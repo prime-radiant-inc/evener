@@ -252,6 +252,15 @@ func defaultFileOps() fileOps {
 	}
 }
 
+// decodeLog decodes a whole, in-memory version-header-plus-batch-lines log.
+// It has exactly one caller-facing shape: Store.Load/Store.Open's own
+// buffer, never a context or an event ceiling — ScanEvents (read_events.go)
+// is the actual context-aware, bounded read path, and does its own inline,
+// line-by-line decoding rather than calling this. decodeLog takes no
+// ctx/maxEvents parameters: its only caller always hands it a fully
+// buffered, already-read log with no cancellation point or event-count
+// boundary to enforce, so bounding parameters here would carry dead
+// branches nothing exercises.
 func decodeLog(raw []byte, tolerateUnterminatedTail bool) ([]Event, error) {
 	if len(raw) == 0 {
 		return nil, errors.New("delegatestore: missing version header")

@@ -97,6 +97,7 @@ func TestSession_ContextManager_CompactsWhenNeeded(t *testing.T) {
 			func(req llm.Request) llm.Response {
 				callCount++
 				return llm.Response{
+					Usage: llm.Usage{InputTokens: 22_000},
 					Message: llm.Message{
 						Role: llm.RoleAssistant,
 						Content: []llm.ContentPart{
@@ -124,8 +125,9 @@ func TestSession_ContextManager_CompactsWhenNeeded(t *testing.T) {
 		t.Fatalf("WriteFile: %v", err)
 	}
 
-	// Use a very small context window to force compaction.
-	profile := WithContextWindow(NewOpenAIProfile("gpt-5.2"), 500)
+	// Use a window large enough for the base prompt but small enough for the
+	// tool result to cross the compaction threshold.
+	profile := WithContextWindow(NewOpenAIProfile("gpt-5.2"), 27_000)
 
 	sess, err := NewSession(c, profile, env, SessionConfig{})
 	if err != nil {
@@ -143,9 +145,9 @@ func TestSession_ContextManager_CompactsWhenNeeded(t *testing.T) {
 		}
 	}()
 
-	// Verify the session is configured with the small window.
-	if sess.Profile().ContextWindowSize() != 500 {
-		t.Fatalf("expected context window 500, got %d", sess.Profile().ContextWindowSize())
+	// Verify the session is configured with the constrained window.
+	if sess.Profile().ContextWindowSize() != 27_000 {
+		t.Fatalf("expected context window 27000, got %d", sess.Profile().ContextWindowSize())
 	}
 
 	ctx := context.Background()
@@ -183,6 +185,7 @@ func TestSession_ContextManager_EmitsEvents(t *testing.T) {
 		steps: []func(req llm.Request) llm.Response{
 			func(req llm.Request) llm.Response {
 				return llm.Response{
+					Usage: llm.Usage{InputTokens: 22_000},
 					Message: llm.Message{
 						Role: llm.RoleAssistant,
 						Content: []llm.ContentPart{
@@ -207,7 +210,7 @@ func TestSession_ContextManager_EmitsEvents(t *testing.T) {
 		t.Fatalf("WriteFile: %v", err)
 	}
 
-	profile := WithContextWindow(NewOpenAIProfile("gpt-5.2"), 500) // Tiny window to force compaction.
+	profile := WithContextWindow(NewOpenAIProfile("gpt-5.2"), 27_000)
 
 	sess, err := NewSession(c, profile, env, SessionConfig{})
 	if err != nil {

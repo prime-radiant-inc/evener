@@ -15,9 +15,6 @@ import { sourceLabel } from "./sourceLabel";
 
 const CLASS = {
   section: requireClass(styles.section, "marketplacesPlugins.module.css", "section"),
-  header: requireClass(styles.header, "marketplacesPlugins.module.css", "header"),
-  title: requireClass(styles.title, "marketplacesPlugins.module.css", "title"),
-  count: requireClass(styles.count, "marketplacesPlugins.module.css", "count"),
   list: requireClass(styles.list, "marketplacesPlugins.module.css", "list"),
   row: requireClass(styles.row, "marketplacesPlugins.module.css", "row"),
   rowMain: requireClass(styles.rowMain, "marketplacesPlugins.module.css", "rowMain"),
@@ -142,12 +139,6 @@ export function MarketplacesSection({ expandedMarketplaces }: MarketplacesSectio
 
   return (
     <section className={CLASS.section}>
-      <header className={CLASS.header}>
-        <h3 className={CLASS.title}>Marketplaces</h3>
-        <span className={CLASS.count}>
-          {marketplaces.length} {marketplaces.length === 1 ? "entry" : "entries"}
-        </span>
-      </header>
       <ul aria-label="Marketplaces" className={CLASS.list}>
         {marketplaces.length === 0 ? (
           <li className={CLASS.empty}>No marketplaces registered. Add one below.</li>

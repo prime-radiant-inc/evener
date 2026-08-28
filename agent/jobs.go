@@ -25,6 +25,7 @@ import (
 	"primeradiant.com/evener/agent/internal/runetrim"
 	"primeradiant.com/evener/agent/provenance"
 	"primeradiant.com/evener/agent/schema"
+	"primeradiant.com/evener/envvars"
 	"primeradiant.com/evener/identifier"
 )
 
@@ -99,13 +100,6 @@ type jobManager struct {
 	// self-influence depth metric consults so a coalesced-away (never delivered)
 	// predecessor cannot inflate depth. Guarded by jm.mu.
 	deliveredWatchSendIDs map[string]struct{}
-	// watchLineage remembers, per watch key, the watchID lineage of configs
-	// that ENDED in that slot (cleared/replaced/expired) so the next install
-	// for the same key inherits it and a clear-and-recreate loop cannot reset
-	// the runaway fuse. Bounded (watchLineageKeyCap keys, oldest evicted);
-	// in-memory like the volume-budget counter. Guarded by jm.mu.
-	watchLineage      map[watchKey][]string
-	watchLineageOrder []watchKey
 	// watchesLostAtRestore holds the durable records of the watches this restore
 	// ended (clearUnrestoredActiveWatches), owed a callback-cancellation or send
 	// end notice by noticeUnrestoredWatchEnds. Written once at construction, read
@@ -219,11 +213,17 @@ var defaultCloseGrace = 5 * time.Second
 // Package vars, not consts, so tests can override and restore them without
 // waiting wall-clock time.
 var (
-	// laneClosePassBudget bounds the P0 close disposal and the P3 close pass
-	// TOGETHER — one shared deadline per close cascade. It bounds git/history
-	// work only; the budget-exempt touch+unlock tail runs after expiry, so
-	// shutdown never blocks on git yet no lane is left locked.
-	laneClosePassBudget = 30 * time.Second
+	// LaneClosePassBudget bounds the P0 close disposal and the P3 close pass
+	// TOGETHER — one shared deadline per close cascade (ensureCloseBudget mints
+	// it), and since #382 it also bounds close's WaitGroup joins. It bounds
+	// git/history work only; the budget-exempt touch+unlock tail runs after
+	// expiry, so shutdown never blocks on git yet no lane is left locked.
+	//
+	// Exported for the same reason as DrainStallTimeout: the only end-to-end
+	// shape that exercises a teardown blocked on an uncancellable operation is a
+	// whole one-shot `evener run`, which lives in another module. Nothing in
+	// production assigns it.
+	LaneClosePassBudget = 30 * time.Second
 	// laneTailWarnThreshold is the lane count above which the budget-exempt
 	// touch+unlock tail earns a second aggregated warning (a pathological
 	// session leaked far more lanes than a close pass can collect).
@@ -285,6 +285,39 @@ func (jm *jobManager) currentCausalProvenance() *provenance.Causal {
 		return nil
 	}
 	return provenance.Clone(jm.currentProvenance())
+}
+
+// hasSupervisedRunningJobs reports whether any live job is guaranteed to keep
+// waking the session even if it never exits: a running job covered by an
+// active watch with a progress interval (periodic ticks, on top of the
+// automatic terminal notification every jm.running entry gets — detached
+// processes are deliberately kept out of the manager, session_tools_jobs.go).
+// A bare running job does NOT qualify: jobs have no watchdog, so a
+// never-exiting unwatched job delivers nothing, and the goal gate's
+// wake-pending hold must not park the goal on it with the no-progress breaker
+// unreachable. This mirrors the wait contract session_jobtree_drain.go
+// teaches the model: to wait on a long command, watch it with a
+// progress_interval.
+//
+// Scope caveat: the scan does not filter by the watch's receiver. A watch
+// configured on behalf of a descendant (configureDescendantReceiverWatch)
+// routes its ticks to that descendant's session, not to this one, so counting
+// it would hold the goal on ticks that wake someone else. That shape is not
+// reachable today — descendant-receiver watches live in the descendant's job
+// manager, not this one — but a future change that mirrors them here must add
+// a receiver filter or this predicate overcounts.
+func (jm *jobManager) hasSupervisedRunningJobs() bool {
+	if jm == nil {
+		return false
+	}
+	jm.mu.Lock()
+	defer jm.mu.Unlock()
+	for _, cfg := range jm.watches {
+		if cfg.progressIntervalMS > 0 && jm.running[cfg.target] != nil {
+			return true
+		}
+	}
+	return false
 }
 
 type runningJob struct {
@@ -480,11 +513,14 @@ type jobNotification struct {
 	// payload: a job.notification watch carries the completed job's status.
 	Kind                                                       jobNotificationKind
 	JobID, JobType, Status, Reason, Description, TranscriptRef string
-	ExhaustionBudget                                           string
-	ExhaustionLimit                                            int
-	Resumable                                                  *bool
-	OutputBytes                                                int64
-	ExitCode                                                   *int
+	// TerminalGen is the exact durable terminal generation this terminal
+	// notification represents.
+	TerminalGen      string
+	ExhaustionBudget string
+	ExhaustionLimit  int
+	Resumable        *bool
+	OutputBytes      int64
+	ExitCode         *int
 	// Provenance is the causal origin carried with this notification: the
 	// triggering watch's lineage so the notification turn it drives stamps the
 	// same origin and a same-watch retrigger is suppressed.
@@ -493,6 +529,16 @@ type jobNotification struct {
 	// against the owning jobManager's CURRENT pending state at accept time
 	// (spec §4.3). The frame text is deliberately NOT carried here.
 	WatchSend *watchSendToken
+	// Timer fields (in-memory only). WatchID identifies the firing timer so
+	// the session can fold repeated ticks; Fires is how many folded into this
+	// entry; Note, IntervalSeconds, and Terminal carry what the block needs.
+	// Only the timer fire path stamps WatchID, and the session drops a
+	// non-terminal entry whose watch key no longer resolves (an orphaned tick).
+	WatchID         string
+	Fires           int
+	Note            string
+	IntervalSeconds int
+	Terminal        bool
 	// receiverSessionID/receiverNotify route no-send watch notifications for
 	// concrete descendant watches back to the ancestor session that installed
 	// them. They are in-memory only; active watches are not restored without a
@@ -512,6 +558,7 @@ func (n jobNotification) isWatch() bool {
 
 type createShellOpts struct {
 	Command     string
+	Intent      string
 	Description string
 }
 
@@ -576,7 +623,6 @@ func newJobManagerWithRestore(stateDir, sessionID string, enqueue func(jobNotifi
 		watches:               make(map[watchKey]*watchConfig),
 		lastFedOffset:         make(map[string]int64),
 		deliveredWatchSendIDs: make(map[string]struct{}),
-		watchLineage:          make(map[watchKey][]string),
 		appendEvent:           store.Append,
 		appendEvents:          store.AppendBatch,
 		createOutput:          createOutput,
@@ -849,6 +895,7 @@ func (jm *jobManager) createShell(opts createShellOpts) (*jobstore.JobRecord, er
 		Type:             jobstore.JobShell,
 		Status:           jobstore.StatusRunning,
 		Command:          opts.Command,
+		Intent:           opts.Intent,
 		Description:      opts.Description,
 		OwnerSessionID:   jm.sessionID,
 		VisibleToSession: jm.sessionID,
@@ -881,6 +928,7 @@ func (jm *jobManager) createShell(opts createShellOpts) (*jobstore.JobRecord, er
 		JobID:            rec.JobID,
 		Type:             rec.Type,
 		Command:          rec.Command,
+		Intent:           rec.Intent,
 		Description:      rec.Description,
 		OwnerSessionID:   rec.OwnerSessionID,
 		VisibleToSession: rec.VisibleToSession,
@@ -1034,11 +1082,11 @@ func (jm *jobManager) emitJobStarted(e jobstore.Event, run *runningJob) {
 			}
 			background = run.rec.Background
 			command = run.rec.Command
-			parentDelegateID = firstNonEmptyJobString(run.rec.ParentDelegateID, parentDelegateID)
-			task = firstNonEmptyJobString(run.rec.Task, task)
-			originTurnID = firstNonEmptyJobString(run.rec.OriginTurnID, originTurnID)
-			originToolCallID = firstNonEmptyJobString(run.rec.OriginToolCallID, originToolCallID)
-			originItemID = firstNonEmptyJobString(run.rec.OriginItemID, originItemID)
+			parentDelegateID = envvars.FirstNonEmpty(run.rec.ParentDelegateID, parentDelegateID)
+			task = envvars.FirstNonEmpty(run.rec.Task, task)
+			originTurnID = envvars.FirstNonEmpty(run.rec.OriginTurnID, originTurnID)
+			originToolCallID = envvars.FirstNonEmpty(run.rec.OriginToolCallID, originToolCallID)
+			originItemID = envvars.FirstNonEmpty(run.rec.OriginItemID, originItemID)
 		}
 	}
 	if jobType != string(jobstore.JobShell) {
@@ -1059,15 +1107,6 @@ func (jm *jobManager) emitJobStarted(e jobstore.Event, run *runningJob) {
 	}, e.Provenance)
 }
 
-func firstNonEmptyJobString(values ...string) string {
-	for _, value := range values {
-		if strings.TrimSpace(value) != "" {
-			return value
-		}
-	}
-	return ""
-}
-
 func (jm *jobManager) emitJobFinished(e jobstore.Event, run *runningJob) {
 	if jm == nil || jm.emit == nil {
 		return
@@ -1086,11 +1125,11 @@ func (jm *jobManager) emitJobFinished(e jobstore.Event, run *runningJob) {
 		}
 		background = run.rec.Background
 		command = run.rec.Command
-		parentDelegateID = firstNonEmptyJobString(run.rec.ParentDelegateID, parentDelegateID)
-		task = firstNonEmptyJobString(run.rec.Task, task)
-		originTurnID = firstNonEmptyJobString(run.rec.OriginTurnID, originTurnID)
-		originToolCallID = firstNonEmptyJobString(run.rec.OriginToolCallID, originToolCallID)
-		originItemID = firstNonEmptyJobString(run.rec.OriginItemID, originItemID)
+		parentDelegateID = envvars.FirstNonEmpty(run.rec.ParentDelegateID, parentDelegateID)
+		task = envvars.FirstNonEmpty(run.rec.Task, task)
+		originTurnID = envvars.FirstNonEmpty(run.rec.OriginTurnID, originTurnID)
+		originToolCallID = envvars.FirstNonEmpty(run.rec.OriginToolCallID, originToolCallID)
+		originItemID = envvars.FirstNonEmpty(run.rec.OriginItemID, originItemID)
 	}
 	if jobType != string(jobstore.JobShell) {
 		return
@@ -1359,6 +1398,7 @@ func (jm *jobManager) reconcileLostJobsWithLoad(loadJobs func() (map[string]*job
 		if jm.enqueue != nil {
 			jm.enqueue(jobNotification{
 				JobID:            finished.JobID,
+				TerminalGen:      finished.TerminalGen,
 				JobType:          string(rec.Type),
 				Status:           string(finished.Status),
 				Reason:           finished.Reason,
@@ -1986,6 +2026,7 @@ func (jm *jobManager) armFinalizedJob(run *runningJob, terminal *terminalJob) er
 		// notices first, then the terminal.
 		ownNotices = append(ownNotices, jobNotification{
 			JobID:            run.rec.JobID,
+			TerminalGen:      terminal.generation,
 			JobType:          string(run.rec.Type),
 			Status:           string(terminal.status),
 			Reason:           terminal.reason,
@@ -2139,6 +2180,7 @@ func (jm *jobManager) armPendingTerminalNotifications() error {
 		if jm.enqueue != nil {
 			jm.enqueue(jobNotification{
 				JobID:            rec.JobID,
+				TerminalGen:      rec.TerminalGen,
 				JobType:          string(rec.Type),
 				Status:           string(rec.Status),
 				Reason:           rec.Reason,

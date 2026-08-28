@@ -2,7 +2,6 @@ package hub
 
 import (
 	"context"
-	"encoding/json"
 	"net/http"
 	"strings"
 	"time"
@@ -49,45 +48,6 @@ func (s *WebServer) handleThreadDocument(w http.ResponseWriter, r *http.Request)
 	serveSPAIndex(w, r, distFS())
 }
 
-// renderSessionTasks returns the session's task list as JSON. For live
-// sessions it proxies the daemon's GET /tasks; for ended sessions it reads
-// the persisted <StateDir>/tasks/<id>.json through loadPersistedTasks
-// (app_tasks.go) — the same task.TaskStore.Load()+View() reader the
-// evener/tasks/list RPC's past fallback uses — rather than a second, hand-
-// rolled parser, so this path inherits TaskStore.Load's not-exist-is-empty
-// semantics and decode-error handling directly instead of a hand-copied
-// sibling of it. A missing file or absent session returns an empty array
-// (200) so the UI doesn't have to special-case "no tasks yet"; a corrupt or
-// unreadable task file now surfaces as a real error instead of being
-// forwarded to the client verbatim.
-func (s *WebServer) renderSessionTasks(w http.ResponseWriter, r *http.Request, id string) {
-	w.Header().Set("Content-Type", "application/json")
-
-	ref := appRefFromRouteID(id)
-	if source, err := sourceForThread(s.sources, ref, ""); err == nil {
-		resp, err := source.ListTasks(r.Context(), appwire.TaskListParams{Ref: ref})
-		if err == nil {
-			_ = json.NewEncoder(w).Encode(resp.Data)
-			return
-		}
-		// fall through to disk on daemon error
-	}
-
-	if isLocalRouteID(id) && s.cfg.Past != nil {
-		if pe, ok := s.cfg.Past.Find(id); ok && pe.StateDir != "" {
-			tasks, err := loadPersistedTasks(pe.StateDir, id)
-			if err != nil {
-				writeAPIError(w, http.StatusInternalServerError, "load tasks: "+err.Error())
-				return
-			}
-			_ = json.NewEncoder(w).Encode(tasks)
-			return
-		}
-	}
-
-	_, _ = w.Write([]byte("[]\n"))
-}
-
 func (s *WebServer) workspaceData(id string) WorkspaceData {
 	if !isLocalRouteID(id) {
 		ref := appRefFromRouteID(id)
@@ -131,7 +91,9 @@ func (s *WebServer) workspaceData(id string) WorkspaceData {
 				data.WorkMillis = status.WorkMillis
 				data.Usage = status.Usage
 				data.ActiveTurnStartedAt = status.ActiveTurnStartedAt
-				data.Cost = appwire.EstimateCost(data.Model, data.Usage)
+				// The daemon prices the live session from its own registry;
+				// the web renders that figure rather than re-deriving it.
+				data.Cost = status.Cost
 				// Populate the context gauge here too so the lean /state poll
 				// (B3) needs no separate turns fetch.
 				data.ContextPercent = int(status.ContextPressure * 100)
@@ -139,7 +101,7 @@ func (s *WebServer) workspaceData(id string) WorkspaceData {
 				data.ContextNumbers = formatContextNumbers(status.ContextUsed, status.ContextWindow, status.ContextRemaining)
 				data.CompactContextNumbers = formatCompactContextNumbers(status.ContextUsed, status.ContextWindow)
 			}
-			// Branch isn't on the rendezvous entry or daemon /status — fall
+			// Branch isn't on the rendezvous entry or daemon AppWire snapshot — fall
 			// back to the past index where the agent persists EnvInfo.
 			if s.cfg.Past != nil {
 				if pe, ok := s.cfg.Past.Find(id); ok {
@@ -197,11 +159,11 @@ func (s *WebServer) workspaceData(id string) WorkspaceData {
 			}
 			// One session's own workspace, so this path can afford the same
 			// full-transcript recovery the single-thread read does: a fork child's
-			// meta carries no CumulativeUsage at all (stampDerivedSessionUsage).
+			// meta carries no CumulativeUsage at all (stampDerivedTotals).
 			if data.Usage == nil {
-				data.Usage = derivedSessionUsage(pe)
+				data.Usage = derivedWorkspaceUsage(pe)
 			}
-			data.Cost = appwire.EstimateCost(data.Model, data.Usage)
+			data.Cost = appwire.EstimateCost(pastEntryCost(s.cfg, pe), data.Usage)
 			s.fillForkLineage(&data, pe.Meta)
 			s.fillSubagentLineage(&data, pe.Meta)
 			s.fillObserverLink(&data, pe.Meta)

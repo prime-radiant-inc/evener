@@ -100,7 +100,7 @@ test("rowFromDelegateItem uses stable delegate_id and rejects activation-only jo
   const stable = rowFromDelegateItem(
     delegateItem({
       callId: "call_stable",
-      argumentsJSON: JSON.stringify({ task: "inspect" }),
+      argumentsJSON: JSON.stringify({ prompt: "inspect" }),
       output: JSON.stringify({
         delegate_id: "dlg_stable",
         status: "running",
@@ -118,7 +118,7 @@ test("rowFromDelegateItem uses stable delegate_id and rejects activation-only jo
     rowFromDelegateItem(
       delegateItem({
         callId: "call_legacy",
-        argumentsJSON: JSON.stringify({ task: "legacy" }),
+        argumentsJSON: JSON.stringify({ prompt: "legacy" }),
         output: JSON.stringify({ job_id: "job_legacy", status: "running" }),
       }),
     ),
@@ -129,7 +129,7 @@ test("rowFromDelegateItem uses stable delegate_id and rejects activation-only jo
 
 test("delegate: summary is the human description", () => {
   const d = toolRendererFor("delegate");
-  const args = JSON.stringify({ task: "Run the full test suite and report back" });
+  const args = JSON.stringify({ prompt: "Run the full test suite and report back" });
   expect(d.summary(delegateItem({ description: "Testing delegation", argumentsJSON: args }))).toBe(
     "Testing delegation",
   );
@@ -138,7 +138,7 @@ test("delegate: summary is the human description", () => {
 test("delegate: delegated task text is not used for the row summary", () => {
   const d = toolRendererFor("delegate");
   const longTask = "x".repeat(100);
-  const args = JSON.stringify({ task: longTask });
+  const args = JSON.stringify({ prompt: longTask });
   expect(d.summary(delegateItem({ description: "Testing delegation", argumentsJSON: args }))).toBe(
     "Testing delegation",
   );
@@ -151,7 +151,7 @@ test("two delegate ToolCallItems each retain their own card and open action", ()
     turnId: turn.id,
     callId: "call_d1",
     description: "first delegate",
-    argumentsJSON: JSON.stringify({ task: "first child" }),
+    argumentsJSON: JSON.stringify({ prompt: "first child" }),
     output: JSON.stringify({ delegate_id: "dlg_1", status: "running", transcript_ref: "ref_child_1" }),
   });
   const second = delegateItem({
@@ -159,7 +159,7 @@ test("two delegate ToolCallItems each retain their own card and open action", ()
     turnId: turn.id,
     callId: "call_d2",
     description: "second delegate",
-    argumentsJSON: JSON.stringify({ task: "second child" }),
+    argumentsJSON: JSON.stringify({ prompt: "second child" }),
     output: JSON.stringify({ delegate_id: "dlg_2", status: "running", transcript_ref: "ref_child_2" }),
   });
   render(
@@ -193,7 +193,7 @@ test("a settled delegate row renders an honest ms-scale duration", () => {
   const settled = delegateItem({
     id: "d_done",
     callId: "call_done",
-    argumentsJSON: JSON.stringify({ task: "did the thing" }),
+    argumentsJSON: JSON.stringify({ prompt: "did the thing" }),
     output: JSON.stringify({ delegate_id: "job_d", status: "completed", transcript_ref: "ref_d" }),
     startedAt: new Date(startedMs).toISOString(),
     completedAt: new Date(startedMs + 12_000).toISOString(),
@@ -209,7 +209,7 @@ test("a failed card carries the danger rail itself - there is no module chrome t
   const failed = delegateItem({
     id: "d_fail",
     callId: "call_fail",
-    argumentsJSON: JSON.stringify({ task: "will fail" }),
+    argumentsJSON: JSON.stringify({ prompt: "will fail" }),
     output: JSON.stringify({ delegate_id: "job_f", status: "failed", transcript_ref: "ref_f", reason: "build error" }),
   });
   render(<Body item={failed} live={false} />);
@@ -231,7 +231,7 @@ test("3zf8: a cancelled child gets its own distinct stopped kind", () => {
   const stopped = delegateItem({
     id: "d_stopped",
     callId: "call_stopped",
-    argumentsJSON: JSON.stringify({ task: "misbehaving, killed" }),
+    argumentsJSON: JSON.stringify({ prompt: "misbehaving, killed" }),
     output: JSON.stringify({ delegate_id: "job_stopped", status: "cancelled", transcript_ref: "ref_stopped" }),
   });
   render(<Body item={stopped} live={false} />);
@@ -248,7 +248,7 @@ function delegateWithTranscriptRef(ref: string): ItemModel {
   return delegateItem({
     id: "d_ref",
     callId: "call_ref",
-    argumentsJSON: JSON.stringify({ task: "has a transcript" }),
+    argumentsJSON: JSON.stringify({ prompt: "has a transcript" }),
     output: JSON.stringify({ delegate_id: "job_ref", status: "running", transcript_ref: ref }),
   });
 }
@@ -265,7 +265,7 @@ test("open transcript opens the read-only transcript pane (mobile / no dockview 
     />,
   );
   const button = screen.getByRole("button", { name: "Open transcript" });
-  expect(button.textContent).toContain("open");
+  expect(button.textContent).toBe(""); // the one icon-only form: no visible words
   expect(button.querySelector("svg")).toBeTruthy();
   expect(button.getAttribute("aria-label")).toBe("Open transcript");
   await user.click(button);
@@ -338,7 +338,7 @@ test("no open-transcript button when the row has no transcriptRef yet", () => {
   const noRef = delegateItem({
     id: "d_noref",
     callId: "call_noref",
-    argumentsJSON: JSON.stringify({ task: "no ref yet" }),
+    argumentsJSON: JSON.stringify({ prompt: "no ref yet" }),
     output: "",
   });
   const turn: TurnModel = { id: "turn_noref", status: "completed", items: [] };
@@ -353,7 +353,7 @@ test("a still-running row (with a transcriptRef) offers Open transcript, not gat
   const running = delegateItem({
     id: "d_run_link",
     callId: "call_run_link",
-    argumentsJSON: JSON.stringify({ task: "still running" }),
+    argumentsJSON: JSON.stringify({ prompt: "still running" }),
     output: JSON.stringify({ delegate_id: "job_rl", status: "running", transcript_ref: "ref_run_link" }),
   });
   const turn: TurnModel = { id: "turn_run_link", status: "inProgress", items: [] };
@@ -366,7 +366,7 @@ test("a still-running row (with a transcriptRef) offers Open transcript, not gat
 // --- expanded card: disclosure + Mandate / Activity / Summary (qb8e, tv5k) -
 
 // A child thread/read that carries a real Activity feed (two tool-call items
-// with a `description` purpose) plus a final agentMessage summary - but ONLY
+// with a `description` intent) plus a final agentMessage summary - but ONLY
 // when the caller asked for turns. A lean (includeTurns:false) read returns
 // none, so a passing Activity/Summary assertion proves the expanded card's
 // watch upgraded to { includeTurns: true } (Task 9's Option B), not that the
@@ -415,7 +415,7 @@ function childThreadRead(params: unknown, childStatus: string) {
                 {
                   // A whitespace-only description is ABSENCE, not a step - the
                   // same rule the main transcript's tool row applies
-                  // (ToolRow.tsx's statedPurposeOf, shared by both surfaces).
+                  // (ToolRow.tsx's statedIntentOf, shared by both surfaces).
                   // A truthiness filter here would count it and the two
                   // surfaces would disagree about whether it exists.
                   id: "item_act_blank",
@@ -444,7 +444,7 @@ test("a folded card quotes the child's newest own words from the full event stre
   const running = delegateItem({
     id: "d_quote",
     callId: "call_quote",
-    argumentsJSON: JSON.stringify({ task: "audit the reducer" }),
+    argumentsJSON: JSON.stringify({ prompt: "audit the reducer" }),
     output: JSON.stringify({ delegate_id: "job_q", status: "running", transcript_ref: "ref_quote_child" }),
   });
   render(<Body item={running} live={false} />);
@@ -458,7 +458,7 @@ test("a folded card quotes the child's newest own words from the full event stre
   expect(quote.tagName).toBe("EM");
 });
 
-test("expanding a card lists recent quotes - purposes plain, messages italic - each with its runtime and timestamp", async () => {
+test("expanding a card lists recent quotes - intents plain, messages italic - each with its runtime and timestamp", async () => {
   const fake = new FakeClient("ready");
   fake.on("thread/read", (params) => {
     const base = childThreadRead(params, "active");
@@ -476,31 +476,50 @@ test("expanding a card lists recent quotes - purposes plain, messages italic - e
   const running = delegateItem({
     id: "d_quotes",
     callId: "call_quotes",
-    argumentsJSON: JSON.stringify({ task: "audit the reducer" }),
+    argumentsJSON: JSON.stringify({ prompt: "audit the reducer" }),
     output: JSON.stringify({ delegate_id: "job_qs", status: "running", transcript_ref: "ref_quotes_child" }),
   });
+  // A fixed reference instant 70s after the stamped step (same calendar day),
+  // so the relative time is deterministic and the absolute stays time-only.
+  const stepStart = new Date(2026, 7, 20, 9, 41, 2);
+  const fixedNow = new Date(2026, 7, 20, 9, 42, 12).getTime();
+  const absStart = new Intl.DateTimeFormat("en", {
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit",
+    hour12: false,
+  }).format(stepStart);
   const user = userEvent.setup();
-  render(<Body item={running} live={false} />);
+  render(
+    <SessionNowContext.Provider value={fixedNow}>
+      <Body item={running} live={false} />
+    </SessionNowContext.Provider>,
+  );
 
   const row = screen.getByTestId("subagent-row");
   await user.click(within(row).getByRole("button", { name: /show recent activity/i }));
   const quotes = await within(row).findByTestId("subagent-quotes");
   const items = within(quotes).getAllByRole("listitem") as HTMLLIElement[];
   // Two real steps plus the final message; the whitespace-only description
-  // contributed no quote (the same statedPurposeOf rule the old feed used).
+  // contributed no quote (the same statedIntentOf rule the old feed used).
   expect(items).toHaveLength(3);
-  expect(items.map((li) => li.value)).toEqual([1, 2, 3]);
+  // The activity feed is a sequence, not an enumeration: no <li> carries an
+  // ordinal value attribute, so the "72. 73. …" numbering is gone.
+  expect(items.every((li) => li.getAttribute("value") === null)).toBe(true);
 
-  // Runtime + timestamp ride each stamped quote: "6s · HH:MM:SS" local. The
-  // expected stamp is computed through the same Date parsing the formatter
-  // uses, so the suite stays timezone-independent.
-  const parsed = new Date(2026, 7, 20, 9, 41, 2);
-  const stamp = `${String(parsed.getHours()).padStart(2, "0")}:${String(parsed.getMinutes()).padStart(2, "0")}:${String(parsed.getSeconds()).padStart(2, "0")}`;
+  // Each stamped quote shows its per-step runtime and a relative start time
+  // (the absolute instant is the <time title> hover), never a wall-clock
+  // string in the visible text. absStart mirrors the widget's own formatter,
+  // so the assertion is timezone-independent.
+  const time0 = items[0]!.querySelector("time");
+  expect(time0).not.toBeNull();
+  expect(time0!.getAttribute("title")).toBe(absStart);
   expect(items[0]!.textContent).toContain("step one");
   expect(items[0]!.textContent).toContain("6s");
-  expect(items[0]!.textContent).toContain(stamp);
-  // Unstamped quotes render no runtime segment rather than a guess.
+  expect(items[0]!.textContent).toContain("1m ago");
+  // Unstamped quotes render no runtime or timestamp segment rather than a guess.
   expect(items[1]!.textContent).toBe("step two");
+  expect(items[1]!.querySelector("time")).toBeNull();
 
   // Expanded activity retains source-specific treatment.
   expect(items[2]!.querySelector("em")?.textContent).toBe("all done");
@@ -512,7 +531,7 @@ test("an expanded card with no child activity yet says so instead of rendering a
   const running = delegateItem({
     id: "d_empty_quotes",
     callId: "call_empty_quotes",
-    argumentsJSON: JSON.stringify({ task: "just spawned" }),
+    argumentsJSON: JSON.stringify({ prompt: "just spawned" }),
     output: JSON.stringify({ delegate_id: "job_eq", status: "running" }),
   });
   const user = userEvent.setup();
@@ -525,7 +544,7 @@ test("an expanded card with no child activity yet says so instead of rendering a
   expect(within(quotes).queryAllByRole("listitem")).toHaveLength(0);
 });
 
-// mhcf: a child thread/read fixture with MANY purpose-bearing steps.
+// mhcf: a child thread/read fixture with MANY intent-bearing steps.
 // childThreadRead above hard-codes exactly two real steps - useful for the
 // Mandate/Activity/Summary shape, but far too few to exercise a cap. `status`
 // is fixed "active" (childRunning: true) so the same fixture also exercises
@@ -572,7 +591,7 @@ test("mhcf: the Activity feed caps to the 5 most recent steps, not the first 5",
   const running = delegateItem({
     id: "d_cap",
     callId: "call_cap",
-    argumentsJSON: JSON.stringify({ task: "long running audit" }),
+    argumentsJSON: JSON.stringify({ prompt: "long running audit" }),
     output: JSON.stringify({ delegate_id: "job_cap", status: "running", transcript_ref: "ref_cap_child" }),
   });
   const user = userEvent.setup();
@@ -587,7 +606,7 @@ test("mhcf: the Activity feed caps to the 5 most recent steps, not the first 5",
   for (const n of [1, 2, 14, 15]) expect(within(activity).queryByText(`step ${n}`)).toBeNull();
 });
 
-// A timing annotation is not an action: round_timings items carry a purpose-
+// A timing annotation is not an action: round_timings items carry an intent-
 // like description ("Round timings") that would otherwise flood the feed -
 // one per round - and crowd real steps out of the five-slot window. They are
 // elided by eventKind, and the remaining steps keep contiguous true ordinals
@@ -635,7 +654,7 @@ test("the Activity feed elides round_timings items and ordinals count only real 
   const running = delegateItem({
     id: "d_rt",
     callId: "call_rt",
-    argumentsJSON: JSON.stringify({ task: "timing audit" }),
+    argumentsJSON: JSON.stringify({ prompt: "timing audit" }),
     output: JSON.stringify({ delegate_id: "job_rt", status: "running", transcript_ref: "ref_rt_child" }),
   });
   const user = userEvent.setup();
@@ -650,7 +669,8 @@ test("the Activity feed elides round_timings items and ordinals count only real 
   // round_timings items never entered the count, so ordinals run 2..6, not
   // 4..8.
   expect(items.map((li) => li.textContent)).toEqual(["step 2", "step 3", "step 4", "step 5", "step 6"]);
-  expect(items.map((li) => li.value)).toEqual([2, 3, 4, 5, 6]);
+  // No ordinals: the feed is unnumbered, so no <li> carries a value attribute.
+  expect(items.every((li) => li.getAttribute("value") === null)).toBe(true);
 });
 
 test("dr7e: no Job detail section renders when neither resumable nor exhaustion fields are set", async () => {
@@ -659,7 +679,7 @@ test("dr7e: no Job detail section renders when neither resumable nor exhaustion 
   const settled = delegateItem({
     id: "d_noexhaust",
     callId: "call_noexhaust",
-    argumentsJSON: JSON.stringify({ task: "quick task" }),
+    argumentsJSON: JSON.stringify({ prompt: "quick task" }),
     output: JSON.stringify({ delegate_id: "job_noex", status: "completed" }),
   });
   const user = userEvent.setup();
@@ -694,7 +714,7 @@ test("the stats line counts the child's turns and tool calls from the full-turns
   const running = delegateItem({
     id: "d_counts",
     callId: "call_counts",
-    argumentsJSON: JSON.stringify({ task: "count my work" }),
+    argumentsJSON: JSON.stringify({ prompt: "count my work" }),
     output: JSON.stringify({ delegate_id: "job_counts", status: "running", transcript_ref: "ref_counts_child" }),
   });
   render(<Body item={running} live={false} />);
@@ -702,7 +722,7 @@ test("the stats line counts the child's turns and tool calls from the full-turns
   const row = screen.getByTestId("subagent-row");
   const stats = await within(row).findByTestId("subagent-stats");
   // 1 real turn (the prelude excluded), 3 tool calls (the final agent message
-  // is not a call; the blank-purpose commandExecution still is).
+  // is not a call; the blank-intent commandExecution still is).
   await waitFor(() => {
     expect(stats.textContent).toContain("1 turn");
     expect(stats.textContent).toContain("3 calls");
@@ -741,7 +761,7 @@ test("the stats line singularizes a single turn and a single call", async () => 
   const running = delegateItem({
     id: "d_single_counts",
     callId: "call_single_counts",
-    argumentsJSON: JSON.stringify({ task: "count one thing" }),
+    argumentsJSON: JSON.stringify({ prompt: "count one thing" }),
     output: JSON.stringify({
       delegate_id: "job_single_counts",
       status: "running",
@@ -765,7 +785,7 @@ test("a running card's stats line closes with a live elapsed clock from its star
   const running = delegateItem({
     id: "d_clock",
     callId: "call_clock",
-    argumentsJSON: JSON.stringify({ task: "timing me" }),
+    argumentsJSON: JSON.stringify({ prompt: "timing me" }),
     output: JSON.stringify({ delegate_id: "job_clock", status: "running" }),
     startedAt: new Date(now - 221_000).toISOString(),
   });
@@ -801,7 +821,7 @@ test("stable delegate attention and lifecycle own the card while child content s
     id: "d_await",
     turnId: turn.id,
     callId: "call_await",
-    argumentsJSON: JSON.stringify({ task: "needs an answer" }),
+    argumentsJSON: JSON.stringify({ prompt: "needs an answer" }),
     output: JSON.stringify({
       delegate_id: stable.delegateId,
       status: "running",
@@ -874,7 +894,7 @@ test("the card is headless: no tag, no open button inside it", () => {
   const running = delegateItem({
     id: "d_headless",
     callId: "call_headless",
-    argumentsJSON: JSON.stringify({ task: "identity is above me" }),
+    argumentsJSON: JSON.stringify({ prompt: "identity is above me" }),
     output: JSON.stringify({ delegate_id: "job_headless", status: "running", transcript_ref: "ref_headless" }),
   });
   render(<Body item={running} live={false} />);
@@ -891,7 +911,7 @@ test("a headless card exposes hidden identity and status, a visible status shape
       item={delegateItem({
         id: "d_accessible",
         callId: "call_accessible",
-        argumentsJSON: JSON.stringify({ task: "accessible child" }),
+        argumentsJSON: JSON.stringify({ prompt: "accessible child" }),
         output: JSON.stringify({ delegate_id: "dlg_accessible", status: "completed" }),
       })}
       live={false}
@@ -924,7 +944,7 @@ test("multiple cards schedule no intervals of their own", () => {
         item={delegateItem({
           id: "d_clock_a",
           callId: "call_clock_a",
-          argumentsJSON: JSON.stringify({ task: "clock a" }),
+          argumentsJSON: JSON.stringify({ prompt: "clock a" }),
           output: JSON.stringify({ delegate_id: "dlg_clock_a", status: "running" }),
         })}
         live={false}
@@ -933,7 +953,7 @@ test("multiple cards schedule no intervals of their own", () => {
         item={delegateItem({
           id: "d_clock_b",
           callId: "call_clock_b",
-          argumentsJSON: JSON.stringify({ task: "clock b" }),
+          argumentsJSON: JSON.stringify({ prompt: "clock b" }),
           output: JSON.stringify({ delegate_id: "dlg_clock_b", status: "running" }),
         })}
         live={false}
@@ -957,7 +977,7 @@ test("the stats line joins its present segments - never a dangling separator", a
   const running = delegateItem({
     id: "d_seps",
     callId: "call_seps",
-    argumentsJSON: JSON.stringify({ task: "counts only, no tokens, no clock" }),
+    argumentsJSON: JSON.stringify({ prompt: "counts only, no tokens, no clock" }),
     output: JSON.stringify({ delegate_id: "job_seps", status: "running", transcript_ref: "ref_seps_child" }),
   });
   render(<Body item={running} live={false} />);
@@ -1042,7 +1062,7 @@ test("a historical session read hydrates a card's kind, tokens, and clock from t
         id: "d_hist",
         turnId: turn.id,
         callId: "call_hist",
-        argumentsJSON: JSON.stringify({ task: "historical child" }),
+        argumentsJSON: JSON.stringify({ prompt: "historical child" }),
         output: JSON.stringify({ delegate_id: "dlg_hist", status: "running", transcript_ref: "ref_hist_child" }),
       })}
       turn={turn}
@@ -1088,7 +1108,7 @@ test("the folded quote of a markdown final report lands on its first substantive
   const done = delegateItem({
     id: "d_md_quote",
     callId: "call_md_quote",
-    argumentsJSON: JSON.stringify({ task: "fix the findings" }),
+    argumentsJSON: JSON.stringify({ prompt: "fix the findings" }),
     output: JSON.stringify({ delegate_id: "job_md", status: "completed", transcript_ref: "ref_md_child" }),
   });
   render(<Body item={done} live={false} />);

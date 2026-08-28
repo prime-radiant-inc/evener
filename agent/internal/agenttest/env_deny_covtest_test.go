@@ -162,7 +162,7 @@ func TestDenyEnvGrep(t *testing.T) {
 	d := &DenyEnv{Seed: 1}
 
 	// count mode.
-	result, err := d.Grep("pattern", "/path", "", false, 0, "count")
+	result, err := d.Grep(context.Background(), "pattern", "/path", "", false, 0, "count")
 	if err != nil {
 		t.Fatalf("Grep count: %v", err)
 	}
@@ -171,12 +171,12 @@ func TestDenyEnvGrep(t *testing.T) {
 	}
 
 	// files_with_matches mode.
-	result, _ = d.Grep("pattern", "/path", "", false, 0, "files_with_matches")
+	result, _ = d.Grep(context.Background(), "pattern", "/path", "", false, 0, "files_with_matches")
 	// Either returns path or empty depending on seed.
 	_ = result
 
 	// default mode.
-	result, _ = d.Grep("pattern", "/path", "", false, 0, "content")
+	result, _ = d.Grep(context.Background(), "pattern", "/path", "", false, 0, "content")
 	_ = result
 }
 

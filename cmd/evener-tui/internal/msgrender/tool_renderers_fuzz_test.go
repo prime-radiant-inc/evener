@@ -30,13 +30,13 @@ func FuzzRenderToolCall(f *testing.F) {
 		name, args, output, errStr string
 	}{
 		{"read_file", `{"file_path":"/a/b.go","offset":1,"limit":5}`, "line\nline", ""},
-		{"shell", `{"command":"ls -la","purpose":"list"}`, "out", ""},
+		{"shell", `{"command":"ls -la","intent":"list"}`, "out", ""},
 		{"edit_file", `{"file_path":"/a.go","old_string":"x","new_string":"y"}`, "", ""},
 		{"grep", `{"pattern":"TODO"}`, "match", ""},
 		{"glob", `{"pattern":"**/*"}`, "", "boom"},
 		{"prov__operation", `{"q":"hi","n":3}`, `{"data":1}`, ""},
 		{"weird-unknown", `not-json`, "", ""},
-		{"delegate", `{"task":"do\nthing"}`, "", ""},
+		{"delegate", `{"prompt":"do\nthing"}`, "", ""},
 		{"", "", "", ""},
 		{"write_file", `{"file_path":"/x","content":"a\nb"}`, "", ""},
 	}
@@ -133,12 +133,12 @@ func replayRenderSurface() {
 	_ = RenderSelectedMessage("first\nsecond", true)
 
 	toolCases := []transcript.ToolCallInfo{
-		{Name: "unknown", RawArgs: `{"purpose":"why"}`, Expanded: false},
+		{Name: "unknown", RawArgs: `{"intent":"why"}`, Expanded: false},
 		{Name: "read_file", Description: ` {"file_path":"x.go"}`, Done: true, Duration: 500 * time.Microsecond},
-		{Name: "read_file", RawArgs: `{"file_path":"x.go","purpose":"inspect"}`, Output: "a\nb\nc\nd\ne\nf\n", Done: true, Expanded: true, Duration: 250 * time.Millisecond},
+		{Name: "read_file", RawArgs: `{"file_path":"x.go","intent":"inspect"}`, Output: "a\nb\nc\nd\ne\nf\n", Done: true, Expanded: true, Duration: 250 * time.Millisecond},
 		{Name: "read_file", RawArgs: `{"file_path":"x.go"}`, Detail: "detail", Output: "output", Error: "boom", Expanded: true},
 		{Name: "read_file", RawArgs: `{"file_path":"x.go"}`, Detail: "detail", Error: "boom", Expanded: true},
-		{Name: "delegate", RawArgs: `{"task":"inspect"}`, Error: "boom", Expanded: true, Subagent: &transcript.SubagentRunInfo{Task: "inspect", Status: "done"}},
+		{Name: "delegate", RawArgs: `{"prompt":"inspect"}`, Error: "boom", Expanded: true, Subagent: &transcript.SubagentRunInfo{Task: "inspect", Status: "done"}},
 		{Name: "delegate_send", RawArgs: `{}`, Done: true, Expanded: true, Subagent: &transcript.SubagentRunInfo{}},
 		{Name: "unknown", RawArgs: `{}`, Done: false, Expanded: false},
 		{Name: "unknown", RawArgs: `{}`, Output: `{"ok":true}`, Error: "boom", Expanded: true},
@@ -152,7 +152,7 @@ func replayRenderSurface() {
 
 	args := ToolArgs{
 		"command": "first line\nsecond line", "pattern": "TODO", "path": "/tmp", "file_path": "x.go",
-		"purpose": "why", "query": "find", "task": "task", "job_id": "123456789", "status": "done",
+		"intent": "why", "query": "find", "task": "task", "job_id": "123456789", "status": "done",
 		"patch": "*** Update File: x.go\n@@ -1 +1 @@\n-old\n+new", "content": "a\nb",
 	}
 	_ = args.Str("missing")
@@ -176,7 +176,7 @@ func replayRenderSurface() {
 	_ = toolRenderers["shell"].Target(ToolArgs{"command": "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ"})
 	_ = toolRenderers["grep"].Result(nil, "", "", 0)
 	_ = toolRenderers["list_dir"].Result(nil, `[{"name":"x"}]`, "", 0)
-	_ = toolRenderers["delegate"].Target(ToolArgs{"task": "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ"})
+	_ = toolRenderers["delegate"].Target(ToolArgs{"prompt": "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ"})
 	_ = toolRenderers["use_skill"].Target(ToolArgs{"skill_name": "named"})
 	_ = formatLineCount(1)
 	mcp, _ := lookupToolRenderer("provider__operation")
@@ -193,7 +193,7 @@ func replayRenderSurface() {
 	_ = taskListBody(nil, "", 80)
 	_ = taskListBody(nil, "bad", 80)
 	_ = taskListBody(nil, `[{"description":"done","status":"done"},{"name":"work","status":"in_progress"},{"name":"wait","status":"pending"}]`, 80)
-	_ = delegateBody(ToolArgs{"task": " task ", "job_id": "123456789", "status": ""}, "", 10)
+	_ = delegateBody(ToolArgs{"prompt": " task ", "job_id": "123456789", "status": ""}, "", 10)
 	_ = delegateBody(nil, `{"job_id":"abcdefghi","status":"completed"}`, 80)
 	_ = delegateBody(ToolArgs{"job_id": "fallback", "status": "queued"}, "bad", 80)
 	_ = SubagentRunBody(transcript.SubagentRunInfo{}, 10)

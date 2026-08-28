@@ -36,3 +36,9 @@ test("the viewport meta uses viewport-fit=cover so safe-area insets are nonzero"
   // values resolve to 0 and the insets are dead code.
   expect(viewportContent()).toContain("viewport-fit=cover");
 });
+
+test("the viewport meta resizes content around the on-screen keyboard", () => {
+  // Chromium/Android's half of the keyboard fix; Safari ignores the unknown
+  // key and is covered by useKeyboardInset (see its header).
+  expect(viewportContent()).toContain("interactive-widget=resizes-content");
+});

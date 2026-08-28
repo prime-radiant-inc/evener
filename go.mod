@@ -29,6 +29,7 @@ require (
 	github.com/modelcontextprotocol/go-sdk v1.3.0
 	github.com/muesli/termenv v0.16.0
 	golang.org/x/net v0.50.0
+	golang.org/x/sync v0.20.0
 	golang.org/x/sys v0.42.0
 	golang.org/x/term v0.40.0
 	golang.org/x/tools v0.42.0
@@ -70,7 +71,6 @@ require (
 	github.com/yuin/goldmark v1.7.13 // indirect
 	github.com/yuin/goldmark-emoji v1.0.5 // indirect
 	golang.org/x/oauth2 v0.30.0 // indirect
-	golang.org/x/sync v0.20.0 // indirect
 	golang.org/x/text v0.34.0 // indirect
 	modernc.org/libc v1.72.3 // indirect
 	modernc.org/mathutil v1.7.1 // indirect

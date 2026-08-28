@@ -19,7 +19,6 @@ import (
 	"primeradiant.com/evener/internal/appserver"
 	"primeradiant.com/evener/internal/plugins"
 	"primeradiant.com/evener/internal/selfupdate"
-	"primeradiant.com/evener/llm/providercfg"
 )
 
 type fuzzModelSource struct {
@@ -112,12 +111,7 @@ func fuzzExerciseModels(data []byte) {
 	_ = sanitizeModelDiagnostics(diags)
 	_ = providerHasLaunchDiagnostic(diags, "P")
 	_ = providerHasLaunchDiagnostic(nil, "P")
-	_ = behaviorTagFromConfig("openrouter-anthropic", nil)
-	pcfg := &providercfg.Config{Instances: []providercfg.InstanceConfig{{Name: "router", Type: providercfg.Type("openrouter-anthropic")}}}
-	_ = behaviorTagFromConfig("router", pcfg)
-	_ = behaviorTagFromConfig("missing", pcfg)
-	_ = launchProviderAllowsUnreportedModels("openrouter-anthropic", nil)
-	_ = launchProviderAllowsUnreportedModels("openai", nil)
+	_ = launchInstanceExists(hubcore.WebConfig{}, "openrouter")
 	_ = launchHarnessDescriptors(hubcore.WebConfig{})
 	_ = launchHarnessDescriptors(hubcore.WebConfig{
 		CodexSources:  []appsource.CodexSourceConfig{{}, {ID: "evener"}, {ID: "remote"}},
@@ -191,14 +185,14 @@ func fuzzExercisePlugins(t *testing.T, root string) {
 	_, _ = c.ListPlugins()
 	_, _ = c.Install(ctx, ref)
 	_, _ = c.Install(ctx, appwire.PluginRefParams{Plugin: "missing", Marketplace: "acme"})
-	_, _ = c.Disable(ref)
-	_, _ = c.Enable(ref)
-	_, _ = c.SetAutoUpgrade(appwire.PluginSetAutoUpgradeParams{Plugin: "widget", Marketplace: "acme", AutoUpgrade: true})
+	_, _ = c.Disable(context.Background(), ref)
+	_, _ = c.Enable(context.Background(), ref)
+	_, _ = c.SetAutoUpgrade(context.Background(), appwire.PluginSetAutoUpgradeParams{Plugin: "widget", Marketplace: "acme", AutoUpgrade: true})
 	_, _ = c.Upgrade(ctx, ref)
-	_, _ = c.Remove(ref)
-	_, _ = c.Remove(ref)
-	_, _ = c.RemoveMarketplace(appwire.MarketplaceNameParams{Name: "acme"})
-	_, _ = c.RemoveMarketplace(appwire.MarketplaceNameParams{Name: "missing"})
+	_, _ = c.Remove(context.Background(), ref)
+	_, _ = c.Remove(context.Background(), ref)
+	_, _ = c.RemoveMarketplace(context.Background(), appwire.MarketplaceNameParams{Name: "acme"})
+	_, _ = c.RemoveMarketplace(context.Background(), appwire.MarketplaceNameParams{Name: "missing"})
 
 	corrupt := newHubPluginsController(filepath.Join(root, "corrupt"))
 	fuzzWriteFile(t, filepath.Join(root, "corrupt", "known_marketplaces.json"), "{")
@@ -207,9 +201,9 @@ func fuzzExercisePlugins(t *testing.T, root string) {
 	_, _ = corrupt.ListPlugins()
 	badref := appwire.PluginRefParams{Plugin: "x", Marketplace: "y"}
 	_, _ = corrupt.Upgrade(ctx, badref)
-	_, _ = corrupt.Enable(badref)
-	_, _ = corrupt.Disable(badref)
-	_, _ = corrupt.SetAutoUpgrade(appwire.PluginSetAutoUpgradeParams{Plugin: "x", Marketplace: "y"})
+	_, _ = corrupt.Enable(context.Background(), badref)
+	_, _ = corrupt.Disable(context.Background(), badref)
+	_, _ = corrupt.SetAutoUpgrade(context.Background(), appwire.PluginSetAutoUpgradeParams{Plugin: "x", Marketplace: "y"})
 
 	mgr := plugins.NewManager(filepath.Join(root, "auto"))
 	_, _ = runPluginAutoUpgradeTick(ctx, mgr, &bytes.Buffer{})

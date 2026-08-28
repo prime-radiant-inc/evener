@@ -15,6 +15,7 @@ import (
 	"github.com/charmbracelet/lipgloss"
 	"primeradiant.com/evener/cmd/evener-tui/internal/transcript"
 	"primeradiant.com/evener/cmd/evener-tui/internal/tuitheme"
+	"primeradiant.com/evener/envvars"
 	"primeradiant.com/evener/identifier"
 )
 
@@ -243,8 +244,12 @@ func delegateBody(args ToolArgs, output string, width int) string {
 
 	th := tuitheme.ActiveTheme()
 	summaryLabel := "delegate"
-	if task := strings.TrimSpace(args.Str("task")); task != "" {
-		summaryLabel = task
+	brief := strings.TrimSpace(args.Str("prompt"))
+	if brief == "" {
+		brief = strings.TrimSpace(args.Str("task")) // brief key in transcripts recorded before the rename
+	}
+	if brief != "" {
+		summaryLabel = brief
 	}
 	identity := identifier.AbbreviateJobID(jobID, 26)
 	if identity != "" {
@@ -279,7 +284,7 @@ func SubagentRunBody(run transcript.SubagentRunInfo, width int) string {
 			label += " " + run.DelegateID
 		}
 		parts = append(parts, label)
-		if task := strings.TrimSpace(firstNonEmpty(run.Task, run.Description)); task != "" {
+		if task := strings.TrimSpace(envvars.FirstNonEmpty(run.Task, run.Description)); task != "" {
 			parts = append(parts, task)
 		}
 		parts = append(parts, "("+status+")")
@@ -325,15 +330,6 @@ func SubagentRunBody(run transcript.SubagentRunInfo, width int) string {
 		}
 	}
 	return lipgloss.NewStyle().Foreground(tuitheme.ActiveTheme().StateSubagent).Render(strings.Join(parts, " · "))
-}
-
-func firstNonEmpty(values ...string) string {
-	for _, value := range values {
-		if strings.TrimSpace(value) != "" {
-			return value
-		}
-	}
-	return ""
 }
 
 // RenderSubagentRail consolidates a contiguous run of subagent / background-job

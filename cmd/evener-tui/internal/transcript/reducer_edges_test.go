@@ -4,6 +4,7 @@ import (
 	"testing"
 
 	"primeradiant.com/evener/appwire"
+	"primeradiant.com/evener/envvars"
 )
 
 // TestCloneUsageNil covers the nil path in cloneUsage.
@@ -153,13 +154,13 @@ func TestSubagentTerminalStatus(t *testing.T) {
 
 // TestFirstNonEmptyString covers the firstNonEmptyString function.
 func TestFirstNonEmptyString(t *testing.T) {
-	if got := firstNonEmptyString("", "  ", "hello", "world"); got != "hello" {
+	if got := envvars.FirstNonEmpty("", "  ", "hello", "world"); got != "hello" {
 		t.Fatalf("firstNonEmptyString should return 'hello', got %q", got)
 	}
-	if got := firstNonEmptyString("", "  ", "\t\n"); got != "" {
+	if got := envvars.FirstNonEmpty("", "  ", "\t\n"); got != "" {
 		t.Fatalf("firstNonEmptyString with all empty should return empty, got %q", got)
 	}
-	if got := firstNonEmptyString("first"); got != "first" {
+	if got := envvars.FirstNonEmpty("first"); got != "first" {
 		t.Fatalf("firstNonEmptyString with first non-empty should return 'first', got %q", got)
 	}
 }

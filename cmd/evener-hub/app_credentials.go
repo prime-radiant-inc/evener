@@ -9,9 +9,8 @@ import (
 
 	"primeradiant.com/evener/appwire"
 	"primeradiant.com/evener/cmdutil"
-	"primeradiant.com/evener/envvars"
 	"primeradiant.com/evener/llm"
-	"primeradiant.com/evener/llm/providercfg"
+	"primeradiant.com/evener/llm/registry"
 )
 
 const credentialTestTimeout = 10 * time.Second
@@ -26,24 +25,43 @@ const (
 )
 
 type credentialProbeClient interface {
-	ListModels(context.Context, string) ([]llm.ModelInfo, error)
+	Models(context.Context, string) (llm.ModelListing, error)
 	Close() error
 }
 
-type credentialProbeLoader func(string) (credentialProbeClient, providercfg.Config, error)
+type credentialProbeLoader func(path string, noUserLayer bool) (credentialProbeClient, error)
 
 type credentialTestCall struct {
 	done   chan struct{}
 	result appwire.AuthTestResponse
 }
 
-func loadCredentialTestClient(path string) (credentialProbeClient, providercfg.Config, error) {
-	if strings.TrimSpace(path) == "" {
-		client, cfg, _, err := cmdutil.LoadClient()
-		return client, cfg, err
+// loadCredentialTestClient builds the probe client the child would get: the
+// user layer at path while the hub is reading it, and none at all when there
+// is no user layer or the file does not load (spec §10). Probing a client the
+// child will never build answers about a different session.
+func loadCredentialTestClient(path string, noUserLayer bool) (credentialProbeClient, error) {
+	if noUserLayer {
+		r, _, err := cmdutil.LoadRegistry(registry.WithNoUserLayer())
+		if err != nil {
+			return nil, err
+		}
+		return cmdutil.NewRegistryClient(r, ""), nil
 	}
-	client, cfg, _, err := cmdutil.LoadClientAt(path)
-	return client, cfg, err
+	var (
+		client *llm.Client
+		err    error
+	)
+	if strings.TrimSpace(path) == "" {
+		client, err = cmdutil.LoadClient("")
+	} else {
+		client, err = cmdutil.LoadClientAt(path, "")
+	}
+	if err != nil {
+		// A typed nil in the interface would read as a usable client.
+		return nil, err
+	}
+	return client, nil
 }
 
 // TestCredentials checks the effective credentials for one configured
@@ -86,18 +104,28 @@ func (c *hubAuthController) TestCredentials(ctx context.Context, params appwire.
 	return call.result, nil
 }
 
+// runCredentialTest asks the registry what the instance needs and whether it
+// has it, then makes one harmless model-list call with the client the launch
+// path would build. A providers.toml the registry read is never a
+// configuration failure here (spec §11.3).
 func (c *hubAuthController) runCredentialTest(ctx context.Context, name string, loader credentialProbeLoader) appwire.AuthTestResponse {
-	client, cfg, err := loader(c.providersConfigPath)
-	inst, ok := configuredInstance(cfg, name)
+	r := c.registry()
+	if r == nil {
+		return credentialTestResponse(name, appwire.AuthTestStatusConfigurationFailure, credentialTestConfigurationMessage)
+	}
+	inst, ok := r.Instance(name)
 	if !ok {
+		res, err := r.ResolveInstance(name)
 		if err != nil {
 			return credentialTestResponse(name, appwire.AuthTestStatusConfigurationFailure, credentialTestConfigurationMessage)
 		}
+		inst = registry.Instance{Name: name, Auth: res.Transport.Auth, CredentialSource: res.Credential.Source}
+	}
+	required := inst.Auth != registry.AuthNone && inst.Auth != registry.AuthOptionalBearer
+	if required && inst.CredentialSource == "none" {
 		return credentialTestResponse(name, appwire.AuthTestStatusMissing, credentialTestMissingMessage)
 	}
-	if credentialRequired(inst) && !c.instanceHasEffectiveCredential(name, inst) {
-		return credentialTestResponse(name, appwire.AuthTestStatusMissing, credentialTestMissingMessage)
-	}
+	client, err := loader(c.providersConfigPath, childNoUserLayer(c.noUserLayer, c.reg))
 	if err != nil || client == nil {
 		return credentialTestResponse(name, appwire.AuthTestStatusConfigurationFailure, credentialTestConfigurationMessage)
 	}
@@ -105,98 +133,19 @@ func (c *hubAuthController) runCredentialTest(ctx context.Context, name string, 
 
 	probeCtx, cancel := context.WithTimeout(ctx, credentialTestTimeout)
 	defer cancel()
-	_, err = client.ListModels(probeCtx, name)
+	listing, err := client.Models(probeCtx, name)
 	if err != nil {
 		status, message := classifyCredentialTestError(err)
 		return credentialTestResponse(name, status, message)
 	}
+	if !listing.Live {
+		return credentialTestResponse(name, appwire.AuthTestStatusUnsupported, credentialTestUnsupportedMessage)
+	}
 	return credentialTestResponse(name, appwire.AuthTestStatusSuccess, credentialTestSuccessMessage)
 }
 
-func configuredInstance(cfg providercfg.Config, name string) (providercfg.InstanceConfig, bool) {
-	for _, inst := range cfg.Instances {
-		if inst.Name == name {
-			return inst, true
-		}
-	}
-	return providercfg.InstanceConfig{}, false
-}
-
-// credentialRequired reports whether there is a credential to look for at all,
-// which is the question evener/auth/test asks before it decides the instance is
-// unconfigured. The envvars registry owns the auth-mode half of that answer —
-// envvars.RequiresNoCredential is the predicate the launch preflight,
-// credentials.Store.List and instanceStatus all ask — and it is keyed on the
-// behavior tag, so an openai instance routed through chat-completions is judged
-// as the openai-compatible provider it resolves as.
-func credentialRequired(inst providercfg.InstanceConfig) bool {
-	tag := providercfg.BehaviorTag(string(inst.Type), string(inst.APIStyle))
-	if envvars.RequiresNoCredential(tag) {
-		return false
-	}
-	if tag == "openai-compatible" && strings.TrimSpace(inst.BaseURL) != "" {
-		return false
-	}
-	return true
-}
-
-// instanceHasEffectiveCredential reports whether the instance has a credential
-// to test. The question is whether launch would find one, so the answer has to
-// be drawn from where launch looks: the inline key and headers carried by the
-// config, then credentials.Store.ResolveKey keyed by the credential tag — the
-// same call cmdutil.LoadClient makes when it builds the client — and finally,
-// for an instance that behaves as OpenAI proper, the stored OAuth record that
-// has no key of its own to resolve. The two tags part company here: the key
-// follows the endpoint the adapter contacts, while OAuth follows the behavior.
-func (c *hubAuthController) instanceHasEffectiveCredential(name string, inst providercfg.InstanceConfig) bool {
-	if apiKey, err := providercfg.ResolveAPIKey(inst.APIKey); err == nil && strings.TrimSpace(apiKey) != "" {
-		return true
-	}
-	if hasResolvedCredentialHeader(inst.CredentialHeaders) {
-		return true
-	}
-	if providercfg.CompatFamily(inst.Type, inst.APIStyle) && hasResolvedAuthorizationHeader(inst.Headers) {
-		return true
-	}
-	credentialTag := providercfg.CredentialTag(string(inst.Type), string(inst.APIStyle), inst.BaseURL)
-	if key, _ := c.creds.ResolveKey(name, credentialTag); strings.TrimSpace(key) != "" {
-		return true
-	}
-	behaviorTag := providercfg.BehaviorTag(string(inst.Type), string(inst.APIStyle))
-	if behaviorTag == "openai" {
-		status, err := c.openAIInstanceStatus(name)
-		return err == nil && status.SignedIn
-	}
-	return false
-}
-
-func hasResolvedCredentialHeader(headers map[string]string) bool {
-	for name, raw := range headers {
-		value, err := providercfg.ResolveHeaderValue(name, raw)
-		if err == nil && strings.TrimSpace(value) != "" {
-			return true
-		}
-	}
-	return false
-}
-
-func hasResolvedAuthorizationHeader(headers map[string]string) bool {
-	for name, raw := range headers {
-		if !strings.EqualFold(name, "Authorization") {
-			continue
-		}
-		value, err := providercfg.ResolveHeaderValue(name, raw)
-		return err == nil && strings.TrimSpace(value) != ""
-	}
-	return false
-}
-
 func classifyCredentialTestError(err error) (string, string) {
-	var configErr *llm.ConfigurationError
-	if errors.As(err, &configErr) && strings.Contains(strings.ToLower(configErr.Message), "does not support listing models") {
-		return appwire.AuthTestStatusUnsupported, credentialTestUnsupportedMessage
-	}
-	if errors.As(err, &configErr) {
+	if _, ok := errors.AsType[*llm.ConfigurationError](err); ok {
 		return appwire.AuthTestStatusConfigurationFailure, credentialTestConfigurationMessage
 	}
 

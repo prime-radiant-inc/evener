@@ -1,0 +1,19 @@
+{
+  "name": "delegate-open-widget-inline",
+  "description": "An intent-only tool row keeps visual order intent text → Open → chevron, with one overlay disclosure trigger and valid sibling controls. Open shares line 1, is measured adjacent to the TEXT edge (never a chevron-unioned edge), and precedes the chevron. Visible content is flex:0 1 auto with a max-width reserving Open, chevron, and both gaps: removing the reservation wraps the trailing items, while restoring flex-grow springs them away from the text. Combined fixtures add the two-level body trigger sharing the intent line (data-body-trigger-intent): the reservation widens by one chevron and gap, and the body trigger must be raised above the absolute overlay trigger or its clicks toggle the wrong disclosure.",
+  "cssFiles": [
+    "styles/global.css",
+    "styles/tokens.css",
+    "panes/session/transcript/toolcallitem.module.css",
+    "widgets/button/button.module.css",
+    "widgets/iconbutton/iconbutton.module.css",
+    "widgets/openbutton/openbutton.module.css"
+  ],
+  "viewport": { "width": 1200, "height": 900, "deviceScaleFactor": 1, "mobile": false },
+  "mutation": {
+    "declaration": "toolcallitem.module.css: .intentTriggerContent max-width removed; separately flex:0 1 auto changed to flex:1 1 0",
+    "verified": "2026-09-03",
+    "expect": "fail",
+    "note": "Without the clamp the long-intent fixtures fail sameLine. With flex-grow restored the short fixtures fail text-edge adjacency. Both mutations were reverified after the text → Open → chevron restructure."
+  }
+}

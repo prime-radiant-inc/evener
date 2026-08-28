@@ -67,7 +67,7 @@ combobox, as a real gesture.
    later navigations don't 401:
    ```
    action: navigate
-   payload: $HUB/auth?token=<TOKEN>&next=/new
+   payload: $HUB/auth/<TOKEN>?next=/new
    ```
    Confirm it mounted:
    ```
@@ -280,9 +280,8 @@ REST surface, and what is no longer on it" in the runbook.
   citation were both wrong; there is no such symbol. Note the status
   codes differ by route: the browser goes over appwire, where an
   oversize payload comes back as a wire `InvalidParams` (`-32602`)
-  toast (`app_threadlifecycle.go:37-39`), while `POST /api/spawn` returns
-  a plain-text **413** (`web_spawn.go:74-77`). A 64×64 PNG is nowhere
-  near either.
+  toast (`app_threadlifecycle.go:37-39`). A 64×64 PNG is nowhere near
+  the limit.
 - **Staging looks different on the two doors, deliberately.** The spawn
   pane renders a text `Chip` (filename only, no dimensions); the
   composer renders an `AttachmentTile` (thumbnail, `W×H` overlay,

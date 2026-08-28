@@ -6,6 +6,8 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+
+	"primeradiant.com/evener/envvars"
 )
 
 // ErrInvalidIDToken is returned (wrapped) by ParseIDTokenClaims when the ID
@@ -42,15 +44,15 @@ func ParseIDTokenClaims(idToken string) (TokenClaims, error) {
 	}
 
 	return TokenClaims{
-		Email: firstNonEmpty(
+		Email: envvars.FirstNonEmpty(
 			claimString(raw, "email"),
 			claimNestedString(raw, "https://api.openai.com/profile", "email"),
 		),
-		AccountID: firstNonEmpty(
+		AccountID: envvars.FirstNonEmpty(
 			claimString(raw, "chatgpt_account_id", "account_id", "account"),
 			claimNestedString(raw, "https://api.openai.com/auth", "chatgpt_account_id", "account_id"),
 		),
-		WorkspaceID: firstNonEmpty(
+		WorkspaceID: envvars.FirstNonEmpty(
 			claimString(raw, "workspace_id", "workspace"),
 			claimNestedString(raw, "https://api.openai.com/auth", "workspace_id"),
 		),

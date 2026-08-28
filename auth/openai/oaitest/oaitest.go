@@ -24,7 +24,7 @@ func IsolateOpenAIAuth(t *testing.T) string {
 	for _, v := range []envvars.Var{
 		envvars.OpenAIAPIKey,
 		envvars.OpenAIBaseURL,
-		envvars.OpenAIChatGPTBaseURL,
+		envvars.OpenAICodexBaseURL,
 		envvars.OpenAIOrgID,
 		envvars.OpenAIProjectID,
 		envvars.OpenAIChatGPTClientID,

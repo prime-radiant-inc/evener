@@ -26,8 +26,6 @@ func FuzzAnthropicImageRequestBuild(f *testing.F) {
 	f.Add("claude-opus-4-6", "", []byte{}, "", "pics/cat.png", uint8(1))
 	f.Add("m", "u", []byte("\xff\xfe"), "image/png", "", uint8(2))
 
-	a := &Adapter{}
-
 	f.Fuzz(func(t *testing.T, model, user string, imgData []byte, imgMedia, imgURL string, sel uint8) {
 		img := &llm.ImageData{Data: imgData, MediaType: imgMedia, Detail: "high"}
 		if len(imgData) == 0 && imgURL != "" {
@@ -47,14 +45,14 @@ func FuzzAnthropicImageRequestBuild(f *testing.F) {
 			},
 		}
 
-		body, err := a.buildRequestBody(req)
+		body, err := (&Protocol{}).BuildBody(req, protoRes(nil))
 		if err != nil {
 			return
 		}
 
 		b, err := json.Marshal(body)
 		if err != nil {
-			t.Fatalf("buildRequestBody produced an unmarshalable body: %v\nbody=%#v", err, body)
+			t.Fatalf("BuildBody produced an unmarshalable body: %v\nbody=%#v", err, body)
 		}
 		var round map[string]any
 		if err := json.Unmarshal(b, &round); err != nil {

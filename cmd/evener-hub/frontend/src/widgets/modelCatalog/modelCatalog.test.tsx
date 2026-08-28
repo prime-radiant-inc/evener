@@ -7,7 +7,7 @@ import { afterEach, describe, expect, test, vi } from "vitest";
 import { WireError } from "../../protocol/errors";
 // ModelCatalog is both the component (value) and the envelope interface (type);
 // a single import brings in both meanings via declaration merging.
-import { ModelCatalog, type ModelCatalogEntry } from "./index";
+import { ModelCatalog, type ModelCatalogEntry, ModelCatalogPanel } from "./index";
 
 afterEach(() => cleanup());
 
@@ -519,4 +519,63 @@ test("the active (virtual-focus) row carries the selected wash", () => {
   const css = readFileSync(join(here, "modelCatalog.module.css"), "utf8");
   const rule = /\.rowActive\s*\{([^}]*)\}/.exec(css)?.[1] ?? "";
   expect(rule).toContain("background: var(--hover-2)");
+});
+
+// --- sheet variant (mobile bottom Sheet) -------------------------------------
+// The variant contract: same grouped list and option semantics as the default
+// combobox, but no search input and rows built for a 48px tap floor
+// (docs/web-ui/design-system.md §11).
+
+function renderSheetPanel(props: Partial<Parameters<typeof ModelCatalogPanel>[0]> = {}) {
+  render(
+    <ModelCatalogPanel
+      loading={false}
+      error={null}
+      catalog={CATALOG}
+      value={props.value ?? ""}
+      onPick={props.onPick ?? vi.fn()}
+      variant="sheet"
+      {...props}
+    />,
+  );
+}
+
+test("the sheet variant renders no search combobox - the list is the whole panel", () => {
+  renderSheetPanel();
+  expect(screen.queryByRole("combobox")).toBeNull();
+  expect(screen.getByRole("listbox", { name: "Model" })).toBeTruthy();
+  expect(screen.getAllByRole("option")).toHaveLength(3);
+});
+
+test("the sheet variant keeps provider group heads and the current-value marker", () => {
+  renderSheetPanel({ value: "openai/gpt-5" });
+  expect(screen.getByRole("listbox", { name: "Model" }).textContent).toContain("anthropic");
+  expect(screen.getByRole("listbox", { name: "Model" }).textContent).toContain("openai");
+  const current = screen.getAllByRole("option", { selected: true });
+  expect(current).toHaveLength(1);
+  expect(current[0]!.textContent).toContain("GPT-5");
+});
+
+test("the sheet variant's options are real buttons - each owns focus for the Sheet's trap", () => {
+  renderSheetPanel({ value: "anthropic/claude-sonnet-4-5" });
+  const option = screen.getByRole("option", { selected: true });
+  expect(option.tagName).toBe("BUTTON");
+  expect((option as HTMLButtonElement).type).toBe("button");
+});
+
+test("picking from the sheet variant reports the entry to the caller", async () => {
+  const user = userEvent.setup();
+  const onPick = vi.fn();
+  renderSheetPanel({ onPick });
+
+  await user.click(screen.getByRole("option", { name: /gpt-5/i }));
+
+  expect(onPick).toHaveBeenCalledWith(expect.objectContaining({ provider: "openai", model: "gpt-5" }));
+});
+
+test("the sheet variant's rows meet the 48px tap floor", () => {
+  const here = dirname(fileURLToPath(import.meta.url));
+  const css = readFileSync(join(here, "modelCatalog.module.css"), "utf8");
+  const rule = /\.sheetRow\s*\{([^}]*)\}/.exec(css)?.[1] ?? "";
+  expect(rule).toContain("min-height: 48px");
 });

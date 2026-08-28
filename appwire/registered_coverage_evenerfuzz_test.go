@@ -49,6 +49,7 @@ func runRegisteredCoverageSuite(t *testing.T) {
 		{"Cost", TestEstimateCost_FormatsToCents},
 		{"CostNil", TestEstimateCost_NilUsageReturnsEmpty},
 		{"CostUnpriced", TestEstimateCost_UnpricedModelReturnsEmpty},
+		{"CostCacheRead", TestEstimateCost_CacheReadPricesAtItsOwnRate},
 		{"FrameRecorder", TestFrameRecorderRoundTrip},
 		{"FrameRecorderJSONL", TestFrameRecorderWritesJSONL},
 		{"IDLess", TestIDLessFrameRoundTrips},
@@ -126,7 +127,7 @@ func coverFailureBranches(t *testing.T) {
 	t.Helper()
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
-	runClientKeepalive(ctx, nil, func() error { return nil }, time.Hour, time.Hour)
+	runClientKeepalive(ctx, nil, func() error { return nil }, time.Hour, time.Hour, nil)
 
 	failedTransport := &sendErrTransport{memoryTransport: newMemoryTransport(), err: errors.New("send")}
 	c := NewClient(failedTransport)

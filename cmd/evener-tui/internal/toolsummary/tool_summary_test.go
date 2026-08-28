@@ -6,15 +6,19 @@ import (
 	"testing"
 )
 
-func TestSummarizeTool_Shell_WithPurpose(t *testing.T) {
-	desc, _ := SummarizeTool("shell", `{"command":"ls -la /tmp","purpose":"list temp files"}`)
+func TestSummarizeTool_Shell_WithIntent(t *testing.T) {
+	desc, _ := SummarizeTool("shell", `{"command":"ls -la /tmp","intent":"list temp files"}`)
 	if desc != "list temp files" {
 		t.Errorf("got %q", desc)
 	}
 }
 
-func TestSummarizeTool_Shell_WithLegacyDescription(t *testing.T) {
-	desc, _ := SummarizeTool("shell", `{"command":"ls -la /tmp","description":"list temp files"}`)
+// TestSummarizeTool_Shell_WithPurposeFallback (issue #709): tool calls
+// recorded before the purpose->intent rename (7512a736e, 2026-08-29) carry
+// the model's stated reason under "purpose", not "intent". The TUI must
+// still show that reason instead of falling through to the raw command.
+func TestSummarizeTool_Shell_WithPurposeFallback(t *testing.T) {
+	desc, _ := SummarizeTool("shell", `{"command":"ls -la /tmp","purpose":"list temp files"}`)
 	if desc != "list temp files" {
 		t.Errorf("got %q", desc)
 	}
@@ -120,8 +124,8 @@ func TestSummarizeTool_Grep(t *testing.T) {
 }
 
 func TestSummarizeTool_TaskList_View(t *testing.T) {
-	desc, detail := SummarizeTool("task_list", `{"action":"view"}`)
-	if desc != "view" {
+	desc, detail := SummarizeTool("task_list", `{}`)
+	if desc != "view tasks" {
 		t.Errorf("got %q", desc)
 	}
 	if detail != "" {
@@ -130,8 +134,8 @@ func TestSummarizeTool_TaskList_View(t *testing.T) {
 }
 
 func TestSummarizeTool_TaskList_Append(t *testing.T) {
-	desc, detail := SummarizeTool("task_list", `{"action":"append","tasks":[{"description":"do thing A","prompt":"do A fully"},{"description":"do thing B","prompt":"do B fully"}]}`)
-	if desc != "append 2 tasks" {
+	desc, detail := SummarizeTool("task_list", `{"add":[{"description":"do thing A","prompt":"do A fully"},{"description":"do thing B","prompt":"do B fully"}]}`)
+	if desc != "add 2 tasks" {
 		t.Errorf("desc: got %q", desc)
 	}
 	if !strings.Contains(detail, "do thing A") {
@@ -144,7 +148,7 @@ func TestSummarizeTool_TaskList_Append(t *testing.T) {
 
 func TestSummarizeTool_TaskList_Update(t *testing.T) {
 	// Status keys must be snake_case to match the statusIcon map.
-	desc, detail := SummarizeTool("task_list", `{"action":"update","updates":[{"id":1,"status":"done"},{"id":2,"status":"in_progress"}]}`)
+	desc, detail := SummarizeTool("task_list", `{"update":[{"id":1,"status":"done"},{"id":2,"status":"in_progress"}]}`)
 	if desc != "update 2 tasks" {
 		t.Errorf("desc: got %q", desc)
 	}
@@ -171,7 +175,10 @@ func TestSummarizeTool_WebSearch(t *testing.T) {
 }
 
 func TestSummarizeTool_Delegate(t *testing.T) {
-	desc, _ := SummarizeTool("delegate", `{"task":"Explore the codebase and find all usages of the Foo interface"}`)
+	if legacy, _ := SummarizeTool("delegate", `{"task":"Legacy brief from an older transcript"}`); !strings.Contains(legacy, "Legacy brief") {
+		t.Errorf("legacy task key not rendered: %q", legacy)
+	}
+	desc, _ := SummarizeTool("delegate", `{"prompt":"Explore the codebase and find all usages of the Foo interface"}`)
 	if !strings.Contains(desc, "Explore") {
 		t.Errorf("got %q", desc)
 	}
@@ -268,10 +275,10 @@ func TestSummarizeToolEmptyCwdNeverStrips(t *testing.T) {
 // Surfaced by FuzzSummarizeTool.
 func TestSummarizeTool_TaskUpdate_MissingID(t *testing.T) {
 	cases := []string{
-		`{"action":"update","updates":[{}]}`,
-		`{"action":"update","updates":[{"status":"completed"}]}`,
-		`{"action":"update","updates":[{"id":"not-a-number"}]}`,
-		`{"action":"update","updates":[{"id":3,"status":"completed"}]}`,
+		`{"update":[{}]}`,
+		`{"update":[{"status":"completed"}]}`,
+		`{"update":[{"id":"not-a-number"}]}`,
+		`{"update":[{"id":3,"status":"completed"}]}`,
 	}
 	for _, args := range cases {
 		// Must not panic; we only assert it returns.

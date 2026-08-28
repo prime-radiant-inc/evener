@@ -1,9 +1,17 @@
+import { readFileSync } from "node:fs";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { cleanup, render, screen } from "@testing-library/react";
 import { afterEach, describe, expect, test, vi } from "vitest";
 import type { SettingsOverviewResponse } from "../../../protocol/types.gen";
 import { connectionStore } from "../../../stores/connection";
 import { AgentsSection } from "./agents";
 import type { SettingsOverviewStore } from "./overviewSeam";
+
+// The repo's CSS-source pin idiom (difftable.test.tsx, select.test.tsx):
+// jsdom has no layout, so placement contracts are pinned against the
+// stylesheet's own source.
+const css = readFileSync(join(dirname(fileURLToPath(import.meta.url)), "agents.module.css"), "utf8");
 
 afterEach(() => {
   connectionStore.setState({ state: "idle", serverInfo: undefined, client: null });
@@ -45,7 +53,7 @@ describe("AgentsSection", () => {
     expect(screen.getByText("No agents discovered.")).toBeTruthy();
   });
 
-  test("an agent with an editPath renders an 'open in editor' link, target=_blank rel=noopener", () => {
+  test("an agent with an editPath renders the standard open affordance: 'open in editor', target=_blank, no opener access", () => {
     const data: SettingsOverviewResponse = {
       agents: [{ name: "reviewer", editPath: "editor://open?path=/plugins/reviewer.md" }],
     };
@@ -53,7 +61,10 @@ describe("AgentsSection", () => {
     const link = screen.getByRole("link", { name: /open in editor/i }) as HTMLAnchorElement;
     expect(link.href).toBe("editor://open?path=/plugins/reviewer.md");
     expect(link.target).toBe("_blank");
-    expect(link.rel).toBe("noopener");
+    // The shared OpenButton anchor: no opener access, no referrer - the same
+    // rel policy as the app's other new-tab links.
+    expect(link.rel).toContain("noopener");
+    expect(link.rel).toContain("noreferrer");
   });
 
   test("an agent with no editPath shows a dim 'built-in' label instead of a link", () => {
@@ -68,5 +79,10 @@ describe("AgentsSection", () => {
     render(<AgentsSection sectionId="agents" useOverview={fixture({ data })} />);
     expect(screen.getByText("evener")).toBeTruthy();
     expect(screen.getByText("codex")).toBeTruthy();
+  });
+
+  test("the open-in-editor anchor rides beside the agent name, not the row's far edge", () => {
+    expect(css).not.toMatch(/\.row\s*\{[^}]*justify-content:\s*space-between/);
+    expect(css).toMatch(/\.builtin\s*\{[^}]*margin-left:\s*auto/);
   });
 });

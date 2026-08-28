@@ -17,31 +17,30 @@ import (
 	"primeradiant.com/evener/llm"
 )
 
-func TestWithPurposeParameter_DescriptionGuidesGerundForm(t *testing.T) {
-	td := WithPurposeParameter(llm.ToolDefinition{Name: "demo"})
+func TestWithIntentParameter_DescriptionGuidesExpectedOutcome(t *testing.T) {
+	td := WithIntentParameter(llm.ToolDefinition{Name: "demo"})
 	props, _ := td.Parameters["properties"].(map[string]any)
 	if props == nil {
-		t.Fatalf("purpose injection produced no properties: %#v", td.Parameters)
+		t.Fatalf("intent injection produced no properties: %#v", td.Parameters)
 	}
-	purpose, _ := props["purpose"].(map[string]any)
-	if purpose == nil {
-		t.Fatalf("purpose property missing: %#v", props)
+	intent, _ := props["intent"].(map[string]any)
+	if intent == nil {
+		t.Fatalf("intent property missing: %#v", props)
 	}
-	desc, _ := purpose["description"].(string)
+	desc, _ := intent["description"].(string)
 	if desc == "" {
-		t.Fatalf("purpose property has no description: %#v", purpose)
+		t.Fatalf("intent property has no description: %#v", intent)
 	}
-	// The purpose string renders as an inline activity label in the UI, so the
-	// description must steer the model toward a verb-first gerund phrase with
-	// a concrete example rather than imperative or verbose prose.
+	// The description should steer the model toward a verb-first gerund phrase
+	// that states the expected outcome, not merely the action being taken.
 	if !strings.Contains(desc, "gerund") {
 		t.Errorf("description lacks gerund-form guidance: %q", desc)
 	}
-	if !strings.Contains(desc, "Reading the config file") {
-		t.Errorf("description lacks a concrete gerund example: %q", desc)
+	if !strings.Contains(desc, "expected outcome") {
+		t.Errorf("description lacks expected-outcome guidance: %q", desc)
 	}
-	if utf8.RuneCountInString(desc) > 240 {
-		t.Errorf("description should stay concise, got %d runes: %q", utf8.RuneCountInString(desc), desc)
+	if !strings.Contains(desc, "Reading config to identify the active profile") {
+		t.Errorf("description lacks an example with an explicit outcome: %q", desc)
 	}
 }
 
@@ -129,7 +128,7 @@ func TestToolRegistry_ToolStateResult_CarriesStateAsSideChannel(t *testing.T) {
 	}
 }
 
-func TestToolRegistry_AddsAndStripsUniversalPurpose(t *testing.T) {
+func TestToolRegistry_AddsAndStripsUniversalIntent(t *testing.T) {
 	r := NewRegistry()
 	var gotArgs map[string]any
 	if err := r.Register(RegisteredTool{
@@ -156,23 +155,23 @@ func TestToolRegistry_AddsAndStripsUniversalPurpose(t *testing.T) {
 	}
 	defs := r.Definitions()
 	props, _ := defs[0].Parameters["properties"].(map[string]any)
-	if _, ok := props["purpose"]; !ok {
-		t.Fatal("registered schema missing universal purpose")
+	if _, ok := props["intent"]; !ok {
+		t.Fatal("registered schema missing universal intent")
 	}
 	res := r.ExecuteCall(context.Background(), execenv.NewLocalExecutionEnvironment(t.TempDir()), llm.ToolCallData{
 		ID:        "c1",
 		Name:      "echo",
-		Arguments: json.RawMessage(`{"value":"x","purpose":"checking behavior"}`),
+		Arguments: json.RawMessage(`{"value":"x","intent":"checking behavior"}`),
 	})
 	if res.IsError {
 		t.Fatalf("unexpected error: %q", res.Output)
 	}
-	if _, ok := gotArgs["purpose"]; ok {
-		t.Fatalf("purpose should be stripped before non-read_file execution: %#v", gotArgs)
+	if _, ok := gotArgs["intent"]; ok {
+		t.Fatalf("intent should be stripped before non-read_file execution: %#v", gotArgs)
 	}
 }
 
-func TestToolRegistry_OmitPurposeLeavesSchemaStrict(t *testing.T) {
+func TestToolRegistry_OmitIntentLeavesSchemaStrict(t *testing.T) {
 	r := NewRegistry()
 	if err := r.Register(RegisteredTool{
 		Definition: llm.ToolDefinition{
@@ -187,7 +186,7 @@ func TestToolRegistry_OmitPurposeLeavesSchemaStrict(t *testing.T) {
 				"required": []string{"message"},
 			},
 		},
-		OmitPurpose: true,
+		OmitIntent: true,
 		Exec: func(ctx context.Context, env execenv.ExecutionEnvironment, args map[string]any) (any, error) {
 			_ = ctx
 			_ = env
@@ -199,19 +198,19 @@ func TestToolRegistry_OmitPurposeLeavesSchemaStrict(t *testing.T) {
 	}
 	defs := r.Definitions()
 	props, _ := defs[0].Parameters["properties"].(map[string]any)
-	if _, ok := props["purpose"]; ok {
-		t.Fatalf("schema should omit purpose: %#v", props["purpose"])
+	if _, ok := props["intent"]; ok {
+		t.Fatalf("schema should omit intent: %#v", props["intent"])
 	}
 	res := r.ExecuteCall(context.Background(), execenv.NewLocalExecutionEnvironment(t.TempDir()), llm.ToolCallData{
 		ID:        "c1",
 		Name:      "result",
-		Arguments: json.RawMessage(`{"message":"done","purpose":"final_result"}`),
+		Arguments: json.RawMessage(`{"message":"done","intent":"final_result"}`),
 	})
 	if !res.IsError {
-		t.Fatalf("purpose should be rejected by strict schema, got: %q", res.Output)
+		t.Fatalf("intent should be rejected by strict schema, got: %q", res.Output)
 	}
-	if !strings.Contains(res.Output, "additionalProperties") || !strings.Contains(res.Output, "purpose") {
-		t.Fatalf("expected purpose schema error, got: %s", res.Output)
+	if !strings.Contains(res.Output, "additionalProperties") || !strings.Contains(res.Output, "intent") {
+		t.Fatalf("expected intent schema error, got: %s", res.Output)
 	}
 }
 
@@ -344,7 +343,7 @@ func TestToolRegistry_OversizedArguments_IsReturnedToModel(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("Register: %v", err)
 	}
-	arguments := json.RawMessage(strings.Repeat("a", maxToolArgumentBytes+1))
+	arguments := json.RawMessage(strings.Repeat("a", MaxToolArgumentBytes+1))
 	res := r.ExecuteCall(context.Background(), execenv.NewLocalExecutionEnvironment(t.TempDir()), llm.ToolCallData{
 		ID:        "c1",
 		Name:      "t",
@@ -353,7 +352,7 @@ func TestToolRegistry_OversizedArguments_IsReturnedToModel(t *testing.T) {
 	if !res.IsError {
 		t.Fatalf("expected error")
 	}
-	wantMsg := fmt.Sprintf("tool arguments too large: %d bytes exceeds the %d byte limit", len(arguments), maxToolArgumentBytes)
+	wantMsg := fmt.Sprintf("tool arguments too large: %d bytes exceeds the %d byte limit", len(arguments), MaxToolArgumentBytes)
 	if res.Output != wantMsg {
 		t.Fatalf("output = %q, want %q", res.Output, wantMsg)
 	}
@@ -375,7 +374,7 @@ func TestToolRegistry_ArgumentsAtSizeCapBoundary_NotRejectedByCap(t *testing.T) 
 	// Exactly at the cap: must not be rejected by the size gate. It's not
 	// valid JSON either, so it falls through to the existing "invalid tool
 	// arguments JSON" path - this test only confirms the size gate didn't fire.
-	arguments := json.RawMessage(strings.Repeat("a", maxToolArgumentBytes))
+	arguments := json.RawMessage(strings.Repeat("a", MaxToolArgumentBytes))
 	res := r.ExecuteCall(context.Background(), execenv.NewLocalExecutionEnvironment(t.TempDir()), llm.ToolCallData{
 		ID:        "c1",
 		Name:      "t",

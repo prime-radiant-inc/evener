@@ -4,6 +4,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io/fs"
+	"path"
 	"slices"
 	"sort"
 	"strings"
@@ -31,12 +33,15 @@ type Finding struct {
 // FindingEvidence is the contract's evidence object. At least one sub-field
 // is populated per Finding; doctorCommand is always set.
 type FindingEvidence struct {
-	SessionRefs     []string `json:"sessionRefs,omitempty"`     //nolint:tagliatelle // doctor Finding wire contract is camelCase (finding-contract.md)
-	WatchIDs        []string `json:"watchIds,omitempty"`        //nolint:tagliatelle // doctor Finding wire contract is camelCase (finding-contract.md)
-	DeliveryIDs     []string `json:"deliveryIds,omitempty"`     //nolint:tagliatelle // doctor Finding wire contract is camelCase (finding-contract.md)
-	TranscriptTurns []int    `json:"transcriptTurns,omitempty"` //nolint:tagliatelle // doctor Finding wire contract is camelCase (finding-contract.md)
-	DoctorCommand   string   `json:"doctorCommand,omitempty"`   //nolint:tagliatelle // doctor Finding wire contract is camelCase (finding-contract.md)
-	LogSnippets     []string `json:"logSnippets,omitempty"`     //nolint:tagliatelle // doctor Finding wire contract is camelCase (finding-contract.md)
+	SessionRefs []string `json:"sessionRefs,omitempty"` //nolint:tagliatelle // doctor Finding wire contract is camelCase (finding-contract.md)
+	// TotalSessionRefs is the true ref count when SessionRefs was
+	// structurally capped at evidenceSessionRefCap; 0 means not capped.
+	TotalSessionRefs int      `json:"totalSessionRefs,omitempty"` //nolint:tagliatelle // doctor Finding wire contract is camelCase (finding-contract.md)
+	WatchIDs         []string `json:"watchIds,omitempty"`         //nolint:tagliatelle // doctor Finding wire contract is camelCase (finding-contract.md)
+	DeliveryIDs      []string `json:"deliveryIds,omitempty"`      //nolint:tagliatelle // doctor Finding wire contract is camelCase (finding-contract.md)
+	TranscriptTurns  []int    `json:"transcriptTurns,omitempty"`  //nolint:tagliatelle // doctor Finding wire contract is camelCase (finding-contract.md)
+	DoctorCommand    string   `json:"doctorCommand,omitempty"`    //nolint:tagliatelle // doctor Finding wire contract is camelCase (finding-contract.md)
+	LogSnippets      []string `json:"logSnippets,omitempty"`      //nolint:tagliatelle // doctor Finding wire contract is camelCase (finding-contract.md)
 }
 
 // SuggestedFix is the contract's routing directive: diagnosis (report-only),
@@ -234,6 +239,23 @@ func ParseRunbook(name string, content []byte) (Runbook, error) {
 		return Runbook{}, fmt.Errorf("runbook %s: no audit: block and no CLASSIFY prose steps found", name)
 	}
 	return rb, nil
+}
+
+// ParseRunbookFromFS resolves a runbook by name from a runbooks/ dir inside
+// fsys (path: <skill>/runbooks/<name>.md) and parses it. The two runbook
+// consumers — the evener-doctor CLI and the doctor_evener tool — share this
+// resolution so their name→runbook mapping cannot drift; each supplies its
+// own FS (the bundled skills embed for both, tests substitute fixtures).
+// Name sanitization rejects path traversal before the FS join.
+func ParseRunbookFromFS(fsys fs.FS, skill, name string) (Runbook, error) {
+	if name == "" || strings.ContainsAny(name, "/\\") || strings.Contains(name, "..") {
+		return Runbook{}, fmt.Errorf("invalid runbook name %q", name)
+	}
+	content, err := fs.ReadFile(fsys, path.Join(skill, "runbooks", name+".md"))
+	if err != nil {
+		return Runbook{}, fmt.Errorf("load runbook %q: %w", name, err)
+	}
+	return ParseRunbook(name, content)
 }
 
 // parseAuditFence tries to YAML-decode a fenced block as an `audit:` list,
@@ -650,14 +672,46 @@ func RunAudit(stateBase string, runbook Runbook, opts AuditOpts) (AuditResult, e
 	for _, sig := range signatureOrder {
 		f := findingsBySignature[sig]
 		check := checkBySignature[sig]
+		// The structured ref list gets the same disclosed structural cap as
+		// the prose: an envelope carrying a fleet-wide Finding would otherwise
+		// overflow any output limit mid-JSON. The true count is disclosed in
+		// TotalSessionRefs and in Description's count.
+		total := len(f.Evidence.SessionRefs)
+		if total > evidenceSessionRefCap {
+			f.Evidence.TotalSessionRefs = total
+			f.Evidence.SessionRefs = f.Evidence.SessionRefs[:evidenceSessionRefCap]
+		}
 		f.Description = fmt.Sprintf("Runbook %q check %q tripped (%s) in %d session(s): %s",
-			runbook.Name, check.Title, conditionsSummary(check.Conditions), len(f.Evidence.SessionRefs), strings.Join(f.Evidence.SessionRefs, ", "))
-		f.Evidence.DoctorCommand = fmt.Sprintf("evener-doctor audit --runbook %s --sessions %s", runbook.Name, strings.Join(f.Evidence.SessionRefs, ","))
+			runbook.Name, check.Title, conditionsSummary(check.Conditions), total, joinSessionRefs(f.Evidence.SessionRefs))
+		// DoctorCommand stays a runnable reproduction command (the Finding
+		// contract defines it as such): it spells out the capped refs plainly,
+		// no ellipsis marker — the marker would make it non-executable shell.
+		// Refs are comma-joined without spaces to match the CLI's --sessions
+		// list syntax.
+		f.Evidence.DoctorCommand = fmt.Sprintf("evener doctor audit --runbook %s --sessions %s", runbook.Name, strings.Join(f.Evidence.SessionRefs, ","))
 		res.Findings = append(res.Findings, *f)
 		res.Summary = append(res.Summary, AuditSummaryRow{Title: f.Title, Severity: f.Severity, Sessions: len(f.Evidence.SessionRefs)})
 	}
 	sort.Slice(res.Unreadable, func(i, j int) bool { return res.Unreadable[i].SessionID < res.Unreadable[j].SessionID })
 	return res, nil
+}
+
+// evidenceSessionRefCap bounds how many session refs a Finding carries —
+// both the structured SessionRefs list and the prose fields (Description,
+// DoctorCommand) built from it. A fleet-wide trip can carry thousands of
+// refs, which would overflow any envelope carrying the Finding. The cut is
+// disclosed twice: TotalSessionRefs carries the true count, and the prose
+// appends an "…and N more" marker — never silent.
+const evidenceSessionRefCap = 200
+
+// joinSessionRefs joins refs comma-separated for Description prose,
+// appending an "…and N more" marker past the cap. (DoctorCommand must stay
+// runnable, so it joins the capped list plainly instead.)
+func joinSessionRefs(refs []string) string {
+	if len(refs) <= evidenceSessionRefCap {
+		return strings.Join(refs, ", ")
+	}
+	return strings.Join(refs[:evidenceSessionRefCap], ", ") + fmt.Sprintf(" …and %d more", len(refs)-evidenceSessionRefCap)
 }
 
 func conditionsSummary(conds []auditCondition) string {

@@ -6,7 +6,6 @@ import (
 
 	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/appwire"
-	"primeradiant.com/evener/hubapi"
 )
 
 // TestActiveTurnRunningForReadsStartedAtAsMillis locks the wire unit for
@@ -31,8 +30,7 @@ func TestActiveTurnRunningForReadsStartedAtAsMillis(t *testing.T) {
 
 // TestWorkspaceDataFromAppThreadCarriesWorkMetrics asserts that
 // thread.Evener.{Usage,WorkMillis,ActiveTurnStartedAt} (WS2) flow onto
-// WorkspaceData, the same way Goal already does (TestHubDetailFromAppThreadCarriesGoal
-// in web_test.go covers the analogous hubapi.SessionDetail mapping).
+// WorkspaceData alongside the other AppWire-derived session projection fields.
 func TestWorkspaceDataFromAppThreadCarriesWorkMetrics(t *testing.T) {
 	usage := &appwire.EvenerUsage{InputTokens: 12, OutputTokens: 34, CacheReadTokens: 5, TotalTokens: 46}
 	wd := workspaceDataFromAppThread(appwire.Thread{
@@ -61,9 +59,30 @@ func TestWorkspaceDataFromAppThreadCarriesWorkMetrics(t *testing.T) {
 }
 
 // TestWorkspaceDataFromAppThread_CarriesCostEstimate verifies the
-// remote/appwire workspace path computes Cost from thread.ModelProvider and
-// thread.Evener.Usage via appwire.EstimateCost.
+// remote/appwire workspace path renders the cost the daemon delivered on
+// thread.Evener.Cost rather than re-deriving one of its own (spec §7.5: the
+// daemon prices from its session's registry, which the web cannot see).
 func TestWorkspaceDataFromAppThread_CarriesCostEstimate(t *testing.T) {
+	wd := workspaceDataFromAppThread(appwire.Thread{
+		ID:            "th_cost",
+		Source:        "local",
+		Status:        appwire.ThreadStatus{Type: "idle"},
+		ModelProvider: "claude-opus-4-5",
+		Evener: appwire.EvenerThread{
+			Ref:   "local:th_cost",
+			Usage: &appwire.EvenerUsage{InputTokens: 100_000, OutputTokens: 20_000},
+			Cost:  "~$1.00",
+		},
+	})
+	if wd.Cost != "~$1.00" {
+		t.Fatalf("Cost = %q, want ~$1.00", wd.Cost)
+	}
+}
+
+// TestWorkspaceDataFromAppThread_NoDaemonCostRendersNothing pins the flag-day
+// rule (spec §14.1): a daemon that reported no cost leaves the chip empty; the
+// web never invents one from a bundled pricing table.
+func TestWorkspaceDataFromAppThread_NoDaemonCostRendersNothing(t *testing.T) {
 	wd := workspaceDataFromAppThread(appwire.Thread{
 		ID:            "th_cost",
 		Source:        "local",
@@ -74,8 +93,8 @@ func TestWorkspaceDataFromAppThread_CarriesCostEstimate(t *testing.T) {
 			Usage: &appwire.EvenerUsage{InputTokens: 100_000, OutputTokens: 20_000},
 		},
 	})
-	if wd.Cost != "~$1.00" {
-		t.Fatalf("Cost = %q, want ~$1.00", wd.Cost)
+	if wd.Cost != "" {
+		t.Fatalf("Cost = %q, want empty when the daemon reported none", wd.Cost)
 	}
 }
 
@@ -97,21 +116,6 @@ func TestEvenerUsageFromCumulative(t *testing.T) {
 	want := &appwire.EvenerUsage{InputTokens: 100, OutputTokens: 50, CacheReadTokens: 10, TotalTokens: 150}
 	if got == nil || *got != *want {
 		t.Fatalf("evenerUsageFromCumulative = %+v, want %+v", got, want)
-	}
-}
-
-// TestHubUsageFromAppwire pins hubUsageFromAppwire's nil-safety (a thread with
-// no token data carries a nil *appwire.EvenerUsage) and its field-for-field
-// mapping into hubapi's flattened Usage type.
-func TestHubUsageFromAppwire(t *testing.T) {
-	if got := hubUsageFromAppwire(nil); got != nil {
-		t.Fatalf("hubUsageFromAppwire(nil) = %+v, want nil", got)
-	}
-
-	got := hubUsageFromAppwire(&appwire.EvenerUsage{InputTokens: 1, OutputTokens: 2, CacheReadTokens: 3, TotalTokens: 6})
-	want := &hubapi.Usage{InputTokens: 1, OutputTokens: 2, CacheReadTokens: 3, TotalTokens: 6}
-	if got == nil || *got != *want {
-		t.Fatalf("hubUsageFromAppwire = %+v, want %+v", got, want)
 	}
 }
 

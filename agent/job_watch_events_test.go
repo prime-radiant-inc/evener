@@ -950,7 +950,9 @@ func TestTerminalCatchupFinalUnterminatedLineFires(t *testing.T) {
 // TestTerminalCatchupRejectsEventsCondition covers spec §7.1: catch-up applies
 // ONLY to pure output_match-only requests. A terminal target carrying events
 // (even alongside output_match) still fails target_terminal — nothing can ever
-// fire — and installs no watch and no catch-up.
+// fire — and installs no watch and no catch-up. A time field or a note is the
+// same story: catch-up must not swallow a request the timer rules would reject,
+// or the model gets a terminal_catchup result instead of a correction.
 func TestTerminalCatchupRejectsEventsCondition(t *testing.T) {
 	t.Parallel()
 	jm := newTestJM(t)
@@ -965,6 +967,9 @@ func TestTerminalCatchupRejectsEventsCondition(t *testing.T) {
 		{"events only", watchArgs{Target: jobID, Events: []string{"communicate"}}},
 		{"output_match plus events", watchArgs{Target: jobID, OutputMatch: "ready", Events: []string{"communicate"}}},
 		{"output_match plus progress", watchArgs{Target: jobID, OutputMatch: "ready", ProgressIntervalMS: 1000}},
+		{"output_match plus after_seconds", watchArgs{Target: jobID, OutputMatch: "ready", AfterSeconds: 600}},
+		{"output_match plus repeat_seconds", watchArgs{Target: jobID, OutputMatch: "ready", RepeatSeconds: 300}},
+		{"output_match plus note", watchArgs{Target: jobID, OutputMatch: "ready", Note: "n"}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			before := len(notified)

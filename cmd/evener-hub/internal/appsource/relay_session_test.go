@@ -3,12 +3,14 @@ package appsource
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
 	"sync"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"primeradiant.com/evener/appwire"
 	"primeradiant.com/evener/rendezvous"
@@ -150,10 +152,91 @@ func relayDelta(threadID, delta string) appwire.Notification {
 	}).Notification
 }
 
+type relayPublicationBarrier struct {
+	session  *relaySession
+	listener *relayListener
+}
+
+type relayPublisherEntryBarrier struct {
+	session     *relaySession
+	entered     chan struct{}
+	release     chan struct{}
+	enteredOnce sync.Once
+	releaseOnce sync.Once
+}
+
+func newRelayPublisherEntryBarrier(t *testing.T, session *relaySession) *relayPublisherEntryBarrier {
+	t.Helper()
+	barrier := &relayPublisherEntryBarrier{
+		session: session,
+		entered: make(chan struct{}),
+		release: make(chan struct{}),
+	}
+	session.publishBoundary.Lock()
+	session.publishEntryHook = func() {
+		barrier.enteredOnce.Do(func() { close(barrier.entered) })
+		<-barrier.release
+	}
+	session.publishBoundary.Unlock()
+	t.Cleanup(func() {
+		barrier.releasePublisher()
+		barrier.disable()
+	})
+	return barrier
+}
+
+func (b *relayPublisherEntryBarrier) releasePublisher() {
+	b.releaseOnce.Do(func() { close(b.release) })
+}
+
+func (b *relayPublisherEntryBarrier) disable() {
+	b.session.publishBoundary.Lock()
+	b.session.publishEntryHook = nil
+	b.session.publishBoundary.Unlock()
+}
+
+func newRelayPublicationBarrier(t *testing.T, session *relaySession, leaseID uint64) *relayPublicationBarrier {
+	t.Helper()
+	barrier := &relayPublicationBarrier{
+		session: session,
+	}
+	session.mu.Lock()
+	session.nextListener++
+	barrier.listener = &relayListener{
+		id:      session.nextListener,
+		leaseID: leaseID,
+		ctx:     t.Context(),
+		in:      make(chan RelayDelivery),
+		out:     make(chan RelayDelivery, 1),
+		done:    make(chan struct{}),
+	}
+	session.listeners[barrier.listener.id] = barrier.listener
+	// A one-slot output makes the two direct input sends a deterministic
+	// in->out barrier: the second send is accepted only after forward has
+	// consumed the first and is blocked on the full output buffer.
+	session.mu.Unlock()
+	go barrier.listener.forward()
+	barrier.listener.in <- RelayDelivery{}
+	barrier.listener.in <- RelayDelivery{}
+	t.Cleanup(func() {
+		session.removeListener(barrier.listener.id)
+		session.maybeIdle()
+	})
+	return barrier
+}
+
+func queueRelayNotificationAtEpoch(session *relaySession, epoch uint64, notification appwire.Notification) <-chan struct{} {
+	done := make(chan struct{})
+	session.mu.Lock()
+	session.queuePublishLocked(epoch, []appwire.Notification{notification}, done)
+	session.mu.Unlock()
+	return done
+}
+
 func TestRelaySessionSnapshotCutFlushesPreCutAndHoldsPostCut(t *testing.T) {
 	source, daemon := newRelayTestSource(t, []rendezvous.Entry{relayEntry("thread-1")})
 	params := appwire.ThreadReadParams{Ref: "local:thread-1", Subscribe: true}
-	lease, err := source.AcquireRelaySession(params)
+	lease, err := source.acquireRelaySession(params)
 	if err != nil {
 		t.Fatalf("AcquireRelaySession: %v", err)
 	}
@@ -207,7 +290,7 @@ func TestRelaySessionSnapshotCutFlushesPreCutAndHoldsPostCut(t *testing.T) {
 func TestRelaySessionSnapshotCutWaitsForQueuedPreCaptureNotification(t *testing.T) {
 	source, daemon := newRelayTestSource(t, []rendezvous.Entry{relayEntry("thread-1")})
 	params := appwire.ThreadReadParams{Ref: "local:thread-1", Subscribe: true}
-	leaseValue, err := source.AcquireRelaySession(params)
+	leaseValue, err := source.acquireRelaySession(params)
 	if err != nil {
 		t.Fatalf("AcquireRelaySession: %v", err)
 	}
@@ -303,10 +386,199 @@ func TestRelaySessionSnapshotCutWaitsForQueuedPreCaptureNotification(t *testing.
 	}
 }
 
+func TestRelaySessionDeferredDeliveryAllowsLaterPublicationAndPreservesReadBarrier(t *testing.T) {
+	source, daemon := newRelayTestSource(t, []rendezvous.Entry{relayEntry("thread-deferred")})
+	params := appwire.ThreadReadParams{Ref: "local:thread-deferred", Subscribe: true}
+	lease, err := source.acquireRelaySession(params)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer lease.Close()
+	deliveries, err := lease.Listen(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	initial := readRelayAsync(t.Context(), lease, params)
+	initialCall := <-daemon.reads
+	initialCall.transport.recv <- appwire.ResponseMessage(initialCall.request.ID, relaySnapshot("thread-deferred", "initial"))
+	initialResult := <-initial
+	if initialResult.err != nil {
+		t.Fatal(initialResult.err)
+	}
+	if !initialResult.result.Handoff.Commit() {
+		t.Fatal("initial handoff commit lost")
+	}
+
+	session := relaySessionFor(t, source)
+	observeRelayFrame(t, session, relayDelta("thread-deferred", "pending unknown"))
+	pending := <-deliveries
+	if pending.Proceed == nil {
+		pending.Acknowledge()
+		t.Fatal("RelayDelivery has no non-acknowledging continuation signal")
+	}
+	observeRelayFrame(t, session, relayDelta("thread-deferred", "later known"))
+
+	read := readRelayAsync(t.Context(), lease, params)
+	call := <-daemon.reads
+	pending.Proceed()
+	later := <-deliveries
+	if got := decodeRelayDelta(t, later.Notification); got != "later known" {
+		t.Fatalf("publication after deferred delivery = %q, want later known", got)
+	}
+	later.Acknowledge()
+	call.transport.recv <- appwire.ResponseMessage(call.request.ID, relaySnapshot("thread-deferred", "replacement"))
+	select {
+	case result := <-read:
+		t.Fatalf("Read crossed its pre-capture publication barrier before deferred acknowledgement: %+v", result)
+	default:
+	}
+	pending.Acknowledge()
+	result := <-read
+	if result.err != nil {
+		t.Fatal(result.err)
+	}
+	result.result.Handoff.Abort()
+}
+
+func TestRelaySessionReadPublishesRoutesBeforeWaitingForPreCutAcknowledgement(t *testing.T) {
+	source, daemon := newRelayTestSource(t, []rendezvous.Entry{relayEntry("thread-route-publication")})
+	params := appwire.ThreadReadParams{Ref: "local:thread-route-publication", Subscribe: true}
+	lease, err := source.acquireRelaySession(params)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer lease.Close()
+	deliveries, err := lease.Listen(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	type routePublishingLease interface {
+		ReadWithRoutePublication(context.Context, appwire.ThreadReadParams, func(context.Context, appwire.Thread) error) (RelayReadResult, error)
+	}
+	publishingLease, ok := lease.(routePublishingLease)
+	if !ok {
+		t.Fatal("production relay lease cannot publish authoritative routes before its pre-cut acknowledgement barrier")
+	}
+	routesPublished := make(chan appwire.Thread, 1)
+	result := make(chan relayReadOutcome, 1)
+	go func() {
+		read, err := publishingLease.ReadWithRoutePublication(t.Context(), params, func(_ context.Context, thread appwire.Thread) error {
+			routesPublished <- thread
+			return nil
+		})
+		result <- relayReadOutcome{result: read, err: err}
+	}()
+	call := <-daemon.reads
+	call.transport.recv <- appwire.Message{Notification: new(relayDelta("thread-route-publication", "before"))}
+	call.transport.recv <- appwire.ResponseMessage(call.request.ID, relaySnapshot("thread-route-publication", "snapshot"))
+	before := <-deliveries
+	select {
+	case thread := <-routesPublished:
+		if thread.ID != "thread-route-publication" {
+			t.Fatalf("published route thread = %q", thread.ID)
+		}
+	case <-time.After(time.Second):
+		before.Acknowledge()
+		t.Fatal("authoritative route callback did not run before pre-cut acknowledgement")
+	}
+	select {
+	case outcome := <-result:
+		before.Acknowledge()
+		t.Fatalf("Read returned before pre-cut acknowledgement: %+v", outcome)
+	default:
+	}
+	before.Acknowledge()
+	outcome := <-result
+	if outcome.err != nil {
+		t.Fatal(outcome.err)
+	}
+	outcome.result.Handoff.Abort()
+}
+
+func TestRelaySessionRoutePublicationPanicReleasesCapture(t *testing.T) {
+	source, daemon := newRelayTestSource(t, []rendezvous.Entry{relayEntry("thread-route-panic")})
+	params := appwire.ThreadReadParams{Ref: "local:thread-route-panic", Subscribe: true}
+	leaseValue, err := source.acquireRelaySession(params)
+	if err != nil {
+		t.Fatal(err)
+	}
+	lease := leaseValue.(*relaySessionLease)
+	defer func() {
+		lease.session.cancel()
+		lease.Close()
+	}()
+	recovered := make(chan any, 1)
+	go func() {
+		defer func() { recovered <- recover() }()
+		_, _ = lease.ReadWithRoutePublication(t.Context(), params, func(context.Context, appwire.Thread) error {
+			panic("route callback panic")
+		})
+	}()
+	call := <-daemon.reads
+	call.transport.recv <- appwire.ResponseMessage(call.request.ID, relaySnapshot("thread-route-panic", "snapshot"))
+	if got := <-recovered; got == nil {
+		t.Fatal("route publication callback did not panic as arranged")
+	}
+	lease.session.mu.Lock()
+	owners := lease.session.commandOwners
+	captureLive := lease.session.capture != nil
+	lease.session.mu.Unlock()
+	if owners != 0 || captureLive {
+		t.Fatalf("route callback panic leaked session command/capture state: commandOwners=%d captureLive=%v", owners, captureLive)
+	}
+	second := readRelayAsync(t.Context(), lease, params)
+	secondCall := <-daemon.reads
+	secondCall.transport.recv <- appwire.ResponseMessage(secondCall.request.ID, relaySnapshot("thread-route-panic", "second"))
+	secondResult := <-second
+	if secondResult.err != nil {
+		t.Fatalf("command gate remained stranded after callback panic: %v", secondResult.err)
+	}
+	secondResult.result.Handoff.Abort()
+}
+
+func TestRelaySessionRoutePublicationErrorReleasesCapture(t *testing.T) {
+	source, daemon := newRelayTestSource(t, []rendezvous.Entry{relayEntry("thread-route-error")})
+	params := appwire.ThreadReadParams{Ref: "local:thread-route-error", Subscribe: true}
+	leaseValue, err := source.acquireRelaySession(params)
+	if err != nil {
+		t.Fatal(err)
+	}
+	lease := leaseValue.(*relaySessionLease)
+	defer lease.Close()
+	publicationErr := errors.New("route publication canceled")
+	result := make(chan error, 1)
+	go func() {
+		_, err := lease.ReadWithRoutePublication(t.Context(), params, func(context.Context, appwire.Thread) error {
+			return publicationErr
+		})
+		result <- err
+	}()
+	call := <-daemon.reads
+	call.transport.recv <- appwire.ResponseMessage(call.request.ID, relaySnapshot("thread-route-error", "snapshot"))
+	if err := <-result; !errors.Is(err, publicationErr) {
+		t.Fatalf("route publication error = %v, want %v", err, publicationErr)
+	}
+	lease.session.mu.Lock()
+	owners := lease.session.commandOwners
+	captureLive := lease.session.capture != nil
+	lease.session.mu.Unlock()
+	if owners != 0 || captureLive {
+		t.Fatalf("route callback error leaked session command/capture state: commandOwners=%d captureLive=%v", owners, captureLive)
+	}
+	second := readRelayAsync(t.Context(), lease, params)
+	secondCall := <-daemon.reads
+	secondCall.transport.recv <- appwire.ResponseMessage(secondCall.request.ID, relaySnapshot("thread-route-error", "second"))
+	secondResult := <-second
+	if secondResult.err != nil {
+		t.Fatalf("command gate remained stranded after callback error: %v", secondResult.err)
+	}
+	secondResult.result.Handoff.Abort()
+}
+
 func TestRelaySessionRacingReadsDoNotOverlap(t *testing.T) {
 	source, daemon := newRelayTestSource(t, []rendezvous.Entry{relayEntry("thread-1")})
 	params := appwire.ThreadReadParams{Ref: "local:thread-1", Subscribe: true}
-	lease, err := source.AcquireRelaySession(params)
+	lease, err := source.acquireRelaySession(params)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -348,7 +620,7 @@ func TestRelaySessionRacingReadsDoNotOverlap(t *testing.T) {
 func TestRelaySessionCanceledListenerCannotStrandPreCutFlush(t *testing.T) {
 	source, daemon := newRelayTestSource(t, []rendezvous.Entry{relayEntry("thread-1")})
 	params := appwire.ThreadReadParams{Ref: "local:thread-1", Subscribe: true}
-	lease, err := source.AcquireRelaySession(params)
+	lease, err := source.acquireRelaySession(params)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -376,7 +648,7 @@ func TestRelaySessionCanceledListenerCannotStrandPreCutFlush(t *testing.T) {
 func TestRelaySessionCanceledListenerIsSafeAfterPublisherSnapshotsIt(t *testing.T) {
 	source, _ := newRelayTestSource(t, []rendezvous.Entry{relayEntry("thread-1")})
 	params := appwire.ThreadReadParams{Ref: "local:thread-1", Subscribe: true}
-	leaseValue, err := source.AcquireRelaySession(params)
+	leaseValue, err := source.acquireRelaySession(params)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -406,7 +678,7 @@ func TestRelaySessionCanceledListenerIsSafeAfterPublisherSnapshotsIt(t *testing.
 func TestRelaySessionCancellationBeforeCutResumesFeedAndFencesLateResponse(t *testing.T) {
 	source, daemon := newRelayTestSource(t, []rendezvous.Entry{relayEntry("thread-1")})
 	params := appwire.ThreadReadParams{Ref: "local:thread-1", Subscribe: true}
-	lease, err := source.AcquireRelaySession(params)
+	lease, err := source.acquireRelaySession(params)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -461,7 +733,7 @@ func TestRelaySessionCancellationBeforeCutResumesFeedAndFencesLateResponse(t *te
 func TestRelaySessionAbortAfterCutReleasesPostCutFeedOnce(t *testing.T) {
 	source, daemon := newRelayTestSource(t, []rendezvous.Entry{relayEntry("thread-1")})
 	params := appwire.ThreadReadParams{Ref: "local:thread-1", Subscribe: true}
-	lease, err := source.AcquireRelaySession(params)
+	lease, err := source.acquireRelaySession(params)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -496,7 +768,7 @@ func TestRelaySessionAbortAfterCutReleasesPostCutFeedOnce(t *testing.T) {
 func TestRelaySessionDisconnectDuringReadCannotReturnSnapshot(t *testing.T) {
 	source, daemon := newRelayTestSource(t, []rendezvous.Entry{relayEntry("thread-1")})
 	params := appwire.ThreadReadParams{Ref: "local:thread-1", Subscribe: true}
-	lease, err := source.AcquireRelaySession(params)
+	lease, err := source.acquireRelaySession(params)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -627,7 +899,7 @@ func TestRelaySessionEOFBeforeConnectionInstallForcesNextReadToRedial(t *testing
 func TestRelaySessionCommitAbortRaceHasOneWinner(t *testing.T) {
 	source, daemon := newRelayTestSource(t, []rendezvous.Entry{relayEntry("thread-1")})
 	params := appwire.ThreadReadParams{Ref: "local:thread-1", Subscribe: true}
-	lease, err := source.AcquireRelaySession(params)
+	lease, err := source.acquireRelaySession(params)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -668,7 +940,7 @@ func TestRelaySessionCommitAbortRaceHasOneWinner(t *testing.T) {
 func TestRelaySessionPreparedHandoffPinsEpochUntilResponseOutcome(t *testing.T) {
 	source, daemon := newRelayTestSource(t, []rendezvous.Entry{relayEntry("thread-1")})
 	params := appwire.ThreadReadParams{Ref: "local:thread-1", Subscribe: true}
-	leaseValue, err := source.AcquireRelaySession(params)
+	leaseValue, err := source.acquireRelaySession(params)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -702,7 +974,7 @@ func TestRelaySessionPreparedHandoffPinsEpochUntilResponseOutcome(t *testing.T) 
 func TestRelaySessionPreparedHandoffAbortAppliesDeferredDisconnectAndRecoversListener(t *testing.T) {
 	source, daemon := newRelayTestSource(t, []rendezvous.Entry{relayEntry("thread-1")})
 	params := appwire.ThreadReadParams{Ref: "local:thread-1", Subscribe: true}
-	leaseValue, err := source.AcquireRelaySession(params)
+	leaseValue, err := source.acquireRelaySession(params)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -748,7 +1020,7 @@ func TestRelaySessionPreparedHandoffAbortAppliesDeferredDisconnectAndRecoversLis
 func TestRelaySessionHandoffCannotPrepareAfterEpochDisconnect(t *testing.T) {
 	source, daemon := newRelayTestSource(t, []rendezvous.Entry{relayEntry("thread-1")})
 	params := appwire.ThreadReadParams{Ref: "local:thread-1", Subscribe: true}
-	leaseValue, err := source.AcquireRelaySession(params)
+	leaseValue, err := source.acquireRelaySession(params)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -778,7 +1050,7 @@ func TestRelaySessionHandoffCannotPrepareAfterEpochDisconnect(t *testing.T) {
 func TestRelaySessionStaleEpochNotificationCannotPublish(t *testing.T) {
 	source, daemon := newRelayTestSource(t, []rendezvous.Entry{relayEntry("thread-1")})
 	params := appwire.ThreadReadParams{Ref: "local:thread-1", Subscribe: true}
-	leaseValue, err := source.AcquireRelaySession(params)
+	leaseValue, err := source.acquireRelaySession(params)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -795,11 +1067,32 @@ func TestRelaySessionStaleEpochNotificationCannotPublish(t *testing.T) {
 	result := <-read
 	result.result.Handoff.Commit()
 
+	session := relaySessionFor(t, source)
 	lease.session.mu.Lock()
 	staleEpoch := lease.session.connection.epoch
 	lease.session.mu.Unlock()
+	// Hold the publisher after it has accepted a live notification. This is an
+	// event barrier, not a timing assumption: the stale notification is queued
+	// behind the blocked job and the epoch is revoked before the publisher can
+	// dequeue it.
+	observeRelayFrame(t, session, relayDelta("thread-1", "barrier"))
+	barrier := <-deliveries
+	if got := decodeRelayDelta(t, barrier.Notification); got != "barrier" {
+		t.Fatalf("barrier delivery = %q, want barrier", got)
+	}
+	session.observe(staleEpoch, appwire.Message{Notification: new(relayDelta("thread-1", "stale"))}, nil)
 	lease.session.disconnect(staleEpoch)
-	lease.session.observe(staleEpoch, appwire.Message{Notification: new(relayDelta("thread-1", "stale"))}, nil)
+	recoveryCall := <-daemon.reads
+	recoveryCall.transport.recv <- appwire.ResponseMessage(
+		recoveryCall.request.ID,
+		relaySnapshot("thread-1", "recovered"),
+	)
+	barrier.Acknowledge()
+	resync := <-deliveries
+	if resync.Notification.Method != appwire.NotifyEvenerThreadResync {
+		t.Fatalf("recovery delivery = %+v, want resync", resync.Notification)
+	}
+	resync.Acknowledge()
 	select {
 	case delivery := <-deliveries:
 		t.Fatalf("stale epoch published %+v", delivery.Notification)
@@ -807,10 +1100,148 @@ func TestRelaySessionStaleEpochNotificationCannotPublish(t *testing.T) {
 	}
 }
 
+func TestRelaySessionDisconnectRevokesBlockedPublicationBeforeRecovery(t *testing.T) {
+	source, daemon := newRelayTestSource(t, []rendezvous.Entry{relayEntry("thread-1")})
+	params := appwire.ThreadReadParams{Ref: "local:thread-1", Subscribe: true}
+	leaseValue, err := source.acquireRelaySession(params)
+	if err != nil {
+		t.Fatal(err)
+	}
+	lease := leaseValue.(*relaySessionLease)
+	defer lease.Close()
+
+	read := readRelayAsync(context.Background(), lease, params)
+	call := <-daemon.reads
+	call.transport.recv <- appwire.ResponseMessage(call.request.ID, relaySnapshot("thread-1", "snapshot"))
+	result := <-read
+	if result.err != nil {
+		t.Fatal(result.err)
+	}
+	if !result.result.Handoff.Commit() {
+		t.Fatal("initial handoff commit lost")
+	}
+
+	session := relaySessionFor(t, source)
+	barrier := newRelayPublicationBarrier(t, session, lease.id)
+	entry := newRelayPublisherEntryBarrier(t, session)
+	session.mu.Lock()
+	epoch := session.epoch
+	fence := session.publicationFence
+	session.recovering = true
+	session.mu.Unlock()
+	staleDone := queueRelayNotificationAtEpoch(session, epoch, relayDelta("thread-1", "stale"))
+
+	// The entry barrier proves the stale job passed its old token check and
+	// acquired the publication read lock before revocation begins.
+	<-entry.entered
+	disconnectDone := make(chan struct{})
+	go func() {
+		session.disconnect(epoch)
+		close(disconnectDone)
+	}()
+	<-fence.revoked
+	entry.releasePublisher()
+	<-staleDone
+	<-disconnectDone
+	entry.disable()
+	<-barrier.listener.out
+	<-barrier.listener.out
+
+	session.mu.Lock()
+	session.recovering = false
+	session.mu.Unlock()
+	go session.recoverCanonicalFeed()
+	recoveryCall := <-daemon.reads
+	recoveryCall.transport.recv <- appwire.ResponseMessage(
+		recoveryCall.request.ID,
+		relaySnapshot("thread-1", "recovered"),
+	)
+	resync := <-barrier.listener.out
+	if resync.Notification.Method != appwire.NotifyEvenerThreadResync {
+		t.Fatalf("recovery delivery = %+v, want resync", resync.Notification)
+	}
+	resync.Acknowledge()
+
+	session.mu.Lock()
+	if session.publicationEpoch != session.epoch {
+		t.Fatalf("publication epoch = %d, authoritative epoch = %d", session.publicationEpoch, session.epoch)
+	}
+	session.mu.Unlock()
+}
+
+func TestRelaySessionPreparedHandoffDisconnectRevokesBlockedPublicationBeforeRecovery(t *testing.T) {
+	source, daemon := newRelayTestSource(t, []rendezvous.Entry{relayEntry("thread-1")})
+	params := appwire.ThreadReadParams{Ref: "local:thread-1", Subscribe: true}
+	leaseValue, err := source.acquireRelaySession(params)
+	if err != nil {
+		t.Fatal(err)
+	}
+	lease := leaseValue.(*relaySessionLease)
+	defer lease.Close()
+
+	read := readRelayAsync(context.Background(), lease, params)
+	call := <-daemon.reads
+	call.transport.recv <- appwire.ResponseMessage(call.request.ID, relaySnapshot("thread-1", "snapshot"))
+	result := <-read
+	if result.err != nil {
+		t.Fatal(result.err)
+	}
+	if !result.result.Handoff.Prepare() {
+		t.Fatal("current handoff could not pin its live continuation")
+	}
+
+	session := relaySessionFor(t, source)
+	barrier := newRelayPublicationBarrier(t, session, lease.id)
+	entry := newRelayPublisherEntryBarrier(t, session)
+	session.mu.Lock()
+	epoch := session.epoch
+	fence := session.publicationFence
+	session.recovering = true
+	session.mu.Unlock()
+	staleDone := queueRelayNotificationAtEpoch(session, epoch, relayDelta("thread-1", "stale"))
+
+	// Ordinary disconnect only marks a prepared connection. The terminal
+	// handoff outcome is the deferred boundary that must revoke this epoch.
+	<-entry.entered
+	session.disconnect(epoch)
+	commitDone := make(chan bool, 1)
+	go func() { commitDone <- result.result.Handoff.Commit() }()
+	<-fence.revoked
+	entry.releasePublisher()
+	<-staleDone
+	if !<-commitDone {
+		t.Fatal("prepared handoff commit lost")
+	}
+	entry.disable()
+	<-barrier.listener.out
+	<-barrier.listener.out
+
+	session.mu.Lock()
+	session.recovering = false
+	session.mu.Unlock()
+	go session.recoverCanonicalFeed()
+	recoveryCall := <-daemon.reads
+	recoveryCall.transport.recv <- appwire.ResponseMessage(
+		recoveryCall.request.ID,
+		relaySnapshot("thread-1", "recovered"),
+	)
+	resync := <-barrier.listener.out
+	if resync.Notification.Method != appwire.NotifyEvenerThreadResync {
+		t.Fatalf("recovery delivery = %+v, want resync", resync.Notification)
+	}
+	resync.Acknowledge()
+
+	session.mu.Lock()
+	if session.publicationEpoch != session.epoch {
+		t.Fatalf("publication epoch = %d, authoritative epoch = %d", session.publicationEpoch, session.epoch)
+	}
+	session.mu.Unlock()
+}
+
 func TestRelaySessionIdleClosesCanonicalConnectionAfterLastOwner(t *testing.T) {
 	source, daemon := newRelayTestSource(t, []rendezvous.Entry{relayEntry("thread-1")})
 	params := appwire.ThreadReadParams{Ref: "local:thread-1", Subscribe: true}
-	lease, err := source.AcquireRelaySession(params)
+	lease, err := source.acquireRelaySession(params)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -837,7 +1268,7 @@ func TestRelaySessionIdleClosesCanonicalConnectionAfterLastOwner(t *testing.T) {
 func TestRelaySessionPreparedHandoffDefersIdleUntilResponseOutcome(t *testing.T) {
 	source, daemon := newRelayTestSource(t, []rendezvous.Entry{relayEntry("thread-1")})
 	params := appwire.ThreadReadParams{Ref: "local:thread-1", Subscribe: true}
-	lease, err := source.AcquireRelaySession(params)
+	lease, err := source.acquireRelaySession(params)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -873,7 +1304,7 @@ func TestRelaySessionPreparedHandoffDefersIdleUntilResponseOutcome(t *testing.T)
 func TestRelaySessionAcquireReplacesClosedActorBeforeIdleMapRemoval(t *testing.T) {
 	source, _ := newRelayTestSource(t, []rendezvous.Entry{relayEntry("thread-1")})
 	params := appwire.ThreadReadParams{Ref: "local:thread-1", Subscribe: true}
-	firstValue, err := source.AcquireRelaySession(params)
+	firstValue, err := source.acquireRelaySession(params)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -891,7 +1322,7 @@ func TestRelaySessionAcquireReplacesClosedActorBeforeIdleMapRemoval(t *testing.T
 	}()
 	<-idleEntered
 
-	secondValue, err := source.AcquireRelaySession(params)
+	secondValue, err := source.acquireRelaySession(params)
 	if err != nil {
 		t.Fatalf("AcquireRelaySession while closed actor awaited map removal: %v", err)
 	}
@@ -911,12 +1342,12 @@ func TestRelaySessionUnrelatedActorProgressesWhileSnapshotBlocked(t *testing.T) 
 	source, daemon := newRelayTestSource(t, []rendezvous.Entry{relayEntry("thread-1"), relayEntry("thread-2")})
 	firstParams := appwire.ThreadReadParams{Ref: "local:thread-1", Subscribe: true}
 	secondParams := appwire.ThreadReadParams{Ref: "local:thread-2", Subscribe: true}
-	firstLease, err := source.AcquireRelaySession(firstParams)
+	firstLease, err := source.acquireRelaySession(firstParams)
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer firstLease.Close()
-	secondLease, err := source.AcquireRelaySession(secondParams)
+	secondLease, err := source.acquireRelaySession(secondParams)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -948,12 +1379,12 @@ func TestRelaySessionPreparedHandoffDoesNotBlockUnrelatedActor(t *testing.T) {
 	source, daemon := newRelayTestSource(t, []rendezvous.Entry{relayEntry("thread-1"), relayEntry("thread-2")})
 	firstParams := appwire.ThreadReadParams{Ref: "local:thread-1", Subscribe: true}
 	secondParams := appwire.ThreadReadParams{Ref: "local:thread-2", Subscribe: true}
-	firstLease, err := source.AcquireRelaySession(firstParams)
+	firstLease, err := source.acquireRelaySession(firstParams)
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer firstLease.Close()
-	secondLease, err := source.AcquireRelaySession(secondParams)
+	secondLease, err := source.acquireRelaySession(secondParams)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -988,7 +1419,7 @@ func TestRelaySessionPreparedHandoffDoesNotBlockUnrelatedActor(t *testing.T) {
 func TestRelaySessionCanonicalFeedDoesNotOverflowUnusedClientNotificationBuffer(t *testing.T) {
 	source, daemon := newRelayTestSource(t, []rendezvous.Entry{relayEntry("thread-1")})
 	params := appwire.ThreadReadParams{Ref: "local:thread-1", Subscribe: true}
-	lease, err := source.AcquireRelaySession(params)
+	lease, err := source.acquireRelaySession(params)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1037,7 +1468,7 @@ func TestRelaySessionCanonicalFeedDoesNotOverflowUnusedClientNotificationBuffer(
 func TestRelaySessionRecoversCanonicalFeedAndEmitsResyncWithoutAnotherRead(t *testing.T) {
 	source, daemon := newRelayTestSource(t, []rendezvous.Entry{relayEntry("thread-1")})
 	params := appwire.ThreadReadParams{Ref: "local:thread-1", Subscribe: true}
-	lease, err := source.AcquireRelaySession(params)
+	lease, err := source.acquireRelaySession(params)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1074,6 +1505,15 @@ func TestRelaySessionRecoversCanonicalFeedAndEmitsResyncWithoutAnotherRead(t *te
 		t.Fatalf("recovered live delta = %q", got)
 	}
 	live.Acknowledge()
+	sessionLease := lease.(*relaySessionLease)
+	awaitRecoveryLatchRelease(t, sessionLease.session)
+	sessionLease.session.mu.Lock()
+	listenerCount := len(sessionLease.session.listeners)
+	listenerStarts := sessionLease.session.nextListener
+	sessionLease.session.mu.Unlock()
+	if listenerCount != 1 || listenerStarts != 1 {
+		t.Fatalf("listeners after reconnect: live=%d started=%d, want one resumed listener", listenerCount, listenerStarts)
+	}
 	if got := daemon.dials.Load(); got != 2 {
 		t.Fatalf("dial count = %d, want exactly one replacement connection", got)
 	}
@@ -1082,7 +1522,7 @@ func TestRelaySessionRecoversCanonicalFeedAndEmitsResyncWithoutAnotherRead(t *te
 func TestRelaySessionRecoveryDisconnectBeforeHandoffResolutionStartsSuccessor(t *testing.T) {
 	source, daemon := newRelayTestSource(t, []rendezvous.Entry{relayEntry("thread-1")})
 	params := appwire.ThreadReadParams{Ref: "local:thread-1", Subscribe: true}
-	leaseValue, err := source.AcquireRelaySession(params)
+	leaseValue, err := source.acquireRelaySession(params)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1145,6 +1585,30 @@ func TestRelaySessionRecoveryDisconnectBeforeHandoffResolutionStartsSuccessor(t 
 	live.Acknowledge()
 }
 
+// awaitRecoveryLatchRelease blocks until recoverCanonicalFeed has left the
+// session, which no frame the replacement connection delivers can prove.
+// Resolving the recovery handoff is what queues that connection's first live
+// frames, and the loop clears the latch on a later, separate acquisition of
+// the session lock -- so a listener holding such a frame is ordered before the
+// clear, not after it.
+func awaitRecoveryLatchRelease(t *testing.T, session *relaySession) {
+	t.Helper()
+	deadline := time.After(5 * time.Second)
+	for {
+		session.mu.Lock()
+		recovering := session.recovering
+		session.mu.Unlock()
+		if !recovering {
+			return
+		}
+		select {
+		case <-deadline:
+			t.Fatal("relay session still marked recovering after replacement feed resumed")
+		case <-time.After(time.Millisecond):
+		}
+	}
+}
+
 func decodeRelayDelta(t *testing.T, notification appwire.Notification) string {
 	t.Helper()
 	var params appwire.AgentMessageDeltaParams
@@ -1186,7 +1650,7 @@ func decodeRelayDelta(t *testing.T, notification appwire.Notification) string {
 func TestRelaySessionCommandReadResyncsListenersOnReplacementConnection(t *testing.T) {
 	source, daemon := newRelayTestSource(t, []rendezvous.Entry{relayEntry("thread-1")})
 	params := appwire.ThreadReadParams{Ref: "local:thread-1", Subscribe: true}
-	lease, err := source.AcquireRelaySession(params)
+	lease, err := source.acquireRelaySession(params)
 	if err != nil {
 		t.Fatalf("AcquireRelaySession: %v", err)
 	}

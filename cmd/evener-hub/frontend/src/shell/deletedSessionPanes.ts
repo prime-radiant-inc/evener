@@ -11,12 +11,12 @@ import { workspaceStore } from "./workspace";
 // deleted project leave the workspace in the same dead-route state, so they
 // clean it up the same way.
 //
-// Both endpoints report what they actually removed as bare thread ids
-// (web_api_project_delete.go's result.Deleted carries target.ThreadID;
-// web_api_session_delete.go ships the same shape for one target), and both
+// Both deletion methods report what they actually removed as bare thread ids
+// (projectDelete's result.Deleted carries target.ThreadID; app_session_delete.go
+// ships the same shape for one target), and both
 // only ever delete LOCAL sessions - so a bare id names the "local:<id>" ref
 // a pane carries. An id that already carries a source prefix passes through
-// unchanged, the same both-forms tolerance stores/tree.ts's sessionIDMatches
+// unchanged, the same both-forms tolerance the navigation store's
 // applies to this very field.
 export function closePanesForDeletedSessions(deletedIDs: string[]): void {
   const goneRefs = new Set(deletedIDs.map((id) => (id.includes(":") ? id : `local:${id}`)));

@@ -44,10 +44,8 @@ func APITimeoutSourceForTransport(parent, attempt context.Context, transportErr 
 	if transportErr == nil || (parent != nil && parent.Err() != nil) {
 		return APITimeoutNone
 	}
-	if attempt != nil && attempt.Err() == context.DeadlineExceeded {
-		if deadline, ok := attempt.Deadline(); ok && !time.Now().Before(deadline) {
-			return APITimeoutAdapter
-		}
+	if source := APITimeoutSourceForContext(parent, attempt); source != APITimeoutNone {
+		return source
 	}
 	transportCause := transportErr
 	if urlErr, ok := transportErr.(*url.Error); ok { //nolint:errorlint // Transport errors are untrusted; do not invoke arbitrary Unwrap methods.
@@ -61,6 +59,19 @@ func APITimeoutSourceForTransport(parent, attempt context.Context, transportErr 
 	}
 	if transportCause == context.DeadlineExceeded { //nolint:errorlint // Transport errors are untrusted; do not invoke arbitrary Is methods.
 		return APITimeoutTransport
+	}
+	return APITimeoutNone
+}
+
+// APITimeoutSourceForContext identifies an adapter-owned context deadline while
+// preserving caller-owned cancellation and deadlines. It is used after an HTTP
+// response has arrived, when no transport error exists to classify.
+func APITimeoutSourceForContext(parent, attempt context.Context) APITimeoutSource {
+	if attempt == nil || attempt.Err() != context.DeadlineExceeded || (parent != nil && parent.Err() != nil) {
+		return APITimeoutNone
+	}
+	if deadline, ok := attempt.Deadline(); ok && !time.Now().Before(deadline) {
+		return APITimeoutAdapter
 	}
 	return APITimeoutNone
 }
@@ -104,17 +115,19 @@ func attemptOwnedTimeout(owner APIAttemptContextOwnership, decodeErr, transportE
 	}
 }
 
-// ApplyAdapterTimeout creates a context with the appropriate deadline from AdapterTimeout.
-// For non-streaming requests, it uses the Request timeout for the whole call.
-// Streaming requests get no additional overall context deadline: Request is
-// applied while waiting for HTTP response headers, and StreamRead is checked per
-// SSE line. Caller-supplied context and HTTP client policies remain authoritative.
+// ApplyAdapterTimeout creates a context with the Request deadline from
+// AdapterTimeout. Request bounds the whole non-streaming call and the complete
+// lifetime of a streaming HTTP attempt, including response headers and body
+// consumption. StreamRead remains a separate idle timeout between SSE lines.
+// Caller-supplied context and HTTP client policies remain authoritative; the
+// earliest deadline wins. The streaming argument is retained for source
+// compatibility with adapters that distinguish request phases elsewhere.
 // If at is nil, returns the context unchanged.
-func ApplyAdapterTimeout(ctx context.Context, at *AdapterTimeout, streaming bool) (context.Context, context.CancelFunc) {
+func ApplyAdapterTimeout(ctx context.Context, at *AdapterTimeout, _ bool) (context.Context, context.CancelFunc) {
 	if at == nil {
 		return ctx, func() {}
 	}
-	if !streaming && at.Request > 0 {
+	if at.Request > 0 {
 		return context.WithTimeout(ctx, at.Request)
 	}
 	return ctx, func() {}

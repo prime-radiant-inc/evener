@@ -2,6 +2,7 @@ package execenv
 
 import (
 	"bytes"
+	"context"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -163,7 +164,7 @@ func FuzzEgrepGrepNative(f *testing.F) {
 		refRe, compileErr := regexp.Compile(flags + pattern)
 
 		// Regex-error parity: grepNative's sole error path is regex compilation.
-		_, contentErr := env.grepNative(pattern, root, globFilter, caseInsensitive, 1<<20, "content")
+		_, contentErr := env.grepNative(context.Background(), pattern, root, globFilter, caseInsensitive, 1<<20, "content")
 		if (compileErr != nil) != (contentErr != nil) {
 			t.Fatalf("regex-error parity broken: compile=%v grepNative=%v (pattern=%q ci=%v)",
 				compileErr, contentErr, pattern, caseInsensitive)
@@ -175,7 +176,7 @@ func FuzzEgrepGrepNative(f *testing.F) {
 		refContent, refCounts, refFiles := egrep_scan(visible, refRe, globFilter)
 
 		// Reference equality (content mode, cap lifted).
-		gotFull, err := env.grepNative(pattern, root, globFilter, caseInsensitive, 1<<20, "content")
+		gotFull, err := env.grepNative(context.Background(), pattern, root, globFilter, caseInsensitive, 1<<20, "content")
 		if err != nil {
 			t.Fatalf("grepNative content errored unexpectedly: %v", err)
 		}
@@ -187,12 +188,12 @@ func FuzzEgrepGrepNative(f *testing.F) {
 
 		// Determinism: repeat the same call, expect identical output.
 		oracle.Deterministic(t, func(struct{}) string {
-			out, _ := env.grepNative(pattern, root, globFilter, caseInsensitive, 1<<20, "content")
+			out, _ := env.grepNative(context.Background(), pattern, root, globFilter, caseInsensitive, 1<<20, "content")
 			return out
 		}, struct{}{}, func(a, b string) bool { return a == b })
 
 		// Cap consistency: fuzzed maxResults keeps exactly the first effMax matches.
-		gotCapped, err := env.grepNative(pattern, root, globFilter, caseInsensitive, fuzzMax, "content")
+		gotCapped, err := env.grepNative(context.Background(), pattern, root, globFilter, caseInsensitive, fuzzMax, "content")
 		if err != nil {
 			t.Fatalf("grepNative capped content errored: %v", err)
 		}
@@ -215,7 +216,7 @@ func FuzzEgrepGrepNative(f *testing.F) {
 		}
 
 		// Count-mode parity.
-		gotCount, err := env.grepNative(pattern, root, globFilter, caseInsensitive, 1<<20, "count")
+		gotCount, err := env.grepNative(context.Background(), pattern, root, globFilter, caseInsensitive, 1<<20, "count")
 		if err != nil {
 			t.Fatalf("grepNative count errored: %v", err)
 		}
@@ -224,7 +225,7 @@ func FuzzEgrepGrepNative(f *testing.F) {
 		}
 
 		// Files-with-matches parity (ordered, cap lifted).
-		gotFiles, err := env.grepNative(pattern, root, globFilter, caseInsensitive, 1<<20, "files_with_matches")
+		gotFiles, err := env.grepNative(context.Background(), pattern, root, globFilter, caseInsensitive, 1<<20, "files_with_matches")
 		if err != nil {
 			t.Fatalf("grepNative files_with_matches errored: %v", err)
 		}
@@ -234,7 +235,7 @@ func FuzzEgrepGrepNative(f *testing.F) {
 
 		// Exercise the fuzz-selected mode too, so the selector's branches are all
 		// reachable; its output already validated above by the per-mode oracles.
-		if _, err := env.grepNative(pattern, root, globFilter, caseInsensitive, fuzzMax, mode); err != nil {
+		if _, err := env.grepNative(context.Background(), pattern, root, globFilter, caseInsensitive, fuzzMax, mode); err != nil {
 			t.Fatalf("grepNative mode=%q errored: %v", mode, err)
 		}
 	})

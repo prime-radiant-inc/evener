@@ -36,7 +36,7 @@
 // with no hover to reveal them).
 import type { ReactNode } from "react";
 import type { SessionPanelKind } from "../../panes/sessionPanels";
-import type { TreeNode as ApiTreeNode, TreeProject as ApiTreeProject, PinSectionSummary } from "../../stores/tree";
+
 import {
   Badge,
   Cadence,
@@ -53,14 +53,18 @@ import { type PinTarget, SessionMenu } from "../sessionMenu/SessionMenu";
 import { isPaneOpen, useWorkspaceStore } from "../workspace";
 import styles from "./RailRow.module.css";
 import {
+  activeWorkSummary,
+  type CompletedJobsFoldRailNode,
   displayState,
   type InactiveFoldRailNode,
+  type JobRailNode,
   needsYouDescendantCount,
   type OverflowRailNode,
   type ProjectRailNode,
   type RailNode,
+  type RailProject,
+  type RailSession,
   type SessionRailNode,
-  workingDescendantCount,
 } from "./railNodes";
 import { isTopLevelSession } from "./sessionKind";
 
@@ -87,7 +91,7 @@ const CLASS = {
   srOnly: requireClass(styles.srOnly, "RailRow.module.css", "srOnly"),
 };
 
-// frameTimes is always [] here: the REST /api/tree snapshot carries no
+// frameTimes is always [] here: navigation summaries carry no
 // per-frame timestamps, only a point-in-time `state`. Cadence still renders
 // correctly with an empty trace (just the state dot, no ticks) - wave-4's
 // live-socket enrichment is what will thread real frame arrivals through
@@ -240,13 +244,16 @@ function Signal({ wireState }: { wireState: string }) {
 // on the main line it charged its width to the title at the rail's default
 // 280px. Exported for direct testing of the join, which the rendered line can
 // only assert on as one flat string.
-export function activityGloss(session: ApiTreeNode): string {
-  const workingCount = workingDescendantCount(session);
-  const parts = [
-    workingCount === 0
-      ? humanizeState(session.state, session.ask_pending === true)
-      : `${workingCount} subagent${workingCount === 1 ? "" : "s"} working`,
-  ];
+export function activityGloss(session: RailSession, activity = activeWorkSummary(session)): string {
+  const workingCount = activity.workingSubagents;
+  const jobCount = activity.runningJobs;
+  const parts: string[] = [];
+  if (workingCount > 0) {
+    parts.push(`${workingCount} subagent${workingCount === 1 ? "" : "s"} working`);
+  } else if (jobCount === 0 || session.state === "active") {
+    parts.push(humanizeState(session.state, session.ask_pending === true));
+  }
+  if (jobCount > 0) parts.push(`${jobCount} job${jobCount === 1 ? "" : "s"} running`);
   if (session.branch !== undefined && session.branch !== "") parts.push(session.branch);
   return parts.join(" · ");
 }
@@ -260,30 +267,39 @@ export function activityGloss(session: ApiTreeNode): string {
 // the project it belongs to is the row it is indented under. Project leads
 // the line (state is what's happening, project is where) the same way
 // activityGloss already leads with state before branch.
-function secondLine(session: ApiTreeNode, showsGloss: boolean, showsProject: boolean): string {
+function secondLine(
+  session: RailSession,
+  showsGloss: boolean,
+  showsProject: boolean,
+  activity?: ReturnType<typeof activeWorkSummary>,
+): string {
   const parts: string[] = [];
   // An empty project name has nothing to join, so it must not contribute a
   // leading " · " separator with no text before it (UX fix).
   if (showsProject && session.project !== "") parts.push(session.project);
-  if (showsGloss) parts.push(activityGloss(session));
+  if (showsGloss) parts.push(activityGloss(session, activity));
   return parts.join(" · ");
 }
 
 export interface RailRowActions {
-  onOpenSessionPane(session: ApiTreeNode, pane: SessionPanelKind): void;
-  onRenameSession(session: ApiTreeNode, name: string): Promise<void>;
-  onShutdownSession(session: ApiTreeNode): Promise<void>;
-  onPinSession(session: ApiTreeNode, target: PinTarget, section?: PinSectionSummary): Promise<void>;
+  onOpenSessionPane(session: RailSession, pane: SessionPanelKind): void;
+  onRenameSession(session: RailSession, name: string): Promise<void>;
+  onShutdownSession(session: RailSession): Promise<void>;
+  onPinSession(
+    session: RailSession,
+    target: PinTarget,
+    section?: { id: string; name: string; member_count: number },
+  ): Promise<void>;
   // Unpin/archive/delete return the mutation's promise so a rejection
   // reaches SessionMenu's confirm helper (the failure convention in
   // SessionMenu.tsx's header comment): Rail's runAction already toasts,
   // and the propagated rejection keeps the menu's dialog open.
-  onUnpinRequest(session: ApiTreeNode): Promise<void>;
-  onToggleArchiveSession(session: ApiTreeNode): Promise<void>;
-  onDeleteSession(session: ApiTreeNode): Promise<void>;
-  onToggleFavoriteProject(project: ApiTreeProject): void;
-  onToggleArchiveProject(project: ApiTreeProject): void;
-  onDeleteProjectRequest(project: ApiTreeProject): void;
+  onUnpinRequest(session: RailSession): Promise<void>;
+  onToggleArchiveSession(session: RailSession): Promise<void>;
+  onDeleteSession(session: RailSession): Promise<void>;
+  onToggleFavoriteProject(project: RailProject): void;
+  onToggleArchiveProject(project: RailProject): void;
+  onDeleteProjectRequest(project: RailProject): void;
 }
 
 export interface RailRowProps {
@@ -307,19 +323,25 @@ function TrailingChevron({ info }: { info: TreeRowInfo }) {
     // comment and dev/gallery-sections/tree.tsx's identical convention) -
     // out of tab order and hidden from assistive tech so it isn't a second,
     // redundant "toggle" announcement.
-    <button
-      type="button"
+    //
+    // A <span>, not a <button>: the chevron is a mouse-only affordance, and a
+    // <button> receives focus on click - a focused aria-hidden element is the
+    // exact violation Chrome's a11y console warns about ("blocked aria-hidden
+    // on an element because its descendant retained focus"). A non-focusable
+    // span can't hold focus, so aria-hidden is safe here. The owning treeitem
+    // is the Tree widget's one roving Tab stop; keyboard users toggle it with
+    // Left/Right arrow there, never via this glyph.
+    <span
       data-testid="rail-chevron"
       className={CLASS.chevronButton}
       aria-hidden="true"
-      tabIndex={-1}
       onClick={(event) => {
         event.stopPropagation();
         info.toggle();
       }}
     >
       <Chevron direction={info.expanded ? "down" : "right"} size={12} />
-    </button>
+    </span>
   );
 }
 
@@ -330,16 +352,17 @@ function ActionsMenu({ label, items }: { label: string; items: MenuItem[] }) {
   if (items.length === 0) return null;
   return (
     <Menu
-      // Same reasoning as Chevron's own tabIndex={-1} above: the row's
-      // single outer treeitem is the Tree widget's one roving Tab stop -
-      // without this, the trigger becomes a SECOND, always-focusable Tab
-      // stop on every row simultaneously, breaking that contract (Tab
-      // would reach "Actions for Row B" without ever reaching Row B's own
-      // treeitem). Still reachable by click; Menu's own consume-then-stop
-      // key handling (widgets/menu/index.tsx) is the other half of this -
-      // an ArrowDown/Enter/Space this trigger already gives meaning to
-      // must never also bubble into Tree's onKeyDown and move the roving
-      // tabindex to a different row out from under an open menu.
+      // The row's single outer treeitem is the Tree widget's one roving Tab
+      // stop - without triggerTabIndex={-1}, this trigger becomes a SECOND,
+      // always-focusable Tab stop on every row simultaneously, breaking that
+      // contract (Tab would reach "Actions for Row B" without ever reaching
+      // Row B's own treeitem). Still reachable by click; Menu's own
+      // consume-then-stop key handling (widgets/menu/index.tsx) is the other
+      // half of this - an ArrowDown/Enter/Space this trigger already gives
+      // meaning to must never also bubble into Tree's onKeyDown and move the
+      // roving tabindex to a different row out from under an open menu. (The
+      // chevron above sidesteps this differently: it is a non-focusable span,
+      // so it is simply never a tab stop at all.)
       triggerTabIndex={-1}
       variant="quiet"
       trigger={
@@ -353,15 +376,15 @@ function ActionsMenu({ label, items }: { label: string; items: MenuItem[] }) {
   );
 }
 
-// "no-project" is a synthetic bucket handleAPITree synthesizes for orphan
-// live sessions with no resolvable project (cmd/evener-hub/web_api_tree.go) -
-// it can appear in the wire's `projects` array like any other TreeProject,
+// "no-project" is a synthetic project bucket for orphan live sessions whose
+// project cannot be resolved (cmd/evener-hub/navigation_projection.go). It can
+// appear in the wire's `projects` array like any other TreeProject,
 // but the server rejects both archive and delete for this exact key
-// ("no-project is not a local project" - web_api_archive.go/
-// web_api_project_delete.go). Offering menu items that are guaranteed to
+// ("no-project is not a local project" - app_archive.go/project_delete.go).
+// Offering menu items that are guaranteed to
 // fail server-side would be worse than offering none - kept as an
 // all-or-nothing exclusion (favorite included) rather than special-casing
-// per action, since POST /api/favorite's own project-kind validation is a
+// per action, since evener/favorite/set's own project-kind validation is a
 // separate, disclosed gap (unrelated to this row's own scope) that this
 // component has no reliable way to distinguish from "would actually work".
 const NO_PROJECT_KEY = "no-project";
@@ -376,11 +399,11 @@ const NO_PROJECT_KEY = "no-project";
 // (shouldn't happen for a real project, but degrades gracefully rather than
 // silently doing nothing) - NO_PROJECT_KEY itself is excluded before this is
 // ever called, same as every other project-scoped action here.
-function spawnInProject(project: ApiTreeProject): void {
+function spawnInProject(project: RailProject): void {
   navigate(project.working_dir ? `/new?dir=${encodeURIComponent(project.working_dir)}` : "/new");
 }
 
-function projectMenuItems(project: ApiTreeProject, actions: RailRowActions): MenuItem[] {
+function projectMenuItems(project: RailProject, actions: RailRowActions): MenuItem[] {
   if (project.key === NO_PROJECT_KEY) return [];
   return [
     {
@@ -412,7 +435,7 @@ function projectMenuItems(project: ApiTreeProject, actions: RailRowActions): Men
 // reachable on hover without costing the list a line. The title always leads, so
 // a truncated title is still recoverable from it (the case this tooltip
 // originally existed for).
-function rowTooltip(session: ApiTreeNode, showsGloss: boolean, saysNotStarted: boolean): string {
+function rowTooltip(session: RailSession, showsGloss: boolean, saysNotStarted: boolean): string {
   const parts = [session.title];
   // A signal row already prints its state; a quiet one doesn't, so only the
   // quiet case needs the word here. A row that has never run reports THAT
@@ -438,16 +461,16 @@ function rowTooltip(session: ApiTreeNode, showsGloss: boolean, saysNotStarted: b
 // still calling it "Not started" would be flatly wrong. So this is only ever
 // true on a row that is otherwise quiet - which is exactly the row that had
 // nothing to say before.
-function saysNotStarted(session: ApiTreeNode, showsGloss: boolean): boolean {
+function saysNotStarted(session: RailSession, showsGloss: boolean): boolean {
   return session.dormant === true && !showsGloss;
 }
 
 // The rail-row use of the shared session menu: same component the session
-// pane's chrome renders, fed from the ApiTreeNode instead of a ThreadModel.
+// pane's chrome renders, fed from the RailSession instead of a ThreadModel.
 // panesOpen drives the ✓ markers via the workspace store; triggerTabIndex
 // -1 keeps the Tree widget's single-roving-Tab-stop contract (see
 // ActionsMenu's own comment, which this replaces for session rows).
-function SessionMenuRow({ session, actions }: { session: ApiTreeNode; actions: RailRowActions }) {
+function SessionMenuRow({ session, actions }: { session: RailSession; actions: RailRowActions }) {
   const ref = session.ref;
   // Three separate boolean selectors, NOT one object-literal selector: a
   // fresh { details, tasks, activity } object every call would fail the
@@ -495,8 +518,16 @@ function SessionRow({ node, info, actions }: { node: SessionRailNode; info: Tree
   // gloss, and with it its second line - which makes signal rows physically
   // taller than quiet ones. That is the point: the rows worth finding are bigger
   // than the rows that aren't, and the list's evenness is worth less than that.
-  const showsGloss = SIGNAL_STATES.has(cadenceStateFor(presented));
-  const hasWorkingDescendants = workingDescendantCount(session) > 0;
+  const activity = activeWorkSummary(session);
+  const hasWorkingDescendants = activity.workingSubagents > 0;
+  const hasRunningJobs = activity.runningJobs > 0;
+  const hasActiveWork = session.state === "active" || hasWorkingDescendants || hasRunningJobs;
+  // Descendant/job activity is a working signal for the owning session. A
+  // failed session still wins over that rollup so an error cannot disappear
+  // behind a green child.
+  let effectiveState = presented;
+  if (effectiveState !== "errored" && hasActiveWork) effectiveState = "active";
+  const showsGloss = SIGNAL_STATES.has(cadenceStateFor(effectiveState));
   // kata hxjn: a row at depth 0 is a top-level entry in a flat, cross-project
   // tier (Live/Pinned - see toSessionNode/sessionNodes; a Projects/Test-runs/
   // Archived session is always nested under its own ProjectRow, never a depth-0
@@ -506,14 +537,14 @@ function SessionRow({ node, info, actions }: { node: SessionRailNode; info: Tree
   // above, made for exactly the fact that rule can't otherwise carry.
   const showsProject = info.depth === 0;
   const notStarted = saysNotStarted(session, showsGloss);
-  const showsActivity = showsGloss || hasWorkingDescendants;
-  const gloss = secondLine(session, showsActivity, showsProject);
+  const showsActivity = showsGloss || hasWorkingDescendants || hasRunningJobs;
+  const gloss = secondLine(session, showsActivity, showsProject, activity);
   const showsSecondLine = showsActivity || showsProject;
   // Only a genuine signal row (showsGloss) carries a state to tint - the
   // depth-0-only "just the project name" line (showsProject with no signal)
   // has no state family to color, so it stays the plain --ink-low default.
   const activityClass = showsGloss
-    ? `${CLASS.activity} ${ACTIVITY_FAMILY_CLASS[cadenceStateFor(presented)] ?? ""}`.trim()
+    ? `${CLASS.activity} ${ACTIVITY_FAMILY_CLASS[cadenceStateFor(effectiveState)] ?? ""}`.trim()
     : CLASS.activity;
   return (
     // data-session-ref is the scroll target Rail's reveal effect (the palette's
@@ -537,7 +568,7 @@ function SessionRow({ node, info, actions }: { node: SessionRailNode; info: Tree
             unreachable. The title's tooltip also carries what the visible row
             drops (rowTooltip). */}
         <span className={CLASS.titleLine}>
-          <Signal wireState={presented} />
+          <Signal wireState={effectiveState} />
           <span className={CLASS.label} title={rowTooltip(session, showsGloss, notStarted)}>
             {session.title}
           </span>
@@ -621,6 +652,17 @@ function ProjectRow({ node, info, actions }: { node: ProjectRailNode; info: Tree
           <span className={CLASS.label} onClick={info.activate}>
             {node.displayName ?? project.name}
           </span>
+          {node.resourceError && node.retry && (
+            <button
+              type="button"
+              onClick={(event) => {
+                event.stopPropagation();
+                node.retry?.();
+              }}
+            >
+              Retry
+            </button>
+          )}
           <TrailingChevron info={info} />
         </span>
       </span>
@@ -660,17 +702,15 @@ function ProjectRow({ node, info, actions }: { node: ProjectRailNode; info: Tree
 // hides carry their own. Its label sits at the same x as every other row at
 // its nesting depth - the trailing chevron after the label is its toggle,
 // the same inline affordance session and project rows use.
-function InactiveFoldRow({ node, info }: { node: InactiveFoldRailNode; info: TreeRowInfo }) {
-  const label = `${node.count === 1 ? "Inactive subagent" : "Inactive subagents"} (${node.count})`;
+function DisclosureFoldRow({ label, testId, info }: { label: string; testId: string; info: TreeRowInfo }) {
   return (
-    <span className={CLASS.railRow} data-testid="rail-row-inactive-fold">
+    <span className={CLASS.railRow} data-testid={testId}>
       <span className={CLASS.textCol}>
         <span className={CLASS.titleLine}>
-          {/* Same mouse-only shortcut for the toggle the chevron already offers,
-              and the same a11y reasoning as SessionRow's own label: this text is
-              the treeitem's accessible name, so it can't be aria-hidden. */}
-          {/* biome-ignore lint/a11y/noStaticElementInteractions: redundant with the row's own Enter handling, see SessionRow */}
-          {/* biome-ignore lint/a11y/useKeyWithClickEvents: redundant with the row's own Enter handling, see SessionRow */}
+          {/* The label is the accessible activation target; the chevron is a
+              decorative shortcut for the same treeitem toggle. */}
+          {/* biome-ignore lint/a11y/noStaticElementInteractions: redundant with the row's own Enter handling */}
+          {/* biome-ignore lint/a11y/useKeyWithClickEvents: redundant with the row's own Enter handling */}
           <span className={CLASS.label} onClick={info.toggle}>
             {label}
           </span>
@@ -678,6 +718,59 @@ function InactiveFoldRow({ node, info }: { node: InactiveFoldRailNode; info: Tre
         </span>
       </span>
     </span>
+  );
+}
+
+function InactiveFoldRow({ node, info }: { node: InactiveFoldRailNode; info: TreeRowInfo }) {
+  const label = `${node.count === 1 ? "Inactive subagent" : "Inactive subagents"} (${node.count})`;
+  return <DisclosureFoldRow label={label} testId="rail-row-inactive-fold" info={info} />;
+}
+
+function jobLabel(job: JobRailNode["job"]): string {
+  return job.command?.trim() || job.task?.trim() || job.job_type?.trim() || job.job_id;
+}
+
+// jobTitle is the job row's hover tooltip: the full command that actually ran
+// (full_command, untruncated, when the label's command was cut by the wire's
+// label bound) plus the tool call's `intent` — why the model said it is
+// running the command. Status rides along the same way the old single-line
+// title carried it, so a hover still answers "what is this doing" end to end.
+function jobTitle(job: JobRailNode["job"], status: string): string {
+  const command =
+    job.full_command?.trim() || job.command?.trim() || job.task?.trim() || job.job_type?.trim() || job.job_id;
+  const intent = job.intent?.trim();
+  if (intent) {
+    return `${command} · ${intent} · ${status}`;
+  }
+  return `${command} · ${status}`;
+}
+
+function JobRow({ node }: { node: JobRailNode }) {
+  const active = node.active;
+  const status = node.job.status.trim() || (active ? "running" : "completed");
+  return (
+    <span className={CLASS.railRow} data-testid="rail-row-job" data-job-id={node.job.job_id}>
+      <span className={CLASS.textCol}>
+        <span className={CLASS.titleLine}>
+          <Signal wireState={active ? "active" : status === "failed" ? "errored" : "ended"} />
+          <span className={CLASS.label} title={jobTitle(node.job, status)}>
+            {jobLabel(node.job)}
+          </span>
+        </span>
+        <span
+          data-testid="rail-row-job-status"
+          className={active ? `${CLASS.activity} ${CLASS.activityAlive}` : CLASS.activity}
+        >
+          {status}
+        </span>
+      </span>
+    </span>
+  );
+}
+
+function CompletedJobsFoldRow({ node, info }: { node: CompletedJobsFoldRailNode; info: TreeRowInfo }) {
+  return (
+    <DisclosureFoldRow label={`Completed jobs (${node.count})`} testId="rail-row-completed-jobs-fold" info={info} />
   );
 }
 
@@ -717,8 +810,12 @@ export function RailRow({ node, info, actions }: RailRowProps) {
   switch (node.kind) {
     case "loading":
       return LoadingRow();
+    case "job":
+      return <JobRow node={node} />;
     case "inactiveFold":
       return <InactiveFoldRow node={node} info={info} />;
+    case "completedJobsFold":
+      return <CompletedJobsFoldRow node={node} info={info} />;
     case "overflow":
       return <OverflowRow node={node} info={info} />;
     case "project":

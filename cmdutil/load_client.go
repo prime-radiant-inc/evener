@@ -1,152 +1,39 @@
 package cmdutil
 
 import (
-	"errors"
-	"fmt"
-	"path/filepath"
-	"strings"
-
 	"primeradiant.com/evener/agent/provider"
-	"primeradiant.com/evener/envvars"
-	"primeradiant.com/evener/internal/credentials"
 	"primeradiant.com/evener/llm"
-	"primeradiant.com/evener/llm/providercfg"
+	"primeradiant.com/evener/llm/registry"
 )
 
-var newClientFromAvailableProviders = llm.NewFromAvailableProviders
-var loadCredentialStore = credentials.LoadStore
-
-// LoadProviderConfig resolves the providers config using the same path and
-// credential injection rules as LoadClient, but does not construct adapters.
-//
-// Path resolution: if EVENER_PROVIDERS_CONFIG is set, that path is used;
-// otherwise filepath.Join(DefaultConfigRoot(), "providers.toml").
-//
-// Behavior:
-//   - providers.toml present and valid → loaded as-is.
-//   - providers.toml absent → the config is seeded in memory from the
-//     environment (descriptors only); nothing is written to disk. Persisting the
-//     file is the hub's responsibility (MaterializeProvidersConfig on startup).
-//   - providers.toml corrupt/invalid → returns error.
-//
-// After loading or seeding the descriptors config, credentials are resolved from
-// credentials.toml in the same directory (missing file = empty store, not an
-// error) and injected into the in-memory config only — never written to disk.
-//
-// Always returns (cfg, true, nil) on success.
-func LoadProviderConfig(opts ...llm.EnvOption) (providercfg.Config, bool, error) {
-	path := envvars.EVENERProvidersConfig.Getenv()
-	if path == "" {
-		path = filepath.Join(DefaultConfigRoot(), "providers.toml")
-	}
-	return LoadProviderConfigAt(path, opts...)
-}
-
-// LoadProviderConfigAt applies the runtime provider and credential resolution
-// rules to an explicit providers.toml path. The explicit path is used by hub
-// actions that must inspect the same configured instances as session startup
-// without changing process-wide environment variables.
-func LoadProviderConfigAt(path string, opts ...llm.EnvOption) (providercfg.Config, bool, error) {
-	if strings.TrimSpace(path) == "" {
-		return providercfg.Config{}, false, errors.New("providers config path is empty")
-	}
-
-	cfg, exists, err := providercfg.LoadFile(path)
+// LoadClient loads the registry and builds the session client. stateDir is
+// the session's state directory (the continuation secret lives there); the
+// registry's own state root is DefaultStateRoot.
+func LoadClient(stateDir string) (*llm.Client, error) {
+	r, _, err := LoadRegistry()
 	if err != nil {
-		return providercfg.Config{}, false, fmt.Errorf("providers config: %w", err)
+		return nil, err
 	}
+	return NewRegistryClient(r, stateDir), nil
+}
 
-	if !exists {
-		// Absent file: seed the config in memory from the environment. We do
-		// NOT write here — persisting providers.toml is the hub's job
-		// (MaterializeProvidersConfig on startup), so a plain client build never
-		// has a write side effect.
-		cfg, err = seedConfigFromEnv(opts...)
-		if err != nil {
-			return providercfg.Config{}, false, fmt.Errorf("seed providers config: %w", err)
-		}
-	}
-
-	store, err := loadCredentialStore(filepath.Join(filepath.Dir(path), "credentials.toml"))
+// LoadClientAt is LoadClient for an explicit providers.toml path (the hub's
+// credential probes inspect the same file the spawn path will).
+func LoadClientAt(path, stateDir string) (*llm.Client, error) {
+	r, _, err := LoadRegistry(registry.WithConfigPath(path))
 	if err != nil {
-		return providercfg.Config{}, false, fmt.Errorf("credentials store: %w", err)
+		return nil, err
 	}
-
-	for i := range cfg.Instances {
-		inst := &cfg.Instances[i]
-		if inst.APIKey != "" {
-			continue
-		}
-		if (hasAuthorizationHeader(inst.Headers) || hasAuthorizationHeader(inst.CredentialHeaders)) && providercfg.CompatFamily(inst.Type, inst.APIStyle) {
-			// For the openai-compat family a configured Authorization header
-			// IS the instance's authentication (those adapters send no bearer
-			// without a key): injecting a type-level fallback key would make
-			// the bearer clobber that header on every request, sending an
-			// unrelated secret to the gateway. Other provider types cannot
-			// authenticate header-only (openai-responses requires OAuth/key,
-			// anthropic hard-wires x-api-key), so their headers are
-			// supplementary and store injection still applies.
-			continue
-		}
-		// The credential tag, not the declared type: the key that authenticates
-		// this instance belongs to the endpoint its adapter will contact, and
-		// providercfg.CredentialTag is the one derivation the hub's preflight
-		// and credentials pane ask the same question of. A custom
-		// chat-completions gateway resolves no type-level key at all (that
-		// secret belongs to another host); an instance without base_url targets
-		// api.openai.com, where the openai row's key is exactly right.
-		if key, _ := store.ResolveKey(inst.Name, providercfg.CredentialTag(string(inst.Type), string(inst.APIStyle), inst.BaseURL)); key != "" {
-			inst.APIKey = key
-		}
-	}
-
-	return cfg, true, nil
+	return NewRegistryClient(r, stateDir), nil
 }
 
-// hasAuthorizationHeader reports whether the instance's configured headers
-// carry an Authorization header (case-insensitive, per HTTP semantics).
-func hasAuthorizationHeader(headers map[string]string) bool {
-	for k := range headers {
-		if strings.EqualFold(k, "Authorization") {
-			return true
-		}
-	}
-	return false
+// ResolveProfile resolves an instance/model reference on the client's registry.
+func ResolveProfile(client *llm.Client, ref string) (*provider.Profile, error) {
+	return provider.Resolve(client.Registry(), ref)
 }
 
-// LoadClient constructs an LLM client that is always config-driven.
-// Always returns (client, cfg, true, nil) on success.
-func LoadClient(opts ...llm.EnvOption) (*llm.Client, providercfg.Config, bool, error) {
-	path := envvars.EVENERProvidersConfig.Getenv()
-	if path == "" {
-		path = filepath.Join(DefaultConfigRoot(), "providers.toml")
-	}
-	return LoadClientAt(path, opts...)
-}
-
-// LoadClientAt constructs a client using the explicit providers.toml path and
-// the same instance-aware credential resolution as LoadClient.
-func LoadClientAt(path string, opts ...llm.EnvOption) (*llm.Client, providercfg.Config, bool, error) {
-	cfg, hasConfig, err := LoadProviderConfigAt(path, opts...)
-	if err != nil {
-		return nil, providercfg.Config{}, false, err
-	}
-	client, _, err := newClientFromAvailableProviders(cfg, opts...)
-	if err != nil {
-		return nil, cfg, hasConfig, fmt.Errorf("LLM client from config: %w", err)
-	}
-	return client, cfg, hasConfig, nil
-}
-
-// BuildResolveProfile returns the SessionConfig.ResolveProfile closure.
-// Instance names are always resolved via ResolveProfileWithLiveWindow (config
-// is always present after LoadClient), so cross-provider switches via
-// Session.SetModel pick up the provider's live context window for openai-compat
-// providers, falling back to the catalog window when the lookup is unavailable.
-// The hasConfig parameter is retained for call-site compatibility and is
-// ignored.
-func BuildResolveProfile(cfg providercfg.Config, hasConfig bool) func(ref string) (*provider.Profile, error) {
-	return func(ref string) (*provider.Profile, error) {
-		return ResolveProfileWithLiveWindow(cfg, ref)
-	}
+// BuildResolveProfile is SessionConfig.ResolveProfile: cross-instance
+// switches resolve on the same registry the session's client dispatches on.
+func BuildResolveProfile(client *llm.Client) func(ref string) (*provider.Profile, error) {
+	return func(ref string) (*provider.Profile, error) { return ResolveProfile(client, ref) }
 }

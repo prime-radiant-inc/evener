@@ -117,9 +117,9 @@ var hubCommandRegistry = []hubCommandDefinition{
 	},
 	{
 		Name:          "auth",
-		Summary:       "Show OpenAI auth status",
+		Summary:       "Show a provider instance's credential status",
 		PaletteLabel:  "/auth",
-		PaletteDetail: "show OpenAI auth status",
+		PaletteDetail: "show a provider instance's credential status",
 		Scopes:        hubCommandSession,
 		Run: func(m *hubModel, args string) tea.Cmd {
 			return fetchHubAuthStatus(m.client, authProviderArg(args))
@@ -127,19 +127,24 @@ var hubCommandRegistry = []hubCommandDefinition{
 	},
 	{
 		Name:          "login",
-		Summary:       "Start OpenAI OAuth login",
+		Summary:       "Start OAuth sign-in for a provider instance",
 		PaletteLabel:  "/login",
-		PaletteDetail: "start OpenAI OAuth login",
+		PaletteDetail: "start OAuth sign-in for a provider instance",
 		Scopes:        hubCommandSession,
 		Run: func(m *hubModel, args string) tea.Cmd {
-			return startHubAuthLogin(m.client, authProviderArg(args))
+			provider := authProviderArg(args)
+			if reason := m.hubAuthLoginBlockedReason(provider); reason != "" {
+				m.addSessionSystem(reason)
+				return nil
+			}
+			return startHubAuthLogin(m.client, provider)
 		},
 	},
 	{
 		Name:          "logout",
-		Summary:       "Sign out of OpenAI OAuth",
+		Summary:       "Remove a provider instance's stored credential",
 		PaletteLabel:  "/logout",
-		PaletteDetail: "sign out of OpenAI OAuth",
+		PaletteDetail: "remove a provider instance's stored credential",
 		Scopes:        hubCommandSession,
 		Run: func(m *hubModel, args string) tea.Cmd {
 			return logoutHubAuth(m.client, authProviderArg(args))
@@ -222,7 +227,7 @@ var hubCommandRegistry = []hubCommandDefinition{
 				m.addSessionSystem("Session ref is invalid.")
 				return nil
 			}
-			return sendHubAction(m.client, ref, "interrupt")
+			return sendHubAction(m.client, ref, "interrupt", m.detail.InstanceID)
 		},
 	},
 	{
@@ -266,7 +271,7 @@ var hubCommandRegistry = []hubCommandDefinition{
 				m.addSessionSystem("Session ref is invalid.")
 				return nil
 			}
-			return sendHubClear(m.client, ref)
+			return sendHubClear(m.client, ref, mutationInstanceID(ref, m.detail.InstanceID, m.detail.SessionID))
 		},
 	},
 	{
@@ -348,6 +353,37 @@ var hubCommandRegistry = []hubCommandDefinition{
 		},
 	},
 	{
+		Name:               "vision-model",
+		Summary:            "Set vision model (picker) or /vision-model <name|off>",
+		PaletteLabel:       "/vision-model",
+		PaletteDetail:      "set vision model",
+		Scopes:             hubCommandSession,
+		UnavailableAction:  "change vision model",
+		UnavailableSummary: "Vision model change is not available for this session.",
+		Available:          capabilityAvailable(func(c hubSessionCapabilities) bool { return c.ChangeVisionModel }, "source does not advertise change vision model"),
+		Run: func(m *hubModel, args string) tea.Cmd {
+			setting := strings.TrimSpace(args)
+			if setting == "" {
+				if m.client == nil {
+					m.addSessionSystem("Vision model picker is not available without a hub client.")
+					return nil
+				}
+				m.addSessionSystem("Fetching available models...")
+				return fetchHubVisionSessionModels(m.client, m.detail.WorkingDir)
+			}
+			if !visionModelRefKnown(setting) {
+				m.addSessionSystem(fmt.Sprintf("Invalid vision model %q. Use a model name, provider/model, or off.", setting))
+				return nil
+			}
+			ref, ok := m.currentRef()
+			if !ok {
+				m.addSessionSystem("Session ref is invalid.")
+				return nil
+			}
+			return sendHubVisionModelAction(m.client, ref, setting)
+		},
+	},
+	{
 		// There is NO effort thread capability on the wire (cmd/evener-hub/app_rpc.go
 		// MethodThreadReasoningEffortSet has no capability gate — the daemon rejects
 		// unsupported calls itself). /effort documents-and-reuses ChangeModel,
@@ -363,26 +399,24 @@ var hubCommandRegistry = []hubCommandDefinition{
 		Available:          capabilityAvailable(func(c hubSessionCapabilities) bool { return c.ChangeModel }, "source does not advertise change model"),
 		Run: func(m *hubModel, args string) tea.Cmd {
 			level := strings.TrimSpace(args)
+			if !m.detail.SupportsReasoning {
+				m.addSessionSystem("This model does not support reasoning effort.")
+				return nil
+			}
+			levels := sessionEffortLevels(m.detail.ReasoningEffortLevels)
+			choices := effortChoices(levels)
 			if level == "" {
-				if !m.detail.SupportsReasoning {
-					m.addSessionSystem("This model does not support reasoning effort.")
-					return nil
-				}
-				if len(m.detail.ReasoningEffortLevels) == 0 {
-					m.addSessionSystem("No reasoning effort levels available for this model.")
-					return nil
-				}
-				items := make([]tuipick.ModelPickerItem, 0, len(m.detail.ReasoningEffortLevels))
-				for _, l := range m.detail.ReasoningEffortLevels {
-					items = append(items, tuipick.ModelPickerItem{ID: l, Display: l})
+				items := make([]tuipick.ModelPickerItem, 0, len(choices))
+				for _, l := range choices {
+					items = append(items, tuipick.ModelPickerItem{ID: l, Display: effortDisplay(l, levels)})
 				}
 				picker := tuipick.NewModelPicker(items, m.detail.ReasoningEffort, m.width)
 				picker.SetTitle("Select reasoning effort")
 				m.sessionEffortPicker = &picker
 				return nil
 			}
-			if !reasoningEffortLevelKnown(m.detail.ReasoningEffortLevels, level) {
-				m.addSessionSystem(fmt.Sprintf("Unknown reasoning effort %q. Available: %s", level, strings.Join(m.detail.ReasoningEffortLevels, ", ")))
+			if !reasoningEffortLevelSettable(levels, level) {
+				m.addSessionSystem(fmt.Sprintf("Unknown reasoning effort %q. Available: %s", level, strings.Join(choices, ", ")))
 				return nil
 			}
 			ref, ok := m.currentRef()

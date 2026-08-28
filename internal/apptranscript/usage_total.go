@@ -39,13 +39,7 @@ func (c *TurnCache) UsageTotalFromFile(path string, maxLineBytes int, fromEntryO
 	if err != nil {
 		return nil, fmt.Errorf("stat transcript: %w", err)
 	}
-	identity := usageTotalKey{
-		size:           info.Size(),
-		modUnixNano:    info.ModTime().UnixNano(),
-		fileIdentity:   fileIdentity(info),
-		changeIdentity: fileChangeIdentity(info),
-		fromOrdinal:    fromEntryOrdinal,
-	}
+	identity := scanMemoIdentity(info, fromEntryOrdinal)
 
 	c.mu.Lock()
 	if entry, ok := c.entries[path]; ok && entry.usageTotal != nil && entry.usageTotal.key == identity {
@@ -76,8 +70,7 @@ func (c *TurnCache) UsageTotalFromFile(path string, maxLineBytes int, fromEntryO
 // unknown-field strictness, header validation) is exactly the one every other
 // reader in this package applies.
 func scanUsageTotal(path string, maxLineBytes int, fromEntryOrdinal int) (*appwire.EvenerUsage, error) {
-	var accumulated llm.Usage
-	counted := false
+	var accumulated usageAccumulator
 	ordinal := 0
 	if _, err := scanSemanticTranscript(path, maxLineBytes, func(raw json.RawMessage) error {
 		ordinal++
@@ -94,20 +87,37 @@ func scanUsageTotal(path string, maxLineBytes int, fromEntryOrdinal int) (*appwi
 			// worse than reporting none, so surface it.
 			return fmt.Errorf("decode transcript entry usage: %w", err)
 		}
-		if appwire.EvenerUsageFromLLM(record.Turn.Usage) == nil {
-			return nil
-		}
-		accumulated = accumulated.Add(record.Turn.Usage)
-		counted = true
+		accumulated.add(record.Turn.Usage)
 		return nil
 	}); err != nil {
 		return nil, err
 	}
 	observeIndexRead(ReadStats{usageScans: 1})
-	if !counted {
-		return nil, nil
+	return accumulated.total(), nil
+}
+
+// usageAccumulator applies the token-sum rule shared by scanUsageTotal and
+// scanDerivedTotals: only entries carrying real token data count, and a span
+// that carried none totals to nil rather than a fabricated zero (absent and
+// zero are different claims — see UsageTotalFromFile).
+type usageAccumulator struct {
+	sum     llm.Usage
+	counted bool
+}
+
+func (a *usageAccumulator) add(usage llm.Usage) {
+	if appwire.EvenerUsageFromLLM(usage) == nil {
+		return
 	}
-	return appwire.EvenerUsageFromLLM(accumulated), nil
+	a.sum = a.sum.Add(usage)
+	a.counted = true
+}
+
+func (a *usageAccumulator) total() *appwire.EvenerUsage {
+	if !a.counted {
+		return nil
+	}
+	return appwire.EvenerUsageFromLLM(a.sum)
 }
 
 // usageOnlyEntry decodes the one field the sum needs. scanSemanticTranscript has
@@ -119,22 +129,8 @@ type usageOnlyEntry struct {
 	} `json:"turn"`
 }
 
-// usageTotalKey is the file identity a memoized sum is valid for. It mirrors
-// the turn cache's own parse-validity gate (object identity, size, mtime,
-// platform change time) and adds the divergence ordinal, since two ordinals
-// over one file are two different answers. mtime is held as nanos so the key
-// stays comparable with == (a time.Time compares its monotonic/location fields
-// too, which would spuriously miss).
-type usageTotalKey struct {
-	size           int64
-	modUnixNano    int64
-	fileIdentity   string
-	changeIdentity string
-	fromOrdinal    int
-}
-
 type usageTotalMemo struct {
-	key   usageTotalKey
+	key   scanMemoKey
 	total *appwire.EvenerUsage
 }
 

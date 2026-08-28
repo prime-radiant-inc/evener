@@ -88,21 +88,15 @@ test("keeps no-parent opening deduped and usable without a desktop host", () => 
   expect(workspaceStore.getState().focusedPaneId).toBe(first?.id);
 });
 
-test("OpenTranscriptButton iconOnly renders the glyph with no visible label and opens on click", () => {
-  render(<OpenTranscriptButton transcriptRef="local:child" parentRef="local:owner" iconOnly />);
+test("OpenTranscriptButton renders the glyph with no visible label, tooltip 'Open', and opens on click", () => {
+  render(<OpenTranscriptButton transcriptRef="local:child" parentRef="local:owner" />);
 
   const button = screen.getByRole("button", { name: "Open transcript" });
   // Icon-only: the accessible name comes from aria-label, not visible text.
   expect(button.textContent).toBe("");
+  expect(button.getAttribute("title")).toBe("Open");
 
   fireEvent.click(button);
   expect(transcriptPanes("local:child")).toHaveLength(1);
   expect(transcriptPanes("local:child")[0]?.params).toEqual({ ref: "local:child", parentRef: "local:owner" });
-});
-
-test("OpenTranscriptButton's default form keeps the visible 'open' label", () => {
-  render(<OpenTranscriptButton transcriptRef="local:child" />);
-
-  const button = screen.getByRole("button", { name: "Open transcript" });
-  expect(button.textContent).toContain("open");
 });

@@ -12,10 +12,10 @@ import (
 // Membership is a decision, not a backlog: moving one out of this list means
 // giving it a case.
 var notifyMethodsDeliberatelyIgnored = []string{
-	// Tree/dashboard shape and attention state are re-fetched wholesale by the
-	// dashboard's own poll rather than folded from a push.
-	appwire.NotifyEvenerTreeChanged,
+	// Navigation/dashboard shape and attention state are re-fetched wholesale
+	// by the dashboard's own poll rather than folded from a push.
 	appwire.NotifyEvenerAttentionChanged,
+	appwire.NotifyEvenerNavigationInvalidated,
 	appwire.NotifyThreadStarted,
 	appwire.NotifyThreadClosed,
 	appwire.NotifyThreadNameChanged,
@@ -25,9 +25,14 @@ var notifyMethodsDeliberatelyIgnored = []string{
 	appwire.NotifyEvenerJobsTreeUpdated,
 	// Tasks render from fetchHubTasks, not from the push.
 	appwire.NotifyEvenerTaskUpdated,
+	// TUI goal status still comes from its own fetch/status surface.
+	appwire.NotifyEvenerGoalUpdated,
 	// The TUI surfaces escalation REQUESTS; a resolution simply removes the
 	// prompt it already cleared locally when the user answered.
 	appwire.NotifyEvenerSandboxEscalationResolved,
+	// Transcript display defaults configure the Web UI's projector. The TUI has
+	// its own transcript renderer and no matching live/default settings surface.
+	appwire.NotifyEvenerSettingsTranscriptDisplayChanged,
 }
 
 // kata e79v: evener/thread/modelRetry was added to the catalog and the TUI ignored

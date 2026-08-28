@@ -67,6 +67,8 @@ interface TouchedRow {
 interface Progress {
   done: number;
   total: number;
+  cancelled?: number;
+  remaining?: number;
 }
 
 function asObjectArray(value: unknown): Record<string, unknown>[] {
@@ -91,9 +93,8 @@ function finalUpdates(updates: Record<string, unknown>[]): Record<string, unknow
   return [...latestByID.values(), ...unmarked].sort((a, b) => a.index - b.index).map(({ update }) => update);
 }
 
-// A valid mutation is exactly what the legacy validAppend/validUpdate gates
-// accepted (renderer.js:4786-4788): append with a non-empty tasks array, or
-// update with a non-empty updates array. Anything else (view, or a malformed
+// A valid mutation is a current add/update batch or its historical
+// action:append/action:update equivalent. Anything else (view, or a malformed
 // call) is not a card.
 function mutationRows(item: ItemModel): TouchedRow[] | undefined {
   const args = parseArgs(item.argumentsJSON);
@@ -101,52 +102,66 @@ function mutationRows(item: ItemModel): TouchedRow[] | undefined {
   if (action === "append") {
     const tasks = asObjectArray(args.tasks);
     if (tasks.length === 0) return undefined;
-    return tasks.map((task, i) => ({
-      key: `append_${i}`,
-      touch: "added",
-      label: str(task, "description") ?? str(task, "prompt") ?? "(untitled task)",
-    }));
+    return appendRows(tasks, true);
   }
   if (action === "update") {
     const updates = finalUpdates(asObjectArray(args.updates));
-    if (updates.length === 0) return undefined;
-    // Only a real status change earns a row - matching the legacy card, which
-    // flags exactly done/cancelled/in_progress updates (renderer.js:5010) and
-    // renders a note-only or reopened update as no per-row change at all.
-    const state = parseTaskState(item.raw);
-    const rows: TouchedRow[] = [];
-    const touchedIds = new Set<number>();
-    let completedAny = false;
-    for (const [i, update] of updates.entries()) {
-      const status = str(update, "status");
-      const touch = TOUCH_BY_STATUS[status ?? ""];
-      if (!touch) continue;
-      const id = typeof update.id === "number" ? update.id : undefined;
-      const stateTask = id === undefined ? undefined : state?.find((task) => task.id === id);
-      // The Go task tool marks explicit in_progress updates from its pre-state.
-      // A false marker is a status reassertion carrying notes, not a fresh
-      // start. Unmarked historical state keeps the existing argument-only
-      // rendering for transcripts written before this marker existed.
-      if (touch === "started" && stateTask?.started === false) continue;
-      if (id !== undefined) touchedIds.add(id);
-      if (touch === "done" || touch === "cancelled") completedAny = true;
-      rows.push({
-        key: `update_${i}`,
-        touch,
-        label: taskLabel(state, id),
-        note: str(update, "notes") || undefined,
-      });
-    }
-    // The daemon may advance a DIFFERENT task to in_progress as a side
-    // effect of this same call (session_tools_task.go's auto-advance); that
-    // task never appears in the caller's own `updates` above.
-    const started = autoStartedTask(state, touchedIds, completedAny);
-    if (started) {
-      rows.push({ key: `auto_started_${started.id}`, touch: "started", label: taskLabel(state, started.id) });
-    }
-    return rows;
+    return updates.length > 0 ? updateRows(item, updates) : undefined;
   }
-  return undefined;
+  if (action !== "") return undefined;
+
+  const adds = asObjectArray(args.add);
+  const updates = finalUpdates(asObjectArray(args.update));
+  if (adds.length === 0 && updates.length === 0) return undefined;
+  return [...appendRows(adds, false), ...updateRows(item, updates)];
+}
+
+function appendRows(tasks: Record<string, unknown>[], legacy: boolean): TouchedRow[] {
+  return tasks.map((task, i) => ({
+    key: `append_${i}`,
+    touch: "added",
+    label: str(task, "description") ?? (legacy ? str(task, "prompt") : undefined) ?? "(untitled task)",
+  }));
+}
+
+function updateRows(item: ItemModel, updates: Record<string, unknown>[]): TouchedRow[] {
+  // Only a real status change earns a row - matching the legacy card, which
+  // flags exactly done/cancelled/in_progress updates (renderer.js:5010) and
+  // renders a note-only or reopened update as no per-row change at all.
+  const state = parseTaskState(item.raw);
+  const rows: TouchedRow[] = [];
+  const touchedIds = new Set<number>();
+  let completedAny = false;
+  for (const [i, update] of updates.entries()) {
+    const status = str(update, "status");
+    const touch = TOUCH_BY_STATUS[status ?? ""];
+    if (!touch) continue;
+    const id = typeof update.id === "number" ? update.id : undefined;
+    const stateTask = id === undefined ? undefined : state?.find((task) => task.id === id);
+    // A suppressed status reassertion still belongs to this call. Record it
+    // before filtering so it cannot be rediscovered as an auto-start below.
+    if (id !== undefined) touchedIds.add(id);
+    // The Go task tool marks every current task from this call's pre-state.
+    // A false marker is a status reassertion carrying notes, not a fresh
+    // start. Unmarked historical state keeps the existing argument-only
+    // rendering for transcripts written before this marker existed.
+    if (touch === "started" && stateTask?.started === false) continue;
+    if (touch === "done" || touch === "cancelled") completedAny = true;
+    rows.push({
+      key: `update_${i}`,
+      touch,
+      label: taskLabel(state, id),
+      note: str(update, "notes") || undefined,
+    });
+  }
+  // The daemon may advance a DIFFERENT task to in_progress as a side effect
+  // of this same call (session_tools_task.go's auto-advance); that task never
+  // appears in the caller's own `updates` above.
+  const started = autoStartedTask(state, touchedIds, completedAny);
+  if (started) {
+    rows.push({ key: `auto_started_${started.id}`, touch: "started", label: taskLabel(state, started.id) });
+  }
+  return rows;
 }
 
 // touchKind's status-to-flag mapping for the three statuses the card renders as
@@ -157,13 +172,31 @@ const TOUCH_BY_STATUS: Record<string, TaskTouch> = {
   in_progress: "started",
 };
 
-const PROGRESS_RE = /Progress:\s*(\d+)\s*\/\s*(\d+)\s*tasks complete/;
+const PROGRESS_RE = /Progress:\s*(\d+)\s*\/\s*(\d+)\s*tasks complete/g;
+const OUTCOME_PROGRESS_RE = /Progress:\s*(\d+)\s+done,\s*(\d+)\s+cancelled,\s*(\d+)\s+remaining\s*\((\d+)\s+total\)/g;
+
+function lastProgressMatch(output: string, pattern: RegExp): RegExpMatchArray | undefined {
+  // matchAll's iterator starts at its pattern's lastIndex. Clone the global
+  // pattern for every parse so a later consumer cannot carry mutable state
+  // into this helper.
+  const matches = [...output.matchAll(new RegExp(pattern.source, pattern.flags))];
+  return matches[matches.length - 1];
+}
 
 function parseProgress(output: string | undefined): Progress | undefined {
   if (!output) return undefined;
-  const m = PROGRESS_RE.exec(output);
-  if (!m) return undefined;
-  return { done: Number(m[1]), total: Number(m[2]) };
+  const outcome = lastProgressMatch(output, OUTCOME_PROGRESS_RE);
+  const legacy = lastProgressMatch(output, PROGRESS_RE);
+  if (outcome && (!legacy || (outcome.index ?? -1) > (legacy.index ?? -1))) {
+    return {
+      done: Number(outcome[1]),
+      cancelled: Number(outcome[2]),
+      remaining: Number(outcome[3]),
+      total: Number(outcome[4]),
+    };
+  }
+  if (!legacy) return undefined;
+  return { done: Number(legacy[1]), total: Number(legacy[2]) };
 }
 
 // isTaskMutation is the non-suppression predicate: a valid append/update with
@@ -220,11 +253,17 @@ function TaskCardBody({ item }: ToolRenderProps) {
       {progress && (
         <div className={CLASS.head}>
           <span className={CLASS.progress} data-testid="task-card-progress">
-            {progress.done} of {progress.total} done
+            {progress.cancelled === undefined || progress.remaining === undefined
+              ? `${progress.done} of ${progress.total} done`
+              : `${progress.done} done, ${progress.cancelled} cancelled, ${progress.remaining} remaining (${progress.total} total)`}
           </span>
           <Meter
-            label={`Task progress: ${progress.done} of ${progress.total} complete`}
-            value={progress.done}
+            label={
+              progress.cancelled === undefined || progress.remaining === undefined
+                ? `Task progress: ${progress.done} of ${progress.total} complete`
+                : `Task progress: ${progress.done} done, ${progress.cancelled} cancelled, ${progress.remaining} remaining (${progress.total} total)`
+            }
+            value={progress.done + (progress.cancelled ?? 0)}
             max={progress.total}
             tone="neutral"
           />

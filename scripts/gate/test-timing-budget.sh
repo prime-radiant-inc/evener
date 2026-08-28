@@ -44,7 +44,7 @@
 #                                                   # and compare FILE's already-
 #                                                   # measured "SUM\t<pkg>\t<secs>" /
 #                                                   # "TEST\t<pkg>\t<name>\t<secs>"
-#                                                   # rows — how the selftest drives
+#                                                   # rows — how a caller drives
 #                                                   # the comparison contract with
 #                                                   # fixture durations, exactly like
 #                                                   # the coverage-floor web row's reuse of the vitest report
@@ -214,7 +214,22 @@ else
 				:
 			fi
 			if [ -f "$report" ]; then
-				vitest_json_to_tsv "$report" >>"$measured"
+				# Parse into a scratch-private file first and merge only on
+				# success: appending vitest_json_to_tsv straight to $measured
+				# would let a mid-loop crash (issue #598 F3 -- valid top-level
+				# JSON, then a malformed entry after at least one TEST row was
+				# already printed) leave orphaned TEST rows with no SUM row in
+				# the retained-on-failure scratch (below, once go_measure_failed
+				# is nonzero), which would look like a clean, silently-incomplete
+				# "web" measurement to a later --measured replay instead of the
+				# incomplete run it is.
+				web_rows="$work/vitest-rows.tsv"
+				if vitest_json_to_tsv "$report" >"$web_rows"; then
+					cat "$web_rows" >>"$measured"
+				else
+					echo "test-timing-budget: failed to parse vitest report at $report" >&2
+					go_measure_failed=1
+				fi
 			else
 				echo "test-timing-budget: no vitest report at $report (see $work/vitest.log)" >&2
 				go_measure_failed=1
@@ -233,9 +248,9 @@ fi
 
 # compare.py is the whole comparison contract: package ratios against the
 # checked-in budget, the flat per-test ceiling, the missing-budget-entry warn,
-# and the global no-baseline-yet warn. It is exercised entirely through
-# --budget/--modules/measured.tsv by the selftest, with no go test or vitest
-# run involved — the fixture IS the input this step reads.
+# and the global no-baseline-yet warn. It can be exercised entirely through
+# --budget/--modules/measured.tsv, with no go test or vitest run involved —
+# the fixture IS the input this step reads.
 compare_out="$work/compare.txt"
 python3 - "$measured" "$budget_file" "$bless" "$check" "$strict" "$compare_out" <<'PY'
 import json, sys

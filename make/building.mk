@@ -45,8 +45,7 @@ build-hub: build-runtime
 
 # web-preflight owns the frontend node_modules install for every web target,
 # so build-web and test-web share one definition of "the install is ready".
-# The install rules and the two guards they exist for live in the script;
-# scripts/web/web-preflight-selftest.sh exercises them against throwaway trees.
+# The install rules and the two guards they exist for live in the script.
 ## Ensure the frontend dependency install is present, healthy, and
 ## lockfile-compatible before any web target runs.
 ## proves: The worktree has a lockfile-compatible install and a real local
@@ -65,7 +64,13 @@ web-preflight:
 # point, the install step is the only cacheable part. vite's emptyOutDir wipes
 # the tracked dist/PLACEHOLDER on every build; vite.config.ts writes it back
 # at closeBundle, so no recipe here restores it and `git status` stays clean
-# after a build however vite was invoked (kata 88nn).
+# after a build however vite was invoked (kata 88nn). npm run build also
+# cleans dist down to that PLACEHOLDER BEFORE the fallible typecheck runs
+# (frontend scripts/clean-dist.mjs): emptyOutDir only fires inside
+# `vite build`, so a failed typecheck used to leave the previous build's dist
+# behind for go:embed to silently pick up — a failed build now leaves only
+# the PLACEHOLDER, which embeds and serves the documented 503 instead of a
+# stale SPA.
 ## Build the frontend (TypeScript typecheck + Vite production build) into
 ## frontend/dist for Go embedding.
 ## proves: TypeScript typecheck and the Vite production build complete and
@@ -83,7 +88,7 @@ build-llmcall:
 
 ## Build the evener-dev dev/test infrastructure binary (agent-shards,
 ## module-lint, fuzz-harvest, fuzzcov, fuzzregistry, internalcheck,
-## test-dev-tooling, tomlcheck, transcript-v2-upgrade). Not installed for
+## tomlcheck, transcript-v2-upgrade). Not installed for
 ## end users; used by make targets and go run ./cmd/evener-dev/bin.
 build-dev:
 	go build -o evener-dev ./cmd/evener-dev/bin/

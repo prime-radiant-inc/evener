@@ -5,7 +5,7 @@
 // `useOverview` is injected rather than importing stores/settingsOverview.ts
 // directly.
 import { friendlyErrorMessage } from "../../../protocol/errors";
-import { EmptyState, Skeleton } from "../../../widgets";
+import { EmptyState, OpenButton, Skeleton } from "../../../widgets";
 import { requireClass } from "../../../widgets/internal/requireClass";
 import styles from "./agents.module.css";
 import { useSettingsOverview } from "./overviewSeam";
@@ -19,7 +19,6 @@ const CLASS = {
   row: requireClass(styles.row, "agents.module.css", "row"),
   name: requireClass(styles.name, "agents.module.css", "name"),
   builtin: requireClass(styles.builtin, "agents.module.css", "builtin"),
-  link: requireClass(styles.link, "agents.module.css", "link"),
 };
 
 export interface AgentsSectionProps {
@@ -62,9 +61,7 @@ export function AgentsSection({ useOverview = useSettingsOverview }: AgentsSecti
               <li key={agent.name} className={CLASS.row}>
                 <span className={CLASS.name}>{agent.name}</span>
                 {agent.editPath ? (
-                  <a className={CLASS.link} href={agent.editPath} target="_blank" rel="noopener">
-                    open in editor ↗
-                  </a>
+                  <OpenButton href={agent.editPath} word="open in editor" />
                 ) : (
                   <span className={CLASS.builtin}>built-in</span>
                 )}

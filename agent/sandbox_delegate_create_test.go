@@ -479,6 +479,7 @@ func TestReadOnlyDelegateDumbModelWritesOnlyToPromptNamedScratch(t *testing.T) {
 		},
 	}
 	childClient.Register(childAdapter)
+	registerTestSessionNamer(childClient)
 
 	parent := newSession(t, withClient(delegateTestClient(func(req llm.Request) llm.Response {
 		return communicateWithDefaultOutput("parent done")

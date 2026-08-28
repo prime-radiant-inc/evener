@@ -335,9 +335,6 @@ func runShards(cfg shardsConfig) int {
 		// MAX_ARG_STRLEN (128KB per single argument string). Write the
 		// regex to a file and hand the path via env so the test binary
 		// reads it in-process, never touching the execve argument list.
-		// The command-line -test.run is a permissive fallback for test
-		// binaries without TestMain env-var support; TestMain overrides
-		// it after flag.Parse by calling flag.Set with the file contents.
 		runFile := filepath.Join(logdir, fmt.Sprintf("shard%d.run", i))
 		if err := os.WriteFile(runFile, []byte(nameRegex(bin)), 0o644); err != nil {
 			_, _ = fmt.Fprintf(cfg.stderr, "agent-shards: %v\n", err)

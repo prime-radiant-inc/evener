@@ -106,7 +106,7 @@ kill -0 "$HUBPID" || { echo "hub failed to start on $PORT" >&2; exit 1; }
 curl -s -o /dev/null -w "%{http_code}\n" "$HUB/"  # → 401 (auth required; means it answered)
 
 # 7. Grab the auth token from the isolated $HOME. The browser needs it
-#    in the URL query and the curl REST shim needs it as a Bearer
+#    in the URL query; HTTP and AppWire clients use it as a Bearer
 #    header.
 TOKEN=$(cat "$HOME/.local/state/evener/auth-token")
 ```
@@ -246,9 +246,10 @@ scripts/e2e/e2e-ratelimited-provider.sh --retry-after 5
 
 prints the run directory, fake429's address, and the exact `evener tui
 --hub-addr ... --auth-token ... --no-auto-start-hub` command to attach.
-Spawn a session with `"model":"ratelimited/fake-model"` (see "Spawning a
-session via the REST shim" below) and every completion call it makes will
-429. Tear down with `scripts/e2e/e2e-ratelimited-provider.sh --stop RUN_DIR`
+Start a session with `model: "ratelimited/fake-model"` through AppWire
+`thread/start` (see "Starting a session via AppWire" below) and every
+completion call it makes will 429. Tear down with
+`scripts/e2e/e2e-ratelimited-provider.sh --stop RUN_DIR`
 (kills fake429 and the hub, removes the run directory).
 
 ## Hermetic workdir per scenario
@@ -263,125 +264,107 @@ tmpdir=$(mktemp -d -t evener-e2e-XXXXX)
 
 For transcript isolation, pass a per-scenario `EVENER_STATE_DIR` in
 `launch_overrides.env`. This keeps the spawned daemon's sessions and
-logs under one directory while still using the hub REST shim:
+logs under one directory while still using the typed AppWire launch path:
 
 ```bash
 state=$(mktemp -d -t evener-e2e-state-XXXXX)
-body=$(jq -n \
-  --arg prompt "$prompt" \
-  --arg model "$model" \
-  --arg wd "$tmpdir" \
-  --arg state "$state" \
-  '{
-    prompt:$prompt,
-    model:$model,
-    working_dir:$wd,
-    harness:"evener",
-    branch:"",
-    access_mode:"full",
-    agent:"default",
-    launch_overrides:{env:{EVENER_STATE_DIR:$state}}
-  }')
 ```
 
 If the scenario needs an `AGENTS.md` (see pacing trick below), write
-it before spawning. Pass `tmpdir` as `working_dir` in the spawn
-payload.
+it before starting. Pass `tmpdir` as `cwd` in the `thread/start` params.
 
-## Spawning a session via the REST shim
+## Starting a session via AppWire
 
-The hub's `/api/spawn` endpoint creates a session and starts a turn.
-Copy-paste skeleton:
+The shipped web UI and TUI start sessions with the typed AppWire
+`thread/start` method. For a browser-free scenario, build the method's
+camelCase parameter object and send it over the authenticated AppWire socket
+described in [Driving AppWire directly](#driving-appwire-directly-the-browser-free-lever):
 
 ```bash
-resp=$(curl -s -X POST -H "Content-Type: application/json" \
-  -H "Authorization: Bearer $TOKEN" \
-  -d "{
-    \"prompt\":\"please run \\\"echo hello\\\" via exec_command then stop\",
-    \"model\":\"anthropic/claude-haiku-4-5-20251001\",
-    \"working_dir\":\"$tmpdir\",
-    \"harness\":\"evener\",
-    \"branch\":\"\",
-    \"access_mode\":\"full\",
-    \"agent\":\"default\",
-    \"launch_overrides\":{}
-  }" \
-  "$HUB/api/spawn")
-SID=$(echo "$resp" | jq -r '.session_id')
+params=$(jq -n \
+  --arg prompt "$prompt" \
+  --arg model "$model" \
+  --arg cwd "$tmpdir" \
+  --arg state "$state" \
+  '{
+    harness:"evener",
+    cwd:$cwd,
+    input:(if $prompt == "" then [] else [{type:"text", text:$prompt}] end),
+    model:$model,
+    launchOverrides:{env:{EVENER_STATE_DIR:$state}}
+  }')
 ```
 
-`SID` is a 22-character UUIDv7 base62 payload. The session's
-appwire ref is `local:$SID`.
+Send `{"id":2,"method":"thread/start","params":<params>}` after
+`initialize`. The response's `result.thread.evener.ref` is the canonical
+session reference; a local session has the form `local:<SID>`.
 
 ### Polling for state transitions
 
 The state vocabulary is fixed and shared by the web rail, the TUI, and
-this REST shim: `idle`, `active`, `awaiting`, `warning`, `errored`,
+AppWire: `idle`, `active`, `awaiting`, `warning`, `errored`,
 `ended`, `notLoaded` (`hubcore.NormalizeState`,
 `cmd/evener-hub/internal/hubcore/tree.go#NormalizeState`, normalizing
 `appwire.ThreadStatus*`, `appwire/types.go:138-145`). A running turn is
 **`active`**, never `processing` — `processing` is not a wire value at
 all, and `test/scenarios/scenario_docs_test.go`'s
 `TestScenarioDocsUseCanonicalActiveState` fails the build on any card
-that writes `state=processing`. Wait for the state the scenario needs:
+that writes `state=processing`. Poll by sending `thread/read` on the
+authenticated AppWire socket:
 
-```bash
-for i in $(seq 1 60); do
-  state=$(curl -s -H "Authorization: Bearer $TOKEN" "$HUB/api/sessions/local:$SID" \
-            | jq -r '.state // ""' 2>/dev/null)
-  [ "$state" = "idle" ] && break          # change "idle" to "active" as needed
-  sleep 1
-done
-echo "state=$state"
+```json
+{"id":3,"method":"thread/read",
+ "params":{"ref":"local:<SID>","includeTurns":false}}
 ```
 
-The same `/api/sessions/local:$SID` response carries
-`capabilities.steer`, `capabilities.queue`, etc. — useful for
-asserting daemon-side gating (kata `wymv`). It also carries
-`active_turn_id`, which the steer paths need: a turn is only truly in
-flight once both the status flip and the turn id have landed
+Read `result.thread.status.type`; repeat until it reaches the state the
+scenario needs. The same response carries
+`result.thread.evener.capabilities` and
+`result.thread.evener.activeTurnId`. A turn is only truly in flight once
+both the `active` status and the active turn id have landed
 (`submitRouting.ts:48-50`'s `isTurnActive`).
 
-### The REST surface, and what is no longer on it
+### Session operations
 
-There is exactly one session REST namespace now: `/api/sessions/<ref>`,
-where `<ref>` is the canonical `local:<SID>` form. The dispatcher is
-`handleAPISession` (`cmd/evener-hub/web_api_tree.go#handleAPISession`) and the
-whole verb list is:
+Session reads and lifecycle actions use AppWire. The current methods are:
 
-| Route | Method | Notes |
-|---|---|---|
-| `/api/sessions/local:$SID` | GET | the detail object polled above |
-| `/api/sessions/local:$SID/details` | GET | same payload |
-| `/api/sessions/local:$SID/send` | POST | `{"text":"…"}` — a follow-up user turn |
-| `/api/sessions/local:$SID/interrupt` | POST | |
-| `/api/sessions/local:$SID/compact` | POST | the one action that can resume an ended session |
-| `/api/sessions/local:$SID/shutdown` | POST | |
-| `/api/sessions/local:$SID/clear` | POST | |
-| `/api/sessions/local:$SID/fork` | POST | |
-| `/api/sessions/local:$SID/model` | POST | |
-| `/api/sessions/local:$SID/reasoning-effort` | POST | |
-| `/api/sessions/local:$SID/rename` | POST | |
-| `/api/sessions/local:$SID/delete` | POST | |
-| `/api/sessions/local:$SID/tasks` | GET | |
+| Operation | AppWire method |
+|---|---|
+| read status/details | `thread/read` |
+| list tasks | `evener/tasks/list` |
+| start a follow-up turn | `turn/start` |
+| interrupt | `turn/interrupt` |
+| compact | `thread/compact/start` |
+| shutdown | `thread/shutdown` |
+| clear | `thread/clear` |
+| fork | `thread/fork` |
+| change model | `thread/model/set` |
+| change reasoning effort | `thread/reasoning-effort/set` |
+
+There are no session REST operations. The old `/api/sessions/<ref>`
+namespace is no longer registered; session reads, lifecycle actions, rename,
+and deletion all use AppWire.
+
+Rename is AppWire-only: send `evener/thread/name/set` with
+`{"ref":"local:<SID>","name":"<new name>"}` on the authenticated `/rpc`
+connection described below.
+
+Deleting one session is not part of this REST namespace. The WebUI uses the
+hub-scoped typed AppWire method `evener/session/delete` with
+`{"ref":"local:$SID"}`; live or concurrently reserved targets are returned in
+the response's `skipped` array.
 
 **The old `/s/<id>/<action>` form-POST shim is gone** — commit
 `660376f78` deleted it along with the vanilla-JS frontend, and
 `web_workspace.go:16-22` says so in a comment: `/s/<id>` now serves only
 the SPA shell and `/s/<id>/images/<sha>`, and every other sub-path
-returns 404. A card that still curls `$HUB/s/$SID/shutdown` gets a 404
-and a silently-not-shut-down session, which then poisons the next run's
-`state: idle` poll.
+returns 404.
 
-**There is no REST route for steer, queue, or drain-as-steer at all.**
-Those three live only on the AppWire WebSocket as `turn/steer`,
-`turn/queue`, and `turn/drainAsSteer` (`appwire/types.go:24,26-27`), so
-a scenario that needs the *user-visible* behaviour has to drive the
-composer in a browser — see "Driving the web UI" below.
-`capabilities.steer`/`capabilities.queue` on the detail object still
-report whether the daemon *would* accept them, which is enough for a
-gating-only assertion without a browser. For the wire contract itself,
-dial the socket directly:
+Steer, queue, and drain-as-steer likewise use `turn/steer`,
+`turn/queue`, and `turn/drainAsSteer` (`appwire/types.go:24,26-27`).
+A scenario that needs the *user-visible* behaviour should drive the composer
+in a browser; a wire-contract or gating assertion should drive AppWire
+directly.
 
 ### Driving AppWire directly (the browser-free lever)
 
@@ -408,9 +391,27 @@ malformed request. Send:
 Notifications for other threads arrive interleaved with your responses,
 so match on `id` rather than reading the next frame and hoping.
 
+Navigation reads use the same socket and method catalog. Send
+`evener/navigation/read` with one of these parameter shapes, then inspect the
+response envelope's `data` field:
+
+```json
+{"resource":"manifest"}
+{"resource":"section","section":"live","offset":0,"limit":50}
+{"resource":"pin_catalog","offset":0,"limit":100}
+{"resource":"pin_section","sectionId":"<id>","offset":0,"limit":50}
+{"resource":"catalog","catalog":"projects","offset":0,"limit":100}
+{"resource":"project","projectKey":"<key>"}
+{"resource":"project_page","projectKey":"<key>","tier":"current","offset":0,"limit":50}
+{"resource":"location","ref":"local:<session-id>"}
+```
+
+The response has `status`, `generationId`, `revision`, and `etag`; `status`
+`not_modified` omits `data`. There is no HTTP `/api/navigation` equivalent.
+
 A session to aim a gating assertion at costs nothing and needs no
-provider credential: spawn with an empty `prompt` and the daemon launches
-without running a turn — a *dormant* session, which reports `state:"idle"`
+provider credential: start with an empty AppWire `input` and the daemon
+launches without running a turn — a *dormant* session, which reports `state:"idle"`
 like any other quiet session and is only distinguishable by the `dormant`
 field (`hubapi/types.go:115-119`). No completion request is ever made.
 
@@ -488,7 +489,7 @@ So the driving surface is the DOM, and only the DOM:
    sees").
 3. `localStorage` under the `evener.prefs.*` / `evener.rail.*` contracts, for
    preconditions, seeded **before** the first page load.
-4. The REST shim and the on-disk transcript, for anything the DOM can
+4. AppWire `thread/read` and the on-disk transcript, for anything the DOM can
    only hint at.
 
 ### Coordinate browser ownership first (kata `8ecz`)
@@ -544,7 +545,7 @@ fact.
 ### Authenticated navigation
 
 ```text
-navigate $HUB/auth?token=<TOKEN>&next=/s/local:<SID>
+navigate $HUB/auth/<TOKEN>?next=/s/local:<SID>
 await_element [data-testid="composer-input-card"]
 ```
 
@@ -726,13 +727,13 @@ JSON.stringify({
 `steerRendered` is the closest thing left to the old `activeTurnId`
 probe: Steer renders only while the turn is genuinely in flight
 (`Composer.tsx:382`). If it never appears while
-`/api/sessions/local:$SID` reports `state=active`, the AppWire socket
+`thread/read` reports `result.thread.status.type=active`, the AppWire socket
 did not hydrate — check `$run/hub.log`, and confirm the page is really
 the one you think it is via the `location.port` assertion above.
 
-The authoritative counterpart to any of this is the REST detail object
+The authoritative counterpart to any of this is the AppWire `thread/read` response
 and the on-disk transcript. When a DOM read is ambiguous, do not add
-more selectors — cross-check `/api/sessions/local:$SID` and
+more selectors — cross-check `thread/read` and
 `evener doctor transcript`, which cannot be fooled by a stale tab.
 
 ## Driving the TUI with tmux
@@ -938,14 +939,8 @@ scaffolding.
 Idempotent cleanup that won't fail if anything's already gone:
 
 ```bash
-# Shut down any sessions you spawned. The canonical ref form is
-# local:<SID> and the namespace is /api/sessions — the old
-# /s/<id>/shutdown shim 404s silently, leaving the daemon running.
-for sid in $SID1 $SID2 $SID3; do
-  curl -s -X POST -H "Content-Type: application/json" \
-    -H "Authorization: Bearer $TOKEN" -d '{}' \
-    "$HUB/api/sessions/local:$sid/shutdown" >/dev/null 2>&1
-done
+# Shut down each spawned session over the authenticated AppWire socket:
+# {"id":N,"method":"thread/shutdown","params":{"ref":"local:<SID>"}}
 
 # Kill any tmux sessions you opened.
 for name in evener-test evener-test-2; do tmux kill-session -t $name 2>/dev/null; done
@@ -1050,9 +1045,9 @@ file a kata. Don't try to drive past the gate from the scenario.
   checklist, never Jesse's real `9180`.
 - **Auth token**: `$HOME/.local/state/evener/auth-token` — the isolated `$HOME` from
   the Setup checklist, never Jesse's real one.
-- **Follow-up turn** (after the initial spawn prompt): `POST /api/sessions/local:<SID>/send` with body `{"text":"..."}` (the spawn only starts turn 1; subsequent user turns go here). See "The REST surface" above for the full verb list and for the three verbs — steer, queue, drain-as-steer — that have no REST route at all.
+- **Follow-up turn** (after the initial spawn prompt): send AppWire `turn/start` with `ref:"local:<SID>"`, a unique `clientMutationId`, and `input:[{"type":"text","text":"..."}]` (the spawn only starts turn 1; subsequent user turns use `turn/start`).
 - **Session URL**: `/s/local:<SID>`. A bare `/s/<SID>` renders "Page not found" client-side, by design.
-- **Recursion opt-in** (delegate subagents that can themselves delegate): per-spawn `launch_overrides.maxSubagentDepth:N` raises the root's own delegation allowance to N. Omitted/default is 1 (a root may delegate, but its delegates are leaves) — recursion is dark without this.
+- **Recursion depth** (delegate subagents that can themselves delegate): per-spawn `launch_overrides.maxSubagentDepth:N` sets the root's own delegation allowance to N; each delegate is granted one level below its creator by default. Omitted/default is 2 (the root's delegates may delegate once more; their delegates are leaves). Set 1 to make every delegate a leaf.
 - **Per-session transcript**: `$HOME/.local/state/evener/projects/<project-id>/sessions/<SID>.transcript.jsonl`
 - **Per-session meta**: same dir, `<SID>.meta.json`
 - **Per-daemon log** (everything a spawned session's `evener serve` writes,

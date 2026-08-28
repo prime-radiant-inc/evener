@@ -7,6 +7,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"time"
 )
 
 var (
@@ -25,6 +26,12 @@ func git(ctx context.Context, dir string, args ...string) (string, error) {
 	// (ext::/fd::), since URLs may come from untrusted marketplace manifests.
 	full := append([]string{"-c", "protocol.ext.allow=never", "-c", "protocol.fd.allow=never"}, args...)
 	cmd := exec.CommandContext(ctx, "git", full...)
+	// On cancellation, terminate git gracefully where the platform allows
+	// (SIGTERM — see terminateGit) instead of exec's default SIGKILL, which
+	// strands git's lock files. WaitDelay hard-kills a git that has not
+	// exited a few seconds later.
+	cmd.Cancel = func() error { return terminateGit(cmd.Process) }
+	cmd.WaitDelay = 5 * time.Second
 	if dir != "" {
 		cmd.Dir = dir
 	}

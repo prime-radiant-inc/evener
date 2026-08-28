@@ -48,7 +48,7 @@ test("renders all 16 section links with their visible labels", () => {
   for (const label of [
     "General",
     "Theme",
-    "Transcript",
+    "Transcript display",
     "Display",
     "Notifications",
     "Providers & credentials",

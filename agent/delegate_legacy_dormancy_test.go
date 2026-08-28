@@ -41,7 +41,7 @@ func TestDelegateLegacyDormancy_NoDelegateJobRecordCanBeCreated(t *testing.T) {
 	call := root.reg.ExecuteCall(context.Background(), root.currentEnv(), llm.ToolCallData{
 		ID:        "legacy-dormancy-create",
 		Name:      "delegate",
-		Arguments: json.RawMessage(`{"task":"prove stable-only creation"}`),
+		Arguments: json.RawMessage(`{"prompt":"prove stable-only creation"}`),
 	})
 	if call.IsError {
 		t.Fatalf("registered delegate returned transport error: %s", call.Output)

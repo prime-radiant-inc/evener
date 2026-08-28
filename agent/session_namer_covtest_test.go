@@ -116,7 +116,7 @@ func TestSessionNameSchema(t *testing.T) {
 // TestSessionNamerUserPrompt covers the prompt builder (lines 142-150).
 func TestSessionNamerUserPrompt(t *testing.T) {
 	// Prompt source.
-	got := sessionNamerUserPrompt(sessionNameSourcePrompt, "test input")
+	got := sessionNamerUserPrompt(sessionNameSourcePrompt, "test input", "")
 	if !strings.Contains(got, "initial user prompt") {
 		t.Fatalf("missing prompt label: %q", got)
 	}
@@ -125,9 +125,17 @@ func TestSessionNamerUserPrompt(t *testing.T) {
 	}
 
 	// Compaction source.
-	got = sessionNamerUserPrompt(sessionNameSourceCompaction, "summary text")
+	got = sessionNamerUserPrompt(sessionNameSourceCompaction, "summary text", "Existing Title")
 	if !strings.Contains(got, "compaction summary") {
 		t.Fatalf("missing compaction label: %q", got)
+	}
+	if !strings.Contains(got, "Current title: Existing Title") {
+		t.Fatalf("compaction prompt missing current title: %q", got)
+	}
+	// Empty current title (initial naming) must not render a title prefix.
+	got = sessionNamerUserPrompt(sessionNameSourceCompaction, "summary text", "")
+	if strings.Contains(got, "Current title:") {
+		t.Fatalf("empty current title should not render prefix: %q", got)
 	}
 }
 

@@ -1,3 +1,6 @@
+import { readFileSync } from "node:fs";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { act, cleanup, render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { createElement, useState } from "react";
@@ -18,14 +21,13 @@ import type { ActivityTree as ActivityTreeData } from "./activityData";
 // order. OpenTranscriptButton is stubbed: it lives in the SAME module as
 // openTranscript, so its internal call uses the module-local binding and the
 // spy above would never observe it. The stub records the props the tree
-// passes (iconOnly included) and routes its click to the spied openTranscript;
+// passes and routes its click to the spied openTranscript;
 // the real button's icon-only rendering and click behavior are covered in
 // openTranscript.test.tsx, where the workspace harness exists.
 let openTranscript: typeof openTranscriptModule.openTranscript;
 let openButtonProps: Array<{
   transcriptRef: string;
   parentRef?: string;
-  iconOnly?: boolean;
 }>;
 beforeEach(() => {
   openTranscript = vi.spyOn(openTranscriptModule, "openTranscript").mockImplementation(() => {});
@@ -42,6 +44,19 @@ beforeEach(() => {
     });
   });
 });
+
+// Captured before beforeEach's spy: the DOM-placement test below needs the
+// real OpenTranscriptButton because the stub renders a bare button without
+// the OpenButton .inline wrapper span the tree's JSX relies on.
+const RealOpenTranscriptButton = openTranscriptModule.OpenTranscriptButton;
+
+// The repo's CSS-source pin idiom (difftable.test.tsx, select.test.tsx):
+// jsdom has no layout, so placement contracts are pinned against the
+// stylesheet's own source.
+const activityPanelCss = readFileSync(
+  join(dirname(fileURLToPath(import.meta.url)), "activitypanel.module.css"),
+  "utf8",
+);
 
 // Pinned clock: every quiet-time assertion below measures against this instant.
 const NOW = new Date("2026-08-05T15:00:12.000Z");
@@ -223,7 +238,6 @@ describe("ActivityTree", () => {
       expect.objectContaining({
         transcriptRef: "local:sess_child",
         parentRef: "ref_root",
-        iconOnly: true,
       }),
     );
 
@@ -381,9 +395,8 @@ describe("ActivityTree", () => {
 
     const shellRow = screen.getByRole("treeitem", { name: "run tests" });
     const openButton = within(shellRow).getByRole("button", { name: "Open transcript" });
-    // The tree asks for the icon-only form; the real component's glyph-only
-    // rendering is covered in openTranscript.test.tsx.
-    expect(openButtonProps.every((props) => props.iconOnly === true)).toBe(true);
+    // The one form is icon-only; the real component's glyph-only rendering is
+    // covered in openTranscript.test.tsx.
     // The button ends the title: after the name text, before the meta cluster.
     const nameText = within(shellRow).getByText("run tests");
     const metaText = within(shellRow).getByText("12s");
@@ -398,6 +411,37 @@ describe("ActivityTree", () => {
     // A row with no transcript ref (broken lint) gets no open button at all.
     const failedRow = screen.getByRole("treeitem", { name: "broken lint" });
     expect(within(failedRow).queryByRole("button", { name: "Open transcript" })).toBeNull();
+  });
+
+  test("the open control's previous sibling is the row's name span - nothing springs it away", () => {
+    // Render through the REAL OpenTranscriptButton (the file's stub renders a
+    // bare button): the button's parentElement is OpenButton's .inline
+    // wrapper span, so the wrapper's previous element sibling must be the
+    // name span itself - no growing flex element may sit between them.
+    vi.mocked(openTranscriptModule.OpenTranscriptButton).mockImplementation(RealOpenTranscriptButton);
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    vi.setSystemTime(NOW);
+    render(<ActivityTree tree={TREE} expandedFoldIDs={[]} onToggleFold={vi.fn()} />);
+
+    const shellRow = screen.getByRole("treeitem", { name: "run tests" });
+    const button = within(shellRow).getByRole("button", { name: "Open transcript" });
+    const nameSpan = button.parentElement?.previousElementSibling;
+    expect(nameSpan?.textContent).toBe("run tests");
+  });
+
+  test("dense rows never grow the name over the open control: meta owns the right edge", () => {
+    expect(activityPanelCss).toMatch(/\.denseName\s*\{[^}]*flex:\s*0 1 auto/);
+    expect(activityPanelCss).toMatch(/\.denseMeta\s*\{[^}]*margin-left:\s*auto/);
+  });
+
+  test("dense-row open targets keep hit width but never overhang the row, so neighbors' targets can't overlap", () => {
+    // A target taller than the ~23.5px row pitch would overlap both
+    // neighbors' targets; where boxes overlap the LATER row wins and a tap in
+    // a row's top band opens the row below (roborev). The shell stretches to
+    // the row and the button to the shell; width (28px / --tap-min) survives.
+    expect(activityPanelCss).toMatch(/\.denseRow\s*>\s*\[data-open-shell\]\s*\{[^}]*margin-block:\s*0/);
+    expect(activityPanelCss).toMatch(/\.denseRow\s*>\s*\[data-open-shell\]\s*\{[^}]*align-self:\s*stretch/);
+    expect(activityPanelCss).toMatch(/\.denseRow\s*>\s*\[data-open-shell\]\s*>\s*button\s*\{[^}]*min-height:\s*0/);
   });
 
   test("clicking a row's title toggles its disclosure, never opens the transcript", async () => {

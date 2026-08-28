@@ -445,31 +445,88 @@ func TestHubJobsListLiveErrorPropagates(t *testing.T) {
 	}
 }
 
-func TestHubJobsListContinuationFallsBackToPastUnchanged(t *testing.T) {
-	cfg, sessionID, childID, _ := seedPastSessionWithActivity(t, 2002)
+// TestHubJobsListMidListTruncationMintsAdvancingContinuation covers the
+// project's posture that truncating legitimate job history is unacceptable:
+// a session's own journal always folds in full (see historicalJobFoldCache),
+// so the only truncation possible is projection's own mid-list cutoff when a
+// rendered page grows too large. That cutoff's continuation must actually
+// ADVANCE: resuming with it must render DIFFERENT, later jobs, not re-render
+// the same first page a fresh, non-continuation request already showed.
+func TestHubJobsListMidListTruncationMintsAdvancingContinuation(t *testing.T) {
+	// 2050 exceeds agent.activityMaxWorkUnits (2000, unexported — this
+	// package can't reference it directly) by enough margin that the child
+	// session's own rendered page still truncates regardless of how many
+	// budget units the root's own entries consume first.
+	cfg, sessionID, childID, _ := seedPastSessionWithActivity(t, 2050)
 	sources := newExitedLocalRegistry()
 
 	first, err := hubJobsList(context.Background(), cfg, sources, appwire.JobsListParams{Ref: "local:" + sessionID})
 	if err != nil {
-		t.Fatalf("hubJobsList first page: %v", err)
+		t.Fatalf("hubJobsList: %v", err)
 	}
 	firstTree := mustActivityTree(t, first.Data)
 	delegate := findActivityDelegate(t, firstTree.Root, childID)
-	if delegate.Child == nil || !delegate.Child.Branch.Truncated || delegate.Child.Branch.Continuation == "" {
-		t.Fatalf("first child branch = %+v child = %+v", delegate.Branch, delegate.Child)
+	if delegate.Child == nil || !delegate.Child.Branch.Truncated {
+		t.Fatalf("child branch = %+v child = %+v, want Truncated=true", delegate.Branch, delegate.Child)
 	}
-	continued, err := hubJobsList(context.Background(), cfg, sources, appwire.JobsListParams{Ref: "local:" + sessionID, Continuation: delegate.Child.Branch.Continuation})
+	if delegate.Child.Branch.Continuation == "" {
+		t.Fatalf("child branch.Continuation is empty, want a real, advancing continuation")
+	}
+	if len(delegate.Child.Entries) == 0 {
+		t.Fatalf("child entries = %+v, want a nonzero rendered prefix", delegate.Child.Entries)
+	}
+	firstJobIDs := activityEntryJobIDs(delegate.Child.Entries)
+
+	second, err := hubJobsList(context.Background(), cfg, sources, appwire.JobsListParams{
+		Ref:          "local:" + sessionID,
+		Continuation: delegate.Child.Branch.Continuation,
+	})
 	if err != nil {
-		t.Fatalf("hubJobsList continuation: %v", err)
+		t.Fatalf("hubJobsList (resumed): %v", err)
 	}
-	continuedTree := mustActivityTree(t, continued.Data)
-	continuedDelegate := findActivityDelegate(t, continuedTree.Root, childID)
-	if continuedDelegate.Child == nil || continuedDelegate.Child.SessionID != childID {
-		t.Fatalf("continued delegate child = %+v", continuedDelegate.Child)
+	secondTree := mustActivityTree(t, second.Data)
+	// The response's own Root is always the SAME query root (the wire shape
+	// buildActivityContinuationAt produces re-enters via a filtered
+	// root->delegate->child chain, not a response rooted at the target
+	// session directly) — the child's entries are still reached the same
+	// way the first page's were.
+	secondDelegate := findActivityDelegate(t, secondTree.Root, childID)
+	if secondDelegate.Child == nil {
+		t.Fatalf("resumed delegate = %+v, want a child subtree", secondDelegate)
 	}
-	if len(continuedDelegate.Child.Entries) == 0 {
-		t.Fatalf("continued child entries = %+v", continuedDelegate.Child.Entries)
+	if len(secondDelegate.Child.Entries) == 0 {
+		t.Fatalf("resumed entries = %+v, want a nonzero second page", secondDelegate.Child.Entries)
 	}
+	secondJobIDs := activityEntryJobIDs(secondDelegate.Child.Entries)
+	if secondJobIDs[0] == firstJobIDs[0] {
+		t.Fatalf("resumed page's first job %q is the SAME as the first page's first job — the continuation did not advance", secondJobIDs[0])
+	}
+	firstSeen := make(map[string]bool, len(firstJobIDs))
+	for _, id := range firstJobIDs {
+		firstSeen[id] = true
+	}
+	overlap := 0
+	for _, id := range secondJobIDs {
+		if firstSeen[id] {
+			overlap++
+		}
+	}
+	if overlap != 0 {
+		t.Fatalf("resumed page repeats %d job(s) already shown on the first page, want 0 overlap", overlap)
+	}
+}
+
+// activityEntryJobIDs extracts the shell-job IDs, in order, from a session's
+// rendered entries (skipping any delegate entries, which this test's fixture
+// does not produce past the root).
+func activityEntryJobIDs(entries []appwire.JobActivityEntry) []string {
+	ids := make([]string, 0, len(entries))
+	for _, entry := range entries {
+		if entry.Job != nil {
+			ids = append(ids, entry.Job.JobID)
+		}
+	}
+	return ids
 }
 
 // TestHubJobsOutputLiveDaemon is the output path's counterpart to

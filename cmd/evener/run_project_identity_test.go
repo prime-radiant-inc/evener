@@ -28,7 +28,7 @@ func TestRunPassesCanonicalProjectAndActiveWorkingDirToSession(t *testing.T) {
 		runEnsureUserConfigDirs, runSeedMarketplaces, runAttachAPILogger, runNewSession = oldEnsure, oldSeed, oldAttach, oldNew
 	})
 	runEnsureUserConfigDirs = func() error { return nil }
-	runSeedMarketplaces = func() error { return nil }
+	runSeedMarketplaces = func(context.Context) error { return nil }
 	runAttachAPILogger = func(*llm.Client, string, io.Writer) (func(string) error, func() error, error) {
 		return func(string) error { return nil }, func() error { return nil }, nil
 	}

@@ -1,0 +1,67 @@
+{
+  "case": "anthropic-opus-4-5-hybrid",
+  "ref": "anthropic/claude-opus-4-5",
+  "stream": false,
+  "method": "POST",
+  "url": "https://api.anthropic.com/v1/messages",
+  "headers": {
+    "Anthropic-Version": "2023-06-01",
+    "Content-Type": "application/json",
+    "X-Api-Key": "\u003ccredential\u003e"
+  },
+  "body": {
+    "cache_control": {
+      "type": "ephemeral"
+    },
+    "max_tokens": 64000,
+    "messages": [
+      {
+        "content": [
+          {
+            "text": "What is the weather in Oslo?",
+            "type": "text"
+          }
+        ],
+        "role": "user"
+      }
+    ],
+    "model": "claude-opus-4-5",
+    "output_config": {
+      "effort": "high"
+    },
+    "system": [
+      {
+        "cache_control": {
+          "type": "ephemeral"
+        },
+        "text": "You are terse.",
+        "type": "text"
+      }
+    ],
+    "thinking": {
+      "budget_tokens": 32768,
+      "type": "enabled"
+    },
+    "tool_choice": {
+      "type": "auto"
+    },
+    "tools": [
+      {
+        "cache_control": {
+          "type": "ephemeral"
+        },
+        "description": "Current weather",
+        "input_schema": {
+          "properties": {
+            "city": {
+              "type": "string"
+            }
+          },
+          "type": "object"
+        },
+        "name": "weather"
+      }
+    ]
+  },
+  "pruned_fields": null
+}

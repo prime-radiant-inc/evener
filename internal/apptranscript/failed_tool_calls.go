@@ -57,13 +57,7 @@ func (c *TurnCache) FailedToolCallsFromFile(path string, maxLineBytes int, fromE
 	if err != nil {
 		return 0, fmt.Errorf("stat transcript: %w", err)
 	}
-	identity := failedToolCallsKey{
-		size:           info.Size(),
-		modUnixNano:    info.ModTime().UnixNano(),
-		fileIdentity:   fileIdentity(info),
-		changeIdentity: fileChangeIdentity(info),
-		fromOrdinal:    fromEntryOrdinal,
-	}
+	identity := scanMemoIdentity(info, fromEntryOrdinal)
 
 	c.mu.Lock()
 	if entry, ok := c.entries[path]; ok && entry.failedToolCalls != nil && entry.failedToolCalls.key == identity {
@@ -113,17 +107,7 @@ func scanFailedToolCalls(path string, maxLineBytes int, fromEntryOrdinal int) (i
 			// reporting none, so surface it.
 			return fmt.Errorf("decode transcript entry tool calls: %w", err)
 		}
-		counting := ordinal >= fromEntryOrdinal
-		for _, part := range record.Turn.Message.Content {
-			switch {
-			case part.ToolCall != nil && part.Kind == llm.ContentToolCall:
-				toolNames[part.ToolCall.ID] = part.ToolCall.Name
-			case part.ToolResult != nil && part.Kind == llm.ContentToolResult:
-				if counting && failedToolResult(part.ToolResult, toolNames) {
-					count++
-				}
-			}
-		}
+		count += tallyFailedToolCalls(record.Turn.Message.Content, ordinal >= fromEntryOrdinal, toolNames)
 		return nil
 	}); err != nil {
 		return 0, err
@@ -145,6 +129,26 @@ func failedToolResult(result *failedToolCallResult, toolNames map[string]string)
 	return transcript.FailedToolResult(name, result.IsError, result.ToolState)
 }
 
+// tallyFailedToolCalls applies the failure rule to one entry's narrow content
+// decode: it learns tool names from EVERY call — a fork child's own result can
+// answer a call the inherited prefix announced — and, when counting, counts
+// the failing results. Shared by scanFailedToolCalls and scanDerivedTotals so
+// the two scans apply one rule.
+func tallyFailedToolCalls(parts []toolScanPart, counting bool, toolNames map[string]string) int {
+	count := 0
+	for _, part := range parts {
+		switch {
+		case part.ToolCall != nil && part.Kind == llm.ContentToolCall:
+			toolNames[part.ToolCall.ID] = part.ToolCall.Name
+		case part.ToolResult != nil && part.Kind == llm.ContentToolResult:
+			if counting && failedToolResult(part.ToolResult, toolNames) {
+				count++
+			}
+		}
+	}
+	return count
+}
+
 // failedToolCallEntry decodes the few fields the count needs.
 // scanSemanticTranscript has already validated the full record, so this narrow
 // view can ignore the rest rather than paying to decode whole message bodies
@@ -155,17 +159,25 @@ type failedToolCallEntry struct {
 		// Tool calls and tool results only ever appear on the assistant and
 		// tool-result kinds, so matching on the part itself is both narrower
 		// and immune to a new turn kind that carries them.
-		Message struct {
-			Content []struct {
-				Kind     llm.ContentKind `json:"kind"`
-				ToolCall *struct {
-					ID   string `json:"id"`
-					Name string `json:"name"`
-				} `json:"tool_call"`
-				ToolResult *failedToolCallResult `json:"tool_result"`
-			} `json:"content"`
-		} `json:"message"`
+		Message toolScanMessage `json:"message"`
 	} `json:"turn"`
+}
+
+// toolScanMessage is the narrow message decode the failure rule needs: only
+// the content parts that carry tool calls and tool results. It is shared by
+// failedToolCallEntry and derivedTotalsEntry so the two scans decode the same
+// field-for-field subset of schema.Turn and cannot drift apart.
+type toolScanMessage struct {
+	Content []toolScanPart `json:"content"`
+}
+
+type toolScanPart struct {
+	Kind     llm.ContentKind `json:"kind"`
+	ToolCall *struct {
+		ID   string `json:"id"`
+		Name string `json:"name"`
+	} `json:"tool_call"`
+	ToolResult *failedToolCallResult `json:"tool_result"`
 }
 
 type failedToolCallResult struct {
@@ -175,20 +187,7 @@ type failedToolCallResult struct {
 	ToolState  json.RawMessage `json:"tool_state"`
 }
 
-// failedToolCallsKey is the file identity a memoized count is valid for. It
-// mirrors usageTotalKey exactly, for the same reasons: object identity, size,
-// mtime (as nanos, so the key stays comparable with ==) and platform change
-// time, plus the divergence ordinal, since two ordinals over one file are two
-// different answers.
-type failedToolCallsKey struct {
-	size           int64
-	modUnixNano    int64
-	fileIdentity   string
-	changeIdentity string
-	fromOrdinal    int
-}
-
 type failedToolCallsMemo struct {
-	key   failedToolCallsKey
+	key   scanMemoKey
 	count int
 }

@@ -1,6 +1,7 @@
 package tool
 
 import (
+	"fmt"
 	"reflect"
 	"slices"
 	"strings"
@@ -170,10 +171,13 @@ func TestDefDelegateParamsAndEnum(t *testing.T) {
 		t.Fatalf("Strict = %v, want false", def.Strict)
 	}
 	props := def.Parameters["properties"].(map[string]any)
-	for _, p := range []string{"task", "agent_type", "model", "reasoning_effort", "result_schema"} {
+	for _, p := range []string{"prompt", "task_list", "agent_type", "model", "reasoning_effort", "result_schema"} {
 		if _, ok := props[p]; !ok {
 			t.Errorf("DefDelegate missing param %q", p)
 		}
+	}
+	if _, ok := props["task"]; ok {
+		t.Errorf("DefDelegate must not have the renamed task param")
 	}
 	if _, ok := props["background"]; ok {
 		t.Errorf("DefDelegate must not have the removed background param")
@@ -185,8 +189,8 @@ func TestDefDelegateParamsAndEnum(t *testing.T) {
 		t.Errorf("DefDelegate must not expose creation max_wait_ms")
 	}
 	req := def.Parameters["required"].([]string)
-	if len(req) != 1 || req[0] != "task" {
-		t.Errorf("required = %v, want [task]", req)
+	if len(req) != 1 || req[0] != "prompt" {
+		t.Errorf("required = %v, want [prompt]", req)
 	}
 	at := props["agent_type"].(map[string]any)
 	enum := at["enum"].([]string)
@@ -278,7 +282,15 @@ func TestDefDelegateHasSandboxParams(t *testing.T) {
 	if !ok {
 		t.Fatalf("sandbox enum = %T, want []string", sb["enum"])
 	}
-	wantEnum := []string{"off", "read-only", "workspace-write", "restricted"}
+	// DefDelegate is the portable full-capability surface: every mode plus
+	// its +nonet variant, plus bare "nonet" (net-only tightening).
+	wantEnum := []string{
+		"off",
+		"read-only", "read-only+nonet",
+		"workspace-write", "workspace-write+nonet",
+		"restricted", "restricted+nonet",
+		"nonet",
+	}
 	if !reflect.DeepEqual(enum, wantEnum) {
 		t.Errorf("sandbox enum = %v, want %v", enum, wantEnum)
 	}
@@ -287,32 +299,19 @@ func TestDefDelegateHasSandboxParams(t *testing.T) {
 		t.Errorf("sandbox description must explain the no-escalation floor, got %q", sbDesc)
 	}
 	// The modes must be glossed, not merely enumerated.
-	for _, want := range []string{"read-only", "workspace-write", "restricted", "no writes", "working tree", "network is a separate toggle"} {
+	for _, want := range []string{"read-only", "workspace-write", "restricted", "no writes", "working tree", "+nonet"} {
 		if !strings.Contains(sbDesc, want) {
 			t.Errorf("sandbox description must define the modes (missing %q), got %q", want, sbDesc)
 		}
 	}
 
-	sn, ok := props["sandbox_net"].(map[string]any)
-	if !ok {
-		t.Fatal("DefDelegate missing sandbox_net param")
+	// The combined-enum surface has no separate sandbox_net property and no
+	// oneOf pairing constraint: an invalid combo is unrepresentable.
+	if _, hasNet := props["sandbox_net"]; hasNet {
+		t.Fatal("DefDelegate must not expose a separate sandbox_net param")
 	}
-	if typ, _ := sn["type"].(string); typ != "boolean" {
-		t.Errorf("sandbox_net type = %q, want boolean", sn["type"])
-	}
-	// Pin the load-bearing semantics (matching the sandbox param's pinning strength):
-	// network-off consequences, inherit-on-omit behavior, and the no-escalation floor.
-	snDesc, _ := sn["description"].(string)
-	for _, want := range []string{"disables all IP networking", "local network server"} {
-		if !strings.Contains(snDesc, want) {
-			t.Errorf("sandbox_net must warn that network-off can break local-server tests (missing %q), got %q", want, snDesc)
-		}
-	}
-	if !strings.Contains(snDesc, "Omit to inherit") {
-		t.Errorf("sandbox_net must document inherit-on-omit with the exact contract phrase, got %q", snDesc)
-	}
-	if !strings.Contains(snDesc, "cannot enable network") {
-		t.Errorf("sandbox_net must document the network no-escalation floor, got %q", snDesc)
+	if _, hasOneOf := DefDelegate(nil).Parameters["oneOf"]; hasOneOf {
+		t.Fatal("DefDelegate must not carry a oneOf constraint")
 	}
 }
 
@@ -381,9 +380,27 @@ func TestDefDelegateSendDescriptionDistinguishesCallerFromFinalReport(t *testing
 
 func TestDefTaskListDescriptionStatesInProgressInvariant(t *testing.T) {
 	def := DefTaskList(nil)
-	want := "Only one task may be in_progress at a time; to start a new one, complete or defer the current one in the same updates array."
+	want := "Only one task may be in_progress at a time; to start a new one, complete or defer the current one in the same update array."
 	if !strings.Contains(def.Description, want) {
 		t.Fatalf("DefTaskList description = %q, want to contain %q", def.Description, want)
+	}
+}
+
+func TestDefTaskListEffortEnumIncludesInherit(t *testing.T) {
+	def := DefTaskList([]string{"low", "medium", "high"})
+	want := []string{"low", "medium", "high", "inherit"}
+	props := def.Parameters["properties"].(map[string]any)
+	for _, arrayName := range []string{"add", "update"} {
+		arraySchema := props[arrayName].(map[string]any)
+		item := arraySchema["items"].(map[string]any)
+		schema := item["properties"].(map[string]any)["reasoning_effort"].(map[string]any)
+		enum, ok := schema["enum"].([]string)
+		if !ok {
+			t.Fatalf("%s reasoning_effort enum missing: %#v", arrayName, schema)
+		}
+		if !reflect.DeepEqual(enum, want) {
+			t.Fatalf("%s reasoning_effort enum = %v, want %v", arrayName, enum, want)
+		}
 	}
 }
 
@@ -428,7 +445,7 @@ func TestDefJobWatchParamsAndKinds(t *testing.T) {
 		t.Fatalf("Strict = %v, want false because job_watch has conditional optional arguments", def.Strict)
 	}
 	props := def.Parameters["properties"].(map[string]any)
-	for _, p := range []string{"operation", "watch_id", "source", "output_match", "progress_interval_ms", "events", "event_filter", "every"} {
+	for _, p := range []string{"operation", "watch_id", "source", "output_match", "progress_interval_ms", "events", "event_filter", "every", "after_seconds", "repeat_seconds", "note"} {
 		if _, ok := props[p]; !ok {
 			t.Errorf("DefJobWatch missing param %q", p)
 		}
@@ -440,6 +457,48 @@ func TestDefJobWatchParamsAndKinds(t *testing.T) {
 	// The available event kinds are interpolated into the description.
 	if !strings.Contains(def.Description, "communicate") || !strings.Contains(def.Description, "job.notification") {
 		t.Errorf("description must enumerate the available event kinds:\n%s", def.Description)
+	}
+}
+
+func TestDefJobWatchOptionalTriggerFieldsAreNullable(t *testing.T) {
+	props := DefJobWatch([]string{"communicate"}).Parameters["properties"].(map[string]any)
+	for _, name := range []string{"output_match", "events", "event_filter"} {
+		t.Run(name, func(t *testing.T) {
+			typeValues, ok := props[name].(map[string]any)["type"].([]string)
+			if !ok {
+				t.Fatalf("%s type = %#v, want nullable type array", name, props[name].(map[string]any)["type"])
+			}
+			if !slices.Contains(typeValues, "null") {
+				t.Fatalf("%s type = %#v, want null", name, typeValues)
+			}
+		})
+	}
+}
+
+func TestDefJobWatch_TimerProperties(t *testing.T) {
+	def := DefJobWatch(nil)
+	props := def.Parameters["properties"].(map[string]any)
+	for _, p := range []string{"after_seconds", "repeat_seconds", "note"} {
+		prop, ok := props[p].(map[string]any)
+		if !ok {
+			t.Fatalf("missing property %q", p)
+		}
+		types, _ := prop["type"].([]string)
+		if len(types) != 2 || types[1] != "null" {
+			t.Errorf("%s type = %v, want nullable", p, prop["type"])
+		}
+	}
+	source := props["source"].(map[string]any)
+	if types, _ := source["type"].([]string); len(types) != 2 || types[1] != "null" {
+		t.Errorf("source must be nullable now that timers default it: %v", source["type"])
+	}
+	if !strings.HasPrefix(def.Description, "Wake yourself later:") {
+		t.Errorf("description must lead with the timer: %q", def.Description[:60])
+	}
+	for _, want := range []string{"(60 to 86400)", "(60 to 3600)"} {
+		if !strings.Contains(def.Description, want) && !strings.Contains(fmt.Sprint(props), want) {
+			t.Errorf("description or properties lack %q", want)
+		}
 	}
 }
 
@@ -558,15 +617,27 @@ func TestTranscriptToolDefinitions(t *testing.T) {
 			t.Errorf("read description still exposes retired surface %q: %s", forbidden, read.Description)
 		}
 	}
-	// format enum is exactly outline|markdown|jsonl.
-	formatEnum := rp["format"].(map[string]any)["enum"].([]string)
+	// format accepts the three public tokens plus null so ref-aware repair can
+	// remove job defaults while artifact refs still reject explicit null.
+	format := rp["format"].(map[string]any)
+	formatEnum := format["enum"].([]any)
 	want := map[string]bool{"outline": true, "markdown": true, "jsonl": true}
-	if len(formatEnum) != 3 {
-		t.Errorf("format enum = %v, want outline|markdown|jsonl", formatEnum)
+	if len(formatEnum) != 4 {
+		t.Errorf("format enum = %v, want outline|markdown|jsonl|null", formatEnum)
 	}
-	for _, f := range formatEnum {
-		if !want[f] {
-			t.Errorf("unexpected format value %q", f)
+	for _, value := range formatEnum {
+		if value == nil {
+			continue
+		}
+		f, ok := value.(string)
+		if !ok || !want[f] {
+			t.Errorf("unexpected format value %#v", value)
+		}
+	}
+	for _, name := range []string{"format", "range", "expand_turn"} {
+		types, ok := rp[name].(map[string]any)["type"].([]any)
+		if !ok || len(types) != 2 || types[1] != "null" {
+			t.Errorf("%s type = %#v, want nullable schema", name, rp[name].(map[string]any)["type"])
 		}
 	}
 
@@ -581,15 +652,17 @@ func TestTranscriptToolDefinitions(t *testing.T) {
 	}
 
 	outputMatch := rp["output_match"].(map[string]any)
-	if outputMatch["type"] != "string" || !strings.Contains(outputMatch["description"].(string), "RE2") {
-		t.Errorf("output_match schema = %#v, want RE2 string", outputMatch)
+	outputMatchTypes, ok := outputMatch["type"].([]any)
+	if !ok || len(outputMatchTypes) != 2 || outputMatchTypes[0] != "string" || outputMatchTypes[1] != "null" || !strings.Contains(outputMatch["description"].(string), "RE2") {
+		t.Errorf("output_match schema = %#v, want nullable RE2 string", outputMatch)
 	}
 	if outputMatch["maxLength"] != 65_536 || !strings.Contains(outputMatch["description"].(string), "65,536") {
 		t.Errorf("output_match schema = %#v, want documented 65,536-character envelope bound", outputMatch)
 	}
 	contextLines := rp["context_lines"].(map[string]any)
-	if contextLines["type"] != "integer" || contextLines["minimum"] != 0 || contextLines["maximum"] != 10 {
-		t.Errorf("context_lines schema = %#v, want integer 0..10", contextLines)
+	contextLineTypes, ok := contextLines["type"].([]any)
+	if !ok || len(contextLineTypes) != 2 || contextLineTypes[0] != "integer" || contextLineTypes[1] != "null" || contextLines["minimum"] != 0 || contextLines["maximum"] != 10 {
+		t.Errorf("context_lines schema = %#v, want nullable integer 0..10", contextLines)
 	}
 	for _, want := range []string{"session ref", "job:", "artifact:", "output_match", "context_lines", "retained_start_bytes", "job_status"} {
 		if !strings.Contains(read.Description, want) {
@@ -675,8 +748,8 @@ func TestDefManageWorktreeDescriptionCarriesUsagePolicy(t *testing.T) {
 }
 
 // TestDefAskUserSchema locks the ask_user input schema to spec §4.2: questions
-// 1-4 per call, each with optional header (<=12 chars)/question/options (2-5 of
-// {label, detail, recommended?}), multi_select, why, and if_unanswered.
+// 1-4 per call, each with optional header/question/options (2-5 of {label,
+// detail, recommended?}), multi_select, why, and if_unanswered.
 func TestDefAskUserSchema(t *testing.T) {
 	def := DefAskUser()
 	if def.Name != "ask_user" {
@@ -702,8 +775,11 @@ func TestDefAskUserSchema(t *testing.T) {
 			t.Fatalf("missing question property %q", k)
 		}
 	}
-	if props["header"].(map[string]any)["maxLength"] != 12 {
-		t.Fatal("header maxLength != 12")
+	if props["header"].(map[string]any)["type"] != "string" {
+		t.Fatal("header is not a string")
+	}
+	if _, ok := props["header"].(map[string]any)["maxLength"]; ok {
+		t.Fatal("header must not have a hard maxLength")
 	}
 	opts := props["options"].(map[string]any)
 	if opts["minItems"] != 2 || opts["maxItems"] != 5 {
@@ -800,5 +876,128 @@ func TestDefAskUserDescriptionIsSpecVerbatim(t *testing.T) {
 		if !strings.Contains(def.Description, want) {
 			t.Fatalf("description missing %q; got: %s", want, def.Description)
 		}
+	}
+}
+
+func TestDefDelegateWithSandboxIncludesVerifiedModelChoices(t *testing.T) {
+	def := DefDelegateWithSandbox(nil, DelegateSandboxSchema{
+		Available:        true,
+		Modes:            []string{"off"},
+		ModelDescription: "Verified at startup (snapshot v1): openai/gpt-5, vertex/gemini-2.5.",
+	})
+	props := def.Parameters["properties"].(map[string]any)
+	model := props["model"].(map[string]any)
+	if got := model["description"].(string); !strings.Contains(got, "openai/gpt-5") {
+		t.Fatalf("model description = %q", got)
+	}
+}
+
+func TestDefDelegateWithoutSandboxIncludesVerifiedModelChoices(t *testing.T) {
+	def := DefDelegateWithSandbox(nil, DelegateSandboxSchema{
+		ModelDescription: "Verified at startup (snapshot v1): openai/gpt-5.",
+	})
+	props := def.Parameters["properties"].(map[string]any)
+	model := props["model"].(map[string]any)
+	if got := model["description"].(string); !strings.Contains(got, "openai/gpt-5") {
+		t.Fatalf("model description = %q", got)
+	}
+}
+
+func TestDefModelListIsBoundedReadOnlyContract(t *testing.T) {
+	def := DefModelList()
+	if def.Name != "model_list" || def.Parameters["additionalProperties"] != false {
+		t.Fatalf("definition = %#v", def)
+	}
+}
+
+// TestDefTaskList_PresenceBased pins the combined-tool schema: no action
+// property, add/update arrays optional, update items require only id, no
+// top-level required list (a bare call is a view), and Strict explicitly
+// false (strict-mode normalization would force-requires nested update
+// fields, reintroducing forced status/depends_on values).
+func TestDefTaskList_PresenceBased(t *testing.T) {
+	def := DefTaskList([]string{"low", "high"})
+	params := def.Parameters
+	props := params["properties"].(map[string]any)
+	if _, has := props["action"]; has {
+		t.Fatal("schema must not have an action property")
+	}
+	if def.Strict == nil || *def.Strict {
+		t.Fatal("DefTaskList must set Strict: false explicitly")
+	}
+	add, has := props["add"]
+	if !has {
+		t.Fatal("schema must have an add property")
+	}
+	addItems := add.(map[string]any)["items"].(map[string]any)
+	addReq, ok := addItems["required"].([]string)
+	if !ok || len(addReq) != 3 || addReq[0] != "type" || addReq[1] != "description" || addReq[2] != "prompt" {
+		t.Fatalf("add item required = %v, want [type description prompt]", addItems["required"])
+	}
+	if addItems["additionalProperties"] != false {
+		t.Fatalf("add item additionalProperties = %v, want false", addItems["additionalProperties"])
+	}
+	if _, has := addItems["properties"].(map[string]any)["brief"]; has {
+		t.Fatal("add item schema must not accept a brief alias")
+	}
+	update, has := props["update"]
+	if !has {
+		t.Fatal("schema must have an update property")
+	}
+	updateItems := update.(map[string]any)["items"].(map[string]any)
+	updateReq, ok := updateItems["required"].([]string)
+	if !ok || len(updateReq) != 1 || updateReq[0] != "id" {
+		t.Fatalf("update item required = %v, want [id]", updateItems["required"])
+	}
+	if updateItems["additionalProperties"] != false {
+		t.Fatalf("update item additionalProperties = %v, want false", updateItems["additionalProperties"])
+	}
+	if _, has := updateItems["properties"].(map[string]any)["brief"]; has {
+		t.Fatal("update item schema must not accept a brief alias")
+	}
+	if top, has := params["required"]; has {
+		t.Fatalf("schema must not force-require add/update at top level: %v", top)
+	}
+}
+
+// TestDefDelegatePromptAndTaskListSchema pins the delegate brief contract: the
+// brief parameter is `prompt`, it carries a description (the delegate sees
+// nothing but this string and its role prompt), and `task_list` seeds the
+// delegate's task list with title+prompt items.
+func TestDefDelegatePromptAndTaskListSchema(t *testing.T) {
+	props := DefDelegate(nil).Parameters["properties"].(map[string]any)
+	prompt := props["prompt"].(map[string]any)
+	if prompt["type"] != "string" {
+		t.Errorf("prompt type = %v, want string", prompt["type"])
+	}
+	if desc, _ := prompt["description"].(string); desc == "" {
+		t.Error("prompt must carry a description; it is the only input the delegate sees")
+	}
+	tl, ok := props["task_list"].(map[string]any)
+	if !ok {
+		t.Fatal("DefDelegate has no task_list param")
+	}
+	if tl["type"] != "array" {
+		t.Errorf("task_list type = %v, want array", tl["type"])
+	}
+	if desc, _ := tl["description"].(string); desc == "" {
+		t.Error("task_list must carry a description")
+	}
+	items := tl["items"].(map[string]any)
+	if items["type"] != "object" {
+		t.Errorf("task_list items type = %v, want object", items["type"])
+	}
+	itemProps := items["properties"].(map[string]any)
+	for _, p := range []string{"title", "prompt", "reasoning_effort", "type"} {
+		if _, ok := itemProps[p]; !ok {
+			t.Errorf("task_list item missing property %q", p)
+		}
+	}
+	req := items["required"].([]string)
+	if len(req) != 2 || req[0] != "title" || req[1] != "prompt" {
+		t.Errorf("task_list item required = %v, want [title prompt]", req)
+	}
+	if items["additionalProperties"] != false {
+		t.Errorf("task_list items additionalProperties = %v, want false", items["additionalProperties"])
 	}
 }

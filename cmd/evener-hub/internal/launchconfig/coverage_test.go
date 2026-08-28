@@ -8,6 +8,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/BurntSushi/toml"
 	"github.com/spf13/afero"
 )
 
@@ -119,8 +120,8 @@ func checkValidateRepoRelativePathResolutionError(t *testing.T) {
 
 func checkDecodeTrustedRepoLayerError(t *testing.T) {
 	sentinel := errors.New("decode failed")
-	_, diags := decodeTrustedRepoLayer("/repo", []byte("model = \"x\""), func([]byte, any) error {
-		return sentinel
+	_, diags := decodeTrustedRepoLayer("/repo", []byte("model = \"x\""), func([]byte, any) (toml.MetaData, error) {
+		return toml.MetaData{}, sentinel
 	})
 	if len(diags) != 1 || diags[0].Layer != LayerRepo || diags[0].Field != ".evener/launch.toml" || diags[0].Message != sentinel.Error() {
 		t.Fatalf("diagnostics = %#v", diags)
@@ -204,7 +205,7 @@ func (fs *statFailureFS) Stat(name string) (os.FileInfo, error) {
 }
 
 func checkComputeTrustStateUnknownDecision(t *testing.T) {
-	meta := Meta{Trust: MetaTrust{Hash: "hash", Decision: "pending"}}
+	meta := Meta{Trust: MetaTrust{Hashes: []string{"hash"}, Decision: "pending"}}
 	if got := ComputeTrustState("hash", meta); got != TrustUntrusted {
 		t.Fatalf("ComputeTrustState = %q, want %q", got, TrustUntrusted)
 	}

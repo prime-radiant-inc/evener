@@ -1,24 +1,22 @@
 package hub
 
 import (
-	"errors"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
-	"strings"
 	"testing"
 	"time"
 
 	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/appwire"
 	"primeradiant.com/evener/cmd/evener-hub/internal/hubcore"
-	"primeradiant.com/evener/llm/providercfg"
 )
 
 // FuzzCovWebViewsSpawn drives deterministic edge seeds through the web view
-// helpers. The byte is deliberately ignored: this target is a coverage seed,
-// while the existing handler fuzzers own arbitrary request mutation.
+// helpers. Its historical name is retained for fuzz corpus stability. The byte
+// is deliberately ignored: this target is a coverage seed, while the existing
+// handler fuzzers own arbitrary request mutation.
 func FuzzCovWebViewsSpawn(f *testing.F) {
 	f.Add(byte(0))
 	f.Fuzz(func(t *testing.T, _ byte) {
@@ -50,47 +48,17 @@ func FuzzCovWebViewsSpawn(f *testing.F) {
 			_ = isDatedSnapshotModelID(s)
 			_ = prettifyModelDisplayName(s)
 		}
-		models := []map[string]any{{"provider": "z", "model": "m-20250101"}, {"provider": "a", "model": "m"}, {"provider": "z", "model": "m"}}
-		sortModelEntriesDatedLast(models)
-		_ = recentModelEntriesFromDescriptors(models, nil)
-		_ = recentModelEntriesFromDescriptors(models, []appwire.ModelDescriptor{{Provider: "z", Model: "m"}, {Provider: "none", Model: "none"}})
-		_ = modelDescriptorsToAPIModels(nil, nil)
-		_ = modelDescriptorsToAPIModels([]appwire.ModelDescriptor{{}, {Provider: "openai", Model: "gpt-4o"}}, nil)
-		_ = catalogModelInfo(nil, "", "")
-		no, yes := false, true
-		providerCfg := &providercfg.Config{Instances: []providercfg.InstanceConfig{
-			{Name: "plain", Type: "ollama"},
-			{Name: "custom", Type: "openai", APIStyle: providercfg.StyleChatCompletions, Models: map[string]providercfg.ModelConfig{
-				"off":    {Reasoning: &no},
-				"levels": {ThinkingLevels: map[string]string{"high": "hard", "low": "easy"}},
-				"on":     {Reasoning: &yes, ContextWindow: 1234},
-			}},
-		}}
-		for _, model := range []string{"missing", "off", "levels", "on"} {
-			entry := map[string]any{}
-			applyInstanceModelOverride(entry, providerCfg, "custom", model)
-		}
-		applyInstanceModelOverride(map[string]any{}, providerCfg, "absent", "x")
-		_ = behaviorTagFor(providerCfg, "plain")
-		_ = behaviorTagFor(providerCfg, "custom")
-		_ = behaviorTagFor(providerCfg, "absent")
+		models := []appwire.ModelDescriptor{{Provider: "z", Model: "m-20250101"}, {Provider: "a", Model: "m"}, {Provider: "z", Model: "m"}}
+		sortModelDescriptors(models)
+		_ = withDisplayNames(nil)
+		_ = withDisplayNames([]appwire.ModelDescriptor{{}, {Provider: "openai", Model: "gpt-4o"}})
+		_ = enrichModelListResponse(appwire.ModelListResponse{})
+		_ = enrichModelListResponse(appwire.ModelListResponse{
+			Data:   []appwire.ModelDescriptor{{Provider: "openai", Model: "gpt-4o"}},
+			Recent: []appwire.ModelDescriptor{{Provider: "openai", Model: "gpt-4o"}},
+		})
 		_ = evenerUsageFromCumulative(schema.CumulativeUsage{})
 		_ = evenerUsageFromCumulative(schema.CumulativeUsage{InputTokens: 1})
-
-		for _, tc := range []struct{ method, target, body string }{
-			{http.MethodGet, "/api/spawn", ""},
-			{http.MethodPost, "/api/spawn", "{"},
-			{http.MethodPost, "/api/spawn", `{}`},
-		} {
-			rec := httptest.NewRecorder()
-			req := httptest.NewRequest(tc.method, tc.target, strings.NewReader(tc.body))
-			web.handleApiSpawn(rec, req)
-		}
-		for _, err := range []error{errors.New("x"), appwire.InvalidParams("bad"), appwire.Unavailable("down")} {
-			writeSpawnError(httptest.NewRecorder(), err)
-		}
-		writeModelsResponse(httptest.NewRecorder(), nil, nil, nil, true)
-		writeModelsResponse(httptest.NewRecorder(), models, nil, nil, false)
 
 		sb := newSandbox(t)
 		for _, target := range []string{"/settings/launch", "/settings/project?cwd=" + root, "/settings/general"} {
@@ -99,8 +67,6 @@ func FuzzCovWebViewsSpawn(f *testing.F) {
 		hx := httptest.NewRequest(http.MethodGet, "/settings", nil)
 		hx.Header.Set("HX-Request", "true")
 		sb.Web.handleSettings(httptest.NewRecorder(), hx)
-		sb.Web.renderSessionTasks(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "/", nil), sandboxSessionID)
-		sb.Web.renderSessionTasks(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "/", nil), "missing")
 		sb.Web.fillForkLineage(&WorkspaceData{}, schema.SessionMeta{})
 		sb.Web.fillForkLineage(&WorkspaceData{}, schema.SessionMeta{ID: "id", ForkLabel: "fork", DivergenceTurn: 2})
 		sb.Web.fillSubagentLineage(&WorkspaceData{}, schema.SessionMeta{})

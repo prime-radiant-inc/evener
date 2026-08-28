@@ -705,3 +705,53 @@ follows automatically. Dark keeps `#F68F3C`, which already reads amber
 against dark surfaces; `--attention-ink` stays `#AD5209` (still 4.75:1 AA
 on the new tint). The re-theme spec's palette table is a historical
 record; this entry supersedes its light `--attention` cell.
+
+## 2026-08-27 one open-out affordance: OpenButton/OpenIcon
+
+"Open out of this surface" had grown four presentations of the same idea —
+the delegate/delegate_send rows' and notification cards' `OpenTranscriptButton`
+(word + glyph), the file tool cards' `FileOpenBesideButton` (glyph only), the
+activity chrome's `ActivityTranscriptAction` (glyph only), and settings'
+"open in editor ↗" (a raw anchor with a text glyph). All are now one widget,
+`widgets/openbutton` (`OpenButton` + the `OpenIcon` box-arrow glyph, in
+design-system.md §3's inventory with a `/dev/widgets` gallery section): word
+form, `iconOnly` dense-row form, and an `href` anchor form for external
+targets (new tab, no opener, no referrer — the same rel policy as the app's
+other new-tab links, which is why settings' `rel` assertion changed). The
+widget owns `stopPropagation` because every form rides something clickable.
+Two layout rulings shipped with it: a purpose-only tool row (the delegate
+card) now trails its affordance on the disclosure line itself — a sibling of
+the trigger button, never nested inside it — the placement notification
+cards already gave "Open subagent"; and the settings link's local "↗" text
+glyph is retired in favour of the standard box-arrow. **The affordance's
+rendering is planned to change**; routing every site through one component
+is what makes that a one-place change, and the gallery section is where the
+new rendering gets reviewed.
+
+## 2026-08-29 plugins settings: segmented workspace
+
+Settings → Marketplaces & Plugins was redesigned from a six-mockup
+exploration (decluttered sections, segmented workspace, master–detail,
+catalog storefront, mobile-first sheets, power table — mockups and
+desktop/mobile screenshots of all six in
+`docs/web-ui/specs/assets/2026-08-29-plugins-segmented-workspace/`). The
+winner is the **segmented workspace**, and its two idioms are now the
+design system's collection-page language, written up in design-system.md
+§10: same-weight sibling collections go behind one page-level
+SegmentedControl with counts in the segment labels instead of stacking
+titled sections, and per-item actions leave the list rows (which become
+single tappable targets) for a detail Sheet — right side on desktop,
+bottom on mobile — that owns state chips, a lazily-browsed description, a
+meta table, Switch rows for binary state, and the ConfirmDialog-gated
+destructive action nested safely over it.
+
+One deliberate departure from the approved mockup, discovered against the
+wire: the mockup's "Update available" chip and "Upgrade to vX.Y.Z" label
+imply an update-detection field the plugin data model does not have
+(`PluginEntry` carries version, enabled, autoUpgrade, broken — nothing
+about a newer upstream). The shipped sheet offers a plain "Upgrade" action
+(the RPC's actual "check and pull if newer" semantics) instead of faking
+the field; real update detection is a backend feature, not a presentation
+choice, and was not smuggled into this redesign. The implementation
+screenshots beside the mockups in the assets directory record what
+actually shipped, in the app's default theme.

@@ -184,7 +184,7 @@ func runLocalEdgeContractProgram(t *testing.T, program []byte) localEdgeTrace {
 	// Native grep is explicitly best effort: WalkDir errors are ignored by its
 	// callback, including a missing requested base. A regression must not turn
 	// this into an ambient filesystem-dependent failure.
-	if got, err := env.grepNative("needle", filepath.Join(root, "missing"), "", false, 1, ""); err != nil || got != "" {
+	if got, err := env.grepNative(context.Background(), "needle", filepath.Join(root, "missing"), "", false, 1, ""); err != nil || got != "" {
 		t.Fatalf("grepNative missing root = (%q, %v), want empty success", got, err)
 	} else {
 		trace.GrepError = "best-effort-empty"

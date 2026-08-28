@@ -280,7 +280,7 @@ test("a job-notification steer renders a notification card (not a steering divid
 
 test("a job-notification steer expands the notification before asserting card body content", () => {
   render(<SteeringItem item={item({ text: JOB_NOTIFICATION_STEERING })} turn={turn} live={false} />);
-  fireEvent.click(screen.getByTestId("notification-card"));
+  // At activity level the card auto-expands (expandByDefault=true).
   expect(screen.getByTestId("notification-card-root")).toBeTruthy();
   expect(screen.getByText("Job completed")).toBeTruthy();
 });
@@ -293,7 +293,7 @@ excerpt:
 </job-notification>`;
   render(<SteeringItem item={item({ text })} turn={turn} live={false} />);
 
-  fireEvent.click(screen.getByTestId("notification-card"));
+  // At activity level the card auto-expands (expandByDefault=true).
 
   const excerpt = screen.getByTestId("notification-field-excerpt");
   expect(excerpt.textContent).toBe(" Test Files  1 failed | 283 passed");
@@ -327,7 +327,7 @@ excerpt:
 ${decoded}
 </job-notification>`;
   render(<SteeringItem item={item({ text })} turn={turn} live={false} />);
-  fireEvent.click(screen.getByTestId("notification-card"));
+  // At activity level the card auto-expands (expandByDefault=true).
 
   const excerpt = screen.getByTestId("notification-field-excerpt");
   // Explicit truncation affordance, final content visible, older content
@@ -350,7 +350,7 @@ excerpt:
 {"message":"**literal shell output**","data":{"status":"ok","concerns":["from stdout"]}}
 </job-notification>`;
   render(<SteeringItem item={item({ text })} turn={turn} live={false} />);
-  fireEvent.click(screen.getByTestId("notification-card"));
+  // At activity level the card auto-expands (expandByDefault=true).
 
   const root = screen.getByTestId("notification-card-root");
   // The raw JSON text is reader-visible verbatim (not consumed as an envelope).
@@ -375,7 +375,7 @@ excerpt:
 {not json} [31mFAIL[39m
 </job-notification>`;
   render(<SteeringItem item={item({ text })} turn={turn} live={false} />);
-  fireEvent.click(screen.getByTestId("notification-card"));
+  // At activity level the card auto-expands (expandByDefault=true).
 
   expect(screen.getByText("FAIL").closest('[data-ansi-fg="red"]')).toBeTruthy();
 });
@@ -405,7 +405,7 @@ test("a notification restores its owning session to main before opening the chil
 
 test("a notification card always keeps the verbatim block inspectable in a raw disclosure", () => {
   render(<SteeringItem item={item({ text: JOB_NOTIFICATION_STEERING })} turn={turn} live={false} />);
-  fireEvent.click(screen.getByTestId("notification-card"));
+  // At activity level the card auto-expands (expandByDefault=true).
   expect(screen.getByTestId("notification-raw").textContent).toContain("job_7");
 });
 

@@ -34,9 +34,8 @@ func canonicalHashTOML(data []byte, encode func(io.Writer, Layer) error) (string
 	return "sha256:" + hex.EncodeToString(sum[:]), nil
 }
 
-// trustHashes returns the effective set of recorded hashes from a MetaTrust.
-// It merges the deprecated singular Hash field into the Hashes slice so that
-// old single-hash entries are handled transparently.
+// trustHashes returns the deduplicated set of recorded hashes from a
+// MetaTrust.
 func trustHashes(t MetaTrust) []string {
 	seen := map[string]bool{}
 	var out []string
@@ -46,15 +45,10 @@ func trustHashes(t MetaTrust) []string {
 			out = append(out, h)
 		}
 	}
-	// Migrate the deprecated singular Hash field.
-	if t.Hash != "" && !seen[t.Hash] {
-		out = append(out, t.Hash)
-	}
 	return out
 }
 
-// TrustHashSet returns the deduplicated set of hashes from a MetaTrust,
-// including migration of the deprecated singular Hash field.
+// TrustHashSet returns the deduplicated set of hashes from a MetaTrust.
 // This is the canonical way for callers to read the hash set before appending.
 func TrustHashSet(t MetaTrust) []string {
 	return trustHashes(t)

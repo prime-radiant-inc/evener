@@ -108,7 +108,7 @@ func (s *CheckpointPredStrategy) ManageContext(ctx context.Context, history *[]s
 		result, err := s.predictiveCheckpoint(ctx, *history, s.cm.PreserveRecentTurns)
 		if err != nil {
 			// Fall back to deterministic checkpoint on error.
-			*history = checkpoint(*history, s.cm.PreserveRecentTurns, &s.cm.Meta, s.cm.resultToolName())
+			*history = checkpoint(*history, s.cm.PreserveRecentTurns, s.cm.metaFor(ctx), s.cm.resultToolName())
 			emitFn(events.EventWarning, events.WarningData{
 				Message: "Predictive checkpoint failed, using deterministic: " + err.Error(),
 			})

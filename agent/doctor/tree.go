@@ -45,10 +45,10 @@ func Tree(stateBase, selector string, opts TreeOpts) (TreeNode, error) {
 	}
 	visited := map[string]bool{}
 	root := TreeNode{SessionID: paths.SessionID, TranscriptRef: paths.TranscriptRef}
-	return expandNode(stateBase, root, paths, opts, depth, visited), nil
+	return expandNode(stateBase, root, paths, opts, depth, visited, delegateCache{}), nil
 }
 
-func expandNode(stateBase string, node TreeNode, paths Paths, opts TreeOpts, depthRemaining int, visited map[string]bool) TreeNode {
+func expandNode(stateBase string, node TreeNode, paths Paths, opts TreeOpts, depthRemaining int, visited map[string]bool, delegates delegateCache) TreeNode {
 	if visited[paths.SessionID] {
 		node.Note = "already shown (cycle)"
 		return node
@@ -61,7 +61,7 @@ func expandNode(stateBase string, node TreeNode, paths Paths, opts TreeOpts, dep
 		return node
 	}
 	node.Failures = legacyDelegateFailures(events)
-	_, stable, diagnostics, err := stableDoctorDelegates(paths)
+	_, stable, diagnostics, err := delegates.get(paths)
 	if err != nil {
 		node.Note = "delegates unreadable: " + err.Error()
 		return node
@@ -70,14 +70,14 @@ func expandNode(stateBase string, node TreeNode, paths Paths, opts TreeOpts, dep
 		node.Note = strings.Join(diagnostics, "; ")
 	}
 
-	node.Children = append(node.Children, stableDelegateChildren(stateBase, paths.SessionID, stable, opts, depthRemaining, visited)...)
+	node.Children = append(node.Children, stableDelegateChildren(stateBase, paths.SessionID, stable, opts, depthRemaining, visited, delegates)...)
 	if opts.Observers {
 		node.Children = append(node.Children, observerChildren(stateBase, paths)...)
 	}
 	return node
 }
 
-func stableDelegateChildren(stateBase, ownerSessionID string, state delegatestore.State, opts TreeOpts, depthRemaining int, visited map[string]bool) []TreeNode {
+func stableDelegateChildren(stateBase, ownerSessionID string, state delegatestore.State, opts TreeOpts, depthRemaining int, visited map[string]bool, delegates delegateCache) []TreeNode {
 	rows := projectDoctorDelegates(ownerSessionID, state)
 	children := make([]TreeNode, 0, len(rows))
 	for _, row := range rows {
@@ -99,9 +99,9 @@ func stableDelegateChildren(stateBase, ownerSessionID string, state delegatestor
 			child.TranscriptRef = childPaths.TranscriptRef
 		}
 		if depthRemaining > 1 {
-			child = expandNode(stateBase, child, childPaths, opts, depthRemaining-1, visited)
+			child = expandNode(stateBase, child, childPaths, opts, depthRemaining-1, visited, delegates)
 		} else {
-			child.Note = stableDepthLimitNote(childPaths)
+			child.Note = stableDepthLimitNote(childPaths, delegates)
 		}
 		child.Note = withDelegateReason(child.Note, row.NotResumableReason)
 		children = append(children, child)
@@ -119,8 +119,8 @@ func withDelegateReason(existing, reason string) string {
 	return reason + "; " + existing
 }
 
-func stableDepthLimitNote(paths Paths) string {
-	_, state, _, err := stableDoctorDelegates(paths)
+func stableDepthLimitNote(paths Paths, delegates delegateCache) string {
+	_, state, _, err := delegates.get(paths)
 	if err != nil {
 		return ""
 	}

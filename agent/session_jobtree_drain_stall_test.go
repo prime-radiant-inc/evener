@@ -50,6 +50,10 @@ type stallDriver struct {
 }
 
 func newStallDriver(ctx context.Context, sess *Session) *stallDriver {
+	return newStallDriverWithProcess(ctx, sess, stallProcess)
+}
+
+func newStallDriverWithProcess(ctx context.Context, sess *Session, process func(context.Context, string, []ImageAttachment, EntryKind) (string, error)) *stallDriver {
 	d := &stallDriver{
 		top:     make(chan struct{}),
 		release: make(chan struct{}),
@@ -62,7 +66,7 @@ func newStallDriver(ctx context.Context, sess *Session) *stallDriver {
 		return nil
 	}
 	go func() {
-		d.res, d.err = sess.drainJobTreeWith(ctx, d.recheck, kick, stallProcess)
+		d.res, d.err = sess.drainJobTreeWith(ctx, d.recheck, kick, process)
 		close(d.done)
 	}()
 	return d
@@ -84,7 +88,7 @@ func (d *stallDriver) releaseKick(t *testing.T) {
 // TestDrainStallWatchdogFiresOnGenuineStall verifies the defense-in-depth
 // backstop: a subtree that stays outstanding with no live/deliverable component
 // (h8mq-style durable-only pending, self-heal disabled) is cut once it has been
-// continuously stalled past drainStallTimeout. The drain must RETURN (not hang),
+// continuously stalled past DrainStallTimeout. The drain must RETURN (not hang),
 // emit ONE warning naming the stuck job, and yield the last result.
 func TestDrainStallWatchdogFiresOnGenuineStall(t *testing.T) {
 	for _, tt := range []struct {
@@ -112,7 +116,7 @@ func TestDrainStallWatchdogFiresOnGenuineStall(t *testing.T) {
 			d.releaseKick(t)
 			d.assertParked(t, "iteration 1 must park, not fire before the timeout")
 
-			clk.Advance(drainStallTimeout + time.Second)
+			clk.Advance(DrainStallTimeout + time.Second)
 			d.recheck <- time.Time{}
 			d.releaseKick(t)
 
@@ -243,7 +247,7 @@ func TestDrainStallWatchdogSparePendingWatchSend(t *testing.T) {
 	assertDrainNotCut(t, sess, clk)
 }
 
-// assertDrainNotCut drives the drain well past drainStallTimeout and asserts it
+// assertDrainNotCut drives the drain well past DrainStallTimeout and asserts it
 // keeps blocking (does not return, emits no stall warning). Live work must never
 // be cut. It then cancels the context to let the drain goroutine exit cleanly.
 func assertDrainNotCut(t *testing.T, sess *Session, clk *agenttest.FakeClock) {
@@ -257,7 +261,7 @@ func assertDrainNotCut(t *testing.T, sess *Session, clk *agenttest.FakeClock) {
 
 	// Advance far past the timeout and run another iteration: live work still
 	// resets the stall clock, so the drain must NOT fire.
-	clk.Advance(drainStallTimeout * 10)
+	clk.Advance(DrainStallTimeout * 10)
 	d.recheck <- time.Time{}
 	d.releaseKick(t)
 	d.assertParked(t, "live work must never be cut even past the timeout")
@@ -298,7 +302,7 @@ func TestDrainStallGiveUpRechecksTheWakeEdge(t *testing.T) {
 	d.releaseKick(t)
 	d.assertParked(t, "iteration 1 must park, not fire before the timeout")
 
-	clk.Advance(drainStallTimeout + time.Second)
+	clk.Advance(DrainStallTimeout + time.Second)
 	d.recheck <- time.Time{}
 	// Release the pass whose stall check will read the expired clock, raising a
 	// wake AFTER the pass consumed its top-of-loop edge (the kick blocks after

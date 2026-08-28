@@ -6,10 +6,7 @@ import (
 	"fmt"
 	"io/fs"
 	"os"
-	"path/filepath"
 	"time"
-
-	"primeradiant.com/evener/internal/legacypaths"
 )
 
 var marshalRegistry = json.MarshalIndent
@@ -58,26 +55,7 @@ func LoadRegistry(path string) (Registry, error) {
 	if r.Plugins == nil {
 		r.Plugins = map[string][]InstallEntry{}
 	}
-	rerootLegacyInstallPaths(r, filepath.Dir(path))
 	return r, nil
-}
-
-// rerootLegacyInstallPaths rewrites any InstallEntry.InstallPath still
-// rooted under the pre-rename legacy plugins root (see legacyRootFor) to
-// live under root, the registry's current plugins root. A no-op when root
-// doesn't have the DefaultRoot shape, or no entry has a legacy path.
-func rerootLegacyInstallPaths(r Registry, root string) {
-	legacy := legacyRootFor(root)
-	if legacy == "" {
-		return
-	}
-	for _, entries := range r.Plugins {
-		for i := range entries {
-			if rewritten, n := legacypaths.Rewrite(entries[i].InstallPath, legacy, root); n > 0 {
-				entries[i].InstallPath = rewritten
-			}
-		}
-	}
 }
 
 // SaveRegistry writes r to path atomically, always at schema version 2.

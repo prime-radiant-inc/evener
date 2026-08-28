@@ -23,6 +23,7 @@ import (
 	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/agent/task"
 	"primeradiant.com/evener/llm"
+	"primeradiant.com/evener/llm/registry"
 )
 
 func TestSession_MaxToolRoundsPerInput_StopsLoop(t *testing.T) {
@@ -57,7 +58,7 @@ func TestSession_MaxToolRoundsPerInput_StopsLoop(t *testing.T) {
 	}
 	c.Register(f)
 
-	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{
+	sess, err := NewSession(c, withTestSessionNamer(c, NewOpenAIProfile("gpt-5.2")), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{
 		MaxToolRoundsPerInput: 2,
 	})
 	if err != nil {
@@ -106,7 +107,7 @@ func TestSession_MaxToolRoundsPerInput_EmitsTurnLimitEvent(t *testing.T) {
 	}
 	c.Register(f)
 
-	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{
+	sess, err := NewSession(c, withTestSessionNamer(c, NewOpenAIProfile("gpt-5.2")), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{
 		MaxToolRoundsPerInput: 2,
 	})
 	if err != nil {
@@ -164,7 +165,7 @@ func TestSession_MaxToolRoundsPerInput_NegativeMeansUnlimited(t *testing.T) {
 	}
 	c.Register(f)
 
-	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{
+	sess, err := NewSession(c, withTestSessionNamer(c, NewOpenAIProfile("gpt-5.2")), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{
 		MaxToolRoundsPerInput: -1, // unlimited
 	})
 	if err != nil {
@@ -215,7 +216,7 @@ func TestSession_LifecycleEvents_BracketSession(t *testing.T) {
 	c := llm.NewClient()
 	c.Register(&fakeAdapter{name: "openai"})
 
-	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{})
+	sess, err := NewSession(c, withTestSessionNamer(c, NewOpenAIProfile("gpt-5.2")), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{})
 	if err != nil {
 		t.Fatalf("NewSession: %v", err)
 	}
@@ -247,7 +248,7 @@ func TestSession_EventSystem_NaturalCompletion_EmitsUserAndAssistantTextEventsIn
 		},
 	})
 
-	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{})
+	sess, err := NewSession(c, withTestSessionNamer(c, NewOpenAIProfile("gpt-5.2")), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{})
 	if err != nil {
 		t.Fatalf("NewSession: %v", err)
 	}
@@ -297,7 +298,7 @@ func TestSession_EventSystem_UserInputCarriesTurnIndex(t *testing.T) {
 		},
 	})
 
-	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{StateDir: dir})
+	sess, err := NewSession(c, withTestSessionNamer(c, NewOpenAIProfile("gpt-5.2")), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{StateDir: dir})
 	if err != nil {
 		t.Fatalf("NewSession: %v", err)
 	}
@@ -366,7 +367,7 @@ func TestSession_EventSystem_ToolCall_EmitsStartDeltaEnd(t *testing.T) {
 		},
 	})
 
-	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{})
+	sess, err := NewSession(c, withTestSessionNamer(c, NewOpenAIProfile("gpt-5.2")), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{})
 	if err != nil {
 		t.Fatalf("NewSession: %v", err)
 	}
@@ -425,7 +426,7 @@ func TestSession_MaxTurns_StopsAcrossInputsAndEmitsEvent(t *testing.T) {
 	}
 	c.Register(f)
 
-	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{
+	sess, err := NewSession(c, withTestSessionNamer(c, NewOpenAIProfile("gpt-5.2")), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{
 		MaxTurns: 1,
 	})
 	if err != nil {
@@ -469,7 +470,7 @@ func TestSession_MultipleSequentialInputs_Work(t *testing.T) {
 	}
 	c.Register(f)
 
-	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{})
+	sess, err := NewSession(c, withTestSessionNamer(c, NewOpenAIProfile("gpt-5.2")), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{})
 	if err != nil {
 		t.Fatalf("NewSession: %v", err)
 	}
@@ -525,7 +526,7 @@ func TestSession_Steer_IsInjectedAfterCurrentToolRound(t *testing.T) {
 	}
 	c.Register(f)
 
-	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{})
+	sess, err := NewSession(c, withTestSessionNamer(c, NewOpenAIProfile("gpt-5.2")), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{})
 	if err != nil {
 		t.Fatalf("NewSession: %v", err)
 	}
@@ -644,7 +645,7 @@ func TestSession_ReasoningEffort_PassedThroughAndCanChange(t *testing.T) {
 	}
 	c.Register(f)
 
-	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{
+	sess, err := NewSession(c, withTestSessionNamer(c, NewOpenAIProfile("gpt-5.2")), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{
 		ReasoningEffort: "low",
 	})
 	if err != nil {
@@ -709,7 +710,7 @@ func TestSession_PopulatesModelRequestMetadata(t *testing.T) {
 	}}
 	c.Register(f)
 
-	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{
+	sess, err := NewSession(c, withTestSessionNamer(c, NewOpenAIProfile("gpt-5.2")), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{
 		StateDir: stateDir,
 		// forceRealIO: this test's contract includes the installation_id file
 		// actually existing at StateDir on the real filesystem (asserted below);
@@ -780,7 +781,7 @@ func TestSession_RetainsEncryptedReasoningAcrossToolRound(t *testing.T) {
 	}}
 	c.Register(f)
 
-	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{})
+	sess, err := NewSession(c, withTestSessionNamer(c, NewOpenAIProfile("gpt-5.2")), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{})
 	if err != nil {
 		t.Fatalf("NewSession: %v", err)
 	}
@@ -829,9 +830,9 @@ func TestSession_ContextWindowAwareness_EmitsWarningOver80Percent(t *testing.T) 
 	}
 	c.Register(f)
 
-	// With cw=100 and ~110 tokens of content (system prompt agents section + user input),
-	// warning should emit since usage exceeds the 80% threshold.
-	sess, err := NewSession(c, WithContextWindow(WithProviderID(NewOpenAIProfile("m"), "tiny"), 100), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{})
+	// Keep enough room for the full base prompt while constraining the window
+	// enough that this request crosses the warning threshold.
+	sess, err := NewSession(c, WithContextWindow(namedInstanceProfile("tiny", "openai", "m"), 25_000), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{})
 	if err != nil {
 		t.Fatalf("NewSession: %v", err)
 	}
@@ -872,7 +873,7 @@ func TestSession_ContextWindowAwareness_DoesNotWarnUnderThreshold(t *testing.T) 
 	}
 	c.Register(f)
 
-	sess, err := NewSession(c, WithContextWindow(WithProviderID(NewOpenAIProfile("m"), "tiny"), 1_000_000), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{})
+	sess, err := NewSession(c, WithContextWindow(namedInstanceProfile("tiny", "openai", "m"), 1_000_000), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{})
 	if err != nil {
 		t.Fatalf("NewSession: %v", err)
 	}
@@ -907,7 +908,7 @@ func TestSession_ContextWindowAwareness_DoesNotWarnForLargeImageBytes(t *testing
 	}
 	c.Register(f)
 
-	sess, err := NewSession(c, WithContextWindow(WithProviderID(NewOpenAIProfile("m"), "tiny"), 262_144), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{})
+	sess, err := NewSession(c, WithContextWindow(namedInstanceProfile("tiny", "openai", "m"), 262_144), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{})
 	if err != nil {
 		t.Fatalf("NewSession: %v", err)
 	}
@@ -959,7 +960,7 @@ func TestSession_AbortSignal_KeepsSessionAliveAndEmitsInterruptedSessionEnd(t *t
 	}
 	c.Register(f)
 
-	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{})
+	sess, err := NewSession(c, withTestSessionNamer(c, NewOpenAIProfile("gpt-5.2")), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{})
 	if err != nil {
 		t.Fatalf("NewSession: %v", err)
 	}
@@ -1109,7 +1110,7 @@ func TestSession_AbortThenFollowup(t *testing.T) {
 	}
 	c.Register(f)
 
-	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{})
+	sess, err := NewSession(c, withTestSessionNamer(c, NewOpenAIProfile("gpt-5.2")), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{})
 	if err != nil {
 		t.Fatalf("NewSession: %v", err)
 	}
@@ -1202,7 +1203,7 @@ func TestSession_AbortDrainsQueuedInputWithFreshContext(t *testing.T) {
 	}
 	c.Register(f)
 
-	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{})
+	sess, err := NewSession(c, withTestSessionNamer(c, NewOpenAIProfile("gpt-5.2")), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{})
 	if err != nil {
 		t.Fatalf("NewSession: %v", err)
 	}
@@ -1306,7 +1307,7 @@ func TestSession_AbortErrorDrainsQueuedInputWithFreshContext(t *testing.T) {
 		},
 	})
 
-	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{})
+	sess, err := NewSession(c, withTestSessionNamer(c, NewOpenAIProfile("gpt-5.2")), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{})
 	if err != nil {
 		t.Fatalf("NewSession: %v", err)
 	}
@@ -1448,7 +1449,7 @@ func TestSession_CustomToolRegistration_OverridesExistingTool(t *testing.T) {
 	c := llm.NewClient()
 	c.Register(&fakeAdapter{name: "openai"})
 
-	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{})
+	sess, err := NewSession(c, withTestSessionNamer(c, NewOpenAIProfile("gpt-5.2")), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{})
 	if err != nil {
 		t.Fatalf("NewSession: %v", err)
 	}
@@ -1493,7 +1494,7 @@ func TestSession_AuthenticationError_LeavesSessionIdle(t *testing.T) {
 	a := &errAdapter{name: "openai", err: llm.ErrorFromHTTPStatus("openai", 401, "bad key", nil, nil)}
 	c.Register(a)
 
-	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{})
+	sess, err := NewSession(c, withTestSessionNamer(c, NewOpenAIProfile("gpt-5.2")), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{})
 	if err != nil {
 		t.Fatalf("NewSession: %v", err)
 	}
@@ -1532,7 +1533,7 @@ func TestSession_ContextLengthError_EmitsWarningAndLeavesSessionIdle(t *testing.
 	a := &errAdapter{name: "openai", err: llm.ErrorFromHTTPStatus("openai", 413, "too large", nil, nil)}
 	c.Register(a)
 
-	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{})
+	sess, err := NewSession(c, withTestSessionNamer(c, NewOpenAIProfile("gpt-5.2")), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{})
 	if err != nil {
 		t.Fatalf("NewSession: %v", err)
 	}
@@ -1578,7 +1579,7 @@ func TestSession_LLMError_EmitsErrorEvent(t *testing.T) {
 	c.Register(a)
 
 	policy := llm.RetryPolicy{MaxRetries: 0}
-	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{
+	sess, err := NewSession(c, withTestSessionNamer(c, NewOpenAIProfile("gpt-5.2")), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{
 		LLMRetryPolicy: &policy,
 	})
 	if err != nil {
@@ -1614,7 +1615,7 @@ func TestSession_ConfigurationError_EmitsEvenerDiagnosticEvent(t *testing.T) {
 	c.Register(a)
 
 	policy := llm.RetryPolicy{MaxRetries: 0}
-	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{
+	sess, err := NewSession(c, withTestSessionNamer(c, NewOpenAIProfile("gpt-5.2")), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{
 		LLMRetryPolicy: &policy,
 	})
 	if err != nil {
@@ -1649,7 +1650,7 @@ func TestSession_RuntimeError_EmitsEvenerDiagnosticEvent(t *testing.T) {
 	c.Register(a)
 
 	policy := llm.RetryPolicy{MaxRetries: 0}
-	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{
+	sess, err := NewSession(c, withTestSessionNamer(c, NewOpenAIProfile("gpt-5.2")), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{
 		LLMRetryPolicy: &policy,
 	})
 	if err != nil {
@@ -1698,7 +1699,7 @@ func TestSession_LLMTransientErrors_RetryWithBackoff(t *testing.T) {
 		Jitter:            false,
 	}
 
-	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{
+	sess, err := NewSession(c, withTestSessionNamer(c, NewOpenAIProfile("gpt-5.2")), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{
 		LLMRetryPolicy: &policy,
 		LLMSleep:       sleep,
 	})
@@ -1774,7 +1775,7 @@ func TestSession_Subagent_AutoNudgeExplicitBuiltinSubagent(t *testing.T) {
 	}
 	c.Register(f)
 
-	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.3-codex"), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{
+	sess, err := NewSession(c, withTestSessionNamer(c, NewOpenAIProfile("gpt-5.3-codex")), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{
 		MaxSubagentDepth: 1,
 	})
 	if err != nil {
@@ -1814,7 +1815,7 @@ func TestSession_SpawnAgent_MaxTurns(t *testing.T) {
 	}
 	c.Register(f)
 
-	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{
+	sess, err := NewSession(c, withTestSessionNamer(c, NewOpenAIProfile("gpt-5.2")), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{
 		MaxSubagentDepth: 1,
 	})
 	if err != nil {
@@ -1880,7 +1881,7 @@ func TestSession_ShellTool_UsesDefaultTimeout(t *testing.T) {
 	c.Register(f)
 
 	env := &captureEnv{wd: "/tmp"}
-	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), env, SessionConfig{})
+	sess, err := NewSession(c, withTestSessionNamer(c, NewOpenAIProfile("gpt-5.2")), env, SessionConfig{})
 	if err != nil {
 		t.Fatalf("NewSession: %v", err)
 	}
@@ -1923,7 +1924,7 @@ func TestSession_ShellTool_CapsTimeoutToMaxCommandTimeoutMS(t *testing.T) {
 	c.Register(f)
 
 	env := &captureEnv{wd: "/tmp"}
-	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), env, SessionConfig{
+	sess, err := NewSession(c, withTestSessionNamer(c, NewOpenAIProfile("gpt-5.2")), env, SessionConfig{
 		MaxCommandTimeoutMS: 5000,
 	})
 	if err != nil {
@@ -1968,7 +1969,7 @@ func TestSession_ShellTool_TimeoutAppendsMessageToToolResult(t *testing.T) {
 	c.Register(f)
 
 	env := &timeoutEnv{wd: dir}
-	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), env, SessionConfig{})
+	sess, err := NewSession(c, withTestSessionNamer(c, NewOpenAIProfile("gpt-5.2")), env, SessionConfig{})
 	if err != nil {
 		t.Fatalf("NewSession: %v", err)
 	}
@@ -2046,7 +2047,7 @@ func TestProcessInput_ToolChoiceIsNeverForced(t *testing.T) {
 	c.Register(f)
 
 	dir := t.TempDir()
-	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{})
+	sess, err := NewSession(c, withTestSessionNamer(c, NewOpenAIProfile("gpt-5.2")), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{})
 	if err != nil {
 		t.Fatalf("NewSession: %v", err)
 	}
@@ -2077,7 +2078,7 @@ func TestProcessInput_DrainsSteeringBeforeFirstLLMCall(t *testing.T) {
 	c.Register(f)
 
 	dir := t.TempDir()
-	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{})
+	sess, err := NewSession(c, withTestSessionNamer(c, NewOpenAIProfile("gpt-5.2")), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{})
 	if err != nil {
 		t.Fatalf("NewSession: %v", err)
 	}
@@ -2153,7 +2154,7 @@ func TestLoopDetection_PatternLength2(t *testing.T) {
 
 	enableLoop := true
 	dir := t.TempDir()
-	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(dir),
+	sess, err := NewSession(c, withTestSessionNamer(c, NewOpenAIProfile("gpt-5.2")), execenv.NewLocalExecutionEnvironment(dir),
 		SessionConfig{
 			EnableLoopDetection:   &enableLoop,
 			LoopDetectionWindow:   6,
@@ -2191,7 +2192,7 @@ func TestProviderOptions_PassedToLLMRequest(t *testing.T) {
 	t.Parallel()
 	c := llm.NewClient()
 	f := &fakeAdapter{
-		name: "anthropic",
+		name: "google",
 		steps: []func(req llm.Request) llm.Response{
 			func(req llm.Request) llm.Response {
 				return wrapCommunicateResponse(llm.Response{
@@ -2203,9 +2204,9 @@ func TestProviderOptions_PassedToLLMRequest(t *testing.T) {
 	}
 	c.Register(f)
 
-	// A real Anthropic 1M-context profile carries provider options (max_tokens
-	// plus the 1M-context beta header); verify they reach the LLM request.
-	profile := newAnthropicProfile("claude-opus-4-6[1m]")
+	// The Gemini profile carries the safety settings the agent adds for the
+	// google protocol; verify they reach the LLM request.
+	profile := newGeminiProfile("gemini-2.5-pro")
 
 	dir := t.TempDir()
 	sess, err := NewSession(c, profile, execenv.NewLocalExecutionEnvironment(dir), SessionConfig{})
@@ -2230,13 +2231,12 @@ func TestProviderOptions_PassedToLLMRequest(t *testing.T) {
 	if reqs[0].ProviderOptions == nil {
 		t.Fatal("expected ProviderOptions to be set on request")
 	}
-	anth, ok := reqs[0].ProviderOptions["anthropic"].(map[string]any)
+	google, ok := reqs[0].ProviderOptions[registry.ProtocolGoogle].(map[string]any)
 	if !ok {
-		t.Fatalf("expected anthropic key in ProviderOptions, got %v", reqs[0].ProviderOptions)
+		t.Fatalf("expected %s key in ProviderOptions, got %v", registry.ProtocolGoogle, reqs[0].ProviderOptions)
 	}
-	betaHeader, _ := anth["beta_headers"].(string)
-	if !strings.HasPrefix(betaHeader, "context-1m") {
-		t.Fatalf("expected beta_headers to start with 'context-1m', got %v", anth["beta_headers"])
+	if google["safetySettings"] == nil {
+		t.Fatalf("expected safetySettings in the google provider options, got %v", google)
 	}
 }
 
@@ -2291,7 +2291,7 @@ func TestMaxTurns_CountsConversationTurns(t *testing.T) {
 	c.Register(f)
 
 	dir := t.TempDir()
-	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(dir),
+	sess, err := NewSession(c, withTestSessionNamer(c, NewOpenAIProfile("gpt-5.2")), execenv.NewLocalExecutionEnvironment(dir),
 		SessionConfig{MaxTurns: 2})
 	if err != nil {
 		t.Fatalf("NewSession: %v", err)
@@ -2336,7 +2336,7 @@ func TestAssistantTurn_CapturesUsageAndResponseID(t *testing.T) {
 	c.Register(f)
 
 	dir := t.TempDir()
-	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{})
+	sess, err := NewSession(c, withTestSessionNamer(c, NewOpenAIProfile("gpt-5.2")), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{})
 	if err != nil {
 		t.Fatalf("NewSession: %v", err)
 	}
@@ -2383,7 +2383,7 @@ func TestSession_GracefulShutdown_ClosesSubagents(t *testing.T) {
 	c.Register(f)
 
 	dir := t.TempDir()
-	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{})
+	sess, err := NewSession(c, withTestSessionNamer(c, NewOpenAIProfile("gpt-5.2")), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{})
 	if err != nil {
 		t.Fatalf("NewSession: %v", err)
 	}
@@ -2393,7 +2393,7 @@ func TestSession_GracefulShutdown_ClosesSubagents(t *testing.T) {
 	}()
 
 	// Create a sub-session and manually register it as a subagent.
-	subSess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{})
+	subSess, err := NewSession(c, withTestSessionNamer(c, NewOpenAIProfile("gpt-5.2")), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{})
 	if err != nil {
 		t.Fatalf("NewSession (sub): %v", err)
 	}
@@ -2435,7 +2435,7 @@ func TestSession_GracefulShutdown_SessionEndIncludesStateAndTurns(t *testing.T) 
 	})
 
 	dir := t.TempDir()
-	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{})
+	sess, err := NewSession(c, withTestSessionNamer(c, NewOpenAIProfile("gpt-5.2")), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{})
 	if err != nil {
 		t.Fatalf("NewSession: %v", err)
 	}
@@ -2493,7 +2493,7 @@ func TestSession_ToolResults_AggregatedIntoSingleTurn(t *testing.T) {
 	}
 	c.Register(f)
 
-	sess, err := NewSession(c, newAnthropicProfile("claude-test"), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{})
+	sess, err := NewSession(c, withTestSessionNamer(c, newAnthropicProfile("claude-test")), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{})
 	if err != nil {
 		t.Fatalf("NewSession: %v", err)
 	}
@@ -2561,7 +2561,7 @@ func TestSession_ToolResults_ContainsAllCallIDs(t *testing.T) {
 	}
 	c.Register(f)
 
-	sess, err := NewSession(c, newAnthropicProfile("claude-test"), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{})
+	sess, err := NewSession(c, withTestSessionNamer(c, newAnthropicProfile("claude-test")), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{})
 	if err != nil {
 		t.Fatalf("NewSession: %v", err)
 	}
@@ -2631,7 +2631,7 @@ func TestSession_ToolResults_SingleCallAlsoAggregated(t *testing.T) {
 	}
 	c.Register(f)
 
-	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{})
+	sess, err := NewSession(c, withTestSessionNamer(c, NewOpenAIProfile("gpt-5.2")), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{})
 	if err != nil {
 		t.Fatalf("NewSession: %v", err)
 	}
@@ -2692,7 +2692,7 @@ func TestSession_ToolNameMapping_ReverseDispatch(t *testing.T) {
 	}
 	c.Register(f)
 
-	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{})
+	sess, err := NewSession(c, withTestSessionNamer(c, NewOpenAIProfile("gpt-5.2")), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{})
 	if err != nil {
 		t.Fatalf("NewSession: %v", err)
 	}
@@ -2789,7 +2789,7 @@ func TestSession_ToolNameMapping_EventsUseCanonicalName(t *testing.T) {
 	}
 	c.Register(f)
 
-	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{})
+	sess, err := NewSession(c, withTestSessionNamer(c, NewOpenAIProfile("gpt-5.2")), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{})
 	if err != nil {
 		t.Fatalf("NewSession: %v", err)
 	}
@@ -2842,7 +2842,7 @@ func TestSession_ToolNameMapping_EventsUseCanonicalName(t *testing.T) {
 	}
 }
 
-func TestSession_ToolPurpose_IncludedInToolCallStartEvent(t *testing.T) {
+func TestSession_ToolIntent_IncludedInToolCallStartEvent(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
 	c := llm.NewClient()
@@ -2854,7 +2854,7 @@ func TestSession_ToolPurpose_IncludedInToolCallStartEvent(t *testing.T) {
 				call := llm.ToolCallData{
 					ID:        "call-sh",
 					Name:      "exec_command",
-					Arguments: json.RawMessage(`{"command":"ls","purpose":"List project files"}`),
+					Arguments: json.RawMessage(`{"command":"ls","intent":"List project files"}`),
 					Type:      "function",
 				}
 				return llm.Response{
@@ -2871,7 +2871,7 @@ func TestSession_ToolPurpose_IncludedInToolCallStartEvent(t *testing.T) {
 	}
 	c.Register(f)
 
-	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{})
+	sess, err := NewSession(c, withTestSessionNamer(c, NewOpenAIProfile("gpt-5.2")), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{})
 	if err != nil {
 		t.Fatalf("NewSession: %v", err)
 	}
@@ -2907,7 +2907,7 @@ func TestSession_ToolPurpose_IncludedInToolCallStartEvent(t *testing.T) {
 			}
 		}
 	}
-	t.Fatal("TOOL_CALL_START event should include description field from tool purpose")
+	t.Fatal("TOOL_CALL_START event should include description field from tool intent")
 }
 
 func TestSession_ReadBeforeWrite_WarnsOnUnreadFile(t *testing.T) {
@@ -2944,7 +2944,7 @@ func TestSession_ReadBeforeWrite_WarnsOnUnreadFile(t *testing.T) {
 	}
 	c.Register(f)
 
-	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{})
+	sess, err := NewSession(c, withTestSessionNamer(c, NewOpenAIProfile("gpt-5.2")), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{})
 	if err != nil {
 		t.Fatalf("NewSession: %v", err)
 	}
@@ -3031,7 +3031,7 @@ func TestSession_ReadBeforeWrite_NoWarningAfterRead(t *testing.T) {
 	}
 	c.Register(f)
 
-	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{})
+	sess, err := NewSession(c, withTestSessionNamer(c, NewOpenAIProfile("gpt-5.2")), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{})
 	if err != nil {
 		t.Fatalf("NewSession: %v", err)
 	}
@@ -3099,7 +3099,7 @@ func TestSession_ReadBeforeWrite_NewFileNoWarning(t *testing.T) {
 	}
 	c.Register(f)
 
-	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{})
+	sess, err := NewSession(c, withTestSessionNamer(c, NewOpenAIProfile("gpt-5.2")), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{})
 	if err != nil {
 		t.Fatalf("NewSession: %v", err)
 	}
@@ -3152,7 +3152,7 @@ func TestSession_ReasoningEffort_MediumPassedThrough(t *testing.T) {
 	}
 	c.Register(f)
 
-	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{
+	sess, err := NewSession(c, withTestSessionNamer(c, NewOpenAIProfile("gpt-5.2")), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{
 		ReasoningEffort: "medium",
 	})
 	if err != nil {
@@ -3196,15 +3196,15 @@ func TestSession_TaskListUpdateEscalatesReasoningEffort(t *testing.T) {
 		steps: []func(req llm.Request) llm.Response{
 			// Step 1: create a task.
 			func(req llm.Request) llm.Response {
-				return taskListCall("c1", `{"action":"append","tasks":[{"type":"implement","description":"work","prompt":"do stuff"}]}`)
+				return taskListCall("c1", `{"add":[{"type":"implement","description":"work","prompt":"do stuff"}]}`)
 			},
 			// Step 2: start it (in_progress, no effort override yet).
 			func(req llm.Request) llm.Response {
-				return taskListCall("c2", `{"action":"update","updates":[{"id":1,"status":"in_progress"}]}`)
+				return taskListCall("c2", `{"update":[{"id":1,"status":"in_progress"}]}`)
 			},
 			// Step 3: escalate reasoning_effort to high.
 			func(req llm.Request) llm.Response {
-				return taskListCall("c3", `{"action":"update","updates":[{"id":1,"status":"in_progress","reasoning_effort":"high"}]}`)
+				return taskListCall("c3", `{"update":[{"id":1,"status":"in_progress","reasoning_effort":"high"}]}`)
 			},
 			// Step 4: done — this request should carry effort=high.
 			func(req llm.Request) llm.Response {
@@ -3214,7 +3214,7 @@ func TestSession_TaskListUpdateEscalatesReasoningEffort(t *testing.T) {
 	}
 	c.Register(f)
 
-	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{
+	sess, err := NewSession(c, withTestSessionNamer(c, NewOpenAIProfile("gpt-5.2")), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{
 		ReasoningEffort: "low",
 	})
 	if err != nil {
@@ -3265,17 +3265,17 @@ func TestSession_TaskList_AppendAndUpdate_EmitToolStateSnapshots(t *testing.T) {
 		name: "openai",
 		steps: []func(req llm.Request) llm.Response{
 			func(req llm.Request) llm.Response {
-				return taskListCall("c1", `{"action":"append","tasks":[{"type":"research","description":"Map criteria","prompt":"look at specs"},{"type":"implement","description":"Write tests","prompt":"add cases"}]}`)
+				return taskListCall("c1", `{"add":[{"type":"research","description":"Map criteria","prompt":"look at specs"},{"type":"implement","description":"Write tests","prompt":"add cases"}]}`)
 			},
 			func(req llm.Request) llm.Response {
-				return taskListCall("c2", `{"action":"update","updates":[{"id":1,"status":"done","notes":"reviewed specs"}]}`)
+				return taskListCall("c2", `{"update":[{"id":1,"status":"done","notes":"reviewed specs"}]}`)
 			},
 			func(req llm.Request) llm.Response { return finalResponse("done") },
 		},
 	}
 	c.Register(f)
 
-	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{})
+	sess, err := NewSession(c, withTestSessionNamer(c, NewOpenAIProfile("gpt-5.2")), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{})
 	if err != nil {
 		t.Fatalf("NewSession: %v", err)
 	}
@@ -3343,7 +3343,7 @@ func TestSession_TaskList_AppendAndUpdate_EmitToolStateSnapshots(t *testing.T) {
 	}
 }
 
-func TestSession_ReasoningEffort_EmptyMeansNoOverride(t *testing.T) {
+func TestSession_ReasoningEffort_EmptyGetsDefaultEffort(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
 	c := llm.NewClient()
@@ -3358,7 +3358,7 @@ func TestSession_ReasoningEffort_EmptyMeansNoOverride(t *testing.T) {
 	}
 	c.Register(f)
 
-	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{
+	sess, err := NewSession(c, withTestSessionNamer(c, NewOpenAIProfile("gpt-5.2")), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{
 		// ReasoningEffort left empty — no override.
 	})
 	if err != nil {
@@ -3377,8 +3377,52 @@ func TestSession_ReasoningEffort_EmptyMeansNoOverride(t *testing.T) {
 	if len(reqs) == 0 {
 		t.Fatal("no requests recorded")
 	}
-	if reqs[0].ReasoningEffort != nil {
-		t.Fatalf("expected nil ReasoningEffort (no override), got %#v", reqs[0].ReasoningEffort)
+	if reqs[0].ReasoningEffort == nil || *reqs[0].ReasoningEffort != "medium" {
+		t.Fatalf("expected the default medium ReasoningEffort (no override), got %#v", reqs[0].ReasoningEffort)
+	}
+}
+
+// Disable aliases are accepted at session construction and behave as the
+// explicit off: gpt-5.2's ladder lists a none level (gpt-5.1+ family), so the
+// alias normalizes to "none" and rides the request as that level rather than
+// being rejected or filled in with the medium default every unconfigured
+// session gets. The Responses builder puts it on the wire from there.
+func TestSession_ReasoningEffort_DisableAliasIsExplicitOff(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	c := llm.NewClient()
+
+	f := &fakeAdapter{
+		name: "openai",
+		steps: []func(req llm.Request) llm.Response{
+			func(req llm.Request) llm.Response {
+				return finalResponse("done")
+			},
+		},
+	}
+	c.Register(f)
+
+	sess, err := NewSession(c, withTestSessionNamer(c, NewOpenAIProfile("gpt-5.2")), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{
+		ReasoningEffort: "off",
+	})
+	if err != nil {
+		t.Fatalf("NewSession: %v (disable aliases must be accepted and normalized)", err)
+	}
+	defer sess.Close()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second) // TRIPWIRE: scripted in-process adapter, no real I/O; only fires on a genuine hang.
+	defer cancel()
+	if _, err := sess.ProcessInput(ctx, "hello", nil); err != nil {
+		t.Fatal(err)
+	}
+	sess.Close()
+
+	reqs := f.Requests()
+	if len(reqs) == 0 {
+		t.Fatal("no requests recorded")
+	}
+	if reqs[0].ReasoningEffort == nil || *reqs[0].ReasoningEffort != "none" {
+		t.Fatalf("ReasoningEffort = %v, want the explicit none level on the request", reqs[0].ReasoningEffort)
 	}
 }
 
@@ -3393,7 +3437,7 @@ func TestSubagent_MaxTurns_DefaultsTo500_NotInheritedFromParent(t *testing.T) {
 	c.Register(f)
 	dir := t.TempDir()
 	// Parent has MaxTurns=100.
-	sess, err := NewSession(c, NewOpenAIProfile("test-model"), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{MaxTurns: 100})
+	sess, err := NewSession(c, withTestSessionNamer(c, NewOpenAIProfile("test-model")), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{MaxTurns: 100})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -3442,7 +3486,7 @@ func TestSession_Subagent_IndependentHistory(t *testing.T) {
 	}
 	c.Register(f)
 
-	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{
+	sess, err := NewSession(c, withTestSessionNamer(c, NewOpenAIProfile("gpt-5.2")), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{
 		MaxSubagentDepth: 1,
 	})
 	if err != nil {
@@ -3494,7 +3538,7 @@ func TestSession_Subagent_SharedFilesystem(t *testing.T) {
 	}
 	c.Register(f)
 
-	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{
+	sess, err := NewSession(c, withTestSessionNamer(c, NewOpenAIProfile("gpt-5.2")), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{
 		MaxSubagentDepth: 1,
 	})
 	if err != nil {
@@ -3527,14 +3571,14 @@ func TestSendInput_SteersRunningAgent(t *testing.T) {
 	}}
 	c.Register(f)
 	dir := t.TempDir()
-	sess, err := NewSession(c, NewOpenAIProfile("test-model"), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{})
+	sess, err := NewSession(c, withTestSessionNamer(c, NewOpenAIProfile("test-model")), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{})
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer sess.Close()
 
 	// Create a subagent session manually.
-	subSess, err := NewSession(c, NewOpenAIProfile("test-model"), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{})
+	subSess, err := NewSession(c, withTestSessionNamer(c, NewOpenAIProfile("test-model")), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -3632,7 +3676,7 @@ func TestSession_RoundLimit_ReturnsTypedErrorAndPartialOutput(t *testing.T) {
 	}
 	c.Register(f)
 
-	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{
+	sess, err := NewSession(c, withTestSessionNamer(c, NewOpenAIProfile("gpt-5.2")), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{
 		MaxToolRoundsPerInput: 2,
 	})
 	if err != nil {
@@ -3673,7 +3717,7 @@ func TestSession_TurnLimit_UsesGreaterEqual(t *testing.T) {
 	}
 	c.Register(f)
 
-	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{
+	sess, err := NewSession(c, withTestSessionNamer(c, NewOpenAIProfile("gpt-5.2")), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{
 		MaxTurns: 2,
 	})
 	if err != nil {
@@ -3721,7 +3765,7 @@ func TestSession_TurnLimit_ReturnsTypedError(t *testing.T) {
 	}
 	c.Register(f)
 
-	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{
+	sess, err := NewSession(c, withTestSessionNamer(c, NewOpenAIProfile("gpt-5.2")), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{
 		MaxTurns: 1,
 	})
 	if err != nil {
@@ -3761,7 +3805,7 @@ func TestSession_SetsGenerousRequestTimeout(t *testing.T) {
 	}
 	c.Register(f)
 
-	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{})
+	sess, err := NewSession(c, withTestSessionNamer(c, NewOpenAIProfile("gpt-5.2")), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -3826,7 +3870,7 @@ func TestSession_Subagent_AutoNudgeOnEmptyResponseExhaustion(t *testing.T) {
 	}
 	c.Register(f)
 
-	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.3-codex"), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{
+	sess, err := NewSession(c, withTestSessionNamer(c, NewOpenAIProfile("gpt-5.3-codex")), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{
 		MaxSubagentDepth: 1,
 	})
 	if err != nil {

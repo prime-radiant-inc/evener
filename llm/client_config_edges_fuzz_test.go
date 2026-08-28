@@ -6,125 +6,84 @@ import (
 	"testing"
 	"time"
 
-	"primeradiant.com/evener/llm/providercfg"
+	"primeradiant.com/evener/llm/registry"
 )
+
+// edgeInstances are the registry records a client must survive: an instance
+// whose base names no known provider, a pseudo-provider with no protocol and
+// no base URL (hidden by spec §4), and one that declares no API-key
+// environment variable at all.
+func edgeInstances() map[string]map[string]registry.Provider {
+	return map[string]map[string]registry.Provider{
+		"unknown-base":  {"edge": {Base: "no-such-provider", APIKey: "k"}},
+		"hidden-pseudo": {"edge": {APIKey: "k"}},
+		"empty-key-env": {"edge": {Base: "openai", APIKeyEnv: []string{}}},
+		"literal-key":   {"edge": {Base: "openai", APIKey: "k"}},
+	}
+}
+
+// replayRegistryEdgeRecords loads each edge record and drives the client
+// paths that must hold for all of them: a registry that fails to load is an
+// error and never a panic, and an instance that does not resolve cannot
+// serve, cannot list, and cannot dispatch.
+func replayRegistryEdgeRecords(t *testing.T) {
+	t.Helper()
+	for name, instances := range edgeInstances() {
+		r, err := registry.Load(
+			registry.WithOffline(true), registry.WithoutCache(), registry.WithNoUserLayer(),
+			registry.WithStateRoot(t.TempDir()),
+			registry.WithEnv(func(string) (string, bool) { return "", false }),
+			registry.WithInstances(instances),
+		)
+		if err != nil {
+			// A record the loader refuses is a configuration error, which is
+			// the whole contract for it: nothing else to drive.
+			continue
+		}
+		c := NewClient(WithRegistry(r))
+		req := Request{Provider: "edge", Model: "gpt-5.5", Messages: []Message{User("hi")}}
+		_, resolveErr := c.Resolve("edge/gpt-5.5")
+		if c.CanServe("edge", "gpt-5.5") != (resolveErr == nil) {
+			t.Fatalf("%s: CanServe disagrees with Resolve (%v)", name, resolveErr)
+		}
+		if resolveErr != nil {
+			if _, err := c.Complete(context.Background(), req); err == nil {
+				t.Fatalf("%s: Complete succeeded for an unresolvable instance", name)
+			}
+			if _, err := c.Stream(context.Background(), req); err == nil {
+				t.Fatalf("%s: Stream succeeded for an unresolvable instance", name)
+			}
+			if _, err := c.Models(context.Background(), "edge"); err == nil {
+				t.Fatalf("%s: Models succeeded for an unresolvable instance", name)
+			}
+		}
+		// Whatever the record, the client's name views never panic and an
+		// unknown instance is never claimed.
+		_ = c.ProviderNames()
+		_ = c.DefaultProvider()
+		if c.CanServe("definitely-not-an-instance", "m") {
+			t.Fatalf("%s: CanServe claimed an unknown instance", name)
+		}
+	}
+}
 
 func replayClientConfigEdges(t *testing.T) {
 	t.Helper()
-	tests := []struct {
-		name string
-		fn   func(*testing.T)
-	}{
-		{"env-state-option", TestNewFromEnv_PassesStateDirOptionToFactories},
-		{"env-state-default", TestNewFromEnv_UsesEVENERStateDirEnvByDefault},
-		{"env-state-home", TestNewFromEnv_PassesXDGStateHomeToFactories},
-		{"env-factories", TestNewFromEnv_UsesRegisteredFactories},
-		{"default-lazy", TestDefaultClient_LazyInitializationFromEnv},
-		{"default-explicit", TestSetDefaultClient_OverridesLazyInit},
-		{"providers-headers", TestNewFromProviders_ResolvesHeaderEnvRefs},
-		{"providers-header-error", TestNewFromProviders_MissingHeaderVar_FailsInstance},
-		{"providers-key", TestNewFromProviders_ResolvesAPIKeyEnvReferences},
-		{"providers-key-error", TestNewFromProviders_MissingEnvKeyFailsInstance},
-		{"providers-openai-key", TestNewFromProviders_OpenAIUnresolvedKeyDefersToFactory},
-		{"providers-register", TestNewFromProviders_RegistersAllInstances},
-		{"providers-default", TestNewFromProviders_DefaultIsSet},
-		{"providers-tags", TestNewFromProviders_BehaviorTagsAreSet},
-		{"providers-routing", TestNewFromProviders_RoutingReachesCorrectAdapter},
-		{"providers-chat", TestNewFromProviders_ChatCompletionsStyleIsOpenAICompat},
-		{"providers-auto", TestNewFromProviders_OpenAIAutoStyleKeepsOpenAIBehavior},
-		{"providers-unknown", TestNewFromProviders_UnknownTypeErrors},
-		{"providers-partial", TestNewFromAvailableProviders_SkippedDefaultNotElected},
-	}
-	for _, tc := range tests {
-		t.Run(tc.name, tc.fn)
-	}
-
-	// Registry no-ops and env-factory outcomes are intentionally tiny and are
-	// easier to make deterministic here than through process environment state.
-	RegisterEnvAdapterFactory(nil)
-	withEnvFactories(t, []EnvAdapterFactory{
-		func(EnvConfig) (ProviderAdapter, bool, error) { return nil, false, nil },
-	})
-	if _, err := NewFromEnv(nil); err == nil {
-		t.Fatal("NewFromEnv with no configured adapters unexpectedly succeeded")
-	}
-	withEnvFactories(t, []EnvAdapterFactory{
-		func(EnvConfig) (ProviderAdapter, bool, error) { return nil, false, errors.New("env sentinel") },
-	})
-	if _, err := NewFromEnv(); err == nil {
-		t.Fatal("NewFromEnv factory error unexpectedly succeeded")
-	}
-
-	RegisterInstanceAdapterFactory("ignored", "", nil)
-	withInstanceFactories(t, map[instanceFactoryKey]InstanceAdapterFactory{
-		{typ: "edge"}: func(inst providercfg.InstanceConfig, _ string) (ProviderAdapter, error) {
-			return &fakeAdapter{name: inst.Name}, nil
-		},
-	})
-	c, errs, err := NewFromAvailableProviders(providercfg.Config{
-		Instances: []providercfg.InstanceConfig{{Name: "edge", Type: "edge", APIStyle: "special"}},
-	}, nil)
-	if err != nil || len(errs) != 0 || c.DefaultProvider() != "edge" {
-		t.Fatalf("catch-all factory = (%v, %v, %v)", c, errs, err)
-	}
-	instanceFactoriesMu.Lock()
-	instanceFactories = map[instanceFactoryKey]InstanceAdapterFactory{
-		{typ: "broken"}: func(providercfg.InstanceConfig, string) (ProviderAdapter, error) {
-			return nil, errors.New("factory sentinel")
-		},
-	}
-	instanceFactoriesMu.Unlock()
-	brokenCfg := providercfg.Config{Instances: []providercfg.InstanceConfig{{Name: "broken", Type: "broken"}}}
-	if _, errs, err := NewFromAvailableProviders(brokenCfg, WithStateDir("unused")); err == nil || len(errs) != 1 {
-		t.Fatalf("all-broken partial init = errs %v, err %v", errs, err)
-	}
-	if _, err := NewFromProviders(brokenCfg); err == nil {
-		t.Fatal("strict factory failure unexpectedly succeeded")
-	}
-
+	replayRegistryEdgeRecords(t)
 	replayClientEdges(t)
 	replayTypeAndValidationEdges(t)
 }
 
-func withEnvFactories(t *testing.T, factories []EnvAdapterFactory) {
-	t.Helper()
-	envFactoriesMu.Lock()
-	old := envFactories
-	envFactories = factories
-	envFactoriesMu.Unlock()
-	t.Cleanup(func() {
-		envFactoriesMu.Lock()
-		envFactories = old
-		envFactoriesMu.Unlock()
-	})
-}
-
-func withInstanceFactories(t *testing.T, factories map[instanceFactoryKey]InstanceAdapterFactory) {
-	t.Helper()
-	instanceFactoriesMu.Lock()
-	old := instanceFactories
-	instanceFactories = factories
-	instanceFactoriesMu.Unlock()
-	t.Cleanup(func() {
-		instanceFactoriesMu.Lock()
-		instanceFactories = old
-		instanceFactoriesMu.Unlock()
-	})
-}
-
 type clientEdgeAdapter struct {
-	name      string
-	closeErr  error
-	initErr   error
-	toolOK    bool
-	modelsErr error
+	name     string
+	closeErr error
+	initErr  error
 }
 
 type classifyEdgeError struct{ status int }
 
 func (e classifyEdgeError) Error() string              { return "edge" }
 func (e classifyEdgeError) Provider() string           { return "edge" }
-func (e classifyEdgeError) BehaviorTag() string        { return "" }
 func (e classifyEdgeError) StatusCode() int            { return e.status }
 func (e classifyEdgeError) ErrorCode() string          { return "" }
 func (e classifyEdgeError) Retryable() bool            { return false }
@@ -143,20 +102,12 @@ func (a *clientEdgeAdapter) Complete(context.Context, Request) (Response, error)
 func (a *clientEdgeAdapter) Stream(context.Context, Request) (Stream, error) { return nil, nil }
 func (a *clientEdgeAdapter) Close() error                                    { return a.closeErr }
 func (a *clientEdgeAdapter) Initialize(context.Context) error                { return a.initErr }
-func (a *clientEdgeAdapter) SupportsToolChoice(string) bool                  { return a.toolOK }
-func (a *clientEdgeAdapter) ListModels(context.Context) ([]ModelInfo, error) { return nil, a.modelsErr }
 
 func replayClientEdges(t *testing.T) {
 	t.Helper()
 	var nilClient *Client
 	if nilClient.ProviderNames() != nil || nilClient.Close() != nil || nilClient.Initialize(context.Background()) != nil {
 		t.Fatal("nil client contract changed")
-	}
-	if nilClient.SupportsToolChoice("p", "auto") {
-		t.Fatal("nil client supports tools")
-	}
-	if _, err := nilClient.ListModels(context.Background(), "p"); err == nil {
-		t.Fatal("nil client listed models")
 	}
 	nilClient.Use(nil)
 	invalid := Request{}
@@ -185,7 +136,7 @@ func replayClientEdges(t *testing.T) {
 	if c.DefaultProvider() != "manual" || c.ProviderNames() != nil {
 		t.Fatal("client accessors changed")
 	}
-	a := &clientEdgeAdapter{name: "edge", closeErr: errors.New("close"), initErr: errors.New("init"), modelsErr: errors.New("models")}
+	a := &clientEdgeAdapter{name: "edge", closeErr: errors.New("close"), initErr: errors.New("init")}
 	c.Register(a)
 	if err := c.Close(); err == nil {
 		t.Fatal("close error lost")
@@ -193,11 +144,8 @@ func replayClientEdges(t *testing.T) {
 	if err := c.Initialize(context.Background()); err == nil {
 		t.Fatal("initialize error lost")
 	}
-	if c.SupportsToolChoice("missing", "auto") || c.SupportsToolChoice("edge", "auto") {
-		t.Fatal("tool support contract changed")
-	}
-	if _, err := c.ListModels(context.Background(), " EDGE "); err == nil {
-		t.Fatal("model-list error lost")
+	if _, err := c.Models(context.Background(), " EDGE "); err == nil {
+		t.Fatal("an override without a listing seam must not list")
 	}
 
 	// Drive the cooperative-close arm without scheduling a goroutine: pump is
@@ -272,6 +220,10 @@ func replayTypeAndValidationEdges(t *testing.T) {
 	_ = Classify(&NoObjectGeneratedError{})
 }
 
+// FuzzClientConfigEdges drives the client's configuration edges — the
+// registry records a user config can produce, the nil-client and
+// unresolvable-provider contracts, and the type/validation surface — from a
+// single fuzzed byte, so the campaign runner reaches them all.
 func FuzzClientConfigEdges(f *testing.F) {
 	f.Add(byte(0))
 	f.Fuzz(func(t *testing.T, _ byte) { replayClientConfigEdges(t) })

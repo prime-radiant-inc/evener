@@ -101,8 +101,8 @@ and assert what each tab converges to.
    Spawn a second asking session the same way as step 1 (call it `SID2`), wait for
    `awaiting`, then:
    ```
-   navigate $HUB/auth?token=<TOKEN>&next=/s/local:<SID2>     # tab 1
-   new_tab  $HUB/auth?token=<TOKEN>&next=/s/local:<SID2>     # tab 2
+   navigate $HUB/auth/<TOKEN>?next=/s/local:<SID2>     # tab 1
+   new_tab  $HUB/auth/<TOKEN>?next=/s/local:<SID2>     # tab 2
    ```
    Confirm both tabs render `[data-ask-response-dock]` for the same question
    (`await_element` in each).

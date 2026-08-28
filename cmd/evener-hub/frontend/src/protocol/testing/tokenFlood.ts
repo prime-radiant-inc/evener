@@ -16,7 +16,7 @@ import type { AnyNotification, Thread, ThreadCapabilities, ThreadReadResponse } 
 // Deterministic so the correctness assertions below are 100% reproducible
 // (a real dropped/reordered chunk must never depend on which random run
 // happened to expose it).
-function mulberry32(seed: number): () => number {
+export function mulberry32(seed: number): () => number {
   let a = seed;
   return () => {
     a |= 0;
@@ -168,6 +168,41 @@ export function buildFloodStream(count: number, seed = 1): FloodStream {
   return { notifications, expectedText, chunkCount: count, ref, threadId, turnId, itemId };
 }
 
+// A model hydrated and folded up to (and including) item/started for one
+// in-flight agentMessage item — the canonical "streaming item" scaffold the
+// token-flood stream (buildFloodStream above) opens with and that
+// reducer.test.ts's O(1)/purity/branch tests fold deltas onto. Shared here
+// (next to buildFloodStream's own notifications) rather than re-implemented
+// per test file. `ids` overrides the flood defaults so callers can pin their
+// own thread/ref/turn/item identity; determinism is by construction (no
+// randomness anywhere).
+export function hydrateStreamingAgentMessage(
+  ref: string,
+  ids?: { threadId?: string; turnId?: string; itemId?: string },
+): ThreadModel {
+  const threadId = ids?.threadId ?? `thr_${ref}`;
+  const turnId = ids?.turnId ?? "turn_1";
+  const itemId = ids?.itemId ?? "item_1";
+  let model = hydrateFloodModel(ref);
+  model = applyNotification(
+    model,
+    {
+      method: "turn/started",
+      params: { threadId, ref, turn: { id: turnId, status: "inProgress", itemsView: "" } },
+    } as AnyNotification,
+    1001,
+  );
+  model = applyNotification(
+    model,
+    {
+      method: "item/started",
+      params: { threadId, ref, turnId, item: { type: "agentMessage", id: itemId, turnId, status: "inProgress" } },
+    } as AnyNotification,
+    1002,
+  );
+  return model;
+}
+
 const CAPABILITIES: ThreadCapabilities = {
   send: true,
   steer: true,
@@ -177,6 +212,7 @@ const CAPABILITIES: ThreadCapabilities = {
   forkFromTurn: true,
   shutdown: true,
   changeModel: true,
+  changeVisionModel: true,
   queue: true,
   goal: true,
   rename: true,

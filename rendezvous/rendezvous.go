@@ -20,21 +20,23 @@ import (
 
 // Entry describes one live evener serve daemon.
 type Entry struct {
-	PID        int       `json:"pid"`
-	Address    string    `json:"address"`
-	Protocol   string    `json:"protocol,omitempty"`
-	Endpoint   string    `json:"endpoint,omitempty"`
-	SourceID   string    `json:"source_id,omitempty"`
-	ThreadID   string    `json:"thread_id,omitempty"`
-	SessionID  string    `json:"session_id,omitempty"`
-	WorkingDir string    `json:"working_dir,omitempty"`
-	StateDir   string    `json:"state_dir,omitempty"`
-	Agent      string    `json:"agent,omitempty"`
-	Model      string    `json:"model,omitempty"`
-	Provider   string    `json:"provider,omitempty"`
-	HubToken   string    `json:"hub_token,omitempty"`
-	StartedAt  time.Time `json:"started_at"`
-	SpawnedBy  string    `json:"spawned_by,omitempty"`
+	PID          int       `json:"pid"`
+	Address      string    `json:"address"`
+	Protocol     string    `json:"protocol,omitempty"`
+	Endpoint     string    `json:"endpoint,omitempty"`
+	SourceID     string    `json:"source_id,omitempty"`
+	ThreadID     string    `json:"thread_id,omitempty"`
+	SessionID    string    `json:"session_id,omitempty"`
+	WorkspaceRef string    `json:"workspace_ref,omitempty"`
+	InstanceID   string    `json:"instance_id,omitempty"`
+	WorkingDir   string    `json:"working_dir,omitempty"`
+	StateDir     string    `json:"state_dir,omitempty"`
+	Agent        string    `json:"agent,omitempty"`
+	Model        string    `json:"model,omitempty"`
+	Provider     string    `json:"provider,omitempty"`
+	HubToken     string    `json:"hub_token,omitempty"`
+	StartedAt    time.Time `json:"started_at"`
+	SpawnedBy    string    `json:"spawned_by,omitempty"`
 }
 
 // DefaultDir returns the canonical rendezvous directory:

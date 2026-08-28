@@ -70,6 +70,11 @@ func (s *Session) resumeWorktreeReentry(meta schema.SessionMeta) error {
 	// ExecCommand confines a workingDir override to the env's own RootDir, and
 	// local is rooted at the launch cwd, not at target.
 	rootedAtTarget := local.WithWorkingDirectory(target)
+	// The probe clones here and below run git through their own environments, and
+	// running a command is what mints a scratch dir and takes its lease. Nothing
+	// keeps a reference to either past this function, so nothing else would ever
+	// release what they minted — on a successful re-entry as much as a refused one.
+	defer rootedAtTarget.DisposeUnadoptedScratch()
 	project, err := identifier.ResolveProjectWith(target, execenv.NewProjectResolver(rootedAtTarget))
 	if err != nil {
 		notice(fmt.Sprintf("previous working directory %s is no longer part of a git repository (%v)", target, err))
@@ -93,6 +98,7 @@ func (s *Session) resumeWorktreeReentry(meta schema.SessionMeta) error {
 	}
 	mainRoot := project.CanonicalPath
 	controlEnv := local.WithWorkingDirectory(mainRoot)
+	defer controlEnv.DisposeUnadoptedScratch()
 	run := s.newWorktreeGitRunner(context.Background(), controlEnv)
 
 	// The path must still be a worktree git's own registry knows about (spec

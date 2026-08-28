@@ -97,7 +97,7 @@ func scenarioHarvestEndToEnd(t *testing.T) {
 	// Each surface produced at least one seed in its target dir.
 	for _, rel := range []string{
 		dirParseSSE,
-		dirOpenAIResponses,
+		dirResponsesStream,
 		dirToolArgsValidate,
 		dirMessageDecode,
 		dirMethodParams,

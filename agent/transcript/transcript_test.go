@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"reflect"
 	"testing"
 	"time"
 
@@ -36,6 +37,36 @@ func readTranscriptLines(t *testing.T, path string) []string {
 		t.Fatalf("scan transcript file: %v", err)
 	}
 	return lines
+}
+
+// TestWriter_HeaderReturnsWrittenHeaderOnFreshWriter pins that a fresh
+// NewWriter's Header() reports the header NewWriter wrote (with Kind and
+// FormatVersion filled in by the writer itself), not a zero value.
+func TestWriter_HeaderReturnsWrittenHeaderOnFreshWriter(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "transcript.jsonl")
+	want := Header{SessionID: "hdr_fresh", ProfileID: "openai", Model: "gpt-5.2", SystemPrompt: "You are Evener."}
+	w, err := NewWriter(path, want)
+	if err != nil {
+		t.Fatalf("NewWriter: %v", err)
+	}
+	defer w.Close() //nolint:errcheck // read-only assertion fixture
+	got := w.Header()
+	if got.SessionID != want.SessionID || got.ProfileID != want.ProfileID || got.Model != want.Model || got.SystemPrompt != want.SystemPrompt {
+		t.Fatalf("fresh writer Header() = %#v, want the header NewWriter wrote %#v", got, want)
+	}
+	if got.Kind != "header" || got.FormatVersion != FormatVersion {
+		t.Fatalf("fresh writer Header() kind/version = %q/%d, want header/%d", got.Kind, got.FormatVersion, FormatVersion)
+	}
+}
+
+// TestWriter_HeaderOnNilWriterReturnsZeroHeader pins the nil-receiver
+// contract: a nil *Writer reports the zero Header rather than panicking.
+func TestWriter_HeaderOnNilWriterReturnsZeroHeader(t *testing.T) {
+	var w *Writer
+	if got := w.Header(); !reflect.DeepEqual(got, Header{}) {
+		t.Fatalf("nil writer Header() = %#v, want the zero Header", got)
+	}
 }
 
 // --- Fix 1: seq increment after successful write ---

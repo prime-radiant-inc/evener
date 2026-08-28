@@ -5,6 +5,7 @@ import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, expect, test, vi } from "vitest";
 import { Sheet } from "./index";
+import sheetStyles from "./sheet.module.css";
 
 afterEach(cleanup);
 
@@ -49,6 +50,38 @@ test("defaults to size=standard and wide adds a distinct sizing class while pres
   expect(standardClass).not.toBe("");
   expect(wideClass).not.toBe("");
   expect(wideClass).not.toBe(standardClass);
+});
+
+test("appends an optional panel class without replacing sheet geometry classes", () => {
+  render(
+    <Sheet open onClose={vi.fn()} title="t" panelClassName="single-scroll-panel">
+      Body
+    </Sheet>,
+  );
+
+  const panel = screen.getByRole("dialog");
+  expect(panel.className).toContain("single-scroll-panel");
+  expect(panel.className.split(/\s+/).length).toBeGreaterThan(1);
+});
+
+test("optional panel styling does not change expandable geometry classes", () => {
+  render(
+    <Sheet
+      open
+      side="bottom"
+      size="wide"
+      expandable={{ peekHeight: 200 }}
+      onClose={vi.fn()}
+      title="t"
+      panelClassName="single-scroll-panel"
+    >
+      Body
+    </Sheet>,
+  );
+
+  const panel = screen.getByRole("dialog");
+  expect(panel.className).toContain("single-scroll-panel");
+  expect(panel.className).not.toContain(sheetStyles.wide);
 });
 
 test("renders as a modal dialog when open, labelled by its title, same contract as Dialog", () => {
@@ -188,4 +221,86 @@ test("all side variants' slide-in animations honor prefers-reduced-motion, using
   expect(css).toContain("animation:");
   expect(css).toContain("var(--motion-duration-overlay)");
   expect(css).toMatch(/@media \(prefers-reduced-motion: reduce\)/);
+});
+
+// --- expandable mode (Task 2) --------------------------------------------
+// The drag handle (data-testid="sheet-handle") is rendered only when
+// `expandable` is set; geometry state ("peek" | "full") is exposed via a
+// `data-geometry` attribute on a wrapper div inside the body (see
+// index.tsx), so these assertions query that wrapper rather than the dialog
+// panel itself.
+
+test("expandable renders a drag handle", () => {
+  render(
+    <Sheet open side="bottom" expandable={{ peekHeight: 200 }} onClose={vi.fn()} title="t">
+      Body
+    </Sheet>,
+  );
+  expect(screen.getByRole("dialog").querySelector("[data-testid='sheet-handle']")).toBeTruthy();
+});
+
+test("non-expandable renders no drag handle", () => {
+  render(
+    <Sheet open side="bottom" onClose={vi.fn()} title="t">
+      Body
+    </Sheet>,
+  );
+  expect(screen.queryByTestId("sheet-handle")).toBeNull();
+});
+
+test("fullScreenFirst starts at full on mount", () => {
+  render(
+    <Sheet open side="bottom" expandable={{ peekHeight: 200, fullScreenFirst: true }} onClose={vi.fn()} title="t">
+      Body
+    </Sheet>,
+  );
+  const panel = screen.getByRole("dialog");
+  expect(panel.querySelector("[data-geometry]")?.getAttribute("data-geometry")).toBe("full");
+});
+
+test("fullScreenFirst resets to full on reopen", async () => {
+  const { rerender } = render(
+    <Sheet open side="bottom" expandable={{ peekHeight: 200, fullScreenFirst: true }} onClose={vi.fn()} title="t">
+      Body
+    </Sheet>,
+  );
+  const panel = screen.getByRole("dialog");
+  // Simulate user dragging to peek
+  fireEvent.pointerDown(screen.getByTestId("sheet-handle"), { clientY: 500 });
+  fireEvent.pointerMove(window, { clientY: 800 });
+  fireEvent.pointerUp(window, { clientY: 800 });
+  expect(panel.querySelector("[data-geometry]")?.getAttribute("data-geometry")).toBe("peek");
+  // Close and reopen
+  rerender(
+    <Sheet
+      open={false}
+      side="bottom"
+      expandable={{ peekHeight: 200, fullScreenFirst: true }}
+      onClose={vi.fn()}
+      title="t"
+    >
+      Body
+    </Sheet>,
+  );
+  rerender(
+    <Sheet open side="bottom" expandable={{ peekHeight: 200, fullScreenFirst: true }} onClose={vi.fn()} title="t">
+      Body
+    </Sheet>,
+  );
+  expect(screen.getByRole("dialog").querySelector("[data-geometry]")?.getAttribute("data-geometry")).toBe("full");
+});
+
+test("tap on handle toggles peek to full", () => {
+  render(
+    <Sheet open side="bottom" expandable={{ peekHeight: 200, fullScreenFirst: false }} onClose={vi.fn()} title="t">
+      Body
+    </Sheet>,
+  );
+  const panel = screen.getByRole("dialog");
+  // Starts at peek (fullScreenFirst is false)
+  expect(panel.querySelector("[data-geometry]")?.getAttribute("data-geometry")).toBe("peek");
+  // Tap toggles to full
+  fireEvent.pointerDown(screen.getByTestId("sheet-handle"), { clientY: 100 });
+  fireEvent.pointerUp(window, { clientY: 100 });
+  expect(panel.querySelector("[data-geometry]")?.getAttribute("data-geometry")).toBe("full");
 });

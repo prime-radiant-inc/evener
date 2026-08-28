@@ -5,8 +5,6 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
-
-	"primeradiant.com/evener/llm"
 )
 
 // FuzzAnthropicComplete drives the Anthropic non-streaming Complete path against
@@ -59,11 +57,7 @@ func FuzzAnthropicComplete(f *testing.F) {
 		}))
 		t.Cleanup(srv.Close)
 
-		a := &Adapter{APIKey: "k", BaseURL: srv.URL}
-		resp, err := a.Complete(context.Background(), llm.Request{
-			Model:    "claude-test",
-			Messages: []llm.Message{llm.User("hi")},
-		})
+		resp, err := (&Protocol{Client: srv.Client()}).Complete(context.Background(), protoReq(""), protoLive(srv))
 
 		if status < 200 || status >= 300 {
 			if err == nil {
@@ -74,8 +68,8 @@ func FuzzAnthropicComplete(f *testing.F) {
 		if err != nil {
 			return // a malformed 2xx body that fails to decode is acceptable.
 		}
-		if resp.Provider != "anthropic" {
-			t.Fatalf("Complete on 2xx: provider = %q, want \"anthropic\" (body %q)", resp.Provider, body)
+		if resp.Provider != "anthropic-prod" {
+			t.Fatalf("Complete on 2xx: provider = %q, want the instance name (body %q)", resp.Provider, body)
 		}
 	})
 }

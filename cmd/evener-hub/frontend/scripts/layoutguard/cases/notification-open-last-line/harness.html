@@ -1,0 +1,95 @@
+<!doctype html>
+<html lang="en" data-theme="dark">
+<head>
+<meta charset="utf-8">
+<title>NotificationCard Open last-line layoutguard</title>
+<link rel="stylesheet" href="tokens.css">
+<link rel="stylesheet" href="resolved.css">
+<style>
+  *, *::before, *::after { box-sizing:border-box; transition:none !important; animation:none !important; }
+  html, body { margin:0; background:var(--surface-0); color:var(--ink-hi); }
+  body { padding:20px; font-family:var(--font-sans); }
+  .fixtures { display:flex; flex-direction:column; gap:16px; }
+  iframe { border:0; height:150px; }
+</style>
+</head>
+<body data-font-size="m">
+<div class="fixtures"></div>
+<script>
+const OPEN_SVG = '<svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true" style="display:block"><path d="M12.5 8.5V12.5H3.5V3.5H7.5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" fill="none"></path><path d="M8 8L13 3M9.5 3H13V6.5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" fill="none"></path></svg>';
+const SECONDARY = "Inspect the complete delegated implementation and verify every browser geometry invariant against the narrow transcript surface before reporting the final result";
+
+function openButton() {
+  return `<span class="inline"><button type="button" class="button quiet sm" data-open aria-label="Open subagent" title="Open"><span class="icon" aria-hidden="true">${OPEN_SVG}</span></button></span>`;
+}
+
+function frameDocument(mode) {
+  const width = mode === "phone" ? 390 : 920;
+  const contentWidth = mode === "phone" ? 320 : 290;
+  return `<!doctype html><html lang="en" data-theme="dark"><head>
+    <meta charset="utf-8"><meta name="viewport" content="width=${width}, initial-scale=1"><base href="${location.href}">
+    <link rel="stylesheet" href="tokens.css"><link rel="stylesheet" href="resolved.css">
+    <style>
+      *, *::before, *::after { box-sizing:border-box; transition:none !important; animation:none !important; }
+      html, body { margin:0; background:var(--surface-0); color:var(--ink-hi); }
+      body { padding:16px; font-family:var(--font-sans); font-size:var(--font-size-body); line-height:var(--line-height-body); }
+      details { width:${contentWidth}px; }
+    </style></head><body data-font-size="m">
+      <details><summary class="head" data-head>
+        <span class="headingText" data-heading>
+          <span class="title">Delegate completed</span>
+          <span class="secondary" data-secondary><span data-secondary-leading>${SECONDARY.slice(0, SECONDARY.lastIndexOf(" ") + 1)}</span><span class="secondaryTail"><span class="secondaryTailText" data-secondary-tail>${SECONDARY.slice(SECONDARY.lastIndexOf(" ") + 1)}</span><span class="openTrailing">${openButton()}</span></span></span>
+        </span>
+      </summary></details>
+    </body></html>`;
+}
+
+const specs = [{ mode:"desktop", width:920 }, { mode:"phone", width:390 }];
+const frames = specs.map((spec) => {
+  const frame = document.createElement("iframe");
+  frame.style.width = `${spec.width}px`;
+  frame.srcdoc = frameDocument(spec.mode);
+  document.querySelector(".fixtures").append(frame);
+  return { ...spec, frame };
+});
+
+function ready({ frame }) {
+  return new Promise((resolve) => {
+    const finish = () => frame.contentWindow.requestAnimationFrame(() => frame.contentWindow.requestAnimationFrame(resolve));
+    if (frame.contentDocument?.readyState === "complete") finish();
+    else frame.addEventListener("load", finish, { once:true });
+  });
+}
+function box(r) { return { left:r.left, right:r.right, top:r.top, bottom:r.bottom, width:r.width, height:r.height }; }
+
+function measureFrame(spec) {
+  const doc = spec.frame.contentDocument;
+  const win = spec.frame.contentWindow;
+  const textParts = [doc.querySelector("[data-secondary-leading]"), doc.querySelector("[data-secondary-tail]")];
+  const lines = textParts.flatMap((part) => {
+    const range = doc.createRange();
+    range.selectNodeContents(part);
+    return [...range.getClientRects()].map(box);
+  });
+  const lastLine = lines.at(-1);
+  const open = box(doc.querySelector("[data-open]").getBoundingClientRect());
+  const gap = parseFloat(win.getComputedStyle(doc.querySelector("[data-head]")).gap);
+  return {
+    mode:spec.mode,
+    viewportWidth:win.innerWidth,
+    lineCount:lines.length,
+    lastLine,
+    open,
+    gap,
+    sharesLastLine:open.top < lastLine.bottom - 1 && open.bottom > lastLine.top + 1,
+    textToOpenGap:open.left - lastLine.right,
+  };
+}
+
+window.measure = async () => {
+  await Promise.all(frames.map(ready));
+  return frames.map(measureFrame);
+};
+</script>
+</body>
+</html>

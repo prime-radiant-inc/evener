@@ -5,6 +5,9 @@ OS version: {{ .OSVersion }}
 Today's date: {{ .Today }}
 Model: {{ .Model }}
 Knowledge cutoff: {{ .KnowledgeCutoff }}
+{{- if .ResourceCapsJSON }}
+<resource_caps>{{ .ResourceCapsJSON }}</resource_caps>
+{{- end }}
 {{- if .Sandbox }}
 Sandbox: {{ .Sandbox }}
 {{- end }}

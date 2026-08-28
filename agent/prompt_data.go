@@ -12,7 +12,7 @@ import (
 type promptData struct {
 	// Resolution context
 	NonInteractive           bool
-	Provider                 string // "openai", "anthropic", "gemini"
+	Provider                 string // the provider INSTANCE name, e.g. "openai-codex", "work-ant" (session_prompts.go assigns s.profile.ID())
 	Agent                    string // public agent name, e.g. "default", "explorer", "coordinator"
 	BaseInstructionsOverride string
 	RolePromptOverride       string
@@ -26,6 +26,9 @@ type promptData struct {
 	Today           string
 	Model           string // from profile, not EnvironmentInfo
 	KnowledgeCutoff string
+	// ResourceCapsJSON is an omitted-when-empty machine payload for the environment
+	// section. It is derived from the trusted structured environment snapshot.
+	ResourceCapsJSON string
 	// Sandbox is the pre-rendered environment-section sandbox line for a sandboxed
 	// session ("<mode> (network on|off) — fixed for this session", plus the
 	// scratch directory path when one has been provisioned); empty when the

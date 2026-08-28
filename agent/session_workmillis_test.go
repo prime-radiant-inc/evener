@@ -328,7 +328,7 @@ func TestRestoreThenTurnAutosaveKeepsPriorTotals(t *testing.T) {
 		},
 	}
 
-	sess, err := RestoreSessionFromMeta(c, NewOpenAIProfile("gpt-5.2"), env, meta, dir)
+	sess, err := RestoreSessionFromMeta(c, withTestSessionNamer(c, NewOpenAIProfile("gpt-5.2")), env, meta, dir)
 	if err != nil {
 		t.Fatalf("RestoreSessionFromMeta: %v", err)
 	}

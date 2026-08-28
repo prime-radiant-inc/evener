@@ -72,7 +72,7 @@ HUB=http://127.0.0.1:$PORT
    ```
 
 3. **Open the workspace in the browser** at
-   `/auth?token=$TOKEN&next=/s/local:$SID` and confirm the live stream has
+   `/auth/$TOKEN?next=/s/local:$SID` and confirm the live stream has
    caught up — the Steer button renders only while the turn is genuinely in
    flight (`showSteer = busy && capabilities.steer`, `Composer.tsx:382`), so
    its presence *is* the hydration check `data-active-turn-id` used to be:

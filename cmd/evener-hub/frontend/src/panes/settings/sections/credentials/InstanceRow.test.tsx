@@ -6,280 +6,223 @@ import { InstanceRow } from "./InstanceRow";
 
 afterEach(cleanup);
 
-function instance(overrides: Partial<InstanceEntry> & Pick<InstanceEntry, "name" | "type">): InstanceEntry {
+function instance(overrides: Partial<InstanceEntry> & Pick<InstanceEntry, "name" | "providerId">): InstanceEntry {
   return {
-    apiStyle: "",
-    baseUrl: "",
+    protocol: "openai-chat",
+    auth: "bearer",
+    implicit: false,
     isDefault: false,
-    activeSource: "absent",
+    activeSource: "none",
     hasStoredOAuth: false,
     credentialRequired: true,
     ...overrides,
   };
 }
 
-function noopHandlers() {
-  return {
-    onTestCredentials: vi.fn(),
-    onSetApiKey: vi.fn(),
-    onOAuthStart: vi.fn(),
-    onEdit: vi.fn(),
-    onClear: vi.fn(),
-    onRemove: vi.fn(),
-    onSetDefault: vi.fn(),
-  };
-}
-
-describe("row actions are conditionally rendered", () => {
-  test("Set key only when authModes includes apiKey", () => {
-    const handlers = noopHandlers();
-    render(<InstanceRow instance={instance({ name: "a", type: "x", authModes: ["oauth"] })} {...handlers} />);
-    expect(screen.queryByRole("button", { name: /set key|replace key/i })).toBeNull();
-  });
-
-  test("Sign in… only when authModes includes oauth", () => {
-    const handlers = noopHandlers();
-    render(<InstanceRow instance={instance({ name: "a", type: "x", authModes: ["apiKey"] })} {...handlers} />);
-    expect(screen.queryByRole("button", { name: /sign in|refresh oauth/i })).toBeNull();
-  });
-
-  test("Clear only when activeSource is file or oauth", () => {
-    const handlers = noopHandlers();
-    const { rerender } = render(
-      <InstanceRow instance={instance({ name: "a", type: "x", activeSource: "env" })} {...handlers} />,
-    );
-    expect(screen.queryByRole("button", { name: "Clear" })).toBeNull();
-    rerender(
-      <InstanceRow
-        instance={instance({ name: "a", type: "x", activeSource: "file", hasStoredFile: true })}
-        {...handlers}
-      />,
-    );
-    expect(screen.getByRole("button", { name: "Clear" })).toBeTruthy();
-  });
-
-  test("Edit and Remove are always present", () => {
-    const handlers = noopHandlers();
-    render(<InstanceRow instance={instance({ name: "a", type: "x" })} {...handlers} />);
-    expect(screen.getByRole("button", { name: "Edit" })).toBeTruthy();
-    expect(screen.getByRole("button", { name: "Remove" })).toBeTruthy();
-  });
-
-  test("make default only when not already default", () => {
-    const handlers = noopHandlers();
-    const { rerender } = render(
-      <InstanceRow instance={instance({ name: "a", type: "x", isDefault: false })} {...handlers} />,
-    );
-    expect(screen.getByRole("button", { name: /make default/i })).toBeTruthy();
-    rerender(<InstanceRow instance={instance({ name: "a", type: "x", isDefault: true })} {...handlers} />);
-    expect(screen.queryByRole("button", { name: /make default/i })).toBeNull();
-  });
-});
-
-describe("Set/Replace key label", () => {
-  test("'Set key' when no file-sourced key exists", () => {
-    const handlers = noopHandlers();
+describe("the row carries identity and status only", () => {
+  test("the whole row is one button showing name, meta, and a chevron", () => {
     render(
       <InstanceRow
-        instance={instance({ name: "a", type: "x", authModes: ["apiKey"], hasStoredFile: false })}
-        {...handlers}
+        instance={instance({ name: "openai-work", providerId: "openai", hasStoredFile: true, activeSource: "store" })}
+        onSelect={() => {}}
       />,
     );
-    expect(screen.getByRole("button", { name: "Set key" })).toBeTruthy();
+    const row = screen.getByRole("button", { name: /openai-work/ });
+    expect(row).toBeTruthy();
   });
 
-  test("'Replace key' whenever a file-sourced key exists, even if a different source is currently effective", () => {
-    const handlers = noopHandlers();
+  test("rows carry no per-row action buttons - every action lives in the detail sheet", () => {
     render(
       <InstanceRow
         instance={instance({
           name: "a",
-          type: "x",
+          providerId: "openai",
           authModes: ["apiKey"],
           hasStoredFile: true,
-          hasStoredOAuth: true,
-          activeSource: "oauth",
+          activeSource: "store",
         })}
-        {...handlers}
+        onSelect={() => {}}
       />,
     );
-    expect(screen.getByRole("button", { name: "Replace key" })).toBeTruthy();
-  });
-});
-
-describe("Sign in / Refresh OAuth label", () => {
-  test("'Sign in…' when no OAuth is stored", () => {
-    const handlers = noopHandlers();
-    render(
-      <InstanceRow
-        instance={instance({ name: "a", type: "x", authModes: ["oauth"], hasStoredOAuth: false })}
-        {...handlers}
-      />,
-    );
-    expect(screen.getByRole("button", { name: "Sign in…" })).toBeTruthy();
+    for (const name of ["Edit", "Remove", "Clear", "Set key", "Sign in…", "Test credentials"]) {
+      expect(screen.queryByRole("button", { name })).toBeNull();
+    }
+    expect(screen.queryByRole("button", { name: /make default/i })).toBeNull();
   });
 
-  test("'Refresh OAuth' once signed in", () => {
-    const handlers = noopHandlers();
-    render(
-      <InstanceRow
-        instance={instance({ name: "a", type: "x", authModes: ["oauth"], hasStoredOAuth: true })}
-        {...handlers}
-      />,
-    );
-    expect(screen.getByRole("button", { name: "Refresh OAuth" })).toBeTruthy();
-  });
-});
-
-describe("layered credential display", () => {
-  test("an unconfigured instance shows 'Not configured' and no Clear button", () => {
-    const handlers = noopHandlers();
-    render(<InstanceRow instance={instance({ name: "a", type: "x", activeSource: "absent" })} {...handlers} />);
-    expect(screen.getByText("Not configured")).toBeTruthy();
-  });
-
-  test("multiple layers show effective + shadowed badges", () => {
-    const handlers = noopHandlers();
+  test("the layered credential chips and the test result line live in the sheet, not the row", () => {
     render(
       <InstanceRow
         instance={instance({
           name: "a",
-          type: "openai",
-          hasStoredOAuth: true,
+          providerId: "anthropic",
           hasStoredFile: true,
-          activeSource: "oauth",
+          activeSource: "api_key",
         })}
-        {...handlers}
+        onSelect={() => {}}
       />,
     );
-    expect(screen.getByText("effective")).toBeTruthy();
-    expect(screen.getByText("shadowed")).toBeTruthy();
-  });
-
-  test("apiStyle/baseUrl trailing text: apiStyle preferred, then base url", () => {
-    const handlers = noopHandlers();
-    render(
-      <InstanceRow
-        instance={instance({ name: "a", type: "openai", apiStyle: "responses", baseUrl: "https://x" })}
-        {...handlers}
-      />,
-    );
-    expect(screen.getByText("responses · base https://x")).toBeTruthy();
-  });
-
-  test("base url alone when apiStyle is empty", () => {
-    const handlers = noopHandlers();
-    render(<InstanceRow instance={instance({ name: "a", type: "openai", baseUrl: "https://x" })} {...handlers} />);
-    expect(screen.getByText("base https://x")).toBeTruthy();
+    expect(screen.queryByText("effective")).toBeNull();
+    expect(screen.queryByText("shadowed")).toBeNull();
+    expect(screen.queryByRole("status")).toBeNull();
   });
 
   test("the default badge shows when isDefault", () => {
-    const handlers = noopHandlers();
-    render(<InstanceRow instance={instance({ name: "a", type: "x", isDefault: true })} {...handlers} />);
+    render(<InstanceRow instance={instance({ name: "a", providerId: "x", isDefault: true })} onSelect={() => {}} />);
     expect(screen.getByText(/default/i)).toBeTruthy();
   });
 });
 
-// The heading dot is the glyph half of what the unconfigured label says in
-// words, so the two have to agree about the same instance. StatusDot's only
-// observable difference between "idle" and "ended" is its accessible name
-// (both states share the neutral token family - src/widgets/statusdot), so
-// that name is what these assert on.
-describe("the heading dot agrees with the credential label", () => {
-  test("a keyless gateway - no key, none needed - is not announced as ended", () => {
-    const handlers = noopHandlers();
+// implicit is the wire's own "exists from the environment, not from
+// providers.toml" flag (InstanceEntry, appwire/types.go) - removal of an
+// implicit instance is refused server-side (spec §11.3), so the sheet
+// offers no Remove, and this badge tells the user why Edit there writes a
+// shadow instead of changing the instance itself.
+describe("implicit instances", () => {
+  test("a 'from environment' badge marks an implicit instance", () => {
     render(
-      <InstanceRow
-        instance={instance({
-          name: "llama",
-          type: "openai",
-          baseUrl: "http://127.0.0.1:8080/v1",
-          activeSource: "absent",
-          credentialRequired: false,
-        })}
-        {...handlers}
-      />,
+      <InstanceRow instance={instance({ name: "groq", providerId: "groq", implicit: true })} onSelect={() => {}} />,
     );
-    expect(screen.getByText("No key set · optional")).toBeTruthy();
-    expect(screen.getByRole("img", { name: "Idle" })).toBeTruthy();
+    expect(screen.getByText("from environment")).toBeTruthy();
   });
 
-  test("an auth-none provider - one that authenticates nothing - is not announced as ended", () => {
-    const handlers = noopHandlers();
+  test("a non-implicit instance carries no badge", () => {
     render(
       <InstanceRow
-        instance={instance({
-          name: "ollama",
-          type: "ollama",
-          activeSource: "none",
-          credentialRequired: false,
-        })}
-        {...handlers}
+        instance={instance({ name: "work", providerId: "groq", base: "groq", implicit: false })}
+        onSelect={() => {}}
       />,
     );
-    expect(screen.getByText("No credentials required")).toBeTruthy();
-    expect(screen.getByRole("img", { name: "Idle" })).toBeTruthy();
-  });
-
-  test("a provider whose required key is missing keeps the ended dot", () => {
-    const handlers = noopHandlers();
-    render(
-      <InstanceRow
-        instance={instance({ name: "a", type: "anthropic", activeSource: "absent", credentialRequired: true })}
-        {...handlers}
-      />,
-    );
-    expect(screen.getByText("Not configured")).toBeTruthy();
-    expect(screen.getByRole("img", { name: "Ended" })).toBeTruthy();
+    expect(screen.queryByText("from environment")).toBeNull();
   });
 });
 
-describe("action callbacks fire", () => {
-  test("clicking each action calls its handler", async () => {
-    const handlers = noopHandlers();
-    const user = userEvent.setup();
+describe("the meta line", () => {
+  test("protocol and base URL trailing text", () => {
     render(
       <InstanceRow
         instance={instance({
           name: "a",
-          type: "openai",
-          authModes: ["apiKey", "oauth"],
+          providerId: "openai",
+          protocol: "openai-responses",
+          baseUrl: "https://x",
           hasStoredFile: true,
-          activeSource: "file",
+          activeSource: "store",
         })}
-        {...handlers}
+        onSelect={() => {}}
       />,
     );
-    await user.click(screen.getByRole("button", { name: "Replace key" }));
-    expect(handlers.onSetApiKey).toHaveBeenCalled();
-    await user.click(screen.getByRole("button", { name: "Sign in…" }));
-    expect(handlers.onOAuthStart).toHaveBeenCalled();
-    await user.click(screen.getByRole("button", { name: "Clear" }));
-    expect(handlers.onClear).toHaveBeenCalled();
-    await user.click(screen.getByRole("button", { name: "Edit" }));
-    expect(handlers.onEdit).toHaveBeenCalled();
-    await user.click(screen.getByRole("button", { name: "Remove" }));
-    expect(handlers.onRemove).toHaveBeenCalled();
-    await user.click(screen.getByRole("button", { name: /make default/i }));
-    expect(handlers.onSetDefault).toHaveBeenCalled();
+    expect(screen.getByText("openai-responses · base https://x")).toBeTruthy();
   });
 
-  test("clicking Test credentials calls its handler", async () => {
-    const handlers = noopHandlers();
+  test("protocol alone when baseUrl is empty", () => {
+    render(
+      <InstanceRow
+        instance={instance({
+          name: "a",
+          providerId: "openai",
+          protocol: "openai-chat",
+          hasStoredFile: true,
+          activeSource: "store",
+        })}
+        onSelect={() => {}}
+      />,
+    );
+    expect(screen.getByText("openai-chat")).toBeTruthy();
+  });
+
+  test("the unconfigured label wins the meta line, with the protocol/base URL appended", () => {
+    render(
+      <InstanceRow
+        instance={instance({
+          name: "llama",
+          providerId: "openai-compatible",
+          auth: "optional-bearer",
+          baseUrl: "http://127.0.0.1:8080/v1",
+          activeSource: "none",
+          credentialRequired: false,
+        })}
+        onSelect={() => {}}
+      />,
+    );
+    expect(screen.getByText("No key set · optional · openai-chat · base http://127.0.0.1:8080/v1")).toBeTruthy();
+  });
+});
+
+// The heading dot is the glyph half of what the meta line says in words, so
+// the two have to agree about the same instance. StatusDot's only observable
+// difference between "idle" and "ended" is its accessible name (both states
+// share the neutral token family - src/widgets/statusdot), so that name is
+// what these assert on.
+describe("the heading dot agrees with the meta line", () => {
+  test("a keyless gateway - no key, none needed - is not announced as ended", () => {
+    render(
+      <InstanceRow
+        instance={instance({
+          name: "llama",
+          providerId: "openai-compatible",
+          auth: "optional-bearer",
+          activeSource: "none",
+          credentialRequired: false,
+        })}
+        onSelect={() => {}}
+      />,
+    );
+    expect(screen.getByText(/No key set · optional/)).toBeTruthy();
+    expect(screen.getByRole("img", { name: "Idle" })).toBeTruthy();
+  });
+
+  test("an auth-none provider - one that authenticates nothing - is not announced as ended", () => {
+    render(
+      <InstanceRow
+        instance={instance({
+          name: "ollama",
+          providerId: "ollama",
+          auth: "none",
+          activeSource: "none",
+          credentialRequired: false,
+        })}
+        onSelect={() => {}}
+      />,
+    );
+    expect(screen.getByText(/No credentials required/)).toBeTruthy();
+    expect(screen.getByRole("img", { name: "Idle" })).toBeTruthy();
+  });
+
+  test("a provider whose required key is missing keeps the ended dot", () => {
+    render(
+      <InstanceRow
+        instance={instance({
+          name: "a",
+          providerId: "anthropic",
+          auth: "bearer",
+          activeSource: "none",
+          credentialRequired: true,
+        })}
+        onSelect={() => {}}
+      />,
+    );
+    expect(screen.getByText(/Not configured/)).toBeTruthy();
+    expect(screen.getByRole("img", { name: "Ended" })).toBeTruthy();
+  });
+
+  test("a configured instance shows the idle dot", () => {
+    render(
+      <InstanceRow
+        instance={instance({ name: "a", providerId: "x", hasStoredFile: true, activeSource: "store" })}
+        onSelect={() => {}}
+      />,
+    );
+    expect(screen.getByRole("img", { name: "Idle" })).toBeTruthy();
+  });
+});
+
+describe("selection", () => {
+  test("clicking the row calls onSelect", async () => {
     const user = userEvent.setup();
-    render(<InstanceRow instance={instance({ name: "a", type: "x" })} {...handlers} />);
-
-    await user.click(screen.getByRole("button", { name: "Test credentials" }));
-
-    expect(handlers.onTestCredentials).toHaveBeenCalledTimes(1);
-  });
-
-  test("pending verification disables only the Test credentials action", () => {
-    const handlers = noopHandlers();
-    render(<InstanceRow instance={instance({ name: "a", type: "x" })} {...handlers} testCredentialsPending />);
-
-    expect((screen.getByRole("button", { name: "Testing credentials…" }) as HTMLButtonElement).disabled).toBe(true);
-    expect((screen.getByRole("button", { name: "Edit" }) as HTMLButtonElement).disabled).toBe(false);
-    expect((screen.getByRole("button", { name: "Remove" }) as HTMLButtonElement).disabled).toBe(false);
+    const onSelect = vi.fn();
+    render(<InstanceRow instance={instance({ name: "openai-work", providerId: "openai" })} onSelect={onSelect} />);
+    await user.click(screen.getByRole("button", { name: /openai-work/ }));
+    expect(onSelect).toHaveBeenCalledTimes(1);
   });
 });

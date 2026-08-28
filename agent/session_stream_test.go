@@ -110,6 +110,45 @@ func TestEmitModelRetry_AttemptCapDropsToFailFastAfterOnSilentStall(t *testing.T
 	}
 }
 
+func TestEmitModelRetry_WallBudgetedRateLimitReportsNoAttemptDenominator(t *testing.T) {
+	t.Parallel()
+	sess := newRetryEmitTestSession(t)
+	policy := llm.RetryPolicy{MaxRetries: 10, RateLimitWallBudget: 30 * time.Minute}
+	req := llm.Request{Model: "gpt-5.2"}
+	err429 := llm.ErrorFromHTTPStatus("bedrock", 429, "Too many tokens", nil, nil)
+	group := &groupRecord{}
+	group.observe(attemptRecord{Phase: llm.PhaseOpen, Err: err429}, nil)
+
+	onRetry := sess.emitModelRetry(policy, req, group)
+	onRetry(err429, 14, time.Minute)
+
+	got := nextModelRetryEvent(t, sess)
+	if got.AttemptCap != 0 || got.MaxAttempts != 0 {
+		t.Fatalf("wall-budgeted retry denominators = (%d, %d), want (0, 0)", got.AttemptCap, got.MaxAttempts)
+	}
+	if got.Attempt != 14 {
+		t.Fatalf("Attempt = %d, want 14", got.Attempt)
+	}
+}
+
+func TestEmitModelRetry_NonRateLimitKeepsAttemptDenominatorUnderWallBudget(t *testing.T) {
+	t.Parallel()
+	sess := newRetryEmitTestSession(t)
+	policy := llm.RetryPolicy{MaxRetries: 10, RateLimitWallBudget: 30 * time.Minute}
+	req := llm.Request{Model: "gpt-5.2"}
+	err503 := llm.ErrorFromHTTPStatus("bedrock", 503, "unavailable", nil, nil)
+	group := &groupRecord{}
+	group.observe(attemptRecord{Phase: llm.PhaseOpen, Err: err503}, nil)
+
+	onRetry := sess.emitModelRetry(policy, req, group)
+	onRetry(err503, 2, time.Second)
+
+	got := nextModelRetryEvent(t, sess)
+	if want := policy.MaxRetries + 1; got.AttemptCap != want || got.MaxAttempts != want {
+		t.Fatalf("non-rate-limit retry denominators = (%d, %d), want (%d, %d)", got.AttemptCap, got.MaxAttempts, want, want)
+	}
+}
+
 // GroupElapsedMS is wall-clock time since the group's first attempt, not a
 // fixed value — a chip stuck at "0s" across successive retries would be as
 // dishonest as the wrong denominator.

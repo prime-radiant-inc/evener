@@ -3,9 +3,11 @@ package mcp
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"slices"
 	"strings"
 	"testing"
+	"time"
 
 	mcpsdk "github.com/modelcontextprotocol/go-sdk/mcp"
 
@@ -293,6 +295,31 @@ func TestMCPManager_Empty(t *testing.T) {
 	}
 	if mgr != nil {
 		t.Error("expected nil manager for empty config")
+	}
+}
+
+func TestMCPManager_PerServerTimeout(t *testing.T) {
+	errDial := errors.New("stop after observing context")
+	var deadline time.Time
+	var hasDeadline bool
+	before := time.Now()
+	mgr, outcomes := NewManager(t.Context(), []mcpconfig.ServerConfig{{Name: "ctx"}}, []func(context.Context) (mcpsdk.Transport, error){
+		func(ctx context.Context) (mcpsdk.Transport, error) {
+			deadline, hasDeadline = ctx.Deadline()
+			return nil, errDial
+		},
+	})
+	after := time.Now()
+	defer mgr.Close()
+
+	if len(outcomes) != 1 || !errors.Is(outcomes[0].Err, errDial) {
+		t.Fatalf("NewManager outcomes = %+v, want dial sentinel", outcomes)
+	}
+	if !hasDeadline {
+		t.Fatal("connect context has no deadline, want production 10s deadline")
+	}
+	if deadline.Before(before.Add(10*time.Second)) || deadline.After(after.Add(10*time.Second)) {
+		t.Fatalf("connect deadline = %v, want creation time + 10s in [%v, %v]", deadline, before.Add(10*time.Second), after.Add(10*time.Second))
 	}
 }
 

@@ -4,16 +4,19 @@ import (
 	"context"
 	"errors"
 	"testing"
+
+	"primeradiant.com/evener/llm/registry"
 )
 
-// fuzzCapAdapter is a ProviderAdapter that also implements the optional
-// capability interfaces (ToolChoiceSupporter, ModelLister, Initializer, Closer,
-// ResponsesContinuationPlanner) with fuzzer-controlled outcomes. Its Stream
-// honors the adapter contract by returning a non-nil already-closed stream.
+// fuzzCapAdapter is an override that also implements the optional seams a
+// registered adapter may bring (LiveModelLister, InputTokenCounter,
+// ResponsesContinuationPlanner, Initializer, Closer) with fuzzer-controlled
+// outcomes. Its Stream honors the adapter contract by returning a non-nil
+// already-closed stream.
 type fuzzCapAdapter struct {
 	name      string
-	supports  bool
-	models    []ModelInfo
+	models    []registry.Model
+	tokens    int
 	initErr   error
 	closeErr  error
 	planErr   error
@@ -27,9 +30,11 @@ func (a *fuzzCapAdapter) Complete(_ context.Context, _ Request) (Response, error
 func (a *fuzzCapAdapter) Stream(_ context.Context, _ Request) (Stream, error) {
 	return doneStream{}, nil
 }
-func (a *fuzzCapAdapter) SupportsToolChoice(_ string) bool { return a.supports }
-func (a *fuzzCapAdapter) ListModels(_ context.Context) ([]ModelInfo, error) {
+func (a *fuzzCapAdapter) LiveModels(_ context.Context) ([]registry.Model, error) {
 	return a.models, nil
+}
+func (a *fuzzCapAdapter) CountInputTokens(_ context.Context, req Request) (InputTokenCount, error) {
+	return InputTokenCount{Tokens: a.tokens, Exact: true, Source: TokenCountSourceProvider, Provider: req.Provider, Model: req.Model}, nil
 }
 func (a *fuzzCapAdapter) Initialize(_ context.Context) error { return a.initErr }
 func (a *fuzzCapAdapter) Close() error {
@@ -42,26 +47,28 @@ func (a *fuzzCapAdapter) PlanResponsesContinuation(_ Request) (ResponsesContinua
 	return ResponsesContinuationPlan{}, a.planErr
 }
 
-// FuzzClientCapabilities drives the Client optional-interface dispatch methods —
-// SupportsToolChoice, ListModels, BehaviorTagOf, PlanResponsesContinuation,
-// Initialize, Close, ProviderNames, Use — over a fuzzed provider name, behavior
-// tag mapping, and adapter outcomes. These thread provider resolution and the
-// nameToTag mapping; only fixed unit cases touched them (0% fuzz).
+// FuzzClientCapabilities drives the client's override seams — Models,
+// CountInputTokens, PlanResponsesContinuation, CanServe, Initialize, Close,
+// ProviderNames, Use — over a fuzzed instance name and adapter outcomes. An
+// override owns its name outright, so these paths never touch the registry:
+// that is what the oracles below pin.
 //
 // Oracles:
-//   - BehaviorTagOf honors its documented identity fallback: mapped tag when the
-//     name is in the mapping, the name itself otherwise.
-//   - SupportsToolChoice returns the adapter's verdict for a registered provider
-//     and false for an unknown one.
-//   - ListModels round-trips the adapter's model slice for a registered provider.
+//   - CanServe is true for the registered name whatever model is asked for,
+//     because an override answers for every model under its name.
+//   - Models returns the override's own rows, marked live, with the §5
+//     visibility rule applied (a hidden row is dropped).
+//   - CountInputTokens returns the override's exact count.
+//   - PlanResponsesContinuation reaches the override's planner.
 //   - Initialize/Close propagate the adapter's error.
-//   - ProviderNames length equals the number of registered providers.
+//   - ProviderNames is exactly the registered name: a client with no
+//     registry of its own lists no registry instances.
 func FuzzClientCapabilities(f *testing.F) {
-	f.Add("openai", "work", true, false, false, false)
-	f.Add("  Anthropic ", "", false, true, true, true)
-	f.Add("", "tag", true, false, true, false)
+	f.Add("openai", 7, false, false, false)
+	f.Add("  Anthropic ", 0, true, true, true)
+	f.Add("", 1024, false, true, false)
 
-	f.Fuzz(func(t *testing.T, rawName, tag string, supports, withInitErr, withCloseErr, withMapping bool) {
+	f.Fuzz(func(t *testing.T, rawName string, tokens int, withInitErr, withCloseErr, withHiddenRow bool) {
 		name := normalizeProviderName(rawName)
 		if name == "" {
 			name = "stub"
@@ -77,62 +84,58 @@ func FuzzClientCapabilities(f *testing.F) {
 		var closeSeen bool
 		adapter := &fuzzCapAdapter{
 			name:      name,
-			supports:  supports,
-			models:    []ModelInfo{{ID: "m1", Provider: name}, {ID: "m2", Provider: name}},
+			models:    []registry.Model{{ID: "m1"}, {ID: "m2"}},
+			tokens:    tokens,
 			initErr:   initErr,
 			closeErr:  closeErr,
 			closeSeen: &closeSeen,
 		}
+		if withHiddenRow {
+			adapter.models = append(adapter.models, registry.Model{ID: "m3", Hidden: true})
+		}
 
 		c := NewClient()
-		if withMapping {
-			c.SetNameToTag(map[string]string{name: tag})
-		}
 		c.Register(adapter)
 		c.Use() // no-op middleware append must not panic
 
-		// BehaviorTagOf identity-fallback contract.
-		gotTag := c.BehaviorTagOf(name)
-		if withMapping {
-			if gotTag != tag {
-				t.Fatalf("BehaviorTagOf(%q)=%q, want mapped %q", name, gotTag, tag)
-			}
-		} else if gotTag != name {
-			t.Fatalf("BehaviorTagOf(%q)=%q, want identity", name, gotTag)
-		}
-		if other := c.BehaviorTagOf("definitely-unmapped-xyz"); other != "definitely-unmapped-xyz" {
-			t.Fatalf("BehaviorTagOf unmapped name lost identity: %q", other)
+		// CanServe: the override answers for every model under its name.
+		if !c.CanServe(name, "any-model") {
+			t.Fatalf("CanServe(%q) = false for a registered override", name)
 		}
 
-		// SupportsToolChoice: adapter verdict for the registered provider, false for unknown.
-		if c.SupportsToolChoice(name, "auto") != supports {
-			t.Fatalf("SupportsToolChoice(%q) != adapter verdict %v", name, supports)
-		}
-		if c.SupportsToolChoice("no-such-provider", "auto") {
-			t.Fatalf("SupportsToolChoice on unknown provider returned true")
-		}
-
-		// ListModels round-trips the adapter's slice.
-		models, err := c.ListModels(context.Background(), name)
+		// Models returns the override's rows, live, minus the hidden one.
+		listing, err := c.Models(context.Background(), name)
 		if err != nil {
-			t.Fatalf("ListModels(%q) errored: %v", name, err)
+			t.Fatalf("Models(%q) errored: %v", name, err)
 		}
-		if len(models) != 2 {
-			t.Fatalf("ListModels returned %d models, want 2", len(models))
+		if !listing.Live {
+			t.Fatalf("Models(%q) not marked live", name)
 		}
-		if _, err := c.ListModels(context.Background(), "no-such-provider"); err == nil {
-			t.Fatalf("ListModels on unknown provider returned no error")
+		if len(listing.Models) != 2 {
+			t.Fatalf("Models returned %d rows, want 2 (hidden rows dropped): %+v", len(listing.Models), listing.Models)
+		}
+		if _, err := c.Models(context.Background(), "no-such-provider"); err == nil {
+			t.Fatalf("Models on an unknown provider returned no error")
 		}
 
-		// PlanResponsesContinuation: adapter is a planner; the planErr is nil so a
-		// plan is returned without a configuration error.
-		if _, err := c.PlanResponsesContinuation(context.Background(), Request{Provider: name}); err != nil {
+		// CountInputTokens takes the override's exact count.
+		count, err := c.CountInputTokens(context.Background(), Request{Provider: name, Model: "m1", Messages: []Message{User("hi")}})
+		if err != nil {
+			t.Fatalf("CountInputTokens errored: %v", err)
+		}
+		if count.Tokens != tokens || !count.Exact {
+			t.Fatalf("CountInputTokens = %+v, want the override's exact %d", count, tokens)
+		}
+
+		// PlanResponsesContinuation reaches the override's planner.
+		if _, err := c.PlanResponsesContinuation(context.Background(), Request{Provider: name, Model: "m1", Messages: []Message{User("hi")}}); err != nil {
 			t.Fatalf("PlanResponsesContinuation errored unexpectedly: %v", err)
 		}
 
-		// ProviderNames length.
-		if got := len(c.ProviderNames()); got != 1 {
-			t.Fatalf("ProviderNames len=%d, want 1", got)
+		// ProviderNames: the override alone; no registry was supplied.
+		names := c.ProviderNames()
+		if len(names) != 1 || names[0] != name {
+			t.Fatalf("ProviderNames = %v, want exactly [%q]", names, name)
 		}
 
 		// Initialize/Close propagate the adapter error.

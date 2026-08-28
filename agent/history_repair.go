@@ -21,18 +21,30 @@ func (s *Session) drainPendingWatchSendsAtBoundary(ctx context.Context) error {
 }
 
 func repairOrphanedToolResults(history []schema.Turn) ([]schema.Turn, int) {
+	out, repairs, _ := repairOrphanedToolResultsIndexed(history)
+	return out, repairs
+}
+
+// repairOrphanedToolResultsIndexed is repairOrphanedToolResults, also
+// reporting each synthetic turn's insertion index in the returned slice
+// (ascending, post-repair coordinates), so a caller tracking the N4
+// in-flight-turn boundary can shift it per insertion at or before the
+// boundary.
+func repairOrphanedToolResultsIndexed(history []schema.Turn) ([]schema.Turn, int, []int) {
 	if len(history) == 0 {
-		return history, 0
+		return history, 0, nil
 	}
 
 	out := make([]schema.Turn, 0, len(history))
 	var pending []llm.ToolCallData
 	repairs := 0
+	var insertedAt []int
 
 	flushPending := func() {
 		if len(pending) == 0 {
 			return
 		}
+		insertedAt = append(insertedAt, len(out))
 		out = append(out, syntheticToolResultsTurn(pending))
 		repairs += len(pending)
 		pending = nil
@@ -78,7 +90,7 @@ func repairOrphanedToolResults(history []schema.Turn) ([]schema.Turn, int) {
 	flushPending()
 
 	if repairs == 0 {
-		return history, 0
+		return history, 0, nil
 	}
 	// Repair must produce well-formed history: every assistant tool call now has a
 	// matching tool result, so a second pass finds nothing left to repair. If this
@@ -89,7 +101,7 @@ func repairOrphanedToolResults(history []schema.Turn) ([]schema.Turn, int) {
 		_, again := repairOrphanedToolResults(out)
 		invariant.Hold(again == 0, "repairOrphanedToolResults left %d orphaned tool call(s) after repair", again)
 	}
-	return out, repairs
+	return out, repairs, insertedAt
 }
 
 func assistantToolCalls(msg llm.Message) []llm.ToolCallData {
@@ -127,11 +139,41 @@ func syntheticToolResultsTurn(calls []llm.ToolCallData) schema.Turn {
 	}
 }
 
-func (s *Session) repairOrphanedToolResults(reason string) int {
+// repairOrphanedToolResults captures, repairs, and publishes s.history under
+// ONE critical section: a turn appended concurrently is either inside the
+// captured history (and so preserved by the repair) or lands after the
+// publish, and a fold publishing concurrently either wins before the capture
+// (so the repair operates on its result) or conflicts on the revision this
+// bump moves (a snapshot/repair/replace split across two lock acquisitions
+// would drop concurrent appends and clobber concurrent publishes). ctx
+// scopes only the post-repair watch-send retry; boundary callers with no
+// turn context pass context.Background().
+func (s *Session) repairOrphanedToolResults(ctx context.Context, reason string) int {
+	if hook := s.cfg.testOnly.beforeHistoryRepairPublish; hook != nil {
+		hook()
+	}
 	s.mu.Lock()
-	repaired, repairs := repairOrphanedToolResults(s.history)
+	repaired, repairs, insertedAt := repairOrphanedToolResultsIndexed(s.history)
 	if repairs > 0 {
 		s.history = repaired
+		// A synthetic turn spliced at or before the N4 boundary shifts every
+		// in-flight turn right by one, so the boundary moves with them —
+		// atomically with the mutation, in this same locked section. "At or
+		// before" is deliberate: a synthetic landing exactly at the boundary
+		// completes the pre-boundary call it repairs
+		// (a call at or after the boundary always yields a synthetic
+		// strictly past it), so the boundary must still move past the
+		// insertion. insertedAt ascends in post-repair coordinates, matching
+		// this incremental comparison.
+		for _, idx := range insertedAt {
+			if idx <= s.turnHistoryBaseline {
+				s.turnHistoryBaseline++
+			}
+		}
+		// Repair splices a synthetic turn wherever the orphaned tool call
+		// was, not just at the end — a fold snapshotted before this must not
+		// be able to publish over it.
+		s.bumpHistoryRevisionLocked()
 	}
 	s.mu.Unlock()
 
@@ -142,7 +184,7 @@ func (s *Session) repairOrphanedToolResults(reason string) int {
 		}
 		s.emit(events.EventWarning, events.WarningData{Message: msg})
 		s.maybeAutoSave()
-		s.retryPendingCallerWatchSendsAfterRepair(context.Background())
+		s.retryPendingCallerWatchSendsAfterRepair(ctx)
 	}
 	return repairs
 }

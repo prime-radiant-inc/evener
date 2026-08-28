@@ -30,11 +30,11 @@ func fuzzScenarioLocalDaemonThreadStatus(t *testing.T) {
 }
 
 func fuzzScenarioFirstLocalHelpers(t *testing.T) {
-	if got := firstLocalDaemonValue("", "", "third"); got != "third" {
-		t.Errorf("firstLocalDaemonValue = %q, want third", got)
+	if got := firstLocalNonEmpty("", "", "third"); got != "third" {
+		t.Errorf("firstLocalNonEmpty = %q, want third", got)
 	}
-	if got := firstLocalDaemonValue("", ""); got != "" {
-		t.Errorf("firstLocalDaemonValue all-empty = %q, want empty", got)
+	if got := firstLocalNonEmpty("", ""); got != "" {
+		t.Errorf("firstLocalNonEmpty all-empty = %q, want empty", got)
 	}
 	if got := firstLocalNonEmpty("", "a", "b"); got != "a" {
 		t.Errorf("firstLocalNonEmpty = %q, want a", got)

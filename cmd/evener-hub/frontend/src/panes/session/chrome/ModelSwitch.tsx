@@ -4,13 +4,10 @@
 // it to a thread: which model is current, whether the wire allows a switch, and
 // what a pick DOES.
 //
-// The launchable SET comes from threadsStore.listModels() (session-lifetime
-// cached in the store, da1b43f85's own doc comment - a repeat call after the
-// first is effectively free) since that's what's actually valid to switch THIS
-// session to; mergeScopedCatalog enriches those bare provider/model pairs with
-// the unscoped /api/models catalog's metadata, exactly the way ModelField.tsx's
-// settings (unscoped) call site already does - so this reuses both the
-// rendering AND the enrichment plumbing rather than duplicating either.
+// The launchable SET and its metadata come from threadsStore.listModels()
+// (session-lifetime cached in the store, so a repeat call after the first is
+// effectively free) since that's what's actually valid to switch THIS session
+// to. The hub's typed model/list response is already the shared catalog.
 //
 // reasoningEffortLevels/supportsReasoning need no special handling here:
 // StatusRow already re-renders from the live ThreadModel on every store
@@ -23,8 +20,7 @@ import { sessionActionError } from "../../../protocol/errors";
 import type { ThreadModel } from "../../../protocol/model";
 import { threadsStore } from "../../../stores/threads";
 import { type ModelCatalog, type ModelCatalogEntry, useToasts } from "../../../widgets";
-import { fetchModelCatalog } from "../../../widgets/modelCatalog/catalogClient";
-import { mergeScopedCatalog } from "../../../widgets/modelCatalog/scopedCatalog";
+import { modelListToCatalog } from "../../../widgets/modelCatalog/catalogClient";
 import { ModelSwitchTrigger } from "./ModelSwitchTrigger";
 import { modelLabel } from "./statusFormat";
 
@@ -50,11 +46,7 @@ export function ModelSwitch({ sessionRef, model }: ModelSwitchProps) {
   const currentModelLabel = modelLabel(model.modelProvider, model.model);
 
   const loadCatalog = useCallback(async (): Promise<ModelCatalog> => {
-    const [scoped, enrichment] = await Promise.all([
-      threadsStore.getState().listModels(),
-      fetchModelCatalog().catch(() => null),
-    ]);
-    return mergeScopedCatalog(scoped.data, enrichment);
+    return modelListToCatalog(await threadsStore.getState().listModels());
   }, []);
 
   async function handlePick(entry: ModelCatalogEntry): Promise<void> {

@@ -1,0 +1,19 @@
+{
+  "name": "notification-open-last-line",
+  "description": "A NotificationCard with a long free-form secondary keeps Open adjacent to and vertically overlapping the secondary text's final line at a narrow desktop content width and at phone width; Open never strands on a line by itself.",
+  "cssFiles": [
+    "styles/global.css",
+    "styles/tokens.css",
+    "panes/session/transcript/messages/notificationcard.module.css",
+    "widgets/button/button.module.css",
+    "widgets/iconbutton/iconbutton.module.css",
+    "widgets/openbutton/openbutton.module.css"
+  ],
+  "viewport": { "width": 1200, "height": 600, "deviceScaleFactor": 1, "mobile": false },
+  "mutation": {
+    "declaration": "notificationcard.module.css: change .secondaryTail display:inline-flex to display:inline",
+    "verified": "2026-09-03",
+    "expect": "fail",
+    "note": "Without the atomic final-text/Open unit, the selected long secondary strands Open below the secondary's last text line."
+  }
+}

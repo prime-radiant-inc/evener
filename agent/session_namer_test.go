@@ -44,7 +44,7 @@ func TestNameSession_UsesCheapModelAndStructuredOutput(t *testing.T) {
 	client := llm.NewClient()
 	client.Register(adapter)
 
-	got, err := nameSession(context.Background(), client, profile, sessionNameSourcePrompt, "fix the flaky test in agent/session_test.go", noNamerSleep)
+	got, err := nameSession(context.Background(), client, profile, sessionNameSourcePrompt, "fix the flaky test in agent/session_test.go", "", noNamerSleep)
 	if err != nil {
 		t.Fatalf("nameSession: %v", err)
 	}
@@ -91,7 +91,7 @@ func TestNameSession_RoutesToCheapProvider(t *testing.T) {
 	client.Register(mainAdapter)
 	client.Register(cheapAdapter)
 
-	got, err := nameSession(context.Background(), client, profile, sessionNameSourcePrompt, "name this session", noNamerSleep)
+	got, err := nameSession(context.Background(), client, profile, sessionNameSourcePrompt, "name this session", "", noNamerSleep)
 	if err != nil {
 		t.Fatalf("nameSession: %v", err)
 	}
@@ -116,7 +116,7 @@ func TestNameSession_FallsBackToActiveModel(t *testing.T) {
 	client := llm.NewClient()
 	client.Register(adapter)
 
-	got, err := nameSession(context.Background(), client, NewOpenAIProfile("gpt-5.2"), sessionNameSourcePrompt, "review the system prompt", noNamerSleep)
+	got, err := nameSession(context.Background(), client, NewOpenAIProfile("gpt-5.2"), sessionNameSourcePrompt, "review the system prompt", "", noNamerSleep)
 	if err != nil {
 		t.Fatalf("nameSession: %v", err)
 	}
@@ -125,10 +125,15 @@ func TestNameSession_FallsBackToActiveModel(t *testing.T) {
 	}
 }
 
-func TestSessionNamerEnabledRequiresConfiguredCheapModel(t *testing.T) {
+func TestSessionNamerEnabledUsesActiveModelFallback(t *testing.T) {
 	t.Parallel()
-	if sessionNamerEnabled(NewOpenAIProfile("gpt-5.2")) {
-		t.Fatal("session namer should not auto-enable from active model")
+	if !sessionNamerEnabled(NewOpenAIProfile("gpt-5.2")) {
+		t.Fatal("session namer should enable from active model")
+	}
+	// A registry profile always resolves a model (default_model fills a blank
+	// ref), so "no model" means no profile at all.
+	if sessionNamerEnabled(nil) {
+		t.Fatal("session namer should remain disabled without a profile")
 	}
 	if !sessionNamerEnabled(WithCheapModel(NewOpenAIProfile("gpt-5.2"), "gpt-4.1-nano")) {
 		t.Fatal("session namer should enable when cheap model is configured")
@@ -148,7 +153,7 @@ func TestNameSession_SanitizesGeneratedName(t *testing.T) {
 	client := llm.NewClient()
 	client.Register(adapter)
 
-	got, err := nameSession(context.Background(), client, NewOpenAIProfile("gpt-5.2"), sessionNameSourceCompaction, "[CONTEXT SUMMARY] parser failures", noNamerSleep)
+	got, err := nameSession(context.Background(), client, NewOpenAIProfile("gpt-5.2"), sessionNameSourceCompaction, "[CONTEXT SUMMARY] parser failures", "", noNamerSleep)
 	if err != nil {
 		t.Fatalf("nameSession: %v", err)
 	}
@@ -164,7 +169,7 @@ func TestNameSession_RejectsEmptySourceText(t *testing.T) {
 	t.Parallel()
 	client := llm.NewClient()
 	client.Register(&fakeAdapter{name: "openai"})
-	_, err := nameSession(context.Background(), client, NewOpenAIProfile("gpt-5.2"), sessionNameSourcePrompt, "   ", noNamerSleep)
+	_, err := nameSession(context.Background(), client, NewOpenAIProfile("gpt-5.2"), sessionNameSourcePrompt, "   ", "", noNamerSleep)
 	if err == nil || !strings.Contains(err.Error(), "source text is empty") {
 		t.Fatalf("err = %v, want source text error", err)
 	}

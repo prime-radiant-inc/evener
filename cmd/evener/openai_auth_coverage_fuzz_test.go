@@ -109,7 +109,7 @@ func fuzzOpenAIBrowserLogin(t *testing.T) {
 	t.Cleanup(func() { openAILoginAction, openAIBrowserOpener = oldAction, oldOpen })
 	openAIBrowserOpener = func(string) error { return errors.New("no browser") }
 	openAILoginAction = func(ctx context.Context, stateDir, instance string, open func(string) error, read func(context.Context) (string, error)) (authopenai.AuthStatus, error) {
-		if instance != "openai" || stateDir == "" {
+		if instance != "openai-codex" || stateDir == "" {
 			t.Fatalf("bad resolved arguments: %q %q", stateDir, instance)
 		}
 		if err := open("https://example.test/auth"); err != nil {
@@ -276,7 +276,7 @@ func fuzzOpenAILogout(t *testing.T) {
 		t.Fatal("status error suppressed")
 	}
 	openAIStatusAction = func(_ string, instance string) (authopenai.AuthStatus, error) {
-		if instance != "openai" {
+		if instance != "openai-codex" {
 			t.Fatalf("instance=%q", instance)
 		}
 		return authopenai.AuthStatus{}, nil
@@ -307,7 +307,7 @@ func fuzzOpenAIStatus(t *testing.T) {
 		t.Fatal("status error suppressed")
 	}
 	openAIStatusAction = func(_ string, instance string) (authopenai.AuthStatus, error) {
-		if instance != "openai" {
+		if instance != "openai-codex" {
 			t.Fatalf("instance=%q", instance)
 		}
 		return authopenai.AuthStatus{}, nil

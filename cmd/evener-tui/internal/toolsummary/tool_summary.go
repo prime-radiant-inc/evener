@@ -73,10 +73,12 @@ func SummarizeToolInDir(toolName, argsJSON, cwd string) (desc, detail string) {
 	case "shell":
 		cmd := str("command")
 		cmd = stripRedundantCd(cmd, cwd)
-		if d := str("purpose"); d != "" {
+		// "purpose" was "intent"'s name before the 2026-08-29 rename
+		// (7512a736e); fall back so pre-rename transcripts still show it
+		// (issue #709).
+		if d := str("intent"); d != "" {
 			desc = trunc(d, 80)
-		} else if d := str("description"); d != "" {
-			// Backward compatibility for older transcripts.
+		} else if d := str("purpose"); d != "" {
 			desc = trunc(d, 80)
 		} else {
 			// Show first line as desc; full command as detail if multi-line.
@@ -145,18 +147,20 @@ func SummarizeToolInDir(toolName, argsJSON, cwd string) (desc, detail string) {
 		return desc, detail
 
 	case "task_list":
-		action := str("action")
-		switch action {
-		case "append":
-			tasks, _ := args["tasks"].([]any)
-			desc = fmt.Sprintf("append %d tasks", len(tasks))
-			detail = renderTaskAppend(tasks)
-		case "update":
-			updates, _ := args["updates"].([]any)
+		// Presence-based dispatch: add and/or update arrays, either or both.
+		adds, _ := args["add"].([]any)
+		updates, _ := args["update"].([]any)
+		detail = renderTaskAppend(adds) + renderTaskUpdate(updates)
+		switch {
+		case len(adds) > 0 && len(updates) > 0:
+			desc = fmt.Sprintf("add %d, update %d tasks", len(adds), len(updates))
+		case len(adds) > 0:
+			desc = fmt.Sprintf("add %d tasks", len(adds))
+		case len(updates) > 0:
 			desc = fmt.Sprintf("update %d tasks", len(updates))
-			detail = renderTaskUpdate(updates)
 		default:
-			desc = action
+			desc = "view tasks"
+			detail = ""
 		}
 		return desc, detail
 
@@ -170,7 +174,10 @@ func SummarizeToolInDir(toolName, argsJSON, cwd string) (desc, detail string) {
 		return desc, detail
 
 	case "delegate":
-		task := str("task")
+		task := str("prompt")
+		if task == "" {
+			task = str("task") // brief key in transcripts recorded before the rename
+		}
 		firstLine := task
 		if before, _, ok := strings.Cut(task, "\n"); ok {
 			firstLine = before

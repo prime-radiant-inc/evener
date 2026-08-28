@@ -101,7 +101,8 @@ test("Open beside is icon-only: no visible text label, but keeps its accessible 
   render(<FileOpenBesideButton absPath="/home/proj/src/a.ts" sessionRef="ref_a" />);
   const button = screen.getByRole("button", { name: "Open beside: src/a.ts" });
   expect(button.textContent).toBe(""); // icon only - the SVG carries no text, aria-hidden
-  expect(button.getAttribute("title")).toBe("Open beside: src/a.ts");
+  // The tooltip is the one word everywhere; the PATH stays in the aria-label.
+  expect(button.getAttribute("title")).toBe("Open");
 });
 
 test("renders nothing for an out-of-cwd path (no affordance)", () => {

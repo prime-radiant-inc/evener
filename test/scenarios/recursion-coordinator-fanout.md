@@ -376,8 +376,9 @@ default).**"); this card only runs with the raised config below.
 
 ## Cleanup
 
-- All delegate jobs are terminal after step 5 (turn-1 workers finished
-  on their 8s sleeps; COORD/COORD2 and the long workers are stopped).
+- All delegate resources have completed or been stopped after step 5
+  (turn-1 workers finished on their 8s sleeps; COORD/COORD2 and the long
+  workers are stopped).
   Shut down the session (`POST /s/$SID/shutdown`); `rm -rf "$tmpdir"`.
 
 ## Sharp edges
@@ -419,9 +420,9 @@ default).**"); this card only runs with the raised config below.
   This card's
   fan-out (1 coordinator + 3 workers = 4 running, then COORD2 + 2 = 3)
   stays well under the cap; a spawn/resume at the cap fails
-  `tree_at_capacity: 50 delegate turn slots in use across this session tree (J delegate jobs, D drive turns). Wait for completions to free slots, job_stop work you no longer need, or narrow your fan-out and retry.`
-  (`agent/tree_counter.go:79-80`) — note "turn slots", not "jobs running",
-  and the trailing jobs/drives split. Do not fan out wider here or the cap,
+  `tree_at_capacity` reports the live cap and the counts of active delegate
+  turns versus drive turns (`agent/tree_counter.go#treeCapacityError`) — note
+  "turn slots", not resource records. Do not fan out wider here or the cap,
   not the owner-scoping, becomes the thing under test (the cap is
   exercised separately).
 - **Worker timing for visibility (step 3).** The turn-1 workers sleep

@@ -102,7 +102,7 @@ func metaEqual(a, b Meta) bool {
 	if a.Schema != b.Schema || a.CWD != b.CWD || !a.CreatedAt.Equal(b.CreatedAt) {
 		return false
 	}
-	if a.Trust.Decision != b.Trust.Decision || a.Trust.Hash != b.Trust.Hash {
+	if a.Trust.Decision != b.Trust.Decision {
 		return false
 	}
 	if !a.Trust.DecidedAt.Equal(b.Trust.DecidedAt) {

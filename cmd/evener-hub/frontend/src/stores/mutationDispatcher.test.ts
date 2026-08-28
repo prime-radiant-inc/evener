@@ -2,7 +2,7 @@ import { IDBFactory } from "fake-indexeddb";
 import { describe, expect, test, vi } from "vitest";
 import { RequestTimeoutError, WireError } from "../protocol/errors";
 import { FakeClient } from "../protocol/testing/fakeClient";
-import type { MutationReceipt, TurnQueueResponse } from "../protocol/types.gen";
+import type { MutationReceipt, ThreadClearResponse, TurnQueueResponse } from "../protocol/types.gen";
 import { MutationDispatcher } from "./mutationDispatcher";
 import type { MutationIntent, MutationOutboxRecord } from "./mutationOutbox";
 import { MutationOutboxIndexedDB } from "./mutationOutboxIndexedDB";
@@ -42,6 +42,17 @@ function queueIntent(targetRef = "ref-a", text = "hello"): MutationIntent {
   };
 }
 
+function clearIntent(targetRef = "ref-a"): MutationIntent {
+  return {
+    targetRef,
+    threadId: "thread-a",
+    method: "thread/clear",
+    payload: { ref: targetRef, expectedInstanceId: "instance-a" },
+    attachments: [],
+    optimisticDisplay: { method: "thread/clear" },
+  };
+}
+
 function storage(indexedDB: IDBFactory, databaseName: string, mutationIds: string[]): MutationOutboxIndexedDB {
   let nextId = 0;
   return new MutationOutboxIndexedDB({
@@ -59,6 +70,37 @@ function queueCalls(client: FakeClient): MutationOutboxRecord["payload"][] {
 }
 
 describe("MutationDispatcher", () => {
+  test("dispatches thread/clear with its instance fence and publishes the replacement response", async () => {
+    const indexedDB = new IDBFactory();
+    const outbox = storage(indexedDB, "clear-response", ["mutation-a"]);
+    const record = await outbox.enqueueIntent(clearIntent());
+    const client = new FakeClient();
+    const onClearResponse = vi.fn();
+    client.on(
+      "thread/clear",
+      (params) =>
+        ({
+          thread: { id: "thread-new", evener: { ref: "ref-a" } },
+          ref: "ref-a",
+          receipt: receipt(params.clientMutationId, "applied"),
+        }) as unknown as ThreadClearResponse,
+    );
+    const dispatcher = new MutationDispatcher(outbox, { getClient: () => client, onClearResponse });
+
+    await dispatcher.dispatchTargets(["ref-a"]);
+
+    expect(client.calls[0]).toMatchObject({
+      method: "thread/clear",
+      params: {
+        ref: "ref-a",
+        expectedInstanceId: "instance-a",
+        clientMutationId: record.clientMutationId,
+      },
+    });
+    expect(onClearResponse).toHaveBeenCalledWith("ref-a", expect.objectContaining({ ref: "ref-a" }));
+    expect(await outbox.getOutbox(record.clientMutationId)).toBeUndefined();
+  });
+
   test("does not dispatch a persisted method outside the retry-safe mutation set", async () => {
     const indexedDB = new IDBFactory();
     const outbox = storage(indexedDB, "method-boundary", ["mutation-a"]);

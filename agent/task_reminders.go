@@ -1,10 +1,17 @@
 package agent
 
 import (
+	"encoding/json"
 	"fmt"
 	"strings"
 
+	"primeradiant.com/evener/agent/events"
 	taskpkg "primeradiant.com/evener/agent/task"
+)
+
+const (
+	taskCompletionMachineBlockStart = "<evener-task-completion>"
+	taskCompletionMachineBlockEnd   = "</evener-task-completion>"
 )
 
 // formatCurrentTaskSteering wraps a Task into a SYSTEM-REMINDER block that
@@ -13,10 +20,9 @@ import (
 // canUseTaskList is the caller's answer to "does this session serve task_list";
 // false swaps the closing call instruction for wording the session can obey.
 func formatCurrentTaskSteering(task taskpkg.Task, canUseTaskList bool) string {
-	var b strings.Builder
-	b.WriteString("<SYSTEM-REMINDER>\n")
-	fmt.Fprintf(&b, "<CURRENT-TASK id=\"%d\">\n", task.ID)
-	fmt.Fprintf(&b, "<TITLE>%s</TITLE>\n", task.Description)
+	b := systemReminderBlockBuilder()
+	fmt.Fprintf(b, "<CURRENT-TASK id=\"%d\">\n", task.ID)
+	fmt.Fprintf(b, "<TITLE>%s</TITLE>\n", task.Description)
 	if task.Prompt != "" {
 		b.WriteString("<INSTRUCTIONS>\n")
 		b.WriteString(strings.TrimSpace(task.Prompt))
@@ -24,12 +30,11 @@ func formatCurrentTaskSteering(task taskpkg.Task, canUseTaskList bool) string {
 	}
 	b.WriteString("</CURRENT-TASK>\n")
 	if canUseTaskList {
-		fmt.Fprintf(&b, "Call your next tool: use task_list to mark task %d as done when this step is complete.\n", task.ID)
+		fmt.Fprintf(b, "Call your next tool: use task_list to mark task %d as done when this step is complete.\n", task.ID)
 	} else {
-		fmt.Fprintf(&b, "Work task %d now, and say so when this step is complete.\n", task.ID)
+		fmt.Fprintf(b, "Work task %d now, and say so when this step is complete.\n", task.ID)
 	}
-	b.WriteString("</SYSTEM-REMINDER>")
-	return b.String()
+	return finishSystemReminderBlock(b)
 }
 
 // taskReminderFull generates the full task list for post-compaction injection,
@@ -41,24 +46,22 @@ func taskReminderFull(store *taskpkg.TaskStore) string {
 		return ""
 	}
 
-	var b strings.Builder
-	b.WriteString("<SYSTEM-REMINDER>\n")
+	b := systemReminderBlockBuilder()
 	b.WriteString("Task list:\n")
 	for _, t := range tasks {
-		fmt.Fprintf(&b, "  [%s] #%d: %s", t.Status, t.ID, t.Description)
+		fmt.Fprintf(b, "  [%s] #%d: %s", t.Status, t.ID, t.Description)
 		if t.ReasoningEffort != "" {
-			fmt.Fprintf(&b, " [%s]", t.ReasoningEffort)
+			fmt.Fprintf(b, " [%s]", t.ReasoningEffort)
 		}
 		if len(t.DependsOn) > 0 {
-			fmt.Fprintf(&b, " (depends_on: %v)", t.DependsOn)
+			fmt.Fprintf(b, " (depends_on: %v)", t.DependsOn)
 		}
 		b.WriteString("\n")
 		for _, n := range t.Notes {
-			fmt.Fprintf(&b, "    note: %s\n", n)
+			fmt.Fprintf(b, "    note: %s\n", n)
 		}
 	}
-	b.WriteString("</SYSTEM-REMINDER>")
-	return b.String()
+	return finishSystemReminderBlock(b)
 }
 
 // taskReminderForInactivity re-emits the current task's steering message when
@@ -82,6 +85,70 @@ func taskReminderAllDone(resultTool string) string {
 		"If you have other work to do, add it to the task list now. " +
 		"Otherwise, deliver your final output with the " + resultTool + " tool.\n" +
 		"</SYSTEM-REMINDER>"
+}
+
+// taskReminderAllDoneWhileDelegatesRun keeps the completion signal from
+// becoming a premature close instruction when this session is synchronously
+// waiting for one or more delegates. The IDs come from the delegate
+// controller's live inline waiters; background and terminal delegates are not
+// included.
+func taskReminderAllDoneWhileDelegatesRun(resultTool string, delegateIDs []string) string {
+	var reminder string
+	if len(delegateIDs) == 0 {
+		reminder = taskReminderAllDone(resultTool)
+	} else {
+		reminder = "<SYSTEM-REMINDER>\n" +
+			"You have completed all tasks on your task list, but delegate(s) " + strings.Join(delegateIDs, ", ") +
+			" are still running. Wait for their result before deciding whether to finish. " +
+			"If you have other work to do, add it to the task list after the delegate result arrives. " +
+			"Otherwise, deliver your final output with the " + resultTool + " tool after that result.\n" +
+			"</SYSTEM-REMINDER>"
+	}
+	return reminder + "\n" + formatTaskCompletionMachineBlock(taskCompletionSteeringData(delegateIDs))
+}
+
+// taskReminderTerminalWhileDelegatesRun preserves the completed-all-tasks
+// reminder for a fully done list, while accurately describing a list whose
+// terminal state includes cancelled tasks.
+func taskReminderTerminalWhileDelegatesRun(resultTool string, delegateIDs []string, allDone bool) string {
+	if allDone {
+		return taskReminderAllDoneWhileDelegatesRun(resultTool, delegateIDs)
+	}
+	var reminder string
+	if len(delegateIDs) == 0 {
+		reminder = "<SYSTEM-REMINDER>\n" +
+			"No actionable tasks remain on your task list. " +
+			"If you have other work to do, add it to the task list now. " +
+			"Otherwise, deliver your final output with the " + resultTool + " tool.\n" +
+			"</SYSTEM-REMINDER>"
+	} else {
+		reminder = "<SYSTEM-REMINDER>\n" +
+			"No actionable tasks remain on your task list, but delegate(s) " + strings.Join(delegateIDs, ", ") +
+			" are still running. Wait for their result before deciding whether to finish. " +
+			"If you have other work to do, add it to the task list after the delegate result arrives. " +
+			"Otherwise, deliver your final output with the " + resultTool + " tool after that result.\n" +
+			"</SYSTEM-REMINDER>"
+	}
+	return reminder + "\n" + formatTaskCompletionMachineBlock(taskCompletionSteeringData(delegateIDs))
+}
+
+func taskCompletionSteeringData(delegateIDs []string) events.TaskCompletionSteeringData {
+	state := events.TaskCompletionReadyForFinalOutput
+	if len(delegateIDs) != 0 {
+		state = events.TaskCompletionWaitingForBlockingDelegates
+	}
+	return events.TaskCompletionSteeringData{
+		CompletionState:     state,
+		BlockingDelegateIDs: append([]string{}, delegateIDs...),
+	}
+}
+
+func formatTaskCompletionMachineBlock(completion events.TaskCompletionSteeringData) string {
+	payload, err := json.Marshal(completion)
+	if err != nil {
+		panic(fmt.Sprintf("marshal task completion steering: %v", err))
+	}
+	return taskCompletionMachineBlockStart + string(payload) + taskCompletionMachineBlockEnd
 }
 
 // taskReminderNudge generates the one-time suggestion to use task_list, wrapped

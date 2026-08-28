@@ -141,6 +141,22 @@ test("falls back to opening welcome when nothing is focused at mount", async () 
   expect(await screen.findByText("No session open")).toBeTruthy();
 });
 
+test("opens the mobile panel when nothing is focused", async () => {
+  render(<StackHost />);
+  // Welcome pane mounts behind the panel; the panel opens over it
+  await screen.findByText("No session open");
+  // The panel's Sheet title "Sessions" is the dialog's accessible name
+  expect(screen.getByRole("dialog", { name: "Sessions" })).toBeTruthy();
+});
+
+test("does not flash the panel during routeDeferred", async () => {
+  render(<StackHost routeDeferred />);
+  // Wait for welcome to appear behind the (closed) panel
+  await screen.findByText("No session open");
+  // Panel should NOT be open while routeDeferred
+  expect(screen.queryByRole("dialog", { name: "Sessions" })).toBeNull();
+});
+
 test("renders the focused pane's component full-screen, with focused=true", async () => {
   workspaceStore.getState().openPane("doc", { ref: "ref_a" });
   render(<StackHost />);
@@ -628,8 +644,8 @@ test("back navigation updates the URL to match the pane it returns to", async ()
   expect(window.location.pathname).toBe("/s/local%3Aref_x");
 });
 
-// kata bbsv. AppShell needs /api/tree before it can place a /s/{ref} deep
-// link, and no fetch resolves inside the first commit - so the shell spends a
+// kata bbsv. AppShell needs the AppWire navigation read before it can place a
+// /s/{ref} deep link, and no response resolves inside the first commit - so the shell spends a
 // beat with the route parsed and unplaced, which the fallback below fills with
 // welcome. Publishing welcome's "/" then would throw away the deep link the
 // shell is still working on, so routeDeferred suspends the sync for the wait.
@@ -706,16 +722,25 @@ test("mounting already at the focused pane's own URL does not dispatch a redunda
   expect(handler).not.toHaveBeenCalled();
 });
 
-// --- bottom safe-area padding (requirement 4) ------------------------
+// --- bottom safe-area accommodation (requirement 4) -------------------
 //
-// jsdom does not evaluate real CSS (env(), viewport units, etc.), so - same
-// idiom as sheet.test.tsx's own prefers-reduced-motion check - this reads
-// the CSS module's own source rather than asserting on computed style.
+// The blanket host padding that used to carry the bottom inset lifted the
+// whole stack - docked composer footer included - off the screen's bottom
+// edge, leaving a dead surface-0 band under the input. The accommodation
+// moved to where the composer docks (PaneScaffold's footer and body rules);
+// the host deliberately carries none of it so the pane chrome fills to the
+// bottom edge. jsdom does not evaluate real CSS (env(), viewport units,
+// etc.), so - same idiom as sheet.test.tsx's own prefers-reduced-motion
+// check - this reads the CSS module's own source rather than asserting on
+// computed style, comments stripped so the .host comment's own mention of
+// the inset cannot false-positive the match.
 
-test("the stack container reserves the device's bottom safe-area inset", () => {
+test("the host lifts nothing off the bottom edge - docked chrome owns the bottom inset", () => {
   const here = dirname(fileURLToPath(import.meta.url));
-  const css = readFileSync(join(here, "StackHost.module.css"), "utf8");
-  expect(css).toContain("env(safe-area-inset-bottom)");
+  const css = readFileSync(join(here, "StackHost.module.css"), "utf8").replace(/\/\*[\s\S]*?\*\//g, "");
+  expect(css).not.toContain("env(safe-area-inset-bottom)");
+  const hostRule = css.match(/\.host \{([^}]*)\}/)?.[1] ?? "";
+  expect(hostRule).not.toContain("padding-bottom");
 });
 
 test("the top bar reserves the device's top safe-area inset", () => {

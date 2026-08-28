@@ -167,8 +167,12 @@ func testDispatchCLICommandWith(t *testing.T) {
 			called = "plugin:" + strings.Join(args, ",")
 			return nil
 		},
+		models: func(args []string, _ io.Reader, _, _ io.Writer) error {
+			called = "models:" + strings.Join(args, ",")
+			return nil
+		},
 	}
-	for _, command := range []string{"serve", "launch-check", "openai", "upgrade", "plugin"} {
+	for _, command := range []string{"serve", "launch-check", "openai", "upgrade", "plugin", "models"} {
 		handled, label, err := dispatchCLICommandWith([]string{command, "arg"}, strings.NewReader(""), io.Discard, io.Discard, runners)
 		if err != nil || !handled || label != "evener "+command || called != command+":arg" {
 			t.Fatalf("%s: handled=%v label=%q err=%v called=%q", command, handled, label, err, called)

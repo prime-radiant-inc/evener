@@ -41,12 +41,13 @@ already covered by subagent-list-and-output.md.
    >    `sh -c 'echo LIST_RUN_TOKEN; sleep 300'`. Capture the job_id
    >    (J3).
    > 4. Call delegate with this exact task: "Communicate exactly
-   >    DLG_LIST_DONE and finish." Capture the job_id (J4).
+   >    DLG_LIST_DONE and finish." Capture the delegate_id (D4).
    > 5. Call job_list with type ["shell"] and report the job_ids.
    > 6. Call job_list with status ["running"] and report the job_ids.
    > 7. Call job_list with status ["failed", "completed"] and report
    >    the job_ids and statuses.
-   > 8. Call job_list with no filters and report the job_ids IN ORDER.
+   > 8. Call job_list with no filters and report the shell job_ids IN ORDER;
+   >    inspect the stable delegate separately with `subagent-list-and-output.md`.
    > 9. Call job_stop with J3 and max_wait_ms 5000. Then call job_list
    >    with status ["cancelled"] and report the job_ids.
    > 10. End your turn.
@@ -67,23 +68,24 @@ already covered by subagent-list-and-output.md.
 Turn 1:
 
 - Filters are exact set selections:
-  - step 5 (`type=["shell"]`): J1, J2, J3 — and NOT J4. J1 and J2 are
+  - step 5 (`type=["shell"]`): J1, J2, J3 — and NOT D4. J1 and J2 are
     backgrounded (`mode: "background"`) over a `sleep 2`, so they are
     durable running records at step-1/2 call time; by step 5 (~2s
     later) they are terminal (spec §3 complete-or-handle: background
     jobs finalize normally).
-  - step 6 (`status=["running"]`): J3 (plus J4 only if the delegate
-    is still mid-run at that moment); J1 and J2 may be terminal by
+  - step 6 (`status=["running"]`): J3; D4 is a stable delegate and is
+    not a shell row. J1 and J2 may be terminal by
     this point — the 2s sleep vs ~1s between steps makes this timing-
     soft; accept either running or terminal for J1/J2 here.
   - step 7 (`status=["failed","completed"]`): J1 with `status`
     `"failed"` (reason `exit_nonzero`, `exit_code` 7) and J2 with
-    `"completed"` — multi-value filters OR together.
+    `"completed"` — multi-value filters OR together. D4 is not a shell row.
   - step 9: after the confirmed stop, `status=["cancelled"]` returns
     exactly J3.
-- Ordering: the step-8 unfiltered listing returns the jobs
-  newest-first by `started_at` — J4, J3, J2, J1 (creation order was
-  J1→J4). Falsification: ascending or insertion order.
+- Ordering: the step-8 shell listing returns shell jobs newest-first by
+  `started_at` — J3, J2, J1 (creation order was J1→J3). Falsification:
+  ascending or insertion order. D4's stable delegate listing is covered by
+  `subagent-list-and-output.md`.
 - Durable-record presence (replaces the old short-job race arm c):
   in step 2, both the running-filtered and unfiltered lists contain J2
   (`status` `"running"` — the `sleep 2` command outlives the 1s bound,
@@ -94,11 +96,10 @@ Turn 1:
   (spec §3: promoted jobs are kept, complete-or-handle invariant).
   Falsification: J2 absent from either list, or present with a phantom
   status outside the canonical five.
-- Every entry carries the documented row fields: `job_id`, `type`,
-  `status`, `reason`, `started_at`, `total_bytes`; J4's row also has
-  `transcript_ref` and `resumable` ("`job_list`" "Delegate records
-  include `delegate_id`, `current_job_id`, `latest_job_id`,
-  `transcript_ref`, `resumable`"). The byte counter on a
+- Every shell entry carries the documented row fields: `job_id`, `type`,
+  `status`, `reason`, `started_at`, `total_bytes`. Stable D4 fields and its
+  delegate listing are covered separately by `subagent-list-and-output.md`.
+  The byte counter on a
   `job_list` row is `total_bytes` (`agent/session_tools_jobs.go:1349`) —
   `output_bytes` is the `<job-notification>` attribute and a `job_status`
   field, and asserting it here would fail on a working build.

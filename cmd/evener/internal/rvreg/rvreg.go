@@ -40,6 +40,7 @@ func (r *Registration) UpdateSessionID(sessionID string) error {
 	}
 	r.entry.ThreadID = sessionID
 	r.entry.SessionID = sessionID
+	r.entry.InstanceID = sessionID
 	_, err := rendezvous.Write(r.runDir, r.entry)
 	return err
 }

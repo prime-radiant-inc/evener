@@ -21,6 +21,7 @@ import (
 	"primeradiant.com/evener/agent/sandbox"
 	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/agent/task"
+	"primeradiant.com/evener/agent/transcript"
 	"primeradiant.com/evener/identifier"
 	"primeradiant.com/evener/llm"
 )
@@ -31,7 +32,10 @@ import (
 // settings, and session persistence. Zero-valued fields are filled in by
 // applyDefaults where defaults apply.
 type SessionConfig struct {
-	artifactStore artifactStore
+	// LifetimeContext owns this session tree when supplied by a one-shot run.
+	// Nil preserves daemon/background ownership and is not persisted.
+	LifetimeContext context.Context `json:"-"`
+	artifactStore   artifactStore
 
 	// Project is the resolved canonical project identity for this launch. It is
 	// separate from the execution environment's active working directory, which
@@ -58,7 +62,7 @@ type SessionConfig struct {
 	MaxCommandTimeoutMS int `json:"max_command_timeout_ms,omitempty"`
 
 	// MaxSubagentDepth limits how deeply sub-agents may spawn further
-	// sub-agents (root session is depth 0). Zero defaults to 1.
+	// sub-agents (root session is depth 0). Zero defaults to 2.
 	MaxSubagentDepth int `json:"max_subagent_depth,omitempty"`
 
 	// MaxConcurrentDelegateTurns bounds concurrently running delegate turns
@@ -222,6 +226,13 @@ type SessionConfig struct {
 	// (on when sandboxed). Only meaningful for a non-off Sandbox. Carried inert in M1.
 	SandboxNet *bool `json:"sandbox_net,omitempty"`
 
+	// VisionModel routes the image-description vision side-channel: "" uses the
+	// session's active model (the default), "off" disables the side-channel, a
+	// bare model resolves on the active provider at call time, and
+	// "provider/model" pins a provider instance. Runtime changes go through
+	// Session.SetVisionModel, which writes this same field under s.mu.
+	VisionModel string `json:"vision_model,omitempty"`
+
 	// ResolveProfile, when non-nil, maps a "provider/model" ref to the
 	// corresponding *provider.Profile. Injected by cmd/evener so that
 	// Session.SetModel can perform cross-provider switches without
@@ -261,6 +272,15 @@ type SessionConfig struct {
 // deterministic. Never set by app callers; never persisted (json:"-" on the
 // parent field).
 type testConfig struct {
+	// visionSideChannelTimeout overrides the production vision timeout only for
+	// deterministic package tests. Zero preserves the production timeout.
+	visionSideChannelTimeout time.Duration
+	// afterCommunicateBoundary observes the state transition at a completed
+	// communicate boundary. Nil in production.
+	afterCommunicateBoundary func(*Session)
+	// delegateDeliveryClassified observes whether an incoming waiterless delivery
+	// was deferred to the enclosing ProcessInput drain. Nil in production.
+	delegateDeliveryClassified func(*Session, bool)
 	// sessionInitFault injects deterministic failures at external initialization
 	// boundaries. Nil preserves the production implementation.
 	sessionInitFault func(point string) error
@@ -276,9 +296,18 @@ type testConfig struct {
 	// delegateInlineWaitReady observes the exact context and duration supplied to
 	// a stable delegate inline wait. Nil preserves the production wait.
 	delegateInlineWaitReady func(context.Context, time.Duration)
+	// delegateSendBeforePositiveWaitAdmission observes the boundary immediately
+	// before a positive-wait send reserves its start. Nil preserves production.
+	delegateSendBeforePositiveWaitAdmission func()
+	// delegateDeliveryCommitsTaken observes the tool-result boundary after inline
+	// delivery commits leave the pending map and before any transcript write.
+	delegateDeliveryCommitsTaken func()
 	// delegateAttentionReadFold replaces only resident attention verification
 	// reads. Nil preserves the production transcript fold.
 	delegateAttentionReadFold func(string, string) (delegateAttentionFold, error)
+	// delegateAttentionFoldEntries replaces only the in-memory attention fold
+	// over restore-retained entries. Nil preserves the production fold.
+	delegateAttentionFoldEntries func([]transcript.Entry) (delegateAttentionFold, error)
 	// delegateAttentionOpenWriter replaces only transcript resume for attention
 	// repair. Nil preserves the production transcript opener.
 	delegateAttentionOpenWriter delegateAttentionWriterOpener
@@ -316,6 +345,32 @@ type testConfig struct {
 	// appendCompactionTurn injects transcript append failures. Nil preserves the
 	// session transcript writer.
 	appendCompactionTurn func(schema.Turn) error
+
+	// beforeHistoryRepairPublish observes the boundary immediately before an
+	// orphaned-tool-result repair publishes to s.history. Tests use it only to
+	// place deterministic concurrent history mutations in that window. Nil in
+	// production.
+	beforeHistoryRepairPublish func()
+
+	// beforeFoldSideEffectsFlush observes the boundary between a winning
+	// fold's publication (history swap, baseline correction, note claim,
+	// transcript commit) and the deferred flush of its remaining side effects
+	// (events, session naming, hook user messages). Tests use it only to
+	// place deterministic concurrent folds in that window. Nil in production.
+	beforeFoldSideEffectsFlush func()
+
+	// beforeFoldTranscriptCommit observes the boundary inside a winning
+	// fold's publication after the history swap (and its baseline/note
+	// bookkeeping) and immediately before the fold's transcript entries are
+	// committed. Tests use it only to place deterministic concurrent turn
+	// recordings in that window. Nil in production.
+	beforeFoldTranscriptCommit func()
+
+	// afterFoldSupersessionCheck observes a fold flush immediately after it
+	// has evaluated whether a newer publication supersedes it and before it
+	// runs its last-write-wins side effects. Tests use it only to place a
+	// deterministic newer publication in that window. Nil in production.
+	afterFoldSupersessionCheck func()
 
 	// worktreeGitRunner replaces only the Git subprocess boundary used by the
 	// native worktree lifecycle. Package-agent tests use it to replay the real
@@ -409,6 +464,9 @@ type testConfig struct {
 	// leaves it nil and probes the live host (sandbox.RealProber); tests inject a
 	// sandbox.FakeProber so the resume path never shells out to bwrap.
 	sandboxProber sandbox.Prober
+	// fileToolEnforceable replaces the runtime secure-open capability probe for
+	// deterministic delegate sandbox tests. Nil probes the live process.
+	fileToolEnforceable func() bool
 
 	// envProbes, when non-nil, replaces envctx.DefaultProbes() wholesale for the
 	// session's environment-context collector — including the production
@@ -543,6 +601,10 @@ type spawnConfig struct {
 	// subagentTask is the task description passed to delegate.
 	subagentTask string
 
+	// inheritedContext seeds a delegate's transcript once, at construction.
+	// NewSession consumes it; descendants start clean unless they also opt in.
+	inheritedContext []transcript.Entry
+
 	// depth is the sub-agent nesting depth (0 for root sessions).
 	depth int
 
@@ -670,6 +732,7 @@ func (c SessionConfig) toSnapshot() schema.ConfigSnapshot {
 		OpenAIResponsesContinuation: c.OpenAIResponsesContinuation,
 		Sandbox:                     c.Sandbox,
 		SandboxNet:                  c.SandboxNet,
+		VisionModel:                 c.VisionModel,
 	}
 }
 
@@ -710,5 +773,6 @@ func configFromSnapshot(s schema.ConfigSnapshot) SessionConfig {
 		OpenAIResponsesContinuation: s.OpenAIResponsesContinuation,
 		Sandbox:                     s.Sandbox,
 		SandboxNet:                  s.SandboxNet,
+		VisionModel:                 s.VisionModel,
 	}
 }

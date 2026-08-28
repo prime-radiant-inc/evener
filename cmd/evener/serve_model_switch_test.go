@@ -79,7 +79,7 @@ func TestServeModelSwitch_ThreadReadReflectsNewModelWithNoInterveningTurn(t *tes
 		select {
 		case <-done:
 		default:
-			// best-effort; the /shutdown POST below normally drains this.
+			// best-effort; the thread/shutdown below normally drains this.
 		}
 	})
 
@@ -139,11 +139,9 @@ func TestServeModelSwitch_ThreadReadReflectsNewModelWithNoInterveningTurn(t *tes
 			after.Thread.ModelProvider, "gpt-switched")
 	}
 
-	resp, err := http.Post("http://"+entry.Address+"/shutdown", "", nil)
-	if err != nil {
-		t.Fatalf("post /shutdown: %v", err)
+	if err := shutdownServeTestDaemon(context.Background(), entry.Address, entry.SessionID); err != nil {
+		t.Fatalf("thread/shutdown: %v", err)
 	}
-	resp.Body.Close()
 
 	select {
 	case err := <-done:
@@ -151,7 +149,7 @@ func TestServeModelSwitch_ThreadReadReflectsNewModelWithNoInterveningTurn(t *tes
 			t.Fatalf("runServe: %v", err)
 		}
 	case <-time.After(5 * time.Second):
-		t.Fatal("runServe did not exit after /shutdown")
+		t.Fatal("runServe did not exit after thread/shutdown")
 	}
 }
 
@@ -197,9 +195,8 @@ func TestServeModelSwitch_ProviderFailureRestoresCapability(t *testing.T) {
 		select {
 		case <-done:
 		default:
-			resp, err := http.Post("http://"+entry.Address+"/shutdown", "", nil)
-			if err == nil {
-				resp.Body.Close()
+			if err := shutdownServeTestDaemon(context.Background(), entry.Address, entry.SessionID); err != nil {
+				return
 			}
 		}
 	})
@@ -292,9 +289,10 @@ func TestServeModelSwitch_ProviderFailureRestoresCapability(t *testing.T) {
 	}()
 
 	_, err = client.TurnStart(ctx, appwire.TurnStartParams{
-		ClientMutationID: "provider-failure-turn",
-		Ref:              ref,
-		Input:            []appwire.InputItem{{Type: "text", Text: "make the first request"}},
+		ClientMutationID:   "provider-failure-turn",
+		ExpectedInstanceID: entry.SessionID,
+		Ref:                ref,
+		Input:              []appwire.InputItem{{Type: "text", Text: "make the first request"}},
 	})
 	if err != nil {
 		t.Fatalf("TurnStart (failed provider): %v", err)
@@ -324,9 +322,10 @@ func TestServeModelSwitch_ProviderFailureRestoresCapability(t *testing.T) {
 		t.Fatalf("ThreadModelSet after provider failure: %v", err)
 	}
 	recovery, err := client.TurnStart(ctx, appwire.TurnStartParams{
-		ClientMutationID: "provider-recovery-turn",
-		Ref:              ref,
-		Input:            []appwire.InputItem{{Type: "text", Text: "recover on the selected provider"}},
+		ClientMutationID:   "provider-recovery-turn",
+		ExpectedInstanceID: entry.SessionID,
+		Ref:                ref,
+		Input:              []appwire.InputItem{{Type: "text", Text: "recover on the selected provider"}},
 	})
 	if err != nil {
 		t.Fatalf("TurnStart (recovered provider): %v", err)
@@ -349,11 +348,9 @@ func TestServeModelSwitch_ProviderFailureRestoresCapability(t *testing.T) {
 			openaiRequests[0].Provider, openaiRequests[0].Model, "openai", "gpt-5.6-sol")
 	}
 
-	resp, err := http.Post("http://"+entry.Address+"/shutdown", "", nil)
-	if err != nil {
-		t.Fatalf("post /shutdown: %v", err)
+	if err := shutdownServeTestDaemon(context.Background(), entry.Address, entry.SessionID); err != nil {
+		t.Fatalf("thread/shutdown: %v", err)
 	}
-	resp.Body.Close()
 	select {
 	case err := <-done:
 		if err != nil {
@@ -363,6 +360,6 @@ func TestServeModelSwitch_ProviderFailureRestoresCapability(t *testing.T) {
 	// fires on a daemon that is genuinely stuck, never on a starved runner
 	// still inside its teardown contract.
 	case <-time.After(60 * time.Second):
-		t.Fatal("runServe did not exit after /shutdown")
+		t.Fatal("runServe did not exit after thread/shutdown")
 	}
 }

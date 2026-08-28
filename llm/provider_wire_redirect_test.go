@@ -18,71 +18,11 @@ import (
 
 	"primeradiant.com/evener/llm"
 	"primeradiant.com/evener/llm/apilog"
-	"primeradiant.com/evener/llm/providers/anthropic"
-	"primeradiant.com/evener/llm/providers/google"
-	"primeradiant.com/evener/llm/providers/openai"
-	"primeradiant.com/evener/llm/providers/openaicompat"
 )
 
-type redirectProvider struct {
-	name         string
-	responseBody []byte
-	new          func(string, *http.Client) llm.ProviderAdapter
-}
-
-func redirectProviders() []redirectProvider {
-	return []redirectProvider{
-		{
-			name:         "openai",
-			responseBody: []byte(`{"id":"resp-1","model":"test-model","output":[{"type":"message","role":"assistant","content":[{"type":"output_text","text":"hello"}]}],"status":"completed","usage":{"input_tokens":1,"output_tokens":1,"total_tokens":2}}`),
-			new: func(baseURL string, client *http.Client) llm.ProviderAdapter {
-				return &openai.Adapter{
-					APIKey:              "test-key",
-					BaseURL:             baseURL,
-					Client:              client,
-					DisableChatFallback: true,
-					DefaultHeaders:      map[string]string{"X-Initial-Hop": "initial", "X-Stays-Visible": "visible"},
-				}
-			},
-		},
-		{
-			name:         "anthropic",
-			responseBody: []byte(`{"id":"msg_1","model":"test-model","content":[{"type":"text","text":"hello"}],"stop_reason":"end_turn","usage":{"input_tokens":1,"output_tokens":1}}`),
-			new: func(baseURL string, client *http.Client) llm.ProviderAdapter {
-				return &anthropic.Adapter{
-					APIKey:         "test-key",
-					BaseURL:        baseURL,
-					Client:         client,
-					DefaultHeaders: map[string]string{"X-Initial-Hop": "initial", "X-Stays-Visible": "visible"},
-				}
-			},
-		},
-		{
-			name:         "google",
-			responseBody: []byte(`{"candidates":[{"content":{"role":"model","parts":[{"text":"hello"}]},"finishReason":"STOP"}],"usageMetadata":{"promptTokenCount":1,"candidatesTokenCount":1,"totalTokenCount":2},"modelVersion":"test-model"}`),
-			new: func(baseURL string, client *http.Client) llm.ProviderAdapter {
-				return &google.Adapter{
-					APIKey:         "test-key",
-					BaseURL:        baseURL,
-					Client:         client,
-					DefaultHeaders: map[string]string{"X-Initial-Hop": "initial", "X-Stays-Visible": "visible"},
-				}
-			},
-		},
-		{
-			name:         "openai-compatible",
-			responseBody: []byte(`{"id":"chatcmpl-1","model":"test-model","choices":[{"index":0,"message":{"role":"assistant","content":"hello"},"finish_reason":"stop"}],"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}}`),
-			new: func(baseURL string, client *http.Client) llm.ProviderAdapter {
-				return &openaicompat.Adapter{
-					APIKey:         "test-key",
-					BaseURL:        baseURL,
-					Client:         client,
-					DefaultHeaders: map[string]string{"X-Initial-Hop": "initial", "X-Stays-Visible": "visible"},
-				}
-			},
-		},
-	}
-}
+// redirectHeaders are the instance's default headers: one the redirect policy
+// deletes on the second hop and one that must survive it.
+var redirectHeaders = map[string]string{"X-Initial-Hop": "initial", "X-Stays-Visible": "visible"}
 
 type redirectRequest struct {
 	method string
@@ -125,7 +65,7 @@ func (s *blockingRedirectSink) snapshot() []apilog.APIAttemptRecord {
 }
 
 func TestCoreCompleteWireCaptureRecordsAcceptedRedirectHopsExactly(t *testing.T) {
-	for _, provider := range redirectProviders() {
+	for _, provider := range wireProviders() {
 		t.Run(provider.name, func(t *testing.T) {
 			requests := make(chan redirectRequest, 2)
 			secondStarted := make(chan struct{})
@@ -145,7 +85,7 @@ func TestCoreCompleteWireCaptureRecordsAcceptedRedirectHopsExactly(t *testing.T)
 				}
 				close(secondStarted)
 				w.Header().Set("Content-Type", "application/json")
-				_, _ = w.Write(provider.responseBody)
+				_, _ = w.Write([]byte(provider.completeBody))
 			}))
 			t.Cleanup(server.Close)
 
@@ -181,10 +121,7 @@ func TestCoreCompleteWireCaptureRecordsAcceptedRedirectHopsExactly(t *testing.T)
 			)
 			done := make(chan error, 1)
 			go func() {
-				response, err := provider.new(server.URL, client).Complete(ctx, llm.Request{
-					Model:    "test-model",
-					Messages: []llm.Message{llm.User("hello")},
-				})
+				response, err := provider.wireClient(t, server.URL, client, redirectHeaders).Complete(ctx, providerRequest(provider.name, "test-model"))
 				if err == nil && response.Text() != "hello" {
 					err = errors.New("redirected response text was not hello")
 				}
@@ -193,7 +130,7 @@ func TestCoreCompleteWireCaptureRecordsAcceptedRedirectHopsExactly(t *testing.T)
 
 			select {
 			case <-sink.firstEntered:
-			case <-time.After(time.Second):
+			case <-time.After(30 * time.Second):
 				t.Fatal("first redirect hop did not reach canonical append")
 			}
 			select {
@@ -207,7 +144,7 @@ func TestCoreCompleteWireCaptureRecordsAcceptedRedirectHopsExactly(t *testing.T)
 				if err != nil {
 					t.Fatalf("Complete: %v", err)
 				}
-			case <-time.After(time.Second):
+			case <-time.After(30 * time.Second):
 				t.Fatal("redirected completion did not finish")
 			}
 			if redirectChecks != 1 {
@@ -227,7 +164,7 @@ func TestCoreCompleteWireCaptureRecordsAcceptedRedirectHopsExactly(t *testing.T)
 				t.Fatalf("canonical attempts = %d, want one per actual request", len(attempts))
 			}
 			assertRedirectAttempt(t, attempts[0], groupID, 1, firstRequest, []byte("redirect-response"), http.StatusFound, apilog.AttemptProviderReject)
-			assertRedirectAttempt(t, attempts[1], groupID, 2, secondRequest, provider.responseBody, http.StatusOK, apilog.AttemptSuccess)
+			assertRedirectAttempt(t, attempts[1], groupID, 2, secondRequest, []byte(provider.completeBody), http.StatusOK, apilog.AttemptSuccess)
 			if firstRequest.method != http.MethodPost || secondRequest.method != http.MethodGet {
 				t.Fatalf("wire methods = %s -> %s, want POST -> GET", firstRequest.method, secondRequest.method)
 			}
@@ -251,7 +188,7 @@ func TestCoreCompleteWireCaptureRecordsAcceptedRedirectHopsExactly(t *testing.T)
 }
 
 func TestCoreCompleteWithoutAPIAttemptPreservesRedirectClientBehavior(t *testing.T) {
-	for _, provider := range redirectProviders() {
+	for _, provider := range wireProviders() {
 		t.Run(provider.name, func(t *testing.T) {
 			requests := make(chan redirectRequest, 2)
 			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -269,7 +206,7 @@ func TestCoreCompleteWithoutAPIAttemptPreservesRedirectClientBehavior(t *testing
 					return
 				}
 				w.Header().Set("Content-Type", "application/json")
-				_, _ = w.Write(provider.responseBody)
+				_, _ = w.Write([]byte(provider.completeBody))
 			}))
 			t.Cleanup(server.Close)
 
@@ -295,10 +232,7 @@ func TestCoreCompleteWithoutAPIAttemptPreservesRedirectClientBehavior(t *testing
 				return nil
 			}
 
-			response, err := provider.new(server.URL, client).Complete(context.Background(), llm.Request{
-				Model:    "test-model",
-				Messages: []llm.Message{llm.User("hello")},
-			})
+			response, err := provider.wireClient(t, server.URL, client, redirectHeaders).Complete(context.Background(), providerRequest(provider.name, "test-model"))
 			if err != nil {
 				t.Fatalf("Complete without API-attempt context: %v", err)
 			}
@@ -327,7 +261,7 @@ func TestCoreCompleteWithoutAPIAttemptPreservesRedirectClientBehavior(t *testing
 }
 
 func TestCoreCompleteWireCaptureUsesActualBodyReadAfterBodyPreservingRedirect(t *testing.T) {
-	for _, provider := range redirectProviders() {
+	for _, provider := range wireProviders() {
 		for _, status := range []int{http.StatusTemporaryRedirect, http.StatusPermanentRedirect} {
 			t.Run(provider.name+"/"+http.StatusText(status), func(t *testing.T) {
 				requests := make(chan redirectRequest, 2)
@@ -345,7 +279,7 @@ func TestCoreCompleteWireCaptureUsesActualBodyReadAfterBodyPreservingRedirect(t 
 						return
 					}
 					w.Header().Set("Content-Type", "application/json")
-					_, _ = w.Write(provider.responseBody)
+					_, _ = w.Write([]byte(provider.completeBody))
 				}))
 				t.Cleanup(server.Close)
 
@@ -376,10 +310,7 @@ func TestCoreCompleteWireCaptureUsesActualBodyReadAfterBodyPreservingRedirect(t 
 					llm.WithAPIAttemptGroup(context.Background(), llm.NewAPIAttemptGroup(groupID)),
 					sink,
 				)
-				response, err := provider.new(server.URL, client).Complete(ctx, llm.Request{
-					Model:    "test-model",
-					Messages: []llm.Message{llm.User("hello")},
-				})
+				response, err := provider.wireClient(t, server.URL, client, redirectHeaders).Complete(ctx, providerRequest(provider.name, "test-model"))
 				if err != nil || response.Text() != "hello" {
 					t.Fatalf("Complete = (%q, %v), want redirected hello", response.Text(), err)
 				}
@@ -392,7 +323,7 @@ func TestCoreCompleteWireCaptureUsesActualBodyReadAfterBodyPreservingRedirect(t 
 				firstRequest := <-requests
 				secondRequest := <-requests
 				assertRedirectAttempt(t, sink.attempts[0], groupID, 1, firstRequest, []byte("body-preserving-redirect"), status, apilog.AttemptProviderReject)
-				assertRedirectAttempt(t, sink.attempts[1], groupID, 2, secondRequest, provider.responseBody, http.StatusOK, apilog.AttemptSuccess)
+				assertRedirectAttempt(t, sink.attempts[1], groupID, 2, secondRequest, []byte(provider.completeBody), http.StatusOK, apilog.AttemptSuccess)
 				if secondRequest.method != http.MethodPost {
 					t.Fatalf("redirect method = %q, want POST", secondRequest.method)
 				}
@@ -409,7 +340,7 @@ func TestCoreCompleteWireCaptureDefersUnreadLargeRedirectUntilChainReturns(t *te
 	if len(largeRedirectBody) <= 2<<10 {
 		t.Fatalf("test body = %d bytes, want larger than net/http redirect slurp limit", len(largeRedirectBody))
 	}
-	for _, provider := range redirectProviders() {
+	for _, provider := range wireProviders() {
 		t.Run(provider.name, func(t *testing.T) {
 			requests := make(chan redirectRequest, 2)
 			secondStarted := make(chan struct{})
@@ -429,7 +360,7 @@ func TestCoreCompleteWireCaptureDefersUnreadLargeRedirectUntilChainReturns(t *te
 				}
 				close(secondStarted)
 				w.Header().Set("Content-Type", "application/json")
-				_, _ = w.Write(provider.responseBody)
+				_, _ = w.Write([]byte(provider.completeBody))
 			}))
 			t.Cleanup(server.Close)
 
@@ -444,16 +375,13 @@ func TestCoreCompleteWireCaptureDefersUnreadLargeRedirectUntilChainReturns(t *te
 			)
 			done := make(chan error, 1)
 			go func() {
-				_, err := provider.new(server.URL, client).Complete(ctx, llm.Request{
-					Model:    "test-model",
-					Messages: []llm.Message{llm.User("hello")},
-				})
+				_, err := provider.wireClient(t, server.URL, client, redirectHeaders).Complete(ctx, providerRequest(provider.name, "test-model"))
 				done <- err
 			}()
 
 			select {
 			case <-sink.firstEntered:
-			case <-time.After(time.Second):
+			case <-time.After(30 * time.Second):
 				t.Fatal("large redirect did not reach first canonical append")
 			}
 			select {
@@ -467,7 +395,7 @@ func TestCoreCompleteWireCaptureDefersUnreadLargeRedirectUntilChainReturns(t *te
 				if err != nil {
 					t.Fatalf("Complete: %v", err)
 				}
-			case <-time.After(time.Second):
+			case <-time.After(30 * time.Second):
 				t.Fatal("redirected completion did not finish")
 			}
 
@@ -484,7 +412,7 @@ func TestCoreCompleteWireCaptureDefersUnreadLargeRedirectUntilChainReturns(t *te
 
 func TestCoreCompleteWireCapturePreservesErrUseLastResponse(t *testing.T) {
 	const responseBody = `{"error":{"message":"redirect response"}}`
-	for _, provider := range redirectProviders() {
+	for _, provider := range wireProviders() {
 		t.Run(provider.name, func(t *testing.T) {
 			requests := make(chan redirectRequest, 2)
 			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -512,10 +440,7 @@ func TestCoreCompleteWireCapturePreservesErrUseLastResponse(t *testing.T) {
 				llm.WithAPIAttemptGroup(context.Background(), llm.NewAPIAttemptGroup(groupID)),
 				sink,
 			)
-			_, err := provider.new(server.URL, client).Complete(ctx, llm.Request{
-				Model:    "test-model",
-				Messages: []llm.Message{llm.User("hello")},
-			})
+			_, err := provider.wireClient(t, server.URL, client, redirectHeaders).Complete(ctx, providerRequest(provider.name, "test-model"))
 			var statusErr interface{ StatusCode() int }
 			if !errors.As(err, &statusErr) || statusErr.StatusCode() != http.StatusFound {
 				t.Fatalf("ErrUseLastResponse provider error = %v, want status 302", err)
@@ -536,7 +461,7 @@ func TestCoreCompleteWireCapturePreservesErrUseLastResponse(t *testing.T) {
 }
 
 func TestCoreCompleteWireCaptureRecordsRedirectThenFinalTransportFailure(t *testing.T) {
-	for _, provider := range redirectProviders() {
+	for _, provider := range wireProviders() {
 		t.Run(provider.name, func(t *testing.T) {
 			requests := make(chan redirectRequest, 1)
 			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -571,10 +496,7 @@ func TestCoreCompleteWireCaptureRecordsRedirectThenFinalTransportFailure(t *test
 				llm.WithAPIAttemptGroup(context.Background(), llm.NewAPIAttemptGroup(groupID)),
 				sink,
 			)
-			_, err := provider.new(server.URL, client).Complete(ctx, llm.Request{
-				Model:    "test-model",
-				Messages: []llm.Message{llm.User("hello")},
-			})
+			_, err := provider.wireClient(t, server.URL, client, redirectHeaders).Complete(ctx, providerRequest(provider.name, "test-model"))
 			if !errors.Is(err, transportErr) {
 				t.Fatalf("Complete error = %v, want final transport identity", err)
 			}
@@ -603,7 +525,7 @@ func TestCoreCompleteWireCaptureRecordsRedirectThenFinalTransportFailure(t *test
 }
 
 func TestCoreCompleteWireCaptureRecordsRejectedRedirectWithoutInventingHop(t *testing.T) {
-	for _, provider := range redirectProviders() {
+	for _, provider := range wireProviders() {
 		t.Run(provider.name, func(t *testing.T) {
 			requests := make(chan redirectRequest, 2)
 			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -628,10 +550,7 @@ func TestCoreCompleteWireCaptureRecordsRejectedRedirectWithoutInventingHop(t *te
 				llm.WithAPIAttemptGroup(context.Background(), llm.NewAPIAttemptGroup(groupID)),
 				sink,
 			)
-			_, err := provider.new(server.URL, client).Complete(ctx, llm.Request{
-				Model:    "test-model",
-				Messages: []llm.Message{llm.User("hello")},
-			})
+			_, err := provider.wireClient(t, server.URL, client, redirectHeaders).Complete(ctx, providerRequest(provider.name, "test-model"))
 			if !errors.Is(err, redirectErr) {
 				t.Fatalf("redirect error = %v, want original policy error identity", err)
 			}

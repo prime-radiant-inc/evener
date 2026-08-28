@@ -95,17 +95,20 @@ const md = new Marked({ gfm: true, renderer });
 
 // Sanitizes the OUTPUT html, not the markdown source - this is DOMPurify's
 // documented pairing with marked (marked itself performs no sanitization).
-// The allowlist is deliberately small: every tag/attribute marked's
-// defaults or the overrides above can produce, and nothing else. Notably
-// absent: img/table and friends - GFM tables and images tokenize fine but
-// aren't allowlisted yet (no consumer needs them this wave). Disallowed
-// elements don't uniformly "degrade to their text content" though -
-// verified directly against this exact config: a <thead>'s content
-// (including its <th> cells) is dropped entirely, while a <tbody>'s
-// <td> content survives as unwrapped text; a bare <img> has no text
-// content to keep in the first place, so it just vanishes. Whichever way
-// a given element behaves, nothing dangerous survives - they fail safe,
-// just not via one single mechanism.
+// The allowlist is every tag/attribute marked's defaults or the overrides
+// above can produce, and nothing else. GFM pipe tables are supported: marked
+// tokenizes them (gfm: true) into <table>/<thead>/<tbody>/<tr>/<th>/<td> with
+// an align="left|center|right" attribute per aligned column, so all six
+// table tags plus `align` are allowlisted. The only path to a real <table>
+// is that tokenizer: the html() override below escapes all authored raw
+// HTML to text before DOMPurify ever sees it, so no markdown-typed <table>
+// can sneak through. Still absent: img - images tokenize fine but aren't
+// allowlisted yet (no consumer needs them this wave). Disallowed elements
+// don't uniformly "degrade to their text content" though - verified
+// directly against this exact config: a bare <img> has no text content to
+// keep, so it just vanishes. Whichever way a given element behaves,
+// nothing dangerous survives - they fail safe, just not via one single
+// mechanism.
 const SANITIZE_CONFIG = {
   ALLOWED_TAGS: [
     "p",
@@ -129,6 +132,12 @@ const SANITIZE_CONFIG = {
     "blockquote",
     "div",
     "span",
+    "table",
+    "thead",
+    "tbody",
+    "tr",
+    "th",
+    "td",
   ],
   // "class" is allowlisted globally (not scoped to specific tags) but is
   // currently inert against anything a markdown AUTHOR controls: the only
@@ -136,10 +145,13 @@ const SANITIZE_CONFIG = {
   // above writes itself (CODEBLOCK_CLASS/CLASS.inlineCode) - html() above
   // escapes all raw source HTML to text before DOMPurify ever sees it, so
   // there's no path today for a class value to originate from user input.
-  // If a future change widens ALLOWED_TAGS to let raw source HTML through
-  // in some form, that safety stops being automatic - re-check whether
-  // "class" should stay this permissive at that point.
-  ALLOWED_ATTR: ["href", "title", "target", "rel", "class"],
+  // `align` is the legacy HTML attribute marked emits for GFM column
+  // alignment (:---/:---:/---:); it carries no script surface and is
+  // harmless on table cells. If a future change widens ALLOWED_TAGS to let
+  // raw source HTML through in some form, that safety stops being
+  // automatic - re-check whether "class"/"align" should stay this
+  // permissive at that point.
+  ALLOWED_ATTR: ["href", "title", "target", "rel", "class", "align"],
 };
 
 /**

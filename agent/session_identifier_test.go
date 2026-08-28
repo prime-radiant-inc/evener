@@ -131,3 +131,57 @@ func TestRestoreSessionReloadsMetadataAfterOwnershipAcquisition(t *testing.T) {
 		t.Fatalf("failed revalidation created transcript: %v", statErr)
 	}
 }
+
+func TestRestoreSessionFailureRetainsPreAcquiredOwnership(t *testing.T) {
+	stateDir := t.TempDir()
+	meta := schema.SessionMeta{ID: "02wMz5Txv1C3Hut0M8GCeC"}
+	if err := schema.SaveSessionMeta(stateDir, meta); err != nil {
+		t.Fatal(err)
+	}
+	transcriptPath := filepath.Join(stateDir, sessionsSubdir, meta.ID+".transcript.jsonl")
+	if err := os.Mkdir(transcriptPath, 0o700); err != nil {
+		t.Fatal(err)
+	}
+
+	owner, err := llm.NewSessionAPILogger(stateDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer owner.Close() //nolint:errcheck
+	if err := owner.ReserveSession(meta.ID); err != nil {
+		t.Fatal(err)
+	}
+	client := llm.NewClient()
+	client.Use(owner)
+	acquireCalls := 0
+
+	_, err = RestoreSessionFromMetaWithConfig(
+		client,
+		NewOpenAIProfile("gpt-5.2"),
+		execenv.NewLocalExecutionEnvironment(t.TempDir()),
+		meta,
+		RestoreSessionConfig{
+			StateDir:                 stateDir,
+			OwnershipAlreadyAcquired: true,
+			AcquireSessionOwnership: func(id string) error {
+				acquireCalls++
+				return owner.ReserveSession(id)
+			},
+		},
+	)
+	if err == nil {
+		t.Fatal("restore succeeded with an unreadable transcript path")
+	}
+	if acquireCalls != 0 {
+		t.Fatalf("pre-acquired restore called ownership callback %d times, want 0", acquireCalls)
+	}
+
+	contender, err := llm.NewSessionAPILogger(stateDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer contender.Close() //nolint:errcheck
+	if err := contender.ReserveSession(meta.ID); !errors.Is(err, llm.ErrAPILogTargetLocked) {
+		t.Fatalf("failed pre-acquired restore released ownership: %v", err)
+	}
+}

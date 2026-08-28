@@ -25,6 +25,7 @@ const CAPABILITIES: ThreadCapabilities = {
   forkFromTurn: true,
   shutdown: true,
   changeModel: true,
+  changeVisionModel: true,
   queue: true,
   goal: true,
   rename: true,
@@ -39,6 +40,7 @@ function testModel(overrides: Partial<ThreadModel> = {}): ThreadModel {
     status: { type: "idle" },
     modelProvider: "anthropic",
     model: "claude",
+    visionModel: "",
     askPending: false,
     pendingEscalations: [],
     turns: [],
@@ -152,6 +154,50 @@ test("the trigger shows a bare 'Tasks' label when no aggregate has arrived yet",
 test("the trigger shows the done/total counts once the aggregate has arrived", () => {
   render(<TasksPanel sessionRef="ref_a" model={testModel({ tasks: { total: 7, done: 3 } })} />);
   expect(screen.getByRole("button", { name: "Tasks 3/7" })).toBeTruthy();
+});
+
+test("outcome aggregates show terminal progress instead of done/total", async () => {
+  const fake = connectFakeClient();
+  fake.on("evener/tasks/list", () => ({ data: [] }));
+  const model = testModel({ tasks: { total: 7, done: 1, cancelled: 5, remaining: 1 } });
+
+  render(
+    <>
+      <TasksPanel sessionRef="ref_a" model={model} />
+      <TasksPanelBody sessionRef="ref_a" model={model} />
+    </>,
+  );
+
+  expect(screen.getByRole("button", { name: "Tasks 1 done, 5 cancelled, 1 remaining (7 total)" })).toBeTruthy();
+  await waitFor(() => expect(screen.getByTestId("tasks-body-head")).toBeTruthy());
+  expect(screen.getByTestId("tasks-body-head").textContent).toContain("1 done, 5 cancelled, 1 remaining (7 total)");
+  expect(
+    screen
+      .getByRole("meter", { name: "Task progress: 1 done, 5 cancelled, 1 remaining (7 total)" })
+      .getAttribute("aria-valuenow"),
+  ).toBe("6");
+});
+
+test("outcome aggregates infer an omitted zero outcome for labels and terminal meters", async () => {
+  const fake = connectFakeClient();
+  fake.on("evener/tasks/list", () => ({ data: [] }));
+  const cancelledOnly = testModel({ tasks: { total: 7, done: 1, cancelled: 5 } });
+  const { unmount } = render(<TasksPanelBody sessionRef="ref_cancelled" model={cancelledOnly} />);
+
+  await waitFor(() => expect(screen.getByTestId("tasks-body-head")).toBeTruthy());
+  const cancelledMeter = screen.getByRole("meter", {
+    name: "Task progress: 1 done, 5 cancelled, 0 remaining (7 total)",
+  });
+  expect(cancelledMeter.getAttribute("aria-valuenow")).toBe("6");
+  unmount();
+
+  const remainingOnly = testModel({ tasks: { total: 7, done: 1, remaining: 5 } });
+  render(<TasksPanelBody sessionRef="ref_remaining" model={remainingOnly} />);
+  await waitFor(() => expect(screen.getByTestId("tasks-body-head")).toBeTruthy());
+  const remainingMeter = screen.getByRole("meter", {
+    name: "Task progress: 1 done, 0 cancelled, 5 remaining (7 total)",
+  });
+  expect(remainingMeter.getAttribute("aria-valuenow")).toBe("1");
 });
 
 // --- STATUS_TONE: pinning test (review finding) --------------------------

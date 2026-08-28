@@ -8,7 +8,7 @@ import (
 )
 
 // TestLibrariesHaveNoInternalLeaks is the regression guard: the agent, llm, and
-// llm/providercfg libraries must not name any evener-internal type in their
+// llm/registry libraries must not name any evener-internal type in their
 // exported surface, so they remain externally importable. (The walk itself is
 // exercised continuously by CI running the binary on the real code.)
 func TestLibrariesHaveNoInternalLeaks(t *testing.T) {

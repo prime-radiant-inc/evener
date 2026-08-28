@@ -26,6 +26,14 @@ test("status CSS declares the approved 560, 480, and 400px compression threshold
   expect(css).toContain("@container (max-width: 399px)");
 });
 
+test("phone status CSS reserves a visible model label without dropping fixed facts", () => {
+  const css = readFileSync(join(here, "statusrow.module.css"), "utf8");
+  const phoneBlock = /@container \(max-width: 399px\) \{([\s\S]*?)\n\}/.exec(css)?.[1] ?? "";
+  expect(phoneBlock).toContain("gap: var(--space-1)");
+  expect(phoneBlock).toContain("padding-inline: 0");
+  expect(phoneBlock).toContain("min-width: 1rem");
+});
+
 const CAPABILITIES: ThreadCapabilities = {
   send: true,
   steer: true,
@@ -35,6 +43,7 @@ const CAPABILITIES: ThreadCapabilities = {
   forkFromTurn: true,
   shutdown: true,
   changeModel: true,
+  changeVisionModel: true,
   queue: true,
   goal: true,
   rename: true,
@@ -49,6 +58,7 @@ function testModel(overrides: Partial<ThreadModel> = {}): ThreadModel {
     status: { type: "idle" },
     modelProvider: "anthropic/claude-sonnet-4-5",
     model: "anthropic/claude-sonnet-4-5",
+    visionModel: "",
     askPending: false,
     pendingEscalations: [],
     turns: [],
@@ -173,7 +183,7 @@ test("groups model and effort visually while retaining two independent controls"
     />,
   );
   const identity = screen.getByTestId("status-row-identity");
-  expect(identity.contains(screen.getByRole("button", { name: /change model/i }))).toBe(true);
+  expect(identity.contains(screen.getByTestId("model-switch-trigger"))).toBe(true);
   expect(identity.contains(screen.getByRole("combobox", { name: /reasoning effort/i }))).toBe(true);
   expect(identity.children).toHaveLength(2);
 });
@@ -188,7 +198,7 @@ test("shows a single model label when provider and model are still the same stri
       now={1000}
     />,
   );
-  expect(screen.getByText("anthropic/claude-sonnet-4-5")).toBeTruthy();
+  expect(screen.getByTestId("model-switch-value").textContent).toBe("anthropic/claude-sonnet-4-5");
 });
 
 test("shows provider/model once a live thread/model/changed has actually split them apart", () => {
@@ -199,7 +209,7 @@ test("shows provider/model once a live thread/model/changed has actually split t
       now={1000}
     />,
   );
-  expect(screen.getByText("anthropic/claude-opus-5")).toBeTruthy();
+  expect(screen.getByTestId("model-switch-value").textContent).toBe("anthropic/claude-opus-5");
 });
 
 // composition proof only - ModelSwitch.test.tsx owns the full picker
@@ -216,7 +226,7 @@ test("wires the model-switch trigger in, acting on the SAME sessionRef passed to
   });
 
   render(<StatusRow sessionRef="ref_a" model={testModel()} now={1000} />);
-  await user.click(screen.getByRole("button", { name: /change model/i }));
+  await user.click(screen.getByTestId("model-switch-trigger"));
   // Named "Model" (widgets/modelCatalog's own aria-label); the effort control's
   // own combobox is named "Reasoning effort", so this is unambiguous even
   // though both roles now live on the same row.
@@ -352,12 +362,11 @@ test("an unset reasoning effort shows as (default), never the first ladder level
   expect(screen.getByTestId("status-row-effort-value").textContent).toBe("(default)");
 });
 
-// evener's "none" clears the effort to the provider default (llm/types.go:670,
-// providercfg/load.go:76) - the same meaning as unset. A ladder that lists
-// "none" collapses it into the single "(default)" entry (never a duplicate
-// option), and a current "none" effort selects that entry, not a literal
-// "none" the user appears to have chosen (mirrors legacy search.js:409-415).
-test("collapses a ladder-listed 'none' into (default) rather than a duplicate option, and a current 'none' effort selects it", () => {
+// "none" is an explicit off the user chose (llm.ReasoningEffortNone), distinct
+// from unset: a session running at "none" must say so, never masquerade as
+// "(default)" (which now means "the session default applies"), and a ladder
+// that lists "none" offers it as its own labelled option.
+test("shows a current 'none' effort as its own selected 'none (off)' option, distinct from (default)", () => {
   render(
     <StatusRow
       sessionRef="ref_a"
@@ -370,10 +379,32 @@ test("collapses a ladder-listed 'none' into (default) rather than a duplicate op
     />,
   );
   const select = screen.getByRole("combobox", { name: /reasoning effort/i }) as HTMLSelectElement;
-  expect(select.value).toBe("");
-  expect(select.options[select.selectedIndex]?.textContent).toBe("(default)");
-  expect(Array.from(select.options).map((o) => o.value)).toEqual(["", "low", "medium", "high"]);
-  expect(screen.getByTestId("status-row-effort-value").textContent).toBe("(default)");
+  expect(select.value).toBe("none");
+  expect(select.options[select.selectedIndex]?.textContent).toBe("none (off)");
+  expect(Array.from(select.options).map((o) => o.value)).toEqual(["", "none", "low", "medium", "high"]);
+  expect(screen.getByTestId("status-row-effort-value").textContent).toBe("none (off)");
+});
+
+// A model whose ladder has no "none" level cannot actually turn thinking off:
+// an explicit none omits the field and the provider default applies, so the
+// label must not claim "off".
+test("a current 'none' on a model without an off level reads 'none (provider default)'", () => {
+  render(
+    <StatusRow
+      sessionRef="ref_a"
+      model={testModel({
+        supportsReasoning: true,
+        reasoningEffortLevels: ["low", "medium", "high"],
+        reasoningEffort: "none",
+      })}
+      now={1000}
+    />,
+  );
+  const select = screen.getByRole("combobox", { name: /reasoning effort/i }) as HTMLSelectElement;
+  expect(select.value).toBe("none");
+  expect(select.options[select.selectedIndex]?.textContent).toBe("none (provider default)");
+  expect(Array.from(select.options).map((o) => o.value)).toEqual(["", "low", "medium", "high", "none"]);
+  expect(screen.getByTestId("status-row-effort-value").textContent).toBe("none (provider default)");
 });
 
 test("changing the reasoning-effort select calls setReasoningEffort with the new level", async () => {

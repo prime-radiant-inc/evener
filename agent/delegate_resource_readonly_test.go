@@ -2,6 +2,7 @@ package agent
 
 import (
 	"bytes"
+	"context"
 	"crypto/sha256"
 	"encoding/json"
 	"os"
@@ -169,7 +170,7 @@ func TestStableDelegateReadOnly_ColdAndLiveProjectionMatch(t *testing.T) {
 	if err != nil {
 		t.Fatalf("live JobActivityTree: %v", err)
 	}
-	cold, err := LoadSessionJobActivityTree(stateDir, s.ID(), appwire.JobsListParams{})
+	cold, err := LoadSessionJobActivityTree(context.Background(), stateDir, s.ID(), appwire.JobsListParams{})
 	if err != nil {
 		t.Fatalf("cold LoadSessionJobActivityTree: %v", err)
 	}
@@ -229,7 +230,7 @@ func TestStableDelegateReadOnly_ActivityProjectsPublicLifecycleAndInternalPhase(
 	if err != nil {
 		t.Fatalf("live JobActivityTree: %v", err)
 	}
-	cold, err := LoadSessionJobActivityTree(stateDir, s.ID(), appwire.JobsListParams{})
+	cold, err := LoadSessionJobActivityTree(context.Background(), stateDir, s.ID(), appwire.JobsListParams{})
 	if err != nil {
 		t.Fatalf("cold LoadSessionJobActivityTree: %v", err)
 	}
@@ -254,7 +255,7 @@ func TestStableDelegateReadOnly_MissingFilesRemainMissing(t *testing.T) {
 	stateDir := t.TempDir()
 	sessionID := identifier.MustNewSessionID()
 	sessionDir := jobsDir(stateDir, sessionID)
-	if _, err := LoadSessionJobActivityTree(stateDir, sessionID, appwire.JobsListParams{}); err != nil {
+	if _, err := LoadSessionJobActivityTree(context.Background(), stateDir, sessionID, appwire.JobsListParams{}); err != nil {
 		t.Fatalf("LoadSessionJobActivityTree missing state: %v", err)
 	}
 	if _, err := LoadSessionHistoricalJobRecords(stateDir, sessionID); err != nil {
@@ -271,7 +272,7 @@ func TestStableDelegateReadOnly_TornTailIsReportedButNotRepaired(t *testing.T) {
 	path := seedStableReadonlyTornJournal(t, stateDir, sessionID)
 	want := mustReadonlyFileState(t, path)
 
-	tree, err := LoadSessionJobActivityTree(stateDir, sessionID, appwire.JobsListParams{})
+	tree, err := LoadSessionJobActivityTree(context.Background(), stateDir, sessionID, appwire.JobsListParams{})
 	if err != nil {
 		t.Fatalf("LoadSessionJobActivityTree torn tail: %v", err)
 	}
@@ -297,7 +298,7 @@ func TestStableDelegateReadOnly_FileBytesAndMetadataRemainUnchanged(t *testing.T
 	}
 	want := mustReadonlyFileState(t, path)
 
-	if _, err := LoadSessionJobActivityTree(stateDir, sessionID, appwire.JobsListParams{}); err != nil {
+	if _, err := LoadSessionJobActivityTree(context.Background(), stateDir, sessionID, appwire.JobsListParams{}); err != nil {
 		t.Fatalf("LoadSessionJobActivityTree: %v", err)
 	}
 	if got := mustReadonlyFileState(t, path); !reflect.DeepEqual(got, want) {
@@ -340,7 +341,7 @@ func TestStableDelegateReadOnly_NoSessionProviderOrWritableOpen(t *testing.T) {
 	if _, err := LoadSessionHistoricalJobRecords(stateDir, sessionID); err != nil {
 		t.Fatalf("historical record projection constructed writable state: %v", err)
 	}
-	if _, err := LoadSessionJobActivityTree(stateDir, sessionID, appwire.JobsListParams{}); err != nil {
+	if _, err := LoadSessionJobActivityTree(context.Background(), stateDir, sessionID, appwire.JobsListParams{}); err != nil {
 		t.Fatalf("historical activity projection constructed writable state: %v", err)
 	}
 	if _, found, err := LoadSessionJobOutputTail(stateDir, sessionID, "job_readonly", 0, 1); err != nil || !found {

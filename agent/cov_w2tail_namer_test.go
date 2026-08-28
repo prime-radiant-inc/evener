@@ -29,10 +29,10 @@ func (a *erroringAdapter) Stream(ctx context.Context, req llm.Request) (llm.Stre
 func TestW2Tail_nameSession_Guards(t *testing.T) {
 	profile := NewOpenAIProfile("gpt-5.2")
 
-	if _, err := nameSession(context.Background(), nil, profile, sessionNameSourcePrompt, "text", noNamerSleep); err == nil {
+	if _, err := nameSession(context.Background(), nil, profile, sessionNameSourcePrompt, "text", "", noNamerSleep); err == nil {
 		t.Errorf("nil client should error")
 	}
-	if _, err := nameSession(context.Background(), llm.NewClient(), nil, sessionNameSourcePrompt, "text", noNamerSleep); err == nil {
+	if _, err := nameSession(context.Background(), llm.NewClient(), nil, sessionNameSourcePrompt, "text", "", noNamerSleep); err == nil {
 		t.Errorf("nil profile should error")
 	}
 }
@@ -40,7 +40,7 @@ func TestW2Tail_nameSession_Guards(t *testing.T) {
 func TestW2Tail_nameSession_LLMErrorWrapped(t *testing.T) {
 	client := llm.NewClient()
 	client.Register(&erroringAdapter{name: "openai"})
-	_, err := nameSession(context.Background(), client, NewOpenAIProfile("gpt-5.2"), sessionNameSourcePrompt, "do a thing", noNamerSleep)
+	_, err := nameSession(context.Background(), client, NewOpenAIProfile("gpt-5.2"), sessionNameSourcePrompt, "do a thing", "", noNamerSleep)
 	if err == nil {
 		t.Fatalf("expected wrapped LLM error")
 	}
@@ -59,7 +59,7 @@ func TestW2Tail_nameSession_EmptyNameAfterSanitize(t *testing.T) {
 			},
 		},
 	})
-	_, err := nameSession(context.Background(), client, NewOpenAIProfile("gpt-5.2"), sessionNameSourceCompaction, "summary text", noNamerSleep)
+	_, err := nameSession(context.Background(), client, NewOpenAIProfile("gpt-5.2"), sessionNameSourceCompaction, "summary text", "", noNamerSleep)
 	if err == nil {
 		t.Fatalf("expected empty-name error after sanitize")
 	}

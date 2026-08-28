@@ -5,6 +5,7 @@ import styles from "./radiogroup.module.css";
 export interface RadioGroupOption {
   value: string;
   label: string;
+  accessibleLabel?: string;
   disabled?: boolean;
 }
 
@@ -144,6 +145,7 @@ export function RadioGroup({ label, value, onChange, options, disabled = false }
             }}
             onClick={() => choose(index)}
             onKeyDown={(event) => handleKeyDown(event, index)}
+            aria-label={option.accessibleLabel}
           >
             <span className={CLASS.dot} aria-hidden="true">
               <span className={CLASS.dotInner} />

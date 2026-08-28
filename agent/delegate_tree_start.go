@@ -464,6 +464,7 @@ func (c *delegateTreeController) CompleteStartInput(claim delegateInputClaim, co
 	}
 	live.binding.ready = true
 	live.activityAt = c.now()
+	live.productiveActivityAt = live.activityAt
 	c.evidenceVersion++
 	plans := delegateMutationPlans{updates: []delegateUpdatePlan{c.capturedPlanLocked(lease.delegateID)}}
 	plans.deliveries = append(plans.deliveries, c.replayDeliveriesForOwnerLocked(lease.delegateID)...)
@@ -790,11 +791,16 @@ func (c *delegateTreeController) CommitStart(reservation *delegateStartReservati
 		c.live[record.delegateID] = live
 	}
 	lease := delegateLease{delegateID: record.delegateID, generation: record.generation}
+	requirement := delegateCompletionReportRequired
+	if record.trigger == delegatestore.TriggerAttention {
+		requirement = delegateCompletionAttentionOnly
+	}
 	live.binding = &delegateRuntimeBinding{
-		lease:   lease,
-		runtime: record.runtime,
-		cancel:  record.cancel,
-		ready:   record.trigger == delegatestore.TriggerAttention,
+		lease:    lease,
+		runtime:  record.runtime,
+		cancel:   record.cancel,
+		ready:    record.trigger == delegatestore.TriggerAttention,
+		evidence: &delegateGenerationEvidence{requirement: requirement},
 	}
 	if record.trigger == delegatestore.TriggerAttention {
 		c.replaceDelegateAttentionLocked(record.delegateID, record.attentionPendingIDs)
@@ -809,6 +815,7 @@ func (c *delegateTreeController) CommitStart(reservation *delegateStartReservati
 		live.waiters[record.generation] = record.waiter
 	}
 	live.activityAt = startedAt
+	live.productiveActivityAt = startedAt
 	live.quietSequence = 1
 	live.quietNotified = false
 	live.quietClaim = nil

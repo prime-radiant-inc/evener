@@ -4,13 +4,11 @@ package hub
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
-	"strings"
 	"testing"
 	"time"
 
@@ -23,7 +21,6 @@ import (
 	"primeradiant.com/evener/cmdutil"
 	"primeradiant.com/evener/envvars"
 	"primeradiant.com/evener/internal/apptranscript"
-	"primeradiant.com/evener/internal/credentials"
 	"primeradiant.com/evener/llm"
 	"primeradiant.com/evener/rendezvous"
 )
@@ -94,14 +91,7 @@ func FuzzExactTails(f *testing.F) {
 		_, _, _ = prepareResolvedForSpawn(t.TempDir(), appendInline)
 		spawnWriteFile, spawnRemoveAll = oldWriteFile, oldRemoveAll
 
-		store, err := credentials.LoadStore(filepath.Join(t.TempDir(), "credentials.toml"))
-		if err != nil {
-			t.Fatal(err)
-		}
-		oldOAuth := openAIStoredOAuthUsableForLaunch
-		openAIStoredOAuthUsableForLaunch = func([]string) bool { return true }
-		_ = validateProviderCredentials("openai", store, nil, "")
-		openAIStoredOAuthUsableForLaunch = oldOAuth
+		_ = validateProviderCredentials("openai", nil)
 
 		canceled, cancel := context.WithCancel(context.Background())
 		cancel()
@@ -119,7 +109,7 @@ func FuzzExactTails(f *testing.F) {
 		// Transcript projection tails: malformed JSON, usage cost stamping,
 		// empty input images, and default output-image media type.
 		entry := hubcore.PastEntry{StateDir: t.TempDir(), Meta: schema.SessionMeta{ID: "missing", Model: "gpt-5"}}
-		_, _ = pastEntryTurns(entry)
+		_, _ = pastEntryTurns(hubcore.WebConfig{}, entry)
 		state := filepath.Join(t.TempDir(), "state")
 		if err := os.MkdirAll(filepath.Join(state, "sessions"), 0o755); err != nil {
 			t.Fatal(err)
@@ -138,7 +128,7 @@ func FuzzExactTails(f *testing.F) {
 			t.Fatal(err)
 		}
 		if pe, ok := past.Find("past"); ok {
-			_, _ = pastEntryTurns(pe)
+			_, _ = pastEntryTurns(hubcore.WebConfig{}, pe)
 		}
 		_ = appItemsFromReplayTurn("t", 0, schema.Turn{Kind: schema.TurnUserInput, Message: llm.Message{Content: []llm.ContentPart{
 			{Kind: llm.ContentImage, Image: &llm.ImageData{}},
@@ -171,32 +161,6 @@ func FuzzExactTails(f *testing.F) {
 		_, _ = hubThreadList(context.Background(), hubcore.WebConfig{}, reg, appwire.ThreadListParams{Limit: 1})
 		_, _ = hubThreadTranscriptList(context.Background(), hubcore.WebConfig{}, reg, appwire.ThreadTranscriptListParams{})
 
-		// Missing live sources are a distinct API failure from ended sessions.
-		roster := hubcore.NewRosterWithEntries(
-			hubcore.LiveEntry{SessionID: "live-a", Entry: rendezvous.Entry{SessionID: "live-a"}},
-			hubcore.LiveEntry{SessionID: "live-b", Entry: rendezvous.Entry{SessionID: "live-b"}},
-			hubcore.LiveEntry{},
-		)
-		liveWeb := NewWebServer(hubcore.WebConfig{Roster: roster})
-		liveWeb.sources = appsource.NewRegistry()
-		liveWeb.handleApiSearch(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "/api/search", nil))
-		liveWeb.handleAPIModel(httptest.NewRecorder(), httptest.NewRequest(http.MethodPost, "/", strings.NewReader(`{"model":"p/m"}`)), "live-a")
-		liveWeb.handleAPIReasoningEffort(httptest.NewRecorder(), httptest.NewRequest(http.MethodPost, "/", strings.NewReader(`{"reasoning_effort":"high"}`)), "live-a")
-		liveWeb.handleAPIRename(httptest.NewRecorder(), httptest.NewRequest(http.MethodPost, "/", strings.NewReader(`{"name":"new"}`)), "live-a")
-
-		// Model a rename race: the first liveness check is stale, while the
-		// pre-write roster recheck observes the resumed session.
-		oldRenameLive := isLiveForRename
-		isLiveForRename = func(*WebServer, string) bool { return false }
-		liveWeb.handleAPIRename(httptest.NewRecorder(), httptest.NewRequest(http.MethodPost, "/", strings.NewReader(`{"name":"new"}`)), "live-a")
-		liveWeb.sources.Add(&scriptedAppSource{id: "local"})
-		liveWeb.handleAPIRename(httptest.NewRecorder(), httptest.NewRequest(http.MethodPost, "/", strings.NewReader(`{"name":"new"}`)), "live-a")
-		liveWeb.sources = appsource.NewRegistry()
-		liveWeb.sources.Add(&exactNameSource{scriptedAppSource: &scriptedAppSource{id: "local"}})
-		liveWeb.cfg.Past = past
-		liveWeb.handleAPIRename(httptest.NewRecorder(), httptest.NewRequest(http.MethodPost, "/", strings.NewReader(`{"name":"new"}`)), "live-a")
-		isLiveForRename = oldRenameLive
-
 		oldManagedList := ensureManagedCodexSourcesForList
 		ensureManagedCodexSourcesForList = func(context.Context, hubcore.WebConfig, *appsource.Registry, appwire.ThreadListParams) error {
 			return errors.New("managed source")
@@ -209,14 +173,16 @@ func FuzzExactTails(f *testing.F) {
 		tree, _ := deleteWeb.memoTree(context.Background())
 		projects := append(append([]hubcore.TreeProject(nil), tree.Projects...), tree.ArchivedProjects...)
 		if len(projects) > 0 {
-			body, _ := json.Marshal(map[string]string{"key": projects[0].Key, "working_dir": projects[0].WorkingDir})
 			checks := 0
 			oldProjectLive := projectSessionLive
 			projectSessionLive = func(*hubcore.Roster, string) bool {
 				checks++
 				return checks > 1
 			}
-			deleteWeb.handleAPIProjectDelete(httptest.NewRecorder(), httptest.NewRequest(http.MethodPost, "/", strings.NewReader(string(body))))
+			_, _ = deleteWeb.projectDelete(context.Background(), appwire.ProjectDeleteParams{
+				Key:        projects[0].Key,
+				WorkingDir: projects[0].WorkingDir,
+			})
 			projectSessionLive = oldProjectLive
 		}
 
@@ -245,17 +211,7 @@ func FuzzExactTails(f *testing.F) {
 		_, _ = hubThreadTranscriptList(context.Background(), hubcore.WebConfig{}, duplicateRegistry, appwire.ThreadTranscriptListParams{Ref: "local:root"})
 		hubTranscriptRootForList = oldTranscriptRoot
 
-		oldEnsureAction := ensureAPIActionAvailable
-		ensureAPIActionAvailable = func(*WebServer, string, string) error { return nil }
-		liveWeb.sources = appsource.NewRegistry()
-		liveWeb.handleAPIClear(httptest.NewRecorder(), httptest.NewRequest(http.MethodPost, "/", nil), "live-a")
-		liveWeb.handleAPIModel(httptest.NewRecorder(), httptest.NewRequest(http.MethodPost, "/", strings.NewReader(`{"model":"p/m"}`)), "live-a")
-		liveWeb.sources.Add(&exactNameSource{scriptedAppSource: &scriptedAppSource{id: "local"}})
-		ensureAPIActionAvailable = func(*WebServer, string, string) error { return errors.New("denied") }
-		liveWeb.handleAPIModel(httptest.NewRecorder(), httptest.NewRequest(http.MethodPost, "/", strings.NewReader(`{"model":"p/m"}`)), "live-a")
-		ensureAPIActionAvailable = oldEnsureAction
 		_ = appendProjectDeleteLiveSkip(nil, "id")
-		sortLiveForSearch([]hubcore.LiveEntry{{SessionID: "b"}, {SessionID: "a"}}, nil)
 		t.Setenv(envvars.Home.Name, "")
 		(&WebServer{}).handleManifest(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "/manifest.webmanifest", nil))
 	})

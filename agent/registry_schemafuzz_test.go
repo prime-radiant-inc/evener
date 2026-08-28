@@ -14,6 +14,7 @@ import (
 	"pgregory.net/rapid"
 
 	"primeradiant.com/evener/agent/execenv"
+	"primeradiant.com/evener/agent/sandbox"
 	"primeradiant.com/evener/fuzz/promoter"
 	"primeradiant.com/evener/fuzz/schemagen"
 	"primeradiant.com/evener/llm"
@@ -78,6 +79,14 @@ func TestToolArgsSchemaFuzz(t *testing.T) {
 	}
 	emitDir, bucketsPath, _ := promoter.PersistPaths(pkgDir, t.TempDir(), filepath.Join(t.TempDir(), "buckets.json"))
 	adapter := &toolArgsAdapter{schemas: schemas, emitDir: emitDir}
+	validGenerators := make(map[string]*rapid.Generator[any], len(tools))
+	for _, td := range tools {
+		generator, err := projectedToolGenerator(td.params)
+		if err != nil {
+			t.Fatalf("tool %q schema projection: %v", td.name, err)
+		}
+		validGenerators[td.name] = generator
+	}
 	store, err := promoter.OpenBucketStore(bucketsPath)
 	if err != nil {
 		t.Fatalf("OpenBucketStore: %v", err)
@@ -100,7 +109,12 @@ func TestToolArgsSchemaFuzz(t *testing.T) {
 		if rapid.Bool().Draw(rt, "adjacent") {
 			mode = schemagen.Adjacent
 		}
-		value := schemagen.Generator(td.params, mode).Draw(rt, "args")
+		var value any
+		if mode == schemagen.Valid {
+			value = validGenerators[td.name].Draw(rt, "args")
+		} else {
+			value = schemagen.Generator(td.params, mode).Draw(rt, "args")
+		}
 
 		// Mirror ExecuteCall's real decode path exactly: marshal the generated
 		// value and json.Unmarshal it into map[string]any (numbers become
@@ -337,7 +351,11 @@ func coreToolSchemaDefs(t testing.TB) []toolSchemaDef {
 	c := llm.NewClient()
 	c.Register(&fakeAdapter{name: "openai"})
 
-	sess, err := NewSession(c, NewOpenAIProfile("gpt-5"), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{})
+	sess, err := NewSession(c, NewOpenAIProfile("gpt-5"), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{
+		testOnly: testConfig{
+			sandboxProber: sandbox.FakeProber{Facts: sandbox.HostFacts{OS: "linux", Home: dir, BwrapPath: "/usr/bin/bwrap", BwrapCapable: true}},
+		},
+	})
 	if err != nil {
 		t.Fatalf("NewSession: %v", err)
 	}

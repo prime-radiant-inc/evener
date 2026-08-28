@@ -889,6 +889,7 @@ func mutationReceipt(
 		ClientMutationID: record.ClientMutationID,
 		Disposition:      disposition,
 		ThreadID:         threadID,
+		InstanceID:       threadID,
 		TurnID:           record.StableTurnID,
 		QueueEntryIDs:    append([]string(nil), record.StableQueueEntryIDs...),
 		ProjectionState:  projectionState,
@@ -1010,6 +1011,43 @@ func (s *Session) reflectDurableClientSteering() {
 	s.mu.Unlock()
 }
 
+// snapshotHasPendingUserSteering reports whether the durable store holds user
+// steering that could still be delivered -- the steering a Stop has something
+// to park. It reads the durable store rather than s.steeringQueue because a
+// steer is recorded there first (clientMutationSteer commits, then reflects)
+// and stays there across a restart, which is the delivery this answer governs.
+//
+// cancelledTurnID names the turn a Stop is ending, or is empty when nobody is
+// stopping anything (the restore normalization).
+//
+// "Accepted" is the resting state clientSteeringFromSnapshot materializes into
+// the in-memory queue. "Claimed" is the window popSteeringHead opens: the
+// claim commits before consumeSteeringMessage appends the transcript entry
+// that finalizes it, and restoreDurableClientMutationQueues returns a claim
+// that never landed to accepted -- so a claimed steer is still deliverable
+// across a restart and still needs parking. The one exception is the steer
+// whose own reserved id IS the turn being cancelled: that steer is the
+// steering-carrier turn the Stop is ending rather than a passenger it has to
+// hold back, and its record disappears as soon as its append finalizes, so
+// parking for it would leave a hold naming nothing.
+func snapshotHasPendingUserSteering(snapshot *clientMutationSnapshot, cancelledTurnID string) bool {
+	for _, id := range snapshot.SteeringOrder {
+		pending, ok := snapshot.PendingExecutions[id]
+		if !ok {
+			continue
+		}
+		switch pending.ExecutionState {
+		case "accepted":
+			return true
+		case "claimed":
+			if cancelledTurnID == "" || pending.TurnID != cancelledTurnID {
+				return true
+			}
+		}
+	}
+	return false
+}
+
 func clientSteeringFromSnapshot(snapshot clientMutationSnapshot) []steeringMessage {
 	client := make([]steeringMessage, 0, len(snapshot.SteeringOrder))
 	for _, id := range snapshot.SteeringOrder {
@@ -1088,6 +1126,19 @@ func (s *Session) restoreDurableClientMutationQueues() {
 			}
 			record.ExecutionState = "accepted"
 			snapshot.Journal[id] = record
+		}
+		// Release a steering hold the loop above left naming nothing. A
+		// snapshot written before #710 could park steering unconditionally at
+		// Stop, so a restored hold can name no pending steer at all -- and a
+		// hold naming nothing swallows every steer the resumed session accepts
+		// afterwards. This runs after the claimed-steering returns above, so a
+		// claim that never landed still counts as parked.
+		//
+		// Release only, never arm: restore is not a Stop, and a session that
+		// was never stopped must keep waking for the steering it is holding
+		// (TestRestoredSteeringWakesWhenTheDaemonAttaches).
+		if snapshot.SteeringHeld && !snapshotHasPendingUserSteering(snapshot, "") {
+			snapshot.SteeringHeld = false
 		}
 		snapshot.QueueRevision++
 		return nil
@@ -1190,12 +1241,16 @@ func (s *Session) recordClientMutationFailure(
 		turn := schema.NewTurn(schema.TurnUserInput, buildUserInputMessage(queued.Text, queued.Images))
 		turn.ClientMutationID = clientMutationID
 		turn.StableTurnID = pending.TurnID
-		if err := s.writeTranscriptDurable(turn); err != nil {
+		if err := s.appendTurnAfterTranscriptWrite(
+			turn,
+			func() error { return s.writeTranscriptDurableLocked(turn) },
+			func() {
+				s.clientMutationAppendedTurn = true
+				s.history = append(s.history, turn)
+			},
+		); err != nil {
 			return fmt.Errorf("append failed client start input: %w", err)
 		}
-		s.mu.Lock()
-		s.history = append(s.history, turn)
-		s.mu.Unlock()
 		if err := s.clientMutationFailureFault("after_user"); err != nil {
 			return err
 		}
@@ -1209,12 +1264,16 @@ func (s *Session) recordClientMutationFailure(
 		turn.ClientMutationID = clientMutationID
 		turn.StableTurnID = pending.TurnID
 		turn.Error = info
-		if err := s.writeTranscriptDurable(turn); err != nil {
+		if err := s.appendTurnAfterTranscriptWrite(
+			turn,
+			func() error { return s.writeTranscriptDurableLocked(turn) },
+			func() {
+				s.clientMutationAppendedTurn = true
+				s.history = append(s.history, turn)
+			},
+		); err != nil {
 			return fmt.Errorf("append failed client start diagnostic: %w", err)
 		}
-		s.mu.Lock()
-		s.history = append(s.history, turn)
-		s.mu.Unlock()
 		if err := s.clientMutationFailureFault("after_failure"); err != nil {
 			return err
 		}
@@ -1440,9 +1499,13 @@ func removeClientMutationSteeringOrder(snapshot *clientMutationSnapshot, clientM
 	}
 }
 
-func (s *Session) appendClientMutationTranscript(turn schema.Turn) error {
+// appendClientMutationTranscriptLocked writes a client-mutation turn's
+// transcript entry; callers hold attentionMu (their append/write pair —
+// appendTurnAfterTranscriptWrite). The test seam runs under that hold; seam
+// closures only record turns or inject errors.
+func (s *Session) appendClientMutationTranscriptLocked(turn schema.Turn) error {
 	if s.clientMutationTranscriptAppend != nil {
 		return s.clientMutationTranscriptAppend(turn)
 	}
-	return s.writeTranscriptDurable(turn)
+	return s.writeTranscriptDurableLocked(turn)
 }

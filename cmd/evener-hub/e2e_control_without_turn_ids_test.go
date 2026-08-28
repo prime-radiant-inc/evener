@@ -16,6 +16,14 @@ import (
 	"primeradiant.com/evener/test/e2e/fakellm"
 )
 
+func localInstanceIDForTestRef(ref string) string {
+	parsed, err := appwire.ParseRef(ref)
+	if err == nil && parsed.SourceID == "local" {
+		return parsed.ThreadID
+	}
+	return strings.TrimPrefix(ref, "local:")
+}
+
 // The rule under test: control mutations do not name turns. Steer, queue, stop,
 // drain and promote carry no expectedTurnId at any layer, because what such a
 // field asserts -- "the session is still in the state I saw" -- is not what any
@@ -73,8 +81,9 @@ func TestE2E_StopCancelsWhateverIsRunningAndNamesIt(t *testing.T) {
 	running := awaitActiveTurn(ctx, t, client, ref, "")
 
 	receipt, err := clientRequest[appwire.TurnInterruptResponse](ctx, client, appwire.MethodTurnInterrupt, appwire.TurnInterruptParams{
-		Ref:              ref,
-		ClientMutationID: newMutationID(t),
+		Ref:                ref,
+		ClientMutationID:   newMutationID(t),
+		ExpectedInstanceID: localInstanceIDForTestRef(ref),
 	})
 	if err != nil {
 		t.Fatalf("turn/interrupt carrying no turn id was refused against running turn %q: %v", running, err)
@@ -148,8 +157,9 @@ func TestE2E_ASendThatRacedAStopStillRuns(t *testing.T) {
 	stopped := awaitActiveTurn(ctx, t, client, ref, "")
 
 	if _, err := clientRequest[appwire.TurnInterruptResponse](ctx, client, appwire.MethodTurnInterrupt, appwire.TurnInterruptParams{
-		Ref:              ref,
-		ClientMutationID: newMutationID(t),
+		Ref:                ref,
+		ClientMutationID:   newMutationID(t),
+		ExpectedInstanceID: localInstanceIDForTestRef(ref),
 	}); err != nil {
 		t.Fatalf("turn/interrupt against running turn %q: %v", stopped, err)
 	}
@@ -161,9 +171,10 @@ func TestE2E_ASendThatRacedAStopStillRuns(t *testing.T) {
 	// composer routes it to turn/queue because it believed a turn was running,
 	// and the daemon no longer refuses that just because the turn has ended.
 	receipt, err := clientRequest[appwire.TurnQueueResponse](ctx, client, appwire.MethodTurnQueue, appwire.TurnQueueParams{
-		Ref:              ref,
-		ClientMutationID: newMutationID(t),
-		Input:            []appwire.InputItem{{Type: "text", Text: followUpText}},
+		Ref:                ref,
+		ClientMutationID:   newMutationID(t),
+		ExpectedInstanceID: localInstanceIDForTestRef(ref),
+		Input:              []appwire.InputItem{{Type: "text", Text: followUpText}},
 	})
 	if err != nil {
 		t.Fatalf("turn/queue against a session whose turn had just been stopped: %v", err)
@@ -188,8 +199,9 @@ func TestE2E_ASendThatRacedAStopStillRuns(t *testing.T) {
 	// And Stop still reaches the turn the queued message woke.
 	wokenTurn := awaitActiveTurn(ctx, t, client, ref, stopped)
 	stopReceipt, err := clientRequest[appwire.TurnInterruptResponse](ctx, client, appwire.MethodTurnInterrupt, appwire.TurnInterruptParams{
-		Ref:              ref,
-		ClientMutationID: newMutationID(t),
+		Ref:                ref,
+		ClientMutationID:   newMutationID(t),
+		ExpectedInstanceID: localInstanceIDForTestRef(ref),
 	})
 	if err != nil {
 		t.Fatalf("turn/interrupt against the woken turn %q: %v", wokenTurn, err)
@@ -236,9 +248,10 @@ func TestE2E_SteerWithNoTurnIDReachesTheModelAndTheTranscript(t *testing.T) {
 	running := awaitActiveTurn(ctx, t, client, ref, "")
 
 	receipt, err := clientRequest[appwire.TurnSteerResponse](ctx, client, appwire.MethodTurnSteer, appwire.TurnSteerParams{
-		Ref:              ref,
-		ClientMutationID: newMutationID(t),
-		Input:            []appwire.InputItem{{Type: "text", Text: steerText}},
+		Ref:                ref,
+		ClientMutationID:   newMutationID(t),
+		ExpectedInstanceID: localInstanceIDForTestRef(ref),
+		Input:              []appwire.InputItem{{Type: "text", Text: steerText}},
 	})
 	if err != nil {
 		t.Fatalf("turn/steer carrying no turn id was refused against running turn %q: %v", running, err)
@@ -311,9 +324,10 @@ func TestE2E_SteerLandsInTheNextTurnWhenItsTurnEnded(t *testing.T) {
 	})
 
 	receipt, err := clientRequest[appwire.TurnSteerResponse](ctx, client, appwire.MethodTurnSteer, appwire.TurnSteerParams{
-		Ref:              ref,
-		ClientMutationID: newMutationID(t),
-		Input:            []appwire.InputItem{{Type: "text", Text: steerText}},
+		Ref:                ref,
+		ClientMutationID:   newMutationID(t),
+		ExpectedInstanceID: localInstanceIDForTestRef(ref),
+		Input:              []appwire.InputItem{{Type: "text", Text: steerText}},
 	})
 	if err != nil {
 		t.Fatalf("A STEER BOUNCED BECAUSE ITS TURN ENDED: turn/steer after turn %q settled: %v", endedTurn, err)
@@ -343,6 +357,92 @@ func TestE2E_SteerLandsInTheNextTurnWhenItsTurnEnded(t *testing.T) {
 	}
 
 	next.RespondToolCall("communicate", communicateArgs("late steer done"))
+}
+
+// TestE2E_SteerAfterAStopReachesTheModelAndTheTranscript is the same rule when
+// the turn ended because the user pressed Stop rather than because the model
+// finished, which is the shape the live turn-control e2e exercises and the one
+// issue #710 was reported from: the steer was Applied and then vanished --
+// never delivered, never a steering item in the transcript a user reads back.
+//
+// A Stop parks pending user steering (#174) so the steer it cancelled is not
+// delivered anyway. A steer typed AFTER the Stop is not that steer; it is the
+// user asking for something new, and it has to run.
+//
+// The stack is fakellm, so this gates the rule the live test only corroborates.
+func TestE2E_SteerAfterAStopReachesTheModelAndTheTranscript(t *testing.T) {
+	e2ecap.RequireLoopbackBind(t)
+	e2ecap.RequireProcessInspect(t)
+	if testing.Short() {
+		t.Skip("live-stack e2e: builds binaries and runs a hub + daemon")
+	}
+
+	provider, err := fakellm.New()
+	if err != nil {
+		t.Fatalf("start fake provider: %v", err)
+	}
+	t.Cleanup(provider.Close)
+
+	stack := startHubStack(t, provider)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
+	defer cancel()
+
+	client := stack.dialRPC(ctx, t)
+	ref := startLiveThread(ctx, t, client, stack, "EVENER-E2E-STEER-AFTER-STOP-OPENING")
+
+	const steerText = "EVENER-E2E-STEER-AFTER-STOP-TEXT"
+
+	// Hold round 1 open so the turn can end only by cancellation.
+	if _, err := provider.Next(ctx.Done()); err != nil {
+		t.Fatalf("waiting for the session's first model request: %v", err)
+	}
+	stopped := awaitActiveTurn(ctx, t, client, ref, "")
+
+	if _, err := clientRequest[appwire.TurnInterruptResponse](ctx, client, appwire.MethodTurnInterrupt, appwire.TurnInterruptParams{
+		Ref:                ref,
+		ClientMutationID:   newMutationID(t),
+		ExpectedInstanceID: localInstanceIDForTestRef(ref),
+	}); err != nil {
+		t.Fatalf("turn/interrupt against running turn %q: %v", stopped, err)
+	}
+	awaitThread(ctx, t, client, ref, "the interrupted session to settle", func(thread appwire.Thread) bool {
+		return thread.Evener.ActiveTurnID == "" && thread.Status.Type != appwire.ThreadStatusActive
+	})
+	awaitTurnStatus(ctx, t, client, ref, stopped, "interrupted")
+
+	receipt, err := clientRequest[appwire.TurnSteerResponse](ctx, client, appwire.MethodTurnSteer, appwire.TurnSteerParams{
+		Ref:                ref,
+		ClientMutationID:   newMutationID(t),
+		ExpectedInstanceID: localInstanceIDForTestRef(ref),
+		Input:              []appwire.InputItem{{Type: "text", Text: steerText}},
+	})
+	if err != nil {
+		t.Fatalf("turn/steer after turn %q was stopped: %v", stopped, err)
+	}
+	if receipt.Receipt.Disposition != appwire.MutationDispositionApplied {
+		t.Fatalf("turn/steer disposition = %q, want %q", receipt.Receipt.Disposition, appwire.MutationDispositionApplied)
+	}
+
+	// Bounded well inside the test's own deadline: a steer nothing wakes for is
+	// never going to arrive, and that must read as this assertion failing
+	// rather than as the package timing out.
+	deliveryCtx, cancelDelivery := context.WithTimeout(ctx, 45*time.Second)
+	defer cancelDelivery()
+	next, err := provider.Next(deliveryCtx.Done())
+	if err != nil {
+		t.Fatalf("THE STEER WAS ACCEPTED AND NEVER RAN: no turn ever woke to deliver it after the Stop: %v", err)
+	}
+	if !next.Contains(steerText) {
+		t.Fatalf("the turn the steer woke does not carry %q; messages:\n%s", steerText, strings.Join(next.Texts(), "\n"))
+	}
+
+	landedIn := awaitSteeringItem(ctx, t, client, ref, steerText)
+	if landedIn == stopped {
+		t.Fatalf("the steer was folded into the stopped turn %q instead of a later one", stopped)
+	}
+
+	next.RespondToolCall("communicate", communicateArgs("steer after stop done"))
 }
 
 // TestE2E_QueuePreconditionsStillRefuseAStaleClient is the other side of
@@ -382,9 +482,10 @@ func TestE2E_QueuePreconditionsStillRefuseAStaleClient(t *testing.T) {
 	awaitActiveTurn(ctx, t, client, ref, "")
 
 	first, err := clientRequest[appwire.TurnQueueResponse](ctx, client, appwire.MethodTurnQueue, appwire.TurnQueueParams{
-		Ref:              ref,
-		ClientMutationID: newMutationID(t),
-		Input:            []appwire.InputItem{{Type: "text", Text: "EVENER-E2E-QUEUED-FIRST"}},
+		Ref:                ref,
+		ClientMutationID:   newMutationID(t),
+		ExpectedInstanceID: localInstanceIDForTestRef(ref),
+		Input:              []appwire.InputItem{{Type: "text", Text: "EVENER-E2E-QUEUED-FIRST"}},
 	})
 	if err != nil {
 		t.Fatalf("turn/queue (first): %v", err)
@@ -396,9 +497,10 @@ func TestE2E_QueuePreconditionsStillRefuseAStaleClient(t *testing.T) {
 	staleEntryID := first.Receipt.QueueEntryIDs[0]
 
 	if _, err := clientRequest[appwire.TurnQueueResponse](ctx, client, appwire.MethodTurnQueue, appwire.TurnQueueParams{
-		Ref:              ref,
-		ClientMutationID: newMutationID(t),
-		Input:            []appwire.InputItem{{Type: "text", Text: "EVENER-E2E-QUEUED-SECOND"}},
+		Ref:                ref,
+		ClientMutationID:   newMutationID(t),
+		ExpectedInstanceID: localInstanceIDForTestRef(ref),
+		Input:              []appwire.InputItem{{Type: "text", Text: "EVENER-E2E-QUEUED-SECOND"}},
 	}); err != nil {
 		t.Fatalf("turn/queue (second): %v", err)
 	}
@@ -412,6 +514,7 @@ func TestE2E_QueuePreconditionsStillRefuseAStaleClient(t *testing.T) {
 	_, err = clientRequest[appwire.TurnDrainAsSteerResponse](ctx, client, appwire.MethodTurnDrainAsSteer, appwire.TurnDrainAsSteerParams{
 		Ref:                   ref,
 		ClientMutationID:      newMutationID(t),
+		ExpectedInstanceID:    localInstanceIDForTestRef(ref),
 		ExpectedQueueRevision: staleSnapshot.Revision,
 	})
 	requireConflict(t, err, "revision",
@@ -422,10 +525,11 @@ func TestE2E_QueuePreconditionsStillRefuseAStaleClient(t *testing.T) {
 	// Cancelling the head is how a real client's snapshot goes stale without the
 	// depth changing under it: index 0 now names a different message.
 	if _, err := clientRequest[appwire.TurnCancelQueuedResponse](ctx, client, appwire.MethodTurnCancelQueued, appwire.TurnCancelQueuedParams{
-		Ref:              ref,
-		ClientMutationID: newMutationID(t),
-		Index:            0,
-		ExpectedEntryID:  staleEntryID,
+		Ref:                ref,
+		ClientMutationID:   newMutationID(t),
+		ExpectedInstanceID: localInstanceIDForTestRef(ref),
+		Index:              0,
+		ExpectedEntryID:    staleEntryID,
 	}); err != nil {
 		t.Fatalf("turn/cancelQueued of the head: %v", err)
 	}
@@ -439,10 +543,11 @@ func TestE2E_QueuePreconditionsStillRefuseAStaleClient(t *testing.T) {
 	}
 
 	_, err = clientRequest[appwire.TurnPromoteQueuedAsSteerResponse](ctx, client, appwire.MethodTurnPromoteQueuedAsSteer, appwire.TurnPromoteQueuedAsSteerParams{
-		Ref:              ref,
-		ClientMutationID: newMutationID(t),
-		Index:            0,
-		ExpectedEntryID:  staleEntryID,
+		Ref:                ref,
+		ClientMutationID:   newMutationID(t),
+		ExpectedInstanceID: localInstanceIDForTestRef(ref),
+		Index:              0,
+		ExpectedEntryID:    staleEntryID,
 	})
 	requireConflict(t, err, "no longer matches",
 		"turn/promoteQueuedAsSteer accepted expectedEntryId %q while index 0 holds %q: the wrong message just went to the model",
@@ -450,10 +555,11 @@ func TestE2E_QueuePreconditionsStillRefuseAStaleClient(t *testing.T) {
 
 	// --- the same two calls, made honestly, must still work -------------------
 	if _, err := clientRequest[appwire.TurnPromoteQueuedAsSteerResponse](ctx, client, appwire.MethodTurnPromoteQueuedAsSteer, appwire.TurnPromoteQueuedAsSteerParams{
-		Ref:              ref,
-		ClientMutationID: newMutationID(t),
-		Index:            0,
-		ExpectedEntryID:  liveEntryID,
+		Ref:                ref,
+		ClientMutationID:   newMutationID(t),
+		ExpectedInstanceID: localInstanceIDForTestRef(ref),
+		Index:              0,
+		ExpectedEntryID:    liveEntryID,
 	}); err != nil {
 		t.Fatalf("turn/promoteQueuedAsSteer with the live entry id %q was refused, so the refusals above prove nothing: %v", liveEntryID, err)
 	}
@@ -461,6 +567,7 @@ func TestE2E_QueuePreconditionsStillRefuseAStaleClient(t *testing.T) {
 	if _, err := clientRequest[appwire.TurnDrainAsSteerResponse](ctx, client, appwire.MethodTurnDrainAsSteer, appwire.TurnDrainAsSteerParams{
 		Ref:                   ref,
 		ClientMutationID:      newMutationID(t),
+		ExpectedInstanceID:    localInstanceIDForTestRef(ref),
 		ExpectedQueueRevision: drained.Revision,
 		Input:                 []appwire.InputItem{{Type: "text", Text: "EVENER-E2E-DRAIN-WITH-CURRENT-REVISION"}},
 	}); err != nil {
@@ -496,11 +603,11 @@ func TestE2E_LiveModelStopAndSteerNeedNoTurnID(t *testing.T) {
 		t.Skip("no LLM API key in env")
 	}
 
-	stack := startHubStackOnProvider(t, fmt.Sprintf(`schema = 1
+	stack := startHubStackOnProvider(t, fmt.Sprintf(`
 default = %q
 
-[instances.%s]
-type = %q
+[providers.%s]
+base = %q
 `, instance, instance, instance), instance+"/"+model)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
@@ -523,8 +630,9 @@ type = %q
 	t.Logf("live turn in flight with model output: %s", running)
 
 	receipt, err := clientRequest[appwire.TurnInterruptResponse](ctx, client, appwire.MethodTurnInterrupt, appwire.TurnInterruptParams{
-		Ref:              ref,
-		ClientMutationID: newMutationID(t),
+		Ref:                ref,
+		ClientMutationID:   newMutationID(t),
+		ExpectedInstanceID: localInstanceIDForTestRef(ref),
 	})
 	if err != nil {
 		t.Fatalf("turn/interrupt carrying no turn id was refused against live turn %q: %v", running, err)
@@ -543,9 +651,10 @@ type = %q
 	// And a steer aimed at a turn that is already over lands in the next one.
 	const steerText = "EVENER-E2E-LIVE-STEER-TEXT"
 	steerReceipt, err := clientRequest[appwire.TurnSteerResponse](ctx, client, appwire.MethodTurnSteer, appwire.TurnSteerParams{
-		Ref:              ref,
-		ClientMutationID: newMutationID(t),
-		Input:            []appwire.InputItem{{Type: "text", Text: "Reply with exactly: " + steerText}},
+		Ref:                ref,
+		ClientMutationID:   newMutationID(t),
+		ExpectedInstanceID: localInstanceIDForTestRef(ref),
+		Input:              []appwire.InputItem{{Type: "text", Text: "Reply with exactly: " + steerText}},
 	})
 	if err != nil {
 		t.Fatalf("turn/steer after the live turn was stopped: %v", err)

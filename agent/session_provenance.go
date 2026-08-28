@@ -68,22 +68,35 @@ func (s *Session) drainSteeringForTurn() []steeringMessage {
 	return msgs
 }
 
-// drainSteeringForCommunicate returns the steering text delivered in a
-// terminal communicate inbox. Client-authored steering crosses the same
-// durable claim, transcript, and incorporation boundary as every other
-// steering consumer before it becomes visible in that inbox. Daemon steering
-// remains a plain queue drain so communicate can preserve its existing image
-// deferral behavior.
+// drainSteeringForCommunicate returns daemon-authored steering context for a
+// terminal communicate inbox. Client-authored steering remains durable pending
+// work for wakeForPendingSteering and EntrySteeringCarrier: marking it
+// incorporated in a result that ends the turn would create a durable transcript
+// item without a model request that can act on it.
 func (s *Session) drainSteeringForCommunicate() []steeringMessage {
-	pending := s.peekSteeringForTurn()
-	drained := make([]steeringMessage, 0, len(pending))
-	for range pending {
+	// Snapshot only the daemon-authored prefix. A client-authored entry is
+	// intentionally left in the durable queue for EntrySteeringCarrier.
+	s.mu.Lock()
+	daemon := make([]steeringMessage, 0, len(s.steeringQueue))
+	for _, msg := range s.steeringQueue {
+		if msg.ClientMutationID != "" {
+			break
+		}
+		daemon = append(daemon, msg)
+	}
+	s.mu.Unlock()
+
+	// Preserve batch-up-front provenance for the entries actually being
+	// consumed, without unioning provenance from the pending client suffix.
+	for _, msg := range daemon {
+		s.unionActiveProvenance(msg.Provenance)
+	}
+
+	drained := make([]steeringMessage, 0, len(daemon))
+	for range daemon {
 		msg, ok := s.popSteeringHead()
 		if !ok {
 			break
-		}
-		if msg.ClientMutationID != "" && !s.consumeSteeringMessage(msg) {
-			continue
 		}
 		drained = append(drained, msg)
 	}

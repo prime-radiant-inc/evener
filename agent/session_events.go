@@ -10,6 +10,7 @@ import (
 	"primeradiant.com/evener/agent/plugin"
 	"primeradiant.com/evener/agent/provenance"
 	"primeradiant.com/evener/agent/schema"
+	"primeradiant.com/evener/agent/task"
 	"primeradiant.com/evener/llm"
 )
 
@@ -140,7 +141,22 @@ func (s *Session) ConsumeEventsLossless(consume func(events.SessionEvent), onDra
 // buffering them here means they now fire it, for the first time, once
 // hookRunner exists.
 func (s *Session) emitSessionStartEnvelope(start events.SessionStartData, promptSources []promptSource) {
-	s.emit(events.EventSessionStart, start)
+	store := s.getOrCreateTaskStore()
+	_ = store.MutateAndPublish(func(epoch, revision uint64) error {
+		// Sample current work only after entering the shared store's publication
+		// order. Otherwise a newer mutation could publish between the sample and
+		// this start seed, giving an old snapshot a newer revision.
+		if start.CurrentWork == nil {
+			start.CurrentWork = s.currentWorkSeedData()
+		}
+		if start.TaskStoreOwnerSessionID == "" {
+			start.TaskStoreOwnerSessionID = s.taskStoreOwnerSessionID()
+		}
+		start.TaskPublicationEpoch = epoch
+		start.TaskPublicationRevision = revision
+		s.emit(events.EventSessionStart, start)
+		return nil
+	})
 	// Collected transcript-health failures (NewSession's transcript create, and
 	// attachTranscript's held-turn flush) are genuine, model-facing warnings —
 	// unlike the diagnostic buffers below, they run through emit (not
@@ -174,6 +190,26 @@ func (s *Session) emitSessionStartEnvelope(start events.SessionStartData, prompt
 	}
 }
 
+// currentWorkSeedData captures the self-contained task and structured goal
+// state used by SessionStart. The non-nil envelope makes goal absence an
+// authoritative clear; task-load failure is represented independently by nil
+// Tasks.
+func (s *Session) currentWorkSeedData() *events.CurrentWorkSeedData {
+	seed := &events.CurrentWorkSeedData{}
+	if tasks, err := s.TasksWithError(); err == nil {
+		state := taskStateData(task.Summarize(tasks))
+		seed.Tasks = &state
+	}
+	if goal := s.Meta().Goal; goal != nil {
+		seed.Goal = &events.GoalStateData{
+			Objective:  goal.Objective,
+			Status:     goal.Status,
+			Iterations: goal.Iterations,
+		}
+	}
+	return seed
+}
+
 // emit sends data on the session's event stream. The kind argument is retained
 // for the contextmgr.Host interface contract (strategies call Emit with an
 // explicit kind via the ctxHost adapter), but the event's Kind is authoritative
@@ -185,6 +221,20 @@ func (s *Session) emitSessionStartEnvelope(start events.SessionStartData, prompt
 // the model is informed. Hook-CONFIGURATION diagnostics must NOT run the
 // Notification hook and instead go through emitDiagnosticWarning.
 func (s *Session) emit(kind events.EventKind, data events.EventData) {
+	// Task mutations are emitted by transport-neutral tool handlers. Stamp the
+	// owning session at this Session boundary so shared descendants name the
+	// durable root store without leaking Session into the handler dependency.
+	switch update := data.(type) {
+	case events.TaskUpdatedData:
+		if update.TaskStoreOwnerSessionID == "" {
+			update.TaskStoreOwnerSessionID = s.taskStoreOwnerSessionID()
+			data = update
+		}
+	case *events.TaskUpdatedData:
+		if update != nil && update.TaskStoreOwnerSessionID == "" {
+			update.TaskStoreOwnerSessionID = s.taskStoreOwnerSessionID()
+		}
+	}
 	s.emitWithProvenance(kind, data, s.activeCausalProvenance())
 }
 

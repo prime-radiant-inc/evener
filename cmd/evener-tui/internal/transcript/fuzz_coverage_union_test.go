@@ -24,7 +24,7 @@ func replayTranscriptCoverage(t *testing.T) {
 		{ID: "user", TurnID: "turn_1", Type: "userMessage", Text: "hello"},
 		{ID: "reason", TurnID: "turn_1", Type: "reasoning"},
 		{ID: "agent", TurnID: "turn_1", Type: "agentMessage", Text: "answer"},
-		{ID: "tool", CallID: "call", TurnID: "turn_1", Type: "commandExecution", ToolName: "delegate", ArgumentsJSON: `{"task":"cover"}`, Raw: []byte(`{"started_job_id":"job","type":"delegate","status":"running","task":"cover","transcript_ref":"ref","origin_turn_id":"turn_1","origin_tool_call_id":"call","origin_item_id":"tool","total_bytes":3}`), StartedAt: ms(10)},
+		{ID: "tool", CallID: "call", TurnID: "turn_1", Type: "commandExecution", ToolName: "delegate", ArgumentsJSON: `{"prompt":"cover"}`, Raw: []byte(`{"started_job_id":"job","type":"delegate","status":"running","task":"cover","transcript_ref":"ref","origin_turn_id":"turn_1","origin_tool_call_id":"call","origin_item_id":"tool","total_bytes":3}`), StartedAt: ms(10)},
 		{ID: "tool", CallID: "call", TurnID: "turn_1", Type: "commandExecution", ToolName: "delegate_send", ArgumentsJSON: `{}`, Output: `{"delegate_id":"delegate","latest_job_id":"job","status":"completed","output_bytes":5}`, StartedAt: ms(10), CompletedAt: ms(20)},
 		{ID: "communicate", Type: "commandExecution", ToolName: "communicate", Output: "ok"},
 	}

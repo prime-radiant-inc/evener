@@ -733,10 +733,13 @@ func TestClientMutation_StartClaimedWithTranscriptRestoresRunnableWithoutDuplica
 	turn := schema.NewTurn(schema.TurnUserInput, buildUserInputMessage(claimed.Text, claimed.Images))
 	turn.ClientMutationID = claimed.ClientMutationID
 	turn.StableTurnID = claimed.StableTurnID
-	if err := sess.appendClientMutationTranscript(turn); err != nil {
+	if err := sess.appendTurnAfterTranscriptWrite(
+		turn,
+		func() error { return sess.appendClientMutationTranscriptLocked(turn) },
+		func() { sess.history = append(sess.history, turn) },
+	); err != nil {
 		t.Fatalf("append claimed start: %v", err)
 	}
-	sess.history = append(sess.history, turn)
 	if err := sess.markClaimedUserTranscriptIncorporated(claimed.ClientMutationID); err != nil {
 		t.Fatalf("mark claimed start incorporated: %v", err)
 	}
@@ -999,7 +1002,7 @@ func TestClientMutation_StartLifecycleTerminalizesAfterRunnerCompletion(t *testi
 	})
 	sess, err := NewSession(
 		client,
-		NewOpenAIProfile("gpt-5.2"),
+		withTestSessionNamer(client, NewOpenAIProfile("gpt-5.2")),
 		execenv.NewLocalExecutionEnvironment(dir),
 		SessionConfig{StateDir: dir, testOnly: testConfig{metaFS: afero.NewMemMapFs()}},
 	)
@@ -1121,6 +1124,83 @@ func TestClientMutation_IncorporationFailureCrashBoundariesRecoverWithoutDuplica
 			}
 			if _, pending := recovered.PendingExecutions[params.ClientMutationID]; pending {
 				t.Fatal("recovered failure remained pending")
+			}
+		})
+	}
+}
+
+// TestRestoreSession_RestoredTranscriptIncludesClientMutationFailureRecovery
+// pins the restore→serve handoff across the failure-recovery append: the
+// entries RestoredTranscript exposes must match what readTranscriptFull sees
+// in the same file, because serve projects exactly that retained list (the
+// daemon's turn snapshot and the projector's live-turn-id fence are seeded
+// from it). A restore that retained the pre-recovery list would seed serve one
+// turn behind the file the recovery just appended to.
+func TestRestoreSession_RestoredTranscriptIncludesClientMutationFailureRecovery(t *testing.T) {
+	for _, boundary := range []string{"after_user", "after_failure"} {
+		t.Run(boundary, func(t *testing.T) {
+			dir := t.TempDir()
+			sess := newQueuePersistTestSession(t, dir)
+			id := sess.ID()
+			params := appwire.TurnStartParams{
+				ClientMutationID: "start-failure-recovery-visibility-" + boundary,
+				Input:            []appwire.InputItem{{Type: "text", Text: "recover failed start for the retained list"}},
+			}
+			started, err := sess.AcceptClientMutationStart(params)
+			if err != nil {
+				t.Fatalf("AcceptClientMutationStart: %v", err)
+			}
+			claimed, ok, err := sess.claimClientMutationStart()
+			if err != nil || !ok {
+				t.Fatalf("claimClientMutationStart: claimed=%#v ok=%v err=%v", claimed, ok, err)
+			}
+			failure := errors.New("deterministic pre-append failure")
+			crash := errors.New("simulated crash at " + boundary)
+			sess.clientMutationPreAppendFailure = func(schema.Turn) error { return failure }
+			sess.clientMutationFailureRecoveryFault = func(got string) error {
+				if got == boundary {
+					return crash
+				}
+				return nil
+			}
+			if err := sess.acceptUserInput(
+				withQueuedClientMutation(context.Background(), claimed),
+				claimed.Text,
+				claimed.Images,
+				nil,
+				false,
+			); !errors.Is(err, failure) || !errors.Is(err, crash) {
+				t.Fatalf("acceptUserInput error = %v, want failure and crash", err)
+			}
+			sess.Close()
+
+			restored := restoreQueuePersistTestSession(t, dir, id)
+			defer restored.Close()
+			_, entries, ok := restored.RestoredTranscript()
+			if !ok {
+				t.Fatal("restored session retained no transcript entries")
+			}
+			path := transcriptPath(restored.stateDir, restored.id)
+			onDisk, err := readTranscriptFull(path)
+			if err != nil {
+				t.Fatalf("readTranscriptFull: %v", err)
+			}
+			if len(entries) != len(onDisk.Entries) {
+				t.Fatalf("retained entries = %d, on-disk entries = %d; the recovery append must be visible to the retained list", len(entries), len(onDisk.Entries))
+			}
+			// Same count and same last turn: the retained list ends where the
+			// file ends, so serve's projection fence cannot lag the file.
+			lastRetained, lastOnDisk := entries[len(entries)-1], onDisk.Entries[len(onDisk.Entries)-1]
+			if lastRetained.Turn.StableTurnID != lastOnDisk.Turn.StableTurnID ||
+				lastRetained.Turn.Kind != lastOnDisk.Turn.Kind ||
+				lastRetained.Turn.ClientMutationID != lastOnDisk.Turn.ClientMutationID {
+				t.Fatalf("last retained turn = %#v, want the on-disk last turn %#v", lastRetained.Turn, lastOnDisk.Turn)
+			}
+			if lastOnDisk.Turn.ClientMutationID != params.ClientMutationID {
+				t.Fatalf("on-disk last turn mutation = %q, want the recovered failure %q", lastOnDisk.Turn.ClientMutationID, params.ClientMutationID)
+			}
+			if lastOnDisk.Turn.StableTurnID != started.Turn.ID {
+				t.Fatalf("on-disk last stable turn = %q, want %q", lastOnDisk.Turn.StableTurnID, started.Turn.ID)
 			}
 		})
 	}

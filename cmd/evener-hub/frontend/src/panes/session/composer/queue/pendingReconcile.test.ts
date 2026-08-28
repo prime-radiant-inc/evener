@@ -35,6 +35,7 @@ function model(overrides: Partial<ThreadModel> = {}): ThreadModel {
     status: { type: "active" },
     modelProvider: "",
     model: "",
+    visionModel: "",
     askPending: false,
     pendingEscalations: [],
     turns: [],

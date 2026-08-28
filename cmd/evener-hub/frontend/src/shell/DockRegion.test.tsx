@@ -3,8 +3,9 @@ import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
 import { initNotifications, resetNotificationsForTests } from "../notifications";
 import { FakeClient } from "../protocol/testing/fakeClient";
+import type { NavigationReadParams, NavigationReadResponse } from "../protocol/types.gen";
 import { connectionStore } from "../stores/connection";
-import { resetTreeStoreForTests } from "../stores/tree";
+import { resetNavigationStoreForTests } from "../stores/navigation/store";
 import { AppShell } from "./AppShell";
 import { DockRegion, resetDockChunkForTests } from "./DockRegion";
 import * as dockHostChunk from "./dockHostChunk";
@@ -44,25 +45,26 @@ function StubDockHost() {
   return <p>dock host mounted</p>;
 }
 
-const EMPTY_TREE = {
-  generated_at: "2026-01-01T00:00:00Z",
+const EMPTY_NAVIGATION_MANIFEST = {
+  generation_id: "test-generation",
+  revision: 1,
   sources: [],
-  live: [],
-  needs_you: [],
-  pin_sections: [],
-  projects: [],
-  archived_projects: [],
-  test_runs: [],
   attentionSummary: { needsYou: 0, error: 0, working: 0 },
+  sections: { live: { count: 0 }, needs_you: { count: 0 }, pin_sections: { count: 0 } },
+  catalogs: { projects: { count: 0 }, archived_projects: { count: 0 }, test_runs: { count: 0 } },
 };
 
-function jsonResponse(body: unknown): Response {
-  return {
-    ok: true,
-    status: 200,
-    statusText: "OK",
-    json: () => Promise.resolve(body),
-  } as Response;
+function scriptNavigationManifest(client: FakeClient): void {
+  client.on("evener/navigation/read", (params: NavigationReadParams): NavigationReadResponse => {
+    expect(params).toEqual({ resource: "manifest" });
+    return {
+      status: "ok",
+      generationId: "test-generation",
+      revision: 1,
+      etag: '"test"',
+      data: EMPTY_NAVIGATION_MANIFEST,
+    };
+  });
 }
 
 // Suppress console.error noise from React's error-boundary logging during
@@ -88,7 +90,7 @@ beforeEach(() => {
   });
   connectionStore.setState({ state: "idle", serverInfo: undefined, client: null });
   resetWorkspaceStoreForTests();
-  resetTreeStoreForTests();
+  resetNavigationStoreForTests();
   loadDockHost.mockReset();
   loadDockHost.mockImplementation(realLoadDockHost);
   // The chunk is one shared lazy() payload per page load, so each test needs
@@ -96,7 +98,6 @@ beforeEach(() => {
   // never call this test's loader at all.
   resetDockChunkForTests();
   resetDockHostLoaderForTests();
-  vi.stubGlobal("fetch", (url: string) => Promise.resolve(jsonResponse(url === "/api/tree" ? EMPTY_TREE : {})));
 });
 
 afterEach(() => {
@@ -123,19 +124,17 @@ afterEach(() => {
   // isolate:false worker - so it is re-run immediately below, restoring the
   // same state a fresh module evaluation would have left (kata p5w9's
   // identical pattern in AppShell.test.tsx). initNotifications() seeds its
-  // `sawReady`/baseline snapshot from whatever connectionStore/treeStore
+  // `sawReady`/baseline snapshot from whatever connectionStore/navigationStore
   // hold AT THIS MOMENT, so both are forced back to their neutral
   // pre-render values FIRST (this file's own beforeEach does the same for
   // the NEXT test in this file; nothing else does it for the NEXT FILE) -
   // seeding from a still-"ready" connectionStore (as this test's own render
   // left it moments ago) would wrongly arm the "reconnect" detector this
   // reset exists to neutralize, exactly the failure mode App.test.tsx's own
-  // comment above describes. Run before vi.unstubAllGlobals() below so
-  // initNotifications()'s baseline ensureLoaded() fetch (treeStore's tree is
-  // null again below) still hits this file's own beforeEach fetch stub
-  // instead of a real network call.
+  // comment above describes. The navigation baseline is scripted on each
+  // client, so this reset does not need a global transport stub.
   connectionStore.setState({ state: "idle", serverInfo: undefined, client: null });
-  resetTreeStoreForTests();
+  resetNavigationStoreForTests();
   resetNotificationsForTests();
   initNotifications();
   vi.unstubAllGlobals();
@@ -144,7 +143,16 @@ afterEach(() => {
 test("a rejected DockHost chunk degrades the dock region, never the whole shell", async () => {
   vi.mocked(loadDockHost).mockRejectedValue(new Error(CHUNK_ERROR));
 
-  render(<AppShell client={new FakeClient("ready")} />);
+  const client = new FakeClient("ready");
+  scriptNavigationManifest(client);
+  client.scriptConnect(() => ({
+    serverInfo: { name: "fake", version: "1" },
+    protocolVersion: "evener-appwire-v3",
+    sourceId: "fake",
+    features: {} as never,
+    navigation: { version: 1, generationId: "test-generation", sequence: 0 },
+  }));
+  render(<AppShell client={client} />);
 
   expect(await screen.findByText("Couldn't load the workspace")).toBeTruthy();
   expect(screen.getByText(CHUNK_ERROR)).toBeTruthy();

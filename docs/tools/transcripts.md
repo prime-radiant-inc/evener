@@ -127,7 +127,7 @@ stable delegate's session `transcript_ref` from `delegate`, `job_status`, or
 | Param | Applies to | Meaning |
 |-------|-----------|---------|
 | `transcript_ref` | all | session ref / bare id / omitted = current session, or `job:<job_id>` for shell output |
-| `format` | session | `outline` \| `markdown` (default) \| `jsonl`; job refs accept `markdown` only |
+| `format` | session | `outline` \| `markdown` (default) \| `jsonl`; job refs reject explicit formats other than `markdown`, and explicit `markdown` is a neutral no-op |
 | `range` | session | turn window; defaults to the last 40 turns |
 | `expand_turn` | session markdown | any semantic `Turn N`; returns byte-paged exact `transcript_v2_jsonl` for that turn or its assistant/result span |
 | `offset_bytes` | session expansion, shell job, artifact | continuation or raw-page start; shell offsets use lifetime coordinates |
@@ -208,8 +208,8 @@ Rendering rules:
   omitted note; unknown kinds get a labeled note. Nothing is silently dropped.
 - **Reasoning shown** — assistant thinking and text render in full, in recorded order.
 - **Tool-call condensation** — calls render as condensed cards under a **Tools** block:
-  `- [status] \`name\` — purpose: <X> — input: <summary>`. Purpose comes only from an
-  explicit `purpose`/`intent`/`description` arg, never inferred. Input summaries are
+  `- [status] \`name\` — intent: <X> — input: <summary>`. Intent comes only from an
+  explicit `intent` arg, never inferred. Input summaries are
   per-tool and never dump file contents or full edit strings.
 - **Tool-result pairing** — results pair to calls by **call ID**, never by adjacency. A
   result whose call is not in the rendered slice collects under a **"Tool results without a
@@ -243,8 +243,9 @@ explicitly need later evidence—never as a completion poll.
 
 Page and search envelopes report `total_bytes`, `retained_start_bytes`, and
 `job_status`. `output_unavailable` means retention pruned or removed requested
-bytes. `format` cannot be combined with job paging/search; `range` and
-`expand_turn` remain session-only. Delegate conversations never use `job:`:
+bytes. For a job, explicit `format:"markdown"` is a neutral no-op in every
+view, including paging and search; every other explicit format is rejected.
+`range` and `expand_turn` remain session-only. Delegate conversations never use `job:`:
 read the session `transcript_ref` carried by the stable `dlg_...` resource.
 
 ### Truncated-result `artifact:` evidence

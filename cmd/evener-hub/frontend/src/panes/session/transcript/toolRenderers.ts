@@ -22,6 +22,8 @@ export interface ToolRenderProps {
   // session, and the pane it opens must be able to say so and offer a way
   // back, not just leave the reader to remember it).
   sessionRef?: string;
+  /** Snapshot cwd supplied by the owning transcript render context. */
+  cwd?: string;
 }
 
 // ToolSummaryContext carries render-path facts a descriptor's summary() may
@@ -35,7 +37,7 @@ export interface ToolSummaryContext {
 
 export interface ToolRendererDescriptor {
   match: string | ((toolName: string) => boolean); // exact name or predicate (job_* family)
-  summary(item: ItemModel, ctx?: ToolSummaryContext): string; // one-line purpose-first summary
+  summary(item: ItemModel, ctx?: ToolSummaryContext): string; // one-line intent-first summary
   // The tool-FAMILY glyph riding inline at the start of the row's tool-use
   // line (widgets/toolicon), so the kind of work - shell vs file read vs
   // edit vs web - is scannable down a run of calls without reading the
@@ -130,10 +132,9 @@ export interface ToolRendererDescriptor {
   // see that field's own kata for why). A parallel field rather than
   // widening summary()'s own return type to ReactNode: summary is ALSO
   // consumed as a plain string by summarySuffix's own concatenation above
-  // and by ToolCallCluster's "N steps · ..." template, and ToolRow's
-  // collapsed-state truncation (middleSplit) operates on summary as raw
-  // characters, not markup - widening the whole contract would touch every
-  // one of those for a link only one descriptor has today. Undefined (every
+  // and ToolRow's collapsed-state truncation (middleSplit) operates on summary
+  // as raw characters, not markup - widening the whole contract would touch
+  // every one of those for a link only one descriptor has today. Undefined (every
   // descriptor but web_fetch) renders the row exactly as before. When the
   // returned URL is not literally found inside summary(item)'s own text,
   // ToolRow renders the plain text unchanged - never a link pointing

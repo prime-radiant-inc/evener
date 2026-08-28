@@ -52,7 +52,7 @@ HUB=http://127.0.0.1:$PORT
    steps 1-2 of `web-steer-live-turn.md` verbatim. Wait until
    `/api/sessions/local:$SID` reports `state=active` with a non-empty
    `active_turn_id` and `capabilities.queue:true`.
-2. Open `/auth?token=$TOKEN&next=/s/local:$SID` and wait for
+2. Open `/auth/$TOKEN?next=/s/local:$SID` and wait for
    `[data-testid="composer-steer"]`.
 3. **Queue three messages.** With a turn in flight, **Send** is the queue
    button — one label, two timings (`submitRouting.ts:19-23`). Type and

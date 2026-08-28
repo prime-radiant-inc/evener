@@ -4,8 +4,8 @@ import (
 	"archive/tar"
 	"bytes"
 	"compress/gzip"
+	"context"
 	"crypto/sha256"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"io/fs"
@@ -24,8 +24,27 @@ import (
 
 	agentplugin "primeradiant.com/evener/agent/plugin"
 	"primeradiant.com/evener/agent/skill"
+	"primeradiant.com/evener/appwire"
 	"primeradiant.com/evener/rendezvous"
 )
+
+func shutdownInstalledServe(ctx context.Context, entry rendezvous.Entry) error {
+	transport, err := appwire.DialWebSocket(ctx, "ws://"+entry.Address+"/rpc", http.DefaultClient)
+	if err != nil {
+		return err
+	}
+	client := appwire.NewClient(transport)
+	defer client.Close()
+	client.Start(context.WithoutCancel(ctx))
+	if _, err := client.Initialize(ctx, appwire.InitializeParams{
+		ClientInfo: appwire.ClientInfo{Name: "install-test-shutdown", Version: "test"},
+	}); err != nil {
+		return err
+	}
+	return client.ThreadShutdown(ctx, appwire.ThreadShutdownParams{
+		Ref: appwire.Ref{SourceID: "local", ThreadID: entry.SessionID}.String(),
+	})
+}
 
 func TestWebPreflightBootstrapsMissingFrontendDependencies(t *testing.T) {
 	t.Parallel()
@@ -184,7 +203,7 @@ func TestInstallHomeGeneratedHome(t *testing.T) {
 	status := installedServeStatus(t, fixtureRoot, env, evenerBin)
 
 	if status.Detailed == nil {
-		t.Fatal("installed evener serve /status omitted detailed status")
+		t.Fatal("installed evener serve AppWire thread omitted diagnostics")
 	}
 	installedSkillNames := status.Detailed.SkillNames()
 	assertContainsAll(t, "bundled agents", status.Detailed.Agents, expectedAgents)
@@ -322,9 +341,144 @@ func TestInstallScriptInstallsReleaseArchive(t *testing.T) {
 	}
 }
 
+func TestInstallScriptPreservesDownloadFailuresAndClassifies404(t *testing.T) {
+	t.Parallel()
+	if testing.Short() {
+		t.Skip("release archive install integration test")
+	}
+	if runtime.GOOS == "windows" {
+		t.Skip("install.sh requires a Unix shell")
+	}
+
+	repoRoot, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("getwd: %v", err)
+	}
+	script := filepath.Join(repoRoot, "install.sh")
+
+	for _, tc := range []struct {
+		name       string
+		version    string
+		httpStatus string
+		curlExit   string
+		wantExit   int
+		wantAdvice bool
+	}{
+		{name: "latest 404", version: "latest", httpStatus: "404", curlExit: "22", wantExit: 22, wantAdvice: true},
+		{name: "latest 401", version: "latest", httpStatus: "401", curlExit: "22", wantExit: 22},
+		{name: "latest 403", version: "latest", httpStatus: "403", curlExit: "22", wantExit: 22},
+		{name: "latest 429", version: "latest", httpStatus: "429", curlExit: "22", wantExit: 22},
+		{name: "latest 500", version: "latest", httpStatus: "500", curlExit: "22", wantExit: 22},
+		{name: "latest DNS failure", version: "latest", httpStatus: "000", curlExit: "6", wantExit: 6},
+		{name: "latest TLS failure", version: "latest", httpStatus: "000", curlExit: "35", wantExit: 35},
+		{name: "latest redirect failure", version: "latest", httpStatus: "000", curlExit: "47", wantExit: 47},
+		{name: "latest receive failure", version: "latest", httpStatus: "000", curlExit: "56", wantExit: 56},
+		{name: "pinned 404", version: "v1.2.3", httpStatus: "404", curlExit: "22", wantExit: 22},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			home, out, runErr := runInstallScript(t, script, "Darwin", "arm64", map[string]string{
+				"EVENER_INSTALL_VERSION":     tc.version,
+				"EVENER_FAKE_CURL_HTTP_CODE": tc.httpStatus,
+				"EVENER_FAKE_CURL_EXIT":      tc.curlExit,
+			})
+			if runErr == nil {
+				t.Fatalf("install succeeded; output = %s", out)
+			}
+			var exitErr *exec.ExitError
+			if !errors.As(runErr, &exitErr) {
+				t.Fatalf("run error is not an exit error: %v", runErr)
+			}
+			if got := exitErr.ExitCode(); got != tc.wantExit {
+				t.Fatalf("exit status = %d, want %d; output = %s", got, tc.wantExit, out)
+			}
+			if !strings.Contains(out, fakeCurlDiagnostic) {
+				t.Fatalf("curl diagnostic sentinel was lost; output = %s", out)
+			}
+			gotAdvice := strings.Contains(out, "EVENER_INSTALL_VERSION=snapshot")
+			if gotAdvice != tc.wantAdvice {
+				t.Fatalf("snapshot advice = %v, want %v; output = %s", gotAdvice, tc.wantAdvice, out)
+			}
+			assertNothingInstalled(t, home, out)
+		})
+	}
+}
+
 // TestInstallScriptRejectsTamperedArchive feeds install.sh a checksums.txt
 // whose digest cannot match the served archive: the install must fail closed
 // at verification, before anything is installed.
+// TestInstallScriptReportsMissingLatestReleaseAsset pins install.sh's
+// behavior when the default ("latest") download 404s: the documented
+// quickstart one-liner sets no EVENER_INSTALL_VERSION, so a release whose
+// "latest" tag has no matching evener_<os>_<arch>.tar.gz asset must fail
+// with an actionable message pointing at EVENER_INSTALL_VERSION=snapshot,
+// not a bare curl error.
+func TestInstallScriptReportsMissingLatestReleaseAsset(t *testing.T) {
+	t.Parallel()
+	if testing.Short() {
+		t.Skip("release archive install integration test")
+	}
+	if runtime.GOOS == "windows" {
+		t.Skip("install.sh requires a Unix shell")
+	}
+
+	repoRoot, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("getwd: %v", err)
+	}
+	script := filepath.Join(repoRoot, "install.sh")
+
+	home, out, runErr := runInstallScript(t, script, "Darwin", "arm64", map[string]string{
+		"EVENER_INSTALL_VERSION": "latest",
+		"EVENER_FAKE_CURL_404":   "evener_darwin_arm64.tar.gz",
+	})
+	if runErr == nil {
+		t.Fatalf("install succeeded despite a 404 on the release asset; output = %s", out)
+	}
+	if !strings.Contains(out, "Failed to download") {
+		t.Fatalf("failure does not report the download error; output = %s", out)
+	}
+	if !strings.Contains(out, "EVENER_INSTALL_VERSION=snapshot") {
+		t.Fatalf("failure does not point at the snapshot workaround; output = %s", out)
+	}
+	assertNothingInstalled(t, home, out)
+}
+
+// TestInstallScriptReportsMissingPinnedReleaseAsset pins that a 404 against
+// an explicitly pinned version (not "latest") gets the download-failure
+// message without the "latest" nudge — pointing at snapshot would be wrong
+// advice when the user already asked for a specific tag.
+func TestInstallScriptReportsMissingPinnedReleaseAsset(t *testing.T) {
+	t.Parallel()
+	if testing.Short() {
+		t.Skip("release archive install integration test")
+	}
+	if runtime.GOOS == "windows" {
+		t.Skip("install.sh requires a Unix shell")
+	}
+
+	repoRoot, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("getwd: %v", err)
+	}
+	script := filepath.Join(repoRoot, "install.sh")
+
+	home, out, runErr := runInstallScript(t, script, "Darwin", "arm64", map[string]string{
+		"EVENER_INSTALL_VERSION": "v0.1.0",
+		"EVENER_FAKE_CURL_404":   "evener_darwin_arm64.tar.gz",
+	})
+	if runErr == nil {
+		t.Fatalf("install succeeded despite a 404 on the release asset; output = %s", out)
+	}
+	if !strings.Contains(out, "Failed to download") {
+		t.Fatalf("failure does not report the download error; output = %s", out)
+	}
+	if strings.Contains(out, "EVENER_INSTALL_VERSION=snapshot") {
+		t.Fatalf("pinned-version failure should not suggest snapshot; output = %s", out)
+	}
+	assertNothingInstalled(t, home, out)
+}
+
 func TestInstallScriptRejectsTamperedArchive(t *testing.T) {
 	t.Parallel()
 	if testing.Short() {
@@ -483,6 +637,8 @@ func installArchiveRoot(osName, arch string) string {
 	return "evener_" + strings.ToLower(osName) + "_" + installArch(arch)
 }
 
+const fakeCurlDiagnostic = "curl-diagnostic-7f3c"
+
 func assertNothingInstalled(t *testing.T, home, out string) {
 	t.Helper()
 	if _, err := os.Stat(filepath.Join(home, ".local", "share", "evener", "bin", "evener")); !os.IsNotExist(err) {
@@ -514,9 +670,11 @@ esac
 	writeExecutable(t, filepath.Join(fakeBin, "curl"), `#!/bin/sh
 out=
 url=
+write_format=
 while [ "$#" -gt 0 ]; do
   case "$1" in
     -o) out="$2"; shift 2 ;;
+    -w) write_format="$2"; shift 2 ;;
     -*) shift ;;
     *) url="$1"; shift ;;
   esac
@@ -526,6 +684,26 @@ if [ -z "$out" ]; then
   exit 2
 fi
 printf '%s\n' "$url" >> "$EVENER_FAKE_CURL_URL_FILE"
+http_code=${EVENER_FAKE_CURL_HTTP_CODE:-200}
+if [ -n "${EVENER_FAKE_CURL_404:-}" ] && [ "$(basename "$url")" = "$EVENER_FAKE_CURL_404" ]; then
+  http_code=404
+fi
+if [ -n "$write_format" ] && [ "$write_format" != '%{http_code}' ]; then
+	echo "invalid write format" >&2
+	exit 2
+fi
+if [ -n "$write_format" ]; then
+	printf '%s' "$http_code"
+fi
+if [ -n "${EVENER_FAKE_CURL_EXIT:-}" ]; then
+	echo "curl-diagnostic-7f3c" >&2
+	cp "$EVENER_FAKE_CURL_ARCHIVE" "$out"
+	exit "$EVENER_FAKE_CURL_EXIT"
+fi
+if [ -n "${EVENER_FAKE_CURL_404:-}" ] && [ "$(basename "$url")" = "$EVENER_FAKE_CURL_404" ]; then
+	echo "curl-diagnostic-7f3c" >&2
+	exit 22
+fi
 case "$(basename "$url")" in
   checksums.txt)
     # Serve the archive's real digest so verification passes; the tamper knob
@@ -642,12 +820,10 @@ func installedServeStatus(t *testing.T, repoRoot string, baseEnv []string, evene
 	workDir := t.TempDir()
 	providersPath := filepath.Join(t.TempDir(), "providers.toml")
 	if err := os.WriteFile(providersPath, []byte(`
-schema = 1
 default = "work"
 
-[instances.work]
-type = "openai"
-api_style = "responses"
+[providers.work]
+base    = "openai"
 api_key = "sk-install-test"
 `), 0o600); err != nil {
 		t.Fatalf("write providers.toml: %v", err)
@@ -714,10 +890,9 @@ api_key = "sk-install-test"
 			return
 		default:
 		}
-		resp, err := http.Post("http://"+entry.Address+"/shutdown", "", nil)
-		if err == nil {
-			_ = resp.Body.Close()
-		}
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		_ = shutdownInstalledServe(shutdownCtx, entry)
+		cancel()
 		select {
 		case <-done:
 		case <-time.After(5 * time.Second):
@@ -727,20 +902,31 @@ api_key = "sk-install-test"
 	})
 
 	client := http.Client{Timeout: 2 * time.Second}
-	resp, err := client.Get("http://" + entry.Address + "/status")
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	transport, err := appwire.DialWebSocket(ctx, entry.Endpoint, &client)
 	if err != nil {
-		t.Fatalf("get installed evener serve /status: %v\nstdout:\n%s\nstderr:\n%s", err, stdout.String(), stderr.String())
+		t.Fatalf("dial installed evener serve AppWire: %v\nstdout:\n%s\nstderr:\n%s", err, stdout.String(), stderr.String())
 	}
-	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusOK {
-		t.Fatalf("status code = %d, want 200", resp.StatusCode)
+	wireClient := appwire.NewClient(transport)
+	wireClient.Start(ctx)
+	defer wireClient.Close()
+	if _, err := wireClient.Initialize(ctx, appwire.InitializeParams{ClientInfo: appwire.ClientInfo{Name: "install-test", Version: "test"}}); err != nil {
+		t.Fatalf("initialize installed evener serve AppWire: %v", err)
 	}
-
-	var status installedStatus
-	if err := json.NewDecoder(resp.Body).Decode(&status); err != nil {
-		t.Fatalf("decode /status: %v", err)
+	response, err := wireClient.ThreadRead(ctx, appwire.ThreadReadParams{})
+	if err != nil {
+		t.Fatalf("read installed evener serve thread: %v", err)
 	}
-	return status
+	diagnostics := response.Thread.Evener.Diagnostics
+	if diagnostics == nil {
+		return installedStatus{}
+	}
+	detailed := &installedDetailedStatus{Agents: diagnostics.Agents}
+	for _, skill := range diagnostics.Skills {
+		detailed.Skills = append(detailed.Skills, installedSkillInfo{Name: skill.Name})
+	}
+	return installedStatus{Detailed: detailed}
 }
 
 type installedStatus struct {

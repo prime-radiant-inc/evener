@@ -8,6 +8,7 @@ import (
 	"primeradiant.com/evener/agent/events"
 	"primeradiant.com/evener/agent/internal/jobstore"
 	"primeradiant.com/evener/agent/provenance"
+	"primeradiant.com/evener/envvars"
 )
 
 type deliverableJobNotification struct {
@@ -52,6 +53,7 @@ func jobRecordDisplayLabel(rec *jobstore.JobRecord) string {
 func jobNotificationFromRecord(rec *jobstore.JobRecord) jobNotification {
 	return jobNotification{
 		JobID:            rec.JobID,
+		TerminalGen:      rec.TerminalGen,
 		JobType:          string(rec.Type),
 		Description:      jobRecordDisplayLabel(rec),
 		Status:           string(rec.Status),
@@ -79,7 +81,7 @@ func jobNotificationFromRecord(rec *jobstore.JobRecord) jobNotification {
 func jobFinishedEventIdentity(n jobNotification, data events.JobFinishedData) jobNotification {
 	n.JobID = data.JobID
 	n.JobType = data.JobType
-	n.Description = firstNonEmptyJobString(data.Task, data.Command)
+	n.Description = envvars.FirstNonEmpty(data.Task, data.Command)
 	n.Status = data.Status
 	n.Reason = data.Reason
 	n.ExhaustionBudget = data.ExhaustionBudget
@@ -239,6 +241,23 @@ func formatJobNotificationBlock(n jobNotification, excerpt notificationExcerpt, 
 		attrs = append(attrs, notificationAttr("transcript_ref", n.TranscriptRef))
 	}
 	if n.Status == jobNotificationEventWatch && n.JobID == "" {
+		if n.WatchID != "" {
+			attrs = append(attrs, notificationAttr("watch_id", n.WatchID))
+			var sentence string
+			switch {
+			case n.Terminal:
+				sentence = fmt.Sprintf("Timer fired after %ds.", n.IntervalSeconds)
+			case n.Fires > 1:
+				sentence = fmt.Sprintf("Timer fired (every %ds), %d times since your last turn.", n.IntervalSeconds, n.Fires)
+			default:
+				sentence = fmt.Sprintf("Timer fired (every %ds).", n.IntervalSeconds)
+			}
+			body := sentence
+			if n.Note != "" {
+				body += "\nNote: " + escapeNotificationBody(n.Note)
+			}
+			return fmt.Sprintf("<job-notification %s>\n%s\n</job-notification>", strings.Join(attrs, " "), body)
+		}
 		return fmt.Sprintf(
 			"<job-notification %s>\n"+
 				"Watch event triggered: %s.\n"+

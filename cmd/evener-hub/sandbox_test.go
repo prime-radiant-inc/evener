@@ -10,8 +10,10 @@ import (
 	"time"
 
 	"primeradiant.com/evener/agent/schema"
+	"primeradiant.com/evener/appwire"
 	"primeradiant.com/evener/cmd/evener-hub/internal/hubcore"
-	"primeradiant.com/evener/llm/providercfg"
+	"primeradiant.com/evener/internal/credentials"
+	"primeradiant.com/evener/llm/registry"
 	"primeradiant.com/evener/rendezvous"
 )
 
@@ -24,20 +26,19 @@ const sandboxSessionID = "01FUZZDOCSESSION0000000000"
 // supplies; finding it in a response body is a path-escape defect.
 const sandboxOutOfRootSecret = "FUZZ-OUT-OF-ROOT-SECRET-do-not-serve-9c1f2a"
 
-// sandboxGitBranch is the fixed branch the git-head seam reports. Its presence
-// in an /api/git/head response proves the seam ran instead of a real `git`.
-const sandboxGitBranch = "sandbox-branch"
+// sandboxGitHead is the fixed HEAD the git-head seam reports. Its presence
+// in an AppWire response proves the seam ran instead of a real `git`.
+const sandboxGitHead = "sandbox-branch"
 
 // sandbox is a fully contained hub for fuzzing/testing the MUTATING handlers.
 // The backend it wires cannot spawn a real agent, shell out, hit the network,
 // or touch the real filesystem outside Root. The escapes a read-only harness
 // cannot drive are each neutralized:
 //
-//   - spawn (/api/spawn, thread/start) → Spawner records the request and returns
-//     a synthetic rendezvous entry with no address; no subprocess, no dial.
-//   - /api/git/head → GitHeadBranch seam returns sandboxGitBranch; no `git`.
-//   - /api/models   → LiveModels seam returns a fixed list; no provider network.
-//   - /api/dirs/create → MkdirAll seam records the path and creates nothing.
+//   - thread/start → Spawner records the request and returns a synthetic
+//     rendezvous entry with no address; no subprocess, no dial.
+//   - evener/git/head → ResolveGitHead seam returns sandboxGitHead; no `git`.
+//   - model/list → LiveModels seam returns a fixed list; no provider network.
 //   - the action verbs (send/steer/queue/clear/...) → an empty Roster and an
 //     empty live-source set, so every verb resolves "thread not found" before it
 //     can dial a daemon.
@@ -56,7 +57,6 @@ type sandbox struct {
 	Web           *WebServer
 	Config        hubcore.WebConfig
 	Spawner       *recordingSpawner
-	Mkdir         *recordingMkdir
 	Root          string // temp root; the only filesystem subtree the hub may mutate
 	CWD           string // the seeded session's working dir, inside Root
 	Secret        []byte // planted ABOVE CWD; the path-escape oracle's tripwire
@@ -100,39 +100,55 @@ func newSandbox(tb testing.TB) *sandbox {
 	}
 
 	// Seed a providers.toml inside Root so the evener/instance/* methods register
-	// (they are gated on ProvidersConfigPath != "") and so the instances
-	// controller's atomic writes land in the sandbox temp tree, never on the real
-	// providers.toml. Two instances give Edit/Remove/SetDefault real targets.
+	// (they are gated on a registry and a ProvidersConfigPath) and so the
+	// instances controller's atomic writes land in the sandbox temp tree, never
+	// on the real providers.toml. Two instances give Edit/Remove/SetDefault real
+	// targets.
 	providersPath := filepath.Join(root, "providers.toml")
-	if err := providercfg.WriteFile(providersPath, providercfg.Config{
-		Default: "work",
-		Instances: []providercfg.InstanceConfig{
-			{Name: "work", Type: "openai"},
-			{Name: "key", Type: "anthropic"},
-		},
-	}); err != nil {
+	const sandboxProviders = `default = "work"
+
+[providers.work]
+base    = "openai"
+api_key = "sk-sandbox"
+
+[providers.key]
+base    = "anthropic"
+api_key = "sk-sandbox"
+`
+	if err := os.WriteFile(providersPath, []byte(sandboxProviders), 0o644); err != nil {
+		tb.Fatal(err)
+	}
+	stateRoot := filepath.Join(root, "state")
+	providerRegistry := hubcore.NewProviderRegistry(func(extra ...registry.Option) (*registry.Registry, *credentials.Store, error) {
+		r, err := registry.Load(append([]registry.Option{
+			registry.WithOffline(true), registry.WithoutCache(),
+			registry.WithConfigPath(providersPath), registry.WithStateRoot(stateRoot),
+			registry.WithEnv(func(string) (string, bool) { return "", false }),
+		}, extra...)...)
+		return r, nil, err
+	})
+	if err := providerRegistry.Reload(); err != nil {
 		tb.Fatal(err)
 	}
 
 	spawner := &recordingSpawner{}
-	mkdir := &recordingMkdir{}
 	cfg := hubcore.WebConfig{
 		HubAddr:             "127.0.0.1:9180",
-		HubStateRoot:        filepath.Join(root, "state"),
+		HubStateRoot:        stateRoot,
 		Past:                idx,
 		Roster:              hubcore.NewRoster(filepath.Join(root, "roster"), nil),
 		RunDir:              filepath.Join(root, "run"), // empty rendezvous dir → no live daemons to reach
 		StateDir:            filepath.Join(root, "projects"),
+		Registry:            providerRegistry,
 		ProvidersConfigPath: providersPath,
 		PluginRoot:          filepath.Join(root, "plugins"), // contain the marketplace/plugin store; "" would resolve to the real ~/.config/evener/plugins
 		Spawner:             spawner,
-		GitHeadBranch: func(context.Context, string) (string, error) {
-			return sandboxGitBranch, nil
+		ResolveGitHead: func(context.Context, string) (string, error) {
+			return sandboxGitHead, nil
 		},
-		LiveModels: func(context.Context) []map[string]any {
-			return []map[string]any{{"provider": "sandbox", "model": "fake-model"}}
+		LiveModels: func(context.Context) []appwire.ModelDescriptor {
+			return []appwire.ModelDescriptor{{Provider: "sandbox", Model: "fake-model"}}
 		},
-		MkdirAll: mkdir.MkdirAll,
 		// AuthToken empty: the auth guard is disabled, so a fuzzed request reaches
 		// the real routes (per the Phase 4 spec).
 	}
@@ -140,7 +156,6 @@ func newSandbox(tb testing.TB) *sandbox {
 		Web:           NewWebServer(cfg),
 		Config:        cfg,
 		Spawner:       spawner,
-		Mkdir:         mkdir,
 		Root:          root,
 		CWD:           cwd,
 		Secret:        secret,
@@ -193,26 +208,4 @@ func (r *recordingSpawner) Resumes() []hubcore.ResumeRequest {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	return append([]hubcore.ResumeRequest(nil), r.resumes...)
-}
-
-// recordingMkdir is the MkdirAll seam: it records each requested path and
-// creates nothing, so a fuzzed /api/dirs/create can never materialize a
-// directory on the real filesystem.
-type recordingMkdir struct {
-	mu    sync.Mutex
-	paths []string
-}
-
-func (m *recordingMkdir) MkdirAll(path string, _ os.FileMode) error {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	m.paths = append(m.paths, path)
-	return nil
-}
-
-// Paths returns a copy of every path a handler asked to create.
-func (m *recordingMkdir) Paths() []string {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	return append([]string(nil), m.paths...)
 }

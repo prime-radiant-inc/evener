@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"context"
 	"encoding/json"
 	"sort"
 	"time"
@@ -44,11 +45,14 @@ type JobStatusInfo struct {
 	TranscriptRef    string `json:"transcript_ref,omitempty"`
 	OutputBytes      int64  `json:"output_bytes"`
 	ExitCode         *int   `json:"exit_code,omitempty"`
+	Command          string `json:"command,omitempty"`
+	Intent           string `json:"intent,omitempty"`
+	Task             string `json:"task,omitempty"`
 }
 
-// DelegateStatusInfo is the stable delegate read model exposed by DetailedStatus.
-// Its JSON names follow the daemon /status convention; AppWire maps the same
-// values into EvenerDelegateInfo without deriving them from Jobs.
+// DelegateStatusInfo is the stable delegate read model exposed by
+// DetailedStatus. AppWire maps these values into EvenerDelegateInfo without
+// deriving them from Jobs.
 type DelegateStatusInfo struct {
 	DelegateID          string                       `json:"delegate_id"`
 	OwnerSessionID      string                       `json:"owner_session_id"`
@@ -101,26 +105,23 @@ type DelegateStatusInfo struct {
 }
 
 // HookEventStatus describes a single hook event's registration state and
-// compatibility tier for the /status endpoint.
+// compatibility tier for typed diagnostics.
 // Tier: Supported=true events are "claude-compatible-subset";
 // Supported=false events are "reserved-placeholder" (recognized by evener but
 // not yet fired). The Tier field carries the exact label from plugin.EventTier.
 type HookEventStatus struct {
 	Event     plugin.HookEvent `json:"event"`
 	Count     int              `json:"count"`
-	Tier      string           `json:"tier"`
+	Tier      string           `json:"tier,omitempty"`
 	Supported bool             `json:"supported"`
 }
 
-// DetailedStatus captures the full session configuration for /status display.
+// DetailedStatus captures the full session configuration for typed diagnostics.
 type DetailedStatus struct {
 	Tools   []ToolInfo             `json:"tools,omitempty"`   // every registered tool and its source
 	MCP     []mcpconfig.ServerInfo `json:"mcp,omitempty"`     // connected MCP servers
 	Skills  []skill.SkillMeta      `json:"skills,omitempty"`  // discovered skills, sorted by name
 	Plugins []PluginInfo           `json:"plugins,omitempty"` // loaded plugins
-	// Hooks maps each hook event to the number of registered hooks for it.
-	// Retained for backward compatibility; HookEvents carries richer per-event data.
-	Hooks map[plugin.HookEvent]int `json:"hooks,omitempty"`
 	// HookEvents lists all registered hook events (supported) plus any
 	// recognized-but-unsupported events declared by loaded plugins.
 	HookEvents []HookEventStatus    `json:"hook_events,omitempty"`
@@ -137,7 +138,7 @@ const detailedStatusTerminalJobsLimit = 50
 // DetailedStatus builds a snapshot of the session's loaded tools, MCP servers,
 // skills, plugins, hooks, jobs, and public agent names.
 func (s *Session) DetailedStatus() DetailedStatus {
-	var ds DetailedStatus
+	ds := DetailedStatus{Plugins: make([]PluginInfo, 0)}
 	now := s.sclock().Now().UTC()
 
 	// Build MCP tool → server name map for tool categorization.
@@ -163,13 +164,8 @@ func (s *Session) DetailedStatus() DetailedStatus {
 		ds.Tools = append(ds.Tools, ToolInfo{Name: name, Source: source})
 	}
 
-	// Skills (sorted by name).
-	for _, meta := range s.skills {
-		ds.Skills = append(ds.Skills, meta)
-	}
-	sort.Slice(ds.Skills, func(i, j int) bool {
-		return ds.Skills[i].Name < ds.Skills[j].Name
-	})
+	// Skills are projected through the canonical, path-free catalog helper.
+	ds.Skills = skill.CatalogEntries(s.skills)
 
 	// Plugins.
 	for _, p := range s.plugins {
@@ -187,16 +183,10 @@ func (s *Session) DetailedStatus() DetailedStatus {
 		})
 	}
 
-	// Hooks: populate the backward-compatible map and the richer HookEvents slice.
+	// HookEvents supported entries count only hooks that can ACTUALLY run:
+	// hooks with an unsupported handler type or an invalid matcher are
+	// dispatch-time dead and surface as load warnings, not as active hooks.
 	if s.hookRunner != nil {
-		// Legacy map: every registered hook per event (registered, not necessarily
-		// runnable). Retained for backward compatibility.
-		if summary := s.hookRunner.Summary(); len(summary) > 0 {
-			ds.Hooks = summary
-		}
-		// HookEvents supported entries count only hooks that can ACTUALLY run:
-		// hooks with an unsupported handler type or an invalid matcher are
-		// dispatch-time dead and surface as load warnings, not as active hooks.
 		for event, count := range s.hookRunner.SupportedSummary() {
 			ds.HookEvents = append(ds.HookEvents, HookEventStatus{
 				Event:     event,
@@ -247,14 +237,16 @@ func (s *Session) DetailedStatus() DetailedStatus {
 
 // LoadSessionDelegateStatus projects a cold session's stable delegate rows
 // from the root journal without constructing a Session or opening an
-// append-capable store.
-func LoadSessionDelegateStatus(stateDir, sessionID string) ([]DelegateStatusInfo, []string, error) {
+// append-capable store. ctx is checked between decoded delegate-journal
+// records the same way the job-activity tree loader's scans are; pass
+// context.Background() when no request-scoped context is available.
+func LoadSessionDelegateStatus(ctx context.Context, stateDir, sessionID string) ([]DelegateStatusInfo, []string, error) {
 	meta, err := schema.LoadSessionMeta(stateDir, sessionID)
 	if err != nil {
 		return nil, nil, err
 	}
 	rootID := activityRootIDFromMeta(sessionID, meta)
-	rows, diagnostics, err := loadHistoricalStableActivityWithAttention(stateDir, rootID, sessionID)
+	rows, diagnostics, err := loadHistoricalStableActivityWithAttention(ctx, stateDir, rootID, sessionID)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -417,6 +409,9 @@ func projectJobStatusInfos(records []*jobstore.JobRecord) []JobStatusInfo {
 			TranscriptRef:    jobTranscriptRef(rec),
 			OutputBytes:      rec.OutputBytes,
 			ExitCode:         rec.ExitCode,
+			Command:          rec.Command,
+			Intent:           rec.Intent,
+			Task:             rec.Task,
 		})
 	}
 	return jobs

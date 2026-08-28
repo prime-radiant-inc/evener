@@ -37,7 +37,7 @@ func TestDelegateResourceBootstrap_ChildInheritsControllerAndStableOwnerID(t *te
 
 	result := root.createDelegate(context.Background(), delegateArgs{
 		Task:                "report the result",
-		DelegationAllowance: 0,
+		DelegationAllowance: new(0),
 	})
 	if result.Err != nil {
 		t.Fatalf("createDelegate: %v", result.Err)
@@ -477,7 +477,7 @@ func newDelegateResourceBootstrapSession(t *testing.T) (*Session, *llm.Client, *
 	adapter := &fakeAdapter{name: "openai"}
 	client := llm.NewClient()
 	client.Register(adapter)
-	profile := NewOpenAIProfile("gpt-5.2")
+	profile := withTestSessionNamer(client, NewOpenAIProfile("gpt-5.2"))
 	sess, err := NewSession(client, profile, execenv.NewLocalExecutionEnvironment(workspace), SessionConfig{
 		StateDir:         stateDir,
 		MaxSubagentDepth: 2,
@@ -486,6 +486,7 @@ func newDelegateResourceBootstrapSession(t *testing.T) (*Session, *llm.Client, *
 		testOnly: testConfig{
 			skipGitSnapshot:     true,
 			minimalSystemPrompt: true,
+			sandboxProber:       bwrapCapableProber(workspace),
 		},
 	})
 	if err != nil {
@@ -502,7 +503,7 @@ func closedDelegateResourceBootstrapFixture(t *testing.T) (schema.SessionMeta, *
 	adapter := &fakeAdapter{name: "openai"}
 	client := llm.NewClient()
 	client.Register(adapter)
-	profile := NewOpenAIProfile("gpt-5.2")
+	profile := withTestSessionNamer(client, NewOpenAIProfile("gpt-5.2"))
 	sess, err := NewSession(client, profile, execenv.NewLocalExecutionEnvironment(workspace), SessionConfig{
 		StateDir:         stateDir,
 		MaxSubagentDepth: 2,
@@ -511,6 +512,7 @@ func closedDelegateResourceBootstrapFixture(t *testing.T) (schema.SessionMeta, *
 		testOnly: testConfig{
 			skipGitSnapshot:     true,
 			minimalSystemPrompt: true,
+			sandboxProber:       bwrapCapableProber(workspace),
 		},
 	})
 	if err != nil {
@@ -526,7 +528,7 @@ func closedDelegateResourceBootstrapFixture(t *testing.T) (schema.SessionMeta, *
 }
 
 func restoreDelegateResourceBootstrapSession(client *llm.Client, profile *provider.Profile, workspace string, meta schema.SessionMeta, stateDir string) (*Session, error) {
-	return restoreDelegateResourceBootstrapSessionWithTestConfig(client, profile, workspace, meta, stateDir, testConfig{})
+	return restoreDelegateResourceBootstrapSessionWithTestConfig(client, profile, workspace, meta, stateDir, testConfig{sandboxProber: bwrapCapableProber(workspace)})
 }
 
 func restoreDelegateResourceBootstrapSessionWithTestConfig(client *llm.Client, profile *provider.Profile, workspace string, meta schema.SessionMeta, stateDir string, testOnly testConfig) (*Session, error) {

@@ -2,7 +2,11 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Make the §5.1 observer read grant reachable from the model-facing
+**Status: superseded historical plan.** The implementation described here was
+removed by the 2026-08-01 open-local-job transcript-read design; it is retained
+for decision history and is not current behavior.
+
+**Goal (historical):** Make the §5.1 observer read grant reachable from the model-facing
 surface: a `job.notification` watch frame mints a durable read grant for the
 receiving observer on the concrete terminal job the frame names, and the
 observer spends it through `read_transcript(transcript_ref="job:<job_id>")`.

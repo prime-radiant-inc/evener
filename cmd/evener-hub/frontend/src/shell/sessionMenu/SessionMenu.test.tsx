@@ -1,26 +1,46 @@
 import { cleanup, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { afterAll, afterEach, beforeEach, expect, test, vi } from "vitest";
-import type { TreeNode as ApiTreeNode } from "../../stores/tree";
+import { afterEach, beforeEach, expect, test, vi } from "vitest";
+import { navigationStore, resetNavigationStoreForTests } from "../../stores/navigation/store";
+import { keyID, type ResourceState } from "../../stores/navigation/types";
 import { resetToastStoreForTests } from "../../widgets/toast/store";
-import * as railActions from "../rail/actions";
+import type { NavigationSessionModel } from "./SessionMenu";
 import { SessionMenu, type SessionMenuActions, type SessionMenuProps } from "./SessionMenu";
 
-// Task 4's "Pin this session…" mounts the real PinSectionPicker, which
-// fetches its section list on mount - stub that fetch. vi.spyOn, not
-// vi.mock: under a shared module registry (isolate:false) some other file
-// (e.g. shell/rail/PinSectionPicker.test.tsx or Rail.test.tsx) may already
-// have loaded "../rail/actions" for real before this file's vi.mock()
-// factory registers, in which case PinSectionPicker.tsx's own
-// `import { listPinSections }` binding is fixed forever and a vi.mock()
-// here can't retroactively change what it calls internally - see
-// PinSectionPicker.test.tsx's own comment on the identical hazard.
-// vi.spyOn patches the one property every importer actually shares.
-let mockedListPinSections = vi.spyOn(railActions, "listPinSections");
+// "Pin this session…" mounts the real PinSectionPicker, which reads
+// pin sections from the navigation store's bounded pin-catalog resource
+// (loadPinCatalogPages + selectPinSections). Seed the store with a pin_catalog resource and
+// stub loadPinCatalogPages so the picker's mount effect resolves without a
+// real network fetch.
+const generation = "generation_test";
+const pinKey = { kind: "pin_catalog" as const, offset: 0, limit: 100 };
 
-afterAll(() => {
-  mockedListPinSections.mockRestore();
-});
+type LoadPinCatalogPages = (force?: boolean) => Promise<void>;
+
+function seedPinCatalog(): void {
+  const resource: ResourceState = {
+    key: pinKey,
+    data: {
+      generation_id: generation,
+      revision: 1,
+      pin_sections: [{ id: "sec_1", name: "Client", count: 0 }],
+      remaining: 0,
+    },
+    loadedRevision: 1,
+    targetRevision: 1,
+    forceToken: 0,
+    etag: "a",
+    loading: false,
+    stale: false,
+    error: null,
+    generationID: generation,
+  };
+  navigationStore.setState({
+    mode: "v1",
+    resources: new Map([[keyID(resource.key), resource]]),
+  });
+  navigationStore.setState({ loadPinCatalogPages: vi.fn(async () => undefined) as LoadPinCatalogPages });
+}
 
 function renderMenu(overrides: Partial<SessionMenuProps> = {}) {
   const actions: SessionMenuActions = {
@@ -53,16 +73,13 @@ async function openMenu(user: ReturnType<typeof userEvent.setup>) {
 
 beforeEach(() => {
   resetToastStoreForTests();
-  // Re-spied here, not just once above: shell/rail/Rail.test.tsx's own
-  // afterEach calls vi.restoreAllMocks(), which is a GLOBAL operation - it
-  // un-does this spy the moment ANY test anywhere in the worker restores
-  // mocks, not just that file's own.
-  mockedListPinSections = vi.spyOn(railActions, "listPinSections");
-  mockedListPinSections.mockResolvedValue([{ id: "sec_1", name: "Client", member_count: 0 }]);
+  resetNavigationStoreForTests();
+  seedPinCatalog();
 });
 
 afterEach(() => {
   cleanup();
+  resetNavigationStoreForTests();
 });
 
 test("panes group leads with open-state checkmarks and dispatches onOpenPane", async () => {
@@ -74,6 +91,31 @@ test("panes group leads with open-state checkmarks and dispatches onOpenPane", a
   expect(screen.getByRole("menuitem", { name: "Activity" })).toBeTruthy();
   await user.click(screen.getByRole("menuitem", { name: "Tasks ✓" }));
   expect(actions.onOpenPane).toHaveBeenCalledWith("tasks");
+});
+
+test("pane-only Verbosity follows Activity, precedes the first separator, and dispatches its callback", async () => {
+  const user = userEvent.setup();
+  const onOpenVerbosity = vi.fn();
+  renderMenu({ onOpenVerbosity });
+  await openMenu(user);
+
+  const menu = screen.getByRole("menu");
+  const verbosity = within(menu).getByRole("menuitem", { name: "Verbosity…" });
+  const activity = within(menu).getByRole("menuitem", { name: "Activity" });
+  const firstSeparator = within(menu).getAllByRole("separator")[0];
+  if (!firstSeparator) throw new Error("Session menu is missing its first separator");
+  expect(activity.compareDocumentPosition(verbosity) & Node.DOCUMENT_POSITION_FOLLOWING).not.toBe(0);
+  expect(verbosity.compareDocumentPosition(firstSeparator) & Node.DOCUMENT_POSITION_FOLLOWING).not.toBe(0);
+
+  await user.click(verbosity);
+  expect(onOpenVerbosity).toHaveBeenCalledOnce();
+});
+
+test("rail-style callers that omit the pane-only callback do not get Verbosity", async () => {
+  const user = userEvent.setup();
+  renderMenu({ triggerLabel: "Actions for My session" });
+  await user.click(screen.getByRole("button", { name: "Actions for My session" }));
+  expect(screen.queryByRole("menuitem", { name: "Verbosity…" })).toBeNull();
 });
 
 test("live labels replace the plain pane names", async () => {
@@ -137,7 +179,7 @@ test("Shut down confirms before calling onShutdown", async () => {
   await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
 });
 
-test("no organization or delete items without a treeNode", async () => {
+test("no organization or delete items without a navigation session", async () => {
   const user = userEvent.setup();
   renderMenu();
   await openMenu(user);
@@ -146,25 +188,21 @@ test("no organization or delete items without a treeNode", async () => {
   expect(screen.queryByRole("menuitem", { name: /delete/i })).toBeNull();
 });
 
-function treeNode(overrides: Partial<ApiTreeNode> = {}): ApiTreeNode {
+function navigationSession(overrides: Partial<NavigationSessionModel> = {}): NavigationSessionModel {
   return {
-    row_id: "row_1",
     ref: "ref_a",
     host_id: "local",
     session_id: "sess_a",
     title: "My session",
-    project: "proj",
-    state: "idle",
     kind: "session",
-    live: false,
-    children: [],
+    top_level: true,
     ...overrides,
   };
 }
 
 test("full menu: organize group between separators, delete last", async () => {
   const user = userEvent.setup();
-  renderMenu({ treeNode: treeNode() });
+  renderMenu({ session: navigationSession() });
   await openMenu(user);
   const items = screen.getAllByRole("menuitem").map((el) => el.textContent);
   expect(items).toEqual([
@@ -182,13 +220,13 @@ test("full menu: organize group between separators, delete last", async () => {
 
 test("nested kinds and remote hosts lose organization/delete items", async () => {
   const user = userEvent.setup();
-  renderMenu({ treeNode: treeNode({ kind: "subagent" }) });
+  renderMenu({ session: navigationSession({ kind: "subagent" }) });
   await openMenu(user);
   expect(screen.queryByRole("menuitem", { name: /pin/i })).toBeNull();
   expect(screen.queryByRole("menuitem", { name: /archive/i })).toBeNull();
   expect(screen.queryByRole("menuitem", { name: /delete/i })).toBeNull();
   cleanup();
-  renderMenu({ treeNode: treeNode({ host_id: "remote" }) });
+  renderMenu({ session: navigationSession({ host_id: "remote" }) });
   await openMenu(user);
   expect(screen.getByRole("menuitem", { name: "Pin this session…" })).toBeTruthy();
   expect(screen.queryByRole("menuitem", { name: /delete/i })).toBeNull();
@@ -196,7 +234,7 @@ test("nested kinds and remote hosts lose organization/delete items", async () =>
 
 test("pinned session offers Unpin; archived offers Unarchive", async () => {
   const user = userEvent.setup();
-  const actions = renderMenu({ treeNode: treeNode({ pin_section_id: "sec_1", tier: "archived" }) });
+  const actions = renderMenu({ session: navigationSession({ pin_section_id: "sec_1", tier: "archived" }) });
   await openMenu(user);
   await user.click(screen.getByRole("menuitem", { name: "Unpin" }));
   expect(actions.onUnpin).toHaveBeenCalledTimes(1);
@@ -207,7 +245,7 @@ test("pinned session offers Unpin; archived offers Unarchive", async () => {
 
 test("Pin this session… opens the PinSectionPicker; assigning calls onPin and closes", async () => {
   const user = userEvent.setup();
-  const actions = renderMenu({ treeNode: treeNode() });
+  const actions = renderMenu({ session: navigationSession() });
   await openMenu(user);
   await user.click(screen.getByRole("menuitem", { name: "Pin this session…" }));
   await user.click(await screen.findByRole("button", { name: "Client" }));
@@ -218,7 +256,7 @@ test("Pin this session… opens the PinSectionPicker; assigning calls onPin and 
 
 test("Delete… confirms before calling onDelete", async () => {
   const user = userEvent.setup();
-  const actions = renderMenu({ treeNode: treeNode() });
+  const actions = renderMenu({ session: navigationSession() });
   await openMenu(user);
   await user.click(screen.getByRole("menuitem", { name: "Delete…" }));
   const dialog = screen.getByRole("dialog", { name: "Delete session?" });

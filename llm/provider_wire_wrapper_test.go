@@ -9,12 +9,7 @@ import (
 
 	"primeradiant.com/evener/llm"
 	"primeradiant.com/evener/llm/apilog"
-	"primeradiant.com/evener/llm/providercfg"
-	_ "primeradiant.com/evener/llm/providers/glm"
-	_ "primeradiant.com/evener/llm/providers/kimi"
-	_ "primeradiant.com/evener/llm/providers/ollama"
-	_ "primeradiant.com/evener/llm/providers/openrouter"
-	_ "primeradiant.com/evener/llm/providers/openrouter_anthropic"
+	"primeradiant.com/evener/llm/registry"
 )
 
 type wrapperWireCaptureSink struct {
@@ -39,13 +34,18 @@ func (s *wrapperWireCaptureSink) snapshot() []apilog.APIAttemptRecord {
 	return append([]apilog.APIAttemptRecord(nil), s.attempts...)
 }
 
-func TestWrapperFactoriesInheritWireCaptureExactlyOnce(t *testing.T) {
+// TestVendorInstancesInheritWireCaptureExactlyOnce is the wrapper-factory
+// guarantee restated for the registry: a vendor id reached over a protocol —
+// including one whose protocol is not the vendor's own (spec §14.1's
+// OpenRouter-over-Anthropic recipe) — records exactly one core attempt, under
+// the instance's own name.
+func TestVendorInstancesInheritWireCaptureExactlyOnce(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		switch r.URL.Path {
 		case "/chat/completions":
 			_, _ = w.Write([]byte(`{"id":"chatcmpl-1","model":"glm-test","choices":[{"index":0,"message":{"role":"assistant","content":"hello"},"finish_reason":"stop"}],"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}}`))
-		case "/v1/messages":
+		case "/messages":
 			_, _ = w.Write([]byte(`{"id":"msg_1","model":"claude-test","content":[{"type":"text","text":"hello"}],"stop_reason":"end_turn","usage":{"input_tokens":1,"output_tokens":1}}`))
 		default:
 			http.NotFound(w, r)
@@ -54,46 +54,28 @@ func TestWrapperFactoriesInheritWireCaptureExactlyOnce(t *testing.T) {
 	t.Cleanup(server.Close)
 
 	tests := []struct {
-		name          string
-		provider      string
-		providerType  providercfg.Type
-		model         string
-		builtInHeader string
+		name     string
+		instance string
+		base     string
+		protocol string
+		model    string
 	}{
-		{
-			name:          "OpenAI-compatible wrapper",
-			provider:      "glm-wire",
-			providerType:  providercfg.Type("glm"),
-			model:         "glm-test",
-			builtInHeader: "Authorization",
-		},
-		{
-			name:          "Anthropic wrapper",
-			provider:      "openrouter-anthropic-wire",
-			providerType:  providercfg.Type("openrouter-anthropic"),
-			model:         "claude-test",
-			builtInHeader: "x-api-key",
-		},
+		{name: "chat-completions vendor", instance: "glm-wire", base: "zai", protocol: registry.ProtocolOpenAIChat, model: "glm-test"},
+		{name: "anthropic-protocol vendor", instance: "openrouter-anthropic-wire", base: "openrouter", protocol: registry.ProtocolAnthropic, model: "claude-test"},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			instance := providerInstance(tt.provider, string(tt.providerType), "", server.URL, tt.builtInHeader)
-			client, err := llm.NewFromProviders(providercfg.Config{
-				Default:   tt.provider,
-				Instances: []providercfg.InstanceConfig{instance},
-			})
-			if err != nil {
-				t.Fatalf("NewFromProviders: %v", err)
-			}
+			provider := wireProvider{name: tt.instance, protocol: tt.protocol, base: tt.base}
+			client := provider.wireClient(t, server.URL, server.Client(), nil)
 
 			sink := &wrapperWireCaptureSink{}
-			groupID := "ag_wrapper_" + tt.provider
+			groupID := "ag_wrapper_" + tt.instance
 			ctx := llm.WithAPIAttemptSink(
 				llm.WithAPIAttemptGroup(context.Background(), llm.NewAPIAttemptGroup(groupID)),
 				sink,
 			)
-			response, err := client.Complete(ctx, providerRequest(tt.provider, tt.model))
+			response, err := client.Complete(ctx, providerRequest(tt.instance, tt.model))
 			if err != nil {
 				t.Fatalf("Complete: %v", err)
 			}
@@ -109,38 +91,33 @@ func TestWrapperFactoriesInheritWireCaptureExactlyOnce(t *testing.T) {
 			if attempt.AttemptGroupID != groupID || attempt.AttemptIndex != 1 {
 				t.Fatalf("attempt group/index = %q/%d, want %q/1", attempt.AttemptGroupID, attempt.AttemptIndex, groupID)
 			}
-			if attempt.ProviderInstance != tt.provider {
-				t.Fatalf("provider instance = %q, want wrapper instance %q", attempt.ProviderInstance, tt.provider)
+			if attempt.ProviderInstance != tt.instance {
+				t.Fatalf("provider instance = %q, want instance %q", attempt.ProviderInstance, tt.instance)
 			}
 		})
 	}
 }
 
-func TestDefaultNameOpenAICompatibleWrapperFactoriesPreserveWireCaptureProvenance(t *testing.T) {
+// TestCuratedVendorInstancesPreserveWireCaptureProvenance is the default-name
+// half: an instance that takes the curated vendor id as its own name still
+// records its attempt under that name.
+func TestCuratedVendorInstancesPreserveWireCaptureProvenance(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = w.Write([]byte(`{"id":"chatcmpl-1","model":"wrapper-test","choices":[{"index":0,"message":{"role":"assistant","content":"hello"},"finish_reason":"stop"}],"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}}`))
 	}))
 	t.Cleanup(server.Close)
 
-	for _, providerType := range []string{"glm", "kimi", "ollama", "openrouter"} {
-		t.Run(providerType, func(t *testing.T) {
-			client, err := llm.NewFromProviders(providercfg.Config{
-				Instances: []providercfg.InstanceConfig{{
-					Type:    providercfg.Type(providerType),
-					BaseURL: server.URL,
-					APIKey:  "provider-key",
-				}},
-			})
-			if err != nil {
-				t.Fatalf("NewFromProviders: %v", err)
-			}
+	for _, base := range []string{"zai", "moonshotai", "ollama", "openrouter"} {
+		t.Run(base, func(t *testing.T) {
+			provider := wireProvider{name: base, protocol: registry.ProtocolOpenAIChat, base: base}
+			client := provider.wireClient(t, server.URL, server.Client(), nil)
 			sink := &wrapperWireCaptureSink{}
 			ctx := llm.WithAPIAttemptSink(
-				llm.WithAPIAttemptGroup(context.Background(), llm.NewAPIAttemptGroup("ag_default_wrapper_"+providerType)),
+				llm.WithAPIAttemptGroup(context.Background(), llm.NewAPIAttemptGroup("ag_default_wrapper_"+base)),
 				sink,
 			)
-			response, err := client.Complete(ctx, providerRequest(providerType, "wrapper-test"))
+			response, err := client.Complete(ctx, providerRequest(base, "wrapper-test"))
 			if err != nil {
 				t.Fatalf("Complete: %v", err)
 			}
@@ -151,8 +128,8 @@ func TestDefaultNameOpenAICompatibleWrapperFactoriesPreserveWireCaptureProvenanc
 			if len(attempts) != 1 {
 				t.Fatalf("canonical attempts = %d, want exactly 1 inherited core attempt", len(attempts))
 			}
-			if got := attempts[0].ProviderInstance; got != providerType {
-				t.Fatalf("provider instance = %q, want default wrapper name %q", got, providerType)
+			if got := attempts[0].ProviderInstance; got != base {
+				t.Fatalf("provider instance = %q, want curated id %q", got, base)
 			}
 		})
 	}

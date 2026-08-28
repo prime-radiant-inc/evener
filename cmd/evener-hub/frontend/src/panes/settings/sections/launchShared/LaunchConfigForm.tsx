@@ -24,6 +24,7 @@ import { Button, useToasts } from "../../../../widgets";
 import { requireClass } from "../../../../widgets/internal/requireClass";
 import { EnvMapField, McpServerListField, ModelListField, PathListField } from "./collectionFields";
 import { PromptCompositeField, ScalarField } from "./fields";
+import { asEnvObjects, asMcpList, asStringList, inheritedItems } from "./inherited";
 import styles from "./LaunchConfigForm.module.css";
 import {
   buildFormState,
@@ -59,6 +60,11 @@ export interface LaunchConfigFormProps {
   /** The (separately-fetched) global layer, project-layer callers only -
    * drives the inline "default: {value}" hints. */
   globalDefaults?: LaunchConfigLayer;
+  /** The effective layer of the caller's launch/resolve for this cwd
+   * (undefined until it lands or after it fails): unset fields whose empty
+   * marker is the generic one prepend their entry here - "high (default)",
+   * "true (use global default)". */
+  resolvedDefaults?: LaunchConfigLayer;
   successToast: string;
   validatePath: (path: string, kind: string) => Promise<PathValidateResponse>;
   onSave: (config: LaunchConfigLayer) => Promise<LaunchConfigResolved>;
@@ -69,11 +75,19 @@ function formatSavedAt(): string {
   return `Saved at ${new Date().toLocaleTimeString()}`;
 }
 
+/** Reads the effective layer's value for a field, or undefined when no layer
+ * sets it (or the resolve hasn't landed). */
+function resolvedValue(option: LaunchOption, resolvedDefaults: LaunchConfigLayer | undefined): unknown {
+  if (!resolvedDefaults) return undefined;
+  return (resolvedDefaults as Record<string, unknown>)[option.wireField];
+}
+
 export function LaunchConfigForm({
   options,
   layer,
   current,
   globalDefaults,
+  resolvedDefaults,
   successToast,
   validatePath,
   onSave,
@@ -183,6 +197,7 @@ export function LaunchConfigForm({
     }
 
     if (isCollectionKind(opt.kind)) {
+      const effective = resolvedValue(opt, resolvedDefaults);
       switch (opt.kind) {
         case "pathList":
           return (
@@ -191,6 +206,7 @@ export function LaunchConfigForm({
               items={state.lists[opt.wireField] ?? []}
               onChange={(v) => updateList(opt.wireField, v)}
               validatePath={validatePath}
+              inheritedItems={inheritedItems(effective, state.lists[opt.wireField] ?? [], (s) => s, asStringList)}
             />
           );
         case "modelList":
@@ -201,16 +217,21 @@ export function LaunchConfigForm({
               onChange={(v) => updateList(opt.wireField, v)}
               explicitEmpty={state.explicitEmpty[opt.wireField] ?? false}
               onExplicitEmptyChange={(checked) => updateExplicitEmpty(opt.wireField, checked)}
+              inheritedItems={inheritedItems(effective, state.lists[opt.wireField] ?? [], (s) => s, asStringList)}
             />
           );
-        case "envMap":
+        case "envMap": {
+          const localEnv = state.envMaps[opt.wireField] ?? {};
+          const localEntries = Object.entries(localEnv).map(([name, value]) => ({ name, value }));
           return (
             <EnvMapField
               option={opt}
-              value={state.envMaps[opt.wireField] ?? {}}
+              value={localEnv}
               onChange={(v) => updateEnvMap(opt.wireField, v)}
+              inheritedItems={inheritedItems(effective, localEntries, (e) => e.name, asEnvObjects)}
             />
           );
+        }
         default: // mcpServerList
           return (
             <McpServerListField
@@ -218,6 +239,7 @@ export function LaunchConfigForm({
               items={state.mcpLists[opt.wireField] ?? []}
               onChange={(v) => updateMcpList(opt.wireField, v)}
               validateCommand={(command) => validatePath(command, "command")}
+              inheritedItems={inheritedItems(effective, state.mcpLists[opt.wireField] ?? [], (s) => s.name, asMcpList)}
             />
           );
       }
@@ -231,6 +253,7 @@ export function LaunchConfigForm({
         onChange={(v) => updateScalar(opt.wireField, v)}
         globalDefaultHint={globalDefaultHint(opt.wireField, layer, globalDefaults)}
         error={fieldErrors[opt.wireField]}
+        resolvedDefaults={resolvedDefaults}
       />
     );
   }

@@ -12,7 +12,7 @@ import (
 
 func TestFuzzCoverageUnion(t *testing.T) {
 	cases := []struct{ tool, args string }{
-		{"shell", `{"command":"x","description":"legacy"}`},
+		{"shell", `{"command":"x","intent":"describe the change"}`},
 		{"shell", `{"command":"line one\nline two"}`},
 		{"read_file", `{"file_path":""}`},
 		{"read_file", `{"file_path":"a/b","offset":1}`},
@@ -21,7 +21,7 @@ func TestFuzzCoverageUnion(t *testing.T) {
 		{"glob", `{"pattern":"*"}`},
 		{"grep", `{"pattern":"x"}`},
 		{"web_fetch", `{"url":"abcdefghijklmnopqrstuvwxyzabcdefghijklmnopqrstuvwxyzabcdefghijklmnopqrstuvwxyz"}`},
-		{"delegate", `{"task":"abcdefghijklmnopqrstuvwxyzabcdefghijklmnopqrstuvwxyzabcdefghijklmnopqrstuvwxyz"}`},
+		{"delegate", `{"prompt":"abcdefghijklmnopqrstuvwxyzabcdefghijklmnopqrstuvwxyzabcdefghijklmnopqrstuvwxyz"}`},
 		{"job_send_message", `{"target":"worker"}`},
 		{"delegate_send", `{"to":"worker"}`},
 		{"job_read_output", `{"job_id":"one"}`},

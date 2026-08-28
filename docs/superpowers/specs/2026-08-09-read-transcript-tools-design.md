@@ -1,5 +1,7 @@
 # Recoverable Tool Output — Design
 
+
+> **Current contract / partial supersession (2026-08-26, Task31/PR480).** Any delegate `JobRecord`, public delegate `job_id`, delegate `job.notification`, or `job:` transcript claim in this historical design is not shipped and is superseded. Delegates use stable `dlg_...` resources with private run generations; lifecycle attention is `<delegate-notification>`; delegate conversation/result history uses session transcript refs. `job_...`, `job.notification`, and `job:` output remain shell-only. Non-delegate design material below remains applicable unless a newer evergreen contract says otherwise.
 Date: 2026-08-09
 Status: Approved final design
 Source: `read-transcript-feedback-2026-08-08.md`
@@ -19,7 +21,7 @@ The registry already returns two forms of most text results:
 
 The registry does not preserve the exact pre-limit model-facing result in a distinct field. `Session.execTool` emits `FullOutput` through `TOOL_CALL_END`, but the model cannot query that event stream. The truncation warning therefore points to data without giving the model an address.
 
-`read_transcript` also limits `job:` refs to one rendered tail. The job store already implements head reads, backward windows, and regex scans over the retained log. The missing work is chiefly an API bridge.
+`read_transcript` also limits `job:` shell refs to one rendered tail. The job store already implements head reads, backward windows, and regex scans over the retained log. The missing work is chiefly an API bridge.
 
 Job output and generic tool output have different retention contracts:
 
@@ -43,7 +45,7 @@ The reader must state this difference plainly.
 | Ref | Data | Lifetime | Completeness |
 | --- | --- | --- | --- |
 | Session ref | Semantic transcript | Durable | Existing transcript contract |
-| `job:<job_id>` | Shell or delegate job output | Durable | Existing retained 8 MiB tail |
+| `job:<job_id>` | Shell job output only | Durable | Existing retained 8 MiB tail |
 | `artifact:<id>` | Generic truncated tool result | Current root session tree | Exact full result |
 
 The tool keeps its current name for compatibility. Its description changes from “read transcript” to “read retained evidence by reference.”
@@ -149,7 +151,7 @@ A `job:` page requested with `offset_bytes`, or an `artifact:` page requested wi
 
 Use the existing UTF-8/base64 rule from transcript expansion: return UTF-8 when the page is valid UTF-8; otherwise return base64. A continuation always names the next raw byte offset. A `job:` envelope also carries `job_status`; an `artifact:` envelope does not, because an artifact is always complete.
 
-For an `artifact:` ref, `retained_start_bytes` is always 0. For a pruned `job:` ref, it is the lifetime offset of the first retained byte. Job-page offsets are lifetime offsets, not offsets relative to the retained file. The first available job page therefore begins at `retained_start_bytes`.
+For an `artifact:` ref, `retained_start_bytes` is always 0. For a pruned `job:` shell ref, it is the lifetime offset of the first retained byte. Job-page offsets are lifetime offsets, not offsets relative to the retained file. The first available job page therefore begins at `retained_start_bytes`.
 
 If a caller requests a job offset before `retained_start_bytes`, including `offset_bytes: 0` after pruning, the read returns `output_unavailable` and names the first available offset. The caller can then start at `retained_start_bytes`. A raw job page never pretends that retained output begins at lifetime offset 0.
 
@@ -202,8 +204,8 @@ The reader rejects unsupported combinations instead of ignoring them.
 - `output_match` on a session ref → `invalid_request`; session search is out of scope.
 - `range` or `expand_turn` on `job:` or `artifact:` → `invalid_request`.
 - Any explicit `format` on an `artifact:` ref → `invalid_request`; artifact reads use the raw page or search envelope.
-- `format=outline` or `format=jsonl` on a `job:` ref → `invalid_request`.
-- `offset_bytes` or `output_match` combined with any explicit `format` on a `job:` ref → `invalid_request`.
+- `format=outline` or `format=jsonl` on a `job:` shell ref → `invalid_request`.
+- `offset_bytes` or `output_match` combined with any explicit `format` on a `job:` shell ref → `invalid_request`.
 - Offset before a job's `retained_start_bytes` → `output_unavailable` with the first available offset.
 - Offset beyond EOF → `invalid_request` with the valid byte interval and, for a running job, its status — the byte may simply not exist yet, and `job_watch` covers waiting for it.
 - Malformed artifact ref → `invalid_request`.
@@ -215,7 +217,7 @@ A ref from a closed or different root session tree is expected to expire. Persis
 
 Existing session-ref reads do not change. Their formats, ranges, turn expansion, fixed page size, and continuation behavior remain intact.
 
-Existing `job:` calls without `offset_bytes` or `output_match` keep the rendered markdown view. This preserves the current shell-log presentation and the delegate job's appended `structured_result`. Passing `offset_bytes`, including zero, selects raw paging. Passing `output_match` selects search.
+Existing shell `job:` calls without `offset_bytes` or `output_match` keep the rendered markdown view. Delegate results remain in the delegate session transcript. Passing `offset_bytes`, including zero, selects raw paging. Passing `output_match` selects search.
 
 Generic tools need no schema or executor changes. Their only visible change occurs on truncation: existing structural truncation markers, including `[Tool output was truncated.]`, remain intact; the result additionally gains an exact byte count, an artifact ref, and a concrete next call. The structural marker describes the inline truncation, while the separate artifact receipt describes recovery.
 

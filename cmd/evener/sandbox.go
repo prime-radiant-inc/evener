@@ -86,7 +86,7 @@ func provisionSandboxWithHost(env *execenv.LocalExecutionEnvironment, cfg *agent
 }
 
 // reconcileClearSandbox makes a cleared serve session's config agree with the
-// environment it reuses. serve's /clear starts a fresh session on the SAME env, so
+// environment it reuses. serve's thread/clear starts a fresh session on the SAME env, so
 // the cleared session inherits the env's ACTUAL sandbox — which on resume is the
 // persisted mode, not the launch flag. Setting the config's mode + network from the
 // env's resolved policy inputs keeps what the session persists identical to what its

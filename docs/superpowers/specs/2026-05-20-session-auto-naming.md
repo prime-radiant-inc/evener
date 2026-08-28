@@ -103,25 +103,31 @@ The flag should accept the same provider-qualified format as launch `model`, e.g
 
 Expected behavior:
 
-- If omitted, current provider default `CheapModel()` behavior remains unchanged.
+- If omitted, auxiliary calls use the active provider and model; automatic
+  naming remains disabled because no fast/cheap model was explicitly chosen.
 - If present and same provider as the active profile, use the specified model as the cheap model.
-- If present and provider-qualified for another provider, the cheap side call should use that provider if the existing client/profile architecture supports it.
-- If cross-provider cheap calls are not currently supported cleanly, initial implementation may validate that the provider matches the active session provider and return a clear launch/config error otherwise. Do not silently ignore the provider.
+- If present and provider-qualified for another registered provider, route the
+  auxiliary call to that provider. Reject an unavailable provider at launch;
+  never ignore the qualifier.
 
 ### Profile/API shape
 
 Preferred approach:
 
-- Add an override field to profile/session config so `profile.CheapModel()` returns the resolved `fast_cheap_model` model name.
-- Keep existing callers unchanged:
+- Store the explicit route in profile/session config. `ConfiguredCheapModel()`
+  exposes the enable-state model, while `CheapModelRef()` resolves the complete
+  provider/model pair.
+- Route completion-based callers through the shared auxiliary caller:
   - compaction
   - web fetch
   - checkpoint prediction
   - memory crystals
   - recursive distill
-  - session namer
+- Keep the session namer as the direct `GenerateObject` exception. Its explicit
+  configuration gate remains separate from completion routing.
 
-If provider switching for cheap calls requires broader architecture, represent the desired cheap model as a structured resolved model ref instead of squeezing provider into `CheapModel() string`.
+Provider switching requires preserving the qualified model ref so the provider
+and model cannot drift apart.
 
 ## Session metadata
 
@@ -168,16 +174,17 @@ Existing sessions display by `OriginalPrompt` until renamed by future compaction
 
 ### Shape
 
-The session namer is a single side LLM call:
+The session namer is a single structured-output side call:
 
 ```go
-resp, err := client.Complete(ctx, llm.Request{
-    Model: profile.CheapModel(),
-    Messages: []llm.Message{
-        llm.System(sessionNamingSystemPrompt),
-        llm.User(input),
-    },
-    MaxOutputTokens: 32,
+model := profile.ConfiguredCheapModel()
+res, err := llm.GenerateObject(ctx, llm.GenerateObjectOptions{
+    Client:   client,
+    Provider: profile.CheapProvider(),
+    Model:    model,
+    System:   new(sessionNamingSystemPrompt),
+    Prompt:   new(input),
+    Schema:   sessionNameSchema(),
 })
 ```
 
@@ -390,9 +397,9 @@ FTS should include a `name` column. Existing FTS index can be rebuilt. If schema
 
 Naming failure must be non-fatal.
 
-On any of these, keep fallback behavior and log advisory failure:
+If no fast/cheap model is configured, skip naming without logging a failure. For
+attempted naming, keep fallback behavior and log advisory failure on:
 
-- no fast cheap model available
 - model validation error
 - LLM call timeout
 - LLM provider error

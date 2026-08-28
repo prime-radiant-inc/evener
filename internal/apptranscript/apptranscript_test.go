@@ -12,6 +12,7 @@ import (
 	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/agent/transcript"
 	"primeradiant.com/evener/appwire"
+	"primeradiant.com/evener/envvars"
 	"primeradiant.com/evener/llm"
 )
 
@@ -319,7 +320,7 @@ func TestProjectTurnMapsToolCallsAndResults(t *testing.T) {
 			ToolCall: &llm.ToolCallData{
 				ID:        "call_read",
 				Name:      "read_file",
-				Arguments: []byte(`{"path":"README.md","purpose":"inspect docs"}`),
+				Arguments: []byte(`{"path":"README.md","intent":"inspect docs"}`),
 			},
 		}}},
 	}, toolNames, nil, nil)
@@ -344,6 +345,55 @@ func TestProjectTurnMapsToolCallsAndResults(t *testing.T) {
 	}
 	if string(done[0].Raw) != `{"job_id":"job_1"}` {
 		t.Fatalf("tool result Raw = %s, want tool_state", done[0].Raw)
+	}
+}
+
+// TestTurnsFromFileFallsBackToPurposeForPreRenameToolCalls (issue #709): the
+// purpose->intent tool-param rename (7512a736e, 2026-08-29) made
+// ToolIntentFromArguments read only "intent", so every transcript recorded
+// before that rename -- which persisted the model's stated reason under
+// "purpose" -- silently rendered its tool calls with no intent line on
+// reload. The data was never lost; only the reader stopped looking for it
+// under its old name. This fixture reproduces the exact pre-rename shape
+// (the argument bytes 7512a736e itself rewrote from "purpose" to "intent"
+// in this file's TestProjectTurnMapsToolCallsAndResults fixture above) and
+// drives it through the real transcript writer and TurnsFromFile, not a
+// hand-built stand-in for either.
+func TestTurnsFromFileFallsBackToPurposeForPreRenameToolCalls(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "session.transcript.jsonl")
+	w, err := transcript.NewWriter(path, transcript.Header{SessionID: "th_1"})
+	if err != nil {
+		t.Fatalf("NewWriter: %v", err)
+	}
+	if err := w.Append(schema.Turn{
+		Kind: schema.TurnAssistant,
+		Message: llm.Message{Content: []llm.ContentPart{{
+			Kind: llm.ContentToolCall,
+			ToolCall: &llm.ToolCallData{
+				ID:        "call_read",
+				Name:      "read_file",
+				Arguments: []byte(`{"path":"README.md","purpose":"inspect docs"}`),
+			},
+		}}},
+	}); err != nil {
+		t.Fatalf("Append: %v", err)
+	}
+	if err := w.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+
+	project := func(turn schema.Turn, turnID string, turnIndex int) []appwire.ThreadItem {
+		return ProjectTurn(turnID, turnIndex, turn, map[string]string{}, nil, nil)
+	}
+	turns, err := TurnsFromFile(path, 128<<20, project)
+	if err != nil {
+		t.Fatalf("TurnsFromFile: %v", err)
+	}
+	if len(turns) != 1 || len(turns[0].Items) != 1 {
+		t.Fatalf("turns=%+v, want 1 turn with 1 item", turns)
+	}
+	if got := turns[0].Items[0].Description; got != "inspect docs" {
+		t.Errorf("Description = %q, want %q (pre-rename purpose value)", got, "inspect docs")
 	}
 }
 
@@ -822,9 +872,9 @@ func TestToolIntentFromArguments(t *testing.T) {
 		want string
 	}{
 		{"intent", `{"intent":"do it"}`, "do it"},
-		{"purpose", `{"purpose":"inspect"}`, "inspect"},
-		{"description", `{"description":"read file"}`, "read file"},
-		{"intent priority", `{"intent":"a","purpose":"b"}`, "a"},
+		{"purpose ignored", `{"intent":"a","purpose":"b"}`, "a"},
+		{"purpose fallback (pre-rename transcripts, issue #709)", `{"purpose":"inspect"}`, "inspect"},
+		{"purpose non-string ignored", `{"purpose":123}`, ""},
 		{"non-string ignored", `{"intent":123}`, ""},
 		{"empty object", `{}`, ""},
 		{"invalid json", `not json`, ""},
@@ -944,7 +994,7 @@ func TestFirstNonEmpty(t *testing.T) {
 		{[]string{"  ", "x"}, "x"},
 	}
 	for _, tc := range tests {
-		got := firstNonEmpty(tc.values...)
+		got := envvars.FirstNonEmpty(tc.values...)
 		if got != tc.want {
 			t.Errorf("firstNonEmpty(%v) = %q, want %q", tc.values, got, tc.want)
 		}

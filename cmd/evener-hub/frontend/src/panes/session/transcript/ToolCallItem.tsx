@@ -4,18 +4,30 @@
 // (toolRenderers.ts) by ItemModel.toolName, which pairs a raw-output default
 // descriptor (toolRenderers.ts's DEFAULT_DESCRIPTOR) with the real per-tool
 // descriptors registered under tools/.
-import { memo, useLayoutEffect, useState } from "react";
-import type { ItemModel } from "../../../protocol/model";
+import { memo, useId, useLayoutEffect, useState } from "react";
+import type { ItemModel, ThreadModel } from "../../../protocol/model";
 import { stableDelegateDisplayStatus } from "../../../protocol/stableDelegate";
 import type { EvenerDelegateInfo } from "../../../protocol/types.gen";
 import { useThreadsStore } from "../../../stores/threads";
+import {
+  disclosureScopeForSession,
+  expandDetailsByDefault,
+  summaryOpenByDefault,
+  type TranscriptRenderContextValue,
+  useTranscriptRenderContext,
+} from "../../../transcriptDisplay/renderContext";
 import { type CadenceState, StatusDot } from "../../../widgets";
-import { isDisclosureOpen, toggleDisclosure } from "../../../widgets/disclosure/disclosureStore";
+import {
+  disclosureDefault,
+  isDisclosureOpen,
+  scopedDisclosureId,
+  toggleDisclosure,
+} from "../../../widgets/disclosure/disclosureStore";
 import { requireClass } from "../../../widgets/internal/requireClass";
 import { FileOpenBesideButton, fileDocParams } from "./fileOpenBeside";
 import { ImageGallery } from "./flow/ImageGallery";
 import { OpenTranscriptButton } from "./openTranscript";
-import { statedPurposeOf, ToolRow } from "./ToolRow";
+import { statedIntentOf, ToolRow } from "./ToolRow";
 import styles from "./toolcallitem.module.css";
 import { toolCallFailed, toolRendererFor } from "./toolRenderers";
 import { supersededBySuccess } from "./toolSupersession";
@@ -24,7 +36,6 @@ import { rowFromDelegateItem } from "./tools/subagentModule";
 import {
   classifyJobStatus,
   effectiveRowKind,
-  itemScopeKey,
   removeSubagentRow,
   rowKeyForDelegateItem,
   type SubagentRow,
@@ -50,19 +61,21 @@ const DELEGATE_INDICATOR_STATE: Record<DelegateStatusKey, CadenceState> = {
   unknown: "needs-you",
 };
 
-const DELEGATE_PURPOSE_PREVIEW_MAX = 120;
+const DELEGATE_INTENT_PREVIEW_MAX = 120;
 
-function clipDelegatePurpose(text: string, max: number): string {
+function clipDelegateIntent(text: string, max: number): string {
   const codePoints = Array.from(text);
   return codePoints.length <= max ? text : `${codePoints.slice(0, max).join("")}…`;
 }
 
-function delegatePurposeOf(item: ItemModel): string | undefined {
-  const statedPurpose = statedPurposeOf(item);
-  if (statedPurpose !== undefined) return statedPurpose;
+function delegateIntentOf(item: ItemModel): string | undefined {
+  const statedIntent = statedIntentOf(item);
+  if (statedIntent !== undefined) return statedIntent;
 
-  const task = str(parseArgs(item.argumentsJSON), "task")?.replace(/\s+/g, " ").trim();
-  return task === undefined || task === "" ? undefined : clipDelegatePurpose(task, DELEGATE_PURPOSE_PREVIEW_MAX);
+  const args = parseArgs(item.argumentsJSON);
+  // Transcripts recorded before the rename carry the brief under `task`.
+  const brief = (str(args, "prompt") ?? str(args, "task"))?.replace(/\s+/g, " ").trim();
+  return brief === undefined || brief === "" ? undefined : clipDelegateIntent(brief, DELEGATE_INTENT_PREVIEW_MAX);
 }
 
 // Both status readers take the delegate call's ALREADY-PARSED output envelope
@@ -92,7 +105,15 @@ function delegateStatusForOutput(
 // toolRenderers.ts's ToolRenderProps), so a fresh turn object on every
 // streaming delta targeting a DIFFERENT item must not re-render an
 // already-settled tool call.
-export const ToolCallItem = memo(function ToolCallItem({ item, live, sessionRef }: ItemRenderProps) {
+interface ToolCallItemBodyProps extends ItemRenderProps {
+  renderContext: TranscriptRenderContextValue;
+  thread?: ThreadModel;
+}
+
+function ToolCallItemBody({ item, live, sessionRef, projectedSummary, renderContext, thread }: ToolCallItemBodyProps) {
+  const context = renderContext;
+  const { config } = context;
+  const disclosureScope = disclosureScopeForSession(context, sessionRef);
   const descriptor = toolRendererFor(item.toolName ?? "");
   const Body = descriptor.body;
   const isDelegate = item.toolName === "delegate";
@@ -102,10 +123,9 @@ export const ToolCallItem = memo(function ToolCallItem({ item, live, sessionRef 
     isDelegate ? turnScopeKey(sessionRef, item.turnId) : "",
     isDelegate ? rowKeyForDelegateItem(item) : "",
   );
-  const stableDelegate = useThreadsStore((s) => {
-    if (sessionRef === undefined || stableDelegateId === undefined) return undefined;
-    const owner = s.threads.get(sessionRef) ?? s.watchedThreads.get(sessionRef);
-    return owner?.delegates?.find((delegate) => delegate.delegateId === stableDelegateId);
+  const stableDelegate = thread?.delegates?.find((delegate) => {
+    if (sessionRef === undefined || stableDelegateId === undefined) return false;
+    return delegate.delegateId === stableDelegateId;
   });
   const delegateKind = delegateStatusForOutput(delegateOutput, delegateRow, stableDelegate, live);
   const delegateStatus = isDelegate ? <StatusDot state={DELEGATE_INDICATOR_STATE[delegateKind]} /> : undefined;
@@ -136,14 +156,14 @@ export const ToolCallItem = memo(function ToolCallItem({ item, live, sessionRef 
   // the open-beside presence check just below, and summary()'s
   // ToolSummaryContext further down, which shell's own descriptor uses to
   // strip a redundant "cd <cwd> && " prefix from its summary.
-  const cwd = useThreadsStore((s) => (sessionRef !== undefined ? s.threads.get(sessionRef)?.cwd : undefined));
+  const cwd = thread?.cwd;
   const canOpenBeside = fileDocParams(openBesidePath, sessionRef, cwd) !== undefined;
   // The openBesidePath re-check is what fileDocParams already required to
   // return a value; stating it here narrows the type instead of asserting it,
   // so the button's absPath needs no cast.
   const openBesideButton =
     canOpenBeside && openBesidePath !== undefined && sessionRef !== undefined ? (
-      <FileOpenBesideButton absPath={openBesidePath} sessionRef={sessionRef} />
+      <FileOpenBesideButton absPath={openBesidePath} sessionRef={sessionRef} cwd={cwd} />
     ) : null;
   // read_file (openBesideInline) quotes its path verbatim inside the summary,
   // so the control rides INLINE between the file name and the line range
@@ -191,14 +211,19 @@ export const ToolCallItem = memo(function ToolCallItem({ item, live, sessionRef 
   // settled, already-collapsed row's summary updates the moment that later
   // reply lands, even though this memoized component would otherwise bail
   // on unchanged item/live/sessionRef props.
-  const summarySuffix = useThreadsStore((s) =>
-    descriptor.summarySuffix?.(item, sessionRef !== undefined ? s.threads.get(sessionRef) : undefined),
-  );
+  const summarySuffix = descriptor.summarySuffix?.(item, thread);
   // cwd (subscribed once above) is threaded into summary() as
   // ToolSummaryContext so shell's own descriptor can strip a redundant
   // "cd <cwd> && " prefix from its summary.
-  const summary = descriptor.summary(item, { cwd }) + (summarySuffix ?? "");
-  const purpose = isDelegate ? delegatePurposeOf(item) : item.description;
+  const statedIntent = statedIntentOf(item);
+  const useProjectedSummary = projectedSummary !== undefined && statedIntent === undefined;
+  const summary = useProjectedSummary ? projectedSummary : descriptor.summary(item, { cwd }) + (summarySuffix ?? "");
+  let intent = item.description;
+  if (isDelegate) {
+    intent = delegateIntentOf(item);
+  } else if (projectedSummary !== undefined && statedIntent !== undefined) {
+    intent = projectedSummary;
+  }
   // kata xw3t: the URL, if any, embedded in this row's own summary text -
   // web_fetch's only descriptor with one today. Read directly off the item
   // (not the thread model): unlike summarySuffix, nothing about which URL a
@@ -247,11 +272,37 @@ export const ToolCallItem = memo(function ToolCallItem({ item, live, sessionRef 
   // landed still collapses the moment it does - autoDefault itself is only
   // ever a fallback, so recomputing what it feeds into here never re-fights
   // an explicit reader toggle (disclosureStore's own contract).
-  const superseded = useThreadsStore((s) =>
-    supersededBySuccess(item, sessionRef !== undefined ? s.threads.get(sessionRef) : undefined),
-  );
-  const disclosureKey = itemScopeKey(sessionRef, item.id);
-  const expanded = isDisclosureOpen(disclosureKey, autoDefault && !superseded);
+  const superseded = supersededBySuccess(item, thread);
+  const disclosureKey = scopedDisclosureId(disclosureScope, item.id);
+  const bodyId = useId();
+  const configDefault = expandDetailsByDefault(config) || disclosureDefault(disclosureScope, item.id, false);
+  const disclosureFallback = configDefault || (autoDefault && !superseded);
+  const expanded = isDisclosureOpen(disclosureKey, disclosureFallback);
+
+  // Two-level disclosure: the summary line has its own open/closed state,
+  // independent of the body disclosure. At verbosity levels where toolCalls is
+  // true (tools/activity/full) the summary defaults open; at chat/intent it
+  // defaults closed, showing only the intent. An intent-less row has no
+  // separate intent line to toggle, so its summary is forced open regardless
+  // of the config default. An explicit user choice (open or close) persists
+  // across verbosity level changes — the default only applies when there is
+  // no explicit choice.
+  const summaryDisclosureKey = scopedDisclosureId(disclosureScope, `summary:${item.id}`);
+  const summaryConfigDefault = summaryOpenByDefault(config);
+  const summaryDisclosureOpen = isDisclosureOpen(summaryDisclosureKey, summaryConfigDefault);
+  const summaryOpen = statedIntent === undefined ? true : summaryDisclosureOpen;
+  // A descriptor whose summary duplicates its expanded body (shell: the raw
+  // command vs the body's pretty-printed block) hides the summary while the
+  // body is open — the body is the single representation. ToolRow's own
+  // summaryHidden prop drives this; the summary disclosure key stays untouched
+  // so re-collapsing the body restores the summary to its prior state.
+  const summaryHidden = expanded && (descriptor.summaryHiddenWhenExpanded ?? false);
+
+  // ToolRow gates the summary on summaryHidden only in two-level mode
+  // (intent-bearing rows with onToggleSummary). For intent-less rows the
+  // summary prop itself must carry the gate: an empty string makes
+  // hasSummary false, so the summary line does not render at all.
+  const summaryVisible = summaryOpen && !summaryHidden;
 
   // A descriptor may suppress its whole row (task_list `action:"view"` and
   // malformed non-mutations - the legacy "no card, no divider, no tool-call
@@ -261,15 +312,15 @@ export const ToolCallItem = memo(function ToolCallItem({ item, live, sessionRef 
   if (descriptor.suppress?.(item)) return null;
 
   // A failed row is never a bare summary line even with no body/images: the
-  // reader must be able to open it and read the error, so it is always a
-  // <details>.
+  // reader must be able to open it and read the error, so it is always an
+  // expandable disclosure.
   if (!Body && !hasOutputImages && !failed) {
     return (
       <div className={CLASS.call} data-testid="tool-call-item" data-tool-name={item.toolName ?? ""}>
         <ToolRow
           summary={isDelegate ? "" : summary}
           summaryLink={summaryLink}
-          purpose={purpose}
+          intent={intent}
           icon={descriptor.icon}
           monoSummary={descriptor.monoSummary}
           failed={false}
@@ -285,7 +336,15 @@ export const ToolCallItem = memo(function ToolCallItem({ item, live, sessionRef 
   }
 
   return (
-    <details
+    // A <div>, not a native <details>: ToolRow's expandable branch is a real
+    // button with aria-expanded, and the body below is a sibling div rendered
+    // conditionally on `expanded`. The native <details>/<summary> pair was
+    // replaced to stop Chrome's a11y console flagging the interactive elements
+    // (linkified summary, "Open beside" / "Open transcript" buttons) that
+    // previously rode inline inside the disclosure trigger. Open/closed state
+    // is fully controlled from disclosureStore, so a plain div wrapper is all
+    // the structure that remains.
+    <div
       className={CLASS.call}
       data-testid="tool-call-item"
       data-tool-name={item.toolName ?? ""}
@@ -295,16 +354,19 @@ export const ToolCallItem = memo(function ToolCallItem({ item, live, sessionRef 
       // recedes (success is glyph-less).
       data-failed={failed ? "true" : undefined}
       data-attention={failed ? "error" : undefined}
-      open={expanded}
     >
       <ToolRow
         // A descriptor whose summary duplicates what its expanded body shows
         // (shell: the raw one-line command vs the body's pretty-printed
         // block) drops the summary line while open - the body is the single
         // representation. Collapsed, the summary stays: it is the only glance.
-        summary={isDelegate || (expanded && descriptor.summaryHiddenWhenExpanded) ? "" : summary}
+        // summaryVisible gates the summary for both intent-less rows (where
+        // ToolRow's summaryHidden has no effect, since two-level mode is
+        // intent-bearing only) and intent-bearing rows (where ToolRow also
+        // applies its own summaryHidden gate).
+        summary={isDelegate || !summaryVisible ? "" : summary}
         summaryLink={summaryLink}
-        purpose={purpose}
+        intent={intent}
         icon={descriptor.icon}
         monoSummary={descriptor.monoSummary}
         failed={failed}
@@ -314,17 +376,21 @@ export const ToolCallItem = memo(function ToolCallItem({ item, live, sessionRef 
         // toggleDisclosure writes an explicit store entry against this
         // session-scoped item key, so the user's own choice wins over
         // autoDefault (the fallback) from here on and survives a remount.
-        onToggle={() => toggleDisclosure(disclosureKey, autoDefault && !superseded)}
+        onToggle={() => toggleDisclosure(disclosureKey, disclosureFallback)}
+        summaryOpen={summaryOpen}
+        onToggleSummary={() => toggleDisclosure(summaryDisclosureKey, summaryConfigDefault)}
+        summaryHidden={summaryHidden}
         trailing={trailingControls}
         trailingAfter={trailingAfter}
         title={detail}
+        bodyId={bodyId}
       />
       {/* The expanded content is one wrapper, so the open transition (A6) and
           the row-to-body spacing live in one rule rather than per-descriptor.
           Rendered only when open: an unmounted body can animate in on the next
           open, and a collapsed row costs nothing to render. */}
       {expanded && (
-        <div className={CLASS.body} data-testid="tool-call-body">
+        <div id={bodyId} className={CLASS.body} data-testid="tool-call-body">
           {/* descriptor.detail() (currently only shell's exit code) rides the
               collapsed row's hover title ONLY (see `title={detail}` above) - it
               is not echoed here as a second copy. A title alone is mouse-only,
@@ -336,12 +402,28 @@ export const ToolCallItem = memo(function ToolCallItem({ item, live, sessionRef 
               below. Echoing detail() here too duplicated that fact on screen
               (kata wksf) instead of adding a second way to reach it. */}
           {hasErrorText && <div className={CLASS.error}>{item.error}</div>}
-          {Body && <Body item={item} live={live} sessionRef={sessionRef} />}
+          {Body && <Body item={item} live={live} sessionRef={sessionRef} cwd={cwd} />}
           <ImageGallery images={item.outputImages} size={descriptor.outputImageSize} />
         </div>
       )}
-    </details>
+    </div>
   );
+}
+
+function ProviderToolCallItem(props: ItemRenderProps) {
+  const context = props.renderContext;
+  if (context === undefined) throw new Error("provider-backed ToolCallItem requires render context");
+  return <ToolCallItemBody {...props} renderContext={context} thread={props.thread} />;
+}
+
+function LegacyToolCallItem(props: ItemRenderProps) {
+  const context = useTranscriptRenderContext();
+  const thread = useThreadsStore((state) => state.threads.get(props.sessionRef ?? ""));
+  return <ToolCallItemBody {...props} renderContext={context} thread={thread} />;
+}
+
+export const ToolCallItem = memo(function ToolCallItem(props: ItemRenderProps) {
+  return props.renderContext === undefined ? <LegacyToolCallItem {...props} /> : <ProviderToolCallItem {...props} />;
 }, ignoringTurn);
 
 registerItemRenderer("commandExecution", ToolCallItem);

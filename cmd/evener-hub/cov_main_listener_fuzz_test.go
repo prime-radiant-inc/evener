@@ -158,6 +158,7 @@ func FuzzRunMainEarlyBootstrap(f *testing.F) {
 		cfg.HubStateRoot = root
 		released := false
 		deps := mainDeps{
+			loadRegistry: hermeticRegistryLoader,
 			loadConfig: func(string) (Config, error) {
 				if mode == 1 {
 					return Config{}, stop

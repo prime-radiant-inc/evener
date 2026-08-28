@@ -13,6 +13,7 @@ import (
 	"primeradiant.com/evener/appwire"
 	"primeradiant.com/evener/hubapi"
 	"primeradiant.com/evener/identifier"
+	"primeradiant.com/evener/rendezvous"
 )
 
 func TestBuildTreeCanonicalProjectAggregation(t *testing.T) {
@@ -50,6 +51,86 @@ func TestBuildTreeCanonicalProjectAggregation(t *testing.T) {
 		if project.WorkingDir == main && len(allSessions(project)) != 3 {
 			t.Fatalf("shared project sessions=%d, want 3: %+v", len(allSessions(project)), project)
 		}
+	}
+}
+
+func TestBuildTreeClearReplacementUsesStableWorkspaceRef(t *testing.T) {
+	now := time.Date(2026, 8, 28, 12, 0, 0, 0, time.UTC)
+	metas := []schema.SessionMeta{{
+		ID:             "old-instance",
+		CreatedAt:      now,
+		UpdatedAt:      now,
+		OriginalPrompt: "old prompt",
+		EnvInfo:        schema.EnvironmentInfo{WorkingDir: "/workspace"},
+	}}
+	live := []LiveEntry{{
+		Entry: rendezvous.Entry{
+			SourceID:     "local",
+			SessionID:    "new-instance",
+			WorkspaceRef: "local:old-instance",
+			WorkingDir:   "/workspace",
+		},
+		SessionID: "new-instance",
+		Status:    appwire.ThreadStatusIdle,
+	}}
+	projects := map[string]identifier.Project{
+		"/workspace": {ID: "project", CanonicalPath: "/workspace"},
+	}
+
+	tree := BuildTreeAtWithProjects(metas, live, nil, now, projects)
+	if len(tree.Live) != 1 || tree.Live[0].ID != "new-instance" || tree.Live[0].Ref != "local:old-instance" {
+		t.Fatalf("live replacement = %#v, want new instance with stable ref", tree.Live)
+	}
+	if len(tree.Projects) != 1 {
+		t.Fatalf("projects = %#v, want one project", tree.Projects)
+	}
+	sessions := allSessions(tree.Projects[0])
+	if len(sessions) != 1 || sessions[0].ID != "new-instance" || sessions[0].Ref != "local:old-instance" {
+		t.Fatalf("project replacement = %#v, want only new instance with stable ref", sessions)
+	}
+	if sessions[0].Title == "old prompt" {
+		t.Fatalf("project replacement inherited retired title: %#v", sessions[0])
+	}
+
+	tree = BuildTreeAtWithProjects(metas, live, nil, now, nil)
+	if len(tree.Projects) != 1 {
+		t.Fatalf("unresolved replacement projects = %#v, want the live replacement to retain its project row", tree.Projects)
+	}
+	sessions = allSessions(tree.Projects[0])
+	if len(sessions) != 1 || sessions[0].ID != "new-instance" {
+		t.Fatalf("unresolved project replacement = %#v, want only new instance", sessions)
+	}
+}
+
+func TestBuildTreeDoesNotUseCrossSourceWorkspaceRef(t *testing.T) {
+	now := time.Date(2026, 8, 28, 12, 0, 0, 0, time.UTC)
+	metas := []schema.SessionMeta{{
+		ID:        "old-instance",
+		CreatedAt: now,
+		UpdatedAt: now,
+		EnvInfo:   schema.EnvironmentInfo{WorkingDir: "/workspace"},
+	}}
+	live := []LiveEntry{{
+		Entry: rendezvous.Entry{
+			SourceID:     "local",
+			SessionID:    "new-instance",
+			WorkspaceRef: "other:old-instance",
+			WorkingDir:   "/workspace",
+		},
+		SessionID: "new-instance",
+		Status:    appwire.ThreadStatusIdle,
+	}}
+	projects := map[string]identifier.Project{
+		"/workspace": {ID: "project", CanonicalPath: "/workspace"},
+	}
+
+	tree := BuildTreeAtWithProjects(metas, live, nil, now, projects)
+	if len(tree.Live) != 1 || tree.Live[0].Ref != "" {
+		t.Fatalf("cross-source live ref = %#v, want the instance ID fallback", tree.Live)
+	}
+	sessions := allSessions(tree.Projects[0])
+	if len(sessions) != 2 {
+		t.Fatalf("cross-source metadata = %#v, want both independent sessions", sessions)
 	}
 }
 
@@ -142,9 +223,22 @@ func fuzzScenarioBuildTree_GroupsByProjectWithSubagentsAndForks(t *testing.T) {
 		t.Errorf("01OTHER should have no children, got %d", len(sessions[1].Children))
 	}
 
-	// Live: 2 entries, both active.
-	if len(tree.Live) != 2 {
+	// Live: 1 top-level row (01ACTIVE). 01SUB1 is a live subagent of 01ACTIVE,
+	// so it nests under it in the Live tier — the same foldout structure the
+	// Projects tier uses — rather than appearing as a flat, parentless row.
+	// 01OLDORIG is not live, so it is absent from the Live tier entirely.
+	if len(tree.Live) != 1 {
 		t.Fatalf("live: %d", len(tree.Live))
+	}
+	if tree.Live[0].ID != "01ACTIVE" {
+		t.Fatalf("live[0]: %q, want 01ACTIVE", tree.Live[0].ID)
+	}
+	liveChildren := tree.Live[0].Children
+	if len(liveChildren) != 1 || liveChildren[0].ID != "01SUB1" || liveChildren[0].Kind != "subagent" {
+		t.Fatalf("live[0] children = %#v, want one subagent child 01SUB1", liveChildren)
+	}
+	if liveChildren[0].State != "active" {
+		t.Errorf("live subagent state = %q, want active", liveChildren[0].State)
 	}
 
 	// Rollup state for the project: active (the most-attention live state).
@@ -178,11 +272,14 @@ func fuzzScenarioBuildTree_ProjectsRunningSubagentOnChild(t *testing.T) {
 	if sessions[0].State != "idle" {
 		t.Fatalf("parent state = %q, want idle", sessions[0].State)
 	}
-	if sessions[0].Children[0].State != "active" {
-		t.Fatalf("child state = %q, want active", sessions[0].Children[0].State)
+	// The child is listed (in-process, resumable) but the daemon carried no
+	// state for it. Liveness is not activity: an old daemon or a settled
+	// delegate with no carried state folds to idle, not active.
+	if sessions[0].Children[0].State != "idle" {
+		t.Fatalf("child state = %q, want idle (liveness is not activity)", sessions[0].Children[0].State)
 	}
-	if project.RollupState != "active" || project.RollupLive != 1 || !project.Expanded {
-		t.Fatalf("project rollup = state %q live %d expanded %v, want active/1/true", project.RollupState, project.RollupLive, project.Expanded)
+	if project.RollupState != "idle" || project.RollupLive != 0 || project.Expanded {
+		t.Fatalf("project rollup = state %q live %d expanded %v, want idle/0/false", project.RollupState, project.RollupLive, project.Expanded)
 	}
 
 	tree = BuildTreeAt(metas, []LiveEntry{{PID: 1, SessionID: "01PARENT", Status: appwire.ThreadStatusIdle}}, nil, now)
@@ -198,7 +295,10 @@ func fuzzScenarioBuildTree_ProjectsRunningSubagentOnChild(t *testing.T) {
 // carries the descendant's own projected status (RunningSubagentStates), the
 // tree must render THAT state — an idle delegate folds into the rail's
 // inactive list — instead of blanket "active". An ID with no carried state
-// (old daemon, legacy job discovery) keeps the active fallback.
+// (old daemon, legacy job discovery) must NOT read as active: liveness
+// alone is not activity, and a settled-but-resumable delegate that the
+// daemon failed to carry a state for would otherwise sit in the current
+// list forever, inflating the working count.
 func fuzzScenarioBuildTree_RunningSubagentUsesCarriedState(t *testing.T) {
 	now := time.Date(2026, 7, 13, 20, 0, 0, 0, time.UTC)
 	metas := []schema.SessionMeta{
@@ -234,11 +334,11 @@ func fuzzScenarioBuildTree_RunningSubagentUsesCarriedState(t *testing.T) {
 	if states["01BUSY"] != "active" {
 		t.Errorf("active-carried child state = %q, want active", states["01BUSY"])
 	}
-	if states["01NOSTATE"] != "active" {
-		t.Errorf("no-state child state = %q, want active (old-daemon fallback)", states["01NOSTATE"])
+	if states["01NOSTATE"] != "idle" {
+		t.Errorf("no-state child state = %q, want idle (liveness is not activity)", states["01NOSTATE"])
 	}
-	// One genuinely working child keeps the project live; the idle one must
-	// not inflate the working count.
+	// One genuinely working child keeps the project live; the idle and
+	// no-state ones must not inflate the working count.
 	if project.RollupState != "active" || project.RollupLive != 1 {
 		t.Errorf("project rollup = state %q live %d, want active/1", project.RollupState, project.RollupLive)
 	}
@@ -288,8 +388,8 @@ func fuzzScenarioBuildTree_TruncatesLongOriginalPromptTitles(t *testing.T) {
 		t.Fatalf("unexpected tree shape: %#v", tree)
 	}
 	got := allSessions(tree.Projects[0])[0].Title
-	if want := strings.Repeat("é", 200) + "…"; got != want {
-		t.Fatalf("title = %d runes (%.30q...), want 200 runes + ellipsis", len([]rune(got)), got)
+	if want := strings.Repeat("é", 199) + "…"; got != want {
+		t.Fatalf("title = %d runes (%.30q...), want 200 runes including ellipsis", len([]rune(got)), got)
 	}
 }
 
@@ -302,7 +402,7 @@ func fuzzScenarioBuildTree_TruncatesLongForkBaseTitleKeepingLabel(t *testing.T) 
 		UpdatedAt:      time.Now(),
 	}}, nil)
 	got := allSessions(tree.Projects[0])[0].Title
-	if want := strings.Repeat("x", 200) + "… · before TDD"; got != want {
+	if want := strings.Repeat("x", 199) + "… · before TDD"; got != want {
 		t.Fatalf("fork title = %q, want truncated base plus label", got)
 	}
 }
@@ -841,6 +941,33 @@ func fuzzScenarioBuildTree_ClustersRepeatedIdleTitles(t *testing.T) {
 	}
 	if singles != 1 {
 		t.Errorf("singleton sessions = %d, want 1 (the haiku)", singles)
+	}
+}
+
+func TestBuildTreeDoesNotClusterSessionWithJobs(t *testing.T) {
+	now := time.Now()
+	metas := make([]schema.SessionMeta, 0, 4)
+	for i := range 4 {
+		metas = append(metas, schema.SessionMeta{
+			ID:        "01JOB" + string(rune('A'+i)),
+			Name:      "repeatable work",
+			UpdatedAt: now.Add(-time.Duration(i) * time.Hour),
+			EnvInfo:   schema.EnvironmentInfo{WorkingDir: "/projects/evener-jobs"},
+		})
+	}
+	tree := buildTree(metas, []LiveEntry{{
+		PID: 1, SessionID: metas[0].ID, Status: appwire.ThreadStatusIdle,
+		RunningJobs: []appwire.EvenerJobInfo{{JobID: "job-running", JobType: "shell", Status: "running"}},
+	}})
+	project := projectByName(t, tree, "evener-jobs")
+	sessions := allSessions(project)
+	if len(sessions) != 4 {
+		t.Fatalf("sessions = %d, want four unclustered rows", len(sessions))
+	}
+	for _, session := range sessions {
+		if session.Kind == "cluster" {
+			t.Fatalf("session with active job was hidden in cluster %q", session.Title)
+		}
 	}
 }
 
@@ -1792,6 +1919,32 @@ func TestTreeProjectPageReturnsCappedAwayTierRows(t *testing.T) {
 	}
 	if page[0].ID == project.Current[0].ID {
 		t.Fatalf("page repeated a retained row %q", page[0].ID)
+	}
+	rows, ok := project.TierRows("current")
+	if !ok || len(rows) != 60 {
+		t.Fatalf("authoritative rows = %d, ok=%v, want 60, true", len(rows), ok)
+	}
+	if rows[50].ID != page[0].ID {
+		t.Fatalf("tier rows lost page order: rows[50]=%q page[0]=%q", rows[50].ID, page[0].ID)
+	}
+}
+
+func TestTreeSnapshotClonesAuthoritativeTierRows(t *testing.T) {
+	now := time.Unix(1_700_000_000, 0)
+	metas := make([]schema.SessionMeta, 0, 60)
+	for index := range 60 {
+		metas = append(metas, schema.SessionMeta{ID: fmt.Sprintf("01SNAP%02d", index), CreatedAt: now, UpdatedAt: now, EnvInfo: schema.EnvironmentInfo{WorkingDir: "/w/snapshot"}})
+	}
+	tree := BuildTreeAt(metas, nil, map[ArchiveKey]bool{}, now)
+	snapshot := tree.Snapshot()
+	original, _ := tree.Projects[0].TierRows("current")
+	cloned, _ := snapshot.Projects[0].TierRows("current")
+	if len(original) != 60 || len(cloned) != 60 {
+		t.Fatalf("authoritative rows original=%d snapshot=%d", len(original), len(cloned))
+	}
+	original[55].Title = "mutated"
+	if cloned[55].Title == "mutated" {
+		t.Fatal("snapshot authoritative tier aliases original")
 	}
 }
 

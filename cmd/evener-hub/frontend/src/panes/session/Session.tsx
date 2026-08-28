@@ -21,42 +21,27 @@
 // 76rem measure so the input aligns with the transcript's own content
 // column; SessionChrome now lives in the composer's own PromptCard control row.
 import { useEffect, useMemo, useRef, useState } from "react";
+import { useStore } from "zustand";
 import type { ThreadModel } from "../../protocol/model";
 import type { PaneProps } from "../../shell/paneRegistry";
 import { navigate, paneToURL } from "../../shell/routing";
 import { workspaceStore } from "../../shell/workspace";
 import { connectionStore } from "../../stores/connection";
+import { useNavigationStore } from "../../stores/navigation/store";
 import { threadsStore, useThreadsStore } from "../../stores/threads";
-import { useTreeStore } from "../../stores/tree";
-import {
-  Button,
-  Cadence,
-  EmptyState,
-  PaneScaffold,
-  RadioGroup,
-  VirtualList,
-  type VirtualListHandle,
-} from "../../widgets";
-import { modelLabel } from "./chrome/statusFormat";
+import { transcriptDisplayStore } from "../../stores/transcriptDisplay";
+import { configFingerprint, resolveEffectiveConfig } from "../../transcriptDisplay/config";
+import { projectThread } from "../../transcriptDisplay/projector";
+import { Button, Cadence, EmptyState, PaneScaffold, type VirtualListHandle } from "../../widgets";
+import { VisuallyHidden } from "../../widgets/internal/VisuallyHidden";
 import { ColdStartSkeleton, useColdStartSkeleton } from "./coldStart";
+import { AskDock, AskDockAnnouncements, useAskDockActivationEpoch, useAskDockPending } from "./composer/askDock";
 import { Composer } from "./composer/Composer";
 import { requestQuoteInsert } from "./composer/quoteInsert";
 import { cadenceStateForStatus, NOW_TICK_MS, SessionNowContext, useNowTick } from "./liveness";
 import { PendingChips } from "./pending/PendingChips";
-import { resolveThreadName } from "./threadTitle";
-import { exchangeOpenersFor } from "./transcript/exchangeOpeners";
-import { isItemLive, TurnBlock } from "./transcript/TurnBlock";
-import { isDormantTranscript } from "./transcript/transcriptVisibility";
-import { itemRendererFor } from "./transcript/types";
-import { useTranscript } from "./transcript/useTranscript";
-// Side-effect barrels: registering every message item renderer (T2) and
-// every tool descriptor (T3) the moment the pane module loads, so the
-// registries are full regardless of import order elsewhere (same
-// principle as TurnBlock.tsx's own ToolCallItem import).
-import "./transcript/messages";
-import "./transcript/tools";
 import styles from "./session.module.css";
-import { FlowOverlay } from "./transcript/flow/FlowOverlay";
+import { navigationSummaryFor, resolveThreadName } from "./threadTitle";
 import { LivenessLine } from "./transcript/flow/LivenessLine";
 import { LoadOlderRow } from "./transcript/flow/LoadOlderRow";
 import { NewContentPill } from "./transcript/flow/NewContentPill";
@@ -64,8 +49,15 @@ import { useSeenDivider } from "./transcript/flow/useSeenDivider";
 import { useTranscriptScroll } from "./transcript/flow/useTranscriptScroll";
 import { SelectionQuote } from "./transcript/SelectionQuote";
 import { formatQuoteBlock } from "./transcript/selectionQuoteLogic";
+import {
+  TranscriptBody,
+  transcriptAnchorEntriesForRows,
+  transcriptRowsForProjection,
+  transcriptSourceTurnRowIndexesForRows,
+} from "./transcript/TranscriptBody";
 import { SandboxEscalationRail } from "./transcript/tools/sandboxEscalation";
-import { type FocusedEntry, focusedEntries, SESSION_VIEW_MODES, type SessionViewMode } from "./viewModes";
+import { isDormantTranscript } from "./transcript/transcriptVisibility";
+import { useTranscript } from "./transcript/useTranscript";
 
 export interface SessionPaneParams {
   ref: string;
@@ -100,31 +92,6 @@ function EmptyTranscript({ active }: { active: boolean }) {
   return <EmptyState title="Send the first message" hint="This session hasn't started yet." />;
 }
 
-// A reasonable average-turn guess for VirtualList's `dynamic` mode to
-// correct post-mount from each turn's real rendered height (turns vary
-// wildly: a one-line tool call vs. a long streamed response) - see
-// widgets/virtuallist's own `dynamic` prop doc comment.
-const ESTIMATED_TURN_HEIGHT = 96;
-
-type ViewRow =
-  | {
-      id: string;
-      turnId: string;
-      sourceIndex: number;
-      visible: true;
-    }
-  | {
-      id: string;
-      turnId: string;
-      sourceIndex: number;
-      visible: boolean;
-      entries: FocusedEntry[];
-    };
-
-function normalizeViewMode(value: string): SessionViewMode {
-  return SESSION_VIEW_MODES.some((mode) => mode.value === value) ? (value as SessionViewMode) : "everything";
-}
-
 // Failure-feedback convention: a USER-INITIATED action that fails surfaces via
 // the useToasts() singleton, kind "error" - no new banner systems, no silent
 // `.catch(() => {})`. Every stream's failure handling (composer
@@ -134,7 +101,6 @@ function normalizeViewMode(value: string): SessionViewMode {
 // of the transcript instead (useTranscript's olderError -> LoadOlderRow).
 export default function Session({ params, paneId, focused: paneFocused }: PaneProps<SessionPaneParams>) {
   const { ref } = params;
-  const [viewMode, setViewMode] = useState<SessionViewMode>("everything");
 
   // One ensureThread(ref) claim on mount, one matching releaseThread(ref) on
   // unmount. AppShell mounts DockHost (and therefore this pane)
@@ -201,73 +167,31 @@ export default function Session({ params, paneId, focused: paneFocused }: PanePr
   // lets this pane render an honest terminal state instead of "Loading
   // transcript…" forever.
   const deletedRef = useThreadsStore((s) => !model && s.deletedRefs.has(ref));
+  const navigation = useNavigationStore();
 
   const frameTimes = useThreadsStore((s) => s.frameTimes.get(ref) ?? EMPTY_FRAME_TIMES);
   const now = useNowTick(NOW_TICK_MS);
-  const openers = useMemo(() => (model ? exchangeOpenersFor(model.turns) : undefined), [model]);
-  const agentLabel = model ? modelLabel(model.modelProvider, model.model) : undefined;
-  const focused = useMemo(() => (model && viewMode === "intent" ? focusedEntries(model.turns) : []), [model, viewMode]);
-  const itemSourceIndexes = useMemo(() => {
-    const indexes = new Map<string, number>();
-    let sourceIndex = 0;
-    for (const turn of model?.turns ?? []) {
-      for (const item of turn.items) {
-        indexes.set(item.id, sourceIndex);
-        sourceIndex += 1;
-      }
-    }
-    return indexes;
-  }, [model]);
-  const viewRows = useMemo<ViewRow[]>(() => {
-    if (!model) return [];
-    if (viewMode === "everything") {
-      return model.turns.map((turn, index) => ({
-        id: turn.id,
-        turnId: turn.id,
-        sourceIndex: index,
-        visible: true as const,
-      }));
-    }
-    const entriesByTurn = new Map<string, FocusedEntry[]>();
-    for (const entry of focused) {
-      const entries = entriesByTurn.get(entry.turnId);
-      if (entries) entries.push(entry);
-      else entriesByTurn.set(entry.turnId, [entry]);
-    }
-    return model.turns.map((turn, sourceIndex) => {
-      const entries = entriesByTurn.get(turn.id) ?? [];
-      return {
-        id: turn.id,
-        turnId: turn.id,
-        sourceIndex,
-        visible: entries.length > 0,
-        entries,
-      };
-    });
-  }, [model, viewMode, focused]);
-  const anchorEntries = useMemo(() => {
-    if (!model) return [];
-    if (viewMode === "everything") {
-      return model.turns.flatMap((turn, index) =>
-        turn.items.map((item) => ({
-          id: item.id,
-          sourceIndex: itemSourceIndexes.get(item.id) ?? 0,
-          index,
-          isMessage: item.type === "userMessage" || item.type === "agentMessage",
-        })),
-      );
-    }
-    return viewRows.flatMap((row, index) =>
-      "entries" in row
-        ? row.entries.map((entry) => ({
-            id: entry.id,
-            sourceIndex: entry.sourceIndex,
-            index,
-            isMessage: entry.kind === "message",
-          }))
-        : [],
-    );
-  }, [model, viewMode, viewRows, itemSourceIndexes]);
+  // While any question batch is pending, the answering surface is the
+  // transcript's trailing row below (a scrollable part of the content, not
+  // the footer-anchored composer replacement it used to be). Read
+  // unconditionally with the rest of this component's hooks, ahead of the
+  // !model early return, per the rules of hooks; the composer reads the same
+  // seam to hide its own input row meanwhile.
+  const askPending = useAskDockPending(ref);
+  // The pending set's activation counter: the pill edge keys on this (not
+  // the boolean) so an atomic pending-set replacement on resync re-fires it.
+  const askEpoch = useAskDockActivationEpoch(ref);
+  const displayViewport = useStore(transcriptDisplayStore, (state) => state.viewport);
+  const displayLocal = useStore(transcriptDisplayStore, (state) => state.local[displayViewport]);
+  const displayHub = useStore(transcriptDisplayStore, (state) => state.hub[displayViewport]);
+  const displayConfig = useMemo(
+    () => resolveEffectiveConfig({ local: displayLocal, hub: displayHub, layout: displayViewport }),
+    [displayHub, displayLocal, displayViewport],
+  );
+  const projection = useMemo(() => (model ? projectThread(model, displayConfig) : undefined), [model, displayConfig]);
+  const renderRows = useMemo(() => (projection ? transcriptRowsForProjection(projection) : []), [projection]);
+  const anchorEntries = useMemo(() => transcriptAnchorEntriesForRows(renderRows), [renderRows]);
+  const sourceTurnRowIndexes = useMemo(() => transcriptSourceTurnRowIndexesForRows(renderRows), [renderRows]);
 
   // VirtualList's own imperative handle (getScrollElement/scrollToIndex) is
   // the seam useTranscriptScroll needs for every scroll-behavior concern
@@ -275,6 +199,8 @@ export default function Session({ params, paneId, focused: paneFocused }: PanePr
   // here, even though the ref only ever populates once turns.length > 0
   // (see useTranscriptScroll's own "hasContent" handling for that).
   const virtualListRef = useRef<VirtualListHandle>(null);
+  const announcementSequence = useRef(0);
+  const [viewAnnouncement, setViewAnnouncement] = useState({ text: "", key: 0 });
   // SelectionQuote's own positioning/containment context (its header
   // comment): the non-scrolling `.transcript` wrapper below, not
   // VirtualList's internal scroll node - a selection's own
@@ -290,8 +216,22 @@ export default function Session({ params, paneId, focused: paneFocused }: PanePr
     model,
     listRef: virtualListRef,
     loadOlder,
-    viewKey: viewMode,
+    viewKey: configFingerprint(displayConfig),
     anchorEntries,
+    // The pending-questions dock is a real virtual row (trailingRow below),
+    // so every end-targeted scroll path - initial positioning, append-follow,
+    // jump-to-bottom - must count it or it lands one row short, leaving the
+    // answering surface below the viewport.
+    renderedRowCount: renderRows.length + (askPending ? 1 : 0),
+    sourceTurnRowIndexes,
+    // ...and its activation is new content: an ask_user item completing
+    // changes no turn/item shape, so without this signal a scrolled-away
+    // reader would get no pill while the composer's input hides itself. The
+    // edge keys on the epoch so an atomic pending-set replacement (a resync
+    // swapping an answered-elsewhere batch for a new one) re-fires it while
+    // the boolean never leaves true.
+    askDockPending: askPending,
+    askDockActivationEpoch: askEpoch,
   });
   const showColdStartSkeleton = useColdStartSkeleton(ref, model);
   // kata g2ez: names the one turn (if any) that starts what's arrived since
@@ -305,13 +245,13 @@ export default function Session({ params, paneId, focused: paneFocused }: PanePr
   // opened before its transcript hydrates showed the raw ref here even when
   // the tree store already knew the friendly title, while the dockview tab
   // right above it already showed that title.
-  const tree = useTreeStore((s) => s.tree);
   // Never the raw ref while the deleted state is showing (below): the ref is
   // the one thing about a gone session that means nothing to a person
   // reading the pane's own header.
   const title = deletedRef
     ? "Session deleted"
-    : (resolveThreadName(model ? new Map([[ref, model]]) : EMPTY_THREADS, tree, ref) ?? ref);
+    : (resolveThreadName(model ? new Map([[ref, model]]) : EMPTY_THREADS, navigationSummaryFor(ref, navigation), ref) ??
+      ref);
 
   // Closing follows Settings.tsx's own handleClose seam exactly (its own doc
   // comment on the trap this avoids, and needsYouCycle.ts's identical note):
@@ -350,25 +290,6 @@ export default function Session({ params, paneId, focused: paneFocused }: PanePr
 
   const cadence = <Cadence state={cadenceStateForStatus(model.status.type)} frameTimes={frameTimes} now={now} />;
 
-  // VirtualList only ever calls getItemKey/renderRow with an index it got
-  // back from its own count-bounded virtualizer (count={model.turns.length}
-  // below), so this index is always in range - but that guarantee crosses a
-  // component boundary TypeScript can't see through. Check it for real
-  // rather than asserting past it, so a future bug here (e.g. turns
-  // shrinking mid-render) fails loudly instead of silently rendering
-  // `undefined`.
-  const turnAt = (index: number) => {
-    const turn = model.turns[index];
-    if (!turn) throw new Error(`VirtualList index ${index} out of range for ${model.turns.length} turns`);
-    return turn;
-  };
-
-  const rowAt = (index: number) => {
-    const row = viewRows[index];
-    if (!row) throw new Error(`VirtualList index ${index} out of range for ${viewRows.length} view rows`);
-    return row;
-  };
-
   const transcriptContent = (
     <div className={styles.transcript} ref={transcriptContainerRef}>
       <SelectionQuote
@@ -383,103 +304,53 @@ export default function Session({ params, paneId, focused: paneFocused }: PanePr
           },
         ]}
       />
-      <FlowOverlay
-        top={
+      <TranscriptBody
+        model={model}
+        config={displayConfig}
+        surface="live"
+        disclosureScope={`transcript:live:${ref}`}
+        sessionRef={ref}
+        viewId={paneId}
+        onAnnounceViewChange={(summary) => {
+          announcementSequence.current += 1;
+          setViewAnnouncement({ text: `Transcript detail: ${summary}`, key: announcementSequence.current });
+        }}
+        showSeenDividerTurnId={seenDividerTurnId ?? undefined}
+        loadOlderRow={
           model.olderCursor && (
             <LoadOlderRow onLoad={loadOlderReportingError} loading={loadingOlder} error={olderError} />
           )
         }
-        pill={
+        liveOverlay={
           <NewContentPill
             count={flow.pillCount}
+            visible={flow.pillVisible}
             needsYou={flow.pillNeedsYou}
             error={flow.pillError}
             pillArrowDirection={flow.pillArrowDirection}
             onClick={flow.jumpToBottom}
           />
         }
-      >
-        <div className={styles.transcriptContent}>
-          <div className={styles.transcriptList}>
-            <VirtualList
-              ref={virtualListRef}
-              dynamic
-              anchorToEnd
-              count={viewRows.length}
-              estimateSize={() => ESTIMATED_TURN_HEIGHT}
-              getItemKey={(index) => rowAt(index).id}
-              renderRow={(index) => {
-                const row = rowAt(index);
-                if (!("entries" in row)) {
-                  const t = turnAt(row.sourceIndex);
-                  return (
-                    <div>
-                      <TurnBlock
-                        turn={t}
-                        sessionRef={ref}
-                        showSeenDivider={t.id === seenDividerTurnId}
-                        exchangeOpeners={openers}
-                        agentLabel={agentLabel}
-                        viewAnchorIndex={index}
-                        viewAnchorSourceIndexes={itemSourceIndexes}
-                      />
-                    </div>
-                  );
-                }
-                if (!row.visible) return null;
-                return (
-                  <div className={styles.focusedTranscript} data-testid="focused-transcript">
-                    {row.entries.map((entry) => {
-                      const anchor = {
-                        "data-view-anchor-id": entry.id,
-                        "data-view-anchor-index": index,
-                        "data-view-anchor-source-index": entry.sourceIndex,
-                        "data-view-anchor-message": entry.kind === "message",
-                      } as const;
-                      if (entry.kind === "action-group") {
-                        return (
-                          <details key={entry.id} className={styles.actionGroup} {...anchor}>
-                            <summary className={styles.actionGroupSummary}>{entry.label}</summary>
-                            <div className={styles.actionGroupIntents}>
-                              {entry.intents.map((intent) => (
-                                <div key={intent.id} className={styles.intent}>
-                                  {intent.rationale}
-                                </div>
-                              ))}
-                            </div>
-                          </details>
-                        );
-                      }
-                      const turn = model.turns[row.sourceIndex];
-                      if (!turn) return null;
-                      const ItemRenderer = itemRendererFor(entry.message.type);
-                      const opensExchange = openers?.has(entry.message.id);
-                      return (
-                        <div
-                          key={entry.id}
-                          className={entry.role === "agent" && !opensExchange ? styles.focusedRunContent : undefined}
-                          {...anchor}
-                        >
-                          <ItemRenderer
-                            item={entry.message}
-                            turn={turn}
-                            live={isItemLive(entry.message)}
-                            sessionRef={ref}
-                            opensExchange={opensExchange}
-                            agentLabel={agentLabel}
-                          />
-                        </div>
-                      );
-                    })}
-                  </div>
-                );
-              }}
-              onChange={flow.restoreViewAnchorAfterMeasurement}
-            />
-          </div>
-          {showColdStartSkeleton && <ColdStartSkeleton />}
-        </div>
-      </FlowOverlay>
+        listRef={virtualListRef}
+        onMeasurementsChange={flow.restoreViewAnchorAfterMeasurement}
+        trailingContent={showColdStartSkeleton && <ColdStartSkeleton />}
+        // The pending-questions dock is the transcript's last row while any
+        // batch is pending: it scrolls with the content (a reader scrolling
+        // back for context scrolls it away), its answer state lives in
+        // askDockStore so the virtual list unmounting the row loses nothing,
+        // and the list's end-anchoring surfaces a new question for a reader
+        // at the bottom without yanking one who scrolled up. Passed only
+        // while pending so no empty zero-height row pads the list otherwise.
+        trailingRow={askPending ? { id: "ask-dock", content: <AskDock ref={ref} /> } : undefined}
+      />
+      <div role="status" aria-live="polite" data-testid="transcript-view-announcement">
+        <VisuallyHidden key={viewAnnouncement.key}>{viewAnnouncement.text}</VisuallyHidden>
+      </div>
+      {/* The ask dock's ONE live region lives here, outside the virtual
+          list: the dock row is virtualized, so an in-row region would
+          re-announce on every scroll-away/scroll-back remount. This
+          component announces only real pending/count transitions. */}
+      <AskDockAnnouncements ref={ref} />
     </div>
   );
   const transcript = <SessionNowContext.Provider value={now}>{transcriptContent}</SessionNowContext.Provider>;
@@ -491,19 +362,6 @@ export default function Session({ params, paneId, focused: paneFocused }: PanePr
       scaffoldMarker={`session:${ref}`}
       title={title}
       cadence={cadence}
-      actions={
-        <div className={styles.viewSelector}>
-          <RadioGroup
-            label="Session view"
-            value={viewMode}
-            options={[...SESSION_VIEW_MODES]}
-            onChange={(value) => {
-              flow.captureViewAnchor();
-              setViewMode(normalizeViewMode(value));
-            }}
-          />
-        </div>
-      }
       footer={
         <div className={styles.footer}>
           <div className={styles.measure}>

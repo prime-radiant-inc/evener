@@ -202,7 +202,7 @@ func FuzzSessionLifecycleTeardownCoverage(f *testing.F) {
 
 		discard := sltcNewSession(t, false, false)
 		discard.mcpMgr = &mcp.Manager{}
-		discard.discardRestoredCandidate()
+		discard.discardRestoredCandidate(true)
 
 		parent := sltcNewSession(t, false, false)
 		parent.mcpMgr = &mcp.Manager{}
@@ -275,7 +275,7 @@ func FuzzSessionLifecyclePromptHookCoverage(f *testing.F) {
 func sltcNewToolSession(t *testing.T) *Session {
 	t.Helper()
 	root := t.TempDir()
-	args, err := json.Marshal(map[string]any{"action": "view"})
+	args, err := json.Marshal(map[string]any{})
 	if err != nil {
 		t.Fatal(err)
 	}

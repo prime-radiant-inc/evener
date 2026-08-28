@@ -26,23 +26,6 @@
   min-width: 0;
 }
 
-/* A collapsed tool run keeps one quiet row; its expanded members inherit the
- * same vertical flow and gain a hairline inset so the cluster reads as one
- * action history without changing ToolCallItem's one-call row grammar. */
-.cluster {
-  display: flex;
-  flex-direction: column;
-  padding: var(--space-1) 0;
-}
-
-.clusterBody {
-  display: flex;
-  flex-direction: column;
-  margin-left: var(--space-3);
-  padding-left: var(--space-3);
-  border-left: 2px solid var(--edge);
-}
-
 /* Run content column (layout roles, layoutRoles.ts): TurnBlock wraps every
  * "run"-role item in this per-item role wrapper, and above the breakpoint it
  * indents by --speaker-gutter, aligning the content under the speaker

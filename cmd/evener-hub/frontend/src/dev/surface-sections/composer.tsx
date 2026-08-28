@@ -12,11 +12,14 @@
 // on an unanswered ask_user call is what makes the real dock populate -
 // exactly the mechanism a live ask_user call would use.
 import { useEffect } from "react";
+import { AskDock } from "../../panes/session/composer/askDock";
 import { Composer } from "../../panes/session/composer/Composer";
 import { writeDraft } from "../../panes/session/composer/draft";
 import { hydrateThread } from "../../protocol/reducer";
+import { FakeClient } from "../../protocol/testing/fakeClient";
 import type { Thread, ThreadCapabilities, ThreadReadResponse } from "../../protocol/types.gen";
-import { threadsStore } from "../../stores/threads";
+import { ClientProvider } from "../../shell/clientContext";
+import { putThreadModel } from "../../stores/threads";
 import styles from "../gallery-section.module.css";
 import { ThemeFlip } from "../ThemeFlip";
 
@@ -29,6 +32,7 @@ const FULL_CAPABILITIES: ThreadCapabilities = {
   forkFromTurn: true,
   shutdown: true,
   changeModel: true,
+  changeVisionModel: true,
   queue: true,
   goal: true,
   rename: true,
@@ -55,6 +59,7 @@ function fixtureThread(ref: string, overrides: Partial<Thread> = {}): Thread {
 const RESTING_REF = "dev-surface-composer-resting";
 const DRAFTED_REF = "dev-surface-composer-drafted";
 const ASK_REF = "dev-surface-composer-ask";
+const client = new FakeClient("ready");
 
 // AskDock reconciles from live ask_user questions in the transcript
 // (deriveAskQuestions.ts's liveAskQuestions): a completed, unanswered
@@ -95,11 +100,18 @@ const askThread: Thread = fixtureThread(ASK_REF, {
 
 function seedComposerFixtures(): void {
   const now = Date.now();
-  const next = new Map(threadsStore.getState().threads);
-  next.set(RESTING_REF, hydrateThread({ thread: fixtureThread(RESTING_REF) } as ThreadReadResponse, RESTING_REF, now));
-  next.set(DRAFTED_REF, hydrateThread({ thread: fixtureThread(DRAFTED_REF) } as ThreadReadResponse, DRAFTED_REF, now));
-  next.set(ASK_REF, hydrateThread({ thread: askThread } as ThreadReadResponse, ASK_REF, now));
-  threadsStore.setState({ threads: next });
+  // putThreadModel is the store's membership path (index maintenance
+  // included), so these fixture panes are routable by ref and threadId
+  // exactly like a production-hydrated thread.
+  putThreadModel(
+    RESTING_REF,
+    hydrateThread({ thread: fixtureThread(RESTING_REF) } as ThreadReadResponse, RESTING_REF, now),
+  );
+  putThreadModel(
+    DRAFTED_REF,
+    hydrateThread({ thread: fixtureThread(DRAFTED_REF) } as ThreadReadResponse, DRAFTED_REF, now),
+  );
+  putThreadModel(ASK_REF, hydrateThread({ thread: askThread } as ThreadReadResponse, ASK_REF, now));
   writeDraft(DRAFTED_REF, "One more thing - can you also add a CHANGELOG entry for this?");
 }
 
@@ -113,23 +125,27 @@ export default function ComposerSurfaceSection() {
       <h2>Composer</h2>
       <p className={styles.note}>
         Real Composer, fed by a threadsStore seeded directly (hydrateThread over fixture wire data - no network).
-        Resting, with drafted text, and with a pending ask_user question (AskDock reconciles itself off the seeded
-        thread's transcript, the same way it would off a live ask_user call).
+        Resting, with drafted text, and with a pending ask_user question. The answering surface (AskDock) renders as the
+        transcript's trailing row in a real session pane (Session.tsx), so it is shown directly here; AskDock reconciles
+        itself off the seeded thread's transcript, the same way it would off a live ask_user call, and the composer's
+        own input row hides while the question is pending.
       </p>
-      <ThemeFlip>
-        <div className={styles.row}>
-          <p className={styles.rowLabel}>resting</p>
-          <Composer ref={RESTING_REF} />
-        </div>
-        <div className={styles.row}>
-          <p className={styles.rowLabel}>drafted</p>
-          <Composer ref={DRAFTED_REF} />
-        </div>
-        <div className={styles.row}>
-          <p className={styles.rowLabel}>ask pending</p>
-          <Composer ref={ASK_REF} />
-        </div>
-      </ThemeFlip>
+      <ClientProvider client={client}>
+        <ThemeFlip>
+          <div className={styles.row}>
+            <p className={styles.rowLabel}>resting</p>
+            <Composer ref={RESTING_REF} />
+          </div>
+          <div className={styles.row}>
+            <p className={styles.rowLabel}>drafted</p>
+            <Composer ref={DRAFTED_REF} />
+          </div>
+          <div className={styles.row}>
+            <p className={styles.rowLabel}>ask pending (transcript trailing row)</p>
+            <AskDock ref={ASK_REF} />
+          </div>
+        </ThemeFlip>
+      </ClientProvider>
     </section>
   );
 }

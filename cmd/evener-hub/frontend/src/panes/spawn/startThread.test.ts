@@ -16,6 +16,7 @@ const NO_CAPABILITIES: ThreadCapabilities = {
   forkFromTurn: false,
   shutdown: false,
   changeModel: false,
+  changeVisionModel: false,
   queue: false,
   goal: false,
   rename: false,
@@ -185,15 +186,6 @@ test("an advanced-schema sandbox wins over the access mode (floor §1.8)", async
   });
 
   expect(fake.calls[0]?.params).toMatchObject({ launchOverrides: { sandbox: "workspace-write" } });
-});
-
-test("branch is display-only and is never sent on the wire (floor §1.7; thread/start has no branch field)", async () => {
-  const fake = new FakeClient("ready");
-  fake.on("thread/start", () => startResponse("local:r"));
-
-  await startThread(fake, { cwd: "/tmp/p", prompt: "go", branch: "feature/x" });
-
-  expect(fake.calls[0]?.params).toEqual({ cwd: "/tmp/p", input: [{ type: "text", text: "go" }] });
 });
 
 test("passes the direct optional fields (harness/model/provider/effort/overrides) through", async () => {

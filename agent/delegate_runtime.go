@@ -82,6 +82,14 @@ type delegateQuietAttentionClaim struct {
 }
 
 func (c *delegateTreeController) ReportActivity(lease delegateLease, at time.Time) error {
+	return c.ReportActivityPhase(lease, at, "")
+}
+
+// ReportActivityPhase records parent-visible activity and separately advances
+// the one-shot drain's productive-liveness clock. Provider retry/backoff is
+// ordinary activity for supervision and reporting, but it is not productive
+// progress that should extend terminal drain grace.
+func (c *delegateTreeController) ReportActivityPhase(lease delegateLease, at time.Time, phase string) error {
 	if c == nil {
 		return errDelegateStaleLease
 	}
@@ -94,20 +102,23 @@ func (c *delegateTreeController) ReportActivity(lease delegateLease, at time.Tim
 		c.mu.Unlock()
 		return err
 	}
-	if at.Before(live.activityAt) {
-		c.mu.Unlock()
-		return nil
-	}
 	rearm := live.quietNotified || live.quietClaim != nil && live.quietClaim.sequence == live.quietSequence
-	if at.Equal(live.activityAt) && !rearm {
+	activityChanged := at.After(live.activityAt) || at.Equal(live.activityAt) && rearm
+	productiveChanged := phase != jobPhaseModelRetrying && at.After(live.productiveActivityAt)
+	if !activityChanged && !productiveChanged {
 		c.mu.Unlock()
 		return nil
 	}
-	if rearm {
+	if activityChanged && rearm {
 		live.quietSequence++
 		live.quietNotified = false
 	}
-	live.activityAt = at
+	if activityChanged {
+		live.activityAt = at
+	}
+	if productiveChanged {
+		live.productiveActivityAt = at
+	}
 	c.evidenceVersion++
 	plan := c.capturedPlanLocked(aggregate.DelegateID)
 	c.mu.Unlock()
@@ -297,8 +308,8 @@ func bindStableDelegateActivityToOwner(child *Session, controller *delegateTreeC
 	child.mu.Lock()
 	child.cfg.spawn.parentDelegateID = lease.delegateID
 	child.cfg.spawn.forwardJobEvent = forward
-	child.cfg.spawn.parentJobActivity = func(string, string) {
-		_ = controller.ReportActivity(lease, child.sclock().Now())
+	child.cfg.spawn.parentJobActivity = func(_ string, phase string) {
+		_ = controller.ReportActivityPhase(lease, child.sclock().Now(), phase)
 	}
 	jm := child.jobManager
 	child.mu.Unlock()
@@ -487,12 +498,12 @@ func (s *Session) reconstructDelegateAttentionRuntime(owner *Session, started de
 		candidate := sub
 		tracked, inserted, trackErr := owner.subagents.admitReconstructed(candidate, attach)
 		if trackErr != nil {
-			candidate.sess.discardRestoredCandidate()
+			candidate.sess.discardRestoredCandidate(candidate.ownsEnv)
 			finishRestore(nil, trackErr)
 			return nil, trackErr
 		}
 		if !inserted {
-			candidate.sess.discardRestoredCandidate()
+			candidate.sess.discardRestoredCandidate(candidate.ownsEnv)
 			sub = tracked
 			restored = false
 		}
@@ -658,7 +669,7 @@ func (s *Session) prepareDeferredOwedStart(start deferredOwedDelegateAttentionSt
 		return false, errors.New("owed candidate conflicts with controller runtime state")
 	}
 	start.owner.subagents.removeSession(start.sub.id, start.sub.sess)
-	start.sub.sess.discardRestoredCandidate()
+	start.sub.sess.discardRestoredCandidate(start.sub.ownsEnv)
 	return false, persistErr
 }
 
@@ -788,18 +799,25 @@ func (runtime delegateRuntime) send(ctx context.Context, delegateID, message str
 	if err != nil {
 		return failed(err)
 	}
-	if plans, steerErr := s.delegateController.Steer(ctx, actor, delegateID, message); steerErr == nil {
-		_ = s.executeDelegateMutationPlans(plans)
-		return stableDelegateSendOutcome{result: sendMessageResult{
-			Target:              delegateID,
-			DelegateID:          delegateID,
-			Type:                delegateResourceType,
-			Status:              jobstore.StatusRunning,
-			RunningInBackground: true,
-			Action:              "steered",
-		}}
-	} else if !errors.Is(steerErr, errDelegateTargetBusy) {
-		return failed(steerErr)
+	if maxWaitMS > 0 {
+		if observe := s.cfg.testOnly.delegateSendBeforePositiveWaitAdmission; observe != nil {
+			observe()
+		}
+	}
+	if maxWaitMS == 0 {
+		if plans, steerErr := s.delegateController.Steer(ctx, actor, delegateID, message); steerErr == nil {
+			_ = s.executeDelegateMutationPlans(plans)
+			return stableDelegateSendOutcome{result: sendMessageResult{
+				Target:              delegateID,
+				DelegateID:          delegateID,
+				Type:                delegateResourceType,
+				Status:              jobstore.StatusRunning,
+				RunningInBackground: true,
+				Action:              "steered",
+			}}
+		} else if !errors.Is(steerErr, errDelegateTargetBusy) {
+			return failed(steerErr)
+		}
 	}
 	reservation, err := s.delegateController.ReserveStart(actor, delegateID)
 	if err != nil {
@@ -829,13 +847,13 @@ func (runtime delegateRuntime) send(ctx context.Context, delegateID, message str
 			return s.delegateController.AttachRuntime(started.lease, selected.sess)
 		})
 		if trackErr != nil {
-			candidate.sess.discardRestoredCandidate()
+			candidate.sess.discardRestoredCandidate(candidate.ownsEnv)
 			return runtime.failStableSendStartAfterDispatch(ctx, started, delegateID, waiter, maxWaitMS, trackErr, func() {
 				finishRestore(nil, trackErr)
 			})
 		}
 		if !inserted {
-			candidate.sess.discardRestoredCandidate()
+			candidate.sess.discardRestoredCandidate(candidate.ownsEnv)
 			sub = tracked
 			restored = false
 		}
@@ -910,6 +928,8 @@ func (runtime delegateRuntime) send(ctx context.Context, delegateID, message str
 		DelegateID:          delegateID,
 		Type:                delegateResourceType,
 		Status:              jobstore.StatusRunning,
+		AgentType:           started.descriptor.AgentType,
+		Tools:               append([]string(nil), started.descriptor.ToolNameCeiling...),
 		RunningInBackground: true,
 		Action:              "started",
 		TranscriptRef:       started.descriptor.TranscriptRef,
@@ -970,6 +990,7 @@ func populateStableDelegateSendResult(result *sendMessageResult, packet delegate
 		result.Task = metadata.Task
 		result.Description = metadata.Description
 		result.AgentType = metadata.AgentType
+		result.Tools = append([]string(nil), metadata.Tools...)
 		result.RequestedModel = metadata.RequestedModel
 		result.ResolvedProfileID = metadata.ResolvedProfileID
 		result.ResolvedModel = metadata.ResolvedModel
@@ -1071,6 +1092,8 @@ func stableDelegateFailedSendResult(started delegateStartCommit, plans delegateM
 		DelegateID:          started.lease.delegateID,
 		Type:                delegateResourceType,
 		Status:              jobstore.StatusRunning,
+		AgentType:           started.descriptor.AgentType,
+		Tools:               append([]string(nil), started.descriptor.ToolNameCeiling...),
 		Resumable:           &resumable,
 		RunningInBackground: false,
 		Action:              "recovery_required",
@@ -1109,11 +1132,16 @@ func (runtime delegateRuntime) create(ctx context.Context, args delegateArgs) de
 	}
 	task := strings.TrimSpace(args.Task)
 	if task == "" {
-		return delegateStartFailed(errors.New("invalid_request: task is required"))
+		return delegateStartFailed(errors.New("invalid_request: prompt is required"))
 	}
 	isolationName := strings.TrimSpace(args.Isolation)
 	if isolationName != "" && isolationName != "worktree" {
 		return delegateStartFailed(fmt.Errorf("invalid_request: isolation %q is not supported (expected \"worktree\")", isolationName))
+	}
+	if len(args.TaskList) > 0 && s.cfg.ShareTasksWithChildren {
+		// A shared store already has the parent's tasks and is never
+		// re-seeded, so the items would vanish; say so instead.
+		return delegateStartFailed(errors.New("invalid_request: task_list cannot seed a delegate that shares your task store; add the steps to your own task_list instead"))
 	}
 	if strings.TrimSpace(s.stateDir) == "" {
 		return delegateStartFailed(errors.New("delegate creation requires a durable state directory"))
@@ -1121,28 +1149,55 @@ func (runtime delegateRuntime) create(ctx context.Context, args delegateArgs) de
 	s.mu.Lock()
 	ownAllowance := s.delegationAllowance
 	s.mu.Unlock()
-	if ok, validRange := validateDelegateGrant(args.DelegationAllowance, ownAllowance); !ok {
+	if args.DelegationAllowance == nil {
+		args.DelegationAllowance = new(defaultDelegateGrant(ownAllowance))
+	}
+	if ok, validRange := validateDelegateGrant(args.grantedAllowance(), ownAllowance); !ok {
 		return delegateStartFailed(fmt.Errorf("invalid_request: delegation_allowance must be less than your own allowance (%d); valid grants: %s", ownAllowance, validRange))
 	}
-	if err := llm.ValidateReasoningEffort(args.ReasoningEffort); err != nil {
+	if err := llm.ValidateReasoningEffort(llm.NormalizeReasoningEffort(args.ReasoningEffort)); err != nil {
 		return delegateStartFailed(err)
 	}
 	selection, err := s.selectSubagentModel(ctx, args.Model, args.AgentType)
 	if err != nil {
 		return delegateStartFailed(err)
 	}
+	if args.ForkContext {
+		parent := s.currentProfile()
+		if selection.profile.ID() != parent.ID() || selection.profile.Model() != parent.Model() {
+			return delegateStartFailed(errors.New("invalid_request: fork_context requires the parent's model and provider; use a clean session with a self-contained prompt for a different model"))
+		}
+	}
 	if selection.warning != nil {
 		s.emitDiagnosticWarning(*selection.warning)
 	}
+	toolNameCeiling := s.stableDelegateEffectiveToolNameCeiling(selection, args, isolationName)
+	readOnlyScope := subagentToolScopeIsReadOnly(false, toolNameCeiling)
 	var requestedSandbox *sandbox.SandboxPolicy
-	if strings.TrimSpace(args.Sandbox) != "" || args.SandboxNet != nil {
+	explicitSandbox := strings.TrimSpace(args.Sandbox) != "" || args.SandboxNet != nil
+	if explicitSandbox && args.SandboxNet != nil && strings.TrimSpace(args.Sandbox) == "" && !delegateSandboxBackendAvailable(s.sandboxHostFacts()) {
+		return delegateStartFailed(newDelegateSandboxRequestError(
+			errors.New("invalid_request: sandbox cannot be enforced on this host because no sandbox backend is available; omit the sandbox parameter"),
+			"sandbox",
+		))
+	}
+	if readOnlyScope {
+		requestedSandbox, err = s.resolveReadOnlyDelegateSandboxRequest(args.Sandbox, args.SandboxNet)
+		if err != nil {
+			return delegateStartFailed(err)
+		}
+	} else if explicitSandbox {
 		parentMode, parentNetwork := s.parentSandboxModeNet()
 		requestedSandbox, err = resolveDelegateSandboxRequest(args.Sandbox, args.SandboxNet, parentMode, parentNetwork)
 		if err != nil {
 			return delegateStartFailed(err)
 		}
+		requestedSandbox, err = s.applyParentWriteBlockedFloor(args.Sandbox, requestedSandbox)
+		if err != nil {
+			return delegateStartFailed(err)
+		}
 	}
-	descriptor, worktreeProject, err := runtime.describe(ctx, args, task, isolationName, requestedSandbox, selection)
+	descriptor, worktreeProject, err := runtime.describe(ctx, args, task, isolationName, requestedSandbox, selection, toolNameCeiling)
 	if err != nil {
 		return delegateStartFailed(err)
 	}
@@ -1162,6 +1217,7 @@ func (runtime delegateRuntime) create(ctx context.Context, args delegateArgs) de
 	}
 	isolation, err := runtime.prepareIsolation(ctx, reservation, worktreeProject, requestedSandbox)
 	if err != nil {
+		err = delegateSandboxFallbackHint(s, args, err)
 		abortErr := s.delegateController.AbortStart(reservation)
 		isolation.cleanup(s, reservation.delegateID)
 		return delegateStartFailed(errors.Join(err, abortErr))
@@ -1213,12 +1269,16 @@ func (runtime delegateRuntime) create(ctx context.Context, args delegateArgs) de
 	}
 	bindStableDelegateActivity(prepared.sub.sess, s.delegateController, started.lease)
 	s.startDelegateQuietWatchdog(started.ctx, started.lease)
+	degradedSandboxAdvisory := degradedReadOnlyDelegateAdvisory(prepared.sub.sess.currentEnv())
 	s.launchSubagentRun(prepared.runCtx, prepared.sub, prepared.runCancel, prepared.input, started.descriptor.Provenance)
 	result := createResult(stableDelegateResult(started.descriptor, started.lease.delegateID, started.plan, plans, nil))
-	// The advisory rides the launched delegate's own result only: it is
+	// The advisories ride the launched delegate's own result only: they are
 	// metadata for the caller's next isolation choice, not delegate output, not
 	// an EventWarning, and not durable job state a later delegate_send replays.
-	result.Warnings = appendUniqueStrings(result.Warnings, sharedWorkspaceAdvisory)
+	// The sandbox one fires when a derived read-only scope had to degrade on this
+	// host, so the parent learns the boundary is advisory for the child's shell
+	// rather than discovering it from a clobbered file.
+	result.Warnings = appendUniqueStrings(result.Warnings, sharedWorkspaceAdvisory, degradedSandboxAdvisory)
 	return result
 }
 
@@ -1235,7 +1295,12 @@ func (s *Session) delegateActor(ctx context.Context) (delegateActor, error) {
 	return rootDelegateActor(s.delegateRootSessionID), nil
 }
 
-func (runtime delegateRuntime) describe(ctx context.Context, args delegateArgs, task, isolationName string, requestedSandbox *sandbox.SandboxPolicy, selection subagentModelSelection) (delegatestore.Descriptor, identifier.Project, error) {
+func (s *Session) stableDelegateEffectiveToolNameCeiling(selection subagentModelSelection, args delegateArgs, isolationName string) []string {
+	allTools, allowedTools, deniedTools := baseSubagentToolPolicy(selection.agent, args.grantsDelegation())
+	return stableDelegateToolNameCeiling(s.reg, s.resultToolName(), allTools, allowedTools, deniedTools, args.grantsDelegation(), args.WatchParent, isolationName)
+}
+
+func (runtime delegateRuntime) describe(ctx context.Context, args delegateArgs, brief, isolationName string, requestedSandbox *sandbox.SandboxPolicy, selection subagentModelSelection, toolNameCeiling []string) (delegatestore.Descriptor, identifier.Project, error) {
 	s := runtime.owner
 	s.mu.Lock()
 	childConfig := s.cfg.toSnapshot().Clone()
@@ -1245,16 +1310,11 @@ func (runtime delegateRuntime) describe(ctx context.Context, args delegateArgs, 
 	if agentType == "" {
 		agentType = "default"
 	}
-	agentName, rolePrompt := stableDelegateRole(selection, args.DelegationAllowance > 0, s)
-	reasoningEffort := strings.TrimSpace(args.ReasoningEffort)
+	agentName, rolePrompt := stableDelegateRole(selection, args.grantsDelegation(), s)
+	reasoningEffort := llm.NormalizeReasoningEffort(args.ReasoningEffort)
 	if reasoningEffort == "" {
-		reasoningEffort = strings.TrimSpace(childConfig.ReasoningEffort)
+		reasoningEffort = llm.NormalizeReasoningEffort(childConfig.ReasoningEffort)
 	}
-	allTools, allowedTools, deniedTools := baseSubagentToolPolicy(selection.agent, args.DelegationAllowance > 0)
-	if !allTools {
-		allowedTools = ensureRecoveryReader(allowedTools, s.reg)
-	}
-	toolNameCeiling := stableDelegateToolNameCeiling(s.reg, s.resultToolName(), allTools, allowedTools, deniedTools, args.DelegationAllowance > 0, args.WatchParent, isolationName)
 	var frozenSkillNames, frozenSkillBodies []string
 	if selection.agent != nil {
 		for _, name := range selection.agent.Skills {
@@ -1302,19 +1362,19 @@ func (runtime delegateRuntime) describe(ctx context.Context, args delegateArgs, 
 	}
 	descriptor := delegatestore.Descriptor{
 		VisibleSessionID:              s.id,
-		Task:                          task,
-		Description:                   task,
+		Task:                          brief,
+		Description:                   brief,
 		AgentType:                     agentType,
 		RequestedModel:                selection.requestedModel,
 		ResolvedProfileID:             selection.profile.ID(),
 		ResolvedModel:                 selection.profile.Model(),
 		FrozenRolePrompt:              rolePrompt,
-		ToolNameCeiling:               toolNameCeiling,
+		ToolNameCeiling:               append([]string(nil), toolNameCeiling...),
 		FrozenSkillNames:              frozenSkillNames,
 		FrozenSkillBodies:             frozenSkillBodies,
 		LocalEnvPolicy:                localEnvPolicyName(s.currentEnv()),
 		ResultSchema:                  resultSchema,
-		DelegationAllowance:           args.DelegationAllowance,
+		DelegationAllowance:           args.grantedAllowance(),
 		WorkingDir:                    s.currentEnv().WorkingDirectory(),
 		Isolation:                     isolationName,
 		Sandbox:                       sandboxSnapshot,
@@ -1324,9 +1384,11 @@ func (runtime delegateRuntime) describe(ctx context.Context, args delegateArgs, 
 		Provenance:                    s.activeCausalProvenance(),
 		Resumable:                     true,
 	}
+	var roleTasks []task.TaskTemplate
 	if selection.agent != nil {
-		descriptor.TaskTemplates = append(descriptor.TaskTemplates, selection.agent.Tasks...)
+		roleTasks = selection.agent.Tasks
 	}
+	descriptor.TaskTemplates = task.ExpandParentTasks(roleTasks, args.TaskList)
 	if callID, ok := ctx.Value(ctxToolCallID).(string); ok {
 		descriptor.OriginToolCallID = callID
 	}
@@ -1371,6 +1433,7 @@ func stableDelegateSandboxSnapshot(policy *sandbox.SandboxPolicy) *delegatestore
 	}
 	result := &delegatestore.SandboxSnapshot{
 		Mode:               policy.Mode.String(),
+		WriteBlocked:       policy.WriteBlocked,
 		DenylistAdd:        append([]string(nil), policy.DenylistAdd...),
 		DenylistRemove:     append([]string(nil), policy.DenylistRemove...),
 		ExtraWritableRoots: append([]string(nil), policy.ExtraWritableRoots...),
@@ -1409,11 +1472,31 @@ func (runtime delegateRuntime) prepareIsolation(ctx context.Context, reservation
 	return isolation, nil
 }
 
+// delegateSandboxFallbackHint closes the host-capability repair loop in the
+// first rejection. When no backend can enforce a requested sandbox and the
+// caller also supplied sandbox_net, the only enforceable fallback is
+// sandbox="off" with sandbox_net omitted. The explicit value is never dropped;
+// this only makes the rejection actionable before a retry.
+func delegateSandboxFallbackHint(s *Session, args delegateArgs, err error) error {
+	if err == nil || s == nil || args.SandboxNet == nil || delegateSandboxBackendAvailable(s.sandboxHostFacts()) {
+		return err
+	}
+	if _, ok := errors.AsType[*sandbox.RefusalError](err); !ok {
+		return err
+	}
+	return newDelegateSandboxRequestError(
+		fmt.Errorf(`%w; change sandbox to "off" and omit sandbox_net`, err),
+		"sandbox", "sandbox_net",
+	)
+}
+
 func (isolation delegateIsolation) cleanup(s *Session, delegateID string) {
 	if isolation.ownsFreshEnv {
-		if local, ok := isolation.env.(*execenv.LocalExecutionEnvironment); ok {
-			local.DisposeSandboxScratch()
-		}
+		// prepareSubagentRunFromSelection leaves a PREPARED environment alone (it
+		// belongs to this isolation step), so this is the only rollback for the
+		// scratch the construction's git snapshot minted on an unsandboxed lane,
+		// as well as for a sandboxed lane's owned one.
+		disposeUnadoptedScratch(isolation.env)
 	}
 	if isolation.worktreePath != "" {
 		s.rollbackFreshDelegateWorktree(delegateID, isolation.worktreePath, isolation.worktreeProject)
@@ -1449,7 +1532,15 @@ func (runtime delegateRuntime) construct(_ context.Context, args delegateArgs, s
 	if started.descriptor.ParentWatchGranted {
 		ctx = context.WithValue(ctx, ctxWatchParent, true)
 	}
-	prepared, err := s.prepareStableDelegateRun(ctx, started.descriptor, started.descriptor.ParentWatchGranted, selection)
+	var inheritedContext []transcript.Entry
+	if args.ForkContext {
+		var err error
+		inheritedContext, err = s.snapshotDelegateContext()
+		if err != nil {
+			return nil, err
+		}
+	}
+	prepared, err := s.prepareStableDelegateRun(ctx, started.descriptor, started.descriptor.ParentWatchGranted, selection, inheritedContext)
 	if err != nil {
 		return nil, err
 	}
@@ -1483,6 +1574,10 @@ func (runtime delegateRuntime) restoreIdle(started delegateStartCommit) (*subage
 	if retained := s.subagents.get(descriptor.ChildSessionID); retained != nil && retained.sess != nil {
 		return retained, false, nil
 	}
+	policy, err := s.restoreDelegateSandboxFloor(&descriptor)
+	if err != nil {
+		return nil, false, err
+	}
 	if err := s.reclaimDelegateRuntimeCapacity(1); err != nil {
 		return nil, false, err
 	}
@@ -1507,17 +1602,17 @@ func (runtime delegateRuntime) restoreIdle(started delegateStartCommit) (*subage
 			profile = provider.WithCommunicateOutputSchema(profile, resultSchema)
 		}
 	}
-	policy := sandboxPolicyFromStableSnapshot(descriptor.Sandbox)
 	childEnv, ownsFresh, err := s.prepareSubagentEnvironment(descriptor.WorkingDir, policy)
 	if err != nil {
 		return nil, false, err
 	}
 	discardEnv := true
 	defer func() {
+		// The construction below runs the child's git snapshot, which is what
+		// mints an unsandboxed environment's scratch, so a failure after that
+		// point has one to drop as surely as a sandboxed restore has its owned one.
 		if discardEnv && ownsFresh {
-			if local, ok := childEnv.(*execenv.LocalExecutionEnvironment); ok {
-				local.DisposeSandboxScratch()
-			}
+			disposeUnadoptedScratch(childEnv)
 		}
 	}()
 	if childEnv == nil || childEnv.WorkingDirectory() != descriptor.WorkingDir || localEnvPolicyName(childEnv) != descriptor.LocalEnvPolicy || !frozenStableDelegateSandboxMatches(childEnv, descriptor.Sandbox) {
@@ -1535,6 +1630,7 @@ func (runtime delegateRuntime) restoreIdle(started delegateStartCommit) (*subage
 		}
 	}
 	restoreCfg := RestoreSessionConfig{
+		LifetimeContext:         s.cfg.LifetimeContext,
 		StateDir:                s.stateDir,
 		Project:                 s.cfg.Project,
 		ResolveProfile:          s.resolveProfile,
@@ -1548,6 +1644,7 @@ func (runtime delegateRuntime) restoreIdle(started delegateStartCommit) (*subage
 		ForceRealIO:             s.cfg.ForceRealIO,
 		artifactStore:           s.artifactStore,
 		deferRestoreSideEffects: true,
+		sandboxProvisioned:      true,
 		spawn: spawnConfig{
 			delegateController:            s.delegateController,
 			delegateRootSessionID:         s.delegateRootSessionID,
@@ -1581,18 +1678,29 @@ func (runtime delegateRuntime) restoreIdle(started delegateStartCommit) (*subage
 	}
 	discardEnv = false
 	if child.delegateController != s.delegateController || child.owningDelegateID != started.lease.delegateID {
-		child.discardRestoredCandidate()
+		child.discardRestoredCandidate(ownsFresh)
 		return nil, false, errors.New("restored delegate did not inherit the exact controller binding")
 	}
 	for name := range child.reg.RegisteredNames() {
 		if !hasString(descriptor.ToolNameCeiling, name) {
-			child.discardRestoredCandidate()
+			child.discardRestoredCandidate(ownsFresh)
 			return nil, false, fmt.Errorf("restored delegate tool %q exceeds the committed ceiling", name)
 		}
 	}
-	if len(descriptor.TaskTemplates) != 0 && len(child.getOrCreateTaskStore().View()) == 0 {
-		if err := child.getOrCreateTaskStore().PopulateFromTemplates(descriptor.TaskTemplates, nil); err != nil {
-			child.discardRestoredCandidate()
+	if len(descriptor.TaskTemplates) != 0 {
+		childStore := child.getOrCreateTaskStore()
+		if err := childStore.MutateAndPublish(func(epoch, revision uint64) error {
+			if len(childStore.View()) != 0 {
+				return nil
+			}
+			if err := childStore.PopulateFromTemplates(descriptor.TaskTemplates, nil); err != nil {
+				return err
+			}
+			summary := task.Summarize(childStore.View())
+			child.emit(events.EventTaskUpdated, taskUpdatedData(summary, child.taskStoreOwnerSessionID(), epoch, revision))
+			return nil
+		}); err != nil {
+			child.discardRestoredCandidate(ownsFresh)
 			return nil, false, fmt.Errorf("restore committed delegate tasks: %w", err)
 		}
 	}
@@ -1653,6 +1761,7 @@ func sandboxPolicyFromStableSnapshot(snapshot *delegatestore.SandboxSnapshot) *s
 	}
 	policy := &sandbox.SandboxPolicy{
 		Mode:               mode,
+		WriteBlocked:       snapshot.WriteBlocked,
 		DenylistAdd:        append([]string(nil), snapshot.DenylistAdd...),
 		DenylistRemove:     append([]string(nil), snapshot.DenylistRemove...),
 		ExtraWritableRoots: append([]string(nil), snapshot.ExtraWritableRoots...),
@@ -1827,6 +1936,8 @@ func stableDelegateResult(descriptor delegatestore.Descriptor, delegateID string
 		ChildSessionID:      descriptor.ChildSessionID,
 		Type:                delegateResourceType,
 		Status:              status,
+		AgentType:           descriptor.AgentType,
+		Tools:               append([]string(nil), descriptor.ToolNameCeiling...),
 		Resumable:           &resumable,
 		RunningInBackground: true,
 		TranscriptRef:       descriptor.TranscriptRef,

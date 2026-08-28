@@ -38,7 +38,7 @@ func (r *byteAtATimeReader) Read(p []byte) (int, error) {
 // stream never completed) and whether any error event was emitted. When
 // chunkOneByte is set, the bytes are delivered one at a time to vary read
 // boundaries without changing the logical stream.
-func accumulateAnthropicSSE(a *Adapter, sse []byte, chunkOneByte bool) (*llm.Response, bool) {
+func accumulateAnthropicSSE(sse []byte, chunkOneByte bool) (*llm.Response, bool) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
@@ -48,7 +48,7 @@ func accumulateAnthropicSSE(a *Adapter, sse []byte, chunkOneByte bool) (*llm.Res
 	}
 	resp := &http.Response{StatusCode: http.StatusOK, Body: io.NopCloser(body)}
 	s := llm.NewChanStream(cancel)
-	go a.decodeStream(ctx, cancel, resp, s, llm.Request{Model: "fuzz-model"}, nil, nil)
+	go decodeMessagesStream(ctx, cancel, resp, s, llm.Request{Model: "fuzz-model"}, "anthropic-fuzz", "http://fuzz.local/v1/messages", llm.APILogCredentialMaterial{}, nil)
 
 	acc := llm.NewStreamAccumulator()
 	sawError := false
@@ -171,12 +171,10 @@ func FuzzAnthropicStreamMetamorphic(f *testing.F) {
 		f.Add([]byte(s))
 	}
 
-	a := &Adapter{BaseURL: "http://fuzz.local"}
-
 	f.Fuzz(func(t *testing.T, raw []byte) {
-		base, baseErr := accumulateAnthropicSSE(a, raw, false) // Oracle (floor): never panics.
+		base, baseErr := accumulateAnthropicSSE(raw, false) // Oracle (floor): never panics.
 
-		rechunked, reErr := accumulateAnthropicSSE(a, raw, true)
+		rechunked, reErr := accumulateAnthropicSSE(raw, true)
 		if !sameAnthropicResponse(base, baseErr, rechunked, reErr) {
 			t.Fatalf("re-chunk boundary changed the accumulated response:\n base=%+v (err=%v)\n one-byte=%+v (err=%v)\n input=%q",
 				base, baseErr, rechunked, reErr, raw)
@@ -185,7 +183,7 @@ func FuzzAnthropicStreamMetamorphic(f *testing.F) {
 		// Insert a comment-only event after every SSE event boundary. SSE comment
 		// lines and data-less events are ignored, so the result must not change.
 		commented := bytes.ReplaceAll(raw, []byte("\n\n"), []byte("\n\n: fuzz-keepalive\n\n"))
-		withComments, cErr := accumulateAnthropicSSE(a, commented, false)
+		withComments, cErr := accumulateAnthropicSSE(commented, false)
 		if !sameAnthropicResponse(base, baseErr, withComments, cErr) {
 			t.Fatalf("interstitial SSE comments changed the accumulated response:\n base=%+v (err=%v)\n commented=%+v (err=%v)\n input=%q",
 				base, baseErr, withComments, cErr, raw)

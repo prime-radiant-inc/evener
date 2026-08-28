@@ -1,4 +1,4 @@
-import { cleanup, render, screen } from "@testing-library/react";
+import { cleanup, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, test } from "vitest";
 import { FakeClient } from "../../../protocol/testing/fakeClient";
@@ -125,5 +125,75 @@ describe("save", () => {
     await user.click(screen.getByRole("button", { name: "Save launch defaults" }));
     await screen.findByText(/^Saved at /);
     expect(screen.getAllByText("Project launch settings saved").length).toBeGreaterThan(0);
+  });
+});
+
+describe("resolved-default labels", () => {
+  // A boolean field is the readable case: on the project layer its unset
+  // marker is "(use global default)", which the resolve's effective layer
+  // turns into "true (use global default)".
+  const BOOL_SCHEMA: LaunchOptionSchemaResponse = {
+    options: [
+      {
+        field: "sandbox_net",
+        wireField: "sandboxNet",
+        label: "Sandbox network egress",
+        group: "Sandbox",
+        kind: "boolean",
+        perLaunch: true,
+        defaultableLayers: ["global", "project"],
+      },
+    ],
+  };
+
+  function boolOptionLabels(): (string | null)[] {
+    const select = screen.getByLabelText("Sandbox network egress") as HTMLSelectElement;
+    return Array.from(select.options).map((o) => o.textContent);
+  }
+
+  test("an unset field names the effective layer's value once resolve(cwd) lands", async () => {
+    setQueryCwd("/repo");
+    const fake = connectFakeClient();
+    fake.on("evener/launch/schema", () => BOOL_SCHEMA);
+    fake.on("evener/launch/getLayer", () => ({}));
+    fake.on("evener/launch/resolve", (params) => {
+      expect(params.cwd).toBe("/repo");
+      return { effective: { sandboxNet: true }, layers: {}, provenance: {} };
+    });
+    render(<ProjectSection sectionId="project" />);
+
+    await screen.findByLabelText("Sandbox network egress");
+    await waitFor(() => expect(boolOptionLabels()).toEqual(["true (use global default)", "true", "false"]));
+  });
+
+  test("a failed resolve leaves the plain (use global default) marker", async () => {
+    setQueryCwd("/repo");
+    const fake = connectFakeClient();
+    fake.on("evener/launch/schema", () => BOOL_SCHEMA);
+    fake.on("evener/launch/getLayer", () => ({}));
+    fake.on("evener/launch/resolve", () => {
+      throw new Error("resolve failed");
+    });
+    render(<ProjectSection sectionId="project" />);
+
+    await screen.findByLabelText("Sandbox network egress");
+    expect(boolOptionLabels()).toEqual(["(use global default)", "true", "false"]);
+  });
+
+  test("saving refreshes the labels from setLayer's own returned resolved config", async () => {
+    setQueryCwd("/repo");
+    const fake = connectFakeClient();
+    fake.on("evener/launch/schema", () => BOOL_SCHEMA);
+    fake.on("evener/launch/getLayer", () => ({}));
+    fake.on("evener/launch/resolve", () => ({ effective: { sandboxNet: true }, layers: {}, provenance: {} }));
+    fake.on("evener/launch/setLayer", () => ({ effective: { sandboxNet: false }, layers: {}, provenance: {} }));
+    render(<ProjectSection sectionId="project" />);
+
+    await screen.findByLabelText("Sandbox network egress");
+    await waitFor(() => expect(boolOptionLabels()).toEqual(["true (use global default)", "true", "false"]));
+
+    const user = userEvent.setup();
+    await user.click(screen.getByRole("button", { name: "Save launch defaults" }));
+    await waitFor(() => expect(boolOptionLabels()).toEqual(["false (use global default)", "true", "false"]));
   });
 });

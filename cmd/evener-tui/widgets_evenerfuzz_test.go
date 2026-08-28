@@ -77,11 +77,11 @@ func exerciseDetailsAndNotices() {
 	var b strings.Builder
 	writeModelOrProviderLine(&b, "", "profile")
 	diag := &appwire.EvenerDiagnostics{
-		Tools:   []appwire.EvenerToolInfo{{Name: "core", Source: "core"}, {Name: "mcp", Source: "mcp:server"}, {Name: "custom", Source: "plugin"}},
-		MCP:     []appwire.EvenerMCPServerInfo{{Name: "server", Tools: []string{"mcp"}, Status: "ready", Error: "old"}},
-		Skills:  []appwire.EvenerSkillInfo{{Name: "skill"}},
-		Plugins: []appwire.EvenerPluginInfo{{Name: "plugin"}},
-		Hooks:   map[string]int{"turn": 1}, Jobs: []appwire.EvenerJobInfo{{JobID: "job", JobType: "exec", Status: "done"}}, Agents: []string{"agent"},
+		Tools:      []appwire.EvenerToolInfo{{Name: "core", Source: "core"}, {Name: "mcp", Source: "mcp:server"}, {Name: "custom", Source: "plugin"}},
+		MCP:        []appwire.EvenerMCPServerInfo{{Name: "server", Tools: []string{"mcp"}, Status: "ready", Error: "old"}},
+		Skills:     []appwire.EvenerSkillInfo{{Name: "skill"}},
+		Plugins:    []appwire.EvenerPluginInfo{{Name: "plugin"}},
+		HookEvents: []appwire.EvenerHookEventStatus{{Event: "turn", Count: 1}}, Jobs: []appwire.EvenerJobInfo{{JobID: "job", JobType: "exec", Status: "done"}}, Agents: []string{"agent"},
 	}
 	writeEvenerDiagnostics(&b, diag)
 	_ = detailsDrawer{Detail: hubSessionDetail{Diagnostics: diag}}.View()

@@ -10,6 +10,7 @@ import (
 
 	"primeradiant.com/evener/agent"
 	"primeradiant.com/evener/agent/events"
+	"primeradiant.com/evener/appwire"
 )
 
 // TestServeRegistersNoDrainItsBridgeNeverStarted pins the invariant behind
@@ -57,7 +58,7 @@ func TestServeRegistersNoDrainItsBridgeNeverStarted(t *testing.T) {
 		}
 	case <-time.After(30 * time.Second):
 		t.Fatal("serve never returned: its teardown is waiting on a drain the bridge never " +
-			"started, so on the /clear path -- where net/http recovers the panic -- the daemon " +
+			"started, so on the thread/clear path -- where net/http recovers the panic -- the daemon " +
 			"would stall its whole shutdown on a channel nothing can close")
 	}
 }
@@ -76,7 +77,7 @@ func TestServeRegistersNoDrainItsBridgeNeverStarted(t *testing.T) {
 // crash on this branch, and newly possible: before it there was no tee to
 // close.
 //
-// Reachable, not theoretical. POST /clear is a live route, and the shutdown
+// Reachable, not theoretical. typed thread/clear is live, and the shutdown
 // goroutine's httpSrv.Close() joins no handlers -- it waits on the listener
 // group, then force-closes connections and returns. The clear closure never
 // consults the cancelled request context, so it runs to completion regardless,
@@ -92,7 +93,7 @@ func TestServeRegistersNoDrainItsBridgeNeverStarted(t *testing.T) {
 // consumer, whose feed blocks its emitter, on a session nothing will ever
 // close.
 //
-// The /clear runs from inside drainWaitExpiry, which serve calls after the
+// The thread/clear call runs from inside drainWaitExpiry, which serve calls after the
 // snapshot and before the close. The window is entered by construction; no
 // clock and no second goroutine are involved.
 func TestServeStartsNoBridgeOnceTeardownHasSnapshotItsDrains(t *testing.T) {
@@ -121,11 +122,14 @@ func TestServeStartsNoBridgeOnceTeardownHasSnapshotItsDrains(t *testing.T) {
 	realExpiry := deps.drainWaitExpiry
 	deps.drainWaitExpiry = func() <-chan time.Time {
 		// The snapshot has been taken and the tee is still open: exactly where
-		// a /clear handler that outlived httpSrv.Close() lands.
+		// a thread/clear handler that outlived httpSrv.Close() lands.
 		mu.Lock()
 		teardownBegun = true
 		mu.Unlock()
-		if err := state.srv.clear(context.Background()); err != nil {
+		old := state.session(0)
+		if err := state.srv.clear(context.Background(), appwire.ThreadClearParams{
+			Ref: "local:" + old.ID(), ClientMutationID: "clear-test", ExpectedInstanceID: old.ID(),
+		}); err != nil {
 			t.Errorf("clear during teardown: %v", err)
 		}
 		return realExpiry()

@@ -20,7 +20,7 @@ import (
 	"primeradiant.com/evener/agent/internal/tool"
 	"primeradiant.com/evener/agent/plugin"
 	"primeradiant.com/evener/llm"
-	_ "primeradiant.com/evener/llm/providers/openai"
+	_ "primeradiant.com/evener/llm/providers/all"
 )
 
 // buildLiveTestPlugin creates a fully-featured plugin in a temp directory.
@@ -474,10 +474,7 @@ func TestLive_Hooks_PromptWithRealLLM(t *testing.T) {
 	}
 
 	// Create a real LLM client for the prompt hook.
-	client, err := llm.NewFromEnv()
-	if err != nil {
-		t.Fatalf("NewFromEnv: %v", err)
-	}
+	client := liveRegistryClient(t)
 
 	runner := hooks.NewRunner(client, integrationTestModel)
 	for event, hooks := range lp.Hooks {
@@ -525,10 +522,7 @@ func TestLive_Session_WithPlugin(t *testing.T) {
 	mkdir(t, workDir, ".claude")
 	writeFile(t, workDir, ".claude/live-test.local.md", "---\nstrict: true\n---\nTest config.")
 
-	client, err := llm.NewFromEnv()
-	if err != nil {
-		t.Fatalf("NewFromEnv: %v", err)
-	}
+	client := liveRegistryClient(t)
 
 	sess, err := NewSession(client, NewOpenAIProfile(integrationTestModel), execenv.NewLocalExecutionEnvironment(workDir), SessionConfig{
 		PluginDirs:            []string{pluginDir},
@@ -645,10 +639,7 @@ func TestLive_Session_MCPToolCall(t *testing.T) {
 	pluginDir := buildLiveTestPlugin(t)
 	workDir := t.TempDir()
 
-	client, err := llm.NewFromEnv()
-	if err != nil {
-		t.Fatalf("NewFromEnv: %v", err)
-	}
+	client := liveRegistryClient(t)
 
 	sess, err := NewSession(client, NewOpenAIProfile(integrationTestModel), execenv.NewLocalExecutionEnvironment(workDir), SessionConfig{
 		PluginDirs:            []string{pluginDir},

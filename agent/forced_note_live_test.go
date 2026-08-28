@@ -32,13 +32,8 @@ import (
 	"primeradiant.com/evener/agent/provider"
 	"primeradiant.com/evener/envvars"
 	"primeradiant.com/evener/llm"
-	"primeradiant.com/evener/llm/providercfg"
-
-	_ "primeradiant.com/evener/llm/providers/anthropic"
-	_ "primeradiant.com/evener/llm/providers/google"
-	_ "primeradiant.com/evener/llm/providers/kimi"
-	_ "primeradiant.com/evener/llm/providers/ollama"
-	_ "primeradiant.com/evener/llm/providers/openai"
+	_ "primeradiant.com/evener/llm/providers/all"
+	"primeradiant.com/evener/llm/registry"
 )
 
 func TestForcedNoteLive(t *testing.T) {
@@ -49,23 +44,27 @@ func TestForcedNoteLive(t *testing.T) {
 	if err != nil {
 		t.Skipf("live eval requires a resolvable user home: %v", err)
 	}
-	stateHome, providersConfig := liveeval.Paths(envvars.XDGStateHome.Trimmed(), home)
+	stateHome, providersConfig, noUserLayer := liveeval.Paths(envvars.XDGStateHome.Trimmed(), home)
+	if noUserLayer {
+		t.Skipf("%s is empty: no user provider layer to run a live eval against", envvars.EVENERProvidersConfig.Name)
+	}
 	if _, err := os.Stat(filepath.Join(stateHome, "evener", "auth", "openai.json")); err != nil {
 		t.Skipf("no OAuth record at %s/evener/auth/openai.json: %v", stateHome, err)
 	}
 	t.Setenv(envvars.XDGStateHome.Name, stateHome)
 
-	cfg, exists, err := providercfg.LoadFile(providersConfig)
-	if err != nil || !exists {
-		t.Skipf("providers.toml at %s: %v exists=%v", providersConfig, err, exists)
+	if _, err := os.Stat(providersConfig); err != nil {
+		t.Skipf("providers.toml at %s: %v", providersConfig, err)
 	}
-	client, _, err := llm.NewFromAvailableProviders(cfg)
+	t.Setenv(envvars.EVENERProvidersConfig.Name, providersConfig)
+	r, err := registry.Load()
 	if err != nil {
-		t.Fatalf("NewFromAvailableProviders: %v", err)
+		t.Fatalf("registry.Load: %v", err)
 	}
-	prof, err := provider.ResolveProfileFromConfig(cfg, "openai/gpt-5.5")
+	client := llm.NewClient(llm.WithRegistry(r))
+	prof, err := provider.Resolve(client.Registry(), "openai/gpt-5.5")
 	if err != nil {
-		t.Fatalf("ResolveProfileFromConfig: %v", err)
+		t.Fatalf("Resolve openai/gpt-5.5: %v", err)
 	}
 
 	// The real window (272K) can't be forced small, so clamp thresholds to their

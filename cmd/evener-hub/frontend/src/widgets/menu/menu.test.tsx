@@ -272,6 +272,13 @@ test("declares a :focus-visible rule in its CSS module, using only tokens", () =
   expect(css).toContain(":focus-visible");
 });
 
+test("keeps the menu trigger and items at the narrow-viewport tap floor", () => {
+  const here = dirname(fileURLToPath(import.meta.url));
+  const css = readFileSync(join(here, "menu.module.css"), "utf8");
+  expect(css).toMatch(/@media\s*\(max-width:\s*899px\)\s*\{[\s\S]*?\.trigger\s*\{[^}]*min-height:\s*var\(--tap-min\)/);
+  expect(css).toMatch(/@media\s*\(max-width:\s*899px\)\s*\{[\s\S]*?\.item\s*\{[^}]*min-height:\s*var\(--tap-min\)/);
+});
+
 // jsdom does not evaluate real CSS animations or media queries - see the
 // exemplar/dialog pattern this mirrors.
 test("the popup's open animation honors prefers-reduced-motion, using only tokens", () => {

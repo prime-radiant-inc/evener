@@ -93,6 +93,20 @@ func checkToArgs_SkipsUnset(t *testing.T) {
 	}
 }
 
+func TestToArgsEnabledPluginsPresence(t *testing.T) {
+	if got := ToArgs(Resolved{Effective: Layer{}}); len(got) != 0 {
+		t.Fatalf("unset args = %v, want none", got)
+	}
+	empty := []string{}
+	if got := ToArgs(Resolved{Effective: Layer{EnabledPlugins: &empty}}); !reflect.DeepEqual(got, []string{"--enabled-plugins="}) {
+		t.Fatalf("empty args = %v", got)
+	}
+	names := []string{"alpha", "beta"}
+	if got := ToArgs(Resolved{Effective: Layer{EnabledPlugins: &names}}); !reflect.DeepEqual(got, []string{"--enabled-plugins=alpha,beta"}) {
+		t.Fatalf("named args = %v", got)
+	}
+}
+
 // TestToArgs_Sandbox: a launch-config sandbox choice must reach the spawned
 // `evener serve`. An explicit mode emits `--sandbox <mode>` (including off, so a
 // launch layer can override a global default back to off); an unset mode emits

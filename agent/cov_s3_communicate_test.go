@@ -4,7 +4,7 @@ import (
 	"strings"
 	"testing"
 
-	"primeradiant.com/evener/llm"
+	"primeradiant.com/evener/agent/internal/tool"
 )
 
 func TestS3Cov_NormalizeNodeOutput(t *testing.T) {
@@ -100,57 +100,30 @@ func TestS3Cov_HasMeaningfulRawOutput(t *testing.T) {
 	}
 }
 
-func TestS3Cov_CommunicateSchemaStringSlice(t *testing.T) {
-	t.Parallel()
-	if got := communicateSchemaStringSlice([]string{"a", "b"}); len(got) != 2 || got[0] != "a" {
-		t.Fatalf("[]string case: %v", got)
-	}
-	if got := communicateSchemaStringSlice([]any{"a", 1, "b"}); len(got) != 2 || got[1] != "b" {
-		t.Fatalf("[]any case: %v", got)
-	}
-	if got := communicateSchemaStringSlice(42); got != nil {
-		t.Fatalf("default case: %v", got)
-	}
-}
-
-func TestS3Cov_CommunicateSchemaContains(t *testing.T) {
-	t.Parallel()
-	if !communicateSchemaContains([]string{"x", "y"}, "y") {
-		t.Fatal("expected contains")
-	}
-	if communicateSchemaContains([]string{"x"}, "z") {
-		t.Fatal("expected not contains")
-	}
-}
-
 func TestS3Cov_UsesDefaultCommunicateOutputEnvelope(t *testing.T) {
 	t.Parallel()
 
-	envelope := func(required any) llm.ToolDefinition {
-		return llm.ToolDefinition{Parameters: map[string]any{
-			"properties": map[string]any{
-				"output": map[string]any{
-					"properties": map[string]any{
-						"message":   map[string]any{},
-						"data":      map[string]any{},
-						"artifacts": map[string]any{},
-					},
-					"required": required,
-				},
-			},
-		}}
-	}
-
-	if !usesDefaultCommunicateOutputEnvelope(envelope([]any{"message", "data", "artifacts"})) {
+	if !usesDefaultCommunicateOutputEnvelope(tool.DefCommunicateNamed("communicate")) {
 		t.Fatal("full default envelope should be recognized")
 	}
-	// Missing a required name → not the default envelope.
-	if usesDefaultCommunicateOutputEnvelope(envelope([]any{"message"})) {
-		t.Fatal("partial required set is not the default envelope")
+	stricter := tool.DefCommunicateNamed("communicate")
+	params := tool.CloneSchemaMap(stricter.Parameters)
+	params["properties"].(map[string]any)["output"].(map[string]any)["properties"].(map[string]any)["message"] = map[string]any{
+		"type": "string", "enum": []string{"only"},
 	}
-	// No output props at all → false.
-	if usesDefaultCommunicateOutputEnvelope(llm.ToolDefinition{Parameters: map[string]any{}}) {
-		t.Fatal("missing output props should be false")
+	stricter.Parameters = params
+	if usesDefaultCommunicateOutputEnvelope(stricter) {
+		t.Fatal("same-key stricter output schema is not the default envelope")
+	}
+}
+
+func BenchmarkUsesDefaultCommunicateOutputEnvelope(b *testing.B) {
+	def := tool.DefCommunicateNamed("communicate")
+	b.ReportAllocs()
+	for b.Loop() {
+		if !usesDefaultCommunicateOutputEnvelope(def) {
+			b.Fatal("canonical default envelope was not recognized")
+		}
 	}
 }
 

@@ -23,12 +23,18 @@ const (
 	launchSchemaRowsOverride launchSchemaRowsMode = "override"
 )
 
-func launchSchemaRows(schema []appwire.LaunchOption, layer appwire.LaunchConfigLayer, layerName string, mode launchSchemaRowsMode) []layerRow {
+func launchSchemaRows(schema []appwire.LaunchOption, layer appwire.LaunchConfigLayer, layerName string, mode launchSchemaRowsMode, effective appwire.LaunchConfigLayer) []layerRow {
 	if len(schema) == 0 {
 		return nil
 	}
 	rows := make([]layerRow, 0, len(schema))
 	for _, opt := range schema {
+		// Plugin selection is owned by the dedicated New Session control;
+		// keeping it out of generic settings/override rows avoids exposing two
+		// competing editors for the same presence-aware field.
+		if opt.Kind == "pluginSelection" {
+			continue
+		}
 		switch mode {
 		case launchSchemaRowsSettings:
 			if !launchOptionDefaultableInLayer(opt, layerName) {
@@ -39,7 +45,7 @@ func launchSchemaRows(schema []appwire.LaunchOption, layer appwire.LaunchConfigL
 				continue
 			}
 		}
-		rows = append(rows, layerRowForOption(opt, layer))
+		rows = append(rows, layerRowForOption(opt, layer, effective))
 	}
 	return rows
 }
@@ -48,8 +54,8 @@ func launchOptionDefaultableInLayer(opt appwire.LaunchOption, layerName string) 
 	return slices.Contains(opt.DefaultableLayers, layerName)
 }
 
-func layerRowForOption(opt appwire.LaunchOption, layer appwire.LaunchConfigLayer) layerRow {
-	value, editValue := launchOptionValue(opt, layer)
+func layerRowForOption(opt appwire.LaunchOption, layer, effective appwire.LaunchConfigLayer) layerRow {
+	value, editValue := launchOptionValue(opt, layer, effective)
 	label := opt.Label
 	if label == "" {
 		label = opt.Field
@@ -66,7 +72,24 @@ func launchOptionUsesPathCompletion(opt appwire.LaunchOption) bool {
 	}
 }
 
-func launchOptionValue(opt appwire.LaunchOption, l appwire.LaunchConfigLayer) (string, string) {
+// launchOptionValue renders an option's display and edit values for a layer.
+// When the field is unset in the displayed layer (rendering the bare
+// "(default)" placeholder) but set in the resolved effective layer, the
+// display instead shows the resolved value with a " (default)" suffix —
+// formatted exactly as a set value would be. The edit value is never
+// suffixed: editing an unset field still starts from the unset placeholder.
+func launchOptionValue(opt appwire.LaunchOption, l, effective appwire.LaunchConfigLayer) (string, string) {
+	display, editValue := launchOptionLayerValue(opt, l)
+	if display != "(default)" {
+		return display, editValue
+	}
+	if resolved, _ := launchOptionLayerValue(opt, effective); resolved != "(default)" && resolved != "(unsupported)" {
+		return resolved + " (default)", editValue
+	}
+	return display, editValue
+}
+
+func launchOptionLayerValue(opt appwire.LaunchOption, l appwire.LaunchConfigLayer) (string, string) {
 	ptrIntStr := func(p *int) string {
 		if p == nil {
 			return "(default)"

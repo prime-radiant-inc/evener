@@ -318,6 +318,11 @@ separate `credentials*.js` file exists).
 
 ### 7e. Edit instance flow
 
+*(`type`/`apiStyle`/`api_style` throughout 7e-7f are the pre-registry
+schema fields, replaced by `base`/`protocol`; `templates/partials/credentials.html`
+itself is gone — this is a point-in-time record of the old form's behavior
+for whoever ports it.)*
+
 - [ ] "Edit" form shows an API-style radio (responses/chat-completions), pre-checked to current
       value, **only when `inst.type === "openai"`**; Base URL input always, pre-filled —
       `templates/partials/credentials.html:232-253`
@@ -894,9 +899,8 @@ hand-roll their own simpler collection editor directly against `launchconfig.get
 - [ ] `launchconfig` wraps 16 RPCs 1:1 through one `request(method, params)` →
       `EvenerAppwire.request`: `schema`→`evener/launch/schema`, `resolve`→`evener/launch/resolve`,
       `getLayer`→`evener/launch/getLayer`, `setLayer`→`evener/launch/setLayer`,
-      `trustRepo`→`evener/launch/trustRepo`, `validatePath`→`evener/path/validate` (via
-      `EvenerAppwire.validatePath` when present, else a raw `fetch("/api/path/validate?...")` GET
-      fallback); `authList`→`evener/auth/list`, `authStatus`→`evener/auth/status`,
+      `trustRepo`→`evener/launch/trustRepo`, `validatePath`→`evener/path/validate` over AppWire;
+      `authList`→`evener/auth/list`, `authStatus`→`evener/auth/status`,
       `authApiKeySet`→`evener/auth/apiKey/set`, `authLoginStart`→`evener/auth/login/start`,
       `authLoginComplete`→`evener/auth/login/complete`, `authLogout`→`evener/auth/logout`,
       `authDeviceStart`→`evener/auth/device/start`, `authDevicePoll`→`evener/auth/device/poll`;

@@ -103,6 +103,13 @@ func runRegistry(args []string, stdout, stderr io.Writer) int {
 			return registryError(stderr, "%v", err)
 		}
 	}
+	// Support rows say nothing about the replay plan, so they are validated
+	// for --check alone.
+	if *check {
+		if err := CheckSupportTargets(*repoRoot, registered); err != nil {
+			return registryError(stderr, "%v", err)
+		}
+	}
 	if *emitPlan {
 		if err := EmitPlan(stdout, registered); err != nil {
 			return registryError(stderr, "emit replay plan: %v", err)
@@ -241,8 +248,9 @@ func DiscoverWorkspace(root string) ([]Target, error) {
 	return targets, nil
 }
 
-// CheckTargets validates only coverage targets. Support-only test rows remain in
-// the manifest for their existing consumers and are deliberately not compared.
+// CheckTargets validates only coverage targets. Support-only test rows are
+// checked separately by CheckSupportTargets, which validates their packages
+// and function names directly instead of through workspace discovery.
 func CheckTargets(registered, discovered []Target) error {
 	registeredSet, issues := targetSet("registered", registered)
 	discoveredSet, discoveredIssues := targetSet("discovered", discovered)
@@ -263,6 +271,97 @@ func CheckTargets(registered, discovered []Target) error {
 	}
 	sort.Strings(issues)
 	return errors.New("fuzz target registry drift:\n  " + strings.Join(issues, "\n  "))
+}
+
+// CheckSupportTargets validates the support-only rows CheckTargets skips.
+// Discovery cannot enumerate them the way it enumerates fuzz/rapid targets —
+// a support row names an ordinary Test function, indistinguishable from the
+// thousands of others in the tree without already knowing its name — so each
+// row is instead checked directly: its package must exist, and one of that
+// package's _test.go files must still declare a top-level function with the
+// row's name. That catches both failure modes this exists for: a package
+// deletion, and a rename that leaves the row's Name stale in a surviving
+// package.
+func CheckSupportTargets(root string, registered []Target) error {
+	modules, err := readWorkspaceModules(root)
+	if err != nil {
+		return err
+	}
+	moduleDirs := make(map[string]string, len(modules))
+	for _, module := range modules {
+		moduleDirs[module.label] = module.dir
+	}
+	buildContext := fuzzBuildContext()
+
+	var issues []string
+	for _, raw := range registered {
+		target, err := canonicalTarget(raw)
+		// A row that will not canonicalize, and every coverage row, is
+		// CheckTargets' finding; reporting it here would double the drift.
+		if err != nil || isCoverageKind(target.Kind) {
+			continue
+		}
+		moduleDir, ok := moduleDirs[target.Module]
+		if !ok {
+			issues = append(issues, "unknown module: "+targetString(target))
+			continue
+		}
+		packageDir := filepath.Join(moduleDir, filepath.FromSlash(strings.TrimPrefix(target.Package, "./")))
+		info, err := os.Stat(packageDir)
+		if err != nil || !info.IsDir() {
+			issues = append(issues, "stale registration: "+targetString(target))
+			continue
+		}
+		declared, err := packageDeclaresTestFunc(buildContext, packageDir, target.Name)
+		if err != nil {
+			return err
+		}
+		if !declared {
+			issues = append(issues, "stale registration: "+targetString(target))
+		}
+	}
+	if len(issues) == 0 {
+		return nil
+	}
+	sort.Strings(issues)
+	return errors.New("fuzz target registry drift:\n  " + strings.Join(issues, "\n  "))
+}
+
+// packageDeclaresTestFunc reports whether packageDir's active _test.go files
+// (matched against buildContext, the same one DiscoverWorkspace uses) declare
+// a top-level Test function named name. Support rows always name an ordinary
+// Test, so this is the discovery loop's own AST shape, narrowed to one name
+// in one directory instead of every fuzz/rapid target in the workspace.
+func packageDeclaresTestFunc(buildContext build.Context, packageDir, name string) (bool, error) {
+	entries, err := os.ReadDir(packageDir)
+	if err != nil {
+		return false, fmt.Errorf("read %s: %w", packageDir, err)
+	}
+	fset := token.NewFileSet()
+	for _, entry := range entries {
+		if entry.IsDir() || !strings.HasSuffix(entry.Name(), "_test.go") {
+			continue
+		}
+		active, err := buildContext.MatchFile(packageDir, entry.Name())
+		if err != nil {
+			return false, fmt.Errorf("match build constraints for %s: %w", filepath.Join(packageDir, entry.Name()), err)
+		}
+		if !active {
+			continue
+		}
+		filePath := filepath.Join(packageDir, entry.Name())
+		file, err := parser.ParseFile(fset, filePath, nil, 0)
+		if err != nil {
+			return false, fmt.Errorf("parse %s: %w", filePath, err)
+		}
+		for _, declaration := range file.Decls {
+			fn, ok := declaration.(*ast.FuncDecl)
+			if ok && fn.Recv == nil && fn.Name.Name == name && isTestFunction(fn) {
+				return true, nil
+			}
+		}
+	}
+	return false, nil
 }
 
 // EmitPlan writes the validated coverage replay plan as headerless UTF-8 TSV.

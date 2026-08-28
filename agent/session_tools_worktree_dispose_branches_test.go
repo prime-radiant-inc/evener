@@ -208,7 +208,7 @@ func TestSubtreeWatchesTargetingNoJobManager(t *testing.T) {
 		},
 	}
 	// jobManager is nil, subagents is initialized but empty
-	if s.subtreeWatchesTargeting("dlg_test") {
+	if s.subtreeWatchesTargeting("dlg_test", "") {
 		t.Fatalf("expected false with no jobManager or subagents")
 	}
 }
@@ -223,7 +223,7 @@ func TestWatchesTargetingEmpty(t *testing.T) {
 		terminalFlush: map[*watchConfig]bool{},
 	}
 	// Call watchesTargeting — it will lock jm.mu and iterate empty maps
-	if jm.watchesTargeting("dlg_test") {
+	if jm.watchesTargeting("dlg_test", "") {
 		t.Fatalf("expected false with empty watches")
 	}
 }

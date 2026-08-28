@@ -594,9 +594,12 @@ durable fold rejects any disagreement between them.
 TaskTemplates stores a copy of every template in the selected named agent's
 ordered workflow, including each title, prompt, reasoning effort, type, and
 insertion directive. Stable construction populates the child task store from
-that complete committed slice. Registered delegate creation supplies no parent
-task templates, preserving the existing child-workflow behavior without
-consulting the live agent registry after commit.
+that complete committed slice. A parent-supplied `task_list` is expanded into
+that slice at describe time (replacing the role's `parent_tasks` placeholder,
+or following the role's defaults when it has none), so launch and every
+resume seed the child from the same frozen list without consulting the live
+agent registry after commit. A delegate that shares its parent's task store
+refuses `task_list` at creation, since a shared store is never re-seeded.
 
 ToolNameCeiling stores the sorted, unique, pre-commit ceiling derived from the
 effective parent registry, named-agent policy, watch and delegation grants,
@@ -934,27 +937,44 @@ releases capacity again and proceeds only with remaining stop cleanup.
 
 ### One exact finalizer
 
-Every runtime completion calls FinishGeneration with its delegate lease. Under
-the controller mutex, runtime completion first passes BeginFinalization. That
-one process claim orders both ordinary and terminal completion against quiet
-attention; only the ordinary mode also arbitrates pending steering. Normal
-completion then passes CompleteSettlement, which
-must durably prepare either the accepted communicate packet or the canonical
-missing-terminal packet before it folds settling. There is no durable settling
-state without a prepared packet. Fatal, exhausted, cancelled, and stop-forced
-completion does not expose such an intermediate state: if it needs a packet
-while still running, FinishGeneration appends terminal_prepared and
-run_finished in one crash-atomic store batch. Attention completed_no_action has
-no outward packet and appends only run_finished without entering settling.
+Every stable runtime completion enters controller finalization with its exact
+delegate lease. The runtime uses BeginRunFinalization to bind the sampled run
+error and settlement mode to one process claim. That claim orders ordinary and
+terminal completion against quiet attention; only the ordinary mode also
+arbitrates pending steering. Normal completion then passes
+CompleteSettlement, which must durably prepare either the accepted
+communicate packet or the canonical missing-terminal packet before it folds
+settling. There is no durable settling state without a prepared packet. Fatal,
+exhausted, cancelled, and stop-forced completion does not expose such an
+intermediate state: if it needs a packet while still running, FinishGeneration
+appends terminal_prepared and run_finished in one crash-atomic store batch.
+
+Attention-only completion has a separate, evidence- and claim-bound path. Each
+active generation has process-local delegateGenerationEvidence: an attention
+generation starts with an attention-only completion requirement, and common
+admission of owner or other report-requiring work monotonically escalates that
+requirement to report-required. The model loop must record the explicit
+attention no-action outcome; terminalSeen records terminal communicate and is
+monotonic. A bare acknowledgement is therefore not enough by itself.
+
+After attention resolution, prepareNoAction validates the exact ordinary claim,
+the explicit outcome, the unchanged attention-only requirement, terminalSeen,
+the nil run error, and the absence of a prepared packet or pending attention.
+It retains the ordinary delegateFinish as a claim-bound fallback. Only
+FinishNoAction may consume that claim. For a running generation it appends one
+packetless delegate_run_finished with public outcome completed and private
+disposition completed_no_action, then folds the claim-bound running -> idle
+transition without entering settling or creating a delivery ID. A live stop
+race uses the retained fallback through the existing stopped path; an append
+failure keeps finalization recovery state live.
+
 FinishGeneration then:
 
 1. rejects a stale generation as a no-op;
 2. resolves stop precedence from current controller state;
 3. uses the required prepared packet when settling; for a non-settling
-   terminal path, records the private disposition completed_no_action with
-   public outcome completed and no outward packet when an attention generation
-   legitimately had nothing to report, otherwise creates a bounded canonical
-   terminal_error packet for the atomic prepare+finish batch;
+   terminal path, creates a bounded canonical terminal_error packet for the
+   atomic prepare+finish batch;
 4. appends delegate_run_finished with outcome, reason, timing, and a private
    delivery ID when owner delivery is required; a non-settling terminal path
    that needs a packet appends prepare+finish as one batch;
@@ -981,12 +1001,15 @@ packet exists only because the owner must be told what happened and restart
 must not invent a different result.
 
 completed_no_action is a private disposition on delegate_run_finished, not
-another record type and not a public outcome status. It is allowed only for an
-attention-triggered generation whose bound durable attention entries were
-successfully consumed without communicate. Its public latest outcome is
-completed. A user-input
+another record type and not a public outcome status. It is allowed only when
+the evidence- and claim-bound FinishNoAction path proves that an
+attention-triggered generation consumed its bound durable attention entries
+without communicate. Its public latest outcome is completed. A user-input
 generation that ends without an accepted communicate result receives the
-ordinary missing-terminal terminal_error.
+ordinary missing-terminal terminal_error. An accepted terminal communicate
+remains on its existing prepared-packet and reported-result path; terminalSeen
+does not replace that path. A caller-supplied completed_no_action passed to
+general FinishGeneration is invalid.
 
 The full child conversation remains in the transcript. The aggregate stores
 only the bounded canonical terminal packet needed for stable owner delivery,
@@ -1033,6 +1056,45 @@ joined the exact completion receipt of every owned shell or descendant job it
 successfully stopped. A shell signal that merely begins asynchronous process
 termination is not completion. Stop-admission or persistence failures remain
 part of the failed generation's terminal diagnostic instead of being discarded.
+
+#### Finish-path authority: the intent reducer
+
+The generation finish path's guards — exact-lease generation/binding
+authentication, settlement-claim creation and fencing, finalization phase
+admission with stop-promotion arbitration, stop precedence and fallback
+selection, suppression, no-action eligibility, prepared-terminal outcome
+normalization, append-failure recovery latching, and the per-entry-point
+stale-lease policies (suppress, propagate, swallow) — live in one locked
+decision function, `reduceFinishIntent` in `agent/delegate_tree_intents.go`.
+The caller holds the controller mutex; the reducer acquires no locks,
+performs no journal I/O, and calls no Session methods (runtime
+pointer-identity comparison is the single permitted exception). Each
+finish-path wrapper method constructs a typed intent, reduces it, appends the
+returned journal batch, builds concrete mutation plans against post-append
+durable state from the returned effect descriptors, and applies the effects.
+Wrappers branch only on the reducer's decision; they never re-evaluate
+aggregate, live, or controller state and never assign outcomes or
+dispositions.
+
+The start-failure finishers (CompleteStartInput, FailCommittedStart,
+FailCommittedRestart, finishStoppedStartLocked) and the recovery finishers
+(reconcileRecoveryRequiredStopLocked,
+reconcileRuntimeLostFromEvidenceLocked) remain separate entry paths with
+their own claim types and batch builders. Folding them into the same reducer
+is a named deferred follow-up; until it lands, stop-finish selection exists
+in three places and prepared-terminal normalization in two.
+
+The differential lifecycle harness
+(`agent/delegate_lifecycle_differential_test.go` with its model in
+`agent/delegate_lifecycle_model_test.go`) gates this path: it drives
+randomized, deterministic operation sequences through the real controller
+and asserts cross-layer agreement between the controller, the durable
+journal, and an independent model after every operation, including across
+simulated crash and append-failure recovery (invariants I1–I7 where in
+force). It pinned the three historical lifecycle bug classes — no-action
+selection, nil-evidence escalation tolerance, and exhaustion-payload
+overwrite — by mutation, and it is the regression net for any future change
+to the finish path.
 
 ### communicate
 

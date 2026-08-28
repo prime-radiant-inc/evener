@@ -12,6 +12,7 @@ import (
 	"primeradiant.com/evener/internal/appprojector"
 	"primeradiant.com/evener/internal/appserver"
 	"primeradiant.com/evener/internal/httpguard"
+	"primeradiant.com/evener/llm/registry"
 )
 
 // ImageAttachment is re-exported from package agent so HTTP clients and the
@@ -88,6 +89,9 @@ type JobStatusInfo struct {
 	ExitCode         *int   `json:"exit_code,omitempty"`
 	OutputBytes      int64  `json:"output_bytes"`
 	TranscriptRef    string `json:"transcript_ref,omitempty"`
+	Command          string `json:"command,omitempty"`
+	Intent           string `json:"intent,omitempty"`
+	Task             string `json:"task,omitempty"`
 }
 
 type DelegateStatusInfo struct {
@@ -148,20 +152,54 @@ type TurnSlotStatus struct {
 	Drives int64 `json:"drive_turns"`
 }
 
-// DetailedStatus captures the full session configuration for /status display.
-type DetailedStatus struct {
-	Tools     []ToolInfo           `json:"tools,omitempty"`
-	MCP       []MCPServerInfo      `json:"mcp,omitempty"`
-	Skills    []SkillInfo          `json:"skills,omitempty"`
-	Plugins   []PluginStatusInfo   `json:"plugins,omitempty"`
-	Hooks     map[string]int       `json:"hooks,omitempty"`
-	Jobs      []JobStatusInfo      `json:"jobs,omitempty"`
-	Delegates []DelegateStatusInfo `json:"delegates,omitempty"`
-	TurnSlots *TurnSlotStatus      `json:"turn_slots,omitempty"`
-	Agents    []string             `json:"agents,omitempty"`
+// HookEventStatus describes a single hook event's registration state.
+type HookEventStatus struct {
+	Event     string `json:"event"`
+	Count     int    `json:"count"`
+	Tier      string `json:"tier,omitempty"`
+	Supported bool   `json:"supported"`
 }
 
-// StatusInfo is the JSON response for GET /status.
+// DetailedStatus captures the full session configuration for AppWire diagnostics.
+type DetailedStatus struct {
+	Tools      []ToolInfo           `json:"tools,omitempty"`
+	MCP        []MCPServerInfo      `json:"mcp,omitempty"`
+	Skills     []SkillInfo          `json:"skills,omitempty"`
+	Plugins    []PluginStatusInfo   `json:"plugins,omitempty"`
+	HookEvents []HookEventStatus    `json:"hook_events,omitempty"`
+	Jobs       []JobStatusInfo      `json:"jobs,omitempty"`
+	Delegates  []DelegateStatusInfo `json:"delegates,omitempty"`
+	TurnSlots  *TurnSlotStatus      `json:"turn_slots,omitempty"`
+	Agents     []string             `json:"agents,omitempty"`
+}
+
+// MarshalJSON preserves an explicit empty plugin inventory while keeping a
+// nil inventory absent for old or unwired sources that cannot report it.
+func (s DetailedStatus) MarshalJSON() ([]byte, error) {
+	type alias DetailedStatus
+	a := alias(s)
+	a.Plugins = nil
+	raw, err := json.Marshal(a)
+	if err != nil {
+		return nil, err
+	}
+	if s.Plugins == nil {
+		return raw, nil
+	}
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &fields); err != nil {
+		return nil, err
+	}
+	plugins, err := json.Marshal(s.Plugins)
+	if err != nil {
+		return nil, err
+	}
+	fields["plugins"] = plugins
+	return json.Marshal(fields)
+}
+
+// StatusInfo is the daemon's materialized root-session state used to build
+// AppWire snapshots and notifications.
 type StatusInfo struct {
 	SessionID        string             `json:"session_id"`
 	State            string             `json:"state"`
@@ -229,15 +267,16 @@ type ContextMetrics struct {
 // ActionCapabilities reports which mutating session actions are currently
 // supported by this daemon.
 type ActionCapabilities struct {
-	Send           bool   `json:"send"`
-	Steer          bool   `json:"steer"`
-	Interrupt      bool   `json:"interrupt"`
-	Compact        bool   `json:"compact"`
-	Clear          bool   `json:"clear"`
-	Shutdown       bool   `json:"shutdown"`
-	ChangeModel    bool   `json:"change_model"`
-	Queue          bool   `json:"queue"`
-	ReadOnlyReason string `json:"read_only_reason,omitempty"`
+	Send              bool   `json:"send"`
+	Steer             bool   `json:"steer"`
+	Interrupt         bool   `json:"interrupt"`
+	Compact           bool   `json:"compact"`
+	Clear             bool   `json:"clear"`
+	Shutdown          bool   `json:"shutdown"`
+	ChangeModel       bool   `json:"change_model"`
+	ChangeVisionModel bool   `json:"change_vision_model"`
+	Queue             bool   `json:"queue"`
+	ReadOnlyReason    string `json:"read_only_reason,omitempty"`
 }
 
 // ServerConfig holds configuration for the HTTP server.
@@ -245,6 +284,7 @@ type ServerConfig struct {
 	AppReplaySize int // default: 1000
 	HubToken      string
 	AllowedHost   string
+	StateDir      string
 }
 
 // appDescendantProjection is the in-memory AppWire view of one in-process
@@ -258,7 +298,12 @@ type appDescendantProjection struct {
 	activeTurnID string
 }
 
-// Server is the HTTP server that bridges an agent.Session to REST and appwire clients.
+type taskPublicationCursor struct {
+	epoch    uint64
+	revision uint64
+}
+
+// Server is the HTTP server that bridges an agent.Session to AppWire clients.
 type Server struct {
 	mux         *http.ServeMux
 	appServer   *appserver.Server
@@ -268,8 +313,13 @@ type Server struct {
 	status         StatusInfo
 	appSourceID    string
 	appThreadID    string
+	appRef         string
 	appProjector   *appprojector.AppEventProjector
 	appDescendants map[string]*appDescendantProjection
+	// appTaskPublications is the active TaskStore incarnation and newest applied
+	// revision per owner for the current root identity. It is internal routing
+	// state and resets with that identity.
+	appTaskPublications map[string]taskPublicationCursor
 	// appTurns is the daemon's one materialized turn authority. Every turn read
 	// -- thread/read, the latest window, an older page -- clones or windows this
 	// and nothing else.
@@ -285,10 +335,6 @@ type Server struct {
 	appEnvelopeSource         ThreadEnvelopeSource
 	appReservedTurnID         string
 	beforeAppProjectionCommit func()
-	// insideAppProjectionCommit is a test seam invoked from within
-	// RecordAppEvent's commit callback, i.e. while the projection gate is held.
-	// Production leaves it nil.
-	insideAppProjectionCommit func()
 	// appLastStampedFailedToolCalls is the failure count most recently
 	// stamped onto an item/completed notification (kata 895d) — nil means
 	// nothing has been stamped yet for the current identity. It exists so
@@ -323,25 +369,36 @@ type Server struct {
 	promoteSteerFunc                func(int, string) error
 	cancelQueuedFunc                func(int, string) (string, int, error)
 	compactFunc                     func(context.Context) error
-	clearFunc                       func(context.Context) error
+	clearFunc                       func(context.Context, appwire.ThreadClearParams) error
+	clearJournalPath                string
+	clearRecords                    map[string]threadClearRecord
+	clearJournalErr                 error
 	modelFunc                       func(string) error
+	visionModelFunc                 func(string) error
 	nameFunc                        func(string)
 	reasoningEffortFunc             func(string)
-	listModelsFunc                  func(context.Context) ([]ModelsResponseItem, error)
+	listModelsFunc                  func(context.Context) ([]appwire.ModelDescriptor, error)
 	tasksFn                         func() any
 	jobsFn                          func(appwire.JobsListParams) (any, error)
 	jobOutputFn                     func(jobID string, beforeBytes, maxBytes int64) (data any, found bool, err error)
 	shutdownFunc                    func()
+
+	// costLookupMu guards costLookup. It is deliberately NOT s.mu: the turn
+	// projector calls the lookup from inside Project, which RecordAppEvent
+	// runs while s.mu is held, so a lookup reaching for s.mu would deadlock.
+	costLookupMu sync.RWMutex
+	costLookup   func(ref string) *registry.Cost
+
 	// sandboxEscalationResolveFunc delivers a human's approve/deny decision for a
 	// pending sandbox-exemption escalation (M7) to the session, unblocking the
 	// waiting tool-exec goroutine. nil when no session is attached.
 	sandboxEscalationResolveFunc func(escalationID string, approve bool) error
 	processing                   bool
-	// clearing is held for the duration of one POST /clear, which is the only
-	// caller of clearFunc. It gates a clear against another clear the way
-	// processing gates one against a turn: see handleClear for why a second
-	// concurrent clear is refused rather than queued.
-	clearing bool
+	// appMutationGate serializes retry-safe turn mutations with thread/clear.
+	// A clear must not rotate the live instance while an old-generation turn
+	// callback is still admitted, and a delayed turn must not enter after clear
+	// has acquired the write side of this gate.
+	appMutationGate sync.RWMutex
 	// notifyWakeRearmed is true while a goroutine is parked on the send of a
 	// notification kick that found the input slot full. It coalesces further
 	// drops into that one parked send. See SubmitNotification.
@@ -381,7 +438,7 @@ func NewServer(cfg ServerConfig) *Server {
 				ThreadTurnsList:   true,
 				TurnStart:         true,
 				TurnSteer:         true,
-				ThreadClear:       false,
+				ThreadClear:       true,
 				ThreadShutdown:    true,
 				ForkFromTurn:      false,
 				Tasks:             true,
@@ -393,28 +450,23 @@ func NewServer(cfg ServerConfig) *Server {
 		// replay for a reconnecting subscriber. It does not bound the turn
 		// snapshot: eviction changes how far a client can catch up from
 		// deltas, never what the thread contains.
-		appNotifier:    appserver.NewNotifier(replaySize),
-		appSourceID:    "local",
-		appTurns:       &appTurnSnapshot{},
-		appDescendants: make(map[string]*appDescendantProjection),
-		inputCh:        make(chan InputMessage, 1),
-		hubToken:       strings.TrimSpace(cfg.HubToken),
-		sameOrigin:     httpguard.NewSameOriginPolicy(cfg.AllowedHost),
+		appNotifier:         appserver.NewNotifier(replaySize),
+		appSourceID:         "local",
+		appTurns:            &appTurnSnapshot{},
+		appDescendants:      make(map[string]*appDescendantProjection),
+		appTaskPublications: make(map[string]taskPublicationCursor),
+		clearJournalPath:    threadClearJournalPath(cfg.StateDir),
+		clearRecords:        make(map[string]threadClearRecord),
+		inputCh:             make(chan InputMessage, 1),
+		hubToken:            strings.TrimSpace(cfg.HubToken),
+		sameOrigin:          httpguard.NewSameOriginPolicy(cfg.AllowedHost),
+	}
+	s.clearRecords, s.clearJournalErr = loadThreadClearJournal(s.clearJournalPath)
+	if s.clearRecords == nil {
+		s.clearRecords = make(map[string]threadClearRecord)
 	}
 	s.registerAppWireHandlers()
 	s.mux.HandleFunc("/rpc", s.appServer.ServeWebSocket)
-	s.mux.HandleFunc("/status", s.handleStatus)
-	s.mux.HandleFunc("/interrupt", s.handleInterrupt)
-	s.mux.HandleFunc("/steer", s.handleSteer)
-	s.mux.HandleFunc("/queue", s.handleQueue)
-	s.mux.HandleFunc("/drain-as-steer", s.handleDrainAsSteer)
-	s.mux.HandleFunc("/compact", s.handleCompact)
-	s.mux.HandleFunc("/model", s.handleModel)
-	s.mux.HandleFunc("/models", s.handleModels)
-	s.mux.HandleFunc("/clear", s.handleClear)
-	s.mux.HandleFunc("/input", s.handleInput)
-	s.mux.HandleFunc("/tasks", s.handleTasks)
-	s.mux.HandleFunc("/shutdown", s.handleShutdown)
 	return s
 }
 
@@ -459,7 +511,7 @@ func (s *Server) updateSessionInfoLocked(sessionID, model, profile string) {
 	s.status.Profile = profile
 }
 
-// SetWorkingDir sets the working directory exposed in /status.
+// SetWorkingDir sets the working directory exposed in AppWire thread snapshots.
 func (s *Server) SetWorkingDir(dir string) {
 	s.mu.Lock()
 	s.status.WorkingDir = dir
@@ -480,7 +532,7 @@ func (s *Server) IncrementTurns() {
 	s.mu.Unlock()
 }
 
-// SetCancelFunc sets the cancel function called by POST /interrupt.
+// SetCancelFunc sets the cancel function used by turn/interrupt.
 // The session loop arms it per turn and clears it between turns, so it answers
 // "is a cancel armed right now" and nothing more durable than that.
 //
@@ -507,7 +559,7 @@ func (s *Server) SetSandboxEscalationResolveFunc(fn func(escalationID string, ap
 	s.mu.Unlock()
 }
 
-// SetSteerFunc sets the function called by POST /steer. It is invoked
+// SetSteerFunc sets the function called by turn/steer. It is invoked
 // regardless of whether the session is currently processing.
 func (s *Server) SetSteerFunc(fn func(string)) {
 	s.mu.Lock()
@@ -523,7 +575,7 @@ func (s *Server) SetSteerWithImagesFunc(fn func(string, []ImageAttachment)) {
 	s.mu.Unlock()
 }
 
-// SetQueueFunc sets the function called by POST /queue (kata 111a). The
+// SetQueueFunc sets the function called by turn/queue (kata 111a). The
 // callback should append the message to the underlying session's input
 // queue. Returns an error when the session refuses the message.
 func (s *Server) SetQueueFunc(fn func(string) error) {
@@ -554,7 +606,7 @@ func (s *Server) SetQueueWithImagesFunc(fn func(string, []ImageAttachment) error
 	s.mu.Unlock()
 }
 
-// SetDrainAsSteerFunc sets the function called by POST /drain-as-steer
+// SetDrainAsSteerFunc sets the function called by turn/drainAsSteer
 // (kata 0bq1). The callback should pop every queued message and inject
 // them as a single STEERING message to the in-flight turn.
 func (s *Server) SetDrainAsSteerFunc(fn func() error) {
@@ -597,24 +649,33 @@ func (s *Server) SetCancelQueuedFunc(fn func(int, string) (string, int, error)) 
 	s.mu.Unlock()
 }
 
-// SetCompactFunc sets the function called by POST /compact.
+// SetCompactFunc sets the function called by thread/compact/start.
 func (s *Server) SetCompactFunc(fn func(context.Context) error) {
 	s.mu.Lock()
 	s.compactFunc = fn
 	s.mu.Unlock()
 }
 
-// SetClearFunc sets the function called by POST /clear.
-func (s *Server) SetClearFunc(fn func(context.Context) error) {
+// SetClearFunc sets the operation called by the typed thread/clear method.
+// The server owns mutation identity, fencing, and the durable receipt; the
+// callback only performs the session replacement.
+func (s *Server) SetClearFunc(fn func(context.Context, appwire.ThreadClearParams) error) {
 	s.mu.Lock()
 	s.clearFunc = fn
 	s.mu.Unlock()
 }
 
-// SetModelFunc sets the function called by POST /model.
+// SetModelFunc sets the function called by thread/model/set.
 func (s *Server) SetModelFunc(fn func(string) error) {
 	s.mu.Lock()
 	s.modelFunc = fn
+	s.mu.Unlock()
+}
+
+// SetVisionModelFunc sets the function called by thread/vision-model/set.
+func (s *Server) SetVisionModelFunc(fn func(string) error) {
+	s.mu.Lock()
+	s.visionModelFunc = fn
 	s.mu.Unlock()
 }
 
@@ -633,39 +694,46 @@ func (s *Server) SetReasoningEffortFunc(fn func(string)) {
 	s.mu.Unlock()
 }
 
-// SetShutdownFunc sets the function called by POST /shutdown.
+// SetShutdownFunc sets the function called by thread/shutdown.
 // It must initiate graceful termination of the daemon process.
-// The handler returns 202 immediately after invoking the callback.
 func (s *Server) SetShutdownFunc(fn func()) {
 	s.mu.Lock()
 	s.shutdownFunc = fn
 	s.mu.Unlock()
 }
 
-// ModelRequest is the JSON body for POST /model.
-type ModelRequest struct {
-	Model string `json:"model"`
+// SetCostLookupFunc installs the $/Mtok cost source every priced figure this
+// daemon reports is derived from: the live session's registry resolution of an
+// "instance/model" reference (spec §7.5). Without one the daemon reports usage
+// and no cost, never a bundled pricing table's guess.
+func (s *Server) SetCostLookupFunc(fn func(ref string) *registry.Cost) {
+	s.costLookupMu.Lock()
+	s.costLookup = fn
+	s.costLookupMu.Unlock()
 }
 
-// ModelsResponseItem is a single model entry in the GET /models response.
-type ModelsResponseItem struct {
-	ID          string `json:"id"`
-	DisplayName string `json:"display_name"`
+// costFor is the cost of ref under the installed lookup; nil when none is
+// installed or the row carries no cost. The pointer aliases the registry's
+// own Cost (registry.Resolved's alias-don't-mutate rule,
+// llm/registry/types.go), so every caller treats it as read-only.
+func (s *Server) costFor(ref string) *registry.Cost {
+	s.costLookupMu.RLock()
+	fn := s.costLookup
+	s.costLookupMu.RUnlock()
+	if fn == nil {
+		return nil
+	}
+	return fn(ref)
 }
 
-// ModelsResponse is the JSON response for GET /models.
-type ModelsResponse struct {
-	Models []ModelsResponseItem `json:"models"`
-}
-
-// SetListModelsFunc sets the function called by GET /models.
-func (s *Server) SetListModelsFunc(fn func(context.Context) ([]ModelsResponseItem, error)) {
+// SetListModelsFunc sets the function used by the typed model/list method.
+func (s *Server) SetListModelsFunc(fn func(context.Context) ([]appwire.ModelDescriptor, error)) {
 	s.mu.Lock()
 	s.listModelsFunc = fn
 	s.mu.Unlock()
 }
 
-// SetTasksFunc sets the function called by GET /tasks. The function should
+// SetTasksFunc sets the function called by evener/tasks/list. The function should
 // return a JSON-serializable slice (typically []task.Task).
 func (s *Server) SetTasksFunc(fn func() any) {
 	s.mu.Lock()
@@ -691,12 +759,6 @@ func (s *Server) SetJobOutputFunc(fn func(jobID string, beforeBytes, maxBytes in
 	s.mu.Lock()
 	s.jobOutputFn = fn
 	s.mu.Unlock()
-}
-
-// InputRequest is the JSON body for POST /input.
-type InputRequest struct {
-	Text   string            `json:"text"`
-	Images []ImageAttachment `json:"images,omitempty"`
 }
 
 // SetProcessing marks whether the session is currently processing input. A

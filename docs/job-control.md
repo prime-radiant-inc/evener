@@ -49,7 +49,10 @@ This reference contract is not itself the runtime system prompt, but the followi
 - Shell commands run in `mode="foreground"` by default and return inline output for quick commands. Set `mode="background"` to launch-and-return as a session-owned job; foreground commands that exceed the session-default wait are promoted to durable background jobs and return a `job_id`. Set `mode="detached"` only to immediately disown a process that does not need Evener job visibility, output, notification, or stop control; it returns only a PID.
 - Delegate creation returns after one stable `delegate_id` and its initial input
   are durable. It does not accept `max_wait_ms` and does not expose a run handle.
-- Use `delegate` to start a new delegate conversation. It returns `dlg_...`,
+- Use `delegate` to start a new delegate conversation: `prompt` is the brief
+  and `task_list` seeds its task list, one item per step. Sessions start clean
+  by default; use `fork_context=true` only when the assignment requires the
+  parent's full context and history. It returns `dlg_...`,
   child/session transcript metadata, status, and resumability—never `job_...`.
 - Use `delegate_send` for follow-up: a running delegate is steered; an idle,
   resumable delegate starts its next private run through the same call.
@@ -100,6 +103,7 @@ Several tools can wait, but they wait on different things. Pick by intent, and d
 | Learn when a backgrounded job finishes | the automatic terminal notification — nothing to call |
 | Learn when a job's output contains X | `job_watch(operation="create", source=<job_id>, output_match=X)` to be notified |
 | Re-observe progress on a long job | `job_watch(operation="create", source=<job_id>, progress_interval_ms=N)` (running targets only) |
+| Wake yourself later | `job_watch(operation="create", after_seconds=N)` or `repeat_seconds=N`, with a `note`; source defaults to `self` |
 | Resume an idle delegate and wait for its answer | `delegate_send(to=<delegate_id>, message=..., max_wait_ms=N)` |
 | Steer a running delegate | `delegate_send(to=<delegate_id>, message=...)` — returns on delivery; `max_wait_ms` is ignored and reported as `wait_ignored_reason` |
 
@@ -154,7 +158,7 @@ branch on `type` and `id`; only shell rows carry `job_id`.
 6. **No model-facing ack.** Retention is automatic and policy-based.
 7. **No model-facing kill.** `job_stop` is the single model-facing stop primitive; forceful cleanup is an implementation detail when needed.
 8. **Provider-free restart.** Shell runtime loss is reconciled from shell evidence; stable delegates are folded/rearmed without constructing a Session or calling a provider.
-9. **Nested shell jobs are supported; nested delegation is allowance-gated.** Subagents may start shell jobs. A subagent may itself delegate only when it was granted a non-zero `delegation_allowance`; a leaf delegate (allowance 0, the default) cannot delegate, so an observer sidecar started without an allowance still must not delegate. See the delegation-allowance amendment below.
+9. **Nested shell jobs are supported; nested delegation is allowance-gated.** Subagents may start shell jobs. A subagent may itself delegate only while its `delegation_allowance` is non-zero. By default a delegate is granted one level below its creator, so it can delegate in turn until the chain reaches a leaf; a creator that passes `delegation_allowance: 0` makes a leaf, and an observer sidecar created that way must not delegate. See the delegation-allowance amendment below.
 10. **Delegate creation and follow-up are separate.** `delegate` starts a new delegate conversation; `delegate_send` follows up on an existing `delegate_id`.
 11. **Watches are watcher-owned.** `job_watch` defines conditions over a source's output/events/progress; when a condition is met it delivers a bounded notification/frame to the watcher that created the watch.
 12. **Observers are composed, not special.** An observer is a delegate granted `watch_parent:true`, a child-created `job_watch(source="parent")`, and an observer result through `communicate(end_turn=true)`.
@@ -162,13 +166,13 @@ branch on `type` and `id`; only shell rows carry `job_id`.
 
 ### Delegation allowance (recursive delegation)
 
-`delegate` accepts an optional `delegation_allowance` integer (default 0). The value follows the strict-zero rule used across the job-control surface — absent or 0 means a leaf delegate that cannot itself delegate, exactly today's behavior; there is no `minimum`/`maximum`/`default` keyword on the schema property.
+`delegate` accepts an optional `delegation_allowance` integer. Absent means the default grant: one level below the creator's own allowance (`max(0, own-1)`), so a delegate can delegate in turn until the chain reaches a leaf. An explicit `0` means a leaf delegate that cannot itself delegate; absent and `0` are therefore distinct, unlike the strict-zero rule used elsewhere on the job-control surface. There is no `minimum`/`maximum`/`default` keyword on the schema property.
 
 **The grant rule.** A session may grant a child a `delegation_allowance` strictly less than its own allowance, so the chain always shortens and allowance 0 is a leaf. A grant `>=` the granter's own allowance is rejected with `invalid_request: delegation_allowance must be less than your own allowance (<A>); valid grants: <range>`, where `<A>` is the granter's allowance and `<range>` enumerates the grantable values (`0` at allowance 1, otherwise `0..<A-1>`). A session's own allowance is persisted in the delegate restore descriptor, so it survives restore. The current allowance is also reported on every `job_list` result (see `job_list`), so an agent can read its budget without re-reading its system prompt.
 
 **Availability matrix (allowance-gated).** Whether a child receives the delegation surface is governed by its granted allowance, not by a fixed depth gate. At allowance 0 the child is a leaf: it does not receive `delegate`, agent-type listings that require delegation are filtered out of its prompt, and its system prompt shows the leaf limits block. `job_watch` is present at every allowance — a session that can run jobs can always watch its own jobs — with each cross-session source authorizing itself (`parent` requires the `watch_parent:true` grant; a concrete job id must be owned by the watching session). At allowance > 0 the child receives `delegate` (added to the default surface for an untyped child; a typed agent gets it only if its tool list names it), may grant onward allowances strictly smaller than its own, is told its allowance in its prompt, and sees the delegation + background-jobs prompt sections. A typed agent's tool list governs *what* the child gets; allowance governs *whether* the delegation tools are grantable at all — allowance never injects tools into a type that does not list them.
 
-**Double opt-in (dark by default).** A root session's allowance equals `MaxSubagentDepth` (default 1). Under defaults the root's allowance is 1, so the root may grant only 0 — every delegate is a leaf and recursion never happens. Enabling recursion requires **both** raising `MaxSubagentDepth` in config **and** passing a non-zero `delegation_allowance` per create. Neither alone unlocks it; recursion stays dark until an operator deliberately does both.
+**Depth is the operator's knob.** A root session's allowance equals `MaxSubagentDepth` (default 2). Under defaults the root's allowance is 2, so its delegates receive allowance 1 by default and may delegate once more; their delegates are leaves. An operator caps the whole tree by lowering `MaxSubagentDepth` (1 makes every delegate a leaf), and a creator caps one branch by passing a smaller `delegation_allowance` or `0`.
 
 ## Job identity and visibility
 
@@ -197,7 +201,7 @@ or `idle`; its prior generation is summarized separately in `last_outcome` with
 | `running` | shell or delegate status | A shell has a live or believed-live process, or a delegate has an open generation. | `stop_pending`, `foreground_timeout` for shell | progress/match as configured |
 | `idle` | delegate status | No delegate generation is processing; resumability is separate metadata. | usually `null` | none by lifecycle alone |
 | `completed` | shell status or delegate `last_outcome` | Work ended normally. | `exit_zero` for shell; otherwise usually `null` | typed terminal attention |
-| `failed` | shell status or delegate `last_outcome` | Created work ran or attempted to run and failed. | `exit_nonzero`, `start_failed`, `finalize_failed`, `forward_failed`, `missing_terminal`, `terminal_error`, `runtime_lost` as applicable | typed terminal attention |
+| `failed` | shell status or delegate `last_outcome` | Created work ran or attempted to run and failed. | `exit_nonzero`, `killed_by_signal: SIGNAL`, `start_failed`, `finalize_failed`, `forward_failed`, `missing_terminal`, `terminal_error`, `runtime_lost` as applicable | typed terminal attention |
 | `exhausted` | delegate `last_outcome` | A delegate generation reached its turn or tool-round budget. | `turn_budget_exhausted`, `tool_round_budget_exhausted` | delegate terminal packet |
 | `cancelled` | shell status or delegate `last_outcome` | Evener intentionally stopped work and confirmed cancellation. | `stopped_by_parent` | typed terminal attention |
 | `stopped` | shell status or delegate `last_outcome` | Work did not complete and Evener cannot attribute it to normal failure or confirmed cancellation. | `runtime_lost`, `cancelled`, `run_timeout` | typed terminal attention |
@@ -356,11 +360,29 @@ with the returned `delegate_id`. To start an observer sidecar, set
 `watch_parent:true`; the child can then observe its immediate parent with
 `job_watch(source="parent")` and report through `communicate(end_turn=true)`.
 
+Delegates start with a **clean session** by default. Put the relevant facts,
+decisions, and excerpts in the assignment whenever that gives the child enough
+context. Use `fork_context:true` only for work that requires the parent's **full
+context and conversation history**. The option requires the same model and
+provider, including the model selected by an agent role.
+
+A fork takes a fixed copy of the recorded conversation before the unfinished
+tool round. Completed tool exchanges and images remain available; compaction
+summaries determine the working context just as they do in the parent, while
+the earlier conversation remains in the child's transcript. Later parent
+messages are not added to that snapshot. Resuming the delegate uses its own
+saved transcript.
+
+The child keeps its own assignment, role, tools, sandbox, and delegation
+allowance. Parent usage, pending deliveries, client mutation IDs, and server
+continuation handles are not adopted. The assignment must still state what
+the child owns, how to verify the result, and what to report back.
+
 Canonical background shape:
 
 ```json
 {
-  "task": "Investigate the failing parser test and report findings.",
+  "prompt": "Investigate the failing parser test and report findings.",
   "agent_type": "explorer",
   "model": "openai/gpt-5.5",
   "reasoning_effort": "high"
@@ -371,11 +393,16 @@ Full target shape (no `max_wait_ms`):
 
 ```json
 {
-  "task": "Investigate the failing parser test and report findings.",
+  "prompt": "Investigate the failing parser test and report findings.",
+  "task_list": [
+    {"title": "Reproduce", "prompt": "Run the parser test suite and capture the failing case verbatim."},
+    {"title": "Report", "prompt": "Report the failing input, the stack, and the smallest change that would fix it.", "type": "research"}
+  ],
   "agent_type": "explorer",
   "model": "openai/gpt-5.5",
   "reasoning_effort": "high",
   "watch_parent": false,
+  "fork_context": false,
   "result_schema": {
     "type": "object",
     "properties": {
@@ -660,7 +687,7 @@ Clear an existing watch:
 Trigger fields:
 
 - `output_match` is level-triggered: it fires once at attach if the shell job's already-retained output contains a match, then again as appended output matches the regex. It requires a concrete `job_...` source; `output_match` on a session/delegate source fails `invalid_request`.
-- `progress_interval_ms` fires periodically with bounded progress/excerpt metadata even if no match occurred. It is a separate progress trigger, not an event-frame modifier.
+- `progress_interval_ms` fires periodically with bounded progress/excerpt metadata even if no match occurred. It is a separate progress trigger, not an event-frame modifier. On a session source `progress_interval_ms` is refused; a timer uses `repeat_seconds`.
 - `events` selects session/job event kinds to include in the watch frame. `events: ["*"]` means all visible event kinds allowed by caller permissions and filtering. Event kind names are implementation-defined but must be discoverable by the model; the shipped vocabulary is `assistant.tool`, `communicate`, and `job.notification`. Plain assistant prose is an internal transcript/UI event and is not watchable through `job_watch`.
 - `event_filter` narrows event watches before any delivery is recorded. In v1 it applies only to `events: ["assistant.tool"]` and supports exact `tool_name` plus `status` (`"ok"` or `"error"`). Non-matching events do not create a delivery, pending row, notification, or observer wake. Assistant-tool frames include the resulting `status` plus the original tool `arguments_json`, so an observer can usually decide from the delivered frame before using audit tools.
 - `every` gates event delivery: `every: N` fires on each Nth occurrence of the watched event kind, for example `events: ["communicate"], every: 3` for every third result-tool message. `every: 1` is the semantic default and reads as unset, whatever `events` contains. `every > 1` is valid only when `events` names exactly one concrete kind; supplying it with zero, multiple, or wildcard (`"*"`) kinds fails `invalid_request`.
@@ -727,11 +754,12 @@ Rules:
 - Invalid regexes fail synchronously at watch creation time.
 - For the retained output present at attach and for bytes successfully appended while a watch is active, Evener must not silently miss a regex match because of preview-window eviction. The no-silent-miss guarantee extends to the attach scan: a token already retained at attach, or one straddling the attach boundary, must still match. Implementations may use line-buffered append-stream matching, chunk-overlap matching, or another mechanism, but the contract is no silent miss for retained/appended watched output.
 - Event frames and output excerpts are bounded and filtered before notification or observer delivery. Implementations may apply redaction/scrubbing for cross-session or observer delivery, but this contract does not promise perfect secret detection; callers must not treat frames as guaranteed secret-free.
-- Default `progress_interval_ms` is absent/no periodic progress wake-up. If supplied, minimum is `1000`, maximum is `3600000`, and omitted/`0` means no periodic progress notification. Negative values fail `invalid_request`. Session event watches use `events`/`event_filter` instead of combining events with periodic progress.
+- `progress_interval_ms` applies to concrete job sources only (min `1000`, max `3600000`, clamped; omitted/`0` means no periodic progress notification, and negatives fail `invalid_request`). Timers use `after_seconds` (60 to 86400) or `repeat_seconds` (60 to 3600) on `self`, rejected rather than clamped when out of range, with an optional `note`; a present `0` or `null` reads as absent, the same way `progress_interval_ms: 0` does. At most 8 live timers per session. Session event watches use `events`/`event_filter` instead of combining events with periodic progress.
+- Integer arguments to `job_watch` (`every`, `progress_interval_ms`, `after_seconds`, `repeat_seconds`) must be integral JSON numbers; strings and fractional numbers fail `invalid_request` rather than being silently ignored.
 - Match/event/progress notifications are batched/throttled. Multiple triggers may be coalesced. For parent-watch observer frames, coalescing is latest-frame-wins by durable key and must not turn a matched condition into silence: Evener either delivers the current pending frame, replaces it with a newer pending frame for the same key, or emits a caller-visible diagnostic for hard failure.
-- Each watch configuration has a model-facing delivery budget of 50 (watch notifications plus observer frames, the count `job_list` reports per watch). A watch that exhausts its budget is auto-cleared with one final notification telling the caller to re-arm with a tighter condition (higher `every`, narrower `output_match`, or longer `progress_interval_ms`).
+- Each watch configuration has a model-facing delivery budget of 50 condition fires: output matches and event frames. Periodic ticks, timer or job progress, count as deliveries but never trip the budget, so the `deliveries` count `job_list` reports can run past the fires the budget counts. A watch that exhausts its budget is auto-cleared with one final notification saying how many times it matched and telling the caller to re-arm with a tighter condition (higher `every` or narrower `output_match`).
 - Terminal notification ordering: flush any queued watch notification/frame for a concrete job, then deliver the terminal notification. Both are facts about the same completion, so they arrive in ONE notification turn — the watch settlement first, then the terminal — rather than waking an idle owner twice for a single ending job.
-- If no watch condition is supplied (`output_match`, `events`, or `progress_interval_ms`) for `operation="create"`, the tool fails unless the source is a granted cross-session session source such as `parent`, where the default is the bounded public frame stream.
+- If no watch condition is supplied (`output_match`, `events`, `progress_interval_ms`, `after_seconds`, or `repeat_seconds`) for `operation="create"`, the tool fails unless the source is a granted cross-session session source such as `parent`, where the default is the bounded public frame stream.
 
 Return shape:
 
@@ -749,6 +777,8 @@ Return shape:
 ```
 
 `replaced_existing` and `fired` are always present, explicitly `false` when they did not happen — `fired` is `true` only for an attach scan or terminal catch-up that matched (§7.1).
+
+The create result's one-line text names the trigger it installed: a job progress watch reads `progress_interval_ms 300000ms`, a timer reads `after 600s` or `every 300s`, and a timer's `note` follows as `note: ...`.
 
 ```mermaid
 stateDiagram-v2
@@ -845,8 +875,9 @@ Canonical behavior:
   `offset_bytes` selects a fixed 16 KiB raw page in lifetime coordinates, and
   `output_match` plus optional `context_lines` performs a bounded RE2 search of
   retained complete lines. Returned continuations advance either operation.
-- An explicit `format` cannot be combined with paging or search. `range` and
-  `expand_turn` are session-only. Search is retrospective evidence; use
+- An explicit job `format` other than `markdown` is rejected. Explicit
+  `format:"markdown"` is a neutral no-op in the default, paging, and search
+  views. `range` and `expand_turn` are session-only. Search is retrospective evidence; use
   `job_watch(output_match=...)` when a future match should wake the owner.
 - Reads are non-consuming and non-acknowledging.
 - The markdown envelope carries `transcript_ref`, `format`, `content_type`, the
@@ -958,8 +989,8 @@ tree walks. Detail comes from `job_status(target=...)`, then the typed transcrip
 ref (`job:` for shell, session ref for delegate).
 
 - `delegation_allowance` reports the calling session's current recursive-delegation budget: the largest value it may grant a child is one less (see Delegation allowance). It is omitted when `<= 1` (a leaf with no `delegate` tool, or a budget that can only grant `0` — a no-op knob) and present when the session can actually fan out, so an agent sees a meaningful budget without re-reading its system prompt.
-- `watches` enumerates the session's currently active watch configurations (the same set `job_watch` installs), so an agent can re-orient on what it is already watching without re-deriving it. Each entry carries a stable `id` (preserved across an idempotent re-configure; a replacement gets a fresh `id`), the public `source`, a one-line `condition` summary of the watch's trigger (`output_match`, `progress_interval_ms`, or `events` with an optional `every N`), `deliveries` (model-facing deliveries so far against the per-watch budget), and `created_at`. Receiver-owned watches are visible to the receiver, not to the descendant manager that physically observes the source. Drain-only residue from already-terminal watched jobs is not listed. `watches` rides with the result when non-empty (omitted from the lean scan when there are none); it is not subject to the job list's size bounding.
-- `recent_watches` is a bounded, latest-first ring of watches that have left the active set, so a watch that fired and then disappeared stays legible (it is not a watch vanishing into ambiguity). Each entry carries the same `id`/`source`/`condition`/`deliveries` plus `end_reason` — `auto_removed_terminal` (the watched job went terminal), `cleared` (`job_watch(operation="clear", watch_id=...)`), `replaced` (a different configuration superseded it), `budget_exhausted` (it hit the per-watch delivery budget), or `job_manager_closed` (the owning job manager shut down — session teardown — while the watch was still installed) — and `ended_at`. Combined with `deliveries`, this distinguishes a watch that fired before it was removed from one that never fired, and both from a watch that was never installed (absent from both lists). Receiver-owned history is visible to the receiver, not the physical source owner. It is omitted from the lean scan when empty. The ring is a debugging aid, not a durable audit log, and does not survive process restart.
+- `watches` enumerates the session's currently active watch configurations (the same set `job_watch` installs), so an agent can re-orient on what it is already watching without re-deriving it. Each entry carries a stable `id` (preserved across an idempotent re-configure; a replacement gets a fresh `id`), the public `source`, a one-line `condition` summary of the watch's trigger (`output_match`, `progress_interval_ms`, `after_seconds: N` or `repeat_seconds: N`, or `events` with an optional `every N`, plus a `note:` part for a timer; `inspect` and `list` render the note through that summary, which bounds the note at the same 2,048 characters storage keeps, so a stored note always shows in full), `deliveries` (model-facing deliveries so far; the budget counts the condition fires among them), and `created_at`. Receiver-owned watches are visible to the receiver, not to the descendant manager that physically observes the source. Drain-only residue from already-terminal watched jobs is not listed. `watches` rides with the result when non-empty (omitted from the lean scan when there are none); it is not subject to the job list's size bounding.
+- `recent_watches` is a bounded, latest-first ring of watches that have left the active set, so a watch that fired and then disappeared stays legible (it is not a watch vanishing into ambiguity). Each entry carries the same `id`/`source`/`condition`/`deliveries` plus `end_reason` — `auto_removed_terminal` (the watched job went terminal), `cleared` (`job_watch(operation="clear", watch_id=...)`), `replaced` (a different configuration superseded it), `fired` (a one-shot timer retired by its only fire), `budget_exhausted` (it hit the per-watch delivery budget), or `job_manager_closed` (the owning job manager shut down — session teardown — while the watch was still installed) — and `ended_at`. `runtime_lost` is a durable end reason too, written at restart for active watches that were not restored, but it never reaches this ring. Combined with `deliveries`, this distinguishes a watch that fired before it was removed from one that never fired, and both from a watch that was never installed (absent from both lists). Receiver-owned history is visible to the receiver, not the physical source owner. It is omitted from the lean scan when empty. The ring is a debugging aid, not a durable audit log, and does not survive process restart.
 
 `description` is optional display metadata. For shell jobs it comes from the shell tool's `description` argument. Delegate descriptions derive from the stable descriptor/task.
 
@@ -1095,7 +1126,7 @@ The v1 model-facing tool matrix is:
 | Delegate/subagent session | shell, `job_watch`, `delegate_send`, `job_status`, `job_list`, `job_stop` | Delegates may start shell jobs and watch their own jobs at any allowance. `delegate` is allowance-gated; `job_watch`'s cross-session sources authorize themselves, with the separate `watch_parent:true` grant exposing `job_watch(source="parent")` to observer leaves. Concrete `delegate_id` targets are scoped to the session's **own direct delegates** at every level — a coordinator may message its own worker delegate by `delegate_id`, but not an arbitrary descendant's delegate (which fails `not_controllable`). |
 | Root session, interactive only | `ask_user` | Not a job-control tool, but the same root/delegate split governs it: never available to a non-interactive root (`--non-interactive`, one-shot `evener <prompt>`) or to any delegate/subagent — root-only, hard-enforced; `grant_tools` rejects an explicit attempt to grant it. |
 
-Job output is not in this matrix because it is not a job tool: `read_transcript` is available to every session, including a leaf delegate, and an exact `job:<job_id>` ref reads any uniquely resolved job persisted under the local Evener state home. This does not widen `job_list`, `job_status`, `job_stop`, `job_watch`, or `delegate_send` scope.
+Shell job output is not in this matrix because it is not a job tool: `read_transcript` is available to every session, including a leaf delegate, and an exact `job:<job_id>` ref reads any uniquely resolved shell job persisted under the local Evener state home. Delegate conversation history uses the delegate session's `transcript_ref`. This does not widen `job_list`, `job_status`, `job_stop`, `job_watch`, or `delegate_send` scope.
 
 While a session is `awaiting` an `ask_user` reply, its autonomous job notifications are held rather than delivered, and drain at the turn boundary that follows the user's reply.
 
@@ -1412,9 +1443,10 @@ a released goroutine as proof of terminal persistence.
 
 ## Nested jobs
 
-Delegates may start shell jobs. They may also create stable child delegates when
-granted a non-zero `delegation_allowance`; allowance zero remains the default,
-so observer sidecars are leaves unless explicitly granted otherwise. Stable
+Delegates may start shell jobs. They may also create stable child delegates while
+their `delegation_allowance` is non-zero, which is the default one level below the
+creator; a creator passes `delegation_allowance: 0` to make a leaf, such as an
+observer sidecar that must not delegate. Stable
 delegate lineage stays in the delegate controller. Shell lineage is typed:
 `parent_job_id` links shell-to-shell work and `parent_delegate_id` names the
 stable delegate that launched a shell.
@@ -1565,9 +1597,9 @@ Tool descriptions and prompts should warn against:
 
 V1 does not define multi-job barriers, any-of/all-of watches, or named job groups. Agents coordinate multiple background jobs through individual terminal notifications and `job_list` recovery. Fan-in/barrier coordination is the likely first future coordination extension if heavy parallel workflows need less manual state tracking, but it remains out of v1 until that surface is deliberately designed.
 
-Nested delegation is allowance-gated: a delegate may create a child only with a
-granted non-zero `delegation_allowance`, and recursion requires both a raised
-`MaxSubagentDepth` and a per-create allowance. Shell jobs are not messageable;
+Nested delegation is allowance-gated: a delegate may create a child only while
+its `delegation_allowance` is non-zero. The default grant is one level below the
+creator, and `MaxSubagentDepth` bounds the whole tree. Shell jobs are not messageable;
 long-running REPL stdin is outside this contract.
 
 ## Capacity and discovery requirements
@@ -1618,9 +1650,9 @@ background unload protocol.
 ## Shipped recursion and owner attention
 
 The tree counter, `include_descendants`, owner-scoped attention, and recursive
-stable stop are shipped. Recursion beyond direct delegates remains behind the
-double opt-in: raise `MaxSubagentDepth` and grant a non-zero
-`delegation_allowance` on the parent delegate. Neither setting alone unlocks it.
+stable stop are shipped. Recursion beyond direct delegates is on by default
+within `MaxSubagentDepth`: each delegate is granted one level below its creator
+unless the creator passes a smaller `delegation_allowance` or `0`.
 
 A session renders only attention for work it owns. Parent-driven child turns
 preserve that rule while retaining ancestor inspection through

@@ -3,6 +3,7 @@ package appwire
 import (
 	"bytes"
 	"encoding/json"
+	"os"
 	"reflect"
 	"testing"
 )
@@ -36,6 +37,33 @@ func TestMethodCatalogWellFormed(t *testing.T) {
 	}
 }
 
+func TestPluginPreviewIsHubOnly(t *testing.T) {
+	var found *MethodSpec
+	for i := range Methods {
+		if Methods[i].Name == MethodEvenerPluginPreview {
+			found = &Methods[i]
+			break
+		}
+	}
+	if found == nil {
+		t.Fatal("plugin preview missing from method catalog")
+	}
+	if found.Scope != ScopeHub {
+		t.Fatalf("plugin preview scope = %q, want hub", found.Scope)
+	}
+	if _, ok := found.Params.(PluginPreviewParams); !ok {
+		t.Fatalf("plugin preview params = %T", found.Params)
+	}
+	if _, ok := found.Result.(PluginPreviewResponse); !ok {
+		t.Fatalf("plugin preview result = %T", found.Result)
+	}
+	for _, name := range CatalogMethodNames(ScopeDaemon) {
+		if name == MethodEvenerPluginPreview {
+			t.Fatal("plugin preview must not be in daemon catalog")
+		}
+	}
+}
+
 func TestNotificationCatalogWellFormed(t *testing.T) {
 	seen := map[string]bool{}
 	for i, n := range Notifications {
@@ -51,8 +79,9 @@ func TestNotificationCatalogWellFormed(t *testing.T) {
 		}
 	}
 	for name, want := range map[string]any{
-		NotifyEvenerDelegateUpdated: EvenerDelegateParams{},
-		NotifyEvenerJobsTreeUpdated: JobsTreeUpdatedParams{},
+		NotifyEvenerDelegateUpdated:       EvenerDelegateParams{},
+		NotifyEvenerJobsTreeUpdated:       JobsTreeUpdatedParams{},
+		NotifyEvenerNavigationInvalidated: NavigationInvalidatedPayload{},
 	} {
 		for _, n := range Notifications {
 			if n.Name != name {
@@ -65,6 +94,180 @@ func TestNotificationCatalogWellFormed(t *testing.T) {
 		}
 		t.Fatalf("notification %q missing from catalog", name)
 	found:
+	}
+}
+
+func TestNavigationInvalidatedPayloadJSON(t *testing.T) {
+	payload := NavigationInvalidatedPayload{
+		GenerationID: "generation-a",
+		Sequence:     7,
+		Targets: []NavigationInvalidationTarget{{
+			Kind:       NavigationTargetProject,
+			ProjectKey: "project-key",
+			Revision:   3,
+		}},
+	}
+	got, err := json.Marshal(payload)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := `{"generationId":"generation-a","sequence":7,"targets":[{"kind":"project","projectKey":"project-key","revision":3}]}`
+	if string(got) != want {
+		t.Fatalf("got %s, want %s", got, want)
+	}
+}
+
+func TestNavigationInvalidationTargetVariants(t *testing.T) {
+	tests := []struct {
+		name   string
+		target NavigationInvalidationTarget
+		want   string
+	}{
+		{"manifest", NavigationInvalidationTarget{Kind: NavigationTargetManifest, Revision: 1}, `{"kind":"manifest","revision":1}`},
+		{"section", NavigationInvalidationTarget{Kind: NavigationTargetSection, Section: "live", Revision: 2}, `{"kind":"section","section":"live","revision":2}`},
+		{"pin catalog", NavigationInvalidationTarget{Kind: NavigationTargetPinCatalog, Revision: 3}, `{"kind":"pin_catalog","revision":3}`},
+		{"pin section", NavigationInvalidationTarget{Kind: NavigationTargetPinSection, SectionID: "pin-a", Revision: 4}, `{"kind":"pin_section","sectionId":"pin-a","revision":4}`},
+		{"catalog", NavigationInvalidationTarget{Kind: NavigationTargetCatalog, Catalog: "projects", Revision: 5}, `{"kind":"catalog","catalog":"projects","revision":5}`},
+		{"all loaded projects", NavigationInvalidationTarget{Kind: NavigationTargetAllLoadedProjects}, `{"kind":"all_loaded_projects"}`},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got, err := json.Marshal(tc.target)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if string(got) != tc.want {
+				t.Fatalf("got %s, want %s", got, tc.want)
+			}
+		})
+	}
+}
+
+func TestNavigationInvalidationTargetRejectsInvalidVariants(t *testing.T) {
+	valid := []NavigationInvalidationTarget{
+		{Kind: NavigationTargetManifest, Revision: 0},
+		{Kind: NavigationTargetSection, Section: "live", Revision: 1},
+		{Kind: NavigationTargetPinCatalog, Revision: 2},
+		{Kind: NavigationTargetPinSection, SectionID: "pin-a", Revision: 3},
+		{Kind: NavigationTargetCatalog, Catalog: "projects", Revision: 4},
+		{Kind: NavigationTargetProject, ProjectKey: "project-a", Revision: 5},
+		{Kind: NavigationTargetAllLoadedProjects},
+	}
+	for _, target := range valid {
+		if _, err := json.Marshal(target); err != nil {
+			t.Errorf("marshal valid %+v: %v", target, err)
+		}
+	}
+
+	invalid := []NavigationInvalidationTarget{
+		{Kind: "unknown", Revision: 1},
+		{Kind: NavigationTargetManifest, Section: "live", Revision: 1},
+		{Kind: NavigationTargetSection, Revision: 1},
+		{Kind: NavigationTargetPinCatalog, Catalog: "projects", Revision: 1},
+		{Kind: NavigationTargetPinSection, Revision: 1},
+		{Kind: NavigationTargetCatalog, Revision: 1},
+		{Kind: NavigationTargetProject, Revision: 1},
+		{Kind: NavigationTargetAllLoadedProjects, Revision: 1},
+		{Kind: NavigationTargetAllLoadedProjects, ProjectKey: "project-a"},
+	}
+	for _, target := range invalid {
+		if _, err := json.Marshal(target); err == nil {
+			t.Errorf("marshal invalid %+v succeeded", target)
+		}
+	}
+}
+
+func TestNavigationInvalidationTargetUnmarshalRejectsInvalidVariants(t *testing.T) {
+	valid := []string{
+		`{"kind":"manifest","revision":0}`,
+		`{"kind":"section","section":"live","revision":1}`,
+		`{"kind":"pin_catalog","revision":2}`,
+		`{"kind":"pin_section","sectionId":"pin-a","revision":3}`,
+		`{"kind":"catalog","catalog":"projects","revision":4}`,
+		`{"kind":"project","projectKey":"project-a","revision":5}`,
+		`{"kind":"all_loaded_projects"}`,
+	}
+	for _, raw := range valid {
+		var target NavigationInvalidationTarget
+		if err := json.Unmarshal([]byte(raw), &target); err != nil {
+			t.Errorf("unmarshal valid %s: %v", raw, err)
+		}
+	}
+
+	invalid := []string{
+		`{"kind":"unknown","revision":1}`,
+		`{"kind":"manifest"}`,
+		`{"kind":"manifest","revision":1,"section":"live"}`,
+		`{"kind":"section","revision":1}`,
+		`{"kind":"pin_catalog","revision":1,"catalog":"projects"}`,
+		`{"kind":"pin_section","revision":1}`,
+		`{"kind":"catalog","revision":1}`,
+		`{"kind":"project","revision":1}`,
+		`{"kind":"all_loaded_projects","revision":1}`,
+		`{"kind":"manifest","revision":1,"unexpected":true}`,
+	}
+	for _, raw := range invalid {
+		var target NavigationInvalidationTarget
+		if err := json.Unmarshal([]byte(raw), &target); err == nil {
+			t.Errorf("unmarshal invalid %s succeeded", raw)
+		}
+	}
+}
+
+func TestTranscriptDisplayCatalog(t *testing.T) {
+	methods := map[string]MethodSpec{}
+	for _, method := range Methods {
+		methods[method.Name] = method
+	}
+	for _, name := range []string{
+		MethodEvenerSettingsTranscriptDisplayGet,
+		MethodEvenerSettingsTranscriptDisplayPatch,
+	} {
+		method, ok := methods[name]
+		if !ok {
+			t.Fatalf("method catalog missing %s", name)
+		}
+		if method.Scope != ScopeHub {
+			t.Errorf("method %s scope = %q, want %q", name, method.Scope, ScopeHub)
+		}
+	}
+	var changed *NotificationSpec
+	for i := range Notifications {
+		if Notifications[i].Name == NotifyEvenerSettingsTranscriptDisplayChanged {
+			changed = &Notifications[i]
+			break
+		}
+	}
+	if changed == nil {
+		t.Fatalf("notification catalog missing %s", NotifyEvenerSettingsTranscriptDisplayChanged)
+	}
+	if reflect.TypeOf(changed.Payload) != reflect.TypeFor[TranscriptDisplayChangedParams]() {
+		t.Fatalf("changed payload type = %T, want %T", changed.Payload, TranscriptDisplayChangedParams{})
+	}
+}
+
+func TestFeatureSetTranscriptDisplayJSONField(t *testing.T) {
+	encoded, err := json.Marshal(FeatureSet{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if bytes.Contains(encoded, []byte(`"transcriptDisplaySettings"`)) {
+		t.Fatalf("false feature must be omitted: %s", encoded)
+	}
+	encoded, err = json.Marshal(FeatureSet{TranscriptDisplaySettings: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Contains(encoded, []byte(`"transcriptDisplaySettings":true`)) {
+		t.Fatalf("true feature missing from JSON: %s", encoded)
+	}
+
+	generated, err := os.ReadFile("../cmd/evener-hub/frontend/src/protocol/types.gen.ts")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Contains(generated, []byte("transcriptDisplaySettings?: boolean;")) {
+		t.Fatal("generated TypeScript feature field is not optional")
 	}
 }
 
@@ -111,18 +314,40 @@ func TestConnectionAndReservedMethodsCataloged(t *testing.T) {
 	}
 }
 
+func TestNavigationReadMethodIsHubScoped(t *testing.T) {
+	for _, method := range Methods {
+		if method.Name != MethodEvenerNavigationRead {
+			continue
+		}
+		if method.Scope != ScopeHub {
+			t.Fatalf("navigation read scope = %q, want %q", method.Scope, ScopeHub)
+		}
+		if _, ok := method.Params.(NavigationReadParams); !ok {
+			t.Fatalf("navigation read params type = %T, want NavigationReadParams", method.Params)
+		}
+		if _, ok := method.Result.(NavigationReadResponse); !ok {
+			t.Fatalf("navigation read result type = %T, want NavigationReadResponse", method.Result)
+		}
+		if method.Summary == "" {
+			t.Fatal("navigation read catalog summary is empty")
+		}
+		return
+	}
+	t.Fatalf("method catalog missing %q", MethodEvenerNavigationRead)
+}
+
 func TestMutationShapesRequireIdentityAndPreconditions(t *testing.T) {
 	tests := []struct {
 		method string
 		valid  string
 	}{
-		{MethodTurnStart, `{"clientMutationId":"m1"}`},
-		{MethodTurnSteer, `{"clientMutationId":"m1","expectedTurnId":"t1"}`},
-		{MethodTurnInterrupt, `{"clientMutationId":"m1","expectedTurnId":"t1"}`},
-		{MethodTurnQueue, `{"clientMutationId":"m1","expectedTurnId":"t1"}`},
-		{MethodTurnDrainAsSteer, `{"clientMutationId":"m1","expectedTurnId":"t1","expectedQueueRevision":0}`},
-		{MethodTurnPromoteQueuedAsSteer, `{"clientMutationId":"m1","expectedTurnId":"t1","expectedEntryId":"q1"}`},
-		{MethodTurnCancelQueued, `{"clientMutationId":"m1","expectedEntryId":"q1"}`},
+		{MethodTurnStart, `{"clientMutationId":"m1","expectedInstanceId":"i1"}`},
+		{MethodTurnSteer, `{"clientMutationId":"m1","expectedInstanceId":"i1"}`},
+		{MethodTurnInterrupt, `{"clientMutationId":"m1","expectedInstanceId":"i1"}`},
+		{MethodTurnQueue, `{"clientMutationId":"m1","expectedInstanceId":"i1"}`},
+		{MethodTurnDrainAsSteer, `{"clientMutationId":"m1","expectedInstanceId":"i1","expectedQueueRevision":0}`},
+		{MethodTurnPromoteQueuedAsSteer, `{"clientMutationId":"m1","expectedInstanceId":"i1","expectedEntryId":"q1"}`},
+		{MethodTurnCancelQueued, `{"clientMutationId":"m1","expectedInstanceId":"i1","expectedEntryId":"q1"}`},
 	}
 	for _, tc := range tests {
 		t.Run(tc.method, func(t *testing.T) {
@@ -151,7 +376,7 @@ func TestMutationExpectedQueueRevisionRequiresUnsignedInteger(t *testing.T) {
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			raw := json.RawMessage(`{"clientMutationId":"m1","expectedTurnId":"t1","expectedQueueRevision":` + tc.value + `}`)
+			raw := json.RawMessage(`{"clientMutationId":"m1","expectedInstanceId":"i1","expectedQueueRevision":` + tc.value + `}`)
 			err := ValidateMutationParams(MethodTurnDrainAsSteer, raw)
 			if tc.wantErr && err == nil {
 				t.Fatal("invalid expectedQueueRevision accepted")
@@ -165,12 +390,13 @@ func TestMutationExpectedQueueRevisionRequiresUnsignedInteger(t *testing.T) {
 
 func TestThreadNotificationsRequireAuthoritativeRoutingIdentity(t *testing.T) {
 	global := map[string]bool{
-		NotifyEvenerAuthUpdated:        true,
-		NotifyEvenerLaunchUpdated:      true,
-		NotifyEvenerAttentionChanged:   true,
-		NotifyEvenerMarketplaceUpdated: true,
-		NotifyEvenerPluginUpdated:      true,
-		NotifyEvenerTreeChanged:        true,
+		NotifyEvenerAuthUpdated:                      true,
+		NotifyEvenerLaunchUpdated:                    true,
+		NotifyEvenerAttentionChanged:                 true,
+		NotifyEvenerMarketplaceUpdated:               true,
+		NotifyEvenerPluginUpdated:                    true,
+		NotifyEvenerNavigationInvalidated:            true,
+		NotifyEvenerSettingsTranscriptDisplayChanged: true,
 	}
 	for _, notification := range Notifications {
 		if global[notification.Name] {
@@ -186,6 +412,12 @@ func TestThreadNotificationsRequireAuthoritativeRoutingIdentity(t *testing.T) {
 			if got, want := field.Tag.Get("json"), map[string]string{"ThreadID": "threadId", "Ref": "ref"}[fieldName]; got != want {
 				t.Errorf("%s payload %s.%s json tag = %q, want %q", notification.Name, payloadType.Name(), fieldName, got, want)
 			}
+		}
+		// The daemon restamps threadId/ref at its notification egress
+		// (stampAppNotificationTarget); a payload without the method would
+		// silently ship the projector's own view of the target instead.
+		if _, ok := notification.Payload.(NotificationTargeted); !ok {
+			t.Errorf("%s payload %s does not implement NotificationTargeted", notification.Name, payloadType.Name())
 		}
 	}
 }
@@ -217,8 +449,8 @@ func TestJobsCatalogEntries(t *testing.T) {
 
 // TestControlMutationsRequireNoTurnID pins the flag-day validator's half of the
 // session-scoped rule: control applies to whatever is running, so no control
-// mutation may demand a turn id -- while the identity every retry-safe mutation
-// needs, and the preconditions that name a real object, are still required.
+// mutation may demand a turn id -- while the stable workspace identity and
+// current instance fence every retry-safe mutation.
 func TestControlMutationsRequireNoTurnID(t *testing.T) {
 	tests := []struct {
 		name    string
@@ -229,17 +461,17 @@ func TestControlMutationsRequireNoTurnID(t *testing.T) {
 		{
 			name:   "interrupt needs no expected turn",
 			method: MethodTurnInterrupt,
-			params: `{"clientMutationId":"m1"}`,
+			params: `{"clientMutationId":"m1","expectedInstanceId":"i1"}`,
 		},
 		{
 			name:   "steer needs no expected turn",
 			method: MethodTurnSteer,
-			params: `{"clientMutationId":"m1"}`,
+			params: `{"clientMutationId":"m1","expectedInstanceId":"i1"}`,
 		},
 		{
 			name:   "queue needs no expected turn",
 			method: MethodTurnQueue,
-			params: `{"clientMutationId":"m1"}`,
+			params: `{"clientMutationId":"m1","expectedInstanceId":"i1"}`,
 		},
 		{
 			name:    "interrupt still needs an identity",
@@ -250,7 +482,7 @@ func TestControlMutationsRequireNoTurnID(t *testing.T) {
 		{
 			name:   "drain needs the queue revision it swaps against, not a turn",
 			method: MethodTurnDrainAsSteer,
-			params: `{"clientMutationId":"m1","expectedQueueRevision":3}`,
+			params: `{"clientMutationId":"m1","expectedInstanceId":"i1","expectedQueueRevision":3}`,
 		},
 		{
 			name:    "drain without its queue revision is still refused",
@@ -261,7 +493,7 @@ func TestControlMutationsRequireNoTurnID(t *testing.T) {
 		{
 			name:   "promote needs the entry it moves, not a turn",
 			method: MethodTurnPromoteQueuedAsSteer,
-			params: `{"clientMutationId":"m1","expectedEntryId":"qe_1"}`,
+			params: `{"clientMutationId":"m1","expectedInstanceId":"i1","expectedEntryId":"qe_1"}`,
 		},
 		{
 			name:    "promote without its entry is still refused",

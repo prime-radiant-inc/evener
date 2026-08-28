@@ -180,7 +180,7 @@ func TestReadFile_RealPDF_DetectedByItsBytes(t *testing.T) {
 		if err := os.WriteFile(filepath.Join(dir, name), content, 0o644); err != nil {
 			t.Fatalf("write %s: %v", name, err)
 		}
-		args, err := json.Marshal(map[string]any{"file_path": name, "purpose": "inspect"})
+		args, err := json.Marshal(map[string]any{"file_path": name, "intent": "inspect"})
 		if err != nil {
 			t.Fatalf("marshal args: %v", err)
 		}

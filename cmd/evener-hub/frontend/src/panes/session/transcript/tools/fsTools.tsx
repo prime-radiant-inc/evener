@@ -1,7 +1,7 @@
 // Descriptors for the four read-only filesystem tools (parity checklist §2):
 // read_file, grep (+ its grep_files/grep_search aliases), list_dir (+
 // list_directory), glob. Each is "cheap" mode in the legacy sense (a short,
-// bounded row) - target/result folded into one purpose-first summary string
+// bounded row) - target/result folded into one intent-first summary string
 // per this file's own ToolRendererDescriptor contract (there is no separate
 // target/result slot on the wire like the legacy DOM had).
 

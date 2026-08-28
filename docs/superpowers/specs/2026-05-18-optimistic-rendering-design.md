@@ -163,6 +163,12 @@ If the existing `internal/appwire` test helpers do not already provide a fake tr
 
 Under `test/scenarios/`:
 
+> **Historical note (superseded 2026-08-26, Task 29 / issue #171):** The
+> original web idle-steer card below is retained as design history. Its daemon
+> refusal premise and optimistic-chip assertions are no longer live coverage;
+> the current card is `test/scenarios/web-steer-no-active-turn-guard.md` and
+> covers only the Composer's client-side guard.
+
 - `web-steer-in-idle-fails-fast.md` — run a session through to IDLE; using Chrome DevTools-driven scripting, click the steer button (we'll force-enable it for the scenario via JS to drive the bug surface), assert the `.optimistic-failed` chip renders with the rejection reason within 200ms.
 - `tui-steer-in-idle-fails-fast.md` — same shape for the TUI: tmux drive, send Ctrl+S or steer command in IDLE, capture-pane and assert the `failed` line appears within 1s.
 - `web-steer-success-reconciles.md` — happy path; clicking steer in processing state shows pending pulse, transitions to confirmed steering divider when the event arrives. Live against `anthropic/claude-haiku-4-5-20251001`.

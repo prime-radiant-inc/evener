@@ -22,7 +22,8 @@ The discipline is adopted wholesale from meta-doctor's repair pipeline:
 > propose-plus-validate. Core-skill and doctor-tool repair are **propose-only
 > behind review + a validation gate** — that tier can corrupt the doctor itself.
 
-Diagnosis is pure over cold artifacts. `evener doctor` reads the shell/watch and
+Diagnosis is pure over cold artifacts. `doctor_evener` (and the `evener doctor`
+CLI) reads the shell/watch and
 stable delegate journals through read-only event readers and folds; it must not
 open an append-capable store, truncate a tail, construct a Session, call a
 provider, or trigger hooks/nudges/salvage. The exact

@@ -34,6 +34,7 @@ var notifyMethods = []string{
 	// Surfaced by TestEveryWireNotificationIsHandledOrExplicitlyIgnored.
 	appwire.NotifyThreadModelChanged,
 	appwire.NotifyThreadReasoningEffortChanged,
+	appwire.NotifyThreadVisionModelChanged,
 	appwire.NotifyEvenerMarketplaceUpdated,
 	appwire.NotifyEvenerPluginUpdated,
 	appwire.NotifyEvenerSandboxEscalationRequested,

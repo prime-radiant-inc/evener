@@ -1,0 +1,15 @@
+/* Composed from sheet.module.css in this directory: Sheet's panel is
+ * position:fixed, scoped here to the demo frame instead of the viewport, with
+ * an explicit width because the frame's only in-flow child is entirely
+ * position:fixed. See sheet.module.css's own derivation for the full trick. */
+.demoFrame {
+  composes: demoFrame from "./sheet.module.css";
+}
+
+.reopen {
+  composes: reopen from "./sheet.module.css";
+}
+
+.sheetBody {
+  padding-bottom: env(safe-area-inset-bottom);
+}

@@ -5,6 +5,7 @@ import (
 	"strings"
 
 	tea "github.com/charmbracelet/bubbletea"
+	"primeradiant.com/evener/appwire"
 	"primeradiant.com/evener/cmd/evener-tui/internal/launchconfig"
 	"primeradiant.com/evener/cmd/evener-tui/internal/tuipick"
 )
@@ -32,12 +33,12 @@ func (m hubModel) handleAuthLoginStart(msg hubAuthLoginStartMsg) (tea.Model, tea
 		m.addAuthErrorNotice("Auth error", msg.err)
 		return m, nil
 	}
+	// The hub echoes the instance it normalized the request to, so the
+	// paste-back step targets whichever instance the flow was started for.
 	m.authLoginProvider = strings.TrimSpace(msg.resp.Provider)
-	if m.authLoginProvider == "" {
-		m.authLoginProvider = "openai"
-	}
 	m.authLoginFlowID = msg.resp.FlowID
-	m.addSessionSystem("OpenAI sign-in URL:\n" + msg.resp.URL + "\nPaste the full OpenAI redirect URL and press enter.")
+	name := authStatusInstanceName(authStatus{Provider: msg.resp.Provider})
+	m.addSessionSystem("Sign-in URL for " + name + ":\n" + msg.resp.URL + "\nPaste the full redirect URL and press enter.")
 	return m, nil
 }
 
@@ -53,7 +54,7 @@ func (m hubModel) handleAuthLoginComplete(msg hubAuthLoginCompleteMsg) (tea.Mode
 	m.authStatus = authStatusFromAppWire(msg.resp.Status)
 	m.authStatusSeen = true
 	m.clearSessionError()
-	m.addSessionSystem("OpenAI login complete. " + formatAuthStatusSummary(m.authStatus))
+	m.addSessionSystem("Sign-in complete for " + authStatusInstanceName(m.authStatus) + ". " + formatAuthStatusSummary(m.authStatus))
 	return m, nil
 }
 
@@ -67,10 +68,16 @@ func (m hubModel) handleAuthLogout(msg hubAuthLogoutMsg) (tea.Model, tea.Cmd) {
 	m.authStatus = authStatusFromAppWire(msg.resp.Status)
 	m.authStatusSeen = true
 	m.clearSessionError()
+	// The hub removes whatever that instance actually holds — an OAuth
+	// record for the Codex transport, the stored key for everything else —
+	// and Removed says whether there was one. Naming the act "sign-out of
+	// OpenAI OAuth" is what let /logout delete an API key and report an
+	// OAuth sign-out.
+	name := authStatusInstanceName(m.authStatus)
 	if msg.resp.Removed {
-		m.addSessionSystem("OpenAI sign-out complete. " + formatAuthStatusSummary(m.authStatus))
+		m.addSessionSystem("Removed the stored credential for " + name + ". " + formatAuthStatusSummary(m.authStatus))
 	} else {
-		m.addSessionSystem("OpenAI auth was already signed out. " + formatAuthStatusSummary(m.authStatus))
+		m.addSessionSystem("No stored credential to remove for " + name + ". " + formatAuthStatusSummary(m.authStatus))
 	}
 	return m, nil
 }
@@ -173,17 +180,90 @@ func (m hubModel) handleLaunchOverridesOpen(msg launchconfig.LaunchOverridesOpen
 	}
 	m.launchOverridesModal = &modal
 	if m.client != nil {
-		return m, launchconfig.CmdLaunchSchema(m.client)
+		// The resolve supplies the modal's "(default)" labels: unset
+		// overrides render the effective value a session started now would
+		// inherit for this working directory.
+		return m, tea.Batch(
+			launchconfig.CmdLaunchSchema(m.client),
+			launchconfig.CmdResolveLaunch(m.client, m.launchOverridesCWD(), nil),
+		)
 	}
 	return m, nil
+}
+
+// launchOverridesCWD is the working directory a session started now would
+// inherit — the spawn form's Dir when set, else the selected dashboard
+// project's directory — which is what the overrides modal resolves its
+// "(default)" labels against.
+func (m hubModel) launchOverridesCWD() string {
+	if dir := strings.TrimSpace(m.spawnDir); dir != "" {
+		return dir
+	}
+	return m.spawnWorkingDir()
 }
 
 func (m hubModel) handleLaunchOverridesResult(msg launchconfig.LaunchOverridesResultMsg) (tea.Model, tea.Cmd) {
 	m.launchOverridesModal = nil
 	if !msg.Cancelled {
 		m.spawnLaunchOverrides = msg.Overrides
+		cmd := m.requestSpawnPluginPreview()
+		return m, cmd
 	}
 	return m, nil
+}
+
+func (m hubModel) handlePluginPreviewResult(msg launchconfig.PluginPreviewResultMsg) (tea.Model, tea.Cmd) {
+	if m.mode != hubModeSpawn || !m.spawnHarnessSupportsPlugins() || msg.Key != m.spawnPluginPreviewRequestKey {
+		return m, nil
+	}
+	m.spawnPluginPreviewLoading = false
+	if msg.Err != nil {
+		if m.spawnPluginPreviewParamsDigest != m.spawnPluginPreviewLastSuccess {
+			m.spawnPluginPreview = appwire.PluginPreviewResponse{}
+			m.spawnPluginPreviewLoaded = false
+		}
+		m.spawnPluginPreviewErr = msg.Err
+		return m.forwardSpawnPluginPreviewToPanel(msg)
+	}
+	m.spawnPluginPreviewErr = nil
+	m.spawnPluginPreviewLoaded = true
+	m.spawnPluginPreview = msg.Response
+	m.spawnPluginPreviewLastSuccess = m.spawnPluginPreviewParamsDigest
+	return m.forwardSpawnPluginPreviewToPanel(msg)
+}
+
+func (m hubModel) handlePluginsForLaunchResult(msg launchconfig.PluginsForLaunchResultMsg) (tea.Model, tea.Cmd) {
+	if !m.spawnHarnessSupportsPlugins() {
+		m.spawnPluginsPanel = nil
+		return m, nil
+	}
+	if msg.Retry {
+		cmd := m.requestSpawnPluginPreview()
+		return m, cmd
+	}
+	m.spawnPluginsPanel = nil
+	if msg.Cancelled || !msg.Applied || msg.EnabledPlugins == nil {
+		return m, nil
+	}
+	updated := appwire.LaunchConfigLayer{}
+	if m.spawnLaunchOverrides != nil {
+		updated = *m.spawnLaunchOverrides
+	}
+	values := append([]string(nil), (*msg.EnabledPlugins)...)
+	updated.EnabledPlugins = &values
+	m.spawnLaunchOverrides = &updated
+	cmd := m.requestSpawnPluginPreview()
+	return m, cmd
+}
+
+func (m hubModel) forwardSpawnPluginPreviewToPanel(msg launchconfig.PluginPreviewResultMsg) (tea.Model, tea.Cmd) {
+	if m.spawnPluginsPanel == nil {
+		return m, nil
+	}
+	updated, cmd := m.spawnPluginsPanel.Update(msg)
+	panel := updated.(launchconfig.PluginsForLaunchPanel)
+	m.spawnPluginsPanel = &panel
+	return m, cmd
 }
 
 func (m hubModel) handleLaunchSettingsEditRequest(msg launchconfig.LaunchSettingsEditRequestMsg) (tea.Model, tea.Cmd) {
@@ -457,11 +537,18 @@ func (m hubModel) handleLaunchResult(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.launchOverridesModal = &p
 		return m, cmd
 	}
+	var modalCmd tea.Cmd
+	if _, ok := msg.(launchconfig.LaunchResolveResultMsg); ok && m.launchOverridesModal != nil {
+		updated, cmd := m.launchOverridesModal.Update(msg)
+		p := updated.(launchconfig.LaunchOverridesModal)
+		m.launchOverridesModal = &p
+		modalCmd = cmd
+	}
 	if m.launchSettingsPanel != nil {
 		updated, cmd := m.launchSettingsPanel.Update(msg)
 		p := updated.(launchconfig.LaunchSettingsPanel)
 		m.launchSettingsPanel = &p
-		return m, cmd
+		return m, tea.Batch(modalCmd, cmd)
 	}
-	return m, nil
+	return m, modalCmd
 }

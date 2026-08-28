@@ -1,0 +1,19 @@
+{
+  "name": "activity-tree-open-hit-target",
+  "description": "Dense activity rows pitch (~23.5px) below even the 28px desktop hit size, so OpenButton's deliberate overhang is capped on this surface: the [data-open-shell] rules in activitypanel.module.css stretch the shell into the row's content box and the button into the shell, keeping the 28px desktop / 44px phone hit WIDTH while the target never exceeds its own row's band. Consecutive rows' targets share no points (a tap near a boundary can never open a neighbor's transcript), a row with the control is exactly as tall as the plain reference row, and elementFromPoint reaches each sampled row's own Open at its center and exposed edges - first, middle, and last rows, at desktop and phone sizes.",
+  "cssFiles": [
+    "styles/global.css",
+    "styles/tokens.css",
+    "panes/session/chrome/activitypanel.module.css",
+    "widgets/button/button.module.css",
+    "widgets/iconbutton/iconbutton.module.css",
+    "widgets/openbutton/openbutton.module.css"
+  ],
+  "viewport": { "width": 1200, "height": 700, "deviceScaleFactor": 1, "mobile": false },
+  "mutation": {
+    "declaration": "activitypanel.module.css: remove the .denseRow > [data-open-shell] rules",
+    "verified": "2026-09-03",
+    "expect": "fail",
+    "note": "Without the cap the shell keeps its 28px/44px height on a ~23.5px row pitch: consecutive targets overlap (maxOverlap > 0.5), targets escape their own rows' bands, and the middle row's boundary probes can resolve to a neighbor's button."
+  }
+}

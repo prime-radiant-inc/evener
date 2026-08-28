@@ -405,6 +405,9 @@ func FuzzJobtoolsFormat(f *testing.F) {
 	f.Add([]byte{1, 1, 1, 1, 1, 1, 1, 1})
 	f.Add([]byte{2, 3, 0, 5, 7, 9, 11, 1, 1, 0, 0, 4, 6})
 	f.Add([]byte{3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3})
+	// Zero jobs/events keep the prefix short; the tail selects a delegate stop
+	// with a non-empty previous status, pinning the delegate-only footer oracle.
+	f.Add([]byte{0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 0, 1, 1, 1})
 
 	f.Fuzz(func(t *testing.T, data []byte) {
 		r := &jobtools_reader{data: data}
@@ -428,8 +431,10 @@ func FuzzJobtoolsFormat(f *testing.F) {
 			PreviousStatus: r.str(),
 			Outcome:        r.str(),
 		}
+		// Append new draws after the established fields so existing corpus inputs
+		// retain their stable cursor meaning.
+		stop.Type = []string{"shell", "delegate"}[r.intn(2)]
 		oracle.Deterministic(t, formatJobStop, stop, func(a, b string) bool { return a == b })
-
 	})
 }
 

@@ -381,6 +381,21 @@ describe("MutationOutboxIndexedDB", () => {
     expect(await store.getRecovery(second.clientMutationId)).toBeDefined();
   });
 
+  test("discardRecovery retains the durable draft when its deletion guard is invalidated", async () => {
+    const store = new MutationOutboxIndexedDB({
+      indexedDB,
+      databaseName,
+      createMutationId: idSequence(),
+    });
+    const record = await store.enqueueIntent(intent("keep me"));
+    await store.transferToRecovery(record.clientMutationId, "rejected");
+
+    expect(await store.discardRecovery(record.clientMutationId, () => false)).toBe(false);
+    expect(await store.getRecovery(record.clientMutationId)).toBeDefined();
+    expect(await store.discardRecovery(record.clientMutationId, () => true)).toBe(true);
+    expect(await store.getRecovery(record.clientMutationId)).toBeUndefined();
+  });
+
   test("recovery resend uses fresh Composer routing while retaining one winner", async () => {
     const createMutationId = idSequence();
     const origin = new MutationOutboxIndexedDB({ indexedDB, databaseName, createMutationId });

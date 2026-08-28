@@ -19,6 +19,7 @@ import (
 	"text/tabwriter"
 	"time"
 
+	"primeradiant.com/evener/appwire"
 	"primeradiant.com/evener/buildinfo"
 	"primeradiant.com/evener/cmd/evener-hub/internal/codexlaunch"
 	"primeradiant.com/evener/cmd/evener-hub/internal/hostlock"
@@ -26,27 +27,17 @@ import (
 	"primeradiant.com/evener/cmd/evener-hub/internal/hubedge"
 	"primeradiant.com/evener/cmdutil"
 	"primeradiant.com/evener/envvars"
+	"primeradiant.com/evener/internal/appserver"
 	"primeradiant.com/evener/internal/binresolve"
 	"primeradiant.com/evener/internal/credentials"
-	"primeradiant.com/evener/llm"
-	"primeradiant.com/evener/llm/providercfg"
+	"primeradiant.com/evener/internal/plugins"
 	"primeradiant.com/evener/rendezvous"
 
 	// Side-effect imports register provider adapters. These are the same
-	// adapters `evener serve` uses, so the hub's /api/models reflects what
+	// adapters `evener serve` uses, so the hub's model/list reflects what
 	// spawning will succeed at — only providers configured in the hub's
 	// environment surface in the picker.
-	_ "primeradiant.com/evener/llm/providers/anthropic"
-	_ "primeradiant.com/evener/llm/providers/glm"
-	_ "primeradiant.com/evener/llm/providers/google"
-	_ "primeradiant.com/evener/llm/providers/kimi"
-	_ "primeradiant.com/evener/llm/providers/kimi_anthropic"
-	_ "primeradiant.com/evener/llm/providers/minimax"
-	_ "primeradiant.com/evener/llm/providers/ollama"
-	_ "primeradiant.com/evener/llm/providers/openai"
-	_ "primeradiant.com/evener/llm/providers/openaicompat"
-	_ "primeradiant.com/evener/llm/providers/openrouter"
-	_ "primeradiant.com/evener/llm/providers/openrouter_anthropic"
+	_ "primeradiant.com/evener/llm/providers/all"
 )
 
 const Version = "0.1.0"
@@ -83,38 +74,60 @@ type hubShutdowner interface {
 	Shutdown(context.Context) error
 }
 
+type navigationPublisher interface {
+	BroadcastAll(string, any)
+}
+
+func runNavigationPublisher(ctx context.Context, navigation *NavigationService, publisher navigationPublisher) {
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-navigation.PublicationReady():
+			for {
+				payloads := navigation.DrainPublications()
+				if len(payloads) == 0 {
+					break
+				}
+				for _, payload := range payloads {
+					publisher.BroadcastAll(appwire.NotifyEvenerNavigationInvalidated, payload)
+				}
+			}
+		}
+	}
+}
+
 type hubOptions struct {
 	configPath   string
 	addr         string
 	evenerBinary string
+	appwireTrace string
 }
 
 type mainDeps struct {
-	loadConfig         func(string) (Config, error)
-	ensureDirs         func() error
-	acquireLock        func(string) (func(), error)
-	newToken           func() (string, error)
-	loadAuthToken      func(string) (string, error)
-	loadCredentials    func(string) (*credentials.Store, error)
-	loadProviderConfig func(string) (providercfg.Config, bool, error)
-	materializeConfig  func(string, ...llm.EnvOption) (providercfg.Config, error)
-	notifyContext      func(context.Context, ...os.Signal) (context.Context, context.CancelFunc)
-	listen             func(context.Context, string, string) (net.Listener, error)
-	serve              func(context.Context, hubHTTPServer, hubShutdowner) error
-	afterWeb           func(*WebServer)
+	loadConfig      func(string) (Config, error)
+	ensureDirs      func() error
+	acquireLock     func(string) (func(), error)
+	newToken        func() (string, error)
+	loadAuthToken   func(string) (string, error)
+	loadCredentials func(string) (*credentials.Store, error)
+	loadRegistry    hubcore.RegistryLoader
+	notifyContext   func(context.Context, ...os.Signal) (context.Context, context.CancelFunc)
+	listen          func(context.Context, string, string) (net.Listener, error)
+	serve           func(context.Context, hubHTTPServer, hubShutdowner) error
+	afterWeb        func(*WebServer)
 }
 
 func defaultMainDeps() mainDeps {
 	return mainDeps{
-		loadConfig:         LoadConfig,
-		ensureDirs:         cmdutil.EnsureUserConfigDirs,
-		acquireLock:        hostlock.AcquireLock,
-		newToken:           newHubToken,
-		loadAuthToken:      hubedge.LoadOrCreateAuthToken,
-		loadCredentials:    credentials.LoadStore,
-		loadProviderConfig: providercfg.LoadFile,
-		materializeConfig:  cmdutil.MaterializeProvidersConfig,
-		notifyContext:      signal.NotifyContext,
+		loadConfig:      LoadConfig,
+		ensureDirs:      cmdutil.EnsureUserConfigDirs,
+		acquireLock:     hostlock.AcquireLock,
+		newToken:        newHubToken,
+		loadAuthToken:   hubedge.LoadOrCreateAuthToken,
+		loadCredentials: credentials.LoadStore,
+		loadRegistry:    cmdutil.LoadRegistry,
+		notifyContext:   signal.NotifyContext,
 		listen: func(ctx context.Context, network, addr string) (net.Listener, error) {
 			var lc net.ListenConfig
 			return lc.Listen(ctx, network, addr)
@@ -172,6 +185,26 @@ func runMain(args []string, stderr io.Writer, deps mainDeps) error {
 	}
 	defer release()
 
+	var appwireTrace *appserver.WebSocketTrace
+	if opts.appwireTrace != "" {
+		tracePath, absErr := filepath.Abs(opts.appwireTrace)
+		if absErr != nil {
+			_, _ = fmt.Fprintf(stderr, "[hub] appwire trace path: %v\n", absErr)
+			return fmt.Errorf("resolve appwire trace path: %w", absErr)
+		}
+		appwireTrace, err = appserver.NewWebSocketTrace(tracePath)
+		if err != nil {
+			_, _ = fmt.Fprintf(stderr, "[hub] appwire trace: %v\n", err)
+			return fmt.Errorf("create appwire trace: %w", err)
+		}
+		defer func() {
+			if closeErr := appwireTrace.Close(); closeErr != nil {
+				_, _ = fmt.Fprintf(stderr, "[hub] close appwire trace: %v\n", closeErr)
+			}
+		}()
+		_, _ = fmt.Fprintf(stderr, "[hub] recording raw browser AppWire frames at %s; this file contains sensitive data\n", tracePath)
+	}
+
 	// Resolve runtime paths.
 	runDir := cfg.RunDir
 	if runDir == "" {
@@ -214,35 +247,20 @@ func runMain(args []string, stderr io.Writer, deps mainDeps) error {
 		_, _ = fmt.Fprintf(stderr, "[hub] auth token: %v\n", err)
 		return err
 	}
-	providersConfigPath := envvars.EVENERProvidersConfig.Getenv()
-	if providersConfigPath == "" {
-		providersConfigPath = filepath.Join(cmdutil.DefaultConfigRoot(), "providers.toml")
-	}
-	// credentials.toml is always a sibling of providers.toml, wherever
-	// EVENER_PROVIDERS_CONFIG points it — matching cmdutil.LoadProviderConfigAt's
-	// resolution so the hub and a plain `evener` client agree on the store.
-	credsStore, err := deps.loadCredentials(filepath.Join(filepath.Dir(providersConfigPath), "credentials.toml"))
+	providersConfigPath, noUserLayer := cmdutil.ProvidersConfigPath()
+	credentialsPath := cmdutil.CredentialsPath()
+	credsStore, err := deps.loadCredentials(credentialsPath)
 	if err != nil {
 		_, _ = fmt.Fprintf(stderr, "[hub] credentials store: %v\n", err)
 		return err
 	}
-	var loadedProviderConfig *providercfg.Config
-	if pcfg, exists, pcfgErr := deps.loadProviderConfig(providersConfigPath); pcfgErr != nil {
-		_, _ = fmt.Fprintf(stderr, "[hub] providers config: %v\n", pcfgErr)
-		return pcfgErr
-	} else if exists {
-		loadedProviderConfig = &pcfg
-	} else {
-		// File absent — materialize a descriptors-only providers.toml from the
-		// environment so the hub has a single source of truth and spawned
-		// children load the same file via EVENER_PROVIDERS_CONFIG.
-		materialized, matErr := deps.materializeConfig(providersConfigPath)
-		if matErr != nil {
-			_, _ = fmt.Fprintf(stderr, "[hub] materialize providers config: %v\n", matErr)
-			return matErr
-		}
-		loadedProviderConfig = &materialized
-		_, _ = fmt.Fprintf(os.Stderr, "[hub] materialized %s\n", providersConfigPath)
+	// A providers.toml the registry cannot read is a diagnostic, not a
+	// startup failure: the hub keeps an implicit-only registry, every child
+	// it spawns resolves the same set, and instance writes stay refused
+	// until the user fixes the file by hand (spec §10, §14.1).
+	hubReg := hubcore.NewProviderRegistry(deps.loadRegistry)
+	if err := hubReg.Reload(); err != nil {
+		_, _ = fmt.Fprintf(stderr, "[hub] providers config: %v — starting with implicit instances only\n", err)
 	}
 	resolvedEvenerBinary := resolveEvenerBinaryPath(opts.evenerBinary, currentExecutable(), exec.LookPath)
 	if opts.evenerBinary == "" && resolvedEvenerBinary != "" && resolvedEvenerBinary != "evener" {
@@ -253,9 +271,11 @@ func runMain(args []string, stderr io.Writer, deps mainDeps) error {
 		EvenerBinary:        resolvedEvenerBinary,
 		RunDir:              runDir,
 		HubToken:            hubToken,
-		Creds:               credsStore,
+		Registry:            hubReg,
 		StateRoot:           hubStateRoot,
 		ProvidersConfigPath: providersConfigPath,
+		CredentialsPath:     credentialsPath,
+		NoUserLayer:         noUserLayer,
 	}
 	var codexLauncher *codexlaunch.CodexLauncher
 	if len(cfg.CodexLaunches) > 0 {
@@ -266,18 +286,9 @@ func runMain(args []string, stderr io.Writer, deps mainDeps) error {
 	// as a fallback when a session's project dir can't be found in the past index.
 	stateDir := filepath.Dir(filepath.Clean(strings.TrimSuffix(stateGlob, "*")))
 
-	// Keep configured providers available for settings; launch choices come
-	// from the Evener harness contract exposed by HubSpawner.
-	var models []hubcore.ModelDescriptor
-	for _, p := range cfg.Providers {
-		for _, m := range p.Models {
-			models = append(models, hubcore.ModelDescriptor{Provider: p.Name, Model: m})
-		}
-	}
-
-	// inputs is the shared inputs-version counter the /api/tree memo (TreeCache)
-	// keys on; bumped whenever an input to the tree changes so the next request
-	// recomputes instead of serving a stale memoized tree.
+	// inputs is the shared source-revision counter used by NavigationService and
+	// the remaining memoized tree projection; bumping it makes the next read
+	// observe changed navigation inputs instead of stale state.
 	inputs := &hubcore.InputsVersion{}
 
 	// Wire archive/favorite's content-delta-gated onChange hook (Task 10) to
@@ -344,54 +355,74 @@ func runMain(args []string, stderr io.Writer, deps mainDeps) error {
 		_ = hubListener.Close()
 		return fmt.Errorf("load deletion state: %w", err)
 	}
+	transcriptDisplayStore, transcriptDisplayStoreErr := hubcore.NewTranscriptDisplayStore(hubStateRoot)
+	if transcriptDisplayStoreErr != nil {
+		_, _ = fmt.Fprintf(stderr, "[hub] transcript display state: %v\n", transcriptDisplayStoreErr)
+	}
+
+	// Resolve the registry root once for this hub process. Launch configuration
+	// may override XDG_CONFIG_HOME for a child, so the child must receive this
+	// concrete root rather than resolving its own default from that environment.
+	pluginRoot := plugins.NewManager("").Root
 
 	// Web
-	web := NewWebServer(hubcore.WebConfig{
-		HubAddr:             cfg.Addr,
-		AuthToken:           authToken,
-		MobileBaseURL:       cfg.MobileBaseURL,
-		HubStateRoot:        cfg.HubStateRoot,
-		LaunchConfigRoot:    cmdutil.DefaultConfigRoot(),
-		RunDir:              runDir,
-		PastIndexPath:       pastIndexDB,
-		Roster:              roster,
-		Past:                past,
-		Archive:             archive,
-		Favorite:            favorite,
-		PinSections:         pinSections,
-		Spawner:             spawner,
-		DeletionStore:       deletionStore,
-		Models:              models,
-		PastPerPage:         cfg.PastResultsPerPage,
-		StateDir:            stateDir,
-		CredsStore:          credsStore,
-		ProviderConfig:      loadedProviderConfig,
-		ProvidersConfigPath: providersConfigPath,
-		CodexSources:        cfg.CodexSources,
-		CodexLaunches:       cfg.CodexLaunches,
-		CodexLauncher:       codexLauncher,
-		PokeAttention:       pokeAttention,
-		Inputs:              inputs,
-		RemoteThreadCache:   remoteCache,
-	})
+	web := newWebServer(hubcore.WebConfig{
+		HubAddr:                   cfg.Addr,
+		AuthToken:                 authToken,
+		MobileBaseURL:             cfg.MobileBaseURL,
+		HubStateRoot:              cfg.HubStateRoot,
+		LaunchConfigRoot:          cmdutil.DefaultConfigRoot(),
+		PluginRoot:                pluginRoot,
+		TranscriptDisplayStore:    transcriptDisplayStore,
+		TranscriptDisplayStoreErr: transcriptDisplayStoreErr,
+		RunDir:                    runDir,
+		PastIndexPath:             pastIndexDB,
+		Roster:                    roster,
+		Past:                      past,
+		Archive:                   archive,
+		Favorite:                  favorite,
+		PinSections:               pinSections,
+		Spawner:                   spawner,
+		DeletionStore:             deletionStore,
+		PastPerPage:               cfg.PastResultsPerPage,
+		StateDir:                  stateDir,
+		CredsStore:                credsStore,
+		Registry:                  hubReg,
+		ProvidersConfigPath:       providersConfigPath,
+		CredentialsPath:           credentialsPath,
+		NoUserLayer:               noUserLayer,
+		CodexSources:              cfg.CodexSources,
+		CodexLaunches:             cfg.CodexLaunches,
+		CodexLauncher:             codexLauncher,
+		PokeAttention:             pokeAttention,
+		Inputs:                    inputs,
+		RemoteThreadCache:         remoteCache,
+	}, appwireTrace)
+	if appwireTrace != nil {
+		defer func() {
+			shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+			if shutdownErr := web.appRPC.Shutdown(shutdownCtx); shutdownErr != nil {
+				_, _ = fmt.Fprintf(stderr, "[hub] drain AppWire trace connections: %v\n", shutdownErr)
+			}
+		}()
+	}
 
-	// evener/tree/changed push (spec §7.3 item 3): Roster/PastIndex's onChange
-	// hook already gates on an actual content-fingerprint delta (never a
-	// no-op probe/rebuild cycle — see bump above), so composing the broadcast
-	// into the same hook pushes the sidebar exactly on a daemon appearing/
-	// disappearing/changing liveness, or a session appearing/ending/changing
-	// in the past index. Rename and project-delete both route their session
-	// edits through PastIndex.UpdateMeta/Rebuild, so this hook covers the
-	// common case for them too — those handlers do NOT also call
-	// notifyTreeChanged unconditionally (it would double-broadcast); they
-	// call it conditionally, only when UpdateMeta/Rebuild report the hook
-	// didn't fire (see notifyTreeChanged's doc comment). Archive and favorite
-	// decisions live in ArchiveStore/FavoriteStore, which never route through
-	// PastIndex at all, so those two mutations broadcast unconditionally
-	// instead via WebServer.notifyMutation (web_api_archive.go,
-	// web_api_favorite.go).
-	past.SetOnChange(func() { bump(); notifyTreeChanged(web.appRPC) })
-	roster.SetOnChange(func() { bump(); notifyTreeChanged(web.appRPC) })
+	// Navigation invalidation hooks: Roster/PastIndex's onChange hook already
+	// gates on an actual content-fingerprint delta (never a no-op probe/rebuild
+	// cycle — see bump above), so composing the navigation invalidation into the
+	// same hook pushes the sidebar exactly on a daemon appearing/disappearing/
+	// changing liveness, or a session appearing/ending/changing in the past
+	// index. Archive and favorite decisions live in ArchiveStore/FavoriteStore,
+	// which never route through PastIndex at all, so they invalidate directly.
+	past.SetOnChange(func() { bump(); web.navigation.Invalidate(navigationChangeHint{}) })
+	roster.SetOnChange(func() { bump(); web.navigation.Invalidate(navigationChangeHint{}) })
+	archive.SetOnChange(func() { bump(); web.navigation.Invalidate(navigationChangeHint{AllLoadedProjects: true}) })
+	favorite.SetOnChange(func() { bump(); web.navigation.Invalidate(navigationChangeHint{AllLoadedProjects: true}) })
+	remoteCache.SetOnChange(func() { bump(); web.navigation.Invalidate(navigationChangeHint{Sources: true}) })
+	if pinSections != nil {
+		pinSections.SetOnChange(func() { bump(); web.navigation.Invalidate(navigationChangeHint{}) })
+	}
 
 	if deps.afterWeb != nil {
 		deps.afterWeb(web)
@@ -409,12 +440,18 @@ func runMain(args []string, stderr io.Writer, deps mainDeps) error {
 	startBackground := func(fn func()) {
 		background.Go(fn)
 	}
-
 	// Populate the roster before serving so the first sidebar request can't hit
 	// an empty roster (the "flash of no sessions" right after a restart). Probes
 	// run concurrently, so this is bounded by ~one probe timeout regardless of
 	// how many daemons are live.
 	roster.Refresh()
+	// Start the resettable navigation scheduler only after the initial roster
+	// seed, so its first capture cannot publish a transient empty generation.
+	startBackground(func() { web.navigation.Start(ctx) })
+	// NavigationService is the sole typed-event authority. Drain its FIFO from
+	// one lifecycle-owned publisher so readiness coalescing cannot duplicate or
+	// reorder invalidations.
+	startBackground(func() { runNavigationPublisher(ctx, web.navigation, web.appRPC) })
 	startBackground(func() { watchHubRoster(ctx, roster) })
 
 	startBackground(func() {
@@ -443,7 +480,7 @@ func runMain(args []string, stderr io.Writer, deps mainDeps) error {
 	// that never did, so a fresh install whose first interaction is the web
 	// UI (Settings → Marketplaces & Plugins) saw zero marketplaces until a
 	// session happened to spawn and seed them first.
-	seedHubMarketplaces()
+	seedHubMarketplaces(ctx)
 
 	// Plugin auto-upgrade daemon (design doc §9.1): refreshes every known
 	// marketplace, then upgrades every installed, git-backed plugin with
@@ -455,8 +492,8 @@ func runMain(args []string, stderr io.Writer, deps mainDeps) error {
 	startHubPluginMaintenance(ctx, cfg, web, startBackground)
 	// Remote-thread cache refresher: refreshRemoteThreads (web_api_tree.go)
 	// walks every configured remote source's ListThreads, a synchronous
-	// network hop that used to run inline on every /api/tree request. Move it
-	// to a ~30s ticker + poke so a tree render never blocks on it; the tree
+	// network hop that used to run inline on every navigation read. Move it
+	// to a ~30s ticker + poke so a tree render never blocks on it; the navigation
 	// read path (remoteTreeThreads) reads remoteCache.Get() instead whenever
 	// RemoteThreadCache is configured.
 	startBackground(func() { refreshHubRemoteThreads(ctx, remotePoke, remoteCache, web) })
@@ -473,7 +510,7 @@ func runMain(args []string, stderr io.Writer, deps mainDeps) error {
 	// Build a usable auth URL. If the bind addr is 0.0.0.0 or ::, replace
 	// it with a hostname the operator can reach the hub at.
 	authHost := advertisedHubHost(cfg.Addr, hubHostname)
-	_, _ = fmt.Fprintf(os.Stderr, "[hub] auth URL (visit once per browser): http://%s/auth?token=%s\n", authHost, authToken)
+	_, _ = fmt.Fprintf(os.Stderr, "[hub] auth URL (visit once per browser): %s\n", hubedge.AuthURLFor("http://"+authHost, authToken))
 	_, _ = fmt.Fprintf(os.Stderr, "[hub] auth token also at %s (use as Authorization: Bearer ... for scripted clients)\n", filepath.Join(hubStateRoot, hubedge.TokenFileName))
 	if err := deps.serve(ctx, srv, codexShutdowner(codexLauncher)); err != nil {
 		_, _ = fmt.Fprintf(stderr, "[hub] %v\n", err)
@@ -489,6 +526,7 @@ func parseHubOptions(args []string, stderr io.Writer) (hubOptions, error) {
 	fs.StringVar(&opts.configPath, "config", opts.configPath, "path to hub.toml")
 	fs.StringVar(&opts.addr, "addr", "", "override hub listen address")
 	fs.StringVar(&opts.evenerBinary, "evener", "", "path to evener binary (default: 'evener' on PATH)")
+	fs.StringVar(&opts.appwireTrace, "appwire-trace", "", "write raw per-connection browser AppWire frames to a new JSONL file")
 	fs.Usage = func() {
 		_, _ = fmt.Fprintf(stderr, "Usage: evener-hub [flags]\n\nMulti-session web orchestrator for evener serve daemons.\n\n")
 		fs.PrintDefaults()
@@ -581,6 +619,9 @@ func printHubEnvVars(w io.Writer) {
 	} {
 		_, _ = fmt.Fprintf(tw, "  %s\t%s\n", v.Name, v.Summary)
 	}
+	// Every implicit provider the registry knows reads its own key and base
+	// URL; naming them all here would be a second, drifting roster.
+	_, _ = fmt.Fprintf(tw, "  %s\t%s\n", "<ID>_API_KEY / <ID>_BASE_URL", "any implicit provider's key or base URL (evener providers list)")
 	_ = tw.Flush()
 }
 

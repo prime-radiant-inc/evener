@@ -69,6 +69,27 @@ function installDecodeErrorStub(): void {
   globalThis.Image = FailingImage;
 }
 
+function installControlledImageStub(): { resolve(): void; reject(): void } {
+  let image: ControlledImage | undefined;
+  class ControlledImage {
+    onload: (() => void) | null = null;
+    onerror: (() => void) | null = null;
+    width = 8;
+    height = 4;
+    src = "";
+
+    constructor() {
+      image = this;
+    }
+  }
+  // @ts-expect-error stubbing the global Image constructor for this test file only
+  globalThis.Image = ControlledImage;
+  return {
+    resolve: () => image?.onload?.(),
+    reject: () => image?.onerror?.(),
+  };
+}
+
 // A fake TextEditor backed by a plain in-memory variable - useAttachments'
 // own contract (see its header comment) is that it never touches a DOM
 // node directly, so its tests need no real textarea element at all, only
@@ -171,6 +192,60 @@ test("a new attachment after recovery hydration uses the next marker", async () 
 
   expect(editor.getText()).toBe("[image 4][image 5]");
   expect(result.current.items.map((item) => item.marker)).toEqual([4, 5]);
+});
+
+test("reset clears settled items and restarts markers at one", async () => {
+  const editor = makeFakeEditor();
+  const { result } = renderHook(() => useAttachments(editor));
+  act(() => result.current.ingestFiles([makeFile("old.png")], () => {}));
+  await flush();
+  expect(result.current.items[0]).toMatchObject({ marker: 1, pending: false });
+
+  act(() => {
+    result.current.reset();
+    editor.write("", 0);
+    result.current.ingestFiles([makeFile("new.png")], () => {});
+  });
+
+  expect(result.current.items).toHaveLength(1);
+  expect(result.current.items[0]).toMatchObject({ marker: 1, name: "new.png" });
+});
+
+test("reset invalidates a pending encode success", async () => {
+  const gate = installControlledImageStub();
+  const editor = makeFakeEditor();
+  const { result } = renderHook(() => useAttachments(editor));
+  act(() => result.current.ingestFiles([makeFile("old.png")], () => {}));
+  expect(result.current.hasPending).toBe(true);
+
+  act(() => {
+    result.current.reset();
+    editor.write("/goal replacement", "/goal replacement".length);
+    gate.resolve();
+  });
+  await flush();
+
+  expect(result.current.items).toEqual([]);
+  expect(editor.getText()).toBe("/goal replacement");
+});
+
+test("reset invalidates a pending encode failure without stripping replacement text or reporting rejection", async () => {
+  const gate = installControlledImageStub();
+  const editor = makeFakeEditor();
+  const onRejected = vi.fn();
+  const { result } = renderHook(() => useAttachments(editor));
+  act(() => result.current.ingestFiles([makeFile("old.png")], onRejected));
+
+  act(() => {
+    result.current.reset();
+    editor.write("/goal replacement", "/goal replacement".length);
+    gate.reject();
+  });
+  await flush();
+
+  expect(result.current.items).toEqual([]);
+  expect(editor.getText()).toBe("/goal replacement");
+  expect(onRejected).not.toHaveBeenCalled();
 });
 
 test("ingesting an image synchronously splices its marker into the editor text and flags the item pending", () => {

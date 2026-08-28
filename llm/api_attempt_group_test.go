@@ -193,6 +193,34 @@ func TestAPIAttemptGroupAppendsAttemptsThenOneSettlement(t *testing.T) {
 	}
 }
 
+// TestAPIAttemptGroupRecordsFinalAttemptProtocol pins the read-back the agent
+// uses to stamp a turn's wire protocol: the group carries the protocol of the
+// attempt begun most recently, so a fallback that crossed to another instance
+// reports the protocol that actually answered, and a call that begins no
+// attempt at all (an override serves it) reports none.
+func TestAPIAttemptGroupRecordsFinalAttemptProtocol(t *testing.T) {
+	group := NewAPIAttemptGroup("ag_protocol")
+	if got := group.Protocol(); got != "" {
+		t.Fatalf("protocol before any attempt = %q, want empty", got)
+	}
+	sink := &recordingAPIAttemptSink{}
+	ctx := WithAPIAttemptSink(WithAPIAttemptGroup(context.Background(), group), sink)
+	startedAt := time.Unix(1_700_000_000, 0).UTC()
+
+	meta := testAPIAttemptMeta(startedAt)
+	meta.Protocol = "openai-responses"
+	BeginAPIAttempt(ctx, meta)
+	if got := group.Protocol(); got != "openai-responses" {
+		t.Fatalf("protocol after the first attempt = %q", got)
+	}
+	meta = testAPIAttemptMeta(startedAt.Add(time.Second))
+	meta.Protocol = "anthropic"
+	BeginAPIAttempt(ctx, meta)
+	if got := group.Protocol(); got != "anthropic" {
+		t.Fatalf("protocol after the fallback attempt = %q, want the final attempt's", got)
+	}
+}
+
 func TestAPIAttemptGroupSettlementOutcomeMatchesFinalAttemptAfterOutOfOrderCompletions(t *testing.T) {
 	sink := &recordingAPIAttemptSink{}
 	group := NewAPIAttemptGroup("ag_out_of_order")
@@ -395,6 +423,17 @@ func TestAPIAttemptGroupZeroAttemptCancellationSettlement(t *testing.T) {
 	}
 	if !reflect.DeepEqual(events, []string{"append_settlement"}) {
 		t.Fatalf("events = %v", events)
+	}
+}
+
+func TestAPIAttemptGroupRunBudgetExhaustionSettlesAsCallerCancel(t *testing.T) {
+	sink := &recordingAPIAttemptSink{}
+	group := NewAPIAttemptGroup("ag_run_budget")
+	ctx := WithAPIAttemptSink(WithAPIAttemptGroup(context.Background(), group), sink)
+	group.SettleResult(ctx, runBudgetError{})
+	_, settlements, _ := sink.snapshot()
+	if len(settlements) != 1 || settlements[0].Outcome != apilog.AttemptCallerCancel {
+		t.Fatalf("settlement = %+v, want caller cancellation", settlements)
 	}
 }
 

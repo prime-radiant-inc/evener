@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/signal"
 	"text/tabwriter"
+	"time"
 
 	"primeradiant.com/evener/agent"
 	"primeradiant.com/evener/buildinfo"
@@ -20,7 +21,6 @@ import (
 	"primeradiant.com/evener/cmd/evener/internal/launchcheck"
 	"primeradiant.com/evener/cmdutil"
 	"primeradiant.com/evener/envvars"
-	openaiprovider "primeradiant.com/evener/llm/providers/openai"
 )
 
 // Alias for brevity within flag definitions.
@@ -29,6 +29,7 @@ type stringSliceFlag = cmdutil.StringSliceFlag
 type runCLIFlags struct {
 	model                       *string
 	fastCheapModel              *string
+	visionModel                 *string
 	workDir                     *string
 	systemPrompt                *string
 	stateDir                    *string
@@ -54,6 +55,7 @@ type runCLIFlags struct {
 	mcpServers                  stringSliceFlag
 	mcpConfigs                  stringSliceFlag
 	pluginDirs                  stringSliceFlag
+	enabledPlugins              pluginSelectionFlag
 	noDefaultMarketplaces       *bool
 	systemPromptAsUser          *bool
 	openAIResponsesContinuation *string
@@ -62,6 +64,7 @@ type runCLIFlags struct {
 	systemPromptAppend          stringSliceFlag
 	sandbox                     *string
 	sandboxNet                  *string
+	runTimeout                  *time.Duration
 }
 
 func main() {
@@ -103,9 +106,8 @@ func defaultMainDepsWithStdin(stdin *os.File) mainDeps {
 }
 
 func mainWithDeps(deps mainDeps) {
-	// Report the evener build version in the OpenAI provider's User-Agent and in
-	// agent session metadata.
-	openaiprovider.ClientVersion = buildinfo.Version()
+	// Report the evener build version in agent session metadata. The provider
+	// User-Agent is stamped by cmdutil.NewRegistryClient when the client loads.
 	agent.BuildVersion = buildinfo.Version()
 
 	// Quick flags that don't need full flag.Parse().
@@ -142,6 +144,11 @@ func mainWithDeps(deps mainDeps) {
 		if errors.Is(err, flag.ErrHelp) {
 			return
 		}
+		deps.exit(2)
+		return
+	}
+	if err := rejectPluginSelectionWithResume(flags.enabledPlugins.Value(), *flags.resume, *flags.resumeLast); err != nil {
+		_, _ = fmt.Fprintf(deps.stderr, "evener: %v\n", err)
 		deps.exit(2)
 		return
 	}
@@ -183,6 +190,11 @@ func mainWithDeps(deps mainDeps) {
 		deps.exit(1)
 		return
 	}
+	if *flags.runTimeout < 0 {
+		_, _ = fmt.Fprintf(deps.stderr, "evener: invalid --timeout %s: must be non-negative\n", flags.runTimeout.String())
+		deps.exit(2)
+		return
+	}
 
 	ctx, cancel := deps.notify(context.Background(), os.Interrupt)
 	defer cancel()
@@ -191,6 +203,7 @@ func mainWithDeps(deps mainDeps) {
 		prompt:                      prompt,
 		model:                       *flags.model,
 		fastCheapModel:              *flags.fastCheapModel,
+		visionModel:                 *flags.visionModel,
 		workDir:                     *flags.workDir,
 		stateDir:                    *flags.stateDir,
 		systemPrompt:                *flags.systemPrompt,
@@ -213,11 +226,13 @@ func mainWithDeps(deps mainDeps) {
 		mcpServers:                  []string(flags.mcpServers),
 		mcpConfigs:                  []string(flags.mcpConfigs),
 		pluginDirs:                  []string(flags.pluginDirs),
+		enabledPlugins:              flags.enabledPlugins.Value(),
 		noDefaultMarketplaces:       *flags.noDefaultMarketplaces,
 		systemPromptAsUser:          *flags.systemPromptAsUser,
 		openAIResponsesContinuation: *flags.openAIResponsesContinuation,
 		sandboxMode:                 *flags.sandbox,
 		sandboxNet:                  *flags.sandboxNet,
+		runTimeout:                  *flags.runTimeout,
 		stdout:                      deps.stdout,
 		stderr:                      deps.stderr,
 		resume:                      *flags.resume,
@@ -240,6 +255,7 @@ func newRunFlagSet(stderr io.Writer) (*flag.FlagSet, *runCLIFlags) {
 
 	flags.model = fs.String("model", "", "LLM model identifier (`provider/model`)")
 	flags.fastCheapModel = fs.String("fast-cheap-model", "", "auxiliary model for side calls (naming, summarization, web fetch); 'provider/model' may use a different provider than --model, or a bare 'model' for the active provider")
+	flags.visionModel = fs.String("vision-model", "", "vision side-channel model: 'off' disables image description, 'provider/model' or bare 'model' routes it (default: the session model)")
 	flags.workDir = fs.String("dir", "", "working `directory` (default: current directory)")
 	flags.systemPrompt = fs.String("system-prompt", "", "path to a custom system prompt `file`")
 	flags.stateDir = fs.String("state-dir", "", "override runtime state `directory` (default: XDG-computed)")
@@ -248,7 +264,7 @@ func newRunFlagSet(stderr io.Writer) (*flag.FlagSet, *runCLIFlags) {
 	flags.resumeLast = fs.Bool("resume-last", false, "resume the most recent session")
 	flags.listSessions = fs.Bool("list-sessions", false, "list saved sessions and exit")
 	flags.maxRounds = fs.Int("max-rounds", -1, "max tool rounds per input (0=unlimited, default: 200)")
-	flags.maxSubagentDepth = fs.Int("max-subagent-depth", -1, "max subagent nesting depth (default: 1)")
+	flags.maxSubagentDepth = fs.Int("max-subagent-depth", -1, "max subagent nesting depth (default: 2)")
 	flags.maxConcurrentDelegates = fs.Int("max-concurrent-delegates", -1, "max concurrently running delegate turns per session tree (default: 50)")
 	flags.maxRetainedTerminal = fs.Int("max-retained-terminal", -1, "max retained terminal delegate records per session (default: 2048)")
 	flags.shareTaskStore = fs.Bool("share-task-store", false, "share task list between parent and child sessions")
@@ -265,6 +281,7 @@ func newRunFlagSet(stderr io.Writer) (*flag.FlagSet, *runCLIFlags) {
 	fs.Var(&flags.mcpServers, "mcp", "MCP server `spec` (repeatable, format: name:command args...)")
 	fs.Var(&flags.mcpConfigs, "mcp-config", "path to .mcp.json `file` (repeatable)")
 	fs.Var(&flags.pluginDirs, "plugin-dir", "plugin `directory` (repeatable)")
+	fs.Var(&flags.enabledPlugins, "enabled-plugins", "comma-separated plugin names to enable (empty selects none)")
 	flags.noDefaultMarketplaces = fs.Bool("no-default-marketplaces", false, "do not seed the default plugin marketplaces on first run")
 	flags.systemPromptAsUser = fs.Bool("system-prompt-as-user", false, "deliver system prompt as first user message instead of system instructions")
 	flags.openAIResponsesContinuation = fs.String("openai-responses-continuation", "", "OpenAI Responses continuation `mode`: off|auto (default: off)")
@@ -273,6 +290,7 @@ func newRunFlagSet(stderr io.Writer) (*flag.FlagSet, *runCLIFlags) {
 	fs.Var(&flags.systemPromptAppend, "system-prompt-append", "path to append to system prompt `file` (repeatable)")
 	flags.sandbox = fs.String("sandbox", "off", "sandbox `mode`: off (default), read-only, workspace-write, or restricted")
 	flags.sandboxNet = fs.String("sandbox-net", "on", "sandbox network egress `on|off` (default on; only applies with a non-off --sandbox mode)")
+	flags.runTimeout = fs.Duration("timeout", 0, "overall one-shot run timeout (0 disables; rate-limit retries use their finite fallback)")
 
 	fs.Usage = func() {
 		printRunUsage(stderr, fs)
@@ -306,6 +324,8 @@ func printRunCommands(w io.Writer) {
 	_, _ = fmt.Fprintf(tw, "  tui\tRun the evener-tui terminal UI\n")
 	_, _ = fmt.Fprintf(tw, "  doctor\tRead-only forensic inspector for sessions/jobs/watches\n")
 	_, _ = fmt.Fprintf(tw, "  migrate\tMigrate user data to the final evener layout\n")
+	_, _ = fmt.Fprintf(tw, "  models\tInspect the provider registry (list, inspect, refresh)\n")
+	_, _ = fmt.Fprintf(tw, "  providers\tInspect and author provider instances (list, probe, add)\n")
 	_ = tw.Flush()
 }
 
@@ -343,6 +363,9 @@ func printRunEnvVars(w io.Writer) {
 	} {
 		_, _ = fmt.Fprintf(tw, "  %s\t%s\n", v.Name, v.Summary)
 	}
+	// Every implicit provider the registry knows reads its own key and base
+	// URL; naming them all here would be a second, drifting roster.
+	_, _ = fmt.Fprintf(tw, "  %s\t%s\n", "<ID>_API_KEY / <ID>_BASE_URL", "any implicit provider's key or base URL (evener providers list)")
 	_ = tw.Flush()
 }
 
@@ -389,6 +412,8 @@ func dispatchCLICommand(args []string, stdin io.Reader, stdout, stderr io.Writer
 			}
 			return nil
 		},
+		models:    runModels,
+		providers: runProviders,
 	})
 }
 
@@ -402,6 +427,8 @@ type cliCommandRunners struct {
 	tui         func([]string, io.Reader, io.Writer, io.Writer) error
 	doctor      func([]string, io.Reader, io.Writer, io.Writer) error
 	migrate     func([]string, io.Reader, io.Writer, io.Writer) error
+	models      func([]string, io.Reader, io.Writer, io.Writer) error
+	providers   func([]string, io.Reader, io.Writer, io.Writer) error
 }
 
 func dispatchCLICommandWith(args []string, stdin io.Reader, stdout, stderr io.Writer, runners cliCommandRunners) (bool, string, error) {
@@ -428,6 +455,10 @@ func dispatchCLICommandWith(args []string, stdin io.Reader, stdout, stderr io.Wr
 		return true, "evener doctor", runners.doctor(args[1:], stdin, stdout, stderr)
 	case "migrate":
 		return true, "evener migrate", runners.migrate(args[1:], stdin, stdout, stderr)
+	case "models":
+		return true, "evener models", runners.models(args[1:], stdin, stdout, stderr)
+	case "providers":
+		return true, "evener providers", runners.providers(args[1:], stdin, stdout, stderr)
 	default:
 		return false, "", nil
 	}

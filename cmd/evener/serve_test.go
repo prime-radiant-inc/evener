@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"net"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -21,18 +22,163 @@ import (
 	"primeradiant.com/evener/agent/mcpconfig"
 	"primeradiant.com/evener/agent/plugin"
 	"primeradiant.com/evener/agent/provider"
+	"primeradiant.com/evener/agent/sandbox"
 	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/agent/skill"
 	"primeradiant.com/evener/agent/transcript"
 	"primeradiant.com/evener/appwire"
 	"primeradiant.com/evener/cmdutil"
 	"primeradiant.com/evener/envvars"
+	"primeradiant.com/evener/internal/plugins"
 	"primeradiant.com/evener/llm"
 	apilog "primeradiant.com/evener/llm/apilog"
-	"primeradiant.com/evener/llm/providercfg"
+	"primeradiant.com/evener/llm/registry"
 	"primeradiant.com/evener/rendezvous"
 	"primeradiant.com/evener/server"
 )
+
+func shutdownServeTestDaemon(ctx context.Context, address, sessionID string) error {
+	transport, err := appwire.DialWebSocket(ctx, "ws://"+address+"/rpc", http.DefaultClient)
+	if err != nil {
+		return err
+	}
+	client := appwire.NewClient(transport)
+	defer client.Close()
+	client.Start(context.WithoutCancel(ctx))
+	if _, err := client.Initialize(ctx, appwire.InitializeParams{
+		ClientInfo: appwire.ClientInfo{Name: "serve-test-shutdown", Version: "test"},
+	}); err != nil {
+		return err
+	}
+	threads, err := client.ThreadList(ctx, appwire.ThreadListParams{})
+	if err != nil {
+		return err
+	}
+	if len(threads.Data) > 0 {
+		sessionID = threads.Data[0].ID
+	}
+	return client.ThreadShutdown(ctx, appwire.ThreadShutdownParams{Ref: appwire.Ref{SourceID: "local", ThreadID: sessionID}.String()})
+}
+
+// A selection that cannot be honoured stops the startup before it seeds
+// marketplaces. Ensuring the config dirs runs first and is not that work: it
+// carries the legacy-data guard, which has to see the config root before
+// anything — plugin resolution included — creates it.
+func TestServePluginSelectionValidationPrecedesMarketplaceSeeding(t *testing.T) {
+	root := t.TempDir()
+	var order []string
+	deps := defaultServeDeps()
+	deps.resolvePlugins = func(_ context.Context, dirs []string, selected *[]string) (plugins.LaunchPluginResolution, error) {
+		order = append(order, "resolve")
+		if !reflect.DeepEqual(dirs, []string{root}) || selected == nil || !reflect.DeepEqual(*selected, []string{"missing-plugin"}) {
+			t.Fatalf("resolver args = dirs %v selected %v", dirs, selected)
+		}
+		return plugins.LaunchPluginResolution{SelectionErrors: []plugins.PluginSelectionError{{Name: "missing-plugin", Reason: "no valid plugin candidate"}}}, nil
+	}
+	deps.ensureConfigDirs = func() error { order = append(order, "ensure-config"); return nil }
+	deps.seedMarketplaces = func(context.Context) error { order = append(order, "seed-marketplaces"); return nil }
+
+	err := runServeWithDeps([]string{"--plugin-dir", root, "--enabled-plugins=missing-plugin"}, deps)
+	if err == nil || !strings.Contains(err.Error(), "enabled plugin selection is unavailable") {
+		t.Fatalf("serve error = %v, want strict selection error", err)
+	}
+	if !reflect.DeepEqual(order, []string{"ensure-config", "resolve"}) {
+		t.Fatalf("startup order = %v, want the config-dir guard and then the resolver", order)
+	}
+}
+
+func TestServePassesResolvedPluginDirsToSessionConfig(t *testing.T) {
+	installServeScriptedProvider(t, &scriptedProvider{name: "openai"})
+	selectedDir := t.TempDir()
+	deps := defaultServeDeps()
+	deps.ensureConfigDirs = func() error { return nil }
+	deps.seedMarketplaces = func(context.Context) error { return nil }
+	deps.resolvePlugins = func(context.Context, []string, *[]string) (plugins.LaunchPluginResolution, error) {
+		return plugins.LaunchPluginResolution{SelectedDirs: []string{selectedDir}}, nil
+	}
+	var got []string
+	deps.provisionSandbox = func(_ *execenv.LocalExecutionEnvironment, cfg *agent.SessionConfig, _ string) error {
+		got = append([]string(nil), cfg.PluginDirs...)
+		return errors.New("stop after config")
+	}
+	err := runServeWithDeps([]string{
+		"--model", "openai/gpt-test", "--dir", t.TempDir(), "--state-dir", t.TempDir(),
+		"--enabled-plugins=alpha", "--plugin-dir", selectedDir,
+	}, deps)
+	if err == nil || !strings.Contains(err.Error(), "stop after config") {
+		t.Fatalf("serve error = %v", err)
+	}
+	if !reflect.DeepEqual(got, []string{selectedDir}) {
+		t.Fatalf("session plugin dirs = %v, want %v", got, []string{selectedDir})
+	}
+}
+
+func TestServePluginRootFlagUsesHubValidatedRegistryAfterDisablement(t *testing.T) {
+	hubRoot := filepath.Join(t.TempDir(), "hub-root")
+	hubInstalledDir := filepath.Join(hubRoot, "installed-alpha")
+	writeTask3Plugin(t, hubInstalledDir, "alpha")
+	if err := plugins.SaveRegistry(filepath.Join(hubRoot, "installed_plugins.json"), plugins.Registry{
+		Plugins: map[string][]plugins.InstallEntry{
+			"alpha@acme": {{
+				InstallPath: hubInstalledDir,
+				Version:     "1.0.0",
+				Enabled:     true,
+				Source:      plugins.Source{Kind: plugins.SourceDirectory, Path: hubInstalledDir},
+			}},
+		},
+	}); err != nil {
+		t.Fatalf("SaveRegistry(enabled): %v", err)
+	}
+	selected := []string{"alpha"}
+	if _, err := plugins.NewManager(hubRoot).ResolveForLaunch(context.Background(), nil, &selected); err != nil {
+		t.Fatalf("hub validation ResolveForLaunch: %v", err)
+	}
+	if err := plugins.SaveRegistry(filepath.Join(hubRoot, "installed_plugins.json"), plugins.Registry{
+		Plugins: map[string][]plugins.InstallEntry{
+			"alpha@acme": {{
+				InstallPath: hubInstalledDir,
+				Version:     "1.0.0",
+				Enabled:     false,
+				Source:      plugins.Source{Kind: plugins.SourceDirectory, Path: hubInstalledDir},
+			}},
+		},
+	}); err != nil {
+		t.Fatalf("SaveRegistry(disabled): %v", err)
+	}
+
+	xdgConfigHome := filepath.Join(t.TempDir(), "ambient-config")
+	ambientRoot := filepath.Join(xdgConfigHome, "evener", "plugins")
+	ambientInstalledDir := filepath.Join(ambientRoot, "installed-alpha")
+	writeTask3Plugin(t, ambientInstalledDir, "alpha")
+	if err := plugins.SaveRegistry(filepath.Join(ambientRoot, "installed_plugins.json"), plugins.Registry{
+		Plugins: map[string][]plugins.InstallEntry{
+			"alpha@acme": {{
+				InstallPath: ambientInstalledDir,
+				Version:     "9.9.9",
+				Enabled:     true,
+				Source:      plugins.Source{Kind: plugins.SourceDirectory, Path: ambientInstalledDir},
+			}},
+		},
+	}); err != nil {
+		t.Fatalf("SaveRegistry(ambient): %v", err)
+	}
+	t.Setenv("XDG_CONFIG_HOME", xdgConfigHome)
+
+	deps := defaultServeDeps()
+	deps.ensureConfigDirs = func() error { return nil }
+	deps.seedMarketplaces = func(context.Context) error { return nil }
+
+	err := runServeWithDeps([]string{
+		"--model", "openai/gpt-test",
+		"--dir", t.TempDir(),
+		"--state-dir", t.TempDir(),
+		"--plugin-root", hubRoot,
+		"--enabled-plugins=alpha",
+	}, deps)
+	if err == nil || !strings.Contains(err.Error(), "enabled plugin selection is unavailable: alpha: no valid plugin candidate") {
+		t.Fatalf("serve error = %v, want disabled hub-root selection failure", err)
+	}
+}
 
 func TestAgentToServerDetailedStatus_DelegatesLossless(t *testing.T) {
 	valid, resumable := true, false
@@ -117,35 +263,39 @@ func TestProcessNextServeInputClaimsDurableStartAfterCoalescedWake(t *testing.T)
 	}
 }
 
+// serveTestClient is a client on a hermetic registry carrying one custom
+// instance, "work", behind openai.
+func serveTestClient(t *testing.T) *llm.Client {
+	t.Helper()
+	r, err := registry.Load(
+		registry.WithOffline(true), registry.WithoutCache(), registry.WithNoUserLayer(),
+		registry.WithStateRoot(t.TempDir()),
+		registry.WithEnv(func(string) (string, bool) { return "", false }),
+		registry.WithInstances(map[string]registry.Provider{"work": {Base: "openai", APIKey: "test"}}),
+	)
+	if err != nil {
+		t.Fatalf("registry: %v", err)
+	}
+	return llm.NewClient(llm.WithRegistry(r))
+}
+
 // TestBuildInitialProfile_ConfigPath verifies that buildInitialProfile resolves
 // a custom instance name (e.g. "work" defined in providers.toml) to a profile
-// whose ID matches the instance name, not the provider type.
+// whose ID matches the instance name, not the provider id behind it.
 func TestBuildInitialProfile_ConfigPath(t *testing.T) {
-	cfg := providercfg.Config{
-		Default: "work",
-		Instances: []providercfg.InstanceConfig{
-			{Name: "work", Type: "openai"},
-		},
-	}
-	profile, err := buildInitialProfile(cfg, cmdutil.ModelRef{Provider: "work", Model: "gpt-4o"}, "")
+	profile, err := buildInitialProfile(serveTestClient(t), cmdutil.ModelRef{Provider: "work", Model: "gpt-4o"}, "")
 	if err != nil {
 		t.Fatalf("buildInitialProfile: %v", err)
 	}
-	if profile.ID() != "work" {
-		t.Fatalf("profile.ID() = %q, want %q", profile.ID(), "work")
+	if profile.ID() != "work" || profile.ProviderID() != "openai" {
+		t.Fatalf("profile = %s/%s, want work/openai", profile.ID(), profile.ProviderID())
 	}
 }
 
 // TestBuildInitialProfile_ConfigPathInvalidOutputSchema verifies that an invalid
 // --output-schema returns an error.
 func TestBuildInitialProfile_ConfigPathInvalidOutputSchema(t *testing.T) {
-	cfg := providercfg.Config{
-		Default: "work",
-		Instances: []providercfg.InstanceConfig{
-			{Name: "work", Type: "openai"},
-		},
-	}
-	_, err := buildInitialProfile(cfg, cmdutil.ModelRef{Provider: "work", Model: "gpt-4o"}, "{not json")
+	_, err := buildInitialProfile(serveTestClient(t), cmdutil.ModelRef{Provider: "work", Model: "gpt-4o"}, "{not json")
 	if err == nil {
 		t.Fatal("expected error for invalid --output-schema JSON")
 	}
@@ -157,13 +307,7 @@ func TestBuildInitialProfile_ConfigPathInvalidOutputSchema(t *testing.T) {
 // TestBuildInitialProfile_UnknownInstanceError verifies that an unknown
 // instance name returns the expected error.
 func TestBuildInitialProfile_UnknownInstanceError(t *testing.T) {
-	cfg := providercfg.Config{
-		Default: "work",
-		Instances: []providercfg.InstanceConfig{
-			{Name: "work", Type: "openai"},
-		},
-	}
-	_, err := buildInitialProfile(cfg, cmdutil.ModelRef{Provider: "unknown", Model: "gpt-4o"}, "")
+	_, err := buildInitialProfile(serveTestClient(t), cmdutil.ModelRef{Provider: "unknown", Model: "gpt-4o"}, "")
 	if err == nil {
 		t.Fatal("expected error for unknown instance name")
 	}
@@ -172,19 +316,10 @@ func TestBuildInitialProfile_UnknownInstanceError(t *testing.T) {
 	}
 }
 
-// TestBuildInitialProfile_MaterializedInstance verifies that buildInitialProfile
-// resolves a type-named instance (e.g. "openai/gpt-5") through the config path,
-// matching the contract that LoadClient materializes a config before callers see it.
-func TestBuildInitialProfile_MaterializedInstance(t *testing.T) {
-	// Simulate a materialized config where the instance name equals the type name,
-	// which is what materializeProvidersConfig produces.
-	cfg := providercfg.Config{
-		Default: "openai",
-		Instances: []providercfg.InstanceConfig{
-			{Name: "openai", Type: "openai"},
-		},
-	}
-	profile, err := buildInitialProfile(cfg, cmdutil.ModelRef{Provider: "openai", Model: "gpt-5"}, "")
+// TestBuildInitialProfile_CuratedInstance verifies that a curated implicit id
+// resolves the same way a configured instance does.
+func TestBuildInitialProfile_CuratedInstance(t *testing.T) {
+	profile, err := buildInitialProfile(serveTestClient(t), cmdutil.ModelRef{Provider: "openai", Model: "gpt-5"}, "")
 	if err != nil {
 		t.Fatalf("buildInitialProfile: %v", err)
 	}
@@ -291,16 +426,14 @@ func TestServe_WritesAndRemovesRendezvousFile(t *testing.T) {
 		t.Error("Address should not be empty")
 	}
 
-	resp, err := http.Post("http://"+entries[0].Address+"/shutdown", "", nil)
-	if err != nil {
-		t.Fatalf("post /shutdown: %v", err)
+	if err := shutdownServeTestDaemon(context.Background(), entries[0].Address, entries[0].SessionID); err != nil {
+		t.Fatalf("thread/shutdown: %v", err)
 	}
-	resp.Body.Close()
 
 	select {
 	case <-done:
 	case <-time.After(5 * time.Second):
-		t.Fatal("runServe did not exit after /shutdown")
+		t.Fatal("runServe did not exit after thread/shutdown")
 	}
 
 	if _, err := os.Stat(target); !os.IsNotExist(err) {
@@ -310,16 +443,10 @@ func TestServe_WritesAndRemovesRendezvousFile(t *testing.T) {
 
 func TestRunServeNonInteractiveFlagControlsPromptAddendum(t *testing.T) {
 	oldLoadClient := serveLoadClient
-	serveLoadClient = func(...llm.EnvOption) (*llm.Client, providercfg.Config, bool, error) {
+	serveLoadClient = func(string) (*llm.Client, error) {
 		client := llm.NewClient()
 		client.Register(serveLoggingAdapter{})
-		cfg := providercfg.Config{
-			Default: "openai",
-			Instances: []providercfg.InstanceConfig{
-				{Name: "openai", Type: "openai"},
-			},
-		}
-		return client, cfg, true, nil
+		return client, nil
 	}
 	t.Cleanup(func() {
 		serveLoadClient = oldLoadClient
@@ -353,11 +480,9 @@ func TestRunServeNonInteractiveFlagControlsPromptAddendum(t *testing.T) {
 			}()
 
 			entry := waitForServeTestRendezvous(t, runDir)
-			resp, err := http.Post("http://"+entry.Address+"/shutdown", "", nil)
-			if err != nil {
-				t.Fatalf("post /shutdown: %v", err)
+			if err := shutdownServeTestDaemon(context.Background(), entry.Address, entry.SessionID); err != nil {
+				t.Fatalf("thread/shutdown: %v", err)
 			}
-			resp.Body.Close()
 
 			select {
 			case err := <-done:
@@ -365,7 +490,7 @@ func TestRunServeNonInteractiveFlagControlsPromptAddendum(t *testing.T) {
 					t.Fatalf("runServe: %v", err)
 				}
 			case <-time.After(5 * time.Second):
-				t.Fatal("runServe did not exit after /shutdown")
+				t.Fatal("runServe did not exit after thread/shutdown")
 			}
 
 			path := filepath.Join(stateDir, "sessions", entry.SessionID+".transcript.jsonl")
@@ -402,16 +527,10 @@ func TestRunServeShutdownWaitsForInFlightInput(t *testing.T) {
 	t.Cleanup(releaseAdapter)
 
 	oldLoadClient := serveLoadClient
-	serveLoadClient = func(...llm.EnvOption) (*llm.Client, providercfg.Config, bool, error) {
+	serveLoadClient = func(string) (*llm.Client, error) {
 		client := llm.NewClient()
 		client.Register(adapter)
-		cfg := providercfg.Config{
-			Default: "openai",
-			Instances: []providercfg.InstanceConfig{
-				{Name: "openai", Type: "openai"},
-			},
-		}
-		return client, cfg, true, nil
+		return client, nil
 	}
 	t.Cleanup(func() {
 		serveLoadClient = oldLoadClient
@@ -451,9 +570,10 @@ func TestRunServeShutdownWaitsForInFlightInput(t *testing.T) {
 
 	ref := appwire.Ref{SourceID: "local", ThreadID: entry.SessionID}.String()
 	if _, err := client.TurnStart(ctx, appwire.TurnStartParams{
-		ClientMutationID: "shutdown-in-flight",
-		Ref:              ref,
-		Input:            []appwire.InputItem{{Type: "text", Text: "stay busy until shutdown"}},
+		ClientMutationID:   "shutdown-in-flight",
+		ExpectedInstanceID: entry.SessionID,
+		Ref:                ref,
+		Input:              []appwire.InputItem{{Type: "text", Text: "stay busy until shutdown"}},
 	}); err != nil {
 		t.Fatalf("TurnStart: %v", err)
 	}
@@ -464,11 +584,9 @@ func TestRunServeShutdownWaitsForInFlightInput(t *testing.T) {
 		t.Fatal("fake adapter was not called")
 	}
 
-	resp, err := http.Post("http://"+entry.Address+"/shutdown", "", nil)
-	if err != nil {
-		t.Fatalf("post /shutdown: %v", err)
+	if err := shutdownServeTestDaemon(context.Background(), entry.Address, entry.SessionID); err != nil {
+		t.Fatalf("thread/shutdown: %v", err)
 	}
-	resp.Body.Close()
 
 	select {
 	case <-adapter.cancelled:
@@ -558,16 +676,16 @@ func TestServeClient_APILogWritesJSONL(t *testing.T) {
 	called := make(chan struct{}, 1)
 
 	oldLoadClient := serveLoadClient
-	serveLoadClient = func(...llm.EnvOption) (*llm.Client, providercfg.Config, bool, error) {
+	serveLoadClient = func(string) (*llm.Client, error) {
 		client := llm.NewClient()
 		client.Register(serveLoggingAdapter{called: called})
-		return client, providercfg.Config{}, false, nil
+		return client, nil
 	}
 	t.Cleanup(func() {
 		serveLoadClient = oldLoadClient
 	})
 
-	client, _, _, closeAPILog, err := newServeLLMClient(stateDir, nil)
+	client, closeAPILog, err := newServeLLMClient(stateDir, nil)
 	if err != nil {
 		t.Fatalf("newServeLLMClient: %v", err)
 	}
@@ -613,90 +731,6 @@ func TestServeClient_APILogWritesJSONL(t *testing.T) {
 	case <-called:
 	default:
 		t.Fatal("fake adapter was not called")
-	}
-}
-
-func TestRunServeClearReleasesOldSessionAPILogRoute(t *testing.T) {
-	stateDir := t.TempDir()
-	deps := defaultServeDeps()
-	deps.ensureConfigDirs = func() error { return nil }
-	deps.seedMarketplaces = func() error { return nil }
-	deps.newClient = func(string, io.Writer) (*llm.Client, providercfg.Config, bool, func() error, error) {
-		client := llm.NewClient()
-		client.Register(serveLoggingAdapter{})
-		cfg := providercfg.Config{
-			Default: "openai",
-			Instances: []providercfg.InstanceConfig{
-				{Name: "openai", Type: "openai"},
-			},
-		}
-		return client, cfg, true, func() error { return nil }, nil
-	}
-	var logger *llm.APILogger
-	deps.attachAPILogger = func(client *llm.Client, stateDir string, _ io.Writer) (func(string) error, func() error, error) {
-		var err error
-		logger, err = llm.NewSessionAPILogger(stateDir)
-		if err != nil {
-			return nil, nil, err
-		}
-		client.Use(logger)
-		return logger.ReserveSession, logger.Close, nil
-	}
-
-	runDir := t.TempDir()
-	workDir := t.TempDir()
-	done := make(chan error, 1)
-	go func() {
-		done <- runServeWithDeps([]string{
-			"--model", "openai/gpt-test",
-			"--addr", "127.0.0.1:0",
-			"--dir", workDir,
-			"--state-dir", stateDir,
-			"--run-dir", runDir,
-			"--no-project-prompts",
-		}, deps)
-	}()
-
-	entry := waitForServeTestRendezvous(t, runDir)
-	t.Cleanup(func() {
-		resp, err := http.Post("http://"+entry.Address+"/shutdown", "", nil)
-		if err == nil {
-			resp.Body.Close()
-		}
-	})
-	if err := logger.ReserveSession(entry.SessionID); err != nil {
-		t.Fatalf("ReserveSession old route: %v", err)
-	}
-	resp, err := http.Post("http://"+entry.Address+"/clear", "", nil)
-	if err != nil {
-		t.Fatalf("POST /clear: %v", err)
-	}
-	resp.Body.Close()
-	if resp.StatusCode != http.StatusNoContent {
-		t.Fatalf("POST /clear status = %d, want %d", resp.StatusCode, http.StatusNoContent)
-	}
-
-	reopened, err := llm.NewSessionAPILogger(stateDir)
-	if err != nil {
-		t.Fatalf("NewSessionAPILogger after clear: %v", err)
-	}
-	defer reopened.Close() //nolint:errcheck
-	if err := reopened.ReserveSession(entry.SessionID); err != nil {
-		t.Fatalf("old session API-log route remained owned after /clear: %v", err)
-	}
-
-	shutdownResp, err := http.Post("http://"+entry.Address+"/shutdown", "", nil)
-	if err != nil {
-		t.Fatalf("POST /shutdown: %v", err)
-	}
-	shutdownResp.Body.Close()
-	select {
-	case err := <-done:
-		if err != nil {
-			t.Fatalf("runServeWithDeps: %v", err)
-		}
-	case <-time.After(5 * time.Second):
-		t.Fatal("runServeWithDeps did not exit after shutdown")
 	}
 }
 
@@ -787,8 +821,8 @@ func TestAgentToServerDetailedStatus_Empty(t *testing.T) {
 	if len(got.Plugins) != 0 {
 		t.Errorf("Plugins = %d, want 0", len(got.Plugins))
 	}
-	if len(got.Hooks) != 0 {
-		t.Errorf("Hooks = %d, want 0", len(got.Hooks))
+	if len(got.HookEvents) != 0 {
+		t.Errorf("HookEvents = %d, want 0", len(got.HookEvents))
 	}
 	if len(got.Jobs) != 0 {
 		t.Errorf("Jobs = %d, want 0", len(got.Jobs))
@@ -798,19 +832,31 @@ func TestAgentToServerDetailedStatus_Empty(t *testing.T) {
 	}
 }
 
+func TestAgentToServerDetailedStatus_PreservesPluginPresence(t *testing.T) {
+	got := agentToServerDetailedStatus(agent.DetailedStatus{Plugins: []agent.PluginInfo{}})
+	if got.Plugins == nil {
+		t.Fatal("explicit empty Plugins became nil")
+	}
+
+	legacy := agentToServerDetailedStatus(agent.DetailedStatus{})
+	if legacy.Plugins != nil {
+		t.Fatalf("nil Plugins became non-nil: %#v", legacy.Plugins)
+	}
+}
+
 func TestAgentToServerDetailedStatus_Partial(t *testing.T) {
 	// Every field gets a distinct value so a transposed or dropped mapping
 	// (e.g. SkillCount swapped with AgentCount, or Skills.Description dropped)
 	// produces a detectable mismatch rather than silently passing.
 	exitCode := 42
 	ds := agent.DetailedStatus{
-		Tools:   []agent.ToolInfo{{Name: "shell", Source: "core"}},
-		MCP:     []mcpconfig.ServerInfo{{Name: "test-server", Tools: []string{"tool1", "tool2"}, Status: "degraded", Error: "boom"}},
-		Skills:  []skill.SkillMeta{{Name: "test-skill", Description: "A test skill"}},
-		Plugins: []agent.PluginInfo{{Name: "test-plugin", Version: "1.0.0", SkillCount: 2, AgentCount: 3, HookCount: 4, MCPCount: 5}},
-		Hooks:   map[plugin.HookEvent]int{"PreToolUse": 1, "PostToolUse": 7},
-		Jobs:    []agent.JobStatusInfo{{JobID: "job1", JobType: "delegate", Status: "done", Reason: "finished", ExitCode: &exitCode, TranscriptRef: "ref1", OutputBytes: 100}},
-		Agents:  []string{"explorer", "default"},
+		Tools:      []agent.ToolInfo{{Name: "shell", Source: "core"}},
+		MCP:        []mcpconfig.ServerInfo{{Name: "test-server", Tools: []string{"tool1", "tool2"}, Status: "degraded", Error: "boom"}},
+		Skills:     []skill.SkillMeta{{Name: "test-skill", Description: "A test skill"}},
+		Plugins:    []agent.PluginInfo{{Name: "test-plugin", Version: "1.0.0", SkillCount: 2, AgentCount: 3, HookCount: 4, MCPCount: 5}},
+		HookEvents: []agent.HookEventStatus{{Event: plugin.HookPreToolUse, Count: 1}, {Event: plugin.HookPostToolUse, Count: 7}},
+		Jobs:       []agent.JobStatusInfo{{JobID: "job1", JobType: "delegate", Status: "done", Reason: "finished", ExitCode: &exitCode, TranscriptRef: "ref1", OutputBytes: 100}},
+		Agents:     []string{"explorer", "default"},
 	}
 	got := agentToServerDetailedStatus(ds)
 
@@ -853,8 +899,20 @@ func TestAgentToServerDetailedStatus_Partial(t *testing.T) {
 		t.Errorf("Plugins[0] = %+v, want {Name:test-plugin Version:1.0.0 SkillCount:2 AgentCount:3 HookCount:4 MCPCount:5}", p)
 	}
 
-	if len(got.Hooks) != 2 || got.Hooks["PreToolUse"] != 1 || got.Hooks["PostToolUse"] != 7 {
-		t.Errorf("Hooks = %v, want PreToolUse=1 PostToolUse=7", got.Hooks)
+	if len(got.HookEvents) != 2 {
+		t.Fatalf("HookEvents = %d, want 2", len(got.HookEvents))
+	}
+	for _, he := range got.HookEvents {
+		switch he.Event {
+		case "PreToolUse":
+			if he.Count != 1 {
+				t.Errorf("HookEvents PreToolUse = %d, want 1", he.Count)
+			}
+		case "PostToolUse":
+			if he.Count != 7 {
+				t.Errorf("HookEvents PostToolUse = %d, want 7", he.Count)
+			}
+		}
 	}
 
 	if len(got.Jobs) != 1 {
@@ -947,16 +1005,10 @@ func TestEvenerUsageFromLLM_NonZeroCacheReadOnlyStillReturns(t *testing.T) {
 
 func TestRunServe_ResumeNonexistent(t *testing.T) {
 	oldLoadClient := serveLoadClient
-	serveLoadClient = func(...llm.EnvOption) (*llm.Client, providercfg.Config, bool, error) {
+	serveLoadClient = func(string) (*llm.Client, error) {
 		client := llm.NewClient()
 		client.Register(serveLoggingAdapter{})
-		cfg := providercfg.Config{
-			Default: "openai",
-			Instances: []providercfg.InstanceConfig{
-				{Name: "openai", Type: "openai"},
-			},
-		}
-		return client, cfg, true, nil
+		return client, nil
 	}
 	t.Cleanup(func() { serveLoadClient = oldLoadClient })
 
@@ -1018,7 +1070,7 @@ func TestServeResumeRunningReservesBeforeRestore(t *testing.T) {
 			restoreCalled := false
 			deps := defaultServeDeps()
 			deps.ensureConfigDirs = func() error { return nil }
-			deps.seedMarketplaces = func() error { return nil }
+			deps.seedMarketplaces = func(context.Context) error { return nil }
 			deps.restoreSession = func(*llm.Client, *provider.Profile, execenv.ExecutionEnvironment, schema.SessionMeta, agent.RestoreSessionConfig) (*agent.Session, error) {
 				restoreCalled = true
 				return nil, errors.New("restore reached")
@@ -1043,5 +1095,261 @@ func TestServeResumeRunningReservesBeforeRestore(t *testing.T) {
 				t.Fatalf("resume lock conflict mutated session artifacts:\n before=%q\n  after=%q", before, after)
 			}
 		})
+	}
+}
+
+// Resolving plugins can wait on the plugin store lock, so the wait has to be
+// one an interrupt ends. That means the signal-derived context exists before
+// plugin resolution rather than after it, when the daemon starts listening.
+func TestServeResolvesPluginsOnTheSignalContext(t *testing.T) {
+	deps := defaultServeDeps()
+	var stopSignals context.CancelFunc
+	deps.notifyContext = func(ctx context.Context, _ ...os.Signal) (context.Context, context.CancelFunc) {
+		next, stop := context.WithCancel(ctx)
+		stopSignals = stop
+		return next, stop
+	}
+	var resolveCtx context.Context
+	deps.resolvePlugins = func(ctx context.Context, _ []string, _ *[]string) (plugins.LaunchPluginResolution, error) {
+		resolveCtx = ctx
+		return plugins.LaunchPluginResolution{SelectionErrors: []plugins.PluginSelectionError{{Name: "missing-plugin", Reason: "no valid plugin candidate"}}}, nil
+	}
+	deps.ensureConfigDirs = func() error { return nil }
+	deps.seedMarketplaces = func(context.Context) error { return nil }
+
+	err := runServeWithDeps([]string{"--enabled-plugins=missing-plugin"}, deps)
+	if err == nil || !strings.Contains(err.Error(), "enabled plugin selection is unavailable") {
+		t.Fatalf("serve error = %v, want the selection error that stops this startup", err)
+	}
+	if resolveCtx == nil {
+		t.Fatal("plugin resolution never ran")
+	}
+	if stopSignals == nil {
+		t.Fatal("the interrupt handler was not installed before plugin resolution")
+	}
+	stopSignals()
+	if resolveCtx.Err() == nil {
+		t.Error("plugin resolution ran on a context an interrupt cannot reach")
+	}
+}
+
+// An interrupt that arrives during startup ends the startup. The steps between
+// resolving plugins and binding the listener are the slow ones — seeding
+// marketplaces takes the same store lock a plugin install holds, probing the
+// login shell PATH and provisioning the sandbox run subprocesses — and
+// net.ListenConfig.Listen on a literal address binds happily with a cancelled
+// context, so without an explicit read of the context the daemon finishes
+// startup, binds, shuts down again and exits 0 with nothing said.
+func TestServeStopsStartupOnAnInterrupt(t *testing.T) {
+	tests := []struct {
+		name string
+		// step names the gate the interrupt has to trip, so each arm proves
+		// its own gate rather than being caught by a later one.
+		step string
+		arm  func(t *testing.T, deps *serveDeps, interrupt func())
+	}{
+		{
+			name: "seeding marketplaces",
+			step: "seeding default marketplaces",
+			arm: func(t *testing.T, deps *serveDeps, interrupt func()) {
+				var seedCtx context.Context
+				deps.seedMarketplaces = func(ctx context.Context) error {
+					interrupt()
+					seedCtx = ctx
+					return nil
+				}
+				t.Cleanup(func() {
+					if seedCtx == nil || seedCtx.Err() == nil {
+						t.Errorf("seeding ran on %v, want the context an interrupt cancels", seedCtx)
+					}
+				})
+			},
+		},
+		{
+			name: "probing the login shell PATH",
+			step: "probing the login shell PATH",
+			arm: func(_ *testing.T, deps *serveDeps, interrupt func()) {
+				// The probe takes no context, so an interrupt during it (or
+				// during the profile work just before it) is only noticed by
+				// the gate that follows it.
+				applyCheap := deps.applyCheap
+				deps.applyCheap = func(profile *provider.Profile, cheap string, client *llm.Client) (*provider.Profile, error) {
+					interrupt()
+					return applyCheap(profile, cheap, client)
+				}
+			},
+		},
+		{
+			name: "provisioning the sandbox",
+			step: "provisioning the sandbox",
+			arm: func(t *testing.T, deps *serveDeps, interrupt func()) {
+				provisionServeScratchThatMustBeDisposed(t, deps, interrupt)
+			},
+		},
+		{
+			name: "creating the session",
+			step: "creating the session",
+			arm: func(t *testing.T, deps *serveDeps, interrupt func()) {
+				var sess *agent.Session
+				newSession := deps.newSession
+				deps.newSession = func(client *llm.Client, profile *provider.Profile, env execenv.ExecutionEnvironment, cfg agent.SessionConfig) (*agent.Session, error) {
+					created, err := newSession(client, profile, env, cfg)
+					sess = created
+					interrupt()
+					return created, err
+				}
+				// The session is live by the time this gate reads the context,
+				// so ending the startup has to take it down: a returned-from
+				// startup that leaves a session running leaks its environment
+				// and its child processes.
+				t.Cleanup(func() {
+					if sess == nil {
+						t.Error("the session was never created")
+						return
+					}
+					if state := sess.State(); state != agent.SessionClosed {
+						t.Errorf("session state = %v, want %v after the startup ended", state, agent.SessionClosed)
+					}
+				})
+			},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			installServeScriptedProvider(t, &scriptedProvider{name: "openai"})
+			deps := defaultServeDeps()
+			var stopSignals context.CancelFunc
+			deps.notifyContext = func(ctx context.Context, _ ...os.Signal) (context.Context, context.CancelFunc) {
+				next, stop := context.WithCancel(ctx)
+				stopSignals = stop
+				return next, stop
+			}
+			deps.ensureConfigDirs = func() error { return nil }
+			deps.seedMarketplaces = func(context.Context) error { return nil }
+			listened := false
+			deps.listen = func(context.Context, string, string) (net.Listener, error) {
+				listened = true
+				return nil, errors.New("a listener was bound after the interrupt")
+			}
+			tt.arm(t, &deps, func() { stopSignals() })
+
+			err := runServeWithDeps([]string{
+				"--model", "openai/gpt-test", "--dir", t.TempDir(), "--state-dir", t.TempDir(),
+			}, deps)
+			if !errors.Is(err, context.Canceled) {
+				t.Fatalf("serve error = %v, want the interrupt that ended startup", err)
+			}
+			if want := "interrupted while " + tt.step; !strings.Contains(err.Error(), want) {
+				t.Errorf("serve error = %q, want it to say %q", err, want)
+			}
+			if listened {
+				t.Error("bound a listener for a startup an interrupt had already ended")
+			}
+		})
+	}
+}
+
+// launchScratchThatMustBeDisposed gives env the owned session scratch a
+// sandboxed startup provisions — a write-blocked off policy takes that path
+// without needing a kernel backend this host may not have — and holds the
+// startup to disposing of it. Nothing releases the directory or the flock
+// lease under it until a session owns the environment and its Close does, so
+// every way out before that hand-off owes them.
+func launchScratchThatMustBeDisposed(t *testing.T, env *execenv.LocalExecutionEnvironment) error {
+	t.Helper()
+	if err := env.EnableSandbox(&sandbox.ResolvedPolicy{Mode: sandbox.ModeOff, WriteBlocked: true}); err != nil {
+		return err
+	}
+	scratch := env.SessionScratchDir()
+	// Registered before the assertion so it runs after it: a failing test must
+	// not leave the scratch behind either.
+	t.Cleanup(env.DisposeSandboxScratch)
+	t.Cleanup(func() {
+		if scratch == "" {
+			t.Error("provisioning left no session scratch to dispose")
+			return
+		}
+		if _, err := os.Stat(scratch); !errors.Is(err, os.ErrNotExist) {
+			t.Errorf("session scratch %s survived the abandoned startup: stat err = %v", scratch, err)
+		}
+	})
+	return nil
+}
+
+// provisionServeScratchThatMustBeDisposed is launchScratchThatMustBeDisposed as
+// a startup's sandbox-provisioning step, running then once the scratch is in
+// place.
+func provisionServeScratchThatMustBeDisposed(t *testing.T, deps *serveDeps, then func()) {
+	t.Helper()
+	deps.provisionSandbox = func(env *execenv.LocalExecutionEnvironment, _ *agent.SessionConfig, _ string) error {
+		if err := launchScratchThatMustBeDisposed(t, env); err != nil {
+			return err
+		}
+		then()
+		return nil
+	}
+}
+
+// A session that was never built never takes the environment over, so the
+// startup that provisioned its scratch is the one that owes its disposal.
+func TestServeDisposesTheSandboxScratchWhenNoSessionIsCreated(t *testing.T) {
+	installServeScriptedProvider(t, &scriptedProvider{name: "openai"})
+	deps := defaultServeDeps()
+	deps.ensureConfigDirs = func() error { return nil }
+	deps.seedMarketplaces = func(context.Context) error { return nil }
+	provisionServeScratchThatMustBeDisposed(t, &deps, func() {})
+	deps.newSession = func(*llm.Client, *provider.Profile, execenv.ExecutionEnvironment, agent.SessionConfig) (*agent.Session, error) {
+		return nil, errors.New("no session today")
+	}
+	deps.listen = func(context.Context, string, string) (net.Listener, error) {
+		t.Error("bound a listener for a startup that has no session")
+		return nil, errors.New("a listener was bound without a session")
+	}
+
+	err := runServeWithDeps([]string{
+		"--model", "openai/gpt-test", "--dir", t.TempDir(), "--state-dir", t.TempDir(),
+	}, deps)
+	if err == nil || !strings.Contains(err.Error(), "session creation") {
+		t.Fatalf("serve error = %v, want the session-creation failure", err)
+	}
+}
+
+// A resume provisions the environment's sandbox from the session's PERSISTED
+// mode inside the restore (provisionRestoredSandbox), and the restore can
+// still fail after that — env.Initialize, the transcript, the artifact store —
+// with no session built to own what was provisioned.
+func TestServeDisposesTheSandboxScratchWhenRestoreFails(t *testing.T) {
+	installServeScriptedProvider(t, &scriptedProvider{name: "openai"})
+	stateDir := t.TempDir()
+	const sessionID = "02wMz5Txv1C3Hut0M8GCeB"
+	if err := schema.SaveSessionMeta(stateDir, schema.SessionMeta{
+		ID: sessionID, ProfileID: "openai", Model: "gpt-test",
+		CreatedAt: time.Unix(1, 0).UTC(), UpdatedAt: time.Unix(2, 0).UTC(),
+	}); err != nil {
+		t.Fatalf("SaveSessionMeta: %v", err)
+	}
+	deps := defaultServeDeps()
+	deps.ensureConfigDirs = func() error { return nil }
+	deps.seedMarketplaces = func(context.Context) error { return nil }
+	deps.restoreSession = func(_ *llm.Client, _ *provider.Profile, env execenv.ExecutionEnvironment, _ schema.SessionMeta, _ agent.RestoreSessionConfig) (*agent.Session, error) {
+		local, ok := env.(*execenv.LocalExecutionEnvironment)
+		if !ok {
+			t.Fatalf("restore got a %T, want the local environment serve built", env)
+		}
+		if err := launchScratchThatMustBeDisposed(t, local); err != nil {
+			return nil, err
+		}
+		return nil, errors.New("restore failed after the sandbox was provisioned")
+	}
+	deps.listen = func(context.Context, string, string) (net.Listener, error) {
+		t.Error("bound a listener for a resume that never restored")
+		return nil, errors.New("a listener was bound without a session")
+	}
+
+	err := runServeWithDeps([]string{
+		"--resume", sessionID, "--dir", stateDir, "--state-dir", stateDir, "--run-dir", t.TempDir(),
+	}, deps)
+	if err == nil || !strings.Contains(err.Error(), "restore session") {
+		t.Fatalf("serve error = %v, want the restore failure", err)
 	}
 }

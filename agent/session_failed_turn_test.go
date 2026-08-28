@@ -43,7 +43,7 @@ func TestProviderErrorPersistsFailedTurn(t *testing.T) {
 	})
 
 	policy := llm.RetryPolicy{MaxRetries: 0}
-	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{
+	sess, err := NewSession(c, withTestSessionNamer(c, NewOpenAIProfile("gpt-5.2")), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{
 		StateDir:       dir,
 		LLMRetryPolicy: &policy,
 		testOnly:       testConfig{metaFS: afero.NewMemMapFs()},
@@ -112,7 +112,7 @@ func TestCancelledTurnPersistsNoFailedTurn(t *testing.T) {
 		},
 	})
 
-	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{
+	sess, err := NewSession(c, withTestSessionNamer(c, NewOpenAIProfile("gpt-5.2")), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{
 		StateDir: dir,
 		testOnly: testConfig{metaFS: afero.NewMemMapFs()},
 	})

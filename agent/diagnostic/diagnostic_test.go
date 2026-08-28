@@ -211,6 +211,26 @@ func TestClassifyStreamTruncationAsProvider(t *testing.T) {
 	}
 }
 
+// TestClassifyEncryptedContentAsProvider covers the legacy-transcript fallback:
+// encrypted reasoning content replayed to a deployment that did not produce it
+// (a mid-session provider switch on a transcript without per-turn provenance).
+// The provider rejects the foreign blob; Classify must surface this as a
+// Provider error with the retry/switch-model hint, not an unclassified Evener error.
+//
+// The message deliberately omits the "error (status=N)" prefix so the
+// providerStatusPrefix regex does not fire: the only path to SourceProvider
+// here is the new "encrypted content is not supported" keyword. Removing the
+// keyword makes this test fail.
+func TestClassifyEncryptedContentAsProvider(t *testing.T) {
+	info := Classify("responses.create(stream) failed: encrypted content is not supported.")
+	if info.Source != SourceProvider {
+		t.Fatalf("Source=%q, want %q", info.Source, SourceProvider)
+	}
+	if info.Title != "Provider error" {
+		t.Fatalf("Title=%q, want Provider error", info.Title)
+	}
+}
+
 // TestFromFields_SourceOverridesClassify verifies that a recognised source
 // string forces the returned Info.Source regardless of what Classify would
 // pick from the (empty) message. Every declared source is listed: one that is

@@ -71,7 +71,7 @@ TOKEN=$(cat "$HOME/.evener/auth-token")
 2. `OPENAI_API_KEY="sk-scenario-not-a-real-key" "$run/evener" openai status`
    — env var set in the test invocation.
 3. Open the isolated hub's credentials page:
-   `$HUB/auth?token=$TOKEN&next=/credentials`. Confirm the OpenAI instance
+   `$HUB/auth/$TOKEN?next=/credentials`. Confirm the OpenAI instance
    row shows the OAuth layer marked `effective`, labelled
    `Configured via OAuth (scenario@example.com)`, with
    `Configured via environment variable` listed below it as `shadowed`.

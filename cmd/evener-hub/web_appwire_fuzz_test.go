@@ -119,7 +119,7 @@ func buildParamsRegistry() *typegen.Registry {
 }
 
 // hubMethodNames returns the wire names of every catalog method, in order. The
-// B1 fuzz indexes into this so every one of the 46 appwire.Methods is reachable:
+// B1 fuzz indexes into this so every catalogued AppWire method is reachable:
 // the routed hub methods run their real app_*.go handler; connection-level
 // (initialize/ping) and unimplemented methods resolve to a structured
 // MethodNotFound through the same Dispatch path.
@@ -220,7 +220,7 @@ func FuzzAppWireDispatch(f *testing.F) {
 		{appwire.MethodThreadFork, `{"ref":"` + ref + `","sourceTurnId":"turn_1","editedInput":"hi"}`},
 		{appwire.MethodTurnStart, `{"ref":"` + ref + `","input":[]}`},
 		{appwire.MethodTurnSteer, `{"ref":"` + ref + `","text":"go"}`},
-		{appwire.MethodThreadClear, `{"ref":"` + ref + `"}`},
+		{appwire.MethodThreadClear, `{"ref":"` + ref + `","clientMutationId":"fuzz-clear","expectedInstanceId":"` + sandboxSessionID + `"}`},
 		{appwire.MethodThreadModelSet, `{"ref":"` + ref + `","model":"gpt-5.5"}`},
 		{appwire.MethodThreadCompactStart, `{"ref":"` + ref + `"}`},
 		{appwire.MethodModelList, `{}`},

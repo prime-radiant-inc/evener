@@ -1,6 +1,7 @@
 package plugins
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"io/fs"
@@ -29,14 +30,14 @@ var (
 // hub start (before any session exists) or on demand via `evener plugin gc`
 // when the user is idle. Gc itself does not enforce that; it runs under the
 // same flock as every other mutation, so it never races an install/upgrade.
-func (m *Manager) Gc() ([]string, error) {
-	release, err := gcAcquireLock(m.lockPath(), 30*time.Second)
+func (m *Manager) Gc(ctx context.Context) ([]string, error) {
+	release, err := m.acquireStoreLock(ctx, gcAcquireLock, m.lockPath(), 30*time.Second)
 	if err != nil {
 		return nil, err
 	}
 	defer release()
 
-	reg, err := LoadRegistry(m.registryPath())
+	reg, err := m.loadRegistry()
 	if err != nil {
 		return nil, err
 	}

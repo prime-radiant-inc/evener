@@ -30,6 +30,8 @@ var testEnvRoot string
 // leaves it alone, and the parent's single RemoveAll collects everything.
 const testEnvRootVar = "EVENER_HUB_TEST_ENV_ROOT"
 
+const detachHelperRunDirEnv = "EVENER_HUB_DETACH_HELPER_RUN_DIR"
+
 // retiredEvenerEnvVars are names the product no longer declares but that a
 // developer machine may still export from when it did. envvars cannot list them
 // (nothing reads them any more), so they are carried here.
@@ -60,6 +62,10 @@ func productEvenerEnvVars() []envvars.Var {
 }
 
 func TestMain(m *testing.M) {
+	if os.Getenv(detachHelperRunDirEnv) != "" {
+		runDetachFakeDaemon()
+		os.Exit(0)
+	}
 	root, inherited := os.LookupEnv(testEnvRootVar)
 	if inherited {
 		if _, err := os.Stat(root); err != nil {
@@ -207,7 +213,15 @@ func (p fakeProber) Probe(rendezvous.Entry) hubcore.ProbeResult {
 // A child that inherits EVENER_HUB_TEST_ENV_ROOT must therefore create nothing of
 // its own, and must not remove what it did not create.
 func TestReExecutedHelperLeavesNoThrowawayRoot(t *testing.T) {
-	pattern := filepath.Join(os.TempDir(), "evener-hub-test-env-*")
+	// Glob a TMPDIR owned by this test case, not the machine-wide
+	// os.TempDir(): any other process running this package's suite
+	// concurrently mints and removes its own evener-hub-test-env-* root in
+	// the shared temp dir on its own schedule, which flips a machine-wide
+	// count for reasons that have nothing to do with the helper under test.
+	// Handing the helper below this directory as its own TMPDIR means a root
+	// it (incorrectly) mints lands here too, so the glob still catches it.
+	helperTempDir := t.TempDir()
+	pattern := filepath.Join(helperTempDir, "evener-hub-test-env-*")
 	before, err := filepath.Glob(pattern)
 	if err != nil {
 		t.Fatalf("glob throwaway roots: %v", err)
@@ -223,7 +237,7 @@ func TestReExecutedHelperLeavesNoThrowawayRoot(t *testing.T) {
 	// precisely the cleanup that a killed process never reaches. Production
 	// kills these -- the fake server blocks in Serve until the parent is done.
 	cmd := exec.Command(exe, "-test.run=^TestFakeCodexAppServerHelper$")
-	cmd.Env = append(os.Environ(), testEnvRootVar+"="+testEnvRoot, "EVENER_FAKE_CODEX_APP_SERVER=serve")
+	cmd.Env = append(os.Environ(), testEnvRootVar+"="+testEnvRoot, "EVENER_FAKE_CODEX_APP_SERVER=serve", "TMPDIR="+helperTempDir)
 	if err := cmd.Start(); err != nil {
 		t.Fatalf("start re-executed helper: %v", err)
 	}

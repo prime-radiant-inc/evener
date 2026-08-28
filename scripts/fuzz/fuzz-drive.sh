@@ -43,9 +43,10 @@
 #   EVENER_FUZZ_GH           gh binary         (default: gh)
 #   EVENER_FUZZ_DRIVE_TIMEOUT timeout wrapper   (default: timeout)
 #
-# No selftest: the old one drove this script with a stubbed toolchain, and
-# fake-toolchain selftests are banned (docs/developing-evener/testing.md). This header is the
-# living contract until the tool's port-on-touch moment.
+# No automated test: an old attempt drove this script with a stubbed
+# toolchain, which docs/developing-evener/testing.md's ban on faking the
+# toolchain in a test rules out. This header is the living contract until
+# the tool's port-on-touch moment.
 set -uo pipefail
 
 repo_root="$(cd "$(dirname "$0")/../.." && pwd)"
@@ -87,7 +88,8 @@ providers="${providers//,/ }"
 evener_bin="${EVENER_FUZZ_EVENER_BIN:-}"
 harvest_bin="${EVENER_FUZZ_HARVEST_BIN:-}"
 gh="${EVENER_FUZZ_GH:-gh}"
-# Backoff sleep is a seam so the self-test can make retries instant.
+# Backoff sleep is a seam so a caller (e.g. a future test) can make retries
+# instant instead of paying the real delay.
 sleep_cmd="${EVENER_FUZZ_DRIVE_SLEEP:-sleep}"
 timeout_cmd="${EVENER_FUZZ_DRIVE_TIMEOUT:-timeout}"
 

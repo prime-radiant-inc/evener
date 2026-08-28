@@ -3,7 +3,7 @@ The following subagent types are available for `delegate` with the `agent_type` 
 {{ range .AvailableAgents }}<agent>
 Name: `{{ .Name }}`
 Description: {{ .Description }}
-Default tools: {{ .DefaultTools }}
+Capabilities: Default tools: {{ .DefaultTools }}
 Default task list:
 {{ if .TaskList }}{{ range .TaskList }}- `{{ .Title }}`: {{ .Description }}{{ if .ReplacedByParentTasks }} Include relevant parent task details in the `delegate` task prompt for this step.{{ end }}
 {{ end }}{{ else }}- none

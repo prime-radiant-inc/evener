@@ -141,7 +141,7 @@ func registerShellTools(reg *tool.Registry, s *Session, deps *toolDeps) error {
 	if err := register(tool.RegisteredTool{
 		Definition: tool.DefShell(),
 		Exec: func(ctx context.Context, env execenv.ExecutionEnvironment, args map[string]any) (any, error) {
-			shellArgs, err := parseShellToolArgs(args)
+			shellArgs, err := parseShellToolArgs(ctx, args)
 			if err != nil {
 				return "", err
 			}
@@ -156,7 +156,7 @@ func registerShellTools(reg *tool.Registry, s *Session, deps *toolDeps) error {
 			}
 			shellArgs.WorkingDir = resolvedWorkingDir
 			if shellArgs.Mode == shellModeDetached {
-				return runDetachedShell(ctx, env, shellArgs)
+				return runDetachedShell(ctx, env, s, shellArgs)
 			}
 			if se, ok := env.(execenv.StreamingExecutor); ok {
 				if s == nil || s.jobManager == nil {
@@ -201,7 +201,6 @@ func registerShellTools(reg *tool.Registry, s *Session, deps *toolDeps) error {
 	if err := register(tool.RegisteredTool{
 		Definition: tool.DefGrep(), ReadOnly: true,
 		Exec: func(ctx context.Context, env execenv.ExecutionEnvironment, args map[string]any) (any, error) {
-			_ = ctx
 			pat := stringArg(args, "pattern")
 			path := stringArg(args, "path")
 			glob := stringArg(args, "glob_filter")
@@ -221,7 +220,7 @@ func registerShellTools(reg *tool.Registry, s *Session, deps *toolDeps) error {
 			if v, ok := args["context_lines"].(float64); ok && int(v) > 0 {
 				contextLines = min(int(v), 10)
 			}
-			return env.Grep(pat, path, glob, ci, maxRes, outputMode, contextLines)
+			return env.Grep(ctx, pat, path, glob, ci, maxRes, outputMode, contextLines)
 		},
 	}); err != nil {
 		return err
@@ -277,7 +276,7 @@ func registerShellTools(reg *tool.Registry, s *Session, deps *toolDeps) error {
 	return nil
 }
 
-func parseShellToolArgs(args map[string]any) (shellArgs, error) {
+func parseShellToolArgs(ctx context.Context, args map[string]any) (shellArgs, error) {
 	mode, err := parseShellMode(args)
 	if err != nil {
 		return shellArgs{}, err
@@ -285,8 +284,11 @@ func parseShellToolArgs(args map[string]any) (shellArgs, error) {
 	parsed := shellArgs{
 		Command:     fmt.Sprint(args["command"]),
 		Description: stringArg(args, "description"),
-		Mode:        mode,
-		Background:  mode == shellModeBackground,
+		// The registry stripped intent from args before dispatch; recover it
+		// from the exec context (see tool.IntentFromContext).
+		Intent:     tool.IntentFromContext(ctx),
+		Mode:       mode,
+		Background: mode == shellModeBackground,
 		// WorkingDir is the raw model-supplied cwd, if any; "" means omitted. It is
 		// resolved (relative paths joined against env.WorkingDirectory(), validated
 		// against the sandbox root) by resolveShellWorkingDir before dispatch, which
@@ -362,7 +364,7 @@ type detachedShellToolResult struct {
 	PID    int    `json:"pid"`
 }
 
-func runDetachedShell(ctx context.Context, env execenv.ExecutionEnvironment, args shellArgs) (tool.StateResult, error) {
+func runDetachedShell(ctx context.Context, env execenv.ExecutionEnvironment, s *Session, args shellArgs) (tool.StateResult, error) {
 	detacher, ok := env.(execenv.DetachedExecutor)
 	if !ok {
 		return tool.StateResult{}, execenv.ErrDetachUnsupported
@@ -373,6 +375,9 @@ func runDetachedShell(ctx context.Context, env execenv.ExecutionEnvironment, arg
 	}
 	if started.PID <= 0 {
 		return tool.StateResult{}, errors.New("detached command started without a valid pid")
+	}
+	if s != nil {
+		s.recordDetachedProcess(started)
 	}
 	state := detachedShellToolResult{Type: "shell", Mode: string(shellModeDetached), Status: "started", PID: started.PID}
 	b, _ := json.Marshal(state)
@@ -575,7 +580,9 @@ func formatShellResult(out shellToolResult) string {
 	// promoted is the foreground-wait-timeout promotion (job-control.md:210,214):
 	// the command itself did not time out — the foreground wait did, and the
 	// command keeps running as a durable background job.
-	promoted := out.Mode == string(shellModeBackground) && out.TimedOut && out.JobID != ""
+	backgrounded := out.Mode == string(shellModeBackground) && out.JobID != ""
+	promoted := backgrounded && out.TimedOut
+	directBackground := backgrounded && !promoted
 
 	var foot []string
 	if out.ExitCode != nil && out.Mode != string(shellModeBackground) && !runTimeout {
@@ -592,17 +599,27 @@ func formatShellResult(out shellToolResult) string {
 		}
 	case promoted:
 		foot = append(foot,
-			fmt.Sprintf("still running as %s — the foreground wait ended, not the command", out.JobID),
+			"the foreground wait ended, not the command",
 			fmt.Sprintf("output accumulates durably; read it with read_transcript(transcript_ref=%q)", "job:"+out.JobID),
 			"completion arrives by notification — do not relaunch or poll",
 		)
-	case out.Mode == string(shellModeBackground) && out.JobID != "":
-		foot = append(foot, "running in background as "+out.JobID)
+	case directBackground:
+		// The identifying footer is appended after optional retention details so
+		// the job ID remains at the absolute tail.
 	case out.JobID != "":
 		foot = append(foot, fmt.Sprintf("output windowed — read more with read_transcript(transcript_ref=%q)", "job:"+out.JobID))
 	}
 	if out.DroppedBytes > 0 {
 		foot = append(foot, fmt.Sprintf("%d bytes dropped past the retention cap", out.DroppedBytes))
+	}
+	if promoted {
+		foot = append(foot, "still running as "+out.JobID)
+	} else if directBackground {
+		foot = append(foot, "running in background as "+out.JobID)
+	}
+	if backgrounded {
+		b.WriteString(systemReminder("This job will notify you when it completes. If your session is idle, the notification will wake it. You do not need to wait for it explicitly."))
+		b.WriteByte(' ')
 	}
 	if len(foot) > 0 {
 		b.WriteString("[")

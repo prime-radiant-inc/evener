@@ -143,6 +143,81 @@ func TestAgentShardsRunFileHoldsRegex(t *testing.T) {
 	}
 }
 
+func TestShardRunFileExplicitFailuresAndValidSelection(t *testing.T) {
+	fixture := buildShardFixture(t)
+	fixtureDir := fixtureModule(t)
+	type testCase struct {
+		name       string
+		content    *string
+		path       string
+		wantExit   int
+		wantOutput string
+	}
+	valid := "^TestFixtureAlpha$\n"
+	empty := " \n\t"
+	invalid := "["
+	cases := []testCase{
+		{name: "unset", wantExit: 0, wantOutput: "--- PASS: TestFixtureAlpha"},
+		{name: "missing", path: "missing.run", wantExit: 2, wantOutput: "read failed"},
+		{name: "empty", content: &empty, path: "empty.run", wantExit: 2, wantOutput: "run regex is empty"},
+		{name: "invalid", content: &invalid, path: "invalid.run", wantExit: 2, wantOutput: "invalid run regex"},
+		{name: "valid", content: &valid, path: "valid.run", wantExit: 0, wantOutput: "--- PASS: TestFixtureAlpha"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			var runFile string
+			if tc.content != nil {
+				runFile = filepath.Join(t.TempDir(), tc.path)
+				if err := os.WriteFile(runFile, []byte(*tc.content), 0o644); err != nil {
+					t.Fatalf("writing run file: %v", err)
+				}
+			} else if tc.path != "" {
+				runFile = filepath.Join(t.TempDir(), tc.path)
+			}
+			cmd := exec.Command(fixture, "-test.count=1", "-test.v")
+			cmd.Dir = fixtureDir
+			cmd.Env = slices.DeleteFunc(os.Environ(), func(value string) bool {
+				return strings.HasPrefix(value, "EVENER_SHARD_RUN_FILE=")
+			})
+			cmd.Env = append(cmd.Env, "GOWORK=off")
+			if runFile != "" {
+				cmd.Env = append(cmd.Env, "EVENER_SHARD_RUN_FILE="+runFile)
+			}
+			output, err := cmd.CombinedOutput()
+			if err == nil {
+				if tc.wantExit != 0 {
+					t.Fatalf("exit = 0, want %d; output:\n%s", tc.wantExit, output)
+				}
+			} else {
+				var exitErr *exec.ExitError
+				if !errors.As(err, &exitErr) || exitErr.ExitCode() != tc.wantExit {
+					t.Fatalf("exit = %v, want %d; output:\n%s", err, tc.wantExit, output)
+				}
+			}
+			if !strings.Contains(string(output), tc.wantOutput) {
+				t.Fatalf("output missing %q:\n%s", tc.wantOutput, output)
+			}
+			if tc.name == "valid" && strings.Contains(string(output), "--- PASS: TestFixtureBeta") {
+				t.Fatalf("valid handoff ran an unselected test:\n%s", output)
+			}
+		})
+	}
+}
+
+func buildShardFixture(t *testing.T) string {
+	t.Helper()
+	bin := filepath.Join(t.TempDir(), "shardfixture.test")
+	cmd := exec.Command("go", "test", "-c", "-o", bin, ".")
+	cmd.Dir = fixtureModule(t)
+	cmd.Env = append(slices.DeleteFunc(os.Environ(), func(value string) bool {
+		return strings.HasPrefix(value, "EVENER_SHARD_RUN_FILE=")
+	}), "GOWORK=off")
+	if output, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("building shard fixture: %v\n%s", err, output)
+	}
+	return bin
+}
+
 // passLineSeconds extracts each PASS line's reported wall seconds by shard.
 func passLineSeconds(t *testing.T, out string) map[int]float64 {
 	t.Helper()

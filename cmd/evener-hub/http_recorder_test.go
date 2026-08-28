@@ -83,7 +83,7 @@ func TestHTTPRecorderRecordsAndPreservesBody(t *testing.T) {
 	})
 	handler := newHTTPRequestRecorder(root)(inner)
 
-	req := httptest.NewRequest(http.MethodPost, "/api/sessions/abc?foo=bar", strings.NewReader("hello-body"))
+	req := httptest.NewRequest(http.MethodPost, "/api/health?foo=bar", strings.NewReader("hello-body"))
 	req.Header.Set("HX-Request", "true")
 	rec := httptest.NewRecorder()
 	handler.ServeHTTP(rec, req)
@@ -97,7 +97,7 @@ func TestHTTPRecorderRecordsAndPreservesBody(t *testing.T) {
 		t.Fatalf("got %d recordings, want 1", len(recs))
 	}
 	got := recs[0]
-	if got.Method != http.MethodPost || got.Path != "/api/sessions/abc" || got.Query != "foo=bar" || got.Body != "hello-body" {
+	if got.Method != http.MethodPost || got.Path != "/api/health" || got.Query != "foo=bar" || got.Body != "hello-body" {
 		t.Fatalf("recording mismatch: %+v", got)
 	}
 	if got.Headers["Hx-Request"][0] != "true" {

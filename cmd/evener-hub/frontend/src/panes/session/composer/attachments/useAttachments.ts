@@ -66,6 +66,10 @@ export interface UseAttachmentsResult {
    * restored into Composer state. Their marker high-water mark remains
    * authoritative for attachments added afterward. */
   replaceWithSettled(items: PendingAttachment[]): void;
+  /** Clears every staged item, restarts marker numbering, and invalidates all
+   * encode continuations already in flight. The editor text is owned by the
+   * caller and is deliberately left untouched. */
+  reset(): void;
   /** True while any item is still mid-encode - gates submit (parity §A: "a
    * staged attachment is still mid-encode" blocks send/steer alike). */
   hasPending: boolean;
@@ -128,14 +132,26 @@ export function useAttachments(editor: TextEditor): UseAttachmentsResult {
   // whichever settle branch runs first, so it only ever holds markers
   // currently removed-while-pending.
   const removedWhilePendingRef = useRef<Set<number>>(new Set());
+  // A reset cannot cancel browser image/canvas work already in flight, so each
+  // continuation captures this generation and becomes a no-op if replacement
+  // increments it before the encode settles.
+  const generationRef = useRef(0);
 
   const replaceWithSettled = useCallback((nextItems: PendingAttachment[]) => {
     nextMarkerRef.current = nextItems.reduce((highest, item) => Math.max(highest, item.marker), 0);
     setItems(nextItems.map((item) => ({ ...item })));
   }, []);
 
+  const reset = useCallback(() => {
+    generationRef.current += 1;
+    removedWhilePendingRef.current.clear();
+    nextMarkerRef.current = 0;
+    setItems([]);
+  }, []);
+
   const ingestFiles = useCallback(
     (files: File[], onRejected: (message: string) => void) => {
+      const generation = generationRef.current;
       const rejections: string[] = [];
       const accepted: { file: File; marker: number }[] = [];
       // Reserved count starts at the CURRENT pending total and increments
@@ -172,6 +188,7 @@ export function useAttachments(editor: TextEditor): UseAttachmentsResult {
         for (const { file, marker } of accepted) {
           reencodeToPng(file)
             .then(({ data, width, height }) => {
+              if (generationRef.current !== generation) return;
               // Discarded before it settled (kata kt4j) - nothing left to update.
               if (removedWhilePendingRef.current.delete(marker)) return;
               setItems((prev) =>
@@ -179,6 +196,7 @@ export function useAttachments(editor: TextEditor): UseAttachmentsResult {
               );
             })
             .catch(() => {
+              if (generationRef.current !== generation) return;
               // Same discard check as above - the user already removed this
               // attachment, so its eventual decode failure is nothing to
               // strip from the editor or tell them about.
@@ -252,6 +270,7 @@ export function useAttachments(editor: TextEditor): UseAttachmentsResult {
   return {
     items,
     replaceWithSettled,
+    reset,
     hasPending: items.some((item) => item.pending),
     ingestFiles,
     removeItem,

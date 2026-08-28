@@ -165,7 +165,7 @@ func TestSendHubDrainAsSteerIncludesAttachments(t *testing.T) {
 
 	atts := []*clipboard.PastedImage{{Path: path, MediaType: "image/png"}}
 
-	msg := sendHubDrainAsSteer(client, appwire.Ref{SourceID: "local", ThreadID: "th_s"}, "steer me", "steer me", atts, 0)()
+	msg := sendHubDrainAsSteer(client, appwire.Ref{SourceID: "local", ThreadID: "th_s"}, "steer me", "steer me", atts, 0, 0)()
 	drainMsg, ok := msg.(hubDrainAsSteerMsg)
 	if !ok || drainMsg.err != nil {
 		t.Fatalf("msg=%T err=%v", msg, drainMsg.err)
@@ -202,7 +202,7 @@ func TestSendHubDrainAsSteerAlwaysUsesInputShape(t *testing.T) {
 	client, cleanup := newTUIAppWireClient(t, app)
 	defer cleanup()
 
-	msg := sendHubDrainAsSteer(client, appwire.Ref{SourceID: "local", ThreadID: "th_s"}, "steer me", "steer me", nil, 0)()
+	msg := sendHubDrainAsSteer(client, appwire.Ref{SourceID: "local", ThreadID: "th_s"}, "steer me", "steer me", nil, 0, 0)()
 	drainMsg, ok := msg.(hubDrainAsSteerMsg)
 	if !ok || drainMsg.err != nil {
 		t.Fatalf("msg=%T err=%v", msg, drainMsg.err)

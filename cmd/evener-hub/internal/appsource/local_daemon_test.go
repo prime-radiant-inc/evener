@@ -56,7 +56,7 @@ func TestRelaySessionHealthyRejoinUsesCanonicalConnection(t *testing.T) {
 	}
 
 	params := appwire.ThreadReadParams{Ref: "local:thread-1", Subscribe: true}
-	lease, err := source.AcquireRelaySession(params)
+	lease, err := source.acquireRelaySession(params)
 	if err != nil {
 		t.Fatalf("AcquireRelaySession: %v", err)
 	}
@@ -501,7 +501,7 @@ func fuzzScenarioLocalDaemonSourceDrainUsesInputShapeDirectly(t *testing.T) {
 		}}
 	}, httpServer.Client())
 
-	_, err := source.DrainAsSteer(context.Background(), appwire.TurnDrainAsSteerParams{ClientMutationID: "test-mutation", ExpectedQueueRevision: 0, Ref: "local:th_1", Input: []appwire.InputItem{{Type: "text", Text: "composer payload"}}})
+	_, err := source.DrainAsSteer(context.Background(), appwire.TurnDrainAsSteerParams{ClientMutationID: "test-mutation", ExpectedInstanceID: "sess_1", ExpectedQueueRevision: 0, Ref: "local:th_1", Input: []appwire.InputItem{{Type: "text", Text: "composer payload"}}})
 	if err != nil {
 		t.Fatalf("DrainAsSteer: %v", err)
 	}
@@ -614,6 +614,60 @@ func fuzzScenarioLocalDaemonSourceListCarriesAskPending(t *testing.T) {
 	}
 	if askByID["th_idle"] {
 		t.Fatalf("non-ask-pending thread must carry Evener.AskPending=false: %+v", resp.Data)
+	}
+}
+
+func TestLocalDaemonSourceListCarriesRunningNonAgentJobs(t *testing.T) {
+	source := NewLocalDaemonSourceWithEntries("local", func() []LocalDaemonEntry {
+		return []LocalDaemonEntry{{
+			Entry: rendezvous.Entry{
+				Protocol:  appwire.ProtocolVersion,
+				Endpoint:  "ws://127.0.0.1/jobs",
+				ThreadID:  "th_jobs",
+				SessionID: "sess_jobs",
+			},
+			Status: appwire.ThreadStatusActive,
+			RunningJobs: []appwire.EvenerJobInfo{{
+				JobID: "job_shell", JobType: "shell", Status: "running",
+			}},
+			CompletedJobs: []appwire.EvenerJobInfo{{
+				JobID: "job_done", JobType: "shell", Status: "completed",
+			}},
+		}}
+	}, nil)
+
+	resp, err := source.ListThreads(context.Background(), appwire.ThreadListParams{})
+	if err != nil {
+		t.Fatalf("ListThreads: %v", err)
+	}
+	if len(resp.Data) != 1 || resp.Data[0].Evener.Diagnostics == nil || len(resp.Data[0].Evener.Diagnostics.Jobs) != 2 {
+		t.Fatalf("thread list diagnostics = %+v, want active and completed shell jobs", resp.Data)
+	}
+	job := resp.Data[0].Evener.Diagnostics.Jobs[0]
+	if job.JobID != "job_shell" || job.JobType != "shell" || job.Status != "running" {
+		t.Fatalf("running job = %+v, want shell identity and status", job)
+	}
+}
+
+func TestThreadFromEntryCarriesStableRefAndLiveInstance(t *testing.T) {
+	source := NewLocalDaemonSourceWithEntries("local", func() []LocalDaemonEntry { return nil }, nil)
+	thread := source.threadFromEntry(LocalDaemonEntry{Entry: rendezvous.Entry{
+		Protocol:     appwire.ProtocolVersion,
+		Endpoint:     "ws://127.0.0.1/rpc",
+		ThreadID:     "instance-new",
+		SessionID:    "instance-new",
+		WorkspaceRef: "local:workspace",
+		InstanceID:   "instance-new",
+	}})
+
+	if thread.ID != "instance-new" {
+		t.Fatalf("thread id = %q, want live instance id", thread.ID)
+	}
+	if thread.Evener.Ref != "local:workspace" {
+		t.Fatalf("thread ref = %q, want stable workspace ref", thread.Evener.Ref)
+	}
+	if thread.Evener.InstanceID != "instance-new" {
+		t.Fatalf("thread instance id = %q, want live instance id", thread.Evener.InstanceID)
 	}
 }
 
@@ -779,7 +833,7 @@ func fuzzScenarioLocalDaemonSourceStartTurnMapsDroppedTransportToMutationOutcome
 		}}
 	}, httpServer.Client())
 
-	_, err := source.StartTurn(context.Background(), appwire.TurnStartParams{ClientMutationID: "test-mutation", Ref: "local:th_1", Input: []appwire.InputItem{{Type: "text", Text: "hi"}}})
+	_, err := source.StartTurn(context.Background(), appwire.TurnStartParams{ClientMutationID: "test-mutation", ExpectedInstanceID: "sess_1", Ref: "local:th_1", Input: []appwire.InputItem{{Type: "text", Text: "hi"}}})
 	var wire appwire.WireError
 	if !errors.As(err, &wire) {
 		t.Fatalf("StartTurn error %T=%v, want WireError", err, err)
@@ -831,40 +885,6 @@ func fuzzScenarioLocalDaemonSourceSendsHubTokenBearer(t *testing.T) {
 	}
 }
 
-func fuzzScenarioLocalDaemonSourceInterruptWithoutTurnIDUsesRESTInterrupt(t *testing.T) {
-	var called bool
-	daemon := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != "/interrupt" {
-			http.NotFound(w, r)
-			return
-		}
-		if r.Method != http.MethodPost {
-			t.Fatalf("method=%s, want POST", r.Method)
-		}
-		called = true
-		w.WriteHeader(http.StatusNoContent)
-	}))
-	defer daemon.Close()
-
-	entry := rendezvous.Entry{
-		Address:  daemon.Listener.Addr().String(),
-		Endpoint: "ws://" + daemon.Listener.Addr().String() + "/rpc",
-		Protocol: appwire.ProtocolVersion,
-		SourceID: "local",
-		ThreadID: "01INT",
-	}
-	source := NewLocalDaemonSourceWithEntries("local", func() []LocalDaemonEntry {
-		return []LocalDaemonEntry{{Entry: entry, SessionID: "01INT"}}
-	}, daemon.Client())
-
-	if _, err := source.InterruptTurn(context.Background(), appwire.TurnInterruptParams{ClientMutationID: "test-mutation", Ref: "local:01INT"}); err == nil {
-		t.Fatal("InterruptTurn without expectedTurnId succeeded")
-	}
-	if called {
-		t.Fatal("REST /interrupt was called")
-	}
-}
-
 // TestThreadFromEntryReadOnlyAliasCarriesKindAndParentRef guards ledger #112:
 // a ReadOnlyAlias entry addresses an in-process descendant (subagent) served
 // through its owner's daemon endpoint. threadFromEntry must mark it as a
@@ -891,5 +911,114 @@ func TestThreadFromEntryReadOnlyAliasCarriesKindAndParentRef(t *testing.T) {
 	}
 	if thread.Evener.ParentRef == "" {
 		t.Fatal("Evener.ParentRef is empty, want a non-empty parent reference")
+	}
+}
+
+func TestLocalDaemonRootAndReadOnlyAliasShareRelaySession(t *testing.T) {
+	entry := rendezvous.Entry{
+		Protocol:     appwire.ProtocolVersion,
+		Endpoint:     "ws://127.0.0.1/rpc",
+		SourceID:     "local",
+		ThreadID:     "sess_root",
+		SessionID:    "sess_root",
+		WorkspaceRef: "local:sess_root",
+	}
+	source := NewLocalDaemonSourceWithEntries("local", func() []LocalDaemonEntry {
+		return []LocalDaemonEntry{
+			{Entry: entry, SessionID: "sess_root"},
+			{Entry: entry, SessionID: "sess_child", OwnerSessionID: "sess_root", ReadOnlyAlias: true},
+		}
+	}, nil)
+	rootRef, err := source.ResolveRelaySession(appwire.ThreadReadParams{Ref: "local:sess_root"})
+	if err != nil {
+		t.Fatalf("resolve root relay: %v", err)
+	}
+	rootValue, err := source.AcquireRelaySession(rootRef)
+	if err != nil {
+		t.Fatalf("acquire root relay: %v", err)
+	}
+	defer rootValue.Close()
+	childRef, err := source.ResolveRelaySession(appwire.ThreadReadParams{Ref: "local:sess_child"})
+	if err != nil {
+		t.Fatalf("resolve child relay: %v", err)
+	}
+	childValue, err := source.AcquireRelaySession(childRef)
+	if err != nil {
+		t.Fatalf("acquire child relay: %v", err)
+	}
+	defer childValue.Close()
+
+	root, ok := rootValue.(*relaySessionLease)
+	if !ok {
+		t.Fatalf("root lease type = %T, want *relaySessionLease", rootValue)
+	}
+	child, ok := childValue.(*relaySessionLease)
+	if !ok {
+		t.Fatalf("child lease type = %T, want *relaySessionLease", childValue)
+	}
+	if root.session != child.session {
+		t.Fatal("root and read-only child aliases acquired different relay sessions")
+	}
+	source.relayMu.Lock()
+	actors := len(source.relaySessions)
+	source.relayMu.Unlock()
+	if actors != 1 {
+		t.Fatalf("relay session actors = %d, want 1", actors)
+	}
+}
+
+func TestLocalDaemonResolveRelaySessionCanonicalizesAliasesWithoutAcquiring(t *testing.T) {
+	entry := rendezvous.Entry{
+		Protocol:     appwire.ProtocolVersion,
+		Endpoint:     "ws://127.0.0.1/rpc",
+		SourceID:     "local",
+		ThreadID:     "sess_root",
+		SessionID:    "sess_root",
+		WorkspaceRef: "local:sess_root",
+	}
+	source := NewLocalDaemonSourceWithEntries("local", func() []LocalDaemonEntry {
+		return []LocalDaemonEntry{
+			{Entry: entry, SessionID: "sess_root"},
+			{Entry: entry, SessionID: "sess_child", OwnerSessionID: "sess_root", ReadOnlyAlias: true},
+		}
+	}, nil)
+
+	root, err := source.ResolveRelaySession(appwire.ThreadReadParams{Ref: "local:sess_root"})
+	if err != nil {
+		t.Fatalf("resolve root relay: %v", err)
+	}
+	child, err := source.ResolveRelaySession(appwire.ThreadReadParams{Ref: "local:sess_child"})
+	if err != nil {
+		t.Fatalf("resolve child relay: %v", err)
+	}
+	byThreadID, err := source.ResolveRelaySession(appwire.ThreadReadParams{ThreadID: "sess_child"})
+	if err != nil {
+		t.Fatalf("resolve thread-ID-only relay: %v", err)
+	}
+	want := appwire.Ref{SourceID: "local", ThreadID: "sess_root"}
+	for name, got := range map[string]appwire.Ref{"root": root, "child": child, "thread-ID-only": byThreadID} {
+		if got != want {
+			t.Errorf("%s canonical ref = %#v, want %#v", name, got, want)
+		}
+		if got.String() == "" {
+			t.Errorf("%s canonical ref is empty", name)
+		}
+	}
+
+	for _, params := range []appwire.ThreadReadParams{
+		{Ref: "not-a-ref"},
+		{Ref: "other:sess_root"},
+		{Ref: "local:missing"},
+		{ThreadID: "missing"},
+	} {
+		if _, err := source.ResolveRelaySession(params); err == nil {
+			t.Errorf("ResolveRelaySession(%+v) succeeded for invalid target", params)
+		}
+	}
+	source.relayMu.Lock()
+	acquired := len(source.relaySessions)
+	source.relayMu.Unlock()
+	if acquired != 0 {
+		t.Fatalf("resolution acquired %d relay sessions, want none", acquired)
 	}
 }

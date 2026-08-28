@@ -15,18 +15,20 @@ import (
 	"primeradiant.com/evener/agent/internal/agenttest"
 	"primeradiant.com/evener/agent/plugin"
 	"primeradiant.com/evener/agent/provider"
+	"primeradiant.com/evener/agent/sandbox"
 	"primeradiant.com/evener/agent/skill"
 	taskpkg "primeradiant.com/evener/agent/task"
 	"primeradiant.com/evener/llm"
+	"primeradiant.com/evener/llm/registry"
 )
 
 type safzEnumerableAdapter struct {
 	*agenttest.ScriptedAdapter
-	models []llm.ModelInfo
+	models []registry.Model
 }
 
-func (a *safzEnumerableAdapter) ListModels(context.Context) ([]llm.ModelInfo, error) {
-	return append([]llm.ModelInfo(nil), a.models...), nil
+func (a *safzEnumerableAdapter) LiveModels(context.Context) ([]registry.Model, error) {
+	return append([]registry.Model(nil), a.models...), nil
 }
 
 // safzResolveProfile is the parent's cross-provider resolver. A "prefix/model"
@@ -89,14 +91,14 @@ func safzRegisterSkill(t *testing.T, sess *Session) {
 // never blocks on emit. env selects the execution environment (a Local env when
 // the target needs the working_dir override + env-policy branches; a DenyEnv when
 // a child actually runs, so no real process/disk is ever touched).
-func safzNewParent(t *testing.T, clk *agenttest.FakeClock, maxDepth int, childScript []int, env execenv.ExecutionEnvironment) *Session {
+func safzNewParent(t *testing.T, clk *agenttest.FakeClock, maxDepth int, childScript []int, env execenv.ExecutionEnvironment, sandboxProbers ...sandbox.Prober) *Session {
 	t.Helper()
 	client := llm.NewClient()
 	client.Register(&safzEnumerableAdapter{
 		ScriptedAdapter: &agenttest.ScriptedAdapter{Provider: "openai", Responder: func(llm.Request) llm.Response {
 			return agenttest.FinalResponse("parent")
 		}},
-		models: []llm.ModelInfo{{ID: "gpt-5"}, {ID: "gpt-5.2"}, {ID: "gpt-5.3"}},
+		models: []registry.Model{{ID: "gpt-5"}, {ID: "gpt-5.2"}, {ID: "gpt-5.3"}},
 	})
 	cfg := SessionConfig{
 		MaxSubagentDepth:      maxDepth,
@@ -105,11 +107,14 @@ func safzNewParent(t *testing.T, clk *agenttest.FakeClock, maxDepth int, childSc
 		LLMSleep:              func(context.Context, time.Duration) error { return nil },
 		ResolveProfile:        safzResolveProfile,
 	}
+	if len(sandboxProbers) != 0 {
+		cfg.testOnly.sandboxProber = sandboxProbers[0]
+	}
 	cfg.testOnly.childClientFactory = func() *llm.Client {
 		cc := llm.NewClient()
 		cc.Register(&safzEnumerableAdapter{
 			ScriptedAdapter: &agenttest.ScriptedAdapter{Provider: "openai", Responder: newChildResponder(childScript)},
-			models:          []llm.ModelInfo{{ID: "gpt-5"}, {ID: "gpt-5.2"}, {ID: "gpt-5.3"}},
+			models:          []registry.Model{{ID: "gpt-5"}, {ID: "gpt-5.2"}, {ID: "gpt-5.3"}},
 		})
 		return cc
 	}

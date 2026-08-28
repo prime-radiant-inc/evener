@@ -203,7 +203,7 @@ func FuzzCovRPCThreadsHandlers(f *testing.F) {
 				t.Fatal("scripted compact unexpectedly succeeded")
 			}
 		case 7:
-			if _, err := hubCommandList(hubcore.WebConfig{}); err != nil {
+			if _, err := hubCommandList(context.Background(), hubcore.WebConfig{}); err != nil {
 				t.Fatal(err)
 			}
 		case 8:

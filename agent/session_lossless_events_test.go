@@ -312,6 +312,16 @@ func TestPreparedSubagentForwardsEventsToRootObserver(t *testing.T) {
 		switch event.Kind {
 		case events.EventSessionStart:
 			foundStart = true
+			start, ok := event.Data.(events.SessionStartData)
+			if !ok {
+				t.Fatalf("descendant SessionStart payload type = %T", event.Data)
+			}
+			if start.CurrentWork == nil || start.CurrentWork.Tasks == nil {
+				t.Fatalf("descendant SessionStart CurrentWork = %+v, want authoritative task seed", start.CurrentWork)
+			}
+			if start.TaskStoreOwnerSessionID != child.ID() {
+				t.Fatalf("descendant SessionStart owner = %q, want child %q", start.TaskStoreOwnerSessionID, child.ID())
+			}
 		case events.EventAssistantTextDelta:
 			foundDelta = true
 		}

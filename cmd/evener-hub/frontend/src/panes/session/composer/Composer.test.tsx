@@ -8,7 +8,9 @@ import { afterEach, beforeAll, beforeEach, expect, test, vi } from "vitest";
 import { WireError } from "../../../protocol/errors";
 import { FakeClient } from "../../../protocol/testing/fakeClient";
 import type { Thread, ThreadCapabilities, ThreadReadResponse } from "../../../protocol/types.gen";
+import { ClientProvider } from "../../../shell/clientContext";
 import { paletteStore } from "../../../shell/palette/paletteController";
+import { isPaneOpen, resetWorkspaceStoreForTests, workspaceStore } from "../../../shell/workspace";
 import { useCommandCatalog } from "../../../stores/commandCatalog";
 import { connectionStore } from "../../../stores/connection";
 import { MutationOutboxIndexedDB } from "../../../stores/mutationOutboxIndexedDB";
@@ -24,16 +26,27 @@ import buttonStyles from "../../../widgets/button/button.module.css";
 import iconButtonStyles from "../../../widgets/iconbutton/iconbutton.module.css";
 import promptCardStyles from "../../../widgets/promptcard/promptcard.module.css";
 import { resetToastStoreForTests } from "../../../widgets/toast/store";
+import { installMobileViewport } from "../testing/mobileViewport";
 import { resetAskDockStoreForTests } from "./askDock/askDockStore";
-import { Composer } from "./Composer";
+import { Composer as ComposerView } from "./Composer";
 import { requestComposerFocus, resetComposerFocusStoreForTests } from "./composerFocus";
-import { draftStorageKey } from "./draft";
+import { draftStorageKey, readDraft } from "./draft";
 import {
   flushPendingTurnsProjectionForTests,
   refreshPendingTurnsProjection,
   resetPendingTurnsStoreForTests,
 } from "./queue/pendingTurnsStore";
 import { requestQuoteInsert, resetQuoteInsertStoreForTests } from "./quoteInsert";
+
+function Composer(props: React.ComponentProps<typeof ComposerView>) {
+  const client = connectionStore.getState().client;
+  if (!client) throw new Error("Composer test rendered without a connected client");
+  return (
+    <ClientProvider client={client}>
+      <ComposerView {...props} />
+    </ClientProvider>
+  );
+}
 
 // See draft.test.ts's identical comment: Node 26 shadows jsdom's real
 // window.localStorage with its own (non-functional under vitest) global.
@@ -67,6 +80,7 @@ const FULL_CAPABILITIES: ThreadCapabilities = {
   forkFromTurn: true,
   shutdown: true,
   changeModel: true,
+  changeVisionModel: true,
   queue: true,
   goal: true,
   rename: true,
@@ -87,6 +101,7 @@ const DAEMON_IDLE_CAPABILITIES: ThreadCapabilities = {
   forkFromTurn: false,
   shutdown: true,
   changeModel: true,
+  changeVisionModel: true,
   queue: false,
   goal: true,
   rename: true,
@@ -107,6 +122,7 @@ const PAST_THREAD_CAPABILITIES: ThreadCapabilities = {
   forkFromTurn: true,
   shutdown: true,
   changeModel: true,
+  changeVisionModel: true,
   queue: false,
   goal: true,
   rename: true,
@@ -224,15 +240,45 @@ class CountingRecoveryStorage extends MutationOutboxIndexedDB {
   }
 }
 
+class ControlledDiscardStorage extends MutationOutboxIndexedDB {
+  discardStarted: Promise<void> = Promise.resolve();
+  private pausedClientMutationId: string | null = null;
+  private markDiscardStarted: (() => void) | undefined;
+  private releaseDiscard: (() => void) | undefined;
+  private discardGate: Promise<void> = Promise.resolve();
+
+  pauseDiscard(clientMutationId: string): void {
+    this.pausedClientMutationId = clientMutationId;
+    this.discardStarted = new Promise((resolve) => {
+      this.markDiscardStarted = resolve;
+    });
+    this.discardGate = new Promise((resolve) => {
+      this.releaseDiscard = resolve;
+    });
+  }
+
+  release(): void {
+    this.releaseDiscard?.();
+  }
+
+  override async discardRecovery(clientMutationId: string, shouldDiscard?: () => boolean): Promise<boolean> {
+    if (clientMutationId === this.pausedClientMutationId) {
+      this.markDiscardStarted?.();
+      await this.discardGate;
+    }
+    return super.discardRecovery(clientMutationId, shouldDiscard);
+  }
+}
+
 async function mountComposerWithHandle(ref: string, overrides: Partial<Thread> = {}) {
   const fake = connectFakeClient();
   fake.on("thread/read", () => readResponse(ref, overrides));
   await threadsStore.getState().ensureThread(ref);
   const view = render(
-    <>
+    <ClientProvider client={fake}>
       <Toast />
       <Composer ref={ref} />
-    </>,
+    </ClientProvider>,
   );
   return { fake, ...view };
 }
@@ -353,14 +399,304 @@ function pendingAskTurns(): Pick<Thread, "turns"> {
   };
 }
 
-test("while ask_pending is open, the AskDock replacement surface is exposed and the message textbox is hidden", async () => {
+function currentWorkEvener({ task = false, goal = false }: { task?: boolean; goal?: boolean }) {
+  return {
+    ref: "ref_a",
+    capabilities: FULL_CAPABILITIES,
+    queue: { revision: 0 },
+    ...(task
+      ? { tasks: { total: 1, done: 0, current: { id: 1, description: "Finish the focused composer test" } } }
+      : {}),
+    ...(goal ? { goal: { objective: "Keep the session focused", status: "active" as const, iterations: 1 } } : {}),
+  };
+}
+
+test("while ask_pending is open, the message textbox is hidden and the dock is not the composer's surface", async () => {
   await mountComposer("ref_a", {
     ...pendingAskTurns(),
+    evener: currentWorkEvener({ task: true, goal: true }),
   });
 
-  expect(screen.getByText("Answer the agent’s questions.")).toBeTruthy();
-  expect(screen.getByText("Ship now?")).toBeTruthy();
+  // The answering surface moved to the transcript's trailing row (Session.tsx
+  // passes AskDock as TranscriptBody's trailingRow; AskDock.test.tsx and
+  // Session.test.tsx prove that half). The composer keeps its own half of the
+  // contract: hiding the input row while a question is pending.
   expect(screen.queryByRole("textbox", { name: /message/i })).toBeNull();
+  expect(screen.queryByTestId("current-work")).toBeNull();
+  expect(screen.queryByText("Answer the agent’s questions.")).toBeNull();
+  expect(document.querySelector("[data-ask-response-dock]")).toBeNull();
+});
+
+test("renders current work directly before the compose card", async () => {
+  await mountComposer("ref_a", {
+    evener: currentWorkEvener({ task: true, goal: true }),
+  });
+
+  const currentWork = screen.getByTestId("current-work");
+  const composerCard = screen.getByTestId("composer-input-card");
+  expect(currentWork.compareDocumentPosition(composerCard) & Node.DOCUMENT_POSITION_FOLLOWING).not.toBe(0);
+});
+
+test("clicking the current goal fills and focuses an empty composer with an editable goal command", async () => {
+  const user = userEvent.setup();
+  await mountComposer("ref_a", {
+    evener: currentWorkEvener({ goal: true }),
+  });
+
+  await user.click(screen.getByRole("button", { name: "Edit goal: Keep the session focused" }));
+
+  expect(textarea().value).toBe("/goal Keep the session focused");
+  expect(document.activeElement).toBe(textarea());
+  expect(screen.queryByRole("dialog", { name: "Replace draft?" })).toBeNull();
+});
+
+test("clicking the current goal confirms before replacing an existing draft", async () => {
+  const user = userEvent.setup();
+  await mountComposer("ref_a", {
+    evener: currentWorkEvener({ goal: true }),
+  });
+  await user.type(textarea(), "Unsent draft");
+
+  await user.click(screen.getByRole("button", { name: "Edit goal: Keep the session focused" }));
+  expect(screen.getByRole("dialog", { name: "Replace draft?" })).toBeTruthy();
+  expect(textarea().value).toBe("Unsent draft");
+
+  await user.click(screen.getByRole("button", { name: "Keep draft" }));
+  expect(screen.queryByRole("dialog", { name: "Replace draft?" })).toBeNull();
+  expect(textarea().value).toBe("Unsent draft");
+
+  await user.click(screen.getByRole("button", { name: "Edit goal: Keep the session focused" }));
+  await user.click(screen.getByRole("button", { name: "Replace draft" }));
+  expect(textarea().value).toBe("/goal Keep the session focused");
+  expect(document.activeElement).toBe(textarea());
+});
+
+test("editing the goal confirms before replacing whitespace-only draft text", async () => {
+  const user = userEvent.setup();
+  await mountComposer("ref_a", { evener: currentWorkEvener({ goal: true }) });
+  fireEvent.change(textarea(), { target: { value: " \n\t" } });
+
+  await user.click(screen.getByRole("button", { name: "Edit goal: Keep the session focused" }));
+
+  expect(screen.getByRole("dialog", { name: "Replace draft?" })).toBeTruthy();
+  expect(textarea().value).toBe(" \n\t");
+});
+
+test("editing the goal confirms before replacing a draft that contains only attachments", async () => {
+  installStalledDecodeStub();
+  const user = userEvent.setup();
+  await mountComposer("ref_a", { evener: currentWorkEvener({ goal: true }) });
+  act(() => pastePngInto(textarea()));
+  fireEvent.change(textarea(), { target: { value: "" } });
+  expect(screen.getByRole("button", { name: "Remove shot.png" })).toBeTruthy();
+
+  await user.click(screen.getByRole("button", { name: "Edit goal: Keep the session focused" }));
+
+  expect(screen.getByRole("dialog", { name: "Replace draft?" })).toBeTruthy();
+  expect(screen.getByRole("button", { name: "Remove shot.png" })).toBeTruthy();
+});
+
+test("confirmed goal replacement clears settled attachments and persists an ordinary goal draft", async () => {
+  installCanvasStubs();
+  const user = userEvent.setup();
+  await mountComposer("ref_a", { evener: currentWorkEvener({ goal: true }) });
+  act(() => pastePngInto(textarea()));
+  await screen.findByRole("button", { name: "View shot.png" });
+  fireEvent.change(textarea(), { target: { value: "" } });
+
+  await user.click(screen.getByRole("button", { name: "Edit goal: Keep the session focused" }));
+  await user.click(screen.getByRole("button", { name: "Replace draft" }));
+
+  expect(textarea().value).toBe("/goal Keep the session focused");
+  expect(screen.queryByRole("button", { name: "Remove shot.png" })).toBeNull();
+  expect(readDraft("ref_a")).toBe("/goal Keep the session focused");
+});
+
+test("confirmed goal replacement invalidates pending attachments without later changing the goal command", async () => {
+  const gate = installGatedDecodeStub();
+  const user = userEvent.setup();
+  await mountComposer("ref_a", { evener: currentWorkEvener({ goal: true }) });
+  act(() => pastePngInto(textarea()));
+  fireEvent.change(textarea(), { target: { value: "" } });
+
+  await user.click(screen.getByRole("button", { name: "Edit goal: Keep the session focused" }));
+  await user.click(screen.getByRole("button", { name: "Replace draft" }));
+  expect(textarea().value).toBe("/goal Keep the session focused");
+
+  await act(async () => {
+    await gate.release();
+  });
+  expect(textarea().value).toBe("/goal Keep the session focused");
+  expect(screen.queryAllByRole("button", { name: /^Remove/ })).toHaveLength(0);
+  expect(readDraft("ref_a")).toBe("/goal Keep the session focused");
+});
+
+test("confirmed goal replacement exits recovery without deleting its durable recovery row", async () => {
+  const storage = new MutationOutboxIndexedDB();
+  setMutationStorageForTests(storage);
+  const recovered = await seedRejectedRecovery(storage, "ref_a", "recover this later");
+  const user = userEvent.setup();
+  await mountComposer("ref_a", {
+    status: { type: "idle" },
+    evener: currentWorkEvener({ goal: true }),
+  });
+  await flushPendingTurnsProjectionForTests();
+  expect(textarea().value).toBe("recover this later");
+
+  await user.click(screen.getByRole("button", { name: "Edit goal: Keep the session focused" }));
+  await user.click(screen.getByRole("button", { name: "Replace draft" }));
+  await flushPendingTurnsProjectionForTests();
+
+  expect(textarea().value).toBe("/goal Keep the session focused");
+  expect(readDraft("ref_a")).toBe("/goal Keep the session focused");
+  expect(await storage.getRecovery(recovered.clientMutationId)).toBeDefined();
+  expect(screen.getByText("recover this later")).toBeTruthy();
+});
+
+test("goal replacement preserves a recovery row whose empty-draft discard is already pending", async () => {
+  const storage = new ControlledDiscardStorage();
+  setMutationStorageForTests(storage);
+  const recovered = await seedRejectedRecovery(storage, "ref_a", "clear me locally");
+  storage.pauseDiscard(recovered.clientMutationId);
+  const user = userEvent.setup();
+  await mountComposer("ref_a", {
+    status: { type: "idle" },
+    evener: currentWorkEvener({ goal: true }),
+  });
+  await flushPendingTurnsProjectionForTests();
+  await user.clear(textarea());
+  await storage.discardStarted;
+
+  await user.click(screen.getByRole("button", { name: "Edit goal: Keep the session focused" }));
+  await user.click(screen.getByRole("button", { name: "Replace draft" }));
+  expect(readDraft("ref_a")).toBe("/goal Keep the session focused");
+
+  storage.release();
+  await flushPendingTurnsProjectionForTests();
+
+  expect((await storage.listRecovery("ref_a")).map((row) => row.clientMutationId)).toEqual([
+    recovered.clientMutationId,
+  ]);
+  expect(readDraft("ref_a")).toBe("/goal Keep the session focused");
+});
+
+test("goal replacement preserves both recovery rows while a merged source discard is pending", async () => {
+  const storage = new ControlledDiscardStorage();
+  setMutationStorageForTests(storage);
+  const owner = await seedRejectedRecovery(storage, "ref_a", "first recovery");
+  const source = await seedRejectedRecovery(storage, "ref_a", "second recovery");
+  storage.pauseDiscard(source.clientMutationId);
+  const user = userEvent.setup();
+  await mountComposer("ref_a", {
+    status: { type: "idle" },
+    evener: currentWorkEvener({ goal: true }),
+  });
+  await flushPendingTurnsProjectionForTests();
+  expect(textarea().value).toBe("first recovery");
+  const sourceRow = screen.getByText("second recovery").closest("li");
+  if (!sourceRow) throw new Error("missing second recovery row");
+  await user.click(within(sourceRow).getByRole("button", { name: "Edit message" }));
+  await storage.discardStarted;
+
+  await user.click(screen.getByRole("button", { name: "Edit goal: Keep the session focused" }));
+  await user.click(screen.getByRole("button", { name: "Replace draft" }));
+  expect(readDraft("ref_a")).toBe("/goal Keep the session focused");
+
+  storage.release();
+  await flushPendingTurnsProjectionForTests();
+
+  expect((await storage.listRecovery("ref_a")).map((row) => row.clientMutationId)).toEqual([
+    owner.clientMutationId,
+    source.clientMutationId,
+  ]);
+  expect(readDraft("ref_a")).toBe("/goal Keep the session focused");
+});
+
+test("goal replacement closes slash completion and resets selection", async () => {
+  useCommandCatalog.setState({ commands: REVIEW_RELEASE_CATALOG, loaded: true });
+  const user = userEvent.setup();
+  await mountComposer("ref_a", { evener: currentWorkEvener({ goal: true }) });
+  await user.type(textarea(), "hi /re");
+  await user.keyboard("{ArrowDown}");
+  expect(slashOptions()[1]?.getAttribute("aria-selected")).toBe("true");
+
+  await user.click(screen.getByRole("button", { name: "Edit goal: Keep the session focused" }));
+  await user.click(screen.getByRole("button", { name: "Replace draft" }));
+  expect(screen.queryByTestId("composer-slash-menu")).toBeNull();
+
+  await user.clear(textarea());
+  await user.type(textarea(), "hi /re");
+  expect(slashOptions()[0]?.getAttribute("aria-selected")).toBe("true");
+});
+
+test("goal replacement focus waits until an ended follow-up textarea mounts", async () => {
+  const user = userEvent.setup();
+  let overrides: Partial<Thread> = {
+    status: { type: "closed" },
+    evener: {
+      ...currentWorkEvener({ goal: true }),
+      capabilities: { ...FULL_CAPABILITIES, send: false },
+    },
+  };
+  const fake = await mountComposer("ref_a", overrides);
+  fake.on("thread/read", () => readResponse("ref_a", overrides));
+  expect(screen.queryByRole("textbox", { name: /^message$/i })).toBeNull();
+
+  await user.click(screen.getByRole("button", { name: "Edit goal: Keep the session focused" }));
+  expect(readDraft("ref_a")).toBe("/goal Keep the session focused");
+
+  overrides = {
+    ...overrides,
+    evener: { ...currentWorkEvener({ goal: true }), capabilities: FULL_CAPABILITIES },
+  };
+  await act(async () => {
+    fake.emitNotification({ method: "evener/thread/resync", params: { threadId: "thr_ref_a", ref: "ref_a" } });
+  });
+
+  await waitFor(() => expect(document.activeElement).toBe(textarea()));
+  expect(textarea().value).toBe("/goal Keep the session focused");
+});
+
+test("clicking the current task twice keeps one Tasks pane open and focuses it", async () => {
+  const user = userEvent.setup();
+  await mountComposer("ref_a", {
+    evener: currentWorkEvener({ task: true }),
+  });
+
+  await user.click(screen.getByRole("button", { name: "Open tasks: Finish the focused composer test" }));
+  expect(isPaneOpen(workspaceStore.getState(), "sessionTasks", { ref: "ref_a" })).toBe(true);
+  const tasksPane = workspaceStore
+    .getState()
+    .panes.find((pane) => pane.type === "sessionTasks" && (pane.params as { ref?: string }).ref === "ref_a");
+  if (!tasksPane) throw new Error("missing Tasks pane");
+  workspaceStore.setState({ focusedPaneId: null });
+  expect(workspaceStore.getState().focusedPaneId).not.toBe(tasksPane.id);
+
+  await user.click(screen.getByRole("button", { name: "Open tasks: Finish the focused composer test" }));
+  expect(
+    workspaceStore
+      .getState()
+      .panes.filter((pane) => pane.type === "sessionTasks" && (pane.params as { ref?: string }).ref === "ref_a"),
+  ).toHaveLength(1);
+  expect(workspaceStore.getState().focusedPaneId).toBe(tasksPane.id);
+});
+
+test("clicking the current task opens the existing mobile tasks sheet for this session", async () => {
+  const restoreViewport = installMobileViewport();
+  const user = userEvent.setup();
+  const fake = await mountComposer("ref_a", {
+    evener: currentWorkEvener({ task: true }),
+  });
+  let calledRef: unknown;
+  fake.on("evener/tasks/list", (params) => {
+    calledRef = params.ref;
+    return { data: [] };
+  });
+
+  await user.click(screen.getByRole("button", { name: "Open tasks: Finish the focused composer test" }));
+  await waitFor(() => expect(calledRef).toBe("ref_a"));
+  expect(isPaneOpen(workspaceStore.getState(), "sessionTasks", { ref: "ref_a" })).toBe(false);
+  restoreViewport();
 });
 
 test("the composer region fills pane height and bottom-anchors the replacement slot", () => {
@@ -387,6 +723,7 @@ beforeEach(() => {
   resetPrefsStoreForTests();
   connectionStore.setState({ state: "idle", serverInfo: undefined, client: null });
   resetThreadsStoreForTests();
+  resetWorkspaceStoreForTests();
   resetPendingTurnsStoreForTests();
   // askDockStore reconciles reactively off threadsStore (registered once at
   // module load - askDockStore.ts's own header comment), so its byRef map
@@ -2614,11 +2951,14 @@ test("a trailing slash token opens a completion menu merging session-scoped buil
   await user.type(textarea(), "hi /re");
 
   // "re" matches the built-in /reasoning-effort too (mergeSlashCommands puts
-  // built-ins first), not just the two catalog entries.
+  // built-ins first), not just the two catalog entries. Fuzzy matching also
+  // finds the command labels whose "r" and "e" are separated.
   expect(slashOptions().map((el) => el.textContent)).toEqual([
     expect.stringContaining("/reasoning-effort"),
     expect.stringContaining("/review"),
     expect.stringContaining("/release"),
+    expect.stringContaining("/project"),
+    expect.stringContaining("/drain-as-steer"),
   ]);
 });
 
@@ -2630,6 +2970,91 @@ test("typing further narrows the menu live", async () => {
   await user.type(textarea(), "hi /rev");
 
   expect(slashOptions().map((el) => el.textContent)).toEqual([expect.stringContaining("/review")]);
+});
+
+test("slash completion hides excluded plugin commands but keeps loaded plugin commands", async () => {
+  useCommandCatalog.setState({
+    commands: [
+      { name: "review", description: "review the diff", source: "plugin", pluginName: "loaded" },
+      { name: "revoke", description: "revoke access", source: "plugin", pluginName: "excluded" },
+    ],
+    loaded: true,
+  });
+  const user = userEvent.setup();
+  await mountComposer("ref_slash_plugins", {
+    evener: {
+      ...testThread("ref_slash_plugins").evener,
+      diagnostics: { plugins: [{ name: "loaded", skillCount: 0, agentCount: 0, hookCount: 0, mcpCount: 0 }] },
+    },
+  });
+
+  await user.type(textarea(), "hi /rev");
+
+  expect(slashOptions().map((el) => el.textContent)).toEqual([expect.stringContaining("/review")]);
+});
+
+test("slash completion keeps built-ins while hiding plugin commands for an explicit empty inventory", async () => {
+  useCommandCatalog.setState({
+    commands: [
+      { name: "review", description: "review the diff", source: "plugin", pluginName: "excluded" },
+      { name: "release", description: "cut a release", source: "plugin", pluginName: "excluded" },
+    ],
+    loaded: true,
+  });
+  const user = userEvent.setup();
+  await mountComposer("ref_slash_empty", {
+    evener: {
+      ...testThread("ref_slash_empty").evener,
+      diagnostics: { plugins: [] },
+    },
+  });
+
+  await user.type(textarea(), "hi /re");
+
+  expect(slashOptions().map((el) => el.textContent)).toEqual([
+    expect.stringContaining("/reasoning-effort"),
+    expect.stringContaining("/project"),
+    expect.stringContaining("/drain-as-steer"),
+  ]);
+});
+
+test("a focused thread skill completes inline text and submits the unchanged prose", async () => {
+  const user = userEvent.setup();
+  const fake = await mountComposer("ref_slash_skill", {
+    evener: {
+      ref: "ref_slash_skill",
+      capabilities: FULL_CAPABILITIES,
+      queue: { revision: 0 },
+      diagnostics: { skills: [{ name: "simplify", description: "rewrite" }] },
+    },
+  });
+  fake.on("turn/start", (params) => ({
+    receipt: {
+      clientMutationId: params.clientMutationId,
+      disposition: "applied",
+      threadId: "thread_a",
+      projectionState: "reflected",
+    },
+    turn: { id: "turn_1", status: "inProgress", itemsView: "" },
+  }));
+
+  await user.type(textarea(), "Use /smp");
+  expect(slashOptions()).toHaveLength(1);
+  expect(slashOptions()[0]?.textContent).toContain("/simplify");
+
+  await user.click(slashOptions()[0]!);
+  expect(textarea().value).toBe("Use /simplify ");
+
+  await user.type(textarea(), "on this");
+  expect(textarea().value).toBe("Use /simplify on this");
+  await user.click(submitButton());
+
+  await waitFor(() => expect(fake.calls.some((call) => call.method === "turn/start")).toBe(true));
+  const call = fake.calls.find((candidate) => candidate.method === "turn/start");
+  expect(call?.params).toMatchObject({
+    ref: "ref_slash_skill",
+    input: [{ type: "text", text: "Use /simplify on this" }],
+  });
 });
 
 test("a mid-word slash never opens the menu", async () => {
@@ -2657,17 +3082,21 @@ test("ArrowDown/ArrowUp move the highlighted option and wrap at both ends", asyn
   const user = userEvent.setup();
   await mountComposer("ref_slash7");
   await user.type(textarea(), "hi /re");
-  // Three matches: the built-in /reasoning-effort, then /review, /release.
+  // Five matches: three contiguous beginnings, then two fuzzy matches.
 
   expect(slashOptions()[0]?.getAttribute("aria-selected")).toBe("true");
   await user.keyboard("{ArrowDown}");
   expect(slashOptions()[1]?.getAttribute("aria-selected")).toBe("true");
   await user.keyboard("{ArrowDown}");
   expect(slashOptions()[2]?.getAttribute("aria-selected")).toBe("true");
+  await user.keyboard("{ArrowDown}");
+  expect(slashOptions()[3]?.getAttribute("aria-selected")).toBe("true");
+  await user.keyboard("{ArrowDown}");
+  expect(slashOptions()[4]?.getAttribute("aria-selected")).toBe("true");
   await user.keyboard("{ArrowDown}"); // wraps past the last option back to the first
   expect(slashOptions()[0]?.getAttribute("aria-selected")).toBe("true");
   await user.keyboard("{ArrowUp}"); // wraps the other way, back to the last
-  expect(slashOptions()[2]?.getAttribute("aria-selected")).toBe("true");
+  expect(slashOptions()[4]?.getAttribute("aria-selected")).toBe("true");
 });
 
 test("Tab commits the highlighted option: splices /name<space> at the token start, caret after the space", async () => {
@@ -2699,7 +3128,12 @@ test("committing a plugin-sourced catalog entry inserts the QUALIFIED /plugin:na
     loaded: true,
   });
   const user = userEvent.setup();
-  await mountComposer("ref_slash_qualified");
+  await mountComposer("ref_slash_qualified", {
+    evener: {
+      ...testThread("ref_slash_qualified").evener,
+      diagnostics: { plugins: [{ name: "p", skillCount: 0, agentCount: 0, hookCount: 0, mcpCount: 0 }] },
+    },
+  });
   await user.type(textarea(), "hi /rev");
 
   await user.keyboard("{Tab}");
@@ -2814,7 +3248,7 @@ test("a built-in invocation (/goal) runs the RPC instead of sending, and clears 
   expect(localStorage.getItem("evener.composer.draft.v1.ref_builtin_goal")).toBeNull();
 });
 
-test("a successful /goal shows the goal chip immediately - no rehydrate needed (goal/set has no live push)", async () => {
+test("a successful /goal response fallback shows the goal chip without rehydration", async () => {
   const user = userEvent.setup();
   const fake = await mountComposer("ref_builtin_goal_chip");
   fake.on("goal/set", () => ({ started: true }));
@@ -2822,9 +3256,9 @@ test("a successful /goal shows the goal chip immediately - no rehydrate needed (
   await user.type(textarea(), "/goal ship the demo");
   await user.click(submitButton());
 
-  // The wire carries no goal-changed notification and the fake never
-  // rehydrates the thread, so the chip can only come from the optimistic
-  // override the command applies (GoalControl's own module cache).
+  // This fake emits no notification and never rehydrates the thread, so this
+  // exercises the goal/set response fallback stored in ThreadModel. Separate
+  // store tests prove an accepted push or hydration invalidates that fallback.
   await waitFor(() => expect(screen.getByTestId("goal-chip-trigger")).toBeTruthy());
   expect(screen.getByTestId("goal-chip-trigger").textContent).toContain("Goal: active");
 });

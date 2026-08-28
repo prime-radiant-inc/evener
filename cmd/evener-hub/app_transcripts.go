@@ -7,7 +7,7 @@ import (
 	"primeradiant.com/evener/appwire"
 	"primeradiant.com/evener/cmd/evener-hub/internal/appsource"
 	"primeradiant.com/evener/cmd/evener-hub/internal/hubcore"
-	"primeradiant.com/evener/cmd/evener-hub/internal/strutil"
+	"primeradiant.com/evener/envvars"
 )
 
 var hubTranscriptRootForList = hubTranscriptRoot
@@ -27,7 +27,7 @@ func hubThreadTranscriptList(ctx context.Context, cfg hubcore.WebConfig, sources
 
 	targets := []appwire.ThreadTranscriptTarget{{
 		Ref:      rootRef,
-		ThreadID: strutil.FirstNonEmpty(root.ID, root.SessionID),
+		ThreadID: envvars.FirstNonEmpty(root.ID, root.SessionID),
 		Title:    "main session (live)",
 		Kind:     "main",
 		Status:   root.Status.Type,
@@ -46,10 +46,10 @@ func hubThreadTranscriptList(ctx context.Context, cfg hubcore.WebConfig, sources
 			return
 		}
 		seen[ref] = struct{}{}
-		title := strutil.FirstNonEmpty(thread.Name, thread.Preview, thread.AgentNickname, "subagent "+strutil.FirstNonEmpty(thread.ID, thread.SessionID, ref))
+		title := envvars.FirstNonEmpty(thread.Name, thread.Preview, thread.AgentNickname, "subagent "+envvars.FirstNonEmpty(thread.ID, thread.SessionID, ref))
 		targets = append(targets, appwire.ThreadTranscriptTarget{
 			Ref:       ref,
-			ThreadID:  strutil.FirstNonEmpty(thread.ID, thread.SessionID),
+			ThreadID:  envvars.FirstNonEmpty(thread.ID, thread.SessionID),
 			Title:     title,
 			Kind:      "subagent",
 			Status:    thread.Status.Type,
@@ -69,7 +69,7 @@ func hubThreadTranscriptList(ctx context.Context, cfg hubcore.WebConfig, sources
 					thread.Source = source.ID()
 				}
 				if thread.Evener.Ref == "" {
-					threadID := strutil.FirstNonEmpty(thread.ID, thread.SessionID)
+					threadID := envvars.FirstNonEmpty(thread.ID, thread.SessionID)
 					if threadID != "" {
 						thread.Evener.Ref = appwire.Ref{SourceID: source.ID(), ThreadID: threadID}.String()
 					}
@@ -81,7 +81,7 @@ func hubThreadTranscriptList(ctx context.Context, cfg hubcore.WebConfig, sources
 	if cfg.Past != nil {
 		_, _ = cfg.Past.Rebuild()
 		for _, entry := range cfg.Past.All() {
-			thread, err := pastEntryThread(cfg, entry, false)
+			thread, err := pastEntryThread(ctx, cfg, entry, false)
 			if err != nil {
 				return appwire.ThreadTranscriptListResponse{}, err
 			}
@@ -101,14 +101,15 @@ func hubTranscriptRoot(ctx context.Context, cfg hubcore.WebConfig, sources *apps
 		}
 		err = readErr
 	}
-	thread, ok, pastErr := pastThreadForRead(cfg, appwire.ThreadReadParams{Ref: ref, IncludeTurns: false})
+	entry, ok := pastEntryForRead(cfg, appwire.ThreadReadParams{Ref: ref})
+	if !ok {
+		return appwire.Thread{}, err
+	}
+	thread, pastErr := pastEntryThread(ctx, cfg, entry, false)
 	if pastErr != nil {
 		return appwire.Thread{}, pastErr
 	}
-	if ok {
-		return thread, nil
-	}
-	return appwire.Thread{}, err
+	return thread, nil
 }
 
 func threadRef(thread appwire.Thread) string {
@@ -116,7 +117,7 @@ func threadRef(thread appwire.Thread) string {
 		return thread.Evener.Ref
 	}
 	sourceID := strings.TrimSpace(thread.Source)
-	threadID := strutil.FirstNonEmpty(thread.ID, thread.SessionID)
+	threadID := envvars.FirstNonEmpty(thread.ID, thread.SessionID)
 	if sourceID == "" || threadID == "" {
 		return ""
 	}

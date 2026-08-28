@@ -2,7 +2,10 @@
 
 Kata: eqs0. Blocks: fd8n.
 
-**Status: implemented** on `wip/kata-eqs0`, all six rulings, per
+**Status: superseded historical design.** This proposal was implemented on
+`wip/kata-eqs0` and then removed/replaced by the 2026-08-01 open-local-job
+transcript-read design. It is retained as history; its grant, delegate-job,
+and `job:`-for-delegate claims are not the shipped contract. Per
 `docs/superpowers/plans/2026-07-31-observer-job-read-grant.md`. Two corrections
 to this document's own text, found while implementing:
 
