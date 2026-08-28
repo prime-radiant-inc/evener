@@ -107,6 +107,7 @@ func TestRuntimeBuildFixtureEnvironmentDropsAmbientHarnessControls(t *testing.T)
 		"EVENER_TEST_NODE_TERM",
 		"EVENER_TEST_NODE_RELEASE",
 		"EVENER_TEST_NODE_READY_FD",
+		"EVENER_TEST_PROCESS_STATE_DIR",
 	}
 	for _, name := range controlNames {
 		t.Setenv(name, "ambient-value")
@@ -342,21 +343,33 @@ func TestMakeRuntimeAliasesBuildThePair(t *testing.T) {
 func TestMakeWebCommandsContainNodeProcessState(t *testing.T) {
 	fixture := newBuildWebFixture(t)
 	frontendDir := filepath.Join(fixture.root, "cmd", "evener-hub", "frontend")
+	processStateDir := filepath.Join(fixture.root, "process-state-records")
+	if err := os.Mkdir(processStateDir, 0o755); err != nil {
+		t.Fatalf("mkdir process-state records: %v", err)
+	}
 	writeTestFile(t, filepath.Join(frontendDir, "package-lock.json"), []byte("{}\n"), 0o644)
 	writeTestFile(t, filepath.Join(frontendDir, "package.json"), []byte("{}\n"), 0o644)
 
 	for _, target := range []string{"build-web", "test-web", "test-web-browser"} {
 		command := exec.Command("make", target)
 		command.Dir = fixture.root
-		command.Env = fixture.environment("")
+		command.Env = append(fixture.environment(""), "EVENER_TEST_PROCESS_STATE_DIR="+processStateDir)
 		if output, err := command.CombinedOutput(); err != nil {
 			t.Fatalf("make %s: %v\n%s", target, err, output)
 		}
 	}
 
-	logData, err := os.ReadFile(fixture.logPath)
+	records, err := os.ReadDir(processStateDir)
 	if err != nil {
-		t.Fatalf("read fake frontend process log: %v", err)
+		t.Fatalf("read fake frontend process-state records: %v", err)
+	}
+	var logData []byte
+	for _, record := range records {
+		data, err := os.ReadFile(filepath.Join(processStateDir, record.Name()))
+		if err != nil {
+			t.Fatalf("read fake frontend process-state record %q: %v", record.Name(), err)
+		}
+		logData = append(logData, data...)
 	}
 	wantNPMCommands := map[string]bool{
 		"ci":            false,
@@ -392,7 +405,7 @@ func TestMakeWebCommandsContainNodeProcessState(t *testing.T) {
 			}
 		}
 	}
-	for line := range strings.SplitSeq(strings.TrimSpace(string(logData)), "\n") {
+	for line := range strings.SplitSeq(strings.TrimSuffix(string(logData), "\n"), "\n") {
 		fields := strings.Split(line, "\t")
 		if len(fields) != 8 {
 			continue
@@ -1295,8 +1308,13 @@ func installFrontendToolchainStubs(t *testing.T, fixture runtimeBuildFixture) {
 	// broken state the preflight exists to catch, so a stub that only mkdir'd
 	// the directory would (correctly) fail the build.
 	writeTestFile(t, filepath.Join(fixture.fakeBin, "npm"), []byte(`#!/bin/sh
-printf 'npm-env\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$*" "${NODE_DISABLE_COMPILE_CACHE:-}" "${HOME:-}" "${TMPDIR:-}" "${XDG_CONFIG_HOME:-}" "${XDG_CACHE_HOME:-}" "${XDG_STATE_HOME:-}" >> "$EVENER_TEST_GO_LOG"
-printf 'npm %s\n' "$*" >> "$EVENER_TEST_GO_LOG"
+if [ -n "${EVENER_TEST_PROCESS_STATE_DIR:-}" ]; then
+  record=$(mktemp "$EVENER_TEST_PROCESS_STATE_DIR/npm.XXXXXX")
+  printf 'npm-env\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$*" "${NODE_DISABLE_COMPILE_CACHE:-}" "${HOME:-}" "${TMPDIR:-}" "${XDG_CONFIG_HOME:-}" "${XDG_CACHE_HOME:-}" "${XDG_STATE_HOME:-}" > "$record"
+else
+  printf 'npm-env\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$*" "${NODE_DISABLE_COMPILE_CACHE:-}" "${HOME:-}" "${TMPDIR:-}" "${XDG_CONFIG_HOME:-}" "${XDG_CACHE_HOME:-}" "${XDG_STATE_HOME:-}" >> "$EVENER_TEST_GO_LOG"
+  printf 'npm %s\n' "$*" >> "$EVENER_TEST_GO_LOG"
+fi
 if [ "$1" = "ci" ]; then
   mkdir -p node_modules/.bin
   printf '#!/bin/sh\necho "Version 6.0.3"\n' > node_modules/.bin/tsc
@@ -1319,7 +1337,12 @@ fi
 exit 0
 `), 0o755)
 	writeTestFile(t, filepath.Join(fixture.fakeBin, "node"), []byte(`#!/bin/sh
-printf 'node-env\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$*" "${NODE_DISABLE_COMPILE_CACHE:-}" "${HOME:-}" "${TMPDIR:-}" "${XDG_CONFIG_HOME:-}" "${XDG_CACHE_HOME:-}" "${XDG_STATE_HOME:-}" >> "$EVENER_TEST_GO_LOG"
+if [ -n "${EVENER_TEST_PROCESS_STATE_DIR:-}" ]; then
+  record=$(mktemp "$EVENER_TEST_PROCESS_STATE_DIR/node.XXXXXX")
+  printf 'node-env\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$*" "${NODE_DISABLE_COMPILE_CACHE:-}" "${HOME:-}" "${TMPDIR:-}" "${XDG_CONFIG_HOME:-}" "${XDG_CACHE_HOME:-}" "${XDG_STATE_HOME:-}" > "$record"
+else
+  printf 'node-env\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$*" "${NODE_DISABLE_COMPILE_CACHE:-}" "${HOME:-}" "${TMPDIR:-}" "${XDG_CONFIG_HOME:-}" "${XDG_CACHE_HOME:-}" "${XDG_STATE_HOME:-}" >> "$EVENER_TEST_GO_LOG"
+fi
 printf 'browser chatter: %s\n' "$*"
 [ "${EVENER_TEST_NODE_HOLD_COMMAND:-}" != "$*" ] || {
   on_term() {
@@ -1617,7 +1640,8 @@ func (fixture runtimeBuildFixture) environment(failPackage string) []string {
 			"EVENER_TEST_SHELL_WAIT_RELEASE",
 			"EVENER_TEST_WEB_CLEANUP_READY", "EVENER_TEST_WEB_CLEANUP_RELEASE", "EVENER_TEST_WEB_CLEANUP_PID",
 			"EVENER_TEST_WEB_WAIT_READY", "EVENER_TEST_WEB_WAIT_RELEASE", "EVENER_TEST_WEB_WAIT_REAPED", "EVENER_TEST_WEB_STALE_JOB", "EVENER_TEST_WEB_WAIT_USED",
-			"EVENER_TEST_NODE_HOLD_COMMAND", "EVENER_TEST_NODE_FAIL_COMMAND", "EVENER_TEST_NODE_PID", "EVENER_TEST_NODE_READY", "EVENER_TEST_NODE_TERM", "EVENER_TEST_NODE_RELEASE", "EVENER_TEST_NODE_READY_FD":
+			"EVENER_TEST_NODE_HOLD_COMMAND", "EVENER_TEST_NODE_FAIL_COMMAND", "EVENER_TEST_NODE_PID", "EVENER_TEST_NODE_READY", "EVENER_TEST_NODE_TERM", "EVENER_TEST_NODE_RELEASE", "EVENER_TEST_NODE_READY_FD",
+			"EVENER_TEST_PROCESS_STATE_DIR":
 			continue
 		}
 		environment = append(environment, assignment)
