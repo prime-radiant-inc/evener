@@ -7,6 +7,7 @@
 
 import { cleanup, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
+import type { ComponentProps } from "react";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
 import { FakeClient } from "../../../protocol/testing/fakeClient";
 import type {
@@ -25,7 +26,7 @@ import { resetThreadsStoreForTests, threadsStore } from "../../../stores/threads
 import { Toast } from "../../../widgets";
 import "../../sessionPanels";
 import { resetGoalOverridesForTests } from "./GoalControl";
-import { SessionChrome } from "./SessionChrome";
+import { SessionChrome as SessionChromeView } from "./SessionChrome";
 
 const CAPABILITIES: ThreadCapabilities = {
   send: true,
@@ -108,8 +109,19 @@ function setLocation(ref: string): void {
   });
 }
 
+let chromeClient = new FakeClient("ready");
+
+function SessionChrome(props: ComponentProps<typeof SessionChromeView>) {
+  return (
+    <ClientProvider client={chromeClient}>
+      <SessionChromeView {...props} />
+    </ClientProvider>
+  );
+}
+
 function connectFakeClient(): FakeClient {
   const fake = new FakeClient("ready");
+  chromeClient = fake;
   connectionStore.getState().connect(fake);
   return fake;
 }
@@ -127,6 +139,7 @@ function renderWithToast(ui: React.ReactElement) {
 }
 
 beforeEach(() => {
+  chromeClient = new FakeClient("ready");
   connectionStore.setState({ state: "idle", serverInfo: undefined, client: null });
   resetThreadsStoreForTests();
   resetWorkspaceStoreForTests();

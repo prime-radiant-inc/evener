@@ -19,11 +19,7 @@ import (
 )
 
 func (s *WebServer) emptyNavigationMutation() hubapi.NavigationMutation {
-	mutation := hubapi.NavigationMutation{Targets: hubapi.NavigationArray[appwire.NavigationInvalidationTarget]{}}
-	if capability := s.navigation.Capability(); capability != nil {
-		mutation.GenerationID = capability.GenerationID
-	}
-	return mutation
+	return s.navigation.EmptyMutation()
 }
 
 func projectKeyForStateDir(stateDir string) string {
@@ -68,14 +64,10 @@ type remoteThreadFetch struct {
 	generation uint64
 }
 
-// notifyMutation nudges the attention watcher (if configured). It exists for
+// pokeMutationAttention nudges the attention watcher (if configured). It exists for
 // mutations whose store never routes through Roster/PastIndex's own composed
 // onChange hook — archive and favorite decisions live in
 // ArchiveStore/FavoriteStore — so they need an explicit nudge every time.
-func (s *WebServer) notifyMutation() {
-	pokeMutationAttention(s.cfg)
-}
-
 func pokeMutationAttention(cfg hubcore.WebConfig) {
 	if cfg.PokeAttention != nil {
 		cfg.PokeAttention()

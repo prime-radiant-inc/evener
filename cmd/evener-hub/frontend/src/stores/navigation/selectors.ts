@@ -117,13 +117,15 @@ function loadedSectionRows(
 export function selectGlobalRows(state = navigationStore.getState()): NavigationSessionSummary[] {
   return [...selectLiveRows(state), ...selectNeedsYouRows(state)];
 }
-export interface LoadedPinSection {
+export interface NavigationPinSectionSummary {
   id: string;
   name: string;
   member_count: number;
+}
+export interface LoadedPinSection extends NavigationPinSectionSummary {
   sessions: NavigationSessionSummary[];
 }
-export function selectPinSections(state = navigationStore.getState()): LoadedPinSection[] {
+export function selectPinSectionSummaries(state = navigationStore.getState()): NavigationPinSectionSummary[] {
   const descriptors = [...state.resources.values()]
     .filter((resource) => resource.key.kind === "pin_catalog" && resource.data !== null)
     .sort((a, b) => {
@@ -139,15 +141,14 @@ export function selectPinSections(state = navigationStore.getState()): LoadedPin
   return descriptors.flatMap((descriptor) => {
     if (seen.has(descriptor.id)) return [];
     seen.add(descriptor.id);
-    return [
-      {
-        id: descriptor.id,
-        name: descriptor.name,
-        member_count: descriptor.count,
-        sessions: loadedSectionRows(state, (key) => key.kind === "pin_section" && key.sectionId === descriptor.id),
-      },
-    ];
+    return [{ id: descriptor.id, name: descriptor.name, member_count: descriptor.count }];
   });
+}
+export function selectPinSections(state = navigationStore.getState()): LoadedPinSection[] {
+  return selectPinSectionSummaries(state).map((section) => ({
+    ...section,
+    sessions: loadedSectionRows(state, (key) => key.kind === "pin_section" && key.sectionId === section.id),
+  }));
 }
 export function selectProjectSummaries(state = navigationStore.getState()): NavigationProjectSummary[] {
   const catalogOrder = { projects: 0, archived_projects: 1, test_runs: 2 } as const;

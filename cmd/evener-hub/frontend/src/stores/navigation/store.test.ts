@@ -12,6 +12,7 @@ import {
   selectNeedsYouCount,
   selectNeedsYouRows,
   selectNextSectionOffset,
+  selectPinSectionSummaries,
   selectPinSections,
   selectProjectPage,
   selectProjectResource,
@@ -388,6 +389,58 @@ test("resource keys map to exact AppWire params and preserve decoded identifiers
   s.setExpanded("p", false);
 });
 
+test("pin catalog page loading preserves every assignment target", async () => {
+  const client = await init((params) => {
+    if (params.resource === "manifest") return wire(emptyManifest());
+    if (params.resource !== "pin_catalog") throw new Error(`unexpected resource ${params.resource}`);
+    if (params.offset === 0) return wire({ pin_sections: [{ id: "first", name: "First", count: 0 }], remaining: 1 });
+    if (params.offset === 1) return wire({ pin_sections: [{ id: "second", name: "Second", count: 2 }], remaining: 0 });
+    throw new Error(`unexpected pin catalog offset ${params.offset}`);
+  });
+
+  await navigationStore.getState().loadPinCatalogPages();
+
+  expect(
+    client.calls
+      .map((call) => call.params as NavigationReadParams)
+      .filter((params) => params.resource === "pin_catalog"),
+  ).toEqual([
+    { resource: "pin_catalog", offset: 0, limit: 100 },
+    { resource: "pin_catalog", offset: 1, limit: 100 },
+  ]);
+  expect(selectPinSectionSummaries()).toEqual([
+    { id: "first", name: "First", member_count: 0 },
+    { id: "second", name: "Second", member_count: 2 },
+  ]);
+});
+
+test("forced pin catalog page loading replaces every fresh cached page", async () => {
+  let refreshed = false;
+  const client = await init((params) => {
+    if (params.resource === "manifest") return wire(emptyManifest());
+    if (params.resource === "pin_catalog" && params.offset === 0)
+      return refreshed
+        ? wire({ pin_sections: [{ id: "section", name: "After", count: 0 }], remaining: 0 })
+        : wire({ pin_sections: [{ id: "section", name: "Before", count: 0 }], remaining: 1 });
+    if (params.resource === "pin_catalog" && params.offset === 1)
+      return refreshed
+        ? wire({ pin_sections: [], remaining: 0 })
+        : wire({ pin_sections: [{ id: "deleted", name: "Deleted", count: 1 }], remaining: 0 });
+    throw new Error(`unexpected resource ${params.resource}`);
+  });
+
+  await navigationStore.getState().loadPinCatalogPages();
+  refreshed = true;
+  await navigationStore.getState().loadPinCatalogPages(true);
+
+  expect(
+    client.calls
+      .map((call) => call.params as NavigationReadParams)
+      .filter((params) => params.resource === "pin_catalog"),
+  ).toHaveLength(4);
+  expect(selectPinSectionSummaries()).toEqual([{ id: "section", name: "After", member_count: 0 }]);
+});
+
 test("AppWire envelope status and conditional reads preserve cached navigation", async () => {
   let manifestCalls = 0;
   const client = await init((params) => {
@@ -672,6 +725,7 @@ test("selectors expose every loaded global/pin page, location, project/page reso
   await navigationStore.getState().lookupLocation("loc");
   const state = navigationStore.getState();
   expect(selectGlobalRows(state).map((row) => row.ref)).toEqual(["s", "s2"]);
+  expect(selectPinSectionSummaries(state)).toEqual([{ id: "pin", name: "Pinned", member_count: 2 }]);
   expect(selectPinSections(state).map((section) => [section.id, section.sessions.map((row) => row.ref)])).toEqual([
     ["pin", ["p1", "p2"]],
   ]);
@@ -766,6 +820,47 @@ test("zero-count pin descriptors and collapsed projects do not issue requests", 
   });
   expect(calls.some((params) => params.resource === "pin_section")).toBe(false);
   expect(calls.some((params) => params.resource === "project" && params.projectKey === "collapsed")).toBe(false);
+});
+
+test("tracking an unseen empty pin section lets its first assignment converge in one targeted read", async () => {
+  let assigned = false;
+  const calls: NavigationReadParams[] = [];
+  await init((params) => {
+    calls.push(params);
+    if (params.resource === "manifest")
+      return wire(
+        emptyManifest({ sections: { live: { count: 0 }, needs_you: { count: 0 }, pin_sections: { count: 1 } } }),
+      );
+    if (params.resource === "pin_catalog")
+      return wire(
+        { pin_sections: [{ id: "empty", count: assigned ? 1 : 0 }], remaining: 0 },
+        "ok",
+        assigned ? '"catalog-two"' : '"catalog-one"',
+        assigned ? 2 : 1,
+      );
+    if (params.resource === "pin_section")
+      return wire(
+        { sessions: assigned ? [{ ref: "local:a", children: [] }] : [], remaining: 0 },
+        "ok",
+        '"section-two"',
+        2,
+      );
+    throw new Error(`unexpected navigation read: ${JSON.stringify(params)}`);
+  });
+  expect(calls.filter((params) => params.resource === "pin_section")).toHaveLength(0);
+
+  navigationStore.getState().trackPinSection("empty");
+  assigned = true;
+  await navigationStore.getState().applyNavigationMutation({
+    generation_id: generation,
+    targets: [
+      { kind: "pin_catalog", revision: 2 },
+      { kind: "pin_section", sectionId: "empty", revision: 2 },
+    ],
+  });
+
+  expect(calls.filter((params) => params.resource === "pin_section")).toHaveLength(1);
+  expect(selectPinSections(navigationStore.getState())[0]?.sessions.map((session) => session.ref)).toEqual(["local:a"]);
 });
 
 test("unavailable project recovery refreshes its owning loaded catalog once and retries once", async () => {

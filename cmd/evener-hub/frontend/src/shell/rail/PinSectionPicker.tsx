@@ -1,12 +1,12 @@
 import { type ChangeEvent, useEffect, useId, useState } from "react";
 import { errorText } from "../../protocol/errors";
 import type { NavigationSessionSummary } from "../../protocol/types.gen";
-import { selectPinSections } from "../../stores/navigation/selectors";
+import { selectPinSectionSummaries } from "../../stores/navigation/selectors";
 import { navigationStore } from "../../stores/navigation/store";
 import { Button, Dialog, Input, Sheet } from "../../widgets";
 import { requireClass } from "../../widgets/internal/requireClass";
 import { useIsMobile } from "../useIsMobile";
-import { isRailRequestStatus, type PinSectionSummary } from "./actions";
+import { isPinSectionNotFound, type PinSectionSummary } from "./actions";
 import styles from "./railDialog.module.css";
 
 export interface PinSectionPickerProps {
@@ -27,6 +27,10 @@ function compareSections(a: PinSectionSummary, b: PinSectionSummary): number {
   return a.name.localeCompare(b.name, undefined, { sensitivity: "base" }) || a.id.localeCompare(b.id);
 }
 
+function sortedPinSectionSummaries(): PinSectionSummary[] {
+  return selectPinSectionSummaries(navigationStore.getState()).sort(compareSections);
+}
+
 export function PinSectionPicker({ session, onAssign, onClose }: PinSectionPickerProps) {
   const inputID = useId();
   const errorID = useId();
@@ -42,15 +46,10 @@ export function PinSectionPicker({ session, onAssign, onClose }: PinSectionPicke
     let active = true;
     void navigationStore
       .getState()
-      .loadPinCatalog()
+      .loadPinCatalogPages()
       .then(() => {
         if (!active) return;
-        const summaries: PinSectionSummary[] = selectPinSections(navigationStore.getState()).map((section) => ({
-          id: section.id,
-          name: section.name,
-          member_count: section.member_count,
-        }));
-        setSections([...summaries].sort(compareSections));
+        setSections(sortedPinSectionSummaries());
       })
       .catch((err) => {
         if (active) setError(errorText(err));
@@ -70,15 +69,10 @@ export function PinSectionPicker({ session, onAssign, onClose }: PinSectionPicke
       await onAssign({ section_id: section.id }, section);
     } catch (err) {
       setError(errorText(err));
-      if (isRailRequestStatus(err, 404)) {
+      if (isPinSectionNotFound(err)) {
         try {
-          await navigationStore.getState().loadPinCatalog();
-          const summaries: PinSectionSummary[] = selectPinSections(navigationStore.getState()).map((section) => ({
-            id: section.id,
-            name: section.name,
-            member_count: section.member_count,
-          }));
-          setSections([...summaries].sort(compareSections));
+          await navigationStore.getState().loadPinCatalogPages(true);
+          setSections(sortedPinSectionSummaries());
         } catch {
           // Keep the assignment's useful not-found error visible. A later
           // picker mount will retry the summary request normally.

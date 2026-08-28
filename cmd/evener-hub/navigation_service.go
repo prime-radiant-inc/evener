@@ -261,6 +261,16 @@ func (s *NavigationService) Capability() *appwire.NavigationCapability {
 	return &appwire.NavigationCapability{Version: 1, GenerationID: s.generation, Sequence: s.sequence}
 }
 
+// EmptyMutation returns the current navigation generation with no invalidation
+// targets for an idempotent mutation that changed no durable state.
+func (s *NavigationService) EmptyMutation() appwire.NavigationMutation {
+	mutation := appwire.NavigationMutation{Targets: []appwire.NavigationInvalidationTarget{}}
+	if capability := s.Capability(); capability != nil {
+		mutation.GenerationID = capability.GenerationID
+	}
+	return mutation
+}
+
 func (s *NavigationService) Stats() NavigationServiceStats {
 	s.mu.Lock()
 	stats := navigationServiceStats{CoreBuilds: s.coreBuilds}
@@ -729,7 +739,7 @@ func navigationLogicalFingerprintsWithContext(ctx context.Context, projection na
 		if err := ctx.Err(); err != nil {
 			return nil, nil, err
 		}
-		pinCatalog = append(pinCatalog, hubapi.NavigationPinSectionDescriptor{ID: section.id, Name: section.name, Count: len(section.rows)})
+		pinCatalog = append(pinCatalog, hubapi.NavigationPinSectionDescriptor{ID: section.id, Name: section.name, Count: section.memberCount})
 		key := navigationResourceKey{Kind: navigationResourcePinSection, SectionID: section.id}
 		rows, err := navigationLogicalNodesContext(ctx, projection, section.rows)
 		if err != nil {

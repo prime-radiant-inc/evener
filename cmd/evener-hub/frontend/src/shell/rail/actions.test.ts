@@ -1,5 +1,6 @@
 // @vitest-environment node
-import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, test } from "vitest";
+import { WireError } from "../../protocol/errors";
 import { FakeClient } from "../../protocol/testing/fakeClient";
 import { connectionStore } from "../../stores/connection";
 import {
@@ -7,146 +8,115 @@ import {
   deletePinSection,
   deleteProject,
   deleteSession,
-  isRailRequestStatus,
-  listPinSections,
+  isPinSectionNotFound,
   renamePinSection,
   setArchived,
   setFavorite,
   unpinSession,
 } from "./actions";
 
-function jsonResponse(body: unknown, status = 200): Response {
-  return {
-    ok: status >= 200 && status < 300,
-    status,
-    statusText: status === 200 ? "OK" : "Error",
-    json: () => Promise.resolve(body),
-  } as Response;
-}
-
-let fetchMock: ReturnType<typeof vi.fn>;
-
 beforeEach(() => {
-  fetchMock = vi.fn();
-  vi.stubGlobal("fetch", fetchMock);
   connectionStore.setState({ state: "idle", serverInfo: undefined, client: null });
 });
 
 afterEach(() => {
   connectionStore.setState({ state: "idle", serverInfo: undefined, client: null });
-  vi.unstubAllGlobals();
-  vi.restoreAllMocks();
-});
-
-const JSON_INIT = (body: unknown) => ({
-  method: "POST",
-  headers: { "Content-Type": "application/json" },
-  credentials: "same-origin",
-  body: JSON.stringify(body),
 });
 
 describe("named pin sections", () => {
-  test("lists all pin sections with same-origin credentials and parses the response", async () => {
-    const sections = [{ id: "section/one", name: "Research", member_count: 2 }];
-    fetchMock.mockResolvedValueOnce(jsonResponse(sections));
-
-    await expect(listPinSections()).resolves.toEqual(sections);
-    expect(fetchMock).toHaveBeenCalledWith("/api/pin-sections", { credentials: "same-origin" });
-  });
-
-  test("assigns by name with the exact POST body and parses the canonical assignment", async () => {
+  test("assigns by name through the typed method and returns the canonical assignment", async () => {
+    const client = new FakeClient();
     const response = {
-      ok: true,
+      ok: true as const,
       changed: true,
       assignment: {
-        session_ref: "local:s1",
-        section: { id: "canonical", name: "Research", member_count: 1 },
+        sessionRef: "local:s1",
+        section: { id: "canonical", name: "Research", memberCount: 1 },
       },
+      navigation: { generation_id: "generation-a", targets: [] },
     };
-    fetchMock.mockResolvedValueOnce(jsonResponse(response));
+    client.on("evener/session-pin/assign", (params) => {
+      expect(params).toEqual({ sessionRef: "local:s1", sectionName: "Research" });
+      return response;
+    });
 
-    await expect(assignSessionPin("local:s1", { section_name: "Research" })).resolves.toEqual(response);
-    expect(fetchMock).toHaveBeenCalledWith(
-      "/api/session-pin",
-      JSON_INIT({ session_ref: "local:s1", section_name: "Research" }),
-    );
+    await expect(assignSessionPin(client, "local:s1", { section_name: "Research" })).resolves.toEqual(response);
   });
 
   test("assigns by section ID without changing the target shape", async () => {
+    const client = new FakeClient();
     const response = {
-      ok: true,
+      ok: true as const,
       changed: false,
-      assignment: { session_ref: "local:s1", section: { id: "s/1", name: "Client", member_count: 1 } },
+      assignment: { sessionRef: "local:s1", section: { id: "s/1", name: "Client", memberCount: 1 } },
+      navigation: { generation_id: "generation-a", targets: [] },
     };
-    fetchMock.mockResolvedValueOnce(jsonResponse(response));
+    client.on("evener/session-pin/assign", (params) => {
+      expect(params).toEqual({ sessionRef: "local:s1", sectionId: "s/1" });
+      return response;
+    });
 
-    await assignSessionPin("local:s1", { section_id: "s/1" });
-    expect(fetchMock).toHaveBeenCalledWith(
-      "/api/session-pin",
-      JSON_INIT({ session_ref: "local:s1", section_id: "s/1" }),
-    );
+    await expect(assignSessionPin(client, "local:s1", { section_id: "s/1" })).resolves.toEqual(response);
   });
 
-  test("assignment failures preserve HTTP status for structured not-found handling", async () => {
-    fetchMock.mockResolvedValueOnce(jsonResponse({ error: "pin section not found" }, 404));
+  test("assignment failures preserve the resource-not-found discriminator", async () => {
+    const client = new FakeClient();
+    client.on("evener/session-pin/assign", () => {
+      throw new WireError("pin section not found", -32602, { evenerErrorInfo: "resourceNotFound" });
+    });
 
-    const error = await assignSessionPin("local:s1", { section_id: "deleted" }).catch((cause: unknown) => cause);
+    const error = await assignSessionPin(client, "local:s1", { section_id: "deleted" }).catch(
+      (cause: unknown) => cause,
+    );
 
-    expect(error).toBeInstanceOf(Error);
     expect((error as Error).message).toBe("pin section not found");
-    expect(isRailRequestStatus(error, 404)).toBe(true);
-    expect(isRailRequestStatus(error, 409)).toBe(false);
+    expect(isPinSectionNotFound(error)).toBe(true);
+    expect(isPinSectionNotFound(new WireError("bad name", -32602, { evenerErrorInfo: "invalidParams" }))).toBe(false);
   });
 
-  test("unpins with an encoded query ref, DELETE, same-origin credentials, and parses success", async () => {
-    fetchMock.mockResolvedValueOnce(
-      jsonResponse({ ok: true, changed: true, assignment: { session_ref: "local:s/1" } }),
-    );
-
-    await expect(unpinSession("local:s/1")).resolves.toEqual({ ok: true, changed: true });
-    expect(fetchMock).toHaveBeenCalledWith("/api/session-pin?ref=local%3As%2F1", {
-      method: "DELETE",
-      credentials: "same-origin",
+  test("unpins through the typed method and preserves the navigation receipt", async () => {
+    const client = new FakeClient();
+    const response = {
+      ok: true as const,
+      changed: true,
+      assignment: { sessionRef: "local:s/1" },
+      navigation: { generation_id: "generation-a", targets: [] },
+    };
+    client.on("evener/session-pin/unpin", (params) => {
+      expect(params).toEqual({ sessionRef: "local:s/1" });
+      return response;
     });
+
+    await expect(unpinSession(client, "local:s/1")).resolves.toEqual(response);
   });
 
-  test("renames through an encoded section URL and returns the canonical summary", async () => {
-    const section = { id: "section/one", name: "New name", member_count: 3 };
+  test("renames through the typed method and returns the canonical summary", async () => {
+    const client = new FakeClient();
+    const section = { id: "section/one", name: "New name", memberCount: 3 };
     const navigation = { generation_id: "g", targets: [] };
-    fetchMock.mockResolvedValueOnce(jsonResponse({ ok: true, changed: true, section, navigation }));
-
-    await expect(renamePinSection("section/one", "New name")).resolves.toEqual({ section, navigation });
-    expect(fetchMock).toHaveBeenCalledWith(
-      "/api/pin-sections/section%2Fone",
-      expect.objectContaining({
-        method: "PATCH",
-        headers: { "Content-Type": "application/json" },
-        credentials: "same-origin",
-        body: JSON.stringify({ name: "New name" }),
-      }),
-    );
-  });
-
-  test("deletes through an encoded section URL and parses the durable member count", async () => {
-    const response = { ok: true, changed: true, member_count: 4 };
-    fetchMock.mockResolvedValueOnce(jsonResponse(response));
-
-    await expect(deletePinSection("section/one")).resolves.toEqual(response);
-    expect(fetchMock).toHaveBeenCalledWith("/api/pin-sections/section%2Fone", {
-      method: "DELETE",
-      credentials: "same-origin",
+    const response = { ok: true as const, changed: true, section, navigation };
+    client.on("evener/pin-section/rename", (params) => {
+      expect(params).toEqual({ sectionId: "section/one", name: "New name" });
+      return response;
     });
+
+    await expect(renamePinSection(client, "section/one", "New name")).resolves.toEqual(response);
   });
 
-  test.each([
-    ["list", () => listPinSections()],
-    ["assign", () => assignSessionPin("local:s1", { section_id: "missing" })],
-    ["unpin", () => unpinSession("local:s1")],
-    ["rename", () => renamePinSection("conflict", "Research")],
-    ["delete", () => deletePinSection("missing")],
-  ])("propagates JSON error messages for %s", async (_label, request) => {
-    fetchMock.mockResolvedValueOnce(jsonResponse({ error: "named pin failure" }, 409));
-    await expect(request()).rejects.toThrow("named pin failure");
+  test("deletes through the typed method and returns the durable member count", async () => {
+    const client = new FakeClient();
+    const response = {
+      ok: true as const,
+      changed: true,
+      memberCount: 4,
+      navigation: { generation_id: "generation-a", targets: [] },
+    };
+    client.on("evener/pin-section/delete", (params) => {
+      expect(params).toEqual({ sectionId: "section/one" });
+      return response;
+    });
+
+    await expect(deletePinSection(client, "section/one")).resolves.toEqual(response);
   });
 });
 

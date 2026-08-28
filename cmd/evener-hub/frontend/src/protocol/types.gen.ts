@@ -1103,6 +1103,35 @@ export interface PendingMutation {
   projectionState: string;
 }
 
+export interface PinSection {
+  id: string;
+  name: string;
+  memberCount: number;
+}
+
+export interface PinSectionDeleteParams {
+  sectionId: string;
+}
+
+export interface PinSectionDeleteResponse {
+  ok: boolean;
+  changed: boolean;
+  memberCount: number;
+  navigation: NavigationMutation;
+}
+
+export interface PinSectionRenameParams {
+  sectionId: string;
+  name: string;
+}
+
+export interface PinSectionRenameResponse {
+  ok: boolean;
+  changed: boolean;
+  section: PinSection;
+  navigation: NavigationMutation;
+}
+
 export interface PluginCheckNowResponse {
   updated?: string[];
   errors?: string[];
@@ -1279,6 +1308,39 @@ export interface SessionDeleteParams {
 export interface SessionDeleteResponse {
   deleted: string[];
   skipped: DeletionSkip[];
+  navigation: NavigationMutation;
+}
+
+export interface SessionPinAssignParams {
+  sessionRef: string;
+  sectionId?: string;
+  sectionName?: string;
+}
+
+export interface SessionPinAssignResponse {
+  ok: boolean;
+  changed: boolean;
+  assignment: SessionPinAssignment;
+  navigation: NavigationMutation;
+}
+
+export interface SessionPinAssignment {
+  sessionRef: string;
+  section: PinSection;
+}
+
+export interface SessionPinUnpinAssignment {
+  sessionRef: string;
+}
+
+export interface SessionPinUnpinParams {
+  sessionRef: string;
+}
+
+export interface SessionPinUnpinResponse {
+  ok: boolean;
+  changed: boolean;
+  assignment: SessionPinUnpinAssignment;
   navigation: NavigationMutation;
 }
 
@@ -1914,6 +1976,10 @@ export const METHOD_NAMES = [
   "evener/archive/set",
   "evener/project/delete",
   "evener/session/delete",
+  "evener/pin-section/rename",
+  "evener/pin-section/delete",
+  "evener/session-pin/assign",
+  "evener/session-pin/unpin",
   "evener/search",
   "evener/harnesses/list",
   "evener/upgrade",
@@ -2084,6 +2150,10 @@ export interface MethodTypes {
   "evener/archive/set": { params: ArchiveParams; result: ArchiveResponse };
   "evener/project/delete": { params: ProjectDeleteParams; result: ProjectDeleteResponse };
   "evener/session/delete": { params: SessionDeleteParams; result: SessionDeleteResponse };
+  "evener/pin-section/rename": { params: PinSectionRenameParams; result: PinSectionRenameResponse };
+  "evener/pin-section/delete": { params: PinSectionDeleteParams; result: PinSectionDeleteResponse };
+  "evener/session-pin/assign": { params: SessionPinAssignParams; result: SessionPinAssignResponse };
+  "evener/session-pin/unpin": { params: SessionPinUnpinParams; result: SessionPinUnpinResponse };
   "evener/search": { params: SearchParams; result: SearchResponse };
   "evener/harnesses/list": { params: HarnessListParams; result: HarnessListResponse };
   "evener/upgrade": { params: UpgradeParams; result: UpgradeResponse };

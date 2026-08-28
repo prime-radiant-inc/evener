@@ -40,7 +40,18 @@ import { resetThreadsStoreForTests, threadsStore } from "../../../stores/threads
 import { Toast } from "../../../widgets";
 import { resetToastStoreForTests } from "../../../widgets/toast/store";
 import { resetAskDockStoreForTests } from "./askDock/askDockStore";
-import { Composer } from "./Composer";
+import { Composer as ComposerView } from "./Composer";
+
+function Composer(props: React.ComponentProps<typeof ComposerView>) {
+  const client = connectionStore.getState().client;
+  if (!client) throw new Error("Composer capability test rendered without a connected client");
+  return (
+    <ClientProvider client={client}>
+      <ComposerView {...props} />
+    </ClientProvider>
+  );
+}
+
 import { resetPendingTurnsStoreForTests } from "./queue/pendingTurnsStore";
 import { resetStoplessComposerSightingsForTests, stoplessComposerSightings } from "./stoplessComposer";
 

@@ -1,21 +1,24 @@
-// actions.ts wraps the application mutations the rail's row menu drives. The
-// typed AppWire mutations await exact navigation targets before removing an
-// overlay; the remaining REST-backed pin actions retain their request helpers.
+// actions.ts wraps the application mutations the rail's row menu drives.
+// Navigation pinning, favorite, archive, project deletion, and session
+// deletion use the typed AppWire client. No optimistic UI: callers await the
+// response's exact navigation targets before removing their overlay.
+
+import { WireError } from "../../protocol/errors";
 import type { AppwireClientLike } from "../../protocol/testing/fakeClient";
 import type {
   FavoriteSetResponse,
   NavigationMutation,
+  PinSectionDeleteResponse,
+  PinSectionRenameResponse,
   ProjectDeleteResponse,
   SessionDeleteResponse,
+  SessionPinAssignResponse,
+  SessionPinUnpinResponse,
 } from "../../protocol/types.gen";
 import { connectionStore } from "../../stores/connection";
+import type { NavigationPinSectionSummary } from "../../stores/navigation/selectors";
 
-/** Wire shape of GET /api/pin-sections — { id, name, member_count }. */
-export interface PinSectionSummary {
-  id: string;
-  name: string;
-  member_count: number;
-}
+export type PinSectionSummary = NavigationPinSectionSummary;
 
 export interface NavigationMutationReceipt {
   navigation: NavigationMutation;
@@ -24,34 +27,8 @@ export type FavoriteMutationResponse = FavoriteSetResponse;
 
 export type ProjectDeleteResult = ProjectDeleteResponse;
 
-async function parseErrorBody(res: Response): Promise<string> {
-  try {
-    const data = (await res.json()) as { error?: string };
-    if (typeof data.error === "string" && data.error !== "") return data.error;
-  } catch {
-    // non-JSON (or empty) error body: fall through to the status line
-  }
-  return `${res.status} ${res.statusText}`;
-}
-
-export class RailRequestError extends Error {
-  readonly status: number;
-
-  constructor(message: string, status: number) {
-    super(message);
-    this.name = "RailRequestError";
-    this.status = status;
-  }
-}
-
-export function isRailRequestStatus(error: unknown, status: number): boolean {
-  return error instanceof RailRequestError && error.status === status;
-}
-
-async function requestJSON<T>(url: string, init: RequestInit): Promise<T> {
-  const res = await fetch(url, { credentials: "same-origin", ...init });
-  if (!res.ok) throw new RailRequestError(await parseErrorBody(res), res.status);
-  return (await res.json()) as T;
+export function isPinSectionNotFound(error: unknown): boolean {
+  return error instanceof WireError && error.evenerErrorInfo === "resourceNotFound";
 }
 
 /** Sets a project favorite through the typed hub AppWire method. */
@@ -64,61 +41,33 @@ export async function setFavorite(
   return client.request("evener/favorite/set", { kind, id, favorited });
 }
 
-export interface SessionPinAssignment {
-  session_ref: string;
-  section: PinSectionSummary;
-}
-
-export interface SessionPinMutationResponse {
-  ok: true;
-  changed: boolean;
-  assignment: SessionPinAssignment;
-  navigation: NavigationMutation;
-}
-
-export async function listPinSections(): Promise<PinSectionSummary[]> {
-  return requestJSON<PinSectionSummary[]>("/api/pin-sections", {});
-}
-
 export async function assignSessionPin(
+  client: AppwireClientLike,
   ref: string,
   target: { section_id: string } | { section_name: string },
-): Promise<SessionPinMutationResponse> {
-  return requestJSON<SessionPinMutationResponse>("/api/session-pin", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ session_ref: ref, ...target }),
-  });
+): Promise<SessionPinAssignResponse> {
+  return client.request(
+    "evener/session-pin/assign",
+    "section_id" in target
+      ? { sessionRef: ref, sectionId: target.section_id }
+      : { sessionRef: ref, sectionName: target.section_name },
+  );
 }
 
-export async function unpinSession(ref: string): Promise<NavigationMutationReceipt & { ok: true; changed: boolean }> {
-  const response = await requestJSON<SessionPinMutationResponse>(`/api/session-pin?ref=${encodeURIComponent(ref)}`, {
-    method: "DELETE",
-  });
-  return { ok: response.ok, changed: response.changed, navigation: response.navigation };
+export async function unpinSession(client: AppwireClientLike, ref: string): Promise<SessionPinUnpinResponse> {
+  return client.request("evener/session-pin/unpin", { sessionRef: ref });
 }
 
 export async function renamePinSection(
+  client: AppwireClientLike,
   id: string,
   name: string,
-): Promise<NavigationMutationReceipt & { section: PinSectionSummary }> {
-  const response = await requestJSON<{
-    ok: true;
-    changed: boolean;
-    section: PinSectionSummary;
-    navigation: NavigationMutation;
-  }>(`/api/pin-sections/${encodeURIComponent(id)}`, {
-    method: "PATCH",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ name }),
-  });
-  return { section: response.section, navigation: response.navigation };
+): Promise<PinSectionRenameResponse> {
+  return client.request("evener/pin-section/rename", { sectionId: id, name });
 }
 
-export async function deletePinSection(
-  id: string,
-): Promise<NavigationMutationReceipt & { ok: true; changed: boolean; member_count: number }> {
-  return requestJSON(`/api/pin-sections/${encodeURIComponent(id)}`, { method: "DELETE" });
+export async function deletePinSection(client: AppwireClientLike, id: string): Promise<PinSectionDeleteResponse> {
+  return client.request("evener/pin-section/delete", { sectionId: id });
 }
 
 /** Sets an archive decision through evener/archive/set. workingDir is required

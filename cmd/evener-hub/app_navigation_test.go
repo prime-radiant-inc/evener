@@ -371,7 +371,7 @@ func TestHubNavigationReadIsRegisteredOnTestHubWithoutService(t *testing.T) {
 
 func TestHubNavigationReadOverAppWireWebSocket(t *testing.T) {
 	service := newNavigationReadTestService(t)
-	server := newHubAppServerWithNavigation(hubcore.WebConfig{}, nil, service)
+	server := newHubAppServerWithNavigation(hubcore.WebConfig{}, nil, service, nil)
 	paths := make(chan string, 1)
 	httpServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		paths <- r.URL.Path

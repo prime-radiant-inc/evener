@@ -105,7 +105,11 @@ function PaneContent() {
   useEffect(() => {
     void threadsStore.getState().ensureThread(REF);
   }, []);
-  return <SessionChrome ref={REF} />;
+  return (
+    <ClientProvider client={fake}>
+      <SessionChrome ref={REF} />
+    </ClientProvider>
+  );
 }
 
 createRoot(root).render(

@@ -6,7 +6,6 @@ import userEvent from "@testing-library/user-event";
 import { lazy } from "react";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, test, vi } from "vitest";
 import { sessionPanelPaneType } from "../../panes/sessionPanels";
-import type { NavigationPinSectionCatalog } from "../../protocol/types.gen";
 import { navigationStore, resetNavigationStoreForTests } from "../../stores/navigation/store";
 import { keyID, type ResourceState } from "../../stores/navigation/types";
 import { Tree, type TreeRowInfo } from "../../widgets";
@@ -24,16 +23,15 @@ import type {
   SessionRailNode,
 } from "./railNodes";
 
-// "Pin this session…" mounts the real PinSectionPicker, which now reads
+// "Pin this session…" mounts the real PinSectionPicker, which reads
 // pin sections from the navigation store's bounded pin-catalog resource
-// (loadPinCatalog + selectPinSections) instead of the legacy unbounded
-// GET /api/pin-sections. Seed the store with a pin_catalog resource and
-// stub loadPinCatalog so the picker's mount effect resolves without a
+// (loadPinCatalogPages + selectPinSections). Seed the store with a pin_catalog resource and
+// stub loadPinCatalogPages so the picker's mount effect resolves without a
 // real network fetch.
 const pinKey = { kind: "pin_catalog" as const, offset: 0, limit: 100 };
 const generation = "generation_test";
 
-type LoadPinCatalog = (offset?: number, limit?: number) => Promise<ResourceState<NavigationPinSectionCatalog>>;
+type LoadPinCatalogPages = (force?: boolean) => Promise<void>;
 
 function seedPinCatalogForPicker(): void {
   const resource: ResourceState = {
@@ -54,9 +52,7 @@ function seedPinCatalogForPicker(): void {
     generationID: generation,
   };
   navigationStore.setState({ mode: "v1", resources: new Map([[keyID(resource.key), resource]]) });
-  const impl = async () =>
-    navigationStore.getState().resources.get(keyID(pinKey)) as ResourceState<NavigationPinSectionCatalog>;
-  navigationStore.setState({ loadPinCatalog: vi.fn(impl) as LoadPinCatalog });
+  navigationStore.setState({ loadPinCatalogPages: vi.fn(async () => undefined) as LoadPinCatalogPages });
 }
 
 function PaneFixture() {

@@ -1,4 +1,4 @@
-import { act, cleanup, fireEvent, render as renderUI, screen } from "@testing-library/react";
+import { act, cleanup, fireEvent, render as renderUI, screen, within } from "@testing-library/react";
 import type { ReactElement } from "react";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { FakeClient } from "../../protocol/testing/fakeClient";
@@ -56,14 +56,6 @@ function resource<T>(key: ResourceKey, data: T): ResourceState<T> {
     error: null,
     generationID: "g1",
   };
-}
-function jsonResponse(body: unknown, status = 200): Response {
-  return {
-    ok: status >= 200 && status < 300,
-    status,
-    statusText: status === 200 ? "OK" : "Error",
-    json: () => Promise.resolve(body),
-  } as Response;
 }
 function deferred<T>() {
   let resolve!: (value: T | PromiseLike<T>) => void;
@@ -260,6 +252,74 @@ describe("resource-backed Rail", () => {
     expect(pins).toHaveLength(1);
     expect(pins[0]).toMatchObject({ id: "p", name: "Pins", member_count: 4 });
     expect(pins[0]?.sessions.map((row) => row.title)).toEqual(["first"]);
+  });
+  test("keeps a dormant durable section out of the visible rail", () => {
+    installState([
+      resource(
+        { kind: "pin_catalog", offset: 0, limit: 100 },
+        {
+          generation_id: "g1",
+          revision: 1,
+          pin_sections: [{ id: "dormant", name: "Dormant", count: 2 }],
+          remaining: 0,
+        },
+      ),
+      resource(
+        { kind: "pin_section", sectionId: "dormant", offset: 0, limit: 50 },
+        { generation_id: "g1", revision: 1, sessions: [], remaining: 0, truncated: false },
+      ),
+    ]);
+    expect(adaptNavigationResources(navigationStore.getState()).pinSections).toEqual([]);
+  });
+  test("tracks an empty section before converging its first pin assignment", async () => {
+    const row = summary({ title: "First pin" });
+    const order: string[] = [];
+    const trackPinSection = vi.fn((sectionID: string) => order.push(`track:${sectionID}`));
+    const applyNavigationMutation = vi.fn(async () => {
+      order.push("apply");
+      navigationStore.setState((state) => {
+        const resources = new Map(state.resources);
+        const loaded = resource(
+          { kind: "pin_section", sectionId: "empty", offset: 0, limit: 50 },
+          { generation_id: "g1", revision: 2, sessions: [row], remaining: 0, truncated: false },
+        );
+        resources.set(keyID(loaded.key), loaded);
+        return { resources };
+      });
+    });
+    installState([
+      sectionResource("live", [row]),
+      resource(
+        { kind: "pin_catalog", offset: 0, limit: 100 },
+        { generation_id: "g1", revision: 1, pin_sections: [{ id: "empty", name: "Empty", count: 0 }], remaining: 0 },
+      ),
+    ]);
+    navigationStore.setState({
+      trackPinSection,
+      applyNavigationMutation,
+      loadPinCatalogPages: vi.fn().mockResolvedValue(undefined),
+    });
+    const client = new FakeClient();
+    client.on("evener/session-pin/assign", () => ({
+      ok: true,
+      changed: true,
+      assignment: { sessionRef: row.ref, section: { id: "empty", name: "Empty", memberCount: 1 } },
+      navigation: {
+        generation_id: "g1",
+        targets: [{ kind: "pin_section", sectionId: "empty", revision: 2 }],
+      },
+    }));
+
+    render(<Rail />, client);
+    fireEvent.click(screen.getByRole("button", { name: /actions for first pin/i }));
+    fireEvent.click(screen.getByRole("menuitem", { name: "Pin this session…" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Empty" }));
+    await act(async () => undefined);
+
+    expect(order).toEqual(["track:empty", "apply"]);
+    const pinnedSection = screen.getByRole("heading", { name: "Empty" }).closest("section");
+    if (!pinnedSection) throw new Error("pinned section missing");
+    expect(within(pinnedSection).getByText("First pin")).toBeTruthy();
   });
   test("uses location lookup to reveal an unloaded project rather than scanning a tree", async () => {
     const lookupLocation = vi.fn().mockResolvedValue(undefined);
@@ -631,13 +691,16 @@ describe("resource-backed Rail", () => {
       ),
     ]);
     navigationStore.setState({ applyNavigationMutation });
-    const fetchMock = vi
-      .fn()
-      .mockResolvedValueOnce(
-        jsonResponse({ ok: true, changed: true, navigation: { generation_id: "g1", targets: [] } }),
-      );
-    vi.stubGlobal("fetch", fetchMock);
     const client = new FakeClient();
+    client.on("evener/session-pin/unpin", (params) => {
+      expect(params).toEqual({ sessionRef: row.ref });
+      return {
+        ok: true,
+        changed: true,
+        assignment: { sessionRef: row.ref },
+        navigation: { generation_id: "g1", targets: [] },
+      };
+    });
     client.on("evener/session/delete", () => ({
       deleted: ["a"],
       skipped: [],
@@ -647,10 +710,7 @@ describe("resource-backed Rail", () => {
     fireEvent.click(screen.getByRole("button", { name: /actions for pinned delete/i }));
     fireEvent.click(screen.getByRole("menuitem", { name: "Unpin" }));
     await act(async () => undefined);
-    expect(fetchMock).toHaveBeenCalledWith(
-      expect.stringContaining("/api/session-pin?ref="),
-      expect.objectContaining({ method: "DELETE" }),
-    );
+    expect(client.calls).toContainEqual({ method: "evener/session-pin/unpin", params: { sessionRef: row.ref } });
     fireEvent.click(screen.getByRole("button", { name: /actions for pinned delete/i }));
     fireEvent.click(screen.getByRole("menuitem", { name: "Delete…" }));
     fireEvent.click(screen.getByRole("button", { name: "Delete" }));
@@ -722,25 +782,38 @@ describe("resource-backed Rail", () => {
         { generation_id: "g1", revision: 1, sessions: [summary({ title: "Pinned" })], remaining: 0, truncated: false },
       ),
     ]);
-    navigationStore.setState({ applyNavigationMutation });
-    const fetchMock = vi.fn(async (_url: string, init?: RequestInit) => {
-      if (!init?.method) return jsonResponse([{ id: "pins", name: "Pins", member_count: 3 }]);
-      if (init.method === "PATCH")
-        return jsonResponse({
-          ok: true,
-          changed: true,
-          section: { id: "pins", name: "Renamed", member_count: 3 },
-          navigation: { generation_id: "g1", targets: [] },
-        });
-      return jsonResponse({
-        ok: true,
-        changed: true,
-        member_count: 3,
-        navigation: { generation_id: "g1", targets: [] },
+    const durableCatalog = resource(
+      { kind: "pin_catalog", offset: 0, limit: 100 },
+      { generation_id: "g1", revision: 2, pin_sections: [{ id: "pins", name: "Pins", count: 3 }], remaining: 0 },
+    );
+    const loadPinCatalogPages = vi.fn(async () => {
+      navigationStore.setState((state) => {
+        const resources = new Map(state.resources);
+        resources.set(keyID(durableCatalog.key), durableCatalog);
+        return { resources };
       });
     });
-    vi.stubGlobal("fetch", fetchMock);
-    render(<Rail />);
+    navigationStore.setState({ applyNavigationMutation, loadPinCatalogPages });
+    const client = new FakeClient();
+    client.on("evener/pin-section/rename", (params) => {
+      expect(params).toEqual({ sectionId: "pins", name: "Renamed" });
+      return {
+        ok: true,
+        changed: true,
+        section: { id: "pins", name: "Renamed", memberCount: 3 },
+        navigation: { generation_id: "g1", targets: [] },
+      };
+    });
+    client.on("evener/pin-section/delete", (params) => {
+      expect(params).toEqual({ sectionId: "pins" });
+      return {
+        ok: true,
+        changed: true,
+        memberCount: 3,
+        navigation: { generation_id: "g1", targets: [] },
+      };
+    });
+    render(<Rail />, client);
     fireEvent.click(screen.getByRole("button", { name: /actions for pins/i }));
     fireEvent.click(screen.getByRole("menuitem", { name: "Rename" }));
     fireEvent.change(screen.getByLabelText("Section name"), { target: { value: "Renamed" } });
@@ -752,7 +825,11 @@ describe("resource-backed Rail", () => {
     expect(screen.getByText(/unpin 3 sessions/i)).toBeTruthy();
     fireEvent.click(screen.getByRole("button", { name: "Delete section" }));
     await act(async () => undefined);
-    expect(fetchMock).toHaveBeenCalledWith("/api/pin-sections/pins", expect.objectContaining({ method: "DELETE" }));
+    expect(loadPinCatalogPages).toHaveBeenCalledWith(true);
+    expect(client.calls).toEqual([
+      { method: "evener/pin-section/rename", params: { sectionId: "pins", name: "Renamed" } },
+      { method: "evener/pin-section/delete", params: { sectionId: "pins" } },
+    ]);
     expect(applyNavigationMutation).toHaveBeenCalledTimes(2);
   });
   test("shows a project root retry while retaining the summary row after a load error", async () => {

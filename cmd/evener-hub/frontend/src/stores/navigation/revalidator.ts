@@ -198,31 +198,38 @@ export class NavigationRevalidator {
   }
   load<T = unknown>(key: ResourceKey, request: NavigationRequest<T>): Promise<ResourceState<T>> {
     if (this.disposed) return Promise.reject(protocolError("revalidator disposed"));
-    const id = keyID(key);
-    let e = this.entries.get(id);
-    if (!e) {
-      e = {
-        state: frozen({
-          key,
-          data: null,
-          loadedRevision: null,
-          targetRevision: null,
-          forceToken: 0,
-          etag: null,
-          loading: false,
-          stale: true,
-          error: null,
-          generationID: this.generationIDValue,
-        }),
-        rerun: false,
-        epoch: this.epoch,
-      };
-      this.entries.set(id, e);
-    }
+    const e = this.entry(key);
     e.request = request as NavigationRequest;
     if (e.promise) return e.promise as Promise<ResourceState<T>>;
     if (!e.state.stale && e.state.data !== null) return Promise.resolve(e.state as ResourceState<T>);
     return this.start(e) as Promise<ResourceState<T>>;
+  }
+  track<T = unknown>(key: ResourceKey, request: NavigationRequest<T>): void {
+    if (this.disposed) return;
+    this.entry(key).request = request as NavigationRequest;
+  }
+  private entry(key: ResourceKey): Entry {
+    const id = keyID(key);
+    const existing = this.entries.get(id);
+    if (existing) return existing;
+    const entry = {
+      state: frozen({
+        key,
+        data: null,
+        loadedRevision: null,
+        targetRevision: null,
+        forceToken: 0,
+        etag: null,
+        loading: false,
+        stale: true,
+        error: null,
+        generationID: this.generationIDValue,
+      }),
+      rerun: false,
+      epoch: this.epoch,
+    };
+    this.entries.set(id, entry);
+    return entry;
   }
   private raise(e: Entry, revision: number | undefined, forced: boolean): void {
     const nextRevision = forced ? e.state.targetRevision : Math.max(e.state.targetRevision ?? -1, revision ?? -1);

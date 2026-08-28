@@ -57,24 +57,10 @@ async function openMenu(user: ReturnType<typeof userEvent.setup>) {
 
 beforeEach(() => {
   resetToastStoreForTests();
-  vi.stubGlobal(
-    "fetch",
-    vi.fn(async (input: string | URL | Request) => {
-      const url = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
-      if (url !== "/api/pin-sections") throw new Error(`unexpected fetch: ${url}`);
-      return {
-        ok: true,
-        status: 200,
-        statusText: "OK",
-        json: async () => [{ id: "sec_1", name: "Client", member_count: 0 }],
-      } as Response;
-    }),
-  );
 });
 
 afterEach(() => {
   cleanup();
-  vi.unstubAllGlobals();
 });
 
 // Line 169: rename dialog onClose

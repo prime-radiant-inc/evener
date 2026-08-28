@@ -3,8 +3,8 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { act, cleanup, render as renderUI, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import type { ReactElement } from "react";
-import { afterEach, beforeEach, expect, test } from "vitest";
+import type { ComponentProps, ReactElement } from "react";
+import { afterEach, beforeEach, expect, test, vi } from "vitest";
 import { FakeClient } from "../../../protocol/testing/fakeClient";
 import type {
   NavigationSessionLocation,
@@ -22,7 +22,7 @@ import { resetThreadsStoreForTests, threadsStore } from "../../../stores/threads
 import "../../sessionPanels";
 import { ActivityPanelBody } from "./ActivityPanel";
 import { resetGoalOverridesForTests } from "./GoalControl";
-import { SessionChrome } from "./SessionChrome";
+import { SessionChrome as SessionChromeView } from "./SessionChrome";
 
 const here = dirname(fileURLToPath(import.meta.url));
 
@@ -125,8 +125,19 @@ function setLocation(ref: string): void {
   });
 }
 
+let chromeClient = new FakeClient("ready");
+
+function SessionChrome(props: ComponentProps<typeof SessionChromeView>) {
+  return (
+    <ClientProvider client={chromeClient}>
+      <SessionChromeView {...props} />
+    </ClientProvider>
+  );
+}
+
 function connectFakeClient(): FakeClient {
   const fake = new FakeClient("ready");
+  chromeClient = fake;
   connectionStore.getState().connect(fake);
   return fake;
 }
@@ -137,6 +148,7 @@ function render(ui: ReactElement) {
 }
 
 beforeEach(() => {
+  chromeClient = new FakeClient("ready");
   connectionStore.setState({ state: "idle", serverInfo: undefined, client: null });
   resetThreadsStoreForTests();
   resetWorkspaceStoreForTests();
@@ -329,6 +341,80 @@ test("menu offers Pin/Archive/Delete when the session is in the tree; omits them
   expect(screen.queryByRole("menuitem", { name: "Pin this session…" })).toBeNull();
   expect(screen.queryByRole("menuitem", { name: "Archive" })).toBeNull();
   expect(screen.queryByRole("menuitem", { name: "Delete…" })).toBeNull();
+});
+
+test("session-menu pin assignment uses typed AppWire and converges its navigation receipt", async () => {
+  const user = userEvent.setup();
+  const fake = connectFakeClient();
+  fake.on("thread/read", () => readResponse("ref_pin"));
+  fake.on("evener/session-pin/assign", (params) => {
+    expect(params).toEqual({ sessionRef: "ref_pin", sectionId: "research" });
+    return {
+      ok: true,
+      changed: true,
+      assignment: {
+        sessionRef: "local:sess_ref_pin",
+        section: { id: "research", name: "Research", memberCount: 1 },
+      },
+      navigation: {
+        generation_id: "generation_test",
+        targets: [{ kind: "pin_section", section_id: "research", revision: 2 }],
+      },
+    };
+  });
+  await threadsStore.getState().ensureThread("ref_pin");
+  setLocation("ref_pin");
+  connectionStore.setState({ client: new FakeClient("ready") });
+  const pinKey = { kind: "pin_catalog", offset: 0, limit: 100 } as const;
+  const pinCatalog = {
+    key: pinKey,
+    data: {
+      generation_id: "generation_test",
+      revision: 1,
+      pin_sections: [{ id: "research", name: "Research", count: 0 }],
+      remaining: 0,
+    },
+    loadedRevision: 1,
+    targetRevision: null,
+    forceToken: 0,
+    etag: "etag-pins",
+    loading: false,
+    stale: false,
+    error: null,
+    generationID: "generation_test",
+  };
+  const convergenceOrder: string[] = [];
+  const trackPinSection = vi.fn((sectionID: string) => convergenceOrder.push(`track:${sectionID}`));
+  const applyNavigationMutation = vi.fn(async () => {
+    convergenceOrder.push("apply");
+  });
+  navigationStore.setState((state) => {
+    const resources = new Map(state.resources);
+    resources.set(keyID(pinKey), pinCatalog);
+    return {
+      resources,
+      loadPinCatalogPages: vi.fn().mockResolvedValue(undefined),
+      trackPinSection,
+      applyNavigationMutation,
+    };
+  });
+
+  render(<SessionChrome ref="ref_pin" />);
+  await user.click(screen.getByRole("button", { name: /session actions/i }));
+  await user.click(screen.getByRole("menuitem", { name: "Pin this session…" }));
+  await user.click(await screen.findByRole("button", { name: "Research" }));
+
+  await waitFor(() =>
+    expect(fake.calls).toContainEqual({
+      method: "evener/session-pin/assign",
+      params: { sessionRef: "ref_pin", sectionId: "research" },
+    }),
+  );
+  expect(applyNavigationMutation).toHaveBeenCalledWith({
+    generation_id: "generation_test",
+    targets: [{ kind: "pin_section", section_id: "research", revision: 2 }],
+  });
+  expect(convergenceOrder).toEqual(["track:research", "apply"]);
 });
 
 test("menu Shut down is gated on capabilities.shutdown", async () => {

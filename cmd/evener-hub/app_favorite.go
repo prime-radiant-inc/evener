@@ -12,7 +12,7 @@ import (
 func registerFavoriteHandler(server *appserver.Server, cfg hubcore.WebConfig, navigation *NavigationService) {
 	appserver.HandleTyped(server.Router(), appwire.MethodEvenerFavoriteSet, func(ctx context.Context, params appwire.FavoriteSetParams) (appwire.FavoriteSetResponse, error) {
 		if params.Kind == "session" {
-			return appwire.FavoriteSetResponse{}, appwire.InvalidParams("session favorites moved to /api/session-pin")
+			return appwire.FavoriteSetResponse{}, appwire.InvalidParams("session favorites use evener/session-pin/assign")
 		}
 		if params.Kind != "project" {
 			return appwire.FavoriteSetResponse{}, appwire.InvalidParams(`kind must be "project"`)

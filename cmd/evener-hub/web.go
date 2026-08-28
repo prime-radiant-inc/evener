@@ -90,7 +90,7 @@ func NewWebServer(cfg hubcore.WebConfig) *WebServer {
 		web.cfg.LiveModels = web.fetchLiveModels
 	}
 	web.navigation = newNavigationService(navigationServiceConfig{Source: webNavigationSource{web: web}})
-	web.appRPC = newHubAppServerWithNavigation(web.cfg, sources, web.navigation)
+	web.appRPC = newHubAppServerWithNavigation(web.cfg, sources, web.navigation, web.resolveTopLevelSessionRef)
 	registerArchiveHandler(web.appRPC, web.cfg, func() *NavigationService { return web.navigation })
 	registerProjectDeleteHandler(web.appRPC, web)
 	registerSessionDeleteHandler(web.appRPC, web.sessionDelete)
@@ -173,9 +173,6 @@ func (s *WebServer) Handler() http.Handler {
 
 	// API
 	mux.HandleFunc("/api/health", s.handleAPIHealth)
-	mux.HandleFunc("/api/pin-sections", s.handleAPIPinSections)
-	mux.HandleFunc("/api/pin-sections/", s.handleAPIPinSection)
-	mux.HandleFunc("/api/session-pin", s.handleAPISessionPin)
 	mux.HandleFunc("/api/sessions/", s.handleAPISession)
 
 	mux.HandleFunc("/auth", hubedge.HandleAuth(s.cfg.AuthToken))

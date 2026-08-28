@@ -504,39 +504,13 @@ func TestCovHandleAPIReasoningEffortNotLive(t *testing.T) {
 	}
 }
 
-// --- web_api_pin_section.go: handleAPIPinSections (method/config check) ---
-
-// TestCovHandleAPIPinSectionsMethodNotAllowed covers the method-not-allowed
-// branch (web_api_pin_section.go:28-29).
-func TestCovHandleAPIPinSectionsMethodNotAllowed(t *testing.T) {
-	web := NewWebServer(hubcore.WebConfig{HubAddr: "127.0.0.1:9180"})
-	req := httptest.NewRequest(http.MethodPost, "/api/pin-sections", nil)
-	rec := httptest.NewRecorder()
-	web.handleAPIPinSections(rec, req)
-	if rec.Code != http.StatusMethodNotAllowed {
-		t.Fatalf("expected 405, got %d", rec.Code)
-	}
-}
-
-// TestCovHandleAPIPinSectionsNotConfigured covers the not-configured branch
-// (web_api_pin_section.go:32-33).
-func TestCovHandleAPIPinSectionsNotConfigured(t *testing.T) {
-	web := NewWebServer(hubcore.WebConfig{HubAddr: "127.0.0.1:9180"})
-	req := httptest.NewRequest(http.MethodGet, "/api/pin-sections", nil)
-	rec := httptest.NewRecorder()
-	web.handleAPIPinSections(rec, req)
-	if rec.Code != http.StatusInternalServerError {
-		t.Fatalf("expected 500, got %d", rec.Code)
-	}
-}
-
-// --- web_api_pin_section.go: topLevelFavoriteSessionID ---
+// --- WebServer.resolveTopLevelSessionRef ---
 
 // TestCovTopLevelFavoriteSessionIDClusterPrefix covers the cluster-prefix
-// rejection (web_api_pin_section.go).
+// rejection in the top-level session resolver.
 func TestCovTopLevelFavoriteSessionIDClusterPrefix(t *testing.T) {
 	web := NewWebServer(hubcore.WebConfig{HubAddr: "127.0.0.1:9180"})
-	if _, ok := web.topLevelFavoriteSessionID(context.TODO(), "cluster:foo"); ok {
+	if _, ok := web.resolveTopLevelSessionRef(context.TODO(), "cluster:foo"); ok {
 		t.Fatal("cluster: prefix should return false")
 	}
 }

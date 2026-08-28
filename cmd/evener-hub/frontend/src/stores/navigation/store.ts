@@ -54,7 +54,9 @@ export interface NavigationStoreState {
     limit?: number,
   ): Promise<ResourceState<NavigationProjectCatalog>>;
   loadPinCatalog(offset?: number, limit?: number): Promise<ResourceState<NavigationPinSectionCatalog>>;
+  loadPinCatalogPages(force?: boolean): Promise<void>;
   loadPinSection(sectionId: string, offset?: number, limit?: number): Promise<ResourceState<NavigationSectionResource>>;
+  trackPinSection(sectionId: string): void;
   loadProject(projectKey: string): Promise<ResourceState<NavigationProjectResource>>;
   loadProjectPage(
     projectKey: string,
@@ -79,7 +81,9 @@ const initial = (): Omit<
   | "loadSection"
   | "loadCatalog"
   | "loadPinCatalog"
+  | "loadPinCatalogPages"
   | "loadPinSection"
+  | "trackPinSection"
   | "loadProject"
   | "loadProjectPage"
   | "lookupLocation"
@@ -117,6 +121,11 @@ const PAGE_LIMIT = 50;
 const CATALOG_LIMIT = 100;
 const NAVIGATION_CATALOGS = ["projects", "archived_projects", "test_runs"] as const;
 const key = (k: ResourceKey) => Object.freeze(k);
+function pinCatalogData(page: ResourceState<NavigationPinSectionCatalog>): NavigationPinSectionCatalog {
+  if (page.error) throw page.error;
+  if (!page.data || page.stale) throw new Error("pin catalog did not load");
+  return page.data;
+}
 function setResource(state: ResourceState): void {
   if (state.key.kind === "manifest") {
     navigationStore.setState({ manifest: state as ResourceState<NavigationManifest> });
@@ -395,8 +404,37 @@ function actions() {
       load<NavigationProjectCatalog>({ kind: "catalog", catalog, offset, limit }),
     loadPinCatalog: (offset = 0, limit = CATALOG_LIMIT) =>
       load<NavigationPinSectionCatalog>({ kind: "pin_catalog", offset, limit }),
+    loadPinCatalogPages: async (force = false) => {
+      if (force && revalidator) {
+        const loadedPages = [...navigationStore.getState().resources.values()]
+          .filter((resource) => resource.key.kind === "pin_catalog")
+          .map((resource) => resource.key);
+        revalidator.force(loadedPages);
+        const refreshedPages = await Promise.all(
+          loadedPages.map((resourceKey) => load<NavigationPinSectionCatalog>(resourceKey)),
+        );
+        for (const page of refreshedPages) pinCatalogData(page);
+      }
+      let offset = 0;
+      while (true) {
+        const page = await load<NavigationPinSectionCatalog>({
+          kind: "pin_catalog",
+          offset,
+          limit: CATALOG_LIMIT,
+        });
+        const data = pinCatalogData(page);
+        if (data.remaining === 0) return;
+        if (data.pin_sections.length === 0) throw new Error("pin catalog page did not advance");
+        offset += data.pin_sections.length;
+      }
+    },
     loadPinSection: (sectionId: string, offset = 0, limit = PAGE_LIMIT) =>
       load<NavigationSectionResource>({ kind: "pin_section", sectionId, offset, limit }),
+    trackPinSection: (sectionId: string) => {
+      if (!revalidator || !activeClient) return;
+      const resourceKey = key({ kind: "pin_section", sectionId, offset: 0, limit: PAGE_LIMIT });
+      revalidator.track(resourceKey, requestFor(resourceKey, activeClient));
+    },
     loadProject: (projectKey: string) => withProjectRecovery(projectKey),
     loadProjectPage: (projectKey: string, tier: "current" | "recent" | "archived", offset = 0, limit = PAGE_LIMIT) =>
       load<NavigationProjectPage>({ kind: "project_page", projectKey, tier, offset, limit }),
