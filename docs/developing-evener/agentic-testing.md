@@ -341,10 +341,9 @@ Session reads and lifecycle actions use AppWire. The current methods are:
 | change model | `thread/model/set` |
 | change reasoning effort | `thread/reasoning-effort/set` |
 
-The only remaining session REST operations are
-`POST /api/sessions/<ref>/rename` and
-`POST /api/sessions/<ref>/delete`. They remain temporarily while their
-frontend callers are converted.
+There are no session REST operations. The old `/api/sessions/<ref>`
+namespace is no longer registered; session reads, lifecycle actions, rename,
+and deletion all use AppWire.
 
 Rename is AppWire-only: send `evener/thread/name/set` with
 `{"ref":"local:<SID>","name":"<new name>"}` on the authenticated `/rpc`

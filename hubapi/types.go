@@ -49,10 +49,6 @@ type Source struct {
 	Kind   string `json:"kind"`
 	Online bool   `json:"online"`
 }
-
-
-}
-
 type SessionCapabilities struct {
 	Send        bool `json:"send"`
 	Steer       bool `json:"steer"`

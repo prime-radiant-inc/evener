@@ -9,7 +9,6 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
-	"strings"
 	"testing"
 	"time"
 
@@ -169,29 +168,6 @@ func FuzzExactTails(f *testing.F) {
 		reg.Add(src)
 		_, _ = hubThreadList(context.Background(), hubcore.WebConfig{}, reg, appwire.ThreadListParams{Limit: 1})
 		_, _ = hubThreadTranscriptList(context.Background(), hubcore.WebConfig{}, reg, appwire.ThreadTranscriptListParams{})
-
-		// Missing live sources are a distinct API failure from ended sessions.
-		roster := hubcore.NewRosterWithEntries(
-			hubcore.LiveEntry{SessionID: "live-a", Entry: rendezvous.Entry{SessionID: "live-a"}},
-			hubcore.LiveEntry{SessionID: "live-b", Entry: rendezvous.Entry{SessionID: "live-b"}},
-			hubcore.LiveEntry{},
-		)
-		liveWeb := NewWebServer(hubcore.WebConfig{Roster: roster})
-		liveWeb.sources = appsource.NewRegistry()
-		liveWeb.handleAPIRename(httptest.NewRecorder(), httptest.NewRequest(http.MethodPost, "/", strings.NewReader(`{"name":"new"}`)), "live-a")
-
-		// Model a rename race: the first liveness check is stale, while the
-		// pre-write roster recheck observes the resumed session.
-		oldRenameLive := isLiveForRename
-		isLiveForRename = func(*WebServer, string) bool { return false }
-		liveWeb.handleAPIRename(httptest.NewRecorder(), httptest.NewRequest(http.MethodPost, "/", strings.NewReader(`{"name":"new"}`)), "live-a")
-		liveWeb.sources.Add(&scriptedAppSource{id: "local"})
-		liveWeb.handleAPIRename(httptest.NewRecorder(), httptest.NewRequest(http.MethodPost, "/", strings.NewReader(`{"name":"new"}`)), "live-a")
-		liveWeb.sources = appsource.NewRegistry()
-		liveWeb.sources.Add(&exactNameSource{scriptedAppSource: &scriptedAppSource{id: "local"}})
-		liveWeb.cfg.Past = past
-		liveWeb.handleAPIRename(httptest.NewRecorder(), httptest.NewRequest(http.MethodPost, "/", strings.NewReader(`{"name":"new"}`)), "live-a")
-		isLiveForRename = oldRenameLive
 
 		oldManagedList := ensureManagedCodexSourcesForList
 		ensureManagedCodexSourcesForList = func(context.Context, hubcore.WebConfig, *appsource.Registry, appwire.ThreadListParams) error {

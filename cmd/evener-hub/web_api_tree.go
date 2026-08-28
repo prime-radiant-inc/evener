@@ -2,8 +2,6 @@ package hub
 
 import (
 	"context"
-	"net/http"
-	"net/url"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -1059,32 +1057,6 @@ func (s *WebServer) liveEntry(sessionID string) (hubcore.LiveEntry, bool) {
 		return hubcore.LiveEntry{}, false
 	}
 	return s.cfg.Roster.Find(sessionID)
-}
-
-func (s *WebServer) handleAPISession(w http.ResponseWriter, r *http.Request) {
-	path := strings.TrimPrefix(r.URL.Path, "/api/sessions/")
-	refText, sub, _ := strings.Cut(path, "/")
-	if unescaped, err := url.PathUnescape(refText); err == nil {
-		refText = unescaped
-	}
-	ref, err := hubapi.ParseRef(refText)
-	if err != nil {
-		writeAPIError(w, http.StatusNotFound, "session not found")
-		return
-	}
-	routeID := ref.SessionID
-	if ref.HostID != "local" {
-		routeID = ref.String()
-	}
-
-	switch sub {
-	case "rename":
-		s.handleAPIRename(w, r, routeID)
-	case "delete":
-		s.handleAPISessionDelete(w, r, routeID)
-	default:
-		writeAPIError(w, http.StatusNotFound, "session not found")
-	}
 }
 
 func (s *WebServer) apiSessionCapabilities(id string, live bool) hubapi.SessionCapabilities {

@@ -109,13 +109,6 @@ func FuzzCoreAPIPass4(f *testing.F) {
 
 		call(http.MethodGet, "/api/health", "")
 		call(http.MethodPost, "/api/health", "")
-		direct := func(fn func(http.ResponseWriter, *http.Request), method, target, body string) *httptest.ResponseRecorder {
-			req := httptest.NewRequest(method, target, strings.NewReader(body))
-			rec := httptest.NewRecorder()
-			fn(rec, req)
-			return rec
-		}
-		call(http.MethodPost, "/api/sessions/remote:thread/rename", `{"name":" renamed "}`)
 		_ = hubGitHead(context.Background(), web.cfg, appwire.GitHeadParams{CWD: workingDir})
 		_ = hubGitHead(context.Background(), web.cfg, appwire.GitHeadParams{CWD: "/definitely/missing/pass4"})
 		_ = hubGitHead(context.Background(), web.cfg, appwire.GitHeadParams{})
