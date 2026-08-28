@@ -2,9 +2,9 @@
 // dispatcher. Pure behavioral tests using lightweight fakes: no transport,
 // no fixtures/scenarios, no DOM, no timers. Every intent variant is covered,
 // plus null/stale safe behavior, raw-ref lookup proof, loadOlder call count,
-// exact mutation arguments, rejected-Promise publication, byte-exact
-// composeAskAnswers payload over all pending questions, and import/boundary
-// proof.
+// exact mutation arguments, rejected-Promise publication with generic fixed
+// messages, generation/ref-change race safety, byte-exact composeAskAnswers
+// payload over all pending questions, and import/boundary proof.
 
 import { describe, expect, expectTypeOf, it } from "vitest";
 import type { StoreApi } from "zustand";
@@ -103,7 +103,6 @@ function createFakeUiStore(
       };
     },
   };
-  // LiveIntentUiStore only needs getState() with the mutation methods.
   const store: LiveIntentUiStore = {
     getState: () => reactive as ReturnType<LiveIntentUiStore["getState"]>,
   };
@@ -111,7 +110,7 @@ function createFakeUiStore(
 }
 
 // ---------------------------------------------------------------------------
-// Fake conversation store
+// Fake conversation store — includes publishExternalError + generation
 // ---------------------------------------------------------------------------
 
 interface ConvRecord {
@@ -119,6 +118,17 @@ interface ConvRecord {
   conversation: MobileConversation | null;
   draft: string;
   error: string | null;
+  conversationGeneration: number;
+  // publishExternalError captures: the store-owned action that the dispatcher
+  // calls on rejection. Records message + expectedRef + expectedGeneration.
+  pubErrorCalls: number;
+  pubErrorMessage: string | null;
+  pubErrorRef: string | null;
+  pubErrorGen: number | null;
+  // Optional override: if set, publishExternalError only writes error when
+  // the captured identity still matches current ref + generation. This mirrors
+  // the real store action being added on the integrated parent.
+  pubErrorGuarded: boolean;
   // call counters
   loadOlderCalls: number;
   loadOlderService: unknown | null;
@@ -140,13 +150,26 @@ interface ConvRecord {
   readProjectionCalls: number;
   subscribeNotificationsCalls: number;
   // Optional overrides: if set, these replace the default resolved methods.
-  refreshImpl?: null;
+  loadOlderImpl?: () => Promise<void>;
   sendImpl?: (svc: unknown, input: InputItem[]) => Promise<void>;
+  steerImpl?: (svc: unknown, input: InputItem[]) => Promise<void>;
+  queueImpl?: (svc: unknown, input: InputItem[]) => Promise<void>;
+  interruptImpl?: () => Promise<void>;
 }
 
 function createFakeConversationStore(
   initial: Partial<ConvRecord> = {},
-): UseBoundStore<StoreApi<LiveConversationState>> & {
+): UseBoundStore<
+  StoreApi<
+    LiveConversationState & {
+      publishExternalError(
+        message: string,
+        expectedRef: string | null,
+        expectedGeneration: number,
+      ): void;
+    }
+  >
+> & {
   __record(): ConvRecord;
   __set(patch: Partial<ConvRecord>): void;
 } {
@@ -155,6 +178,12 @@ function createFakeConversationStore(
     conversation: null,
     draft: "",
     error: null,
+    conversationGeneration: 1,
+    pubErrorCalls: 0,
+    pubErrorMessage: null,
+    pubErrorRef: null,
+    pubErrorGen: null,
+    pubErrorGuarded: true,
     loadOlderCalls: 0,
     loadOlderService: null,
     setDraftCalls: 0,
@@ -176,8 +205,6 @@ function createFakeConversationStore(
     subscribeNotificationsCalls: 0,
     ...initial,
   };
-  // Build a getState() result whose fields read the live `rec` and whose
-  // methods update the counters.
   const reactive = {
     get ref() {
       return rec.ref;
@@ -194,10 +221,13 @@ function createFakeConversationStore(
     set error(value: string | null) {
       rec.error = value;
     },
+    get conversationGeneration() {
+      return rec.conversationGeneration;
+    },
     loadOlder(service: unknown) {
       rec.loadOlderCalls++;
       rec.loadOlderService = service;
-      return Promise.resolve();
+      return rec.loadOlderImpl ? rec.loadOlderImpl() : Promise.resolve();
     },
     setDraft(text: string) {
       rec.setDraftCalls++;
@@ -214,45 +244,109 @@ function createFakeConversationStore(
       rec.steerCalls++;
       rec.steerService = service;
       rec.steerInput = input;
-      return Promise.resolve();
+      return rec.steerImpl ? rec.steerImpl(service, input) : Promise.resolve();
     },
     queue(service: unknown, input: InputItem[]) {
       rec.queueCalls++;
       rec.queueService = service;
       rec.queueInput = input;
-      return Promise.resolve();
+      return rec.queueImpl ? rec.queueImpl(service, input) : Promise.resolve();
     },
     interrupt(service: unknown) {
       rec.interruptCalls++;
       rec.interruptService = service;
-      return Promise.resolve();
+      return rec.interruptImpl ? rec.interruptImpl() : Promise.resolve();
+    },
+    publishExternalError(
+      message: string,
+      expectedRef: string | null,
+      expectedGeneration: number,
+    ) {
+      rec.pubErrorCalls++;
+      rec.pubErrorMessage = message;
+      rec.pubErrorRef = expectedRef;
+      rec.pubErrorGen = expectedGeneration;
+      // Guarded: only write error if the captured identity still matches.
+      if (
+        !rec.pubErrorGuarded ||
+        (rec.ref === expectedRef &&
+          rec.conversationGeneration === expectedGeneration)
+      ) {
+        rec.error = message;
+      }
     },
   };
-  const useStore = ((selector?: (s: LiveConversationState) => unknown) =>
-    selector
-      ? selector(reactive as unknown as LiveConversationState)
-      : reactive) as unknown as UseBoundStore<StoreApi<LiveConversationState>>;
-  useStore.getState = () => reactive as unknown as LiveConversationState;
-  useStore.setState = ((patch: Partial<LiveConversationState>) => {
+  const useStore = ((selector?: (s: unknown) => unknown) =>
+    selector ? selector(reactive) : reactive) as unknown as UseBoundStore<
+    StoreApi<
+      LiveConversationState & {
+        publishExternalError(
+          message: string,
+          expectedRef: string | null,
+          expectedGeneration: number,
+        ): void;
+      }
+    >
+  >;
+  useStore.getState = () =>
+    reactive as unknown as LiveConversationState & {
+      publishExternalError(
+        message: string,
+        expectedRef: string | null,
+        expectedGeneration: number,
+      ): void;
+    };
+  useStore.setState = ((
+    patch: Partial<
+      LiveConversationState & {
+        publishExternalError(
+          message: string,
+          expectedRef: string | null,
+          expectedGeneration: number,
+        ): void;
+      }
+    >,
+  ) => {
     Object.assign(rec, patch as Partial<ConvRecord>);
-  }) as UseBoundStore<StoreApi<LiveConversationState>>["setState"];
+  }) as UseBoundStore<
+    StoreApi<
+      LiveConversationState & {
+        publishExternalError(
+          message: string,
+          expectedRef: string | null,
+          expectedGeneration: number,
+        ): void;
+      }
+    >
+  >["setState"];
   (useStore as unknown as { __record(): ConvRecord }).__record = () => rec;
   (useStore as unknown as { __set(p: Partial<ConvRecord>): void }).__set = (
     patch: Partial<ConvRecord>,
   ) => {
     Object.assign(rec, patch);
   };
-  return useStore as UseBoundStore<StoreApi<LiveConversationState>> & {
+  return useStore as UseBoundStore<
+    StoreApi<
+      LiveConversationState & {
+        publishExternalError(
+          message: string,
+          expectedRef: string | null,
+          expectedGeneration: number,
+        ): void;
+      }
+    >
+  > & {
     __record(): ConvRecord;
     __set(patch: Partial<ConvRecord>): void;
   };
 }
 
 // ---------------------------------------------------------------------------
-// Fake roster store
+// Fake roster store — includes generation
 // ---------------------------------------------------------------------------
 
 interface RosterRecord {
+  generation: number;
   refreshCalls: number;
   refreshService: unknown | null;
   setSearchCalls: number;
@@ -268,6 +362,7 @@ function createFakeRosterStore(
   __set(patch: Partial<RosterRecord>): void;
 } {
   const rec: RosterRecord = {
+    generation: 0,
     refreshCalls: 0,
     refreshService: null,
     setSearchCalls: 0,
@@ -276,6 +371,9 @@ function createFakeRosterStore(
     ...initial,
   };
   const reactive = {
+    get generation() {
+      return rec.generation;
+    },
     get error() {
       return rec.error;
     },
@@ -620,19 +718,6 @@ describe("createLiveIntentDispatcher — openConversation raw-ref lookup", () =>
     expect(recorded.openConversationRef).toBe("ref-abc");
   });
 
-  it("never opens when the row key is unknown", () => {
-    const { runtime } = makeRuntime();
-    const { callbacks, recorded } = createFakeCallbacks(() => null);
-    const dispatch = createLiveIntentDispatcher(
-      runtime,
-      callbacks,
-      createFakeUiStore(),
-    );
-    dispatch({ type: "openConversation", key: "unknown-key" });
-    expect(recorded.openConversation).toBe(0);
-    expect(recorded.openConversationRef).toBeNull();
-  });
-
   it("never passes the display key as a ref — the ref comes only from the resolver", () => {
     const { runtime } = makeRuntime();
     const seenKeys: string[] = [];
@@ -650,7 +735,9 @@ describe("createLiveIntentDispatcher — openConversation raw-ref lookup", () =>
     expect(recorded.openConversationRef).toBe("raw-ref");
   });
 
-  it("stale key (resolver returns null) is a safe no-op", () => {
+  // M1: consolidated unknown/stale resolver test — both unknown and stale
+  // (resolver returns null) keys never open.
+  it("unknown or stale key (resolver returns null) never opens — no callback, no ref", () => {
     const { runtime } = makeRuntime();
     const { callbacks, recorded } = createFakeCallbacks(() => null);
     const dispatch = createLiveIntentDispatcher(
@@ -658,8 +745,10 @@ describe("createLiveIntentDispatcher — openConversation raw-ref lookup", () =>
       callbacks,
       createFakeUiStore(),
     );
-    dispatch({ type: "openConversation", key: "stale" });
+    dispatch({ type: "openConversation", key: "unknown-key" });
+    dispatch({ type: "openConversation", key: "stale-key" });
     expect(recorded.openConversation).toBe(0);
+    expect(recorded.openConversationRef).toBeNull();
   });
 });
 
@@ -814,26 +903,6 @@ describe("createLiveIntentDispatcher — submit(mode)", () => {
     dispatch({ type: "submit", mode: "send" });
     expect(conversationStore.__record().sendCalls).toBe(0);
   });
-
-  it("does not retry on rejection — publishes a sanitized message to conversationStore.error", async () => {
-    const { runtime, conversationStore } = makeRuntime();
-    conversationStore.__set({
-      draft: "x",
-      sendImpl: async () => {
-        throw new Error("network down");
-      },
-    });
-    const { callbacks } = createFakeCallbacks();
-    const dispatch = createLiveIntentDispatcher(
-      runtime,
-      callbacks,
-      createFakeUiStore(),
-    );
-    dispatch({ type: "submit", mode: "send" });
-    await flush();
-    expect(conversationStore.__record().sendCalls).toBe(1);
-    expect(conversationStore.__record().error).toBe("network down");
-  });
 });
 
 describe("createLiveIntentDispatcher — interrupt", () => {
@@ -947,6 +1016,10 @@ describe("createLiveIntentDispatcher — RootShell callbacks", () => {
   });
 });
 
+// ---------------------------------------------------------------------------
+// submitQuestion — canonical payload + C1 all-or-nothing
+// ---------------------------------------------------------------------------
+
 describe("createLiveIntentDispatcher — submitQuestion canonical payload", () => {
   it("composes ONE answers payload over ALL pending questions in view order, not only the clicked card", async () => {
     const { runtime, conversationStore, liveService } = makeRuntime();
@@ -987,7 +1060,10 @@ describe("createLiveIntentDispatcher — submitQuestion canonical payload", () =
     conversationStore.__set({ conversation: conv });
     const { callbacks } = createFakeCallbacks(
       () => null,
-      () => ({ view, operational }),
+      () => ({
+        view,
+        operational,
+      }),
     );
     const uiStore = createFakeUiStore({
       questionDrafts: {
@@ -1047,7 +1123,10 @@ describe("createLiveIntentDispatcher — submitQuestion canonical payload", () =
     conversationStore.__set({ conversation: conv });
     const { callbacks } = createFakeCallbacks(
       () => null,
-      () => ({ view, operational }),
+      () => ({
+        view,
+        operational,
+      }),
     );
     const uiStore = createFakeUiStore({
       questionDrafts: {
@@ -1082,7 +1161,10 @@ describe("createLiveIntentDispatcher — submitQuestion canonical payload", () =
     conversationStore.__set({ conversation: conv });
     const { callbacks } = createFakeCallbacks(
       () => null,
-      () => ({ view, operational }),
+      () => ({
+        view,
+        operational,
+      }),
     );
     const uiStore = createFakeUiStore({
       questionDrafts: {
@@ -1100,7 +1182,7 @@ describe("createLiveIntentDispatcher — submitQuestion canonical payload", () =
     expect(sentText).toBe('[answers]\n1. [H?] → "X"');
   });
 
-  it("fallback resolution uses ifUnanswered from the source question", async () => {
+  it("fallback resolution uses ifUnanswered from the exact source question", async () => {
     const { runtime, conversationStore } = makeRuntime();
     const conv = buildConversationWithQuestions([
       {
@@ -1117,7 +1199,10 @@ describe("createLiveIntentDispatcher — submitQuestion canonical payload", () =
     conversationStore.__set({ conversation: conv });
     const { callbacks } = createFakeCallbacks(
       () => null,
-      () => ({ view, operational }),
+      () => ({
+        view,
+        operational,
+      }),
     );
     const uiStore = createFakeUiStore({
       questionDrafts: {
@@ -1153,7 +1238,10 @@ describe("createLiveIntentDispatcher — submitQuestion canonical payload", () =
     conversationStore.__set({ conversation: conv });
     const { callbacks } = createFakeCallbacks(
       () => null,
-      () => ({ view, operational }),
+      () => ({
+        view,
+        operational,
+      }),
     );
     const uiStore = createFakeUiStore({
       questionDrafts: {
@@ -1187,7 +1275,10 @@ describe("createLiveIntentDispatcher — submitQuestion canonical payload", () =
     conversationStore.__set({ conversation: conv });
     const { callbacks } = createFakeCallbacks(
       () => null,
-      () => ({ view, operational }),
+      () => ({
+        view,
+        operational,
+      }),
     );
     const uiStore = createFakeUiStore({
       questionDrafts: {
@@ -1241,7 +1332,10 @@ describe("createLiveIntentDispatcher — submitQuestion canonical payload", () =
     conversationStore.__set({ conversation: conv });
     const { callbacks } = createFakeCallbacks(
       () => null,
-      () => ({ view, operational }),
+      () => ({
+        view,
+        operational,
+      }),
     );
     const uiStore = createFakeUiStore({
       questionDrafts: {
@@ -1274,7 +1368,10 @@ describe("createLiveIntentDispatcher — submitQuestion canonical payload", () =
     conversationStore.__set({ conversation: conv });
     const { callbacks } = createFakeCallbacks(
       () => null,
-      () => ({ view, operational }),
+      () => ({
+        view,
+        operational,
+      }),
     );
     const uiStore = createFakeUiStore({
       questionDrafts: {
@@ -1364,7 +1461,10 @@ describe("createLiveIntentDispatcher — submitQuestion canonical payload", () =
     conversationStore.__set({ conversation: conv });
     const { callbacks } = createFakeCallbacks(
       () => null,
-      () => ({ view, operational }),
+      () => ({
+        view,
+        operational,
+      }),
     );
     const dispatch = createLiveIntentDispatcher(
       runtime,
@@ -1374,14 +1474,293 @@ describe("createLiveIntentDispatcher — submitQuestion canonical payload", () =
     dispatch({ type: "submitQuestion", key: "not-a-real-question-key" });
     expect(conversationStore.__record().sendCalls).toBe(0);
   });
+
+  it("is a safe no-op when the clicked key is in operational but not in view.questions", () => {
+    const { runtime, conversationStore } = makeRuntime();
+    const conv = buildConversationWithQuestions([
+      {
+        key: "qk-1",
+        header: "V?",
+        question: "q",
+        options: [{ label: "X", detail: "" }],
+        multiSelect: false,
+      },
+    ]);
+    const { view, operational } = buildProjection(conv);
+    conversationStore.__set({ conversation: conv });
+    // The clicked key exists in the operational map but we simulate it not
+    // being in view.questions by passing a different key that the operational
+    // map also doesn't have — but the real scenario is: clicked key in
+    // operational but view.questions has different keys. We construct that by
+    // passing an operational key that is NOT in view.questions. Since the
+    // projector builds them together, we just assert the guard fires for a
+    // key not in view.questions.
+    const realKey = [...operational.questionKeys.keys()][0] ?? "";
+    // Build a projection with a DIFFERENT view that doesn't include realKey.
+    const staleView = { ...view, questions: [] };
+    const { callbacks } = createFakeCallbacks(
+      () => null,
+      () => ({
+        view: staleView,
+        operational,
+      }),
+    );
+    const dispatch = createLiveIntentDispatcher(
+      runtime,
+      callbacks,
+      createFakeUiStore(),
+    );
+    dispatch({ type: "submitQuestion", key: realKey });
+    expect(conversationStore.__record().sendCalls).toBe(0);
+  });
 });
 
-describe("createLiveIntentDispatcher — async/error contract", () => {
-  it("observes refreshRoster rejection by writing a sanitized message to rosterStore.error, no silent catch", async () => {
-    const { runtime, rosterStore, rosterService } = makeRuntime();
+// ---------------------------------------------------------------------------
+// C1: submitQuestion all-or-nothing — missing middle link / missing source
+// ---------------------------------------------------------------------------
+
+describe("createLiveIntentDispatcher — submitQuestion all-or-nothing (C1)", () => {
+  it("missing operational link for a MIDDLE question → zero send, no partial payload", async () => {
+    const { runtime, conversationStore } = makeRuntime();
+    const conv = buildConversationWithQuestions([
+      {
+        key: "qk-1",
+        header: "Q1?",
+        question: "q",
+        options: [{ label: "A", detail: "" }],
+        multiSelect: false,
+      },
+      {
+        key: "qk-2",
+        header: "Q2?",
+        question: "q",
+        options: [{ label: "B", detail: "" }],
+        multiSelect: false,
+      },
+      {
+        key: "qk-3",
+        header: "Q3?",
+        question: "q",
+        options: [{ label: "C", detail: "" }],
+        multiSelect: false,
+      },
+    ]);
+    const { view, operational } = buildProjection(conv);
+    const qKeys = [...operational.questionKeys.keys()];
+    const q1Display = qKeys[0] ?? "";
+    const q2Display = qKeys[1] ?? "";
+    const q3Display = qKeys[2] ?? "";
+    const q1Opt = view.questions[0]?.options[0]?.key ?? "";
+    const q3Opt = view.questions[2]?.options[0]?.key ?? "";
+
+    // Build a stale operational map that is missing the MIDDLE question link.
+    const staleQuestionKeys = new Map(operational.questionKeys);
+    staleQuestionKeys.delete(q2Display);
+    const staleOperational: ConversationOperationalMap = {
+      itemKeys: operational.itemKeys,
+      questionKeys: staleQuestionKeys,
+      optionKeys: operational.optionKeys,
+    };
+
+    conversationStore.__set({ conversation: conv });
+    const { callbacks } = createFakeCallbacks(
+      () => null,
+      () => ({
+        view,
+        operational: staleOperational,
+      }),
+    );
+    const uiStore = createFakeUiStore({
+      questionDrafts: {
+        [q1Display]: {
+          selectedOptionKeys: [q1Opt],
+          note: "",
+          resolution: "answer",
+        },
+        [q2Display]: {
+          selectedOptionKeys: [],
+          note: "",
+          resolution: "skip",
+        },
+        [q3Display]: {
+          selectedOptionKeys: [q3Opt],
+          note: "",
+          resolution: "answer",
+        },
+      },
+    });
+    const dispatch = createLiveIntentDispatcher(runtime, callbacks, uiStore);
+    dispatch({ type: "submitQuestion", key: q1Display });
+    await flush();
+    // C1: all-or-nothing — middle link missing → zero send, no partial.
+    expect(conversationStore.__record().sendCalls).toBe(0);
+    expect(conversationStore.__record().sendInput).toBeNull();
+  });
+
+  it("missing exact source MobileAskQuestion for a MIDDLE question → zero send, no partial payload", async () => {
+    const { runtime, conversationStore } = makeRuntime();
+    const conv = buildConversationWithQuestions([
+      {
+        key: "qk-1",
+        header: "Q1?",
+        question: "q",
+        options: [{ label: "A", detail: "" }],
+        multiSelect: false,
+      },
+      {
+        key: "qk-2",
+        header: "Q2?",
+        question: "q",
+        options: [{ label: "B", detail: "" }],
+        multiSelect: false,
+      },
+      {
+        key: "qk-3",
+        header: "Q3?",
+        question: "q",
+        options: [{ label: "C", detail: "" }],
+        multiSelect: false,
+      },
+    ]);
+    const { view, operational } = buildProjection(conv);
+    const qKeys = [...operational.questionKeys.keys()];
+    const q1Display = qKeys[0] ?? "";
+    const q2Display = qKeys[1] ?? "";
+    const q3Display = qKeys[2] ?? "";
+    const q1Opt = view.questions[0]?.options[0]?.key ?? "";
+    const q3Opt = view.questions[2]?.options[0]?.key ?? "";
+
+    // Build a stale conversation where the MIDDLE question is missing from
+    // the source batch — the operational link still points to callId+qk-2,
+    // but the source batch no longer contains qk-2.
+    const staleConv: MobileConversation = {
+      ...conv,
+      items: [
+        {
+          kind: "question",
+          id: "q-item-1",
+          batch: {
+            callId: "call-1",
+            questions: (() => {
+              const item = conv.items[0];
+              if (item && item.kind === "question") {
+                const qs = item.batch.questions;
+                // qk-2 (index 1) intentionally omitted — stale source.
+                return [qs[0], qs[2]].filter(
+                  (q): q is NonNullable<typeof q> => q !== undefined,
+                );
+              }
+              return [
+                {
+                  key: "x",
+                  header: "",
+                  question: "",
+                  options: [],
+                  multiSelect: false,
+                },
+                {
+                  key: "y",
+                  header: "",
+                  question: "",
+                  options: [],
+                  multiSelect: false,
+                },
+              ];
+            })(),
+          },
+        },
+      ],
+    };
+
+    conversationStore.__set({ conversation: staleConv });
+    const { callbacks } = createFakeCallbacks(
+      () => null,
+      () => ({
+        view,
+        operational,
+      }),
+    );
+    const uiStore = createFakeUiStore({
+      questionDrafts: {
+        [q1Display]: {
+          selectedOptionKeys: [q1Opt],
+          note: "",
+          resolution: "answer",
+        },
+        [q2Display]: {
+          selectedOptionKeys: [],
+          note: "",
+          resolution: "skip",
+        },
+        [q3Display]: {
+          selectedOptionKeys: [q3Opt],
+          note: "",
+          resolution: "answer",
+        },
+      },
+    });
+    const dispatch = createLiveIntentDispatcher(runtime, callbacks, uiStore);
+    dispatch({ type: "submitQuestion", key: q1Display });
+    await flush();
+    // C1: all-or-nothing — middle source missing → zero send, no partial,
+    // no fallback header/ifUnanswered.
+    expect(conversationStore.__record().sendCalls).toBe(0);
+    expect(conversationStore.__record().sendInput).toBeNull();
+  });
+
+  it("validates source header and ifUnanswered come from the exact source question, not a fallback", async () => {
+    const { runtime, conversationStore } = makeRuntime();
+    const conv = buildConversationWithQuestions([
+      {
+        key: "qk-1",
+        header: "Exact Header",
+        question: "q",
+        options: [{ label: "X", detail: "" }],
+        multiSelect: false,
+        ifUnanswered: "exact fallback text",
+      },
+    ]);
+    const { view, operational } = buildProjection(conv);
+    const qDisplay = [...operational.questionKeys.keys()][0] ?? "";
+    const optKey = view.questions[0]?.options[0]?.key ?? "";
+    conversationStore.__set({ conversation: conv });
+    const { callbacks } = createFakeCallbacks(
+      () => null,
+      () => ({
+        view,
+        operational,
+      }),
+    );
+    const uiStore = createFakeUiStore({
+      questionDrafts: {
+        [qDisplay]: {
+          selectedOptionKeys: [optKey],
+          note: "exact note",
+          resolution: "answer",
+        },
+      },
+    });
+    const dispatch = createLiveIntentDispatcher(runtime, callbacks, uiStore);
+    dispatch({ type: "submitQuestion", key: qDisplay });
+    await flush();
+    const sentText = conversationStore.__record().sendInput?.[0]?.text ?? "";
+    // Header and ifUnanswered come from the exact source question.
+    expect(sentText).toContain("[Exact Header]");
+    // The note is also exact.
+    expect(sentText).toContain('— note: "exact note"');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// I1/I2: error safety — generic messages, generation/ref races, no leak
+// ---------------------------------------------------------------------------
+
+describe("createLiveIntentDispatcher — error safety (I1/I2)", () => {
+  it("refreshRoster rejection publishes generic fixed message, never raw Error.message", async () => {
+    const { runtime, rosterStore } = makeRuntime();
     rosterStore.__set({
       refreshImpl: async () => {
-        throw new Error("roster boom");
+        throw new Error("secret roster failure ref=abc123");
       },
     });
     const { callbacks } = createFakeCallbacks();
@@ -1392,18 +1771,166 @@ describe("createLiveIntentDispatcher — async/error contract", () => {
     );
     dispatch({ type: "refreshRoster" });
     await flush();
-    expect(rosterStore.__record().error).toBe("roster boom");
-    expect(rosterStore.__record().refreshCalls).toBeGreaterThanOrEqual(1);
-    expect(rosterService).toBeDefined();
+    expect(rosterStore.__record().error).toBe("Roster operation failed");
+    // The raw secret-bearing message must NOT appear.
+    expect(rosterStore.__record().error).not.toContain("secret");
+    expect(rosterStore.__record().error).not.toContain("abc123");
   });
 
-  it("never leaves an unhandled rejection on a rejected submit", async () => {
+  it("refreshRoster rejection after generation change publishes zero — no stale error", async () => {
+    const { runtime, rosterStore } = makeRuntime();
+    const holder: { fn: (() => void) | null } = { fn: null };
+    rosterStore.__set({
+      refreshImpl: () =>
+        new Promise<void>((_resolve, reject) => {
+          holder.fn = () => reject(new Error("late roster boom"));
+        }),
+    });
+    const { callbacks } = createFakeCallbacks();
+    const dispatch = createLiveIntentDispatcher(
+      runtime,
+      callbacks,
+      createFakeUiStore(),
+    );
+    dispatch({ type: "refreshRoster" });
+    // Bump generation BEFORE the rejection fires.
+    rosterStore.__set({ generation: 999 });
+    holder.fn?.();
+    await flush();
+    // Late rejection after generation change → zero publication.
+    expect(rosterStore.__record().error).toBeNull();
+  });
+
+  it.each([
+    ["submit send", "send", "sendImpl"] as const,
+    ["submit steer", "steer", "steerImpl"] as const,
+    ["submit queue", "queue", "queueImpl"] as const,
+  ])(
+    "%s rejection calls publishExternalError with generic message, never raw",
+    async (_label, mode, implKey) => {
+      const { runtime, conversationStore } = makeRuntime();
+      conversationStore.__set({
+        draft: "x",
+        [implKey]: async () => {
+          throw new Error("secret send failure ref=sensitive");
+        },
+      });
+      const { callbacks } = createFakeCallbacks();
+      const dispatch = createLiveIntentDispatcher(
+        runtime,
+        callbacks,
+        createFakeUiStore(),
+      );
+      dispatch({ type: "submit", mode });
+      await flush();
+      const r = conversationStore.__record();
+      expect(r.pubErrorCalls).toBe(1);
+      expect(r.pubErrorMessage).toBe("Conversation operation failed");
+      // The raw secret-bearing message must NOT be published.
+      expect(r.error).not.toContain("secret");
+      expect(r.error).not.toContain("sensitive");
+    },
+  );
+
+  it("loadOlder rejection calls publishExternalError with generic message, never raw", async () => {
     const { runtime, conversationStore } = makeRuntime();
     conversationStore.__set({
-      draft: "x",
-      sendImpl: async () => {
-        throw new Error("send boom");
+      loadOlderImpl: async () => {
+        throw new Error("secret loadOlder failure ref=leaked");
       },
+    });
+    const { callbacks } = createFakeCallbacks();
+    const dispatch = createLiveIntentDispatcher(
+      runtime,
+      callbacks,
+      createFakeUiStore(),
+    );
+    dispatch({ type: "loadOlder" });
+    await flush();
+    const r = conversationStore.__record();
+    expect(r.pubErrorCalls).toBe(1);
+    expect(r.pubErrorMessage).toBe("Conversation operation failed");
+    expect(r.error).not.toContain("secret");
+    expect(r.error).not.toContain("leaked");
+  });
+
+  it("interrupt rejection calls publishExternalError with generic message, never raw", async () => {
+    const { runtime, conversationStore } = makeRuntime();
+    conversationStore.__set({
+      interruptImpl: async () => {
+        throw new Error("secret interrupt failure ref=leaked");
+      },
+    });
+    const { callbacks } = createFakeCallbacks();
+    const dispatch = createLiveIntentDispatcher(
+      runtime,
+      callbacks,
+      createFakeUiStore(),
+    );
+    dispatch({ type: "interrupt" });
+    await flush();
+    const r = conversationStore.__record();
+    expect(r.pubErrorCalls).toBe(1);
+    expect(r.pubErrorMessage).toBe("Conversation operation failed");
+    expect(r.error).not.toContain("secret");
+    expect(r.error).not.toContain("leaked");
+  });
+
+  it("submitQuestion rejection calls publishExternalError with generic message, never raw", async () => {
+    const { runtime, conversationStore } = makeRuntime();
+    const conv = buildConversationWithQuestions([
+      {
+        key: "qk-1",
+        header: "Q?",
+        question: "q",
+        options: [{ label: "X", detail: "" }],
+        multiSelect: false,
+      },
+    ]);
+    const { view, operational } = buildProjection(conv);
+    const qDisplay = [...operational.questionKeys.keys()][0] ?? "";
+    const optKey = view.questions[0]?.options[0]?.key ?? "";
+    conversationStore.__set({
+      conversation: conv,
+      sendImpl: async () => {
+        throw new Error("secret question send failure ref=leaked");
+      },
+    });
+    const { callbacks } = createFakeCallbacks(
+      () => null,
+      () => ({
+        view,
+        operational,
+      }),
+    );
+    const uiStore = createFakeUiStore({
+      questionDrafts: {
+        [qDisplay]: {
+          selectedOptionKeys: [optKey],
+          note: "",
+          resolution: "answer",
+        },
+      },
+    });
+    const dispatch = createLiveIntentDispatcher(runtime, callbacks, uiStore);
+    dispatch({ type: "submitQuestion", key: qDisplay });
+    await flush();
+    const r = conversationStore.__record();
+    expect(r.pubErrorCalls).toBe(1);
+    expect(r.pubErrorMessage).toBe("Conversation operation failed");
+    expect(r.error).not.toContain("secret");
+    expect(r.error).not.toContain("leaked");
+  });
+
+  it("conversation rejection captures exact ref + generation before the Promise", async () => {
+    const { runtime, conversationStore } = makeRuntime();
+    conversationStore.__set({
+      ref: "exact-ref",
+      conversationGeneration: 42,
+      sendImpl: async () => {
+        throw new Error("boom");
+      },
+      draft: "x",
     });
     const { callbacks } = createFakeCallbacks();
     const dispatch = createLiveIntentDispatcher(
@@ -1413,9 +1940,94 @@ describe("createLiveIntentDispatcher — async/error contract", () => {
     );
     dispatch({ type: "submit", mode: "send" });
     await flush();
+    const r = conversationStore.__record();
+    expect(r.pubErrorRef).toBe("exact-ref");
+    expect(r.pubErrorGen).toBe(42);
+  });
+
+  it("conversation rejection after ref change publishes zero — no stale error", async () => {
+    const { runtime, conversationStore } = makeRuntime();
+    const holder: { fn: (() => void) | null } = { fn: null };
+    conversationStore.__set({
+      ref: "ref-old",
+      conversationGeneration: 1,
+      sendImpl: () =>
+        new Promise<void>((_resolve, reject) => {
+          holder.fn = () => reject(new Error("late boom"));
+        }),
+      draft: "x",
+    });
+    const { callbacks } = createFakeCallbacks();
+    const dispatch = createLiveIntentDispatcher(
+      runtime,
+      callbacks,
+      createFakeUiStore(),
+    );
+    dispatch({ type: "submit", mode: "send" });
+    // Change ref BEFORE the rejection fires.
+    conversationStore.__set({ ref: "ref-new" });
+    holder.fn?.();
+    await flush();
+    // Late rejection after ref change → zero publication (guarded).
+    expect(conversationStore.__record().error).toBeNull();
+  });
+
+  it("conversation rejection after generation change publishes zero — no stale error", async () => {
+    const { runtime, conversationStore } = makeRuntime();
+    const holder: { fn: (() => void) | null } = { fn: null };
+    conversationStore.__set({
+      ref: "ref-1",
+      conversationGeneration: 1,
+      interruptImpl: () =>
+        new Promise<void>((_resolve, reject) => {
+          holder.fn = () => reject(new Error("late boom"));
+        }),
+    });
+    const { callbacks } = createFakeCallbacks();
+    const dispatch = createLiveIntentDispatcher(
+      runtime,
+      callbacks,
+      createFakeUiStore(),
+    );
+    dispatch({ type: "interrupt" });
+    // Bump generation BEFORE the rejection fires.
+    conversationStore.__set({ conversationGeneration: 2 });
+    holder.fn?.();
+    await flush();
+    // Late rejection after generation change → zero publication (guarded).
+    expect(conversationStore.__record().error).toBeNull();
+  });
+
+  it("never leaves an unhandled rejection on any rejected conversation path", async () => {
+    const { runtime, conversationStore } = makeRuntime();
+    conversationStore.__set({
+      draft: "x",
+      sendImpl: async () => {
+        throw new Error("unhandled check");
+      },
+    });
+    const { callbacks } = createFakeCallbacks();
+    const dispatch = createLiveIntentDispatcher(
+      runtime,
+      callbacks,
+      createFakeUiStore(),
+    );
+    // Track unhandled rejections during this test.
+    let unhandled = 0;
+    const handler = () => unhandled++;
+    process.on("unhandledRejection", handler);
+    dispatch({ type: "submit", mode: "send" });
+    await flush();
+    await flush();
+    process.off("unhandledRejection", handler);
+    expect(unhandled).toBe(0);
     expect(conversationStore.__record().error).not.toBeNull();
   });
 });
+
+// ---------------------------------------------------------------------------
+// Compile-time exhaustiveness + boundary proof
+// ---------------------------------------------------------------------------
 
 describe("createLiveIntentDispatcher — compile-time exhaustiveness", () => {
   it("LiveConceptIntent has exactly the expected variants", () => {
@@ -1463,7 +2075,6 @@ describe("createLiveIntentDispatcher — boundary proof", () => {
       typeof source.default === "string"
         ? source.default
         : String(source.default);
-    // The source must not reference concept-lab fixture/scenario modules.
     // Each forbidden token is matched as a standalone word boundary.
     expect(text).not.toMatch(/\bfixtures\b/);
     expect(text).not.toMatch(/\bscenario\b/);
