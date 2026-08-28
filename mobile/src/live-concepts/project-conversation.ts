@@ -36,6 +36,7 @@
 // that with its own oversized-content truncation.
 
 import type {
+  ActivityState,
   MobileConversation,
   MobileTimelineItem,
 } from "../conversation/model";
@@ -157,6 +158,12 @@ function conversationTone(status: string): DisplayTone {
   if (status === "error" || status === "failed") return "failed";
   if (status === "ready" || status === "idle") return "idle";
   return "unknown";
+}
+
+function activityTone(state: ActivityState): DisplayTone {
+  if (state === "running") return "running";
+  if (state === "failed") return "failed";
+  return "success";
 }
 
 // --- error -------------------------------------------------------------------
@@ -616,10 +623,7 @@ export function createLiveConversationProjector(options?: {
 
           case "activity": {
             const outputText = item.detail.output ?? "";
-            const { body, truncated } =
-              outputText.length > 0
-                ? truncate(outputText)
-                : { body: "", truncated: false };
+            const { body, truncated } = truncate(outputText);
             // Plan3: truncated is projector-actually-truncated OR the store
             // marked this item's ID as truncated (authoritative freeze set).
             const isTruncated = truncated || truncatedItemIds.has(item.id);
@@ -628,12 +632,7 @@ export function createLiveConversationProjector(options?: {
               kind: "tool",
               label: item.label,
               body,
-              tone:
-                item.state === "running"
-                  ? "running"
-                  : item.state === "failed"
-                    ? "failed"
-                    : "success",
+              tone: activityTone(item.state),
               streaming: item.state === "running",
               truncated: isTruncated,
               questionKey: null,

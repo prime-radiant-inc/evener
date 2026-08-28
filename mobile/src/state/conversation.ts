@@ -26,6 +26,7 @@ import type {
   ThreadItem,
 } from "../../../cmd/evener-hub/frontend/src/protocol/types.gen";
 import type {
+  ActivityState,
   MobileCapabilities,
   MobileConversation,
   MobileTimelineItem,
@@ -416,6 +417,12 @@ function requireCap(
   }
 }
 
+function commandActivityState(item: ThreadItem): ActivityState {
+  if (item.error !== undefined && item.error !== "") return "failed";
+  if (item.status === "inProgress") return "running";
+  return "completed";
+}
+
 // Project a wire ThreadItem into a mobile timeline item for insertion from
 // item/started and item/completed notifications. This reuses the same field
 // mapping as the full projection but handles a single item in isolation.
@@ -461,12 +468,7 @@ function projectSingleItem(
       id: item.id,
       label: item.toolName ?? item.description?.trim() ?? "Tool",
       family: "tool",
-      state:
-        item.error !== undefined && item.error !== ""
-          ? "failed"
-          : item.status === "inProgress"
-            ? "running"
-            : "completed",
+      state: commandActivityState(item),
       detail: {
         arguments: item.argumentsJson,
         output: item.output,
@@ -723,26 +725,10 @@ export function createConversationStore() {
     };
   }
 
-  // C1: Verify a captured operation binding is still current. Checks
-  // epoch/ref/gen AND that boundService still equals the binding's service
-  // AND boundSink still equals the binding's sink (null for plain open,
-  // non-null for openProjected). A rebind with different objects suppresses.
-  function isOperationBindingCurrent(binding: RequestBinding): boolean {
-    const state = storeGet?.();
-    if (state === undefined) return false;
-    return (
-      binding.epoch === bindingEpoch &&
-      binding.ref === state.ref &&
-      binding.generation === state.conversationGeneration &&
-      boundService === binding.service &&
-      boundSink === binding.sink
-    );
-  }
-
-  // I1: Verify a captured binding is still current. If the epoch, ref,
-  // generation, OR service/sink object identity changed (rebind with
-  // different objects), the request is stale and must be suppressed — never
-  // call serviceA with refB or sinkA after rebind to B.
+  // Verify a captured binding is still current. This applies to scheduled
+  // rereads, capability refreshes, paging, and mutations. If the epoch, ref,
+  // generation, or service/sink object identity changed, suppress the stale
+  // request before it can publish into the new binding.
   function isBindingCurrent(binding: RequestBinding): boolean {
     const state = storeGet?.();
     if (state === undefined) return false;
@@ -753,15 +739,6 @@ export function createConversationStore() {
       boundService === binding.service &&
       boundSink === binding.sink
     );
-  }
-
-  // C1: Cap-specific binding validation using isOperationBindingCurrent.
-  // For openProjected: checks epoch/service/sink/ref/gen. For plain open:
-  // boundService is set (after successful open), boundSink is null — the
-  // binding's sink is also null, so null === null. A rebind to serviceB/
-  // sinkB with same gen/mutation suppresses A's caps.
-  function isCapBindingCurrent(binding: RequestBinding): boolean {
-    return isOperationBindingCurrent(binding);
   }
 
   // Request one authoritative reread through the store-owned drain scheduler.
@@ -816,7 +793,7 @@ export function createConversationStore() {
       // I1: Suppress stale work BEFORE any read — validate the full binding
       // tuple (epoch/service/sink/ref/gen). A rebind with different objects
       // suppresses this effect.
-      if (!isCapBindingCurrent(binding)) return;
+      if (!isBindingCurrent(binding)) return;
       const liveService = service as LiveConversationService;
       if (typeof liveService.refreshCapabilities !== "function") return;
       // I2: Check active mutation before the refresh — stale recovery bail.
@@ -830,7 +807,7 @@ export function createConversationStore() {
       }
       // I1: Validate the full binding tuple AGAIN after the await — a rebind
       // to serviceB/sinkB during the refresh must suppress A's capabilities.
-      if (!isCapBindingCurrent(binding)) return;
+      if (!isBindingCurrent(binding)) return;
       // I2: Check active mutation AFTER the refresh too.
       if (g().pendingMutation?.mutationId !== mutationId) return;
       // I1: Validate generation immediately before publication.
@@ -1516,7 +1493,7 @@ export function createConversationStore() {
         if (state.loadingOlder || state.conversation === null) return;
         // F8: Never request with a null/empty cursor — no more older pages.
         if (state.olderCursor === null) return;
-        const cursor = state.olderCursor ?? "";
+        const cursor = state.olderCursor;
         const gen = state.conversationGeneration;
         // C1: Capture a service-specific operation binding. If the supplied
         // service is wrong (A after B bound), binding is null — zero request.
@@ -1537,7 +1514,7 @@ export function createConversationStore() {
           // C1: Recheck the exact operation binding after the await. If the
           // binding changed (rebind to B), A's completion makes ZERO state
           // changes — no items/cursor/loading.
-          if (!isOperationBindingCurrent(opBinding)) return;
+          if (!isBindingCurrent(opBinding)) return;
           // Fix round 1 I2: generation/identity-stale — perform ZERO set calls
           // (including loadingOlder). The newer conversation owns all fields.
           if (get().conversationGeneration !== gen) return;
@@ -1592,26 +1569,12 @@ export function createConversationStore() {
             // Prune ownership maps for evicted IDs (IDs not in the final merged
             // set). This prevents stale freeze/page/live entries from
             // affecting future page loads or re-introductions.
-            const mergedIds = new Set(merged.map((i) => i.id));
-            for (const id of [...truncatedItemIds]) {
-              if (!mergedIds.has(id)) truncatedItemIds.delete(id);
-            }
-            for (const id of [...pageOwnedIds]) {
-              if (!mergedIds.has(id)) pageOwnedIds.delete(id);
-            }
-            for (const id of [...liveOwnedRevs.keys()]) {
-              if (!mergedIds.has(id)) liveOwnedRevs.delete(id);
-            }
+            pruneEvictedIds(merged);
             // F8: If we're at the cap and the merge trimmed older items,
             // disable further paging honestly — set cursor to null so
             // we don't repeatedly load rows that will be discarded.
             const atCap = merged.length >= RETAINED_ITEM_CAP;
-            const nextCursor =
-              atCap && deduped.length < result.items.length
-                ? null // Some items were deduped — cap prevents useful paging
-                : atCap
-                  ? null // At cap — further paging would just discard rows
-                  : (result.nextCursor ?? null);
+            const nextCursor = atCap ? null : (result.nextCursor ?? null);
             set({
               conversation: { ...currentConv, items: merged },
               olderCursor: nextCursor,
@@ -1622,7 +1585,7 @@ export function createConversationStore() {
           // C1: Recheck the exact operation binding after the await. If the
           // binding changed (rebind to B), A's completion makes ZERO state
           // changes — no loadingOlder/error.
-          if (!isOperationBindingCurrent(opBinding)) return;
+          if (!isBindingCurrent(opBinding)) return;
           // I1: A current page failure always settles its own loadingOlder,
           // but writes error only if its captured error owner is unchanged;
           // a newer mutation/page error/clear/ABA survives.
@@ -1693,7 +1656,7 @@ export function createConversationStore() {
         try {
           await service.send(input);
           // C1: Recheck the exact operation binding after the await.
-          if (!isOperationBindingCurrent(opBinding)) return;
+          if (!isBindingCurrent(opBinding)) return;
           // F4: Check mutationId — out-of-order completion cannot clear a
           // newer mutation's state.
           if (get().pendingMutation?.mutationId === mutationId) {
@@ -1711,7 +1674,7 @@ export function createConversationStore() {
           }
         } catch (err) {
           // C1: Recheck the exact operation binding after the await.
-          if (!isOperationBindingCurrent(opBinding)) return;
+          if (!isBindingCurrent(opBinding)) return;
           await handleMutationError(
             err,
             service,
@@ -1767,7 +1730,7 @@ export function createConversationStore() {
         try {
           await service.steer(input);
           // C1: Recheck the exact operation binding after the await.
-          if (!isOperationBindingCurrent(opBinding)) return;
+          if (!isBindingCurrent(opBinding)) return;
           if (get().pendingMutation?.mutationId === mutationId) {
             // I1: clear error only if error-owner revision is unchanged —
             // revision equality ONLY.
@@ -1781,7 +1744,7 @@ export function createConversationStore() {
           }
         } catch (err) {
           // C1: Recheck the exact operation binding after the await.
-          if (!isOperationBindingCurrent(opBinding)) return;
+          if (!isBindingCurrent(opBinding)) return;
           await handleMutationError(
             err,
             service,
@@ -1836,7 +1799,7 @@ export function createConversationStore() {
         try {
           await service.queue(input);
           // C1: Recheck the exact operation binding after the await.
-          if (!isOperationBindingCurrent(opBinding)) return;
+          if (!isBindingCurrent(opBinding)) return;
           if (get().pendingMutation?.mutationId === mutationId) {
             // I1: clear error only if error-owner revision is unchanged —
             // revision equality ONLY.
@@ -1850,7 +1813,7 @@ export function createConversationStore() {
           }
         } catch (err) {
           // C1: Recheck the exact operation binding after the await.
-          if (!isOperationBindingCurrent(opBinding)) return;
+          if (!isBindingCurrent(opBinding)) return;
           await handleMutationError(
             err,
             service,
@@ -1901,7 +1864,7 @@ export function createConversationStore() {
         try {
           await service.interrupt();
           // C1: Recheck the exact operation binding after the await.
-          if (!isOperationBindingCurrent(opBinding)) return;
+          if (!isBindingCurrent(opBinding)) return;
           if (get().pendingMutation?.mutationId === mutationId) {
             // I1: clear error only if error-owner revision is unchanged —
             // revision equality ONLY.
@@ -1915,7 +1878,7 @@ export function createConversationStore() {
           }
         } catch (err) {
           // C1: Recheck the exact operation binding after the await.
-          if (!isOperationBindingCurrent(opBinding)) return;
+          if (!isBindingCurrent(opBinding)) return;
           await handleMutationError(
             err,
             service,
@@ -2263,8 +2226,7 @@ export function createConversationStore() {
             // no mutation/live revision/freeze change, request authoritative
             // reread.
             if (
-              !existing ||
-              existing.kind !== "activity" ||
+              existing?.kind !== "activity" ||
               existing.family !== "reasoning"
             ) {
               if (state.ref !== null) {
@@ -2315,7 +2277,7 @@ export function createConversationStore() {
             // either callId, mismatch, unknown family, or wrong family => no
             // mutation/live revision/freeze change, request authoritative
             // reread.
-            if (!existing || existing.kind !== "activity") {
+            if (existing?.kind !== "activity") {
               if (state.ref !== null) {
                 requestRehydrate(state.ref);
               }
