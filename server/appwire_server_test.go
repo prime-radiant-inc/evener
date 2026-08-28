@@ -1039,6 +1039,132 @@ func TestServerAppWireTaskAndGoalPatchesAreInSnapshotBeforeNotificationDelivery(
 	}
 }
 
+func TestServerAppWireCheckpointCannotOverwriteDescendantSharedTaskCarrier(t *testing.T) {
+	srv := NewServer(ServerConfig{})
+	srv.SetAppIdentity("local", "root")
+	src := publishEnvelope(srv, &stubThreadEnvelopeSource{
+		tasks: &appwire.TaskAggregate{Total: 1, Current: &appwire.TaskSummary{ID: 1, Description: "old sampled task"}},
+	})
+	srv.RecordDescendantAppEvent("root", events.SessionEvent{Kind: events.EventSessionStart, SessionID: "child", Data: events.SessionStartData{
+		TaskStoreOwnerSessionID: "root",
+		CurrentWork: &events.CurrentWorkSeedData{Tasks: &events.TaskStateData{
+			Total: 1, Current: &events.TaskSummaryData{ID: 1, Description: "old sampled task"},
+		}},
+	}})
+	src.queue = appwire.QueueState{Depth: 4, Revision: 2}
+
+	parked := make(chan struct{})
+	release := make(chan struct{})
+	var once sync.Once
+	src.parkOnMeta = func() {
+		once.Do(func() {
+			close(parked)
+			<-release
+		})
+	}
+	checkpointDone := make(chan struct{})
+	go func() {
+		defer close(checkpointDone)
+		BridgeEvent(srv, events.SessionEvent{Kind: events.EventTurnEnded, SessionID: "root"}, nil)
+	}()
+	<-parked
+
+	srv.RecordDescendantAppEvent("root", events.SessionEvent{Kind: events.EventTaskUpdated, SessionID: "child", Data: events.TaskUpdatedData{
+		TaskStateData: events.TaskStateData{
+			Total: 2, Done: 1, Current: &events.TaskSummaryData{ID: 2, Description: "new shared-owner task"},
+		},
+		TaskStoreOwnerSessionID: "root",
+	}})
+	notifications := srv.AppNotificationsAfter(0, "root")
+	if len(notifications) == 0 || notifications[len(notifications)-1].Notification.Method != appwire.NotifyEvenerTaskUpdated {
+		t.Fatalf("root notifications = %+v, want task update", notifications)
+	}
+	assertCurrentTask := func(stage string) {
+		t.Helper()
+		thread := readThreadOverWire(t, srv, "local:root")
+		if thread.Evener.Tasks == nil || thread.Evener.Tasks.Current == nil || thread.Evener.Tasks.Current.Description != "new shared-owner task" {
+			t.Fatalf("%s tasks = %+v, want descendant carrier", stage, thread.Evener.Tasks)
+		}
+	}
+	assertCurrentTask("notification cut")
+	close(release)
+	<-checkpointDone
+	assertCurrentTask("after checkpoint")
+	if queue := readThreadOverWire(t, srv, "local:root").Evener.Queue; queue.Depth != 4 || queue.Revision != 2 {
+		t.Fatalf("unaffected checkpoint queue = %+v, want updated sample", queue)
+	}
+}
+
+func TestServerAppWireCheckpointCannotOverwriteConcurrentGoalCarrier(t *testing.T) {
+	srv := NewServer(ServerConfig{})
+	srv.SetAppIdentity("local", "root")
+	src := publishEnvelope(srv, &stubThreadEnvelopeSource{meta: schema.SessionMeta{Goal: &schema.GoalSnapshot{
+		Objective: "old sampled goal", Status: "active", Iterations: 1,
+	}}})
+
+	parked := make(chan struct{})
+	release := make(chan struct{})
+	var once sync.Once
+	src.parkAfterMeta = func() {
+		once.Do(func() {
+			close(parked)
+			<-release
+		})
+	}
+	checkpointDone := make(chan struct{})
+	go func() {
+		defer close(checkpointDone)
+		BridgeEvent(srv, events.SessionEvent{Kind: events.EventTurnEnded, SessionID: "root"}, nil)
+	}()
+	<-parked
+
+	BridgeEvent(srv, events.SessionEvent{Kind: events.EventGoalUpdated, SessionID: "root", Data: events.GoalUpdatedData{Goal: &events.GoalStateData{
+		Objective: "new carrier goal", Status: "active", Iterations: 2,
+	}}}, nil)
+	notifications := srv.AppNotificationsAfter(0, "root")
+	if len(notifications) == 0 || notifications[len(notifications)-1].Notification.Method != appwire.NotifyEvenerGoalUpdated {
+		t.Fatalf("root notifications = %+v, want goal update", notifications)
+	}
+	assertGoal := func(stage string) {
+		t.Helper()
+		thread := readThreadOverWire(t, srv, "local:root")
+		if thread.Evener.Goal == nil || thread.Evener.Goal.Objective != "new carrier goal" || thread.Evener.Goal.Iterations != 2 {
+			t.Fatalf("%s goal = %+v, want direct carrier", stage, thread.Evener.Goal)
+		}
+	}
+	assertGoal("notification cut")
+	close(release)
+	<-checkpointDone
+	assertGoal("after checkpoint")
+}
+
+func TestServerAppWireCheckpointStillRepairsTaskAndGoalWithoutConcurrentCarrier(t *testing.T) {
+	srv := NewServer(ServerConfig{})
+	srv.SetAppIdentity("local", "root")
+	src := publishEnvelope(srv, &stubThreadEnvelopeSource{
+		tasks: &appwire.TaskAggregate{Total: 1, Current: &appwire.TaskSummary{ID: 1, Description: "initial sampled task"}},
+		meta:  schema.SessionMeta{Goal: &schema.GoalSnapshot{Objective: "initial sampled goal", Status: "active", Iterations: 1}},
+	})
+	srv.RecordAppEvent(events.SessionEvent{Kind: events.EventTaskUpdated, SessionID: "root", Data: events.TaskUpdatedData{
+		TaskStateData: events.TaskStateData{Total: 2, Current: &events.TaskSummaryData{ID: 2, Description: "stale carrier task"}},
+	}})
+	srv.RecordAppEvent(events.SessionEvent{Kind: events.EventGoalUpdated, SessionID: "root", Data: events.GoalUpdatedData{Goal: &events.GoalStateData{
+		Objective: "stale carrier goal", Status: "active", Iterations: 2,
+	}}})
+
+	src.tasks = &appwire.TaskAggregate{Total: 3, Done: 1, Current: &appwire.TaskSummary{ID: 3, Description: "checkpoint repaired task"}}
+	src.meta.Goal = &schema.GoalSnapshot{Objective: "checkpoint repaired goal", Status: "active", Iterations: 4}
+	BridgeEvent(srv, events.SessionEvent{Kind: events.EventTurnEnded, SessionID: "root"}, nil)
+
+	thread := readThreadOverWire(t, srv, "local:root")
+	if thread.Evener.Tasks == nil || thread.Evener.Tasks.Current == nil || thread.Evener.Tasks.Current.Description != "checkpoint repaired task" {
+		t.Fatalf("repaired tasks = %+v", thread.Evener.Tasks)
+	}
+	if thread.Evener.Goal == nil || thread.Evener.Goal.Objective != "checkpoint repaired goal" || thread.Evener.Goal.Iterations != 4 {
+		t.Fatalf("repaired goal = %+v", thread.Evener.Goal)
+	}
+}
+
 func TestServerAppWireTaskAndGoalUpdatesHaveOneOrderForEveryClient(t *testing.T) {
 	srv := NewServer(ServerConfig{})
 	srv.SetAppIdentity("local", "root")

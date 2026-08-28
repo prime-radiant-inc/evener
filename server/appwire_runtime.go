@@ -228,6 +228,12 @@ func (s *Server) RecordAppEvent(event events.SessionEvent) {
 				mergeStartCurrentWork(&params.Thread.Evener, s.appEnvelope.Tasks, s.appEnvelope.Goal, start.CurrentWork)
 				s.appEnvelope.Tasks = cloneTaskAggregate(params.Thread.Evener.Tasks)
 				s.appEnvelope.Goal = cloneGoalState(params.Thread.Evener.Goal)
+				if start.CurrentWork != nil && start.CurrentWork.Tasks != nil {
+					s.appEnvelope.taskCarrierGeneration++
+				}
+				if start.CurrentWork != nil {
+					s.appEnvelope.goalCarrierGeneration++
+				}
 				if item.TaskStoreOwnerSessionID != "" {
 					s.appEnvelope.TaskStoreOwnerSessionID = item.TaskStoreOwnerSessionID
 				}
@@ -245,6 +251,7 @@ func (s *Server) RecordAppEvent(event events.SessionEvent) {
 				}
 			case appwire.GoalUpdatedParams:
 				s.appEnvelope.Goal = goalPatch(params)
+				s.appEnvelope.goalCarrierGeneration++
 				pending = append(pending, pendingAppNotification{threadID: threadID, ref: ref, method: item.Method, params: params, snapshot: s.appTurns})
 			default:
 				pending = append(pending, pendingAppNotification{threadID: threadID, ref: ref, method: item.Method, params: item.Params, snapshot: s.appTurns})
@@ -469,6 +476,7 @@ func cloneGoalState(value *appwire.GoalState) *appwire.GoalState {
 func (s *Server) applyTaskCarrierLocked(threadID string, params appwire.TaskUpdatedParams) {
 	if threadID == s.appThreadID {
 		s.appEnvelope.Tasks = taskPatch(params)
+		s.appEnvelope.taskCarrierGeneration++
 		return
 	}
 	if projection := s.appDescendants[threadID]; projection != nil {

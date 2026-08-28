@@ -24,11 +24,11 @@ A focused `CurrentWork` component renders inside `Composer`, after queue and att
 
 At widths above the composer’s existing 559px container boundary, the component renders one line:
 
-`● WORKING ON <task> | ⚑ GOAL <objective>`
+`● Task <task> | ⚑ Goal <objective>`
 
 The task uses stronger text than the goal. The green ring marks a real in-progress task; the goal flag stays neutral. If the goal is absent, its divider, flag, label, and text do not render. If the task is absent but an objective exists, the component renders the goal by itself. If both are absent, the component renders nothing.
 
-At 559px and below, the task remains the first row and the optional goal moves to a second indented row. Each value stays on one line and ellipsizes independently. The full value remains in the DOM and in a native title tooltip. The component uses the composer’s container width, not viewport width, so a narrow desktop dock behaves like mobile.
+At 559px and below, the task remains the first row and the optional goal moves to a second row. Both rows are left-justified with no goal indent. Each value stays on one line and ellipsizes independently. The full value remains in the DOM and in a native title tooltip. The component uses the composer’s container width, not viewport width, so a narrow desktop dock behaves like mobile.
 
 `ThreadModel` is the sole state source for both `CurrentWork` and `GoalControl`. A successful local `goal/set` response may synthesize an immediate goal only as a fallback; an accepted goal notification or authoritative hydration invalidates that fallback and wins. No component keeps a parallel goal cache.
 

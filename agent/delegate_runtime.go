@@ -1660,13 +1660,22 @@ func (runtime delegateRuntime) restoreIdle(started delegateStartCommit) (*subage
 			return nil, false, fmt.Errorf("restored delegate tool %q exceeds the committed ceiling", name)
 		}
 	}
-	if len(descriptor.TaskTemplates) != 0 && len(child.getOrCreateTaskStore().View()) == 0 {
-		if err := child.getOrCreateTaskStore().PopulateFromTemplates(descriptor.TaskTemplates, nil); err != nil {
+	if len(descriptor.TaskTemplates) != 0 {
+		childStore := child.getOrCreateTaskStore()
+		if err := childStore.MutateAndPublish(func() error {
+			if len(childStore.View()) != 0 {
+				return nil
+			}
+			if err := childStore.PopulateFromTemplates(descriptor.TaskTemplates, nil); err != nil {
+				return err
+			}
+			summary := task.Summarize(childStore.View())
+			child.emit(events.EventTaskUpdated, taskUpdatedData(summary, child.taskStoreOwnerSessionID()))
+			return nil
+		}); err != nil {
 			child.discardRestoredCandidate()
 			return nil, false, fmt.Errorf("restore committed delegate tasks: %w", err)
 		}
-		summary := task.Summarize(child.getOrCreateTaskStore().View())
-		child.emit(events.EventTaskUpdated, taskUpdatedData(summary, child.taskStoreOwnerSessionID()))
 	}
 	now := s.sclock().Now()
 	stableDescriptor := cloneDelegateStartDescriptor(descriptor)

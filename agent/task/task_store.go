@@ -163,12 +163,16 @@ func cloneTasks(tasks []Task) []Task {
 
 // TaskStore manages a persistent list of tasks stored as JSON.
 type TaskStore struct {
-	mu     sync.Mutex
-	tasks  []Task
-	nextID int
-	path   string
-	now    func() time.Time
-	fs     afero.Fs
+	mu                    sync.Mutex
+	mutationPublicationMu sync.Mutex
+	tasks                 []Task
+	nextID                int
+	path                  string
+	now                   func() time.Time
+	fs                    afero.Fs
+	// beforeMutationPublicationWait is a deterministic contention seam for the
+	// shared-producer ordering test. Production leaves it nil.
+	beforeMutationPublicationWait func()
 }
 
 // NewTaskStore creates a TaskStore that persists to <stateDir>/tasks/<sessionID>.json.
@@ -180,6 +184,21 @@ func NewTaskStore(stateDir, sessionID string) *TaskStore {
 		now:    time.Now,
 		fs:     afero.NewOsFs(),
 	}
+}
+
+// MutateAndPublish serializes one logical mutation through publication of the
+// resulting state. The serializer belongs to the store so sessions sharing one
+// TaskStore also share publication order. The store's data mutex remains scoped
+// to individual data operations inside fn and is never held by this method.
+func (s *TaskStore) MutateAndPublish(fn func() error) error {
+	if !s.mutationPublicationMu.TryLock() {
+		if s.beforeMutationPublicationWait != nil {
+			s.beforeMutationPublicationWait()
+		}
+		s.mutationPublicationMu.Lock()
+	}
+	defer s.mutationPublicationMu.Unlock()
+	return fn()
 }
 
 // SetClock overrides the store's time source. Used by tests for deterministic
