@@ -1,7 +1,6 @@
 import { cleanup, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
-import type { NavigationPinSectionCatalog } from "../../protocol/types.gen";
 import { navigationStore, resetNavigationStoreForTests } from "../../stores/navigation/store";
 import { keyID, type ResourceState } from "../../stores/navigation/types";
 import { resetToastStoreForTests } from "../../widgets/toast/store";
@@ -10,13 +9,13 @@ import { SessionMenu, type SessionMenuActions, type SessionMenuProps } from "./S
 
 // "Pin this session…" mounts the real PinSectionPicker, which reads
 // pin sections from the navigation store's bounded pin-catalog resource
-// (loadPinCatalog + selectPinSections). Seed the store with a pin_catalog resource and
-// stub loadPinCatalog so the picker's mount effect resolves without a
+// (loadPinCatalogPages + selectPinSections). Seed the store with a pin_catalog resource and
+// stub loadPinCatalogPages so the picker's mount effect resolves without a
 // real network fetch.
 const generation = "generation_test";
 const pinKey = { kind: "pin_catalog" as const, offset: 0, limit: 100 };
 
-type LoadPinCatalog = (offset?: number, limit?: number) => Promise<ResourceState<NavigationPinSectionCatalog>>;
+type LoadPinCatalogPages = (force?: boolean) => Promise<void>;
 
 function seedPinCatalog(): void {
   const resource: ResourceState = {
@@ -40,9 +39,7 @@ function seedPinCatalog(): void {
     mode: "v1",
     resources: new Map([[keyID(resource.key), resource]]),
   });
-  const impl = async () =>
-    navigationStore.getState().resources.get(keyID(pinKey)) as ResourceState<NavigationPinSectionCatalog>;
-  navigationStore.setState({ loadPinCatalog: vi.fn(impl) as LoadPinCatalog });
+  navigationStore.setState({ loadPinCatalogPages: vi.fn(async () => undefined) as LoadPinCatalogPages });
 }
 
 function renderMenu(overrides: Partial<SessionMenuProps> = {}) {
