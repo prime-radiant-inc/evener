@@ -7353,8 +7353,9 @@ describe("ConversationStore", () => {
       }
     });
 
-    // Task 2A-Family (round 2): controlled-reread adversarial tests, resliced
-    // into separate (A) and (B) deterministic proofs. Do NOT conflate A/B.
+    // Task 2A-Family (round 2, fix 1): controlled-reread adversarial tests,
+    // resliced into separate (A) and (B) deterministic proofs. Do NOT conflate
+    // A/B.
     //
     // (A) invalid-only ownership test: trigger invalid delta, hold one reread,
     //     assert sync unchanged, release omitted-target authoritative result,
@@ -7371,6 +7372,16 @@ describe("ConversationStore", () => {
     // Stored-missing-callId and unknown-family cases get (A) only — no valid
     // exact family/call delta exists, so (B) is not applicable.
     //
+    // Fix 1 timing: after releasing the controlled read, WAIT for
+    // post-rehydrate reconciliation/store state to complete using a
+    // store.subscribe level-triggered barrier (not an immediate assertion).
+    // In EVERY A/B case, reassert started=1, done=1, and
+    // service.readProjectionCalls=readsAfterOpen+1 AFTER reconciliation so
+    // queued duplicates cannot hide. Any unexpected controlled read is
+    // released so it fails cleanly rather than leaving a hang. Positive valid
+    // controls cross an actual scheduler dispatch turn/barrier before
+    // asserting zero controlled reads/unchanged service count.
+
     // Helper: open via openProjected with given mobile items, then install
     // a controlled readProjection that hangs until released. The reread
     // result omits all activity items (the target drops on release).
@@ -7419,6 +7430,46 @@ describe("ConversationStore", () => {
       };
     }
 
+    // Fix 1: Deterministic post-rehydrate reconciliation barrier. The
+    // rehydrate commit calls set({ conversation: ... }) synchronously in the
+    // same microtask turn that the controlled read resolves. store.subscribe
+    // fires synchronously on every set(), so this level-triggered promise
+    // resolves when the conversation items change — a true state barrier, not
+    // a microtask count guess. If the conversation object identity already
+    // changed (synchronous commit), resolve immediately.
+    function waitForReconcile(
+      store: ReturnType<typeof createConversationStore>,
+    ): Promise<void> {
+      const conv = store.getState().conversation;
+      // If the conversation is null or already has only the base user item,
+      // we still need to wait for the set to fire. Use a subscribe that
+      // resolves on the next conversation change.
+      return new Promise<void>((resolve) => {
+        const unsub = store.subscribe((s) => {
+          if (s.conversation !== conv) {
+            unsub();
+            resolve();
+          }
+        });
+        // Level-triggered: if already changed (sync commit), resolve now.
+        if (store.getState().conversation !== conv) {
+          unsub();
+          resolve();
+        }
+      });
+    }
+
+    // Fix 1: Release any unexpected remaining controlled reads so a queued
+    // duplicate fails cleanly with an assertion error rather than hanging.
+    // Call after all assertions to drain any straggler reads.
+    function releaseStragglers(
+      ctrl: ReturnType<typeof makeControlledRead>,
+    ): void {
+      // The release queue is FIFO; releasing with nothing pending is a no-op.
+      // Release up to a bounded count to drain any unexpected straggler.
+      for (let i = 0; i < 10; i++) ctrl.release();
+    }
+
     // --- (A) invalid-only ownership tests ---
 
     it("2A-Family-r2 (A): reasoning delta to tool item — no mutation, target drops (invalid did not mark live ownership)", async () => {
@@ -7464,16 +7515,21 @@ describe("ConversationStore", () => {
       // live-owned, so it drops as omitted old history.
       ctrl.release();
       await ctrl.completed(1);
-      // Exactly one controlled read completed.
+      // Fix 1: WAIT for post-rehydrate reconciliation via store.subscribe
+      // level-triggered barrier (not microtask count).
+      await waitForReconcile(store);
+      // Reassert exact counts after reconciliation — queued duplicates
+      // cannot hide.
+      expect(ctrl.getStartedCount()).toBe(1);
       expect(ctrl.getDoneCount()).toBe(1);
-      await yieldMicrotask();
-      await yieldMicrotask();
-      await yieldMicrotask();
+      expect(service.readProjectionCalls.length).toBe(readsAfterOpen + 1);
       // Target MUST drop — proves invalid did not mark live ownership.
       const item1 = store
         .getState()
         .conversation?.items.find((i) => i.id === "tool-r");
       expect(item1).toBeUndefined();
+      // Clean up any unexpected straggler reads.
+      releaseStragglers(ctrl);
     });
 
     it("2A-Family-r2 (A): tool delta to reasoning item — no mutation, target drops (invalid did not mark live ownership)", async () => {
@@ -7515,15 +7571,16 @@ describe("ConversationStore", () => {
       // Release — reread omits reason-1. Invalid did NOT mark it live-owned.
       ctrl.release();
       await ctrl.completed(1);
+      await waitForReconcile(store);
+      expect(ctrl.getStartedCount()).toBe(1);
       expect(ctrl.getDoneCount()).toBe(1);
-      await yieldMicrotask();
-      await yieldMicrotask();
-      await yieldMicrotask();
+      expect(service.readProjectionCalls.length).toBe(readsAfterOpen + 1);
       // Target MUST drop.
       const item1 = store
         .getState()
         .conversation?.items.find((i) => i.id === "reason-1");
       expect(item1).toBeUndefined();
+      releaseStragglers(ctrl);
     });
 
     it("2A-Family-r2 (A): callId mismatch — no mutation, target drops (invalid did not mark live ownership)", async () => {
@@ -7565,15 +7622,16 @@ describe("ConversationStore", () => {
       // Release — reread omits tool-mismatch. Invalid did NOT mark it live-owned.
       ctrl.release();
       await ctrl.completed(1);
+      await waitForReconcile(store);
+      expect(ctrl.getStartedCount()).toBe(1);
       expect(ctrl.getDoneCount()).toBe(1);
-      await yieldMicrotask();
-      await yieldMicrotask();
-      await yieldMicrotask();
+      expect(service.readProjectionCalls.length).toBe(readsAfterOpen + 1);
       // Target MUST drop.
       const item1 = store
         .getState()
         .conversation?.items.find((i) => i.id === "tool-mismatch");
       expect(item1).toBeUndefined();
+      releaseStragglers(ctrl);
     });
 
     it("2A-Family-r2 (A): incoming missing callId — no mutation, target drops (invalid did not mark live ownership)", async () => {
@@ -7614,15 +7672,16 @@ describe("ConversationStore", () => {
       // Release — reread omits tool-hascall. Invalid did NOT mark it live-owned.
       ctrl.release();
       await ctrl.completed(1);
+      await waitForReconcile(store);
+      expect(ctrl.getStartedCount()).toBe(1);
       expect(ctrl.getDoneCount()).toBe(1);
-      await yieldMicrotask();
-      await yieldMicrotask();
-      await yieldMicrotask();
+      expect(service.readProjectionCalls.length).toBe(readsAfterOpen + 1);
       // Target MUST drop.
       const item1 = store
         .getState()
         .conversation?.items.find((i) => i.id === "tool-hascall");
       expect(item1).toBeUndefined();
+      releaseStragglers(ctrl);
     });
 
     it("2A-Family-r2 (A): stored missing callId — no mutation, target drops (invalid did not mark live ownership)", async () => {
@@ -7665,15 +7724,16 @@ describe("ConversationStore", () => {
       // Release — reread omits tool-nocall. Invalid did NOT mark it live-owned.
       ctrl.release();
       await ctrl.completed(1);
+      await waitForReconcile(store);
+      expect(ctrl.getStartedCount()).toBe(1);
       expect(ctrl.getDoneCount()).toBe(1);
-      await yieldMicrotask();
-      await yieldMicrotask();
-      await yieldMicrotask();
+      expect(service.readProjectionCalls.length).toBe(readsAfterOpen + 1);
       // Target MUST drop.
       const item1 = store
         .getState()
         .conversation?.items.find((i) => i.id === "tool-nocall");
       expect(item1).toBeUndefined();
+      releaseStragglers(ctrl);
     });
 
     it("2A-Family-r2 (A): unknown family rejects reasoning delta — no mutation, target drops", async () => {
@@ -7716,15 +7776,16 @@ describe("ConversationStore", () => {
       // Release — reread omits unk-1. Invalid did NOT mark it live-owned.
       ctrl.release();
       await ctrl.completed(1);
+      await waitForReconcile(store);
+      expect(ctrl.getStartedCount()).toBe(1);
       expect(ctrl.getDoneCount()).toBe(1);
-      await yieldMicrotask();
-      await yieldMicrotask();
-      await yieldMicrotask();
+      expect(service.readProjectionCalls.length).toBe(readsAfterOpen + 1);
       // Target MUST drop.
       const item1 = store
         .getState()
         .conversation?.items.find((i) => i.id === "unk-1");
       expect(item1).toBeUndefined();
+      releaseStragglers(ctrl);
     });
 
     it("2A-Family-r2 (A): unknown family rejects tool delta — no mutation, target drops", async () => {
@@ -7767,15 +7828,16 @@ describe("ConversationStore", () => {
       // Release — reread omits unk-2. Invalid did NOT mark it live-owned.
       ctrl.release();
       await ctrl.completed(1);
+      await waitForReconcile(store);
+      expect(ctrl.getStartedCount()).toBe(1);
       expect(ctrl.getDoneCount()).toBe(1);
-      await yieldMicrotask();
-      await yieldMicrotask();
-      await yieldMicrotask();
+      expect(service.readProjectionCalls.length).toBe(readsAfterOpen + 1);
       // Target MUST drop.
       const item1 = store
         .getState()
         .conversation?.items.find((i) => i.id === "unk-2");
       expect(item1).toBeUndefined();
+      releaseStragglers(ctrl);
     });
 
     // --- (B) invalid-then-valid freeze tests ---
@@ -7831,6 +7893,9 @@ describe("ConversationStore", () => {
           delta: "\nappended",
         },
       } as AnyNotification);
+      // Fix 1: cross a scheduler dispatch turn before asserting the valid
+      // delta did NOT trigger a second controlled read.
+      await yieldMicrotask();
       // Exactly one controlled read — valid delta does NOT trigger a reread.
       expect(ctrl.getStartedCount()).toBe(1);
       const item1 = store
@@ -7844,10 +7909,12 @@ describe("ConversationStore", () => {
       // The invalid reasoning delta did NOT mark it — only the valid one did.
       ctrl.release();
       await ctrl.completed(1);
+      await waitForReconcile(store);
+      // Reassert exact counts after reconciliation — queued duplicates
+      // cannot hide.
+      expect(ctrl.getStartedCount()).toBe(1);
       expect(ctrl.getDoneCount()).toBe(1);
-      await yieldMicrotask();
-      await yieldMicrotask();
-      await yieldMicrotask();
+      expect(service.readProjectionCalls.length).toBe(readsAfterOpen + 1);
       // Target preserved with valid delta content — live ownership from
       // the valid delta, not from the invalid.
       const item2 = store
@@ -7857,6 +7924,7 @@ describe("ConversationStore", () => {
       if (item2?.kind === "activity") {
         expect(item2.detail.output).toBe("out0\nappended");
       }
+      releaseStragglers(ctrl);
     });
 
     it("2A-Family-r2 (B): tool delta to reasoning item — valid reasoning delta applies while reread blocked (invalid did not freeze)", async () => {
@@ -7908,6 +7976,8 @@ describe("ConversationStore", () => {
           delta: " more",
         },
       } as AnyNotification);
+      // Fix 1: cross a scheduler dispatch turn before asserting.
+      await yieldMicrotask();
       expect(ctrl.getStartedCount()).toBe(1);
       const item1 = store
         .getState()
@@ -7919,10 +7989,10 @@ describe("ConversationStore", () => {
       // live-owned, so the rehydrate preserves it.
       ctrl.release();
       await ctrl.completed(1);
+      await waitForReconcile(store);
+      expect(ctrl.getStartedCount()).toBe(1);
       expect(ctrl.getDoneCount()).toBe(1);
-      await yieldMicrotask();
-      await yieldMicrotask();
-      await yieldMicrotask();
+      expect(service.readProjectionCalls.length).toBe(readsAfterOpen + 1);
       // Target preserved with valid delta content.
       const item2 = store
         .getState()
@@ -7931,6 +8001,7 @@ describe("ConversationStore", () => {
       if (item2?.kind === "activity") {
         expect(item2.detail.output).toBe("Thinking more");
       }
+      releaseStragglers(ctrl);
     });
 
     it("2A-Family-r2 (B): callId mismatch — valid matching callId applies while reread blocked (invalid did not freeze)", async () => {
@@ -7982,6 +8053,8 @@ describe("ConversationStore", () => {
           delta: "\nappended",
         },
       } as AnyNotification);
+      // Fix 1: cross a scheduler dispatch turn before asserting.
+      await yieldMicrotask();
       expect(ctrl.getStartedCount()).toBe(1);
       const item1 = store
         .getState()
@@ -7993,10 +8066,10 @@ describe("ConversationStore", () => {
       // marked it live-owned, so the rehydrate preserves it.
       ctrl.release();
       await ctrl.completed(1);
+      await waitForReconcile(store);
+      expect(ctrl.getStartedCount()).toBe(1);
       expect(ctrl.getDoneCount()).toBe(1);
-      await yieldMicrotask();
-      await yieldMicrotask();
-      await yieldMicrotask();
+      expect(service.readProjectionCalls.length).toBe(readsAfterOpen + 1);
       // Target preserved with valid delta content.
       const item2 = store
         .getState()
@@ -8005,6 +8078,7 @@ describe("ConversationStore", () => {
       if (item2?.kind === "activity") {
         expect(item2.detail.output).toBe("base\nappended");
       }
+      releaseStragglers(ctrl);
     });
 
     it("2A-Family-r2 (B): incoming missing callId — valid matching callId applies while reread blocked (invalid did not freeze)", async () => {
@@ -8055,6 +8129,8 @@ describe("ConversationStore", () => {
           delta: "\nappended",
         },
       } as AnyNotification);
+      // Fix 1: cross a scheduler dispatch turn before asserting.
+      await yieldMicrotask();
       expect(ctrl.getStartedCount()).toBe(1);
       const item1 = store
         .getState()
@@ -8066,10 +8142,10 @@ describe("ConversationStore", () => {
       // marked it live-owned, so the rehydrate preserves it.
       ctrl.release();
       await ctrl.completed(1);
+      await waitForReconcile(store);
+      expect(ctrl.getStartedCount()).toBe(1);
       expect(ctrl.getDoneCount()).toBe(1);
-      await yieldMicrotask();
-      await yieldMicrotask();
-      await yieldMicrotask();
+      expect(service.readProjectionCalls.length).toBe(readsAfterOpen + 1);
       // Target preserved with valid delta content.
       const item2 = store
         .getState()
@@ -8078,13 +8154,14 @@ describe("ConversationStore", () => {
       if (item2?.kind === "activity") {
         expect(item2.detail.output).toBe("base\nappended");
       }
+      releaseStragglers(ctrl);
     });
 
     // --- positive controls (no reread) ---
 
     it("2A-Family-r2: exact callId match appends tool delta synchronously", async () => {
-      const { store, service, readsAfterOpen } = await openWithControlledReread(
-        [
+      const { store, service, ctrl, readsAfterOpen } =
+        await openWithControlledReread([
           {
             kind: "activity",
             id: "tool-exact",
@@ -8093,8 +8170,7 @@ describe("ConversationStore", () => {
             state: "running",
             detail: { output: "base", callId: "call-exact" },
           },
-        ],
-      );
+        ]);
       // Valid: exact callId match → accepted synchronously, no reread.
       store.getState().applyNotification({
         method: "item/toolOutput/delta",
@@ -8107,7 +8183,13 @@ describe("ConversationStore", () => {
           delta: "\nappended",
         },
       } as AnyNotification);
+      // Fix 1: cross an actual scheduler dispatch turn/barrier before
+      // asserting zero controlled reads/unchanged service count. Immediate
+      // sync count is insufficient — a queued reread would dispatch on the
+      // next microtask.
+      await yieldMicrotask();
       // No reread — exact match accepted.
+      expect(ctrl.getStartedCount()).toBe(0);
       expect(service.readProjectionCalls.length).toBe(readsAfterOpen);
       const item = store
         .getState()
@@ -8115,11 +8197,12 @@ describe("ConversationStore", () => {
       if (item?.kind === "activity") {
         expect(item.detail.output).toBe("base\nappended");
       }
+      releaseStragglers(ctrl);
     });
 
     it("2A-Family-r2: exact reasoning match appends reasoning delta synchronously", async () => {
-      const { store, service, readsAfterOpen } = await openWithControlledReread(
-        [
+      const { store, service, ctrl, readsAfterOpen } =
+        await openWithControlledReread([
           {
             kind: "activity",
             id: "reason-exact",
@@ -8128,8 +8211,7 @@ describe("ConversationStore", () => {
             state: "running",
             detail: { output: "base" },
           },
-        ],
-      );
+        ]);
       // Valid: reasoning family match → accepted synchronously, no reread.
       store.getState().applyNotification({
         method: "item/reasoning/summaryTextDelta",
@@ -8142,7 +8224,11 @@ describe("ConversationStore", () => {
           delta: " appended",
         },
       } as AnyNotification);
+      // Fix 1: cross an actual scheduler dispatch turn/barrier before
+      // asserting zero controlled reads/unchanged service count.
+      await yieldMicrotask();
       // No reread — exact family match accepted.
+      expect(ctrl.getStartedCount()).toBe(0);
       expect(service.readProjectionCalls.length).toBe(readsAfterOpen);
       const item = store
         .getState()
@@ -8150,6 +8236,7 @@ describe("ConversationStore", () => {
       if (item?.kind === "activity") {
         expect(item.detail.output).toBe("base appended");
       }
+      releaseStragglers(ctrl);
     });
   });
 
