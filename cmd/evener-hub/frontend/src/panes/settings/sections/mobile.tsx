@@ -1,7 +1,11 @@
 import { QRCodeSVG } from "qrcode.react";
-import { useEffect, useState } from "react";
+import { useState } from "react";
+import { WireError } from "../../../protocol/errors";
+import type { AppwireClientLike } from "../../../protocol/testing/fakeClient";
+import { useClient } from "../../../shell/clientContext";
 import { Button, EmptyState, Skeleton } from "../../../widgets";
 import { copyText } from "./credentials/clipboard";
+import { useConnectedEffect } from "./useConnectedEffect";
 
 type PairingState =
   | { kind: "loading" }
@@ -11,21 +15,21 @@ type PairingState =
 
 /**
  * MobileSection presents a browser-only pairing QR for the dedicated native
- * app. The QR holds the Hub's long-lived capability URL, so it is fetched only
- * on demand from the authenticated, no-store endpoint and never logged here.
+ * app. The QR holds the Hub's long-lived capability URL, so it is requested
+ * only while this authenticated section is mounted and never stored or logged
+ * here.
  */
 export function MobileSection() {
+  const client = useClient();
   const [state, setState] = useState<PairingState>({ kind: "loading" });
 
-  useEffect(() => {
-    let mounted = true;
-    void loadPairingURL().then((next) => {
-      if (mounted) setState(next);
-    });
-    return () => {
-      mounted = false;
-    };
-  }, []);
+  useConnectedEffect(
+    async (isCancelled) => {
+      const next = await loadPairingURL(client);
+      if (!isCancelled()) setState(next);
+    },
+    [client],
+  );
 
   if (state.kind === "loading") return <Skeleton lines={4} />;
 
@@ -64,25 +68,15 @@ export function MobileSection() {
   );
 }
 
-async function loadPairingURL(): Promise<PairingState> {
+async function loadPairingURL(client: AppwireClientLike): Promise<PairingState> {
   try {
-    const response = await fetch("/api/mobile/pairing", { credentials: "same-origin" });
-    if (response.status === 409) return { kind: "unreachable" };
-    if (!response.ok) return { kind: "error" };
-    const payload: unknown = await response.json();
-    if (!isPairingResponse(payload)) return { kind: "error" };
-    return { kind: "ready", authURL: payload.auth_url };
-  } catch {
+    const response = await client.request("evener/mobile/pairing", { origin: window.location.origin });
+    if (response.authUrl === "") return { kind: "error" };
+    return { kind: "ready", authURL: response.authUrl };
+  } catch (error) {
+    if (error instanceof WireError && error.evenerErrorInfo === "conflict") {
+      return { kind: "unreachable" };
+    }
     return { kind: "error" };
   }
-}
-
-function isPairingResponse(value: unknown): value is { auth_url: string } {
-  return (
-    typeof value === "object" &&
-    value !== null &&
-    "auth_url" in value &&
-    typeof (value as { auth_url: unknown }).auth_url === "string" &&
-    (value as { auth_url: string }).auth_url !== ""
-  );
 }

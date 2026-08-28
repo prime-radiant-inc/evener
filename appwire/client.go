@@ -553,6 +553,12 @@ func (c *Client) GitHead(ctx context.Context, params GitHeadParams) (GitHeadResp
 	return out, err
 }
 
+func (c *Client) MobilePairing(ctx context.Context, params MobilePairingParams) (MobilePairingResponse, error) {
+	var out MobilePairingResponse
+	err := c.request(ctx, MethodEvenerMobilePairing, params, &out)
+	return out, err
+}
+
 func (c *Client) NavigationRead(ctx context.Context, params NavigationReadParams) (NavigationReadResponse, error) {
 	var out NavigationReadResponse
 	err := c.request(ctx, MethodEvenerNavigationRead, params, &out)
