@@ -25,8 +25,8 @@ const (
 	// The string must stay byte-equal to appwire.ThreadStatusAwaiting
 	// ("awaiting"): every status pass-through switch on the wire journey
 	// defaults unrecognized strings to idle, so changing this string would
-	// silently downgrade an awaiting session to idle across /status, the
-	// roster, and the NeedsYou tier.
+	// silently downgrade an awaiting session to idle across AppWire, the roster,
+	// and the NeedsYou tier.
 	SessionAwaiting SessionState = "awaiting"
 	// SessionClosed indicates the session has been closed.
 	SessionClosed SessionState = "closed"

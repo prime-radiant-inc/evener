@@ -46,39 +46,53 @@ func scriptedBackgroundShellCall(id, command string) llm.ToolCallData {
 	return llm.ToolCallData{ID: id, Name: "shell", Arguments: args, Type: "function"}
 }
 
-// serveStatusState is the fields of server.StatusInfo (server/server.go's
-// GET /status response, server/server.go:79-90) these tests assert on. Turns
-// is the monotonic turn counter: polling for it to advance proves a reply was
+// serveStatusState is the subset of the daemon AppWire thread snapshot these
+// tests assert on. Turns is the monotonic turn counter: polling for it to advance proves a reply was
 // genuinely accepted and processed as a new turn, decoupled from any race on
 // observing the transient "active" state in between two polls.
 type serveStatusState struct {
-	State string `json:"state"`
-	Turns int    `json:"turns"`
+	State string
+	Turns int
 }
 
-// getServeAskStatus performs one GET /status and decodes the response,
-// failing the test on any transport or decode error. Use
+// getServeAskStatus performs one bounded AppWire thread/read, failing the test
+// on any transport or protocol error. Use
 // waitForServeAskStatusUp instead when the daemon may not be listening yet
 // (e.g. immediately after a restart).
 func getServeAskStatus(t *testing.T, addr string) serveStatusState {
 	t.Helper()
-	resp, err := http.Get("http://" + addr + "/status")
+	status, err := readServeAskStatus(addr)
 	if err != nil {
-		t.Fatalf("GET /status: %v", err)
-	}
-	defer resp.Body.Close()
-	var status serveStatusState
-	if err := json.NewDecoder(resp.Body).Decode(&status); err != nil {
-		t.Fatalf("decode /status response: %v", err)
+		t.Fatalf("AppWire thread/read: %v", err)
 	}
 	return status
 }
 
-// waitForServeAskStatusUp retries GET /status, tolerating connection-refused
-// while the HTTP server finishes binding after a restart, and returns the
-// FIRST successfully decoded response WITHOUT retrying on its state value.
+func readServeAskStatus(addr string) (serveStatusState, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	transport, err := appwire.DialWebSocket(ctx, "ws://"+addr+"/rpc", http.DefaultClient)
+	if err != nil {
+		return serveStatusState{}, err
+	}
+	client := appwire.NewClient(transport)
+	client.Start(ctx)
+	defer client.Close()
+	if _, err := client.Initialize(ctx, appwire.InitializeParams{ClientInfo: appwire.ClientInfo{Name: "serve-status-test", Version: "test"}}); err != nil {
+		return serveStatusState{}, err
+	}
+	response, err := client.ThreadRead(ctx, appwire.ThreadReadParams{})
+	if err != nil {
+		return serveStatusState{}, err
+	}
+	return serveStatusState{State: response.Thread.Status.Type, Turns: response.Thread.Evener.TurnCount}, nil
+}
+
+// waitForServeAskStatusUp retries AppWire thread/read, tolerating connection
+// failures while the server finishes binding after a restart, and returns the
+// FIRST successful response WITHOUT retrying on its state value.
 // Callers assert on that first response directly: spec §5.4 requires the
-// serve-level SetState-after-restore fix to make /status report the restored
+// serve-level SetState-after-restore fix to make thread/read report the restored
 // state immediately, not idle-until-next-turn, so retrying past an unwanted
 // state here would hide a regression instead of proving its absence.
 func waitForServeAskStatusUp(t *testing.T, addr string, timeout time.Duration) serveStatusState {
@@ -86,25 +100,19 @@ func waitForServeAskStatusUp(t *testing.T, addr string, timeout time.Duration) s
 	deadline := time.Now().Add(timeout)
 	var lastErr error
 	for time.Now().Before(deadline) {
-		resp, err := http.Get("http://" + addr + "/status")
+		status, err := readServeAskStatus(addr)
 		if err != nil {
 			lastErr = err
 			time.Sleep(20 * time.Millisecond)
 			continue
 		}
-		var status serveStatusState
-		decodeErr := json.NewDecoder(resp.Body).Decode(&status)
-		resp.Body.Close()
-		if decodeErr != nil {
-			t.Fatalf("decode /status response: %v", decodeErr)
-		}
 		return status
 	}
-	t.Fatalf("daemon at %s never accepted a /status connection within %s (last dial error: %v)", addr, timeout, lastErr)
+	t.Fatalf("daemon at %s never answered AppWire thread/read within %s (last error: %v)", addr, timeout, lastErr)
 	return serveStatusState{}
 }
 
-// pollServeAskStatusUntil polls GET /status every interval until it reports
+// pollServeAskStatusUntil polls AppWire thread/read every interval until it reports
 // want or timeout elapses, failing with the last observed state otherwise.
 func pollServeAskStatusUntil(t *testing.T, addr, want string, timeout, interval time.Duration) serveStatusState {
 	t.Helper()
@@ -121,15 +129,15 @@ func pollServeAskStatusUntil(t *testing.T, addr, want string, timeout, interval 
 	return serveStatusState{}
 }
 
-// TestServeAsk_StatusAwaitingAtRest proves spec §8's serve-level claim: GET
-// /status — the endpoint the hub prober actually polls, not just the
+// TestServeAsk_StatusAwaitingAtRest proves spec §8's serve-level claim:
+// AppWire thread/read — the endpoint the hub prober actually uses, not just the
 // in-process appStatus function — reports "awaiting" while a question is
 // pending, and that the reply genuinely resolves it (rather than the ask
 // mechanism silently getting stuck). It does not assert "idle" once the
 // reply lands: under attention-status-model v5's inbox semantics (merged
 // after this test was first written), the reply's own turn
 // (scriptedCommunicate("answered")) is itself a clean, output-producing
-// completion with nothing else in flight, so /status legitimately settles
+// completion with nothing else in flight, so thread/read legitimately settles
 // back to "awaiting" — the identical wire value an unresolved ask would
 // show. The discriminator that the reply was accepted and processed, not
 // that the ask stuck, is the Turns counter advancing; polling for that
@@ -199,7 +207,7 @@ func TestServeAsk_StatusAwaitingAtRest(t *testing.T) {
 		t.Fatalf("TurnStart (question): %v", err)
 	}
 
-	// The asking round ends the turn at its boundary (spec §5.1); /status must
+	// The asking round ends the turn at its boundary (spec §5.1); thread/read must
 	// report "awaiting" at rest.
 	atRest := pollServeAskStatusUntil(t, entry.Address, "awaiting", 10*time.Second, 100*time.Millisecond)
 	turnsBeforeReply := atRest.Turns
@@ -232,7 +240,7 @@ func TestServeAsk_StatusAwaitingAtRest(t *testing.T) {
 	}
 	// Inbox semantics (attention-status-model v5): the reply's own turn
 	// (scriptedCommunicate("answered")) is a clean, output-producing
-	// completion with nothing else in flight, so /status legitimately
+	// completion with nothing else in flight, so thread/read legitimately
 	// settles back to "awaiting" rather than "idle" — the merged truth.
 	afterReply = pollServeAskStatusUntil(t, entry.Address, "awaiting", 10*time.Second, 100*time.Millisecond)
 	if afterReply.Turns <= turnsBeforeReply {
@@ -260,7 +268,7 @@ func TestServeAsk_StatusAwaitingAtRest(t *testing.T) {
 
 // TestServeAsk_NoFlickerOnJobCompletion proves spec §5.3's entry gate holds at
 // the serve level: a background job that completes WHILE the session rests
-// awaiting must never cause GET /status to read anything but "awaiting" — no
+// awaiting must never cause thread/read to report anything but "awaiting" — no
 // "active" turn, no "idle" collapse — because the entry gate refuses the
 // resulting notification wake before any state transition
 // (agent/session_lifecycle.go's ProcessInputKind). The job is started in the
@@ -378,7 +386,7 @@ func TestServeAsk_NoFlickerOnJobCompletion(t *testing.T) {
 // TestServeAsk_RestoreReportsAwaitingImmediately proves spec §5.4's restore
 // contract at the serve level: a daemon restarted with a pending ask_user
 // question at the transcript tail must report "awaiting" on the very FIRST
-// successful GET /status after restart — never an idle-until-next-turn
+// successful AppWire thread/read after restart — never an idle-until-next-turn
 // window. This is Task 8's two-touchpoint fix
 // (RestoreSessionFromMetaWithConfig's deriveRestoredState +
 // cmd/evener/serve.go's post-restore srv.SetState belt-and-suspenders write),
@@ -478,12 +486,12 @@ func TestServeAsk_RestoreReportsAwaitingImmediately(t *testing.T) {
 		t.Fatalf("resumed session id = %q, want %q (same session restored)", entry2.SessionID, entry1.SessionID)
 	}
 
-	// The FIRST successful /status read after restart must already say
+	// The FIRST successful thread/read after restart must already say
 	// awaiting — connection-refused retries are fine while the daemon boots,
 	// but no idle-until-next-turn window is allowed once it answers.
 	first := waitForServeAskStatusUp(t, entry2.Address, 10*time.Second)
 	if first.State != "awaiting" {
-		t.Fatalf("first /status read after restore = %q, want %q (no idle-until-next-turn window)", first.State, "awaiting")
+		t.Fatalf("first thread/read after restore = %q, want %q (no idle-until-next-turn window)", first.State, "awaiting")
 	}
 
 	httpResp2, err := http.Post("http://"+entry2.Address+"/shutdown", "", nil)

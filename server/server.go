@@ -156,7 +156,7 @@ type HookEventStatus struct {
 	Supported bool   `json:"supported"`
 }
 
-// DetailedStatus captures the full session configuration for /status display.
+// DetailedStatus captures the full session configuration for AppWire diagnostics.
 type DetailedStatus struct {
 	Tools      []ToolInfo           `json:"tools,omitempty"`
 	MCP        []MCPServerInfo      `json:"mcp,omitempty"`
@@ -194,7 +194,8 @@ func (s DetailedStatus) MarshalJSON() ([]byte, error) {
 	return json.Marshal(fields)
 }
 
-// StatusInfo is the JSON response for GET /status.
+// StatusInfo is the daemon's materialized root-session state used to build
+// AppWire snapshots and notifications.
 type StatusInfo struct {
 	SessionID        string             `json:"session_id"`
 	State            string             `json:"state"`
@@ -438,7 +439,6 @@ func NewServer(cfg ServerConfig) *Server {
 	}
 	s.registerAppWireHandlers()
 	s.mux.HandleFunc("/rpc", s.appServer.ServeWebSocket)
-	s.mux.HandleFunc("/status", s.handleStatus)
 	s.mux.HandleFunc("/interrupt", s.handleInterrupt)
 	s.mux.HandleFunc("/steer", s.handleSteer)
 	s.mux.HandleFunc("/queue", s.handleQueue)
@@ -493,7 +493,7 @@ func (s *Server) updateSessionInfoLocked(sessionID, model, profile string) {
 	s.status.Profile = profile
 }
 
-// SetWorkingDir sets the working directory exposed in /status.
+// SetWorkingDir sets the working directory exposed in AppWire thread snapshots.
 func (s *Server) SetWorkingDir(dir string) {
 	s.mu.Lock()
 	s.status.WorkingDir = dir

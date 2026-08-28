@@ -2,7 +2,6 @@ package main
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"io"
 	"net"
@@ -404,8 +403,7 @@ func TestRunServeRetrySafeTurnPublishesControllableStableIdentity(t *testing.T) 
 // TestRunServe_StreamErrorPublishesIdleStatus proves the real serve input loop
 // publishes owning Session state after an exhausted streaming failure. The
 // wrapper observes the production true -> false -> SetState boundary while
-// forwarding every state mutation to the real server used by both HTTP and
-// AppWire projections.
+// forwarding every state mutation to the real AppWire server projection.
 func TestRunServe_StreamErrorPublishesIdleStatus(t *testing.T) {
 	adapter := &closedStreamAdapter{}
 	deps := defaultServeDeps()
@@ -496,25 +494,12 @@ func TestRunServe_StreamErrorPublishesIdleStatus(t *testing.T) {
 		t.Fatalf("adapter calls = Stream %d, Complete %d; want Stream 1, Complete 0", streamCalls, completeCalls)
 	}
 
-	statusResp, err := http.Get("http://" + entry.Address + "/status")
-	if err != nil {
-		t.Fatalf("GET /status: %v", err)
-	}
-	defer statusResp.Body.Close()
-	var status server.StatusInfo
-	if err := json.NewDecoder(statusResp.Body).Decode(&status); err != nil {
-		t.Fatalf("decode /status: %v", err)
-	}
-	if status.State != string(agent.SessionIdle) || !status.Capabilities.Send || status.Capabilities.Queue || status.Capabilities.Interrupt {
-		t.Fatalf("/status = state %q, capabilities %+v; want idle, send enabled, queue and interrupt disabled", status.State, status.Capabilities)
-	}
-
 	thread, err := client.ThreadRead(ctx, appwire.ThreadReadParams{Ref: ref})
 	if err != nil {
 		t.Fatalf("ThreadRead: %v", err)
 	}
-	if thread.Thread.Status.Type != appwire.ThreadStatusIdle || !thread.Thread.Evener.Capabilities.Send || thread.Thread.Evener.Capabilities.Queue {
-		t.Fatalf("thread/read = status %q, capabilities %+v; want idle, send enabled, queue disabled", thread.Thread.Status.Type, thread.Thread.Evener.Capabilities)
+	if thread.Thread.Status.Type != appwire.ThreadStatusIdle || !thread.Thread.Evener.Capabilities.Send || thread.Thread.Evener.Capabilities.Queue || thread.Thread.Evener.Capabilities.Interrupt {
+		t.Fatalf("thread/read = status %q, capabilities %+v; want idle, send enabled, queue and interrupt disabled", thread.Thread.Status.Type, thread.Thread.Evener.Capabilities)
 	}
 
 	shutdownResp, err := http.Post("http://"+entry.Address+"/shutdown", "", nil)
@@ -535,7 +520,7 @@ func TestRunServe_StreamErrorPublishesIdleStatus(t *testing.T) {
 // TestHoldServeStateForAwaitingWake proves holdServeStateForAwaitingWake mirrors
 // the session-level entry gate's refusal predicate (agent/session_lifecycle.go's
 // `len(s.askPending) > 0 && kind != EntryUserInput`, spec §5.3): the input loop
-// must hold its /status shadow write for exactly the (kind, hasPendingAsk) pairs
+// must hold its status shadow write for exactly the (kind, hasPendingAsk) pairs
 // where ProcessInputKind will refuse before any state transition, and flip as
 // before everywhere else. Keyed on hasPendingAsk rather than raw SessionState
 // (attention-status-model v5 reconciliation): a session generally awaiting with

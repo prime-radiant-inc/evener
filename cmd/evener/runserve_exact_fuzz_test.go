@@ -105,7 +105,7 @@ func fuzzRunServeCallbacks(t *testing.T) {
 	d.newServer = func(cfg server.ServerConfig) serveServer { srv = server.NewServer(cfg); return srv }
 	d.serveHTTP = func(_ *http.Server, _ net.Listener) error {
 		requests := []struct{ method, path, body string }{
-			{"GET", "/status", ""}, {"GET", "/tasks", ""},
+			{"GET", "/tasks", ""},
 			{"POST", "/model", `{"model":"test2"}`},
 		}
 		for _, q := range requests {

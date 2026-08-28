@@ -1463,7 +1463,7 @@ func (s *Session) initPlugins(sessionStartKind plugin.SessionStartKind, runSessi
 			runner.Add(event, eventHooks...)
 		}
 
-		// Accumulate recognized-but-unsupported events for /status diagnostics and
+		// Accumulate recognized-but-unsupported events for AppWire diagnostics and
 		// queue a loud warning per event: a plugin author who declares a hook for a
 		// reserved event evener does not fire yet gets a visible signal, not silence.
 		unsupported := make([]string, 0, len(p.UnsupportedHooks))

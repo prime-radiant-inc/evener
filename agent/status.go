@@ -46,9 +46,9 @@ type JobStatusInfo struct {
 	ExitCode         *int   `json:"exit_code,omitempty"`
 }
 
-// DelegateStatusInfo is the stable delegate read model exposed by DetailedStatus.
-// Its JSON names follow the daemon /status convention; AppWire maps the same
-// values into EvenerDelegateInfo without deriving them from Jobs.
+// DelegateStatusInfo is the stable delegate read model exposed by
+// DetailedStatus. AppWire maps these values into EvenerDelegateInfo without
+// deriving them from Jobs.
 type DelegateStatusInfo struct {
 	DelegateID          string                       `json:"delegate_id"`
 	OwnerSessionID      string                       `json:"owner_session_id"`
@@ -101,7 +101,7 @@ type DelegateStatusInfo struct {
 }
 
 // HookEventStatus describes a single hook event's registration state and
-// compatibility tier for the /status endpoint.
+// compatibility tier for typed diagnostics.
 // Tier: Supported=true events are "claude-compatible-subset";
 // Supported=false events are "reserved-placeholder" (recognized by evener but
 // not yet fired). The Tier field carries the exact label from plugin.EventTier.
@@ -112,7 +112,7 @@ type HookEventStatus struct {
 	Supported bool             `json:"supported"`
 }
 
-// DetailedStatus captures the full session configuration for /status display.
+// DetailedStatus captures the full session configuration for typed diagnostics.
 type DetailedStatus struct {
 	Tools   []ToolInfo             `json:"tools,omitempty"`   // every registered tool and its source
 	MCP     []mcpconfig.ServerInfo `json:"mcp,omitempty"`     // connected MCP servers

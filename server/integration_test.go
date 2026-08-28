@@ -2,7 +2,6 @@ package server
 
 import (
 	"context"
-	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -22,28 +21,13 @@ func TestIntegration_InputToAppwire(t *testing.T) {
 	ts := httptest.NewServer(srv)
 	defer ts.Close()
 
-	// Verify /status returns 200 with well-formed JSON before any events.
-	resp, err := http.Get(ts.URL + "/status")
-	if err != nil {
-		t.Fatalf("status: %v", err)
-	}
-	if resp.StatusCode != http.StatusOK {
-		resp.Body.Close()
-		t.Fatalf("status code: got %d, want 200", resp.StatusCode)
-	}
-	var status StatusInfo
-	if err := json.NewDecoder(resp.Body).Decode(&status); err != nil {
-		resp.Body.Close()
-		t.Fatalf("status decode: %v", err)
-	}
-	resp.Body.Close()
-	if !status.Capabilities.Send {
+	if !srv.appThread().Evener.Capabilities.Send {
 		t.Errorf("capabilities.send: got false, want true (session is idle and ready)")
 	}
 
 	// Send input
 	inputBody := strings.NewReader(`{"text":"hello"}`)
-	resp, err = http.Post(ts.URL+"/input", "application/json", inputBody)
+	resp, err := http.Post(ts.URL+"/input", "application/json", inputBody)
 	if err != nil {
 		t.Fatalf("input: %v", err)
 	}
@@ -97,9 +81,6 @@ func TestIntegration_StatusUpdates(t *testing.T) {
 		Bridge(srv, evs)
 	}()
 
-	ts := httptest.NewServer(srv)
-	defer ts.Close()
-
 	// Send session start event, then close to let Bridge drain and exit.
 	evs <- events.SessionEvent{
 		Kind:      events.EventSessionStart,
@@ -112,25 +93,14 @@ func TestIntegration_StatusUpdates(t *testing.T) {
 	close(evs)
 	<-done // Bridge has processed all events; status is now stable.
 
-	// Check status via HTTP
-	resp, err := http.Get(ts.URL + "/status")
-	if err != nil {
-		t.Fatalf("status: %v", err)
+	thread := srv.appThread()
+	if thread.SessionID != "test-session" {
+		t.Errorf("session_id: got %q, want test-session", thread.SessionID)
 	}
-	defer resp.Body.Close()
-
-	var status StatusInfo
-	if err := json.NewDecoder(resp.Body).Decode(&status); err != nil {
-		t.Fatalf("status decode: %v", err)
+	if thread.ModelProvider != "gpt-5" {
+		t.Errorf("model: got %q, want gpt-5", thread.ModelProvider)
 	}
-
-	if status.SessionID != "test-session" {
-		t.Errorf("session_id: got %q, want test-session", status.SessionID)
-	}
-	if status.Model != "gpt-5" {
-		t.Errorf("model: got %q, want gpt-5", status.Model)
-	}
-	if status.State != "idle" {
-		t.Errorf("state: got %q, want idle", status.State)
+	if thread.Status.Type != "idle" {
+		t.Errorf("state: got %q, want idle", thread.Status.Type)
 	}
 }

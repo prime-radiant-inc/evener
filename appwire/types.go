@@ -605,9 +605,8 @@ type EvenerThread struct {
 	// afford a scan per session. Consumers render nil as nothing, never as a
 	// fabricated zero.
 	FailedToolCalls *int `json:"failedToolCalls,omitempty"`
-	// AskPending mirrors StatusInfo.PendingAsk (Track A §2 ask-tiering) —
-	// true while an ask_user question is unanswered. Additive: absent on old
-	// daemons and Codex threads, decoding as false.
+	// AskPending is true while an ask_user question is unanswered. Additive:
+	// absent on old daemons and Codex threads, decoding as false.
 	AskPending bool `json:"askPending,omitempty"`
 	// PendingEscalations is the M7 surface-on-entry snapshot: the redacted approval
 	// cards for any sandbox-exemption escalations currently blocked on this session,

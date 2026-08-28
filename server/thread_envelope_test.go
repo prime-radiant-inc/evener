@@ -2,7 +2,6 @@ package server
 
 import (
 	"context"
-	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"sync"
@@ -497,122 +496,6 @@ func TestEnvelopeCommittedBeforeTheCutIsInTheResponse(t *testing.T) {
 	}
 	if n := *got.response.Thread.Evener.FailedToolCalls; n != 5 {
 		t.Fatalf("response failedToolCalls = %d, want 5: the envelope was sampled before the commit", n)
-	}
-}
-
-// statusOverWire serves /status and decodes the response into StatusInfo --
-// the same struct the handler used to encode it. That proves the response is
-// valid JSON and every field survives the trip, but Marshal and Unmarshal
-// share one tag table here, so a JSON tag renamed or dropped on StatusInfo
-// changes what this helper both writes and reads together and the round trip
-// still succeeds. It cannot see that mutation. Use statusRawWire to pin a
-// field's literal wire name independently of the Go struct.
-func statusOverWire(t *testing.T, srv *Server) StatusInfo {
-	t.Helper()
-	rec := httptest.NewRecorder()
-	srv.handleStatus(rec, httptest.NewRequest(http.MethodGet, "/status", nil))
-	var got StatusInfo
-	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
-		t.Fatalf("decode /status: %v", err)
-	}
-	return got
-}
-
-// statusRawWire serves /status and decodes the response as untyped JSON, so an
-// assertion can pin a field's literal wire key instead of going back through
-// StatusInfo. Only the handler's encode is involved -- there is no matching
-// Unmarshal side for a renamed or dropped tag to silently move with -- so a
-// mutated tag shows up here as a missing or differently-named key.
-func statusRawWire(t *testing.T, srv *Server) map[string]any {
-	t.Helper()
-	rec := httptest.NewRecorder()
-	srv.handleStatus(rec, httptest.NewRequest(http.MethodGet, "/status", nil))
-	var got map[string]any
-	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
-		t.Fatalf("decode /status: %v", err)
-	}
-	return got
-}
-
-// TestStatusServesTheEnvelopesFailureCountAndEscalationBit pins the two /status
-// fields materialization collapsed onto the envelope.
-//
-// Both used to pull their own session callback, and both were unasserted on
-// this endpoint before the collapse and after it. The escalation BIT is now the
-// snapshot's own emptiness rather than a separate HasPendingEscalations() call,
-// which is the collapse: with nothing holding it, /status could report no
-// escalation while thread/read carries the card, and the hub's needs-you badge
-// would never light for the session that is actually blocked.
-//
-// The unmeasured case is asserted because FailedToolCalls is a pointer on
-// purpose: absent and zero are different claims, and a daemon that counted
-// nothing must not report a clean run.
-func TestStatusServesTheEnvelopesFailureCountAndEscalationBit(t *testing.T) {
-	srv := NewServer(ServerConfig{})
-	srv.SetAppIdentity("local", "th_1")
-	publishEnvelope(srv, &stubThreadEnvelopeSource{})
-
-	unmeasured := statusOverWire(t, srv)
-	if unmeasured.FailedToolCalls != nil {
-		t.Fatalf("failed_tool_calls = %d with nothing counted, want absent",
-			*unmeasured.FailedToolCalls)
-	}
-	if unmeasured.PendingEscalation {
-		t.Fatal("pending_escalation = true with no card on the envelope")
-	}
-
-	setEnvelope(srv, func(e *stubThreadEnvelopeSource) {
-		e.failedToolCalls, e.failuresMeasured = 3, true
-		e.escalations = []appwire.SandboxEscalationRequested{{EscalationID: "esc_1", Tool: "read_file"}}
-	})
-
-	got := statusOverWire(t, srv)
-	if got.FailedToolCalls == nil {
-		t.Fatal("failed_tool_calls is absent from /status while the envelope carries a measured " +
-			"count: the two endpoints are back to disagreeing about one value")
-	}
-	if n := *got.FailedToolCalls; n != 3 {
-		t.Fatalf("failed_tool_calls = %d, want 3", n)
-	}
-	if !got.PendingEscalation {
-		t.Fatal("pending_escalation = false while the envelope holds a blocked card: the hub's " +
-			"needs-you badge never lights for the session waiting on a human")
-	}
-
-	setEnvelope(srv, func(e *stubThreadEnvelopeSource) { e.escalations = nil })
-	if statusOverWire(t, srv).PendingEscalation {
-		t.Fatal("pending_escalation stayed true after the last card cleared")
-	}
-}
-
-// TestStatusWirePinsFailedToolCallsAndPendingEscalationJSONKeys asserts the
-// literal wire key names statusOverWire cannot. That helper decodes into
-// StatusInfo, the same struct the handler filled in, so a JSON tag renamed or
-// dropped on StatusInfo is invisible to it -- encode and decode move
-// together. cmd/evener-hub/internal/hubcore/prober.go separately re-declares
-// these same two tags to read them cross-process, so a silent rename here is
-// a silent break there (the hub's needs-you badge for pending_escalation).
-// Decoding into an untyped map instead means a renamed or dropped tag surfaces
-// as a missing key, independently of whichever Go struct StatusInfo is.
-func TestStatusWirePinsFailedToolCallsAndPendingEscalationJSONKeys(t *testing.T) {
-	srv := NewServer(ServerConfig{})
-	srv.SetAppIdentity("local", "th_1")
-	publishEnvelope(srv, &stubThreadEnvelopeSource{})
-	setEnvelope(srv, func(e *stubThreadEnvelopeSource) {
-		e.failedToolCalls, e.failuresMeasured = 3, true
-		e.escalations = []appwire.SandboxEscalationRequested{{EscalationID: "esc_1", Tool: "read_file"}}
-	})
-
-	raw := statusRawWire(t, srv)
-	got, ok := raw["failed_tool_calls"]
-	if !ok {
-		t.Fatalf(`/status JSON has no "failed_tool_calls" key: got %v`, raw)
-	}
-	if n, ok := got.(float64); !ok || n != 3 {
-		t.Fatalf(`"failed_tool_calls" = %v, want 3`, got)
-	}
-	if v, ok := raw["pending_escalation"]; !ok || v != true {
-		t.Fatalf(`/status JSON has no "pending_escalation": true, got %v (present=%v)`, v, ok)
 	}
 }
 

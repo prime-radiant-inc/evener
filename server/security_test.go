@@ -10,7 +10,7 @@ import (
 func TestServerHubTokenRejectsMissingBearer(t *testing.T) {
 	srv := NewServer(ServerConfig{HubToken: "secret"})
 
-	req := httptest.NewRequest(http.MethodGet, "/status", nil)
+	req := httptest.NewRequest(http.MethodGet, "/tasks", nil)
 	rec := httptest.NewRecorder()
 	srv.ServeHTTP(rec, req)
 
@@ -22,7 +22,7 @@ func TestServerHubTokenRejectsMissingBearer(t *testing.T) {
 func TestServerHubTokenAllowsMatchingBearer(t *testing.T) {
 	srv := NewServer(ServerConfig{HubToken: "secret"})
 
-	req := httptest.NewRequest(http.MethodGet, "/status", nil)
+	req := httptest.NewRequest(http.MethodGet, "/tasks", nil)
 	req.Header.Set("Authorization", "Bearer secret")
 	rec := httptest.NewRecorder()
 	srv.ServeHTTP(rec, req)
@@ -35,7 +35,7 @@ func TestServerHubTokenAllowsMatchingBearer(t *testing.T) {
 func TestServerSameOriginGuardRejectsBadHost(t *testing.T) {
 	srv := NewServer(ServerConfig{AllowedHost: "127.0.0.1:9131"})
 
-	req := httptest.NewRequest(http.MethodGet, "/status", nil)
+	req := httptest.NewRequest(http.MethodGet, "/tasks", nil)
 	req.Host = "evil.example.com:9131"
 	rec := httptest.NewRecorder()
 	srv.ServeHTTP(rec, req)
@@ -51,7 +51,7 @@ func TestServerSameOriginGuardRejectsBadHost(t *testing.T) {
 func TestServerSameOriginGuardAllowsLocalhostAlias(t *testing.T) {
 	srv := NewServer(ServerConfig{AllowedHost: "127.0.0.1:9131"})
 
-	req := httptest.NewRequest(http.MethodGet, "/status", nil)
+	req := httptest.NewRequest(http.MethodGet, "/tasks", nil)
 	req.Host = "localhost:9131"
 	req.Header.Set("Origin", "http://localhost:9131")
 	rec := httptest.NewRecorder()
@@ -65,7 +65,7 @@ func TestServerSameOriginGuardAllowsLocalhostAlias(t *testing.T) {
 func TestServerSameOriginGuardRejectsBadOrigin(t *testing.T) {
 	srv := NewServer(ServerConfig{AllowedHost: "127.0.0.1:9131"})
 
-	req := httptest.NewRequest(http.MethodGet, "/status", nil)
+	req := httptest.NewRequest(http.MethodGet, "/tasks", nil)
 	req.Host = "127.0.0.1:9131"
 	req.Header.Set("Origin", "http://evil.example.com")
 	rec := httptest.NewRecorder()

@@ -134,7 +134,7 @@ func BridgeEvent(srv *Server, ev events.SessionEvent, observer func(events.Sessi
 //
 // Status before notification. The two reach a client by different routes: the
 // notification arrives on the subscription, the status it describes is read
-// back from thread/read and /status. Projecting first leaves a window where a
+// back from thread/read. Projecting first leaves a window where a
 // client that reduces thread/started and immediately re-reads sees the
 // PREVIOUS session's model, profile and state — and across /clear that window
 // spans a whole identity, because ReplaceAppIdentity has already moved
