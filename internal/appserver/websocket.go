@@ -156,14 +156,60 @@ func runWebSocketReceiveLoop(ctx context.Context, ws webSocketCloser, transport 
 			}
 			return
 		}
+		dispatchWebSocketMessage(ctx, conn, msg)
+	}
+}
+
+// dispatchWebSocketMessage runs each request on its own goroutine so a slow
+// handler no longer head-of-line blocks the connection's other requests —
+//
+// Ordering constraints that survive concurrency:
+//
+//   - initialize must be the first request. Until the connection reports
+//     initialized, every message is handled inline in the receive loop:
+//     pre-initialize requests other than ping are rejected ("initialize
+//     required"), and the initialize handshake itself completes — response
+//     enqueued — before the loop reads another frame. Dispatch of later
+//     requests therefore cannot observe a half-initialized connection.
+//   - responses enter the connection send queue through the same
+//     enqueueResponse path as before, so hydration capture commit/abort
+//     ordering is unchanged.
+//
+// Error responses from enqueueResponse are terminal for the connection, but
+// a handler goroutine must not tear the receive loop down out from under it;
+// canceling the shared context is enough — the next Recv fails and the loop
+// exits with the normal close handling.
+func dispatchWebSocketMessage(ctx context.Context, conn *Connection, msg appwire.Message) {
+	if msg.Request == nil || msg.Request.Method == appwire.MethodPing {
 		resp := conn.HandleMessage(ctx, msg)
 		if resp.Kind() == appwire.MessageInvalid {
-			continue
-		}
-		if err := conn.enqueueResponse(ctx, resp); err != nil {
 			return
 		}
+		if err := conn.enqueueResponse(ctx, resp); err != nil {
+			conn.cancelContext()
+			return
+		}
+		return
 	}
+	if !conn.isInitialized() {
+		resp := conn.HandleMessage(ctx, msg)
+		if resp.Kind() == appwire.MessageInvalid {
+			return
+		}
+		if err := conn.enqueueResponse(ctx, resp); err != nil {
+			conn.cancelContext()
+		}
+		return
+	}
+	go func() {
+		resp := conn.HandleMessage(ctx, msg)
+		if resp.Kind() == appwire.MessageInvalid {
+			return
+		}
+		if err := conn.enqueueResponse(ctx, resp); err != nil {
+			conn.cancelContext()
+		}
+	}()
 }
 
 // runWebSocketKeepalive pings the peer every interval and cancels the

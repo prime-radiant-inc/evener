@@ -45,7 +45,7 @@ func TestServeWebSocketHandlesAppWire(t *testing.T) {
 	}
 }
 
-func TestServeWebSocketKeepsBusyRPCAliveAndPingsWhenReaderIsIdle(t *testing.T) {
+func TestServeWebSocketPingsIdleReaderWhileBusyRPCHandlerRuns(t *testing.T) {
 	server := NewServer(ServerConfig{ServerName: "test-server", Version: "test", SourceID: "local"})
 	ticker := newControlledKeepaliveTicker()
 	decision := make(chan bool, 2)
@@ -101,17 +101,21 @@ func TestServeWebSocketKeepsBusyRPCAliveAndPingsWhenReaderIsIdle(t *testing.T) {
 	}
 
 	// Drive the actual ServeWebSocket keepalive goroutine while HandleMessage is
-	// held in the serial reader/dispatch path. The decision is emitted only
-	// after the gate has observed the busy reader, so release is not time-based.
+	// held busy in a handler goroutine. Concurrent dispatch keeps the receive
+	// loop reading, so the gate observes an available reader and the keepalive
+	// pings even while the RPC handler is still held. The decision is emitted
+	// only after the gate has been consulted, so release is not time-based.
 	ticker.Tick()
 	select {
 	case attempted := <-decision:
-		if attempted {
-			t.Fatal("keepalive attempted a ping while the serial RPC handler was busy")
+		if !attempted {
+			t.Fatal("keepalive did not attempt a ping while the receive loop was free and the RPC handler was busy")
 		}
 		release()
+	case <-idlePingSeen:
+		release()
 	case <-time.After(time.Second):
-		t.Fatal("keepalive did not report the busy-reader decision")
+		t.Fatal("keepalive did not report the available-reader decision")
 	}
 
 	select {
@@ -125,21 +129,24 @@ func TestServeWebSocketKeepsBusyRPCAliveAndPingsWhenReaderIsIdle(t *testing.T) {
 	// Receiving the RPC response does not order the send goroutine against the
 	// receive loop's next readerAvailable transition, so drive controlled ticks
 	// until the keepalive observes that transition and pings the idle peer.
+	//
+	// Under concurrent dispatch the ping is what proves the fix this test was
+	// renamed around: the heartbeat answers while the held handler is busy.
+	sawAvailablePing := false
 	availableDeadline := time.NewTimer(time.Second)
 	defer availableDeadline.Stop()
-	for {
+	for !sawAvailablePing {
 		ticker.Tick()
 		select {
 		case attempted := <-decision:
 			if attempted {
-				goto readerAvailable
+				sawAvailablePing = true
 			}
 		case <-availableDeadline.C:
 			t.Fatal("keepalive did not observe the available reader")
 		}
 	}
 
-readerAvailable:
 	select {
 	case <-idlePingSeen:
 	case <-time.After(time.Second):

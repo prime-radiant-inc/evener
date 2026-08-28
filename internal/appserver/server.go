@@ -453,8 +453,8 @@ func (c *Connection) HandleMessage(ctx context.Context, msg appwire.Message) app
 	}
 	req := *msg.Request
 	// ping is the browser's app-level heartbeat (browsers cannot send WS ping
-	// frames from JS). It bypasses the router, but still runs in this serial
-	// receive/dispatch path and can therefore be starved by a busy handler.
+	// frames from JS). It bypasses the router and is answered inline in the
+	// receive loop, so no busy handler can starve it.
 	if req.Method == appwire.MethodPing {
 		return appwire.ResponseMessage(req.ID, struct{}{})
 	}
