@@ -168,6 +168,18 @@ function extractCapabilities(raw: unknown): ThreadCapabilities {
 }
 
 type MutationKind = "send" | "steer" | "queue" | "interrupt";
+export const CANONICAL_MUTATION_DISPOSITIONS = ["applied", "replayed"] as const;
+export type CanonicalMutationDisposition =
+  (typeof CANONICAL_MUTATION_DISPOSITIONS)[number];
+
+const CANONICAL_MUTATION_PROJECTION: Readonly<
+  Record<MutationKind, "pending" | "reflected">
+> = {
+  send: "pending",
+  steer: "pending",
+  queue: "pending",
+  interrupt: "reflected",
+};
 
 function exactObject(
   raw: unknown,
@@ -217,7 +229,8 @@ function decodeMutationResult(
     "threadId",
     "projectionState",
   ];
-  if (kind === "send" || kind === "steer") requiredReceiptKeys.push("turnId");
+  if (kind === "send" || kind === "steer" || kind === "interrupt")
+    requiredReceiptKeys.push("turnId");
   if (kind === "queue") requiredReceiptKeys.push("queueEntryIds");
   const receipt = exactObject(
     result.receipt,
@@ -229,19 +242,27 @@ function decodeMutationResult(
       `ConversationService: ${kind} receipt correlation mismatch`,
     );
   }
-  if (receipt.disposition !== "accepted") {
-    throw new Error(`ConversationService: ${kind} receipt was not accepted`);
+  if (
+    !CANONICAL_MUTATION_DISPOSITIONS.includes(
+      receipt.disposition as CanonicalMutationDisposition,
+    )
+  ) {
+    throw new Error(`ConversationService: ${kind} receipt was not applied`);
+  }
+  const disposition = receipt.disposition as CanonicalMutationDisposition;
+  if (receipt.projectionState !== CANONICAL_MUTATION_PROJECTION[kind]) {
+    throw new Error(`ConversationService: ${kind} projection state is invalid`);
   }
   const decoded: MutationReceipt = {
     clientMutationId,
-    disposition: "accepted",
+    disposition,
     threadId: nonemptyString(receipt.threadId, `${kind} thread id`),
     projectionState: nonemptyString(
       receipt.projectionState,
       `${kind} projection state`,
     ),
   };
-  if (kind === "send" || kind === "steer") {
+  if (kind === "send" || kind === "steer" || kind === "interrupt") {
     decoded.turnId = nonemptyString(receipt.turnId, `${kind} turn id`);
   }
   if (kind === "queue") {
