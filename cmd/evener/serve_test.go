@@ -986,7 +986,7 @@ func TestAgentToServerDetailedStatus_Partial(t *testing.T) {
 		t.Fatalf("HookEvents = %d, want 2", len(got.HookEvents))
 	}
 	for _, he := range got.HookEvents {
-		switch string(he.Event) {
+		switch he.Event {
 		case "PreToolUse":
 			if he.Count != 1 {
 				t.Errorf("HookEvents PreToolUse = %d, want 1", he.Count)
