@@ -123,6 +123,7 @@ function makeHarness(profileId = "profile-a") {
     runtime,
     uiStore,
     platform: "ios",
+    profileScopeEpoch: 1,
     surface: "sessions",
     ...callbacks,
   };
@@ -147,6 +148,86 @@ async function openConversation(
   } as unknown as ConversationService;
   await act(async () => {
     await harness.runtime.conversationStore.getState().open(service, ref);
+  });
+}
+
+interface ProfileSourceSeed {
+  ref: string;
+  rosterTitle: string;
+  project: string;
+  threadId: string;
+  sessionId: string;
+  itemId: string;
+  transcript: string;
+  jobId: string;
+  activity: string;
+}
+
+async function resetAllProfileSources(
+  harness: ReturnType<typeof makeHarness>,
+  seed: ProfileSourceSeed,
+): Promise<void> {
+  act(() => {
+    harness.runtime.rosterStore?.getState().reset();
+    harness.runtime.rosterStore?.setState({
+      entries: [
+        {
+          ref: seed.ref,
+          title: seed.rosterTitle,
+          project: seed.project,
+          status: "active",
+          updatedAt: 1_800_000_000_000,
+          attention: "recent",
+        },
+      ],
+      sessionsVisible: true,
+    });
+    harness.runtime.conversationStore.getState().reset();
+    harness.runtime.activityStore.getState().reset();
+  });
+  await openConversation(
+    harness,
+    {
+      ...conversation([
+        {
+          kind: "user",
+          id: seed.itemId,
+          text: seed.transcript,
+        },
+      ]),
+      id: seed.threadId,
+      sessionId: seed.sessionId,
+      name: `${seed.project} conversation`,
+    },
+    seed.ref,
+  );
+  const generation =
+    harness.runtime.conversationStore.getState().conversationGeneration;
+  act(() => {
+    harness.runtime.activityStore.getState().setLiveView(
+      {
+        tasks: [{ status: "done", count: 1 }],
+        work: [
+          {
+            kind: "job",
+            label: seed.activity,
+            tone: "terminal",
+            diagnostics: {
+              rawId: seed.jobId,
+              operationName: "shell",
+              statusClass: "completed",
+            },
+          },
+        ],
+        usage: {},
+        capabilities,
+      },
+      {
+        threadId: seed.threadId,
+        ref: seed.ref,
+        generation,
+      },
+    );
   });
 }
 
@@ -432,7 +513,7 @@ describe("LiveConceptHost ownership", () => {
     expect(screen.getByRole("button", { name: /Interrupt/i })).toBeEnabled();
   });
 
-  it("fails closed across a profile change until live stores advance", async () => {
+  it("blocks stale profile data until a higher scope epoch accepts reset sources", async () => {
     const harness = makeHarness();
     await openConversation(
       harness,
@@ -487,9 +568,14 @@ describe("LiveConceptHost ownership", () => {
         offset: 8,
       });
     });
+    const resetProfileScope = vi.spyOn(
+      harness.uiStore.getState(),
+      "resetProfileScope",
+    );
     const { container, rerender } = render(
       <LiveConceptHost {...harness.props} />,
     );
+    expect(resetProfileScope).not.toHaveBeenCalled();
     expect(harness.uiStore.getState().expandedToolKeys).toContain("tool-key");
     const oldRosterButton = screen.getByRole("button", {
       name: /Roster projector sentinel/,
@@ -549,6 +635,7 @@ describe("LiveConceptHost ownership", () => {
       oldConversationState,
     );
     expect(harness.runtime.activityStore.getState()).toBe(oldActivityState);
+    expect(resetProfileScope).not.toHaveBeenCalled();
 
     act(() => {
       container.appendChild(oldRosterButton);
@@ -557,6 +644,27 @@ describe("LiveConceptHost ownership", () => {
     expect(harness.callbacks.onOpenConversation).not.toHaveBeenCalled();
     oldRosterButton.remove();
 
+    await resetAllProfileSources(harness, {
+      ref: "new-profile-ref",
+      rosterTitle: "New profile roster sentinel",
+      project: "New profile project",
+      threadId: "new-profile-thread-id",
+      sessionId: "new-profile-session-id",
+      itemId: "new-profile-item-id",
+      transcript: "New profile transcript sentinel",
+      jobId: "new-profile-job-id",
+      activity: "New profile activity sentinel",
+    });
+
+    rerender(
+      <LiveConceptHost
+        {...harness.props}
+        profileScopeEpoch={2}
+        runtime={runtimeB}
+        surface="sessions"
+      />,
+    );
+    expect(resetProfileScope).toHaveBeenCalledTimes(1);
     const state = harness.uiStore.getState();
     expect(state.concept).toBe("constellation");
     expect(state.workOpen).toBe(false);
@@ -566,81 +674,11 @@ describe("LiveConceptHost ownership", () => {
     expect(state.questionDrafts).toEqual({});
     expect(state.focusedItemKey).toBeNull();
     expect(state.scrollAnchors).toEqual({});
-
-    act(() => {
-      harness.runtime.rosterStore?.getState().reset();
-      harness.runtime.rosterStore?.setState({
-        entries: [
-          {
-            ref: "new-profile-ref",
-            title: "New profile roster sentinel",
-            project: "New profile project",
-            status: "active",
-            updatedAt: 1_800_000_000_000,
-            attention: "recent",
-          },
-        ],
-        sessionsVisible: true,
-      });
-      harness.runtime.conversationStore.getState().reset();
-      harness.runtime.activityStore.getState().reset();
-    });
-    await openConversation(
-      harness,
-      {
-        ...conversation([
-          {
-            kind: "user",
-            id: "new-profile-item-id",
-            text: "New profile transcript sentinel",
-          },
-        ]),
-        id: "new-profile-thread-id",
-        sessionId: "new-profile-session-id",
-        name: "New profile conversation",
-      },
-      "new-profile-ref",
-    );
-    const newConversationGeneration =
-      harness.runtime.conversationStore.getState().conversationGeneration;
-    act(() => {
-      harness.runtime.activityStore.getState().setLiveView(
-        {
-          tasks: [{ status: "done", count: 1 }],
-          work: [
-            {
-              kind: "job",
-              label: "New profile activity sentinel",
-              tone: "terminal",
-              diagnostics: {
-                rawId: "new-profile-job-id",
-                operationName: "shell",
-                statusClass: "completed",
-              },
-            },
-          ],
-          usage: {},
-          capabilities,
-        },
-        {
-          threadId: "new-profile-thread-id",
-          ref: "new-profile-ref",
-          generation: newConversationGeneration,
-        },
-      );
-    });
-
-    rerender(
-      <LiveConceptHost
-        {...harness.props}
-        runtime={runtimeB}
-        surface="sessions"
-      />,
-    );
     expect(screen.getByText("New profile roster sentinel")).toBeInTheDocument();
     rerender(
       <LiveConceptHost
         {...harness.props}
+        profileScopeEpoch={2}
         runtime={runtimeB}
         surface="conversation"
       />,
@@ -649,21 +687,192 @@ describe("LiveConceptHost ownership", () => {
       screen.getByText("New profile transcript sentinel"),
     ).toBeInTheDocument();
     rerender(
-      <LiveConceptHost {...harness.props} runtime={runtimeB} surface="work" />,
+      <LiveConceptHost
+        {...harness.props}
+        profileScopeEpoch={2}
+        runtime={runtimeB}
+        surface="work"
+      />,
     );
     expect(
       screen.getByText("New profile activity sentinel"),
     ).toBeInTheDocument();
+    expect(resetProfileScope).toHaveBeenCalledTimes(1);
   });
 
-  it("does not erase valid local state on initial mount or render prototype content", () => {
+  it("uses monotonic epochs to block a rapid profile alias until epoch three", async () => {
+    const harness = makeHarness();
+    const runtimeA = harness.runtime;
+    const runtimeB = { ...runtimeA, profileId: "profile-b" };
+    const { rerender } = render(<LiveConceptHost {...harness.props} />);
+
+    await resetAllProfileSources(harness, {
+      ref: "profile-b-ref",
+      rosterTitle: "Profile B roster sentinel",
+      project: "Profile B project",
+      threadId: "profile-b-thread-id",
+      sessionId: "profile-b-session-id",
+      itemId: "profile-b-item-id",
+      transcript: "Profile B transcript sentinel",
+      jobId: "profile-b-job-id",
+      activity: "Profile B activity sentinel",
+    });
+    rerender(
+      <LiveConceptHost
+        {...harness.props}
+        profileScopeEpoch={2}
+        runtime={runtimeB}
+      />,
+    );
+    expect(screen.getByText("Profile B roster sentinel")).toBeInTheDocument();
+
+    rerender(
+      <LiveConceptHost
+        {...harness.props}
+        profileScopeEpoch={2}
+        runtime={runtimeA}
+      />,
+    );
+    expect(document.body.innerHTML).not.toContain("Profile B roster sentinel");
+    rerender(
+      <LiveConceptHost
+        {...harness.props}
+        profileScopeEpoch={2}
+        runtime={runtimeA}
+        surface="conversation"
+      />,
+    );
+    expect(document.body.innerHTML).not.toContain(
+      "Profile B transcript sentinel",
+    );
+    rerender(
+      <LiveConceptHost
+        {...harness.props}
+        profileScopeEpoch={2}
+        runtime={runtimeA}
+        surface="work"
+      />,
+    );
+    expect(document.body.innerHTML).not.toContain(
+      "Profile B activity sentinel",
+    );
+    rerender(
+      <LiveConceptHost
+        {...harness.props}
+        profileScopeEpoch={1}
+        runtime={runtimeA}
+      />,
+    );
+    expect(document.body.innerHTML).not.toContain("Profile B roster sentinel");
+
+    await resetAllProfileSources(harness, {
+      ref: "profile-a-return-ref",
+      rosterTitle: "Profile A return roster sentinel",
+      project: "Profile A return project",
+      threadId: "profile-a-return-thread-id",
+      sessionId: "profile-a-return-session-id",
+      itemId: "profile-a-return-item-id",
+      transcript: "Profile A return transcript sentinel",
+      jobId: "profile-a-return-job-id",
+      activity: "Profile A return activity sentinel",
+    });
+    rerender(
+      <LiveConceptHost
+        {...harness.props}
+        profileScopeEpoch={3}
+        runtime={runtimeA}
+      />,
+    );
+    expect(
+      screen.getByText("Profile A return roster sentinel"),
+    ).toBeInTheDocument();
+    rerender(
+      <LiveConceptHost
+        {...harness.props}
+        profileScopeEpoch={3}
+        runtime={runtimeA}
+        surface="conversation"
+      />,
+    );
+    expect(
+      screen.getByText("Profile A return transcript sentinel"),
+    ).toBeInTheDocument();
+    rerender(
+      <LiveConceptHost
+        {...harness.props}
+        profileScopeEpoch={3}
+        runtime={runtimeA}
+        surface="work"
+      />,
+    );
+    expect(
+      screen.getByText("Profile A return activity sentinel"),
+    ).toBeInTheDocument();
+  });
+
+  it("accepts sources cleared before the profile change when epoch advances", async () => {
+    const harness = makeHarness();
+    const { rerender } = render(<LiveConceptHost {...harness.props} />);
+
+    await resetAllProfileSources(harness, {
+      ref: "precleared-profile-b-ref",
+      rosterTitle: "Pre-cleared B roster sentinel",
+      project: "Pre-cleared B project",
+      threadId: "precleared-profile-b-thread-id",
+      sessionId: "precleared-profile-b-session-id",
+      itemId: "precleared-profile-b-item-id",
+      transcript: "Pre-cleared B transcript sentinel",
+      jobId: "precleared-profile-b-job-id",
+      activity: "Pre-cleared B activity sentinel",
+    });
+    const runtimeB = { ...harness.runtime, profileId: "profile-b" };
+    rerender(
+      <LiveConceptHost
+        {...harness.props}
+        profileScopeEpoch={2}
+        runtime={runtimeB}
+      />,
+    );
+    expect(
+      screen.getByText("Pre-cleared B roster sentinel"),
+    ).toBeInTheDocument();
+    rerender(
+      <LiveConceptHost
+        {...harness.props}
+        profileScopeEpoch={2}
+        runtime={runtimeB}
+        surface="conversation"
+      />,
+    );
+    expect(
+      screen.getByText("Pre-cleared B transcript sentinel"),
+    ).toBeInTheDocument();
+    rerender(
+      <LiveConceptHost
+        {...harness.props}
+        profileScopeEpoch={2}
+        runtime={runtimeB}
+        surface="work"
+      />,
+    );
+    expect(
+      screen.getByText("Pre-cleared B activity sentinel"),
+    ).toBeInTheDocument();
+  });
+
+  it("resets UI once per accepted epoch while preserving concept and initial state", async () => {
     const harness = makeHarness();
     act(() => {
       harness.uiStore.getState().toggleTool("preserved-on-mount");
       harness.uiStore.getState().setFocusedItemKey("focused-on-mount");
     });
-    render(<LiveConceptHost {...harness.props} />);
+    const resetProfileScope = vi.spyOn(
+      harness.uiStore.getState(),
+      "resetProfileScope",
+    );
+    const { rerender } = render(<LiveConceptHost {...harness.props} />);
 
+    expect(resetProfileScope).not.toHaveBeenCalled();
     expect(harness.uiStore.getState().expandedToolKeys).toContain(
       "preserved-on-mount",
     );
@@ -671,5 +880,34 @@ describe("LiveConceptHost ownership", () => {
     expect(screen.queryByText(/^Search$/)).not.toBeInTheDocument();
     expect(screen.queryByText(/Lab Controls/i)).not.toBeInTheDocument();
     expect(screen.queryByText(/synthetic/i)).not.toBeInTheDocument();
+
+    act(() => harness.uiStore.getState().setConcept("field-notes"));
+    await resetAllProfileSources(harness, {
+      ref: "same-profile-new-scope-ref",
+      rosterTitle: "Same profile new scope roster",
+      project: "Same profile new scope project",
+      threadId: "same-profile-new-scope-thread",
+      sessionId: "same-profile-new-scope-session",
+      itemId: "same-profile-new-scope-item",
+      transcript: "Same profile new scope transcript",
+      jobId: "same-profile-new-scope-job",
+      activity: "Same profile new scope activity",
+    });
+    rerender(<LiveConceptHost {...harness.props} profileScopeEpoch={2} />);
+    expect(resetProfileScope).toHaveBeenCalledTimes(1);
+    expect(harness.uiStore.getState().concept).toBe("field-notes");
+    expect(harness.uiStore.getState().expandedToolKeys.size).toBe(0);
+    expect(harness.uiStore.getState().focusedItemKey).toBeNull();
+    rerender(
+      <LiveConceptHost
+        {...harness.props}
+        profileScopeEpoch={2}
+        surface="conversation"
+      />,
+    );
+    expect(resetProfileScope).toHaveBeenCalledTimes(1);
+    expect(
+      screen.getByText("Same profile new scope transcript"),
+    ).toBeInTheDocument();
   });
 });

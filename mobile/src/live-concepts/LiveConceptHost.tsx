@@ -60,6 +60,12 @@ export interface LiveConceptHostProps {
   runtime: LiveConceptHostRuntime;
   uiStore: BoundStore<LiveConceptUiStore>;
   platform: Platform;
+  /**
+   * RootShell-owned monotonic profile-scope epoch. RootShell increments this
+   * only after atomically resetting/replacing roster, conversation, activity,
+   * and profile-scoped UI sources for the incoming scope.
+   */
+  profileScopeEpoch: number;
   surface: "sessions" | "conversation" | "work";
   onOpenConceptSwitcher(): void;
   onOpenConversation(ref: string): void;
@@ -143,6 +149,7 @@ export function LiveConceptHost({
   runtime,
   uiStore,
   platform,
+  profileScopeEpoch,
   surface,
   onOpenConceptSwitcher,
   onOpenConversation,
@@ -202,12 +209,6 @@ export function LiveConceptHost({
     (state) => state.sessionsVisible,
     false,
   );
-  const rosterGeneration = useNullableStoreValue(
-    runtime.rosterStore,
-    (state) => state.generation,
-    0,
-  );
-
   const rawRef = runtime.conversationStore((state) => state.ref);
   const mobileConversation = runtime.conversationStore(
     (state) => state.conversation,
@@ -218,43 +219,29 @@ export function LiveConceptHost({
     (state) => state.pendingMutation,
   );
   const conversationError = runtime.conversationStore((state) => state.error);
-  const conversationGeneration = runtime.conversationStore(
-    (state) => state.conversationGeneration,
-  );
   const activityView = runtime.activityStore((state) => state.view);
 
-  interface ProfileSourceSnapshot {
+  const acceptedProfileScope = useRef<{
     profileId: string | null;
-    rosterStore: LiveConceptHostRuntime["rosterStore"];
-    rosterGeneration: number;
-    conversationStore: LiveConceptHostRuntime["conversationStore"];
-    conversationGeneration: number;
-  }
-
-  const profileSourceSnapshot = useRef<ProfileSourceSnapshot | null>(null);
-  if (profileSourceSnapshot.current === null) {
-    profileSourceSnapshot.current = {
+    epoch: number;
+  } | null>(null);
+  if (acceptedProfileScope.current === null) {
+    acceptedProfileScope.current = {
       profileId: runtime.profileId,
-      rosterStore: runtime.rosterStore,
-      rosterGeneration,
-      conversationStore: runtime.conversationStore,
-      conversationGeneration,
+      epoch: profileScopeEpoch,
     };
   }
-  const acceptedProfileSource = profileSourceSnapshot.current;
-  const profileBlocked = acceptedProfileSource.profileId !== runtime.profileId;
-  const rosterSourceAdvanced =
-    runtime.rosterStore === null ||
-    runtime.rosterStore !== acceptedProfileSource.rosterStore ||
-    rosterGeneration !== acceptedProfileSource.rosterGeneration;
-  const conversationSourceAdvanced =
-    runtime.conversationStore !== acceptedProfileSource.conversationStore ||
-    conversationGeneration !== acceptedProfileSource.conversationGeneration;
-  const profileSourcesReady =
-    rosterSourceAdvanced && conversationSourceAdvanced;
+  const acceptedScope = acceptedProfileScope.current;
+  const profileBlocked =
+    acceptedScope.profileId !== runtime.profileId ||
+    acceptedScope.epoch !== profileScopeEpoch;
   const projectionProfileGate = useMemo(
-    () => ({ profileId: runtime.profileId, blocked: profileBlocked }),
-    [profileBlocked, runtime.profileId],
+    () => ({
+      profileId: runtime.profileId,
+      epoch: profileScopeEpoch,
+      blocked: profileBlocked,
+    }),
+    [profileBlocked, profileScopeEpoch, runtime.profileId],
   );
 
   const rosterProjection = useMemo<ProjectedRoster>(() => {
@@ -364,64 +351,37 @@ export function LiveConceptHost({
   currentConversationProjection.current = conversationResult.projection;
   currentActivityOperational.current = activityResult.operational;
 
-  const cleanedProfileTransition = useRef<{
-    from: string | null;
-    to: string | null;
-  } | null>(null);
   const [, forceAcceptedProfileRender] = useReducer(
     (revision: number) => revision + 1,
     0,
   );
   useLayoutEffect(() => {
-    const accepted = profileSourceSnapshot.current;
+    const accepted = acceptedProfileScope.current;
     if (accepted === null) return;
-    if (accepted.profileId === runtime.profileId) {
-      profileSourceSnapshot.current = {
-        profileId: runtime.profileId,
-        rosterStore: runtime.rosterStore,
-        rosterGeneration,
-        conversationStore: runtime.conversationStore,
-        conversationGeneration,
-      };
+    if (
+      accepted.profileId === runtime.profileId &&
+      accepted.epoch === profileScopeEpoch
+    ) {
       return;
     }
+    if (profileScopeEpoch <= accepted.epoch) return;
 
-    const cleaned = cleanedProfileTransition.current;
-    if (
-      cleaned === null ||
-      cleaned.from !== accepted.profileId ||
-      cleaned.to !== runtime.profileId
-    ) {
-      conversationProjector.reset();
-      activityProjector.reset();
-      rosterRefs.current = EMPTY_REFS;
-      currentConversationProjection.current = null;
-      currentActivityOperational.current = null;
-      uiStore.getState().resetProfileScope();
-      cleanedProfileTransition.current = {
-        from: accepted.profileId,
-        to: runtime.profileId,
-      };
-    }
-
-    if (!profileSourcesReady) return;
-    profileSourceSnapshot.current = {
+    conversationProjector.reset();
+    activityProjector.reset();
+    rosterRefs.current = EMPTY_REFS;
+    currentConversationProjection.current = null;
+    currentActivityOperational.current = null;
+    uiStore.getState().resetProfileScope();
+    acceptedProfileScope.current = {
       profileId: runtime.profileId,
-      rosterStore: runtime.rosterStore,
-      rosterGeneration,
-      conversationStore: runtime.conversationStore,
-      conversationGeneration,
+      epoch: profileScopeEpoch,
     };
     forceAcceptedProfileRender();
   }, [
     activityProjector,
-    conversationGeneration,
     conversationProjector,
-    profileSourcesReady,
-    rosterGeneration,
-    runtime.conversationStore,
+    profileScopeEpoch,
     runtime.profileId,
-    runtime.rosterStore,
     uiStore,
   ]);
 
