@@ -1,5 +1,8 @@
 import { describe, expect, it, vi } from "vitest";
-import type { ConversationClientLike } from "../services/conversation";
+import type {
+  ConversationClientLike,
+  LiveConversationService,
+} from "../services/conversation";
 import type { ProfileRedacted } from "../services/nativeProfiles";
 import { createProfileScopedServices } from "./production-services";
 
@@ -25,12 +28,14 @@ describe("createProfileScopedServices", () => {
     const createClient = vi.fn(() => client);
 
     const scoped = createProfileScopedServices(PROFILE, createClient);
+    const liveConversationService: LiveConversationService =
+      scoped.conversationService;
 
     expect(createClient).toHaveBeenCalledWith(PROFILE);
     expect(scoped.client).toBe(client);
     expect(scoped.rosterService).toBeDefined();
     expect(scoped.rosterStore).toBeDefined();
     expect(scoped.newSessionService).toBeDefined();
-    expect(scoped.conversationService).toBeDefined();
+    expect(liveConversationService).toBeDefined();
   });
 });
