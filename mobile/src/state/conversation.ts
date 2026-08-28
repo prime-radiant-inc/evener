@@ -65,6 +65,12 @@ export interface ConversationMutationState {
   mutationId: number;
 }
 
+/** Display-safe local acknowledgement of a completed production mutation. */
+export interface AcceptedConversationMutation {
+  readonly kind: "send" | "steer" | "queue" | "interrupt";
+  readonly receipt: number;
+}
+
 interface DrainScheduler {
   request(key: string, effect: () => Promise<void>): Promise<void>;
 }
@@ -344,6 +350,7 @@ export interface ConversationState {
   readonly draft: string;
   readonly pendingSend: string | null;
   readonly pendingMutation?: ConversationMutationState | null;
+  readonly lastAcceptedMutation?: AcceptedConversationMutation | null;
 
   open(service: ConversationService, ref: string): Promise<void>;
   loadOlder(service: ConversationService): Promise<void>;
@@ -1040,6 +1047,7 @@ export function createConversationStore() {
       draft: "",
       pendingSend: null,
       pendingMutation: null,
+      lastAcceptedMutation: null,
 
       async open(service, ref) {
         // Increment conversation generation so late frames from a previous
@@ -1068,6 +1076,7 @@ export function createConversationStore() {
           draft: "",
           pendingSend: null,
           pendingMutation: null,
+          lastAcceptedMutation: null,
           conversationGeneration: gen,
         });
         try {
@@ -1136,6 +1145,7 @@ export function createConversationStore() {
           draft: "",
           pendingSend: null,
           pendingMutation: null,
+          lastAcceptedMutation: null,
           conversationGeneration: gen,
         });
         try {
@@ -1661,6 +1671,7 @@ export function createConversationStore() {
           draft: "",
           pendingSend: "pending",
           pendingMutation: mutation,
+          lastAcceptedMutation: null,
           error: null,
         });
         // I1: Capture the error-owner revision AFTER installing the pending
@@ -1682,9 +1693,18 @@ export function createConversationStore() {
             // unchanged — revision equality ONLY, no || error === null
             // shortcut. A newer clear-to-null or ABA-null owns error.
             if (entryErrorRev === errorOwnerRev) {
-              set({ pendingSend: null, pendingMutation: null, error: null });
+              set({
+                pendingSend: null,
+                pendingMutation: null,
+                lastAcceptedMutation: { kind: "send", receipt: mutationId },
+                error: null,
+              });
             } else {
-              set({ pendingSend: null, pendingMutation: null });
+              set({
+                pendingSend: null,
+                pendingMutation: null,
+                lastAcceptedMutation: { kind: "send", receipt: mutationId },
+              });
             }
             // I1: mutation settled (success) — drain deferred trailing reread.
             drainTrailingReread();
@@ -1740,6 +1760,7 @@ export function createConversationStore() {
           draft: "",
           pendingSend: null,
           pendingMutation: mutation,
+          lastAcceptedMutation: null,
           error: null,
         });
         // I1: Capture error-owner revision AFTER installing pending+error-clear.
@@ -1752,9 +1773,16 @@ export function createConversationStore() {
             // I1: clear error only if error-owner revision is unchanged —
             // revision equality ONLY.
             if (entryErrorRev === errorOwnerRev) {
-              set({ pendingMutation: null, error: null });
+              set({
+                pendingMutation: null,
+                lastAcceptedMutation: { kind: "steer", receipt: mutationId },
+                error: null,
+              });
             } else {
-              set({ pendingMutation: null });
+              set({
+                pendingMutation: null,
+                lastAcceptedMutation: { kind: "steer", receipt: mutationId },
+              });
             }
             // I1: mutation settled (success) — drain deferred trailing reread.
             drainTrailingReread();
@@ -1809,6 +1837,7 @@ export function createConversationStore() {
           draft: "",
           pendingSend: null,
           pendingMutation: mutation,
+          lastAcceptedMutation: null,
           error: null,
         });
         // I1: Capture error-owner revision AFTER installing pending+error-clear.
@@ -1821,9 +1850,16 @@ export function createConversationStore() {
             // I1: clear error only if error-owner revision is unchanged —
             // revision equality ONLY.
             if (entryErrorRev === errorOwnerRev) {
-              set({ pendingMutation: null, error: null });
+              set({
+                pendingMutation: null,
+                lastAcceptedMutation: { kind: "queue", receipt: mutationId },
+                error: null,
+              });
             } else {
-              set({ pendingMutation: null });
+              set({
+                pendingMutation: null,
+                lastAcceptedMutation: { kind: "queue", receipt: mutationId },
+              });
             }
             // I1: mutation settled (success) — drain deferred trailing reread.
             drainTrailingReread();
@@ -1875,7 +1911,12 @@ export function createConversationStore() {
         // Interrupt does NOT clear the draft.
         // F10: any new mutation clears legacy pendingSend.
         // Fix round 1 I3: atomically clear prior error with new pending mutation.
-        set({ pendingSend: null, pendingMutation: mutation, error: null });
+        set({
+          pendingSend: null,
+          pendingMutation: mutation,
+          lastAcceptedMutation: null,
+          error: null,
+        });
         // I1: Capture error-owner revision AFTER installing pending+error-clear.
         const entryErrorRev = errorOwnerRev;
         try {
@@ -1886,9 +1927,22 @@ export function createConversationStore() {
             // I1: clear error only if error-owner revision is unchanged —
             // revision equality ONLY.
             if (entryErrorRev === errorOwnerRev) {
-              set({ pendingMutation: null, error: null });
+              set({
+                pendingMutation: null,
+                lastAcceptedMutation: {
+                  kind: "interrupt",
+                  receipt: mutationId,
+                },
+                error: null,
+              });
             } else {
-              set({ pendingMutation: null });
+              set({
+                pendingMutation: null,
+                lastAcceptedMutation: {
+                  kind: "interrupt",
+                  receipt: mutationId,
+                },
+              });
             }
             // I1: mutation settled (success) — drain deferred trailing reread.
             drainTrailingReread();
@@ -1946,6 +2000,7 @@ export function createConversationStore() {
           draft: "",
           pendingSend: null,
           pendingMutation: null,
+          lastAcceptedMutation: null,
           olderCursor: null,
           loadingOlder: false,
           conversationGeneration: conversationGen,
@@ -2432,6 +2487,7 @@ export function createConversationStore() {
           draft: "",
           pendingSend: null,
           pendingMutation: null,
+          lastAcceptedMutation: null,
           conversationGeneration: conversationGen,
         });
       },

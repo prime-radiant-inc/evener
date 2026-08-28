@@ -14,6 +14,7 @@
 import { rpcURLFromLocation } from "../../../cmd/evener-hub/frontend/src/protocol/transport";
 import type {
   AnyNotification,
+  InitializeResponse,
   MethodName,
   MethodTypes,
 } from "../../../cmd/evener-hub/frontend/src/protocol/types.gen";
@@ -43,7 +44,7 @@ import { createTauriNativeTransport } from "./production-transport";
 const CONCEPT_STORAGE_KEY = "evener.live-concept";
 
 export interface ProfileClientTransport extends ConversationClientLike {
-  connect(): Promise<unknown>;
+  connect(): Promise<InitializeResponse>;
   close(): void;
   onStateChange(handler: (state: string) => void): () => void;
 }
@@ -131,7 +132,7 @@ class LeaseAwareProfileClient implements ProfileAppwireClient {
     });
   }
 
-  connect(): Promise<unknown> {
+  connect(): Promise<InitializeResponse> {
     return this.transport.connect();
   }
 

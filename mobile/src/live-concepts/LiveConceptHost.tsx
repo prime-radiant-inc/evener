@@ -218,6 +218,9 @@ export function LiveConceptHost({
   const pendingMutation = runtime.conversationStore(
     (state) => state.pendingMutation,
   );
+  const acceptedMutation = runtime.conversationStore(
+    (state) => state.lastAcceptedMutation ?? null,
+  );
   const conversationError = runtime.conversationStore((state) => state.error);
   const activityView = runtime.activityStore((state) => state.view);
 
@@ -449,6 +452,7 @@ export function LiveConceptHost({
       ? false
       : (mobileConversation?.capabilities.interrupt ?? false),
     pending: profileBlocked ? null : projectPendingMutation(pendingMutation),
+    accepted: profileBlocked ? null : acceptedMutation,
     error: profileBlocked
       ? null
       : conversationResult.failed
@@ -464,7 +468,12 @@ export function LiveConceptHost({
       : "standard",
     reducedMotion,
     surface,
-    connection: projectLiveConnection(connectionStatus, activeReachability),
+    connection: {
+      ...projectLiveConnection(connectionStatus, activeReachability),
+      ...(runtime.connectionEvidence === undefined
+        ? {}
+        : { evidence: runtime.connectionEvidence }),
+    },
     roster: rosterProjection.view,
     conversation,
     activity: activityResult.view,

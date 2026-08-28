@@ -2,6 +2,7 @@ import type { ReactNode } from "react";
 import type { LiveConceptRendererProps } from "../contract";
 import type { LiveConceptSurface } from "../model";
 import { Icon } from "../shared/Icon";
+import { conceptRootAxLabel } from "../smoke-semantics";
 import { ConversationView } from "./ConversationView";
 import { SessionsView } from "./SessionsView";
 import { WorkView } from "./WorkView";
@@ -70,7 +71,7 @@ export function StillwaterRenderer({
   }
 
   return (
-    <div
+    <section
       className="concept-stillwater"
       data-concept-root
       data-platform={state.platform}
@@ -79,6 +80,7 @@ export function StillwaterRenderer({
       data-surface={surface}
       data-text-scale={state.textScale}
       data-thread-key={state.conversation?.threadKey}
+      aria-label={conceptRootAxLabel(state)}
     >
       <main className="sw-scroll" data-route={meta.route}>
         <header className="sw-topbar">
@@ -112,6 +114,6 @@ export function StillwaterRenderer({
         </header>
         <div className="sw-route-content">{content}</div>
       </main>
-    </div>
+    </section>
   );
 }

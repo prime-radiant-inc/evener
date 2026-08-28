@@ -1,5 +1,6 @@
 import type { LiveConceptIntent, LiveConceptState } from "../contract";
 import { StatusLabel } from "../shared/StatusLabel";
+import { rosterAxLabel, rosterRowAxLabel } from "../smoke-semantics";
 
 export interface SessionsViewProps {
   state: LiveConceptState;
@@ -17,6 +18,8 @@ export function SessionsView({ state, dispatch }: SessionsViewProps) {
       className="sw-sessions"
       data-roster-status={roster.status}
       data-roster-has-more={roster.hasMore ? "true" : "false"}
+      role="status"
+      aria-label={rosterAxLabel(state.concept, roster)}
     >
       <div className="sw-filter-row">
         <label>
@@ -98,6 +101,7 @@ export function SessionsView({ state, dispatch }: SessionsViewProps) {
                   >
                     <button
                       type="button"
+                      aria-label={rosterRowAxLabel(row)}
                       onClick={() =>
                         dispatch({ type: "openConversation", key: row.key })
                       }

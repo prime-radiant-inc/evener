@@ -53,6 +53,15 @@ describe("ConceptSwitcher — dialog structure", () => {
     expect(buttons).toHaveLength(3);
   });
 
+  it("gives every choice an exact user-meaningful AX action label", () => {
+    renderSwitcher();
+    for (const name of ["Stillwater", "Constellation", "Field Notes"]) {
+      expect(
+        screen.getByRole("button", { name: `Switch to ${name}` }),
+      ).toBeVisible();
+    }
+  });
+
   it("matches the expected concept IDs", () => {
     expect(CONCEPT_CHOICES.map((c) => c.id)).toEqual([
       "stillwater",

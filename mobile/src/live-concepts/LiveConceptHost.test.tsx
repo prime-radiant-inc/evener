@@ -507,9 +507,15 @@ describe("LiveConceptHost ownership", () => {
     expect(root).toHaveAttribute("data-platform", "android");
     expect(root).toHaveAttribute("data-appearance", "dark");
     expect(root).toHaveAttribute("data-text-scale", "accessibility");
-    expect(screen.getByRole("button", { name: "Send" })).toBeDisabled();
-    expect(screen.getByRole("button", { name: "Steer" })).toBeEnabled();
-    expect(screen.getByRole("button", { name: "Queue" })).toBeDisabled();
+    expect(
+      screen.getByRole("button", { name: "Use send mode" }),
+    ).toBeDisabled();
+    expect(
+      screen.getByRole("button", { name: "Use steer mode" }),
+    ).toBeEnabled();
+    expect(
+      screen.getByRole("button", { name: "Use queue mode" }),
+    ).toBeDisabled();
     expect(screen.getByRole("button", { name: /Interrupt/i })).toBeEnabled();
   });
 

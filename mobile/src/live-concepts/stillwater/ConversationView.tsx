@@ -8,6 +8,7 @@ import type { LiveQuestionView, LiveTranscriptItem } from "../model";
 import { Disclosure } from "../shared/Disclosure";
 import { Icon } from "../shared/Icon";
 import { StatusLabel } from "../shared/StatusLabel";
+import { mutationAxLabel, transcriptItemAxLabel } from "../smoke-semantics";
 
 export interface ConversationViewProps {
   state: LiveConceptState;
@@ -291,6 +292,7 @@ export function ConversationView({ state, dispatch }: ConversationViewProps) {
           conversation.items.map((item) => (
             <article
               className={`sw-transcript-item sw-transcript-item--${item.kind}`}
+              aria-label={transcriptItemAxLabel(item)}
               data-transcript-item-id={item.key}
               data-focused={ui.focusedItemKey === item.key ? "true" : "false"}
               data-streaming={item.streaming ? "true" : "false"}
@@ -325,6 +327,7 @@ export function ConversationView({ state, dispatch }: ConversationViewProps) {
           className="sw-composer-status"
           data-composer-pending={composer.pending.status}
           role="status"
+          aria-label={mutationAxLabel(composer) ?? undefined}
         >
           <span>
             {composer.pending.status === "pending"
@@ -342,6 +345,16 @@ export function ConversationView({ state, dispatch }: ConversationViewProps) {
         </section>
       ) : null}
 
+      {composer.pending === null && composer.accepted ? (
+        <section
+          className="sw-composer-status"
+          role="status"
+          aria-label={mutationAxLabel(composer) ?? undefined}
+        >
+          {composer.accepted.kind} accepted
+        </section>
+      ) : null}
+
       {composer.error ? (
         <div className="sw-banner" role="alert" data-composer-error>
           {composer.error}
@@ -354,6 +367,7 @@ export function ConversationView({ state, dispatch }: ConversationViewProps) {
           {composerModes.map((m) => (
             <button
               type="button"
+              aria-label={`Use ${m} mode`}
               aria-pressed={mode === m}
               disabled={!canUseMode(m, composer)}
               key={m}
@@ -378,6 +392,7 @@ export function ConversationView({ state, dispatch }: ConversationViewProps) {
         <button
           className="sw-primary-action sw-composer__submit"
           type="button"
+          aria-label="Submit message"
           disabled={!canSubmit}
           onClick={() => dispatch({ type: "submit", mode })}
         >
