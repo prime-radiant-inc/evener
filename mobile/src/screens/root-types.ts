@@ -3,6 +3,7 @@
  */
 import type { StoreApi } from "zustand";
 import type { UseBoundStore } from "zustand/react";
+import type { ConceptStorage } from "../live-concepts/live-ui-store";
 import type { NativeBridge } from "../native/client";
 import type {
   ProfileRedacted,
@@ -36,6 +37,8 @@ export interface ShellServiceBundle {
 export interface ShellServices {
   readonly profile: ProfileService;
   readonly native: NativeBridge;
+  /** Local selected-concept persistence; fixtures may use the shell fallback. */
+  readonly conceptStorage?: ConceptStorage;
   /** Production-only factory for the active profile's AppWire service graph. */
   readonly createProfileScopedServices?: (
     profile: ProfileRedacted,
