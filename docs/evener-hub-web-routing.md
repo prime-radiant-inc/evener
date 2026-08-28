@@ -41,7 +41,7 @@ left to fragment-route.
 - `evener/project/delete` — delete every removable session under a
   path-validated local project and return detailed outcomes plus its committed
   navigation receipt.
-- `POST /api/sessions/{ref}/rename` — rename a session.
+- `evener/thread/name/set` — rename a live or ended session.
 
 ## What changed (2026-07-04 sidebar rebuild)
 
@@ -59,5 +59,4 @@ left to fragment-route.
 - Test-run sessions are classified into their own tier server-side, in
   `/api/tree` — the client does not yet render them as a distinct sidebar
   section.
-- Rename (`POST /api/sessions/{ref}/rename`) is in scope for both live and
-  ended sessions.
+- Rename uses `evener/thread/name/set` for both live and ended sessions.

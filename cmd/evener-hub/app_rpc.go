@@ -192,6 +192,7 @@ func newHubAppServerWithNavigation(cfg hubcore.WebConfig, sources *appsource.Reg
 		observeHubRelayFunctions(relayFunctions)
 	}
 	registerThreadHandlers(server, cfg, sources, relayFunctions)
+	registerThreadNameSetHandler(server, cfg, sources, navigation)
 	registerAuthHandlers(server, authController)
 	registerInstanceHandlers(server, instancesController)
 	// launch.toml is user-editable configuration, so its root is the config
@@ -541,9 +542,6 @@ func registerThreadHandlers(
 	})
 	appserver.HandleTyped(server.Router(), appwire.MethodThreadVisionModelSet, func(ctx context.Context, params appwire.ThreadVisionModelSetParams) (appwire.EmptyResponse, error) {
 		return appwire.EmptyResponse{}, setThreadVisionModelWithResume(ctx, cfg, sources, params)
-	})
-	appserver.HandleTyped(server.Router(), appwire.MethodEvenerThreadNameSet, func(ctx context.Context, params appwire.ThreadNameSetParams) (appwire.EmptyResponse, error) {
-		return setThreadNameWithResume(ctx, cfg, sources, params)
 	})
 	appserver.HandleTyped(server.Router(), appwire.MethodThreadReasoningEffortSet, func(ctx context.Context, params appwire.ThreadReasoningEffortSetParams) (appwire.EmptyResponse, error) {
 		return withDeletionTargetOwnership(cfg, params.Ref, "", "", func() (appwire.EmptyResponse, error) {

@@ -25,7 +25,7 @@ import { useRef } from "react";
 import { sessionActionError } from "../../../protocol/errors";
 import type { NavigationSessionLocation } from "../../../protocol/types.gen";
 import { closePanesForDeletedSessions } from "../../../shell/deletedSessionPanes";
-import { assignSessionPin, deleteSession, renameSession, setArchived, unpinSession } from "../../../shell/rail/actions";
+import { assignSessionPin, deleteSession, setArchived, unpinSession } from "../../../shell/rail/actions";
 import { SessionMenu } from "../../../shell/sessionMenu/SessionMenu";
 import { useIsMobile } from "../../../shell/useIsMobile";
 import { isPaneOpen, useWorkspaceStore, workspaceStore } from "../../../shell/workspace";
@@ -195,12 +195,7 @@ export function SessionChrome({ ref: sessionRef, placement = "footer" }: Session
             // confirm button re-enabled; only success closes it.
             onRename: async (name) => {
               try {
-                if (navigation.mode === "v1") {
-                  const result = await renameSession(sessionRef, name);
-                  await navigationStore.getState().applyNavigationMutation(result.navigation);
-                } else {
-                  await threadsStore.getState().rename(sessionRef, name);
-                }
+                await threadsStore.getState().rename(sessionRef, name);
               } catch (err) {
                 toasts.push("error", sessionActionError("Couldn't rename session", err));
                 throw err;

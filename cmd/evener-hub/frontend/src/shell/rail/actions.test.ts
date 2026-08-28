@@ -10,7 +10,6 @@ import {
   isRailRequestStatus,
   listPinSections,
   renamePinSection,
-  renameSession,
   setArchived,
   setFavorite,
   unpinSession,
@@ -22,15 +21,6 @@ function jsonResponse(body: unknown, status = 200): Response {
     status,
     statusText: status === 200 ? "OK" : "Error",
     json: () => Promise.resolve(body),
-  } as Response;
-}
-
-function emptyResponse(status = 204): Response {
-  return {
-    ok: status >= 200 && status < 300,
-    status,
-    statusText: "No Content",
-    json: () => Promise.reject(new Error("no body")),
   } as Response;
 }
 
@@ -184,24 +174,6 @@ describe("setFavorite", () => {
       throw new Error("favorite store error: boom");
     });
     await expect(setFavorite(client, "project", "x", true)).rejects.toThrow("favorite store error: boom");
-  });
-});
-
-describe("renameSession", () => {
-  test("POSTs /api/sessions/<url-encoded ref>/rename with exact name body", async () => {
-    fetchMock.mockResolvedValueOnce(emptyResponse(204));
-    await renameSession("local:abc/def", "New name");
-    expect(fetchMock).toHaveBeenCalledWith("/api/sessions/local%3Aabc%2Fdef/rename", JSON_INIT({ name: "New name" }));
-  });
-
-  test("resolves on a 204 No Content response with no body to parse", async () => {
-    fetchMock.mockResolvedValueOnce(emptyResponse(204));
-    await expect(renameSession("ref", "name")).resolves.toBeUndefined();
-  });
-
-  test("rejects with the server's error message on failure", async () => {
-    fetchMock.mockResolvedValueOnce(jsonResponse({ error: "name is required" }, 400));
-    await expect(renameSession("ref", "")).rejects.toThrow("name is required");
   });
 });
 

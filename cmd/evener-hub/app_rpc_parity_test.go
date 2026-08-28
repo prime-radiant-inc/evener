@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/appwire"
 	"primeradiant.com/evener/cmd/evener-hub/internal/hubcore"
 	"primeradiant.com/evener/internal/appserver"
@@ -109,9 +110,9 @@ func TestHubRPCThreadClearRejectsPastThreadWithoutResume(t *testing.T) {
 	}
 }
 
-// TestHubRPCThreadNameSetResumesPastThread proves renaming an exited session
-// resumes the daemon and retries (kata qp94).
-func TestHubRPCThreadNameSetResumesPastThread(t *testing.T) {
+// TestHubRPCThreadNameSetEditsPastThreadWithoutResume proves renaming an ended
+// local session updates its metadata without launching a daemon.
+func TestHubRPCThreadNameSetEditsPastThreadWithoutResume(t *testing.T) {
 	var sessionID string
 	renamedTo := ""
 	cfg, sid, resumeCalls := parityResumeFixture(t, func(daemon *appserver.Server) {
@@ -146,11 +147,22 @@ func TestHubRPCThreadNameSetResumesPastThread(t *testing.T) {
 	if err := client.ThreadNameSet(context.Background(), appwire.ThreadNameSetParams{Ref: "local:" + sessionID, Name: "renamed"}); err != nil {
 		t.Fatalf("ThreadNameSet: %v", err)
 	}
-	if *resumeCalls != 1 {
-		t.Fatalf("resume calls=%d, want 1", *resumeCalls)
+	if *resumeCalls != 0 {
+		t.Fatalf("resume calls=%d, want 0", *resumeCalls)
 	}
-	if renamedTo != "renamed" {
-		t.Fatalf("renamedTo=%q, want %q", renamedTo, "renamed")
+	if renamedTo != "" {
+		t.Fatalf("daemon rename=%q, want no daemon call", renamedTo)
+	}
+	entry, ok := cfg.Past.Find(sessionID)
+	if !ok {
+		t.Fatalf("past session %q not found", sessionID)
+	}
+	meta, err := schema.LoadSessionMeta(entry.StateDir, sessionID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if meta.Name != "renamed" || meta.NameSource != "user" {
+		t.Fatalf("renamed meta=%+v", meta)
 	}
 }
 

@@ -14,7 +14,6 @@ import (
 	"primeradiant.com/evener/appwire"
 	"primeradiant.com/evener/cmd/evener-hub/internal/hubcore"
 	"primeradiant.com/evener/hubapi"
-	"primeradiant.com/evener/rendezvous"
 )
 
 type pass6WorkspaceSource struct {
@@ -95,7 +94,7 @@ func FuzzWorkspaceMutationsPass6(f *testing.F) {
 			return rr
 		}
 
-		switch mode % 10 {
+		switch mode % 8 {
 		case 0:
 			for _, target := range []string{"/s/remote:thread/send", "/s/remote:thread/fork", "/s/remote:thread/interrupt", "/s/remote:thread/compact", "/s/remote:thread/shutdown", "/s/remote:thread/clear", "/s/remote:thread/steer", "/s/remote:thread/queue", "/s/remote:thread/drain-as-steer", "/s/remote:thread/images/nope"} {
 				web.handleSession(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, target, nil))
@@ -127,40 +126,17 @@ func FuzzWorkspaceMutationsPass6(f *testing.F) {
 			web.fillSubagentLineage(&data, schema.SessionMeta{})
 			web.fillSubagentLineage(&data, schema.SessionMeta{ID: "x", IsSubagent: true, ParentSessionID: "unknown-parent-id"})
 		case 5:
-			call(func(w http.ResponseWriter, r *http.Request) { web.handleAPIRename(w, r, "ended") }, http.MethodGet, "/", "")
-			call(func(w http.ResponseWriter, r *http.Request) { web.handleAPIRename(w, r, "ended") }, http.MethodPost, "/", "{")
-			call(func(w http.ResponseWriter, r *http.Request) { web.handleAPIRename(w, r, "missing") }, http.MethodPost, "/", `{"name":"x"}`)
-			loadSessionMetaForRename = func(string, string) (schema.SessionMeta, error) { return schema.SessionMeta{}, errors.New("load") }
-			t.Cleanup(func() { loadSessionMetaForRename = schema.LoadSessionMeta })
-			call(func(w http.ResponseWriter, r *http.Request) { web.handleAPIRename(w, r, "ended") }, http.MethodPost, "/", `{"name":"x"}`)
-		case 6:
-			saveSessionMetaForRename = func(string, schema.SessionMeta) error { return errors.New("save") }
-			t.Cleanup(func() { saveSessionMetaForRename = schema.SaveSessionMeta })
-			call(func(w http.ResponseWriter, r *http.Request) { web.handleAPIRename(w, r, "ended") }, http.MethodPost, "/", `{"name":"x"}`)
-			liveRoster := hubcore.NewRosterWithEntries(hubcore.LiveEntry{Entry: rendezvous.Entry{SessionID: "thread"}, SessionID: "thread", Status: "active"})
-			liveWeb := NewWebServer(hubcore.WebConfig{Past: past, Roster: liveRoster})
-			liveWeb.sources.Add(source)
-			source.nameErr = nil
-			call = func(fn func(http.ResponseWriter, *http.Request), method, target, body string) *httptest.ResponseRecorder {
-				rr := httptest.NewRecorder()
-				fn(rr, httptest.NewRequest(method, target, strings.NewReader(body)))
-				return rr
-			}
-			call(func(w http.ResponseWriter, r *http.Request) { liveWeb.handleAPIRename(w, r, "remote:thread") }, http.MethodPost, "/", `{"name":"x"}`)
-			source.nameErr = errors.New("rename")
-			call(func(w http.ResponseWriter, r *http.Request) { liveWeb.handleAPIRename(w, r, "remote:thread") }, http.MethodPost, "/", `{"name":"x"}`)
-		case 7:
 			_, _ = web.projectDelete(context.Background(), appwire.ProjectDeleteParams{})
 			_, _ = NewWebServer(hubcore.WebConfig{}).projectDelete(context.Background(), appwire.ProjectDeleteParams{Key: "x", WorkingDir: "x"})
 			_, _ = web.projectDelete(context.Background(), appwire.ProjectDeleteParams{Key: "wrong", WorkingDir: work})
-		case 8:
+		case 6:
 			params := appwire.ProjectDeleteParams{Key: testProjectID(t, work), WorkingDir: work}
 			live := NewWebServer(hubcore.WebConfig{Past: past, Roster: hubcore.NewRosterWithEntries(hubcore.LiveEntry{SessionID: "ended", Status: "active"})})
 			_, _ = live.projectDelete(context.Background(), params)
 			removeProjectSessionFile = func(string) error { return errors.New("remove") }
 			t.Cleanup(func() { removeProjectSessionFile = os.Remove })
 			_, _ = web.projectDelete(context.Background(), params)
-		case 9:
+		case 7:
 			params := appwire.ProjectDeleteParams{Key: testProjectID(t, work), WorkingDir: work}
 			removeProjectSessionDir = func(string) error { return errors.New("ignored") }
 			t.Cleanup(func() { removeProjectSessionDir = os.RemoveAll })

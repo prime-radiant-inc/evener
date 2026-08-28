@@ -7,9 +7,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
-	"time"
 
-	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/appwire"
 	"primeradiant.com/evener/cmd/evener-hub/internal/hubcore"
 )
@@ -98,48 +96,6 @@ func TestCovWebCoreAPIHelpersAndRoutes(t *testing.T) {
 
 }
 
-func TestCovWebCoreAPIRenameValidation(t *testing.T) {
-	emptyPast := hubcore.NewPastIndex(filepath.Join(t.TempDir(), "projects", "*"))
-	if _, err := emptyPast.Rebuild(); err != nil {
-		t.Fatal(err)
-	}
-	web := NewWebServer(hubcore.WebConfig{Past: emptyPast})
-	for _, tc := range []struct{ method, body string }{
-		{http.MethodGet, ""}, {http.MethodPost, "{"}, {http.MethodPost, `{}`},
-		{http.MethodPost, `{"name":" renamed "}`},
-	} {
-		req := httptest.NewRequest(tc.method, "/rename", strings.NewReader(tc.body))
-		rec := httptest.NewRecorder()
-		web.handleAPIRename(rec, req, "missing")
-	}
-
-	// An indexed entry with no meta file reaches the deterministic load error.
-	stateDir := t.TempDir()
-	past := hubcore.NewPastIndex(filepath.Join(t.TempDir(), "projects", "*"))
-	if _, err := past.Rebuild(); err != nil {
-		t.Fatal(err)
-	}
-	past.SeedForTest([]schema.SessionMeta{{ID: "gone", UpdatedAt: time.Unix(1, 0)}})
-	loadFail := NewWebServer(hubcore.WebConfig{Past: past})
-	// SeedForTest has no StateDir, which is sufficient to exercise LoadSessionMeta's error path.
-	req := httptest.NewRequest(http.MethodPost, "/rename", strings.NewReader(`{"name":"new"}`))
-	loadFail.handleAPIRename(httptest.NewRecorder(), req, "gone")
-
-	// refreshRenamedMeta covers both the persisted-meta and fallback-index paths.
-	meta := schema.SessionMeta{ID: "saved", Name: "disk", UpdatedAt: time.Unix(2, 0)}
-	if err := schema.SaveSessionMeta(stateDir, meta); err != nil {
-		t.Fatal(err)
-	}
-	idx := hubcore.NewPastIndex(filepath.Join(stateDir, "missing-glob"))
-	if _, err := idx.Rebuild(); err != nil {
-		t.Fatal(err)
-	}
-	idx.SeedForTest([]schema.SessionMeta{meta})
-	refresh := NewWebServer(hubcore.WebConfig{Past: idx})
-	refresh.refreshRenamedMeta("saved", "fallback")
-	refresh.refreshRenamedMeta("missing", "fallback")
-}
-
 // FuzzCovWebCoreAPI replays the deterministic core handler matrix under the
 // native fuzz runner. The byte is deliberately used only to vary execution
 // order: every input exercises the same contained filesystem and API cases.
@@ -148,14 +104,11 @@ func FuzzCovWebCoreAPI(f *testing.F) {
 		f.Add(seed)
 	}
 	f.Fuzz(func(t *testing.T, order byte) {
-		tests := []func(*testing.T){
+		 tests := []func(*testing.T){
 			TestCovWebCoreAPIHelpersAndRoutes,
-			TestCovWebCoreAPIRenameValidation,
 			TestProjectDeleteRemovesFilesAndScrubs,
 			TestProjectDeleteRejectsKeyWorkingDirMismatch,
 			TestProjectDeleteRefusesWhenLive,
-			TestRenameEndedSessionEditsMetaAndRefreshesIndex,
-			TestRenameLiveRaceDaemonFailureHardFails,
 		}
 		for i := range tests {
 			tests[(i+int(order))%len(tests)](t)

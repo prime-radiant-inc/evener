@@ -124,7 +124,6 @@ func FuzzCoreAPIPass4(f *testing.F) {
 		call(http.MethodPost, "/api/sessions/remote:thread/reasoning-effort", `{"reasoning_effort":" high "}`)
 		direct(func(w http.ResponseWriter, r *http.Request) { web.handleAPIReasoningEffort(w, r, "remote:thread") }, http.MethodGet, "/effort", "")
 		direct(func(w http.ResponseWriter, r *http.Request) { web.handleAPIReasoningEffort(w, r, "local:missing") }, http.MethodPost, "/effort", `{}`)
-		call(http.MethodPost, "/api/sessions/remote:thread/rename", `{"name":" renamed "}`)
 		call(http.MethodPost, "/api/sessions/remote:thread/model", `{`)
 		_ = hubGitHead(context.Background(), web.cfg, appwire.GitHeadParams{CWD: workingDir})
 		_ = hubGitHead(context.Background(), web.cfg, appwire.GitHeadParams{CWD: "/definitely/missing/pass4"})
@@ -134,9 +133,6 @@ func FuzzCoreAPIPass4(f *testing.F) {
 			t.Fatal(err)
 		}
 
-		call(http.MethodPost, "/api/sessions/local:ended/rename", `{"name":" ended renamed "}`)
-		call(http.MethodPost, "/api/sessions/local:missing/rename", `{"name":"x"}`)
-		call(http.MethodPost, "/api/sessions/local:ended/rename", `{`)
 		projectParams := appwire.ProjectDeleteParams{Key: testProjectID(t, workingDir), WorkingDir: workingDir}
 		web.cfg.Roster = hubcore.NewRosterWithEntries(hubcore.LiveEntry{SessionID: "ended", Status: "active"})
 		_, _ = web.projectDelete(context.Background(), projectParams)

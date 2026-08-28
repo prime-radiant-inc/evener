@@ -531,45 +531,6 @@ func TestCovHandleAPIPinSectionsNotConfigured(t *testing.T) {
 	}
 }
 
-// --- web_api_rename.go: handleAPIRename ---
-
-// TestCovHandleAPIRenameMethodNotAllowed covers the method-not-allowed branch
-// (web_api_rename.go:26-27).
-func TestCovHandleAPIRenameMethodNotAllowed(t *testing.T) {
-	web := NewWebServer(hubcore.WebConfig{HubAddr: "127.0.0.1:9180"})
-	req := httptest.NewRequest(http.MethodGet, "/api/sessions/s1/rename", nil)
-	rec := httptest.NewRecorder()
-	web.handleAPIRename(rec, req, "s1")
-	if rec.Code != http.StatusMethodNotAllowed {
-		t.Fatalf("expected 405, got %d", rec.Code)
-	}
-}
-
-// TestCovHandleAPIRenameInvalidJSON covers the invalid-JSON branch
-// (web_api_rename.go:33-34).
-func TestCovHandleAPIRenameInvalidJSON(t *testing.T) {
-	web := NewWebServer(hubcore.WebConfig{HubAddr: "127.0.0.1:9180"})
-	req := httptest.NewRequest(http.MethodPost, "/api/sessions/s1/rename", strings.NewReader("bad json"))
-	rec := httptest.NewRecorder()
-	web.handleAPIRename(rec, req, "s1")
-	if rec.Code != http.StatusBadRequest {
-		t.Fatalf("expected 400, got %d", rec.Code)
-	}
-}
-
-// TestCovHandleAPIRenameEmptyName covers the empty-name branch
-// (web_api_rename.go:38-39).
-func TestCovHandleAPIRenameEmptyName(t *testing.T) {
-	web := NewWebServer(hubcore.WebConfig{HubAddr: "127.0.0.1:9180"})
-	body := `{"name":""}`
-	req := httptest.NewRequest(http.MethodPost, "/api/sessions/s1/rename", strings.NewReader(body))
-	rec := httptest.NewRecorder()
-	web.handleAPIRename(rec, req, "s1")
-	if rec.Code != http.StatusBadRequest {
-		t.Fatalf("expected 400, got %d", rec.Code)
-	}
-}
-
 // --- web_api_session_delete.go: handleAPISessionDelete ---
 
 // TestCovHandleAPISessionDeleteMethodNotAllowed covers the method-not-allowed

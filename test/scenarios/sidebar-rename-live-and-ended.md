@@ -1,9 +1,9 @@
 # sidebar-rename-live-and-ended: row-menu rename survives a refetch, survives compaction (namer suppression), and works on ended sessions
 
-**What this covers**: `POST /api/sessions/<ref>/rename` on both of its paths —
-the live-daemon path (`SetThreadName` through the source) and the ended
-meta-edit path (`cmd/evener-hub/web_api_rename.go:50-63` and `:94-124`) — the
-rail's rename dialog, and the namer-suppression rule in
+**What this covers**: the typed `evener/thread/name/set` method on both of its
+hub paths — the live-daemon path (`SetThreadName` through the source) and the
+ended meta-edit path (`cmd/evener-hub/app_rename.go#setThreadName`) — the rail's
+rename dialog, and the namer-suppression rule in
 `agent/session_namer.go`: once a session's name source is `"user"`, a later
 `"compaction"`-sourced suggestion must **not** overwrite it
 (`shouldApplySessionNameLocked`, `:374-382`; the source constants at `:21-23`).
@@ -45,31 +45,37 @@ optimistic overlay.
 1. **Rename the live session through the UI.** Find its row by
    `[data-session-ref="local:<SID>"]`, click the `⋯` trigger inside it, click
    the `Rename` item, replace the input's value, click `Rename`.
-2. **Snapshot synchronously, before the round trip resolves.** Read the row's
+2. **Snapshot synchronously, before the AppWire round trip resolves.** Read the row's
    title text immediately after the click, without awaiting anything — the rail
    projects an optimistic `sessionTitle` op onto the rendered tree from before
-   the POST until the follow-up refetch settles (`Rail.tsx:383-393,318-328`,
+   the request resolves (`Rail.tsx#runAction`,
    applied by `railPending.ts:80-81`).
-3. **Snapshot again after the refetch settles** (~2s is ample; the mutation
-   awaits `navigationStore.getState().loadManifest()` and only then drops the overlay). Then
-   cross-check the server: read the AppWire navigation resource for the row's title, and the
-   session's persisted `<SID>.meta.json` for `name` / `name_source`.
+3. **Snapshot again after the navigation publication and refetch settle**
+   (~2s is ample). Then cross-check the server: read the AppWire navigation
+   resource for the row's title, and the session's persisted
+   `<SID>.meta.json` for `name` / `name_source`.
 4. **Trigger a real compaction turn**:
    `POST /api/sessions/local:<SID>/compact`. Poll
    `GET /api/sessions/local:<SID>` until it settles, and record
    `context_used` (`hubapi/types.go:144`) before and after.
 5. Re-read the row's title in the browser. Do not force anything — a successful
-   rename broadcasts `navigation invalidation` exactly once, either through
-   `PastIndex.UpdateMeta`'s composed hook or the compensating
-   `notifyTreeChanged` when that hook didn't fire
-   (`web_api_rename.go:112-122` and `:136-153`), and the rail refetches on a
-   250ms debounce (`stores/navigation/store.ts:443-450,455-467`). Re-read the meta file's
+   rename commits one `evener/navigation/invalidated` publication through
+   `NavigationService.Refresh` (`app_rename.go#completeThreadNameMutation`),
+   and the navigation store refetches the affected loaded resources
+   (`stores/navigation/store.ts#initNavigation`). Re-read the meta file's
    `name` / `name_source`.
-6. **On the separate ended session**, drive the REST path directly:
-   `POST /api/sessions/local:<SID2>/rename` with body `{"name":"<new>"}`. No
-   live daemon is involved.
-7. Check the response status, the meta file, and — in the browser after the
-   refetch — the row title, plus whether any toast appeared.
+6. **On the separate ended session**, use the authenticated `/rpc` AppWire
+   connection from "Driving AppWire directly" in
+   `docs/developing-evener/agentic-testing.md`. After `initialize`, send a
+   request with an id so its response can be distinguished from the interleaved
+   navigation notification:
+   ```json
+   {"id":2,"method":"evener/thread/name/set","params":{"ref":"local:<SID2>","name":"  <new>  "}}
+   ```
+   No live daemon is involved.
+7. Check that request id 2 has an empty successful result, then check the meta
+   file and — in the browser after the refetch — the row title, plus whether
+   any toast appeared.
 
 ## Expected
 
@@ -79,11 +85,11 @@ optimistic overlay.
 - **Step 3**: the title is *still* the new value after the refetch settles, and
   the AppWire navigation resource plus the meta file agree, with `"name_source":"user"`. That
   agreement is what proves a real server round trip rather than an un-reverted
-  optimistic echo. Falsify: the title snaps back — the POST was rejected and
+  optimistic echo. Falsify: the title snaps back — the AppWire request was rejected and
   the overlay was dropped (a failure also toasts, `Couldn't rename session: …`,
   `Rail.tsx:388,324`).
-- **Step 4 (exact)**: `204` (`web_api_rename.go:62` on the live path). Confirm
-  the compaction genuinely did something — `context_used` should drop sharply
+- **Step 4**: confirm the compaction genuinely did something — `context_used`
+  should drop sharply
   (one live run went from ~15000 to 133) — so a no-op compaction cannot produce
   a false pass in step 5.
 - **Step 5 (the core assertion)**: the meta file still shows the user-assigned
@@ -93,13 +99,14 @@ optimistic overlay.
   suppression is broken. `shouldApplySessionNameLocked` only lets a
   `compaction`-sourced name land when the current source is `prompt` or
   `compaction` (`agent/session_namer.go:378-381`), never over `user`.
-- **Step 7 (exact)**: `204` (`web_api_rename.go:124`, the ended meta-edit path,
-  which stamps `Name`, `NameSource: "user"` and `NameUpdatedAt` at `:105-107`);
-  the meta file shows the new name and `"name_source":"user"`; the row shows
-  the new title after the refetch; and no error toast appears — the toast
+- **Step 7 (exact)**: request id 2 has `"result":{}`; the name is trimmed to
+  `<new>` and the ended meta-edit path stamps `Name`, `NameSource: "user"`, and
+  `NameUpdatedAt` (`app_rename.go#mutateThreadName`). The meta file shows the
+  normalized name and `"name_source":"user"`; the row shows the new title
+  after the refetch; and no error toast appears — the toast
   region is `section[aria-live="polite"][aria-label="Notifications"]`
   (`widgets/toast/index.tsx:36`), which must stay empty. Falsify: any visible
-  error or rollback despite the `204`.
+  error or rollback despite the successful AppWire response.
 
 ## Cleanup
 
@@ -115,12 +122,11 @@ optimistic overlay.
   "does this id parse as a local ref" (`isLocalRouteID`, `web.go#isLocalRouteID`). So
   Codex-bridged rows and synthetic `cluster:` fold rows never offer it — this
   card is about local top-level evener sessions.
-- **The ref is URL-escaped on the way out and unescaped on the way in.**
-  `renameSession` posts to `/api/sessions/${encodeURIComponent(ref)}/rename`
-  (`shell/rail/actions.ts:43-49`) and the dispatcher `url.PathUnescape`s the
-  first segment (`web_api_tree.go:1356-1361`). Driving it by curl, `local:$SID`
-  works unescaped too — the colon is legal in a path segment — but keep the
-  `local:` prefix: a bare id parses as a ref with no host and 404s.
+- **The ref is typed data, not a URL segment.** `threadsStore.rename` sends the
+  exact ref in `ThreadNameSetParams` (`stores/threads.ts#threadsStore`), and the hub
+  validates and canonicalizes it with `appwire.ParseRef`
+  (`app_rename.go#setThreadName`). Keep the `local:` prefix: a bare id is not a
+  valid AppWire ref and is rejected as invalid parameters.
 - **A newly-created project only auto-expands while it has a live or
   attention-needing session** (`rollup_live>0 || rollup_attn>0`,
   `internal/hubcore/tree.go:946`); once its sessions end it collapses. After
