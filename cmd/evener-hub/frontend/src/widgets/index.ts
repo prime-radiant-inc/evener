@@ -63,6 +63,8 @@ export { Meter } from "./meter";
 // `export type` (a second `export type { ModelCatalog }` would duplicate it).
 export type { ModelCatalogEntry, ModelCatalogPanelProps, ModelCatalogProps } from "./modelCatalog";
 export { ModelCatalog, ModelCatalogPanel } from "./modelCatalog";
+export type { OpenButtonProps } from "./openbutton";
+export { OpenButton, OpenIcon } from "./openbutton";
 export type { PaneScaffoldProps } from "./panescaffold";
 // --- data batch (W2T4) ---
 export { PaneScaffold } from "./panescaffold";

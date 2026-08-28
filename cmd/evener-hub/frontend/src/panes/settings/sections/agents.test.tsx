@@ -45,7 +45,7 @@ describe("AgentsSection", () => {
     expect(screen.getByText("No agents discovered.")).toBeTruthy();
   });
 
-  test("an agent with an editPath renders an 'open in editor' link, target=_blank rel=noopener", () => {
+  test("an agent with an editPath renders the standard open affordance: 'open in editor', target=_blank, no opener access", () => {
     const data: SettingsOverviewResponse = {
       agents: [{ name: "reviewer", editPath: "editor://open?path=/plugins/reviewer.md" }],
     };
@@ -53,7 +53,10 @@ describe("AgentsSection", () => {
     const link = screen.getByRole("link", { name: /open in editor/i }) as HTMLAnchorElement;
     expect(link.href).toBe("editor://open?path=/plugins/reviewer.md");
     expect(link.target).toBe("_blank");
-    expect(link.rel).toBe("noopener");
+    // The shared OpenButton anchor: no opener access, no referrer - the same
+    // rel policy as the app's other new-tab links.
+    expect(link.rel).toContain("noopener");
+    expect(link.rel).toContain("noreferrer");
   });
 
   test("an agent with no editPath shows a dim 'built-in' label instead of a link", () => {

@@ -1,0 +1,16 @@
+/* The anchor form of the open affordance (an external target, e.g. settings'
+ * "open in editor"): an accent text link with the glyph riding after the
+ * words, one inline-flex row so the 14px icon centers on the caption line. */
+.link {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
+  color: var(--accent);
+  font-size: var(--font-size-caption);
+}
+
+.link:focus-visible {
+  outline: var(--focus-ring);
+  outline-offset: 2px;
+  border-radius: var(--radius-control);
+}
