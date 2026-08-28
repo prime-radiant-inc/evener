@@ -11285,4 +11285,176 @@ describe("ConversationStore", () => {
       expect(store.getState().conversation).toBe(convBefore);
     });
   });
+
+  describe("Task3: store-owned external error publication seam", () => {
+    it("exact current owner writes generic message and survives a subsequent rehydrate", async () => {
+      // The dispatcher publishes a generic sanitized external error against the
+      // exact current ref+generation. The write goes through the wrapped set so
+      // errorOwnerRev advances. A rehydrate that started BEFORE publication
+      // captured the older errorOwnerRev; when it completes it must preserve
+      // the newer external error rather than clearing it — proving the
+      // revision advanced through the wrapped set.
+      const service = new FakeConversationService();
+      const store = createConversationStore();
+      service.readProjectionResult = makeReadProjectionResult(makeThread());
+      await store.getState().openProjected(service, createFakeSink(), "ref-1");
+      const ref = store.getState().ref;
+      const gen = store.getState().conversationGeneration;
+      expect(ref).toBe("ref-1");
+      const readsAfterOpen = service.readProjectionCalls.length;
+
+      // Start a rehydrate (R) that hangs — it captures errorOwnerRev at entry
+      // (before the external error is published). Use the controlled read's
+      // level-triggered barriers, not microtask guesses: started(1) confirms
+      // the read began; ready(1) confirms orig(ref) resolved and the read is
+      // parked at the release gate, so R's entry errorOwnerRev is captured.
+      const ctrl = makeControlledRead(service);
+      store.getState().applyNotification({
+        method: "evener/thread/resync",
+        params: { threadId: "thread-1", ref: "ref-1" },
+      } as AnyNotification);
+      await ctrl.started(1);
+      await ctrl.ready(1);
+      expect(ctrl.getStartedCount()).toBe(1);
+      expect(ctrl.getDoneCount()).toBe(0);
+
+      // While R is in-flight, publish the external error against the exact
+      // current owner. This goes through the wrapped set, advancing
+      // errorOwnerRev past R's captured value.
+      store.getState().publishExternalError("external failure", ref, gen);
+      expect(store.getState().error).toBe("external failure");
+
+      // Before release, capture the pre-reconcile conversation and install a
+      // subscription barrier that resolves only when the conversation identity
+      // changes (the rehydrate commit). The subscription is installed BEFORE
+      // release so it cannot miss a synchronous commit during release, and it
+      // unsubscribes synchronously on match so cleanup never leaves a blocked
+      // read. Then release, await exact completed(1), and await the reconcile
+      // barrier — no yieldMicrotask/sleeps/polling.
+      const preReleaseConv = store.getState().conversation;
+      const reconcileP =
+        store.getState().conversation !== preReleaseConv
+          ? Promise.resolve()
+          : new Promise<void>((resolve) => {
+              const unsub = store.subscribe((s) => {
+                if (s.conversation !== preReleaseConv) {
+                  unsub();
+                  resolve();
+                }
+              });
+            });
+      ctrl.release();
+      await ctrl.completed(1);
+      await reconcileP;
+      expect(ctrl.getStartedCount()).toBe(1);
+      expect(ctrl.getDoneCount()).toBe(1);
+      // Exactly one rehydrate read ran (the initial open read is excluded).
+      expect(service.readProjectionCalls.length).toBe(readsAfterOpen + 1);
+
+      // The external error survives the rehydrate.
+      expect(store.getState().error).toBe("external failure");
+    });
+
+    it("stale ref and stale generation make zero set, same reference, zero notifications", async () => {
+      const service = new FakeConversationService();
+      const store = createConversationStore();
+      service.readProjectionResult = makeReadProjectionResult(makeThread());
+      await store.getState().openProjected(service, createFakeSink(), "ref-1");
+
+      // Track subscriber notifications. Use a strict identity snapshot so a
+      // no-op (same state object reference) fires zero callbacks.
+      const notifications: string[] = [];
+      const unsubscribe = store.subscribe((s) => {
+        notifications.push(s.error ?? "null");
+      });
+
+      const stateBefore = store.getState();
+
+      // Stale ref — the store holds "ref-1", caller passes "ref-stale".
+      store
+        .getState()
+        .publishExternalError(
+          "stale ref error",
+          "ref-stale",
+          store.getState().conversationGeneration,
+        );
+      expect(store.getState().error).toBeNull();
+      expect(store.getState()).toBe(stateBefore);
+      expect(notifications).toHaveLength(0);
+
+      // Stale generation — caller passes an old generation.
+      store.getState().publishExternalError("stale gen error", "ref-1", 999);
+      expect(store.getState().error).toBeNull();
+      expect(store.getState()).toBe(stateBefore);
+      expect(notifications).toHaveLength(0);
+
+      // Stale ref AND stale generation together.
+      store.getState().publishExternalError("both stale", "ref-stale", 999);
+      expect(store.getState().error).toBeNull();
+      expect(store.getState()).toBe(stateBefore);
+      expect(notifications).toHaveLength(0);
+
+      unsubscribe();
+    });
+
+    it("reset/open transition rejects old expected owner", async () => {
+      // After a reset (or open of a new conversation), a publishExternalError
+      // call carrying the OLD ref+generation must make zero state changes.
+      const service = new FakeConversationService();
+      const store = createConversationStore();
+      service.readProjectionResult = makeReadProjectionResult(makeThread());
+      await store.getState().openProjected(service, createFakeSink(), "ref-1");
+      const oldRef = store.getState().ref;
+      const oldGen = store.getState().conversationGeneration;
+
+      // Reset to idle — increments generation and clears ref.
+      store.getState().reset();
+      expect(store.getState().ref).toBeNull();
+      expect(store.getState().conversationGeneration).not.toBe(oldGen);
+
+      const notifications: string[] = [];
+      const unsubscribe = store.subscribe((s) => {
+        notifications.push(s.error ?? "null");
+      });
+      const stateBefore = store.getState();
+
+      // Publish against the OLD owner — must be rejected (zero set).
+      store.getState().publishExternalError("post-reset error", oldRef, oldGen);
+      expect(store.getState().error).toBeNull();
+      expect(store.getState()).toBe(stateBefore);
+      expect(notifications).toHaveLength(0);
+
+      unsubscribe();
+
+      // Open a new conversation — the old owner is still rejected.
+      service.readProjectionResult = makeReadProjectionResult(
+        makeThread({ id: "thread-2" }),
+      );
+      await store.getState().openProjected(service, createFakeSink(), "ref-2");
+      expect(store.getState().ref).toBe("ref-2");
+
+      const stateAfterOpen = store.getState();
+      const notifications2: string[] = [];
+      const unsubscribe2 = store.subscribe((s) => {
+        notifications2.push(s.error ?? "null");
+      });
+
+      // Publish against the OLD owner (ref-1, old gen) — rejected.
+      store.getState().publishExternalError("post-open error", oldRef, oldGen);
+      expect(store.getState()).toBe(stateAfterOpen);
+      expect(notifications2).toHaveLength(0);
+
+      // Publishing against the NEW owner succeeds.
+      store
+        .getState()
+        .publishExternalError(
+          "new owner error",
+          "ref-2",
+          store.getState().conversationGeneration,
+        );
+      expect(store.getState().error).toBe("new owner error");
+
+      unsubscribe2();
+    });
+  });
 });
