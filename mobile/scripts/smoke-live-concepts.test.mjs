@@ -177,6 +177,8 @@ function baseEvidence(milestone) {
         foregroundGeneration: 5,
         activeThreadId: "thread-opaque",
         rehydrated: true,
+        backgroundTreeDigest: `sha256:${"b".repeat(64)}`,
+        foregroundTreeDigest: `sha256:${"c".repeat(64)}`,
       };
     case "reconnect":
       return {
@@ -410,6 +412,11 @@ test("rejects milestone-specific incomplete or contradictory evidence", async (t
     rejects((rows) => {
       rows[9].evidence.foregroundGeneration = 4;
     }, /foreground generation/i),
+  );
+  await t.test("background tree", () =>
+    rejects((rows) => {
+      delete rows[9].evidence.backgroundTreeDigest;
+    }, /background semantic tree digest/i),
   );
   await t.test("reconnect generation", () =>
     rejects((rows) => {
@@ -777,6 +784,9 @@ test("runLiveSmoke completes from fake command and monotonic boundaries only", a
       "data-observed-notification": "evener/thread/item-completed",
     };
     if (phase === "profile") return common;
+    if (phase === "background") {
+      return { label: "SpringBoard", generation: String(generation) };
+    }
     const conversation = {
       ...common,
       "data-thread-key": "thread-opaque",
@@ -832,7 +842,10 @@ test("runLiveSmoke completes from fake command and monotonic boundaries only", a
       };
     }
     if (program === "idb" && argv[0] === "launch") {
-      if (terminated) {
+      if (argv.includes("--foreground-if-running")) {
+        generation += 1;
+        phase = "work";
+      } else if (terminated) {
         generation += 1;
         terminated = false;
       }
@@ -840,6 +853,11 @@ test("runLiveSmoke completes from fake command and monotonic boundaries only", a
     }
     if (program === "idb" && argv[0] === "terminate") {
       terminated = true;
+      return { status: 0, stdout: "", stderr: "" };
+    }
+    if (program === "idb" && argv[0] === "ui" && argv[1] === "button") {
+      assert.equal(argv[2], "HOME");
+      phase = "background";
       return { status: 0, stdout: "", stderr: "" };
     }
     if (program === "idb" && argv[0] === "ui" && argv[1] === "describe-all") {
@@ -894,6 +912,20 @@ test("runLiveSmoke completes from fake command and monotonic boundaries only", a
   assert.equal(
     calls.some((call) => call.includes("x") || call.includes("y")),
     false,
+  );
+  assert.equal(
+    calls.some(
+      (call) =>
+        call[0] === "idb" &&
+        call[1] === "ui" &&
+        call[2] === "button" &&
+        call[3] === "HOME",
+    ),
+    true,
+  );
+  assert.equal(
+    calls.filter((call) => call[0] === "idb" && call[1] === "terminate").length,
+    1,
   );
   assert.equal(
     calls.filter(
