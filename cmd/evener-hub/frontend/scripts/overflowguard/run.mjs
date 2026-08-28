@@ -177,6 +177,40 @@ async function dispatchTrustedKey(send, key, code, windowsVirtualKeyCode) {
   await evaluate(send, "new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)))");
 }
 
+async function waitForDesktopScrollbar(send) {
+  await evaluate(
+    send,
+    `new Promise((resolve, reject) => {
+      const panel = document.querySelector('[data-testid="transcript-detail-popover"] [role="dialog"]');
+      if (!panel) {
+        resolve(null);
+        return;
+      }
+      const probe = document.createElement('div');
+      probe.style.cssText = 'position:absolute;visibility:hidden;overflow:scroll;width:100px;height:100px';
+      document.body.append(probe);
+      const expected = probe.offsetWidth - probe.clientWidth;
+      probe.remove();
+      let frames = 0;
+      const check = () => {
+        const style = getComputedStyle(panel);
+        const borders = (Number.parseFloat(style.borderLeftWidth) || 0) + (Number.parseFloat(style.borderRightWidth) || 0);
+        const actual = panel.offsetWidth - panel.clientWidth - borders;
+        if (panel.scrollHeight > panel.clientHeight && Math.abs(actual - expected) <= ${GEOMETRY_TOLERANCE}) {
+          resolve({ expected, actual });
+          return;
+        }
+        if (++frames >= 120) {
+          reject(new Error('desktop Detail scrollbar geometry did not settle: expected=' + expected + ', actual=' + actual + ', scroll=' + panel.scrollHeight + '/' + panel.clientHeight));
+          return;
+        }
+        requestAnimationFrame(check);
+      };
+      check();
+    })`,
+  );
+}
+
 async function measureTrustedFocus(send) {
   await evaluate(
     send,
@@ -187,6 +221,10 @@ async function measureTrustedFocus(send) {
       if (!editor || segments.length !== 6) throw new Error('live Detail focus fixture is incomplete');
     })()`,
   );
+  // Chromium can report the pre-scrollbar content width for one paint after a
+  // newly focused, overflowing Popover becomes interactive. Await the actual
+  // platform gutter (zero for overlay scrollbars) instead of a fixed frame count.
+  await waitForDesktopScrollbar(send);
   const readState = async () =>
     evaluate(
       send,
