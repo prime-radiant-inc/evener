@@ -167,10 +167,10 @@ func registerTaskTools(reg *tool.Registry, deps *toolDeps) {
 				// task is announced via a separate SYSTEM-REMINDER steering
 				// message when the agent actually transitions one to
 				// in_progress, either manually or via auto-advance.
-				total, done := store.Progress()
-				deps.emit(events.EventTaskUpdated, events.TaskUpdatedData{Total: total, Done: done})
+				taskUpdate := taskUpdatedData(store.View())
+				deps.emit(events.EventTaskUpdated, taskUpdate)
 				return tool.StateResult{
-					Output: fmt.Sprintf("Added %d task(s). Progress: %d/%d tasks complete.", len(added), done, total),
+					Output: fmt.Sprintf("Added %d task(s). Progress: %d/%d tasks complete.", len(added), taskUpdate.Done, taskUpdate.Total),
 					State:  store.View(),
 				}, nil
 			case "update":
@@ -269,8 +269,7 @@ func registerTaskTools(reg *tool.Registry, deps *toolDeps) {
 				}
 
 				if !completedAny && manuallyStartedID == 0 {
-					total, done := store.Progress()
-					deps.emit(events.EventTaskUpdated, events.TaskUpdatedData{Total: total, Done: done})
+					deps.emit(events.EventTaskUpdated, taskUpdatedData(mutation.After))
 					return tool.StateResult{
 						Output: "Updated " + formatTaskUpdates(updates) + ".",
 						State:  taskToolStateSnapshot(mutation.After, inProgressUpdates, started),
@@ -315,15 +314,31 @@ func registerTaskTools(reg *tool.Registry, deps *toolDeps) {
 					}
 				}
 
-				total, done := store.Progress()
-				deps.emit(events.EventTaskUpdated, events.TaskUpdatedData{Total: total, Done: done})
-				fmt.Fprintf(&msg, "Progress: %d/%d tasks complete.", done, total)
+				taskUpdate := taskUpdatedData(finalTasks)
+				deps.emit(events.EventTaskUpdated, taskUpdate)
+				fmt.Fprintf(&msg, "Progress: %d/%d tasks complete.", taskUpdate.Done, taskUpdate.Total)
 				return tool.StateResult{Output: msg.String(), State: taskToolStateSnapshot(finalTasks, inProgressUpdates, started)}, nil
 			default:
 				return nil, fmt.Errorf("unknown task_list action %q: use view, append, or update", action)
 			}
 		},
 	})
+}
+
+// taskUpdatedData derives the authoritative task progress and current task
+// from one post-mutation task snapshot. The first in-progress task is current,
+// matching the task store's list order.
+func taskUpdatedData(tasks []taskpkg.Task) events.TaskUpdatedData {
+	data := events.TaskUpdatedData{Total: len(tasks)}
+	for _, task := range tasks {
+		if task.Status == taskpkg.TaskDone {
+			data.Done++
+		}
+		if data.Current == nil && task.Status == taskpkg.TaskInProgress {
+			data.Current = &events.TaskSummaryData{ID: task.ID, Description: task.Description}
+		}
+	}
+	return data
 }
 
 func taskListAllDone(tasks []taskpkg.Task) bool {

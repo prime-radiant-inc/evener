@@ -1439,6 +1439,7 @@ export interface TaskUpdatedParams {
   ref: string;
   total: number;
   done: number;
+  current?: TaskSummary;
 }
 
 export interface Thread {

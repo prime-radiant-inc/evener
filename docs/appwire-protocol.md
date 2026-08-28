@@ -1365,6 +1365,7 @@ _(no fields)_
 | `ref` | `string` |  |  |
 | `total` | `int` |  |  |
 | `done` | `int` |  |  |
+| `current` | `*appwire.TaskSummary` | yes |  |
 
 
 ### `ThreadClearParams`

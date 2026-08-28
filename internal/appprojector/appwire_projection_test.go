@@ -174,14 +174,18 @@ func TestProject_TaskUpdated(t *testing.T) {
 	p := NewAppEventProjector("th1", "local:th1")
 	out := p.Project(events.SessionEvent{
 		Kind: events.EventTaskUpdated,
-		Data: events.TaskUpdatedData{Total: 3, Done: 1},
+		Data: events.TaskUpdatedData{
+			Total:   3,
+			Done:    1,
+			Current: &events.TaskSummaryData{ID: 2, Description: "live current task"},
+		},
 	})
 	if len(out) != 1 || out[0].Method != appwire.NotifyEvenerTaskUpdated {
 		t.Fatalf("want one evener/task/updated notification, got %+v", out)
 	}
 	params, ok := out[0].Params.(appwire.TaskUpdatedParams)
-	if !ok || params.Total != 3 || params.Done != 1 {
-		t.Fatalf("params = %+v, want Total=3 Done=1", out[0].Params)
+	if !ok || params.Total != 3 || params.Done != 1 || params.Current == nil || params.Current.ID != 2 || params.Current.Description != "live current task" {
+		t.Fatalf("params = %+v, want Total=3 Done=1 Current={ID:2 Description:live current task}", out[0].Params)
 	}
 }
 

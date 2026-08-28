@@ -884,7 +884,15 @@ function applyNotificationToThread(model: ThreadModel, n: AnyNotification, now: 
 
     case "evener/task/updated": {
       if (!notificationTargetsThread(n, model)) return model;
-      return { ...model, tasks: { total: n.params.total, done: n.params.done }, lastFrameAt: now };
+      return {
+        ...model,
+        tasks: {
+          total: n.params.total,
+          done: n.params.done,
+          ...(n.params.current ? { current: n.params.current } : {}),
+        },
+        lastFrameAt: now,
+      };
     }
 
     case "evener/thread/name/changed": {

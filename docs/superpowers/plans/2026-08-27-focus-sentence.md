@@ -37,7 +37,7 @@
 - Modify: `cmd/evener/serve.go`
 - Modify: `cmd/evener-hub/app_threadread.go`
 - Test: `cmd/evener-hub/app_threadread_tasks_test.go`
-- Regenerate: `appwire/protocol.md`
+- Regenerate: `docs/appwire-protocol.md`
 - Regenerate: `cmd/evener-hub/frontend/src/protocol/types.gen.ts`
 
 **Interfaces:**
@@ -135,7 +135,7 @@ Expected: all focused tests pass; generated TypeScript contains optional `curren
 - [ ] **Step 5: Commit snapshot projection**
 
 ```bash
-git add appwire/types.go appwire/clone.go appwire/clone_test.go appwire/protocol.md agent/session_goal.go agent/session_goal_test.go server/thread_envelope.go server/thread_envelope_test_helpers_test.go server/thread_envelope_test.go cmd/evener/serve.go cmd/evener-hub/app_threadread.go cmd/evener-hub/app_threadread_tasks_test.go cmd/evener-hub/frontend/src/protocol/types.gen.ts docs/superpowers/specs/2026-08-27-focus-sentence-design.md docs/superpowers/plans/2026-08-27-focus-sentence.md
+git add appwire/types.go appwire/clone.go appwire/clone_test.go docs/appwire-protocol.md agent/session_goal.go agent/session_goal_test.go server/thread_envelope.go server/thread_envelope_test_helpers_test.go server/thread_envelope_test.go cmd/evener/serve.go cmd/evener-hub/app_threadread.go cmd/evener-hub/app_threadread_tasks_test.go cmd/evener-hub/frontend/src/protocol/types.gen.ts docs/superpowers/specs/2026-08-27-focus-sentence-design.md docs/superpowers/plans/2026-08-27-focus-sentence.md
 git commit -m "feat: project current work in thread snapshots"
 ```
 
@@ -149,7 +149,7 @@ git commit -m "feat: project current work in thread snapshots"
 - Modify: `internal/appprojector/appwire_projection.go`
 - Test: `internal/appprojector/appwire_projection_test.go`
 - Modify: `appwire/types.go`
-- Regenerate: `appwire/protocol.md`
+- Regenerate: `docs/appwire-protocol.md`
 - Regenerate: `cmd/evener-hub/frontend/src/protocol/types.gen.ts`
 - Modify: `cmd/evener-hub/frontend/src/protocol/model.ts`
 - Modify: `cmd/evener-hub/frontend/src/protocol/reducer.ts`
@@ -221,7 +221,7 @@ Expected: all focused tests pass.
 - [ ] **Step 5: Commit live task updates**
 
 ```bash
-git add agent/events/payloads.go agent/events/payloads_test.go agent/session_tools_task.go agent/cov_task_updated_test.go internal/appprojector/appwire_projection.go internal/appprojector/appwire_projection_test.go appwire/types.go appwire/protocol.md cmd/evener-hub/frontend/src/protocol/types.gen.ts cmd/evener-hub/frontend/src/protocol/model.ts cmd/evener-hub/frontend/src/protocol/reducer.ts cmd/evener-hub/frontend/src/protocol/reducer.test.ts
+git add agent/events/payloads.go agent/events/payloads_test.go agent/session_tools_task.go agent/cov_task_updated_test.go internal/appprojector/appwire_projection.go internal/appprojector/appwire_projection_test.go appwire/types.go docs/appwire-protocol.md cmd/evener-hub/frontend/src/protocol/types.gen.ts cmd/evener-hub/frontend/src/protocol/model.ts cmd/evener-hub/frontend/src/protocol/reducer.ts cmd/evener-hub/frontend/src/protocol/reducer.test.ts
 git commit -m "feat: push the current task to clients"
 ```
 
@@ -242,7 +242,7 @@ git commit -m "feat: push the current task to clients"
 - Modify: `appwire/methods.go`
 - Modify: `appwire/types.go`
 - Modify: `appwire/protocol.go`
-- Regenerate: `appwire/protocol.md`
+- Regenerate: `docs/appwire-protocol.md`
 - Regenerate: `cmd/evener-hub/frontend/src/protocol/types.gen.ts`
 - Modify: `cmd/evener-tui/hub_notification_coverage_test.go`
 - Modify: `cmd/evener-hub/frontend/src/protocol/reducer.ts`
@@ -344,7 +344,7 @@ Expected: every focused test passes.
 - [ ] **Step 6: Commit live goal updates**
 
 ```bash
-git add agent/events/events.go agent/events/payloads.go agent/events/payloads_test.go agent/session_goal.go agent/session_goal_test.go agent/session_tools_goal.go agent/session_tools_goal_test.go server/thread_envelope.go server/thread_envelope_test.go internal/appprojector/appwire_projection.go internal/appprojector/appwire_projection_test.go appwire/methods.go appwire/types.go appwire/protocol.go appwire/protocol.md cmd/evener-tui/hub_notification_coverage_test.go cmd/evener-hub/frontend/src/protocol/types.gen.ts cmd/evener-hub/frontend/src/protocol/reducer.ts cmd/evener-hub/frontend/src/protocol/reducer.test.ts cmd/evener-hub/frontend/src/stores/threads.ts cmd/evener-hub/frontend/src/stores/threads.test.ts cmd/evener-hub/frontend/src/panes/session/chrome/GoalControl.tsx cmd/evener-hub/frontend/src/panes/session/chrome/GoalControl.test.tsx cmd/evener-hub/frontend/src/shell/palette/commands.ts cmd/evener-hub/frontend/src/shell/palette/commands.test.ts
+git add agent/events/events.go agent/events/payloads.go agent/events/payloads_test.go agent/session_goal.go agent/session_goal_test.go agent/session_tools_goal.go agent/session_tools_goal_test.go server/thread_envelope.go server/thread_envelope_test.go internal/appprojector/appwire_projection.go internal/appprojector/appwire_projection_test.go appwire/methods.go appwire/types.go appwire/protocol.go docs/appwire-protocol.md cmd/evener-tui/hub_notification_coverage_test.go cmd/evener-hub/frontend/src/protocol/types.gen.ts cmd/evener-hub/frontend/src/protocol/reducer.ts cmd/evener-hub/frontend/src/protocol/reducer.test.ts cmd/evener-hub/frontend/src/stores/threads.ts cmd/evener-hub/frontend/src/stores/threads.test.ts cmd/evener-hub/frontend/src/panes/session/chrome/GoalControl.tsx cmd/evener-hub/frontend/src/panes/session/chrome/GoalControl.test.tsx cmd/evener-hub/frontend/src/shell/palette/commands.ts cmd/evener-hub/frontend/src/shell/palette/commands.test.ts
 git commit -m "feat: push goal state to clients"
 ```
 

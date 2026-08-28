@@ -6,6 +6,28 @@ import (
 	"testing"
 )
 
+func TestTaskUpdatedData_CurrentJSON(t *testing.T) {
+	withCurrent, err := json.Marshal(TaskUpdatedData{
+		Total:   3,
+		Done:    1,
+		Current: &TaskSummaryData{ID: 2, Description: "live current task"},
+	})
+	if err != nil {
+		t.Fatalf("marshal TaskUpdatedData with current: %v", err)
+	}
+	if !strings.Contains(string(withCurrent), `"current":{"id":2,"description":"live current task"}`) {
+		t.Fatalf("TaskUpdatedData JSON = %s", withCurrent)
+	}
+
+	withoutCurrent, err := json.Marshal(TaskUpdatedData{Total: 3, Done: 1})
+	if err != nil {
+		t.Fatalf("marshal TaskUpdatedData without current: %v", err)
+	}
+	if strings.Contains(string(withoutCurrent), `"current"`) {
+		t.Fatalf("TaskUpdatedData without current = %s", withoutCurrent)
+	}
+}
+
 func TestJobFinishedData_ExhaustionMetadata(t *testing.T) {
 	t.Parallel()
 	resumable := false
