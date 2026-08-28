@@ -2,6 +2,7 @@ package agent
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"strings"
@@ -1035,5 +1036,76 @@ func TestDrainJobTreeWaitsForForegroundPromotedShell(t *testing.T) {
 	}
 	if pending := sess.peekNotifications(); pending != 0 {
 		t.Fatalf("queued notifications after drain = %d, want 0", pending)
+	}
+}
+
+// TestDrainDoesNotExcuseFiredReadinessWatch verifies that an output-match watch
+// that already fired is not a live excuse for the still-running background job.
+// The watch remains armed for later output, but only an unfired condition can
+// tell a one-shot drain that the model explicitly awaits this job.
+func TestDrainDoesNotExcuseFiredReadinessWatch(t *testing.T) {
+	adapter := &fakeAdapter{name: "openai", steps: []func(llm.Request) llm.Response{
+		func(llm.Request) llm.Response { return finalResponse("readiness acknowledged") },
+	}}
+	sess := newSession(t, withAdapter(adapter), withConfig(SessionConfig{NoProjectPrompts: true, TurnEndsProcess: true}))
+	shell := sess.reg.ExecuteCall(context.Background(), sess.env, llm.ToolCallData{
+		ID: "shell", Name: "shell", Arguments: json.RawMessage(`{"command":"printf READY\\n; sleep 5","mode":"background"}`),
+	})
+	if shell.IsError {
+		t.Fatalf("shell: %s", shell.Output)
+	}
+	var started struct {
+		JobID string `json:"job_id"`
+	}
+	if err := json.Unmarshal(toolResultJSON(shell), &started); err != nil || started.JobID == "" {
+		t.Fatalf("shell result: %v %s", err, shell.Output)
+	}
+	t.Cleanup(func() {
+		_, _ = sess.jobManager.stop(started.JobID)
+		waitForShellDone(t, sess.jobManager, started.JobID)
+	})
+	// TRIPWIRE: the shell emits READY immediately; 5s only fires if the real
+	// background process/output path wedges.
+	waitForCondition(t, 5*time.Second, "READY output", func() bool {
+		sess.jobManager.mu.Lock()
+		defer sess.jobManager.mu.Unlock()
+		run := sess.jobManager.running[started.JobID]
+		if run == nil || run.output == nil {
+			return false
+		}
+		data, _, _, err := run.output.Tail(maxJobOutputRetentionBytes)
+		return err == nil && strings.Contains(string(data), "READY")
+	})
+	watch := sess.reg.ExecuteCall(context.Background(), sess.env, llm.ToolCallData{
+		ID: "watch", Name: "job_watch", Arguments: json.RawMessage(`{"operation":"create","source":"` + started.JobID + `","output_match":"READY"}`),
+	})
+	if watch.IsError {
+		t.Fatalf("watch: %s", watch.Output)
+	}
+	sess.jobManager.mu.Lock()
+	var fired, live bool
+	for key, cfg := range sess.jobManager.watches {
+		if key.Target == started.JobID {
+			live = true
+			fired = cfg.deliveries > 0 && cfg.conditionFires > 0
+		}
+	}
+	sess.jobManager.mu.Unlock()
+	if !fired || !live {
+		t.Fatalf("attach lifecycle did not fire and retain watch: fired=%v live=%v", fired, live)
+	}
+	// TRIPWIRE: notification delivery is synchronous; 5s only fires if the
+	// real session turn wedges.
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if _, err := sess.ProcessInputKind(ctx, "", nil, EntryNotification); err != nil {
+		t.Fatalf("deliver fired readiness notification: %v", err)
+	}
+	ids, sole, err := sess.undisposedBackgroundDrainJobs()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !sole || len(ids) != 1 || ids[0] != started.JobID {
+		t.Fatalf("fired readiness watch still excuses job: ids=%v sole=%v", ids, sole)
 	}
 }

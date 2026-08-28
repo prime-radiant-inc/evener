@@ -1,3 +1,4 @@
+import { useState } from "react";
 import { Disclosure } from "../../widgets/disclosure";
 import { ThemeFlip } from "../ThemeFlip";
 import styles from "./disclosure.module.css";
@@ -12,6 +13,8 @@ import styles from "./disclosure.module.css";
 // over): each theme pane still renders whatever the store says, correctly, in
 // its own palette.
 function DisclosureDemo() {
+  const [controlledOpen, setControlledOpen] = useState(true);
+
   return (
     <div className={styles.frame}>
       <Disclosure id="gallery-disclosure-open" summary="Tool call · read_file" defaultOpen>
@@ -20,13 +23,19 @@ function DisclosureDemo() {
       <Disclosure id="gallery-disclosure-closed" summary="Tool call · write_file">
         <p className={styles.body}>This one starts collapsed. Click the summary row to toggle it.</p>
       </Disclosure>
+      <Disclosure id="gallery-disclosure-disabled-collapsed" summary="Disabled collapsed store" disabled>
+        <p className={styles.body}>This disabled store-backed disclosure remains collapsed.</p>
+      </Disclosure>
+      <Disclosure open={controlledOpen} onOpenChange={setControlledOpen} summary="Disabled open controlled" disabled>
+        <p className={styles.body}>Disabled controlled body</p>
+      </Disclosure>
     </div>
   );
 }
 
 export default function DisclosureGallerySection() {
   return (
-    <section>
+    <section data-testid="disclosure-gallery">
       <h2>Disclosure</h2>
       <ThemeFlip>
         <DisclosureDemo />

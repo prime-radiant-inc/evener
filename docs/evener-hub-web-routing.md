@@ -3,7 +3,8 @@
 Evener Hub uses a full-page app shell plus HTMX-loaded fragments.
 
 - User-facing page routes stay clean and deep-linkable: `/`, `/new`, `/s/:ref`, `/settings`, and `/settings/:section`.
-- AppWire and API routes stay under `/rpc` and `/api`.
+- AppWire requests use `/rpc`; HTTP routes that have not yet migrated stay
+  under `/api`.
 - Internal fragments live under `/_partials/*` and require `HX-Request: true`.
 
 Fragment routes:
@@ -20,21 +21,27 @@ Legacy fragment-looking paths such as `/sidebar`, `/workspace/spawn`, and
 `/s/:ref/state` are not public routes. Direct browser navigation should land on
 a page route or fail instead of rendering a fragment without the app shell.
 
-Sidebar routes (JSON, not fragments):
+Sidebar navigation (AppWire, not fragments):
 
-The sidebar is client-rendered: it fetches JSON and keeps its own keyed DOM,
-instead of swapping in a server-rendered HTML partial. `/_partials/sidebar`
-and `/_partials/sidebar/project` are gone — there is no server-rendered
-sidebar left to fragment-route.
+The sidebar is client-rendered: it reads typed navigation resources over the
+authenticated AppWire connection and keeps its own keyed DOM, instead of
+swapping in a server-rendered HTML partial. `/_partials/sidebar` and
+`/_partials/sidebar/project` are gone — there is no server-rendered sidebar
+left to fragment-route.
 
-- `GET /api/tree` — the sidebar's data source: the full navigation tree
-  (live sessions, projects, Needs-you, Pinned, archived projects, test runs).
-- `GET /api/tree/project?key=` — one project's node, keyed by its slug; used
-  to re-fetch a project the client has expanded.
-- `POST /api/favorite` — set or clear a session's or project's favorite
-  (Pinned) decision.
-- `POST /api/project/delete` — delete every session under a project.
-- `POST /api/sessions/{ref}/rename` — rename a session.
+- `evener/navigation/read` — the typed sidebar read surface. Its `manifest`
+  resource provides the bounded descriptor/count index and attention summary;
+  `section`, `pin_catalog`, `pin_section`, `catalog`, `project`,
+  `project_page`, and `location` resources provide bounded rows and ownership
+  details. The canonical request shapes, pagination rules, and response
+  envelope are maintained in the [AppWire navigation resource matrix](developing-evener/agentic-testing.md).
+- `evener/favorite/set` — set or clear a project's favorite (Pinned) decision;
+  the typed method retains the explicit rejection for obsolete session-shaped
+  favorite requests.
+- `evener/project/delete` — delete every removable session under a
+  path-validated local project and return detailed outcomes plus its committed
+  navigation receipt.
+- `evener/thread/name/set` — rename a live or ended session.
 
 ## What changed (2026-07-04 sidebar rebuild)
 
@@ -45,12 +52,11 @@ sidebar left to fragment-route.
 - Project identity is the full working directory, not its basename — two
   same-named projects at different paths get distinct slug-based keys
   instead of colliding into one node.
-- Sessions and projects can be favorited (`POST /api/favorite`); favorited
-  sessions surface in a Pinned tier.
+- Project favorites use the typed `evener/favorite/set` method; favorited
+  sessions surface in a Pinned tier through the separate session-pin API.
 - A project and every session under it can be deleted in one action
-  (`POST /api/project/delete`).
+  (`evener/project/delete`).
 - Test-run sessions are classified into their own tier server-side, in
   `/api/tree` — the client does not yet render them as a distinct sidebar
   section.
-- Rename (`POST /api/sessions/{ref}/rename`) is in scope for both live and
-  ended sessions.
+- Rename uses `evener/thread/name/set` for both live and ended sessions.

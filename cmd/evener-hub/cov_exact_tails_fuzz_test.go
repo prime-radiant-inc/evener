@@ -4,7 +4,6 @@ package hub
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"net/http"
 	"net/http/httptest"
@@ -179,23 +178,8 @@ func FuzzExactTails(f *testing.F) {
 		)
 		liveWeb := NewWebServer(hubcore.WebConfig{Roster: roster})
 		liveWeb.sources = appsource.NewRegistry()
-		liveWeb.handleApiSearch(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "/api/search", nil))
 		liveWeb.handleAPIModel(httptest.NewRecorder(), httptest.NewRequest(http.MethodPost, "/", strings.NewReader(`{"model":"p/m"}`)), "live-a")
 		liveWeb.handleAPIReasoningEffort(httptest.NewRecorder(), httptest.NewRequest(http.MethodPost, "/", strings.NewReader(`{"reasoning_effort":"high"}`)), "live-a")
-		liveWeb.handleAPIRename(httptest.NewRecorder(), httptest.NewRequest(http.MethodPost, "/", strings.NewReader(`{"name":"new"}`)), "live-a")
-
-		// Model a rename race: the first liveness check is stale, while the
-		// pre-write roster recheck observes the resumed session.
-		oldRenameLive := isLiveForRename
-		isLiveForRename = func(*WebServer, string) bool { return false }
-		liveWeb.handleAPIRename(httptest.NewRecorder(), httptest.NewRequest(http.MethodPost, "/", strings.NewReader(`{"name":"new"}`)), "live-a")
-		liveWeb.sources.Add(&scriptedAppSource{id: "local"})
-		liveWeb.handleAPIRename(httptest.NewRecorder(), httptest.NewRequest(http.MethodPost, "/", strings.NewReader(`{"name":"new"}`)), "live-a")
-		liveWeb.sources = appsource.NewRegistry()
-		liveWeb.sources.Add(&exactNameSource{scriptedAppSource: &scriptedAppSource{id: "local"}})
-		liveWeb.cfg.Past = past
-		liveWeb.handleAPIRename(httptest.NewRecorder(), httptest.NewRequest(http.MethodPost, "/", strings.NewReader(`{"name":"new"}`)), "live-a")
-		isLiveForRename = oldRenameLive
 
 		oldManagedList := ensureManagedCodexSourcesForList
 		ensureManagedCodexSourcesForList = func(context.Context, hubcore.WebConfig, *appsource.Registry, appwire.ThreadListParams) error {
@@ -209,14 +193,16 @@ func FuzzExactTails(f *testing.F) {
 		tree, _ := deleteWeb.memoTree(context.Background())
 		projects := append(append([]hubcore.TreeProject(nil), tree.Projects...), tree.ArchivedProjects...)
 		if len(projects) > 0 {
-			body, _ := json.Marshal(map[string]string{"key": projects[0].Key, "working_dir": projects[0].WorkingDir})
 			checks := 0
 			oldProjectLive := projectSessionLive
 			projectSessionLive = func(*hubcore.Roster, string) bool {
 				checks++
 				return checks > 1
 			}
-			deleteWeb.handleAPIProjectDelete(httptest.NewRecorder(), httptest.NewRequest(http.MethodPost, "/", strings.NewReader(string(body))))
+			_, _ = deleteWeb.projectDelete(context.Background(), appwire.ProjectDeleteParams{
+				Key:        projects[0].Key,
+				WorkingDir: projects[0].WorkingDir,
+			})
 			projectSessionLive = oldProjectLive
 		}
 
@@ -255,7 +241,6 @@ func FuzzExactTails(f *testing.F) {
 		liveWeb.handleAPIModel(httptest.NewRecorder(), httptest.NewRequest(http.MethodPost, "/", strings.NewReader(`{"model":"p/m"}`)), "live-a")
 		ensureAPIActionAvailable = oldEnsureAction
 		_ = appendProjectDeleteLiveSkip(nil, "id")
-		sortLiveForSearch([]hubcore.LiveEntry{{SessionID: "b"}, {SessionID: "a"}}, nil)
 		t.Setenv(envvars.Home.Name, "")
 		(&WebServer{}).handleManifest(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "/manifest.webmanifest", nil))
 	})

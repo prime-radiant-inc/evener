@@ -102,8 +102,6 @@ func FuzzSessionLivePass4(f *testing.F) {
 			_ = record(http.MethodGet, "/api/sessions/remote%3Athread-1/details", "")
 			_, _ = web.apiSessionState(ref)
 		case 5:
-			_ = record(http.MethodGet, "/api/tree", "")
-			_ = record(http.MethodGet, "/api/tree?summary=1", "")
 		case 6:
 			metas, live, _ := web.navigationTreeInputs(context.Background())
 			if len(metas) != 1 || len(live) != 1 {
@@ -119,7 +117,6 @@ func FuzzSessionLivePass4(f *testing.F) {
 			thread.Evener.Ref = ""
 			thread.Status.Type = appwire.ThreadStatusClosed
 			web = pass4RemoteWeb(thread, nil)
-			_ = record(http.MethodGet, "/api/tree", "")
 			_, _ = web.apiSessionDetail(ref)
 		case 9:
 			source := &stubThreadLister{id: "remote", resp: appwire.ThreadListResponse{Data: []appwire.Thread{thread}}}

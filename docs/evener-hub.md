@@ -175,6 +175,56 @@ See the
 [launch config design spec](superpowers/specs/2026-05-16-hub-evener-launch-config-design.md)
 for the full schema and semantics.
 
+### Session plugin selection
+
+Plugin selection is a new-session control. The default state leaves the
+selection omitted, so the session uses every otherwise-loadable plugin from the
+resolved explicit directories and globally enabled installed plugins. Choosing
+an individual plugin, **All**, or **None** changes the launch to an explicit
+allow-list of manifest names; **None** sends an explicit empty list and loads no
+plugins. Globally disabled plugins are never selectable, and this control does
+not change persistent plugin state.
+
+In the desktop new-session pane, the summary appears between the working
+directory/model/effort controls and Advanced options:
+
+```text
+Plugins for this session
+5 of 6 will load · session only                                      v
+```
+
+Expanding it shows a filter, **All** and **None** actions, one accessible switch
+per candidate, source metadata (marketplace or directory), component counts,
+and any preview diagnostics. Diagnostics identify invalid or duplicate
+candidates without hiding the remaining valid rows. A stale or unavailable
+explicit selection is a blocking error that must be corrected before Start.
+
+On mobile, the **Plugins — N of M** row below the existing launch settings opens
+a sheet with the same filter, actions, metadata, and diagnostics. The sheet
+stays open while switches are changed; **Done** applies the selection and
+**Cancel** restores the selection from before the sheet opened.
+
+The TUI new-session form has a `Plugins: N/M enabled` field after `Dir` and
+before `Prompt`. Enter opens the `Plugins for this session` picker; Space
+toggles a row, `A` selects all visible rows, `N` selects none, Enter applies, and
+Escape cancels. This field is separate from the global `/plugins` manager.
+
+The launcher previews the effective candidates for the current working directory
+and launch overrides. While inspection is pending it shows `Inspecting
+plugins…`; a failed inspection shows `Couldn't inspect plugins` with retry and
+never invents a zero count. Preview diagnostics are nonblocking candidate
+warnings, while missing names in an explicit allow-list remain blocking and
+are revalidated at Start.
+
+The selection applies only to the session being created. After a successful
+Start, the new-session form resets to the current defaults; a failed Start keeps
+the explicit selection for correction. The created session stores its resolved
+plugin directories, so resumes, forks, asides, direct children/subagents, and
+durable delegates inherit the same plugin set. `--resume` and `--resume-last`
+restore that frozen set rather than accepting a replacement; `--resume-with`
+creates a new session and may choose a new set. Global enable/disable changes do
+not mutate an existing session.
+
 ## Provider credentials
 
 > Architecture reference:
@@ -300,20 +350,17 @@ The smoke checks use `jq` and `python3`; install both first. Basic health
 curl -fsS http://127.0.0.1:9180/api/health | jq .
 ```
 
-Other API routes need the auth token. Check the spawn-scoped Evener model
-list. Use the same `hub_config` and `hub_state_root` values as in the start
-recipe above; the defaults below are the XDG defaults. For a custom
-`evener hub --config /path/to/hub.toml`, set `hub_config` to that path and set
-`hub_state_root` to the exact `hub_state_root` value in that file.
+Other API routes need the auth token. Model enumeration is AppWire-only:
+connect to `ws://127.0.0.1:9180/rpc`, authenticate with the token, send
+`initialize`, then send this typed request (see
+`docs/developing-evener/agentic-testing.md`, "Driving AppWire directly"):
 
-```bash
-hub_config="${XDG_CONFIG_HOME:-$HOME/.config}/evener/hub.toml"
-hub_state_root="${XDG_STATE_HOME:-$HOME/.local/state}/evener"
-curl -fsS \
-  -H "Authorization: Bearer $(cat "$hub_state_root/auth-token")" \
-  "http://127.0.0.1:9180/api/models?cwd=$(python3 -c 'import urllib.parse,sys; print(urllib.parse.quote(sys.argv[1]))' /path/to/project)" \
-  | jq .
+```json
+{"id":2,"method":"model/list","params":{"cwd":"/path/to/project"}}
 ```
+
+The response's `result.data` contains the spawn-scoped descriptors;
+`result.recent` is the optional global Recent group.
 
 Manual verification:
 

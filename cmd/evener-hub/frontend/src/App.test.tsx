@@ -2,10 +2,13 @@ import { cleanup, render, screen } from "@testing-library/react";
 import { afterAll, afterEach, beforeAll, beforeEach, expect, test, vi } from "vitest";
 import { initNotifications, resetNotificationsForTests } from "./notifications";
 import { AppwireClient } from "./protocol/client";
+import { FakeClient } from "./protocol/testing/fakeClient";
+import type { NavigationReadParams, NavigationReadResponse } from "./protocol/types.gen";
+import { AppShell } from "./shell/AppShell";
 import { resetWorkspaceStoreForTests } from "./shell/workspace";
 import { connectionStore } from "./stores/connection";
+import { navigationStore, resetNavigationStoreForTests } from "./stores/navigation/store";
 import { resetThreadsStoreForTests } from "./stores/threads";
-import { resetTreeStoreForTests, treeStore } from "./stores/tree";
 import { resetToastStoreForTests } from "./widgets/toast/store";
 
 // AppShell's default createClient constructs a REAL AppwireClient (no test
@@ -95,51 +98,43 @@ class MemoryStorage {
   }
 }
 
-const EMPTY_TREE_RESPONSE = {
-  generated_at: "2026-01-01T00:00:00Z",
+const EMPTY_NAV_RESPONSE = {
+  generation_id: "test-generation",
+  revision: 1,
   sources: [],
-  live: [],
-  needs_you: [],
-  pin_sections: [],
-  projects: [],
-  archived_projects: [],
-  test_runs: [],
   attentionSummary: { needsYou: 0, error: 0, working: 0 },
+  sections: { live: { count: 0 }, needs_you: { count: 0 }, pin_sections: { count: 0 } },
+  catalogs: { projects: { count: 0 }, archived_projects: { count: 0 }, test_runs: { count: 0 } },
 };
 
-function stubTreeFetch(): void {
-  vi.stubGlobal("fetch", (input: RequestInfo | URL, init?: RequestInit) => {
-    if (input !== "/api/tree" || (init?.method ?? "GET") !== "GET" || init?.credentials !== "same-origin") {
-      throw new Error(`unexpected fetch in App.test: ${String(input)}`);
-    }
-    return Promise.resolve(
-      new Response(JSON.stringify(EMPTY_TREE_RESPONSE), { headers: { "Content-Type": "application/json" } }),
-    );
-  });
+function navigationReadResponse(generationId: string): NavigationReadResponse {
+  return {
+    status: "ok",
+    generationId,
+    revision: 1,
+    etag: '"test"',
+    data: { ...EMPTY_NAV_RESPONSE, generation_id: generationId },
+  };
 }
 
-function stubDeferredTreeFetch(): { requested: Promise<void>; release: () => void } {
+function stubDeferredNavigationRead(client: FakeClient): { requested: Promise<void>; release: () => void } {
   let signalRequest!: () => void;
-  let releaseResponse!: (response: Response) => void;
+  let releaseResponse!: () => void;
   const requested = new Promise<void>((resolve) => {
     signalRequest = resolve;
   });
-  const response = new Promise<Response>((resolve) => {
+  const response = new Promise<void>((resolve) => {
     releaseResponse = resolve;
   });
-  vi.stubGlobal("fetch", (input: RequestInfo | URL, init?: RequestInit) => {
-    if (input !== "/api/tree" || (init?.method ?? "GET") !== "GET" || init?.credentials !== "same-origin") {
-      throw new Error(`unexpected fetch in App.test: ${String(input)}`);
-    }
+  client.on("evener/navigation/read", (params) => {
+    if (params.resource !== "manifest") throw new Error(`unexpected navigation resource: ${params.resource}`);
     signalRequest();
-    return response;
+    return response.then(() => navigationReadResponse("test-generation"));
   });
   return {
     requested,
     release: () => {
-      releaseResponse(
-        new Response(JSON.stringify(EMPTY_TREE_RESPONSE), { headers: { "Content-Type": "application/json" } }),
-      );
+      releaseResponse();
     },
   };
 }
@@ -182,7 +177,7 @@ async function warmRoute(path: string, text: string | RegExp): Promise<void> {
 // instead of a timeout.
 beforeAll(async () => {
   resetWorkspaceStoreForTests();
-  resetTreeStoreForTests();
+  resetNavigationStoreForTests();
   globalThis.ResizeObserver = StubResizeObserver;
   // @ts-expect-error MemoryStorage deliberately implements only the Storage
   // methods DockHost.tsx actually calls (getItem/setItem/removeItem/clear),
@@ -196,7 +191,6 @@ beforeAll(async () => {
   // welcome route renders.
   closeStaleClient();
   connectionStore.setState({ state: "idle", serverInfo: undefined, client: null });
-  stubTreeFetch();
   await import("./dev/WidgetGallery");
   await import("./dev/DevHarness");
   await import("./panes/welcome/Welcome");
@@ -217,11 +211,10 @@ beforeAll(async () => {
 
 beforeEach(() => {
   resetWorkspaceStoreForTests();
-  resetTreeStoreForTests();
+  resetNavigationStoreForTests();
   closeAllCreatedClients();
   connectionStore.setState({ state: "idle", serverInfo: undefined, client: null });
   localStorage.clear();
-  stubTreeFetch();
 });
 
 afterEach(() => {
@@ -236,7 +229,7 @@ afterEach(() => {
   // reset (see resetToastStoreForTests's own comment; GoalControl.test.tsx's
   // identical reset for the fuller writeup).
   resetToastStoreForTests();
-  resetTreeStoreForTests();
+  resetNavigationStoreForTests();
   // Each test above renders <App/> with no test client injected, so every
   // one constructs a fresh real AppwireClient and wires it into
   // connectionStore - which threads.ts's module-scope
@@ -258,7 +251,7 @@ afterEach(() => {
   // Left un-reset, a LATER file's own client connecting straight to "ready"
   // (e.g. `new FakeClient("ready")`) reads as a "reconnect" against this
   // leftover `sawReady=true`, firing an extra, unexpected
-  // treeStore.refresh() into that file's own fetch-call assertions.
+  // navigationStore.loadManifest() into that file's own navigation-call assertions.
   //
   // AppShell.tsx's module-scope initNotifications() call only ever fires
   // once per worker (its own "only once" guard), so leaving it reset would
@@ -266,13 +259,13 @@ afterEach(() => {
   // isolate:false worker - so it is re-run immediately below, restoring the
   // same state a fresh module evaluation would have left (kata p5w9's
   // identical pattern in AppShell.test.tsx; see notifications/index.ts's own
-  // reset comment). This pair runs LAST, after connectionStore and treeStore
+  // reset comment). This pair runs LAST, after connectionStore and navigationStore
   // are already back to idle/null above: initNotifications() seeds its
   // `sawReady`/baseline snapshot from whatever those stores hold AT THIS
   // MOMENT, and seeding from a still-"ready" connectionStore (as this test's
   // own render left it moments ago) would wrongly arm the very "reconnect"
   // detector this reset exists to neutralize - reading the NEXT file's first
-  // real connect as a reconnect and firing a spurious treeStore.refresh()
+  // real connect as a reconnect and firing a spurious navigationStore.loadManifest()
   // into ITS fetch-call assertions instead.
   resetNotificationsForTests();
   initNotifications();
@@ -293,22 +286,51 @@ test("renders the app shell (welcome pane) at the default route", async () => {
   expect(screen.queryByText(/connection:/i)).toBeNull();
 });
 
-test("initiates and settles the welcome tree load without an error", async () => {
-  const treeFetch = stubDeferredTreeFetch();
-  render(<App />);
-  // Prove App initiated the request before joining it: calling ensureLoaded()
-  // before this signal could start the request itself and let a boot that no
-  // longer loads the tree pass unnoticed.
-  await treeFetch.requested;
-  treeFetch.release();
-  expect(await treeStore.getState().ensureLoaded()).toBe(true);
-  const { tree, loading, error } = treeStore.getState();
-  expect(tree).not.toBeNull();
-  expect(loading).toBe(false);
-  expect(error).toBeNull();
+test("initiates and settles the welcome navigation load without an error", async () => {
+  const client = new FakeClient("ready");
+  client.scriptConnect(() => ({
+    serverInfo: { name: "fake", version: "1" },
+    protocolVersion: "evener-appwire-v3",
+    sourceId: "fake",
+    features: {} as never,
+    navigation: { version: 1, generationId: "test-generation", sequence: 0 },
+  }));
+  const navRead = stubDeferredNavigationRead(client);
+  render(<AppShell client={client} />);
+  await navRead.requested;
+  navRead.release();
+  await navigationStore.getState().loadManifest();
+  const manifest = navigationStore.getState().manifest;
+  expect(manifest).not.toBeNull();
+  expect(manifest?.error).toBeNull();
 });
 
-test("does not escape a tree fetch before the test fake is installed", () => {
+test("AppShell's injected v1 handshake selects navigation through AppWire", async () => {
+  const client = new FakeClient("ready");
+  client.scriptConnect(() => ({
+    serverInfo: { name: "fake", version: "1" },
+    protocolVersion: "evener-appwire-v3",
+    sourceId: "fake",
+    features: {} as never,
+    navigation: { version: 1, generationId: "app-generation", sequence: 0 },
+  }));
+  const calls: NavigationReadParams[] = [];
+  client.on("evener/navigation/read", (params) => {
+    calls.push(params);
+    if (params.resource !== "manifest") throw new Error(`unexpected navigation resource: ${params.resource}`);
+    return { ...navigationReadResponse("app-generation"), etag: '"app-manifest"' };
+  });
+
+  render(<AppShell client={client} />);
+  await Promise.resolve();
+  await Promise.resolve();
+  await Promise.resolve();
+
+  expect(navigationStore.getState().mode).toBe("v1");
+  expect(calls).toEqual([{ resource: "manifest" }]);
+});
+
+test("does not escape a navigation request before the test fake is installed", () => {
   expect(escapedFetches).toHaveLength(0);
 });
 

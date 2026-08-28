@@ -20,10 +20,10 @@ is finished and the nested job is terminal, the forwarded job's
 retained output is STILL readable by the parent — the
 forwarded-output promise ("Output storage" "either by mirroring
 output into the parent job store or by durable routing metadata";
-design spec 2026-06-08 §3.4: model-invisible). The cross-store read
-GRANT flavor — an observer reading a job it does not own, through the
-grant a `job.notification` delivery mints — is covered by
-`sidecar-handoff-packager-job-notification.md`, not here.
+design spec 2026-06-08 §3.4: model-invisible). The cross-session
+observer read-grant design was retired. This card covers forwarded
+nested shell output and does not imply observer grants or delegate
+`job.notification` resources.
 
 ## Pre-state
 

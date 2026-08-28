@@ -1,6 +1,7 @@
 package execenv
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"os"
@@ -135,7 +136,7 @@ func TestEscape_DenylistReadEveryTool(t *testing.T) {
 			if _, err := env.Glob(t.Context(), "*", ssh); !isDeniedErr(err) {
 				t.Errorf("glob(denylisted base): want denial, got %v", err)
 			}
-			if _, err := env.Grep("KEY", ssh, "", false, 10, "content"); !isDeniedErr(err) {
+			if _, err := env.Grep(context.Background(), "KEY", ssh, "", false, 10, "content"); !isDeniedErr(err) {
 				t.Errorf("grep(denylisted base): want denial, got %v", err)
 			}
 			_ = worktree // apply_patch's denylist case lives in apply_patch_sandbox_test.go

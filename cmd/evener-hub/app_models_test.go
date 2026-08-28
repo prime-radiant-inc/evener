@@ -43,12 +43,12 @@ func TestFetchLiveModels_KimiContextWindow(t *testing.T) {
 	})
 	client.SetNameToTag(map[string]string{"kimi-anthropic-api": "kimi-anthropic"})
 
-	oldLoadClient := webSpawnLoadClient
-	webSpawnLoadClient = func(...llm.EnvOption) (*llm.Client, providercfg.Config, bool, error) {
+	oldLoadClient := liveModelLoadClient
+	liveModelLoadClient = func(...llm.EnvOption) (*llm.Client, providercfg.Config, bool, error) {
 		return client, providercfg.Config{}, true, nil
 	}
 	t.Cleanup(func() {
-		webSpawnLoadClient = oldLoadClient
+		liveModelLoadClient = oldLoadClient
 	})
 
 	server := NewWebServer(hubcore.WebConfig{
@@ -59,9 +59,8 @@ func TestFetchLiveModels_KimiContextWindow(t *testing.T) {
 	models := server.fetchLiveModels(context.Background())
 	contextByModel := make(map[string]int, len(models))
 	for _, model := range models {
-		modelID, _ := model["model"].(string)
-		if contextWindow, ok := model["context_window"].(int); ok {
-			contextByModel[modelID] = contextWindow
+		if model.ContextWindow != nil {
+			contextByModel[model.Model] = *model.ContextWindow
 		}
 	}
 
@@ -74,8 +73,8 @@ func TestFetchLiveModels_KimiContextWindow(t *testing.T) {
 }
 
 // TestHubModelList_AttachesRecentFromPastIndex verifies every ModelList
-// response (the path both the TUI's appwire RPC and the web's non-evener-harness
-// REST branch use) carries Recent, filtered to models actually present in
+// response (the path both the TUI and browser use) carries Recent, filtered to
+// models actually present in
 // resp.Data — a recent ref no longer offered isn't rendered as unselectable.
 func TestHubModelList_AttachesRecentFromPastIndex(t *testing.T) {
 	past := hubcore.NewPastIndex("")
@@ -94,6 +93,9 @@ func TestHubModelList_AttachesRecentFromPastIndex(t *testing.T) {
 	}
 	if resp.Recent != nil {
 		t.Fatalf("Recent = %+v, want nil (no models in resp.Data to match against)", resp.Recent)
+	}
+	if resp.Data == nil {
+		t.Fatal("Data = nil, want an empty JSON array")
 	}
 }
 
@@ -121,13 +123,63 @@ func TestAttachRecentModels_FiltersToAvailableModels(t *testing.T) {
 		{ID: "b", ProfileID: "openai", Model: "retired-model"},
 	})
 	cfg := hubcore.WebConfig{Past: past}
+	supportsTools := true
 	resp := appwire.ModelListResponse{Data: []appwire.ModelDescriptor{
-		{Provider: "openai", Model: "gpt-5.2"},
+		{Provider: "openai", Model: "gpt-5.2", DisplayName: "GPT-5.2", SupportsTools: &supportsTools},
 	}}
 	got := attachRecentModels(cfg, resp)
-	want := []appwire.ModelDescriptor{{Provider: "openai", Model: "gpt-5.2"}}
+	want := []appwire.ModelDescriptor{{Provider: "openai", Model: "gpt-5.2", DisplayName: "GPT-5.2", SupportsTools: &supportsTools}}
 	if !reflect.DeepEqual(got.Recent, want) {
 		t.Fatalf("Recent = %+v, want %+v (retired-model absent from resp.Data must be dropped)", got.Recent, want)
+	}
+}
+
+func TestEnrichModelDescriptorsAddsCatalogMetadata(t *testing.T) {
+	got := enrichModelDescriptors([]appwire.ModelDescriptor{{Provider: "anthropic", Model: "claude-opus-4-6"}}, nil)
+	if len(got) != 1 {
+		t.Fatalf("got %d descriptors, want 1", len(got))
+	}
+	d := got[0]
+	if d.DisplayName != "Claude Opus 4 6" {
+		t.Errorf("display name = %q, want prettified model id", d.DisplayName)
+	}
+	if d.ContextWindow == nil || *d.ContextWindow != 1_000_000 {
+		t.Errorf("context window = %v, want 1000000", d.ContextWindow)
+	}
+	if d.SupportsVision == nil || !*d.SupportsVision {
+		t.Errorf("supports vision = %v, want true", d.SupportsVision)
+	}
+	if d.SupportsWebSearch == nil || !*d.SupportsWebSearch {
+		t.Errorf("supports web search = %v, want true", d.SupportsWebSearch)
+	}
+	if d.MaxOutputTokens == nil || *d.MaxOutputTokens != 128_000 {
+		t.Errorf("max output tokens = %v, want 128000", d.MaxOutputTokens)
+	}
+}
+
+func TestEnrichModelDescriptorsPreservesExplicitMetadata(t *testing.T) {
+	contextWindow := 7
+	supportsTools := false
+	supportsReasoning := false
+	inputCost := 0.0
+	in := appwire.ModelDescriptor{
+		Provider:            "anthropic",
+		Model:               "claude-opus-4-6",
+		DisplayName:         "Configured",
+		ContextWindow:       &contextWindow,
+		SupportsTools:       &supportsTools,
+		SupportsReasoning:   &supportsReasoning,
+		InputCostPerMillion: &inputCost,
+	}
+	got := enrichModelDescriptors([]appwire.ModelDescriptor{in}, nil)
+	if got[0].DisplayName != in.DisplayName || got[0].ContextWindow == nil || *got[0].ContextWindow != contextWindow ||
+		got[0].SupportsTools == nil || *got[0].SupportsTools != supportsTools ||
+		got[0].SupportsReasoning == nil || *got[0].SupportsReasoning != supportsReasoning ||
+		got[0].InputCostPerMillion == nil || *got[0].InputCostPerMillion != inputCost {
+		t.Fatalf("explicit metadata changed: got %+v, want preserved fields from %+v", got[0], in)
+	}
+	if len(got[0].ReasoningEffortLevels) != 0 {
+		t.Fatalf("explicit reasoning=false should keep levels empty: %+v", got[0].ReasoningEffortLevels)
 	}
 }
 
@@ -166,24 +218,24 @@ func TestIsDatedSnapshotModelID(t *testing.T) {
 	}
 }
 
-func TestModelDescriptorsToAPIModels_UsesPrettifiedDisplayNameAndSortsDatedLast(t *testing.T) {
-	models := modelDescriptorsToAPIModels([]appwire.ModelDescriptor{
+func TestEnrichModelDescriptors_UsesPrettifiedDisplayNameAndSortsDatedLast(t *testing.T) {
+	models := enrichModelListResponse(hubcore.WebConfig{}, appwire.ModelListResponse{Data: []appwire.ModelDescriptor{
 		{Provider: "anthropic", Model: "claude-opus-4-6-20251101"},
 		{Provider: "anthropic", Model: "claude-opus-4-6"},
 		{Provider: "openai", Model: "gpt-5.2"},
-	}, nil)
+	}}).Data
 	if len(models) != 3 {
 		t.Fatalf("got %d models, want 3", len(models))
 	}
-	if got := models[0]["display_name"]; got != "Claude Opus 4 6" {
-		t.Errorf("models[0].display_name = %v, want %q", got, "Claude Opus 4 6")
+	if got := models[0].DisplayName; got != "Claude Opus 4 6" {
+		t.Errorf("models[0].DisplayName = %v, want %q", got, "Claude Opus 4 6")
 	}
 	// Within the anthropic group, the dated snapshot must sort after the bare
 	// family id, regardless of input order.
 	var anthropicOrder []string
 	for _, m := range models {
-		if m["provider"] == "anthropic" {
-			anthropicOrder = append(anthropicOrder, m["model"].(string))
+		if m.Provider == "anthropic" {
+			anthropicOrder = append(anthropicOrder, m.Model)
 		}
 	}
 	want := []string{"claude-opus-4-6", "claude-opus-4-6-20251101"}
@@ -192,49 +244,58 @@ func TestModelDescriptorsToAPIModels_UsesPrettifiedDisplayNameAndSortsDatedLast(
 	}
 }
 
-func TestModelDescriptorsToAPIModels_IncludesCapabilityBadges(t *testing.T) {
-	models := modelDescriptorsToAPIModels([]appwire.ModelDescriptor{
+func TestEnrichModelDescriptors_IncludesCapabilityBadges(t *testing.T) {
+	models := enrichModelDescriptors([]appwire.ModelDescriptor{
 		{Provider: "anthropic", Model: "claude-opus-4-6"},
 	}, nil)
 	if len(models) != 1 {
 		t.Fatalf("got %d models, want 1", len(models))
 	}
 	m := models[0]
-	if got, _ := m["supports_vision"].(bool); !got {
-		t.Errorf("supports_vision = %v, want true", m["supports_vision"])
+	if m.SupportsVision == nil || !*m.SupportsVision {
+		t.Errorf("supports vision = %v, want true", m.SupportsVision)
 	}
-	if got, _ := m["supports_web_search"].(bool); !got {
-		t.Errorf("supports_web_search = %v, want true", m["supports_web_search"])
+	if m.SupportsWebSearch == nil || !*m.SupportsWebSearch {
+		t.Errorf("supports web search = %v, want true", m.SupportsWebSearch)
 	}
-	if got, _ := m["max_output_tokens"].(int); got != 128000 {
-		t.Errorf("max_output_tokens = %v, want 128000", m["max_output_tokens"])
+	if m.MaxOutputTokens == nil || *m.MaxOutputTokens != 128000 {
+		t.Errorf("max output tokens = %v, want 128000", m.MaxOutputTokens)
 	}
-	if got, _ := m["context_window"].(int); got != 1_000_000 {
-		t.Errorf("context_window = %v, want 1000000", m["context_window"])
+	if m.ContextWindow == nil || *m.ContextWindow != 1_000_000 {
+		t.Errorf("context window = %v, want 1000000", m.ContextWindow)
 	}
 }
 
-// TestModelDescriptorsToAPIModels_UncataloguedModelStillRendersWithoutBadges
+// TestEnrichModelDescriptors_UncataloguedModelStillRendersWithoutBadges
 // pins the graceful-degradation rule: a live model absent from the embedded
 // catalog (catalogModelInfo returns nil) must still render name+provider+id
 // — not be dropped — just without any badge fields.
-func TestModelDescriptorsToAPIModels_UncataloguedModelStillRendersWithoutBadges(t *testing.T) {
-	models := modelDescriptorsToAPIModels([]appwire.ModelDescriptor{
+func TestEnrichModelDescriptors_UncataloguedModelStillRendersWithoutBadges(t *testing.T) {
+	models := enrichModelDescriptors([]appwire.ModelDescriptor{
 		{Provider: "mycompany", Model: "totally-unknown-model-xyz"},
 	}, nil)
 	if len(models) != 1 {
 		t.Fatalf("uncatalogued model was dropped: got %d entries, want 1", len(models))
 	}
 	m := models[0]
-	if m["provider"] != "mycompany" || m["model"] != "totally-unknown-model-xyz" {
+	if m.Provider != "mycompany" || m.Model != "totally-unknown-model-xyz" {
 		t.Fatalf("uncatalogued entry missing provider/model: %+v", m)
 	}
-	if m["display_name"] != "Totally Unknown Model Xyz" {
-		t.Errorf("display_name = %v, want prettified id even when uncatalogued", m["display_name"])
+	if m.DisplayName != "Totally Unknown Model Xyz" {
+		t.Errorf("display name = %v, want prettified id even when uncatalogued", m.DisplayName)
 	}
-	for _, badge := range []string{"supports_tools", "supports_vision", "supports_reasoning", "supports_web_search", "context_window", "max_output_tokens", "input_cost_per_million", "output_cost_per_million"} {
-		if _, ok := m[badge]; ok {
-			t.Errorf("uncatalogued entry should omit %q, got %v", badge, m[badge])
+	for field, present := range map[string]bool{
+		"supports_tools":          m.SupportsTools != nil,
+		"supports_vision":         m.SupportsVision != nil,
+		"supports_reasoning":      m.SupportsReasoning != nil,
+		"supports_web_search":     m.SupportsWebSearch != nil,
+		"context_window":          m.ContextWindow != nil,
+		"max_output_tokens":       m.MaxOutputTokens != nil,
+		"input_cost_per_million":  m.InputCostPerMillion != nil,
+		"output_cost_per_million": m.OutputCostPerMillion != nil,
+	} {
+		if present {
+			t.Errorf("uncatalogued entry should omit %q", field)
 		}
 	}
 }

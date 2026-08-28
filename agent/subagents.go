@@ -270,6 +270,25 @@ func baseSubagentToolPolicy(agent *plugin.Agent, canDelegate bool) (allTools boo
 	}
 }
 
+// subagentToolScopeIsReadOnly reports whether an explicitly tool-scoped agent
+// has any direct workspace mutation capability. Shell is intentionally not in
+// this list: the bundled explorer/reviewer/verifier roles need shell for
+// inspection, but a shell is still a write-capable process unless the child's
+// execution environment supplies a kernel boundary. The boundary is therefore
+// derived from the structured tool scope, never from role prose.
+func subagentToolScopeIsReadOnly(allTools bool, allowed []string) bool {
+	if allTools || len(allowed) == 0 {
+		return false
+	}
+	for _, name := range allowed {
+		switch name {
+		case "write_file", "edit_file", "apply_patch", "manage_worktree":
+			return false
+		}
+	}
+	return true
+}
+
 func frozenSubagentToolNames(allTools bool, allowed, denied []string) []string {
 	switch {
 	case allTools:
@@ -338,7 +357,7 @@ func frozenStableDelegateSandboxMatches(env execenv.ExecutionEnvironment, want *
 	if got == nil || want == nil {
 		return got == nil && want == nil
 	}
-	if got.Mode != want.Mode || !slices.Equal(got.DenylistAdd, want.DenylistAdd) || !slices.Equal(got.DenylistRemove, want.DenylistRemove) || !slices.Equal(got.ExtraWritableRoots, want.ExtraWritableRoots) || !slices.Equal(got.ExtraReadRoots, want.ExtraReadRoots) {
+	if got.Mode != want.Mode || got.WriteBlocked != want.WriteBlocked || !slices.Equal(got.DenylistAdd, want.DenylistAdd) || !slices.Equal(got.DenylistRemove, want.DenylistRemove) || !slices.Equal(got.ExtraWritableRoots, want.ExtraWritableRoots) || !slices.Equal(got.ExtraReadRoots, want.ExtraReadRoots) {
 		return false
 	}
 	if got.Network == nil || want.Network == nil {
@@ -607,6 +626,7 @@ func (s *Session) prepareStableDelegateRun(ctx context.Context, descriptor deleg
 func subagentConfigFromFrozenDescriptor(frozenConfig schema.ConfigSnapshot, parentCfg SessionConfig) SessionConfig {
 	subCfg := configFromSnapshot(frozenConfig.Clone())
 	subCfg.Project = parentCfg.Project
+	subCfg.LifetimeContext = parentCfg.LifetimeContext
 	subCfg.LLMRetryPolicy = parentCfg.LLMRetryPolicy
 	subCfg.LLMSleep = parentCfg.LLMSleep
 	subCfg.clock = parentCfg.clock
@@ -852,6 +872,13 @@ func (s *Session) prepareSubagentRunFromSelection(
 	if v, ok := ctx.Value(ctxDelegateSandboxPolicy).(*sandbox.SandboxPolicy); ok {
 		reqSandbox = v
 	}
+	if reqSandbox == nil && subagentToolScopeIsReadOnly(allTools, allowedTools) {
+		var sandboxErr error
+		reqSandbox, sandboxErr = s.readOnlyDelegateSandbox()
+		if sandboxErr != nil {
+			return nil, fmt.Errorf("read-only delegate sandbox: %w", sandboxErr)
+		}
+	}
 	preparedEnv, hasPreparedEnv := ctx.Value(delegatePreparedEnvironmentContextKey{}).(delegatePreparedEnvironment)
 	subEnv := preparedEnv.env
 	ownsFreshEnv := preparedEnv.ownsFresh
@@ -1022,7 +1049,7 @@ func (s *Session) prepareSubagentRunFromSelection(
 	// child keeps running. Child cancellation is handled by subSess.Close(),
 	// including when the parent session closes. The per-run context lets
 	// parent stops interrupt this run without destroying the child session.
-	runCtx, runCancel := context.WithCancel(context.Background())
+	runCtx, runCancel := context.WithCancel(s.sessionCtx)
 	sub.mu.Lock()
 	sub.cancel = runCancel
 	sub.cancelRequested = false
@@ -1824,6 +1851,7 @@ type delegateTerminalPacketMetadata struct {
 	Task              string                          `json:"task,omitempty"`
 	Description       string                          `json:"description,omitempty"`
 	AgentType         string                          `json:"agent_type,omitempty"`
+	Tools             []string                        `json:"tools,omitempty"`
 	RequestedModel    string                          `json:"requested_model,omitempty"`
 	ResolvedProfileID string                          `json:"resolved_profile_id,omitempty"`
 	ResolvedModel     string                          `json:"resolved_model,omitempty"`
@@ -1946,6 +1974,7 @@ func delegateTerminalMetadataFromRun(inputs delegateTerminalRunInputs) delegateT
 		Task:              inputs.descriptor.Task,
 		Description:       inputs.descriptor.Description,
 		AgentType:         inputs.descriptor.AgentType,
+		Tools:             append([]string(nil), inputs.descriptor.ToolNameCeiling...),
 		RequestedModel:    inputs.descriptor.RequestedModel,
 		ResolvedProfileID: inputs.descriptor.ResolvedProfileID,
 		ResolvedModel:     inputs.descriptor.ResolvedModel,

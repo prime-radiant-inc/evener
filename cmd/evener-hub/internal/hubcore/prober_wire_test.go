@@ -42,6 +42,7 @@ func (s wireProbeEnvelopeSource) PendingEscalations() []appwire.SandboxEscalatio
 	return s.escalations
 }
 func (s wireProbeEnvelopeSource) ReasoningInfo() (string, []string, bool) { return "", nil, false }
+func (s wireProbeEnvelopeSource) VisionModel() string                     { return "" }
 func (s wireProbeEnvelopeSource) SessionMeta() schema.SessionMeta         { return schema.SessionMeta{} }
 
 // TestStatusProberAgreesWithServerStatusInfoAcrossTheWire decodes a REAL

@@ -8,7 +8,7 @@ import { ThemeFlip } from "../ThemeFlip";
 // small static in-memory fake, just enough to show the two resting displays -
 // the harness-default marker and a chosen qualified provider/model; it never
 // hits the wire, so the badges/cost/Recent affordances only light up against a
-// live /api/models envelope.
+// live model/list response.
 const CATALOG: ModelCatalog = {
   models: [
     { provider: "anthropic", model: "claude-sonnet-4-5", displayName: "Claude Sonnet 4.5" },

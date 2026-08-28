@@ -6,6 +6,8 @@ import (
 	"bytes"
 	"fmt"
 	"os"
+	"os/exec"
+	"os/signal"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -13,6 +15,81 @@ import (
 	"testing"
 	"time"
 )
+
+// TestMain also serves a tiny real-process signal fixture. The fixture is
+// launched by the shell scripts below, so it lives in the same process-group
+// path as a production suite while using Go's signal delivery contract rather
+// than a shell trap's command-boundary semantics. The latter was the lost
+// event: a shell can receive TERM while it is between the readiness echo and
+// its blocking read, or while it is waiting for a foreground child, and exit
+// before running the trap.
+func TestMain(m *testing.M) {
+	if ready := os.Getenv("EVENER_WAVE_FIXTURE_READY"); ready != "" {
+		runSignalFixture(
+			os.Getenv("EVENER_WAVE_FIXTURE_MODE"),
+			ready,
+			os.Getenv("EVENER_WAVE_FIXTURE_EVENT"),
+			os.Getenv("EVENER_WAVE_FIXTURE_PARENT_READY"),
+		)
+		return
+	}
+	os.Exit(m.Run())
+}
+
+func runSignalFixture(mode, ready, event, parentReady string) {
+	signals := make(chan os.Signal, 1)
+	signal.Notify(signals, syscall.SIGTERM, syscall.SIGINT)
+	if mode == "parent" {
+		child := exec.Command(os.Args[0], "-test.run", "^$") //nolint:noctx,gosec // test fixture runs this package's own binary
+		child.Env = fixtureEnv("child", ready, event, "")
+		if err := child.Start(); err != nil {
+			os.Exit(2)
+		}
+		writeFixtureLine(parentReady, "ready")
+		<-signals
+		_ = child.Wait()
+		signal.Stop(signals)
+		os.Exit(143)
+	}
+	writeFixtureLine(ready, "ready")
+	<-signals
+	if event != "" {
+		writeFixtureLine(event, "termed")
+	}
+	signal.Stop(signals)
+	os.Exit(143)
+}
+
+func fixtureEnv(mode, ready, event, parentReady string) []string {
+	env := environWithout(
+		"EVENER_WAVE_FIXTURE_MODE",
+		"EVENER_WAVE_FIXTURE_READY",
+		"EVENER_WAVE_FIXTURE_EVENT",
+		"EVENER_WAVE_FIXTURE_PARENT_READY",
+	)
+	env = append(env, "EVENER_WAVE_FIXTURE_MODE="+mode, "EVENER_WAVE_FIXTURE_READY="+ready)
+	if event != "" {
+		env = append(env, "EVENER_WAVE_FIXTURE_EVENT="+event)
+	}
+	if parentReady != "" {
+		env = append(env, "EVENER_WAVE_FIXTURE_PARENT_READY="+parentReady)
+	}
+	return env
+}
+
+func writeFixtureLine(path, line string) {
+	f, err := os.OpenFile(path, os.O_WRONLY, 0)
+	if err != nil {
+		os.Exit(2)
+	}
+	if _, err := fmt.Fprintln(f, line); err != nil {
+		_ = f.Close()
+		os.Exit(2)
+	}
+	if err := f.Close(); err != nil {
+		os.Exit(2)
+	}
+}
 
 func writeSuite(t *testing.T, dir, name, body string) {
 	t.Helper()
@@ -23,6 +100,33 @@ func writeSuite(t *testing.T, dir, name, body string) {
 	if err := os.WriteFile(path, []byte("#!/bin/sh\n"+body), 0o755); err != nil {
 		t.Fatal(err)
 	}
+}
+
+// writeSignalFixtureSuite creates a suite that delegates its readiness and
+// TERM event to a child of this test binary. The child registers signal.Notify
+// before writing readiness, making the readiness FIFO an actual handler-ready
+// event rather than a marker emitted before the awaitable operation begins.
+func writeSignalFixtureSuite(t *testing.T, dir, name, ready, event, parentReady string) {
+	t.Helper()
+	testBinaryPath, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	testBinary := strconv.Quote(testBinaryPath)
+	mode := "direct"
+	if parentReady != "" {
+		mode = "parent"
+	}
+	command := "EVENER_WAVE_FIXTURE_MODE=" + mode + " "
+	command += "EVENER_WAVE_FIXTURE_READY=" + strconv.Quote(ready) + " "
+	if event != "" {
+		command += "EVENER_WAVE_FIXTURE_EVENT=" + strconv.Quote(event) + " "
+	}
+	if parentReady != "" {
+		command += "EVENER_WAVE_FIXTURE_PARENT_READY=" + strconv.Quote(parentReady) + " "
+	}
+	command += "exec " + testBinary + " -test.run '^$'"
+	writeSuite(t, dir, name, command)
 }
 
 func TestAllSuitesPassPrintsPassAndExitsZero(t *testing.T) {
@@ -273,6 +377,16 @@ func readFifoLine(t *testing.T, path string, run *waveRun) string {
 	return line
 }
 
+// waveKillGrace gives the real child handler the time this test can spare.
+// It shares the test-deadline arithmetic with post-exit FIFO diagnostics, so
+// an absent handler still trips before the testing package's own panic while a
+// loaded runner does not get the old one-second cleanup race.
+func waveKillGrace(t *testing.T) time.Duration {
+	t.Helper()
+	deadline, _ := t.Deadline()
+	return graceFor(deadline, time.Now())
+}
+
 // startWave runs runWave in a goroutine and returns the running wave.
 func startWave(cfg waveConfig) *waveRun {
 	run := &waveRun{done: make(chan struct{})}
@@ -284,20 +398,24 @@ func startWave(cfg waveConfig) *waveRun {
 }
 
 func TestInterruptTermsProcessGroupAndExits143(t *testing.T) {
-	fx := mkFixtureFifos(t, "ready", "events", "hold")
+	fx := mkFixtureFifos(t, "ready", "events")
 	dir := t.TempDir()
-	writeSuite(t, dir, "holder",
-		"trap 'echo suite-termed >"+fx+"/events; exit 143' TERM\n"+
-			"echo ready >"+fx+"/ready\n"+
-			"read _ <"+fx+"/hold\n")
+	writeSignalFixtureSuite(t, dir, "holder", filepath.Join(fx, "ready"), filepath.Join(fx, "events"), "")
 	signals := make(chan os.Signal, 1)
 	var out bytes.Buffer
-	run := startWave(waveConfig{ScriptsDir: dir, Suites: []string{"holder"}, KillGrace: time.Minute, Out: &out, Signals: signals})
+	run := startWave(waveConfig{ScriptsDir: dir, Suites: []string{"holder"}, KillGrace: waveKillGrace(t), Out: &out, Signals: signals})
+	t.Cleanup(func() {
+		select {
+		case signals <- syscall.SIGTERM:
+		default:
+		}
+		<-run.done
+	})
 	if got := readFifoLine(t, filepath.Join(fx, "ready"), run); got != "ready" {
 		t.Fatalf("readiness handshake got %q", got)
 	}
 	signals <- syscall.SIGTERM
-	if got := readFifoLine(t, filepath.Join(fx, "events"), run); got != "suite-termed" {
+	if got := readFifoLine(t, filepath.Join(fx, "events"), run); got != "termed" {
 		t.Fatalf("suite never saw TERM, got %q", got)
 	}
 	if code := run.wait(); code != 143 {
@@ -306,21 +424,25 @@ func TestInterruptTermsProcessGroupAndExits143(t *testing.T) {
 }
 
 func TestForkedDescendantIsReaped(t *testing.T) {
-	fx := mkFixtureFifos(t, "ready", "ready2", "events", "hold", "hold2")
+	fx := mkFixtureFifos(t, "ready", "ready2", "events")
 	dir := t.TempDir()
-	writeSuite(t, dir, "forker",
-		"( trap 'echo grandchild-termed >"+fx+"/events; exit 0' TERM\n"+
-			"  echo up >"+fx+"/ready2\n"+
-			"  read _ <"+fx+"/hold2 ) &\n"+
-			"echo ready >"+fx+"/ready\n"+
-			"read _ <"+fx+"/hold\n")
+	writeSignalFixtureSuite(t, dir, "forker", filepath.Join(fx, "ready2"), filepath.Join(fx, "events"), filepath.Join(fx, "ready"))
+	// The Go fixture parent remains in the wave so the child's event proves
+	// group delivery, while both readiness lines are handler-installed events.
 	signals := make(chan os.Signal, 1)
 	var out bytes.Buffer
-	run := startWave(waveConfig{ScriptsDir: dir, Suites: []string{"forker"}, KillGrace: time.Minute, Out: &out, Signals: signals})
+	run := startWave(waveConfig{ScriptsDir: dir, Suites: []string{"forker"}, KillGrace: waveKillGrace(t), Out: &out, Signals: signals})
+	t.Cleanup(func() {
+		select {
+		case signals <- syscall.SIGTERM:
+		default:
+		}
+		<-run.done
+	})
 	readFifoLine(t, filepath.Join(fx, "ready"), run)
 	readFifoLine(t, filepath.Join(fx, "ready2"), run)
 	signals <- syscall.SIGTERM
-	if got := readFifoLine(t, filepath.Join(fx, "events"), run); got != "grandchild-termed" {
+	if got := readFifoLine(t, filepath.Join(fx, "events"), run); got != "termed" {
 		t.Fatalf("forked descendant never saw TERM, got %q", got)
 	}
 	if code := run.wait(); code != 143 {

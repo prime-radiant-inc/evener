@@ -2,7 +2,7 @@
 
 **What this covers**: the server-side project classification in
 `cmd/evener-hub/internal/hubcore/tree.go` (`TreeProject.IsArchived`/`IsTestRun`,
-`:126-134,939-940`) and `/api/tree`'s projection of it into
+`:126-134,939-940`) and AppWire's navigation-read projection of it into
 `archived_projects[]` / `test_runs[]`, where TestRuns takes precedence over
 Archived (`navigationProjectBuckets`, `cmd/evener-hub/web_api_tree.go#navigationProjectBuckets`;
 the ordered emit at `:161-176`). Covers the full archive→unarchive round trip,
@@ -16,6 +16,8 @@ drive `sidebar.js`'s `pushArchivedSection`/`pushTestRunsSection`, poke
 `window.EvenerSidebar.refresh()`, and match `[data-row-id="section:test-runs"]`.
 All of that died with the vanilla frontend (`660376f78`); the rail is React
 (`cmd/evener-hub/frontend/src/shell/rail/`) and none of those handles exist.
+
+**Navigation resource request counts are bounded** (`docs/superpowers/specs/2026-08-25-tree-transport-optimization-design.md`): archive/unarchive/delete mutations trigger at most one AppWire read per affected loaded navigation representation (manifest, catalog page, project root); an idle rail issues zero navigation reads after hydration, and a mutation plus its AppWire notification do not duplicate a resource read.
 
 **Two section shapes, and only one of them is a disclosure** — this is the
 biggest change from the card's old text:
@@ -38,8 +40,8 @@ biggest change from the card's old text:
 - The frontend must be built (`make build-web`) *before* the hub for step 5+,
   or the SPA is a one-line placeholder (rebuild matrix item 3 in the runbook).
 - Two scratch working directories `$A` and `$B` that must both still exist for
-  the whole run — `identifier.ResolveProject` symlink-resolves them and every
-  archive/delete POST re-derives the project id from the path.
+  the whole run — `identifier.ResolveProject` symlink-resolves them and each
+  project archive/delete request re-derives the project id from the path.
 - A model the hub can spawn against. Nothing here needs a *good* answer, only
   a session that reaches the past index, so the cheapest model wins.
 
@@ -50,15 +52,17 @@ a browser, and only assert what the rail renders.
 
 1. Spawn a session in `$A` (plain `POST /api/spawn`, no `launch_overrides`),
    let it finish, then `POST /api/sessions/local:$SID_A/shutdown`.
-   `GET /api/tree`: `$A`'s project key is in `projects[]`.
+   Read the AppWire navigation manifest (`evener/navigation/read` with `{"resource":"manifest"}`): `$A`'s project key is in `data.catalogs.projects`.
 2. Spawn a session in `$B` with
    `launch_overrides:{env:{EVENER_SESSION_ORIGIN:"test"}}`, let it finish, then
-   `POST /api/sessions/local:$SID_B/shutdown`. `GET /api/tree`: `$B`'s key is
-   in `test_runs[]` and in neither `projects[]` nor `archived_projects[]`.
-3. **Archive `$A`.** `POST /api/archive` with
-   `{"kind":"project","id":"<A key>","archived":true,"working_dir":"<A working_dir from /api/tree>"}`.
-   Re-`GET /api/tree`.
-4. **Unarchive `$A`.** Same POST with `"archived":false`. Re-`GET /api/tree`.
+   `POST /api/sessions/local:$SID_B/shutdown`. Read the AppWire navigation manifest:
+   `$B`'s key is in `data.catalogs.test_runs` and in neither
+   `data.catalogs.projects` nor `data.catalogs.archived_projects`.
+3. **Archive `$A`.** Send an AppWire `evener/archive/set` request with
+   `{"kind":"project","id":"<A key>","archived":true,"workingDir":"<A working_dir from the navigation manifest>"}`.
+   Re-read the AppWire navigation manifest.
+4. **Unarchive `$A`.** Send the same AppWire request with `"archived":false`.
+   Re-read the AppWire navigation manifest.
 5. **Browser, baseline.** Navigate to `/auth?token=$TOKEN&next=/`. Read the
    section shapes:
    ```javascript
@@ -70,11 +74,11 @@ a browser, and only assert what the rail renders.
        .filter(([t]) => /Archived sessions/.test(t)),
    })
    ```
-6. **Archive `$A` again** (step 3's POST) and let the rail refetch on its own —
-   the archive handler broadcasts `evener/tree/changed` unconditionally
-   (`web_api_archive.go:71` → `notifyMutation`, `web_api_tree.go#notifyMutation`) and
+6. **Archive `$A` again** (step 3's request) and let the rail refetch on its own —
+   the archive handler broadcasts `navigation invalidation` unconditionally
+   (`app_archive.go` → `NavigationService.Refresh`) and
    the store refetches on a 250ms debounce
-   (`stores/tree.ts:443-450,455-467`). Re-read step 5's probe,
+   (`stores/navigation/store.ts:443-450,455-467`). Re-read step 5's probe,
    then click the `Archived sessions (…)` button and confirm `$A`'s project row
    appears inside it.
 7. Open `$A`'s row menu — the `⋯` trigger is
@@ -84,12 +88,12 @@ a browser, and only assert what the rail renders.
    `widgets/menu/index.tsx:337-366`). Click **Unarchive project**.
 8. Find `$B`'s project row under the `Test runs` heading and read its menu the
    same way. Do **not** click Delete project… here; drive the destructive step
-   over REST in step 9 so the assertion is on the server and the disk, not on
-   a dialog. (If you do want the UI path, see Sharp edges: it is a real
-   in-app `Dialog`, never `window.confirm`.)
-9. **Delete `$B`.** `POST /api/project/delete` with
-   `{"key":"<B key>","working_dir":"<B working_dir from /api/tree>"}`.
-10. `GET /api/tree` and check the disk under the isolated state root.
+   through a separate AppWire client in step 9 so the assertion is on the
+   server and the disk, not on a dialog. (If you do want the UI path, see
+   Sharp edges: it is a real in-app `Dialog`, never `window.confirm`.)
+9. **Delete `$B`.** Request `evener/project/delete` with
+   `{"key":"<B key>","workingDir":"<B working_dir from the navigation manifest>"}`.
+10. Read the AppWire navigation manifest and check the disk under the isolated state root.
 
 ## Expected
 
@@ -99,7 +103,8 @@ a browser, and only assert what the rail renders.
   what routes it, and a mixed project (one unmarked session) is correctly
   *not* a test run (`fuzzScenarioAllTestSessionsClassifyAsTestRun`,
   `internal/hubcore/tree_test.go#fuzzScenarioAllTestSessionsClassifyAsTestRun`).
-- **Step 3 (exact)**: `200 {"ok":true}`; `$A` moves to `archived_projects[]`
+- **Step 3 (exact)**: a successful `evener/archive/set` response with
+  `{"ok":true}`; `$A` moves to `archived_projects[]`
   and is gone from `projects[]`. Its entry is a **stub**: `"sessions": null`
   with `session_count` carrying the real row count
   (`web_api_tree.go:167-176`). Falsify: `$A` still in `projects[]`, or the
@@ -129,16 +134,16 @@ a browser, and only assert what the rail renders.
   the row), or a zero-count header lingers.
 - **Step 8**: `$B`'s menu offers `Archive project` (not Unarchive — `$B` was
   never archived, only classified as a test run) and `Delete project…`.
-- **Step 9 (exact)**: `200 {"deleted":["<SID_B>"],"skipped":[]}`
-  (`web_api_project_delete.go:193`). Falsify: `deleted` empty on a genuine
-  delete, or a 409 (means the session never actually shut down — see Sharp
-  edges).
+- **Step 9 (exact)**: a response with
+  `{"deleted":["<SID_B>"],"skipped":[],"navigation":<receipt>}`. Falsify:
+  `deleted` empty on a genuine delete, or AppWire conflict code `-32013`
+  (means the session never actually shut down — see Sharp edges).
 - **Step 10 (exact)**: `$B`'s key absent from all three of `projects[]`,
   `archived_projects[]`, `test_runs[]`; and
   `find "$HOME/.local/state/evener/projects" -name "$SID_B*"` returns nothing.
   In the browser, the `Test runs` heading is gone (its bucket is empty and
   `RailSection` returns null at `Rail.tsx:101`). Falsify: files surviving a
-  `200`, or a heading rendering for an empty bucket.
+  successful response, or a heading rendering for an empty bucket.
 
 ## Cleanup
 
@@ -166,8 +171,10 @@ a browser, and only assert what the rail renders.
   project is expanded too. An ended session's project inside a freshly
   expanded section legitimately shows a header with nothing under it.
 - **An archived project's sessions are not in the payload.** They ship as
-  stubs and lazy-load from `/api/tree/project?key=<key>` on the project row's
-  first expand (`Rail.tsx:241-253`, handler at `web_api_tree.go:285-322`).
+  stubs and lazy-load from `evener/navigation/read` with
+  `{"resource":"project","projectKey":"<key>"}` on the project row's first
+  expand (`Rail.tsx:241-253`, handler at `app_navigation.go`, projection at
+  `navigation_service.go`).
   Until that resolves the row has a single placeholder child
   (`railNodes.ts:365-367`) rendering `Loading…` with `role="status"`
   (`RailRow.tsx:663-672`), so "expanded but empty" for a beat is normal.
@@ -179,10 +186,9 @@ a browser, and only assert what the rail renders.
   Setting it in the hub's own environment would stamp `origin=test` onto every
   session the hub ever spawns.
 - **"Live" for the delete refusal means a registered daemon, not a running
-  turn.** A session sitting in `awaiting` still 409s
-  (`web_api_project_delete.go:147-159`). Shut it down first and confirm the
-  shutdown landed, or step 9 fails for a reason that has nothing to do with
-  classification.
+  turn.** A session sitting in `awaiting` still returns an AppWire conflict
+  (`project_delete.go`). Shut it down first and confirm the shutdown landed,
+  or step 9 fails for a reason that has nothing to do with classification.
 - **The TestRuns-over-Archived overlap case is server-side only** and this
   card does not re-derive it live. The old text pointed at
   `cmd/evener-hub/jstest/test-sidebar-testruns.js`; that directory no longer

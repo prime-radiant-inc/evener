@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -440,7 +441,15 @@ func TestClearedWatchStartsAFreshAnnouncementEpisode(t *testing.T) {
 	t.Parallel()
 	var jobID string
 	watchArmed := make(chan struct{})
-	var clearedNoticeSeen atomic.Bool
+	// budgetCrossed holds the watch-arming turn open until the test has driven
+	// the budget crossing. The escalation is turn-paced, so without the hold the
+	// drain can complete that turn and reach the final warning before the
+	// cleared notification is queued, and the fresh-episode assertions then read
+	// an episode the notification never interrupted.
+	budgetCrossed := make(chan struct{})
+	kickReady := make(chan struct{})
+	kickRelease := make(chan struct{})
+	var kickReadyOnce sync.Once
 	adapter := &fakeAdapter{name: "openai"}
 	adapter.steps = []func(llm.Request) llm.Response{
 		func(llm.Request) llm.Response {
@@ -451,14 +460,10 @@ func TestClearedWatchStartsAFreshAnnouncementEpisode(t *testing.T) {
 		},
 		func(llm.Request) llm.Response {
 			close(watchArmed)
+			<-budgetCrossed
 			return finalResponse("watching; it will finish")
 		},
-		func(req llm.Request) llm.Response {
-			if strings.Contains(req.Messages[len(req.Messages)-1].Text(), "watch cleared") {
-				clearedNoticeSeen.Store(true)
-			}
-			return finalResponse("the watch was cleared; reconsidering")
-		},
+		func(llm.Request) llm.Response { return finalResponse("the watch was cleared; reconsidering") },
 		func(llm.Request) llm.Response { return finalResponse("still waiting for the job") },
 		func(llm.Request) llm.Response { return finalResponse("exiting") },
 	}
@@ -477,9 +482,25 @@ func TestClearedWatchStartsAFreshAnnouncementEpisode(t *testing.T) {
 	})
 	go func() {
 		defer close(finished)
-		res, err := sess.drainJobTreeWith(ctx, feedRechecks(ctx), sess.kickDriveTree, sess.ProcessInputKind)
+		kick := func(kickCtx context.Context) error {
+			if len(adapter.Requests()) >= 2 {
+				kickReadyOnce.Do(func() { close(kickReady) })
+				select {
+				case <-kickRelease:
+				case <-kickCtx.Done():
+					return kickCtx.Err()
+				}
+			}
+			return sess.kickDriveTree(kickCtx)
+		}
+		res, err := sess.drainJobTreeWith(ctx, feedRechecks(ctx), kick, sess.ProcessInputKind)
 		done <- drainResult{res, err}
 	}()
+	// Registered after the join above so it runs before it: a t.Fatal between
+	// here and the release below would otherwise strand the held turn and leave
+	// the join waiting on a drain that can never finish.
+	releaseWatchTurn := sync.OnceFunc(func() { close(budgetCrossed) })
+	t.Cleanup(releaseWatchTurn)
 	select {
 	case <-watchArmed:
 	case d := <-done:
@@ -518,21 +539,25 @@ func TestClearedWatchStartsAFreshAnnouncementEpisode(t *testing.T) {
 	if stillLive {
 		t.Fatal("budget-crossing delivery left the watch live")
 	}
+	releaseWatchTurn()
+	select {
+	case <-kickReady:
+	case d := <-done:
+		t.Fatalf("drain returned before the next episode boundary: (%q, %v)", d.res, d.err)
+	}
+	close(kickRelease)
 
 	d := <-done
 	if d.err != nil {
 		t.Fatalf("drain error: %v", d.err)
 	}
-	if !clearedNoticeSeen.Load() {
-		t.Fatal("drain did not process the watch-cleared notification")
-	}
 	reqs := adapter.Requests()
 	if len(reqs) != 5 {
-		t.Fatalf("model requests = %d, want 5 (initial watch turn, cleared notification, fresh announcement, final warning)", len(reqs))
+		t.Fatalf("model requests = %d, want 5 after one watch notification and two fresh-episode escalation turns", len(reqs))
 	}
-	if strings.Contains(reqs[3].Messages[len(reqs[3].Messages)-1].Text(), "Final notice:") ||
-		!strings.Contains(reqs[3].Messages[len(reqs[3].Messages)-1].Text(), "cannot finish") {
-		t.Fatalf("fresh episode request = %q, want the first announcement rather than the final warning", reqs[3].Messages[len(reqs[3].Messages)-1].Text())
+	last := reqs[2].Messages[len(reqs[2].Messages)-1].Text()
+	if !strings.Contains(last, "<job-notification") || !strings.Contains(last, `event="watch"`) {
+		t.Fatalf("request 3 did not carry the structured watch notification: %q", last)
 	}
 }
 

@@ -797,7 +797,7 @@ func (e *wppEnv) FileExists(string) bool { return false }
 func (e *wppEnv) Glob(context.Context, string, string, ...bool) ([]string, error) {
 	return nil, errors.New("wppEnv Glob is not a filesystem")
 }
-func (e *wppEnv) Grep(string, string, string, bool, int, string, ...int) (string, error) {
+func (e *wppEnv) Grep(_ context.Context, _ string, _ string, _ string, _ bool, _ int, _ string, _ ...int) (string, error) {
 	return "", errors.New("wppEnv Grep is not a filesystem")
 }
 func (e *wppEnv) ListDirectory(string, int) ([]execenv.DirEntry, error) {

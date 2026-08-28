@@ -320,7 +320,10 @@ func stmRunRoundContracts(t *testing.T, program []byte) {
 	s.mu.Lock()
 	s.state = SessionProcessing
 	s.mu.Unlock()
-	done, reply := s.deliverIfCommunicated(ctx, false)
+	done, reply, err := s.deliverIfCommunicated(ctx, false)
+	if err != nil {
+		t.Fatalf("deliver communicate: %v", err)
+	}
 	if !done || reply == "" || s.State() != SessionIdle {
 		t.Fatalf("communicate boundary = done=%v reply=%q state=%q", done, reply, s.State())
 	}
@@ -465,9 +468,8 @@ func stmAskArgs(r *stmReader) map[string]any {
 	word := r.word()
 	return map[string]any{
 		"questions": []any{map[string]any{
-			// DefAskUser limits headers to 12 characters. Keep the fuzzed word in
-			// the body/detail fields while holding this structural field valid so
-			// the real handler, rather than argument repair, is the exercised seam.
+			// Keep this structural field stable so the real handler, rather than
+			// argument repair, is the exercised seam.
 			"header":   "Choice",
 			"question": "Choose " + word,
 			"options": []any{

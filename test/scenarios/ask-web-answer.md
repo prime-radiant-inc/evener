@@ -260,7 +260,7 @@ leaves the daemon running, which then poisons the next run's state poll.
   entirely and exhaust the loop still reading `awaiting` — that is not a failure; step 8's
   outline read is the actual proof, independent of whether this loop observed the
   transition.
-- The hub's roster refresh (which feeds `/api/tree` and the rail) ticks every 5s
+- The hub's roster refresh (which feeds the navigation projection and the rail) ticks every 5s
   (`cmd/evener-hub/internal/hubcore/roster.go:451`); the direct `/api/sessions/local:<SID>`
   call talks to the live daemon and reflects `awaiting` sooner. Don't confuse the two
   cadences — see `ask-cross-session-notify.md` for the roster-level path.

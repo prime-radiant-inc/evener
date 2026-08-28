@@ -20,6 +20,7 @@ type LaunchOverridesOpenMsg struct {
 
 type LaunchOverridesModal struct {
 	cur       appwire.LaunchConfigLayer
+	effective appwire.LaunchConfigLayer
 	schema    []appwire.LaunchOption
 	cursor    int
 	done      bool
@@ -45,6 +46,13 @@ func (m LaunchOverridesModal) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case LaunchSchemaResultMsg:
 		if v.Err == nil {
 			m.schema = v.Schema.Options
+		}
+	case LaunchResolveResultMsg:
+		// The resolve for the current working directory supplies the
+		// "(default)" labels: unset overrides render the effective value a
+		// session started now would inherit.
+		if v.Err == nil {
+			m.effective = v.Resolved.Effective
 		}
 	case tea.KeyMsg:
 		switch v.Type {
@@ -120,7 +128,7 @@ func (m LaunchOverridesModal) Done() bool { return m.done }
 
 func (m LaunchOverridesModal) rows() []layerRow {
 	if len(m.schema) > 0 {
-		return launchSchemaRows(m.schema, m.cur, launchLayerLaunch, launchSchemaRowsOverride)
+		return launchSchemaRows(m.schema, m.cur, launchLayerLaunch, launchSchemaRowsOverride, m.effective)
 	}
-	return layerRows(m.cur)
+	return layerRows(m.cur, m.effective)
 }

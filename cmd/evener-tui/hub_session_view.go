@@ -332,6 +332,10 @@ func (m *hubModel) sessionChromeText() (topBar, overlayText, footer string) {
 		overlay.WriteString(m.sessionModelPicker.View())
 		overlay.WriteString("\n\n")
 	}
+	if m.sessionVisionModelPicker != nil {
+		overlay.WriteString(m.sessionVisionModelPicker.View())
+		overlay.WriteString("\n\n")
+	}
 	if m.sessionEffortPicker != nil {
 		overlay.WriteString(m.sessionEffortPicker.View())
 		overlay.WriteString("\n\n")

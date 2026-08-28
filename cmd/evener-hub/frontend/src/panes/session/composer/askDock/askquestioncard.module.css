@@ -20,8 +20,10 @@
 }
 
 .header {
+  min-width: 0;
   font-weight: var(--font-weight-semibold);
   color: var(--ink-hi);
+  overflow-wrap: anywhere;
 }
 
 .questionText {

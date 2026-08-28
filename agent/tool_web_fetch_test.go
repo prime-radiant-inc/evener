@@ -4,15 +4,18 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
 
 	"primeradiant.com/evener/agent/execenv"
+	"primeradiant.com/evener/agent/internal/agenttest"
 	"primeradiant.com/evener/llm"
 )
 
@@ -392,14 +395,40 @@ func TestWebFetchTool_InvalidURL(t *testing.T) {
 	}
 }
 
-func TestWebFetchTool_HTTPErrorStatus(t *testing.T) {
+func TestWebFetchTool_HTTP404RetriesWithAlternateUserAgent(t *testing.T) {
+	const (
+		firstBodySentinel = "WF404BODY7A19C2"
+		pageSentinel      = "WF404PAGE6E31B8"
+		modelSentinel     = "WF404MODEL4D20F5"
+		questionSentinel  = "WF404QUESTION9C57A1"
+	)
+	recoveredHTML := fmt.Sprintf(`<html><body><h1>%s</h1></body></html>`, pageSentinel)
+	var requestCount int
+	var userAgents []string
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(http.StatusNotFound)
+		requestCount++
+		userAgents = append(userAgents, r.Header.Get("User-Agent"))
+		if requestCount == 1 {
+			w.WriteHeader(http.StatusNotFound)
+			_, _ = fmt.Fprint(w, firstBodySentinel)
+			return
+		}
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		_, _ = fmt.Fprint(w, recoveredHTML)
 	}))
 	defer srv.Close()
 
 	dir := t.TempDir()
-	fa := &fakeAdapter{name: "openai"}
+	cacheHome := t.TempDir()
+	t.Setenv("XDG_CACHE_HOME", cacheHome)
+	fa := &fakeAdapter{
+		name: "openai",
+		steps: []func(req llm.Request) llm.Response{
+			func(req llm.Request) llm.Response {
+				return llm.Response{Message: llm.Assistant(modelSentinel)}
+			},
+		},
+	}
 	c := llm.NewClient()
 	c.Register(fa)
 
@@ -412,12 +441,286 @@ func TestWebFetchTool_HTTPErrorStatus(t *testing.T) {
 	res := sess.reg.ExecuteCall(context.Background(), sess.env, llm.ToolCallData{
 		ID:        "wf1",
 		Name:      "web_fetch",
-		Arguments: json.RawMessage(fmt.Sprintf(`{"url": %q, "question": "test"}`, srv.URL)),
+		Arguments: json.RawMessage(fmt.Sprintf(`{"url": %q, "question": %q}`, srv.URL, questionSentinel)),
 	})
-	if !res.IsError {
-		t.Fatalf("expected error for 404, got success: %s", res.Output)
+	if res.IsError {
+		t.Fatalf("web_fetch returned error after alternate-UA recovery: %s", res.Output)
 	}
-	if !strings.Contains(res.Output, "404") {
-		t.Fatalf("error should mention 404: %s", res.Output)
+	if got := len(fa.Requests()); got != 1 {
+		t.Fatalf("model request count = %d, want 1 after successful retry", got)
+	}
+	if requestCount != 2 {
+		t.Fatalf("HTTP request count = %d, want one retry after 404", requestCount)
+	}
+	if len(userAgents) != 2 || userAgents[0] != "evener/1.0" {
+		t.Fatalf("User-Agent sequence = %q, want initial evener/1.0 then alternate", userAgents)
+	}
+	if !strings.HasPrefix(userAgents[1], "Mozilla/5.0") {
+		t.Fatalf("alternate User-Agent = %q, want browser-shaped User-Agent", userAgents[1])
+	}
+	rawPaths, err := filepath.Glob(filepath.Join(cacheHome, "evener", "web_cache", "*", "*", "raw.html"))
+	if err != nil {
+		t.Fatalf("glob recovered cache: %v", err)
+	}
+	if len(rawPaths) != 1 {
+		t.Fatalf("recovered raw cache paths = %v, want one successful-response cache", rawPaths)
+	}
+	raw, err := os.ReadFile(rawPaths[0])
+	if err != nil {
+		t.Fatalf("read recovered raw cache: %v", err)
+	}
+	if got := string(raw); got != recoveredHTML {
+		t.Fatalf("raw cache identity mismatch: got %q, want opaque fixture %q", got, recoveredHTML)
+	}
+}
+
+type webFetchTrackingBody struct {
+	io.ReadCloser
+	closed bool
+}
+
+func (b *webFetchTrackingBody) Close() error {
+	b.closed = true
+	return b.ReadCloser.Close()
+}
+
+type webFetchTrackingTransport struct {
+	base                       http.RoundTripper
+	requests                   []*http.Request
+	bodies                     []*webFetchTrackingBody
+	firstBodyClosedBeforeRetry bool
+}
+
+func (t *webFetchTrackingTransport) RoundTrip(req *http.Request) (*http.Response, error) {
+	if len(t.requests) == 1 && len(t.bodies) == 1 {
+		t.firstBodyClosedBeforeRetry = t.bodies[0].closed
+	}
+	t.requests = append(t.requests, req)
+	resp, err := t.base.RoundTrip(req)
+	if err != nil {
+		return nil, err
+	}
+	body := &webFetchTrackingBody{ReadCloser: resp.Body}
+	t.bodies = append(t.bodies, body)
+	resp.Body = body
+	return resp, nil
+}
+
+func TestWebFetch_Retries403WithAlternateUserAgentAndClosesBodies(t *testing.T) {
+	const (
+		firstBodySentinel = "WF403BODY3D80A6"
+		pageSentinel      = "WF403PAGE8B14E7"
+		modelSentinel     = "WF403MODEL2C96F1"
+		questionSentinel  = "WF403QUESTION5A73D9"
+	)
+	recoveredHTML := fmt.Sprintf(`<html><body><h1>%s</h1></body></html>`, pageSentinel)
+	var requestCount int
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requestCount++
+		if requestCount == 1 {
+			w.WriteHeader(http.StatusForbidden)
+			_, _ = fmt.Fprint(w, firstBodySentinel)
+			return
+		}
+		if got := r.Header.Get("User-Agent"); !strings.HasPrefix(got, "Mozilla/5.0") {
+			w.WriteHeader(http.StatusForbidden)
+			return
+		}
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		_, _ = fmt.Fprint(w, recoveredHTML)
+	}))
+	defer srv.Close()
+
+	transport := &webFetchTrackingTransport{base: http.DefaultTransport}
+	adapter := &agenttest.ModelTrackingAdapter{
+		Provider: "openai",
+		Respond: func(req llm.Request) (llm.Response, error) {
+			return llm.Response{Message: llm.Assistant(modelSentinel)}, nil
+		},
+	}
+	client := llm.NewClient()
+	client.Register(adapter)
+	sess, err := NewSession(client, NewOpenAIProfile("test-model"),
+		execenv.NewLocalExecutionEnvironment(t.TempDir()), SessionConfig{})
+	if err != nil {
+		t.Fatalf("NewSession: %v", err)
+	}
+	t.Cleanup(sess.Close)
+	sess.httpClient = &http.Client{Transport: transport}
+
+	got, err := sess.webFetch(context.Background(), srv.URL, questionSentinel)
+	if err != nil {
+		t.Fatalf("webFetch: %v", err)
+	}
+	result, ok := got.(map[string]any)
+	if !ok {
+		t.Fatalf("webFetch result = %T, want map[string]any", got)
+	}
+	if answer, ok := result["answer"].(string); !ok || answer == "" {
+		t.Fatalf("answer field = %#v, want non-empty string", result["answer"])
+	}
+	if got, want := adapter.Models(), []string{"gpt-4.1-nano"}; !slices.Equal(got, want) {
+		t.Fatalf("models addressed = %v, want successful cheap-model route %v", got, want)
+	}
+	if requestCount != 2 || len(transport.requests) != 2 {
+		t.Fatalf("HTTP requests = %d, transport requests = %d, want exactly one retry", requestCount, len(transport.requests))
+	}
+	if !transport.firstBodyClosedBeforeRetry {
+		t.Fatal("403 response body was not closed before the alternate-UA retry")
+	}
+	for i, body := range transport.bodies {
+		if !body.closed {
+			t.Errorf("response body %d was not closed", i)
+		}
+	}
+}
+
+func TestWebFetch_DocWallRetryIsBoundedAndOtherStatusIsNotRetried(t *testing.T) {
+	tests := []struct {
+		name   string
+		status int
+	}{
+		{name: "persistent 404", status: http.StatusNotFound},
+		{name: "500 control", status: http.StatusInternalServerError},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			var requestCount int
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				requestCount++
+				w.WriteHeader(tc.status)
+				_, _ = fmt.Fprint(w, "WFSTATUSBODY1E64B9")
+			}))
+			t.Cleanup(srv.Close)
+
+			adapter := &agenttest.ModelTrackingAdapter{
+				Provider: "openai",
+				Respond: func(req llm.Request) (llm.Response, error) {
+					return finalResponse("WFUNEXPECTEDMODEL7F02C5"), nil
+				},
+			}
+			client := llm.NewClient()
+			client.Register(adapter)
+			sess, err := NewSession(client, NewOpenAIProfile("test-model"),
+				execenv.NewLocalExecutionEnvironment(t.TempDir()), SessionConfig{})
+			if err != nil {
+				t.Fatalf("NewSession: %v", err)
+			}
+			t.Cleanup(sess.Close)
+
+			if _, err := sess.webFetch(context.Background(), srv.URL, "WFSTATUSQUESTION4A93D8"); err == nil {
+				t.Fatalf("webFetch succeeded for HTTP %d", tc.status)
+			} else if !strings.Contains(err.Error(), fmt.Sprintf("HTTP %d", tc.status)) {
+				t.Fatalf("webFetch error = %v, want HTTP %d", err, tc.status)
+			}
+			wantRequests := 1
+			if tc.status == http.StatusNotFound {
+				wantRequests = 2
+			}
+			if requestCount != wantRequests {
+				t.Fatalf("HTTP request count = %d, want %d", requestCount, wantRequests)
+			}
+		})
+	}
+}
+
+func TestWebFetch_RawFallbackWhenBothModelsRefuse(t *testing.T) {
+	const (
+		wantRawLimit     = 20_000
+		sourceSentinel   = "WFRAWSOURCE6C18A4"
+		fillerSentinel   = "WFRAWFILL9D32E7"
+		questionSentinel = "WFRAWQUESTION5B70C1"
+	)
+	page := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		_, _ = fmt.Fprintf(w, "<html><body><h1>%s</h1><p>%s</p></body></html>",
+			sourceSentinel, strings.Repeat(fillerSentinel+" ", wantRawLimit))
+	}))
+	t.Cleanup(page.Close)
+
+	adapter := &agenttest.ModelTrackingAdapter{Provider: "openai"}
+	adapter.Respond = func(req llm.Request) (llm.Response, error) {
+		return llm.Response{}, llm.ErrorFromHTTPStatus("openai", http.StatusBadRequest,
+			"The provided model identifier is invalid.", nil, nil)
+	}
+	client := llm.NewClient()
+	client.Register(adapter)
+	sess, err := NewSession(client, NewOpenAIProfile("test-model"),
+		execenv.NewLocalExecutionEnvironment(t.TempDir()), SessionConfig{})
+	if err != nil {
+		t.Fatalf("NewSession: %v", err)
+	}
+	t.Cleanup(sess.Close)
+
+	got, err := sess.webFetch(context.Background(), page.URL, questionSentinel)
+	if err != nil {
+		t.Fatalf("webFetch: %v", err)
+	}
+	result, ok := got.(map[string]any)
+	if !ok {
+		t.Fatalf("webFetch result = %T, want map[string]any", got)
+	}
+	if result["fallback"] != "raw" {
+		t.Fatalf("fallback = %#v, want raw", result["fallback"])
+	}
+	if result["url"] != page.URL {
+		t.Fatalf("url = %#v, want %q", result["url"], page.URL)
+	}
+	if result["content_source"] != "converted_markdown" {
+		t.Fatalf("content_source = %#v, want converted_markdown", result["content_source"])
+	}
+	if result["fallback_reason"] != "both_models_refused" {
+		t.Fatalf("fallback_reason = %#v, want both_models_refused", result["fallback_reason"])
+	}
+	if result["content_untrusted"] != true {
+		t.Fatalf("content_untrusted = %#v, want true", result["content_untrusted"])
+	}
+	content, ok := result["content"].(string)
+	if !ok {
+		t.Fatalf("content = %T, want string", result["content"])
+	}
+	if got := len([]rune(content)); got != wantRawLimit {
+		t.Fatalf("raw content length = %d, want deterministic limit %d", got, wantRawLimit)
+	}
+	if strings.Contains(content, "<h1>") || !strings.Contains(content, sourceSentinel) {
+		t.Fatalf("raw fallback did not preserve opaque converted-content identity: %q", content[:min(len(content), 80)])
+	}
+	if result["content_truncated"] != true {
+		t.Fatalf("content_truncated = %#v, want true", result["content_truncated"])
+	}
+	if result["content_limit"] != wantRawLimit {
+		t.Fatalf("content_limit = %#v, want %d", result["content_limit"], wantRawLimit)
+	}
+	if got, want := adapter.Models(), []string{"gpt-4.1-nano", "test-model"}; !slices.Equal(got, want) {
+		t.Fatalf("models addressed = %v, want first and second refusals %v", got, want)
+	}
+}
+
+func TestWebFetch_NonRefusalModelErrorRemainsError(t *testing.T) {
+	page := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/plain")
+		_, _ = fmt.Fprint(w, "WFNONREFUSALPAGE8E41D2")
+	}))
+	t.Cleanup(page.Close)
+
+	adapter := &agenttest.ModelTrackingAdapter{Provider: "openai"}
+	adapter.Respond = func(req llm.Request) (llm.Response, error) {
+		return llm.Response{}, llm.ErrorFromHTTPStatus("openai", http.StatusBadRequest,
+			"invalid field: response_format", nil, nil)
+	}
+	client := llm.NewClient()
+	client.Register(adapter)
+	sess, err := NewSession(client, NewOpenAIProfile("test-model"),
+		execenv.NewLocalExecutionEnvironment(t.TempDir()), SessionConfig{})
+	if err != nil {
+		t.Fatalf("NewSession: %v", err)
+	}
+	t.Cleanup(sess.Close)
+
+	if _, err := sess.webFetch(context.Background(), page.URL, "WFNONREFUSALQUESTION3C67A9"); err == nil {
+		t.Fatal("webFetch succeeded, want non-refusal model error")
+	}
+	if got, want := adapter.Models(), []string{"gpt-4.1-nano"}; !slices.Equal(got, want) {
+		t.Fatalf("models addressed = %v, want no fallback %v", got, want)
 	}
 }

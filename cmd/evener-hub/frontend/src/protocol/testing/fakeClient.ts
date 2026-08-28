@@ -5,7 +5,7 @@
 // the stores (src/stores/*) depend on, per AppwireClientLike below — with
 // scripted per-method request handlers and manual notification/ready/
 // state-change injection. No sockets, no timers.
-import type { AppwireClient, ConnectionState, TerminalReason } from "../client";
+import { APPWIRE_PROTOCOL_VERSION, type AppwireClient, type ConnectionState, type TerminalReason } from "../client";
 import type { AnyNotification, InitializeResponse, MethodName, MethodTypes } from "../types.gen";
 import { METHOD_NAMES, NOTIFICATION_NAMES } from "../types.gen";
 
@@ -60,7 +60,7 @@ export type ConnectHandler = () => InitializeResponse | Promise<InitializeRespon
 // to script one just to get past the handshake.
 const DEFAULT_INITIALIZE_RESPONSE: InitializeResponse = {
   serverInfo: { name: "fake-evener-hub", version: "0.0.0" },
-  protocolVersion: "evener-appwire-v3",
+  protocolVersion: APPWIRE_PROTOCOL_VERSION,
   sourceId: "fake",
   features: {
     threadList: false,

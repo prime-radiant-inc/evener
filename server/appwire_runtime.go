@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"io/fs"
 	"maps"
 	"os"
@@ -528,6 +529,7 @@ func (s *Server) registerAppWireHandlers() {
 	appserver.HandleTyped(router, appwire.MethodThreadShutdown, s.handleAppThreadShutdown)
 	appserver.HandleTyped(router, appwire.MethodThreadClear, s.handleAppThreadClear)
 	appserver.HandleTyped(router, appwire.MethodThreadModelSet, s.handleAppThreadModelSet)
+	appserver.HandleTyped(router, appwire.MethodThreadVisionModelSet, s.handleAppThreadVisionModelSet)
 	appserver.HandleTyped(router, appwire.MethodEvenerThreadNameSet, s.handleAppThreadNameSet)
 	appserver.HandleTyped(router, appwire.MethodThreadReasoningEffortSet, s.handleAppThreadReasoningEffortSet)
 	appserver.HandleTyped(router, appwire.MethodEvenerTasksList, s.handleAppTasksList)
@@ -663,11 +665,20 @@ func (s *Server) appProjectionThreadID() string {
 	return s.status.SessionID
 }
 
-// appAllTurns returns the whole installed snapshot for threadID, oldest-first.
-// It is the one authority: thread/read, the latest window, and older pages all
-// derive from this slice, so they cannot disagree with each other or with what
-// subscribers were sent.
+// appAllTurns returns a defensive copy of the whole installed snapshot for
+// threadID, oldest-first.
 func (s *Server) appAllTurns(threadID string) []appwire.Turn {
+	snapshot := s.appTurnSnapshotForID(threadID)
+	if snapshot == nil {
+		return nil
+	}
+	return snapshot.Snapshot()
+}
+
+// appTurnSnapshotForID selects the installed snapshot shared by full reads,
+// latest windows, and older pages. Callers use the snapshot's locking accessors
+// so the three views cannot disagree with each other or with subscriber state.
+func (s *Server) appTurnSnapshotForID(threadID string) *appTurnSnapshot {
 	s.mu.RLock()
 	snapshot := s.appTurns
 	installed := s.appThreadID == threadID && snapshot != nil && snapshot.threadID == threadID
@@ -681,7 +692,7 @@ func (s *Server) appAllTurns(threadID string) []appwire.Turn {
 	if !installed {
 		return nil
 	}
-	return snapshot.Snapshot()
+	return snapshot
 }
 
 func transcriptHeader(path string, maxLineBytes int) transcript.Header {
@@ -690,8 +701,11 @@ func transcriptHeader(path string, maxLineBytes int) transcript.Header {
 		return transcript.Header{}
 	}
 	defer file.Close() //nolint:errcheck // read-only file; close error is not actionable
+	return transcriptHeaderFromReader(file, maxLineBytes)
+}
 
-	reader := bufio.NewReaderSize(file, 64*1024)
+func transcriptHeaderFromReader(source io.Reader, maxLineBytes int) transcript.Header {
+	reader := bufio.NewReaderSize(source, transcriptHeaderReadBufferBytes)
 	for {
 		lineBytes, complete, _, err := transcript.ReadLine(reader, maxLineBytes)
 		if err != nil || !complete {
@@ -713,12 +727,20 @@ func transcriptHeader(path string, maxLineBytes int) transcript.Header {
 // and returns the cursor for the page before them. A limit of zero or less
 // returns the whole thread with no cursor.
 func (s *Server) appLatestTurns(threadID string, limit int) ([]appwire.Turn, string) {
-	return appwire.WindowTurns(s.appAllTurns(threadID), limit)
+	snapshot := s.appTurnSnapshotForID(threadID)
+	if snapshot == nil {
+		return nil, ""
+	}
+	return snapshot.Latest(limit)
 }
 
 // appPageTurns pages backward through the installed snapshot from cursor.
 func (s *Server) appPageTurns(threadID, cursor string, limit int) appwire.ThreadTurnsListResponse {
-	return appwire.PageTurns(s.appAllTurns(threadID), cursor, limit)
+	snapshot := s.appTurnSnapshotForID(threadID)
+	if snapshot == nil {
+		return appwire.ThreadTurnsListResponse{}
+	}
+	return snapshot.Page(cursor, limit)
 }
 
 // handleAppThreadTurnsList pages turns backward (older) for lazy transcript
@@ -1045,6 +1067,34 @@ func (s *Server) handleAppThreadModelSet(_ context.Context, params appwire.Threa
 	return appwire.EmptyResponse{}, nil
 }
 
+func (s *Server) handleAppThreadVisionModelSet(_ context.Context, params appwire.ThreadVisionModelSetParams) (appwire.EmptyResponse, error) {
+	if err := s.requireRootMutationTarget(params.Ref, ""); err != nil {
+		return appwire.EmptyResponse{}, err
+	}
+	s.mu.RLock()
+	processing := s.processing
+	reservedTurnID := strings.TrimSpace(s.appReservedTurnID)
+	fn := s.visionModelFunc
+	s.mu.RUnlock()
+	if processing || reservedTurnID != "" {
+		msg := "session is processing"
+		if reservedTurnID != "" {
+			msg = "turn " + reservedTurnID + " is active"
+		}
+		return appwire.EmptyResponse{}, appwire.Conflict(msg)
+	}
+	if fn == nil {
+		return appwire.EmptyResponse{}, appwire.Unavailable("vision model change not available")
+	}
+	// "" and "off" are legitimate setting values (session-model and disabled),
+	// so unlike model/set there is no empty-value rejection here; ref shape is
+	// the session's job to validate (Session.SetVisionModel).
+	if err := fn(params.VisionModel); err != nil {
+		return appwire.EmptyResponse{}, appwire.InvalidParams(err.Error())
+	}
+	return appwire.EmptyResponse{}, nil
+}
+
 func (s *Server) handleAppThreadNameSet(_ context.Context, params appwire.ThreadNameSetParams) (appwire.EmptyResponse, error) {
 	if err := s.requireRootMutationTarget(params.Ref, ""); err != nil {
 		return appwire.EmptyResponse{}, err
@@ -1147,20 +1197,18 @@ func (s *Server) handleAppJobsOutput(_ context.Context, params appwire.JobsOutpu
 func (s *Server) handleAppModelList(ctx context.Context, _ appwire.ModelListParams) (appwire.ModelListResponse, error) {
 	s.mu.RLock()
 	fn := s.listModelsFunc
-	provider := s.status.Profile
 	s.mu.RUnlock()
 	if fn == nil {
-		return appwire.ModelListResponse{}, nil
+		return appwire.ModelListResponse{Data: []appwire.ModelDescriptor{}}, nil
 	}
 	models, err := fn(ctx)
 	if err != nil {
 		return appwire.ModelListResponse{}, err
 	}
-	out := make([]appwire.ModelDescriptor, 0, len(models))
-	for _, model := range models {
-		out = append(out, appwire.ModelDescriptor{Provider: provider, Model: model.ID})
+	if models == nil {
+		models = []appwire.ModelDescriptor{}
 	}
-	return appwire.ModelListResponse{Data: out}, nil
+	return appwire.ModelListResponse{Data: models}, nil
 }
 
 // appThread assembles the thread snapshot. It is a struct copy plus identity:
@@ -1210,6 +1258,7 @@ func (s *Server) appThread() appwire.Thread {
 	reasoningEffort := envelope.ReasoningEffort
 	reasoningEffortLevels := envelope.ReasoningEffortLevels
 	supportsReasoning := envelope.SupportsReasoning
+	visionModel := envelope.VisionModel
 	threadName := envelope.Name
 	threadPreview := envelope.Preview
 	if threadPreview == "" {
@@ -1249,6 +1298,7 @@ func (s *Server) appThread() appwire.Thread {
 			ReasoningEffort:       reasoningEffort,
 			ReasoningEffortLevels: reasoningEffortLevels,
 			SupportsReasoning:     supportsReasoning,
+			VisionModel:           visionModel,
 		},
 	}
 }
@@ -1256,6 +1306,9 @@ func (s *Server) appThread() appwire.Thread {
 func appDiagnosticsFromDetailedStatus(ds DetailedStatus) *appwire.EvenerDiagnostics {
 	out := &appwire.EvenerDiagnostics{
 		Hooks: make(map[string]int, len(ds.Hooks)),
+	}
+	if ds.Plugins != nil {
+		out.Plugins = make([]appwire.EvenerPluginInfo, 0, len(ds.Plugins))
 	}
 	for _, tool := range ds.Tools {
 		out.Tools = append(out.Tools, appwire.EvenerToolInfo{Name: tool.Name, Source: tool.Source})
@@ -1383,13 +1436,14 @@ func (s *Server) appCapabilities(state string, processing bool) appwire.ThreadCa
 		// business of the paths that act on it -- handleInterrupt still answers
 		// Unavailable with none wired, and InterruptClientMutation has its own
 		// quiescence precondition (kata vewa).
-		Interrupt:    s.interruptWired && active && !closed,
-		Compact:      s.compactFunc != nil && !closed,
-		Clear:        false,
-		ForkFromTurn: false,
-		Shutdown:     s.shutdownFunc != nil,
-		ChangeModel:  s.modelFunc != nil && !closed,
-		Rename:       s.nameFunc != nil && !closed,
+		Interrupt:         s.interruptWired && active && !closed,
+		Compact:           s.compactFunc != nil && !closed,
+		Clear:             false,
+		ForkFromTurn:      false,
+		Shutdown:          s.shutdownFunc != nil,
+		ChangeModel:       s.modelFunc != nil && !closed,
+		ChangeVisionModel: s.visionModelFunc != nil && !closed,
+		Rename:            s.nameFunc != nil && !closed,
 		// Queue mirrors Steer's "active turn" gate: only meaningful while
 		// a turn is in flight or reserved by turn/start (kata 111a).
 		Queue: s.queueFunc != nil && active && !closed,

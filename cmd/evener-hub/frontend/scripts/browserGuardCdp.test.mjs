@@ -19,10 +19,40 @@ import { test } from "node:test";
 import {
   applyViewport,
   clearViewportOverride,
+  createStartupDeadline,
+  devtoolsHttpURL,
   evaluate,
   forcePseudoStates,
   navigateTo,
+  waitForHttp,
 } from "./browserGuardCdp.mjs";
+
+test("preserves the announced endpoint host when building HTTP URLs", () => {
+  assert.equal(
+    devtoolsHttpURL({ url: "ws://[::1]:43210/devtools/browser/test" }, "/json/version"),
+    "http://[::1]:43210/json/version",
+  );
+  assert.equal(
+    devtoolsHttpURL({ url: "ws://localhost:43211/devtools/browser/test" }, "/json/list"),
+    "http://localhost:43211/json/list",
+  );
+  assert.equal(
+    devtoolsHttpURL({ url: "ws://127.0.0.1:80/devtools/browser/test", host: "127.0.0.1", port: 80 }, "/json/version"),
+    "http://127.0.0.1:80/json/version",
+  );
+});
+
+test("one startup deadline aborts the pending HTTP readiness phase", async (context) => {
+  context.mock.timers.enable({ apis: ["setTimeout"] });
+  const deadline = createStartupDeadline();
+  const pending = waitForHttp("http://127.0.0.1:1/json/version", "chrome", () => null, {
+    signal: deadline.signal,
+  });
+
+  context.mock.timers.tick(30_000);
+  await assert.rejects(pending, /browser startup deadline exceeded after 30000ms/);
+  deadline.clear();
+});
 
 const cdpModuleUrl = new URL("./browserGuardCdp.mjs", import.meta.url).href;
 

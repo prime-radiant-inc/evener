@@ -186,7 +186,7 @@ func (fakeZeroExitErrEnv) FileExists(string) bool                               
 func (fakeZeroExitErrEnv) Glob(context.Context, string, string, ...bool) ([]string, error) {
 	return nil, nil
 }
-func (fakeZeroExitErrEnv) Grep(string, string, string, bool, int, string, ...int) (string, error) {
+func (fakeZeroExitErrEnv) Grep(_ context.Context, _ string, _ string, _ string, _ bool, _ int, _ string, _ ...int) (string, error) {
 	return "", nil
 }
 func (fakeZeroExitErrEnv) ListDirectory(string, int) ([]execenv.DirEntry, error) { return nil, nil }

@@ -20,17 +20,17 @@ selector map and the "Seeding preferences before the first load" recipe.
 Two things this card used to assume are wrong now and are the likely
 cause of a false pass: there is no `[data-chip-value-model]` and no
 `[data-model-prefill-notice]` anywhere in the tree. The notice is a
-`role="status"` region (`panes/spawn/Spawn.tsx:678-680`) and the model
+`role="status"` region in `panes/spawn/Spawn.tsx` and the model
 control is the shared ARIA combobox in `widgets/modelCatalog/` — its
 **closed trigger is a `<button>` whose text is the qualified
 `provider/model`, or the empty label when nothing is set**
-(`widgets/modelCatalog/index.tsx:388-406`).
+(`widgets/modelCatalog/index.tsx#ModelCatalog`).
 
 **Namespace warning**: these keys are `evener-hub.spawn-defaults.*`, a
 *different* namespace from the `evener.prefs.*` flat keys the runbook's
 seeding section describes. Unlike `evener.prefs.*`, they are read on the
 spawn pane's own mount, not once at module load — but the sweep still
-runs mount-only (deps `[]`, `Spawn.tsx:275`), so seed before you open
+runs mount-only (Spawn's mount-only stale-model sweep), so seed before you open
 `/new` and do a full reload rather than an SPA navigation.
 
 ## Pre-state
@@ -48,18 +48,17 @@ runs mount-only (deps `[]`, `Spawn.tsx:275`), so seed before you open
 
 ### Browser-free (pick a genuinely stale value — this is the precondition, and it is where the card usually goes wrong)
 
-1. `GET /api/models` (bare array; add `?diagnostics=1` for the envelope)
-   and choose a `provider/model` string where the **provider appears**
+1. Send `model/list` over the authenticated AppWire connection with the
+   target `harness` and `cwd`, and choose a `provider/model` string where the
+   **provider appears**
    and the **model does not**. That distinction is the whole
    classification: `modelValidityAgainstList`
    (`panes/spawn/spawnDefaults.ts:166-176`) returns `"stale"` only when
    the provider was seen, `"unknown"` when it wasn't — and `unknown` is
    deliberately left untouched, because the hub can't prove it wrong.
    A value with no `/` at all is `"malformed"` and is also swept.
-   ```bash
-   curl -s -H "Authorization: Bearer $TOKEN" "$HUB/api/models" \
-     | jq -r '[.[].provider] | unique'          # providers that ARE enumerated
-   ```
+   Inspect `result.data` and collect its unique provider values — those are
+   the providers that are enumerated.
    `openai/gpt-5-mini` works when `openai` is live; substitute whatever
    holds on this hub. If you pick a provider the hub doesn't enumerate,
    the sweep correctly does nothing and the card reads as a regression
@@ -84,10 +83,9 @@ runs mount-only (deps `[]`, `Spawn.tsx:275`), so seed before you open
 3. Full reload of `/new` (not an SPA navigation — the sweep effect is
    mount-only).
 4. Wait for the sweep's own `model/list` RPC to resolve
-   (`Spawn.tsx:261-270`) — a second or two. It is an **appwire call over
-   the WebSocket with no harness/cwd**, not the `/api/models?cwd=…` REST
-   call the picker uses for enrichment; if the socket never hydrates,
-   nothing is swept.
+   (`Spawn`'s model-list loading effect) — a second or two. It is an **appwire call over
+   the WebSocket with no harness/cwd**; if the socket never hydrates, nothing
+   is swept.
 5. Read the result:
    ```js
    ({

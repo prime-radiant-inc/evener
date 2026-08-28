@@ -2,13 +2,17 @@ package hub
 
 import (
 	"encoding/json"
+	"maps"
 	"os"
 	"path/filepath"
 	"strconv"
 	"strings"
 
 	"primeradiant.com/evener/agent"
+	"primeradiant.com/evener/agent/execenv"
+	"primeradiant.com/evener/agent/plugin"
 	"primeradiant.com/evener/agent/schema"
+	"primeradiant.com/evener/agent/skill"
 	taskpkg "primeradiant.com/evener/agent/task"
 	"primeradiant.com/evener/agent/transcript"
 	"primeradiant.com/evener/appwire"
@@ -26,6 +30,7 @@ func pastThreadForRead(cfg hubcore.WebConfig, params appwire.ThreadReadParams) (
 	if err != nil {
 		return thread, true, err
 	}
+	thread = attachPastThreadSkillCatalog(entry, thread)
 	// One thread, one transcript: this path can afford the full-transcript
 	// scans the per-entry list sweeps cannot (see stampDerivedSessionUsage).
 	return stampDerivedFailureCount(entry, stampDerivedSessionUsage(entry, thread)), true, nil
@@ -50,6 +55,7 @@ func pastThreadReadResponse(cfg hubcore.WebConfig, params appwire.ThreadReadPara
 	if err != nil {
 		return appwire.ThreadReadResponse{}, true, err
 	}
+	thread = attachPastThreadSkillCatalog(entry, thread)
 	var olderCursor string
 	thread.Turns, olderCursor, err = pastEntryLatestTurns(entry, params.TurnLimit)
 	if err != nil {
@@ -62,10 +68,11 @@ func pastThreadReadResponse(cfg hubcore.WebConfig, params appwire.ThreadReadPara
 func pastThreadTurnsList(cfg hubcore.WebConfig, params appwire.ThreadTurnsListParams) (appwire.ThreadTurnsListResponse, bool, error) {
 	readParams := appwire.ThreadReadParams{Ref: params.Ref, ThreadID: params.ThreadID, IncludeTurns: true}
 	if params.Limit <= 0 {
-		thread, ok, err := pastThreadForRead(cfg, readParams)
+		entry, ok := pastEntryForRead(cfg, readParams)
 		if !ok {
-			return appwire.ThreadTurnsListResponse{}, false, err
+			return appwire.ThreadTurnsListResponse{}, false, nil
 		}
+		thread, err := pastEntryThread(cfg, entry, true)
 		if err != nil {
 			return appwire.ThreadTurnsListResponse{}, true, err
 		}
@@ -138,12 +145,20 @@ func mergePastThreadForRead(cfg hubcore.WebConfig, params appwire.ThreadReadPara
 			params.Ref = appwire.Ref{SourceID: "local", ThreadID: live.SessionID}.String()
 		}
 	}
-	past, ok, err := pastThreadForRead(cfg, params)
+	entry, ok := pastEntryForRead(cfg, params)
+	if !ok {
+		return live, nil
+	}
+	// A live window is authoritative. Read saved turns only as the compatibility
+	// fallback for a live source that returned none; the metadata merged below
+	// does not use pastThreadForRead's full-transcript usage or failure scans.
+	includePastTurns := params.IncludeTurns && len(live.Turns) == 0
+	past, err := pastEntryThread(cfg, entry, includePastTurns)
 	if err != nil {
 		return appwire.Thread{}, err
 	}
-	if !ok {
-		return live, nil
+	if live.Evener.Diagnostics == nil {
+		past = attachPastThreadSkillCatalog(entry, past)
 	}
 	if live.ID == "" {
 		live.ID = past.ID
@@ -184,10 +199,84 @@ func mergePastThreadForRead(cfg hubcore.WebConfig, params appwire.ThreadReadPara
 	if live.Evener.Tasks == nil {
 		live.Evener.Tasks = past.Evener.Tasks
 	}
+	if live.Evener.Diagnostics == nil {
+		live.Evener.Diagnostics = past.Evener.Diagnostics
+	}
 	if params.IncludeTurns && len(live.Turns) == 0 {
 		live.Turns = past.Turns
 	}
 	return live, nil
+}
+
+// discoverPastThreadSkillCatalog reconstructs the metadata a session had at
+// start without loading any skill bodies. The order mirrors session startup:
+// embedded skills first, project and configured extra directories next, and
+// finally the skills exposed by configured plugins. Later layers overwrite an
+// earlier canonical key, just as they do during session initialization. Plugin
+// directories use the shared first-manifest-wins selection policy; a later
+// duplicate is skipped even if the selected plugin fails component loading.
+//
+// This function is intentionally behind a package variable. Thread-list,
+// transcript-list, and turn-page sweeps must remain metadata-only and cheap;
+// their tests replace the seam to prove they never invoke cold discovery.
+var discoverPastThreadSkillCatalog = discoverPastThreadSkills
+
+func discoverPastThreadSkills(entry hubcore.PastEntry) []appwire.EvenerSkillInfo {
+	all := make(map[string]skill.SkillMeta)
+	if embedded, err := skill.EmbeddedSkills(); err == nil {
+		maps.Copy(all, embedded)
+	}
+
+	workingDir := strings.TrimSpace(entry.Meta.EnvInfo.WorkingDir)
+	if workingDir != "" {
+		env := execenv.NewLocalExecutionEnvironment(workingDir)
+		maps.Copy(all, skill.DiscoverSkills(env, entry.Meta.Config.SkillsDirs...))
+	}
+
+	seenPluginNames := make(map[string]struct{}, len(entry.Meta.Config.PluginDirs))
+	for _, dir := range entry.Meta.Config.PluginDirs {
+		pluginName, ok := pastThreadPluginName(dir)
+		if !ok {
+			continue
+		}
+		if _, seen := seenPluginNames[pluginName]; seen {
+			continue
+		}
+		seenPluginNames[pluginName] = struct{}{}
+		pluginSkills := make(map[string]skill.SkillMeta)
+		skill.ScanSkillsDir(filepath.Join(dir, "skills"), pluginSkills)
+		for name, meta := range pluginSkills {
+			all[pluginName+":"+name] = meta
+		}
+	}
+
+	entries := skill.CatalogEntries(all)
+	result := make([]appwire.EvenerSkillInfo, 0, len(entries))
+	for _, entry := range entries {
+		result = append(result, appwire.EvenerSkillInfo{Name: entry.Name, Description: entry.Description})
+	}
+	return result
+}
+
+// pastThreadPluginName reads only the plugin manifest fields needed to locate
+// its skill directory. In particular, this does not load agents, commands,
+// hooks, or MCP configuration: a malformed unrelated component must not hide
+// otherwise valid plugin skills from a cold thread read.
+func pastThreadPluginName(dir string) (string, bool) {
+	name, err := plugin.ManifestName(dir)
+	return name, err == nil
+}
+
+func attachPastThreadSkillCatalog(entry hubcore.PastEntry, thread appwire.Thread) appwire.Thread {
+	skills := discoverPastThreadSkillCatalog(entry)
+	if len(skills) == 0 {
+		return thread
+	}
+	if thread.Evener.Diagnostics == nil {
+		thread.Evener.Diagnostics = &appwire.EvenerDiagnostics{}
+	}
+	thread.Evener.Diagnostics.Skills = skills
+	return thread
 }
 
 // pastThreadCapabilities is what the hub can carry out for a thread with no
@@ -204,7 +293,7 @@ func mergePastThreadForRead(cfg hubcore.WebConfig, params appwire.ThreadReadPara
 // departing daemon cut for a turn that is over. One definition, so the pushed
 // set and the read that follows it cannot drift.
 func pastThreadCapabilities() appwire.ThreadCapabilities {
-	return appwire.ThreadCapabilities{
+	caps := appwire.ThreadCapabilities{
 		Send:         true,
 		ForkFromTurn: true,
 		Compact:      true,
@@ -214,6 +303,8 @@ func pastThreadCapabilities() appwire.ThreadCapabilities {
 		Goal:         true,
 		Rename:       true,
 	}
+	caps.ChangeVisionModel = caps.ChangeModel
+	return caps
 }
 
 func pastEntryThread(cfg hubcore.WebConfig, entry hubcore.PastEntry, includeTurns bool) (appwire.Thread, error) {
@@ -294,6 +385,7 @@ func pastEntryThread(cfg hubcore.WebConfig, entry hubcore.PastEntry, includeTurn
 			// expose the in-process child's turn start time.
 		},
 	}
+	thread.Evener.VisionModel = entry.Meta.VisionModel
 	delegates, delegateDiagnostics, err := pastEntryDelegateStatus(entry)
 	if err != nil {
 		return appwire.Thread{}, err

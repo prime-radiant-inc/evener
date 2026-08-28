@@ -33,6 +33,8 @@ used to say:
   `spawn-stale-model-cleared.md`'s and `spawn-empty-prompt-starts-dormant.md`'s job;
   this card spawns over REST so its own assertions stay about attention.
 
+**Navigation resource request counts are bounded** (`docs/superpowers/specs/2026-08-25-tree-transport-optimization-design.md`): an attention state change triggers at most one AppWire read per affected loaded navigation representation (manifest, Live/Needs You section page, project root); the idle rail issues zero navigation reads after hydration, and the attention change plus its AppWire notification do not duplicate a resource read.
+
 Part B (steps 5-7) and Part C are **fully browser-free**. Part A (steps 1-4) needs Chrome.
 
 ## Pre-state
@@ -191,11 +193,10 @@ Part B (steps 5-7) and Part C are **fully browser-free**. Part A (steps 1-4) nee
    done
    echo "final=$state seen_awaiting=$seen_awaiting"   # expect: idle, 0
    ```
-   Cross-check the hub's own tree agrees, without a browser:
-   ```bash
-   curl -s -H "Authorization: Bearer $TOKEN" "$HUB/api/tree" | jq --arg sid "$SID2" \
-     '[.live[], .needs_you[]] | map(select(.session_id == $sid)) | {states: map(.state), inNeedsYou: (map(.state) | length)}'
-   ```
+   Cross-check the hub's own tree agrees, without a browser: read
+   `evener/navigation/read` with
+   `{"resource":"section","section":"live","offset":0,"limit":50}` and
+   again with `section:"needs_you"`; inspect `data.sessions[]` for `$SID2`.
 
 ### C. Goal variant — not re-proven here
 
@@ -227,7 +228,7 @@ those pass instead of driving a live goal session here.
   the step-2 opt-in, which means a notification default was flipped back on.
 - **Step 4**: both the title prefix and the favicon dot clear, and `activity` leaves
   `your move`. The tab's own reply emits `thread/started`, which is on the tree store's
-  refresh-trigger list (`stores/tree.ts:443-451`), so this should land within a second —
+  refresh-trigger list (`stores/navigation/store.ts:443-451`), so this should land within a second —
   well inside the 6 s ceiling. Falsify: clearing consistently needs the full ~6 s, meaning
   the own-tab trigger regressed to the broadcast-only path (the 5 s attention-watcher tick,
   `cmd/evener-hub/main_background.go:50`); or it never clears at all.

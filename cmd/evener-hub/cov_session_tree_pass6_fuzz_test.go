@@ -140,14 +140,7 @@ func FuzzSessionTreePass6(f *testing.F) {
 			// Tree method/summary/project gates and populated project projection.
 			past := hubcore.NewPastIndex("")
 			past.SeedForTest([]schema.SessionMeta{{ID: "past-6", Name: title, CreatedAt: now.Add(-time.Hour), UpdatedAt: now, EnvInfo: schema.EnvironmentInfo{WorkingDir: "/work/project"}}})
-			web = NewWebServer(hubcore.WebConfig{Past: past})
-			web.handleAPITree(httptest.NewRecorder(), httptest.NewRequest(http.MethodPost, "/api/tree", nil))
-			web.handleAPITree(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "/api/tree?summary=1", nil))
-			web.handleAPITree(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "/api/tree", nil))
-			for _, target := range []string{"/api/tree/project", "/api/tree/project?key=missing"} {
-				web.handleAPITreeProject(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, target, nil))
-			}
-			web.handleAPITreeProject(httptest.NewRecorder(), httptest.NewRequest(http.MethodPost, "/api/tree/project?key=x", nil))
+			_ = NewWebServer(hubcore.WebConfig{Past: past})
 
 		case 6:
 			// Archived project stub and favorite/pinned projection.
@@ -162,8 +155,7 @@ func FuzzSessionTreePass6(f *testing.F) {
 			if err := favorite.Set("session", "past-6", true, now); err != nil {
 				t.Fatal(err)
 			}
-			web = NewWebServer(hubcore.WebConfig{Past: past, Archive: archive, Favorite: favorite})
-			web.handleAPITree(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "/api/tree", nil))
+			_ = NewWebServer(hubcore.WebConfig{Past: past, Archive: archive, Favorite: favorite})
 
 		case 7:
 			// Session API parse/method/subroute matrix and fork decode failures.
@@ -188,11 +180,6 @@ func FuzzSessionTreePass6(f *testing.F) {
 			_ = hubUsageFromAppwire(&appwire.EvenerUsage{InputTokens: 1, OutputTokens: 2, CacheReadTokens: 3, TotalTokens: 6})
 			_ = hubRefFromTreeNodeID("remote:thread-6")
 			_ = hubRefFromTreeNodeID("local-id")
-			node := hubcore.TreeNode{ID: "parent", State: "active", Children: []hubcore.TreeNode{{ID: "child", State: "ended"}}}
-			_ = empty.apiTreeNode("project", "key", node, false)
-			_ = empty.apiTreeProject("project", map[hubcore.ArchiveKey]bool{}, hubcore.TreeProject{
-				Key: "key", Current: []hubcore.TreeNode{node}, Recent: []hubcore.TreeNode{node}, Archived: []hubcore.TreeNode{node},
-			})
 		}
 	})
 }

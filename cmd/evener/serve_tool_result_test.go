@@ -51,9 +51,11 @@ type serveShellNotificationSignals struct {
 	started       chan struct{}
 	completed     chan struct{}
 	turnComplete  chan struct{}
+	awaiting      chan struct{}
 	startedOnce   sync.Once
 	completedOnce sync.Once
 	turnOnce      sync.Once
+	awaitingOnce  sync.Once
 }
 
 func watchServeShellNotifications(client *appwire.Client, callID string) *serveShellNotificationSignals {
@@ -61,6 +63,7 @@ func watchServeShellNotifications(client *appwire.Client, callID string) *serveS
 		started:      make(chan struct{}),
 		completed:    make(chan struct{}),
 		turnComplete: make(chan struct{}),
+		awaiting:     make(chan struct{}),
 	}
 	go func() {
 		for notification := range client.Notifications() {
@@ -77,6 +80,11 @@ func watchServeShellNotifications(client *appwire.Client, callID string) *serveS
 				}
 			case appwire.NotifyTurnCompleted:
 				signals.turnOnce.Do(func() { close(signals.turnComplete) })
+			case appwire.NotifyThreadStatusChanged:
+				var params appwire.ThreadStatusChangedParams
+				if json.Unmarshal(notification.Params, &params) == nil && params.Status.Type == appwire.ThreadStatusAwaiting {
+					signals.awaitingOnce.Do(func() { close(signals.awaiting) })
+				}
 			}
 		}
 	}()
@@ -107,25 +115,6 @@ func transcriptToolResult(data []byte, callID string) (*llm.ToolResultData, bool
 		}
 	}
 	return nil, false
-}
-
-func waitForServeState(addr, want string, timeout time.Duration) bool {
-	deadline := time.Now().Add(timeout)
-	for time.Now().Before(deadline) {
-		resp, err := http.Get("http://" + addr + "/status")
-		if err == nil {
-			var status struct {
-				State string `json:"state"`
-			}
-			decodeErr := json.NewDecoder(resp.Body).Decode(&status)
-			resp.Body.Close()
-			if decodeErr == nil && status.State == want {
-				return true
-			}
-		}
-		time.Sleep(10 * time.Millisecond)
-	}
-	return false
 }
 
 func dialServeToolResultClient(ctx context.Context, t *testing.T, addr, name, ref string) (*appwire.Client, *serveShellNotificationSignals) {
@@ -166,6 +155,9 @@ func runServeForegroundShellPersistenceCase(t *testing.T, mode foregroundShellSe
 	gatePath := filepath.Join(workDir, "shell-release")
 	shellCommand := fmt.Sprintf("while [ ! -f %s ]; do sleep 0.01; done; printf shell-complete", strconv.Quote(gatePath))
 	secondRequest := make(chan struct{})
+	secondResponseRelease := make(chan struct{})
+	releaseSecondResponse := sync.OnceFunc(func() { close(secondResponseRelease) })
+	defer releaseSecondResponse()
 	var secondOnce sync.Once
 	var secondRequestResult *llm.ToolResultData
 	installServeScriptedProvider(t, &scriptedProvider{
@@ -177,6 +169,7 @@ func runServeForegroundShellPersistenceCase(t *testing.T, mode foregroundShellSe
 			func(req llm.Request) llm.Response {
 				secondRequestResult, _ = requestToolResult(req, "shell_1")
 				secondOnce.Do(func() { close(secondRequest) })
+				<-secondResponseRelease
 				return scriptedCommunicate("shell persisted")
 			},
 		},
@@ -241,6 +234,15 @@ func runServeForegroundShellPersistenceCase(t *testing.T, mode foregroundShellSe
 	case <-ctx.Done():
 		t.Fatalf("second provider request after foreground shell: %v", ctx.Err())
 	}
+	if mode == foregroundShellNoSubscriber {
+		// Reaching the second provider request proves the shell result crossed the
+		// full tool boundary with zero subscribers. Attach only after that proof,
+		// while the response is still gated, so the terminal status event is an
+		// exact settle barrier instead of a wall-clock guess.
+		client, signals = dialServeToolResultClient(ctx, t, entry.Address, "settle-observer", ref)
+		defer client.Close()
+	}
+	releaseSecondResponse()
 	if secondRequestResult == nil {
 		t.Fatal("second provider request did not contain the foreground shell tool result")
 	}
@@ -272,13 +274,16 @@ func runServeForegroundShellPersistenceCase(t *testing.T, mode foregroundShellSe
 		case <-ctx.Done():
 			t.Fatalf("foreground shell never emitted item/completed: %v", ctx.Err())
 		}
-		select {
-		case <-signals.turnComplete:
-		case <-ctx.Done():
-			t.Fatalf("foreground shell turn never completed: %v", ctx.Err())
-		}
-	} else if !waitForServeState(entry.Address, "awaiting", time.Second) {
-		t.Fatal("no-subscriber foreground shell turn never settled to awaiting")
+	}
+	select {
+	case <-signals.turnComplete:
+	case <-ctx.Done():
+		t.Fatalf("foreground shell turn never completed: %v", ctx.Err())
+	}
+	select {
+	case <-signals.awaiting:
+	case <-ctx.Done():
+		t.Fatalf("foreground shell turn never settled to awaiting: %v", ctx.Err())
 	}
 
 	shutdownResp, err := http.Post("http://"+entry.Address+"/shutdown", "", nil)

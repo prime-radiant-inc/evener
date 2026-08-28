@@ -180,17 +180,63 @@ func TestExpandHistory_Google_DifferentProvider_ThinkingAbsent(t *testing.T) {
 	}
 }
 
-// --- thinking, openai Responses + openai-compat targets (builder-guarded) ---
+// --- thinking, openai Responses target (same-deployment only) ---
+//
+// openai Responses carries an opaque encrypted_content blob that only its
+// issuing deployment can decrypt. A cross-deployment replay yields a 400
+// "Encrypted content is not supported.", so thinking from a different provider
+// is stripped; same-provider thinking (even across models) replays.
 
-func TestExpandHistory_OpenAIResponses_ThinkingUnfiltered(t *testing.T) {
+func TestExpandHistory_OpenAIResponses_SameProviderDifferentModel_ThinkingReplays(t *testing.T) {
+	t.Parallel()
+	turns := []schema.Turn{assistantThinkingTurn("openai", "gpt-5.4", "gpt-5.4")}
+	out := expandHistory(turns, replayScope{
+		Provider: "openai", Model: "gpt-5.6", BehaviorTag: "openai",
+		InFlightFrom: len(turns), canonicalModel: canonicalModelID,
+	})
+	if !hasContentKind(out, llm.ContentThinking) {
+		t.Fatal("openai same-provider thinking must replay across models")
+	}
+}
+
+func TestExpandHistory_OpenAIResponses_DifferentProvider_ThinkingAbsent(t *testing.T) {
 	t.Parallel()
 	turns := []schema.Turn{assistantThinkingTurn("anthropic", "claude-opus-4-6", "claude-opus-4-6")}
 	out := expandHistory(turns, replayScope{
 		Provider: "openai", Model: "gpt-5.4", BehaviorTag: "openai",
 		InFlightFrom: len(turns), canonicalModel: canonicalModelID,
 	})
-	if !hasContentKind(out, llm.ContentThinking) {
-		t.Fatal("openai Responses keeps its own reasoning guard; expansion must not strip thinking")
+	if hasContentKind(out, llm.ContentThinking) {
+		t.Fatal("openai cross-provider thinking replayed; want it stripped (encrypted_content is deployment-scoped)")
+	}
+	if !hasContentKind(out, llm.ContentText) {
+		t.Fatal("answer text must survive thinking stripping")
+	}
+}
+
+// TestExpandHistory_OpenAIResponses_DifferentProvider_RedactedThinkingAbsent
+// covers the redacted_thinking half of the filter loop: ContentRedThinking is
+// stripped under the same !keepThinking guard as ContentThinking, but no prior
+// test exercised it for the openai family.
+func TestExpandHistory_OpenAIResponses_DifferentProvider_RedactedThinkingAbsent(t *testing.T) {
+	t.Parallel()
+	turns := []schema.Turn{{
+		Kind: schema.TurnAssistant,
+		Message: llm.Message{Role: llm.RoleAssistant, Content: []llm.ContentPart{
+			{Kind: llm.ContentRedThinking, Thinking: &llm.ThinkingData{Text: "redacted"}},
+			{Kind: llm.ContentText, Text: "answer"},
+		}},
+		ResponseProvider: "anthropic",
+	}}
+	out := expandHistory(turns, replayScope{
+		Provider: "openai", Model: "gpt-5.4", BehaviorTag: "openai",
+		InFlightFrom: len(turns), canonicalModel: canonicalModelID,
+	})
+	if hasContentKind(out, llm.ContentRedThinking) {
+		t.Fatal("openai cross-provider redacted_thinking replayed; want it stripped")
+	}
+	if !hasContentKind(out, llm.ContentText) {
+		t.Fatal("answer text must survive redacted_thinking stripping")
 	}
 }
 

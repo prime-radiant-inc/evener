@@ -119,22 +119,23 @@ export function ConnectionBanner({ state, createClient = defaultCreateClient }: 
       // FakeClient (tests) has no socket to open, so running its connect()
       // even under MODE==="test" is safe, and necessary to exercise the
       // serverInfo-population duty below.
+      // Wire first so replacement clears the old handshake metadata before
+      // this client's response is published.
+      connectionStore.getState().connect(fresh);
       if (!(fresh instanceof AppwireClient && import.meta.env.MODE === "test")) {
         try {
           const info = await fresh.connect();
-          connectionStore.setState({ serverInfo: info.serverInfo });
+          if (connectionStore.getState().client !== fresh || fresh.state === "closed") return;
+          connectionStore.setState({ serverInfo: info.serverInfo, features: info.features });
         } catch {
           // Reflected via the client's own state, mirrored into
-          // connectionStore by connect() below either way - nothing further
+          // connectionStore by connect() above either way - nothing further
           // to do with the rejection itself (same treatment as AppShell's
           // own initial-boot connect() failure).
         }
       }
-      // Wires the store to this client regardless of whether connect()
-      // above resolved or rejected, so connectionStore.state (and, via
-      // stores/threads.ts's reactive rewireClient, every open pane's live
-      // wiring) always reflects THIS attempt's real outcome.
-      connectionStore.getState().connect(fresh);
+      // The store was wired before connect() so it reflects THIS attempt's
+      // state even when the handshake rejects.
     } finally {
       setRetrying(false);
     }

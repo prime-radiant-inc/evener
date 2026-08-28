@@ -131,7 +131,11 @@ func promptSweepParentSession(t *testing.T) *Session {
 	s := newSession(t, withConfig(SessionConfig{
 		MaxSubagentDepth: 3,
 		NoProjectPrompts: true,
-		testOnly:         testConfig{skipGitSnapshot: true, noSyncJobStore: true},
+		testOnly: testConfig{
+			skipGitSnapshot: true,
+			noSyncJobStore:  true,
+			sandboxProber:   bwrapCapableProber(t.TempDir()),
+		},
 	}))
 	s.delegationAllowance = 2
 	return s

@@ -120,6 +120,7 @@ func (m hubModel) updateImpl(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.forkDraft = nil
 		m.sessionThemePicker = nil
 		m.sessionModelPicker = nil
+		m.sessionVisionModelPicker = nil
 		m.sessionTranscriptPicker = nil
 		m.sessionPanel = nil
 		m.sessionDetailsRequested = false
@@ -337,6 +338,8 @@ func (m hubModel) updateImpl(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.addSessionSystem("Stop requested.")
 		case "model":
 			m.addSessionSystem("Model updated.")
+		case "vision-model":
+			m.addSessionSystem("Vision model updated.")
 		case "effort":
 			m.addSessionSystem("Reasoning effort updated.")
 		case "steer":
@@ -437,6 +440,7 @@ func (m hubModel) updateImpl(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.err = fmt.Errorf("start returned invalid ref: %s", msg.resp.Ref)
 			return m, nil
 		}
+		m.spawnLaunchOverrides = nil // one-shot overrides are consumed only after success
 		return m, fetchHubSession(m.frames, m.client, ref)
 	case hubModelsMsg:
 		if msg.err != nil {
@@ -481,6 +485,17 @@ func (m hubModel) updateImpl(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		picker := tuipick.NewModelPicker(msg.models, m.detail.Model, m.width)
 		m.sessionModelPicker = &picker
+		m.removeTrailingSessionSystem("Fetching available models...")
+		return m, nil
+	case hubVisionModelsMsg:
+		if msg.err != nil {
+			m.removeTrailingSessionSystem("Fetching available models...")
+			m.addHubErrorNotice("Provider unavailable", "provider", msg.err, "Check provider auth and model availability.")
+			return m, nil
+		}
+		picker := tuipick.NewModelPicker(msg.models, visionModelPickerActiveID(m.detail.VisionModel), m.width)
+		picker.SetTitle("Select vision model")
+		m.sessionVisionModelPicker = &picker
 		m.removeTrailingSessionSystem("Fetching available models...")
 		return m, nil
 	case hubTranscriptTargetsMsg:
@@ -556,6 +571,8 @@ func (m hubModel) updateImpl(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if msg.modelErr != nil && m.spawnHarnessUsesEvenerModels() {
 				m.err = fmt.Errorf("models failed: %w", msg.modelErr)
 			}
+			cmd := m.requestSpawnPluginPreview()
+			return m, cmd
 		}
 		return m, nil
 	case hubAuthStatusMsg:
@@ -587,6 +604,15 @@ func (m hubModel) updateImpl(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m.handleLaunchOverridesOpen(msg)
 	case launchconfig.LaunchOverridesResultMsg:
 		return m.handleLaunchOverridesResult(msg)
+	case launchconfig.PluginPreviewRequestMsg:
+		if m.client != nil {
+			return m, launchconfig.CmdPluginPreview(m.client, msg.Params, msg.Key)
+		}
+		return m, nil
+	case launchconfig.PluginPreviewResultMsg:
+		return m.handlePluginPreviewResult(msg)
+	case launchconfig.PluginsForLaunchResultMsg:
+		return m.handlePluginsForLaunchResult(msg)
 	case launchconfig.LaunchSettingsEditRequestMsg:
 		return m.handleLaunchSettingsEditRequest(msg)
 	case tuipick.TextInputResultMsg:
@@ -627,6 +653,17 @@ func (m hubModel) updateImpl(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m.handlePluginSetAutoUpgrade(msg)
 	}
 	return m, nil
+}
+
+// visionModelPickerActiveID canonicalizes only the bare off sentinel for the
+// picker display. Other refs stay unchanged so active-model matching does not
+// reinterpret provider-qualified refs such as "off/model".
+func visionModelPickerActiveID(ref string) string {
+	trimmed := strings.TrimSpace(ref)
+	if strings.EqualFold(trimmed, "off") {
+		return "off"
+	}
+	return ref
 }
 
 func statusRefreshStatesMatchExpected(currentState, payloadState, expectedState string) bool {

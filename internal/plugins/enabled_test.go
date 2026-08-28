@@ -3,6 +3,8 @@ package plugins
 import (
 	"bytes"
 	"context"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -72,5 +74,36 @@ func TestEnabledPluginDirs_WarnsOnDuplicateExplicit(t *testing.T) {
 	}
 	if !strings.Contains(warn.String(), "duplicate plugin name") {
 		t.Fatalf("expected a duplicate warning, got: %q", warn.String())
+	}
+}
+
+func TestEnabledPluginDirs_RendersResolverDiagnostics(t *testing.T) {
+	root := t.TempDir()
+	invalid := filepath.Join(root, "invalid")
+	broken := filepath.Join(root, "broken")
+	if err := os.MkdirAll(invalid, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(broken, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	m := NewManager(filepath.Join(root, "store"))
+	if err := SaveRegistry(m.registryPath(), Registry{Plugins: map[string][]InstallEntry{
+		"broken@market": {{InstallPath: broken, Enabled: true, Source: Source{Kind: SourceDirectory, Path: broken}}},
+	}}); err != nil {
+		t.Fatal(err)
+	}
+	var warn bytes.Buffer
+	m.Stderr = &warn
+
+	if dirs := m.EnabledPluginDirs([]string{invalid}); len(dirs) != 0 {
+		t.Fatalf("EnabledPluginDirs = %v, want no valid directories", dirs)
+	}
+	got := warn.String()
+	if !strings.Contains(got, "warning: skipping invalid --plugin-dir "+invalid) {
+		t.Fatalf("missing explicit warning: %q", got)
+	}
+	if !strings.Contains(got, "warning: skipping broken plugin "+broken) {
+		t.Fatalf("missing registry warning: %q", got)
 	}
 }

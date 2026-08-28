@@ -96,7 +96,7 @@ func fuzzTimeoutAndHeaders(t *testing.T, seed uint8) {
 	}
 	streamCtx, streamCancel := ApplyAdapterTimeout(ctx, at, true)
 	streamCancel()
-	if streamCtx != ctx || AdapterTransport(at) == nil || len(StreamReadSSEOptions(at)) != 1 {
+	if _, ok := streamCtx.Deadline(); !ok || AdapterTransport(at) == nil || len(StreamReadSSEOptions(at)) != 1 {
 		t.Fatal("positive adapter timeout contract failed")
 	}
 	client := &http.Client{}

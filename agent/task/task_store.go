@@ -6,10 +6,12 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 
 	"github.com/spf13/afero"
+	"primeradiant.com/evener/llm"
 )
 
 // TaskTemplate defines a default task in an agent's workflow. When a session
@@ -197,6 +199,19 @@ func (s *TaskStore) Load() error {
 	var tasks []Task
 	if err := json.Unmarshal(data, &tasks); err != nil {
 		return fmt.Errorf("unmarshal tasks: %w", err)
+	}
+	// Persisted task files predate task-list effort validation and may contain
+	// an unsupported override. Normalize each task before publishing the loaded
+	// slice so a stale value cannot become a provider request after restore. The
+	// empty value is the existing inherit representation; keep all other task
+	// fields untouched. Load still assigns only after unmarshalling and
+	// normalization, so malformed input cannot partially replace the store.
+	for i := range tasks {
+		effort := strings.ToLower(strings.TrimSpace(tasks[i].ReasoningEffort))
+		if err := llm.ValidateReasoningEffort(effort); err != nil {
+			effort = ""
+		}
+		tasks[i].ReasoningEffort = effort
 	}
 	s.tasks = tasks
 

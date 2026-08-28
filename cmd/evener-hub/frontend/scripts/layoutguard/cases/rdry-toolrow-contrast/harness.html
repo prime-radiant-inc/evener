@@ -16,17 +16,38 @@
 </style>
 </head>
 <body>
-<!-- Reproduces ToolRow.tsx's purpose-bearing row verbatim (the branch taken
-     when a call has a stated purpose): purpose leads, verb/target/meta
-     demotes onto its own line below it - the "Wrote fizzbuzz.py" line kata
-     rdry measured, against the REAL class names from
-     panes/session/transcript/toolcallitem.module.css. -->
-<summary class="row" data-testid="tool-row">
+<!-- The purpose-bearing row keeps the original contrast fixture. -->
+<div class="row" data-testid="tool-row">
   <span class="purpose" data-testid="tool-row-purpose">Write fizzbuzz.py to disk</span>
   <span class="summary demoted" data-testid="tool-row-summary" id="demoted-line">Wrote fizzbuzz.py</span>
   <span class="chevron" aria-hidden="true">&#9656;</span>
-</summary>
+</div>
+<!-- The existing case also exercises the ordinary purpose-less disclosure
+     geometry: the native trigger is a sibling of the visible summary and
+     inline action controls, while its rectangle covers the whole row. -->
+<div class="row" data-testid="geometry-row">
+  <div class="summaryLine">
+    <span class="summary" id="summary-line">Fetched <a id="summary-link" href="https://example.com/page">https://example.com/page</a></span>
+    <span class="summaryTrailing"><button id="action" type="button">Open beside</button></span>
+  </div>
+  <button class="trigger" id="trigger" type="button" aria-expanded="false" aria-controls="disclosure-body" aria-label="Fetched https://example.com/page">
+    <span class="chevron" aria-hidden="true">&#9656;</span>
+  </button>
+</div>
+<div id="disclosure-body" hidden>Body</div>
 <script>
+const trigger = document.getElementById("trigger");
+const action = document.getElementById("action");
+let toggles = 0;
+let actions = 0;
+trigger.addEventListener("click", () => {
+  toggles += 1;
+  trigger.setAttribute("aria-expanded", String(toggles % 2 === 1));
+});
+action.addEventListener("click", () => {
+  actions += 1;
+});
+
 window.measure = () => {
   const root = document.documentElement;
   function readTheme(themeAttr) {
@@ -44,7 +65,27 @@ window.measure = () => {
   // app ships. data-theme="light" is the explicit flip kata rdry measured.
   const dark = readTheme(null);
   const light = readTheme("light");
-  return { dark, light };
+  const summary = document.getElementById("summary-line");
+  const triggerRect = trigger.getBoundingClientRect();
+  const summaryRect = summary.getBoundingClientRect();
+  const actionRect = action.getBoundingClientRect();
+  const summaryPoint = document.elementFromPoint(summaryRect.left + summaryRect.width / 2, summaryRect.top + summaryRect.height / 2);
+  const actionPoint = document.elementFromPoint(actionRect.left + actionRect.width / 2, actionRect.top + actionRect.height / 2);
+  return {
+    dark,
+    light,
+    geometry: {
+      triggerContainsSummary:
+        triggerRect.left <= summaryRect.left &&
+        triggerRect.right >= summaryRect.right &&
+        triggerRect.top <= summaryRect.top &&
+        triggerRect.bottom >= summaryRect.bottom,
+      summaryHitTrigger: summaryPoint === trigger,
+      actionHitAction: actionPoint === action || action.contains(actionPoint),
+      toggles,
+      actions,
+    },
+  };
 };
 </script>
 </body>

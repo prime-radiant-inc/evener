@@ -1,0 +1,121 @@
+.root {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+  min-inline-size: 0;
+  container-type: inline-size;
+  container-name: transcript-detail-editor;
+}
+
+.compact {
+  gap: var(--space-2);
+}
+
+.advancedPanel {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+}
+
+.fieldsets {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: var(--space-3);
+}
+
+.fieldset {
+  min-inline-size: 0;
+  margin: 0;
+  border: 0;
+  padding: 0;
+}
+
+.fieldset legend {
+  padding: 0;
+}
+
+.controls {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+
+@container transcript-detail-editor (max-width: 34rem) {
+  .fieldsets {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
+.detailControl {
+  min-width: 0;
+}
+
+.detailPanel {
+  box-sizing: border-box;
+  inline-size: min(42rem, calc(100vw - var(--space-8)));
+  max-block-size: calc(100dvh - var(--space-8));
+  padding: var(--space-4);
+  overflow-y: auto;
+  container-type: inline-size;
+  container-name: transcript-detail-panel;
+}
+
+.detailPanelTitle {
+  margin: 0;
+  color: var(--ink-hi);
+  font-size: var(--font-size-pane-title);
+}
+
+.detailContent,
+.detailSheetContent {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+  min-width: 0;
+}
+
+.detailScope {
+  margin: 0;
+  color: var(--ink-mid);
+  font-size: var(--font-size-ui);
+  font-weight: var(--font-weight-medium);
+}
+
+.detailStatus,
+.detailWarning {
+  margin: 0;
+  background: var(--surface-inset);
+  padding: var(--space-2) var(--space-3);
+  color: var(--ink-mid);
+  font-size: var(--font-size-ui);
+  line-height: var(--line-height-body);
+}
+
+.detailStatus p {
+  margin: 0;
+}
+
+.detailStatus p + p {
+  margin-top: var(--space-1);
+}
+
+.detailWarning p {
+  margin: 0;
+}
+
+.detailWarning p + p {
+  margin-top: var(--space-1);
+}
+
+.detailActions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+  justify-content: flex-end;
+}
+
+@container transcript-detail-panel (max-width: 34rem) {
+  .detailPanel .detailActions {
+    flex-direction: column;
+  }
+}

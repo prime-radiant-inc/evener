@@ -510,6 +510,18 @@ describe("notification-triggered refetch", () => {
     expect(extensionsStore.getState().plugins).toEqual([PLUGIN_A]);
   });
 
+  test("evener/plugin/updated increments pluginRevision synchronously before refetch", async () => {
+    const fake = connectFakeClient();
+    fake.on("evener/plugin/list", () => ({ plugins: [] }));
+    await extensionsStore.getState().fetchPlugins();
+    expect(extensionsStore.getState().pluginRevision).toBe(0);
+
+    fake.emitNotification({ method: "evener/plugin/updated", params: {} });
+    expect(extensionsStore.getState().pluginRevision).toBe(1);
+    await vi.advanceTimersByTimeAsync(250);
+    expect(extensionsStore.getState().pluginRevision).toBe(1);
+  });
+
   test("evener/launch/updated schedules a debounced fetchLaunchLayer, 250ms", async () => {
     const fake = connectFakeClient();
     fake.on("evener/launch/getLayer", () => ({ pluginDirs: [] }));

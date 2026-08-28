@@ -288,28 +288,28 @@ func FuzzRuntimeBoundaryEdges(f *testing.F) {
 			_ = fn("denied", nil, fs.ErrPermission)
 			return nil
 		}
-		if _, err := rootFS.grepNative("x", root, "", false, 10, "content"); err != nil {
+		if _, err := rootFS.grepNative(context.Background(), "x", root, "", false, 10, "content"); err != nil {
 			t.Fatal(err)
 		}
 		secureBrowseWalkDir = func(fs.FS, string, fs.WalkDirFunc) error { return fs.ErrPermission }
-		if _, err := rootFS.grepNative("x", root, "", false, 10, "content"); err == nil {
+		if _, err := rootFS.grepNative(context.Background(), "x", root, "", false, 10, "content"); err == nil {
 			t.Fatal("browse walk fault succeeded")
 		}
 		secureBrowseWalkDir = browseWalkOrig
 		secureBrowseReadFile = func(fs.FS, string) ([]byte, error) { return nil, fs.ErrPermission }
-		if _, err := rootFS.grepNative("x", root, "", false, 10, "content"); err != nil {
+		if _, err := rootFS.grepNative(context.Background(), "x", root, "", false, 10, "content"); err != nil {
 			t.Fatal(err)
 		}
 		secureBrowseReadFile = browseReadOrig
 
 		grepReadOrig, grepWalkOrig := grepReadFile, grepWalk
-		grepReadFile = func(string) ([]byte, error) { return nil, fs.ErrPermission }
-		if _, err := NewLocalExecutionEnvironment(root).grepNative("x", root, "", false, 10, "content"); err != nil {
+		grepReadFile = func(fs.FS, string) ([]byte, error) { return nil, fs.ErrPermission }
+		if _, err := NewLocalExecutionEnvironment(root).grepNative(context.Background(), "x", root, "", false, 10, "content"); err != nil {
 			t.Fatal(err)
 		}
 		grepReadFile = grepReadOrig
-		grepWalk = func(string, fs.WalkDirFunc) error { return fs.ErrPermission }
-		if _, err := NewLocalExecutionEnvironment(root).grepNative("x", root, "", false, 10, "content"); err == nil {
+		grepWalk = func(fs.FS, string, fs.WalkDirFunc) error { return fs.ErrPermission }
+		if _, err := NewLocalExecutionEnvironment(root).grepNative(context.Background(), "x", root, "", false, 10, "content"); err == nil {
 			t.Fatal("local walk fault succeeded")
 		}
 		grepWalk = grepWalkOrig

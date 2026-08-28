@@ -325,6 +325,7 @@ export function hydrateThread(resp: ThreadReadResponse, ref: string, now: number
     // (below) is what later splits provider and model id apart properly.
     model: thread.modelProvider,
     reasoningEffort: thread.evener.reasoningEffort,
+    visionModel: thread.evener.visionModel ?? "",
     askPending: thread.evener.askPending ?? false,
     // Go wire-nullable-array rule: omitempty absent means empty, not missing.
     pendingEscalations: thread.evener.pendingEscalations ?? [],
@@ -335,7 +336,11 @@ export function hydrateThread(resp: ThreadReadResponse, ref: string, now: number
     // An absent aggregate means the daemon could not authoritatively read
     // tasks; preserve a present zero so an empty task list stays distinct.
     tasks: thread.evener.tasks ?? null,
+    ...(thread.evener.diagnostics
+      ? { diagnostics: { plugins: thread.evener.diagnostics.plugins?.map((plugin) => ({ name: plugin.name })) } }
+      : {}),
     delegates: (thread.evener.diagnostics?.delegates ?? []).map(cloneStableDelegate),
+    skills: (thread.evener.diagnostics?.skills ?? []).map((skill) => ({ ...skill })),
     turnSlots: thread.evener.diagnostics?.turnSlots ? { ...thread.evener.diagnostics.turnSlots } : null,
     jobsUpdatedAt: null,
     jobsTreeRevision: null,
@@ -870,6 +875,11 @@ function applyNotificationToThread(model: ThreadModel, n: AnyNotification, now: 
     case "thread/reasoning-effort/changed": {
       if (!notificationTargetsThread(n, model)) return model;
       return { ...model, reasoningEffort: n.params.reasoningEffort, lastFrameAt: now };
+    }
+
+    case "thread/vision-model/changed": {
+      if (!notificationTargetsThread(n, model)) return model;
+      return { ...model, visionModel: n.params.visionModel, lastFrameAt: now };
     }
 
     case "evener/task/updated": {

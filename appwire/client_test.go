@@ -103,6 +103,82 @@ func TestClientRoutesResponsesAndNotifications(t *testing.T) {
 	}
 }
 
+func TestClientNavigationReadRoundTrip(t *testing.T) {
+	transport := newMemoryTransport()
+	client := NewClient(transport)
+	ctx := t.Context()
+	client.Start(ctx)
+
+	zero := uint32(0)
+	done := make(chan struct {
+		resp NavigationReadResponse
+		err  error
+	}, 1)
+	go func() {
+		resp, err := client.NavigationRead(ctx, NavigationReadParams{
+			Resource: "section",
+			Section:  "live",
+			Offset:   &zero,
+			Limit:    &zero,
+			ETag:     "etag-a",
+		})
+		done <- struct {
+			resp NavigationReadResponse
+			err  error
+		}{resp: resp, err: err}
+	}()
+
+	var written Message
+	select {
+	case written = <-transport.writes:
+	case <-time.After(time.Second):
+		t.Fatal("request was not written")
+	}
+	if written.Request.Method != MethodEvenerNavigationRead {
+		t.Fatalf("method = %q, want %q", written.Request.Method, MethodEvenerNavigationRead)
+	}
+	var params NavigationReadParams
+	if err := json.Unmarshal(written.Request.Params, &params); err != nil {
+		t.Fatalf("params decode: %v", err)
+	}
+	if params.Resource != "section" || params.Section != "live" || params.ETag != "etag-a" {
+		t.Fatalf("params = %+v, want section/live with etag", params)
+	}
+	if params.Offset == nil {
+		t.Fatal("decoded offset is nil; explicit zero was not preserved")
+	}
+	if *params.Offset != 0 {
+		t.Fatalf("decoded offset = %d, want 0", *params.Offset)
+	}
+	if params.Limit == nil {
+		t.Fatal("decoded limit is nil; explicit zero was not preserved")
+	}
+	if *params.Limit != 0 {
+		t.Fatalf("decoded limit = %d, want 0", *params.Limit)
+	}
+
+	transport.reads <- ResponseMessage(written.Request.ID, NavigationReadResponse{
+		Status:       "not_modified",
+		GenerationID: "generation-a",
+		Revision:     4,
+		ETag:         "etag-a",
+	})
+	select {
+	case result := <-done:
+		if result.err != nil {
+			t.Fatalf("NavigationRead: %v", result.err)
+		}
+		if result.resp.Status != "not_modified" || result.resp.GenerationID != "generation-a" || result.resp.Revision != 4 || result.resp.ETag != "etag-a" {
+			t.Fatalf("response = %+v, want matching not-modified envelope", result.resp)
+		}
+		if len(result.resp.Data) != 0 {
+			t.Fatalf("response data = %s, want omitted for not-modified result", result.resp.Data)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("response was not routed")
+	}
+}
+
 func TestClientGoalSetRoundTrip(t *testing.T) {
 	transport := newMemoryTransport()
 	client := NewClient(transport)

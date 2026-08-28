@@ -3,7 +3,9 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { cleanup, render, screen } from "@testing-library/react";
 import { afterEach, expect, test } from "vitest";
-import { resetTreeStoreForTests, type TreeNode, type TreeResponse, treeStore } from "../../stores/tree";
+import type { NavigationSessionSummary } from "../../protocol/types.gen";
+import { navigationStore, resetNavigationStoreForTests } from "../../stores/navigation/store";
+import { keyID } from "../../stores/navigation/types";
 import Welcome from "./Welcome";
 
 // A stylesheet-grep assertion must not be satisfiable by a comment - this repo
@@ -16,12 +18,11 @@ function stripCssComments(css: string): string {
 afterEach(() => {
   cleanup();
   window.history.pushState({}, "", "/");
-  resetTreeStoreForTests();
+  resetNavigationStoreForTests();
 });
 
-function node(overrides: Partial<TreeNode> = {}): TreeNode {
+function node(overrides: Partial<NavigationSessionSummary> = {}): NavigationSessionSummary {
   return {
-    row_id: "row1",
     ref: "local:row1",
     host_id: "local",
     session_id: "row1",
@@ -35,20 +36,27 @@ function node(overrides: Partial<TreeNode> = {}): TreeNode {
   };
 }
 
-const EMPTY_TREE: TreeResponse = {
-  generated_at: "2026-01-01T00:00:00Z",
-  sources: [],
-  live: [],
-  needs_you: [],
-  pin_sections: [],
-  projects: [],
-  archived_projects: [],
-  test_runs: [],
-  attentionSummary: { needsYou: 0, error: 0, working: 0 },
-};
-
-function setTree(overrides: Partial<TreeResponse>): void {
-  treeStore.setState({ tree: { ...EMPTY_TREE, ...overrides } });
+function setLive(rows: NavigationSessionSummary[]): void {
+  const key = { kind: "section", section: "live", offset: 0, limit: 50 } as const;
+  navigationStore.setState({
+    resources: new Map([
+      [
+        keyID(key),
+        {
+          key,
+          data: { generation_id: "generation_test", revision: 1, sessions: rows, remaining: 0, truncated: false },
+          loadedRevision: 1,
+          targetRevision: null,
+          forceToken: 0,
+          etag: '"test"',
+          loading: false,
+          stale: false,
+          error: null,
+          generationID: "generation_test",
+        },
+      ],
+    ]),
+  });
 }
 
 const here = dirname(fileURLToPath(import.meta.url));
@@ -63,7 +71,7 @@ const LONG_TITLE =
   "This means that we're going to cover all of the binary names, all of the command entry points, and every alias the installer ships, in one pass so nothing is missed";
 
 test("the full long resume-candidate title is present in the DOM, not truncated away", () => {
-  setTree({ live: [node({ ref: "local:long1", title: LONG_TITLE })] });
+  setLive([node({ ref: "local:long1", title: LONG_TITLE })]);
   render(<Welcome params={{}} paneId="welcome" focused={true} />);
   const button = screen.getByRole("button", { name: /Jump back in/ });
   expect(button.textContent).toContain(LONG_TITLE);

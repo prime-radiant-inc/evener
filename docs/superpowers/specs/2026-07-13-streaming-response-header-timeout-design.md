@@ -3,6 +3,14 @@
 **Date:** 2026-07-13
 **Status:** Implemented
 
+**Superseding revision (2026-08-24, issue #328):** The original design below
+deliberately stopped `AdapterTimeout.Request` at response headers. The current
+contract extends that same per-attempt deadline through streaming body
+consumption; `StreamRead` remains the idle-between-events guard. The original
+no-body-deadline statements are retained as the historical rationale for the
+header-only implementation, while [`docs/llm-providers.md`](../../llm-providers.md)
+records the current contract and its retry-boundary decision.
+
 ## Problem
 
 Evener does not bound the time a streaming provider request may spend waiting for

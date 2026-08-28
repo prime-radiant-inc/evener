@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -1004,7 +1005,10 @@ func TestSession_SubagentStopHookRunsWhenSubagentFinishes(t *testing.T) {
 	}
 	defer sess.Close()
 
-	result, err := sess.spawnAgent(context.Background(), "inspect", "", "", 1, "explorer", "", nil, nil)
+	// This fixture intentionally requires its SubagentStop hook to mutate the
+	// shared workspace, so declare a mutating child scope instead of asking the
+	// read-only explorer floor to permit the write.
+	result, err := sess.spawnAgent(context.Background(), "inspect", "", "", 1, "explorer", "", nil, []string{"write_file"})
 	if err != nil {
 		t.Fatalf("spawnAgent: %v", err)
 	}
@@ -2150,5 +2154,15 @@ func TestSessionConfigDelegateTurnKnobsSnapshotRoundTrip(t *testing.T) {
 	out := configFromSnapshot(in.toSnapshot())
 	if out.MaxConcurrentDelegateTurns != 7 || out.MaxRetainedTerminal != 99 {
 		t.Fatalf("round trip = %+v, want 7/99", out)
+	}
+}
+
+func TestPluginSelectionSnapshotRoundTrip(t *testing.T) {
+	t.Parallel()
+	for _, want := range [][]string{nil, {}, {"/plugins/alpha", "/plugins/beta"}} {
+		got := configFromSnapshot((SessionConfig{PluginDirs: want}).toSnapshot()).PluginDirs
+		if !slices.Equal(want, got) {
+			t.Fatalf("PluginDirs round trip = %v, want %v", got, want)
+		}
 	}
 }

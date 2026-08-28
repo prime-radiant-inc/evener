@@ -2460,6 +2460,11 @@ EOF
 
 ## Task 12: Live end-to-end scenarios
 
+**Historical note (superseded 2026-08-26, Task 29 / issue #171):** The
+original web idle-steer card references below are retained as implementation
+history. They describe the retired daemon-refusal/optimistic-chip contract;
+the current live card is `test/scenarios/web-steer-no-active-turn-guard.md`.
+
 **Files:**
 - Create: `test/scenarios/web-steer-in-idle-fails-fast.md`
 - Create: `test/scenarios/web-steer-success-reconciles.md`

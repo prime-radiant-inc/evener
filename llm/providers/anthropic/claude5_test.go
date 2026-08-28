@@ -2,6 +2,8 @@ package anthropic
 
 import (
 	"context"
+	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -24,6 +26,19 @@ func TestIsClaude5OrNewer(t *testing.T) {
 		// Provider-qualified ref from an openrouter-anthropic instance: only
 		// the catalog entry it resolves to identifies the generation.
 		{"anthropic/claude-sonnet-5", true},
+		// Platform-qualified catalog entries are exact keys, not last-segment
+		// fallbacks, so each serving-path spelling must carry the flag too.
+		{"anthropic.claude-sonnet-5", true},
+		{"us.anthropic.claude-sonnet-5", true},
+		{"eu.anthropic.claude-fable-5", true},
+		{"vertex_ai/claude-opus-5", true},
+		{"vertex_ai/claude-sonnet-5@default", true},
+		{"azure_ai/claude-fable-5", true},
+		// Opus 4.7/4.8 share the no-sampling-params contract; the prefixed
+		// entries are the residual covered by issue #151 after #169.
+		{"us.anthropic.claude-opus-4-7", true},
+		{"vertex_ai/claude-opus-4-8@default", true},
+		{"azure_ai/claude-opus-4-7", true},
 		// No catalog entry at all — the generation parse keeps an unreleased
 		// 5+ family on the safe request shape.
 		{"claude-fable-6", true},
@@ -46,7 +61,14 @@ func TestBuildRequestBody_Claude5_AdaptiveWithDisplay(t *testing.T) {
 	// request displayed thinking (display defaults to "omitted" on Claude 5).
 	a := &Adapter{APIKey: "test", BaseURL: "https://api.anthropic.com"}
 	effort := "high"
-	for _, model := range []string{"claude-sonnet-5", "claude-fable-5", "claude-fable-5-20260901"} {
+	for _, model := range []string{
+		"claude-sonnet-5",
+		"claude-fable-5",
+		"claude-fable-5-20260901",
+		"us.anthropic.claude-sonnet-5",
+		"vertex_ai/claude-fable-5@default",
+		"azure_ai/claude-fable-5",
+	} {
 		req := llm.Request{
 			Model:           model,
 			Messages:        []llm.Message{llm.User("hi")},
@@ -76,6 +98,59 @@ func TestBuildRequestBody_Claude5_AdaptiveWithDisplay(t *testing.T) {
 		if oc["effort"] == "" {
 			t.Fatalf("%s: expected output_config.effort", model)
 		}
+	}
+}
+
+func TestComplete_PlatformClaude5RequestShape(t *testing.T) {
+	var requestBody map[string]any
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/v1/messages" {
+			t.Errorf("request path = %q, want /v1/messages", r.URL.Path)
+		}
+		if err := json.NewDecoder(r.Body).Decode(&requestBody); err != nil {
+			t.Errorf("decode request body: %v", err)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{"id":"msg_1","type":"message","role":"assistant","model":"claude-sonnet-5","content":[{"type":"text","text":"ok"}],"stop_reason":"end_turn","usage":{"input_tokens":1,"output_tokens":1}}`)
+	}))
+	t.Cleanup(server.Close)
+
+	temperature := 0.7
+	topP := 0.9
+	for _, model := range []string{
+		"us.anthropic.claude-sonnet-5",
+		"vertex_ai/claude-fable-5@default",
+		"azure_ai/claude-opus-4-7",
+	} {
+		t.Run(model, func(t *testing.T) {
+			requestBody = nil
+			a := &Adapter{APIKey: "test", BaseURL: server.URL, Client: server.Client()}
+			if _, err := a.Complete(context.Background(), llm.Request{
+				Model:       model,
+				Messages:    []llm.Message{llm.User("hi")},
+				Temperature: &temperature,
+				TopP:        &topP,
+			}); err != nil {
+				t.Fatalf("Complete: %v", err)
+			}
+			if got := requestBody["model"]; got != model {
+				t.Fatalf("wire model = %v, want serving-path ID %q", got, model)
+			}
+			if _, ok := requestBody["temperature"]; ok {
+				t.Fatalf("wire body contains temperature: %v", requestBody["temperature"])
+			}
+			if _, ok := requestBody["top_p"]; ok {
+				t.Fatalf("wire body contains top_p: %v", requestBody["top_p"])
+			}
+			thinking, ok := requestBody["thinking"].(map[string]any)
+			if !ok {
+				t.Fatalf("wire body missing thinking: %v", requestBody)
+			}
+			if thinking["type"] != "adaptive" || thinking["display"] != "summarized" {
+				t.Fatalf("wire thinking = %v, want adaptive/summarized", thinking)
+			}
+		})
 	}
 }
 

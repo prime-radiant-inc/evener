@@ -85,6 +85,70 @@ func TestRestoreSessionConfigUsesInjectedClock(t *testing.T) {
 	}
 }
 
+func TestRestoreSessionLifetimeOwnsRootAndChild(t *testing.T) {
+	owner, cancelOwner := context.WithCancel(context.Background())
+	client := llm.NewClient()
+	client.Register(&agenttest.ScriptedAdapter{
+		Provider:  "openai",
+		Responder: func(llm.Request) llm.Response { return agenttest.FinalResponse("done") },
+	})
+	meta := schema.SessionMeta{
+		ID:        ulid.Make().String(),
+		ProfileID: "openai",
+		Model:     "gpt-5.2",
+		Config:    (SessionConfig{MaxSubagentDepth: 1, NoProjectPrompts: true}).toSnapshot(),
+	}
+	restored, err := RestoreSessionFromMetaWithConfig(
+		client,
+		NewOpenAIProfile("gpt-5.2"),
+		&agenttest.DenyEnv{WorkDir: t.TempDir()},
+		meta,
+		RestoreSessionConfig{
+			LifetimeContext: owner,
+			StateDir:        t.TempDir(),
+			testOnly: testConfig{
+				skipGitSnapshot:     true,
+				minimalSystemPrompt: true,
+				noSyncJobStore:      true,
+			},
+		},
+	)
+	if err != nil {
+		t.Fatalf("RestoreSessionFromMetaWithConfig: %v", err)
+	}
+	t.Cleanup(restored.Close)
+
+	prepared := prepareSubagentForTreeRevisionTest(t, restored, "child task")
+	t.Cleanup(prepared.runCancel)
+	t.Cleanup(func() { releasePreparedTreeSlot(prepared) })
+	t.Cleanup(prepared.sub.sess.Close)
+
+	for name, done := range map[string]<-chan struct{}{
+		"root":      restored.sessionCtx.Done(),
+		"child":     prepared.sub.sess.sessionCtx.Done(),
+		"child run": prepared.runCtx.Done(),
+	} {
+		select {
+		case <-done:
+			t.Fatalf("%s context ended before owner cancellation", name)
+		default:
+		}
+	}
+
+	cancelOwner()
+	for name, done := range map[string]<-chan struct{}{
+		"root":      restored.sessionCtx.Done(),
+		"child":     prepared.sub.sess.sessionCtx.Done(),
+		"child run": prepared.runCtx.Done(),
+	} {
+		select {
+		case <-done:
+		default:
+			t.Fatalf("%s context outlived restored-session owner", name)
+		}
+	}
+}
+
 // TestLifecycleBackgroundShellQuiesces proves the C2 path: a turn that issues a
 // background shell tool call actually starts a background job, and quiesceJobs
 // drives it to a terminal status deterministically.

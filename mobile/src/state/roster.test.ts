@@ -6,7 +6,8 @@
 // - reset clears all state
 // - grouping by attention: needsYou, running, recent
 // - hasMore stored from the service result
-// - event refresh: two tree/attention signals coalesce into one refresh
+// - event refresh: every canonical roster-affecting notification refreshes
+// - event refresh: two roster-affecting signals coalesce into one refresh
 // - sessionsVisible === false does not schedule a refresh
 // - generation change rejects a late refresh result
 //
@@ -102,15 +103,11 @@ function makeEntry(over: Partial<RosterEntry> = {}): RosterEntry {
   };
 }
 
-function treeChanged(): AnyNotification {
-  return { method: "evener/tree/changed", params: {} } as AnyNotification;
-}
-
 function attentionChanged(): AnyNotification {
   return {
     method: "evener/attention/changed",
     params: { changed: [], summary: { needsYou: 0, error: 0, working: 0 } },
-  } as AnyNotification;
+  };
 }
 
 function statusChanged(): AnyNotification {
@@ -121,8 +118,73 @@ function statusChanged(): AnyNotification {
       ref: "ref-1",
       status: { type: "active" },
     },
-  } as AnyNotification;
+  };
 }
+
+const ROSTER_REFRESH_NOTIFICATIONS = [
+  {
+    method: "thread/started",
+    params: {
+      threadId: "t1",
+      ref: "ref-1",
+      thread: {
+        id: "t1",
+        sessionId: "s1",
+        preview: "",
+        ephemeral: false,
+        modelProvider: "test",
+        createdAt: 1,
+        updatedAt: 1,
+        status: { type: "active" },
+        cwd: "/tmp/project",
+        cliVersion: "test",
+        source: "test",
+        evener: {
+          ref: "ref-1",
+          capabilities: {
+            send: true,
+            steer: true,
+            interrupt: true,
+            compact: true,
+            clear: true,
+            forkFromTurn: true,
+            shutdown: true,
+            changeModel: true,
+            changeVisionModel: true,
+            queue: true,
+            goal: true,
+            rename: true,
+          },
+          queue: { revision: 0 },
+        },
+      },
+    },
+  },
+  {
+    method: "thread/closed",
+    params: { threadId: "t1", ref: "ref-1", reason: "complete" },
+  },
+  {
+    method: "thread/status/changed",
+    params: { threadId: "t1", ref: "ref-1", status: { type: "active" } },
+  },
+  {
+    method: "thread/queueChanged",
+    params: {
+      threadId: "t1",
+      ref: "ref-1",
+      queue: { revision: 1 },
+    },
+  },
+  {
+    method: "evener/thread/name/changed",
+    params: { threadId: "t1", ref: "ref-1", name: "Renamed" },
+  },
+  {
+    method: "evener/attention/changed",
+    params: { changed: [], summary: { needsYou: 0, error: 0, working: 0 } },
+  },
+] satisfies readonly AnyNotification[];
 
 // --- tests ------------------------------------------------------------------
 
@@ -342,7 +404,44 @@ describe("RosterStore", () => {
 // --- event refresh tests ----------------------------------------------------
 
 describe("RosterStore — event refresh", () => {
-  it("coalesces two tree/attention signals into one refresh", async () => {
+  it.each(ROSTER_REFRESH_NOTIFICATIONS)(
+    "schedules a refresh for $method",
+    async (notification) => {
+      const scheduler = new FakeScheduler();
+      const service = new FakeRosterService();
+      const store = createRosterStore({ scheduler });
+      store.getState().setSessionsVisible(true);
+
+      store.getState().handleNotification(notification, service);
+
+      expect(scheduler.scheduleCalls).toHaveLength(1);
+      expect(scheduler.scheduleCalls[0]?.key).toBe("roster-refresh:0");
+    },
+  );
+
+  it("does not schedule for a canonical notification that cannot affect the roster", () => {
+    const scheduler = new FakeScheduler();
+    const service = new FakeRosterService();
+    const store = createRosterStore({ scheduler });
+    store.getState().setSessionsVisible(true);
+
+    store.getState().handleNotification(
+      {
+        method: "thread/model/changed",
+        params: {
+          threadId: "t1",
+          ref: "ref-1",
+          modelProvider: "test",
+          model: "test-model",
+        },
+      },
+      service,
+    );
+
+    expect(scheduler.scheduleCalls).toHaveLength(0);
+  });
+
+  it("coalesces two roster-affecting signals into one refresh", async () => {
     const scheduler = new FakeScheduler();
     let notify: (n: AnyNotification) => void = () => {};
     const subscribe = (h: (n: AnyNotification) => void): (() => void) => {
@@ -358,7 +457,7 @@ describe("RosterStore — event refresh", () => {
     await store.getState().refresh(service);
     expect(service.listCalls).toBe(1);
 
-    notify?.(treeChanged());
+    notify?.(statusChanged());
     notify?.(attentionChanged());
 
     expect(scheduler.scheduleCalls).toHaveLength(2);
@@ -384,27 +483,9 @@ describe("RosterStore — event refresh", () => {
     // sessionsVisible defaults to false
     expect(store.getState().sessionsVisible).toBe(false);
 
-    notify?.(treeChanged());
-
-    expect(scheduler.scheduleCalls).toHaveLength(0);
-  });
-
-  it("schedules a refresh for thread/status/changed", async () => {
-    const scheduler = new FakeScheduler();
-    let notify: (n: AnyNotification) => void = () => {};
-    const subscribe = (h: (n: AnyNotification) => void): (() => void) => {
-      notify = h;
-      return () => {};
-    };
-
-    const service = new FakeRosterService();
-    const store = createRosterStore({ scheduler, subscribe });
-    store.getState().setSessionsVisible(true);
-    await store.getState().refresh(service);
-
     notify?.(statusChanged());
 
-    expect(scheduler.scheduleCalls).toHaveLength(1);
+    expect(scheduler.scheduleCalls).toHaveLength(0);
   });
 
   it("uses a generation-scoped scheduler key", async () => {
@@ -420,7 +501,7 @@ describe("RosterStore — event refresh", () => {
     store.getState().setSessionsVisible(true);
     await store.getState().refresh(service);
 
-    notify?.(treeChanged());
+    notify?.(statusChanged());
     const keyBefore = scheduler.scheduleCalls[0]?.key;
     expect(keyBefore).toContain(String(store.getState().generation));
   });
@@ -490,7 +571,7 @@ describe("RosterStore — event refresh", () => {
     expect(oldService.listCalls).toBe(1);
 
     // Schedule a refresh via an event notification (captures old generation).
-    notify?.(treeChanged());
+    notify?.(statusChanged());
     expect(scheduler.scheduleCalls).toHaveLength(1);
     const scheduledKey = scheduler.scheduleCalls[0]?.key;
     expect(scheduledKey).toBeDefined();
@@ -533,7 +614,7 @@ describe("RosterStore — event refresh", () => {
     const genBefore = store.getState().generation;
 
     // Schedule a refresh via event.
-    notify?.(treeChanged());
+    notify?.(statusChanged());
     const scheduledKey = scheduler.scheduleCalls[0]?.key;
     expect(scheduledKey).toBeDefined();
 

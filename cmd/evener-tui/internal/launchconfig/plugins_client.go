@@ -81,6 +81,21 @@ type PluginMutateResultMsg struct {
 	Err  error
 }
 
+// PluginPreviewRequestMsg asks the hub model to run a side-effect-free plugin
+// preview. Key identifies the request's directory/override revision so a late
+// response cannot replace a newer preview.
+type PluginPreviewRequestMsg struct {
+	Params appwire.PluginPreviewParams
+	Key    string
+}
+
+// PluginPreviewResultMsg carries one keyed plugin preview result.
+type PluginPreviewResultMsg struct {
+	Response appwire.PluginPreviewResponse
+	Key      string
+	Err      error
+}
+
 // PluginActionMsg carries a plugin mutation sharing PluginRefParams' shape:
 // install, upgrade, remove, enable, or disable.
 type PluginActionMsg struct {
@@ -147,6 +162,15 @@ func CmdPluginList(client *appwire.Client) tea.Cmd {
 		defer cancel()
 		resp, err := client.PluginList(ctx)
 		return PluginListResultMsg{List: resp, Err: err}
+	}
+}
+
+func CmdPluginPreview(client *appwire.Client, params appwire.PluginPreviewParams, key string) tea.Cmd {
+	return func() tea.Msg {
+		ctx, cancel := context.WithTimeout(context.Background(), pluginsQuickTimeout)
+		defer cancel()
+		resp, err := client.PluginPreview(ctx, params)
+		return PluginPreviewResultMsg{Response: resp, Key: key, Err: err}
 	}
 }
 

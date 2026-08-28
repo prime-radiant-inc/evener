@@ -548,7 +548,7 @@ func TestExplainSchemaError_NoInstanceLocation(t *testing.T) {
 // TestExplainSchemaError_PresentFieldWithContainerPath covers the
 // present-field path with containerPath != "" (line 66-68).
 func TestExplainSchemaError_PresentFieldWithContainerPath(t *testing.T) {
-	params := askUserParamsForExplain()
+	params := askUserParamsWithHeaderMaxLengthForExplain()
 	args := map[string]any{
 		"questions": []any{map[string]any{
 			"header":   strings.Repeat("x", 20),

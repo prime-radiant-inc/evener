@@ -239,10 +239,10 @@ Verified again after surfacing `watch_id` in the model-facing
 - Parent captured both watch ids directly from create results:
   `[watching caller · watch_id ...]`; it did not call
   `job_watch(operation="list")` to recover ids.
-- Parent still used `job_list` and `job_read_output` after successful
-  `read_file` to wait for the async observer job. That was fluent
-  enough: it found the correct running observer job without human
-  steering.
+- Parent still used `job_list` and job metadata after successful
+  `read_file` to orient on the async observer delegate. Current delegate
+  completion is delivered as a `delegate-notification` with the delegate
+  session transcript; `job_read_output` is retired.
 - Observer ignored the broad `job_watch` frame with bare
   `PASSIVE_IGNORED_NO_ACTION` and zero tool calls. The filtered
   `read_file` frame correctly called `delegate_send` and `communicate`,

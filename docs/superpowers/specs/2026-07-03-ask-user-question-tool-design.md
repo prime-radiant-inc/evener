@@ -30,7 +30,7 @@ Meanwhile a dedicated model-invoked question tool became table stakes across the
 
 ## 3. Prior art distilled (what we copy, what we avoid)
 
-We copy the convergent schema (questions[] + short `header` chip + 2–5 `{label, detail}` options + always-available free text), the convergent headless stance (remove the tool; never fabricate answers), and the convergent subagent stance (root-only, hard-enforced).
+We copy the convergent schema (questions[] + a `header` chip + 2–5 `{label, detail}` options + always-available free text), the convergent headless stance (remove the tool; never fabricate answers), and the convergent subagent stance (root-only, hard-enforced).
 
 We deliberately avoid five documented failure modes:
 
@@ -56,7 +56,7 @@ We also decline Codex's plan-mode-only gating (users file issues begging for the
 {
   "questions": [            // 1..4
     {
-      "header": "DB choice",        // optional, ≤12 chars; chip/tab label; omitted headers display as Question N
+	      "header": "DB choice",        // optional chip/tab label; delimiter characters are encoded in [answers] replies; omitted headers display as Question N
       "question": "Which datastore for the ingest path?",  // required
       "options": [                   // required, 2..5
         { "label": "Postgres", "detail": "matches prod; heavier local setup", "recommended": true },
@@ -89,7 +89,7 @@ The user's **next message is the answer**. The form composes it in a stable form
 4. [Endpoint] → free text: "use RDS, not self-hosted"
 ```
 
-Per question, exactly one resolution: a quoted selection (multi-select joins **quoted** labels: `→ "A", "B"` — unambiguous even when a label contains a comma), `free text: "…"`, `you decide` (optional `leaning`, then `note`, both quoted), `do your stated fallback ("…")` (only where `if_unanswered` exists), or `skipped (no answer)`. Question numbering is global across the turn's pending set in posting order — spanning multiple `ask_user` calls — and every line carries the header (or the stable fallback label `Question N`, 1-based within the call), so the reply stays unambiguous even when clients render the calls as separate cards. **Every** resolution line accepts the trailing `— note: "…"` suffix — the annotation is universal (Jesse's hard requirement), and renderers must offer the note affordance on every resolution path, question-level, not chip-only.
+Per question, exactly one resolution: a quoted selection (multi-select joins **quoted** labels: `→ "A", "B"` — unambiguous even when a label contains a comma), `free text: "…"`, `you decide` (optional `leaning`, then `note`, both quoted), `do your stated fallback ("…")` (only where `if_unanswered` exists), or `skipped (no answer)`. Question numbering is global across the turn's pending set in posting order — spanning multiple `ask_user` calls — and every line carries the header (or the stable fallback label `Question N`, 1-based within the call), so the reply stays unambiguous even when clients render the calls as separate cards. Headers containing `]`, CR, or LF are JSON-encoded inside the header brackets so the framing remains unambiguous. **Every** resolution line accepts the trailing `— note: "…"` suffix — the annotation is universal (Jesse's hard requirement), and renderers must offer the note affordance on every resolution path, question-level, not chip-only.
 
 The user may instead ignore the form and type anything: free prose **is** a valid reply, delivered verbatim as the user message. There is no daemon-side answer validation and no invalid-answer state — a reply is a reply; the form's structure lives in the client.
 
@@ -97,7 +97,7 @@ The user may instead ignore the form and type anything: free prose **is** a vali
 
 > Ask the user structured questions. Asking yields the floor: when the round containing your `ask_user` call(s) completes, your turn ends and the session waits visibly for the reply (no timeout). Do the work that does not need answers first, then batch every question this decision point needs — several `ask_user` calls may share the round, and a `communicate` in the same round still delivers its message. The answers arrive in the user's next message: either the numbered `[answers]` form (one resolution per question: a selection, free text, "you decide" — choose with your judgment, honoring any stated leaning —, your stated fallback, or skipped — proceed on your best judgment, state the assumption, and do not immediately re-ask) or free prose; treat either as the reply to everything you asked. Any answer may carry a user note — read it; it can qualify or override the selection.
 >
-> - `questions`: 1–4 per call, each with an optional short `header` (≤12 chars; omitted headers display as `Question N`, 1-based within the call), the full `question`, and 2–5 `options` (`{label, detail}`, labels unique). Set `multi_select` to allow several; set `recommended: true` on at most one option and put it first.
+> - `questions`: 1–4 per call, each with an optional display `header` (omitted headers display as `Question N`, 1-based within the call), the full `question`, and 2–5 `options` (`{label, detail}`, labels unique). Set `multi_select` to allow several; set `recommended: true` on at most one option and put it first.
 > - Do not add an "Other" or free-text option; the UI always offers one, plus "you decide".
 > - Optional per question: `why` (one line: what the answer changes) and `if_unanswered` (the fallback you would take; the user can accept it with one tap).
 >
@@ -115,7 +115,7 @@ The existing non-interactive section (`agent/prompts/sections/non-interactive.md
 
 ### 5.1 Asking ends the turn at its round's boundary
 
-The handler registers like any core tool (`registerCoreTools` → new `registerAskTool`, `agent/session_tool_registry.go`). It validates its input (label uniqueness, one `recommended` per question — schema constraints like counts and lengths are already enforced by the registry's JSON-Schema validation), adds the questions to the round's **pending set**, and returns a short ack as its tool result. The calls themselves are ordinary: several may share a round, siblings execute normally, and a `communicate` in the same round records its message exactly as today.
+The handler registers like any core tool (`registerCoreTools` → new `registerAskTool`, `agent/session_tool_registry.go`). It validates its input (label uniqueness, one `recommended` per question — schema constraints like counts are already enforced by the registry's JSON-Schema validation), adds the questions to the round's **pending set**, and returns a short ack as its tool result. The calls themselves are ordinary: several may share a round, siblings execute normally, and a `communicate` in the same round records its message exactly as today.
 
 The one new mechanism is a single check at the round boundary — the same place `deliverIfCommunicated` already decides whether the turn ends: **if the round posted questions, the turn ends**, and the boundary state is **`SessionAwaiting`** — a new session state alongside idle/processing/closed — instead of idle. `communicate` **composes, never collides**: an explicit `communicate` in the asking round contributes its user-facing message, and its `end_turn` value is moot because the asks already end the turn (Jesse's directive: multiple asks and a communicate in one round cause the turn end, together). A model that asks in what it meant as a mid-turn round simply ends its turn early — the tool description says asking yields the floor, and the boundary enforces it; remaining work continues after the reply.
 

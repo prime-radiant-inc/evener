@@ -52,6 +52,7 @@ func jobRecordDisplayLabel(rec *jobstore.JobRecord) string {
 func jobNotificationFromRecord(rec *jobstore.JobRecord) jobNotification {
 	return jobNotification{
 		JobID:            rec.JobID,
+		TerminalGen:      rec.TerminalGen,
 		JobType:          string(rec.Type),
 		Description:      jobRecordDisplayLabel(rec),
 		Status:           string(rec.Status),

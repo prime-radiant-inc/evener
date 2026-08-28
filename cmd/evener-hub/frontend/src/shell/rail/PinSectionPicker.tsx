@@ -1,14 +1,16 @@
 import { type ChangeEvent, useEffect, useId, useState } from "react";
 import { errorText } from "../../protocol/errors";
-import type { PinSectionSummary, TreeNode } from "../../stores/tree";
+import type { NavigationSessionSummary } from "../../protocol/types.gen";
+import { selectPinSections } from "../../stores/navigation/selectors";
+import { navigationStore } from "../../stores/navigation/store";
 import { Button, Dialog, Input, Sheet } from "../../widgets";
 import { requireClass } from "../../widgets/internal/requireClass";
 import { useIsMobile } from "../useIsMobile";
-import { isRailRequestStatus, listPinSections } from "./actions";
+import { isRailRequestStatus, type PinSectionSummary } from "./actions";
 import styles from "./railDialog.module.css";
 
 export interface PinSectionPickerProps {
-  session: TreeNode;
+  session: NavigationSessionSummary;
   onAssign: (target: { section_id: string } | { section_name: string }, section?: PinSectionSummary) => Promise<void>;
   onClose: () => void;
 }
@@ -38,9 +40,17 @@ export function PinSectionPicker({ session, onAssign, onClose }: PinSectionPicke
 
   useEffect(() => {
     let active = true;
-    void listPinSections()
-      .then((summaries) => {
-        if (active) setSections([...summaries].sort(compareSections));
+    void navigationStore
+      .getState()
+      .loadPinCatalog()
+      .then(() => {
+        if (!active) return;
+        const summaries: PinSectionSummary[] = selectPinSections(navigationStore.getState()).map((section) => ({
+          id: section.id,
+          name: section.name,
+          member_count: section.member_count,
+        }));
+        setSections([...summaries].sort(compareSections));
       })
       .catch((err) => {
         if (active) setError(errorText(err));
@@ -62,7 +72,12 @@ export function PinSectionPicker({ session, onAssign, onClose }: PinSectionPicke
       setError(errorText(err));
       if (isRailRequestStatus(err, 404)) {
         try {
-          const summaries = await listPinSections();
+          await navigationStore.getState().loadPinCatalog();
+          const summaries: PinSectionSummary[] = selectPinSections(navigationStore.getState()).map((section) => ({
+            id: section.id,
+            name: section.name,
+            member_count: section.member_count,
+          }));
           setSections([...summaries].sort(compareSections));
         } catch {
           // Keep the assignment's useful not-found error visible. A later

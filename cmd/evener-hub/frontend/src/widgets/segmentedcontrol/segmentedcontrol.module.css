@@ -1,0 +1,104 @@
+.root {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  min-inline-size: 0;
+  gap: var(--space-2);
+}
+
+.label {
+  color: var(--ink-hi);
+  font-family: var(--font-sans);
+  font-size: var(--font-size-ui);
+  line-height: var(--line-height-body);
+  font-weight: var(--font-weight-medium);
+}
+
+.track {
+  display: inline-grid;
+  align-items: stretch;
+  box-sizing: border-box;
+  overflow: visible;
+  padding: 2px;
+  gap: 2px;
+  border: 1px solid var(--edge);
+  border-radius: var(--radius-control);
+  background: var(--field);
+  box-shadow: var(--shadow-inset-field);
+}
+
+.fullWidth {
+  inline-size: 100%;
+}
+
+.option {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-inline-size: 0;
+  inline-size: 100%;
+  border: 0;
+  border-radius: var(--radius-control);
+  padding-block: 0;
+  padding-inline: var(--space-1);
+  background: transparent;
+  color: var(--ink-mid);
+  font-family: var(--font-sans);
+  font-size: var(--font-size-ui);
+  line-height: var(--line-height-body);
+  font-weight: var(--font-weight-medium);
+  text-align: center;
+  cursor: pointer;
+  transition:
+    background-color var(--motion-duration-hover) var(--motion-easing-standard),
+    border-color var(--motion-duration-hover) var(--motion-easing-standard),
+    color var(--motion-duration-hover) var(--motion-easing-standard),
+    box-shadow var(--motion-duration-hover) var(--motion-easing-standard);
+}
+
+.option:not([aria-checked="true"]):hover:not(:disabled) {
+  background: var(--hover-1);
+}
+
+.option[aria-checked="true"] {
+  background: var(--hover-2);
+  color: var(--ink-hi);
+  font-weight: var(--font-weight-semibold);
+}
+
+.option:focus-visible {
+  outline: var(--focus-ring);
+  outline-offset: 2px;
+}
+
+.option:disabled {
+  cursor: not-allowed;
+  opacity: 0.5;
+}
+
+.optionLabel {
+  min-inline-size: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.sm {
+  block-size: 28px;
+}
+
+.md {
+  block-size: 32px;
+}
+
+@media (max-width: 899px) {
+  .option {
+    min-block-size: var(--tap-min);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .option {
+    transition: none;
+  }
+}

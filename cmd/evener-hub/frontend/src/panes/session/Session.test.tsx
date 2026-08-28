@@ -13,8 +13,11 @@ import { ClientProvider } from "../../shell/clientContext";
 import { resetWorkspaceStoreForTests, workspaceStore } from "../../shell/workspace";
 import { connectionStore } from "../../stores/connection";
 import { MutationOutboxIndexedDB } from "../../stores/mutationOutboxIndexedDB";
+import { navigationStore, resetNavigationStoreForTests } from "../../stores/navigation/store";
+import { keyID } from "../../stores/navigation/types";
 import { resetThreadsStoreForTests, setMutationStorageForTests, threadsStore } from "../../stores/threads";
-import { resetTreeStoreForTests, type TreeNode, type TreeResponse, treeStore } from "../../stores/tree";
+import { transcriptDisplayStore } from "../../stores/transcriptDisplay";
+import { makeTranscriptDisplayConfig } from "../../transcriptDisplay/config";
 import { Toast } from "../../widgets";
 import { requireClass } from "../../widgets/internal/requireClass";
 import virtualListStyles from "../../widgets/virtuallist/virtuallist.module.css";
@@ -95,6 +98,7 @@ const CAPABILITIES: ThreadCapabilities = {
   forkFromTurn: true,
   shutdown: true,
   changeModel: true,
+  changeVisionModel: true,
   queue: true,
   goal: true,
   rename: true,
@@ -173,7 +177,7 @@ beforeEach(() => {
   globalThis.indexedDB = new IDBFactory();
   connectionStore.setState({ state: "idle", serverInfo: undefined, client: null });
   resetThreadsStoreForTests();
-  resetTreeStoreForTests();
+  resetNavigationStoreForTests();
   mutationStorage = new MutationOutboxIndexedDB();
   setMutationStorageForTests(mutationStorage);
   resetPendingTurnsStoreForTests();
@@ -303,6 +307,51 @@ test("shows the thread's live name once hydrated, not the raw ref", async () => 
   await waitFor(() => expect(screen.getByText("My session")).toBeTruthy());
 });
 
+test("keeps the live Detail control reachable above the transcript", async () => {
+  const fake = connectFakeClient();
+  fake.on("thread/read", () =>
+    readResponse("ref_a", {
+      turns: [
+        {
+          id: "turn_1",
+          status: "completed",
+          itemsView: "full",
+          items: [{ id: "item_1", turnId: "turn_1", type: "userMessage", text: "hello", status: "completed" }],
+        },
+      ],
+    }),
+  );
+  const user = userEvent.setup();
+
+  render(
+    <ClientProvider client={fake}>
+      <Session params={{ ref: "ref_a" }} paneId="p1" focused={true} />
+    </ClientProvider>,
+  );
+
+  const trigger = await screen.findByRole("button", { name: /^Detail:/ });
+  expect(trigger.closest('[data-testid="transcript-virtual-list"]')).toBeNull();
+  await user.click(trigger);
+  expect(screen.getByRole("radio", { name: "Tools" })).toBeTruthy();
+  await user.click(screen.getByRole("button", { name: "Edit hub defaults" }));
+  expect(window.location.pathname).toBe("/settings/transcript");
+  transcriptDisplayStore.setState({ viewport: "desktop" });
+  transcriptDisplayStore.getState().setLocal("desktop", makeTranscriptDisplayConfig({ kind: "preset", level: "full" }));
+  await waitFor(() =>
+    expect(screen.getByTestId("transcript-view-announcement").textContent).toContain("Transcript detail: Full detail"),
+  );
+  const status = screen.getByTestId("transcript-view-announcement");
+  transcriptDisplayStore
+    .getState()
+    .setLocal("desktop", makeTranscriptDisplayConfig({ kind: "preset", level: "full" }, { roundTimings: true }));
+  await waitFor(() => expect(status.textContent).toContain("Transcript detail: Full detail · 1 advanced"));
+  transcriptDisplayStore
+    .getState()
+    .setLocal("desktop", makeTranscriptDisplayConfig({ kind: "preset", level: "full" }, { tokenCounts: true }));
+  await waitFor(() => expect(status.textContent).toContain("Transcript detail: Full detail · 1 advanced"));
+  expect(screen.getByTestId("transcript-view-announcement")).toBe(status);
+});
+
 test("falls back to the raw ref as the title when the thread has no name yet", async () => {
   const fake = connectFakeClient();
   fake.on("thread/read", () => readResponse("ref_a"));
@@ -316,37 +365,47 @@ test("falls back to the raw ref as the title when the thread has no name yet", a
   await waitFor(() => expect(screen.getByText("ref_a")).toBeTruthy());
 });
 
-// Minimal, well-formed TreeNode - only the fields findSessionNode/title
-// resolution actually touch (mirrors shell/DockHost.test.tsx's identical
-// fixture, kept separate per-file rather than shared: the two suites don't
-// otherwise import from each other).
-function fixtureTreeNode(ref: string, title: string): TreeNode {
-  return {
-    row_id: `row_${ref}`,
+function setNavigationTitle(ref: string, title: string): void {
+  const key = { kind: "location", ref } as const;
+  const data = {
+    generation_id: "generation_test",
+    revision: 1,
     ref,
-    host_id: "local",
-    session_id: ref,
-    title,
-    project: "test-project",
-    state: "idle",
-    kind: "session",
-    live: true,
-    children: [],
+    top_level_ref: ref,
+    top_level: true,
+    session: {
+      ref,
+      host_id: "local",
+      session_id: ref,
+      title,
+      project: "test-project",
+      state: "idle",
+      kind: "session",
+      live: true,
+      children: [],
+    },
   };
-}
-
-function fixtureTree(nodes: TreeNode[]): TreeResponse {
-  return {
-    generated_at: "2026-01-01T00:00:00Z",
-    sources: [],
-    live: nodes,
-    needs_you: [],
-    pin_sections: [],
-    projects: [],
-    archived_projects: [],
-    test_runs: [],
-    attentionSummary: { needsYou: 0, error: 0, working: 0 },
-  };
+  navigationStore.setState({
+    mode: "v1",
+    clientGenerationID: "generation_test",
+    resources: new Map([
+      [
+        keyID(key),
+        {
+          key,
+          data,
+          loadedRevision: 1,
+          targetRevision: null,
+          forceToken: 0,
+          etag: "etag",
+          loading: false,
+          stale: false,
+          error: null,
+          generationID: "generation_test",
+        },
+      ],
+    ]),
+  });
 }
 
 // kata (session-pane header fix): the pane's own in-pane header (this
@@ -355,8 +414,8 @@ function fixtureTree(nodes: TreeNode[]): TreeResponse {
 // tree store knew the real title - the same bug DockHost.test.tsx's "tab
 // title falls back to the tree store's title" test pins for the dockview
 // tab. This is that same fallback, applied to the in-pane header.
-test("falls back to the tree store's title as the header when no thread name is known yet", async () => {
-  treeStore.setState({ tree: fixtureTree([fixtureTreeNode("ref_a", "Fix the flaky CI job")]) });
+test("falls back to the navigation location title as the header when no thread name is known yet", async () => {
+  setNavigationTitle("ref_a", "Fix the flaky CI job");
   const fake = connectFakeClient();
   fake.on("thread/read", () => readResponse("ref_a"));
 
@@ -734,104 +793,8 @@ test("renders turns via VirtualList/TurnBlock once hydrated", async () => {
   );
 
   await waitFor(() => expect(screen.getByTestId("turn-block")).toBeTruthy());
+  expect(screen.getByTestId("transcript-virtual-list")).toBeTruthy();
   expect(screen.getByText("hi")).toBeTruthy();
-});
-
-test("switches between Everything and Intent transcript views", async () => {
-  const user = userEvent.setup();
-  const fake = connectFakeClient();
-  fake.on("thread/read", () =>
-    readResponse("ref_a", {
-      turns: [
-        {
-          id: "turn_1",
-          status: "completed",
-          itemsView: "full",
-          items: [
-            {
-              id: "user_1",
-              turnId: "turn_1",
-              type: "userMessage",
-              text: "Please inspect the project",
-              status: "completed",
-            },
-            {
-              id: "tool_1",
-              turnId: "turn_1",
-              type: "commandExecution",
-              text: "",
-              toolName: "raw_tool_alpha",
-              description: "Find the relevant source files",
-              error: "RAW_TOOL_RESULT_ALPHA",
-              status: "failed",
-            },
-            {
-              id: "tool_2",
-              turnId: "turn_1",
-              type: "commandExecution",
-              text: "",
-              toolName: "raw_tool_beta",
-              description: "Check the current behavior",
-              error: "RAW_TOOL_RESULT_BETA",
-              status: "failed",
-            },
-            {
-              id: "tool_3",
-              turnId: "turn_1",
-              type: "commandExecution",
-              text: "",
-              toolName: "raw_tool_gamma",
-              description: "Verify the intended change",
-              error: "RAW_TOOL_RESULT_GAMMA",
-              status: "failed",
-            },
-            {
-              id: "agent_1",
-              turnId: "turn_1",
-              type: "agentMessage",
-              text: "The project is ready",
-              status: "completed",
-            },
-          ],
-        },
-      ],
-    }),
-  );
-
-  render(
-    <ClientProvider client={fake}>
-      <Session params={{ ref: "ref_a" }} paneId="p1" focused={true} />
-    </ClientProvider>,
-  );
-
-  const viewSelector = await screen.findByRole("radiogroup", { name: /session view/i });
-  const radios = within(viewSelector).getAllByRole("radio");
-  expect(radios.map((radio) => radio.textContent)).toEqual(["Everything", "Intent"]);
-  expect(screen.getByRole("radio", { name: "Everything" }).getAttribute("aria-checked")).toBe("true");
-  expect(screen.getByText("RAW_TOOL_RESULT_ALPHA")).toBeTruthy();
-  const everythingAgentAnchor = document.querySelector<HTMLElement>('[data-view-anchor-id="agent_1"]');
-  expect(everythingAgentAnchor?.dataset.viewAnchorIndex).toBe("0");
-  expect(everythingAgentAnchor?.dataset.viewAnchorSourceIndex).toBe("4");
-  expect(everythingAgentAnchor?.dataset.viewAnchorMessage).toBe("true");
-
-  await user.click(screen.getByRole("radio", { name: "Intent" }));
-  expect(screen.getByRole("radio", { name: "Intent" }).getAttribute("aria-checked")).toBe("true");
-  expect(screen.getByText("Please inspect the project")).toBeTruthy();
-  expect(screen.getByText("The project is ready")).toBeTruthy();
-  const summary = screen.getByText("3 actions");
-  const group = summary.closest("details");
-  expect(group).not.toBeNull();
-  expect(group?.hasAttribute("open")).toBe(false);
-  expect(screen.getByText("Find the relevant source files")).toBeTruthy();
-  expect(screen.getByText("Check the current behavior")).toBeTruthy();
-  expect(screen.getByText("Verify the intended change")).toBeTruthy();
-  expect(screen.queryByText("raw_tool_alpha")).toBeNull();
-  expect(screen.queryByText("RAW_TOOL_RESULT_ALPHA")).toBeNull();
-
-  screen.getByRole("radio", { name: "Intent" }).focus();
-  await user.keyboard("{ArrowLeft}");
-  expect(screen.getByRole("radio", { name: "Everything" }).getAttribute("aria-checked")).toBe("true");
-  expect(screen.getByRole("radio", { name: "Intent" }).getAttribute("aria-checked")).toBe("false");
 });
 
 // --- seen divider (kata g2ez) --------------------------------------------
@@ -1254,207 +1217,6 @@ test("scrolled away: a live item arriving shows the real NewContentPill, wired t
   expect(pill.textContent).toContain("1");
 });
 
-test("a real mode switch captures the DOM row crossing the viewport top and applies its saved offset after VirtualList measures the fallback", async () => {
-  const user = userEvent.setup();
-  const fake = connectFakeClient();
-  const turns = Array.from({ length: 15 }, (_, index) => ({
-    id: `turn_${index}`,
-    status: "completed" as const,
-    itemsView: "full" as const,
-    items:
-      index === 0
-        ? [
-            {
-              id: "user_0",
-              turnId: "turn_0",
-              type: "userMessage" as const,
-              text: "the nearest surviving message",
-              status: "completed" as const,
-            },
-          ]
-        : [
-            {
-              id: `tool_${index}`,
-              turnId: `turn_${index}`,
-              type: "commandExecution" as const,
-              text: "",
-              toolName: `tool_${index}`,
-              // No description: Intent hides this turn entirely, forcing the
-              // source-nearest surviving message at turn_0 as the fallback.
-              status: "completed" as const,
-            },
-          ],
-  }));
-  fake.on("thread/read", () => readResponse("ref_a", { turns }));
-
-  const { container } = render(
-    <ClientProvider client={fake}>
-      <Session params={{ ref: "ref_a" }} paneId="p1" focused={true} />
-    </ClientProvider>,
-  );
-  await screen.findByText("the nearest surviving message");
-
-  const root = scrollRootOf(container);
-  Object.defineProperty(root, "scrollHeight", { configurable: true, value: turns.length * CONTAINER_HEIGHT });
-  Object.defineProperty(root, "clientHeight", { configurable: true, value: CONTAINER_HEIGHT });
-
-  let requestedTop: number | undefined;
-  root.scrollTo = vi.fn((options?: ScrollToOptions | number, y?: number) => {
-    requestedTop = typeof options === "number" ? (y ?? options) : (options?.top ?? 0);
-    // A browser delivers the resulting scroll/measurement asynchronously.
-    // The test does so explicitly below, after proving the fallback is still
-    // outside the real VirtualList's rendered window.
-  });
-
-  const geometry = vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockImplementation(function (
-    this: HTMLElement,
-  ) {
-    const element = this as HTMLElement;
-    const sourceIndex = element.dataset.viewAnchorSourceIndex;
-    if (sourceIndex !== undefined) {
-      const top = Number(sourceIndex) * CONTAINER_HEIGHT - root.scrollTop;
-      return {
-        x: 0,
-        y: top,
-        top,
-        right: 100,
-        bottom: top + CONTAINER_HEIGHT,
-        left: 0,
-        width: 100,
-        height: CONTAINER_HEIGHT,
-        toJSON: () => ({}),
-      };
-    }
-    return {
-      x: 0,
-      y: 0,
-      top: 0,
-      right: 100,
-      bottom: element === root ? CONTAINER_HEIGHT : 0,
-      left: 0,
-      width: 100,
-      height: element === root ? CONTAINER_HEIGHT : 0,
-      toJSON: () => ({}),
-    };
-  });
-
-  // turn_10 crosses the viewport top by 18px. turn_9 is rendered only as
-  // overscan above it; turn_11 begins below it. This geometry distinguishes
-  // the real top content from either rendered-order shortcut.
-  root.scrollTop = 10 * CONTAINER_HEIGHT + 18;
-  fireEvent.scroll(root);
-  await waitFor(() => {
-    expect(container.querySelector('[data-view-anchor-index="9"]')).toBeTruthy();
-    expect(container.querySelector('[data-view-anchor-index="10"]')).toBeTruthy();
-    expect(container.querySelector('[data-view-anchor-index="11"]')).toBeTruthy();
-  });
-  requestedTop = undefined;
-
-  await user.click(screen.getByRole("radio", { name: "Intent" }));
-
-  // turn_10 is hidden in Intent. The actual Session -> hook -> VirtualList
-  // wiring requests turn_0, which is initially outside overscan, while keeping
-  // turn_10's saved -18px offset pending.
-  await waitFor(() => expect(requestedTop).toBe(0));
-  expect(container.querySelector('[data-view-anchor-index="0"]')).toBeNull();
-
-  // Deliver the browser's scroll event. The real VirtualList renders and
-  // measures turn_0, its onChange callback re-enters useTranscriptScroll, and
-  // the pending offset correction places the row 18px above the viewport top.
-  root.scrollTop = requestedTop ?? 0;
-  fireEvent.scroll(root);
-  await waitFor(() => expect(root.scrollTop).toBe(18));
-
-  geometry.mockRestore();
-});
-
-test("a real mode switch preserves the top-visible message inside a mixed turn", async () => {
-  const user = userEvent.setup();
-  const fake = connectFakeClient();
-  fake.on("thread/read", () =>
-    readResponse("ref_a", {
-      turns: [
-        {
-          id: "mixed_turn",
-          status: "completed",
-          itemsView: "full",
-          items: [
-            {
-              id: "mixed_user",
-              turnId: "mixed_turn",
-              type: "userMessage",
-              text: "first entry in the mixed turn",
-              status: "completed",
-            },
-            {
-              id: "mixed_tool",
-              turnId: "mixed_turn",
-              type: "commandExecution",
-              text: "",
-              toolName: "mixed_tool",
-              status: "completed",
-            },
-            {
-              id: "mixed_agent",
-              turnId: "mixed_turn",
-              type: "agentMessage",
-              text: "actual top-visible entry",
-              status: "completed",
-            },
-          ],
-        },
-      ],
-    }),
-  );
-
-  const { container } = render(
-    <ClientProvider client={fake}>
-      <Session params={{ ref: "ref_a" }} paneId="p1" focused={true} />
-    </ClientProvider>,
-  );
-  await screen.findByText("actual top-visible entry");
-
-  const root = scrollRootOf(container);
-  Object.defineProperty(root, "scrollTop", { configurable: true, writable: true, value: 300 });
-  Object.defineProperty(root, "scrollHeight", { configurable: true, value: 1200 });
-  Object.defineProperty(root, "clientHeight", { configurable: true, value: 300 });
-  const geometry = vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockImplementation(function (
-    this: HTMLElement,
-  ) {
-    const element = this as HTMLElement;
-    const focused = container.querySelector('[data-testid="focused-transcript"]') !== null;
-    const box = focused
-      ? {
-          mixed_user: { top: -130, height: 60 },
-          mixed_agent: { top: -30, height: 96 },
-        }[element.dataset.viewAnchorId ?? ""]
-      : {
-          mixed_user: { top: -240, height: 60 },
-          mixed_tool: { top: -180, height: 162 },
-          mixed_agent: { top: -18, height: 96 },
-        }[element.dataset.viewAnchorId ?? ""];
-    const top = box?.top ?? 0;
-    const height = box?.height ?? (element === root ? 300 : 0);
-    return {
-      x: 0,
-      y: top,
-      top,
-      right: 100,
-      bottom: top + height,
-      left: 0,
-      width: 100,
-      height,
-      toJSON: () => ({}),
-    };
-  });
-
-  await user.click(screen.getByRole("radio", { name: "Intent" }));
-
-  await waitFor(() => expect(root.scrollTop).toBe(288));
-  expect(container.querySelector('[data-view-anchor-id="mixed_agent"]')).toBeTruthy();
-  geometry.mockRestore();
-});
-
 test("scrolled away: a turn FAILING while unseen upgrades the real pill to the error variant", async () => {
   const fake = connectFakeClient();
   fake.on("thread/read", () =>
@@ -1810,13 +1572,11 @@ test("the transcript flex chain carries min-width: 0", () => {
 
 // --- speaker geometry has exactly one declaration site: tokens.css --------
 //
-// .focusedTranscript (this file) and .turn (transcript/turnblock.module.css)
-// are SIBLING branches of the same VirtualList row, and TurnBlock is also
-// reused standalone (the /dev/surfaces gallery, panes/transcript's read-only
-// pane) - no component class is an ancestor of every consumer, so the
-// speaker geometry (--speaker-avatar-size/-gap/-gutter) lives in tokens.css
-// and NEITHER stylesheet may redeclare any of it. This pins that contract
-// from both sides.
+// TranscriptBody's shared .turn (transcript/turnblock.module.css) is also
+// reused standalone by the preview and read-only surfaces - no pane-specific
+// component class is an ancestor of every consumer, so the speaker geometry
+// (--speaker-avatar-size/-gap/-gutter) lives in tokens.css and NEITHER
+// stylesheet may redeclare any of it. This pins that contract from both sides.
 test("speaker geometry is declared only in tokens.css, not in session or turnblock css", () => {
   const here = dirname(fileURLToPath(import.meta.url));
   const stripped = (path: string) => readFileSync(path, "utf8").replace(/\/\*[\s\S]*?\*\//g, "");

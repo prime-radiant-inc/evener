@@ -21,6 +21,46 @@ command line (or a resumed session's persisted config), never from a tool call.
 Sandboxing is opt-in on purpose. The default stays off so existing workflows are
 unchanged; turn it on when you want a session's blast radius contained.
 
+There is one deliberate delegate safety floor: a delegate whose structured tool
+scope contains no workspace-mutation tool (`write_file`, `edit_file`,
+`apply_patch`, or `manage_worktree`) receives a private `read-only` sandbox even
+when its parent session is off. This covers roles such as exploration and review
+whose shell is intended for inspection; the kernel wrapper confines that shell
+and every descendant, while the delegate's own session scratch remains writable.
+A parent already running `restricted` keeps that narrower read scope and applies
+the same write block without widening reads. A role with an explicit mutation
+tool follows the normal delegate floor.
+
+On a host where no backend can enforce that box — an ordinary unprivileged Linux
+container without usable bubblewrap — the derived scope **degrades rather than
+refusing the spawn**. The delegate runs with no kernel wrapper; its file tools
+keep the identical write boundary (every `write_file`/`edit_file` outside its own
+scratch dir is denied) and mask the same credential denylist, and its shell is
+unconfined. That keeps the capability instead of deleting it: coupling the scope
+to an OS sandbox made every `explorer` delegate fail outright on such a host, and
+the model usually abandoned delegation rather than retrying.
+
+It is not a pure superset of the advisory scope this floor replaced. Routing the
+file tools through the enforcement layer also means they refuse to traverse a
+**symlinked directory**, which an unsandboxed delegate could — the same refusal
+every enforced mode makes, now paid by a delegate that previously had no sandbox
+at all. A workspace whose ROOT is reached through a symlink is unaffected: reads
+anchor at the worktree, which tolerates a symlinked ancestor. Everything here is
+disclosed in both directions — the delegate's own environment section says which
+half is enforced, which half is on its honour, and what its file tools will not
+traverse, and the spawn result the parent reads carries the same warning.
+
+An explicit delegate `sandbox` argument does **not** bypass the structured
+read-only floor, and does **not** get the degrade either — a caller that states
+the contract is refused rather than silently given a weaker box. `read-only` is
+accepted when it is also compatible with the parent's boundary, while `off`,
+`workspace-write`, and ordinary `restricted` are rejected because they permit
+persistent workspace writes. A net-only request is applied to the mandatory
+write-blocked policy and may only preserve or tighten the parent's network
+boundary. The same structured scope and sandbox policy are revalidated before
+a stable delegate is restored, and a write-blocked delegate cannot relax that
+inherited floor for its own descendants.
+
 ## Flags
 
 | Flag | Values | Default | Meaning |

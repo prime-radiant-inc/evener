@@ -171,13 +171,6 @@ func compactSessionPromptTitle(prompt string) string {
 	return strings.TrimSpace(prompt[:maxLen-1]) + "…"
 }
 
-func searchPastTitle(pe hubcore.PastEntry) string {
-	if title := strings.TrimSpace(pe.Meta.Name); title != "" {
-		return title
-	}
-	return hubcore.ShortID(pe.Meta.ID)
-}
-
 // stateLabel returns the unified display word (Track A §1) for a normalized
 // state. Delegates to hubapi.StateWord so the web and the TUI can never
 // independently drift on vocabulary. askPending selects the needs-you band

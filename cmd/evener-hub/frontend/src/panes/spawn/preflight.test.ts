@@ -1,6 +1,7 @@
 // @vitest-environment node
 
-import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
+import { describe, expect, test } from "vitest";
+import { WireError } from "../../protocol/errors";
 import { FakeClient } from "../../protocol/testing/fakeClient";
 import { createDir, preflightDir } from "./preflight";
 
@@ -63,48 +64,21 @@ describe("preflightDir", () => {
 });
 
 describe("createDir", () => {
-  let fetchMock: ReturnType<typeof vi.fn>;
+  test("requests directory creation over AppWire", async () => {
+    const fake = new FakeClient("ready");
+    fake.on("evener/dirs/create", () => ({ path: "/tmp/new", created: true }));
 
-  function jsonResponse(body: unknown, status = 200): Response {
-    return {
-      ok: status >= 200 && status < 300,
-      status,
-      statusText: status === 200 ? "OK" : "Error",
-      json: () => Promise.resolve(body),
-    } as Response;
-  }
+    await createDir(fake, "/tmp/new");
 
-  beforeEach(() => {
-    fetchMock = vi.fn();
-    vi.stubGlobal("fetch", fetchMock);
-  });
-  afterEach(() => {
-    vi.unstubAllGlobals();
-    vi.restoreAllMocks();
-  });
-
-  test("POSTs /api/dirs/create with the path", async () => {
-    fetchMock.mockResolvedValueOnce(jsonResponse({ path: "/tmp/new", created: true }));
-
-    await createDir("/tmp/new");
-
-    expect(fetchMock).toHaveBeenCalledWith("/api/dirs/create", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      credentials: "same-origin",
-      body: JSON.stringify({ path: "/tmp/new" }),
-    });
+    expect(fake.calls[0]).toEqual({ method: "evener/dirs/create", params: { path: "/tmp/new" } });
   });
 
   test("throws the server's error message on failure", async () => {
-    fetchMock.mockResolvedValueOnce(jsonResponse({ error: "a file already exists at that path" }, 409));
+    const fake = new FakeClient("ready");
+    fake.on("evener/dirs/create", () => {
+      throw new WireError("a file already exists at that path", -32013);
+    });
 
-    await expect(createDir("/tmp/file")).rejects.toThrow("a file already exists at that path");
-  });
-
-  test("falls back to the HTTP status when the error body has no message", async () => {
-    fetchMock.mockResolvedValueOnce(jsonResponse({}, 500));
-
-    await expect(createDir("/tmp/x")).rejects.toThrow("HTTP 500");
+    await expect(createDir(fake, "/tmp/file")).rejects.toThrow("a file already exists at that path");
   });
 });

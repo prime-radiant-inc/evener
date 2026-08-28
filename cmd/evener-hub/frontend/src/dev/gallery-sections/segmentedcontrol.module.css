@@ -1,0 +1,33 @@
+.stack {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: var(--space-6);
+}
+
+.row,
+.frames {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-start;
+  gap: var(--space-6);
+  max-inline-size: 100%;
+}
+
+.fullWidthDemo {
+  inline-size: min(42rem, 100%);
+  max-inline-size: 100%;
+}
+
+.frame320,
+.frame390 {
+  max-inline-size: 100%;
+}
+
+.frame320 {
+  inline-size: 320px;
+}
+
+.frame390 {
+  inline-size: 390px;
+}

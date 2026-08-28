@@ -101,14 +101,15 @@ func hubTranscriptRoot(ctx context.Context, cfg hubcore.WebConfig, sources *apps
 		}
 		err = readErr
 	}
-	thread, ok, pastErr := pastThreadForRead(cfg, appwire.ThreadReadParams{Ref: ref, IncludeTurns: false})
+	entry, ok := pastEntryForRead(cfg, appwire.ThreadReadParams{Ref: ref})
+	if !ok {
+		return appwire.Thread{}, err
+	}
+	thread, pastErr := pastEntryThread(cfg, entry, false)
 	if pastErr != nil {
 		return appwire.Thread{}, pastErr
 	}
-	if ok {
-		return thread, nil
-	}
-	return appwire.Thread{}, err
+	return thread, nil
 }
 
 func threadRef(thread appwire.Thread) string {

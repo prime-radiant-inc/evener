@@ -26,6 +26,7 @@ import (
 	"primeradiant.com/evener/agent/internal/hooks"
 	"primeradiant.com/evener/agent/internal/installid"
 	"primeradiant.com/evener/agent/internal/mcp"
+	"primeradiant.com/evener/agent/internal/modelavailability"
 	"primeradiant.com/evener/agent/internal/sessionlog"
 	"primeradiant.com/evener/agent/internal/tool"
 	"primeradiant.com/evener/agent/mcpconfig"
@@ -164,7 +165,7 @@ func NewSession(client *llm.Client, profile *provider.Profile, env execenv.Execu
 	if err := llm.ValidateReasoningEffort(cfg.ReasoningEffort); err != nil {
 		return nil, err
 	}
-	resolvedProfile, err := resolveLiveModelProfileValidated(client, profile)
+	resolvedProfile, selectedModels, err := resolveLiveModelProfileValidated(client, profile)
 	if err != nil {
 		return nil, err
 	}
@@ -184,7 +185,11 @@ func NewSession(client *llm.Client, profile *provider.Profile, env execenv.Execu
 		ownsArtifactStore = true
 	}
 
-	sessCtx, sessCancel := context.WithCancel(context.Background())
+	owner := cfg.LifetimeContext
+	if owner == nil {
+		owner = context.Background()
+	}
+	sessCtx, sessCancel := context.WithCancel(owner)
 	initComplete := false
 	ownedSessionID := ""
 	defer func() {
@@ -269,6 +274,7 @@ func NewSession(client *llm.Client, profile *provider.Profile, env execenv.Execu
 		ownsArtifactStore:             ownsArtifactStore,
 		subscriberCountFn:             cfg.spawn.subscriberCount,
 	}
+	s.captureModelAvailability(selectedModels)
 	s.createdAt = s.sclock().Now().UTC()
 	s.initEnvContext(nil)
 	if err := s.bootstrapDelegateResources(); err != nil {
@@ -352,11 +358,10 @@ func NewSession(client *llm.Client, profile *provider.Profile, env execenv.Execu
 		if agent, ok := s.pluginAgents[agentName]; ok && len(agent.Tasks) > 0 {
 			store := s.getOrCreateTaskStore()
 			if err := store.PopulateFromTemplates(agent.Tasks, nil); err == nil {
-				// Inject first task prompt and set reasoning effort.
+				// Inject the first task prompt. Its reasoning_effort applies
+				// per-round via prepareModelRequest while it is in progress; it
+				// must not overwrite the session's configured effort.
 				if current, ok := store.CurrentInProgress(); ok {
-					if current.ReasoningEffort != "" {
-						s.cfg.ReasoningEffort = current.ReasoningEffort
-					}
 					s.SteerKind(formatCurrentTaskSteering(current, s.canInstructTool("task_list")), events.SteeringKindCurrentTask)
 				}
 			}
@@ -457,14 +462,74 @@ func NewSession(client *llm.Client, profile *provider.Profile, env execenv.Execu
 	return s, nil
 }
 
+func inlineModelSnapshot(snapshot modelavailability.Snapshot) (string, bool) {
+	return snapshot.Inline(
+		modelavailability.DefaultInlineMaxCount,
+		tool.DelegateModelDescriptionAdditionBudget(modelavailability.DefaultInlineMaxBytes),
+	)
+}
+
+// captureModelAvailability records the startup-bound catalog used by delegate
+// model selection before tool schemas are projected. Leaf sessions cannot
+// delegate, so they do not enumerate providers or register the browsing tool.
+func (s *Session) captureModelAvailability(selectedModels liveModelEnumeration) {
+	if !s.hasConfiguredDelegateCapability() {
+		return
+	}
+	names := s.client.ProviderNames()
+	if len(names) == 0 {
+		return
+	}
+	catalog := llm.EmbeddedModelCatalog()
+	snapshot := modelavailability.Capture(s.sessionCtx, names, s.profile.ID(), func(ctx context.Context, name string) ([]llm.ModelInfo, error) {
+		if name == s.profile.ID() {
+			return selectedModels.models, selectedModels.err
+		}
+		return s.client.ListModels(ctx, name)
+	}, func(name string, model llm.ModelInfo) bool {
+		return modelSwitchVisible(s.client.BehaviorTagOf(name), model, catalog)
+	}, liveModelMetadataTimeout)
+	s.modelSnapshot = &snapshot
+	if text, ok := inlineModelSnapshot(snapshot); ok {
+		s.delegateModelDescription = text
+	} else if len(snapshot.Choices) > 0 {
+		s.delegateModelDescription = fmt.Sprintf("Startup model snapshot %s is incomplete or too large; use the model-list read tool to browse verified choices.", snapshot.Version)
+	} else {
+		s.delegateModelDescription = fmt.Sprintf("Startup model snapshot %s has no verified choices; provider availability is unverified.", snapshot.Version)
+	}
+}
+
+// hasConfiguredDelegateCapability applies the construction-time policy axes
+// that can remove delegate after core-tool registration. Capture runs before
+// that registration so its snapshot can shape the delegate schema, but a
+// session whose final policy excludes delegate must not enumerate providers.
+func (s *Session) hasConfiguredDelegateCapability() bool {
+	if s.delegationAllowance <= 0 || s.cfg.testOnly.minimalWorktreeToolRegistry {
+		return false
+	}
+	if len(s.cfg.spawn.allowedToolNames) > 0 && !hasString(s.cfg.spawn.allowedToolNames, "delegate") {
+		return false
+	}
+	if hasString(s.cfg.spawn.deniedToolNames, "delegate") {
+		return false
+	}
+	return len(s.cfg.spawn.toolNameCeiling) == 0 || hasString(s.cfg.spawn.toolNameCeiling, "delegate")
+}
+
 // RestoreSessionConfig carries runtime-only settings needed when restoring a
 // persisted session. Persisted fields still come from SessionMeta.Config; this
 // struct layers non-serialized values such as StateDir and ResolveProfile.
 type RestoreSessionConfig struct {
-	StateDir                    string
-	Project                     identifier.Project
-	ResolveProfile              func(ref string) (*provider.Profile, error)
-	AcquireSessionOwnership     func(sessionID string) error
+	// LifetimeContext owns this restored session tree when supplied by a
+	// one-shot run. Nil preserves daemon/background ownership.
+	LifetimeContext         context.Context
+	StateDir                string
+	Project                 identifier.Project
+	ResolveProfile          func(ref string) (*provider.Profile, error)
+	AcquireSessionOwnership func(sessionID string) error
+	// OwnershipAlreadyAcquired keeps a host reservation alive across restore
+	// failure while still carrying AcquireSessionOwnership into the session.
+	OwnershipAlreadyAcquired    bool
 	ModelFallbacks              []string
 	OpenAIResponsesContinuation string
 	LLMRetryPolicy              *llm.RetryPolicy
@@ -472,6 +537,12 @@ type RestoreSessionConfig struct {
 	spawn                       spawnConfig
 	resumeHistory               []schema.Turn
 	deferRestoreSideEffects     bool
+	// sandboxProvisioned is set only by the stable-delegate restore path after it
+	// has re-resolved and enabled the descriptor's complete sandbox policy. That
+	// policy contains delegate-only axes (such as WriteBlocked) which the ordinary
+	// session config projection cannot represent; provisioning it again from the
+	// projection would silently weaken the boundary.
+	sandboxProvisioned bool
 	// clock is an intentionally package-private restore seam. NewSession already
 	// accepts this boundary through SessionConfig; restore must preserve it so
 	// deterministic job/watch replay never falls back to wall time mid-program.
@@ -523,10 +594,12 @@ func RestoreSessionFromMetaWithConfig(client *llm.Client, profile *provider.Prof
 	restoreComplete := false
 	ownershipAcquired := false
 	if restoreCfg.AcquireSessionOwnership != nil {
-		if err := restoreCfg.AcquireSessionOwnership(meta.ID); err != nil {
-			return nil, fmt.Errorf("acquire session ownership: %w", err)
+		if !restoreCfg.OwnershipAlreadyAcquired {
+			if err := restoreCfg.AcquireSessionOwnership(meta.ID); err != nil {
+				return nil, fmt.Errorf("acquire session ownership: %w", err)
+			}
+			ownershipAcquired = true
 		}
-		ownershipAcquired = true
 		if restoreCfg.StateDir != "" {
 			var currentMeta schema.SessionMeta
 			var err error
@@ -536,7 +609,9 @@ func RestoreSessionFromMetaWithConfig(client *llm.Client, profile *provider.Prof
 				currentMeta, err = schema.LoadSessionMeta(restoreCfg.StateDir, meta.ID)
 			}
 			if err != nil {
-				_ = client.ReleaseSessionAPILog(meta.ID)
+				if ownershipAcquired {
+					_ = client.ReleaseSessionAPILog(meta.ID)
+				}
 				return nil, fmt.Errorf("reload session metadata after ownership: %w", err)
 			}
 			meta = currentMeta
@@ -549,6 +624,7 @@ func RestoreSessionFromMetaWithConfig(client *llm.Client, profile *provider.Prof
 	}()
 
 	cfg := configFromSnapshot(meta.Config)
+	cfg.LifetimeContext = restoreCfg.LifetimeContext
 	cfg.StateDir = restoreCfg.StateDir
 	cfg.Project = restoreCfg.Project
 	cfg.ResolveProfile = restoreCfg.ResolveProfile
@@ -619,8 +695,10 @@ func RestoreSessionFromMetaWithConfig(client *llm.Client, profile *provider.Prof
 	// longer enforce the mode fails closed here (a *sandbox.RefusalError) rather
 	// than resuming unconfined, and config drift can never widen an old session's
 	// box. An off/empty mode skips the probe and restores byte-identically.
-	if err := provisionRestoredSandbox(cfg, env); err != nil {
-		return nil, err
+	if !restoreCfg.sandboxProvisioned {
+		if err := provisionRestoredSandbox(cfg, env); err != nil {
+			return nil, err
+		}
 	}
 	if err := env.Initialize(); err != nil {
 		return nil, fmt.Errorf("env initialize: %w", err)
@@ -659,7 +737,11 @@ func RestoreSessionFromMetaWithConfig(client *llm.Client, profile *provider.Prof
 		}
 	}
 
-	sessCtx, sessCancel := context.WithCancel(context.Background())
+	owner := cfg.LifetimeContext
+	if owner == nil {
+		owner = context.Background()
+	}
+	sessCtx, sessCancel := context.WithCancel(owner)
 	delegationAllowance := cfg.spawn.delegationAllowance
 	if cfg.spawn.parentSessionID == "" {
 		// Root sessions derive their allowance from MaxSubagentDepth (already
@@ -707,6 +789,7 @@ func RestoreSessionFromMetaWithConfig(client *llm.Client, profile *provider.Prof
 		stateDir:                 cfg.StateDir,
 		installID:                resolveInstallationID(cfg, cfg.StateDir),
 		state:                    SessionIdle,
+		loopEffortEscalated:      meta.ReasoningEffortEscalated,
 		events:                   make(chan events.SessionEvent, 256),
 		history:                  resumeHistory,
 		turns:                    meta.AcceptedInputTurns,
@@ -742,8 +825,9 @@ func RestoreSessionFromMetaWithConfig(client *llm.Client, profile *provider.Prof
 	// Delegate reconciliation is durable, local startup work. Complete it before
 	// any provider metadata access so caller-delivery crash replay cannot depend
 	// on provider availability or latency.
-	profile = resolveLiveModelProfileWithTimeout(client, profile)
+	profile, selectedModels := resolveLiveModelProfileWithEnumerationTimeout(client, profile)
 	s.profile = profile
+	s.captureModelAvailability(selectedModels)
 	closeDelegateStoreOnError := true
 	defer func() {
 		if closeDelegateStoreOnError {
@@ -1155,6 +1239,7 @@ func (s *Session) initSessionState(sessionStartKind plugin.SessionStartKind, run
 	reg.OverrideLimits(s.cfg.ToolOutputLimits)
 	enforceShellToolJSONLimit(reg)
 	enforceJobToolJSONLimits(reg)
+	enforceModelListJSONLimits(reg)
 	s.reg = reg
 
 	s.coreToolNames = reg.RegisteredNames()
@@ -1303,15 +1388,14 @@ func modelFallbackEligible(err error, policy llm.RetryPolicy) bool {
 // retryLoopDeclined reports whether the retry chain refused to retry err at all
 // because the server asked for a longer wait than the backoff cap allows.
 //
-// unified-llm-spec.md: "If Retry-After exceeds max_delay, do NOT retry. Raise
-// the error immediately with retry_after set on the exception. This prevents
-// silently waiting minutes for a rate limit to clear." The error therefore
-// reaches the fallback chain still classified Retryable but with zero retries
-// spent — retrying the same model is precisely what was just refused, so the
-// next model is the only route left. Mirrors llm.retryDelay's own condition; if
-// the two ever disagree, an error would be declined by one layer and ignored by
-// the other, which is the dead zone this closes.
+// Attempt-counted policies retain the unified-llm-spec refusal for a long
+// Retry-After. Wall-budgeted rate limits deliberately honor the provider's
+// longer wait in llm.retry_util, so they must not be redirected to a fallback
+// immediately by this helper.
 func retryLoopDeclined(err error, policy llm.RetryPolicy) bool {
+	if policy.WallBudgetedRateLimit(err) {
+		return false
+	}
 	if policy.MaxDelay <= 0 {
 		return false
 	}

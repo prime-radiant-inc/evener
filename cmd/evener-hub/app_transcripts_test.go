@@ -9,6 +9,7 @@ import (
 
 	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/appwire"
+	"primeradiant.com/evener/cmd/evener-hub/internal/appsource"
 	"primeradiant.com/evener/cmd/evener-hub/internal/hubcore"
 )
 
@@ -61,5 +62,31 @@ func TestHubRPCTranscriptTargetsUseEvenerParentRefs(t *testing.T) {
 	}
 	if resp.Data[1].Kind != "subagent" || resp.Data[1].Ref != "local:"+subID || resp.Data[1].TurnsUsed != 1 {
 		t.Fatalf("subagent target=%+v", resp.Data[1])
+	}
+}
+
+func TestHubTranscriptListPastFallbackDoesNotDiscoverSkills(t *testing.T) {
+	cfg, entry := seedPastSessionWithSkillFixtures(t)
+	sources := appsource.NewRegistry()
+	sources.Add(&pastFallbackRelaySource{readErr: appwire.SessionUnavailable("live source unavailable")})
+	var calls int
+	previous := discoverPastThreadSkillCatalog
+	discoverPastThreadSkillCatalog = func(hubcore.PastEntry) []appwire.EvenerSkillInfo {
+		calls++
+		return []appwire.EvenerSkillInfo{{Name: "unexpected"}}
+	}
+	t.Cleanup(func() { discoverPastThreadSkillCatalog = previous })
+
+	response, err := hubThreadTranscriptList(context.Background(), cfg, sources, appwire.ThreadTranscriptListParams{
+		Ref: "local:" + entry.Meta.ID,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(response.Data) == 0 || response.Data[0].Ref != "local:"+entry.Meta.ID {
+		t.Fatalf("transcript targets = %+v", response.Data)
+	}
+	if calls != 0 {
+		t.Fatalf("transcript-list fallback made %d cold skill-discovery calls, want 0", calls)
 	}
 }

@@ -1166,7 +1166,7 @@ func TestClientMutation_SteeringClaimRestoreDoesNotConsumeTurnBudget(t *testing.
 	}
 }
 
-func TestClientMutation_CommunicateEndTurnDurablyConsumesClientSteering(t *testing.T) {
+func TestClientMutation_CommunicateEndTurnDefersClientSteering(t *testing.T) {
 	sess := newTestSession(t)
 	clientImage := appwire.InputItem{
 		Type:      "image",
@@ -1181,7 +1181,7 @@ func TestClientMutation_CommunicateEndTurnDurablyConsumesClientSteering(t *testi
 			clientImage,
 		},
 	}
-	response, err := sess.clientMutationSteer(params)
+	_, err := sess.clientMutationSteer(params)
 	if err != nil {
 		t.Fatalf("clientMutationSteer: %v", err)
 	}
@@ -1207,50 +1207,37 @@ func TestClientMutation_CommunicateEndTurnDurablyConsumesClientSteering(t *testi
 	if err := json.Unmarshal([]byte(raw.(string)), &result); err != nil {
 		t.Fatalf("decode communicate result: %v", err)
 	}
-	if got, want := result.Inbox, []string{"client update", "daemon reminder"}; !slices.Equal(got, want) {
+	// The client entry is first, so preserving queue order means the terminal
+	// communicate drain cannot skip it to expose the daemon entry behind it.
+	// Both entries remain pending for the next carrier/ordinary steering turn.
+	if got, want := result.Inbox, []string{}; !slices.Equal(got, want) {
 		t.Fatalf("communicate inbox = %#v, want %#v", got, want)
 	}
 
 	snapshot := sess.clientMutations.snapshot()
 	record := snapshot.Journal[params.ClientMutationID]
-	if record.OperationState != clientMutationOperationTerminal ||
-		record.ExecutionState != "incorporated" {
-		t.Fatalf("consumed steering record = (%q,%q), want terminal/incorporated",
+	if record.OperationState != clientMutationOperationApplied ||
+		record.ExecutionState != "accepted" {
+		t.Fatalf("deferred steering record = (%q,%q), want applied/accepted",
 			record.OperationState, record.ExecutionState)
 	}
-	if _, ok := snapshot.PendingExecutions[params.ClientMutationID]; ok {
-		t.Fatal("communicate-consumed steering remained pending")
+	if pending, ok := snapshot.PendingExecutions[params.ClientMutationID]; !ok || pending.ExecutionState != "accepted" {
+		t.Fatalf("deferred steering pending execution = %#v, want accepted", pending)
+	}
+	if len(snapshot.SteeringOrder) != 1 {
+		t.Fatalf("deferred steering order = %#v, want one client entry", snapshot.SteeringOrder)
 	}
 
-	var incorporated int
-	for _, turn := range sess.history {
-		if turn.ClientMutationID != params.ClientMutationID {
-			continue
-		}
-		incorporated++
-		if turn.StableTurnID != response.Receipt.TurnID {
-			t.Fatalf("incorporated stable turn = %q, want %q", turn.StableTurnID, response.Receipt.TurnID)
-		}
-		var images int
-		for _, part := range turn.Message.Content {
-			if part.Kind == llm.ContentImage {
-				images++
-			}
-		}
-		if images != 1 {
-			t.Fatalf("incorporated client image count = %d, want 1", images)
-		}
-	}
-	if incorporated != 1 {
-		t.Fatalf("incorporated client steering count = %d, want 1", incorporated)
-	}
-
-	sess.reflectDurableClientSteering()
 	steering := sess.SteeringQueueSnapshot()
-	if len(steering) != 1 ||
-		steering[0].Text != "daemon reminder" ||
-		len(steering[0].Images) != 1 {
-		t.Fatalf("post-reflection steering = %#v, want only deferred daemon image steering", steering)
+	if len(steering) != 2 ||
+		steering[0].Text != "client update" || len(steering[0].Images) != 1 ||
+		steering[1].Text != "daemon reminder" || len(steering[1].Images) != 1 {
+		t.Fatalf("post-communicate steering = %#v, want client then daemon entries with images", steering)
+	}
+	for _, turn := range sess.history {
+		if turn.ClientMutationID == params.ClientMutationID {
+			t.Fatalf("deferred client steering was incorporated into history: %#v", turn)
+		}
 	}
 }
 

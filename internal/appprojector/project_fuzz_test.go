@@ -42,6 +42,21 @@ var projectorCases = []struct {
 		_ = json.Unmarshal(b, &d)
 		return d
 	}},
+	{events.EventCommunicatePreviewStart, func(b []byte) events.EventData {
+		var d events.CommunicatePreviewStartData
+		_ = json.Unmarshal(b, &d)
+		return d
+	}},
+	{events.EventCommunicatePreviewDelta, func(b []byte) events.EventData {
+		var d events.CommunicatePreviewDeltaData
+		_ = json.Unmarshal(b, &d)
+		return d
+	}},
+	{events.EventCommunicatePreviewReset, func(b []byte) events.EventData {
+		var d events.CommunicatePreviewResetData
+		_ = json.Unmarshal(b, &d)
+		return d
+	}},
 	{events.EventReasoningSummaryDelta, func(b []byte) events.EventData {
 		var d events.ReasoningSummaryDeltaData
 		_ = json.Unmarshal(b, &d)

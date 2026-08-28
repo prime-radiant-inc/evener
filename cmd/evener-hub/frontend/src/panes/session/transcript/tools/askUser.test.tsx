@@ -11,7 +11,7 @@ function item(overrides: Partial<ItemModel> = {}): ItemModel {
 }
 
 // Ground truth: agent/internal/tool/definitions.go's DefAskUser - exact
-// argumentsJson shape: {questions:[{header(<=12 chars), question,
+// argumentsJson shape: {questions:[{header, question,
 // options:[{label,detail,recommended?}], multi_select?, why?,
 // if_unanswered?}]}, 1-4 questions. ask_user's own Output is always the
 // SAME fixed string on success (agent/session_tools_ask.go's

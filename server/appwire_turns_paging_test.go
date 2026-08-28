@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -62,6 +63,42 @@ func writeTranscriptPairs(t testing.TB, path string, pairs int) {
 	}
 }
 
+func TestPrepareAppIdentityHydratesPersistedCommunicate(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "communicate.transcript.jsonl")
+	tw, err := transcript.NewWriter(path, transcript.Header{SessionID: "th_hydrate", CreatedAt: time.Now(), ProfileID: "openai", Model: "gpt-test"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	call := llm.ToolCallData{ID: "persisted-call", Name: "communicate", Arguments: json.RawMessage(`{"message":"hydrated"}`)}
+	if err := tw.Append(schema.NewTurn(schema.TurnUserInput, llm.User("run"))); err != nil {
+		t.Fatal(err)
+	}
+	if err := tw.Append(schema.Turn{Kind: schema.TurnAssistant, Message: llm.Message{Role: llm.RoleAssistant, Content: []llm.ContentPart{{Kind: llm.ContentToolCall, ToolCall: &call}}}}); err != nil {
+		t.Fatal(err)
+	}
+	if err := tw.Close(); err != nil {
+		t.Fatal(err)
+	}
+	prepared, err := PrepareAppIdentity("local", "th_hydrate", path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(prepared.turns.turns) == 0 {
+		t.Fatal("hydration produced no turns")
+	}
+	found := false
+	for _, turn := range prepared.turns.turns {
+		for _, item := range turn.Items {
+			if item.Type == "agentMessage" && item.Text == "hydrated" {
+				found = true
+			}
+		}
+	}
+	if !found {
+		t.Fatalf("persisted communicate missing after runtime hydration: %+v", prepared.turns.turns)
+	}
+}
+
 // installTranscriptIdentity seeds srv from a real transcript the way production
 // serve does: project once, then publish.
 func installTranscriptIdentity(t testing.TB, srv *Server, threadID, path string) {
@@ -99,6 +136,81 @@ func turnIDs(turns []appwire.Turn) []string {
 		out[i] = tn.ID
 	}
 	return out
+}
+
+type cloneCountingJSONValue struct {
+	calls *int
+}
+
+func (v cloneCountingJSONValue) MarshalJSON() ([]byte, error) {
+	(*v.calls)++
+	return []byte(`{"value":"excluded"}`), nil
+}
+
+func installTurnSnapshotForTest(srv *Server, turns []appwire.Turn) {
+	srv.mu.Lock()
+	srv.appTurns = &appTurnSnapshot{threadID: "th_1", turns: turns}
+	srv.mu.Unlock()
+}
+
+func countedCloneTurn(id string, calls *int) appwire.Turn {
+	return appwire.Turn{
+		ID: id,
+		Error: &appwire.TurnError{
+			CodexErrorInfo: cloneCountingJSONValue{calls: calls},
+		},
+	}
+}
+
+func TestServerAppWireLatestWindowClonesOnlyReturnedTurns(t *testing.T) {
+	srv := NewServer(ServerConfig{})
+	srv.SetAppIdentity("local", "th_1")
+	var excludedCloneCalls int
+	installTurnSnapshotForTest(srv, []appwire.Turn{
+		countedCloneTurn("turn_1", &excludedCloneCalls),
+		countedCloneTurn("turn_2", &excludedCloneCalls),
+		{ID: "turn_3", Items: []appwire.ThreadItem{{Raw: json.RawMessage(`{"value":"latest"}`)}}},
+	})
+
+	got, cursor := srv.appLatestTurns("th_1", 1)
+	if ids := turnIDs(got); !reflect.DeepEqual(ids, []string{"turn_3"}) || cursor != "2" {
+		t.Fatalf("latest window = %v (cursor %q), want [turn_3] (cursor 2)", ids, cursor)
+	}
+	if excludedCloneCalls != 0 {
+		t.Fatalf("latest window deep-cloned %d excluded turn value(s), want 0", excludedCloneCalls)
+	}
+
+	got[0].Items[0].Raw[0] = 'X'
+	again, _ := srv.appLatestTurns("th_1", 1)
+	if string(again[0].Items[0].Raw) != `{"value":"latest"}` {
+		t.Fatalf("latest window aliases installed state: %s", again[0].Items[0].Raw)
+	}
+}
+
+func TestServerAppWireOlderPageClonesOnlyReturnedTurns(t *testing.T) {
+	srv := NewServer(ServerConfig{})
+	srv.SetAppIdentity("local", "th_1")
+	var excludedCloneCalls int
+	installTurnSnapshotForTest(srv, []appwire.Turn{
+		countedCloneTurn("turn_1", &excludedCloneCalls),
+		countedCloneTurn("turn_2", &excludedCloneCalls),
+		{ID: "turn_3", Items: []appwire.ThreadItem{{Raw: json.RawMessage(`{"value":"page"}`)}}},
+		countedCloneTurn("turn_4", &excludedCloneCalls),
+	})
+
+	got := srv.appPageTurns("th_1", "3", 1)
+	if ids := turnIDs(got.Data); !reflect.DeepEqual(ids, []string{"turn_3"}) || got.NextCursor != "2" {
+		t.Fatalf("older page = %v (cursor %q), want [turn_3] (cursor 2)", ids, got.NextCursor)
+	}
+	if excludedCloneCalls != 0 {
+		t.Fatalf("older page deep-cloned %d excluded turn value(s), want 0", excludedCloneCalls)
+	}
+
+	got.Data[0].Items[0].Raw[0] = 'X'
+	again := srv.appPageTurns("th_1", "3", 1)
+	if string(again.Data[0].Items[0].Raw) != `{"value":"page"}` {
+		t.Fatalf("older page aliases installed state: %s", again.Data[0].Items[0].Raw)
+	}
 }
 
 func TestDaemonThreadReadWindowsAndTurnsListPagesToHead(t *testing.T) {
@@ -660,17 +772,34 @@ func TestTranscriptHeaderReadsOnlyLeadingHeader(t *testing.T) {
 		}
 		return path
 	}
-	small := writeNoAPICallTranscript(1)
 	large := writeNoAPICallTranscript(2000)
 	if got := transcriptHeader(large, appTranscriptMaxLineBytes).SessionID; got != "th_1" {
 		t.Fatalf("header session = %q, want th_1", got)
 	}
 
-	smallAllocs := testing.AllocsPerRun(3, func() { _ = transcriptHeader(small, appTranscriptMaxLineBytes) })
-	largeAllocs := testing.AllocsPerRun(3, func() { _ = transcriptHeader(large, appTranscriptMaxLineBytes) })
-	if largeAllocs > smallAllocs+10 {
-		t.Fatalf("large no-api_call identity validation inspected historical entries: allocations large=%.0f small=%.0f", largeAllocs, smallAllocs)
+	file, err := os.Open(large)
+	if err != nil {
+		t.Fatal(err)
 	}
+	defer file.Close() //nolint:errcheck // read-only fixture
+	counted := &countingHeaderReader{Reader: file}
+	if got := transcriptHeaderFromReader(counted, appTranscriptMaxLineBytes); got.SessionID != "th_1" {
+		t.Fatalf("counted header session = %q, want th_1", got.SessionID)
+	}
+	if counted.bytes > transcriptHeaderReadBufferBytes {
+		t.Fatalf("header validation read %d bytes from a %d-byte-bound reader", counted.bytes, transcriptHeaderReadBufferBytes)
+	}
+}
+
+type countingHeaderReader struct {
+	io.Reader
+	bytes int64
+}
+
+func (r *countingHeaderReader) Read(p []byte) (int, error) {
+	n, err := r.Reader.Read(p)
+	r.bytes += int64(n)
+	return n, err
 }
 
 // TestPreparedAppIdentityRejectsAnotherSessionsTranscript pins that preparation

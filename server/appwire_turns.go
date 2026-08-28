@@ -18,6 +18,13 @@ import (
 // large turn.
 const appTranscriptMaxLineBytes = 128 << 20
 
+// transcriptHeaderReadBufferBytes bounds the prefetch for an ordinary header
+// line. The parser stops at that line; keeping this buffer finite prevents a
+// large historical transcript from crossing the reader boundary merely because
+// identity validation needs its header. Oversized headers are still governed
+// by the maxLineBytes limit passed to transcript.ReadLine.
+const transcriptHeaderReadBufferBytes = 64 * 1024
+
 var (
 	appTurnsEnsureTurnHook   func(string) bool
 	appTurnsItemForDeltaHook func(*appwire.ThreadItem)
@@ -344,10 +351,29 @@ func (s *appTurnSnapshot) Snapshot() []appwire.Turn {
 	return s.snapshotLocked()
 }
 
+func (s *appTurnSnapshot) Latest(limit int) ([]appwire.Turn, string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	turns, cursor := appwire.WindowTurns(s.turns, limit)
+	return cloneAppTurns(turns), cursor
+}
+
+func (s *appTurnSnapshot) Page(cursor string, limit int) appwire.ThreadTurnsListResponse {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	page := appwire.PageTurns(s.turns, cursor, limit)
+	page.Data = cloneAppTurns(page.Data)
+	return page
+}
+
 func (s *appTurnSnapshot) snapshotLocked() []appwire.Turn {
-	turns := make([]appwire.Turn, len(s.turns))
+	return cloneAppTurns(s.turns)
+}
+
+func cloneAppTurns(source []appwire.Turn) []appwire.Turn {
+	turns := make([]appwire.Turn, len(source))
 	for i := range turns {
-		turns[i] = cloneAppTurn(s.turns[i])
+		turns[i] = cloneAppTurn(source[i])
 	}
 	return turns
 }

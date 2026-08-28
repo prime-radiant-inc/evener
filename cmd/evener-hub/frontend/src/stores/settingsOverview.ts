@@ -33,7 +33,7 @@ import { connectionStore } from "./connection";
 export interface SettingsOverviewStoreState {
   // null until the first successful load; a failed refresh leaves whatever
   // was last successfully loaded in place rather than blanking it (mirrors
-  // stores/tree.ts's own TreeStoreState.tree doc comment) - a transient
+  // the navigation store's state doc comment) - a transient
   // fetch error must not flash an already-populated section back to empty.
   data: SettingsOverviewResponse | null;
   loading: boolean;

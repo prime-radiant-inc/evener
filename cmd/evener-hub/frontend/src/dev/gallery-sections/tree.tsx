@@ -64,10 +64,13 @@ function TreeDemo() {
               // Decorative mouse shortcut for the same action Right/Left
               // arrow already performs on the treeitem itself - hidden
               // from assistive tech (and out of tab order) so it isn't a
-              // second, redundant "toggle" announcement.
-              <button type="button" className={styles.chevron} aria-hidden="true" tabIndex={-1} onClick={info.toggle}>
+              // second, redundant "toggle" announcement. A <span>, not a
+              // <button>: a button receives focus on click, and a focused
+              // aria-hidden element is the violation Chrome's a11y console
+              // warns about; a non-focusable span can't hold focus.
+              <span className={styles.chevron} aria-hidden="true" onClick={info.toggle}>
                 <Chevron direction={info.expanded ? "down" : "right"} />
-              </button>
+              </span>
             )}
             {/* Mouse-only shortcut for the same activation Enter already
                 performs on the owning treeitem (see the chevron's own

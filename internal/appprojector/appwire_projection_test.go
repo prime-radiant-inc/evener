@@ -115,6 +115,24 @@ func TestProject_ReasoningEffortChanged(t *testing.T) {
 	}
 }
 
+func TestProject_VisionModelChanged(t *testing.T) {
+	p := NewAppEventProjector("th1", "local:th1")
+	out := p.Project(events.SessionEvent{
+		Kind: events.EventVisionModelChanged,
+		Data: events.VisionModelChangedData{OldVisionModel: "", NewVisionModel: "off"},
+	})
+	if len(out) != 1 || out[0].Method != appwire.NotifyThreadVisionModelChanged {
+		t.Fatalf("want one thread/vision-model/changed notification, got %+v", out)
+	}
+	params, ok := out[0].Params.(appwire.ThreadVisionModelChangedParams)
+	if !ok {
+		t.Fatalf("params type = %T, want appwire.ThreadVisionModelChangedParams", out[0].Params)
+	}
+	if params.ThreadID != "th1" || params.Ref != "local:th1" || params.VisionModel != "off" {
+		t.Fatalf("params = %+v", params)
+	}
+}
+
 // TestProject_ModelThenEffortNotificationOrdering pins the client-facing
 // contract for a switch that also clamps effort: the model-changed
 // notification (which carries the new reasoning-effort ladder) is delivered

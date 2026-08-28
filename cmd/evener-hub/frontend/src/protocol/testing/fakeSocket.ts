@@ -3,6 +3,7 @@
 // client from the "server" side: open() to simulate the connection opening,
 // receive(obj) to simulate an incoming frame, and closeFromServer() to
 // simulate the server closing the connection unprompted.
+import { APPWIRE_PROTOCOL_VERSION } from "../client";
 import type { WebSocketLike } from "../transport";
 import type { InitializeResponse } from "../types.gen";
 
@@ -12,7 +13,7 @@ import type { InitializeResponse } from "../types.gen";
 // without duplicating the literal.
 export const FAKE_INITIALIZE_RESULT: InitializeResponse = {
   serverInfo: { name: "fake-evener-hub", version: "0.0.0-test" },
-  protocolVersion: "evener-appwire-v3",
+  protocolVersion: APPWIRE_PROTOCOL_VERSION,
   sourceId: "fake-source",
   features: {
     threadList: true,

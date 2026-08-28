@@ -23,10 +23,11 @@ import (
 
 // WebServer wires routes and middleware.
 type WebServer struct {
-	cfg       hubcore.WebConfig
-	appRPC    *appserver.Server
-	sources   *appsource.Registry
-	startedAt time.Time
+	cfg        hubcore.WebConfig
+	appRPC     *appserver.Server
+	navigation *NavigationService
+	sources    *appsource.Registry
+	startedAt  time.Time
 
 	// lastGoodThreads retains each remote source's most recent successful
 	// ListThreads result so a transient list failure doesn't blank that
@@ -39,14 +40,15 @@ type WebServer struct {
 	// liveModels caches raw live /models listings for this server; per-server
 	// so another WebServer (different provider config) never shares entries.
 	liveModels *modelsCache
-	// treeCache memoizes the complete /api/tree navigation generation — tree,
-	// attention, live entries, and favorite authority — by inputs-version,
-	// remote generation, and 30s time bucket (see hubcore.TreeCache).
+	// treeCache memoizes the shared tree projection used by the remaining
+	// mutation handlers. NavigationService owns AppWire navigation generations
+	// and captures its source directly rather than using this cache.
 	treeCache  *hubcore.TreeCache
 	manifestFS fs.FS
 
-	frontendHash     string
-	deletionStoreErr error
+	frontendHash              string
+	deletionStoreErr          error
+	transcriptDisplayStoreErr error
 }
 
 var manifestMarshal = json.Marshal
@@ -56,6 +58,10 @@ func NewWebServer(cfg hubcore.WebConfig) *WebServer {
 	var deletionStoreErr error
 	if cfg.DeletionStore == nil {
 		cfg.DeletionStore, deletionStoreErr = hubcore.NewDeletionStore(cfg.HubStateRoot)
+	}
+	transcriptDisplayStoreErr := cfg.TranscriptDisplayStoreErr
+	if cfg.TranscriptDisplayStore == nil {
+		cfg.TranscriptDisplayStore, transcriptDisplayStoreErr = hubcore.NewTranscriptDisplayStore(cfg.HubStateRoot)
 	}
 	sources := newHubSourceRegistry(cfg)
 	if cfg.CodexLauncher == nil && len(cfg.CodexLaunches) > 0 {
@@ -69,17 +75,25 @@ func NewWebServer(cfg hubcore.WebConfig) *WebServer {
 	}
 	fHash, _ := frontendDistHash(distFS())
 	web := &WebServer{
-		cfg:              cfg,
-		sources:          sources,
-		startedAt:        time.Now().UTC(),
-		lastGoodThreads:  map[string][]appwire.Thread{},
-		liveModels:       &modelsCache{},
-		treeCache:        &hubcore.TreeCache{},
-		manifestFS:       assetsRoot(),
-		frontendHash:     fHash,
-		deletionStoreErr: deletionStoreErr,
+		cfg:                       cfg,
+		sources:                   sources,
+		startedAt:                 time.Now().UTC(),
+		lastGoodThreads:           map[string][]appwire.Thread{},
+		liveModels:                &modelsCache{},
+		treeCache:                 &hubcore.TreeCache{},
+		manifestFS:                assetsRoot(),
+		frontendHash:              fHash,
+		deletionStoreErr:          deletionStoreErr,
+		transcriptDisplayStoreErr: transcriptDisplayStoreErr,
 	}
-	web.appRPC = newHubAppServer(cfg, sources)
+	if web.cfg.LiveModels == nil {
+		web.cfg.LiveModels = web.fetchLiveModels
+	}
+	web.navigation = newNavigationService(navigationServiceConfig{Source: webNavigationSource{web: web}})
+	web.appRPC = newHubAppServerWithNavigation(web.cfg, sources, web.navigation)
+	registerArchiveHandler(web.appRPC, web.cfg, func() *NavigationService { return web.navigation })
+	registerProjectDeleteHandler(web.appRPC, web)
+	registerSessionDeleteHandler(web.appRPC, web.sessionDelete)
 	if deletionStoreErr == nil {
 		_ = web.resumeProjectDeletions()
 	}
@@ -158,24 +172,10 @@ func (s *WebServer) Handler() http.Handler {
 	mux.HandleFunc("/credentials", s.handleCredentials)
 
 	// API
-	mux.HandleFunc("/api/spawn", s.handleApiSpawn)
-	mux.HandleFunc("/api/models", s.handleApiModels)
-	mux.HandleFunc("/api/dirs/create", s.handleAPIDirCreate)
-	mux.HandleFunc("/api/path/validate", s.handleAPIPathValidate)
-	mux.HandleFunc("/api/git/head", s.handleApiGitHead)
-	mux.HandleFunc("/api/search", s.handleApiSearch)
 	mux.HandleFunc("/api/health", s.handleAPIHealth)
-	mux.HandleFunc("/api/mobile/pairing", s.handleAPIMobilePairing)
-	mux.HandleFunc("/api/upgrade", s.handleAPIUpgrade)
-	mux.HandleFunc("/api/tree/project", s.handleAPITreeProject)
-	mux.HandleFunc("/api/tree", s.handleAPITree)
-	mux.HandleFunc("/api/archive", s.handleAPIArchive)
-	mux.HandleFunc("/api/favorite", s.handleAPIFavorite)
 	mux.HandleFunc("/api/pin-sections", s.handleAPIPinSections)
 	mux.HandleFunc("/api/pin-sections/", s.handleAPIPinSection)
 	mux.HandleFunc("/api/session-pin", s.handleAPISessionPin)
-	mux.HandleFunc("/api/project/delete", s.handleAPIProjectDelete)
-	mux.HandleFunc("/api/spawn-schema", s.handleAPISpawnSchema)
 	mux.HandleFunc("/api/sessions/", s.handleAPISession)
 
 	mux.HandleFunc("/auth", hubedge.HandleAuth(s.cfg.AuthToken))

@@ -11,8 +11,6 @@
 # with `scratch_dir <var> <prefix>` and reclaim it with the no-argument
 # `scratch_rm`, the same way every other script here does.
 #
-# Suites that need a helper no one else does (e.g. merge-approval-gate's
-# assert_before) keep it locally rather than growing this file for one caller.
 . "$(dirname "${BASH_SOURCE[0]}")/scratch-lib.sh"
 
 checks=0

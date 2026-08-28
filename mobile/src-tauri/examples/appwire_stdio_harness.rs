@@ -736,17 +736,31 @@ async fn handle_client_frame(
     } else if method == "initialized" {
         socket
             .send(Message::Text(
-                json!({ "method": "thread/closed", "params": {} })
-                    .to_string()
-                    .into(),
+                json!({
+                    "method": "thread/closed",
+                    "params": {
+                        "threadId": "held-thread",
+                        "ref": "held-ref",
+                        "reason": "stale-generation-test",
+                    },
+                })
+                .to_string()
+                .into(),
             ))
             .await
             .map_err(|_| ())?;
         socket
             .send(Message::Text(
-                json!({ "method": "evener/tree/changed", "params": {} })
-                    .to_string()
-                    .into(),
+                json!({
+                    "method": "thread/status/changed",
+                    "params": {
+                        "threadId": "current-thread",
+                        "ref": "current-ref",
+                        "status": { "type": "idle" },
+                    },
+                })
+                .to_string()
+                .into(),
             ))
             .await
             .map_err(|_| ())?;

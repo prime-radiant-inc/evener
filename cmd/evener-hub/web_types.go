@@ -8,50 +8,12 @@ import (
 	"primeradiant.com/evener/hubapi"
 )
 
-// searchResult is one item in the /api/search response. Ref carries the
-// qualified session ref (e.g. "local:abc") in the same shape apiTreeNode
-// produces for /api/tree — SPA clients open sessions only by qualified ref
-// (appwire.ParseRef rejects bare ids), so the bare ID field alone cannot be
-// used to open a hit.
-type searchResult struct {
-	ID      string `json:"id"`
-	Title   string `json:"title"`
-	Project string `json:"project"`
-	State   string `json:"state"`
-	Age     string `json:"age"`
-	Ref     string `json:"ref"`
-}
-
-// searchResponse is the JSON envelope returned by /api/search.
-type searchResponse struct {
-	Live []searchResult `json:"live"`
-	Past []searchResult `json:"past"`
-}
-
-// spawnRequest is the JSON body for POST /api/spawn. Items
-// carries optional attachments (e.g. image bytes) that the composer wants
-// to include with the initial user turn (kata t5j6).
-type spawnRequest struct {
-	Prompt          string                     `json:"prompt"`
-	Harness         string                     `json:"harness"`
-	Model           string                     `json:"model"`
-	WorkingDir      string                     `json:"working_dir"`
-	Branch          string                     `json:"branch"`
-	AccessMode      string                     `json:"access_mode"`
-	Agent           string                     `json:"agent"`
-	ReasoningEffort string                     `json:"reasoning_effort"`
-	NonInteractive  *bool                      `json:"non_interactive,omitempty"`
-	LaunchOverrides *appwire.LaunchConfigLayer `json:"launch_overrides,omitempty"`
-	Items           []appwire.InputItem        `json:"items,omitempty"`
-}
-
-// modelsCache is a per-WebServer TTL cache of the RAW live model list (all
-// providers' ListModels results, un-overlaid — see overlayLiveEntries).
-// Provider /models calls are cheap but not free.
+// modelsCache is a per-WebServer TTL cache of the raw live model list. Provider
+// configuration overlays are applied to fresh descriptors on each response.
 type modelsCache struct {
 	mu      sync.Mutex
 	expires time.Time
-	models  []map[string]any
+	models  []appwire.ModelDescriptor
 }
 
 const liveModelsTTL = 5 * time.Minute

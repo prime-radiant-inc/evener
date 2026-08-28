@@ -15,9 +15,24 @@ import (
 	"primeradiant.com/evener/agent/internal/delegatestore"
 	"primeradiant.com/evener/agent/internal/jobstore"
 	"primeradiant.com/evener/agent/plugin"
+	"primeradiant.com/evener/agent/skill"
 	"primeradiant.com/evener/agent/transcript"
 	"primeradiant.com/evener/llm"
 )
+
+func TestDetailedStatusUsesNamespacedSkillCatalogKey(t *testing.T) {
+	s := newTestSession(t)
+	s.skills = map[string]skill.SkillMeta{
+		"plugin:simplify": {Name: "simplify", Description: "rewrite", SkillFile: writeSkillBodyFile(t, "body")},
+	}
+	got := s.DetailedStatus()
+	if len(got.Skills) != 1 || got.Skills[0].Name != "plugin:simplify" {
+		t.Fatalf("skills = %+v", got.Skills)
+	}
+	if got.Skills[0].Dir != "" || got.Skills[0].SkillFile != "" {
+		t.Fatalf("skills exposed filesystem metadata: %+v", got.Skills[0])
+	}
+}
 
 func TestSession_DetailedStatus_DelegatesMatchControllerFoldAfterReopen(t *testing.T) {
 	fixture := newColdStableDelegateFixtureConfigured(t, "", func(descriptor *delegatestore.Descriptor) {
@@ -427,6 +442,9 @@ func TestSession_DetailedStatus_EmptySections(t *testing.T) {
 		t.Errorf("expected no MCP servers, got %d", len(ds.MCP))
 	}
 	// No plugins in a vanilla session.
+	if ds.Plugins == nil {
+		t.Fatal("expected an explicit empty plugin slice")
+	}
 	if len(ds.Plugins) != 0 {
 		t.Errorf("expected no plugins, got %d", len(ds.Plugins))
 	}

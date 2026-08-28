@@ -7,6 +7,7 @@ import (
 	"flag"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -21,6 +22,40 @@ import (
 	"primeradiant.com/evener/llm"
 	_ "primeradiant.com/evener/llm/providers/openai"
 )
+
+func TestRunCLIEnabledPluginsFlagWiresPresenceAndNames(t *testing.T) {
+	var stderr bytes.Buffer
+	fs, flags := newRunFlagSet(&stderr)
+	if err := fs.Parse([]string{"--enabled-plugins= alpha, beta", "prompt"}); err != nil {
+		t.Fatal(err)
+	}
+	got := flags.enabledPlugins.Value()
+	if got == nil || !reflect.DeepEqual(*got, []string{"alpha", "beta"}) {
+		t.Fatalf("enabled plugins = %#v", got)
+	}
+}
+
+func TestMainRejectsEnabledPluginsWithResumeBeforeRun(t *testing.T) {
+	var stdout, stderr bytes.Buffer
+	exitCode := 0
+	runCalled := false
+	deps := defaultMainDeps()
+	deps.args = []string{"--enabled-plugins=alpha", "--resume", "session", "prompt"}
+	deps.stdout = &stdout
+	deps.stderr = &stderr
+	deps.exit = func(code int) { exitCode = code }
+	deps.run = func(context.Context, runConfig) error { runCalled = true; return nil }
+	mainWithDeps(deps)
+	if exitCode != 2 {
+		t.Fatalf("exit code = %d, want 2", exitCode)
+	}
+	if runCalled {
+		t.Fatal("run called after an enabled-plugin/resume conflict")
+	}
+	if !strings.Contains(stderr.String(), "--enabled-plugins cannot be used with --resume") {
+		t.Fatalf("stderr = %q", stderr.String())
+	}
+}
 
 // TestNewSessionFromEnv verifies that we can create a working session
 // from environment variables. This is the core wiring test.

@@ -1,86 +1,19 @@
 package hub
 
 import (
-	"context"
 	"encoding/json"
 	"errors"
-	"io"
 	"net/http"
-	"net/netip"
-	"net/url"
-	"os"
-	"os/exec"
-	"path/filepath"
-	"sort"
-	"strconv"
 	"strings"
-
-	"golang.org/x/net/idna"
 
 	"primeradiant.com/evener/agent/diagnostic"
 	"primeradiant.com/evener/appwire"
 	"primeradiant.com/evener/buildinfo"
-	"primeradiant.com/evener/cmd/evener-hub/internal/fspaths"
-	"primeradiant.com/evener/cmd/evener-hub/internal/hubcore"
-	"primeradiant.com/evener/cmd/evener-hub/internal/hubedge"
-	"primeradiant.com/evener/envvars"
 	"primeradiant.com/evener/hubapi"
 )
 
-var (
-	webHubUpgrade            = hubUpgrade
-	gitCommand               = exec.CommandContext
-	mobileHostnameProfile    = idna.New(idna.MapForLookup(), idna.StrictDomainName(false), idna.CheckHyphens(false))
-	ensureAPIActionAvailable = func(s *WebServer, id, action string) error {
-		return s.ensureSessionActionAvailable(id, action)
-	}
-)
-
-func (s *WebServer) handleApiSearch(w http.ResponseWriter, r *http.Request) {
-	q := strings.ToLower(strings.TrimSpace(r.URL.Query().Get("q")))
-	var resp searchResponse
-	if s.cfg.Roster != nil {
-		live := s.cfg.Roster.List()
-		sortLiveForSearch(live, s.cfg.Past)
-		for _, le := range live {
-			if le.SessionID == "" {
-				continue
-			}
-			title := liveTitle(le.SessionID, le, s.cfg.Past)
-			if q == "" || strings.Contains(strings.ToLower(le.SessionID), q) || strings.Contains(strings.ToLower(title), q) {
-				resp.Live = append(resp.Live, searchResult{
-					ID:      le.SessionID,
-					Title:   title,
-					State:   hubcore.NormalizeState(le.Status),
-					Project: filepath.Base(le.WorkingDir),
-					Age:     "now",
-					Ref:     hubRefFromTreeNodeID(le.SessionID).String(),
-				})
-			}
-		}
-	}
-	if s.cfg.Past != nil {
-		// Empty query → most-recent N. Substring match otherwise.
-		results := s.cfg.Past.Search(q, 20, 0)
-		for _, e := range results {
-			resp.Past = append(resp.Past, searchResult{
-				ID:      e.Meta.ID,
-				Title:   searchPastTitle(e),
-				State:   "ended",
-				Project: filepath.Base(e.Meta.EnvInfo.WorkingDir),
-				Age:     hubcore.AgeString(e.Meta.UpdatedAt),
-				Ref:     hubRefFromTreeNodeID(e.Meta.ID).String(),
-			})
-		}
-	}
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(resp) //nolint:errcheck
-}
-
-func sortLiveForSearch(live []hubcore.LiveEntry, past *hubcore.PastIndex) {
-	sort.SliceStable(live, func(i, j int) bool {
-		return hubcore.LiveEntryWithPastLess(live[i], live[j], past)
-	})
+var ensureAPIActionAvailable = func(s *WebServer, id, action string) error {
+	return s.ensureSessionActionAvailable(id, action)
 }
 
 func writeAPIJSON(w http.ResponseWriter, status int, v any) {
@@ -157,151 +90,11 @@ func (s *WebServer) handleAPIHealth(w http.ResponseWriter, r *http.Request) {
 		BackendGitSha:    buildinfo.GitSHA,
 		FrontendHash:     s.frontendHash,
 		Capabilities: hubapi.HealthCapabilities{
-			Tree:             true,
 			TranscriptFollow: true,
-			SpawnSchema:      true,
-			Spawn:            s.cfg.Spawner != nil || len(s.cfg.CodexSources) > 0 || len(s.cfg.CodexLaunches) > 0 || s.cfg.CodexLauncher != nil,
 			Fork:             true,
 			RemoteSources:    len(s.cfg.CodexSources) > 0,
 		},
 	})
-}
-
-func (s *WebServer) handleAPIMobilePairing(w http.ResponseWriter, r *http.Request) {
-	w.Header().Set("Cache-Control", "no-store")
-	if r.Method != http.MethodGet {
-		writeAPIError(w, http.StatusMethodNotAllowed, "GET required")
-		return
-	}
-	base, ok := s.mobilePairingBaseURL(r)
-	if !ok {
-		writeAPIError(w, http.StatusConflict, "mobile pairing requires a reachable non-loopback Hub origin")
-		return
-	}
-	writeAPIJSON(w, http.StatusOK, struct {
-		AuthURL string `json:"auth_url"`
-	}{AuthURL: hubedge.AuthURLFor(base, s.cfg.AuthToken)})
-}
-
-func (s *WebServer) mobilePairingBaseURL(r *http.Request) (string, bool) {
-	if s.cfg.MobileBaseURL != "" {
-		return safeMobileOrigin(s.cfg.MobileBaseURL)
-	}
-	scheme := "http"
-	if r.TLS != nil {
-		scheme = "https"
-	}
-	return safeMobileOrigin(scheme + "://" + r.Host)
-}
-
-// safeMobileOrigin applies the connection policy the mobile app enforces before
-// putting an origin in a QR code. HTTP may name only a private-network address
-// (or a .local name which the app resolves and validates); HTTPS may name a
-// public or private host. Neither may name loopback, which refers to the phone
-// after scanning rather than the Hub.
-func safeMobileOrigin(raw string) (string, bool) {
-	if err := validateMobileBaseURL(raw); err != nil {
-		return "", false
-	}
-	u, err := url.Parse(raw)
-	if err != nil {
-		return "", false
-	}
-	host := strings.TrimRight(u.Hostname(), ".")
-	if _, err := netip.ParseAddr(host); err != nil {
-		// Browsers apply UTS #46 mappings before interpreting a hostname. Do
-		// the same so Unicode spellings of numeric addresses cannot bypass the
-		// IP and legacy-numeric checks below. Canonical IP literals bypass IDNA
-		// because IPv6 colons are not valid domain-name runes.
-		host, err = mobileHostnameProfile.ToASCII(host)
-		if err != nil {
-			return "", false
-		}
-		host = strings.TrimRight(host, ".")
-	}
-	// Reject localhost and its reserved subdomains in all case and
-	// trailing-dot spellings.
-	hostLower := strings.ToLower(host)
-	if host == "" || hostLower == "localhost" || strings.HasSuffix(hostLower, ".localhost") {
-		return "", false
-	}
-	if addr, err := netip.ParseAddr(host); err == nil {
-		addr = addr.Unmap()
-		if addr.IsLoopback() {
-			return "", false
-		}
-		if u.Scheme == "http" && !isPrivateMobileHTTPAddr(addr) {
-			return "", false
-		}
-	} else {
-		// Some clients accept inet_aton-style numeric addresses such as 127.1,
-		// 2130706433, or 0x7f000001. Reject those spellings deterministically
-		// rather than resolving a host while serving the pairing request.
-		if isLegacyIPv4Literal(host) {
-			return "", false
-		}
-		if u.Scheme == "http" && !strings.HasSuffix(hostLower, ".local") {
-			return "", false
-		}
-	}
-	return strings.TrimRight(raw, "/"), true
-}
-
-func isLegacyIPv4Literal(host string) bool {
-	parts := strings.Split(host, ".")
-	if len(parts) > 4 {
-		return false
-	}
-	for i, part := range parts {
-		base := 10
-		digits := part
-		if len(part) > 2 && part[0] == '0' && (part[1] == 'x' || part[1] == 'X') {
-			base = 16
-			digits = part[2:]
-		} else if len(part) > 1 && part[0] == '0' {
-			base = 8
-		}
-		if digits == "" {
-			return false
-		}
-		value, err := strconv.ParseUint(digits, base, 32)
-		if err != nil {
-			return false
-		}
-		bits := 8
-		if i == len(parts)-1 {
-			bits = 8 * (5 - len(parts))
-		}
-		if value >= uint64(1)<<bits {
-			return false
-		}
-	}
-	return true
-}
-
-func isPrivateMobileHTTPAddr(addr netip.Addr) bool {
-	if addr.IsPrivate() || addr.IsLinkLocalUnicast() {
-		return true
-	}
-	return addr.Is4() && netip.MustParsePrefix("100.64.0.0/10").Contains(addr)
-}
-
-func (s *WebServer) handleAPIUpgrade(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodPost {
-		writeAPIError(w, http.StatusMethodNotAllowed, "POST required")
-		return
-	}
-	var params appwire.UpgradeParams
-	if err := json.NewDecoder(r.Body).Decode(&params); err != nil && !errors.Is(err, io.EOF) {
-		writeAPIError(w, http.StatusBadRequest, err.Error())
-		return
-	}
-	resp, err := webHubUpgrade(r.Context(), params)
-	if err != nil {
-		writeAPIError(w, http.StatusBadGateway, err.Error())
-		return
-	}
-	writeAPIJSON(w, http.StatusOK, resp)
 }
 
 func (s *WebServer) apiStateGlob() string {
@@ -309,21 +102,6 @@ func (s *WebServer) apiStateGlob() string {
 		return ""
 	}
 	return s.cfg.Past.StateGlob()
-}
-
-func (s *WebServer) handleAPISpawnSchema(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodGet {
-		writeAPIError(w, http.StatusMethodNotAllowed, "GET required")
-		return
-	}
-	writeAPIJSON(w, http.StatusOK, hubapi.SpawnSchema{Fields: []hubapi.SpawnField{
-		{Name: "prompt", Type: "text"},
-		{Name: "harness", Type: "enum", Values: launchHarnessIDs(s.cfg)},
-		{Name: "working_dir", Type: "path"},
-		{Name: "model", Type: "model"},
-		{Name: "agent", Type: "string"},
-		{Name: "reasoning_effort", Type: "enum", Values: []string{"minimal", "low", "medium", "high", "xhigh", "max", "none"}},
-	}})
 }
 
 func warningPayload(raw json.RawMessage) map[string]any {
@@ -506,111 +284,4 @@ func (s *WebServer) handleAPIReasoningEffort(w http.ResponseWriter, r *http.Requ
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)
-}
-
-func (s *WebServer) handleAPIPathValidate(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodGet {
-		http.Error(w, "GET required", http.StatusMethodNotAllowed)
-		return
-	}
-	resp := fspaths.ValidateLaunchPath(appwire.PathValidateParams{
-		Path: r.URL.Query().Get("path"),
-		Kind: r.URL.Query().Get("kind"),
-	})
-	writeAPIJSON(w, http.StatusOK, resp)
-}
-
-// handleAPIDirCreate creates a directory (and any missing parents) at an
-// absolute path, so the spawn flow can offer to create a proposed working
-// directory that does not exist yet. POST {"path": "..."}. Idempotent: an
-// existing directory succeeds (created:false); a file at that path is a
-// conflict. The hub already grants the user full filesystem reach for spawning,
-// so creating a directory they are about to launch into adds no new authority.
-func (s *WebServer) handleAPIDirCreate(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodPost {
-		writeAPIError(w, http.StatusMethodNotAllowed, "POST required")
-		return
-	}
-	var body struct {
-		Path string `json:"path"`
-	}
-	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
-		writeAPIError(w, http.StatusBadRequest, "invalid JSON body")
-		return
-	}
-	path := strings.TrimSpace(body.Path)
-	if path == "" {
-		writeAPIError(w, http.StatusBadRequest, "path is required")
-		return
-	}
-	if strings.HasPrefix(path, "~/") || path == "~" {
-		path = filepath.Join(envvars.Home.Getenv(), strings.TrimPrefix(path, "~"))
-	}
-	if !filepath.IsAbs(path) {
-		writeAPIError(w, http.StatusBadRequest, "absolute path required")
-		return
-	}
-	path = filepath.Clean(path)
-	if info, err := os.Stat(path); err == nil {
-		if !info.IsDir() {
-			writeAPIError(w, http.StatusConflict, "a file already exists at that path")
-			return
-		}
-		writeAPIJSON(w, http.StatusOK, map[string]any{"path": path, "created": false})
-		return
-	}
-	mkdirAll := os.MkdirAll
-	if s.cfg.MkdirAll != nil {
-		mkdirAll = s.cfg.MkdirAll
-	}
-	if err := mkdirAll(path, 0o755); err != nil {
-		writeAPIError(w, http.StatusInternalServerError, err.Error())
-		return
-	}
-	writeAPIJSON(w, http.StatusOK, map[string]any{"path": path, "created": true})
-}
-
-// gitHeadBranch runs `git rev-parse --abbrev-ref HEAD` in dir and returns
-// the branch name. In detached HEAD state it falls back to the short SHA.
-func gitHeadBranch(ctx context.Context, dir string) (string, error) {
-	out, err := gitCommand(ctx, "git", "-C", dir, "rev-parse", "--abbrev-ref", "HEAD").Output()
-	if err != nil {
-		return "", err
-	}
-	branch := strings.TrimSpace(string(out))
-	if branch == "HEAD" {
-		// Detached HEAD — return short SHA instead.
-		out2, err2 := gitCommand(ctx, "git", "-C", dir, "rev-parse", "--short", "HEAD").Output()
-		if err2 != nil {
-			return branch, nil //nolint:nilerr // detached HEAD: short-SHA refinement is best-effort; the literal "HEAD" is a valid fallback
-		}
-		branch = strings.TrimSpace(string(out2))
-	}
-	return branch, nil
-}
-
-// handleApiGitHead returns the current git HEAD branch name for a given cwd.
-// Query param: cwd=<absolute path>. Returns {"branch": "<name>"} or {"branch": ""} on error.
-func (s *WebServer) handleApiGitHead(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodGet {
-		writeAPIError(w, http.StatusMethodNotAllowed, "GET required")
-		return
-	}
-	cwd := strings.TrimSpace(r.URL.Query().Get("cwd"))
-	gitHead := gitHeadBranch
-	if s.cfg.GitHeadBranch != nil {
-		gitHead = s.cfg.GitHeadBranch
-	}
-	branch := ""
-	if cwd != "" {
-		if abs, err := filepath.Abs(cwd); err == nil {
-			cwd = abs
-		}
-		if _, err := os.Stat(cwd); err == nil {
-			if out, err := gitHead(r.Context(), cwd); err == nil {
-				branch = out
-			}
-		}
-	}
-	writeAPIJSON(w, http.StatusOK, map[string]string{"branch": branch})
 }

@@ -22,6 +22,7 @@
 import { useRef } from "react";
 import type { ItemModel } from "../../../../protocol/model";
 import { useThreadsStore } from "../../../../stores/threads";
+import { useOptionalTranscriptRenderContext } from "../../../../transcriptDisplay/renderContext";
 import { CodeBlock, ShellCommandBlock } from "../../../../widgets";
 import { AnsiTailBuffer } from "../../../../widgets/codeblock/ansi";
 import type { ToolRenderProps, ToolSummaryContext } from "../toolRenderers";
@@ -79,11 +80,7 @@ function shellExitCode(item: ItemModel): number | undefined {
 
 // The row summary owns collapsed command presentation. The expanded body owns
 // a readable formatted command block and the output block independently.
-function ShellBody({ item, live, sessionRef }: ToolRenderProps) {
-  // cwd is snapshot-only ThreadModel state (fileOpenBeside.tsx's DECISION B),
-  // stable for the pane's life, so this selector returns a stable string - no
-  // re-renders from the session's frequent streaming updates.
-  const cwd = useThreadsStore((s) => (sessionRef !== undefined ? s.threads.get(sessionRef)?.cwd : undefined));
+function ShellBodyContent({ item, live, cwd, sessionRef }: ToolRenderProps) {
   const rawCommand = shellCommand(parseArgs(item.argumentsJSON));
   const command = stripRedundantCd(rawCommand, cwd);
   const output = item.output ?? "";
@@ -109,6 +106,22 @@ function ShellBody({ item, live, sessionRef }: ToolRenderProps) {
       {command !== "" && <ShellCommandBlock command={command} copyText={rawCommand} />}
       {output !== "" && <CodeBlock text={body} copyText={tail.copyText} copyLabel="Copy output" ansi />}
     </>
+  );
+}
+
+function LegacyShellBody(props: ToolRenderProps) {
+  const cwd = useThreadsStore((state) =>
+    props.sessionRef === undefined ? undefined : state.threads.get(props.sessionRef)?.cwd,
+  );
+  return <ShellBodyContent {...props} cwd={cwd} />;
+}
+
+function ShellBody(props: ToolRenderProps) {
+  const context = useOptionalTranscriptRenderContext();
+  return context === null ? (
+    <LegacyShellBody {...props} />
+  ) : (
+    <ShellBodyContent {...props} cwd={props.cwd ?? context.thread?.cwd} />
   );
 }
 

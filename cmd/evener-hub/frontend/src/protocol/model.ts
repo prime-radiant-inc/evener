@@ -5,6 +5,7 @@
 
 import type {
   EvenerDelegateInfo,
+  EvenerSkillInfo,
   EvenerTurnSlots,
   EvenerUsage,
   GoalState,
@@ -194,6 +195,13 @@ export interface ModelRetryState {
 // beside it, one of exactly two frames put it there.
 export type CapabilitySource = "read" | "statusFrame" | "none";
 
+export interface ThreadDiagnostics {
+  // Snapshot-only plugin inventory. An absent diagnostics object, or an
+  // object without plugins, means the daemon could not provide the inventory;
+  // an empty array is an authoritative empty inventory.
+  plugins?: Array<{ name: string }>;
+}
+
 export interface ThreadModel {
   ref: string;
   threadId: string;
@@ -202,6 +210,7 @@ export interface ThreadModel {
   modelProvider: string;
   model: string;
   reasoningEffort?: string;
+  visionModel: string;
   askPending: boolean;
   // Surface-on-entry snapshot of blocked sandbox-exemption approval cards
   // (M7) — appwire/types.go's ThreadEvener.PendingEscalations doc comment: "a
@@ -214,11 +223,15 @@ export interface ThreadModel {
   queue: QueueState | null;
   pendingMutations?: PendingMutation[];
   tasks: { total: number; done: number } | null;
+  // Snapshot-only plugin diagnostics from thread/read. The palette uses this
+  // inventory to scope the global command catalog to the active session.
+  diagnostics?: ThreadDiagnostics;
   // Stable delegates are controller-fold snapshots, never activation jobs.
   // Live updates are fenced by projectionRevision; latestActivityAt is
   // independently max-merged because transcript activity is durable outside
   // the lifecycle event sequence.
   delegates?: EvenerDelegateInfo[];
+  skills?: EvenerSkillInfo[];
   turnSlots?: EvenerTurnSlots | null;
   // Bumped (to the reducer's frame time) by every evener/job/started and
   // evener/job/finished for this thread; the jobs panel re-fetches its list when

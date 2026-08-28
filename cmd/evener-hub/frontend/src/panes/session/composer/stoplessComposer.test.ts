@@ -21,6 +21,7 @@ const STEER_WITHOUT_STOP: ThreadCapabilities = {
   forkFromTurn: false,
   shutdown: true,
   changeModel: true,
+  changeVisionModel: true,
   queue: true,
   goal: true,
   rename: true,

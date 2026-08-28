@@ -37,6 +37,7 @@ import type { ThreadModel, TurnModel } from "../../../../protocol/model";
 import type { VirtualListHandle } from "../../../../widgets/virtuallist";
 import { isDormantTranscript } from "../transcriptVisibility";
 import { isAtBottom, isNearTop, readScrollMetrics, type ScrollMetrics } from "./scrollMetrics";
+import { type CapturedTranscriptView, registerTranscriptView } from "./transcriptViewRegistry";
 
 export interface UseTranscriptScrollOptions {
   ref: string;
@@ -51,6 +52,10 @@ export interface UseTranscriptScrollOptions {
   measureAnchors?: (el: HTMLElement) => ViewAnchorPosition[];
   /** All entries in the active representation, including those in virtualized-out rows. */
   anchorEntries?: readonly Omit<ViewAnchorPosition, "offset" | "height">[];
+  /** Number of rows in the active transformed representation. */
+  renderedRowCount?: number;
+  /** Source turn id to active transformed-row index. */
+  sourceTurnRowIndexes?: ReadonlyMap<string, number>;
 }
 
 export interface ViewAnchorPosition {
@@ -132,6 +137,335 @@ function topVisiblePosition(positions: readonly ViewAnchorPosition[]): ViewAncho
     .sort((a, b) => b.offset - a.offset)[0];
   if (crossing) return crossing;
   return positions.filter((position) => position.offset >= 0).sort((a, b) => a.offset - b.offset)[0];
+}
+
+interface CapturedFocusMetadata {
+  readonly anchorId: string;
+  readonly sourceIdentity: string;
+  readonly sourceIndex?: number;
+  readonly descendantPath: readonly number[];
+  readonly element: HTMLElement;
+}
+
+const capturedAnchorMetadata = new WeakMap<CapturedTranscriptView, ViewAnchor>();
+const capturedFocusMetadata = new WeakMap<CapturedTranscriptView, CapturedFocusMetadata>();
+
+function sourceIdentity(id: string): string {
+  if (id.startsWith("intent:")) return id.slice("intent:".length);
+  if (id.startsWith("tools:")) return id.slice("tools:".length).split(":")[0] ?? id;
+  return id;
+}
+
+function descendantPath(root: HTMLElement, element: HTMLElement): readonly number[] {
+  const path: number[] = [];
+  let current: HTMLElement = element;
+  while (current !== root) {
+    const parent = current.parentElement;
+    if (!parent) return [];
+    const index = Array.from(parent.children).indexOf(current);
+    if (index < 0) return [];
+    path.unshift(index);
+    current = parent;
+  }
+  return path;
+}
+
+function descendantAtPath(root: HTMLElement, path: readonly number[]): HTMLElement | undefined {
+  let current: HTMLElement = root;
+  for (const index of path) {
+    const next = current.children[index];
+    if (!next) return undefined;
+    if (!(next instanceof HTMLElement)) return undefined;
+    current = next;
+  }
+  return current;
+}
+
+function isFocusableDescendant(element: HTMLElement): boolean {
+  return element.matches("button, a[href], input, select, textarea, [tabindex]");
+}
+
+function sourceIndexFromDataset(element: HTMLElement): number | undefined {
+  const value = Number(element.dataset.viewAnchorSourceIndex);
+  return Number.isSafeInteger(value) ? value : undefined;
+}
+
+function focusMetadataFor(el: HTMLElement): CapturedFocusMetadata | undefined {
+  const active = el.ownerDocument.activeElement;
+  if (!(active instanceof HTMLElement)) return undefined;
+  const anchor = Array.from(el.querySelectorAll<HTMLElement>("[data-view-anchor-id]")).find(
+    (candidate) => candidate === active || candidate.contains(active),
+  );
+  const anchorId = anchor?.dataset.viewAnchorId;
+  if (!anchor || !anchorId) return undefined;
+  return {
+    anchorId,
+    sourceIdentity: sourceIdentity(anchorId),
+    sourceIndex: sourceIndexFromDataset(anchor),
+    descendantPath: descendantPath(anchor, active),
+    element: active,
+  };
+}
+
+/** Capture the state that must survive a projected transcript replacement. */
+export function captureTranscriptView(
+  el: HTMLElement,
+  measure: (element: HTMLElement) => ScrollMetrics = readScrollMetrics,
+  measureAnchors: (element: HTMLElement) => ViewAnchorPosition[] = readAnchorPositions,
+): CapturedTranscriptView {
+  const metrics = measure(el);
+  const scrollable = Math.max(0, metrics.scrollHeight - metrics.clientHeight);
+  const firstVisible = topVisiblePosition(measureAnchors(el));
+  const focusMetadata = focusMetadataFor(el);
+  const captured: CapturedTranscriptView = {
+    anchorId: firstVisible?.id,
+    anchorOffset: firstVisible?.offset ?? 0,
+    normalizedOffset: scrollable > 0 ? metrics.scrollTop / scrollable : 0,
+    followingBottom: isAtBottom(metrics),
+    focusedEntryId: focusMetadata?.anchorId,
+  };
+  if (firstVisible) capturedAnchorMetadata.set(captured, captureTopAnchor(firstVisible));
+  if (focusMetadata) capturedFocusMetadata.set(captured, focusMetadata);
+  return captured;
+}
+
+function anchorFromCapture(
+  captured: CapturedTranscriptView,
+  candidates: readonly ViewAnchorPosition[],
+): ViewAnchor | undefined {
+  const metadata = capturedAnchorMetadata.get(captured);
+  if (metadata) return metadata;
+  const source = candidates.find((candidate) => candidate.id === captured.anchorId);
+  if (!source) return undefined;
+  return captureTopAnchor({ ...source, offset: captured.anchorOffset });
+}
+
+function focusCandidateMatches(candidate: ViewAnchorPosition, metadata: CapturedFocusMetadata): boolean {
+  if (candidate.id === metadata.anchorId) return true;
+  if (sourceIdentity(candidate.id) !== metadata.sourceIdentity) return false;
+  return metadata.sourceIndex === undefined || candidate.sourceIndex === metadata.sourceIndex;
+}
+
+function focusNodeMatches(candidate: HTMLElement, metadata: CapturedFocusMetadata): boolean {
+  if (candidate.dataset.viewAnchorId === metadata.anchorId) return true;
+  if (sourceIdentity(candidate.dataset.viewAnchorId ?? "") !== metadata.sourceIdentity) return false;
+  const sourceIndex = sourceIndexFromDataset(candidate);
+  return metadata.sourceIndex === undefined || sourceIndex === undefined || sourceIndex === metadata.sourceIndex;
+}
+
+function focusAnchor(anchor: HTMLElement, metadata: CapturedFocusMetadata): void {
+  if (metadata.element.isConnected && anchor.contains(metadata.element)) {
+    metadata.element.focus();
+    return;
+  }
+  const descendant = descendantAtPath(anchor, metadata.descendantPath);
+  if (descendant && isFocusableDescendant(descendant)) {
+    descendant.focus();
+    return;
+  }
+  // Production anchors are divs. Make only this programmatic fallback
+  // focusable; tab order remains unchanged because -1 is not tabbable.
+  anchor.tabIndex = -1;
+  anchor.focus();
+}
+
+type FocusRestoreResult = "not-focused" | "restored" | "waiting" | "missing";
+
+function focusCapturedEntry(
+  el: HTMLElement,
+  captured: CapturedTranscriptView,
+  candidates: readonly ViewAnchorPosition[],
+  listRef: RefObject<VirtualListHandle | null> | undefined,
+  pending: PendingTranscriptViewRestore,
+): FocusRestoreResult {
+  if (captured.focusedEntryId === undefined) return "not-focused";
+  const metadata =
+    capturedFocusMetadata.get(captured) ??
+    ({
+      anchorId: captured.focusedEntryId,
+      sourceIdentity: sourceIdentity(captured.focusedEntryId),
+      descendantPath: [],
+      element: el.ownerDocument.activeElement instanceof HTMLElement ? el.ownerDocument.activeElement : el,
+    } satisfies CapturedFocusMetadata);
+  const focused = Array.from(el.querySelectorAll<HTMLElement>("[data-view-anchor-id]")).find((candidate) =>
+    focusNodeMatches(candidate, metadata),
+  );
+  if (focused) {
+    focusAnchor(focused, metadata);
+    return "restored";
+  }
+
+  const logicalFocus = candidates.find((candidate) => focusCandidateMatches(candidate, metadata));
+  if (logicalFocus) {
+    if (!pending.focusScrollRequested && listRef?.current) {
+      pending.focusScrollRequested = true;
+      listRef.current.scrollToIndex(logicalFocus.index, { align: "start" });
+      return "waiting";
+    }
+    return pending.focusScrollRequested ? "waiting" : "missing";
+  }
+  return "missing";
+}
+
+export interface UseTranscriptViewRegistrationOptions {
+  enabled: boolean;
+  id: string;
+  layout?: string;
+  viewKey?: string;
+  listRef?: RefObject<VirtualListHandle | null>;
+  measure?: (el: HTMLElement) => ScrollMetrics;
+  measureAnchors?: (el: HTMLElement) => ViewAnchorPosition[];
+  anchorEntries?: readonly Omit<ViewAnchorPosition, "offset" | "height">[];
+  renderedRowCount?: number;
+  detailTriggerRef?: RefObject<HTMLElement | null>;
+  focusDetailTrigger?: () => void;
+  announce?: (summary: string) => void;
+}
+
+export interface UseTranscriptViewRegistrationResult {
+  restoreAfterMeasurement(): void;
+}
+
+interface PendingTranscriptViewRestore {
+  readonly captured: CapturedTranscriptView;
+  target?: RestoredViewAnchor;
+  scrollRequested: boolean;
+  anchorRestored: boolean;
+  focusScrollRequested: boolean;
+}
+
+function focusDetailForOptions(options: UseTranscriptViewRegistrationOptions): void {
+  if (options.focusDetailTrigger) {
+    options.focusDetailTrigger();
+    return;
+  }
+  options.detailTriggerRef?.current?.focus();
+}
+
+/**
+ * Registers the shared body with the transition registry without taking
+ * ownership of ordinary append/prepend scrolling. The body calls the result
+ * from VirtualList's measurement callback; the view-key layout effect covers
+ * hosts whose row measurement callback does not fire for a config commit.
+ */
+export function useTranscriptViewRegistration(
+  options: UseTranscriptViewRegistrationOptions,
+): UseTranscriptViewRegistrationResult {
+  const { enabled, id, layout, viewKey } = options;
+  const optionsRef = useRef(options);
+  optionsRef.current = options;
+  const pendingRef = useRef<PendingTranscriptViewRestore | null>(null);
+
+  const restoreAfterMeasurement = useCallback(() => {
+    const pending = pendingRef.current;
+    if (!pending) return;
+    const currentOptions = optionsRef.current;
+    const el = currentOptions.listRef?.current?.getScrollElement();
+    if (!el) return;
+
+    const measure = currentOptions.measure ?? readScrollMetrics;
+    const measureAnchors = currentOptions.measureAnchors ?? readAnchorPositions;
+    const measured = measureAnchors(el);
+    const candidates = currentOptions.anchorEntries?.map((entry) => ({ ...entry, offset: 0 })) ?? measured;
+    if (pending.captured.followingBottom) {
+      const count = currentOptions.renderedRowCount ?? 0;
+      if (count > 0) currentOptions.listRef?.current?.scrollToIndex(count - 1, { align: "end" });
+      const focusResult = focusCapturedEntry(el, pending.captured, candidates, currentOptions.listRef, pending);
+      if (focusResult === "waiting") return;
+      if (focusResult === "missing") focusDetailForOptions(currentOptions);
+      pendingRef.current = null;
+      return;
+    }
+
+    const anchor = anchorFromCapture(pending.captured, candidates);
+    if (!pending.anchorRestored) {
+      const pendingTargetStillExists =
+        pending.target === undefined || candidates.some((candidate) => candidate.id === pending.target?.id);
+      if (!pendingTargetStillExists) {
+        pending.target = undefined;
+        pending.scrollRequested = false;
+      }
+      const restored = pending.target ?? (anchor ? restoreTopAnchor(anchor, candidates) : undefined);
+      if (!restored) {
+        const metrics = measure(el);
+        const scrollable = Math.max(0, metrics.scrollHeight - metrics.clientHeight);
+        el.scrollTop = Math.max(0, Math.min(1, pending.captured.normalizedOffset)) * scrollable;
+        pending.anchorRestored = true;
+      } else {
+        const current = measured.find((position) => position.id === restored.id);
+        if (current) {
+          el.scrollTop += current.offset - restored.offset;
+          pending.anchorRestored = true;
+        } else if (!pending.scrollRequested) {
+          pending.target = restored;
+          pending.scrollRequested = true;
+          currentOptions.listRef?.current?.scrollToIndex(restored.index, { align: "start" });
+          return;
+        } else {
+          return;
+        }
+      }
+    }
+
+    const focusResult = focusCapturedEntry(el, pending.captured, candidates, currentOptions.listRef, pending);
+    if (focusResult === "waiting") return;
+    if (focusResult === "missing") focusDetailForOptions(currentOptions);
+    pendingRef.current = null;
+  }, []);
+
+  const capture = useCallback((): CapturedTranscriptView => {
+    const currentOptions = optionsRef.current;
+    const el = currentOptions.listRef?.current?.getScrollElement();
+    if (!el) {
+      return {
+        anchorOffset: 0,
+        normalizedOffset: 0,
+        followingBottom: false,
+      };
+    }
+    return captureTranscriptView(el, currentOptions.measure, currentOptions.measureAnchors);
+  }, []);
+
+  const restore = useCallback((captured: CapturedTranscriptView): void => {
+    pendingRef.current = {
+      captured,
+      scrollRequested: false,
+      anchorRestored: false,
+      focusScrollRequested: false,
+    };
+  }, []);
+
+  const focusDetailTrigger = useCallback(() => {
+    const currentOptions = optionsRef.current;
+    if (currentOptions.focusDetailTrigger) {
+      currentOptions.focusDetailTrigger();
+      return;
+    }
+    currentOptions.detailTriggerRef?.current?.focus();
+  }, []);
+
+  const announce = useCallback((summary: string) => {
+    optionsRef.current.announce?.(summary);
+  }, []);
+
+  useLayoutEffect(() => {
+    if (!enabled) return;
+    return registerTranscriptView({
+      id,
+      layout,
+      capture,
+      restore,
+      focusDetailTrigger,
+      announce,
+    });
+  }, [announce, capture, enabled, focusDetailTrigger, id, layout, restore]);
+
+  // biome-ignore lint/correctness/useExhaustiveDependencies: viewKey is deliberately trigger-only
+  useLayoutEffect(() => {
+    restoreAfterMeasurement();
+  }, [restoreAfterMeasurement, viewKey]);
+
+  return { restoreAfterMeasurement };
 }
 
 export interface UseTranscriptScrollResult {
@@ -224,6 +558,8 @@ export function useTranscriptScroll({
   viewKey = "everything",
   measureAnchors = readAnchorPositions,
   anchorEntries,
+  renderedRowCount: renderedRowCountInput,
+  sourceTurnRowIndexes,
 }: UseTranscriptScrollOptions): UseTranscriptScrollResult {
   const [pillCount, setPillCount] = useState(0);
   // The first failed turn's index, while the reader hasn't seen it yet
@@ -276,16 +612,18 @@ export function useTranscriptScroll({
   // failedTurnCount's own comment for the trigger half of that fix). IDs
   // are also prepend-safe for free: unlike errorAnchorIndex (a position,
   // shifted explicitly below), a turn's identity doesn't change when
-  // older turns are prepended in front of it.
+  // older turns are prepended in front of it. The active target's row index is
+  // resolved from its source turn id on every transformed-row update.
   const resolvedFailedTurnIdsRef = useRef<Set<string>>(new Set());
   // Latest-ref mirror of errorAnchorIndex (state) for the same reason
-  // itemCountRef/turnsLengthRef/modelRef exist: handleScroll is a
+  // itemCountRef/renderedRowCountRef/modelRef exist: handleScroll is a
   // long-lived closure (attached once per mount/hasContent transition, not
   // every render - see that effect's own comment) and the content-changed
   // effect's dependency array deliberately excludes it, so both must read
   // the CURRENT value through a ref rather than close over a stale one.
   const errorAnchorIndexRef = useRef<number | null>(null);
   errorAnchorIndexRef.current = errorAnchorIndex;
+  const errorAnchorTurnIdRef = useRef<string | undefined>(undefined);
 
   // "Latest" ref so the scroll listener - attached far less often than every
   // render - never invokes a stale loadOlder closure. Necessary specifically
@@ -297,6 +635,7 @@ export function useTranscriptScroll({
 
   const itemCount = totalItemCount(model);
   const turnsLength = model?.turns.length ?? 0;
+  const renderedRowCount = renderedRowCountInput ?? turnsLength;
   const firstTurnId = model?.turns[0]?.id;
   // Content-changed effect trigger (see that effect's own dependency-array
   // comment for why itemCount/firstTurnId alone can't reach a bare-stamp
@@ -329,8 +668,10 @@ export function useTranscriptScroll({
   // re-created on every render (see the effects below).
   const itemCountRef = useRef(itemCount);
   itemCountRef.current = itemCount;
-  const turnsLengthRef = useRef(turnsLength);
-  turnsLengthRef.current = turnsLength;
+  const renderedRowCountRef = useRef(renderedRowCount);
+  renderedRowCountRef.current = renderedRowCount;
+  const sourceTurnRowIndexesRef = useRef(sourceTurnRowIndexes);
+  sourceTurnRowIndexesRef.current = sourceTurnRowIndexes;
   // Latest ref for model itself: the content-changed effect below needs the
   // full turns array (to size a detected prepend), but must NOT re-run on
   // every streaming delta just because `model` is a fresh object reference -
@@ -340,6 +681,11 @@ export function useTranscriptScroll({
   // constraint in spirit even though this hook's own work is cheap either way.
   const modelRef = useRef(model);
   modelRef.current = model;
+
+  const rowIndexForTurn = useCallback((turnId: string, sourceIndex: number): number => {
+    const mapped = sourceTurnRowIndexesRef.current?.get(turnId) ?? sourceIndex;
+    return Math.max(0, Math.min(mapped, Math.max(0, renderedRowCountRef.current - 1)));
+  }, []);
 
   const clearPill = useCallback(() => {
     setPillCount(0);
@@ -354,6 +700,7 @@ export function useTranscriptScroll({
     // the cleared value without waiting for the next render.
     setErrorAnchorIndex(null);
     errorAnchorIndexRef.current = null;
+    errorAnchorTurnIdRef.current = undefined;
   }, []);
 
   const jumpToBottom = useCallback(() => {
@@ -366,7 +713,7 @@ export function useTranscriptScroll({
       listRef.current?.scrollToIndex(anchor, { align: "start" });
       wasAtBottomRef.current = false;
     } else {
-      const count = turnsLengthRef.current;
+      const count = renderedRowCountRef.current;
       if (count > 0) listRef.current?.scrollToIndex(count - 1, { align: "end" });
       wasAtBottomRef.current = true;
     }
@@ -455,6 +802,7 @@ export function useTranscriptScroll({
       resolvedFailedTurnIdsRef.current = new Set();
       setErrorAnchorIndex(null);
       errorAnchorIndexRef.current = null;
+      errorAnchorTurnIdRef.current = undefined;
       setPillCount(0);
     }
     prevHasContentRef.current = hasContent;
@@ -468,7 +816,7 @@ export function useTranscriptScroll({
       // replaced the earlier per-ref restore of a stored scroll offset — the
       // whole persistence (threads.ts scrollPositions + the debounced writer
       // that lived below) was removed with it, not just bypassed.
-      const count = turnsLengthRef.current;
+      const count = renderedRowCountRef.current;
       if (count > 0) listRef.current?.scrollToIndex(count - 1, { align: "end" });
       const m = measure(el);
       wasAtBottomRef.current = isAtBottom(m);
@@ -507,6 +855,7 @@ export function useTranscriptScroll({
       if (anchor !== null) {
         if (range && anchor >= range.startIndex && anchor <= range.endIndex) {
           setErrorAnchorIndex(null);
+          errorAnchorTurnIdRef.current = undefined;
         }
         // Update arrow direction: point up if anchor is above the visible
         // range, down otherwise. When no range is yet available (before
@@ -592,18 +941,19 @@ export function useTranscriptScroll({
         baselineItemCountRef.current = itemCount;
         resolvedFailedTurnIdsRef.current = new Set();
         setErrorAnchorIndex(null);
+        errorAnchorTurnIdRef.current = undefined;
       } else {
         const prependedCount = currentModel.turns.slice(0, prevIndex).reduce((sum, t) => sum + t.items.length, 0);
         // Prepended history is backfill, not "new" - advance the baseline by
         // exactly what loadOlder added so the pill count stays unaffected.
         baselineItemCountRef.current += prependedCount;
-        // prevIndex IS the count of turns just prepended (it's where the
-        // old first turn now sits) - an active anchor's INDEX shifts by
-        // that same amount, or it'd silently point at the wrong turn from
-        // here on (resolvedFailedTurnIdsRef needs no such shift - it's
-        // keyed by turn ID, not position).
-        if (errorAnchorIndexRef.current !== null) {
-          setErrorAnchorIndex(errorAnchorIndexRef.current + prevIndex);
+        // The active error target is keyed by source turn id. Re-resolve its
+        // transformed row below instead of adding the source prepend count;
+        // several source turns may occupy one rendered row.
+        const activeTurnId = errorAnchorTurnIdRef.current;
+        if (activeTurnId !== undefined) {
+          const activeSourceIndex = currentModel.turns.findIndex((turn) => turn.id === activeTurnId);
+          if (activeSourceIndex >= 0) setErrorAnchorIndex(rowIndexForTurn(activeTurnId, activeSourceIndex));
         }
         // Prepended (historical) turns are backfill, not new - same
         // "backfill, not new" reasoning as baselineItemCountRef just above,
@@ -645,7 +995,8 @@ export function useTranscriptScroll({
           );
           if (firstUnresolved) {
             resolvedFailedTurnIdsRef.current.add(firstUnresolved.id);
-            setErrorAnchorIndex(currentModel.turns.indexOf(firstUnresolved));
+            errorAnchorTurnIdRef.current = firstUnresolved.id;
+            setErrorAnchorIndex(rowIndexForTurn(firstUnresolved.id, currentModel.turns.indexOf(firstUnresolved)));
           }
         }
       }
@@ -653,7 +1004,7 @@ export function useTranscriptScroll({
       const unseen = itemCount - baselineItemCountRef.current;
       if (unseen > 0) {
         if (wasAtBottomRef.current) {
-          const count = turnsLengthRef.current;
+          const count = renderedRowCountRef.current;
           if (count > 0) listRef.current?.scrollToIndex(count - 1, { align: "end" });
           wasAtBottomRef.current = true;
           baselineItemCountRef.current = itemCount;
@@ -671,7 +1022,21 @@ export function useTranscriptScroll({
     // failure can flip with NEITHER itemCount NOR firstTurnId changing (the
     // bare-stamp settle above), so without it this whole failed-turn branch
     // would silently never run for that real wire shape.
-  }, [itemCount, firstTurnId, failedTurns, listRef, measure]);
+  }, [itemCount, firstTurnId, failedTurns, listRef, measure, renderedRowCount, sourceTurnRowIndexes, rowIndexForTurn]);
+
+  // A transformed row set can change without changing the source turn/item
+  // shape (for example, an Intent run coalescing three turns into one row).
+  // Keep an active failure target coupled to its source turn id, not its old
+  // source-turn index.
+  // biome-ignore lint/correctness/useExhaustiveDependencies: row count/map are deliberate trigger dependencies for ref-backed target remapping
+  useLayoutEffect(() => {
+    const turnId = errorAnchorTurnIdRef.current;
+    if (turnId === undefined || modelRef.current === undefined) return;
+    const sourceIndex = modelRef.current.turns.findIndex((turn) => turn.id === turnId);
+    if (sourceIndex < 0) return;
+    const rowIndex = rowIndexForTurn(turnId, sourceIndex);
+    if (errorAnchorIndexRef.current !== rowIndex) setErrorAnchorIndex(rowIndex);
+  }, [renderedRowCount, sourceTurnRowIndexes, rowIndexForTurn]);
 
   return {
     pillCount,

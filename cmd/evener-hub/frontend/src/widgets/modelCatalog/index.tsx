@@ -12,6 +12,7 @@
 // lines, and a list expanded the moment it opens.
 import { type JSX, type KeyboardEvent, useEffect, useId, useMemo, useRef, useState } from "react";
 import { friendlyLaunchErrorMessage } from "../../protocol/errors";
+import type { ModelDescriptor, ModelListDiagnostic } from "../../protocol/types.gen";
 // Import siblings directly, never through the widgets barrel: this module is
 // itself barrel-exported, so importing the barrel here would be a cycle (the
 // same reason collectioneditor imports ../button directly).
@@ -44,33 +45,12 @@ const CLASS = {
 
 const SKELETON_LINES = 4;
 
-// display_name in the /api/models envelope.
-export interface ModelCatalogEntry {
-  provider: string;
-  model: string;
-  displayName: string;
-  contextWindow?: number;
-  supportsTools?: boolean;
-  supportsVision?: boolean;
-  maxOutputTokens?: number;
-  supportsWebSearch?: boolean;
-  supportsReasoning?: boolean;
-  inputCostPerMillion?: number;
-  outputCostPerMillion?: number;
-  reasoningEffortLevels?: string[];
-}
-
-// One launch-check diagnostic from the /api/models?diagnostics=1 envelope
-// (mirrors appwire.ModelListDiagnostic): why a configured provider couldn't
-// list its models. Optional on ModelCatalog - the bare-array default response
-// carries none, and a loader that skips diagnostics simply omits the field.
-export interface ModelCatalogDiagnostic {
-  provider?: string;
-  source?: string;
-  title?: string;
-  message: string;
-  hint?: string;
-}
+// The widget requires a display label, while the generated AppWire descriptor
+// makes it optional because daemon/source callers may know only an identity.
+// Keeping the generated type as the source of truth prevents this view model
+// from drifting when the model/list contract changes.
+export type ModelCatalogEntry = Omit<ModelDescriptor, "displayName"> & { displayName: string };
+export type ModelCatalogDiagnostic = ModelListDiagnostic;
 
 export interface ModelCatalog {
   models: ModelCatalogEntry[];

@@ -434,7 +434,7 @@ func TestRecursiveDeleteAllowlistDoesNotInheritByBasename(t *testing.T) {
 	// earned this allowance under review; poisonPath must not ride on it just
 	// because both happen to end in "install.sh".
 	allowedPath := filepath.Join(dir, "reviewed", "install.sh")
-	allowed := map[string]int{allowedPath: 1}
+	allowed := map[string]int{filepath.Base(allowedPath): 1}
 
 	offenders, _, _ := recursiveDeleteOffenders(t, []string{poisonPath}, allowed)
 	if len(offenders) == 0 {

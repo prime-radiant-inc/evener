@@ -123,13 +123,14 @@ const CAPABILITIES: ThreadCapabilities = {
   forkFromTurn: true,
   shutdown: true,
   changeModel: true,
+  changeVisionModel: true,
   queue: true,
   goal: true,
   rename: true,
 };
 
 type TestThreadOverrides = Omit<Partial<Thread>, "evener"> & {
-  evener?: Omit<Thread["evener"], "queue"> & { queue: Partial<QueueState> };
+  evener?: Partial<Omit<Thread["evener"], "queue">> & { queue?: Partial<QueueState> };
 };
 
 function testThread(overrides: TestThreadOverrides = {}): Thread {
@@ -160,6 +161,77 @@ function testHydrate(overrides: TestThreadOverrides = {}): ThreadModel {
   const thread = testThread(overrides);
   return hydrateThread({ thread }, thread.evener.ref, 1000);
 }
+
+test("hydrateThread carries the snapshot plugin diagnostics into ThreadModel", () => {
+  const model = testHydrate({
+    evener: {
+      ref: "ref_t",
+      capabilities: CAPABILITIES,
+      queue: {},
+      diagnostics: {
+        plugins: [
+          { name: "enabled", skillCount: 1, agentCount: 0, hookCount: 0, mcpCount: 0 },
+          { name: "another", skillCount: 0, agentCount: 1, hookCount: 0, mcpCount: 0 },
+        ],
+      },
+    },
+  });
+
+  expect(model.diagnostics?.plugins?.map((plugin) => plugin.name)).toEqual(["enabled", "another"]);
+});
+
+test("hydrateThread preserves an explicit empty plugin inventory", () => {
+  const model = testHydrate({
+    evener: {
+      ref: "ref_t",
+      capabilities: CAPABILITIES,
+      queue: {},
+      diagnostics: { plugins: [] },
+    },
+  });
+
+  expect(model.diagnostics?.plugins).toEqual([]);
+});
+
+test("hydrateThread leaves diagnostics unavailable when the wire omits them", () => {
+  expect(testHydrate().diagnostics).toBeUndefined();
+});
+
+test("hydrateThread retains canonical skill descriptors", () => {
+  const model = testHydrate({
+    evener: { diagnostics: { skills: [{ name: "plugin:simplify", description: "rewrite" }] } },
+  });
+  expect(model.skills).toEqual([{ name: "plugin:simplify", description: "rewrite" }]);
+});
+
+test("hydrateThread defaults missing skills and copies wire descriptors", () => {
+  expect(testHydrate().skills).toEqual([]);
+
+  const skills = [{ name: "plugin:simplify", description: "rewrite" }];
+  const model = testHydrate({ evener: { diagnostics: { skills } } });
+  expect(model.skills).not.toBe(skills);
+  expect(model.skills?.[0]).not.toBe(skills[0]);
+});
+
+test("applyNotification preserves skills while applying a status update", () => {
+  const model = testHydrate({
+    evener: { diagnostics: { skills: [{ name: "plugin:simplify", description: "rewrite" }] } },
+  });
+  const notification: AnyNotification = {
+    method: "thread/status/changed",
+    params: {
+      threadId: model.threadId,
+      ref: model.ref,
+      status: { type: "active" },
+      capabilities: CAPABILITIES,
+    },
+  };
+
+  const next = applyNotification(model, notification, 2000);
+
+  expect(next).not.toBe(model);
+  expect(next.skills).toEqual([{ name: "plugin:simplify", description: "rewrite" }]);
+});
 
 function testEscalation(overrides: Partial<SandboxEscalationRequested> = {}): SandboxEscalationRequested {
   return {
@@ -2089,6 +2161,34 @@ test("thread/reasoning-effort/changed updates reasoningEffort", () => {
     2000,
   );
   expect(model.reasoningEffort).toBe("high");
+});
+
+test("hydrateThread carries visionModel and defaults an absent wire value", () => {
+  expect(testHydrate().visionModel).toBe("");
+  expect(
+    testHydrate({
+      evener: {
+        ref: "ref_t",
+        capabilities: CAPABILITIES,
+        queue: { revision: 0 },
+        visionModel: "anthropic/claude-haiku-4-5",
+      },
+    }).visionModel,
+  ).toBe("anthropic/claude-haiku-4-5");
+});
+
+test("thread/vision-model/changed updates visionModel", () => {
+  let model = testHydrate();
+  expect(model.visionModel).toBe("");
+  model = applyNotification(
+    model,
+    {
+      method: "thread/vision-model/changed",
+      params: { threadId: "thr_t", ref: "ref_t", visionModel: "anthropic/claude-haiku-4-5" },
+    },
+    2000,
+  );
+  expect(model.visionModel).toBe("anthropic/claude-haiku-4-5");
 });
 
 // Wave 5 T1: thread/model/changed's real payload (appwire/types.go's

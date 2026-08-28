@@ -11,6 +11,7 @@ import (
 	"strings"
 	"text/tabwriter"
 
+	"primeradiant.com/evener/cmdutil"
 	"primeradiant.com/evener/internal/plugins"
 )
 
@@ -31,6 +32,10 @@ type pluginManager interface {
 	Gc() ([]string, error)
 	Doctor() ([]plugins.DoctorFinding, error)
 	UpdateAutoUpgrade(context.Context) ([]plugins.UpgradedPlugin, error)
+}
+
+type pluginLaunchResolver interface {
+	ResolveForLaunch([]string, *[]string) (plugins.LaunchPluginResolution, error)
 }
 
 var newPluginManager = func() pluginManager { return plugins.NewManager("") }
@@ -303,6 +308,46 @@ func renderPluginList(w io.Writer, items []plugins.ListItem, asJSON bool) error 
 	return nil
 }
 
+func renderEffectivePluginList(w io.Writer, resolution plugins.LaunchPluginResolution, asJSON bool) error {
+	if asJSON {
+		result := effectivePluginListJSON{
+			Plugins:     make([]effectivePluginJSON, 0, len(resolution.Candidates)),
+			Diagnostics: resolution.Diagnostics,
+		}
+		for _, candidate := range resolution.Candidates {
+			result.Plugins = append(result.Plugins, effectivePluginJSON{
+				Name: candidate.Name, Version: candidate.Version, Description: candidate.Description,
+				Source: candidate.Source, Marketplace: candidate.Marketplace, Path: candidate.Path,
+				SkillCount: candidate.SkillCount, AgentCount: candidate.AgentCount,
+				CommandCount: candidate.CommandCount, HookCount: candidate.HookCount, MCPCount: candidate.MCPCount,
+			})
+		}
+		return json.NewEncoder(w).Encode(result)
+	}
+
+	if len(resolution.Candidates) == 0 {
+		_, _ = fmt.Fprintln(w, "No effective plugins.")
+		renderLaunchPluginDiagnostics(w, resolution.Diagnostics)
+		return nil
+	}
+	tw := tabwriter.NewWriter(w, 0, 0, 2, ' ', 0)
+	_, _ = fmt.Fprintln(tw, "PLUGIN\tVERSION\tSOURCE\tSKILLS\tAGENTS\tCOMMANDS\tHOOKS\tMCP")
+	for _, candidate := range resolution.Candidates {
+		source := string(candidate.Source)
+		if candidate.Marketplace != "" {
+			source += ":" + candidate.Marketplace
+		}
+		if candidate.Path != "" {
+			source += ":" + candidate.Path
+		}
+		_, _ = fmt.Fprintf(tw, "%s\t%s\t%s\t%d\t%d\t%d\t%d\t%d\n", candidate.Name, candidate.Version, source,
+			candidate.SkillCount, candidate.AgentCount, candidate.CommandCount, candidate.HookCount, candidate.MCPCount)
+	}
+	_ = tw.Flush()
+	renderLaunchPluginDiagnostics(w, resolution.Diagnostics)
+	return nil
+}
+
 func runPluginLifecycle(verb string, args []string, _ io.Reader, stdout, stderr io.Writer) error {
 	ctx := context.Background()
 	m := newPluginManager()
@@ -312,7 +357,21 @@ func runPluginLifecycle(verb string, args []string, _ io.Reader, stdout, stderr 
 		fs := flag.NewFlagSet("list", flag.ContinueOnError)
 		fs.SetOutput(stderr)
 		asJSON := fs.Bool("json", false, "emit JSON")
+		effective := fs.Bool("effective", false, "list the effective launch plugin inventory")
+		var pluginDirs cmdutil.StringSliceFlag
+		fs.Var(&pluginDirs, "plugin-dir", "plugin directory (repeatable)")
 		if err := fs.Parse(args); err != nil {
+			return err
+		}
+		if *effective {
+			resolver, ok := m.(pluginLaunchResolver)
+			if !ok {
+				return errors.New("plugin manager does not support effective listing")
+			}
+			resolution, err := resolver.ResolveForLaunch([]string(pluginDirs), nil)
+			if renderErr := renderEffectivePluginList(stdout, resolution, *asJSON); renderErr != nil {
+				return renderErr
+			}
 			return err
 		}
 		items, err := m.List()

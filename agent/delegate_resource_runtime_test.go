@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -60,6 +61,23 @@ func TestDelegateResourceRuntime_RunningSendPersistsBeforeAck(t *testing.T) {
 	}
 }
 
+func TestDelegateResourceRuntime_RestoresDescriptorPluginDirs(t *testing.T) {
+	pluginDir := makePluginDir(t, "delegate-selected")
+	fixture := newColdStableDelegateFixtureConfigured(t, "", func(descriptor *delegatestore.Descriptor) {
+		descriptor.Config.PluginDirs = []string{pluginDir}
+	})
+	root, err := restoreDelegateResourceBootstrapSession(fixture.client, fixture.profile, fixture.workspace, fixture.meta, fixture.stateDir)
+	if err != nil {
+		t.Fatalf("restore root: %v", err)
+	}
+	defer root.Close()
+	aggregate := delegateAggregateSnapshot(t, root.delegateController, fixture.delegateID)
+	got := subagentConfigFromFrozenDescriptor(aggregate.Descriptor.Config, SessionConfig{PluginDirs: []string{"/parent/plugin"}})
+	if !slices.Equal(got.PluginDirs, []string{pluginDir}) {
+		t.Fatalf("restored delegate PluginDirs = %v, want [%q]", got.PluginDirs, pluginDir)
+	}
+}
+
 func TestDelegateResourceRuntime_RunningSendDoesNotStartSuccessor(t *testing.T) {
 	c, _ := newDelegateControllerTestHarness(t, 1, 1)
 	seedDelegateControllerRunning(t, c, "dlg_target", "")
@@ -71,6 +89,57 @@ func TestDelegateResourceRuntime_RunningSendDoesNotStartSuccessor(t *testing.T) 
 	}
 	if generation := c.durable["dlg_target"].Generation; generation != 1 {
 		t.Fatalf("running send generation = %d, want 1", generation)
+	}
+}
+
+func TestDelegateResourceRuntime_PositiveWaitCannotSteerAfterIdleToRunningTransition(t *testing.T) {
+	c, _ := newDelegateControllerTestHarness(t, 1, 1)
+	delegateID := "dlg_target"
+	seedDelegateControllerIdle(t, c, delegateID, "")
+	root := &Session{delegateController: c, delegateRootSessionID: "root-session"}
+	var liveRuntime *Session
+	var interleavingLease delegateLease
+	root.cfg.testOnly.delegateSendBeforePositiveWaitAdmission = func() {
+		reservation, reserveErr := root.delegateController.ReserveStart(rootDelegateActor("root-session"), delegateID)
+		if reserveErr != nil {
+			t.Fatalf("interleaving ReserveStart: %v", reserveErr)
+		}
+		started, commitErr := root.delegateController.CommitStart(reservation)
+		if commitErr != nil {
+			t.Fatalf("interleaving CommitStart: %v", commitErr)
+		}
+		interleavingLease = started.lease
+		liveRuntime = attachDelegateSteerRuntime(t, root.delegateController, delegateID, afero.NewMemMapFs())
+		if started.lease.generation != 1 {
+			t.Fatalf("interleaving generation = %d, want 1", started.lease.generation)
+		}
+	}
+
+	outcome := (delegateRuntime{owner: root}).send(context.Background(), delegateID, "must not steer", 1000)
+	if outcome.result.Err == nil || !errors.Is(outcome.result.Err, errDelegateTargetBusy) {
+		t.Fatalf("positive-wait interleaving outcome = %#v, want busy refusal", outcome.result)
+	}
+	if outcome.result.Action == "steered" {
+		t.Fatal("positive wait durably steered through the idle-to-running transition")
+	}
+	c = root.delegateController
+	c.mu.Lock()
+	aggregate := c.durable[delegateID]
+	live := c.live[delegateID]
+	pendingSteers := 0
+	if live != nil {
+		pendingSteers = len(live.pendingSteers)
+	}
+	steeringClaims := len(c.steeringClaims)
+	c.mu.Unlock()
+	if aggregate == nil || aggregate.Phase != delegatestore.PhaseRunning || steeringClaims != 0 || pendingSteers != 0 {
+		t.Fatalf("interleaving state = aggregate:%#v steeringClaims:%d pendingSteers:%d", aggregate, steeringClaims, pendingSteers)
+	}
+	if liveRuntime == nil {
+		t.Fatal("interleaving did not install live runtime")
+	}
+	if _, err := c.FinishGeneration(interleavingLease, delegateFinish{}); err != nil {
+		t.Fatalf("finish interleaving generation: %v", err)
 	}
 }
 
@@ -1037,6 +1106,10 @@ func TestDelegateResourceRuntime_GenericStopUsesCanonicalFinish(t *testing.T) {
 	pluginDir := writeStableOnceBlockingStopPlugin(t, marker)
 	fixture := newColdStableDelegateFixtureConfigured(t, "", func(descriptor *delegatestore.Descriptor) {
 		descriptor.Config.PluginDirs = []string{pluginDir}
+		// The Stop hook intentionally writes a marker outside private scratch.
+		// Declare that mutating fixture scope instead of weakening the read-only
+		// role floor for a hook side effect.
+		descriptor.ToolNameCeiling = append(descriptor.ToolNameCeiling, "write_file")
 	})
 	fixture.adapter.steps = []func(llm.Request) llm.Response{
 		func(llm.Request) llm.Response { return finalResponse("before generic Stop continuation") },
@@ -2108,6 +2181,43 @@ func TestDelegateResourceRuntime_ColdIdleUsesCommittedConfigTemplatesAndToolCeil
 	}
 	if got := len(fixture.adapter.Requests()); got != 0 {
 		t.Fatalf("provider requests during cold construction = %d", got)
+	}
+}
+
+func TestDelegateResourceRuntime_ColdIdleInheritsLiveLifetimeContext(t *testing.T) {
+	fixture := newColdStableDelegateFixture(t, "")
+	root, err := restoreDelegateResourceBootstrapSession(fixture.client, fixture.profile, fixture.workspace, fixture.meta, fixture.stateDir)
+	if err != nil {
+		t.Fatalf("restore root: %v", err)
+	}
+	defer root.Close()
+	owner, cancelOwner := context.WithCancel(context.Background())
+	root.cfg.LifetimeContext = owner
+	reservation, err := root.delegateController.ReserveStart(rootDelegateActor(root.id), fixture.delegateID)
+	if err != nil {
+		t.Fatalf("ReserveStart: %v", err)
+	}
+	started, err := root.delegateController.CommitStart(reservation)
+	if err != nil {
+		t.Fatalf("CommitStart: %v", err)
+	}
+	defer func() {
+		_, _ = root.delegateController.FailCommittedRestart(started.lease, delegatePermanentStartFailure(errors.New("test complete"), "construction_failed"))
+	}()
+	sub, restored, err := (delegateRuntime{owner: root}).restoreIdle(started)
+	if err != nil {
+		t.Fatalf("restoreIdle: %v", err)
+	}
+	if !restored {
+		t.Fatal("cold idle delegate was reported retained")
+	}
+	defer sub.sess.discardRestoredCandidate()
+
+	cancelOwner()
+	select {
+	case <-sub.sess.sessionCtx.Done():
+	default:
+		t.Fatal("restored stable delegate outlived the live parent lifetime context")
 	}
 }
 

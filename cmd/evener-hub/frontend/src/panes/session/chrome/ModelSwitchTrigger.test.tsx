@@ -42,6 +42,13 @@ test("the label is the visible text and the spoken name also names the action", 
   );
 });
 
+test("an action label overrides only the visually hidden accessible suffix", () => {
+  renderTrigger({ actionLabel: "change vision model" });
+  expect(screen.getByRole("button", { name: "anthropic/claude-sonnet-4-5 — change vision model" })).toBe(
+    screen.getByTestId("trigger"),
+  );
+});
+
 // The whitespace text node between the chevron and the screen-reader suffix is
 // load-bearing: each child's text is trimmed before the accessible name is
 // concatenated, so without it the name runs together. Asserted as the rendered

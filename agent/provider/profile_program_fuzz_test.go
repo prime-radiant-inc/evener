@@ -222,8 +222,9 @@ func assertProviderProfileDecorators(t *testing.T, profile *Profile, next string
 	if got := live.ReasoningEffortLevels(); !reflect.DeepEqual(got, wantLiveEfforts) {
 		t.Fatalf("WithLiveModelInfo effort levels = %v, want %v", got, wantLiveEfforts)
 	}
-	if got := providerProgramTaskListEfforts(live.ToolDefinitions()); !reflect.DeepEqual(got, wantLiveEfforts) {
-		t.Fatalf("WithLiveModelInfo task_list effort enum = %v, want %v", got, wantLiveEfforts)
+	wantLiveTaskListEfforts := append(append([]string(nil), wantLiveEfforts...), "inherit")
+	if got := providerProgramTaskListEfforts(live.ToolDefinitions()); !reflect.DeepEqual(got, wantLiveTaskListEfforts) {
+		t.Fatalf("WithLiveModelInfo task_list effort enum = %v, want %v", got, wantLiveTaskListEfforts)
 	}
 	if profile.ContextWindowSize() != baseWindow || profile.SupportsWebSearch() != baseWebSearch || !reflect.DeepEqual(profile.ReasoningEffortLevels(), baseEfforts) || !reflect.DeepEqual(providerProgramTaskListEfforts(profile.ToolDefinitions()), baseTaskListEfforts) {
 		t.Fatal("WithLiveModelInfo mutated its base profile")

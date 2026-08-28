@@ -105,6 +105,7 @@ const ALL_TRUE_CAPS: ThreadCapabilities = {
   forkFromTurn: true,
   shutdown: true,
   changeModel: true,
+  changeVisionModel: true,
   queue: true,
   goal: true,
   rename: true,
@@ -2131,7 +2132,7 @@ describe("ConversationService", () => {
 
   // R5: Before ANY ref/capability state write in open/readProjection/refresh,
   // extract and runtime-validate response.thread.evener.capabilities into a
-  // complete plain local ThreadCapabilities copy. All 11 generated fields must
+  // complete plain local ThreadCapabilities copy. All 12 generated fields must
   // be booleans; allow future extra keys but never retain the response object
   // or getters. Null/missing/nonobject/wrong-field/throwing-getter must reject
   // before commit and leave the pair null.
@@ -2300,6 +2301,7 @@ describe("ConversationService", () => {
         forkFromTurn: true,
         shutdown: true,
         changeModel: true,
+        changeVisionModel: true,
         queue: true,
         goal: true,
         rename: true,
@@ -2367,6 +2369,7 @@ describe("ConversationService", () => {
         forkFromTurn: true,
         shutdown: true,
         changeModel: true,
+        changeVisionModel: true,
         queue: true,
         goal: true,
         get rename() {
@@ -2487,6 +2490,7 @@ describe("ConversationService", () => {
         forkFromTurn: true,
         shutdown: true,
         changeModel: true,
+        changeVisionModel: true,
         queue: true,
         goal: true,
         rename: true,

@@ -14,12 +14,12 @@ import type { ThreadModel } from "../../protocol/model";
 import type { CommandDescriptor, ThreadCapabilities } from "../../protocol/types.gen";
 import { useCommandCatalog } from "../../stores/commandCatalog";
 import { connectionStore } from "../../stores/connection";
+import { selectNeedsYouRows } from "../../stores/navigation/selectors";
+import { navigationStore } from "../../stores/navigation/store";
 import { prefsStore } from "../../stores/prefs";
 import { threadsStore } from "../../stores/threads";
-import { treeStore } from "../../stores/tree";
 import type { ToastKind } from "../../widgets";
-import { fetchModelCatalog } from "../../widgets/modelCatalog/catalogClient";
-import { mergeScopedCatalog } from "../../widgets/modelCatalog/scopedCatalog";
+import { modelListToCatalog } from "../../widgets/modelCatalog/catalogClient";
 import { needsYouRefs, nextNeedsYouRef, openNeedsYouSession } from "../rail/needsYouCycle";
 import { revealSessionInRail } from "../rail/railController";
 import { navigate } from "../routing";
@@ -324,7 +324,7 @@ export function buildCommands(): Command[] {
       keywords: ["needs you", "attention", "next"],
       scope: "global",
       run: (ctx) => {
-        const next = nextNeedsYouRef(needsYouRefs(treeStore.getState().tree), ctx.sessionRef);
+        const next = nextNeedsYouRef(needsYouRefs(selectNeedsYouRows(navigationStore.getState())), ctx.sessionRef);
         if (next !== null) openNeedsYouSession(next);
       },
     },
@@ -417,23 +417,13 @@ export function buildCommands(): Command[] {
       args: {
         kind: "enum",
         placeholder: "choose a model…",
-        // The launchable SET still comes from model/list (session-scoped -
-        // what's actually valid to switch THIS session to), enriched with the
-        // unscoped rich /api/models catalog's display names via
-        // mergeScopedCatalog - the SAME merge ModelSwitch.tsx's own
-        // mid-session picker uses (chrome/ModelSwitch.tsx's openPicker). A
-        // failed enrichment fetch degrades to label-only entries
-        // (mergeScopedCatalog's own null-enrichment fallback), never a load
-        // failure - the scoped list alone is still a usable enum.
+        // The launchable SET and metadata come from the session-cached
+        // model/list response, which is the same catalog ModelSwitch uses.
         source: async () => {
-          const [scoped, enrichment] = await Promise.all([
-            threadsStore.getState().listModels(),
-            fetchModelCatalog().catch(() => null),
-          ]);
-          const catalog = mergeScopedCatalog(scoped.data, enrichment);
+          const catalog = modelListToCatalog(await threadsStore.getState().listModels());
           return catalog.models.map((m) => ({
             id: `${m.provider}/${m.model}`,
-            label: m.displayName || m.model,
+            label: m.displayName,
             hint: m.provider,
           }));
         },
@@ -472,8 +462,8 @@ export function buildCommands(): Command[] {
         kind: "enum",
         placeholder: "choose effort…",
         // Snapshot-based (the focused model's own reasoningEffortLevels /
-        // supportsReasoning), NOT /api/models - the live surface shouldn't
-        // need it (floor §2.5). A non-reasoning model yields ZERO options, not
+        // supportsReasoning), not a separate catalog request - the live
+        // surface shouldn't need it (floor §2.5). A non-reasoning model yields ZERO options, not
         // just "(default)". "none" is omitted from a non-empty ladder: it
         // normalizes to "" (same as default), so it isn't a distinct option.
         source: (ctx) => {
@@ -701,6 +691,22 @@ export function slashCommandInvocation(command: Pick<CommandDescriptor, "name" |
   return command.source === "plugin" && command.pluginName
     ? `/${command.pluginName}:${command.name}`
     : `/${command.name}`;
+}
+
+// The command catalog is global, but plugin commands are only valid in a
+// session that loaded their plugin. Keep this filter at the palette boundary:
+// the store remains the complete catalog for other consumers, and the
+// no-session state deliberately keeps its global view.
+export function visibleCatalogCommands(
+  commands: CommandDescriptor[],
+  activePluginNames: ReadonlySet<string> | null | undefined,
+): CommandDescriptor[] {
+  if (activePluginNames === undefined) return commands;
+  return commands.filter(
+    (command) =>
+      command.source !== "plugin" ||
+      (activePluginNames !== null && command.pluginName !== undefined && activePluginNames.has(command.pluginName)),
+  );
 }
 
 function catalogCommands(catalog: CommandDescriptor[]): Command[] {

@@ -31,9 +31,10 @@ type LiveEntry struct {
 	RunningSubagentIDs []string // in-process children reported by this daemon; not independently routable
 	// RunningSubagentStates carries each running child's own projected status
 	// ("active", "idle", ...) when the daemon reports it. A listed child with
-	// no entry has an unknown state (old daemon), NOT a settled one — callers
-	// must keep their previous fallback for that case. Keyed by child session
-	// ID; a defensive copy rides every List/Find like the IDs slice.
+	// no entry has an unknown state (old daemon) — callers must NOT treat
+	// liveness as activity, and fold a no-state child to idle rather than
+	// active. Keyed by child session ID; a defensive copy rides every
+	// List/Find like the IDs slice.
 	RunningSubagentStates map[string]string
 	Project               identifier.Project // canonical identity resolved at hub ingestion, when available
 }

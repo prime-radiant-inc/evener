@@ -653,6 +653,31 @@ func TestStatusEndpoint_DetailedStatus(t *testing.T) {
 	}
 }
 
+func TestStatusEndpoint_DetailedStatusPreservesEmptyPlugins(t *testing.T) {
+	srv := NewServer(ServerConfig{})
+	srv.SetStatus(StatusInfo{SessionID: "empty-plugins", State: "idle"})
+	setEnvelope(srv, func(e *stubThreadEnvelopeSource) {
+		e.detailedStatus = DetailedStatus{Plugins: []PluginStatusInfo{}}
+	})
+
+	req := httptest.NewRequest(http.MethodGet, "/status", nil)
+	w := httptest.NewRecorder()
+	srv.ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("status code: got %d, want 200", w.Code)
+	}
+
+	var wire struct {
+		Detailed map[string]json.RawMessage `json:"detailed"`
+	}
+	if err := json.NewDecoder(w.Body).Decode(&wire); err != nil {
+		t.Fatalf("decode status: %v", err)
+	}
+	if got := string(wire.Detailed["plugins"]); got != "[]" {
+		t.Fatalf("serialized empty plugins = %s, want []", got)
+	}
+}
+
 func TestStatusEndpoint_DetailedStatusIncludesStableDelegates(t *testing.T) {
 	srv := NewServer(ServerConfig{})
 	srv.SetStatus(StatusInfo{SessionID: "root", State: "idle"})
@@ -698,75 +723,6 @@ func TestStatusEndpoint_NoDetailedStatusFunc(t *testing.T) {
 	}
 	if status.Detailed != nil {
 		t.Error("expected nil detailed status when no func set")
-	}
-}
-
-func TestModelsEndpoint(t *testing.T) {
-	srv := NewServer(ServerConfig{})
-
-	srv.SetListModelsFunc(func(ctx context.Context) ([]ModelsResponseItem, error) {
-		return []ModelsResponseItem{
-			{ID: "gpt-4o", DisplayName: "gpt-4o"},
-			{ID: "gpt-4o-mini", DisplayName: "gpt-4o-mini"},
-		}, nil
-	})
-
-	req := httptest.NewRequest(http.MethodGet, "/models", nil)
-	w := httptest.NewRecorder()
-	srv.ServeHTTP(w, req)
-
-	if w.Code != http.StatusOK {
-		t.Fatalf("status code: got %d, want 200", w.Code)
-	}
-
-	var resp ModelsResponse
-	if err := json.NewDecoder(w.Body).Decode(&resp); err != nil {
-		t.Fatalf("decode: %v", err)
-	}
-	if len(resp.Models) != 2 {
-		t.Fatalf("got %d models, want 2", len(resp.Models))
-	}
-	if resp.Models[0].ID != "gpt-4o" {
-		t.Errorf("models[0].id = %q", resp.Models[0].ID)
-	}
-}
-
-func TestModelsEndpoint_NoFunc(t *testing.T) {
-	srv := NewServer(ServerConfig{})
-
-	req := httptest.NewRequest(http.MethodGet, "/models", nil)
-	w := httptest.NewRecorder()
-	srv.ServeHTTP(w, req)
-
-	if w.Code != http.StatusServiceUnavailable {
-		t.Fatalf("status code: got %d, want 503", w.Code)
-	}
-}
-
-func TestModelsEndpoint_Error(t *testing.T) {
-	srv := NewServer(ServerConfig{})
-	srv.SetListModelsFunc(func(ctx context.Context) ([]ModelsResponseItem, error) {
-		return nil, errors.New("upstream error")
-	})
-
-	req := httptest.NewRequest(http.MethodGet, "/models", nil)
-	w := httptest.NewRecorder()
-	srv.ServeHTTP(w, req)
-
-	if w.Code != http.StatusBadGateway {
-		t.Fatalf("status code: got %d, want 502", w.Code)
-	}
-}
-
-func TestModelsEndpoint_MethodNotAllowed(t *testing.T) {
-	srv := NewServer(ServerConfig{})
-
-	req := httptest.NewRequest(http.MethodPost, "/models", nil)
-	w := httptest.NewRecorder()
-	srv.ServeHTTP(w, req)
-
-	if w.Code != http.StatusMethodNotAllowed {
-		t.Fatalf("status code: got %d, want 405", w.Code)
 	}
 }
 
@@ -1652,8 +1608,8 @@ func TestHandleAppJobsOutput(t *testing.T) {
 func TestServerAppWireModelList(t *testing.T) {
 	srv := NewServer(ServerConfig{})
 	srv.SetAppIdentity("local", "th_1")
-	srv.SetListModelsFunc(func(ctx context.Context) ([]ModelsResponseItem, error) {
-		return []ModelsResponseItem{{ID: "gpt-4o"}}, nil
+	srv.SetListModelsFunc(func(ctx context.Context) ([]appwire.ModelDescriptor, error) {
+		return []appwire.ModelDescriptor{{Model: "gpt-4o"}}, nil
 	})
 
 	conn := srv.AppServer().NewConnection("test")
@@ -1677,6 +1633,26 @@ func TestServerAppWireModelList(t *testing.T) {
 	}
 	if out.Data[0].Provider != "" {
 		t.Errorf("provider: got %q, want empty (no profile set)", out.Data[0].Provider)
+	}
+}
+
+func TestServerAppWireModelListEmptyDataIsArray(t *testing.T) {
+	srv := NewServer(ServerConfig{})
+	conn := srv.AppServer().NewConnection("test")
+	init := conn.HandleMessage(context.Background(), appwire.RequestMessage(appwire.NewIntID(1), appwire.MethodInitialize, appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}))
+	if init.Kind() != appwire.MessageResponse {
+		t.Fatalf("init=%v", init.Kind())
+	}
+	resp := conn.HandleMessage(context.Background(), appwire.RequestMessage(appwire.NewIntID(2), appwire.MethodModelList, appwire.ModelListParams{}))
+	if resp.Kind() != appwire.MessageResponse {
+		t.Fatalf("resp=%v", resp.Kind())
+	}
+	out, ok := resp.Response.Result.(appwire.ModelListResponse)
+	if !ok {
+		t.Fatalf("model/list result=%T (%+v)", resp.Response.Result, resp)
+	}
+	if out.Data == nil {
+		t.Fatal("model/list data = nil, want an empty JSON array")
 	}
 }
 

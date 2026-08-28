@@ -47,6 +47,17 @@ func TestLaunchCheckReportsProtocolAndValidatedModel(t *testing.T) {
 	}
 }
 
+func TestLaunchCheckRejectsPreviousProtocolVersion(t *testing.T) {
+	var stdout, stderr bytes.Buffer
+	err := RunLaunchCheck([]string{"--protocol", "evener-appwire-v2", "--json"}, &stdout, &stderr)
+	if err == nil || !strings.Contains(err.Error(), "unsupported appwire protocol") {
+		t.Fatalf("RunLaunchCheck error = %v, want previous-protocol rejection", err)
+	}
+	if stdout.Len() != 0 {
+		t.Fatalf("RunLaunchCheck wrote a contract for an incompatible protocol: %q", stdout.String())
+	}
+}
+
 func TestLaunchCheckListsLiveModelsFromConfiguredProviders(t *testing.T) {
 	configureLaunchCheckOpenAIModels(t, `{"data":[{"id":"gpt-live"},{"id":"text-embedding-3-small"}]}`)
 

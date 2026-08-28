@@ -705,3 +705,25 @@ follows automatically. Dark keeps `#F68F3C`, which already reads amber
 against dark surfaces; `--attention-ink` stays `#AD5209` (still 4.75:1 AA
 on the new tint). The re-theme spec's palette table is a historical
 record; this entry supersedes its light `--attention` cell.
+
+## 2026-08-27 one open-out affordance: OpenButton/OpenIcon
+
+"Open out of this surface" had grown four presentations of the same idea —
+the delegate/delegate_send rows' and notification cards' `OpenTranscriptButton`
+(word + glyph), the file tool cards' `FileOpenBesideButton` (glyph only), the
+activity chrome's `ActivityTranscriptAction` (glyph only), and settings'
+"open in editor ↗" (a raw anchor with a text glyph). All are now one widget,
+`widgets/openbutton` (`OpenButton` + the `OpenIcon` box-arrow glyph, in
+design-system.md §3's inventory with a `/dev/widgets` gallery section): word
+form, `iconOnly` dense-row form, and an `href` anchor form for external
+targets (new tab, no opener, no referrer — the same rel policy as the app's
+other new-tab links, which is why settings' `rel` assertion changed). The
+widget owns `stopPropagation` because every form rides something clickable.
+Two layout rulings shipped with it: a purpose-only tool row (the delegate
+card) now trails its affordance on the disclosure line itself — a sibling of
+the trigger button, never nested inside it — the placement notification
+cards already gave "Open subagent"; and the settings link's local "↗" text
+glyph is retired in favour of the standard box-arrow. **The affordance's
+rendering is planned to change**; routing every site through one component
+is what makes that a one-place change, and the gallery section is where the
+new rendering gets reviewed.

@@ -18,6 +18,20 @@ type Client struct {
 	httpClient *http.Client
 }
 
+// HTTPError describes a non-successful HTTP response from the hub.
+type HTTPError struct {
+	Status   int
+	Response ErrorResponse
+}
+
+func (e *HTTPError) Error() string {
+	if e.Response.Error != "" {
+		return fmt.Sprintf("hub returned %d: %s", e.Status, e.Response.Error)
+	}
+	return fmt.Sprintf("hub returned %d", e.Status)
+}
+func (e *HTTPError) StatusCode() int { return e.Status }
+
 func NewClient(base string, httpClient *http.Client) (*Client, error) {
 	if !strings.Contains(base, "://") {
 		base = "http://" + base
@@ -101,33 +115,9 @@ func (c *Client) Health(ctx context.Context) (HealthResponse, error) {
 	return out, err
 }
 
-func (c *Client) Tree(ctx context.Context) (TreeResponse, error) {
-	var out TreeResponse
-	err := c.get(ctx, "/api/tree", &out)
-	return out, err
-}
-
 func (c *Client) Session(ctx context.Context, ref Ref) (SessionDetail, error) {
 	var out SessionDetail
 	err := c.get(ctx, "/api/sessions/"+ref.PathEscaped(), &out)
-	return out, err
-}
-
-func (c *Client) SpawnSchema(ctx context.Context) (SpawnSchema, error) {
-	var out SpawnSchema
-	err := c.get(ctx, "/api/spawn-schema", &out)
-	return out, err
-}
-
-func (c *Client) Spawn(ctx context.Context, req SpawnRequest) (SpawnResponse, error) {
-	var out SpawnResponse
-	err := c.post(ctx, "/api/spawn", req, &out)
-	return out, err
-}
-
-func (c *Client) Models(ctx context.Context) ([]ModelOption, error) {
-	var out []ModelOption
-	err := c.get(ctx, "/api/models", &out)
 	return out, err
 }
 

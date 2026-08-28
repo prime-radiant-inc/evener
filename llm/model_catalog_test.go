@@ -326,10 +326,21 @@ func TestEmbeddedModelCatalog_Claude5RequestShape(t *testing.T) {
 			t.Errorf("%s Claude5RequestShape = true, want false (pre-5 request contract)", id)
 		}
 	}
-	// Dated snapshots and provider-qualified refs carry no entry of their own;
-	// they inherit the flag through LookupModelInfo's family and last-segment
-	// fallbacks, which is what makes the flag safe to key request shaping on.
-	for _, ref := range []string{"claude-sonnet-5-20260901", "anthropic/claude-opus-5"} {
+	// Dated snapshots and provider-qualified refs either inherit through
+	// LookupModelInfo's family/last-segment fallback or have a serving-path
+	// catalog entry with a family overlay, which is what makes the flag safe to
+	// key request shaping on.
+	for _, ref := range []string{
+		"claude-sonnet-5-20260901",
+		"anthropic/claude-opus-5",
+		"anthropic.claude-sonnet-5",
+		"us.anthropic.claude-sonnet-5",
+		"eu.anthropic.claude-fable-5",
+		"vertex_ai/claude-sonnet-5@default",
+		"azure_ai/claude-fable-5",
+		"us.anthropic.claude-opus-4-7",
+		"vertex_ai/claude-opus-4-8@default",
+	} {
 		mi := cat.LookupModelInfo(ref)
 		if mi == nil {
 			t.Fatalf("LookupModelInfo(%q) = nil", ref)
@@ -340,13 +351,103 @@ func TestEmbeddedModelCatalog_Claude5RequestShape(t *testing.T) {
 	}
 }
 
+func TestEmbeddedModelCatalog_ClaudePlatformOverlayKeepsServingMetadata(t *testing.T) {
+	cat := EmbeddedModelCatalog()
+	if cat == nil {
+		t.Fatal("embedded catalog nil")
+	}
+	cases := []struct {
+		id               string
+		family           string
+		thinkingAlwaysOn bool
+	}{
+		{"anthropic.claude-sonnet-5", "claude-sonnet-5", false},
+		{"us.anthropic.claude-sonnet-5", "claude-sonnet-5", false},
+		{"vertex_ai/claude-fable-5@default", "claude-fable-5", true},
+		{"azure_ai/claude-sonnet-5", "claude-sonnet-5", false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.id, func(t *testing.T) {
+			got := cat.GetModelInfo(tc.id)
+			base := cat.GetModelInfo(tc.family)
+			if got == nil || base == nil {
+				t.Fatalf("catalog entries = %v/%v, want both present", got, base)
+			}
+			if got.ID != tc.id {
+				t.Fatalf("ID = %q, want serving-path ID %q", got.ID, tc.id)
+			}
+			if got.Provider == base.Provider {
+				t.Fatalf("Provider = %q, want serving-path provider distinct from %q", got.Provider, base.Provider)
+			}
+			if !got.Claude5RequestShape || !got.SupportsAdaptiveThinking || !got.SupportsEffortParameter {
+				t.Fatalf("request capabilities = shape:%v adaptive:%v effort:%v, want all true", got.Claude5RequestShape, got.SupportsAdaptiveThinking, got.SupportsEffortParameter)
+			}
+			if !reflect.DeepEqual(got.ReasoningEffortLevels, base.ReasoningEffortLevels) {
+				t.Fatalf("effort levels = %v, want family levels %v", got.ReasoningEffortLevels, base.ReasoningEffortLevels)
+			}
+			if got.SupportsWebSearch == nil || !*got.SupportsWebSearch {
+				t.Fatalf("SupportsWebSearch = %v, want explicit true overlay", got.SupportsWebSearch)
+			}
+			if got.ThinkingAlwaysOn != tc.thinkingAlwaysOn {
+				t.Fatalf("ThinkingAlwaysOn = %v, want %v", got.ThinkingAlwaysOn, tc.thinkingAlwaysOn)
+			}
+		})
+	}
+
+	// Bedrock pricing differs from direct Anthropic pricing. The exact catalog
+	// entry must survive overlay normalization rather than becoming a bare-ID
+	// alias with the wrong serving cost.
+	direct := cat.GetModelInfo("claude-sonnet-5")
+	bedrock := cat.GetModelInfo("us.anthropic.claude-sonnet-5")
+	if direct == nil || bedrock == nil || direct.InputCostPerMillion == nil || bedrock.InputCostPerMillion == nil {
+		t.Fatal("missing direct or Bedrock pricing")
+	}
+	if *direct.InputCostPerMillion == *bedrock.InputCostPerMillion {
+		t.Fatalf("direct and Bedrock input pricing collapsed to %v", *direct.InputCostPerMillion)
+	}
+}
+
 // claude5OrNewerByID restates the Anthropic request builder's model-ID
-// generation parse (isClaude5OrNewer in llm/providers/anthropic/request.go):
-// the first numeric segment after "claude-" is the major generation. It is
-// restated rather than imported because that package imports this one.
+// generation parse (isClaude5OrNewer in llm/providers/anthropic/request.go)
+// after removing the provider-qualified spellings represented in the vendored
+// catalog. Opus 4.7/4.8 are included because their reviewed request contract
+// is the same as Claude 5+. It is restated rather than imported because that
+// package imports this one.
 func claude5OrNewerByID(model string) bool {
+	model = strings.TrimSuffix(model, "[1m]")
+	if strings.Contains(model, "/") {
+		knownPlatformPrefix := strings.HasPrefix(model, "vertex_ai/") ||
+			strings.HasPrefix(model, "azure_ai/") ||
+			strings.HasPrefix(model, "bedrock/") ||
+			strings.HasPrefix(model, "openrouter/anthropic/") ||
+			strings.HasPrefix(model, "perplexity/anthropic/")
+		if !knownPlatformPrefix {
+			return false
+		}
+		model = model[strings.LastIndex(model, "/")+1:]
+	}
+	for _, prefix := range []string{
+		"anthropic.",
+		"us.anthropic.",
+		"eu.anthropic.",
+		"au.anthropic.",
+		"jp.anthropic.",
+		"global.anthropic.",
+		"apac.anthropic.",
+		"us-gov.anthropic.",
+	} {
+		model = strings.TrimPrefix(model, prefix)
+	}
+	if i := strings.IndexByte(model, '@'); i >= 0 {
+		model = model[:i]
+	}
+	model = strings.TrimSuffix(model, ":0")
+	model = strings.TrimSuffix(model, "-v1")
 	if !strings.HasPrefix(model, "claude-") {
 		return false
+	}
+	if strings.HasPrefix(model, "claude-opus-4-7") || strings.HasPrefix(model, "claude-opus-4-8") {
+		return true
 	}
 	for seg := range strings.SplitSeq(strings.TrimPrefix(model, "claude-"), "-") {
 		if n, err := strconv.Atoi(seg); err == nil {

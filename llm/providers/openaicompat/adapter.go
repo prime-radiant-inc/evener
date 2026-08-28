@@ -301,22 +301,27 @@ func (a *Adapter) streamViaChatCompletions(ctx context.Context, req llm.Request)
 	}
 	parentCtx := ctx
 	ctx, timeoutCancel := llm.ApplyAdapterTimeout(ctx, req.AdapterTimeout, true)
-	defer timeoutCancel()
+	sctx, cancel := context.WithCancel(ctx)
+	cancelAll := func() {
+		cancel()
+		timeoutCancel()
+	}
 
 	body, err := buildRequestBody(req, true, a.compatFor(req.Model))
 	if err != nil {
+		cancelAll()
 		return nil, err
 	}
 
 	jsonBody, err := json.Marshal(body)
 	if err != nil {
+		cancelAll()
 		return nil, err
 	}
 
-	sctx, cancel := context.WithCancel(ctx)
 	httpReq, err := http.NewRequestWithContext(sctx, http.MethodPost, a.BaseURL+"/chat/completions", bytes.NewReader(jsonBody))
 	if err != nil {
-		cancel()
+		cancelAll()
 		return nil, err
 	}
 	a.setChatHeaders(httpReq, req)
@@ -336,7 +341,7 @@ func (a *Adapter) streamViaChatCompletions(ctx context.Context, req llm.Request)
 		timeoutSource := llm.APITimeoutSourceForTransport(parentCtx, sctx, err)
 		returnedErr := llm.WrapContextError("openai-compatible", err)
 		attempt.Complete(llm.APIAttemptResult{Err: returnedErr}, timeoutSource, nil, err)
-		cancel()
+		cancelAll()
 		return nil, returnedErr
 	}
 
@@ -357,16 +362,16 @@ func (a *Adapter) streamViaChatCompletions(ctx context.Context, req llm.Request)
 			ResponseBody: b,
 			Err:          returnedErr,
 		}, llm.APITimeoutNone, decodeErr, nil)
-		cancel()
+		cancelAll()
 		return nil, returnedErr
 	}
 
-	s := llm.NewChanStream(cancel)
+	s := llm.NewChanStream(cancelAll)
 	rl := llm.ParseRateLimitHeaders(resp.Header)
 
 	s.Send(llm.StreamEvent{Type: llm.StreamEventStreamStart})
 
-	go a.decodeStream(sctx, cancel, resp, s, req, jsonBody, rl, attempt)
+	go a.decodeStream(sctx, cancelAll, resp, s, req, jsonBody, rl, attempt)
 
 	return s, nil
 }

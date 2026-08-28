@@ -1,5 +1,7 @@
 // @vitest-environment node
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
+import { FakeClient } from "../../protocol/testing/fakeClient";
+import { connectionStore } from "../../stores/connection";
 import {
   assignSessionPin,
   deletePinSection,
@@ -8,7 +10,6 @@ import {
   isRailRequestStatus,
   listPinSections,
   renamePinSection,
-  renameSession,
   setArchived,
   setFavorite,
   unpinSession,
@@ -23,23 +24,16 @@ function jsonResponse(body: unknown, status = 200): Response {
   } as Response;
 }
 
-function emptyResponse(status = 204): Response {
-  return {
-    ok: status >= 200 && status < 300,
-    status,
-    statusText: "No Content",
-    json: () => Promise.reject(new Error("no body")),
-  } as Response;
-}
-
 let fetchMock: ReturnType<typeof vi.fn>;
 
 beforeEach(() => {
   fetchMock = vi.fn();
   vi.stubGlobal("fetch", fetchMock);
+  connectionStore.setState({ state: "idle", serverInfo: undefined, client: null });
 });
 
 afterEach(() => {
+  connectionStore.setState({ state: "idle", serverInfo: undefined, client: null });
   vi.unstubAllGlobals();
   vi.restoreAllMocks();
 });
@@ -118,9 +112,10 @@ describe("named pin sections", () => {
 
   test("renames through an encoded section URL and returns the canonical summary", async () => {
     const section = { id: "section/one", name: "New name", member_count: 3 };
-    fetchMock.mockResolvedValueOnce(jsonResponse({ ok: true, changed: true, section }));
+    const navigation = { generation_id: "g", targets: [] };
+    fetchMock.mockResolvedValueOnce(jsonResponse({ ok: true, changed: true, section, navigation }));
 
-    await expect(renamePinSection("section/one", "New name")).resolves.toEqual(section);
+    await expect(renamePinSection("section/one", "New name")).resolves.toEqual({ section, navigation });
     expect(fetchMock).toHaveBeenCalledWith(
       "/api/pin-sections/section%2Fone",
       expect.objectContaining({
@@ -156,102 +151,149 @@ describe("named pin sections", () => {
 });
 
 describe("setFavorite", () => {
-  test("works for kind=project", async () => {
-    fetchMock.mockResolvedValueOnce(jsonResponse({ ok: true }));
-    await setFavorite("project", "proj-key", false);
-    expect(fetchMock).toHaveBeenCalledWith(
-      "/api/favorite",
-      JSON_INIT({ kind: "project", id: "proj-key", favorited: false }),
-    );
+  test("uses the typed AppWire method and preserves navigation targets", async () => {
+    const client = new FakeClient();
+    const response = {
+      ok: true as const,
+      navigation: { generation_id: "generation-2", targets: [{ kind: "pin_catalog" as const, revision: 7 }] },
+    };
+    client.on("evener/favorite/set", (params) => {
+      expect(params).toEqual({ kind: "project", id: "proj-key", favorited: false });
+      return response;
+    });
+
+    await expect(setFavorite(client, "project", "proj-key", false)).resolves.toEqual(response);
+    expect(client.calls).toEqual([
+      { method: "evener/favorite/set", params: { kind: "project", id: "proj-key", favorited: false } },
+    ]);
   });
 
-  test("rejects with the server's error message on failure", async () => {
-    fetchMock.mockResolvedValueOnce(jsonResponse({ error: "favorite store error: boom" }, 500));
-    await expect(setFavorite("project", "x", true)).rejects.toThrow("favorite store error: boom");
-  });
-});
-
-describe("renameSession", () => {
-  test("POSTs /api/sessions/<url-encoded ref>/rename with exact name body", async () => {
-    fetchMock.mockResolvedValueOnce(emptyResponse(204));
-    await renameSession("local:abc/def", "New name");
-    expect(fetchMock).toHaveBeenCalledWith("/api/sessions/local%3Aabc%2Fdef/rename", JSON_INIT({ name: "New name" }));
-  });
-
-  test("resolves on a 204 No Content response with no body to parse", async () => {
-    fetchMock.mockResolvedValueOnce(emptyResponse(204));
-    await expect(renameSession("ref", "name")).resolves.toBeUndefined();
-  });
-
-  test("rejects with the server's error message on failure", async () => {
-    fetchMock.mockResolvedValueOnce(jsonResponse({ error: "name is required" }, 400));
-    await expect(renameSession("ref", "")).rejects.toThrow("name is required");
+  test("propagates AppWire failures", async () => {
+    const client = new FakeClient();
+    client.on("evener/favorite/set", () => {
+      throw new Error("favorite store error: boom");
+    });
+    await expect(setFavorite(client, "project", "x", true)).rejects.toThrow("favorite store error: boom");
   });
 });
 
 describe("setArchived", () => {
-  test("POSTs /api/archive for a session using the provided canonical session ID", async () => {
-    fetchMock.mockResolvedValueOnce(jsonResponse({ ok: true }));
-    await setArchived("session", "s1", true);
-    const [, init] = fetchMock.mock.calls[0] as [string, RequestInit];
-    expect(JSON.parse(init.body as string)).toEqual({ kind: "session", id: "s1", archived: true });
+  test("sends the typed AppWire request for a session and returns its receipt", async () => {
+    const response = { ok: true, navigation: { generation_id: "g1", targets: [] } };
+    const client = new FakeClient();
+    client.on("evener/archive/set", (params) => {
+      expect(params).toEqual({ kind: "session", id: "s1", archived: true });
+      return response;
+    });
+    connectionStore.getState().connect(client);
+
+    await expect(setArchived("session", "s1", true)).resolves.toEqual(response);
+    expect(client.calls).toEqual([
+      { method: "evener/archive/set", params: { kind: "session", id: "s1", archived: true } },
+    ]);
   });
 
-  test("POSTs /api/archive for a session with no working_dir field at all", async () => {
-    fetchMock.mockResolvedValueOnce(jsonResponse({ ok: true }));
+  test("omits workingDir for a session", async () => {
+    const client = new FakeClient();
+    client.on("evener/archive/set", () => ({ ok: true, navigation: { generation_id: "g1", targets: [] } }));
+    connectionStore.getState().connect(client);
+
     await setArchived("session", "local:abc", true);
-    const [, init] = fetchMock.mock.calls[0] as [string, RequestInit];
-    expect(JSON.parse(init.body as string)).toEqual({ kind: "session", id: "local:abc", archived: true });
+    expect(client.calls[0]?.params).toEqual({ kind: "session", id: "local:abc", archived: true });
   });
 
-  test("POSTs /api/archive for a project with working_dir included", async () => {
-    fetchMock.mockResolvedValueOnce(jsonResponse({ ok: true }));
+  test("includes workingDir for a project", async () => {
+    const client = new FakeClient();
+    client.on("evener/archive/set", () => ({ ok: true, navigation: { generation_id: "g1", targets: [] } }));
+    connectionStore.getState().connect(client);
+
     await setArchived("project", "proj-key", true, "/home/user/proj");
-    expect(fetchMock).toHaveBeenCalledWith(
-      "/api/archive",
-      JSON_INIT({ kind: "project", id: "proj-key", archived: true, working_dir: "/home/user/proj" }),
-    );
+    expect(client.calls[0]?.params).toEqual({
+      kind: "project",
+      id: "proj-key",
+      archived: true,
+      workingDir: "/home/user/proj",
+    });
   });
 
-  test("rejects with the server's error message on failure", async () => {
-    fetchMock.mockResolvedValueOnce(jsonResponse({ error: "archive store error: boom" }, 500));
+  test("propagates an AppWire failure", async () => {
+    const client = new FakeClient();
+    client.on("evener/archive/set", () => {
+      throw new Error("archive store error: boom");
+    });
+    connectionStore.getState().connect(client);
+
     await expect(setArchived("session", "x", true)).rejects.toThrow("archive store error: boom");
   });
 });
 
 describe("deleteProject", () => {
-  test("POSTs /api/project/delete with exact key/working_dir body and returns the parsed result", async () => {
-    fetchMock.mockResolvedValueOnce(jsonResponse({ deleted: ["a", "b"], skipped: [] }));
-    const result = await deleteProject("proj-key", "/home/user/proj");
-    expect(fetchMock).toHaveBeenCalledWith(
-      "/api/project/delete",
-      JSON_INIT({ key: "proj-key", working_dir: "/home/user/proj" }),
-    );
-    expect(result).toEqual({ deleted: ["a", "b"], skipped: [] });
+  test("sends the typed AppWire request and returns its result", async () => {
+    const response = {
+      deleted: ["a", "b"],
+      skipped: [],
+      navigation: { generation_id: "g1", targets: [] },
+    };
+    const client = new FakeClient();
+    client.on("evener/project/delete", () => response);
+    connectionStore.getState().connect(client);
+
+    await expect(deleteProject("proj-key", "/home/user/proj")).resolves.toEqual(response);
+    expect(client.calls).toEqual([
+      { method: "evener/project/delete", params: { key: "proj-key", workingDir: "/home/user/proj" } },
+    ]);
   });
 
-  test("a 409 conflict (live sessions) rejects with the server's error message", async () => {
-    fetchMock.mockResolvedValueOnce(jsonResponse({ error: "project has live sessions", live: ["sess1"] }, 409));
+  test("propagates an AppWire conflict", async () => {
+    const client = new FakeClient();
+    client.on("evener/project/delete", () => {
+      throw new Error("project has live sessions");
+    });
+    connectionStore.getState().connect(client);
+
     await expect(deleteProject("proj-key", "/dir")).rejects.toThrow("project has live sessions");
+  });
+
+  test("rejects when no AppWire client is connected", async () => {
+    await expect(deleteProject("proj-key", "/dir")).rejects.toThrow("project delete action: no client connected");
   });
 });
 
 describe("deleteSession", () => {
-  test("POSTs /api/sessions/<url-encoded ref>/delete and returns the parsed result", async () => {
-    fetchMock.mockResolvedValueOnce(jsonResponse({ deleted: ["local:abc"], skipped: [] }));
-    const result = await deleteSession("local:abc/def");
-    expect(fetchMock).toHaveBeenCalledWith("/api/sessions/local%3Aabc%2Fdef/delete", JSON_INIT({}));
-    expect(result).toEqual({ deleted: ["local:abc"], skipped: [] });
+  test("uses the typed AppWire method and returns its navigation receipt", async () => {
+    const client = new FakeClient();
+    const response = {
+      deleted: ["abc"],
+      skipped: [],
+      navigation: { generation_id: "generation-3", targets: [] },
+    };
+    client.on("evener/session/delete", (params) => {
+      expect(params).toEqual({ ref: "local:abc" });
+      return response;
+    });
+
+    await expect(deleteSession(client, "local:abc")).resolves.toEqual(response);
+    expect(client.calls).toEqual([{ method: "evener/session/delete", params: { ref: "local:abc" } }]);
   });
 
   test("a refused delete (live or reserved target) resolves with the session in skipped, not an error", async () => {
-    fetchMock.mockResolvedValueOnce(jsonResponse({ deleted: [], skipped: [{ id: "abc", reason: "resumed live" }] }));
-    const result = await deleteSession("local:abc");
-    expect(result).toEqual({ deleted: [], skipped: [{ id: "abc", reason: "resumed live" }] });
+    const client = new FakeClient();
+    client.on("evener/session/delete", () => ({
+      deleted: [],
+      skipped: [{ id: "abc", reason: "resumed live" }],
+      navigation: { generation_id: "generation-3", targets: [] },
+    }));
+
+    const result = await deleteSession(client, "local:abc");
+    expect(result.skipped).toEqual([{ id: "abc", reason: "resumed live" }]);
   });
 
-  test("rejects with the server's error message on failure", async () => {
-    fetchMock.mockResolvedValueOnce(jsonResponse({ error: "invalid session ID: boom" }, 400));
-    await expect(deleteSession("local:abc")).rejects.toThrow("invalid session ID: boom");
+  test("propagates AppWire failures", async () => {
+    const client = new FakeClient();
+    client.on("evener/session/delete", () => {
+      throw new Error("invalid session ID: boom");
+    });
+
+    await expect(deleteSession(client, "local:abc")).rejects.toThrow("invalid session ID: boom");
   });
 });

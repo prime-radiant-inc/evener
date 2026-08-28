@@ -5,6 +5,11 @@ interface GallerySectionModule {
   default: ComponentType;
 }
 
+export interface SurfaceGallerySection {
+  path: string;
+  Section: ComponentType;
+}
+
 // One module per surface, stream-owned (src/dev/surface-sections/<name>.tsx)
 // so adding a surface's gallery section never conflicts with another
 // stream's - the same discovery idiom WidgetGallery.tsx uses for
@@ -18,7 +23,7 @@ const SECTION_MODULES = import.meta.glob<GallerySectionModule>(
   { eager: true },
 );
 
-const SECTIONS = Object.keys(SECTION_MODULES)
+export const SURFACE_GALLERY_SECTIONS: SurfaceGallerySection[] = Object.keys(SECTION_MODULES)
   .sort()
   .map((path) => {
     // path came from Object.keys(SECTION_MODULES) itself, so the lookup
@@ -42,14 +47,18 @@ const SECTIONS = Object.keys(SECTION_MODULES)
  * `.setState()` the same way a test's own fixture setup does) - see each
  * surface-sections/*.tsx file's own header for which it does.
  */
-export default function SurfaceGallery() {
+interface SurfaceGalleryProps {
+  sections?: readonly SurfaceGallerySection[];
+}
+
+export default function SurfaceGallery({ sections = SURFACE_GALLERY_SECTIONS }: SurfaceGalleryProps = {}) {
   return (
     <div className={styles.gallery}>
       <p className={styles.intro}>
         Surface gallery — real pane-level surfaces, rendered with fixture data. Nothing here is live: no network request
         actually resolves, and no action button here has a lasting effect.
       </p>
-      {SECTIONS.map(({ path, Section }) => (
+      {sections.map(({ path, Section }) => (
         <Section key={path} />
       ))}
     </div>

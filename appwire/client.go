@@ -407,6 +407,10 @@ func (c *Client) ThreadReasoningEffortSet(ctx context.Context, params ThreadReas
 	return c.request(ctx, MethodThreadReasoningEffortSet, params, nil)
 }
 
+func (c *Client) ThreadVisionModelSet(ctx context.Context, params ThreadVisionModelSetParams) error {
+	return c.request(ctx, MethodThreadVisionModelSet, params, nil)
+}
+
 func (c *Client) ThreadCompactStart(ctx context.Context, params ThreadCompactStartParams) error {
 	return c.request(ctx, MethodThreadCompactStart, params, nil)
 }
@@ -531,9 +535,63 @@ func (c *Client) PathsComplete(ctx context.Context, params PathsCompleteParams) 
 	return out, err
 }
 
+func (c *Client) DirsCreate(ctx context.Context, params DirsCreateParams) (DirsCreateResponse, error) {
+	var out DirsCreateResponse
+	err := c.request(ctx, MethodEvenerDirsCreate, params, &out)
+	return out, err
+}
+
 func (c *Client) ProjectsRecent(ctx context.Context, params ProjectsRecentParams) (ProjectsRecentResponse, error) {
 	var out ProjectsRecentResponse
 	err := c.request(ctx, MethodEvenerProjectsRecent, params, &out)
+	return out, err
+}
+
+func (c *Client) GitHead(ctx context.Context, params GitHeadParams) (GitHeadResponse, error) {
+	var out GitHeadResponse
+	err := c.request(ctx, MethodEvenerGitHead, params, &out)
+	return out, err
+}
+
+func (c *Client) MobilePairing(ctx context.Context, params MobilePairingParams) (MobilePairingResponse, error) {
+	var out MobilePairingResponse
+	err := c.request(ctx, MethodEvenerMobilePairing, params, &out)
+	return out, err
+}
+
+func (c *Client) NavigationRead(ctx context.Context, params NavigationReadParams) (NavigationReadResponse, error) {
+	var out NavigationReadResponse
+	err := c.request(ctx, MethodEvenerNavigationRead, params, &out)
+	return out, err
+}
+
+func (c *Client) FavoriteSet(ctx context.Context, params FavoriteSetParams) (FavoriteSetResponse, error) {
+	var out FavoriteSetResponse
+	err := c.request(ctx, MethodEvenerFavoriteSet, params, &out)
+	return out, err
+}
+
+func (c *Client) ArchiveSet(ctx context.Context, params ArchiveParams) (ArchiveResponse, error) {
+	var out ArchiveResponse
+	err := c.request(ctx, MethodEvenerArchiveSet, params, &out)
+	return out, err
+}
+
+func (c *Client) ProjectDelete(ctx context.Context, params ProjectDeleteParams) (ProjectDeleteResponse, error) {
+	var out ProjectDeleteResponse
+	err := c.request(ctx, MethodEvenerProjectDelete, params, &out)
+	return out, err
+}
+
+func (c *Client) SessionDelete(ctx context.Context, params SessionDeleteParams) (SessionDeleteResponse, error) {
+	var out SessionDeleteResponse
+	err := c.request(ctx, MethodEvenerSessionDelete, params, &out)
+	return out, err
+}
+
+func (c *Client) Search(ctx context.Context, params SearchParams) (SearchResponse, error) {
+	var out SearchResponse
+	err := c.request(ctx, MethodEvenerSearch, params, &out)
 	return out, err
 }
 
@@ -618,6 +676,12 @@ func (c *Client) MarketplaceBrowse(ctx context.Context, params MarketplaceBrowse
 func (c *Client) PluginList(ctx context.Context) (PluginListResponse, error) {
 	var out PluginListResponse
 	err := c.request(ctx, MethodEvenerPluginList, EmptyParams{}, &out)
+	return out, err
+}
+
+func (c *Client) PluginPreview(ctx context.Context, params PluginPreviewParams) (PluginPreviewResponse, error) {
+	var out PluginPreviewResponse
+	err := c.request(ctx, MethodEvenerPluginPreview, params, &out)
 	return out, err
 }
 

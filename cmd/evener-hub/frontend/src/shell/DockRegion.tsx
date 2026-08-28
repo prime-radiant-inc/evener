@@ -85,7 +85,7 @@ let dockHost = lazyDockHost();
 // A payload caches its outcome for the life of the module, success or
 // failure, so one test's failed chunk would otherwise be every later test's
 // failed chunk. Mirrors the resetXForTests precedent every other module
-// singleton here follows (stores/tree.ts's own note); no production code
+// singleton here follows (stores/navigation/store.ts's own note); no production code
 // should ever call it.
 export function resetDockChunkForTests(): void {
   dockHost = lazyDockHost();

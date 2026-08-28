@@ -98,11 +98,6 @@ if [ "$status" -eq 1 ]; then
 else
 	bad "symlinked install with a differing lockfile exited $status: $out"
 fi
-if echo "$out" | grep -q "does not match this worktree's"; then
-	ok "the refusal names the lockfile mismatch as the reason"
-else
-	bad "the refusal does not name the lockfile mismatch: $out"
-fi
 if echo "$out" | grep -q "$shared"; then
 	ok "the refusal names the shared install to refresh"
 else

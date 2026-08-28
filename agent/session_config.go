@@ -31,7 +31,10 @@ import (
 // settings, and session persistence. Zero-valued fields are filled in by
 // applyDefaults where defaults apply.
 type SessionConfig struct {
-	artifactStore artifactStore
+	// LifetimeContext owns this session tree when supplied by a one-shot run.
+	// Nil preserves daemon/background ownership and is not persisted.
+	LifetimeContext context.Context `json:"-"`
+	artifactStore   artifactStore
 
 	// Project is the resolved canonical project identity for this launch. It is
 	// separate from the execution environment's active working directory, which
@@ -222,6 +225,13 @@ type SessionConfig struct {
 	// (on when sandboxed). Only meaningful for a non-off Sandbox. Carried inert in M1.
 	SandboxNet *bool `json:"sandbox_net,omitempty"`
 
+	// VisionModel routes the image-description vision side-channel: "" uses the
+	// session's active model (the default), "off" disables the side-channel, a
+	// bare model resolves on the active provider at call time, and
+	// "provider/model" pins a provider instance. Runtime changes go through
+	// Session.SetVisionModel, which writes this same field under s.mu.
+	VisionModel string `json:"vision_model,omitempty"`
+
 	// ResolveProfile, when non-nil, maps a "provider/model" ref to the
 	// corresponding *provider.Profile. Injected by cmd/evener so that
 	// Session.SetModel can perform cross-provider switches without
@@ -261,6 +271,25 @@ type SessionConfig struct {
 // deterministic. Never set by app callers; never persisted (json:"-" on the
 // parent field).
 type testConfig struct {
+	// visionSideChannelTimeout overrides the production vision timeout only for
+	// deterministic package tests. Zero preserves the production timeout.
+	visionSideChannelTimeout time.Duration
+	// beforeTerminalCommunicateAccept observes the exact production boundary
+	// after Stop hooks accept communicate and before its terminal notification
+	// cut is captured. Tests use it only to place deterministic finalize/cut
+	// ordering barriers. Nil in production.
+	beforeTerminalCommunicateAccept func()
+	// afterCommunicateBoundary observes the state transition at a completed
+	// communicate boundary. Nil in production.
+	afterCommunicateBoundary func(*Session)
+	// delegateDeliveryClassified observes whether an incoming waiterless delivery
+	// was deferred to the enclosing ProcessInput drain. Nil in production.
+	delegateDeliveryClassified func(*Session, bool)
+	// terminalCutAfterManagerLock observes captureTerminalNotificationCut after
+	// it owns jm.mu and before it reads durable/running/queue state. It permits a
+	// concurrent finalizer to prove which side of the cut owns the notification.
+	// Nil in production.
+	terminalCutAfterManagerLock func()
 	// sessionInitFault injects deterministic failures at external initialization
 	// boundaries. Nil preserves the production implementation.
 	sessionInitFault func(point string) error
@@ -276,6 +305,12 @@ type testConfig struct {
 	// delegateInlineWaitReady observes the exact context and duration supplied to
 	// a stable delegate inline wait. Nil preserves the production wait.
 	delegateInlineWaitReady func(context.Context, time.Duration)
+	// delegateSendBeforePositiveWaitAdmission observes the boundary immediately
+	// before a positive-wait send reserves its start. Nil preserves production.
+	delegateSendBeforePositiveWaitAdmission func()
+	// delegateDeliveryCommitsTaken observes the tool-result boundary after inline
+	// delivery commits leave the pending map and before any transcript write.
+	delegateDeliveryCommitsTaken func()
 	// delegateAttentionReadFold replaces only resident attention verification
 	// reads. Nil preserves the production transcript fold.
 	delegateAttentionReadFold func(string, string) (delegateAttentionFold, error)
@@ -409,6 +444,9 @@ type testConfig struct {
 	// leaves it nil and probes the live host (sandbox.RealProber); tests inject a
 	// sandbox.FakeProber so the resume path never shells out to bwrap.
 	sandboxProber sandbox.Prober
+	// fileToolEnforceable replaces the runtime secure-open capability probe for
+	// deterministic delegate sandbox tests. Nil probes the live process.
+	fileToolEnforceable func() bool
 
 	// envProbes, when non-nil, replaces envctx.DefaultProbes() wholesale for the
 	// session's environment-context collector — including the production
@@ -670,6 +708,7 @@ func (c SessionConfig) toSnapshot() schema.ConfigSnapshot {
 		OpenAIResponsesContinuation: c.OpenAIResponsesContinuation,
 		Sandbox:                     c.Sandbox,
 		SandboxNet:                  c.SandboxNet,
+		VisionModel:                 c.VisionModel,
 	}
 }
 
@@ -710,5 +749,6 @@ func configFromSnapshot(s schema.ConfigSnapshot) SessionConfig {
 		OpenAIResponsesContinuation: s.OpenAIResponsesContinuation,
 		Sandbox:                     s.Sandbox,
 		SandboxNet:                  s.SandboxNet,
+		VisionModel:                 s.VisionModel,
 	}
 }

@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"sort"
 	"sync"
+	"time"
 
 	"primeradiant.com/evener/appwire"
 )
@@ -15,6 +16,12 @@ type ServerConfig struct {
 	Version    string
 	SourceID   string
 	Features   appwire.FeatureSet
+	// Navigation is absent until a server supports navigation HTTP resources.
+	Navigation *appwire.NavigationCapability
+	// NavigationCapability is evaluated for every initialize request. It lets a
+	// hub advertise a current generation/sequence rather than freezing those
+	// values when its RPC server was constructed.
+	NavigationCapability func() *appwire.NavigationCapability
 	// AdapterNativeInitialize keeps the shared JSON-RPC server usable in tests
 	// for adapters whose upstream protocol owns a different initialize shape.
 	AdapterNativeInitialize bool
@@ -28,6 +35,8 @@ type Server struct {
 	cfg                            ServerConfig
 	router                         *Router
 	subs                           *Subscriptions
+	keepaliveTickerFactory         func(time.Duration) webSocketKeepaliveTicker
+	keepaliveDecision              func(bool)
 	projectionMu                   sync.Mutex
 	deliveryMu                     sync.Mutex
 	nextHydrationGeneration        uint64
@@ -41,10 +50,11 @@ type Server struct {
 
 func NewServer(cfg ServerConfig) *Server {
 	s := &Server{
-		cfg:    cfg,
-		router: NewRouter(),
-		subs:   NewSubscriptions(),
-		conns:  map[string]*Connection{},
+		cfg:                    cfg,
+		router:                 NewRouter(),
+		subs:                   NewSubscriptions(),
+		conns:                  map[string]*Connection{},
+		keepaliveTickerFactory: newRealWebSocketKeepaliveTicker,
 	}
 	HandleTyped(s.router, appwire.MethodInitialize, s.initialize)
 	return s
@@ -246,12 +256,25 @@ func (s *Server) initialize(_ context.Context, params appwire.InitializeParams) 
 	if s.cfg.AdapterNativeInitialize {
 		protocolVersion = ""
 	}
+	capability := s.cfg.Navigation
+	if s.cfg.NavigationCapability != nil {
+		capability = s.cfg.NavigationCapability()
+	}
 	return appwire.InitializeResponse{
 		ServerInfo:      appwire.ServerInfo{Name: s.cfg.ServerName, Version: s.cfg.Version},
 		ProtocolVersion: protocolVersion,
 		SourceID:        s.cfg.SourceID,
 		Features:        s.cfg.Features,
+		Navigation:      navigationCapability(capability),
 	}, nil
+}
+
+func navigationCapability(capability *appwire.NavigationCapability) *appwire.NavigationCapability {
+	if capability == nil {
+		return nil
+	}
+	clone := *capability
+	return &clone
 }
 
 type Connection struct {
@@ -429,10 +452,9 @@ func (c *Connection) HandleMessage(ctx context.Context, msg appwire.Message) app
 		return appwire.ErrorMessage(appwire.NewIntID(0), appwire.InvalidRequest("request message required"))
 	}
 	req := *msg.Request
-	// ping is a connection-level keepalive (the browser's app-level heartbeat,
-	// since browsers can't send WS ping frames from JS). Answer it directly,
-	// before the initialize gate and without the router, so it stays cheap and
-	// can't be starved by a busy handler.
+	// ping is the browser's app-level heartbeat (browsers cannot send WS ping
+	// frames from JS). It bypasses the router, but still runs in this serial
+	// receive/dispatch path and can therefore be starved by a busy handler.
 	if req.Method == appwire.MethodPing {
 		return appwire.ResponseMessage(req.ID, struct{}{})
 	}

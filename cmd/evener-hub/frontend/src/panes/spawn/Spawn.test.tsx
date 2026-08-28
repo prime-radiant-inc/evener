@@ -6,13 +6,27 @@ import userEvent from "@testing-library/user-event";
 import { afterEach, beforeAll, beforeEach, expect, test, vi } from "vitest";
 import { WireError } from "../../protocol/errors";
 import { FakeClient } from "../../protocol/testing/fakeClient";
-import type { Thread, ThreadCapabilities, ThreadStartParams, ThreadStartResponse } from "../../protocol/types.gen";
+import type {
+  AnyNotification,
+  LaunchOption,
+  ModelDescriptor,
+  ModelListResponse,
+  PluginPreviewResponse,
+  Thread,
+  ThreadCapabilities,
+  ThreadStartParams,
+  ThreadStartResponse,
+} from "../../protocol/types.gen";
 import { ClientProvider } from "../../shell/clientContext";
+import { connectionStore } from "../../stores/connection";
+import { extensionsStore, resetExtensionsStoreForTests } from "../../stores/extensions";
 import { Toast } from "../../widgets";
 import promptCardStyles from "../../widgets/promptcard/promptcard.module.css";
 import textareaStyles from "../../widgets/textarea/textarea.module.css";
 import { resetToastStoreForTests } from "../../widgets/toast/store";
 import Spawn from "./Spawn";
+
+let modelListOverride: ModelDescriptor[] | null = null;
 
 class MemoryStorage {
   private store = new Map<string, string>();
@@ -45,6 +59,7 @@ const NO_CAPABILITIES: ThreadCapabilities = {
   forkFromTurn: false,
   shutdown: false,
   changeModel: false,
+  changeVisionModel: false,
   queue: false,
   goal: false,
   rename: false,
@@ -83,14 +98,17 @@ function readyClient(configure?: (fake: FakeClient) => void): FakeClient {
   }));
   fake.on("evener/launch/schema", () => ({ options: [] }));
   fake.on("model/list", () => ({
-    data: [
-      { provider: "anthropic", model: "claude-sonnet-4-5" },
-      { provider: "openai", model: "gpt-5" },
+    data: modelListOverride ?? [
+      { provider: "anthropic", model: "claude-sonnet-4-5", displayName: "anthropic/claude-sonnet-4-5" },
+      { provider: "openai", model: "gpt-5", displayName: "openai/gpt-5" },
     ],
   }));
   fake.on("evener/projects/recent", () => ({ data: [] }));
   fake.on("evener/paths/complete", () => ({ data: [] }));
   fake.on("evener/path/validate", () => ({ path: "", valid: true }));
+  fake.on("evener/dirs/create", ({ path }) => ({ path, created: true }));
+  fake.on("evener/git/head", () => ({ head: "main" }));
+  fake.on("evener/plugin/preview", () => ({ plugins: [] }));
   fake.on("thread/start", () => startResponse("local:abc123"));
   configure?.(fake);
   return fake;
@@ -152,32 +170,19 @@ async function settled(): Promise<void> {
   await screen.findByRole("button", { name: "Advanced options" });
 }
 
-let fetchMock: ReturnType<typeof vi.fn>;
-
 beforeAll(() => {
   globalThis.localStorage = new MemoryStorage() as unknown as Storage;
 });
 
 beforeEach(() => {
   localStorage.clear();
-  fetchMock = vi.fn((url: string) => {
-    if (url.startsWith("/api/git/head")) {
-      return Promise.resolve({ ok: true, status: 200, json: () => Promise.resolve({ branch: "main" }) } as Response);
-    }
-    if (url === "/api/dirs/create") {
-      return Promise.resolve({
-        ok: true,
-        status: 200,
-        json: () => Promise.resolve({ path: "/x", created: true }),
-      } as Response);
-    }
-    return Promise.resolve({ ok: false, status: 404, json: () => Promise.resolve({}) } as Response);
-  });
-  vi.stubGlobal("fetch", fetchMock);
+  modelListOverride = null;
 });
 
 afterEach(() => {
   cleanup();
+  connectionStore.setState({ state: "idle", serverInfo: undefined, client: null });
+  resetExtensionsStoreForTests();
   vi.unstubAllGlobals();
   window.history.pushState({}, "", "/");
   resetToastStoreForTests();
@@ -211,8 +216,8 @@ test("the configuration row is working directory, model and effort - and nothing
 // Issue #198: the phone's attach button and model trigger are the composer's,
 // in the composer's place - the card's own control row - rather than a fixed
 // band at the foot of the viewport and a bespoke sheet in the settings list.
-// The row order below is the whole remaining Treatment A list: Model left it
-// when the card took the job.
+// The row order below is the Treatment A list plus session-only Plugins. Model
+// left it when the card took the job.
 test("mobile Spawn sets attachments and the model from inside the prompt card, not from the settings rows", async () => {
   renderSpawn(readyClient());
   await settled();
@@ -220,7 +225,7 @@ test("mobile Spawn sets attachments and the model from inside the prompt card, n
   const mobileConfig = screen.getByTestId("spawn-mobile-config");
   expect(
     [...mobileConfig.querySelectorAll<HTMLElement>("[data-testid='mobile-spawn-row']")].map((row) => row.dataset.label),
-  ).toEqual(["Harness", "Working directory", "Branch", "Reasoning effort", "Access mode"]);
+  ).toEqual(["Harness", "Working directory", "Branch", "Reasoning effort", "Access mode", "Plugins"]);
 
   const card = screen.getByTestId("spawn-prompt-card");
   const controls = screen.getByTestId("spawn-controls");
@@ -404,21 +409,20 @@ test("branch renders as a suffix on the directory row, not as an editable peer f
   await settled();
 
   await waitFor(() => expect(screen.getByTestId("spawn-branch").textContent).toContain("main"));
-  // Not a text box: it is a readout of the directory's HEAD, and the wire has
-  // nowhere to send a branch anyway (startThread.ts's own branch note).
+  // Not a text box: it is a readout of the directory's HEAD.
   expect(screen.queryByLabelText("Branch")).toBeNull();
   expect(screen.getByTestId("spawn-branch").querySelector("input")).toBeNull();
 });
 
 test("the branch readout is absent when the working directory has no resolvable HEAD", async () => {
-  // The default fetch mock 404s everything except /api/git/head; override it so
-  // HEAD resolution fails soft to "" the way branch.ts documents.
-  vi.stubGlobal(
-    "fetch",
-    vi.fn(() => Promise.resolve({ ok: false, status: 404, json: () => Promise.resolve({}) } as Response)),
-  );
   localStorage.setItem("evener-hub.spawn-defaults.global.working_dir", "/tmp/plain");
-  renderSpawn(readyClient());
+  renderSpawn(
+    readyClient((fake) => {
+      fake.on("evener/git/head", () => {
+        throw new Error("git head unavailable");
+      });
+    }),
+  );
   await settled();
 
   await waitFor(() => expectWorkingDir("/tmp/plain"));
@@ -468,6 +472,484 @@ test("a full submit sends the cwd, prompt, and access-mode sandbox, then routes 
   });
   // Sticky defaults persist the working dir globally on submit (floor §1.9).
   expect(localStorage.getItem("evener-hub.spawn-defaults.global.working_dir")).toBe("/tmp/project");
+});
+
+test("Spawn preview omits enabledPlugins while selection remains untouched", async () => {
+  const user = userEvent.setup();
+  const fake = readyClient();
+  renderSpawn(fake);
+  await settled();
+  await setWorkingDir(user, "/tmp/project");
+  await waitFor(() =>
+    expect(fake.calls.filter((call) => call.method === "evener/plugin/preview").at(-1)?.params).toEqual({
+      cwd: "/tmp/project",
+    }),
+  );
+});
+
+test("desktop plugin summary remains mounted with exact loading and error status", async () => {
+  const pending = new Promise<PluginPreviewResponse>(() => {});
+  const pendingClient = readyClient((f) => f.on("evener/plugin/preview", () => pending));
+  renderSpawn(pendingClient);
+  expect(screen.getByTestId("spawn-plugin-summary").textContent).toContain("Inspecting plugins…");
+  expect((screen.getByTestId("spawn-submit") as HTMLButtonElement).disabled).toBe(false);
+
+  cleanup();
+  const errorClient = readyClient((f) => {
+    f.on("evener/plugin/preview", () => {
+      throw new Error("preview unavailable");
+    });
+  });
+  renderSpawn(errorClient);
+  await waitFor(() =>
+    expect(screen.getByTestId("spawn-plugin-summary").textContent).toContain("Couldn't inspect plugins"),
+  );
+  // The failure says WHY, and the retry is a small inline action.
+  expect(screen.getByTestId("spawn-plugin-summary").textContent).toContain("preview unavailable");
+  expect(screen.getByTestId("spawn-plugin-summary").textContent).not.toContain("0 of 0");
+  expect(within(screen.getByTestId("spawn-plugin-summary")).getByRole("button", { name: "Retry" })).toBeTruthy();
+});
+
+const SPAWN_PLUGIN_PREVIEW: PluginPreviewResponse = {
+  plugins: [
+    {
+      name: "alpha",
+      source: "installed",
+      selected: true,
+      skillCount: 1,
+      agentCount: 0,
+      commandCount: 0,
+      hookCount: 0,
+      mcpCount: 0,
+    },
+    {
+      name: "beta",
+      source: "directory",
+      path: "/tmp/beta",
+      selected: true,
+      skillCount: 0,
+      agentCount: 0,
+      commandCount: 1,
+      hookCount: 0,
+      mcpCount: 0,
+    },
+  ],
+};
+
+test("desktop plugin summary lists the configured plugin names", async () => {
+  const user = userEvent.setup();
+  const fake = readyClient((f) => {
+    f.on("evener/plugin/preview", () => SPAWN_PLUGIN_PREVIEW);
+  });
+  renderSpawn(fake);
+  await settled();
+  await setWorkingDir(user, "/tmp/project");
+
+  await waitFor(() =>
+    expect(screen.getByTestId("spawn-plugin-summary").textContent).toContain("Configured plugins: alpha, beta"),
+  );
+  expect(screen.getByTestId("spawn-plugin-summary").textContent).not.toContain("session only");
+
+  await openDesktopPluginSelection(user);
+  await user.click(screen.getByRole("switch", { name: "beta" }));
+  await waitFor(() =>
+    expect(screen.getByTestId("spawn-plugin-summary").textContent).toContain("Configured plugins: alpha"),
+  );
+  expect(screen.getByTestId("spawn-plugin-summary").textContent).not.toContain("beta");
+});
+
+async function openDesktopPluginSelection(user: ReturnType<typeof userEvent.setup>): Promise<void> {
+  await waitFor(() => expect(screen.getByTestId("spawn-plugin-disclosure")).toBeTruthy());
+  const disclosure = screen.getByTestId("spawn-plugin-disclosure") as HTMLDetailsElement;
+  if (!disclosure.open) await user.click(screen.getByText("Plugins for this session"));
+}
+
+test("explicit plugin selection reaches Preview, resolve, and Thread Start", async () => {
+  const user = userEvent.setup();
+  const fake = readyClient((f) => {
+    f.on("evener/plugin/preview", () => SPAWN_PLUGIN_PREVIEW);
+    f.on("evener/launch/resolve", () => ({
+      effective: { model: "anthropic/claude-sonnet-4-5" },
+      layers: {},
+      provenance: {},
+    }));
+  });
+  renderSpawn(fake);
+  await settled();
+  await setWorkingDir(user, "/tmp/project");
+  await openDesktopPluginSelection(user);
+  await user.click(screen.getByRole("switch", { name: "beta" }));
+
+  await waitFor(() => {
+    expect(fake.calls.filter((call) => call.method === "evener/plugin/preview").at(-1)?.params).toMatchObject({
+      cwd: "/tmp/project",
+      launchOverrides: { enabledPlugins: ["alpha"] },
+    });
+  });
+  await waitFor(() => {
+    expect(fake.calls.filter((call) => call.method === "evener/launch/resolve").at(-1)?.params).toMatchObject({
+      cwd: "/tmp/project",
+      launchOverrides: { enabledPlugins: ["alpha"] },
+    });
+  });
+  await user.click(screen.getByTestId("spawn-submit"));
+  await waitFor(() => expect(fake.calls.some((call) => call.method === "thread/start")).toBe(true));
+  expect(fake.calls.find((call) => call.method === "thread/start")?.params).toMatchObject({
+    launchOverrides: { enabledPlugins: ["alpha"] },
+  });
+  await waitFor(() =>
+    expect(fake.calls.filter((call) => call.method === "evener/plugin/preview").at(-1)?.params).toEqual({
+      cwd: "/tmp/project",
+    }),
+  );
+});
+
+test("a missing working directory still exposes plugin selection before Create & start", async () => {
+  const user = userEvent.setup();
+  const fake = readyClient((f) => {
+    f.on("evener/plugin/preview", (params) => {
+      if (params.cwd === "/tmp/new") return SPAWN_PLUGIN_PREVIEW;
+      return { plugins: [] };
+    });
+    f.on("evener/path/validate", () => ({
+      path: "/tmp/new",
+      valid: false,
+      error: "stat /tmp/new: no such file or directory",
+    }));
+  });
+  renderSpawn(fake);
+  await settled();
+
+  await setWorkingDir(user, "/tmp/new");
+  await openDesktopPluginSelection(user);
+  await user.click(screen.getByRole("switch", { name: "beta" }));
+  await waitFor(() =>
+    expect(fake.calls.filter((call) => call.method === "evener/plugin/preview").at(-1)?.params).toMatchObject({
+      cwd: "/tmp/new",
+      launchOverrides: { enabledPlugins: ["alpha"] },
+    }),
+  );
+
+  await user.click(screen.getByTestId("spawn-submit"));
+  await user.click(await screen.findByRole("button", { name: "Create & start" }));
+  await waitFor(() => expect(fake.calls.some((call) => call.method === "thread/start")).toBe(true));
+  expect(fake.calls.find((call) => call.method === "thread/start")?.params).toMatchObject({
+    cwd: "/tmp/new",
+    launchOverrides: { enabledPlugins: ["alpha"] },
+  });
+});
+
+test("explicit selection blocks while refresh is pending but preview failure still submits to server validation", async () => {
+  const user = userEvent.setup();
+  let rejectRefresh!: (reason?: unknown) => void;
+  const refreshPending = new Promise<PluginPreviewResponse>((_, reject) => {
+    rejectRefresh = reject;
+  });
+  let explicitPreviewCalls = 0;
+  const fake = readyClient((f) => {
+    f.on("evener/plugin/preview", (params) => {
+      const names = params.launchOverrides?.enabledPlugins;
+      if (Array.isArray(names) && names.length === 1 && names[0] === "alpha") {
+        explicitPreviewCalls += 1;
+        if (explicitPreviewCalls === 2) return refreshPending;
+      }
+      return SPAWN_PLUGIN_PREVIEW;
+    });
+  });
+  connectionStore.getState().connect(fake);
+  renderSpawn(fake);
+  await settled();
+  await setWorkingDir(user, "/tmp/project");
+  await openDesktopPluginSelection(user);
+  await user.click(screen.getByRole("switch", { name: "beta" }));
+  await waitFor(() => expect(explicitPreviewCalls).toBe(1));
+  await waitFor(() => expect((screen.getByTestId("spawn-submit") as HTMLButtonElement).disabled).toBe(false));
+
+  // A plugin notification starts a fresh inspection while the explicit allow-list remains selected.
+  await act(async () => {
+    // The Spawn pane's preview refresh is exercised by changing its revision through
+    // the same notification path as the connected app shell.
+    fake.emitNotification({ method: "evener/plugin/updated", params: {} } as AnyNotification);
+  });
+  expect(extensionsStore.getState().pluginRevision).toBe(1);
+  await waitFor(() => expect((screen.getByTestId("spawn-submit") as HTMLButtonElement).disabled).toBe(true));
+  await waitFor(() => expect(explicitPreviewCalls).toBe(2));
+  // The refresh must not unmount the list: the previous plugins stay visible
+  // (and toggleable) while the new inspection is in flight.
+  expect(screen.getByRole("switch", { name: "alpha" })).toBeTruthy();
+  expect(screen.getByTestId("spawn-plugin-summary").textContent).toContain("Configured plugins: alpha");
+
+  rejectRefresh(new Error("preview unavailable"));
+  await waitFor(() => expect(screen.getAllByText("Couldn't inspect plugins").length).toBeGreaterThan(0));
+  expect((screen.getByTestId("spawn-submit") as HTMLButtonElement).disabled).toBe(false);
+
+  await user.click(screen.getByTestId("spawn-submit"));
+  await waitFor(() => expect(fake.calls.some((call) => call.method === "thread/start")).toBe(true));
+  expect(fake.calls.find((call) => call.method === "thread/start")?.params).toMatchObject({
+    launchOverrides: { enabledPlugins: ["alpha"] },
+  });
+});
+
+test("known-invalid explicit selection stays blocked when an unrelated edit's refresh fails", async () => {
+  const user = userEvent.setup();
+  let rejectRefresh!: (reason?: unknown) => void;
+  const refreshPending = new Promise<PluginPreviewResponse>((_, reject) => {
+    rejectRefresh = reject;
+  });
+  const invalidPreview: PluginPreviewResponse = {
+    ...SPAWN_PLUGIN_PREVIEW,
+    selectionErrors: [{ name: "alpha", reason: "plugin is unavailable" }],
+  };
+  let explicitPreviewCalls = 0;
+  const fake = readyClient((f) => {
+    f.on("evener/plugin/preview", (params) => {
+      const names = params.launchOverrides?.enabledPlugins;
+      if (Array.isArray(names) && names.length === 1 && names[0] === "alpha") {
+        explicitPreviewCalls += 1;
+        return invalidPreview;
+      }
+      if (Array.isArray(names) && names.length === 2 && names.includes("alpha") && names.includes("beta")) {
+        explicitPreviewCalls += 1;
+        return refreshPending;
+      }
+      return SPAWN_PLUGIN_PREVIEW;
+    });
+    f.on("thread/start", () => {
+      throw new Error("start must not be reached");
+    });
+  });
+  connectionStore.getState().connect(fake);
+  renderSpawn(fake);
+  await settled();
+  await setWorkingDir(user, "/tmp/project");
+  await openDesktopPluginSelection(user);
+  await user.click(screen.getByRole("switch", { name: "beta" }));
+  await waitFor(() => expect(explicitPreviewCalls).toBe(1));
+  await waitFor(() => expect((screen.getByTestId("spawn-submit") as HTMLButtonElement).disabled).toBe(true));
+
+  await user.click(screen.getByRole("switch", { name: "beta" }));
+  await waitFor(() => expect(explicitPreviewCalls).toBe(2));
+  expect((screen.getByTestId("spawn-submit") as HTMLButtonElement).disabled).toBe(true);
+
+  rejectRefresh(new Error("preview unavailable"));
+  await waitFor(() => expect(screen.getAllByText("Couldn't inspect plugins").length).toBeGreaterThan(0));
+  expect((screen.getByTestId("spawn-submit") as HTMLButtonElement).disabled).toBe(true);
+
+  await user.keyboard("{Meta>}{Enter}{/Meta}");
+  expect(fake.calls.some((call) => call.method === "thread/start")).toBe(false);
+});
+
+test("explicit empty plugin selection reaches Thread Start as an empty list", async () => {
+  const user = userEvent.setup();
+  const fake = readyClient((f) => f.on("evener/plugin/preview", () => SPAWN_PLUGIN_PREVIEW));
+  renderSpawn(fake);
+  await settled();
+  await setWorkingDir(user, "/tmp/project");
+  await openDesktopPluginSelection(user);
+  await user.click(screen.getByRole("button", { name: "None" }));
+  await waitFor(() =>
+    expect(fake.calls.filter((call) => call.method === "evener/plugin/preview").at(-1)?.params).toMatchObject({
+      launchOverrides: { enabledPlugins: [] },
+    }),
+  );
+  await user.click(screen.getByTestId("spawn-submit"));
+  await waitFor(() => expect(fake.calls.some((call) => call.method === "thread/start")).toBe(true));
+  expect(fake.calls.find((call) => call.method === "thread/start")?.params).toMatchObject({
+    launchOverrides: { enabledPlugins: [] },
+  });
+});
+
+test("selection survives Advanced-options updates and failed Start", async () => {
+  const user = userEvent.setup();
+  const advancedOption: LaunchOption = {
+    field: "maxRounds",
+    wireField: "maxRounds",
+    label: "Max rounds",
+    group: "general",
+    kind: "integer",
+    perLaunch: true,
+  };
+  const fake = readyClient((f) => {
+    f.on("evener/plugin/preview", () => SPAWN_PLUGIN_PREVIEW);
+    f.on("evener/launch/schema", () => ({ options: [advancedOption] }));
+    f.on("thread/start", () => {
+      throw new Error("start failed");
+    });
+  });
+  renderSpawn(fake);
+  await settled();
+  await setWorkingDir(user, "/tmp/project");
+  await openDesktopPluginSelection(user);
+  await user.click(screen.getByRole("switch", { name: "beta" }));
+  await waitFor(() => expect(screen.getByRole("switch", { name: "beta" }).getAttribute("aria-checked")).toBe("false"));
+
+  await user.click(screen.getByRole("button", { name: "Advanced options" }));
+  await user.clear(screen.getByLabelText("Max rounds"));
+  await user.type(screen.getByLabelText("Max rounds"), "7");
+  await waitFor(() => {
+    expect(fake.calls.filter((call) => call.method === "evener/plugin/preview").at(-1)?.params).toMatchObject({
+      launchOverrides: { enabledPlugins: ["alpha"], maxRounds: 7 },
+    });
+  });
+  await user.click(screen.getByTestId("spawn-submit"));
+  await waitFor(() => expect(fake.calls.some((call) => call.method === "thread/start")).toBe(true));
+  expect(screen.getByRole("switch", { name: "beta" }).getAttribute("aria-checked")).toBe("false");
+});
+
+test("preview failure exposes retry without guessing zero or blocking default Start", async () => {
+  const user = userEvent.setup();
+  const fake = readyClient((f) => {
+    f.on("evener/plugin/preview", () => {
+      throw new Error("preview unavailable");
+    });
+  });
+  renderSpawn(fake);
+
+  await waitFor(() => expect(screen.getAllByText("Couldn't inspect plugins").length).toBeGreaterThan(0));
+  expect(screen.queryByText(/0 of 0/)).toBeNull();
+  expect((screen.getByTestId("spawn-submit") as HTMLButtonElement).disabled).toBe(false);
+  await user.click(screen.getAllByRole("button", { name: "Retry" })[0]!);
+  await waitFor(() =>
+    expect(fake.calls.filter((call) => call.method === "evener/plugin/preview").length).toBeGreaterThan(1),
+  );
+});
+
+test("retained stale plugin names block every submit path until removed", async () => {
+  const user = userEvent.setup();
+  const stalePreview: PluginPreviewResponse = {
+    plugins: [
+      { ...SPAWN_PLUGIN_PREVIEW.plugins[0]!, name: "alpha" },
+      { ...SPAWN_PLUGIN_PREVIEW.plugins[1]!, name: "gone" },
+      { ...SPAWN_PLUGIN_PREVIEW.plugins[1]!, name: "beta" },
+    ],
+  };
+  const refreshedPreview: PluginPreviewResponse = {
+    plugins: [{ ...SPAWN_PLUGIN_PREVIEW.plugins[0]!, name: "alpha" }],
+  };
+  const advancedOption: LaunchOption = {
+    field: "maxRounds",
+    wireField: "maxRounds",
+    label: "Max rounds",
+    group: "general",
+    kind: "integer",
+    perLaunch: true,
+  };
+  const fake = readyClient((f) => {
+    f.on("evener/plugin/preview", (params) =>
+      params.launchOverrides?.maxRounds === 7 ? refreshedPreview : stalePreview,
+    );
+    f.on("evener/launch/schema", () => ({ options: [advancedOption] }));
+    f.on("thread/start", () => {
+      throw new Error("start failed");
+    });
+  });
+  renderSpawn(fake);
+  await settled();
+  await setWorkingDir(user, "/tmp/project");
+  await openDesktopPluginSelection(user);
+  await user.click(screen.getByRole("switch", { name: "beta" }));
+  await waitFor(() => expect(screen.getByTestId("spawn-plugin-disclosure")).toBeTruthy());
+
+  await user.click(screen.getByRole("button", { name: "Advanced options" }));
+  await user.clear(screen.getByLabelText("Max rounds"));
+  await user.type(screen.getByLabelText("Max rounds"), "7");
+  await waitFor(() => expect(screen.getByRole("button", { name: "Remove gone" })).toBeTruthy());
+
+  const pathValidateCallsBefore = fake.calls.filter((call) => call.method === "evener/path/validate").length;
+  expect((screen.getByTestId("spawn-submit") as HTMLButtonElement).disabled).toBe(true);
+  await user.keyboard("{Meta>}{Enter}{/Meta}");
+  await user.click(screen.getByTestId("spawn-submit"));
+  expect(fake.calls.filter((call) => call.method === "evener/path/validate")).toHaveLength(pathValidateCallsBefore);
+  expect(fake.calls.some((call) => call.method === "thread/start")).toBe(false);
+  expect(screen.getByRole("button", { name: "Remove gone" })).toBeTruthy();
+
+  await user.click(screen.getByRole("button", { name: "Remove gone" }));
+  await waitFor(() => {
+    expect(fake.calls.filter((call) => call.method === "evener/plugin/preview").at(-1)?.params).toMatchObject({
+      launchOverrides: { enabledPlugins: ["alpha"], maxRounds: 7 },
+    });
+  });
+  await waitFor(() => expect((screen.getByTestId("spawn-submit") as HTMLButtonElement).disabled).toBe(false));
+});
+
+test("switching to a non-Evener harness hides plugins and clears explicit selection from start", async () => {
+  const user = userEvent.setup();
+  const fake = readyClient((f) => {
+    f.on("evener/plugin/preview", () => SPAWN_PLUGIN_PREVIEW);
+  });
+  renderSpawn(fake);
+  await settled();
+  await setWorkingDir(user, "/tmp/project");
+  await openDesktopPluginSelection(user);
+  await user.click(screen.getByRole("switch", { name: "beta" }));
+  await waitFor(() =>
+    expect(fake.calls.filter((call) => call.method === "evener/plugin/preview").at(-1)?.params).toMatchObject({
+      launchOverrides: { enabledPlugins: ["alpha"] },
+    }),
+  );
+
+  await user.click(screen.getByRole("button", { name: "Advanced options" }));
+  await user.selectOptions(screen.getByLabelText("Harness"), "codex-cli");
+
+  expect(screen.queryByTestId("spawn-plugin-desktop")).toBeNull();
+  expect(
+    [
+      ...screen.getByTestId("spawn-mobile-config").querySelectorAll<HTMLElement>("[data-testid='mobile-spawn-row']"),
+    ].map((row) => row.dataset.label),
+  ).not.toContain("Plugins");
+  await user.click(screen.getByTestId("spawn-submit"));
+  await waitFor(() => expect(fake.calls.some((call) => call.method === "thread/start")).toBe(true));
+  const start = fake.calls.find((call) => call.method === "thread/start");
+  expect(start?.params).not.toMatchObject({ launchOverrides: { enabledPlugins: ["alpha"] } });
+});
+
+test("clearing an invalid selection after preview failure reaches Create & start", async () => {
+  const user = userEvent.setup();
+  let previewAvailable = true;
+  const invalidPreview: PluginPreviewResponse = {
+    ...SPAWN_PLUGIN_PREVIEW,
+    selectionErrors: [{ name: "alpha", reason: "plugin is unavailable" }],
+  };
+  const fake = readyClient((f) => {
+    f.on("evener/plugin/preview", (params) => {
+      if (!previewAvailable) throw new Error("preview unavailable");
+      if (params.launchOverrides?.enabledPlugins) return invalidPreview;
+      return SPAWN_PLUGIN_PREVIEW;
+    });
+    f.on("evener/path/validate", () => ({
+      path: "/tmp/new",
+      valid: false,
+      error: "stat /tmp/new: no such file or directory",
+    }));
+  });
+  connectionStore.getState().connect(fake);
+  renderSpawn(fake);
+  await settled();
+  await setWorkingDir(user, "/tmp/new");
+  await openDesktopPluginSelection(user);
+  await user.click(screen.getByRole("switch", { name: "beta" }));
+  await waitFor(() =>
+    expect(fake.calls.filter((call) => call.method === "evener/plugin/preview").at(-1)?.params).toMatchObject({
+      launchOverrides: { enabledPlugins: ["alpha"] },
+    }),
+  );
+  await waitFor(() => expect((screen.getByTestId("spawn-submit") as HTMLButtonElement).disabled).toBe(true));
+
+  previewAvailable = false;
+  await user.click(screen.getByRole("button", { name: "Retry" }));
+  await waitFor(() => expect(screen.getAllByText("Couldn't inspect plugins").length).toBeGreaterThan(0));
+
+  expect((screen.getByTestId("spawn-submit") as HTMLButtonElement).disabled).toBe(true);
+  await user.click(screen.getByRole("button", { name: "None" }));
+  await waitFor(() => expect((screen.getByTestId("spawn-submit") as HTMLButtonElement).disabled).toBe(false));
+  await user.click(screen.getByTestId("spawn-submit"));
+  await user.click(await screen.findByRole("button", { name: "Create & start" }));
+
+  await waitFor(() => expect(fake.calls.some((call) => call.method === "thread/start")).toBe(true));
+  expect(fake.calls.find((call) => call.method === "thread/start")?.params).toMatchObject({
+    cwd: "/tmp/new",
+    launchOverrides: { enabledPlugins: [] },
+  });
 });
 
 // A blank prompt starts a DORMANT session, exactly as the placeholder
@@ -700,6 +1182,7 @@ test("offers to create a missing directory, then creates it and spawns", async (
       valid: false,
       error: "stat /tmp/new: no such file or directory",
     }));
+    f.on("evener/dirs/create", () => ({ path: "/tmp/new", created: true }));
   });
   renderSpawn(fake);
   await settled();
@@ -711,10 +1194,7 @@ test("offers to create a missing directory, then creates it and spawns", async (
   await user.click(await screen.findByRole("button", { name: "Create & start" }));
 
   await waitFor(() =>
-    expect(fetchMock).toHaveBeenCalledWith(
-      "/api/dirs/create",
-      expect.objectContaining({ body: JSON.stringify({ path: "/tmp/new" }) }),
-    ),
+    expect(fake.calls).toContainEqual({ method: "evener/dirs/create", params: { path: "/tmp/new" } }),
   );
   await waitFor(() => expect(fake.calls.some((c) => c.method === "thread/start")).toBe(true));
   // doSpawn's busy reset is shared by both callers - handleCreateConfirm's
@@ -930,6 +1410,142 @@ test("kata xgk8: an Advanced-options model override satisfies the requirement wi
   expect(modelTrigger().textContent).toContain("(default)"); // top-level chip untouched
 });
 
+// --- resolved-default labels -------------------------------------------------
+//
+// A launch-config control whose unset state reads "(default)" names the value
+// a session started now would inherit instead: the field's entry in the
+// effective layer of evener/launch/resolve for the current working directory.
+// Until that resolve lands - or if it fails - the label stays plain
+// "(default)": an unresolved answer must never be dressed up as a known one.
+
+function effortOptionLabels(): (string | null)[] {
+  const select = screen.getByLabelText("Effort") as HTMLSelectElement;
+  return Array.from(select.options).map((o) => o.textContent);
+}
+
+test("Effort, Model, and the mobile rows name the resolved default once launch/resolve lands", async () => {
+  const user = userEvent.setup();
+  const fake = readyClient((f) => {
+    f.on("evener/launch/resolve", () => ({
+      effective: { model: "anthropic/claude-sonnet-4-5", reasoningEffort: "high" },
+      layers: {},
+      provenance: {},
+    }));
+  });
+  renderSpawn(fake);
+  await settled();
+
+  // No working directory yet, so no resolve has run: plain "(default)".
+  expect(effortOptionLabels()[0]).toBe("(default)");
+  expect(screen.getByTestId("spawn-model-value").textContent).toBe("(default)");
+
+  await setWorkingDir(user, "/tmp/project");
+  await waitFor(() => expect(fake.calls.some((c) => c.method === "evener/launch/resolve")).toBe(true));
+
+  // Effort's empty option names the inherited effort.
+  await waitFor(() => expect(effortOptionLabels()[0]).toBe("high (default)"));
+  // The desktop Model field's closed trigger names the inherited model.
+  expect(modelTrigger().textContent).toContain("anthropic/claude-sonnet-4-5 (default)");
+  // The card's phone trigger follows the same rule the desktop field does.
+  expect(screen.getByTestId("spawn-model-value").textContent).toBe("anthropic/claude-sonnet-4-5 (default)");
+  // The mobile Reasoning effort row derives its resting label from the same
+  // options list, so it inherits the resolved wording too.
+  const mobileConfig = screen.getByTestId("spawn-mobile-config");
+  const effortRow = mobileConfig.querySelector('[data-label="Reasoning effort"]');
+  expect(effortRow?.textContent).toContain("high (default)");
+});
+
+// Access mode is the chip-level face of the launch-config sandbox field
+// (floor §1.8), so it follows the same resolved-default rule: its empty
+// option names the inherited sandbox in the chip's own friendly wording.
+test("Access mode names the resolved sandbox default once launch/resolve lands", async () => {
+  const user = userEvent.setup();
+  const fake = readyClient((f) => {
+    f.on("evener/launch/resolve", () => ({
+      effective: { sandbox: "workspace-write" },
+      layers: {},
+      provenance: {},
+    }));
+  });
+  renderSpawn(fake);
+  await settled();
+
+  // The desktop Access mode select lives inside the Advanced panel.
+  await user.click(screen.getByRole("button", { name: "Advanced options" }));
+  const accessOptionLabels = () => {
+    const select = screen.getByLabelText("Access mode") as HTMLSelectElement;
+    return Array.from(select.options).map((o) => o.textContent);
+  };
+
+  // No working directory yet, so no resolve has run: plain "(default)".
+  expect(accessOptionLabels()[0]).toBe("(default)");
+
+  await setWorkingDir(user, "/tmp/project");
+  await waitFor(() => expect(fake.calls.some((c) => c.method === "evener/launch/resolve")).toBe(true));
+
+  // The desktop Access mode select's empty option names the inherited sandbox.
+  await waitFor(() => expect(accessOptionLabels()[0]).toBe("Workspace write (default)"));
+  // The mobile Access mode row derives its resting label from the same
+  // options list, so it inherits the resolved wording too.
+  const mobileConfig = screen.getByTestId("spawn-mobile-config");
+  const accessRow = mobileConfig.querySelector('[data-label="Access mode"]');
+  expect(accessRow?.textContent).toContain("Workspace write (default)");
+});
+
+test("the (default) labels stay plain when the resolve fails", async () => {
+  const user = userEvent.setup();
+  const fake = readyClient((f) => {
+    f.on("evener/launch/resolve", () => {
+      throw new Error("resolve down");
+    });
+  });
+  renderSpawn(fake);
+  await settled();
+
+  await setWorkingDir(user, "/tmp/project");
+  await waitFor(() => expect(fake.calls.some((c) => c.method === "evener/launch/resolve")).toBe(true));
+  await act(async () => {}); // let the rejection's state writes land
+
+  expect(effortOptionLabels()[0]).toBe("(default)");
+  expect(modelTrigger().textContent).not.toContain("claude");
+  expect(screen.getByTestId("spawn-model-value").textContent).toBe("(default)");
+});
+
+// The Advanced panel's own unset labels resolve the same way, off the same
+// resolve the pane already runs: a boolean field reads "On (default)"/"Off
+// (default)" per the effective value.
+test("an Advanced-options boolean names the resolved default (On/Off)", async () => {
+  const user = userEvent.setup();
+  const fake = readyClient((f) => {
+    f.on("evener/launch/schema", () => ({
+      options: [
+        {
+          field: "no_project_prompts",
+          wireField: "noProjectPrompts",
+          label: "No project prompts",
+          group: "general",
+          kind: "boolean",
+          perLaunch: true,
+        },
+      ],
+    }));
+    f.on("evener/launch/resolve", () => ({
+      effective: { model: "anthropic/claude-sonnet-4-5", noProjectPrompts: true },
+      layers: {},
+      provenance: {},
+    }));
+  });
+  renderSpawn(fake);
+  await settled();
+
+  await setWorkingDir(user, "/tmp/project");
+  await waitFor(() => expect(fake.calls.some((c) => c.method === "evener/launch/resolve")).toBe(true));
+
+  await user.click(screen.getByRole("button", { name: "Advanced options" }));
+  const select = screen.getByLabelText("No project prompts") as HTMLSelectElement;
+  expect(Array.from(select.options).map((o) => o.textContent)).toEqual(["On (default)", "On", "Off"]);
+});
+
 // --- uncredentialed-default fallback ---------------------------------------
 //
 // A resolved default whose provider has no credentials is a guaranteed
@@ -946,8 +1562,8 @@ test("preselects the first launchable model when the resolved default's provider
   const fake = readyClient((f) => {
     f.on("model/list", () => ({
       data: [
-        { provider: "anthropic", model: "claude-sonnet-4-5" },
-        { provider: "anthropic", model: "claude-opus-4" },
+        { provider: "anthropic", model: "claude-sonnet-4-5", displayName: "anthropic/claude-sonnet-4-5" },
+        { provider: "anthropic", model: "claude-opus-4", displayName: "anthropic/claude-opus-4" },
       ],
     }));
     f.on("evener/launch/resolve", () => ({
@@ -1010,8 +1626,8 @@ test("a sticky per-project model default is never clobbered by the uncredentiale
   const fake = readyClient((f) => {
     f.on("model/list", () => ({
       data: [
-        { provider: "anthropic", model: "claude-opus-4" },
-        { provider: "anthropic", model: "claude-sonnet-4-5" },
+        { provider: "anthropic", model: "claude-opus-4", displayName: "anthropic/claude-opus-4" },
+        { provider: "anthropic", model: "claude-sonnet-4-5", displayName: "anthropic/claude-sonnet-4-5" },
       ],
     }));
     f.on("evener/launch/resolve", () => ({
@@ -1042,39 +1658,24 @@ test("surfaces the discard notice when a prefilled model is no longer offered (f
 // --- Effort: the ladder belongs to the selected model -----------------------
 //
 // The Effort select used to render one hardcoded ladder (minimal/low/medium/
-// high + none) for EVERY model. /api/models already serves each model's own
-// reasoning_effort_levels (web_spawn.go) and the merged catalog carries them,
-// so the select derives its options from the selected model's entry - or, with
-// Model left at "(default)", from the hub's resolved default model - falling
-// back to the classic ladder only when the hub can't enumerate levels.
+// high + none) for EVERY model. model/list now serves each model's own
+// reasoningEffortLevels, so the select derives its options from the selected
+// model's descriptor - or, with Model left at "(default)", from the hub's
+// resolved default model - falling back to the classic ladder only when the
+// hub can't enumerate levels.
 
-function stubModelsApi(models: Array<Record<string, unknown>>): void {
-  vi.stubGlobal(
-    "fetch",
-    vi.fn((url: string) => {
-      if (url.startsWith("/api/git/head")) {
-        return Promise.resolve({ ok: true, status: 200, json: () => Promise.resolve({ branch: "main" }) } as Response);
-      }
-      if (url.startsWith("/api/models")) {
-        return Promise.resolve({
-          ok: true,
-          status: 200,
-          json: () => Promise.resolve({ models, recent: [], diagnostics: [] }),
-        } as Response);
-      }
-      return Promise.resolve({ ok: false, status: 404, json: () => Promise.resolve({}) } as Response);
-    }),
-  );
+function scriptModelList(models: ModelDescriptor[]): void {
+  modelListOverride = models;
 }
 
 function effortSelect(): HTMLSelectElement {
   return screen.getByLabelText("Effort") as HTMLSelectElement;
 }
 
-function effortOptionLabels(): string[] {
+function effortOptionValues(): string[] {
   return within(effortSelect())
     .getAllByRole("option")
-    .map((option) => option.textContent ?? "");
+    .map((option) => (option as HTMLOptionElement).value);
 }
 
 async function pickModel(user: ReturnType<typeof userEvent.setup>, query: string, qualified: string): Promise<void> {
@@ -1089,18 +1690,20 @@ async function pickModel(user: ReturnType<typeof userEvent.setup>, query: string
 
 test("the Effort select offers the selected model's own ladder and re-derives it on a model switch", async () => {
   const user = userEvent.setup();
-  stubModelsApi([
+  scriptModelList([
     {
       provider: "anthropic",
       model: "claude-sonnet-4-5",
-      supports_reasoning: true,
-      reasoning_effort_levels: ["low", "medium", "high"],
+      displayName: "anthropic/claude-sonnet-4-5",
+      supportsReasoning: true,
+      reasoningEffortLevels: ["low", "medium", "high"],
     },
     {
       provider: "openai",
       model: "gpt-5",
-      supports_reasoning: true,
-      reasoning_effort_levels: ["minimal", "low", "medium", "high", "xhigh", "max"],
+      displayName: "openai/gpt-5",
+      supportsReasoning: true,
+      reasoningEffortLevels: ["minimal", "low", "medium", "high", "xhigh", "max"],
     },
   ]);
   renderSpawn(readyClient());
@@ -1108,33 +1711,40 @@ test("the Effort select offers the selected model's own ladder and re-derives it
 
   await pickModel(user, "gpt-5", "openai/gpt-5");
   await waitFor(() =>
-    expect(effortOptionLabels()).toEqual(["(default)", "minimal", "low", "medium", "high", "xhigh", "max", "none"]),
+    expect(effortOptionValues()).toEqual(["", "minimal", "low", "medium", "high", "xhigh", "max", "none"]),
   );
 
   // A chosen level the next model's ladder doesn't name can't stay selected -
   // the select must never display a value it doesn't offer.
   await user.selectOptions(effortSelect(), "xhigh");
   await pickModel(user, "sonnet", "anthropic/claude-sonnet-4-5");
-  await waitFor(() => expect(effortOptionLabels()).toEqual(["(default)", "low", "medium", "high", "none"]));
+  await waitFor(() => expect(effortOptionValues()).toEqual(["", "low", "medium", "high", "none"]));
   expect(effortSelect().value).toBe("");
 });
 
 test("a model the catalog says cannot reason disables the Effort select and clears a chosen effort", async () => {
   const user = userEvent.setup();
-  stubModelsApi([
+  scriptModelList([
     {
       provider: "anthropic",
       model: "claude-sonnet-4-5",
-      supports_reasoning: true,
-      reasoning_effort_levels: ["low", "medium", "high"],
+      displayName: "anthropic/claude-sonnet-4-5",
+      supportsReasoning: true,
+      reasoningEffortLevels: ["low", "medium", "high"],
     },
-    { provider: "openai", model: "gpt-5", supports_reasoning: false, reasoning_effort_levels: [] },
+    {
+      provider: "openai",
+      model: "gpt-5",
+      displayName: "openai/gpt-5",
+      supportsReasoning: false,
+      reasoningEffortLevels: [],
+    },
   ]);
   renderSpawn(readyClient());
   await settled();
 
   await pickModel(user, "sonnet", "anthropic/claude-sonnet-4-5");
-  await waitFor(() => expect(effortOptionLabels()).toEqual(["(default)", "low", "medium", "high", "none"]));
+  await waitFor(() => expect(effortOptionValues()).toEqual(["", "low", "medium", "high", "none"]));
   await user.selectOptions(effortSelect(), "high");
 
   await pickModel(user, "gpt-5", "openai/gpt-5");
@@ -1144,14 +1754,21 @@ test("a model the catalog says cannot reason disables the Effort select and clea
 
 test("with Model left at '(default)', the Effort select follows the hub's resolved default model", async () => {
   const user = userEvent.setup();
-  stubModelsApi([
+  scriptModelList([
     {
       provider: "anthropic",
       model: "claude-sonnet-4-5",
-      supports_reasoning: true,
-      reasoning_effort_levels: ["low", "medium", "high"],
+      displayName: "anthropic/claude-sonnet-4-5",
+      supportsReasoning: true,
+      reasoningEffortLevels: ["low", "medium", "high"],
     },
-    { provider: "openai", model: "gpt-5", supports_reasoning: true, reasoning_effort_levels: ["low", "high"] },
+    {
+      provider: "openai",
+      model: "gpt-5",
+      displayName: "openai/gpt-5",
+      supportsReasoning: true,
+      reasoningEffortLevels: ["low", "high"],
+    },
   ]);
   const fake = readyClient((f) => {
     f.on("evener/launch/resolve", () => ({
@@ -1170,73 +1787,64 @@ test("with Model left at '(default)', the Effort select follows the hub's resolv
   // fallback doesn't preselect it - Model stays "(default)" and the ladder
   // still has to be gpt-5's own.
   expect(modelTrigger().textContent).toContain("(default)");
-  await waitFor(() => expect(effortOptionLabels()).toEqual(["(default)", "low", "high", "none"]));
+  await waitFor(() => expect(effortOptionValues()).toEqual(["", "low", "high", "none"]));
 });
 
 test("the classic ladder remains when the hub can't enumerate the model's own levels", async () => {
   const user = userEvent.setup();
-  // The default fetch mock 404s /api/models, so the enrichment fails and the
-  // catalog degrades to label-only entries - the select must keep working.
+  // The default model/list fixture has no reasoning metadata, so the catalog
+  // degrades to label-only entries - the select must keep working.
   renderSpawn(readyClient());
   await settled();
 
   await pickModel(user, "gpt-5", "openai/gpt-5");
-  await waitFor(() => expect(effortOptionLabels()).toEqual(["(default)", "minimal", "low", "medium", "high", "none"]));
+  await waitFor(() => expect(effortOptionValues()).toEqual(["", "minimal", "low", "medium", "high", "none"]));
 });
 
-// The pane-level modelCatalog (the Effort select's source of
-// reasoningEffortLevels) loads via a debounced /api/models enrichment, while
-// the picker loads its OWN catalog on open. If the pane-level enrichment
-// fails (transient 502, network blip) while the picker's succeeds, the picker
-// shows models WITH effort levels, but the pane-level catalog degrades to
-// label-only entries (no reasoningEffortLevels). Picking a model discards the
-// picker's entry metadata - only the qualified string reaches
-// handleModelChange - so the Effort select falls back to the generic ladder
-// instead of the model's own, even though the picker just displayed it.
-test("the Effort select uses the picked model's own ladder even when the pane-level catalog enrichment failed", async () => {
+// The pane-level Effort preview and the picker share one harness/cwd-scoped
+// model/list promise. A rich response therefore reaches both consumers
+// without the old REST enrichment request or a two-source merge race.
+test("the Effort select and picker share one scoped model/list response", async () => {
   const user = userEvent.setup();
-  const models = [
-    {
-      provider: "openai",
-      model: "gpt-5",
-      supports_reasoning: true,
-      reasoning_effort_levels: ["minimal", "low", "medium", "high", "xhigh", "max"],
-    },
-  ];
-  // The picker opens before the 250ms debounce fires, so its /api/models call
-  // is the FIRST. Make it succeed (full enrichment). The pane-level debounced
-  // call is the SECOND — make it fail (502), so modelCatalog degrades to
-  // label-only entries with no reasoningEffortLevels.
-  let modelsApiCallCount = 0;
-  vi.stubGlobal(
-    "fetch",
-    vi.fn((url: string) => {
-      if (url.startsWith("/api/git/head")) {
-        return Promise.resolve({ ok: true, status: 200, json: () => Promise.resolve({ branch: "main" }) } as Response);
-      }
-      if (url.startsWith("/api/models")) {
-        modelsApiCallCount += 1;
-        if (modelsApiCallCount === 2) {
-          // Pane-level enrichment fails: the catalog degrades to label-only.
-          return Promise.resolve({ ok: false, status: 502, json: () => Promise.resolve({}) } as Response);
-        }
-        return Promise.resolve({
-          ok: true,
-          status: 200,
-          json: () => Promise.resolve({ models, recent: [], diagnostics: [] }),
-        } as Response);
-      }
-      return Promise.resolve({ ok: false, status: 404, json: () => Promise.resolve({}) } as Response);
-    }),
-  );
-  renderSpawn(readyClient());
+  let resolve: ((response: ModelListResponse) => void) | undefined;
+  const fake = readyClient((f) => {
+    f.on(
+      "model/list",
+      () =>
+        new Promise<ModelListResponse>((done) => {
+          resolve = done;
+        }),
+    );
+  });
+  renderSpawn(fake);
   await settled();
 
-  await pickModel(user, "gpt-5", "openai/gpt-5");
-  // The picker had the model's own ladder; the Effort select must show it too
-  // immediately, not the generic fallback - the picker already loaded the
-  // entry with reasoningEffortLevels and must not discard that metadata.
-  expect(effortOptionLabels()).toEqual(["(default)", "minimal", "low", "medium", "high", "xhigh", "max", "none"]);
+  await waitFor(() => expect(resolve).toBeDefined());
+  if (!resolve) throw new Error("model/list test response resolver was not installed");
+  const resolveModelList = resolve;
+  await user.click(modelTrigger());
+  expect(screen.getByRole("combobox", { name: "Model" })).toBeTruthy();
+  expect(fake.calls.filter((call) => call.method === "model/list")).toHaveLength(1);
+
+  await act(async () => {
+    resolveModelList({
+      data: [
+        {
+          provider: "openai",
+          model: "gpt-5",
+          displayName: "openai/gpt-5",
+          supportsReasoning: true,
+          reasoningEffortLevels: ["minimal", "low", "medium", "high", "xhigh", "max"],
+        },
+      ],
+    });
+  });
+
+  await user.click(await screen.findByText("openai/gpt-5"));
+  await waitFor(() =>
+    expect(effortOptionValues()).toEqual(["", "minimal", "low", "medium", "high", "xhigh", "max", "none"]),
+  );
+  expect(fake.calls.filter((call) => call.method === "model/list")).toHaveLength(1);
 });
 
 // --- post-success reset (floor §1.14 L186, wave6-report.md gap) -----------
@@ -1647,16 +2255,17 @@ test("shows a Loader, not static text, while the spawn request is in flight", as
 // is sent must be the same value.
 test("an effort the fallback ladder cannot name is still offered, not silently sent as (default)", async () => {
   const user = userEvent.setup();
-  stubModelsApi([
+  scriptModelList([
     {
       provider: "openai",
       model: "gpt-5",
-      supports_reasoning: true,
-      reasoning_effort_levels: ["minimal", "low", "medium", "high", "xhigh", "max"],
+      displayName: "openai/gpt-5",
+      supportsReasoning: true,
+      reasoningEffortLevels: ["minimal", "low", "medium", "high", "xhigh", "max"],
     },
     // No reasoning metadata at all: catalogEffortLevels returns null here, so
     // the select falls back to the guessed minimal/low/medium/high ladder.
-    { provider: "anthropic", model: "claude-sonnet-4-5" },
+    { provider: "anthropic", model: "claude-sonnet-4-5", displayName: "anthropic/claude-sonnet-4-5" },
   ]);
   let started: ThreadStartParams | undefined;
   renderSpawn(
@@ -1670,14 +2279,14 @@ test("an effort the fallback ladder cannot name is still offered, not silently s
   await settled();
 
   await pickModel(user, "gpt-5", "openai/gpt-5");
-  await waitFor(() => expect(effortOptionLabels()).toContain("xhigh"));
+  await waitFor(() => expect(effortOptionValues()).toContain("xhigh"));
   await user.selectOptions(effortSelect(), "xhigh");
 
   await pickModel(user, "sonnet", "anthropic/claude-sonnet-4-5");
   // The fallback ladder took over (it starts at "minimal", the real one did
   // not) and still offers the preserved level, because state still holds it.
-  await waitFor(() => expect(effortOptionLabels()).toContain("minimal"));
-  expect(effortOptionLabels()).toContain("xhigh");
+  await waitFor(() => expect(effortOptionValues()).toContain("minimal"));
+  expect(effortOptionValues()).toContain("xhigh");
 
   const displayed = effortSelect().value;
   expect(displayed).toBe("xhigh");
@@ -1688,42 +2297,21 @@ test("an effort the fallback ladder cannot name is still offered, not silently s
   expect(started?.reasoningEffort ?? "").toBe(displayed);
 });
 
-// The Effort ladder needs the merged model catalog, and the effect that loads it
-// is keyed on loadCatalog -- a useCallback over [loadModels, harness, cwd],
-// where loadModels is itself over [client, harness, cwd]. cwd updates straight
-// from the field's onChange, so every character typed into the working-directory
-// path mints a new callback identity and refires the effect: one model/list RPC
-// plus one /api/models fetch per keystroke, to learn a ladder that only matters
-// when the Effort select is used.
+// The Effort ladder needs the scoped model catalog. The loader is keyed by
+// harness+cwd, but its request is debounced so every character typed into the
+// working-directory path does not issue a separate model/list RPC.
 test("typing a working directory does not reload the model catalog per keystroke", async () => {
   const user = userEvent.setup();
-  let catalogFetches = 0;
-  vi.stubGlobal(
-    "fetch",
-    vi.fn((url: string) => {
-      if (url.startsWith("/api/git/head")) {
-        return Promise.resolve({ ok: true, status: 200, json: () => Promise.resolve({ branch: "main" }) } as Response);
-      }
-      if (url.startsWith("/api/models")) {
-        catalogFetches++;
-        return Promise.resolve({
-          ok: true,
-          status: 200,
-          json: () => Promise.resolve({ models: [], recent: [], diagnostics: [] }),
-        } as Response);
-      }
-      return Promise.resolve({ ok: false, status: 404, json: () => Promise.resolve({}) } as Response);
-    }),
-  );
-  renderSpawn(readyClient());
+  const fake = readyClient();
+  renderSpawn(fake);
   await settled();
 
-  const baseline = catalogFetches;
+  const baseline = fake.calls.filter((call) => call.method === "model/list").length;
   await user.type(screen.getByLabelText("Working directory"), "/tmp/some/project");
   await settled();
 
   // 17 characters typed. One reload for the settled path is the contract; a
   // reload per character is the defect.
-  const perKeystroke = catalogFetches - baseline;
+  const perKeystroke = fake.calls.filter((call) => call.method === "model/list").length - baseline;
   expect(perKeystroke).toBeLessThanOrEqual(1);
 });

@@ -120,3 +120,45 @@ func TestLaunchOverridesModal_ApplyEditMCPs(t *testing.T) {
 		t.Fatalf("MCPs=%+v", cur.MCPs)
 	}
 }
+
+// TestLaunchOverridesModal_ResolvedDefaultLabels: an unset override renders
+// the bare "(default)" label until a resolve result arrives, then renders the
+// resolved effective value with the "(default)" suffix — in both the schema
+// and fallback row paths.
+func TestLaunchOverridesModal_ResolvedDefaultLabels(t *testing.T) {
+	m := NewLaunchOverridesModalWithSchema(appwire.LaunchConfigLayer{}, []appwire.LaunchOption{
+		{Field: "reasoning_effort", Label: "Reasoning effort", Kind: "select", PerLaunch: true},
+	})
+	if v := m.View(); strings.Contains(v, "high (default)") {
+		t.Fatalf("no resolve yet, view should not show a resolved label:\n%s", v)
+	}
+	updated, _ := m.Update(LaunchResolveResultMsg{Resolved: appwire.LaunchConfigResolved{
+		Effective: appwire.LaunchConfigLayer{ReasoningEffort: "high"},
+	}})
+	m = updated.(LaunchOverridesModal)
+	if v := m.View(); !strings.Contains(v, "high (default)") {
+		t.Fatalf("schema rows should render the resolved default label:\n%s", v)
+	}
+
+	// Fallback (schema-less) rows follow the same rule.
+	twoHundred := 200
+	fallback := NewLaunchOverridesModal()
+	updated, _ = fallback.Update(LaunchResolveResultMsg{Resolved: appwire.LaunchConfigResolved{
+		Effective: appwire.LaunchConfigLayer{MaxRounds: &twoHundred},
+	}})
+	if v := updated.(LaunchOverridesModal).View(); !strings.Contains(v, "200 (default)") {
+		t.Fatalf("fallback rows should render the resolved default label:\n%s", v)
+	}
+}
+
+// TestLaunchOverridesModal_ResolveErrorKeepsPlainDefault: a failed resolve
+// leaves the bare "(default)" label in place.
+func TestLaunchOverridesModal_ResolveErrorKeepsPlainDefault(t *testing.T) {
+	m := NewLaunchOverridesModalWithSchema(appwire.LaunchConfigLayer{}, []appwire.LaunchOption{
+		{Field: "reasoning_effort", Label: "Reasoning effort", Kind: "select", PerLaunch: true},
+	})
+	updated, _ := m.Update(LaunchResolveResultMsg{Err: errOOM})
+	if v := updated.(LaunchOverridesModal).View(); !strings.Contains(v, "(default)") || strings.Contains(v, "high") {
+		t.Fatalf("failed resolve should keep the bare default label:\n%s", v)
+	}
+}

@@ -35,6 +35,26 @@ func TestClientURLPreservesQueryString(t *testing.T) {
 	}
 }
 
+func TestNavigationContractsHaveNoSequenceMember(t *testing.T) {
+	values := []any{
+		hubapi.NavigationManifest{}, hubapi.NavigationSectionResource{}, hubapi.NavigationPinSectionCatalog{},
+		hubapi.NavigationProjectCatalog{}, hubapi.NavigationProjectResource{}, hubapi.NavigationProjectPage{}, hubapi.NavigationSessionLocation{},
+	}
+	for _, value := range values {
+		raw, err := json.Marshal(value)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var object map[string]json.RawMessage
+		if err := json.Unmarshal(raw, &object); err != nil {
+			t.Fatal(err)
+		}
+		if _, ok := object["sequence"]; ok {
+			t.Fatalf("%T unexpectedly has sequence member: %s", value, raw)
+		}
+	}
+}
+
 func TestPinSectionRESTTypesJSONRoundTrip(t *testing.T) {
 	want := hubapi.SessionPinMutationResponse{
 		OK:      true,
@@ -69,10 +89,6 @@ func TestClientHealth(t *testing.T) {
 		Version:   "1.0.0",
 		StartedAt: time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC),
 		HubAddr:   "127.0.0.1:9180",
-		Capabilities: hubapi.HealthCapabilities{
-			Tree:  true,
-			Spawn: true,
-		},
 	}
 	client, srv := newTestClient(t, func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodGet {
@@ -95,12 +111,6 @@ func TestClientHealth(t *testing.T) {
 	if got.HubAddr != want.HubAddr {
 		t.Errorf("hub_addr: got %q, want %q", got.HubAddr, want.HubAddr)
 	}
-	if !got.Capabilities.Tree {
-		t.Error("expected Tree capability")
-	}
-	if !got.Capabilities.Spawn {
-		t.Error("expected Spawn capability")
-	}
 	if !got.StartedAt.Equal(want.StartedAt) {
 		t.Errorf("started_at: got %v, want %v", got.StartedAt, want.StartedAt)
 	}
@@ -119,48 +129,6 @@ func TestClientHealth_Error(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "400") {
 		t.Errorf("error should report status code 400, got %v", err)
-	}
-}
-
-func TestClientTree(t *testing.T) {
-	want := hubapi.TreeResponse{
-		Projects: []hubapi.TreeProject{
-			{Key: "proj1", Name: "Project 1"},
-		},
-	}
-	client, srv := newTestClient(t, func(w http.ResponseWriter, r *http.Request) {
-		if r.Method != http.MethodGet {
-			t.Errorf("method: got %s, want GET", r.Method)
-		}
-		if r.URL.Path != "/api/tree" {
-			t.Errorf("path: got %s, want /api/tree", r.URL.Path)
-		}
-		_ = json.NewEncoder(w).Encode(want)
-	})
-	defer srv.Close()
-
-	got, err := client.Tree(context.Background())
-	if err != nil {
-		t.Fatalf("Tree: %v", err)
-	}
-	if len(got.Projects) != 1 || got.Projects[0].Key != "proj1" {
-		t.Errorf("projects: got %+v", got.Projects)
-	}
-}
-
-func TestClientTree_Error(t *testing.T) {
-	client, srv := newTestClient(t, func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(http.StatusInternalServerError)
-		_ = json.NewEncoder(w).Encode(hubapi.TreeResponse{})
-	})
-	defer srv.Close()
-
-	_, err := client.Tree(context.Background())
-	if err == nil {
-		t.Fatal("expected error for 500 response")
-	}
-	if !strings.Contains(err.Error(), "500") {
-		t.Errorf("error should report status code 500, got %v", err)
 	}
 }
 
@@ -212,140 +180,6 @@ func TestClientSession_Error(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "404") {
 		t.Errorf("error should report status code 404, got %v", err)
-	}
-}
-
-func TestClientSpawnSchema(t *testing.T) {
-	want := hubapi.SpawnSchema{
-		Fields: []hubapi.SpawnField{
-			{Name: "prompt", Type: "string", Required: true},
-		},
-	}
-	client, srv := newTestClient(t, func(w http.ResponseWriter, r *http.Request) {
-		if r.Method != http.MethodGet {
-			t.Errorf("method: got %s, want GET", r.Method)
-		}
-		if r.URL.Path != "/api/spawn-schema" {
-			t.Errorf("path: got %s, want /api/spawn-schema", r.URL.Path)
-		}
-		_ = json.NewEncoder(w).Encode(want)
-	})
-	defer srv.Close()
-
-	got, err := client.SpawnSchema(context.Background())
-	if err != nil {
-		t.Fatalf("SpawnSchema: %v", err)
-	}
-	if len(got.Fields) != 1 || got.Fields[0].Name != "prompt" {
-		t.Errorf("fields: got %+v", got.Fields)
-	}
-}
-
-func TestClientSpawnSchema_Error(t *testing.T) {
-	client, srv := newTestClient(t, func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(http.StatusServiceUnavailable)
-		_ = json.NewEncoder(w).Encode(hubapi.SpawnSchema{})
-	})
-	defer srv.Close()
-
-	_, err := client.SpawnSchema(context.Background())
-	if err == nil {
-		t.Fatal("expected error for 503 response")
-	}
-	if !strings.Contains(err.Error(), "503") {
-		t.Errorf("error should report status code 503, got %v", err)
-	}
-}
-
-func TestClientSpawn(t *testing.T) {
-	want := hubapi.SpawnResponse{
-		Ref:       "local:abc123",
-		HostID:    "local",
-		SessionID: "abc123",
-	}
-	client, srv := newTestClient(t, func(w http.ResponseWriter, r *http.Request) {
-		if r.Method != http.MethodPost {
-			t.Errorf("method: got %s, want POST", r.Method)
-		}
-		if r.URL.Path != "/api/spawn" {
-			t.Errorf("path: got %s, want /api/spawn", r.URL.Path)
-		}
-		var req hubapi.SpawnRequest
-		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-			t.Errorf("decode body: %v", err)
-		}
-		if req.Prompt != "do something" {
-			t.Errorf("prompt: got %q, want %q", req.Prompt, "do something")
-		}
-		_ = json.NewEncoder(w).Encode(want)
-	})
-	defer srv.Close()
-
-	req := hubapi.SpawnRequest{Prompt: "do something"}
-	got, err := client.Spawn(context.Background(), req)
-	if err != nil {
-		t.Fatalf("Spawn: %v", err)
-	}
-	if got.Ref != want.Ref {
-		t.Errorf("ref: got %q, want %q", got.Ref, want.Ref)
-	}
-	if got.HostID != want.HostID {
-		t.Errorf("host_id: got %q, want %q", got.HostID, want.HostID)
-	}
-	if got.SessionID != want.SessionID {
-		t.Errorf("session_id: got %q, want %q", got.SessionID, want.SessionID)
-	}
-}
-
-func TestClientSpawn_Error(t *testing.T) {
-	client, srv := newTestClient(t, func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(http.StatusInternalServerError)
-	})
-	defer srv.Close()
-
-	_, err := client.Spawn(context.Background(), hubapi.SpawnRequest{})
-	if err == nil {
-		t.Fatal("expected error for 500 response")
-	}
-}
-
-func TestClientModels(t *testing.T) {
-	want := []hubapi.ModelOption{
-		{Provider: "openai", Model: "gpt-4o"},
-	}
-	client, srv := newTestClient(t, func(w http.ResponseWriter, r *http.Request) {
-		if r.Method != http.MethodGet {
-			t.Errorf("method: got %s, want GET", r.Method)
-		}
-		if r.URL.Path != "/api/models" {
-			t.Errorf("path: got %s, want /api/models", r.URL.Path)
-		}
-		_ = json.NewEncoder(w).Encode(want)
-	})
-	defer srv.Close()
-
-	got, err := client.Models(context.Background())
-	if err != nil {
-		t.Fatalf("Models: %v", err)
-	}
-	if len(got) != 1 || got[0].Model != "gpt-4o" {
-		t.Errorf("models: got %+v", got)
-	}
-}
-
-func TestClientModels_Error(t *testing.T) {
-	client, srv := newTestClient(t, func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(http.StatusBadGateway)
-		_ = json.NewEncoder(w).Encode([]hubapi.ModelOption{})
-	})
-	defer srv.Close()
-
-	_, err := client.Models(context.Background())
-	if err == nil {
-		t.Fatal("expected error for 502 response")
-	}
-	if !strings.Contains(err.Error(), "502") {
-		t.Errorf("error should report status code 502, got %v", err)
 	}
 }
 

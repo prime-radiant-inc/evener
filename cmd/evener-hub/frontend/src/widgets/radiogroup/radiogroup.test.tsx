@@ -55,6 +55,21 @@ test("renders one visible radio per option", () => {
   expect(screen.getByRole("radio", { name: "Light" })).toBeTruthy();
 });
 
+test("uses an option accessible label without changing its visible label", () => {
+  render(
+    <RadioGroup
+      label="Transcript detail"
+      value="full"
+      options={[{ value: "full", label: "Full", accessibleLabel: "Full detail" }]}
+      onChange={() => {}}
+    />,
+  );
+
+  expect(screen.getByText("Full")).toBeTruthy();
+  expect(screen.getByRole("radio", { name: "Full detail" })).toBeTruthy();
+  expect(screen.queryByRole("radio", { name: "Full" })).toBeNull();
+});
+
 test("aria-checked reflects the current value, exactly one option at a time", () => {
   render(<RadioGroup label="Theme" value="dark" options={THEME_OPTIONS} onChange={() => {}} />);
   expect(screen.getByRole("radio", { name: "System" }).getAttribute("aria-checked")).toBe("false");

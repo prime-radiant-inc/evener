@@ -5,6 +5,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -474,6 +475,32 @@ func TestForkSession_RestorePreservesAcceptedInputBudget(t *testing.T) {
 	requireBudgetExhaustion(t, err, exhaustedBudgetTurns, 7, false)
 	if got := len(adapter.Requests()); got != 5 {
 		t.Fatalf("model requests after rejected input = %d, want 5", got)
+	}
+}
+
+func TestForkSession_PreservesSelectedPluginDirs(t *testing.T) {
+	t.Parallel()
+	stateDir, parentID := buildParentSession(t)
+	parentMeta, err := schema.LoadSessionMeta(stateDir, parentID)
+	if err != nil {
+		t.Fatalf("LoadSessionMeta(parent): %v", err)
+	}
+	want := []string{"/plugins/selected-alpha", "/plugins/selected-beta"}
+	parentMeta.Config.PluginDirs = want
+	if err := schema.SaveSessionMeta(stateDir, parentMeta); err != nil {
+		t.Fatalf("SaveSessionMeta(parent): %v", err)
+	}
+
+	childID, err := ForkSession(stateDir, parentID, 3, "second task, selected plugins", "")
+	if err != nil {
+		t.Fatalf("ForkSession: %v", err)
+	}
+	childMeta, err := schema.LoadSessionMeta(stateDir, childID)
+	if err != nil {
+		t.Fatalf("LoadSessionMeta(child): %v", err)
+	}
+	if !slices.Equal(childMeta.Config.PluginDirs, want) {
+		t.Fatalf("child PluginDirs = %v, want %v", childMeta.Config.PluginDirs, want)
 	}
 }
 

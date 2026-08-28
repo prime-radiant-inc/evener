@@ -4,6 +4,8 @@ import (
 	"embed"
 	"encoding/json"
 	"regexp"
+	"slices"
+	"strings"
 	"sync"
 )
 
@@ -17,6 +19,54 @@ var datedModelSuffix = regexp.MustCompile(`-\d{8}(-v\d+)?$`)
 // IDs without a dated suffix are returned unchanged.
 func familyModelID(modelID string) string {
 	return datedModelSuffix.ReplaceAllString(modelID, "")
+}
+
+// claudeCatalogFamilyID returns the bare Anthropic family ID for a catalog key
+// whose serving path is encoded in the ID. The returned ID is used only to find
+// Evener capability overlays; the catalog entry itself remains the lookup
+// result, so serving-path pricing and limits are not replaced with direct-API
+// metadata.
+//
+// LiteLLM uses several provider-specific spellings for the same Anthropic
+// family. Keep this allowlist narrow: a model name containing "claude" is not
+// enough to prove that it uses the Anthropic Messages request contract.
+func claudeCatalogFamilyID(modelID string) (string, bool) {
+	id := strings.TrimSuffix(strings.TrimSpace(modelID), "[1m]")
+
+	pathQualified := strings.HasPrefix(id, "vertex_ai/") ||
+		strings.HasPrefix(id, "azure_ai/") ||
+		strings.HasPrefix(id, "bedrock/") ||
+		strings.HasPrefix(id, "anthropic/") ||
+		strings.HasPrefix(id, "openrouter/anthropic/") ||
+		strings.HasPrefix(id, "perplexity/anthropic/")
+	if pathQualified {
+		id = id[strings.LastIndex(id, "/")+1:]
+	}
+	for _, prefix := range []string{
+		"anthropic.",
+		"us.anthropic.",
+		"eu.anthropic.",
+		"au.anthropic.",
+		"jp.anthropic.",
+		"global.anthropic.",
+		"apac.anthropic.",
+		"us-gov.anthropic.",
+	} {
+		if stripped, ok := strings.CutPrefix(id, prefix); ok {
+			id = stripped
+			break
+		}
+	}
+
+	if i := strings.IndexByte(id, '@'); i >= 0 {
+		id = id[:i]
+	}
+	id = strings.TrimSuffix(id, ":0")
+	id = strings.TrimSuffix(id, "-v1")
+	if !strings.HasPrefix(id, "claude-") {
+		return "", false
+	}
+	return familyModelID(id), true
 }
 
 //go:embed data/litellm_model_catalog.json data/evener_model_catalog_overrides.json
@@ -59,11 +109,14 @@ func loadEmbeddedModelCatalog(
 }
 
 // applyOverrides merges Evener-specific model metadata on top of the base catalog.
-// An override entry that matches an existing model (by exact ID, or by dated-family
-// ID for dated snapshots) overlays it. An override entry that matches no model and
-// carries base metadata (a context window) materializes a Evener-only catalog entry —
-// this is how Evener ships models LiteLLM doesn't cover, e.g. kimi-for-coding.
-// Overlay-only entries that match nothing (and the "_comment" key) are no-ops.
+// An override entry that matches an existing model (by exact ID, dated-family ID
+// for snapshots, or a supported provider-qualified Claude family) overlays it.
+// A qualified family inherits capability fields from its bare override while
+// retaining its own serving metadata. An override entry that matches no model
+// and carries base metadata (a context window) materializes a Evener-only
+// catalog entry — this is how Evener ships models LiteLLM doesn't cover, e.g.
+// kimi-for-coding. Overlay-only entries that match nothing (and the "_comment"
+// key) are no-ops.
 func applyOverrides(cat *ModelCatalog, data []byte) {
 	var raw map[string]any
 	if err := json.Unmarshal(data, &raw); err != nil {
@@ -77,12 +130,25 @@ func applyOverrides(cat *ModelCatalog, data []byte) {
 		includeAliases := ok
 		key := m.ID
 		if !ok {
-			// Dated snapshots (claude-opus-4-5-20251101[-v1]) carry no override of
-			// their own; inherit the bare family override so effort metadata applies
-			// to dated IDs too. An exact match above always wins.
+			// Dated snapshots (claude-opus-4-5-20251101[-v1]) and supported
+			// provider-qualified Claude IDs carry no override of their own; inherit
+			// the bare family override so capability metadata applies to those IDs
+			// too. An exact match above always wins.
+			candidates := make([]string, 0, 2)
 			if fam := familyModelID(m.ID); fam != m.ID {
-				entry, ok = raw[fam]
-				key = fam
+				candidates = append(candidates, fam)
+			}
+			if fam, qualified := claudeCatalogFamilyID(m.ID); qualified && fam != m.ID {
+				if !slices.Contains(candidates, fam) {
+					candidates = append(candidates, fam)
+				}
+			}
+			for _, candidate := range candidates {
+				entry, ok = raw[candidate]
+				if ok {
+					key = candidate
+					break
+				}
 			}
 			if !ok {
 				continue

@@ -84,10 +84,11 @@ type serveServer interface {
 	SetThreadEnvelopeSource(server.ThreadEnvelopeSource)
 	RefreshThreadEnvelope()
 	SetModelFunc(func(string) error)
+	SetVisionModelFunc(func(string) error)
 	UpdateSessionInfo(sessionID, model, profile string)
 	SetNameFunc(func(string))
 	SetReasoningEffortFunc(func(string))
-	SetListModelsFunc(func(context.Context) ([]server.ModelsResponseItem, error))
+	SetListModelsFunc(func(context.Context) ([]appwire.ModelDescriptor, error))
 	SetTasksFunc(func() any)
 	SetJobsFunc(func(appwire.JobsListParams) (any, error))
 	SetJobOutputFunc(func(string, int64, int64) (any, bool, error))
@@ -113,6 +114,7 @@ type serveDeps struct {
 	getwd            func() (string, error)
 	ensureConfigDirs func() error
 	seedMarketplaces func() error
+	resolvePlugins   func([]string, *[]string) (plugins.LaunchPluginResolution, error)
 	resolveMeta      func(string, string, bool) (schema.SessionMeta, error)
 	newClient        func(string, io.Writer) (*llm.Client, providercfg.Config, bool, func() error, error)
 	attachAPILogger  func(*llm.Client, string, io.Writer) (func(string) error, func() error, error)
@@ -173,8 +175,7 @@ func defaultServeDeps() serveDeps {
 	return serveDeps{
 		newFlagSet: flag.NewFlagSet,
 		getwd:      os.Getwd, ensureConfigDirs: cmdutil.EnsureUserConfigDirs,
-		seedMarketplaces: func() error { _, err := plugins.NewManager("").SeedDefaultMarketplaces(); return err },
-		resolveMeta:      cmdutil.ResolveSessionMeta, newClient: newUnloggedServeLLMClient,
+		resolveMeta: cmdutil.ResolveSessionMeta, newClient: newUnloggedServeLLMClient,
 		attachAPILogger: serveAttachSessionAPILogger,
 		buildProfile:    buildInitialProfile, applyCheap: applyFastCheapModel,
 		newSession: agent.NewSession, restoreSession: agent.RestoreSessionFromMetaWithConfig,
@@ -243,6 +244,7 @@ func runServeWithDeps(args []string, deps serveDeps) error {
 	addr := fs.String("addr", "127.0.0.1:9131", "listen address")
 	model := fs.String("model", "", "LLM model identifier (provider/model)")
 	fastCheapModel := fs.String("fast-cheap-model", "", "auxiliary model for side calls (naming, summarization, web fetch); 'provider/model' may use a different provider than --model, or a bare 'model' for the active provider")
+	visionModel := fs.String("vision-model", "", "vision side-channel model: 'off' disables image description, 'provider/model' or bare 'model' routes it (default: the session model)")
 	workDir := fs.String("dir", "", "working directory")
 	stateDir := fs.String("state-dir", "", "override runtime state directory")
 	runDirFlag := fs.String("run-dir", "", "override rendezvous run directory")
@@ -276,6 +278,9 @@ func runServeWithDeps(args []string, deps serveDeps) error {
 	fs.Var(&mcpConfigs, "mcp-config", "path to .mcp.json file (repeatable)")
 	var pluginDirs cmdutil.StringSliceFlag
 	fs.Var(&pluginDirs, "plugin-dir", "plugin directory (repeatable)")
+	pluginRoot := fs.String("plugin-root", "", "internal plugin registry root override")
+	var enabledPlugins pluginSelectionFlag
+	fs.Var(&enabledPlugins, "enabled-plugins", "comma-separated plugin names to enable (empty selects none)")
 	var modelFallbacks cmdutil.StringSliceFlag
 	fs.Var(&modelFallbacks, "model-fallback", "fallback model (provider/model) tried on permanent provider errors (repeatable)")
 	openAIResponsesContinuation := fs.String("openai-responses-continuation", "", "OpenAI Responses continuation mode: off|auto (default: off)")
@@ -292,6 +297,27 @@ func runServeWithDeps(args []string, deps serveDeps) error {
 		printServeEnvVars(os.Stderr)
 	}
 	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	pluginManager := plugins.NewManager(*pluginRoot)
+	if err := rejectPluginSelectionWithResume(enabledPlugins.Value(), *resume, *resumeLast); err != nil {
+		return err
+	}
+	resolvePlugins := deps.resolvePlugins
+	if resolvePlugins == nil {
+		resolvePlugins = func(explicit []string, enabled *[]string) (plugins.LaunchPluginResolution, error) {
+			return pluginManager.ResolveForLaunch(explicit, enabled)
+		}
+	}
+	resolvedPlugins, resolveErr := resolvePlugins([]string(pluginDirs), enabledPlugins.Value())
+	if resolveErr != nil && enabledPlugins.Value() != nil {
+		return fmt.Errorf("resolve plugins: %w", resolveErr)
+	}
+	if resolveErr != nil {
+		fmt.Fprintf(os.Stderr, "warning: listing installed plugins: %v\n", resolveErr)
+	}
+	renderLaunchPluginDiagnostics(os.Stderr, resolvedPlugins.Diagnostics)
+	if err := resolvedPlugins.ValidateSelection(); err != nil {
 		return err
 	}
 	resolvedOpenAIResponsesContinuation := resolveOpenAIResponsesContinuation(*openAIResponsesContinuation, nil)
@@ -323,7 +349,14 @@ func runServeWithDeps(args []string, deps serveDeps) error {
 	if err := deps.ensureConfigDirs(); err != nil {
 		return err
 	}
-	if err := deps.seedMarketplaces(); err != nil {
+	seedMarketplaces := deps.seedMarketplaces
+	if seedMarketplaces == nil {
+		seedMarketplaces = func() error {
+			_, err := pluginManager.SeedDefaultMarketplaces()
+			return err
+		}
+	}
+	if err := seedMarketplaces(); err != nil {
 		fmt.Fprintf(os.Stderr, "warning: seeding default marketplaces: %v\n", err)
 	}
 
@@ -341,7 +374,6 @@ func runServeWithDeps(args []string, deps serveDeps) error {
 			return fmt.Errorf("resolve project state: %w", err)
 		}
 	}
-
 	resuming := *resume != "" || *resumeLast
 	var resumedMeta schema.SessionMeta
 	if resuming {
@@ -397,6 +429,10 @@ func runServeWithDeps(args []string, deps serveDeps) error {
 	if err != nil {
 		return err
 	}
+	visionModelVal, err := applyVisionModel(profile, *visionModel, client)
+	if err != nil {
+		return err
+	}
 	env := execenv.NewLocalExecutionEnvironment(wd)
 	// A daemon/session launched outside the developer's shell rc chain (macOS
 	// launchd, a GUI app, systemd) inherits a PATH lacking tool directories like
@@ -419,10 +455,11 @@ func runServeWithDeps(args []string, deps serveDeps) error {
 		SkillsDirs:                  []string(skillsDirs),
 		MCPConfigFiles:              []string(mcpConfigs),
 		MCPInline:                   []string(mcpServers),
-		PluginDirs:                  plugins.NewManager("").EnabledPluginDirs([]string(pluginDirs)),
+		PluginDirs:                  resolvedPlugins.SelectedDirs,
 		ContextStrategy:             *contextStrategy,
 		ExportATIFPath:              *exportATIF,
 		ExportATIFProviderHandles:   *exportATIFProviderHandles,
+		VisionModel:                 visionModelVal,
 		NonInteractive:              *nonInteractive,
 		SystemPromptAsUser:          *systemPromptAsUser,
 		ModelFallbacks:              []string(modelFallbacks),
@@ -461,6 +498,7 @@ func runServeWithDeps(args []string, deps serveDeps) error {
 			Project:                     project,
 			ResolveProfile:              sessionCfg.ResolveProfile,
 			AcquireSessionOwnership:     reserveSession,
+			OwnershipAlreadyAcquired:    true,
 			ModelFallbacks:              sessionCfg.ModelFallbacks,
 			OpenAIResponsesContinuation: resolvedOpenAIResponsesContinuation,
 		})
@@ -857,6 +895,9 @@ func runServeWithDeps(args []string, deps serveDeps) error {
 	})
 	srv.SetNameFunc(func(name string) { getSession().Rename(name) })
 	srv.SetReasoningEffortFunc(func(effort string) { getSession().SetReasoningEffort(effort) })
+	// Resolve the session per call like the model/effort hooks above: binding one
+	// session's method value here would pin the hook to the pre-/clear session.
+	srv.SetVisionModelFunc(func(v string) error { return getSession().SetVisionModel(v) })
 	srv.SetListModelsFunc(cmdutil.ListModelsFunc(client, profile.ID()))
 	srv.SetTasksFunc(func() any { return getSession().Tasks() })
 	srv.SetJobsFunc(func(params appwire.JobsListParams) (any, error) {
@@ -1259,6 +1300,32 @@ func applyFastCheapModel(profile *provider.Profile, raw string, client *llm.Clie
 	return provider.WithCheapModel(profile, raw), nil
 }
 
+// applyVisionModel validates the --vision-model ref against the registered
+// providers and returns the canonical SessionConfig.VisionModel value. "off"
+// (canonicalized to lowercase) disables the side-channel, a bare model keeps
+// the active provider, and "provider/model" pins a provider that must be
+// registered (configured AND credentialed) — the same rule --fast-cheap-model
+// enforces. The active profile is never touched.
+func applyVisionModel(profile *provider.Profile, raw string, client *llm.Client) (string, error) {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return "", nil
+	}
+	if strings.EqualFold(raw, "off") {
+		return "off", nil
+	}
+	if prov, model, ok := strings.Cut(raw, "/"); ok {
+		if prov == "" || model == "" {
+			return "", fmt.Errorf("--vision-model %q is malformed: want \"model\" or \"provider/model\"", raw)
+		}
+		if prov != profile.ID() && !clientHasProvider(client, prov) {
+			return "", fmt.Errorf("--vision-model provider %q is not configured or has no credential (active provider %q); available providers: %s",
+				prov, profile.ID(), strings.Join(client.ProviderNames(), ", "))
+		}
+	}
+	return raw, nil
+}
+
 func clientHasProvider(client *llm.Client, name string) bool {
 	if client == nil {
 		return false
@@ -1282,6 +1349,9 @@ func evenerUsageFromLLM(u llm.Usage) *appwire.EvenerUsage {
 
 func agentToServerDetailedStatus(ds agent.DetailedStatus) server.DetailedStatus {
 	var out server.DetailedStatus
+	if ds.Plugins != nil {
+		out.Plugins = make([]server.PluginStatusInfo, 0, len(ds.Plugins))
+	}
 
 	for _, t := range ds.Tools {
 		out.Tools = append(out.Tools, server.ToolInfo{Name: t.Name, Source: t.Source})
@@ -1469,6 +1539,10 @@ func (l liveThreadEnvelopeSource) ReasoningInfo() (string, []string, bool) {
 	sess := l.session()
 	p := sess.Profile()
 	return sess.ReasoningEffort(), p.ReasoningEffortLevels(), p.SupportsReasoning()
+}
+
+func (l liveThreadEnvelopeSource) VisionModel() string {
+	return l.session().VisionModel()
 }
 
 func (l liveThreadEnvelopeSource) SessionMeta() schema.SessionMeta {

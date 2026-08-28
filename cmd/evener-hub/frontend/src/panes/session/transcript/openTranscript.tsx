@@ -1,8 +1,7 @@
 import * as paneActions from "../../../shell/paneActions";
 import { openTopLevelSession } from "../../../shell/sessionPlacement";
 import { workspaceStore } from "../../../shell/workspace";
-import { Button, IconButton } from "../../../widgets";
-import { OpenBesideIcon } from "./fileOpenBeside";
+import { OpenButton } from "../../../widgets";
 
 function transcriptRefOf(params: unknown): string | undefined {
   const ref = (params as { ref?: unknown }).ref;
@@ -60,41 +59,16 @@ export function OpenTranscriptButton({
   transcriptRef: string;
   parentRef?: string;
   label?: string;
-  // iconOnly is the dense-row form: just the glyph with the accessible name,
-  // for surfaces (the activity tree's first line) with no room for the word.
   iconOnly?: boolean;
-  // tabIndex forwards to the underlying button: the activity tree rows are
-  // their own tab stop, so their nested open glyph takes -1 there.
   tabIndex?: number;
 }) {
-  if (iconOnly) {
-    return (
-      <IconButton
-        label={label}
-        title={label}
-        tabIndex={tabIndex}
-        icon={<OpenBesideIcon />}
-        variant="quiet"
-        size="xs"
-        onClick={(event) => {
-          event.stopPropagation();
-          openTranscript(transcriptRef, parentRef);
-        }}
-      />
-    );
-  }
   return (
-    <Button
-      variant="quiet"
-      size="sm"
-      aria-label={label}
-      onClick={(event) => {
-        event.stopPropagation();
-        openTranscript(transcriptRef, parentRef);
-      }}
-    >
-      open
-      <OpenBesideIcon />
-    </Button>
+    <OpenButton
+      label={label}
+      iconOnly={iconOnly}
+      size="xs"
+      tabIndex={tabIndex}
+      onClick={() => openTranscript(transcriptRef, parentRef)}
+    />
   );
 }

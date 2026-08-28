@@ -18,6 +18,7 @@ import type { LaunchConfigLayer, LaunchConfigResolved, LaunchOption, MCPServerSp
 import type { ModelCatalog as ModelCatalogEnvelope, PathFieldKind } from "../../widgets";
 import { Button, CollectionEditor, FormRow, Input, ModelCatalog, PathField, RadioGroup, Select } from "../../widgets";
 import { requireClass } from "../../widgets/internal/requireClass";
+import { asEnvEntries, asMcpList, asStringList, inheritedItems } from "../settings/sections/launchShared/inherited";
 import { type PathValidation, validatePathListAdd } from "../settings/sections/launchShared/pathListAdd";
 import { schemaPathKind } from "../settings/sections/launchShared/schema";
 import styles from "./advancedOptions.module.css";
@@ -56,6 +57,12 @@ export interface AdvancedOptionsProps {
   /** Rendered first inside the expanded panel, ahead of the schema controls
    * (9ct0: hosts the Access-mode field moved in from the top-level bar). */
   children?: ReactNode;
+  /** The effective layer of the pane's own launch/resolve for the current
+   * cwd (undefined until it lands or after it fails): a control whose unset
+   * state reads "(default)" prepends its entry here - "On (default)",
+   * "high (default)", "openai/gpt-5 (default)" - so the empty marker names
+   * what a session started now would actually inherit. */
+  resolvedDefaults?: LaunchConfigLayer;
 }
 
 export function AdvancedOptions({
@@ -66,6 +73,7 @@ export function AdvancedOptions({
   loadCatalog,
   complete,
   children,
+  resolvedDefaults,
 }: AdvancedOptionsProps) {
   const [open, setOpen] = useState(false);
   const [values, setValues] = useState<AdvancedValues>({});
@@ -130,6 +138,7 @@ export function AdvancedOptions({
               loadCatalog={loadCatalog}
               complete={complete}
               validatePath={validatePath}
+              resolvedDefaults={resolvedDefaults}
               onScalar={(v) => updateScalar(opt, v)}
               onValue={(field) => update(opt.wireField, field)}
             />
@@ -164,8 +173,54 @@ interface ControlProps {
   complete: (prefix: string, includeFiles: boolean) => Promise<string[]>;
   /** Gates a pathList add (the scalar path kinds validate through onScalar). */
   validatePath: (path: string, kind: string) => Promise<PathValidation>;
+  resolvedDefaults?: LaunchConfigLayer;
   onScalar: (value: string) => void;
   onValue: (field: AdvancedFieldValue) => void;
+}
+
+/** The effective layer's raw value for this field, or undefined when no layer
+ * sets it (or the resolve hasn't landed) - the source for every "<value>
+ * (default)" label below. */
+function resolvedValue(option: LaunchOption, resolvedDefaults: LaunchConfigLayer | undefined): unknown {
+  if (!resolvedDefaults) return undefined;
+  return (resolvedDefaults as Record<string, unknown>)[option.wireField];
+}
+
+/** The "<value> (default)" label for an unset string-valued control, or plain
+ * "(default)" when the effective layer doesn't set the field. */
+function stringDefaultLabel(option: LaunchOption, resolvedDefaults: LaunchConfigLayer | undefined): string {
+  const value = resolvedValue(option, resolvedDefaults);
+  return typeof value === "string" && value !== "" ? `${value} (default)` : "(default)";
+}
+
+/** The "<On|Off> (default)" label for an unset boolean control - the panel's
+ * own On/Off wording, matching the set values' display labels. */
+function booleanDefaultLabel(option: LaunchOption, resolvedDefaults: LaunchConfigLayer | undefined): string {
+  const value = resolvedValue(option, resolvedDefaults);
+  if (value === true) return "On (default)";
+  if (value === false) return "Off (default)";
+  return "(default)";
+}
+
+/** The longest a resolved default runs in a placeholder before it is clipped:
+ * long free-text values (a system prompt) must not turn a placeholder into a
+ * wall of text. */
+const DEFAULT_PLACEHOLDER_MAX = 60;
+
+/** The placeholder naming the resolved default for the input-based controls
+ * (integer, text, and the browsable path widget): "<value> (default)", with
+ * long strings clipped. "" when no layer sets the field - the inputs stay
+ * bare then, exactly as they were before the resolved-default labels. */
+function inputDefaultPlaceholder(option: LaunchOption, resolvedDefaults: LaunchConfigLayer | undefined): string {
+  const value = resolvedValue(option, resolvedDefaults);
+  if (typeof value === "number" && Number.isFinite(value)) return `${value} (default)`;
+  if (typeof value === "string" && value.trim() !== "") {
+    const trimmed = value.trim();
+    const shown =
+      trimmed.length > DEFAULT_PLACEHOLDER_MAX ? `${trimmed.slice(0, DEFAULT_PLACEHOLDER_MAX - 1)}…` : trimmed;
+    return `${shown} (default)`;
+  }
+  return "";
 }
 
 /** The schema's browsable path kinds, mapped onto the widget's. A "command"
@@ -182,7 +237,17 @@ function pathFieldKind(pathKind: string | undefined): PathFieldKind | null {
   }
 }
 
-function Control({ option, value, error, loadCatalog, complete, validatePath, onScalar, onValue }: ControlProps) {
+function Control({
+  option,
+  value,
+  error,
+  loadCatalog,
+  complete,
+  validatePath,
+  resolvedDefaults,
+  onScalar,
+  onValue,
+}: ControlProps) {
   const controlId = useId();
   const current = typeof value?.value === "string" ? value.value : "";
 
@@ -192,7 +257,12 @@ function Control({ option, value, error, loadCatalog, complete, validatePath, on
   function textRow() {
     return (
       <FormRow label={option.label} htmlFor={controlId} help={option.description} error={error || undefined}>
-        <Input id={controlId} value={current} onChange={(e) => onScalar(e.target.value)} />
+        <Input
+          id={controlId}
+          value={current}
+          onChange={(e) => onScalar(e.target.value)}
+          placeholder={inputDefaultPlaceholder(option, resolvedDefaults) || undefined}
+        />
       </FormRow>
     );
   }
@@ -206,7 +276,7 @@ function Control({ option, value, error, loadCatalog, complete, validatePath, on
             value={current === "" ? BOOLEAN_DEFAULT : current}
             onChange={(e) => onScalar(e.target.value === BOOLEAN_DEFAULT ? "" : e.target.value)}
             options={[
-              { value: BOOLEAN_DEFAULT, label: "(default)" },
+              { value: BOOLEAN_DEFAULT, label: booleanDefaultLabel(option, resolvedDefaults) },
               { value: "true", label: "On" },
               { value: "false", label: "Off" },
             ]}
@@ -230,8 +300,14 @@ function Control({ option, value, error, loadCatalog, complete, validatePath, on
             value={current}
             onChange={(e) => onScalar(e.target.value)}
             options={[
-              { value: "", label: "(default)" },
-              ...(option.choices ?? []).map((c) => ({ value: c.value, label: c.label })),
+              // The panel owns the one empty option: the schema ships its own
+              // value:"" choice for some fields (reasoning_effort,
+              // context_strategy), which is dropped here rather than rendered
+              // as a second, indistinguishable "(default)".
+              { value: "", label: stringDefaultLabel(option, resolvedDefaults) },
+              ...(option.choices ?? [])
+                .filter((c) => (c.value ?? "") !== "")
+                .map((c) => ({ value: c.value, label: c.label })),
             ]}
           />
         </FormRow>
@@ -239,7 +315,13 @@ function Control({ option, value, error, loadCatalog, complete, validatePath, on
     case "integer":
       return (
         <FormRow label={option.label} htmlFor={controlId} help={option.description}>
-          <Input id={controlId} type="number" value={current} onChange={(e) => onScalar(e.target.value)} />
+          <Input
+            id={controlId}
+            type="number"
+            value={current}
+            onChange={(e) => onScalar(e.target.value)}
+            placeholder={inputDefaultPlaceholder(option, resolvedDefaults) || undefined}
+          />
         </FormRow>
       );
     case "path": {
@@ -253,7 +335,17 @@ function Control({ option, value, error, loadCatalog, complete, validatePath, on
       // evener/path/validate failure.
       return (
         <FormRow label={option.label} htmlFor={controlId} help={option.description} error={error || undefined}>
-          <PathField id={controlId} value={current} onChange={onScalar} kind={pathKind} complete={complete} />
+          <PathField
+            id={controlId}
+            value={current}
+            onChange={onScalar}
+            kind={pathKind}
+            complete={complete}
+            // The trigger's empty face names the resolved default path the way
+            // the selects' empty options do; undefined keeps its built-in
+            // "(default)" when no layer sets the field.
+            placeholder={inputDefaultPlaceholder(option, resolvedDefaults) || undefined}
+          />
         </FormRow>
       );
     }
@@ -264,7 +356,12 @@ function Control({ option, value, error, loadCatalog, complete, validatePath, on
       return (
         <div className={CLASS.fieldBlock}>
           <span className={CLASS.fieldLabel}>{option.label}</span>
-          <ModelCatalog value={current} onChange={onScalar} loadCatalog={loadCatalog} />
+          <ModelCatalog
+            value={current}
+            onChange={onScalar}
+            loadCatalog={loadCatalog}
+            emptyLabel={stringDefaultLabel(option, resolvedDefaults)}
+          />
           {option.description && <p className={CLASS.fieldHelp}>{option.description}</p>}
         </div>
       );
@@ -275,6 +372,7 @@ function Control({ option, value, error, loadCatalog, complete, validatePath, on
             option={option}
             items={Array.isArray(value?.value) ? (value.value as string[]) : []}
             loadCatalog={loadCatalog}
+            resolvedDefaults={resolvedDefaults}
             onValue={onValue}
           />
         </CollectionSection>
@@ -287,6 +385,7 @@ function Control({ option, value, error, loadCatalog, complete, validatePath, on
             items={Array.isArray(value?.value) ? (value.value as string[]) : []}
             complete={complete}
             validatePath={validatePath}
+            resolvedDefaults={resolvedDefaults}
             onValue={onValue}
           />
         </CollectionSection>
@@ -294,13 +393,23 @@ function Control({ option, value, error, loadCatalog, complete, validatePath, on
     case "envMap":
       return (
         <CollectionSection option={option}>
-          <EnvControl option={option} value={isRecord(value?.value) ? value.value : {}} onValue={onValue} />
+          <EnvControl
+            option={option}
+            value={isRecord(value?.value) ? value.value : {}}
+            resolvedDefaults={resolvedDefaults}
+            onValue={onValue}
+          />
         </CollectionSection>
       );
     case "mcpServerList":
       return (
         <CollectionSection option={option}>
-          <McpControl option={option} value={isMcpList(value?.value) ? value.value : []} onValue={onValue} />
+          <McpControl
+            option={option}
+            value={isMcpList(value?.value) ? value.value : []}
+            resolvedDefaults={resolvedDefaults}
+            onValue={onValue}
+          />
         </CollectionSection>
       );
     default:
@@ -343,12 +452,14 @@ function PathListControl({
   items,
   complete,
   validatePath,
+  resolvedDefaults,
   onValue,
 }: {
   option: LaunchOption;
   items: string[];
   complete: (prefix: string, includeFiles: boolean) => Promise<string[]>;
   validatePath: (path: string, kind: string) => Promise<PathValidation>;
+  resolvedDefaults: LaunchConfigLayer | undefined;
   onValue: (field: AdvancedFieldValue) => void;
 }) {
   const pathKind = pathFieldKind(option.pathKind);
@@ -356,6 +467,7 @@ function PathListControl({
     <CollectionEditor<string>
       label={option.label}
       items={items}
+      inheritedItems={inheritedItems(resolvedValue(option, resolvedDefaults), items, (item) => item, asStringList)}
       getKey={(item) => item}
       renderItem={(item) => item}
       removeLabel={(item) => `Remove ${item}`}
@@ -412,17 +524,20 @@ function ModelListControl({
   option,
   items,
   loadCatalog,
+  resolvedDefaults,
   onValue,
 }: {
   option: LaunchOption;
   items: string[];
   loadCatalog: () => Promise<ModelCatalogEnvelope>;
+  resolvedDefaults: LaunchConfigLayer | undefined;
   onValue: (field: AdvancedFieldValue) => void;
 }) {
   return (
     <CollectionEditor<string>
       label={option.label}
       items={items}
+      inheritedItems={inheritedItems(resolvedValue(option, resolvedDefaults), items, (item) => item, asStringList)}
       getKey={(item) => item}
       renderItem={(item) => item}
       removeLabel={(item) => `Remove ${item}`}
@@ -450,10 +565,12 @@ function ModelListControl({
 function EnvControl({
   option,
   value,
+  resolvedDefaults,
   onValue,
 }: {
   option: LaunchOption;
   value: Record<string, string>;
+  resolvedDefaults: LaunchConfigLayer | undefined;
   onValue: (field: AdvancedFieldValue) => void;
 }) {
   const entries = Object.entries(value);
@@ -461,6 +578,7 @@ function EnvControl({
     <CollectionEditor<[string, string]>
       label={option.label}
       items={entries}
+      inheritedItems={inheritedItems(resolvedValue(option, resolvedDefaults), entries, ([name]) => name, asEnvEntries)}
       getKey={([name]) => name}
       renderItem={([name, val]) => `${name}=${val}`}
       removeLabel={([name]) => `Remove ${name}`}
@@ -485,16 +603,19 @@ function EnvControl({
 function McpControl({
   option,
   value,
+  resolvedDefaults,
   onValue,
 }: {
   option: LaunchOption;
   value: MCPServerSpec[];
+  resolvedDefaults: LaunchConfigLayer | undefined;
   onValue: (field: AdvancedFieldValue) => void;
 }) {
   return (
     <CollectionEditor<MCPServerSpec>
       label={option.label}
       items={value}
+      inheritedItems={inheritedItems(resolvedValue(option, resolvedDefaults), value, (spec) => spec.name, asMcpList)}
       getKey={(spec) => spec.name}
       renderItem={(spec) => `${spec.name}: ${spec.command} ${(spec.args ?? []).join(" ")}`.trim()}
       removeLabel={(spec) => `Remove ${spec.name}`}

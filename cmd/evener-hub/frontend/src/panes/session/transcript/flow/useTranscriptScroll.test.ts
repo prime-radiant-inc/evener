@@ -6,10 +6,13 @@ import type { ThreadCapabilities } from "../../../../protocol/types.gen";
 import { resetThreadsStoreForTests } from "../../../../stores/threads";
 import type { VirtualListHandle } from "../../../../widgets/virtuallist";
 import type { ScrollMetrics } from "./scrollMetrics";
+import { resetTranscriptViewRegistryForTests, transitionTranscriptViews } from "./transcriptViewRegistry";
 import {
   captureTopAnchor,
+  captureTranscriptView,
   restoreTopAnchor,
   useTranscriptScroll,
+  useTranscriptViewRegistration,
   type ViewAnchorPosition,
 } from "./useTranscriptScroll";
 
@@ -34,6 +37,7 @@ const NO_CAPABILITIES: ThreadCapabilities = {
   forkFromTurn: false,
   shutdown: false,
   changeModel: false,
+  changeVisionModel: false,
   queue: false,
   goal: false,
   rename: false,
@@ -48,6 +52,7 @@ function model(turns: TurnModel[], overrides: Partial<ThreadModel> = {}): Thread
     status: { type: "idle" },
     modelProvider: "anthropic/claude",
     model: "anthropic/claude",
+    visionModel: "",
     askPending: false,
     turns,
     queue: null,
@@ -127,6 +132,7 @@ const SCROLLED_AWAY: ScrollMetrics = { scrollTop: 0, scrollHeight: 5000, clientH
 
 beforeEach(() => {
   resetThreadsStoreForTests();
+  resetTranscriptViewRegistryForTests();
 });
 
 afterEach(() => {
@@ -135,6 +141,28 @@ afterEach(() => {
 });
 
 describe("stick-to-bottom vs. the new-content pill", () => {
+  test("initial end targeting uses the transformed row count", () => {
+    const { ref, scrollToIndex } = makeListHandle();
+    const { measure } = makeMeasure(AT_BOTTOM);
+    renderHook(() =>
+      useTranscriptScroll({
+        ref: "ref_a",
+        model: model([turn("t1", ["i1"]), turn("t2", ["i2"]), turn("t3", ["i3"])]),
+        listRef: ref,
+        loadOlder: vi.fn(),
+        measure,
+        renderedRowCount: 1,
+        sourceTurnRowIndexes: new Map([
+          ["t1", 0],
+          ["t2", 0],
+          ["t3", 0],
+        ]),
+      }),
+    );
+
+    expect(scrollToIndex).toHaveBeenCalledWith(0, { align: "end" });
+  });
+
   test("at the bottom before a mutation: the viewport sticks to the newly-last turn, no pill", () => {
     const { ref, scrollToIndex } = makeListHandle();
     const { measure } = makeMeasure(AT_BOTTOM);
@@ -148,6 +176,48 @@ describe("stick-to-bottom vs. the new-content pill", () => {
 
     expect(scrollToIndex).toHaveBeenCalledWith(1, { align: "end" });
     expect(result.current.pillCount).toBe(0);
+  });
+
+  test("append-follow targets the final transformed row after three source turns coalesce", () => {
+    const { ref, scrollToIndex } = makeListHandle();
+    const { measure } = makeMeasure(AT_BOTTOM);
+    const { rerender } = renderHook(
+      ({ m, rowCount, rowIndexes }) =>
+        useTranscriptScroll({
+          ref: "ref_a",
+          model: m,
+          listRef: ref,
+          loadOlder: vi.fn(),
+          measure,
+          renderedRowCount: rowCount,
+          sourceTurnRowIndexes: rowIndexes,
+        }),
+      {
+        initialProps: {
+          m: model([turn("t1", ["i1"]), turn("t2", ["i2"]), turn("t3", ["i3"])]),
+          rowCount: 1,
+          rowIndexes: new Map([
+            ["t1", 0],
+            ["t2", 0],
+            ["t3", 0],
+          ]),
+        },
+      },
+    );
+    scrollToIndex.mockClear();
+
+    rerender({
+      m: model([turn("t1", ["i1"]), turn("t2", ["i2"]), turn("t3", ["i3"]), turn("t4", ["i4"])]),
+      rowCount: 2,
+      rowIndexes: new Map([
+        ["t1", 0],
+        ["t2", 0],
+        ["t3", 0],
+        ["t4", 1],
+      ]),
+    });
+
+    expect(scrollToIndex).toHaveBeenCalledWith(1, { align: "end" });
   });
 
   test("scrolled away before a mutation: the viewport does not move, and the pill counts the newly-added items", () => {
@@ -239,6 +309,48 @@ describe("clearing the pill", () => {
 // tone rendering this state drives (precedence: error > needs-you > plain
 // count, resolved there, not here - the hook exposes independent booleans).
 describe("the error anchor (failed turn)", () => {
+  test("a failed source turn targets its transformed row, not its source-turn index", () => {
+    const { ref, scrollToIndex } = makeListHandle();
+    const { measure } = makeMeasure(SCROLLED_AWAY);
+    const { result, rerender } = renderHook(
+      ({ m, rowCount, rowIndexes }) =>
+        useTranscriptScroll({
+          ref: "ref_a",
+          model: m,
+          listRef: ref,
+          loadOlder: vi.fn(),
+          measure,
+          renderedRowCount: rowCount,
+          sourceTurnRowIndexes: rowIndexes,
+        }),
+      {
+        initialProps: {
+          m: model([turn("t1", ["i1"]), turn("t2", ["i2"]), turn("t3", ["i3"])]),
+          rowCount: 1,
+          rowIndexes: new Map([
+            ["t1", 0],
+            ["t2", 0],
+            ["t3", 0],
+          ]),
+        },
+      },
+    );
+
+    rerender({
+      m: model([turn("t1", ["i1"]), turn("t2", ["i2"]), turn("t3", ["i3"], { status: "failed" })]),
+      rowCount: 2,
+      rowIndexes: new Map([
+        ["t1", 0],
+        ["t2", 0],
+        ["t3", 1],
+      ]),
+    });
+
+    expect(result.current.pillError).toBe(true);
+    act(() => result.current.jumpToBottom());
+    expect(scrollToIndex).toHaveBeenCalledWith(1, { align: "start" });
+  });
+
   test("a failed turn appended while scrolled away becomes the error anchor", () => {
     const { ref } = makeListHandle();
     const { measure } = makeMeasure(SCROLLED_AWAY);
@@ -1040,6 +1152,29 @@ describe("same-ref remount (model undefined -> defined on the same ref)", () => 
 });
 
 describe("view-mode anchor preservation", () => {
+  test("exact and nearest restoration stay within transformed row indexes", () => {
+    const transformedAnchors: ViewAnchorPosition[] = [
+      { id: "tool-1", sourceIndex: 1, index: 0, offset: 0, isMessage: false },
+      { id: "agent-2", sourceIndex: 2, index: 0, offset: 0, isMessage: true },
+      { id: "agent-4", sourceIndex: 4, index: 1, offset: 0, isMessage: true },
+    ];
+    const firstAnchor = transformedAnchors[0];
+    if (!firstAnchor) throw new Error("missing transformed test anchor");
+
+    expect(restoreTopAnchor(captureTopAnchor(firstAnchor), transformedAnchors)).toEqual({
+      id: "tool-1",
+      index: 0,
+      offset: 0,
+    });
+    expect(
+      restoreTopAnchor(
+        captureTopAnchor({ id: "hidden", sourceIndex: 3, index: 0, offset: 18, isMessage: false }),
+        transformedAnchors,
+      ),
+    ).toEqual({ id: "agent-2", index: 0, offset: 18 });
+    expect(transformedAnchors.every((anchor) => anchor.index >= 0 && anchor.index < 2)).toBe(true);
+  });
+
   test("captures and restores the same stable entry and viewport offset", () => {
     const anchor = captureTopAnchor({ id: "turn-4", sourceIndex: 4, index: 4, offset: 18, isMessage: true });
 
@@ -1239,6 +1374,156 @@ describe("view-mode anchor preservation", () => {
     act(() => result.current.restoreViewAnchorAfterMeasurement());
 
     expect(el.scrollTop).toBe(462);
+  });
+});
+
+describe("registered transcript view preservation", () => {
+  test("captures the visible anchor, bottom state, and focused entry", () => {
+    const el = document.createElement("div");
+    const anchor = document.createElement("div");
+    anchor.dataset.viewAnchorId = "agent-4";
+    anchor.dataset.viewAnchorSourceIndex = "4";
+    const focusedDescendant = document.createElement("button");
+    anchor.append(focusedDescendant);
+    el.append(anchor);
+    document.body.append(el);
+    focusedDescendant.focus();
+
+    const captured = captureTranscriptView(
+      el,
+      () => ({ scrollTop: 950, scrollHeight: 1000, clientHeight: 50 }),
+      () => [{ id: "agent-4", sourceIndex: 4, index: 2, offset: 18, height: 96, isMessage: true }],
+    );
+
+    expect(captured).toMatchObject({
+      anchorId: "agent-4",
+      anchorOffset: 18,
+      normalizedOffset: 1,
+      followingBottom: true,
+      focusedEntryId: "agent-4",
+    });
+    el.remove();
+  });
+
+  test("restores a surviving focused entry and focuses the Detail fallback when it disappears", () => {
+    const list = makeListHandle();
+    document.body.append(list.el);
+    const oldAnchor = document.createElement("div");
+    oldAnchor.dataset.viewAnchorId = "tool-old";
+    oldAnchor.dataset.viewAnchorSourceIndex = "4";
+    const oldEntry = document.createElement("button");
+    oldAnchor.append(oldEntry);
+    list.el.append(oldAnchor);
+    const detail = document.createElement("button");
+    document.body.append(detail);
+    oldEntry.focus();
+
+    let positions: ViewAnchorPosition[] = [
+      { id: "tool-old", sourceIndex: 4, index: 1, offset: 18, height: 40, isMessage: false },
+    ];
+    const anchorEntries = [{ id: "tool-old", sourceIndex: 4, index: 1, isMessage: false }];
+    const { rerender } = renderHook(
+      ({ viewKey, entries }) =>
+        useTranscriptViewRegistration({
+          enabled: true,
+          id: "pane",
+          layout: "desktop",
+          viewKey,
+          listRef: list.ref,
+          measure: () => ({ scrollTop: 300, scrollHeight: 1200, clientHeight: 300 }),
+          measureAnchors: () => positions,
+          anchorEntries: entries,
+          renderedRowCount: 2,
+          detailTriggerRef: { current: detail },
+        }),
+      { initialProps: { viewKey: "everything", entries: anchorEntries } },
+    );
+
+    positions = [{ id: "tool-old", sourceIndex: 4, index: 0, offset: 2, height: 40, isMessage: false }];
+    act(() => {
+      transitionTranscriptViews(
+        () => rerender({ viewKey: "intent", entries: anchorEntries }),
+        "Transcript display changed",
+      );
+    });
+    expect(document.activeElement).toBe(oldEntry);
+
+    positions = [{ id: "tool-old", sourceIndex: 4, index: 0, offset: 2, height: 40, isMessage: false }];
+    act(() => {
+      transitionTranscriptViews(() => {
+        oldAnchor.remove();
+        positions = [{ id: "agent-new", sourceIndex: 5, index: 1, offset: 0, height: 96, isMessage: true }];
+        rerender({
+          viewKey: "tools",
+          entries: [{ id: "agent-new", sourceIndex: 5, index: 1, isMessage: true }],
+        });
+      }, "Transcript display changed again");
+    });
+    expect(document.activeElement).toBe(detail);
+    list.el.remove();
+    detail.remove();
+  });
+
+  test("waits for a virtualized source alias and restores the same descendant from Intent to Tools", () => {
+    const list = makeListHandle();
+    document.body.append(list.el);
+    const intentAnchor = document.createElement("div");
+    intentAnchor.dataset.viewAnchorId = "intent:tool-1";
+    intentAnchor.dataset.viewAnchorSourceIndex = "4";
+    const intentButton = document.createElement("button");
+    intentAnchor.append(intentButton);
+    list.el.append(intentAnchor);
+    const detail = document.createElement("button");
+    document.body.append(detail);
+    intentButton.focus();
+
+    let positions: ViewAnchorPosition[] = [
+      { id: "intent:tool-1", sourceIndex: 4, index: 0, offset: 18, height: 40, isMessage: false },
+    ];
+    const intentEntries = [{ id: "intent:tool-1", sourceIndex: 4, index: 0, isMessage: false }];
+    const { result, rerender } = renderHook(
+      ({ viewKey, entries }) =>
+        useTranscriptViewRegistration({
+          enabled: true,
+          id: "alias-pane",
+          layout: "desktop",
+          viewKey,
+          listRef: list.ref,
+          measure: () => ({ scrollTop: 300, scrollHeight: 1200, clientHeight: 300 }),
+          measureAnchors: () => positions,
+          anchorEntries: entries,
+          renderedRowCount: 2,
+          detailTriggerRef: { current: detail },
+        }),
+      { initialProps: { viewKey: "intent", entries: intentEntries } },
+    );
+
+    act(() => {
+      transitionTranscriptViews(() => {
+        intentAnchor.remove();
+        positions = [];
+        rerender({
+          viewKey: "tools",
+          entries: [{ id: "tool-1", sourceIndex: 4, index: 1, isMessage: false }],
+        });
+      }, "Transcript display changed");
+    });
+    expect(list.scrollToIndex).toHaveBeenCalledWith(1, { align: "start" });
+    expect(document.activeElement).not.toBe(detail);
+
+    const toolAnchor = document.createElement("div");
+    toolAnchor.dataset.viewAnchorId = "tool-1";
+    toolAnchor.dataset.viewAnchorSourceIndex = "4";
+    const toolButton = document.createElement("button");
+    toolAnchor.append(toolButton);
+    list.el.append(toolAnchor);
+    positions = [{ id: "tool-1", sourceIndex: 4, index: 1, offset: 18, height: 40, isMessage: false }];
+    act(() => result.current.restoreAfterMeasurement());
+
+    expect(document.activeElement).toBe(toolButton);
+    expect(document.activeElement).not.toBe(detail);
+    list.el.remove();
+    detail.remove();
   });
 });
 

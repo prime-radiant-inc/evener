@@ -71,6 +71,8 @@ type delegateResult struct {
 	StructuredResultReason   string
 	Worktree                 *delegateWorktreeReport
 	Sandbox                  *delegateSandboxReport
+	AgentType                string
+	Tools                    []string
 	Model                    string
 	Warnings                 []string
 	Err                      error
@@ -100,6 +102,7 @@ type sendMessageResult struct {
 	Task                     string
 	Description              string
 	AgentType                string
+	Tools                    []string
 	RequestedModel           string
 	ResolvedProfileID        string
 	ResolvedModel            string

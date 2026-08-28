@@ -62,6 +62,10 @@ func (f fakeSource) SetThreadModel(context.Context, appwire.ThreadModelSetParams
 	return nil
 }
 
+func (f fakeSource) SetThreadVisionModel(context.Context, appwire.ThreadVisionModelSetParams) error {
+	return nil
+}
+
 func (f fakeSource) SetThreadName(context.Context, appwire.ThreadNameSetParams) error {
 	return nil
 }

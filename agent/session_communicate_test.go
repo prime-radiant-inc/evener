@@ -350,13 +350,6 @@ type communicateSessionRoutedAdapter struct {
 	status     llm.ToolCallData
 	childDone  llm.ToolCallData
 	parentDone llm.ToolCallData
-
-	// childRequestSeen closes the instant the first child (delegate) model
-	// request arrives, so a caller can await that event directly instead of
-	// polling requestCounts(). It is the actual completion signal for "the
-	// delegate reached its model call" -- requestCounts() only reports state
-	// a poll would otherwise have to catch mid-transition.
-	childRequestSeen chan struct{}
 }
 
 func (*communicateSessionRoutedAdapter) Name() string { return "openai" }
@@ -376,9 +369,6 @@ func (a *communicateSessionRoutedAdapter) Complete(_ context.Context, req llm.Re
 		}
 	} else {
 		a.childRequests++
-		if a.childRequests == 1 && a.childRequestSeen != nil {
-			close(a.childRequestSeen)
-		}
 		response = toolCallResponse(a.childDone)
 	}
 	response.Provider = a.Name()
@@ -423,15 +413,39 @@ func TestCommunicate_StatusBatchedWithDelegateDoesNotEndTurn(t *testing.T) {
 	childDone := communicateCall("child_done", "CHILD_DONE")
 	parentDone := communicateCall("parent_done", "Parent saw the delegate complete.")
 	f := &communicateSessionRoutedAdapter{
-		delegate:         delegate,
-		status:           status,
-		childDone:        childDone,
-		parentDone:       parentDone,
-		childRequestSeen: make(chan struct{}),
+		delegate:   delegate,
+		status:     status,
+		childDone:  childDone,
+		parentDone: parentDone,
 	}
 	c.Register(f)
 
-	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{StateDir: t.TempDir()})
+	rootIdle := make(chan struct{})
+	deliveryClassified := make(chan bool, 1)
+	var releaseChild sync.Once
+	t.Cleanup(func() { releaseChild.Do(func() { close(rootIdle) }) })
+	var boundaryOnce sync.Once
+	var deliveryWasDeferred bool
+	var sess *Session
+	cfg := SessionConfig{StateDir: t.TempDir()}
+	cfg.testOnly.subagentAfterFinalStatePublish = func(*subagent) { <-rootIdle }
+	cfg.testOnly.afterCommunicateBoundary = func(s *Session) {
+		if s != sess {
+			return
+		}
+		boundaryOnce.Do(func() {
+			releaseChild.Do(func() { close(rootIdle) })
+			deliveryWasDeferred = <-deliveryClassified
+		})
+	}
+	cfg.testOnly.delegateDeliveryClassified = func(s *Session, deferred bool) {
+		if s == sess {
+			deliveryClassified <- deferred
+		}
+	}
+
+	var err error
+	sess, err = NewSession(c, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(dir), cfg)
 	if err != nil {
 		t.Fatalf("NewSession: %v", err)
 	}
@@ -446,19 +460,11 @@ func TestCommunicate_StatusBatchedWithDelegateDoesNotEndTurn(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ProcessInput: %v", err)
 	}
-	// The delegate child runs asynchronously and the parent turn does not wait
-	// for it, so Close here would cancel a child that has not yet reached its
-	// model call. Await the child's own completion signal (its adapter Complete
-	// call closes childRequestSeen) rather than polling requestCounts(), so
-	// this observes the transition itself instead of racing to catch it.
-	// TRIPWIRE: the child is a scripted in-process adapter call with no real
-	// I/O, so it normally closes the channel in well under a second; 30s only
-	// fires if the child genuinely never reaches its model call.
-	awaitWithin(t, 30*time.Second, "child delegate model request", func() {
-		<-f.childRequestSeen
-	})
 	sess.Close()
 
+	if !deliveryWasDeferred {
+		t.Fatal("delegate completion crossed the terminal boundary instead of waiting for the ProcessInput drain")
+	}
 	if strings.TrimSpace(out) != "Parent saw the delegate complete." {
 		t.Fatalf("ProcessInput returned %q, want parent final", out)
 	}
@@ -740,6 +746,105 @@ func TestCommunicate_ClientSteeringBeforeResultProjectsValidNextRequest(t *testi
 	}
 	if requestErr != nil {
 		t.Fatal(requestErr)
+	}
+}
+
+func TestCommunicate_TerminalClientSteeringRunsAfterTheTerminalResult(t *testing.T) {
+	t.Parallel()
+	const steerText = "commit them"
+	const firstCallID = "communicate_terminal_race"
+	const secondCallID = "communicate_steering_carrier"
+
+	reachedTool := make(chan struct{})
+	wake := make(chan struct{}, 1)
+	var sess *Session
+	var steerErr error
+	var requestErr error
+	var once sync.Once
+
+	adapter := &fakeAdapter{
+		name: "anthropic",
+		steps: []func(req llm.Request) llm.Response{
+			func(llm.Request) llm.Response {
+				return toolCallResponse(communicateCall(firstCallID, "Initial work complete."))
+			},
+			func(req llm.Request) llm.Response {
+				requestErr = validateSteeredCommunicateHistory(req.Messages, firstCallID, steerText)
+				return toolCallResponse(communicateCall(secondCallID, "Committed."))
+			},
+		},
+	}
+	client := llm.NewClient()
+	client.Register(adapter)
+
+	sess, err := NewSession(client, newAnthropicProfile("k3"), execenv.NewLocalExecutionEnvironment(t.TempDir()), SessionConfig{
+		StateDir: t.TempDir(),
+		testOnly: testConfig{
+			execToolCheckpoint: func(name string) {
+				if name != "before_side_effects" {
+					return
+				}
+				once.Do(func() {
+					close(reachedTool)
+					_, steerErr = sess.AcceptClientMutationSteer(appwire.TurnSteerParams{
+						ClientMutationID: "steer_terminal_race",
+						Input:            []appwire.InputItem{{Type: "text", Text: steerText}},
+					})
+				})
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("NewSession: %v", err)
+	}
+	t.Cleanup(sess.Close)
+	sess.SetPendingUserInputWakeFunc(func() {
+		select {
+		case wake <- struct{}{}:
+		default:
+		}
+	})
+
+	if _, err := sess.ProcessInput(context.Background(), "finish the current work", nil); err != nil {
+		t.Fatalf("first ProcessInput: %v", err)
+	}
+	if steerErr != nil {
+		t.Fatalf("AcceptClientMutationSteer: %v", steerErr)
+	}
+	select {
+	case <-reachedTool:
+	default:
+		t.Fatal("terminal communicate race checkpoint was not reached")
+	}
+
+	select {
+	case <-wake:
+		// The scripted in-process adapter and channel wake should complete well
+		// within this bound; 5s only fires on a genuine synchronization hang.
+		// TRIPWIRE: deterministic in-process wake, not synchronization; this
+		// bound is far above the expected completion time and catches hangs.
+	case <-time.After(5 * time.Second):
+		t.Fatal("pending steering wake did not arrive")
+	}
+	if _, ran, err := sess.ProcessPendingUserInput(context.Background(), nil); err != nil {
+		t.Fatalf("ProcessPendingUserInput: %v", err)
+	} else if !ran {
+		t.Fatal("terminal communicate consumed accepted steering; no carrier turn ran")
+	}
+	if requestErr != nil {
+		t.Fatal(requestErr)
+	}
+	if got := len(adapter.Requests()); got != 2 {
+		t.Fatalf("provider requests = %d, want initial terminal turn plus carrier turn", got)
+	}
+
+	snapshot := sess.clientMutations.snapshot()
+	if len(snapshot.PendingExecutions) != 0 || len(snapshot.SteeringOrder) != 0 {
+		t.Fatalf("client steering remains pending after carrier: pending=%v order=%v", snapshot.PendingExecutions, snapshot.SteeringOrder)
+	}
+	record := snapshot.Journal["steer_terminal_race"]
+	if record.ExecutionState != "incorporated" || record.OperationState != clientMutationOperationTerminal {
+		t.Fatalf("steering mutation state = operation=%q execution=%q, want terminal/incorporated", record.OperationState, record.ExecutionState)
 	}
 }
 

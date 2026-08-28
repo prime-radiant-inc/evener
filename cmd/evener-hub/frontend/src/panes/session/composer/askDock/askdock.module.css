@@ -73,6 +73,7 @@
   border: 1px solid var(--edge);
   border-radius: var(--radius-control);
   padding: var(--space-1) var(--space-2);
+  overflow-wrap: anywhere;
 }
 
 /* Selected is --accent (control selection, design-system.md §4 - same rule

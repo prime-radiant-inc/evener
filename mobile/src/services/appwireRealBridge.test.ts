@@ -214,7 +214,7 @@ describe("AppwireClient + TauriSocket + real Rust command/AppwireManager", () =>
       });
       client.onNotification((notification) => {
         notifications.push(notification.method);
-        if (notification.method === "evener/tree/changed") {
+        if (notification.method === "thread/status/changed") {
           firstCurrent.resolve(undefined);
         }
       });
@@ -241,7 +241,7 @@ describe("AppwireClient + TauriSocket + real Rust command/AppwireManager", () =>
       });
       const stopReady = client.onReady(() => reconnected.resolve(undefined));
       client.onNotification((notification) => {
-        if (notification.method === "evener/tree/changed") {
+        if (notification.method === "thread/status/changed") {
           secondCurrent.resolve(undefined);
         }
       });
@@ -277,14 +277,14 @@ describe("AppwireClient + TauriSocket + real Rust command/AppwireManager", () =>
       });
       secondClient.onNotification((notification) => {
         profileTwoNotifications.push(notification.method);
-        if (notification.method === "evener/tree/changed") {
+        if (notification.method === "thread/status/changed") {
           profileTwoCurrent.resolve(undefined);
         }
       });
       await secondClient.connect();
       await profileTwoCurrent.promise;
       await bridge.control("releaseHeld");
-      expect(profileTwoNotifications).toEqual(["evener/tree/changed"]);
+      expect(profileTwoNotifications).toEqual(["thread/status/changed"]);
       expect(notifications).not.toContain("thread/closed");
 
       snapshot = await bridge.control<ServerSnapshot>("snapshot");

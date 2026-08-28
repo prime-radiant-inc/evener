@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/signal"
 	"text/tabwriter"
+	"time"
 
 	"primeradiant.com/evener/agent"
 	"primeradiant.com/evener/buildinfo"
@@ -29,6 +30,7 @@ type stringSliceFlag = cmdutil.StringSliceFlag
 type runCLIFlags struct {
 	model                       *string
 	fastCheapModel              *string
+	visionModel                 *string
 	workDir                     *string
 	systemPrompt                *string
 	stateDir                    *string
@@ -54,6 +56,7 @@ type runCLIFlags struct {
 	mcpServers                  stringSliceFlag
 	mcpConfigs                  stringSliceFlag
 	pluginDirs                  stringSliceFlag
+	enabledPlugins              pluginSelectionFlag
 	noDefaultMarketplaces       *bool
 	systemPromptAsUser          *bool
 	openAIResponsesContinuation *string
@@ -62,6 +65,7 @@ type runCLIFlags struct {
 	systemPromptAppend          stringSliceFlag
 	sandbox                     *string
 	sandboxNet                  *string
+	runTimeout                  *time.Duration
 }
 
 func main() {
@@ -145,6 +149,11 @@ func mainWithDeps(deps mainDeps) {
 		deps.exit(2)
 		return
 	}
+	if err := rejectPluginSelectionWithResume(flags.enabledPlugins.Value(), *flags.resume, *flags.resumeLast); err != nil {
+		_, _ = fmt.Fprintf(deps.stderr, "evener: %v\n", err)
+		deps.exit(2)
+		return
+	}
 
 	var cpuStop func()
 	if *flags.cpuProfile != "" {
@@ -183,6 +192,11 @@ func mainWithDeps(deps mainDeps) {
 		deps.exit(1)
 		return
 	}
+	if *flags.runTimeout < 0 {
+		_, _ = fmt.Fprintf(deps.stderr, "evener: invalid --timeout %s: must be non-negative\n", flags.runTimeout.String())
+		deps.exit(2)
+		return
+	}
 
 	ctx, cancel := deps.notify(context.Background(), os.Interrupt)
 	defer cancel()
@@ -191,6 +205,7 @@ func mainWithDeps(deps mainDeps) {
 		prompt:                      prompt,
 		model:                       *flags.model,
 		fastCheapModel:              *flags.fastCheapModel,
+		visionModel:                 *flags.visionModel,
 		workDir:                     *flags.workDir,
 		stateDir:                    *flags.stateDir,
 		systemPrompt:                *flags.systemPrompt,
@@ -213,11 +228,13 @@ func mainWithDeps(deps mainDeps) {
 		mcpServers:                  []string(flags.mcpServers),
 		mcpConfigs:                  []string(flags.mcpConfigs),
 		pluginDirs:                  []string(flags.pluginDirs),
+		enabledPlugins:              flags.enabledPlugins.Value(),
 		noDefaultMarketplaces:       *flags.noDefaultMarketplaces,
 		systemPromptAsUser:          *flags.systemPromptAsUser,
 		openAIResponsesContinuation: *flags.openAIResponsesContinuation,
 		sandboxMode:                 *flags.sandbox,
 		sandboxNet:                  *flags.sandboxNet,
+		runTimeout:                  *flags.runTimeout,
 		stdout:                      deps.stdout,
 		stderr:                      deps.stderr,
 		resume:                      *flags.resume,
@@ -240,6 +257,7 @@ func newRunFlagSet(stderr io.Writer) (*flag.FlagSet, *runCLIFlags) {
 
 	flags.model = fs.String("model", "", "LLM model identifier (`provider/model`)")
 	flags.fastCheapModel = fs.String("fast-cheap-model", "", "auxiliary model for side calls (naming, summarization, web fetch); 'provider/model' may use a different provider than --model, or a bare 'model' for the active provider")
+	flags.visionModel = fs.String("vision-model", "", "vision side-channel model: 'off' disables image description, 'provider/model' or bare 'model' routes it (default: the session model)")
 	flags.workDir = fs.String("dir", "", "working `directory` (default: current directory)")
 	flags.systemPrompt = fs.String("system-prompt", "", "path to a custom system prompt `file`")
 	flags.stateDir = fs.String("state-dir", "", "override runtime state `directory` (default: XDG-computed)")
@@ -265,6 +283,7 @@ func newRunFlagSet(stderr io.Writer) (*flag.FlagSet, *runCLIFlags) {
 	fs.Var(&flags.mcpServers, "mcp", "MCP server `spec` (repeatable, format: name:command args...)")
 	fs.Var(&flags.mcpConfigs, "mcp-config", "path to .mcp.json `file` (repeatable)")
 	fs.Var(&flags.pluginDirs, "plugin-dir", "plugin `directory` (repeatable)")
+	fs.Var(&flags.enabledPlugins, "enabled-plugins", "comma-separated plugin names to enable (empty selects none)")
 	flags.noDefaultMarketplaces = fs.Bool("no-default-marketplaces", false, "do not seed the default plugin marketplaces on first run")
 	flags.systemPromptAsUser = fs.Bool("system-prompt-as-user", false, "deliver system prompt as first user message instead of system instructions")
 	flags.openAIResponsesContinuation = fs.String("openai-responses-continuation", "", "OpenAI Responses continuation `mode`: off|auto (default: off)")
@@ -273,6 +292,7 @@ func newRunFlagSet(stderr io.Writer) (*flag.FlagSet, *runCLIFlags) {
 	fs.Var(&flags.systemPromptAppend, "system-prompt-append", "path to append to system prompt `file` (repeatable)")
 	flags.sandbox = fs.String("sandbox", "off", "sandbox `mode`: off (default), read-only, workspace-write, or restricted")
 	flags.sandboxNet = fs.String("sandbox-net", "on", "sandbox network egress `on|off` (default on; only applies with a non-off --sandbox mode)")
+	flags.runTimeout = fs.Duration("timeout", 0, "overall one-shot run timeout (0 disables; rate-limit retries use their finite fallback)")
 
 	fs.Usage = func() {
 		printRunUsage(stderr, fs)

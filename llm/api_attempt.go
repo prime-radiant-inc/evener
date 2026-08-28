@@ -2,6 +2,7 @@ package llm
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"sync"
 	"time"
@@ -295,7 +296,7 @@ func (g *APIAttemptGroup) SettleResult(ctx context.Context, err error) {
 	outcome := apilog.AttemptSuccess
 	useFinalAttemptOutcome := false
 	if err != nil {
-		if ctx != nil && ctx.Err() != nil {
+		if ctx != nil && (ctx.Err() != nil || errors.Is(err, ErrRunBudgetExhausted)) {
 			outcome = apilog.AttemptCallerCancel
 		} else {
 			useFinalAttemptOutcome = true

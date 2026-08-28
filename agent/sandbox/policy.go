@@ -200,6 +200,13 @@ type SandboxPolicy struct {
 	// Mode is the enforcement mode. The zero value (ModeOff) is today's behavior.
 	Mode Mode
 
+	// WriteBlocked removes persistent workspace writes from the resolved file-tool
+	// and spawned-process scopes while retaining the mode's read scope. It is used
+	// for a read-only delegate under a restricted parent: ModeReadOnly would widen
+	// that parent's reads, while this flag keeps the restricted read boundary and
+	// leaves only the separately provisioned session scratch writable.
+	WriteBlocked bool
+
 	// Network reports whether egress is allowed (--sandbox-net on). It is a
 	// tri-state: nil means the unset default (ON when sandboxed), a non-nil value
 	// is an explicit choice. A plain bool zero value would silently mean OFF, so a

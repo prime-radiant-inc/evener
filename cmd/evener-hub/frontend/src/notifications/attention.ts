@@ -1,27 +1,8 @@
-// The pure heart of the notifications engine: deriving per-thread attention
-// transitions from successive treeStore snapshots, with no DOM or store
-// access of its own. The engine (index.ts) owns the stateful "which snapshot
-// was the baseline" bookkeeping; this module just answers "given two
-// snapshots, what should fire?".
-//
-// Data source is treeStore's own `needs_you` tier array — the uncapped,
-// top-level, non-archived, non-subagent set of sessions at level
-// needs_you/error (cmd/evener-hub/internal/hubcore/tree.go:792-852). That is
-// EXACTLY the daemon's tier-eligible attention population (the same
-// definition the AttentionSummary counts over, attention.go:27-36), so a
-// ref newly present in the tier is precisely a transition INTO the alarming
-// set from outside it — the legacy engine's `into && !was` gate
-// (notifications.js:264-267), reconstructed from snapshots instead of the
-// per-broadcast prevLevel the old wire carried.
+import type { NavigationSessionSummary } from "../protocol/types.gen";
 import type { NotificationsLoudScopePref } from "../stores/prefs";
-import type { TreeResponse } from "../stores/tree";
 
 export type AttentionLevel = "working" | "needs_you" | "error" | "idle";
 
-// Mirrors the daemon's attentionLevel(NormalizeState(status)) exactly
-// (attention.go:53-64 over tree.go:236-259): the tree node's `state` is
-// already the normalized UI state, so the client re-derives the same level
-// the server bucketed the badge counts by.
 export function levelFromState(state: string): AttentionLevel {
   switch (state) {
     case "active":
@@ -36,9 +17,6 @@ export function levelFromState(state: string): AttentionLevel {
   }
 }
 
-// One thread's presence in the needs_you tier. `level` is only ever
-// needs_you or error (the tier holds nothing else); `askPending` and `level`
-// together decide loudScope narrowing below.
 export interface AttentionEntry {
   ref: string;
   title: string;
@@ -46,27 +24,27 @@ export interface AttentionEntry {
   askPending: boolean;
 }
 
-// Snapshot the needs_you tier, keyed by the qualified `ref` (stable session
-// identity). A null tree (nothing loaded yet) is an empty snapshot. The
-// level guard is defensive: the tier is built server-side from exactly
-// awaiting/warning/errored, so anything else would be a wire contract break.
-export function snapshotFromTree(tree: TreeResponse | null): Map<string, AttentionEntry> {
-  const snap = new Map<string, AttentionEntry>();
-  if (!tree) return snap;
-  for (const n of tree.needs_you) {
-    const level = levelFromState(n.state);
+export function snapshotFromNavigation(rows: readonly NavigationSessionSummary[] | null): Map<string, AttentionEntry> {
+  const snapshot = new Map<string, AttentionEntry>();
+  if (!rows) return snapshot;
+  for (const row of rows) {
+    const level = levelFromState(row.state);
     if (level !== "needs_you" && level !== "error") continue;
-    snap.set(n.ref, { ref: n.ref, title: n.title, level, askPending: n.ask_pending === true });
+    snapshot.set(row.ref, { ref: row.ref, title: row.title, level, askPending: row.ask_pending === true });
   }
-  return snap;
+  return snapshot;
 }
 
-// The refs that just transitioned INTO the alarming set (present in `next`,
-// absent from `prev`), narrowed by loudScope: "asks" (the default) fires
-// only for an ask_pending transition or an error; "all" fires for every
-// qualifying transition (notifications.js:268). error<->needs_you shuffles
-// within the tier, and drops out of it, produce nothing — matching the
-// legacy's `into && !was` outer gate.
+/** Compatibility seam for the notification owner during the migration. */
+export function snapshotFromTree(input: unknown): Map<string, AttentionEntry> {
+  if (Array.isArray(input)) return snapshotFromNavigation(input as NavigationSessionSummary[]);
+  if (input && typeof input === "object" && "needs_you" in input) {
+    const rows = (input as { needs_you?: unknown }).needs_you;
+    return Array.isArray(rows) ? snapshotFromNavigation(rows as NavigationSessionSummary[]) : new Map();
+  }
+  return new Map();
+}
+
 export function detectFires(
   prev: Map<string, AttentionEntry>,
   next: Map<string, AttentionEntry>,
@@ -75,8 +53,7 @@ export function detectFires(
   const fires: AttentionEntry[] = [];
   for (const [ref, entry] of next) {
     if (prev.has(ref)) continue;
-    const loud = loudScope === "all" || entry.askPending || entry.level === "error";
-    if (loud) fires.push(entry);
+    if (loudScope === "all" || entry.askPending || entry.level === "error") fires.push(entry);
   }
   return fires;
 }

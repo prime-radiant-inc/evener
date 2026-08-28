@@ -80,19 +80,22 @@ func scriptedDelegateCall(id, task string) llm.Response {
 }
 
 type heldShellExecutor struct {
-	command string
-	output  string
-	exit    int
-	release chan struct{}
-	once    sync.Once
+	command          string
+	output           string
+	exit             int
+	release          chan struct{}
+	waitReturned     chan struct{}
+	releaseOnce      sync.Once
+	waitReturnedOnce sync.Once
 }
 
 func newHeldShellExecutor(command, output string, exit int) *heldShellExecutor {
 	return &heldShellExecutor{
-		command: command,
-		output:  output,
-		exit:    exit,
-		release: make(chan struct{}),
+		command:      command,
+		output:       output,
+		exit:         exit,
+		release:      make(chan struct{}),
+		waitReturned: make(chan struct{}),
 	}
 }
 
@@ -107,11 +110,17 @@ func (e *heldShellExecutor) StreamCommand(_ context.Context, command, _ string, 
 			return e.exit, nil
 		},
 		Signal: e.releaseShell,
+		// runShell invokes SignalName only after Wait returns, so this is a
+		// completion barrier for the executor rather than a timing assumption.
+		SignalName: func() string {
+			e.waitReturnedOnce.Do(func() { close(e.waitReturned) })
+			return ""
+		},
 	}, nil
 }
 
 func (e *heldShellExecutor) releaseShell() {
-	e.once.Do(func() { close(e.release) })
+	e.releaseOnce.Do(func() { close(e.release) })
 }
 
 type shellExecutorEnvironment struct {
@@ -128,12 +137,17 @@ func (e *shellExecutorEnvironment) StreamCommand(ctx context.Context, command, w
 // running makes the session yield so the completion is delivered as a
 // notification turn (session_lifecycle.go post-tool seam), which would fold the
 // notification into the tool-result request and race these scripted steps
-// against a fast local process.
-func releaseOnDrainStart(t *testing.T, release func()) {
+// against a fast local process. waitForCompletion, when supplied, is the
+// executor's completion event, not a timing assumption about when finalization
+// will happen.
+func releaseOnDrainStart(t *testing.T, release func(), waitForCompletion func()) {
 	t.Helper()
 	oldDrainJobTree := runDrainJobTree
 	runDrainJobTree = func(sess *agent.Session, ctx context.Context) (string, error) {
 		release()
+		if waitForCompletion != nil {
+			waitForCompletion()
+		}
 		return oldDrainJobTree(sess, ctx)
 	}
 	t.Cleanup(func() {
@@ -149,7 +163,7 @@ func installHeldRunShell(t *testing.T, executor *heldShellExecutor) {
 		return oldNewSession(client, profile, &shellExecutorEnvironment{ExecutionEnvironment: env, executor: executor}, cfg)
 	}
 	t.Cleanup(func() { runNewSession = oldNewSession })
-	releaseOnDrainStart(t, executor.releaseShell)
+	releaseOnDrainStart(t, executor.releaseShell, func() { <-executor.waitReturned })
 }
 
 // TestRunDrainsDelegatedJobTreeBeforeExit is the PRI-2441 B1 regression: a
@@ -341,7 +355,7 @@ func chainedShellDrainScenario(t *testing.T, tweak func(*runConfig)) *scriptedPr
 		if err := os.WriteFile(gate, []byte("go\n"), 0o600); err != nil {
 			t.Errorf("release shell A: %v", err)
 		}
-	})
+	}, nil)
 	jobIDPattern := regexp.MustCompile(`job_id="([^"]+)"`)
 	adapter := &scriptedProvider{name: "openai", steps: []func(llm.Request) llm.Response{
 		func(req llm.Request) llm.Response {

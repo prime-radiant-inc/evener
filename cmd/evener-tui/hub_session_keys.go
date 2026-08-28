@@ -114,6 +114,27 @@ func (m hubModel) updateSessionKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, cmd
 	}
 
+	if m.sessionVisionModelPicker != nil {
+		updated, cmd := m.sessionVisionModelPicker.Update(msg)
+		picker := updated.(tuipick.ModelPicker)
+		m.sessionVisionModelPicker = &picker
+		if picker.Done() {
+			selected := picker.Selected()
+			m.sessionVisionModelPicker = nil
+			if !picker.Cancelled() {
+				ref, ok := m.currentRef()
+				if !ok {
+					m.addSessionSystem("Session ref is invalid.")
+					return m, nil
+				}
+				m.addSessionSystem("Updating vision model...")
+				return m, sendHubVisionModelAction(m.client, ref, selected)
+			}
+			m.session.refreshViewport()
+		}
+		return m, cmd
+	}
+
 	if m.sessionEffortPicker != nil {
 		updated, cmd := m.sessionEffortPicker.Update(msg)
 		picker := updated.(tuipick.ModelPicker)

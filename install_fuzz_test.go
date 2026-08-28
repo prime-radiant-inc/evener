@@ -108,23 +108,34 @@ case "$1" in
 esac
 `, osName, archName))
 		writeExecutable(t, filepath.Join(fakeBin, "curl"), `#!/bin/sh
-url="$2"
-printf '%s\n' "$url" >> "$EVENER_FUZZ_URL_FILE"
+out=
+url=
+write_format=
 while [ "$#" -gt 0 ]; do
-  if [ "$1" = -o ]; then
-    case "$url" in
-      *checksums.txt)
-        # The archive above is the empty file this stub wrote, so its digest
-        # is the well-known empty-input sha256.
-        printf '%s  %s\n' "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855" "$EVENER_FUZZ_ARCHIVE_ROOT.tar.gz" > "$2"
-        exit 0
-        ;;
-    esac
-    : > "$2"; exit 0
-  fi
-  shift
+  case "$1" in
+    -o) out="$2"; shift 2 ;;
+    -w) write_format="$2"; shift 2 ;;
+    -*) shift ;;
+    *) url="$1"; shift ;;
+  esac
 done
-exit 2
+[ -n "$out" ] || { echo "missing -o" >&2; exit 2; }
+[ -n "$url" ] || { echo "missing URL" >&2; exit 2; }
+if [ -n "$write_format" ]; then
+  [ "$write_format" = '%{http_code}' ] || { echo "unexpected -w format" >&2; exit 2; }
+  printf '200'
+fi
+printf '%s\n' "$url" >> "$EVENER_FUZZ_URL_FILE"
+case "$url" in
+  *checksums.txt)
+    # The archive above is the empty file this stub wrote, so its digest
+    # is the well-known empty-input sha256.
+    printf '%s  %s\n' "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855" "$EVENER_FUZZ_ARCHIVE_ROOT.tar.gz" > "$out"
+    exit 0
+    ;;
+esac
+: > "$out"
+exit 0
 `)
 		writeExecutable(t, filepath.Join(fakeBin, "tar"), fmt.Sprintf(`#!/bin/sh
 dest=

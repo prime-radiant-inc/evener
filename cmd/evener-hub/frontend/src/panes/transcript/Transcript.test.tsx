@@ -1,4 +1,5 @@
 import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 import { lazy } from "react";
 import { afterAll, afterEach, beforeEach, expect, test, vi } from "vitest";
 import { FakeClient } from "../../protocol/testing/fakeClient";
@@ -8,6 +9,8 @@ import { registerPaneForTests } from "../../shell/paneRegistry";
 import { registerDockviewApi, resetWorkspaceStoreForTests } from "../../shell/workspace";
 import { connectionStore } from "../../stores/connection";
 import { resetThreadsStoreForTests } from "../../stores/threads";
+import { transcriptDisplayStore } from "../../stores/transcriptDisplay";
+import { makeTranscriptDisplayConfig } from "../../transcriptDisplay/config";
 import { resetSubagentModuleStoreForTests } from "../session/transcript/tools/subagentModuleStore";
 import Transcript from "./Transcript";
 
@@ -34,6 +37,7 @@ const CAPABILITIES: ThreadCapabilities = {
   forkFromTurn: true,
   shutdown: true,
   changeModel: true,
+  changeVisionModel: true,
   queue: true,
   goal: true,
   rename: true,
@@ -194,9 +198,55 @@ test("renders the thread's turns through the shared VirtualList/TurnBlock engine
   );
 
   await waitFor(() => expect(screen.getByTestId("turn-block")).toBeTruthy());
+  expect(screen.getByTestId("transcript-virtual-list")).toBeTruthy();
   expect(screen.getByText("hi from the observed thread")).toBeTruthy();
   await waitFor(() => expect(screen.getByTestId("subagent-row")).toBeTruthy());
   expect(within(screen.getByTestId("subagent-row")).getByText("Status: done")).toBeTruthy();
+});
+
+test("keeps the read-only Detail control reachable above the transcript", async () => {
+  const fake = connectFakeClient();
+  fake.on("thread/read", () =>
+    readResponse("ref_a", {
+      turns: [
+        {
+          id: "turn_1",
+          status: "completed",
+          itemsView: "full",
+          items: [{ id: "item_1", turnId: "turn_1", type: "userMessage", text: "read me", status: "completed" }],
+        },
+      ],
+    }),
+  );
+  const user = userEvent.setup();
+
+  render(
+    <ClientProvider client={fake}>
+      <Transcript params={{ ref: "ref_a" }} paneId="p1" focused={false} />
+    </ClientProvider>,
+  );
+
+  const trigger = await screen.findByRole("button", { name: /^Detail:/ });
+  expect(trigger.closest('[data-testid="transcript-virtual-list"]')).toBeNull();
+  await user.click(trigger);
+  expect(screen.getByRole("radio", { name: "Tools" })).toBeTruthy();
+  transcriptDisplayStore.setState({ viewport: "desktop" });
+  transcriptDisplayStore
+    .getState()
+    .setLocal("desktop", makeTranscriptDisplayConfig({ kind: "preset", level: "activity" }));
+  await waitFor(() =>
+    expect(screen.getByTestId("transcript-view-announcement").textContent).toContain("Transcript detail: Activity"),
+  );
+  const status = screen.getByTestId("transcript-view-announcement");
+  transcriptDisplayStore
+    .getState()
+    .setLocal("desktop", makeTranscriptDisplayConfig({ kind: "preset", level: "activity" }, { roundTimings: true }));
+  await waitFor(() => expect(status.textContent).toContain("Transcript detail: Activity · 1 advanced"));
+  transcriptDisplayStore
+    .getState()
+    .setLocal("desktop", makeTranscriptDisplayConfig({ kind: "preset", level: "activity" }, { tokenCounts: true }));
+  await waitFor(() => expect(status.textContent).toContain("Transcript detail: Activity · 1 advanced"));
+  expect(screen.getByTestId("transcript-view-announcement")).toBe(status);
 });
 
 test("is read-only: renders no composer and no session-chrome footer, even for a fully capable thread", async () => {

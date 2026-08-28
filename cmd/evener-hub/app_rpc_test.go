@@ -35,6 +35,21 @@ import (
 	"primeradiant.com/evener/rendezvous"
 )
 
+func TestHubRPCPluginPreviewRoute(t *testing.T) {
+	server := appserver.NewServer(appserver.ServerConfig{ServerName: "hub", SourceID: "local"})
+	registerPluginHandlers(server, newHubPluginsController(t.TempDir(), t.TempDir()))
+	out, err := server.Router().Dispatch(context.Background(), appwire.Request{
+		Method: appwire.MethodEvenerPluginPreview,
+		Params: json.RawMessage(`{"cwd":"/tmp"}`),
+	})
+	if err != nil {
+		t.Fatalf("preview route: %v", err)
+	}
+	if _, ok := out.(appwire.PluginPreviewResponse); !ok {
+		t.Fatalf("preview route response = %T, want PluginPreviewResponse", out)
+	}
+}
+
 func TestHubRPCThreadListUsesAppWireRendezvous(t *testing.T) {
 	runDir := t.TempDir()
 	writeRendezvous(t, runDir, rendezvous.Entry{
@@ -71,6 +86,75 @@ func TestHubRPCThreadListUsesAppWireRendezvous(t *testing.T) {
 	}
 	if len(resp.Data) != 1 || resp.Data[0].ID != "th_1" || resp.Data[0].Evener.Ref != "local:th_1" {
 		t.Fatalf("threads=%+v", resp.Data)
+	}
+}
+
+func TestHubRPCSteersSurvivingDaemonAfterHubRestart(t *testing.T) {
+	const (
+		daemonProtocol = "evener-appwire-v3"
+		threadID       = "th_compatible"
+		mutationID     = "mutation-compatible-steer"
+	)
+
+	steered := make(chan appwire.TurnSteerParams, 1)
+	runDir := t.TempDir()
+	daemonHTTP := startAppwireTestDaemonWithProtocol(t, runDir, threadID, daemonProtocol, func(daemon *appserver.Server) {
+		appserver.HandleTyped(daemon.Router(), appwire.MethodTurnSteer, func(_ context.Context, params appwire.TurnSteerParams) (appwire.TurnSteerResponse, error) {
+			steered <- params
+			return appwire.TurnSteerResponse{Receipt: appwire.MutationReceipt{
+				ClientMutationID: params.ClientMutationID,
+				Disposition:      appwire.MutationDispositionApplied,
+				ThreadID:         threadID,
+				ProjectionState:  appwire.MutationProjectionReflected,
+			}}, nil
+		})
+	})
+	defer daemonHTTP.Close()
+
+	roster := hubcore.NewRoster(runDir, fakeProber{sessionID: threadID, status: appwire.ThreadStatusActive})
+	roster.Refresh()
+
+	resumeCalls := 0
+	hub := newHubRPCTestServer(t, hubcore.WebConfig{
+		RunDir:      runDir,
+		Roster:      roster,
+		Past:        hubcore.NewPastIndex(""),
+		ResumeLocks: hubcore.NewResumeLocks(),
+		Spawner: &fakeRPCSpawner{resume: func(context.Context, hubcore.ResumeRequest) (rendezvous.Entry, error) {
+			resumeCalls++
+			return rendezvous.Entry{}, errors.New("surviving daemon must be reused")
+		}},
+	})
+	defer hub.Close()
+	client := dialHubRPC(t, hub)
+	defer client.Close()
+	if _, err := client.Initialize(t.Context(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
+		t.Fatalf("Initialize: %v", err)
+	}
+	resumed, err := client.ThreadResume(t.Context(), appwire.ThreadResumeParams{Session: threadID})
+	if err != nil {
+		t.Fatalf("ThreadResume: %v", err)
+	}
+	if resumed.Thread.ID != threadID || resumeCalls != 0 {
+		t.Fatalf("resume = %+v, replacement calls = %d", resumed.Thread, resumeCalls)
+	}
+
+	var response appwire.TurnSteerResponse
+	err = client.Request(t.Context(), appwire.MethodTurnSteer, appwire.TurnSteerParams{
+		Ref:              "local:" + threadID,
+		ThreadID:         threadID,
+		ClientMutationID: mutationID,
+		Input:            []appwire.InputItem{{Type: "text", Text: "survived the hub restart"}},
+	}, &response)
+	if err != nil {
+		t.Fatalf("TurnSteer: %v", err)
+	}
+	if response.Receipt.ClientMutationID != mutationID || response.Receipt.ThreadID != threadID {
+		t.Fatalf("receipt = %+v", response.Receipt)
+	}
+	params := <-steered
+	if params.ClientMutationID != mutationID || inputTextForTest(params.Input) != "survived the hub restart" {
+		t.Fatalf("daemon steer params = %+v", params)
 	}
 }
 
@@ -5277,6 +5361,10 @@ func (s *relayLifecycleSource) SetThreadModel(context.Context, appwire.ThreadMod
 	return appwire.Unavailable("relay lifecycle source does not set models")
 }
 
+func (s *relayLifecycleSource) SetThreadVisionModel(context.Context, appwire.ThreadVisionModelSetParams) error {
+	return appwire.Unavailable("relay lifecycle source does not set vision models")
+}
+
 func (s *relayLifecycleSource) SetThreadName(context.Context, appwire.ThreadNameSetParams) error {
 	return appwire.Unavailable("relay lifecycle source does not set names")
 }
@@ -5809,6 +5897,44 @@ func TestHubRPCTurnMutationsForwardWithoutDynamicCapabilityGates(t *testing.T) {
 	}
 }
 
+func TestHubRPCTurnSteerMissingLocalSessionReturnsTerminalRejection(t *testing.T) {
+	runDir := t.TempDir()
+	roster := hubcore.NewRoster(runDir, nil)
+	roster.Refresh()
+	hub := newHubRPCTestServer(t, hubcore.WebConfig{
+		RunDir: runDir,
+		Roster: roster,
+		Past:   hubcore.NewPastIndex(""),
+	})
+	defer hub.Close()
+
+	client := dialHubRPC(t, hub)
+	defer client.Close()
+	if _, err := client.Initialize(context.Background(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
+		t.Fatalf("Initialize: %v", err)
+	}
+
+	params := appwire.TurnSteerParams{
+		Ref:              "local:missing",
+		ClientMutationID: "mutation-missing-session",
+		Input:            []appwire.InputItem{{Type: "text", Text: "steer"}},
+	}
+	var response appwire.TurnSteerResponse
+	err := client.Request(context.Background(), appwire.MethodTurnSteer, params, &response)
+	var wire appwire.WireError
+	if !errors.As(err, &wire) {
+		t.Fatalf("TurnSteer error %T=%v, want WireError", err, err)
+	}
+	data, ok := wire.Data.(map[string]any)
+	if !ok ||
+		data["evenerErrorInfo"] != string(appwire.ErrorSessionUnavailable) ||
+		data["clientMutationId"] != params.ClientMutationID ||
+		data["mutationOutcome"] != string(appwire.MutationOutcomeNotAccepted) ||
+		data["retryDisposition"] != string(appwire.RetryDispositionNone) {
+		t.Fatalf("wire=%+v data=%T %#v", wire, wire.Data, wire.Data)
+	}
+}
+
 func TestHubRPCThreadCompactStartResumesPastThread(t *testing.T) {
 	root := t.TempDir()
 	workingDir := t.TempDir()
@@ -5960,6 +6086,83 @@ func TestHubRPCThreadModelSetResumesPastThread(t *testing.T) {
 	}
 	if modelCalled != "openai/gpt-5.6-sol" {
 		t.Fatalf("modelCalled=%q", modelCalled)
+	}
+}
+
+func TestHubRPCThreadVisionModelSetResumesPastThread(t *testing.T) {
+	root := t.TempDir()
+	workingDir := t.TempDir()
+	stateDir := filepath.Join(root, "projects", "project-past-0000000000")
+	sessionID := buildRPCParentSessionWithWorkingDir(t, stateDir, workingDir)
+	past := hubcore.NewPastIndex(filepath.Join(root, "projects", "*"))
+	if _, err := past.Rebuild(); err != nil {
+		t.Fatal(err)
+	}
+
+	daemon := appserver.NewServer(appserver.ServerConfig{ServerName: "daemon", SourceID: "local"})
+	appserver.HandleTyped(daemon.Router(), appwire.MethodThreadRead, func(_ context.Context, params appwire.ThreadReadParams) (appwire.ThreadReadResponse, error) {
+		return appwire.ThreadReadResponse{Thread: appwire.Thread{
+			ID:        sessionID,
+			SessionID: sessionID,
+			Source:    "local",
+			Evener: appwire.EvenerThread{
+				Ref:          params.Ref,
+				Capabilities: appwire.ThreadCapabilities{ChangeVisionModel: true},
+			},
+		}}, nil
+	})
+	visionModelCalled := ""
+	appserver.HandleTyped(daemon.Router(), appwire.MethodThreadVisionModelSet, func(_ context.Context, params appwire.ThreadVisionModelSetParams) (appwire.EmptyResponse, error) {
+		if params.Ref != "local:"+sessionID {
+			t.Fatalf("vision model ref=%q", params.Ref)
+		}
+		visionModelCalled = params.VisionModel
+		return appwire.EmptyResponse{}, nil
+	})
+	daemonHTTP := httptest.NewServer(http.HandlerFunc(daemon.ServeWebSocket))
+	defer daemonHTTP.Close()
+
+	runDir := t.TempDir()
+	resumeCalls := 0
+	spawner := &fakeRPCSpawner{
+		resume: func(_ context.Context, req hubcore.ResumeRequest) (rendezvous.Entry, error) {
+			if req.SessionID != sessionID || req.StateDir != stateDir || req.WorkingDir != workingDir {
+				t.Fatalf("resume request=%+v", req)
+			}
+			resumeCalls++
+			entry := rendezvous.Entry{
+				PID:        106,
+				Protocol:   appwire.ProtocolVersion,
+				Endpoint:   "ws" + daemonHTTP.URL[len("http"):],
+				SourceID:   "local",
+				ThreadID:   sessionID,
+				SessionID:  sessionID,
+				WorkingDir: workingDir,
+			}
+			writeRendezvous(t, runDir, entry)
+			return entry, nil
+		},
+	}
+	roster := hubcore.NewRoster(runDir, nil)
+	hub := newHubRPCTestServer(t, hubcore.WebConfig{RunDir: runDir, Roster: roster, Spawner: spawner, Past: past})
+	defer hub.Close()
+	client := dialHubRPC(t, hub)
+	defer client.Close()
+
+	if _, err := client.Initialize(context.Background(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
+		t.Fatalf("Initialize: %v", err)
+	}
+	if err := client.ThreadVisionModelSet(context.Background(), appwire.ThreadVisionModelSetParams{
+		Ref:         "local:" + sessionID,
+		VisionModel: "off",
+	}); err != nil {
+		t.Fatalf("ThreadVisionModelSet: %v", err)
+	}
+	if resumeCalls != 1 {
+		t.Fatalf("resume calls=%d, want 1", resumeCalls)
+	}
+	if visionModelCalled != "off" {
+		t.Fatalf("visionModelCalled=%q", visionModelCalled)
 	}
 }
 
@@ -6118,7 +6321,6 @@ func TestHubRPCModelListUsesEvenerLaunchContractWhenDaemonFails(t *testing.T) {
 		RunDir:  runDir,
 		Roster:  roster,
 		Spawner: spawner,
-		Models:  []hubcore.ModelDescriptor{{Provider: "openai", Model: "gpt-stale"}},
 	})
 	defer hub.Close()
 	client := dialHubRPC(t, hub)
@@ -7714,6 +7916,11 @@ func TestHubRPCThreadResumeRoutesConfiguredCodexSource(t *testing.T) {
 		resumeCalled = true
 		if params["threadId"] != "th_codex" {
 			t.Fatalf("thread/resume params=%+v", params)
+		}
+		for _, field := range []string{"pluginDirs", "enabledPlugins"} {
+			if _, present := params[field]; present {
+				t.Fatalf("thread/resume unexpectedly carried launch selection %q: %+v", field, params)
+			}
 		}
 		return map[string]any{"thread": map[string]any{
 			"id":            "th_codex",
@@ -9624,6 +9831,7 @@ func TestHubRPCRegistersExpectedHandlerSet(t *testing.T) {
 		appwire.MethodThreadCompactStart,
 		appwire.MethodThreadShutdown,
 		appwire.MethodThreadModelSet,
+		appwire.MethodThreadVisionModelSet,
 		appwire.MethodEvenerThreadNameSet,
 		appwire.MethodThreadReasoningEffortSet,
 		appwire.MethodGoalSet,
@@ -9636,6 +9844,12 @@ func TestHubRPCRegistersExpectedHandlerSet(t *testing.T) {
 		appwire.MethodEvenerAuthApiKeySet,
 		appwire.MethodEvenerAuthDeviceStart,
 		appwire.MethodEvenerAuthDevicePoll,
+		appwire.MethodEvenerNavigationRead,
+		appwire.MethodEvenerFavoriteSet,
+		appwire.MethodEvenerArchiveSet,
+		appwire.MethodEvenerProjectDelete,
+		appwire.MethodEvenerSessionDelete,
+		appwire.MethodEvenerSearch,
 		appwire.MethodEvenerInstanceList,
 		appwire.MethodEvenerInstanceCreate,
 		appwire.MethodEvenerInstanceEdit,
@@ -9653,11 +9867,16 @@ func TestHubRPCRegistersExpectedHandlerSet(t *testing.T) {
 		appwire.MethodEvenerJobsOutput,
 		appwire.MethodEvenerThreadTranscriptsList,
 		appwire.MethodEvenerPathsComplete,
+		appwire.MethodEvenerDirsCreate,
 		appwire.MethodEvenerProjectsRecent,
 		appwire.MethodEvenerPathValidate,
+		appwire.MethodEvenerGitHead,
+		appwire.MethodEvenerMobilePairing,
 		appwire.MethodEvenerHarnessesList,
 		appwire.MethodEvenerCommandList,
 		appwire.MethodEvenerSettingsOverview,
+		appwire.MethodEvenerSettingsTranscriptDisplayGet,
+		appwire.MethodEvenerSettingsTranscriptDisplayPatch,
 		appwire.MethodEvenerMarketplaceList,
 		appwire.MethodEvenerMarketplaceAdd,
 		appwire.MethodEvenerMarketplaceRemove,
@@ -9671,6 +9890,7 @@ func TestHubRPCRegistersExpectedHandlerSet(t *testing.T) {
 		appwire.MethodEvenerPluginDisable,
 		appwire.MethodEvenerPluginSetAutoUpgrade,
 		appwire.MethodEvenerPluginCheckNow,
+		appwire.MethodEvenerPluginPreview,
 	}
 
 	// The list is a lock, not a sample: nothing may be registered that it does

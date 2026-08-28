@@ -1116,6 +1116,12 @@ func jobResultBody(raw string) (string, bool) {
 		statusParts = append(statusParts, "reason="+r.Reason)
 	}
 	statusParts = append(statusParts, "transcript_ref="+ref)
+	if len(r.Tools) > 0 {
+		// The capability ceiling is frozen at delegate creation/send time. Keep
+		// the ordered enum list visible in the condensed projection rather than
+		// merely accepting it as a decoded-but-invisible field.
+		statusParts = append(statusParts, "tools=["+strings.Join(r.Tools, ",")+"]")
+	}
 
 	var b strings.Builder
 	b.WriteString(strings.Join(statusParts, " "))
@@ -1199,6 +1205,7 @@ var jobResultKnownKeys = map[string]bool{
 	"run_ended_at":        true, // delegateSendResult
 	"latest_activity_at":  true, // delegateSendResult
 	"cumulative_usage":    true, // delegateSendResult
+	"tools":               true, // stableDelegateCreateResult, delegateSendResult
 }
 
 var jobResultMetadataKeys = []string{

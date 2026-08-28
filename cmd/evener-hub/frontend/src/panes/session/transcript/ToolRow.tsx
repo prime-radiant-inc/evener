@@ -47,20 +47,26 @@
 //     TOOL-CALL line: inline at the end of the summary when there is one,
 //     which - with a purpose present - is the demoted second line, not the
 //     rationale line. A purpose-only row (no summary) trails them on the
-//     purpose line instead, the one line it has. The one exception: a
+//     purpose line instead, the one line it has: a sibling flex item AFTER
+//     the trigger button (never nested inside it - a button inside a button
+//     is not valid), sprung to the line's end by the trigger's own flex-grow,
+//     the same placement the notification card's head gives "Open subagent"
+//     (notificationcard.module.css's .action). The one exception: a
 //     descriptor whose summary quotes its target verbatim (read_file's
 //     openBesideInline) anchors the control mid-summary via trailingAfter -
 //     between the file name and the line range it opens.
 //
 // A row with no purpose is a single line: summary, then affordances, then
 // the chevron if there is something to expand.
-import type { ReactNode } from "react";
+import { type ReactNode, useId } from "react";
 import { Chevron, FailureGlyph, ToolIcon, type ToolIconKind } from "../../../widgets";
 import { requireClass } from "../../../widgets/internal/requireClass";
 import styles from "./toolcallitem.module.css";
 
 const CLASS = {
   row: requireClass(styles.row, "toolcallitem.module.css", "row"),
+  trigger: requireClass(styles.trigger, "toolcallitem.module.css", "trigger"),
+  summaryLine: requireClass(styles.summaryLine, "toolcallitem.module.css", "summaryLine"),
   purpose: requireClass(styles.purpose, "toolcallitem.module.css", "purpose"),
   summary: requireClass(styles.summary, "toolcallitem.module.css", "summary"),
   mono: requireClass(styles.mono, "toolcallitem.module.css", "mono"),
@@ -71,6 +77,7 @@ const CLASS = {
   clampedHead: requireClass(styles.clampedHead, "toolcallitem.module.css", "clampedHead"),
   clampedTail: requireClass(styles.clampedTail, "toolcallitem.module.css", "clampedTail"),
   summaryTrailing: requireClass(styles.summaryTrailing, "toolcallitem.module.css", "summaryTrailing"),
+  purposeTrailing: requireClass(styles.purposeTrailing, "toolcallitem.module.css", "purposeTrailing"),
   summaryMeta: requireClass(styles.summaryMeta, "toolcallitem.module.css", "summaryMeta"),
   chevron: requireClass(styles.chevron, "toolcallitem.module.css", "chevron"),
 };
@@ -124,6 +131,8 @@ export interface ToolRowProps {
   /** Hover text for details that are real but must not be the headline — the
    * shell exit code, per A2. */
   title?: string;
+  /** Stable ID of the conditionally rendered body controlled by this trigger. */
+  bodyId?: string;
 }
 
 /** The one rule for reading a tool call's stated purpose (ItemModel.description):
@@ -166,10 +175,9 @@ function middleSplit(text: string): [head: string, tail: string] {
  * present in it (a descriptor bug, never a mismatched or fabricated href -
  * kata xw3t's own "never a dead anchor" carryover from tcp9). stopPropagation
  * on the anchor's own click keeps it from also toggling the enclosing
- * <summary>'s disclosure: that element's onClick (below) unconditionally
- * preventDefaults every click that reaches it, which - since this is the
- * SAME bubbled event - would otherwise cancel the link's native navigation
- * too, not just skip the toggle.
+ * disclosure trigger: that element's onClick (below) fires onToggle for
+ * every click that reaches it, which - since this is the SAME bubbled
+ * event - would otherwise toggle the row as well as navigate the link.
  *
  * Located by search (indexOf), NOT by the positional-prefix rule
  * `trailingAfter` uses, and deliberately so. That rule exists because a
@@ -191,7 +199,7 @@ function linkifySummary(text: string, href: string | undefined): ReactNode {
   return (
     <>
       {text.slice(0, start)}
-      <a href={href} target="_blank" rel="noopener noreferrer" onClick={(e) => e.stopPropagation()}>
+      <a href={href} target="_blank" rel="noopener noreferrer">
         {href}
       </a>
       {text.slice(start + href.length)}
@@ -213,7 +221,10 @@ export function ToolRow({
   trailingAfter,
   title,
   status,
+  bodyId,
 }: ToolRowProps) {
+  const generatedBodyId = useId();
+  const disclosureBodyId = bodyId ?? generatedBodyId;
   const statedPurpose = statedPurposeOf({ description: purpose });
   const hasPurpose = statedPurpose !== undefined;
   const hasSummary = summary.trim() !== "";
@@ -257,6 +268,12 @@ export function ToolRow({
       <Chevron />
     </span>
   ) : null;
+  const failureNode = failed ? <FailureGlyph /> : null;
+  const statusNode = hasStatus ? (
+    <span className={CLASS.status} data-testid="tool-row-status">
+      {status}
+    </span>
+  ) : null;
   // The kind icon sits in the RAIL beside the rationale line (Jesse's review
   // call: pull the tool-use and thought icons into the gutter, at 50%
   // opacity, on the rationale's line - not inline in the text). It is the
@@ -270,6 +287,19 @@ export function ToolRow({
         <ToolIcon kind={icon} />
       </span>
     ) : null;
+  // A purpose-only row has no tool-call line for affordances to ride, so they
+  // ride the DISCLOSURE line - the one line it has (see the grammar above).
+  // The disclosure trigger is a <button>, so the control cannot nest inside
+  // it: the slot follows the trigger as a sibling flex item of the row, and
+  // data-purpose-trailing on the row is the stylesheet's hook for letting the
+  // two share line 1.
+  const purposeLineTrailing =
+    hasPurpose && !hasSummary && anchorSplit === undefined && trailing !== undefined && trailing !== null ? (
+      <span className={CLASS.purposeTrailing} data-testid="tool-row-purpose-trailing">
+        {trailing}
+      </span>
+    ) : null;
+  const showPurposeTrailing = purposeLineTrailing !== null;
   // The collapsed second line's middle-truncation, WITH the inline-affordance
   // variant: when anchorSplit places the trailing control mid-summary, the
   // control becomes a flex item of the clamped line between the anchor's end
@@ -334,12 +364,8 @@ export function ToolRow({
           left edge down a long list of sibling rows, whereas a tool row sits
           inside flowing prose, where a blank reserved column reads as a stray
           indent. Different context, different answer. */}
-      {failed && <FailureGlyph />}
-      {hasStatus && (
-        <span className={CLASS.status} data-testid="tool-row-status">
-          {status}
-        </span>
-      )}
+      {failureNode}
+      {statusNode}
       {hasPurpose && (
         <span className={CLASS.purpose} data-testid="tool-row-purpose">
           {statedPurpose}
@@ -390,47 +416,99 @@ export function ToolRow({
     );
   }
 
+  const summaryContent = (
+    <>
+      {hasSummary && (
+        <span
+          className={`${CLASS.summary}${monoSummary ? ` ${CLASS.mono}` : ""}${
+            hasPurpose ? ` ${CLASS.demoted}${expanded ? "" : ` ${CLASS.clamped}`}` : ""
+          }`}
+          data-testid="tool-row-summary"
+          title={hasPurpose ? summary : undefined}
+        >
+          {hasPurpose && !expanded ? (
+            clampedSummary
+          ) : anchorSplit !== undefined ? (
+            <>
+              {linkifySummary(anchorSplit[0], summaryLink)}
+              <span className={CLASS.summaryTrailing} data-testid="tool-row-trailing">
+                {trailing}
+              </span>
+              {linkifySummary(anchorSplit[1], summaryLink)}
+            </>
+          ) : (
+            linkifySummary(summary, summaryLink)
+          )}
+          {hasPurpose && trailing && anchorSplit === undefined ? (
+            <span className={CLASS.summaryTrailing}>{trailing}</span>
+          ) : null}
+        </span>
+      )}
+      {/* Rows with no purpose trail the control at the summary line's end. A
+          purpose-only row never reaches this fallback: its control rides the
+          disclosure line via purposeLineTrailing (the summaryLine div below
+          only mounts when there is no such slot). */}
+      {!hasPurpose && anchorSplit === undefined ? trailing : null}
+    </>
+  );
+  const triggerLabel = !hasPurpose
+    ? [
+        failed ? "Failed" : undefined,
+        hasSummary ? summary : undefined,
+        !hasSummary && !failed ? "Tool call" : undefined,
+      ]
+        .filter((part): part is string => part !== undefined)
+        .join(" ")
+    : undefined;
+
   return (
-    // <summary> is natively keyboard-operable (implicit role="button";
-    // Enter/Space synthesize the same click this handler already takes), which
-    // is why A3's keyboard requirement needs no extra key handling here.
-    //
-    // aria-expanded: HTML-AAM maps a details element's first <summary> to
-    // role=button, and aria-expanded IS supported on button - Biome's own role
-    // table simply doesn't carry summary's implicit mapping. The attribute can
-    // never disagree with the native details state either: ToolCallItem drives
-    // <details open> from the same `expanded` value passed here.
-    // biome-ignore lint/a11y/noStaticElementInteractions: <summary> is natively keyboard-operable, see above
-    // biome-ignore lint/a11y/useAriaPropsSupportedByRole: summary's implicit role is button, which supports aria-expanded, see above
-    <summary
+    <div
       className={CLASS.row}
       data-testid="tool-row"
       data-purpose={hasPurpose ? "true" : undefined}
+      data-purpose-trailing={showPurposeTrailing ? "true" : undefined}
       title={title}
-      aria-expanded={expanded}
-      // A descriptor can suppress BOTH the purpose (none stated) and the
-      // summary (summaryHiddenWhenExpanded, open) at once, leaving nothing but
-      // the aria-hidden chevron inside this <summary> - an unnamed disclosure.
-      // aria-label REPLACES the computed accessible name entirely, including
-      // any descendant name (FailureGlyph's "Failed", a status glyph's state
-      // label), so the fallback applies ONLY when the row would otherwise
-      // have no accessible name at all - not merely no purpose/summary, and
-      // not merely no FAILED/hasStatus flag (a nameless status value like
-      // null or false must not suppress it either, see hasStatus above).
-      // When failed or hasStatus is true, their own accessible name stands
-      // instead. The fallback is a stable label, not a restoration of the
-      // hidden summary text (that suppression, ToolCallItem.tsx:259, is
-      // deliberate).
-      aria-label={!hasPurpose && !hasSummary && !failed && !hasStatus ? "Tool call" : undefined}
-      onClick={(e) => {
-        // Fully controlled: preventDefault stops the browser flipping
-        // <details open> itself, so the caller's store stays the single source
-        // of truth (the same posture as widgets/disclosure).
-        e.preventDefault();
-        onToggle?.();
-      }}
     >
-      {content}
-    </summary>
+      {hasPurpose ? (
+        <button
+          type="button"
+          className={CLASS.trigger}
+          data-testid="tool-row-trigger"
+          aria-expanded={expanded}
+          aria-controls={disclosureBodyId}
+          onClick={() => onToggle?.()}
+        >
+          {iconNode}
+          {failureNode}
+          {statusNode}
+          <span className={CLASS.purpose} data-testid="tool-row-purpose">
+            {statedPurpose}
+            {chevron}
+          </span>
+        </button>
+      ) : (
+        <>
+          {iconNode}
+          {failureNode}
+          {statusNode}
+        </>
+      )}
+      {purposeLineTrailing}
+      {!hasPurpose && <div className={CLASS.summaryLine}>{summaryContent}</div>}
+      {!hasPurpose && (
+        <button
+          type="button"
+          className={CLASS.trigger}
+          data-testid="tool-row-trigger"
+          aria-expanded={expanded}
+          aria-controls={disclosureBodyId}
+          aria-label={triggerLabel}
+          onClick={() => onToggle?.()}
+        >
+          {chevron}
+        </button>
+      )}
+      {hasPurpose && !showPurposeTrailing && <div className={CLASS.summaryLine}>{summaryContent}</div>}
+    </div>
   );
 }

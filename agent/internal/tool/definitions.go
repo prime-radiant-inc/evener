@@ -97,13 +97,58 @@ func DefShell() llm.ToolDefinition {
 	}
 }
 
+// DelegateSandboxSchema describes the sandbox controls that the current
+// session can actually enforce. Available=false removes both sandbox knobs;
+// explicit values are still rejected by the handler rather than ignored.
+// Modes and NetworkValues are copied into the returned definition. An empty
+// NetworkValues leaves sandbox_net as an unconstrained boolean, which is the
+// portable full-capability schema used by DefDelegate.
+type DelegateSandboxSchema struct {
+	Available                   bool
+	Modes                       []string
+	NetworkValues               []bool
+	RequireNonOffModeForNetwork bool
+	SandboxDescription          string
+	SandboxNetDescription       string
+	// ModelDescription is appended to the model override description when a
+	// caller has captured a bounded, startup-frozen availability snapshot.
+	// Empty preserves the generic string contract.
+	ModelDescription string
+}
+
+const delegateModelOverrideDescription = "Model override. Default: the delegate captures your CURRENT model at the moment it is spawned (so a delegate spawned after you switch models inherits the new one, and one spawned before keeps the model it started with). An explicit value here pins the delegate to that model instead, regardless of your current or future model."
+
+// DelegateModelDescriptionAdditionBudget reports how many bytes may be
+// appended to the model parameter's fixed description without exceeding the
+// caller's total schema-description budget.
+func DelegateModelDescriptionAdditionBudget(maxBytes int) int {
+	budget := maxBytes - len([]byte(delegateModelOverrideDescription)) - 1
+	if budget < 0 {
+		return 0
+	}
+	return budget
+}
+
 // DefDelegate defines the delegate tool, which starts a NEW delegate
 // conversation (independent agentic work) and returns its durable stable identity.
 // agentTypes constrains the agent_type enum to the session's
 // available roles; pass nil to omit the enum (free-form). reasoning_effort uses
 // the delegate contract's portable low/medium/high enum; the handler resolves
-// provider-specific details.
+// provider-specific details. The legacy constructor exposes the full sandbox
+// surface; session-owned callers should use DefDelegateWithSandbox so the
+// advertised controls match the host and parent capabilities.
 func DefDelegate(agentTypes []string) llm.ToolDefinition {
+	return DefDelegateWithSandbox(agentTypes, DelegateSandboxSchema{
+		Available: true,
+		Modes:     []string{"off", "read-only", "workspace-write", "restricted"},
+	})
+}
+
+// DefDelegateWithSandbox is DefDelegate with a capability-honest sandbox
+// surface. It keeps the stable delegate contract identical for unrelated
+// parameters while removing or constraining sandbox values the session cannot
+// enforce.
+func DefDelegateWithSandbox(agentTypes []string, sandboxSchema DelegateSandboxSchema) llm.ToolDefinition {
 	strictFalse := false
 	agentTypeSchema := map[string]any{
 		"type":        "string",
@@ -112,7 +157,7 @@ func DefDelegate(agentTypes []string) llm.ToolDefinition {
 	if len(agentTypes) > 0 {
 		agentTypeSchema["enum"] = append([]string(nil), agentTypes...)
 	}
-	return llm.ToolDefinition{
+	def := llm.ToolDefinition{
 		Name: "delegate",
 		Description: "Start a NEW delegate conversation to do independent agentic work; returns one durable `delegate_id` " +
 			"and stable conversation metadata, never an activation job identity. `delegate` never resumes an existing " +
@@ -130,7 +175,7 @@ func DefDelegate(agentTypes []string) llm.ToolDefinition {
 			"properties": map[string]any{
 				"task":                 map[string]any{"type": "string"},
 				"agent_type":           agentTypeSchema,
-				"model":                map[string]any{"type": "string", "description": "Model override. Default: the delegate captures your CURRENT model at the moment it is spawned (so a delegate spawned after you switch models inherits the new one, and one spawned before keeps the model it started with). An explicit value here pins the delegate to that model instead, regardless of your current or future model."},
+				"model":                map[string]any{"type": "string", "description": delegateModelOverrideDescription},
 				"reasoning_effort":     map[string]any{"type": "string", "description": "Reasoning effort for this delegate (low, medium, or high). Default inherits from parent.", "enum": []string{"low", "medium", "high"}},
 				"delegation_allowance": map[string]any{"type": "integer", "description": "0 (default): a leaf delegate that cannot itself delegate. >0: the delegate may delegate, granting onward allowances strictly smaller than this; must be strictly less than your own allowance. The allowance only takes effect if the chosen agent_type actually has the `delegate` tool: the built-in `subagent` role is a non-delegating leaf, so a >0 allowance on it is a silent no-op. For a multi-level tree, omit agent_type (the default role can delegate)."},
 				"watch_parent":         map[string]any{"type": "boolean", "description": "Grant this child permission to observe your session with job_watch(source=\"parent\"). This does not grant delegation or any transitive watch permission."},
@@ -157,6 +202,54 @@ func DefDelegate(agentTypes []string) llm.ToolDefinition {
 			"required": []string{"task"},
 		},
 	}
+	props := def.Parameters["properties"].(map[string]any)
+	if sandboxSchema.ModelDescription != "" {
+		props["model"].(map[string]any)["description"] = strings.TrimSpace(props["model"].(map[string]any)["description"].(string) + " " + sandboxSchema.ModelDescription)
+	}
+	if !sandboxSchema.Available {
+		delete(props, "sandbox")
+		delete(props, "sandbox_net")
+		def.Description += " This session's host cannot enforce per-delegate sandboxing, so `sandbox` and `sandbox_net` are unavailable; do not send them."
+		return def
+	}
+	if len(sandboxSchema.Modes) > 0 {
+		props["sandbox"].(map[string]any)["enum"] = append([]string(nil), sandboxSchema.Modes...)
+	} else {
+		// An available backend may still have no explicit mode that satisfies the
+		// parent's effective floor (for example, restricted plus WriteBlocked).
+		// Omit only the unusable mode control; sandbox_net remains available for
+		// the valid net-only tightening/inheritance path.
+		delete(props, "sandbox")
+	}
+	if len(sandboxSchema.NetworkValues) > 0 {
+		props["sandbox_net"].(map[string]any)["enum"] = append([]bool(nil), sandboxSchema.NetworkValues...)
+	}
+	if sandboxSchema.RequireNonOffModeForNetwork {
+		nonOffModes := make([]string, 0, len(sandboxSchema.Modes))
+		for _, mode := range sandboxSchema.Modes {
+			if mode != "off" {
+				nonOffModes = append(nonOffModes, mode)
+			}
+		}
+		def.Parameters["oneOf"] = []any{
+			map[string]any{"not": map[string]any{"required": []string{"sandbox_net"}}},
+			map[string]any{
+				"required": []string{"sandbox", "sandbox_net"},
+				"properties": map[string]any{
+					"sandbox": map[string]any{"enum": nonOffModes},
+				},
+			},
+		}
+	}
+	if sandboxSchema.SandboxDescription != "" {
+		if sandbox, ok := props["sandbox"].(map[string]any); ok {
+			sandbox["description"] = strings.TrimSpace(sandbox["description"].(string) + " " + sandboxSchema.SandboxDescription)
+		}
+	}
+	if sandboxSchema.SandboxNetDescription != "" {
+		props["sandbox_net"].(map[string]any)["description"] = strings.TrimSpace(props["sandbox_net"].(map[string]any)["description"].(string) + " " + sandboxSchema.SandboxNetDescription)
+	}
+	return def
 }
 
 // DefDelegateSend defines the delegate_send tool, the single follow-up surface
@@ -178,6 +271,24 @@ func DefDelegateSend() llm.ToolDefinition {
 				"max_wait_ms": map[string]any{"type": "integer", "description": "0 (default): deliver/start without waiting. >0: for a newly started delegate generation, wait inline up to this many ms for its result; delivery to a running delegate or caller returns once delivered."},
 			},
 			"required": []string{"to", "message"},
+		},
+	}
+}
+
+// DefModelList exposes a bounded read-only view of a startup-frozen model
+// snapshot. Cursor values are opaque and snapshot-authenticated by the agent.
+func DefModelList() llm.ToolDefinition {
+	return llm.ToolDefinition{
+		Name:        "model_list",
+		Description: "List choices from the startup-frozen model availability snapshot. This is read-only; use the opaque cursor returned for the next page. Pages are bounded by both max_count and max_bytes and are never truncated.",
+		Parameters: map[string]any{
+			"type":                 "object",
+			"additionalProperties": false,
+			"properties": map[string]any{
+				"cursor":    map[string]any{"type": "string", "description": "Opaque snapshot-bound continuation cursor; omit for the first page."},
+				"max_count": map[string]any{"type": "integer", "minimum": 1, "maximum": 128},
+				"max_bytes": map[string]any{"type": "integer", "minimum": 1, "maximum": 4096},
+			},
 		},
 	}
 }
@@ -497,13 +608,15 @@ func DefCommunicateNamed(name string) llm.ToolDefinition {
 }
 
 func DefTaskList(effortLevels []string) llm.ToolDefinition {
-	reasoningDesc := "Raise or lower the reasoning budget for this task. Omit to leave unchanged."
+	reasoningDesc := "Raise or lower the reasoning budget for this task. Use \"inherit\" (or omit) to keep the session's configured effort."
 	reasoningSchema := map[string]any{
 		"type":        "string",
 		"description": reasoningDesc,
 	}
 	if len(effortLevels) > 0 {
-		reasoningSchema["enum"] = append([]string(nil), effortLevels...)
+		// "inherit" rides along so a strict-mode provider (which force-requires
+		// every property) still lets the model decline to override.
+		reasoningSchema["enum"] = append(append([]string(nil), effortLevels...), "inherit")
 	}
 	return llm.ToolDefinition{
 		Name:        "task_list",
@@ -758,7 +871,7 @@ func DefAskUser() llm.ToolDefinition {
 	return llm.ToolDefinition{
 		Name: "ask_user",
 		Description: "Ask the user structured questions. Asking yields the floor: when the round containing your `ask_user` call(s) completes, your turn ends and the session waits visibly for the reply (no timeout). Do the work that does not need answers first, then batch every question this decision point needs — several `ask_user` calls may share the round, and a `communicate` in the same round still delivers its message. The answers arrive in the user's next message: either the numbered `[answers]` form (one resolution per question: a selection, free text, \"you decide\" — choose with your judgment, honoring any stated leaning —, your stated fallback, or skipped — proceed on your best judgment, state the assumption, and do not immediately re-ask) or free prose; treat either as the reply to everything you asked. Any answer may carry a user note — read it; it can qualify or override the selection.\n\n" +
-			"- `questions`: 1–4 per call, each with an optional short `header` (≤12 chars; omitted headers display as `Question N`), the full `question`, and 2–5 `options` (`{label, detail}`, labels unique). Set `multi_select` to allow several; set `recommended: true` on at most one option and put it first. For a single question, `question` + `options` may be given directly instead of the `questions` array.\n" +
+			"- `questions`: 1–4 per call, each with an optional display `header` (omitted headers display as `Question N`), the full `question`, and 2–5 `options` (`{label, detail}`, labels unique). Set `multi_select` to allow several; set `recommended: true` on at most one option and put it first. For a single question, `question` + `options` may be given directly instead of the `questions` array.\n" +
 			"- Do not add an \"Other\" or free-text option; the UI always offers one, plus \"you decide\".\n" +
 			"- Optional per question: `why` (one line: what the answer changes) and `if_unanswered` (the fallback you would take; the user can accept it with one tap).\n\n" +
 			"First try to resolve the question yourself with tools. Asking is how you end your turn when only the user can unblock the rest — finish the answer-independent work before you ask.",
@@ -775,7 +888,7 @@ func DefAskUser() llm.ToolDefinition {
 					"items": map[string]any{
 						"type": "object",
 						"properties": map[string]any{
-							"header":   map[string]any{"type": "string", "maxLength": 12, "description": "Short chip/tab label."},
+							"header":   map[string]any{"type": "string", "description": "Display label; answer framing encodes delimiter characters when needed."},
 							"question": map[string]any{"type": "string", "description": "The full question text."},
 							"options": map[string]any{
 								"type":        "array",

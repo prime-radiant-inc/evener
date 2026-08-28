@@ -26,8 +26,32 @@ func newTestSession(t *testing.T) *Session {
 	return newSession(t, withConfig(SessionConfig{
 		MaxSubagentDepth: 1,
 		NoProjectPrompts: true,
+		testOnly: testConfig{
+			skipGitSnapshot:     true,
+			minimalSystemPrompt: true,
+			noSyncJobStore:      true,
+			sandboxProber:       bwrapCapableProber(t.TempDir()),
+		},
+	}))
+}
+
+func TestSubagentInheritsSelectedPluginDirs(t *testing.T) {
+	want := []string{"/plugins/selected-alpha", "/plugins/selected-beta"}
+	parent := newSession(t, withConfig(SessionConfig{
+		MaxSubagentDepth: 1,
+		NoProjectPrompts: true,
+		PluginDirs:       want,
 		testOnly:         testConfig{skipGitSnapshot: true, minimalSystemPrompt: true, noSyncJobStore: true},
 	}))
+	prepared, err := parent.prepareSubagentRun(context.Background(), "inspect", "", "", 1, "", "", nil, nil)
+	if err != nil {
+		t.Fatalf("prepareSubagentRun: %v", err)
+	}
+	defer releasePreparedTreeSlot(prepared)
+	defer prepared.sub.sess.Close()
+	if !slices.Equal(prepared.sub.sess.cfg.PluginDirs, want) {
+		t.Fatalf("child PluginDirs = %v, want %v", prepared.sub.sess.cfg.PluginDirs, want)
+	}
 }
 
 func TestEnsureRecoveryReaderPreservesPolicyShape(t *testing.T) {
@@ -736,6 +760,7 @@ func TestWatchParentGrantIsNotInheritedByGrandchild(t *testing.T) {
 	subCfg.spawn.parentSessionID = "parent"
 	subCfg.spawn.delegationAllowance = 1
 	subCfg.spawn.parentWatchGranted = true
+	subCfg.testOnly.sandboxProber = bwrapCapableProber(dir)
 
 	child, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(dir), subCfg)
 	if err != nil {

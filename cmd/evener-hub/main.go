@@ -19,6 +19,7 @@ import (
 	"text/tabwriter"
 	"time"
 
+	"primeradiant.com/evener/appwire"
 	"primeradiant.com/evener/buildinfo"
 	"primeradiant.com/evener/cmd/evener-hub/internal/codexlaunch"
 	"primeradiant.com/evener/cmd/evener-hub/internal/hostlock"
@@ -28,12 +29,13 @@ import (
 	"primeradiant.com/evener/envvars"
 	"primeradiant.com/evener/internal/binresolve"
 	"primeradiant.com/evener/internal/credentials"
+	"primeradiant.com/evener/internal/plugins"
 	"primeradiant.com/evener/llm"
 	"primeradiant.com/evener/llm/providercfg"
 	"primeradiant.com/evener/rendezvous"
 
 	// Side-effect imports register provider adapters. These are the same
-	// adapters `evener serve` uses, so the hub's /api/models reflects what
+	// adapters `evener serve` uses, so the hub's model/list reflects what
 	// spawning will succeed at — only providers configured in the hub's
 	// environment surface in the picker.
 	_ "primeradiant.com/evener/llm/providers/anthropic"
@@ -81,6 +83,29 @@ func (s *listenerHTTPServer) ListenAndServe() error {
 
 type hubShutdowner interface {
 	Shutdown(context.Context) error
+}
+
+type navigationPublisher interface {
+	BroadcastAll(string, any)
+}
+
+func runNavigationPublisher(ctx context.Context, navigation *NavigationService, publisher navigationPublisher) {
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-navigation.PublicationReady():
+			for {
+				payloads := navigation.DrainPublications()
+				if len(payloads) == 0 {
+					break
+				}
+				for _, payload := range payloads {
+					publisher.BroadcastAll(appwire.NotifyEvenerNavigationInvalidated, payload)
+				}
+			}
+		}
+	}
 }
 
 type hubOptions struct {
@@ -266,18 +291,9 @@ func runMain(args []string, stderr io.Writer, deps mainDeps) error {
 	// as a fallback when a session's project dir can't be found in the past index.
 	stateDir := filepath.Dir(filepath.Clean(strings.TrimSuffix(stateGlob, "*")))
 
-	// Keep configured providers available for settings; launch choices come
-	// from the Evener harness contract exposed by HubSpawner.
-	var models []hubcore.ModelDescriptor
-	for _, p := range cfg.Providers {
-		for _, m := range p.Models {
-			models = append(models, hubcore.ModelDescriptor{Provider: p.Name, Model: m})
-		}
-	}
-
-	// inputs is the shared inputs-version counter the /api/tree memo (TreeCache)
-	// keys on; bumped whenever an input to the tree changes so the next request
-	// recomputes instead of serving a stale memoized tree.
+	// inputs is the shared source-revision counter used by NavigationService and
+	// the remaining memoized tree projection; bumping it makes the next read
+	// observe changed navigation inputs instead of stale state.
 	inputs := &hubcore.InputsVersion{}
 
 	// Wire archive/favorite's content-delta-gated onChange hook (Task 10) to
@@ -344,54 +360,63 @@ func runMain(args []string, stderr io.Writer, deps mainDeps) error {
 		_ = hubListener.Close()
 		return fmt.Errorf("load deletion state: %w", err)
 	}
+	transcriptDisplayStore, transcriptDisplayStoreErr := hubcore.NewTranscriptDisplayStore(hubStateRoot)
+	if transcriptDisplayStoreErr != nil {
+		_, _ = fmt.Fprintf(stderr, "[hub] transcript display state: %v\n", transcriptDisplayStoreErr)
+	}
+
+	// Resolve the registry root once for this hub process. Launch configuration
+	// may override XDG_CONFIG_HOME for a child, so the child must receive this
+	// concrete root rather than resolving its own default from that environment.
+	pluginRoot := plugins.NewManager("").Root
 
 	// Web
 	web := NewWebServer(hubcore.WebConfig{
-		HubAddr:             cfg.Addr,
-		AuthToken:           authToken,
-		MobileBaseURL:       cfg.MobileBaseURL,
-		HubStateRoot:        cfg.HubStateRoot,
-		LaunchConfigRoot:    cmdutil.DefaultConfigRoot(),
-		RunDir:              runDir,
-		PastIndexPath:       pastIndexDB,
-		Roster:              roster,
-		Past:                past,
-		Archive:             archive,
-		Favorite:            favorite,
-		PinSections:         pinSections,
-		Spawner:             spawner,
-		DeletionStore:       deletionStore,
-		Models:              models,
-		PastPerPage:         cfg.PastResultsPerPage,
-		StateDir:            stateDir,
-		CredsStore:          credsStore,
-		ProviderConfig:      loadedProviderConfig,
-		ProvidersConfigPath: providersConfigPath,
-		CodexSources:        cfg.CodexSources,
-		CodexLaunches:       cfg.CodexLaunches,
-		CodexLauncher:       codexLauncher,
-		PokeAttention:       pokeAttention,
-		Inputs:              inputs,
-		RemoteThreadCache:   remoteCache,
+		HubAddr:                   cfg.Addr,
+		AuthToken:                 authToken,
+		MobileBaseURL:             cfg.MobileBaseURL,
+		HubStateRoot:              cfg.HubStateRoot,
+		LaunchConfigRoot:          cmdutil.DefaultConfigRoot(),
+		PluginRoot:                pluginRoot,
+		TranscriptDisplayStore:    transcriptDisplayStore,
+		TranscriptDisplayStoreErr: transcriptDisplayStoreErr,
+		RunDir:                    runDir,
+		PastIndexPath:             pastIndexDB,
+		Roster:                    roster,
+		Past:                      past,
+		Archive:                   archive,
+		Favorite:                  favorite,
+		PinSections:               pinSections,
+		Spawner:                   spawner,
+		DeletionStore:             deletionStore,
+		PastPerPage:               cfg.PastResultsPerPage,
+		StateDir:                  stateDir,
+		CredsStore:                credsStore,
+		ProviderConfig:            loadedProviderConfig,
+		ProvidersConfigPath:       providersConfigPath,
+		CodexSources:              cfg.CodexSources,
+		CodexLaunches:             cfg.CodexLaunches,
+		CodexLauncher:             codexLauncher,
+		PokeAttention:             pokeAttention,
+		Inputs:                    inputs,
+		RemoteThreadCache:         remoteCache,
 	})
 
-	// evener/tree/changed push (spec §7.3 item 3): Roster/PastIndex's onChange
-	// hook already gates on an actual content-fingerprint delta (never a
-	// no-op probe/rebuild cycle — see bump above), so composing the broadcast
-	// into the same hook pushes the sidebar exactly on a daemon appearing/
-	// disappearing/changing liveness, or a session appearing/ending/changing
-	// in the past index. Rename and project-delete both route their session
-	// edits through PastIndex.UpdateMeta/Rebuild, so this hook covers the
-	// common case for them too — those handlers do NOT also call
-	// notifyTreeChanged unconditionally (it would double-broadcast); they
-	// call it conditionally, only when UpdateMeta/Rebuild report the hook
-	// didn't fire (see notifyTreeChanged's doc comment). Archive and favorite
-	// decisions live in ArchiveStore/FavoriteStore, which never route through
-	// PastIndex at all, so those two mutations broadcast unconditionally
-	// instead via WebServer.notifyMutation (web_api_archive.go,
-	// web_api_favorite.go).
-	past.SetOnChange(func() { bump(); notifyTreeChanged(web.appRPC) })
-	roster.SetOnChange(func() { bump(); notifyTreeChanged(web.appRPC) })
+	// Navigation invalidation hooks: Roster/PastIndex's onChange hook already
+	// gates on an actual content-fingerprint delta (never a no-op probe/rebuild
+	// cycle — see bump above), so composing the navigation invalidation into the
+	// same hook pushes the sidebar exactly on a daemon appearing/disappearing/
+	// changing liveness, or a session appearing/ending/changing in the past
+	// index. Archive and favorite decisions live in ArchiveStore/FavoriteStore,
+	// which never route through PastIndex at all, so they invalidate directly.
+	past.SetOnChange(func() { bump(); web.navigation.Invalidate(navigationChangeHint{}) })
+	roster.SetOnChange(func() { bump(); web.navigation.Invalidate(navigationChangeHint{}) })
+	archive.SetOnChange(func() { bump(); web.navigation.Invalidate(navigationChangeHint{AllLoadedProjects: true}) })
+	favorite.SetOnChange(func() { bump(); web.navigation.Invalidate(navigationChangeHint{AllLoadedProjects: true}) })
+	remoteCache.SetOnChange(func() { bump(); web.navigation.Invalidate(navigationChangeHint{Sources: true}) })
+	if pinSections != nil {
+		pinSections.SetOnChange(func() { bump(); web.navigation.Invalidate(navigationChangeHint{}) })
+	}
 
 	if deps.afterWeb != nil {
 		deps.afterWeb(web)
@@ -409,12 +434,18 @@ func runMain(args []string, stderr io.Writer, deps mainDeps) error {
 	startBackground := func(fn func()) {
 		background.Go(fn)
 	}
-
 	// Populate the roster before serving so the first sidebar request can't hit
 	// an empty roster (the "flash of no sessions" right after a restart). Probes
 	// run concurrently, so this is bounded by ~one probe timeout regardless of
 	// how many daemons are live.
 	roster.Refresh()
+	// Start the resettable navigation scheduler only after the initial roster
+	// seed, so its first capture cannot publish a transient empty generation.
+	startBackground(func() { web.navigation.Start(ctx) })
+	// NavigationService is the sole typed-event authority. Drain its FIFO from
+	// one lifecycle-owned publisher so readiness coalescing cannot duplicate or
+	// reorder invalidations.
+	startBackground(func() { runNavigationPublisher(ctx, web.navigation, web.appRPC) })
 	startBackground(func() { watchHubRoster(ctx, roster) })
 
 	startBackground(func() {
@@ -455,8 +486,8 @@ func runMain(args []string, stderr io.Writer, deps mainDeps) error {
 	startHubPluginMaintenance(ctx, cfg, web, startBackground)
 	// Remote-thread cache refresher: refreshRemoteThreads (web_api_tree.go)
 	// walks every configured remote source's ListThreads, a synchronous
-	// network hop that used to run inline on every /api/tree request. Move it
-	// to a ~30s ticker + poke so a tree render never blocks on it; the tree
+	// network hop that used to run inline on every navigation read. Move it
+	// to a ~30s ticker + poke so a tree render never blocks on it; the navigation
 	// read path (remoteTreeThreads) reads remoteCache.Get() instead whenever
 	// RemoteThreadCache is configured.
 	startBackground(func() { refreshHubRemoteThreads(ctx, remotePoke, remoteCache, web) })

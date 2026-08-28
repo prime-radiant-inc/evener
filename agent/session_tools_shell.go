@@ -156,7 +156,7 @@ func registerShellTools(reg *tool.Registry, s *Session, deps *toolDeps) error {
 			}
 			shellArgs.WorkingDir = resolvedWorkingDir
 			if shellArgs.Mode == shellModeDetached {
-				return runDetachedShell(ctx, env, shellArgs)
+				return runDetachedShell(ctx, env, s, shellArgs)
 			}
 			if se, ok := env.(execenv.StreamingExecutor); ok {
 				if s == nil || s.jobManager == nil {
@@ -201,7 +201,6 @@ func registerShellTools(reg *tool.Registry, s *Session, deps *toolDeps) error {
 	if err := register(tool.RegisteredTool{
 		Definition: tool.DefGrep(), ReadOnly: true,
 		Exec: func(ctx context.Context, env execenv.ExecutionEnvironment, args map[string]any) (any, error) {
-			_ = ctx
 			pat := stringArg(args, "pattern")
 			path := stringArg(args, "path")
 			glob := stringArg(args, "glob_filter")
@@ -221,7 +220,7 @@ func registerShellTools(reg *tool.Registry, s *Session, deps *toolDeps) error {
 			if v, ok := args["context_lines"].(float64); ok && int(v) > 0 {
 				contextLines = min(int(v), 10)
 			}
-			return env.Grep(pat, path, glob, ci, maxRes, outputMode, contextLines)
+			return env.Grep(ctx, pat, path, glob, ci, maxRes, outputMode, contextLines)
 		},
 	}); err != nil {
 		return err
@@ -362,7 +361,7 @@ type detachedShellToolResult struct {
 	PID    int    `json:"pid"`
 }
 
-func runDetachedShell(ctx context.Context, env execenv.ExecutionEnvironment, args shellArgs) (tool.StateResult, error) {
+func runDetachedShell(ctx context.Context, env execenv.ExecutionEnvironment, s *Session, args shellArgs) (tool.StateResult, error) {
 	detacher, ok := env.(execenv.DetachedExecutor)
 	if !ok {
 		return tool.StateResult{}, execenv.ErrDetachUnsupported
@@ -373,6 +372,9 @@ func runDetachedShell(ctx context.Context, env execenv.ExecutionEnvironment, arg
 	}
 	if started.PID <= 0 {
 		return tool.StateResult{}, errors.New("detached command started without a valid pid")
+	}
+	if s != nil {
+		s.recordDetachedProcess(started)
 	}
 	state := detachedShellToolResult{Type: "shell", Mode: string(shellModeDetached), Status: "started", PID: started.PID}
 	b, _ := json.Marshal(state)

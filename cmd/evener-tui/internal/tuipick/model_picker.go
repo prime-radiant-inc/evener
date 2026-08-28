@@ -207,7 +207,7 @@ func (m ModelPicker) renderBody() string {
 // (hubSessionDetail.Model — the daemon's status.Model, no provider prefix).
 func modelIDMatchesActive(id, active string) bool {
 	if active == "" {
-		return false
+		return id == ""
 	}
 	if id == active {
 		return true
@@ -226,6 +226,9 @@ func (m ModelPicker) Done() bool { return m.done }
 
 // Selected returns the chosen item ID, or "" if none was selected.
 func (m ModelPicker) Selected() string { return m.selected }
+
+// Cancelled reports whether the picker was dismissed without selecting an item.
+func (m ModelPicker) Cancelled() bool { return m.cancelled }
 
 func (m ModelPicker) View() string {
 	title := m.title

@@ -150,6 +150,87 @@ func relayDelta(threadID, delta string) appwire.Notification {
 	}).Notification
 }
 
+type relayPublicationBarrier struct {
+	session  *relaySession
+	listener *relayListener
+}
+
+type relayPublisherEntryBarrier struct {
+	session     *relaySession
+	entered     chan struct{}
+	release     chan struct{}
+	enteredOnce sync.Once
+	releaseOnce sync.Once
+}
+
+func newRelayPublisherEntryBarrier(t *testing.T, session *relaySession) *relayPublisherEntryBarrier {
+	t.Helper()
+	barrier := &relayPublisherEntryBarrier{
+		session: session,
+		entered: make(chan struct{}),
+		release: make(chan struct{}),
+	}
+	session.publishBoundary.Lock()
+	session.publishEntryHook = func() {
+		barrier.enteredOnce.Do(func() { close(barrier.entered) })
+		<-barrier.release
+	}
+	session.publishBoundary.Unlock()
+	t.Cleanup(func() {
+		barrier.releasePublisher()
+		barrier.disable()
+	})
+	return barrier
+}
+
+func (b *relayPublisherEntryBarrier) releasePublisher() {
+	b.releaseOnce.Do(func() { close(b.release) })
+}
+
+func (b *relayPublisherEntryBarrier) disable() {
+	b.session.publishBoundary.Lock()
+	b.session.publishEntryHook = nil
+	b.session.publishBoundary.Unlock()
+}
+
+func newRelayPublicationBarrier(t *testing.T, session *relaySession, leaseID uint64) *relayPublicationBarrier {
+	t.Helper()
+	barrier := &relayPublicationBarrier{
+		session: session,
+	}
+	session.mu.Lock()
+	session.nextListener++
+	barrier.listener = &relayListener{
+		id:      session.nextListener,
+		leaseID: leaseID,
+		ctx:     t.Context(),
+		in:      make(chan RelayDelivery),
+		out:     make(chan RelayDelivery, 1),
+		done:    make(chan struct{}),
+	}
+	session.listeners[barrier.listener.id] = barrier.listener
+	// A one-slot output makes the two direct input sends a deterministic
+	// in->out barrier: the second send is accepted only after forward has
+	// consumed the first and is blocked on the full output buffer.
+	session.mu.Unlock()
+	go barrier.listener.forward()
+	barrier.listener.in <- RelayDelivery{}
+	barrier.listener.in <- RelayDelivery{}
+	t.Cleanup(func() {
+		session.removeListener(barrier.listener.id)
+		session.maybeIdle()
+	})
+	return barrier
+}
+
+func queueRelayNotificationAtEpoch(session *relaySession, epoch uint64, notification appwire.Notification) <-chan struct{} {
+	done := make(chan struct{})
+	session.mu.Lock()
+	session.queuePublishLocked(epoch, []appwire.Notification{notification}, done)
+	session.mu.Unlock()
+	return done
+}
+
 func TestRelaySessionSnapshotCutFlushesPreCutAndHoldsPostCut(t *testing.T) {
 	source, daemon := newRelayTestSource(t, []rendezvous.Entry{relayEntry("thread-1")})
 	params := appwire.ThreadReadParams{Ref: "local:thread-1", Subscribe: true}
@@ -795,16 +876,175 @@ func TestRelaySessionStaleEpochNotificationCannotPublish(t *testing.T) {
 	result := <-read
 	result.result.Handoff.Commit()
 
+	session := relaySessionFor(t, source)
 	lease.session.mu.Lock()
 	staleEpoch := lease.session.connection.epoch
 	lease.session.mu.Unlock()
+	// Hold the publisher after it has accepted a live notification. This is an
+	// event barrier, not a timing assumption: the stale notification is queued
+	// behind the blocked job and the epoch is revoked before the publisher can
+	// dequeue it.
+	observeRelayFrame(t, session, relayDelta("thread-1", "barrier"))
+	barrier := <-deliveries
+	if got := decodeRelayDelta(t, barrier.Notification); got != "barrier" {
+		t.Fatalf("barrier delivery = %q, want barrier", got)
+	}
+	session.observe(staleEpoch, appwire.Message{Notification: new(relayDelta("thread-1", "stale"))}, nil)
 	lease.session.disconnect(staleEpoch)
-	lease.session.observe(staleEpoch, appwire.Message{Notification: new(relayDelta("thread-1", "stale"))}, nil)
+	recoveryCall := <-daemon.reads
+	recoveryCall.transport.recv <- appwire.ResponseMessage(
+		recoveryCall.request.ID,
+		relaySnapshot("thread-1", "recovered"),
+	)
+	barrier.Acknowledge()
+	resync := <-deliveries
+	if resync.Notification.Method != appwire.NotifyEvenerThreadResync {
+		t.Fatalf("recovery delivery = %+v, want resync", resync.Notification)
+	}
+	resync.Acknowledge()
 	select {
 	case delivery := <-deliveries:
 		t.Fatalf("stale epoch published %+v", delivery.Notification)
 	default:
 	}
+}
+
+func TestRelaySessionDisconnectRevokesBlockedPublicationBeforeRecovery(t *testing.T) {
+	source, daemon := newRelayTestSource(t, []rendezvous.Entry{relayEntry("thread-1")})
+	params := appwire.ThreadReadParams{Ref: "local:thread-1", Subscribe: true}
+	leaseValue, err := source.AcquireRelaySession(params)
+	if err != nil {
+		t.Fatal(err)
+	}
+	lease := leaseValue.(*relaySessionLease)
+	defer lease.Close()
+
+	read := readRelayAsync(context.Background(), lease, params)
+	call := <-daemon.reads
+	call.transport.recv <- appwire.ResponseMessage(call.request.ID, relaySnapshot("thread-1", "snapshot"))
+	result := <-read
+	if result.err != nil {
+		t.Fatal(result.err)
+	}
+	if !result.result.Handoff.Commit() {
+		t.Fatal("initial handoff commit lost")
+	}
+
+	session := relaySessionFor(t, source)
+	barrier := newRelayPublicationBarrier(t, session, lease.id)
+	entry := newRelayPublisherEntryBarrier(t, session)
+	session.mu.Lock()
+	epoch := session.epoch
+	fence := session.publicationFence
+	session.recovering = true
+	session.mu.Unlock()
+	staleDone := queueRelayNotificationAtEpoch(session, epoch, relayDelta("thread-1", "stale"))
+
+	// The entry barrier proves the stale job passed its old token check and
+	// acquired the publication read lock before revocation begins.
+	<-entry.entered
+	disconnectDone := make(chan struct{})
+	go func() {
+		session.disconnect(epoch)
+		close(disconnectDone)
+	}()
+	<-fence.revoked
+	entry.releasePublisher()
+	<-staleDone
+	<-disconnectDone
+	entry.disable()
+	<-barrier.listener.out
+	<-barrier.listener.out
+
+	session.mu.Lock()
+	session.recovering = false
+	session.mu.Unlock()
+	go session.recoverCanonicalFeed()
+	recoveryCall := <-daemon.reads
+	recoveryCall.transport.recv <- appwire.ResponseMessage(
+		recoveryCall.request.ID,
+		relaySnapshot("thread-1", "recovered"),
+	)
+	resync := <-barrier.listener.out
+	if resync.Notification.Method != appwire.NotifyEvenerThreadResync {
+		t.Fatalf("recovery delivery = %+v, want resync", resync.Notification)
+	}
+	resync.Acknowledge()
+
+	session.mu.Lock()
+	if session.publicationEpoch != session.epoch {
+		t.Fatalf("publication epoch = %d, authoritative epoch = %d", session.publicationEpoch, session.epoch)
+	}
+	session.mu.Unlock()
+}
+
+func TestRelaySessionPreparedHandoffDisconnectRevokesBlockedPublicationBeforeRecovery(t *testing.T) {
+	source, daemon := newRelayTestSource(t, []rendezvous.Entry{relayEntry("thread-1")})
+	params := appwire.ThreadReadParams{Ref: "local:thread-1", Subscribe: true}
+	leaseValue, err := source.AcquireRelaySession(params)
+	if err != nil {
+		t.Fatal(err)
+	}
+	lease := leaseValue.(*relaySessionLease)
+	defer lease.Close()
+
+	read := readRelayAsync(context.Background(), lease, params)
+	call := <-daemon.reads
+	call.transport.recv <- appwire.ResponseMessage(call.request.ID, relaySnapshot("thread-1", "snapshot"))
+	result := <-read
+	if result.err != nil {
+		t.Fatal(result.err)
+	}
+	if !result.result.Handoff.Prepare() {
+		t.Fatal("current handoff could not pin its live continuation")
+	}
+
+	session := relaySessionFor(t, source)
+	barrier := newRelayPublicationBarrier(t, session, lease.id)
+	entry := newRelayPublisherEntryBarrier(t, session)
+	session.mu.Lock()
+	epoch := session.epoch
+	fence := session.publicationFence
+	session.recovering = true
+	session.mu.Unlock()
+	staleDone := queueRelayNotificationAtEpoch(session, epoch, relayDelta("thread-1", "stale"))
+
+	// Ordinary disconnect only marks a prepared connection. The terminal
+	// handoff outcome is the deferred boundary that must revoke this epoch.
+	<-entry.entered
+	session.disconnect(epoch)
+	commitDone := make(chan bool, 1)
+	go func() { commitDone <- result.result.Handoff.Commit() }()
+	<-fence.revoked
+	entry.releasePublisher()
+	<-staleDone
+	if !<-commitDone {
+		t.Fatal("prepared handoff commit lost")
+	}
+	entry.disable()
+	<-barrier.listener.out
+	<-barrier.listener.out
+
+	session.mu.Lock()
+	session.recovering = false
+	session.mu.Unlock()
+	go session.recoverCanonicalFeed()
+	recoveryCall := <-daemon.reads
+	recoveryCall.transport.recv <- appwire.ResponseMessage(
+		recoveryCall.request.ID,
+		relaySnapshot("thread-1", "recovered"),
+	)
+	resync := <-barrier.listener.out
+	if resync.Notification.Method != appwire.NotifyEvenerThreadResync {
+		t.Fatalf("recovery delivery = %+v, want resync", resync.Notification)
+	}
+	resync.Acknowledge()
+
+	session.mu.Lock()
+	if session.publicationEpoch != session.epoch {
+		t.Fatalf("publication epoch = %d, authoritative epoch = %d", session.publicationEpoch, session.epoch)
+	}
+	session.mu.Unlock()
 }
 
 func TestRelaySessionIdleClosesCanonicalConnectionAfterLastOwner(t *testing.T) {

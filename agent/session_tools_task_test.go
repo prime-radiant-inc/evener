@@ -43,7 +43,6 @@ func newTaskToolHarness(t *testing.T, inputs []taskpkg.TaskInput) *taskToolHarne
 		taskGuard: taskGuard{
 			getOrCreateTaskStore: func() *taskpkg.TaskStore { return h.store },
 			markUsed:             func() {},
-			setReasoningEffort:   func(string) {},
 		},
 	}
 	h.reg = tool.NewRegistry()
@@ -225,5 +224,24 @@ func TestTaskTool_UpdateMarkerOnlyDescribesExplicitFinalInProgress(t *testing.T)
 				t.Fatalf("%s update marker = %v, want absent", tc.status, got.Started)
 			}
 		})
+	}
+}
+
+func TestTaskTool_UpdateCompletionUsesLegacySteerFallback(t *testing.T) {
+	h := newTaskToolHarness(t, []taskpkg.TaskInput{{Description: "finish", Prompt: "finish"}})
+	if err := h.store.Update([]taskpkg.TaskUpdate{{ID: 1, Status: taskpkg.TaskInProgress}}); err != nil {
+		t.Fatalf("start task: %v", err)
+	}
+
+	result := h.update(t, map[string]any{"id": 1, "status": "done"})
+	if result.IsError {
+		t.Fatalf("done update failed: %s", result.Output)
+	}
+	if len(h.steers) != 1 {
+		t.Fatalf("legacy completion steering count = %d, want 1", len(h.steers))
+	}
+	payload := parseTaskCompletionLLMPayload(t, llm.User(h.steers[0]))
+	if payload.CompletionState != "ready_for_final_output" || len(payload.BlockingDelegateIDs) != 0 {
+		t.Fatalf("legacy completion payload = %+v, want ready with no blocking delegates", payload)
 	}
 }

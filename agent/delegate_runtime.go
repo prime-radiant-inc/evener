@@ -82,6 +82,14 @@ type delegateQuietAttentionClaim struct {
 }
 
 func (c *delegateTreeController) ReportActivity(lease delegateLease, at time.Time) error {
+	return c.ReportActivityPhase(lease, at, "")
+}
+
+// ReportActivityPhase records parent-visible activity and separately advances
+// the one-shot drain's productive-liveness clock. Provider retry/backoff is
+// ordinary activity for supervision and reporting, but it is not productive
+// progress that should extend terminal drain grace.
+func (c *delegateTreeController) ReportActivityPhase(lease delegateLease, at time.Time, phase string) error {
 	if c == nil {
 		return errDelegateStaleLease
 	}
@@ -94,20 +102,23 @@ func (c *delegateTreeController) ReportActivity(lease delegateLease, at time.Tim
 		c.mu.Unlock()
 		return err
 	}
-	if at.Before(live.activityAt) {
-		c.mu.Unlock()
-		return nil
-	}
 	rearm := live.quietNotified || live.quietClaim != nil && live.quietClaim.sequence == live.quietSequence
-	if at.Equal(live.activityAt) && !rearm {
+	activityChanged := at.After(live.activityAt) || at.Equal(live.activityAt) && rearm
+	productiveChanged := phase != jobPhaseModelRetrying && at.After(live.productiveActivityAt)
+	if !activityChanged && !productiveChanged {
 		c.mu.Unlock()
 		return nil
 	}
-	if rearm {
+	if activityChanged && rearm {
 		live.quietSequence++
 		live.quietNotified = false
 	}
-	live.activityAt = at
+	if activityChanged {
+		live.activityAt = at
+	}
+	if productiveChanged {
+		live.productiveActivityAt = at
+	}
 	c.evidenceVersion++
 	plan := c.capturedPlanLocked(aggregate.DelegateID)
 	c.mu.Unlock()
@@ -297,8 +308,8 @@ func bindStableDelegateActivityToOwner(child *Session, controller *delegateTreeC
 	child.mu.Lock()
 	child.cfg.spawn.parentDelegateID = lease.delegateID
 	child.cfg.spawn.forwardJobEvent = forward
-	child.cfg.spawn.parentJobActivity = func(string, string) {
-		_ = controller.ReportActivity(lease, child.sclock().Now())
+	child.cfg.spawn.parentJobActivity = func(_ string, phase string) {
+		_ = controller.ReportActivityPhase(lease, child.sclock().Now(), phase)
 	}
 	jm := child.jobManager
 	child.mu.Unlock()
@@ -788,18 +799,25 @@ func (runtime delegateRuntime) send(ctx context.Context, delegateID, message str
 	if err != nil {
 		return failed(err)
 	}
-	if plans, steerErr := s.delegateController.Steer(ctx, actor, delegateID, message); steerErr == nil {
-		_ = s.executeDelegateMutationPlans(plans)
-		return stableDelegateSendOutcome{result: sendMessageResult{
-			Target:              delegateID,
-			DelegateID:          delegateID,
-			Type:                delegateResourceType,
-			Status:              jobstore.StatusRunning,
-			RunningInBackground: true,
-			Action:              "steered",
-		}}
-	} else if !errors.Is(steerErr, errDelegateTargetBusy) {
-		return failed(steerErr)
+	if maxWaitMS > 0 {
+		if observe := s.cfg.testOnly.delegateSendBeforePositiveWaitAdmission; observe != nil {
+			observe()
+		}
+	}
+	if maxWaitMS == 0 {
+		if plans, steerErr := s.delegateController.Steer(ctx, actor, delegateID, message); steerErr == nil {
+			_ = s.executeDelegateMutationPlans(plans)
+			return stableDelegateSendOutcome{result: sendMessageResult{
+				Target:              delegateID,
+				DelegateID:          delegateID,
+				Type:                delegateResourceType,
+				Status:              jobstore.StatusRunning,
+				RunningInBackground: true,
+				Action:              "steered",
+			}}
+		} else if !errors.Is(steerErr, errDelegateTargetBusy) {
+			return failed(steerErr)
+		}
 	}
 	reservation, err := s.delegateController.ReserveStart(actor, delegateID)
 	if err != nil {
@@ -910,6 +928,8 @@ func (runtime delegateRuntime) send(ctx context.Context, delegateID, message str
 		DelegateID:          delegateID,
 		Type:                delegateResourceType,
 		Status:              jobstore.StatusRunning,
+		AgentType:           started.descriptor.AgentType,
+		Tools:               append([]string(nil), started.descriptor.ToolNameCeiling...),
 		RunningInBackground: true,
 		Action:              "started",
 		TranscriptRef:       started.descriptor.TranscriptRef,
@@ -970,6 +990,7 @@ func populateStableDelegateSendResult(result *sendMessageResult, packet delegate
 		result.Task = metadata.Task
 		result.Description = metadata.Description
 		result.AgentType = metadata.AgentType
+		result.Tools = append([]string(nil), metadata.Tools...)
 		result.RequestedModel = metadata.RequestedModel
 		result.ResolvedProfileID = metadata.ResolvedProfileID
 		result.ResolvedModel = metadata.ResolvedModel
@@ -1071,6 +1092,8 @@ func stableDelegateFailedSendResult(started delegateStartCommit, plans delegateM
 		DelegateID:          started.lease.delegateID,
 		Type:                delegateResourceType,
 		Status:              jobstore.StatusRunning,
+		AgentType:           started.descriptor.AgentType,
+		Tools:               append([]string(nil), started.descriptor.ToolNameCeiling...),
 		Resumable:           &resumable,
 		RunningInBackground: false,
 		Action:              "recovery_required",
@@ -1134,15 +1157,33 @@ func (runtime delegateRuntime) create(ctx context.Context, args delegateArgs) de
 	if selection.warning != nil {
 		s.emitDiagnosticWarning(*selection.warning)
 	}
+	toolNameCeiling := s.stableDelegateEffectiveToolNameCeiling(selection, args, isolationName)
+	readOnlyScope := subagentToolScopeIsReadOnly(false, toolNameCeiling)
 	var requestedSandbox *sandbox.SandboxPolicy
-	if strings.TrimSpace(args.Sandbox) != "" || args.SandboxNet != nil {
+	explicitSandbox := strings.TrimSpace(args.Sandbox) != "" || args.SandboxNet != nil
+	if explicitSandbox && args.SandboxNet != nil && strings.TrimSpace(args.Sandbox) == "" && !delegateSandboxBackendAvailable(s.sandboxHostFacts()) {
+		return delegateStartFailed(newDelegateSandboxRequestError(
+			errors.New("invalid_request: sandbox_net cannot be enforced on this host because no sandbox backend is available; omit sandbox_net"),
+			"sandbox_net",
+		))
+	}
+	if readOnlyScope {
+		requestedSandbox, err = s.resolveReadOnlyDelegateSandboxRequest(args.Sandbox, args.SandboxNet)
+		if err != nil {
+			return delegateStartFailed(err)
+		}
+	} else if explicitSandbox {
 		parentMode, parentNetwork := s.parentSandboxModeNet()
 		requestedSandbox, err = resolveDelegateSandboxRequest(args.Sandbox, args.SandboxNet, parentMode, parentNetwork)
 		if err != nil {
 			return delegateStartFailed(err)
 		}
+		requestedSandbox, err = s.applyParentWriteBlockedFloor(args.Sandbox, requestedSandbox)
+		if err != nil {
+			return delegateStartFailed(err)
+		}
 	}
-	descriptor, worktreeProject, err := runtime.describe(ctx, args, task, isolationName, requestedSandbox, selection)
+	descriptor, worktreeProject, err := runtime.describe(ctx, args, task, isolationName, requestedSandbox, selection, toolNameCeiling)
 	if err != nil {
 		return delegateStartFailed(err)
 	}
@@ -1162,6 +1203,7 @@ func (runtime delegateRuntime) create(ctx context.Context, args delegateArgs) de
 	}
 	isolation, err := runtime.prepareIsolation(ctx, reservation, worktreeProject, requestedSandbox)
 	if err != nil {
+		err = delegateSandboxFallbackHint(s, args, err)
 		abortErr := s.delegateController.AbortStart(reservation)
 		isolation.cleanup(s, reservation.delegateID)
 		return delegateStartFailed(errors.Join(err, abortErr))
@@ -1213,12 +1255,16 @@ func (runtime delegateRuntime) create(ctx context.Context, args delegateArgs) de
 	}
 	bindStableDelegateActivity(prepared.sub.sess, s.delegateController, started.lease)
 	s.startDelegateQuietWatchdog(started.ctx, started.lease)
+	degradedSandboxAdvisory := degradedReadOnlyDelegateAdvisory(prepared.sub.sess.currentEnv())
 	s.launchSubagentRun(prepared.runCtx, prepared.sub, prepared.runCancel, prepared.input, started.descriptor.Provenance)
 	result := createResult(stableDelegateResult(started.descriptor, started.lease.delegateID, started.plan, plans, nil))
-	// The advisory rides the launched delegate's own result only: it is
+	// The advisories ride the launched delegate's own result only: they are
 	// metadata for the caller's next isolation choice, not delegate output, not
 	// an EventWarning, and not durable job state a later delegate_send replays.
-	result.Warnings = appendUniqueStrings(result.Warnings, sharedWorkspaceAdvisory)
+	// The sandbox one fires when a derived read-only scope had to degrade on this
+	// host, so the parent learns the boundary is advisory for the child's shell
+	// rather than discovering it from a clobbered file.
+	result.Warnings = appendUniqueStrings(result.Warnings, sharedWorkspaceAdvisory, degradedSandboxAdvisory)
 	return result
 }
 
@@ -1235,7 +1281,12 @@ func (s *Session) delegateActor(ctx context.Context) (delegateActor, error) {
 	return rootDelegateActor(s.delegateRootSessionID), nil
 }
 
-func (runtime delegateRuntime) describe(ctx context.Context, args delegateArgs, task, isolationName string, requestedSandbox *sandbox.SandboxPolicy, selection subagentModelSelection) (delegatestore.Descriptor, identifier.Project, error) {
+func (s *Session) stableDelegateEffectiveToolNameCeiling(selection subagentModelSelection, args delegateArgs, isolationName string) []string {
+	allTools, allowedTools, deniedTools := baseSubagentToolPolicy(selection.agent, args.DelegationAllowance > 0)
+	return stableDelegateToolNameCeiling(s.reg, s.resultToolName(), allTools, allowedTools, deniedTools, args.DelegationAllowance > 0, args.WatchParent, isolationName)
+}
+
+func (runtime delegateRuntime) describe(ctx context.Context, args delegateArgs, task, isolationName string, requestedSandbox *sandbox.SandboxPolicy, selection subagentModelSelection, toolNameCeiling []string) (delegatestore.Descriptor, identifier.Project, error) {
 	s := runtime.owner
 	s.mu.Lock()
 	childConfig := s.cfg.toSnapshot().Clone()
@@ -1250,11 +1301,6 @@ func (runtime delegateRuntime) describe(ctx context.Context, args delegateArgs, 
 	if reasoningEffort == "" {
 		reasoningEffort = strings.TrimSpace(childConfig.ReasoningEffort)
 	}
-	allTools, allowedTools, deniedTools := baseSubagentToolPolicy(selection.agent, args.DelegationAllowance > 0)
-	if !allTools {
-		allowedTools = ensureRecoveryReader(allowedTools, s.reg)
-	}
-	toolNameCeiling := stableDelegateToolNameCeiling(s.reg, s.resultToolName(), allTools, allowedTools, deniedTools, args.DelegationAllowance > 0, args.WatchParent, isolationName)
 	var frozenSkillNames, frozenSkillBodies []string
 	if selection.agent != nil {
 		for _, name := range selection.agent.Skills {
@@ -1309,7 +1355,7 @@ func (runtime delegateRuntime) describe(ctx context.Context, args delegateArgs, 
 		ResolvedProfileID:             selection.profile.ID(),
 		ResolvedModel:                 selection.profile.Model(),
 		FrozenRolePrompt:              rolePrompt,
-		ToolNameCeiling:               toolNameCeiling,
+		ToolNameCeiling:               append([]string(nil), toolNameCeiling...),
 		FrozenSkillNames:              frozenSkillNames,
 		FrozenSkillBodies:             frozenSkillBodies,
 		LocalEnvPolicy:                localEnvPolicyName(s.currentEnv()),
@@ -1371,6 +1417,7 @@ func stableDelegateSandboxSnapshot(policy *sandbox.SandboxPolicy) *delegatestore
 	}
 	result := &delegatestore.SandboxSnapshot{
 		Mode:               policy.Mode.String(),
+		WriteBlocked:       policy.WriteBlocked,
 		DenylistAdd:        append([]string(nil), policy.DenylistAdd...),
 		DenylistRemove:     append([]string(nil), policy.DenylistRemove...),
 		ExtraWritableRoots: append([]string(nil), policy.ExtraWritableRoots...),
@@ -1407,6 +1454,24 @@ func (runtime delegateRuntime) prepareIsolation(ctx context.Context, reservation
 	isolation.env = env
 	isolation.ownsFreshEnv = ownsFresh
 	return isolation, nil
+}
+
+// delegateSandboxFallbackHint closes the host-capability repair loop in the
+// first rejection. When no backend can enforce a requested sandbox and the
+// caller also supplied sandbox_net, the only enforceable fallback is
+// sandbox="off" with sandbox_net omitted. The explicit value is never dropped;
+// this only makes the rejection actionable before a retry.
+func delegateSandboxFallbackHint(s *Session, args delegateArgs, err error) error {
+	if err == nil || s == nil || args.SandboxNet == nil || delegateSandboxBackendAvailable(s.sandboxHostFacts()) {
+		return err
+	}
+	if _, ok := errors.AsType[*sandbox.RefusalError](err); !ok {
+		return err
+	}
+	return newDelegateSandboxRequestError(
+		fmt.Errorf(`%w; change sandbox to "off" and omit sandbox_net`, err),
+		"sandbox", "sandbox_net",
+	)
 }
 
 func (isolation delegateIsolation) cleanup(s *Session, delegateID string) {
@@ -1483,6 +1548,10 @@ func (runtime delegateRuntime) restoreIdle(started delegateStartCommit) (*subage
 	if retained := s.subagents.get(descriptor.ChildSessionID); retained != nil && retained.sess != nil {
 		return retained, false, nil
 	}
+	policy, err := s.restoreDelegateSandboxFloor(&descriptor)
+	if err != nil {
+		return nil, false, err
+	}
 	if err := s.reclaimDelegateRuntimeCapacity(1); err != nil {
 		return nil, false, err
 	}
@@ -1507,7 +1576,6 @@ func (runtime delegateRuntime) restoreIdle(started delegateStartCommit) (*subage
 			profile = provider.WithCommunicateOutputSchema(profile, resultSchema)
 		}
 	}
-	policy := sandboxPolicyFromStableSnapshot(descriptor.Sandbox)
 	childEnv, ownsFresh, err := s.prepareSubagentEnvironment(descriptor.WorkingDir, policy)
 	if err != nil {
 		return nil, false, err
@@ -1535,6 +1603,7 @@ func (runtime delegateRuntime) restoreIdle(started delegateStartCommit) (*subage
 		}
 	}
 	restoreCfg := RestoreSessionConfig{
+		LifetimeContext:         s.cfg.LifetimeContext,
 		StateDir:                s.stateDir,
 		Project:                 s.cfg.Project,
 		ResolveProfile:          s.resolveProfile,
@@ -1548,6 +1617,7 @@ func (runtime delegateRuntime) restoreIdle(started delegateStartCommit) (*subage
 		ForceRealIO:             s.cfg.ForceRealIO,
 		artifactStore:           s.artifactStore,
 		deferRestoreSideEffects: true,
+		sandboxProvisioned:      true,
 		spawn: spawnConfig{
 			delegateController:            s.delegateController,
 			delegateRootSessionID:         s.delegateRootSessionID,
@@ -1653,6 +1723,7 @@ func sandboxPolicyFromStableSnapshot(snapshot *delegatestore.SandboxSnapshot) *s
 	}
 	policy := &sandbox.SandboxPolicy{
 		Mode:               mode,
+		WriteBlocked:       snapshot.WriteBlocked,
 		DenylistAdd:        append([]string(nil), snapshot.DenylistAdd...),
 		DenylistRemove:     append([]string(nil), snapshot.DenylistRemove...),
 		ExtraWritableRoots: append([]string(nil), snapshot.ExtraWritableRoots...),
@@ -1827,6 +1898,8 @@ func stableDelegateResult(descriptor delegatestore.Descriptor, delegateID string
 		ChildSessionID:      descriptor.ChildSessionID,
 		Type:                delegateResourceType,
 		Status:              status,
+		AgentType:           descriptor.AgentType,
+		Tools:               append([]string(nil), descriptor.ToolNameCeiling...),
 		Resumable:           &resumable,
 		RunningInBackground: true,
 		TranscriptRef:       descriptor.TranscriptRef,

@@ -1,7 +1,7 @@
 import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { act, cleanup, render, renderHook, screen, waitFor, within } from "@testing-library/react";
+import { act, cleanup, renderHook, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeAll, beforeEach, expect, test, vi } from "vitest";
 import "../../panes/sessionPanels";
@@ -11,16 +11,17 @@ import { WireError } from "../../protocol/errors";
 import "../../panes/sessionPanels";
 import type { ItemModel, ThreadModel, TurnModel } from "../../protocol/model";
 import { FakeClient } from "../../protocol/testing/fakeClient";
-import type { ThreadCapabilities } from "../../protocol/types.gen";
+import type { NavigationSessionSummary, SearchResult, ThreadCapabilities } from "../../protocol/types.gen";
 import { useCommandCatalog } from "../../stores/commandCatalog";
 import { connectionStore } from "../../stores/connection";
+import { navigationStore, resetNavigationStoreForTests } from "../../stores/navigation/store";
+import { keyID } from "../../stores/navigation/types";
 import { resetThreadsStoreForTests, threadsStore } from "../../stores/threads";
-import { resetTreeStoreForTests, type TreeResponse, treeStore } from "../../stores/tree";
 import { Toast } from "../../widgets";
 import { isPaneOpen, resetWorkspaceStoreForTests, workspaceStore } from "../workspace";
 import { CommandPalette, commandErrorMessage } from "./CommandPalette";
 import { openPalette, paletteStore } from "./paletteController";
-import type { SearchResult } from "./search";
+import { renderPalette as render, scriptSearch } from "./paletteTestUtils";
 
 // See stores/prefs.test.ts: Node 26 shadows jsdom's localStorage.
 class MemoryStorage {
@@ -52,6 +53,7 @@ const CAPS: ThreadCapabilities = {
   forkFromTurn: true,
   shutdown: true,
   changeModel: true,
+  changeVisionModel: true,
   queue: true,
   goal: true,
   rename: true,
@@ -66,6 +68,7 @@ function testModel(overrides: Partial<ThreadModel> = {}): ThreadModel {
     status: { type: "idle" },
     modelProvider: "anthropic",
     model: "claude",
+    visionModel: "",
     askPending: false,
     pendingEscalations: [],
     turns: [],
@@ -103,21 +106,17 @@ function focusSession(ref: string, overrides: Partial<ThreadModel> = {}): void {
   threadsStore.setState({ threads: new Map([[ref, testModel({ ref, ...overrides })]]) });
 }
 
-let fetchMock: ReturnType<typeof vi.fn>;
-
 beforeEach(() => {
   paletteStore.setState({ open: false, query: "", openSeq: 0 });
   connectionStore.setState({ state: "idle", serverInfo: undefined, client: null });
   useCommandCatalog.setState({ commands: [], loaded: false });
   resetThreadsStoreForTests();
   resetWorkspaceStoreForTests();
-  resetTreeStoreForTests();
+  resetNavigationStoreForTests();
   resetQuoteInsertStoreForTests();
   resetComposerFocusStoreForTests();
   localStorage.clear();
   window.history.pushState({}, "", "/");
-  fetchMock = vi.fn();
-  vi.stubGlobal("fetch", fetchMock);
   // Keep viewport tests isolated from direct matchMedia assignments.
   // @ts-expect-error jsdom baseline has no matchMedia.
   delete window.matchMedia;
@@ -152,47 +151,62 @@ test("Escape closes the overlay when no command is selected", async () => {
 
 // --- empty-query view: needs-you sessions (UX fix) ------------------------
 
-function needsYouTree(): TreeResponse {
-  return {
-    generated_at: "2026-01-01T00:00:00Z",
-    sources: [],
-    live: [],
-    needs_you: [
-      {
-        row_id: "r1",
-        ref: "local:ny1",
-        host_id: "local",
-        session_id: "ny1",
-        title: "Session A",
-        project: "P",
-        state: "awaiting",
-        kind: "session",
-        live: true,
-        children: [],
-      },
-      {
-        row_id: "r2",
-        ref: "local:ny2",
-        host_id: "local",
-        session_id: "ny2",
-        title: "Session B",
-        project: "P",
-        state: "awaiting",
-        kind: "session",
-        live: true,
-        children: [],
-      },
-    ],
-    pin_sections: [],
-    projects: [],
-    archived_projects: [],
-    test_runs: [],
-    attentionSummary: { needsYou: 2, error: 0, working: 0 },
-  };
+function needsYouRows(): NavigationSessionSummary[] {
+  return [
+    {
+      ref: "local:ny1",
+      host_id: "local",
+      session_id: "ny1",
+      title: "Session A",
+      project: "P",
+      state: "awaiting",
+      kind: "session",
+      live: true,
+      children: [],
+    },
+    {
+      ref: "local:ny2",
+      host_id: "local",
+      session_id: "ny2",
+      title: "Session B",
+      project: "P",
+      state: "awaiting",
+      kind: "session",
+      live: true,
+      children: [],
+    },
+  ];
+}
+function setNeedsYouRows(rows: NavigationSessionSummary[] | null): void {
+  const key = { kind: "section", section: "needs_you", offset: 0, limit: 50 } as const;
+  navigationStore.setState({
+    mode: "v1",
+    clientGenerationID: "generation_test",
+    resources:
+      rows === null
+        ? new Map()
+        : new Map([
+            [
+              keyID(key),
+              {
+                key,
+                data: { generation_id: "generation_test", revision: 1, sessions: rows, remaining: 0, truncated: false },
+                loadedRevision: 1,
+                targetRevision: null,
+                forceToken: 0,
+                etag: "etag",
+                loading: false,
+                stale: false,
+                error: null,
+                generationID: "generation_test",
+              },
+            ],
+          ]),
+  });
 }
 
 test("the empty-query view lists needs-you sessions (title + 'needs you' hint) when any exist", () => {
-  treeStore.setState({ tree: needsYouTree() });
+  setNeedsYouRows(needsYouRows());
   render(<CommandPalette />);
   act(() => openPalette());
 
@@ -203,7 +217,7 @@ test("the empty-query view lists needs-you sessions (title + 'needs you' hint) w
 
 test("Enter on a needs-you row opens that session and closes the palette", async () => {
   const user = userEvent.setup();
-  treeStore.setState({ tree: needsYouTree() });
+  setNeedsYouRows(needsYouRows());
   render(<CommandPalette />);
   act(() => openPalette());
 
@@ -214,7 +228,7 @@ test("Enter on a needs-you row opens that session and closes the palette", async
 });
 
 test("the empty-query view keeps its old (empty) behavior when there are no needs-you sessions", () => {
-  treeStore.setState({ tree: null });
+  setNeedsYouRows(null);
   render(<CommandPalette />);
   act(() => openPalette());
 
@@ -244,12 +258,49 @@ test("an async catalog refresh rerenders the open session palette - a newly-load
     return { commands: [{ name: "review", pluginName: "p", source: "plugin" }] };
   });
   connectionStore.setState({ client: fake as never });
-  focusSession("ref_a");
+  focusSession("ref_a", { diagnostics: { plugins: [{ name: "p" }] } });
   render(<CommandPalette />);
 
   act(() => openPalette("/review"));
 
   await waitFor(() => expect(screen.getByRole("option", { name: /Continue in the composer/ })).toBeTruthy());
+});
+
+test("the palette scopes catalog commands to active diagnostics without mutating the global catalog", async () => {
+  const user = userEvent.setup();
+  useCommandCatalog.setState({
+    commands: [
+      { name: "review", pluginName: "enabled", source: "plugin" },
+      { name: "secret", pluginName: "excluded", source: "plugin" },
+      { name: "whoami", source: "user" },
+    ],
+    loaded: true,
+  });
+  focusSession("ref_a", { diagnostics: { plugins: [{ name: "enabled" }] } });
+  render(<CommandPalette />);
+
+  act(() => openPalette("/review"));
+  expect(screen.getByRole("option", { name: /Continue in the composer/ })).toBeTruthy();
+
+  await user.clear(screen.getByRole("combobox"));
+  await user.type(screen.getByRole("combobox"), "/secret");
+  expect(screen.queryByRole("option", { name: /Continue in the composer/ })).toBeNull();
+
+  await user.clear(screen.getByRole("combobox"));
+  await user.type(screen.getByRole("combobox"), "/whoami");
+  expect(screen.getByRole("option", { name: /Continue in the composer/ })).toBeTruthy();
+
+  threadsStore.setState({
+    threads: new Map([["ref_a", testModel({ ref: "ref_a" })]]),
+  });
+  await waitFor(() => expect(screen.getByRole("option", { name: /Continue in the composer/ })).toBeTruthy());
+  await user.clear(screen.getByRole("combobox"));
+  await user.type(screen.getByRole("combobox"), "/review");
+  expect(screen.queryByRole("option", { name: /Continue in the composer/ })).toBeNull();
+  await user.clear(screen.getByRole("combobox"));
+  await user.type(screen.getByRole("combobox"), "/whoami");
+  expect(screen.getByRole("option", { name: /Continue in the composer/ })).toBeTruthy();
+  expect(useCommandCatalog.getState().commands.map((command) => command.name)).toEqual(["review", "secret", "whoami"]);
 });
 
 test("selecting a free-arg APP-GLOBAL command enters args mode with a pill and placeholder, and Esc backs out (does not close)", async () => {
@@ -304,7 +355,7 @@ test("a session-scoped built-in (/interrupt) is never listed as a runnable comma
 
 test("with a focused session, activating the handoff row inserts the typed text into that session's composer and closes", async () => {
   const user = userEvent.setup();
-  focusSession("ref_a");
+  focusSession("ref_a", { diagnostics: { plugins: [{ name: "p" }] } });
   render(<CommandPalette />);
   act(() => openPalette("/interrupt"));
 
@@ -486,17 +537,14 @@ test("typing after /help leaves the help panel and returns to a real command lis
 
 // --- search mode ---
 
-test("search mode renders Live and Past sections from /api/search with highlighting", async () => {
+test("search mode renders Live and Past sections from AppWire with highlighting", async () => {
   const user = userEvent.setup();
-  fetchMock.mockResolvedValue({
-    ok: true,
-    status: 200,
-    json: () =>
-      Promise.resolve({
-        live: [{ id: "local:a", title: "frobnitz worker", project: "proj", state: "active", age: "now" }],
-        past: [{ id: "p1", title: "old frobnitz run", project: "old", state: "ended", age: "2h" }],
-      }),
-  } as Response);
+  scriptSearch({
+    live: [
+      { id: "local:a", ref: "local:local:a", title: "frobnitz worker", project: "proj", state: "active", age: "now" },
+    ],
+    past: [{ id: "p1", ref: "local:p1", title: "old frobnitz run", project: "old", state: "ended", age: "2h" }],
+  });
 
   render(<CommandPalette />);
   act(() => openPalette());
@@ -512,11 +560,7 @@ test("search mode renders Live and Past sections from /api/search with highlight
 
 test("in-session search scans the focused ThreadModel's turns", async () => {
   const user = userEvent.setup();
-  fetchMock.mockResolvedValue({
-    ok: true,
-    status: 200,
-    json: () => Promise.resolve({ live: [], past: [] }),
-  } as Response);
+  scriptSearch({ live: [], past: [] });
   focusSession("ref_a", { turns: [turn([item("i1", "please investigate the frobnitz")])] });
 
   render(<CommandPalette />);
@@ -574,11 +618,7 @@ test('typing past a bare "?" leaves the help view and resumes filtering, same as
 // required now (see search.ts), and a fixture omitting it would be describing
 // a response the hub cannot produce.
 async function searchAndClick(user: ReturnType<typeof userEvent.setup>, result: SearchResult, term: string) {
-  fetchMock.mockResolvedValue({
-    ok: true,
-    status: 200,
-    json: () => Promise.resolve({ live: [result], past: [] }),
-  } as Response);
+  scriptSearch({ live: [result], past: [] });
   render(<CommandPalette />);
   act(() => openPalette());
   await user.type(screen.getByRole("combobox"), term);
@@ -627,7 +667,7 @@ test("Enter on an exact app-global command name runs it", async () => {
 test("Enter on an exact session-scoped command name (/status) hands off to the composer instead of running it", async () => {
   const user = userEvent.setup();
   const send = vi.spyOn(threadsStore.getState(), "send").mockResolvedValue();
-  focusSession("ref_a");
+  focusSession("ref_a", { diagnostics: { plugins: [{ name: "p" }] } });
   render(<CommandPalette />);
   act(() => openPalette("/status"));
 
@@ -645,7 +685,7 @@ test("Enter on an exact session-scoped command name (/status) hands off to the c
 test("Enter on a fuzzy near-miss of a session-scoped command name (/stat) still hands off, not a raw send", async () => {
   const user = userEvent.setup();
   const send = vi.spyOn(threadsStore.getState(), "send").mockResolvedValue();
-  focusSession("ref_a");
+  focusSession("ref_a", { diagnostics: { plugins: [{ name: "p" }, { name: "q" }] } });
   render(<CommandPalette />);
   act(() => openPalette("/stat"));
 
@@ -689,7 +729,7 @@ test("selecting a plugin catalog entry's handoff row inserts the raw typed text 
     commands: [{ name: "review", pluginName: "p", source: "plugin" }],
     loaded: true,
   });
-  focusSession("ref_a");
+  focusSession("ref_a", { diagnostics: { plugins: [{ name: "p" }] } });
   render(<CommandPalette />);
   act(() => openPalette("/review"));
 
@@ -715,7 +755,7 @@ test("Enter on a plugin command with arguments hands off the FULL typed text, ar
     commands: [{ name: "review", pluginName: "p", source: "plugin" }],
     loaded: true,
   });
-  focusSession("ref_a");
+  focusSession("ref_a", { diagnostics: { plugins: [{ name: "p" }] } });
   render(<CommandPalette />);
   act(() => openPalette("/review main"));
 
@@ -735,7 +775,7 @@ test("two catalog entries sharing a name still collapse to ONE handoff row, not 
     ],
     loaded: true,
   });
-  focusSession("ref_a");
+  focusSession("ref_a", { diagnostics: { plugins: [{ name: "p" }, { name: "q" }] } });
   render(<CommandPalette />);
   act(() => openPalette("/review"));
 

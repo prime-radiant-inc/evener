@@ -1,138 +1,119 @@
-// railPending.ts is the rail's optimistic layer: a list of in-flight
-// mutations, and one pure function that projects them onto the tree the store
-// last fetched. Rail.tsx holds the list (adding an op before its POST,
-// dropping it once the follow-up refresh has settled) and renders from the
-// projected tree, so a pin, a rename, or an archive shows the instant you
-// click it instead of after a round trip.
-//
-// Deliberately simpler than the htmx sidebar's equivalent
-// (parity-m3-sidebar-tree.md §15: a keyed pending Map, per-op confirm()
-// predicates, "mutation-type" vs "disappearance-type" completion rules and a
-// 30-second eviction backstop). All of that machinery existed because that UI
-// resynced on a coalesced 2-second debounce that could not be awaited, so an
-// op had no defined moment at which it was safe to drop and needed a rule for
-// recognising its own effect in a later tree. Rail awaits its refresh
-// directly (treeStore.refresh() always resolves, never rejects), so every op
-// has exactly one such moment and none of those rules are needed.
-//
-// Only the ARCHIVING direction hides a row. Unarchiving has no optimistic
-// form - where the row reappears depends on server-side tier classification
-// this layer cannot predict - which matches the htmx behavior exactly.
+// Pure optimistic projection over resource-local rail slices. The authoritative
+// navigation store remains untouched; an operation is removed only after the
+// caller has reloaded the affected navigation resources.
+import type { RailPinSection, RailProject, RailSession } from "./railNodes";
 
-import type {
-  TreeNode as ApiTreeNode,
-  TreeProject as ApiTreeProject,
-  PinSectionSummary,
-  PinSectionTree,
-  TreeResponse,
-} from "../../stores/tree";
+export interface RailPinSummary {
+  id: string;
+  name: string;
+  member_count: number;
+}
 
 export type PendingOp =
   | { kind: "hideSession"; ref: string }
   | { kind: "hideProject"; key: string }
-  | { kind: "sessionPin"; ref: string; source: ApiTreeNode; section: PinSectionSummary }
+  | { kind: "sessionPin"; ref: string; source: RailSession; section: RailPinSummary }
   | { kind: "sessionUnpin"; ref: string }
   | { kind: "pinSectionRename"; id: string; name: string }
   | { kind: "pinSectionDelete"; id: string }
   | { kind: "projectFavorite"; key: string; value: boolean }
   | { kind: "sessionTitle"; ref: string; title: string };
 
+export interface RailResources {
+  live: readonly RailSession[];
+  needsYou: readonly RailSession[];
+  pinSections: readonly RailPinSection[];
+  projects: readonly RailProject[];
+  archivedProjects: readonly RailProject[];
+  testRuns: readonly RailProject[];
+  liveOverflow?: { remaining: number; offset: number; limit: number };
+  needsYouOverflow?: { remaining: number; offset: number; limit: number };
+  catalogOverflow?: Partial<
+    Record<"projects" | "archived_projects" | "test_runs", { remaining: number; offset: number; limit: number }>
+  >;
+}
+
 export interface RenderedProjectRows {
   projectKey: string;
-  treeGeneration: number;
-  rows: readonly ApiTreeNode[];
+  generationID: string;
+  rows: readonly RailSession[];
 }
 
 export interface PinSourceIndexOptions {
-  treeGeneration: number;
+  generationID: string;
   projectDetails: readonly RenderedProjectRows[];
 }
 
 export interface PinSourceIndex {
-  rowsByIdentity: ReadonlyMap<string, ApiTreeNode>;
+  rowsByIdentity: ReadonlyMap<string, RailSession>;
 }
 
 export interface ApplyPendingOptions {
   pinSources?: PinSourceIndex;
 }
 
-// Rebuilds a session list with `fn` applied to every node at every depth,
-// dropping any node fn maps to null. Returns new arrays/objects throughout -
-// the store's tree is never mutated, so a later render off the unmodified
-// tree (once the op is dropped) is always correct.
-function mapNodes(nodes: ApiTreeNode[], fn: (n: ApiTreeNode) => ApiTreeNode | null): ApiTreeNode[] {
-  const out: ApiTreeNode[] = [];
-  for (const n of nodes) {
-    const mapped = fn(n);
-    if (mapped === null) continue;
-    out.push({ ...mapped, children: mapNodes(mapped.children, fn) });
+const NON_TOP_LEVEL_KINDS = new Set(["fork", "subagent", "cluster"]);
+const identity = (node: Pick<RailSession, "row_id" | "ref">) => `${node.row_id}\0${node.ref}`;
+
+function mapNodes(nodes: readonly RailSession[], fn: (node: RailSession) => RailSession | null): RailSession[] {
+  const result: RailSession[] = [];
+  for (const node of nodes) {
+    const mapped = fn(node);
+    if (mapped) result.push({ ...mapped, children: mapNodes(mapped.children, fn) });
   }
-  return out;
+  return result;
 }
 
-function mapEverySession(tree: TreeResponse, fn: (n: ApiTreeNode) => ApiTreeNode | null): TreeResponse {
-  const mapProjects = (ps: ApiTreeProject[]): ApiTreeProject[] =>
-    ps.map((p) => ({ ...p, sessions: mapNodes(p.sessions, fn) }));
+function mapSessions(resources: RailResources, fn: (node: RailSession) => RailSession | null): RailResources {
+  const projects = (items: readonly RailProject[]) =>
+    items.map((project) => ({ ...project, sessions: mapNodes(project.sessions, fn) }));
   return {
-    ...tree,
-    live: mapNodes(tree.live, fn),
-    needs_you: mapNodes(tree.needs_you, fn),
-    pin_sections: tree.pin_sections.map((section) => ({ ...section, sessions: mapNodes(section.sessions, fn) })),
-    projects: mapProjects(tree.projects),
-    archived_projects: mapProjects(tree.archived_projects),
-    test_runs: mapProjects(tree.test_runs),
+    ...resources,
+    live: mapNodes(resources.live, fn),
+    needsYou: mapNodes(resources.needsYou, fn),
+    pinSections: resources.pinSections.map((section) => ({
+      ...section,
+      sessions: mapNodes(section.sessions ?? [], fn),
+    })),
+    projects: projects(resources.projects),
+    archivedProjects: projects(resources.archivedProjects),
+    testRuns: projects(resources.testRuns),
   };
 }
 
-const NON_TOP_LEVEL_KINDS: ReadonlySet<string> = new Set(["fork", "subagent", "cluster"]);
-
-function pinSourceIdentity(node: Pick<ApiTreeNode, "row_id" | "ref">): string {
-  return `${node.row_id}\0${node.ref}`;
-}
-
-/** Indexes only rows the current rail can render as top-level session rows.
- * Lazy project detail must carry the same authoritative tree generation and
- * still belong to a project in that tree; retained cache entries from an older
- * refresh are intentionally excluded. */
-export function buildPinSourceIndex(tree: TreeResponse, options?: PinSourceIndexOptions): PinSourceIndex {
-  const rowsByIdentity = new Map<string, ApiTreeNode>();
-  const add = (rows: readonly ApiTreeNode[]) => {
+export function buildPinSourceIndex(resources: RailResources, options?: PinSourceIndexOptions): PinSourceIndex {
+  const rowsByIdentity = new Map<string, RailSession>();
+  const add = (rows: readonly RailSession[]) => {
     for (const row of rows) {
-      if (NON_TOP_LEVEL_KINDS.has(row.kind)) continue;
-      rowsByIdentity.set(pinSourceIdentity(row), row);
+      if (!NON_TOP_LEVEL_KINDS.has(row.kind)) rowsByIdentity.set(identity(row), row);
     }
   };
-  const addProjects = (projects: readonly ApiTreeProject[]) => {
-    for (const project of projects) add(project.sessions);
+  const addProjects = (projects: readonly RailProject[]) => {
+    projects.forEach((project) => {
+      add(project.sessions);
+    });
   };
-
-  add(tree.live);
-  add(tree.needs_you);
-  addProjects(tree.projects);
-  addProjects(tree.archived_projects);
-  addProjects(tree.test_runs);
-  for (const section of tree.pin_sections) add(section.sessions);
-
+  add(resources.live);
+  add(resources.needsYou);
+  resources.pinSections.forEach((section) => {
+    add(section.sessions ?? []);
+  });
+  addProjects(resources.projects);
+  addProjects(resources.archivedProjects);
+  addProjects(resources.testRuns);
   if (options) {
-    const currentProjectKeys = new Set(
-      [...tree.projects, ...tree.archived_projects, ...tree.test_runs].map((project) => project.key),
+    const currentKeys = new Set(
+      [...resources.projects, ...resources.archivedProjects, ...resources.testRuns].map((project) => project.key),
     );
     for (const detail of options.projectDetails) {
-      if (detail.treeGeneration !== options.treeGeneration || !currentProjectKeys.has(detail.projectKey)) continue;
-      add(detail.rows);
+      if (detail.generationID === options.generationID && currentKeys.has(detail.projectKey)) add(detail.rows);
     }
   }
-
   return { rowsByIdentity };
 }
 
-function eligiblePinSource(requested: ApiTreeNode, ref: string, pinSources: PinSourceIndex): ApiTreeNode | undefined {
-  if (requested.ref !== ref || NON_TOP_LEVEL_KINDS.has(requested.kind)) return undefined;
-  return pinSources.rowsByIdentity.get(pinSourceIdentity(requested));
-}
-
-function annotateSessionPin(tree: TreeResponse, ref: string, sectionID: string | undefined): TreeResponse {
-  return mapEverySession(tree, (node) => {
+function annotateSessions(resources: RailResources, ref: string, sectionID: string | undefined): RailResources {
+  return mapSessions(resources, (node) => {
     if (node.ref !== ref) return node;
     if (sectionID === undefined) {
       const { pin_section_id: _pinSectionID, ...unpinned } = node;
@@ -142,128 +123,104 @@ function annotateSessionPin(tree: TreeResponse, ref: string, sectionID: string |
   });
 }
 
-function annotateSourcePin(source: ApiTreeNode, ref: string, sectionID: string): ApiTreeNode {
-  return {
-    ...source,
-    pin_section_id: sectionID,
-    children: mapNodes(source.children, (node) => (node.ref === ref ? { ...node, pin_section_id: sectionID } : node)),
-  };
-}
-
-function withoutSession(section: PinSectionTree, ref: string): PinSectionTree {
-  return { ...section, sessions: section.sessions.filter((node) => node.ref !== ref) };
-}
-
 function applySessionPin(
-  tree: TreeResponse,
-  ref: string,
-  requestedSource: ApiTreeNode,
-  summary: PinSectionSummary,
+  resources: RailResources,
+  op: Extract<PendingOp, { kind: "sessionPin" }>,
   pinSources: PinSourceIndex,
-): TreeResponse {
-  const source = eligiblePinSource(requestedSource, ref, pinSources);
-  if (!source) return tree;
-  const pinnedSource = annotateSourcePin(source, ref, summary.id);
-
-  const annotated = annotateSessionPin(tree, ref, summary.id);
-  let foundTarget = false;
-  const pinSections = annotated.pin_sections.flatMap((section) => {
-    const currentIndex = section.sessions.findIndex((node) => node.ref === ref);
-    const cleaned = withoutSession(section, ref);
-    if (section.id !== summary.id) return cleaned.sessions.length === 0 ? [] : [cleaned];
-    foundTarget = true;
-    const sessions = [...cleaned.sessions];
-    sessions.splice(currentIndex < 0 ? sessions.length : Math.min(currentIndex, sessions.length), 0, {
-      ...pinnedSource,
+): RailResources {
+  const source =
+    op.source.ref === op.ref && !NON_TOP_LEVEL_KINDS.has(op.source.kind)
+      ? pinSources.rowsByIdentity.get(identity(op.source))
+      : undefined;
+  if (!source) return resources;
+  const annotated = annotateSessions(resources, op.ref, op.section.id);
+  let found = false;
+  const sections = annotated.pinSections.flatMap((section) => {
+    const without = (section.sessions ?? []).filter((session) => session.ref !== op.ref);
+    if (section.id !== op.section.id) return without.length ? [{ ...section, sessions: without }] : [];
+    found = true;
+    const index = (section.sessions ?? []).findIndex((session) => session.ref === op.ref);
+    const sessions = [...without];
+    sessions.splice(index < 0 ? sessions.length : Math.min(index, sessions.length), 0, {
+      ...source,
+      pin_section_id: op.section.id,
     });
-    return [
-      {
-        ...cleaned,
-        name: summary.name,
-        sessions,
-      },
-    ];
+    return [{ ...section, name: op.section.name, sessions }];
   });
-  if (!foundTarget) {
-    pinSections.push({ id: summary.id, name: summary.name, sessions: [pinnedSource] });
-  }
-  return { ...annotated, pin_sections: pinSections };
+  if (!found) sections.push({ ...op.section, sessions: [{ ...source, pin_section_id: op.section.id }] });
+  return { ...annotated, pinSections: sections };
 }
 
-function applySessionUnpin(tree: TreeResponse, ref: string): TreeResponse {
-  const annotated = annotateSessionPin(tree, ref, undefined);
-  return {
-    ...annotated,
-    pin_sections: annotated.pin_sections
-      .map((section) => withoutSession(section, ref))
-      .filter((section) => section.sessions.length > 0),
-  };
-}
-
-function applyPinSectionDelete(tree: TreeResponse, id: string): TreeResponse {
-  const deleted = tree.pin_sections.find((section) => section.id === id);
-  if (!deleted) return tree;
-  const refs = new Set<string>();
-  const collect = (nodes: ApiTreeNode[]) => {
-    for (const node of nodes) {
-      if (node.pin_section_id === id) refs.add(node.ref);
-      collect(node.children);
-    }
-  };
-  collect(deleted.sessions);
-  let projected = { ...tree, pin_sections: tree.pin_sections.filter((section) => section.id !== id) };
-  for (const ref of refs) projected = annotateSessionPin(projected, ref, undefined);
-  return projected;
-}
-
-function mapEveryProject(tree: TreeResponse, fn: (p: ApiTreeProject) => ApiTreeProject | null): TreeResponse {
-  const keep = (ps: ApiTreeProject[]): ApiTreeProject[] => ps.map(fn).filter((p): p is ApiTreeProject => p !== null);
-  return {
-    ...tree,
-    projects: keep(tree.projects),
-    archived_projects: keep(tree.archived_projects),
-    test_runs: keep(tree.test_runs),
-  };
-}
-
-function applyOne(tree: TreeResponse, op: PendingOp, pinSources: PinSourceIndex): TreeResponse {
+function applyOne(resources: RailResources, op: PendingOp, pinSources: PinSourceIndex): RailResources {
   switch (op.kind) {
     case "hideSession":
-      // Every tier, not just the one you clicked in: a session can be listed
-      // in Live and under its project at the same time, and clearing one
-      // listing while the other lingers reads as the action half-working.
-      return mapEverySession(tree, (n) => (n.ref === op.ref ? null : n));
-    case "hideProject":
-      return mapEveryProject(tree, (p) => (p.key === op.key ? null : p));
+      return mapSessions(resources, (node) => (node.ref === op.ref ? null : node));
+    case "hideProject": {
+      const keep = (projects: readonly RailProject[]) => projects.filter((project) => project.key !== op.key);
+      return {
+        ...resources,
+        projects: keep(resources.projects),
+        archivedProjects: keep(resources.archivedProjects),
+        testRuns: keep(resources.testRuns),
+      };
+    }
     case "sessionPin":
-      return applySessionPin(tree, op.ref, op.source, op.section, pinSources);
-    case "sessionUnpin":
-      return applySessionUnpin(tree, op.ref);
+      return applySessionPin(resources, op, pinSources);
+    case "sessionUnpin": {
+      const annotated = annotateSessions(resources, op.ref, undefined);
+      return {
+        ...annotated,
+        pinSections: annotated.pinSections
+          .map((section) => ({ ...section, sessions: (section.sessions ?? []).filter((node) => node.ref !== op.ref) }))
+          .filter((section) => (section.sessions ?? []).length > 0),
+      };
+    }
     case "pinSectionRename":
       return {
-        ...tree,
-        pin_sections: tree.pin_sections.map((section) =>
-          section.id === op.id ? { ...section, name: op.name } : section,
-        ),
+        ...resources,
+        pinSections: resources.pinSections.map((s) => (s.id === op.id ? { ...s, name: op.name } : s)),
       };
-    case "pinSectionDelete":
-      return applyPinSectionDelete(tree, op.id);
+    case "pinSectionDelete": {
+      const deleted = resources.pinSections.find((section) => section.id === op.id);
+      if (!deleted) return resources;
+      const refs = new Set<string>();
+      const collect = (rows: readonly RailSession[]) =>
+        rows.forEach((row) => {
+          refs.add(row.ref);
+          collect(row.children);
+        });
+      collect(deleted.sessions ?? []);
+      const remaining = { ...resources, pinSections: resources.pinSections.filter((section) => section.id !== op.id) };
+      return mapSessions(remaining, (node) =>
+        refs.has(node.ref)
+          ? (() => {
+              const { pin_section_id: _, ...clean } = node;
+              return clean;
+            })()
+          : node,
+      );
+    }
     case "sessionTitle":
-      return mapEverySession(tree, (n) => (n.ref === op.ref ? { ...n, title: op.title } : n));
-    case "projectFavorite":
-      return mapEveryProject(tree, (p) => (p.key === op.key ? { ...p, favorite: op.value } : p));
+      return mapSessions(resources, (node) => (node.ref === op.ref ? { ...node, title: op.title } : node));
+    case "projectFavorite": {
+      const update = (projects: readonly RailProject[]) =>
+        projects.map((project) => (project.key === op.key ? { ...project, favorite: op.value } : project));
+      return {
+        ...resources,
+        projects: update(resources.projects),
+        archivedProjects: update(resources.archivedProjects),
+        testRuns: update(resources.testRuns),
+      };
+    }
   }
 }
 
-/** Projects every in-flight op onto `tree`, in order. Returns the SAME tree
- * object when there is nothing pending, so the common case costs no copy and
- * no re-render. */
 export function applyPending(
-  tree: TreeResponse,
-  ops: readonly PendingOp[],
+  resources: RailResources,
+  operations: readonly PendingOp[],
   options: ApplyPendingOptions = {},
-): TreeResponse {
-  if (ops.length === 0) return tree;
-  const pinSources = options.pinSources ?? buildPinSourceIndex(tree);
-  return ops.reduce((projected, op) => applyOne(projected, op, pinSources), tree);
+): RailResources {
+  if (operations.length === 0) return resources;
+  const pinSources = options.pinSources ?? buildPinSourceIndex(resources);
+  return operations.reduce((current, operation) => applyOne(current, operation, pinSources), resources);
 }

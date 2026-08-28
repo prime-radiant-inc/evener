@@ -145,6 +145,7 @@ type SessionMeta struct {
 	// Empty when none is configured. Persisted so the cheap routing survives
 	// resume — launch args alone do not carry it across restart.
 	CheapModel               string          `json:"cheap_model,omitempty"`
+	VisionModel              string          `json:"vision_model,omitempty"`
 	Config                   ConfigSnapshot  `json:"config"`     // the session's configuration
 	EnvInfo                  EnvironmentInfo `json:"env_info"`   // captured environment description
 	CreatedAt                time.Time       `json:"created_at"` // when the session was first created
@@ -191,6 +192,9 @@ type SessionMeta struct {
 	// EnvContext is the environment-context tracker state (last emitted
 	// snapshot), persisted so resume stays silent when nothing changed.
 	EnvContext *envctx.State `json:"env_context,omitempty"`
+	// ReasoningEffortEscalated records the sticky loop-detection escalation
+	// separately from Config so a resumed lower-effort task cannot undo it.
+	ReasoningEffortEscalated bool `json:"reasoning_effort_escalated,omitempty"`
 	// ObservedBy records append-only observer UI relationships. It grants no
 	// access and lets the hub auto-open an observer beside this worker.
 	ObservedBy []string `json:"observed_by,omitempty"`

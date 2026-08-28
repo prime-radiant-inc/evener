@@ -236,6 +236,8 @@ func TestWithModel_CarriesInstanceModels(t *testing.T) {
 
 // The task_list tool's effort enum must reflect the configured levels, not the
 // provider default — a stale enum teaches the model levels the clamp rejects.
+// The "inherit" sentinel always rides along so strict-mode providers (which
+// force-require the property) let the model decline to override.
 func TestNewOpenAICompatProfile_TaskListEnumMatchesConfiguredLevels(t *testing.T) {
 	p := newOpenAICompatProfile("openai-compatible", "glm-5.2-nvfp4", 0, lunarouteModels())
 	def := findToolDef(p, "task_list")
@@ -243,7 +245,7 @@ func TestNewOpenAICompatProfile_TaskListEnumMatchesConfiguredLevels(t *testing.T
 		t.Fatal("profile has no task_list tool")
 	}
 	enum := effortEnumFromTaskList(t, *def)
-	want := []string{"minimal", "low", "medium", "high", "xhigh"}
+	want := []string{"minimal", "low", "medium", "high", "xhigh", "inherit"}
 	if !reflect.DeepEqual(enum, want) {
 		t.Errorf("task_list effort enum = %v, want %v", enum, want)
 	}

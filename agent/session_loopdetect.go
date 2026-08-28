@@ -28,6 +28,7 @@ func (s *Session) stuckEscalation(count int) string {
 			// lowers it to whatever tier the model actually tops out at.
 			s.cfg.ReasoningEffort = "max"
 		}
+		s.loopEffortEscalated = true
 		s.mu.Unlock()
 		return "You are stuck in a loop. Your reasoning effort has been increased. " +
 			"Stop and think about why your current approach is not working. " +

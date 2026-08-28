@@ -17,10 +17,17 @@
 // (Jesse 2026-07-22).
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 import { friendlyLaunchErrorMessage } from "../../protocol/errors";
-import type { HarnessDescriptor, LaunchConfigLayer, LaunchOption } from "../../protocol/types.gen";
+import type {
+  HarnessDescriptor,
+  LaunchConfigLayer,
+  LaunchOption,
+  ModelListResponse,
+  PluginSelectionError,
+} from "../../protocol/types.gen";
 import { useClient } from "../../shell/clientContext";
 import type { PaneProps } from "../../shell/paneRegistry";
 import { navigate, paneToURL } from "../../shell/routing";
+import { useExtensionsStore } from "../../stores/extensions";
 import {
   Button,
   ConfirmDialog,
@@ -39,21 +46,31 @@ import {
   useToasts,
 } from "../../widgets";
 import { CloseIcon } from "../../widgets/dialog/CloseIcon";
+import { Disclosure } from "../../widgets/disclosure";
 import { requireClass } from "../../widgets/internal/requireClass";
 import type { ModelCatalog, ModelCatalogEntry } from "../../widgets/modelCatalog";
-import { fetchModelCatalog } from "../../widgets/modelCatalog/catalogClient";
-import { mergeScopedCatalog } from "../../widgets/modelCatalog/scopedCatalog";
+import { modelListToCatalog } from "../../widgets/modelCatalog/catalogClient";
+import { mergeCatalogEntry, mergeCatalogSnapshot } from "../../widgets/modelCatalog/scopedCatalog";
 import { ModelSwitchTrigger } from "../session/chrome/ModelSwitchTrigger";
 import { AttachmentTile } from "../session/composer/AttachmentTile";
 import { AttachIcon } from "../session/composer/attachments/AttachIcon";
 import { imageFilesFromClipboard } from "../session/composer/attachments/clipboard";
 import { type TextEditor, useAttachments } from "../session/composer/attachments/useAttachments";
 import { AdvancedOptions } from "./AdvancedOptions";
-import { ACCESS_MODE_OPTIONS } from "./accessMode";
+import { ACCESS_MODE_OPTIONS, accessModeDefaultLabel } from "./accessMode";
 import { resolveHeadBranch } from "./branch";
-import { harnessUsesEvenerModels } from "./harnessModels";
+import { harnessSupportsPluginSelection, harnessUsesEvenerModels } from "./harnessModels";
 import { MobileSettingRows } from "./MobileSettingRows";
 import { ModelField } from "./ModelField";
+import { PluginSelectionPanel } from "./PluginSelectionPanel";
+import pluginSelectionStyles from "./pluginSelection.module.css";
+import {
+  type PluginSelectionState,
+  pluginSelectionIssues,
+  reconcilePluginSelection,
+  selectedPluginNames,
+  withPluginSelection,
+} from "./pluginSelectionState";
 import { createDir, preflightDir } from "./preflight";
 import { perLaunchEvenerOptions, resolveScalars } from "./schema";
 import styles from "./spawn.module.css";
@@ -66,6 +83,7 @@ import {
 } from "./spawnDefaults";
 import { startThread } from "./startThread";
 import { readUrlPrefill } from "./urlPrefill";
+import { usePluginPreview } from "./usePluginPreview";
 
 // No route params: /new resolves to spawn with an empty param object; the
 // ?dir=/?prompt= prefill is read from window.location.search, not params.
@@ -75,8 +93,8 @@ export type SpawnPaneParams = Record<string, never>;
 // enumerate - the same fallback the session status row uses (StatusRow.tsx's
 // DEFAULT_EFFORT_LEVELS), so both surfaces agree on the unknown case. The
 // select's real ladder comes from the selected model's catalog entry
-// (reasoningEffortLevels/supportsReasoning, served by /api/models -
-// web_spawn.go); "(default)" + an explicit "none" ride every ladder.
+// (reasoningEffortLevels/supportsReasoning, served by model/list);
+// "(default)" + an explicit "none" ride every ladder.
 const FALLBACK_EFFORT_LEVELS = ["minimal", "low", "medium", "high"];
 // Shared empty-ladder constant so the derived value keeps a stable identity
 // across renders (the stale-effort effect below keys off it).
@@ -121,6 +139,8 @@ const CLASS = {
   fieldLabel: requireClass(styles.fieldLabel, "spawn.module.css", "fieldLabel"),
   modelNote: requireClass(styles.modelNote, "spawn.module.css", "modelNote"),
   submitLabel: requireClass(styles.submitLabel, "spawn.module.css", "submitLabel"),
+  pluginDesktop: requireClass(pluginSelectionStyles.desktopSurface, "pluginSelection.module.css", "desktopSurface"),
+  pluginSummary: requireClass(pluginSelectionStyles.summary, "pluginSelection.module.css", "summary"),
 };
 
 // kata xgk8: the empty-value label Model shows when the hub has confirmed it
@@ -143,6 +163,10 @@ export default function Spawn(_props: PaneProps<SpawnPaneParams>) {
   const [harnesses, setHarnesses] = useState<HarnessDescriptor[]>([]);
   const [schemaOptions, setSchemaOptions] = useState<LaunchOption[]>([]);
   const [advancedOverrides, setAdvancedOverrides] = useState<LaunchConfigLayer>({});
+  const [pluginSelection, setPluginSelection] = useState<PluginSelectionState>({ mode: "default" });
+  const [knownSelectionIssues, setKnownSelectionIssues] = useState<PluginSelectionError[]>([]);
+  const pluginSelectionRef = useRef(pluginSelection);
+  pluginSelectionRef.current = pluginSelection;
   const [staleNotice, setStaleNotice] = useState<string | null>(null);
   const [createDialogPath, setCreateDialogPath] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
@@ -159,14 +183,25 @@ export default function Spawn(_props: PaneProps<SpawnPaneParams>) {
   // unconfirmable state never blocks Start (same fail-open shape as
   // preflightDir).
   const [noDefaultModel, setNoDefaultModel] = useState(false);
-  // The merged launchable-model catalog (model/list + /api/models), loaded at
-  // pane level so the Effort select can read the selected model's own
-  // reasoningEffortLevels without waiting for a picker to open. null = not
-  // loaded or the load failed - the select stays on the fallback ladder.
+  // The launchable-model catalog, loaded at pane level so the Effort select can
+  // read the selected model's own reasoningEffortLevels without waiting for a
+  // picker to open. null = not loaded or the load failed - the select stays on
+  // the fallback ladder.
   const [modelCatalog, setModelCatalog] = useState<ModelCatalog | null>(null);
   // The hub's resolved default model for this cwd ("" until resolve confirms
   // one): what the Effort ladder keys off while Model reads "(default)".
   const [resolvedDefaultModel, setResolvedDefaultModel] = useState("");
+  // The whole effective layer of the same launch/resolve (null until it
+  // lands, or after it fails): every launch-config control whose unset state
+  // reads "(default)" prepends its entry here - "high (default)",
+  // "On (default)", "anthropic/claude-sonnet-4 (default)" - so the word
+  // "(default)" never stands in for an answer the hub actually knows.
+  const [resolvedDefaults, setResolvedDefaults] = useState<LaunchConfigLayer | null>(null);
+  const pluginRevision = useExtensionsStore((state) => state.pluginRevision);
+  const pluginSelectionSupported = harnessSupportsPluginSelection(harness, harnesses);
+  const combinedOverrides = pluginSelectionSupported
+    ? withPluginSelection(advancedOverrides, pluginSelection)
+    : withPluginSelection(advancedOverrides, { mode: "default" });
 
   // Attachments reuse the composer's staged-image pipeline via a TextEditor
   // bridge over the prompt textarea (see Composer.tsx's own bridge for the
@@ -224,26 +259,34 @@ export default function Spawn(_props: PaneProps<SpawnPaneParams>) {
   // below for how noDefaultModel is set.
   const modelRequired = model === "" && noDefaultModel;
 
-  const loadModels = useCallback(
-    () => client.request("model/list", { harness: harness || undefined, cwd: cwd || undefined }).then((r) => r.data),
-    [client, harness, cwd],
-  );
-  // The advanced panel's model-valued fields use the same scoped catalog the
-  // top-level Model field does: model/list is the authoritative launchable SET
-  // for this harness+cwd, enriched best-effort with /api/models metadata (a
-  // failed enrichment degrades to the plain scoped list, never an empty
-  // picker) - the identical composition ModelField.tsx documents.
-  const loadCatalog = useCallback(
-    () =>
-      Promise.all([
-        loadModels(),
-        // A failed enrichment degrades to the plain scoped list
-        // (mergeScopedCatalog tolerates null); a failed model/list still
-        // rejects, so the picker surfaces the real error.
-        fetchModelCatalog({ harness: harness || undefined, cwd: cwd || undefined }).catch(() => null),
-      ]).then(([scoped, enrichment]) => mergeScopedCatalog(scoped, enrichment)),
-    [loadModels, harness, cwd],
-  );
+  const modelListCache = useRef<{ client: object; entries: Map<string, Promise<ModelListResponse>> }>({
+    client,
+    entries: new Map(),
+  });
+  const loadModelList = useCallback((): Promise<ModelListResponse> => {
+    if (modelListCache.current.client !== client) {
+      modelListCache.current = { client, entries: new Map() };
+    }
+    const cache = modelListCache.current.entries;
+    const key = `${harness}\0${cwd}`;
+    const cached = cache.get(key);
+    if (cached) return cached;
+
+    const request = client.request("model/list", { harness: harness || undefined, cwd: cwd || undefined });
+    let tracked: Promise<ModelListResponse>;
+    tracked = request.catch((error) => {
+      if (cache.get(key) === tracked) cache.delete(key);
+      throw error;
+    });
+    cache.set(key, tracked);
+    return tracked;
+  }, [client, harness, cwd]);
+  const loadModels = useCallback(() => loadModelList().then((response) => response.data ?? []), [loadModelList]);
+  // Every model-valued control in the spawn pane consumes this one scoped
+  // response. The same promise is shared with the default-model preview, so
+  // opening a picker and resolving the working directory cannot issue
+  // duplicate model/list RPCs for the same harness and cwd.
+  const loadCatalog = useCallback(() => loadModelList().then(modelListToCatalog), [loadModelList]);
   // Both path RPCs answer with a Go slice, and an EMPTY one marshals as JSON
   // null rather than [] - a hub with no remembered projects, or a directory with
   // no children. types.gen.ts declares `data: string[]`, so the compiler is no
@@ -270,9 +313,46 @@ export default function Spawn(_props: PaneProps<SpawnPaneParams>) {
     [client],
   );
   const resolveConfig = useCallback(
-    (overrides: LaunchConfigLayer) => client.request("evener/launch/resolve", { cwd, launchOverrides: overrides }),
-    [client, cwd],
+    (overrides: LaunchConfigLayer) =>
+      client.request("evener/launch/resolve", {
+        cwd,
+        launchOverrides: pluginSelectionSupported
+          ? withPluginSelection(overrides, pluginSelection)
+          : withPluginSelection(overrides, { mode: "default" }),
+      }),
+    [client, cwd, pluginSelection, pluginSelectionSupported],
   );
+
+  const pluginPreview = usePluginPreview({
+    client,
+    cwd,
+    launchOverrides: combinedOverrides,
+    pluginRevision,
+    enabled: pluginSelectionSupported,
+  });
+
+  useEffect(() => {
+    if (!pluginSelectionSupported) return;
+    const state = pluginPreview.state;
+    if (state.status !== "ready") return;
+    const nextSelection = reconcilePluginSelection(pluginSelectionRef.current, state.response);
+    setPluginSelection(nextSelection);
+    setKnownSelectionIssues(pluginSelectionIssues(nextSelection, state.response));
+    // A selection change clears the cached issues until its new preview settles.
+    // Re-running this effect for that selection change would restore old issues.
+  }, [pluginPreview.state, pluginSelectionSupported]);
+
+  // A refresh triggered by a selection toggle keeps the previous response on
+  // the loading state (see usePluginPreview), so the disclosure and its list
+  // stay mounted instead of flashing an empty "Inspecting plugins…" panel.
+  const previewResponse = pluginSelectionSupported ? (pluginPreview.state.response ?? null) : null;
+  const configuredPluginNames = previewResponse ? selectedPluginNames(pluginSelection, previewResponse) : [];
+  const currentSelectionIssues =
+    pluginPreview.state.status === "ready" ? pluginSelectionIssues(pluginSelection, pluginPreview.state.response) : [];
+  const explicitSelectionLoading =
+    pluginSelectionSupported && pluginSelection.mode === "explicit" && pluginPreview.state.status === "loading";
+  const pluginSelectionBlocked =
+    explicitSelectionLoading || knownSelectionIssues.length > 0 || currentSelectionIssues.length > 0;
 
   // Mount: URL prefill + sticky defaults (synchronous), then the async catalogs
   // (harnesses, advanced schema) and the stale-model sweep.
@@ -286,12 +366,6 @@ export default function Spawn(_props: PaneProps<SpawnPaneParams>) {
     if (defaults.workingDir) setCwd(defaults.workingDir);
     if (defaults.accessMode) setAccessMode(defaults.accessMode);
     if (defaults.reasoningEffort) setReasoningEffort(defaults.reasoningEffort);
-    // The persisted branch is a fast first paint only - the HEAD resolution
-    // below always overrides it once it lands. Now that the readout is
-    // read-only, HEAD is the sole authority for what it says; a remembered
-    // value outliving the branch it named would be a lie in a field that
-    // presents itself as fact.
-    if (defaults.branch) setBranch(defaults.branch);
     // Writing the prompt is what starting an agent IS, so the caret starts
     // there rather than on whichever field happens to be first in the DOM.
     textareaRef.current?.focus();
@@ -312,7 +386,7 @@ export default function Spawn(_props: PaneProps<SpawnPaneParams>) {
     // Stale-model cleanup (floor §1.10): sweep the persisted defaults against the
     // live model list; if this project's prefilled model was discarded, clear it
     // and surface the inline notice.
-    client.request("model/list", {}).then(
+    loadModelList().then(
       (r) => {
         if (!active) return;
         const { discarded } = sweepStaleModels(r.data);
@@ -362,25 +436,19 @@ export default function Spawn(_props: PaneProps<SpawnPaneParams>) {
   }, [busy]);
 
   // Pane-level merged catalog for the Effort select's per-model ladder: the
-  // same composition the model pickers load on demand (model/list's
-  // launchable SET enriched with /api/models metadata, which is where
-  // reasoningEffortLevels/supportsReasoning live - model/list itself carries
-  // only provider/model pairs). Reloads with the harness/cwd scope, exactly
-  // like loadCatalog itself. Fail-open: a rejected load leaves modelCatalog
-  // null and the select on the fallback ladder.
-  // Debounced, because loadCatalog closes over cwd and cwd updates straight
-  // from the path field's onChange: undelayed, this costs one model/list RPC
-  // plus one /api/models fetch per CHARACTER typed into the working directory.
-  // The catalog is scoped by harness+cwd so it cannot simply stop tracking cwd,
-  // and its only reader here is the Effort ladder, which nobody consults
-  // mid-keystroke -- so it settles with the path instead of chasing it. The
-  // model pickers keep calling loadCatalog on demand and are unaffected.
+  // same model/list catalog the pickers load on demand. Reloads with the
+  // harness/cwd scope, exactly like loadCatalog itself. Fail-open: a rejected
+  // load leaves modelCatalog null and the select on the fallback ladder.
+  // Debounced because cwd updates straight from the path field's onChange. The
+  // catalog is scoped by harness+cwd, so it settles with the path instead of
+  // chasing every keystroke; model pickers call the same keyed loader on
+  // demand.
   useEffect(() => {
     let active = true;
     const settle = setTimeout(() => {
       loadCatalog().then(
         (catalog) => {
-          if (active) setModelCatalog(catalog);
+          if (active) setModelCatalog((previous) => mergeCatalogSnapshot(previous, catalog));
         },
         () => {},
       );
@@ -398,13 +466,13 @@ export default function Spawn(_props: PaneProps<SpawnPaneParams>) {
   useEffect(() => {
     if (cwd.trim() === "") return undefined;
     let active = true;
-    resolveHeadBranch(cwd).then((head) => {
+    resolveHeadBranch(client, cwd).then((head) => {
       if (active) setBranch(head);
     });
     return () => {
       active = false;
     };
-  }, [cwd]);
+  }, [client, cwd]);
 
   // Default-model preview (kata xgk8): thread/start resolves Model from the
   // SAME layered launch config this previews (app_threadlifecycle.go -
@@ -443,33 +511,39 @@ export default function Spawn(_props: PaneProps<SpawnPaneParams>) {
     if (cwd.trim() === "") {
       setNoDefaultModel(false);
       setResolvedDefaultModel("");
+      setResolvedDefaults(null);
       return undefined;
     }
     let active = true;
-    Promise.all([resolveConfig(advancedOverrides), loadModels().catch(() => null)]).then(
-      ([result, models]) => {
-        if (!active) return;
-        const defaultModel = (result.effective.model ?? "").trim();
-        setNoDefaultModel(defaultModel === "");
-        setResolvedDefaultModel(defaultModel);
-        if (defaultModel === "" || modelRef.current !== "" || !models || models.length === 0) return;
-        const slash = defaultModel.indexOf("/");
-        const defaultProvider = slash === -1 ? defaultModel : defaultModel.slice(0, slash);
-        const defaultCredentialed = models.some((m) => m.provider === defaultProvider);
-        const fallback = models[0];
-        if (!defaultCredentialed && fallback) {
-          setModel(`${fallback.provider}/${fallback.model}`);
-        }
-      },
-      () => {
-        if (active) {
-          setNoDefaultModel(false);
-          setResolvedDefaultModel("");
-        }
-      },
-    );
+    const settle = setTimeout(() => {
+      Promise.all([resolveConfig(advancedOverrides), loadModels().catch(() => null)]).then(
+        ([result, models]) => {
+          if (!active) return;
+          setResolvedDefaults(result.effective);
+          const defaultModel = (result.effective.model ?? "").trim();
+          setNoDefaultModel(defaultModel === "");
+          setResolvedDefaultModel(defaultModel);
+          if (defaultModel === "" || modelRef.current !== "" || !models || models.length === 0) return;
+          const slash = defaultModel.indexOf("/");
+          const defaultProvider = slash === -1 ? defaultModel : defaultModel.slice(0, slash);
+          const defaultCredentialed = models.some((m) => m.provider === defaultProvider);
+          const fallback = models[0];
+          if (!defaultCredentialed && fallback) {
+            setModel(`${fallback.provider}/${fallback.model}`);
+          }
+        },
+        () => {
+          if (active) {
+            setNoDefaultModel(false);
+            setResolvedDefaultModel("");
+            setResolvedDefaults(null);
+          }
+        },
+      );
+    }, CATALOG_SETTLE_MS);
     return () => {
       active = false;
+      clearTimeout(settle);
     };
   }, [cwd, advancedOverrides, resolveConfig, loadModels]);
 
@@ -499,11 +573,24 @@ export default function Spawn(_props: PaneProps<SpawnPaneParams>) {
     reasoningEffort !== "" && reasoningEffort !== "none" && !effortLevels.includes(reasoningEffort)
       ? reasoningEffort
       : null;
+  // The effort a session started now would inherit: prepended onto the empty
+  // option's "(default)" once launch/resolve has landed with one.
+  const resolvedEffortDefault =
+    typeof resolvedDefaults?.reasoningEffort === "string" ? resolvedDefaults.reasoningEffort.trim() : "";
   const effortOptions = [
-    { value: "", label: "(default)" },
+    { value: "", label: resolvedEffortDefault !== "" ? `${resolvedEffortDefault} (default)` : "(default)" },
     ...effortLevels.filter((level) => level !== "none").map((level) => ({ value: level, label: level })),
     ...(preservedEffort === null ? [] : [{ value: preservedEffort, label: preservedEffort }]),
     { value: "none", label: "none" },
+  ];
+  // Access mode is the chip-level face of the launch-config sandbox field
+  // (floor §1.8), so its empty option follows the same rule as Effort's:
+  // name the inherited sandbox in the chip's own friendly wording
+  // ("Workspace write (default)") once resolve lands, plain "(default)"
+  // until then.
+  const accessOptions = [
+    { value: "", label: accessModeDefaultLabel(resolvedDefaults?.sandbox ?? "") },
+    ...ACCESS_MODE_OPTIONS,
   ];
 
   // A chosen effort the (new) model's ladder doesn't name can't stay selected
@@ -518,8 +605,18 @@ export default function Spawn(_props: PaneProps<SpawnPaneParams>) {
     }
   }, [knownEffortLevels, reasoningEffort]);
 
+  function handlePluginSelectionChange(next: PluginSelectionState): void {
+    setKnownSelectionIssues((issues) => {
+      if (next.mode === "default") return [];
+      const selectedNames = new Set(next.names);
+      return issues.filter((issue) => selectedNames.has(issue.name));
+    });
+    setPluginSelection(next);
+  }
+
   function handleHarnessChange(next: string): void {
     setHarness(next);
+    if (!harnessSupportsPluginSelection(next, harnesses)) handlePluginSelectionChange({ mode: "default" });
     // Switching to a non-evener harness always blanks the model; switching to a
     // evener-model harness only blanks a value that isn't already provider/model
     // shaped (floor §1.10, spawn.js:395-402).
@@ -548,10 +645,8 @@ export default function Spawn(_props: PaneProps<SpawnPaneParams>) {
       const key = `${entry.provider}/${entry.model}`;
       const idx = models.findIndex((m) => `${m.provider}/${m.model}` === key);
       if (idx >= 0) {
-        // Replace the existing entry (which may be label-only from a failed
-        // enrichment) with the picker's fully-enriched one.
         const nextModels = [...models];
-        nextModels[idx] = entry;
+        nextModels[idx] = mergeCatalogEntry(nextModels[idx], entry);
         return { models: nextModels, recent, diagnostics };
       }
       return { models: [...models, entry], recent, diagnostics };
@@ -578,10 +673,16 @@ export default function Spawn(_props: PaneProps<SpawnPaneParams>) {
   }
 
   async function doSpawn(): Promise<void> {
+    if (pluginSelectionBlocked) {
+      busyRef.current = false;
+      setBusy(false);
+      setBusyStartedAt(null);
+      return;
+    }
     // The advanced schema's sandbox wins over the access-mode chip (floor §1.8);
     // its model/reasoningEffort win over the chips (floor §1.11) - resolveScalars
     // hoists them into the top-level fields the daemon prefers over overrides.
-    const overrides = advancedOverrides;
+    const overrides = combinedOverrides;
     const scalars = resolveScalars({ model, reasoningEffort }, overrides);
     // Snapshot before the await (mirrors Composer.tsx's submitAction) so an
     // attachment staged WHILE this request is in flight isn't in the set
@@ -603,7 +704,6 @@ export default function Spawn(_props: PaneProps<SpawnPaneParams>) {
       cwd,
       harness,
       model,
-      branch,
       accessMode,
       reasoningEffort,
       harnessUsesEvenerModels: usesEvenerModels,
@@ -613,11 +713,12 @@ export default function Spawn(_props: PaneProps<SpawnPaneParams>) {
     // marker-counter reset). The spawn pane is a dockview singleton that can
     // still be mounted behind the session pane this navigates to, so without
     // this an already-sent prompt/image stays staged and re-sendable if the
-    // user returns to it. Sticky defaults (harness/model/cwd/branch/access
+    // user returns to it. Sticky defaults (harness/model/cwd/access
     // mode, floor §1.9-§1.10) are deliberately left untouched - only the
     // one-shot prompt/attachments reset.
     updatePrompt("");
     attachments.clearSubmitted(submittedMarkers);
+    handlePluginSelectionChange({ mode: "default" });
     // Same defect class: both callers set busy=true before awaiting this
     // function but only their OWN catch blocks ever reset it back to false,
     // so a success fell through with the button stuck disabled/"Starting…"
@@ -637,6 +738,7 @@ export default function Spawn(_props: PaneProps<SpawnPaneParams>) {
     // - a submit that CANNOT succeed must never fire regardless of path in.
     // The field's own inline note already says why, so no toast here.
     if (modelRequired) return;
+    if (pluginSelectionBlocked) return;
     if (attachments.hasPending) {
       toasts.push("error", "Image attachment is still processing.");
       return;
@@ -689,7 +791,7 @@ export default function Spawn(_props: PaneProps<SpawnPaneParams>) {
     setBusy(true);
     setBusyStartedAt(Date.now());
     try {
-      await createDir(path);
+      await createDir(client, path);
       await doSpawn();
     } catch (err) {
       // friendlyLaunchErrorMessage, not errorText: doSpawn's thread/start call
@@ -712,7 +814,6 @@ export default function Spawn(_props: PaneProps<SpawnPaneParams>) {
     harnesses.length > 0
       ? harnesses.map((h) => ({ value: h.id, label: h.label }))
       : [{ value: "evener", label: "evener" }];
-
   return (
     <PaneScaffold title="Start an agent" mobileTitle="new">
       <div className={CLASS.form}>
@@ -791,10 +892,16 @@ export default function Spawn(_props: PaneProps<SpawnPaneParams>) {
                     control for one setting. The label follows the same rules
                     the desktop field's does - the required-choice word when
                     the hub has confirmed no default (kata xgk8), otherwise
-                    the chosen model or "(default)". */}
+                    the chosen model, the resolved default model's own
+                    "<model> (default)", or plain "(default)" until the
+                    resolve lands. */}
                 <span className={CLASS.modelTrigger} data-testid="spawn-model-slot">
                   <ModelSwitchTrigger
-                    label={modelRequired ? MODEL_CHOOSE_LABEL : model || "(default)"}
+                    label={
+                      modelRequired
+                        ? MODEL_CHOOSE_LABEL
+                        : model || (resolvedDefaultModel !== "" ? `${resolvedDefaultModel} (default)` : "(default)")
+                    }
                     value={model}
                     loadCatalog={loadCatalog}
                     onPick={handleModelPickEntry}
@@ -813,7 +920,7 @@ export default function Spawn(_props: PaneProps<SpawnPaneParams>) {
                   aria-label="Start"
                   icon={busy ? undefined : <SendIcon />}
                   onClick={() => void handleSpawn()}
-                  disabled={busy || modelRequired}
+                  disabled={busy || modelRequired || pluginSelectionBlocked}
                 >
                   {busy ? (
                     <Loader label="Starting" startedAt={busyStartedAt ?? now} now={now} />
@@ -869,8 +976,7 @@ export default function Spawn(_props: PaneProps<SpawnPaneParams>) {
             </FormRow>
             {/* Branch is a read-only HEAD readout, not a peer field: it rides
                 the directory row as a mono suffix ("~/code/evener · main") because
-                it is a PROPERTY of that directory, and the wire has nowhere to
-                send it anyway (startThread.ts's own branch comment). */}
+                it is a property of that directory. */}
             {branch !== "" && (
               <span className={CLASS.branch} data-testid="spawn-branch" title={`HEAD ${branch}`}>
                 <span className={CLASS.branchSeparator} aria-hidden="true">
@@ -894,10 +1000,14 @@ export default function Spawn(_props: PaneProps<SpawnPaneParams>) {
               value={model}
               onChange={handleModelChange}
               onPickEntry={handleModelPickEntry}
-              loadModels={loadModels}
-              harness={harness || undefined}
-              cwd={cwd || undefined}
-              emptyLabel={modelRequired ? MODEL_CHOOSE_LABEL : undefined}
+              loadCatalog={loadCatalog}
+              emptyLabel={
+                modelRequired
+                  ? MODEL_CHOOSE_LABEL
+                  : resolvedDefaultModel !== ""
+                    ? `${resolvedDefaultModel} (default)`
+                    : undefined
+              }
             />
             {modelRequired && (
               <p className={CLASS.modelNote} role="alert">
@@ -917,6 +1027,51 @@ export default function Spawn(_props: PaneProps<SpawnPaneParams>) {
           </FormRow>
         </div>
 
+        {pluginSelectionSupported && (
+          <div className={CLASS.pluginDesktop} data-testid="spawn-plugin-desktop">
+            {previewResponse === null && (
+              <div className={CLASS.pluginSummary} data-testid="spawn-plugin-summary" role="status">
+                <strong>Plugins for this session</strong>
+                {pluginPreview.state.status === "loading" && <span>Inspecting plugins…</span>}
+                {pluginPreview.state.status === "error" && (
+                  <>
+                    <span title={pluginPreview.state.message}>
+                      Couldn't inspect plugins: {pluginPreview.state.message}
+                    </span>
+                    <Button variant="quiet" size="xs" type="button" onClick={pluginPreview.retry}>
+                      Retry
+                    </Button>
+                  </>
+                )}
+              </div>
+            )}
+            {previewResponse !== null && (
+              <Disclosure
+                id="spawn-plugin-selection"
+                data-testid="spawn-plugin-disclosure"
+                summary={
+                  <div className={CLASS.pluginSummary} data-testid="spawn-plugin-summary">
+                    <strong>Plugins for this session</strong>
+                    <span>
+                      {configuredPluginNames.length > 0
+                        ? `Configured plugins: ${configuredPluginNames.join(", ")}`
+                        : "Configured plugins: none"}
+                    </span>
+                  </div>
+                }
+              >
+                <PluginSelectionPanel
+                  preview={previewResponse}
+                  selection={pluginSelection}
+                  removeOnly={pluginPreview.state.status === "error"}
+                  onSelectionChange={handlePluginSelectionChange}
+                  onRetry={pluginPreview.retry}
+                />
+              </Disclosure>
+            )}
+          </div>
+        )}
+
         <div className={CLASS.mobileConfig} data-testid="spawn-mobile-config">
           <MobileSettingRows
             harness={harness || "evener"}
@@ -934,8 +1089,13 @@ export default function Spawn(_props: PaneProps<SpawnPaneParams>) {
             reasoningDisabled={effortDisabled}
             onReasoningChange={setReasoningEffort}
             accessMode={accessMode}
-            accessOptions={[{ value: "", label: "(default)" }, ...ACCESS_MODE_OPTIONS]}
+            accessOptions={accessOptions}
             onAccessChange={setAccessMode}
+            pluginPreview={pluginPreview.state}
+            pluginSelection={pluginSelection}
+            pluginsSupported={pluginSelectionSupported}
+            onPluginSelectionChange={handlePluginSelectionChange}
+            onPluginRetry={pluginPreview.retry}
           />
         </div>
 
@@ -946,6 +1106,7 @@ export default function Spawn(_props: PaneProps<SpawnPaneParams>) {
           resolveConfig={resolveConfig}
           loadCatalog={loadCatalog}
           complete={complete}
+          resolvedDefaults={resolvedDefaults ?? undefined}
         >
           <FormRow label="Harness" htmlFor="spawn-harness">
             <Select
@@ -960,7 +1121,7 @@ export default function Spawn(_props: PaneProps<SpawnPaneParams>) {
               id="spawn-access"
               value={accessMode}
               onChange={(e) => setAccessMode(e.target.value)}
-              options={[{ value: "", label: "(default)" }, ...ACCESS_MODE_OPTIONS]}
+              options={accessOptions}
             />
           </FormRow>
         </AdvancedOptions>

@@ -12,16 +12,16 @@ independently falsifiable:
   or display name as the fallback answer when nothing is highlighted
   (`:209-216`). Picking closes the popover and reports the model up
   through `ModelField` → `handleModelChange`
-  (`panes/spawn/Spawn.tsx:358-361`).
+  (`panes/spawn/Spawn.tsx#handleModelChange`).
 - **Bare Enter in the prompt textarea inserts a newline.**
   `handlePromptKeyDown` returns without touching an Enter that carries
-  no modifier (`Spawn.tsx:363-369`), so the browser's own default action
-  runs. Nothing above the textarea claims the key either: the app's only
+  no modifier (`Spawn.tsx#handlePromptKeyDown`), so the browser's own default
+  action runs. Nothing above the textarea claims the key either: the app's only
   global keydown listeners are ⌘K for the palette
   (`shell/AppShell.tsx:266-281`) and ⌘B for the rail
   (`shell/rail/RailHost.tsx:54-66`).
 - **Only ⌘/Ctrl+Enter spawns.** That chord is the one path from a
-  keystroke to `handleSpawn` (`Spawn.tsx:365-368`); the `Spawn` button
+  keystroke to `handleSpawn` (`Spawn.tsx#handleSpawn`); the `Spawn` button
   is the only other way in.
 
 The reason a stray keypress cannot spawn is structural, not defensive:
@@ -58,9 +58,10 @@ roles (`role="combobox"` with `aria-label="Model"`, `role="listbox"`,
   inside every `eval` before trusting what it returns.
 - `make build-web` **before** the hub binary, or the hub embeds
   `dist/PLACEHOLDER` and serves no app at all.
-- At least one launchable model in the picker (`GET $HUB/api/models`
-  non-empty). Note one qualified `provider/model` id from it; the steps
-  below call it `$MODEL`.
+- At least one launchable model in the picker (`model/list` over the
+  authenticated AppWire connection returns a non-empty `result.data`). Note
+  one qualified `provider/model` id from it; the steps below call it
+  `$MODEL`.
 - A working directory that exists, so the cwd preflight in `handleSpawn`
   neither aborts nor opens the "create it?" dialog.
 - Your own Chrome profile (`set_profile <worktree-name>`) before the
@@ -95,11 +96,14 @@ roles (`role="combobox"` with `aria-label="Model"`, `role="listbox"`,
    (see Sharp edges — that section is the one part of this pane with a
    real form in it, and it is not what this card is about).
 3. Snapshot the hub's session set, so "nothing spawned" is a comparison
-   rather than a feeling:
-   ```bash
-   curl -s -H "Authorization: Bearer $TOKEN" "$HUB/api/tree" \
-     | jq -c '[.. | objects | .ref? // empty] | unique'
-   ```
+   rather than a feeling. On the authenticated `/rpc` AppWire connection,
+   read the `manifest`, page through every non-empty global section and
+   project catalog until `remaining` is zero, read `pin_catalog` and every
+   non-empty `pin_section` through their remaining pages, then read each
+   returned project resource and page each `current`, `recent`, and
+   `archived` tier through its `remaining` pages with `project_page`. Collect
+   the refs from every response and save the resulting set for comparison
+   after the picker interaction.
 4. Open the picker and pick with Enter. The desktop Model field's trigger
    is the only VISIBLE button on the page carrying the screen-reader
    text `— change model`; assert that before clicking it. The filter on

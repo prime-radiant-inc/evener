@@ -2,6 +2,7 @@ package appwire
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 )
 
@@ -33,6 +34,7 @@ const (
 	MethodThreadClear                 = "thread/clear"
 	MethodThreadModelSet              = "thread/model/set"
 	MethodThreadReasoningEffortSet    = "thread/reasoning-effort/set"
+	MethodThreadVisionModelSet        = "thread/vision-model/set"
 	MethodThreadCompactStart          = "thread/compact/start"
 	MethodThreadShutdown              = "thread/shutdown"
 	MethodTurnStart                   = "turn/start"
@@ -50,8 +52,17 @@ const (
 	MethodEvenerThreadTranscriptsList = "evener/thread/transcripts/list"
 	MethodEvenerSubagentPreview       = "evener/subagentPreview"
 	MethodEvenerPathsComplete         = "evener/paths/complete"
+	MethodEvenerDirsCreate            = "evener/dirs/create"
 	MethodEvenerProjectsRecent        = "evener/projects/recent"
 	MethodEvenerPathValidate          = "evener/path/validate"
+	MethodEvenerGitHead               = "evener/git/head"
+	MethodEvenerMobilePairing         = "evener/mobile/pairing"
+	MethodEvenerNavigationRead        = "evener/navigation/read"
+	MethodEvenerFavoriteSet           = "evener/favorite/set"
+	MethodEvenerArchiveSet            = "evener/archive/set"
+	MethodEvenerProjectDelete         = "evener/project/delete"
+	MethodEvenerSessionDelete         = "evener/session/delete"
+	MethodEvenerSearch                = "evener/search"
 	MethodEvenerHarnessesList         = "evener/harnesses/list"
 	MethodEvenerUpgrade               = "evener/upgrade"
 	MethodEvenerAuthStatus            = "evener/auth/status"
@@ -75,6 +86,7 @@ const (
 	MethodEvenerInstanceRemove        = "evener/instance/remove"
 	MethodEvenerInstanceSetDefault    = "evener/instance/setDefault"
 	MethodEvenerPluginCheckNow        = "evener/plugin/checkNow"
+	MethodEvenerPluginPreview         = "evener/plugin/preview"
 	MethodEvenerMarketplaceList       = "evener/marketplace/list"
 	MethodEvenerMarketplaceAdd        = "evener/marketplace/add"
 	MethodEvenerMarketplaceRemove     = "evener/marketplace/remove"
@@ -112,29 +124,33 @@ const (
 	// NotifyThreadReasoningEffortChanged pushes a mid-session reasoning-effort
 	// change. See ThreadReasoningEffortChangedParams.
 	NotifyThreadReasoningEffortChanged = "thread/reasoning-effort/changed"
-	NotifyTurnStarted                  = "turn/started"
-	NotifyTurnCompleted                = "turn/completed"
-	NotifyItemStarted                  = "item/started"
-	NotifyItemCompleted                = "item/completed"
-	NotifyAgentMessageDelta            = "item/agentMessage/delta"
-	NotifyAgentMessageReset            = "item/agentMessage/reset"
-	NotifyReasoningSummaryDelta        = "item/reasoning/summaryTextDelta"
-	NotifyToolOutputDelta              = "item/toolOutput/delta"
-	NotifyWarning                      = "warning"
-	NotifyEvenerContextPressure        = "evener/thread/contextPressure/updated"
-	NotifyEvenerThreadModelRetry       = "evener/thread/modelRetry"
-	NotifyEvenerThreadResync           = "evener/thread/resync"
-	NotifyEvenerTaskUpdated            = "evener/task/updated"
-	NotifyEvenerSteeringInjected       = "evener/steering/injected"
-	NotifyEvenerJobStarted             = "evener/job/started"
-	NotifyEvenerJobFinished            = "evener/job/finished"
-	NotifyEvenerDelegateUpdated        = "evener/delegate/updated"
-	NotifyEvenerJobsTreeUpdated        = "evener/jobs/treeUpdated"
-	NotifyEvenerAuthUpdated            = "evener/auth/updated"
-	NotifyEvenerLaunchUpdated          = "evener/launch/updated"
-	NotifyEvenerAttentionChanged       = "evener/attention/changed"
-	NotifyEvenerMarketplaceUpdated     = "evener/marketplace/updated"
-	NotifyEvenerPluginUpdated          = "evener/plugin/updated"
+	// NotifyThreadVisionModelChanged pushes a mid-session vision-model change.
+	// See ThreadVisionModelChangedParams.
+	NotifyThreadVisionModelChanged    = "thread/vision-model/changed"
+	NotifyTurnStarted                 = "turn/started"
+	NotifyTurnCompleted               = "turn/completed"
+	NotifyItemStarted                 = "item/started"
+	NotifyItemCompleted               = "item/completed"
+	NotifyAgentMessageDelta           = "item/agentMessage/delta"
+	NotifyAgentMessageReset           = "item/agentMessage/reset"
+	NotifyReasoningSummaryDelta       = "item/reasoning/summaryTextDelta"
+	NotifyToolOutputDelta             = "item/toolOutput/delta"
+	NotifyWarning                     = "warning"
+	NotifyEvenerContextPressure       = "evener/thread/contextPressure/updated"
+	NotifyEvenerThreadModelRetry      = "evener/thread/modelRetry"
+	NotifyEvenerThreadResync          = "evener/thread/resync"
+	NotifyEvenerTaskUpdated           = "evener/task/updated"
+	NotifyEvenerSteeringInjected      = "evener/steering/injected"
+	NotifyEvenerJobStarted            = "evener/job/started"
+	NotifyEvenerJobFinished           = "evener/job/finished"
+	NotifyEvenerDelegateUpdated       = "evener/delegate/updated"
+	NotifyEvenerJobsTreeUpdated       = "evener/jobs/treeUpdated"
+	NotifyEvenerAuthUpdated           = "evener/auth/updated"
+	NotifyEvenerLaunchUpdated         = "evener/launch/updated"
+	NotifyEvenerAttentionChanged      = "evener/attention/changed"
+	NotifyEvenerNavigationInvalidated = "evener/navigation/invalidated"
+	NotifyEvenerMarketplaceUpdated    = "evener/marketplace/updated"
+	NotifyEvenerPluginUpdated         = "evener/plugin/updated"
 	// NotifyEvenerSandboxEscalationRequested pushes a harness-raised, human-gated
 	// sandbox-exemption approval card to the client (M7). The tool-exec goroutine
 	// blocks until the client answers with MethodEvenerSandboxEscalationResolve.
@@ -146,11 +162,6 @@ const (
 	// card. Emitted exactly once per escalation, from the convergence point in
 	// agent/session_escalation.go's escalateOnSandboxDenial.
 	NotifyEvenerSandboxEscalationResolved = "evener/sandbox/escalation/resolved"
-	// NotifyEvenerTreeChanged pushes a hint that tree-relevant state changed
-	// (roster delta, past-index change, or an archive/favorite/rename/
-	// project-delete mutation) so the web sidebar can refetch /api/tree
-	// instead of polling. Hub-originated; never sent by daemons.
-	NotifyEvenerTreeChanged = "evener/tree/changed"
 )
 
 const (
@@ -187,10 +198,186 @@ type Capabilities struct {
 }
 
 type InitializeResponse struct {
-	ServerInfo      ServerInfo `json:"serverInfo"`
-	ProtocolVersion string     `json:"protocolVersion"`
-	SourceID        string     `json:"sourceId"`
-	Features        FeatureSet `json:"features"`
+	ServerInfo      ServerInfo            `json:"serverInfo"`
+	ProtocolVersion string                `json:"protocolVersion"`
+	SourceID        string                `json:"sourceId"`
+	Features        FeatureSet            `json:"features"`
+	Navigation      *NavigationCapability `json:"navigation,omitempty"`
+}
+
+// NavigationCapability advertises the version and current ordered AppWire
+// invalidation stream for the hub's navigation resources.
+type NavigationCapability struct {
+	Version      int    `json:"version"`
+	GenerationID string `json:"generationId"`
+	Sequence     uint64 `json:"sequence"`
+}
+
+// NavigationReadParams selects one bounded hub navigation resource. Offset
+// and Limit are pointers so an explicit zero remains distinguishable from an
+// omitted page parameter on the wire.
+type NavigationReadParams struct {
+	Resource   string  `json:"resource"`
+	Section    string  `json:"section,omitempty"`
+	SectionID  string  `json:"sectionId,omitempty"`
+	Catalog    string  `json:"catalog,omitempty"`
+	ProjectKey string  `json:"projectKey,omitempty"`
+	Tier       string  `json:"tier,omitempty"`
+	Ref        string  `json:"ref,omitempty"`
+	Offset     *uint32 `json:"offset,omitempty"`
+	Limit      *uint32 `json:"limit,omitempty"`
+	ETag       string  `json:"etag,omitempty"`
+}
+
+// NavigationReadResponse carries one revisioned navigation resource. Data is
+// raw JSON because the resource discriminator selects among several existing
+// projection shapes.
+type NavigationReadResponse struct {
+	Status       string          `json:"status"`
+	GenerationID string          `json:"generationId"`
+	Revision     uint64          `json:"revision"`
+	ETag         string          `json:"etag"`
+	Data         json.RawMessage `json:"data,omitempty"`
+}
+
+// FavoriteSetParams selects the project favorite decision to persist. Kind is
+// retained so the typed method preserves the explicit rejection for the
+// obsolete session-favorite request shape.
+type FavoriteSetParams struct {
+	Kind      string `json:"kind"`
+	ID        string `json:"id"`
+	Favorited bool   `json:"favorited"`
+}
+
+// FavoriteSetResponse acknowledges the committed favorite decision and gives
+// clients the exact navigation targets to converge before the invalidation
+// notification arrives.
+type FavoriteSetResponse struct {
+	OK         bool               `json:"ok"`
+	Navigation NavigationMutation `json:"navigation"`
+}
+
+// NavigationMutation is returned by hub-owned mutations after navigation
+// state has committed, so clients can converge before the matching AppWire
+// event. Targets is intentionally a plain slice so existing hubapi callers
+// can assign their named NavigationArray values to it.
+type NavigationMutation struct {
+	GenerationID string                         `json:"generation_id"` //nolint:tagliatelle // wire field uses the established snake_case name
+	Targets      []NavigationInvalidationTarget `json:"targets"`
+}
+
+// MarshalJSON keeps the navigation wire contract's arrays non-null even for a
+// zero-value mutation.
+func (mutation NavigationMutation) MarshalJSON() ([]byte, error) {
+	targets := mutation.Targets
+	if targets == nil {
+		targets = []NavigationInvalidationTarget{}
+	}
+	return json.Marshal(struct {
+		GenerationID string                         `json:"generation_id"` //nolint:tagliatelle // wire field uses the established snake_case name
+		Targets      []NavigationInvalidationTarget `json:"targets"`
+	}{GenerationID: mutation.GenerationID, Targets: targets})
+}
+
+// ArchiveTargetKind identifies the hub-owned object whose explicit archive
+// decision is being changed.
+type ArchiveTargetKind string
+
+const (
+	ArchiveTargetSession ArchiveTargetKind = "session"
+	ArchiveTargetProject ArchiveTargetKind = "project"
+)
+
+// ArchiveParams sets or clears an explicit archive decision. Project targets
+// must include the working directory used to resolve and verify their
+// canonical project ID; session targets omit it.
+type ArchiveParams struct {
+	Kind       ArchiveTargetKind `json:"kind"`
+	ID         string            `json:"id"`
+	WorkingDir string            `json:"workingDir,omitempty"`
+	Archived   bool              `json:"archived"`
+}
+
+// ArchiveResponse confirms the durable decision and returns the navigation
+// receipt committed by the same refresh that publishes its invalidation.
+type ArchiveResponse struct {
+	OK         bool               `json:"ok"`
+	Navigation NavigationMutation `json:"navigation"`
+}
+
+// ProjectDeleteParams identifies the exact local project to delete. WorkingDir
+// is resolved independently and must produce Key before any destructive work.
+type ProjectDeleteParams struct {
+	Key        string `json:"key"`
+	WorkingDir string `json:"workingDir"`
+}
+
+// ProjectDeleteSkip records one session that a project deletion could not own
+// or remove without weakening its live-session and deletion-fence protections.
+type ProjectDeleteSkip struct {
+	ID     string `json:"id"`
+	Reason string `json:"reason"`
+}
+
+// ProjectDeleteResponse reports exactly which project sessions were removed or
+// skipped and the navigation mutation committed for the resulting tree.
+type ProjectDeleteResponse struct {
+	Deleted    []string            `json:"deleted"`
+	Skipped    []ProjectDeleteSkip `json:"skipped"`
+	Navigation NavigationMutation  `json:"navigation"`
+}
+
+// ProjectDeleteConflictData preserves the live-session details returned when
+// a whole-project delete refuses to begin.
+type ProjectDeleteConflictData struct {
+	ErrorData
+	Live []string `json:"live"`
+}
+
+// SessionDeleteParams selects one local session by its qualified AppWire ref.
+type SessionDeleteParams struct {
+	Ref string `json:"ref"`
+}
+
+// DeletionSkip reports a target that could not be deleted without falsely
+// presenting it as deleted. Live and concurrently reserved sessions use this
+// completed response path rather than a wire error.
+type DeletionSkip struct {
+	ID     string `json:"id"`
+	Reason string `json:"reason"`
+}
+
+// SessionDeleteResponse reports the committed single-session deletion outcome
+// and the navigation mutation clients must converge before clearing overlays.
+type SessionDeleteResponse struct {
+	Deleted    []string           `json:"deleted"`
+	Skipped    []DeletionSkip     `json:"skipped"`
+	Navigation NavigationMutation `json:"navigation"`
+}
+
+// SearchParams selects matching live and past sessions for the hub command
+// palette. An empty query returns the most recent past sessions and all live
+// sessions, matching the palette's initial result set.
+type SearchParams struct {
+	Query string `json:"query,omitempty"`
+}
+
+// SearchResult is one session hit from the hub's live or past search index.
+// Ref is the qualified session reference that clients use to open the hit.
+type SearchResult struct {
+	ID      string `json:"id"`
+	Title   string `json:"title"`
+	Project string `json:"project"`
+	State   string `json:"state"`
+	Age     string `json:"age"`
+	Ref     string `json:"ref"`
+}
+
+// SearchResponse groups matching live sessions separately from persisted
+// sessions so the command palette can render its two result sections.
+type SearchResponse struct {
+	Live []SearchResult `json:"live"`
+	Past []SearchResult `json:"past"`
 }
 
 type ServerInfo struct {
@@ -199,18 +386,19 @@ type ServerInfo struct {
 }
 
 type FeatureSet struct {
-	ThreadList        bool `json:"threadList"`
-	ThreadTurnsList   bool `json:"threadTurnsList"`
-	TurnStart         bool `json:"turnStart"`
-	TurnSteer         bool `json:"turnSteer"`
-	ThreadClear       bool `json:"threadClear"`
-	ThreadShutdown    bool `json:"threadShutdown"`
-	ForkFromTurn      bool `json:"forkFromTurn"`
-	Tasks             bool `json:"tasks"`
-	TranscriptList    bool `json:"transcriptList"`
-	ModelList         bool `json:"modelList"`
-	DirectoryComplete bool `json:"directoryComplete"`
-	Auth              bool `json:"auth"`
+	ThreadList                bool `json:"threadList"`
+	ThreadTurnsList           bool `json:"threadTurnsList"`
+	TurnStart                 bool `json:"turnStart"`
+	TurnSteer                 bool `json:"turnSteer"`
+	ThreadClear               bool `json:"threadClear"`
+	ThreadShutdown            bool `json:"threadShutdown"`
+	ForkFromTurn              bool `json:"forkFromTurn"`
+	Tasks                     bool `json:"tasks"`
+	TranscriptList            bool `json:"transcriptList"`
+	ModelList                 bool `json:"modelList"`
+	DirectoryComplete         bool `json:"directoryComplete"`
+	Auth                      bool `json:"auth"`
+	TranscriptDisplaySettings bool `json:"transcriptDisplaySettings,omitempty"`
 }
 
 type Thread struct {
@@ -366,6 +554,11 @@ type EvenerThread struct {
 	ReasoningEffort       string   `json:"reasoningEffort,omitempty"`
 	ReasoningEffortLevels []string `json:"reasoningEffortLevels,omitempty"`
 	SupportsReasoning     bool     `json:"supportsReasoning,omitempty"`
+	// VisionModel is the session's vision side-channel setting: "" describes
+	// with the session model, "off" disables the side-channel, anything else is
+	// a model ref. Snapshot-only like the effort fields beside it; live updates
+	// arrive as thread/vision-model/changed.
+	VisionModel string `json:"visionModel,omitempty"`
 }
 
 // GoalState is the wire representation of a session's /goal. Status is the
@@ -501,6 +694,9 @@ type ThreadCapabilities struct {
 	ForkFromTurn bool `json:"forkFromTurn"`
 	Shutdown     bool `json:"shutdown"`
 	ChangeModel  bool `json:"changeModel"`
+	// ChangeVisionModel advertises support for thread/vision-model/set. True for
+	// a live evener session whose daemon wires a vision-model hook.
+	ChangeVisionModel bool `json:"changeVisionModel"`
 	// Queue advertises support for turn/queue (kata 111a). True when a turn
 	// is currently in flight and the session can accept enqueued user
 	// messages for processing after the active turn completes.
@@ -525,6 +721,31 @@ type EvenerDiagnostics struct {
 	Delegates []EvenerDelegateInfo  `json:"delegates,omitempty"`
 	TurnSlots *EvenerTurnSlots      `json:"turnSlots,omitempty"`
 	Agents    []string              `json:"agents,omitempty"`
+}
+
+// MarshalJSON preserves an explicit empty plugin inventory while keeping a
+// nil inventory absent for old or unwired sources that cannot report it.
+func (d EvenerDiagnostics) MarshalJSON() ([]byte, error) {
+	type alias EvenerDiagnostics
+	a := alias(d)
+	a.Plugins = nil
+	raw, err := json.Marshal(a)
+	if err != nil {
+		return nil, err
+	}
+	if d.Plugins == nil {
+		return raw, nil
+	}
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &fields); err != nil {
+		return nil, err
+	}
+	plugins, err := json.Marshal(d.Plugins)
+	if err != nil {
+		return nil, err
+	}
+	fields["plugins"] = plugins
+	return json.Marshal(fields)
 }
 
 type EvenerToolInfo struct {
@@ -1264,6 +1485,23 @@ type ThreadReasoningEffortSetParams struct {
 	ReasoningEffort string `json:"reasoningEffort"`
 }
 
+// ThreadVisionModelSetParams sets the vision side-channel routing on a running
+// session. VisionModel carries the whole setting: "" describes with the
+// session's active model, "off" disables the side-channel, and any other value
+// is a "model" or "provider/model" ref — a single string because a
+// provider/model split cannot express the first two states.
+type ThreadVisionModelSetParams struct {
+	Ref         string `json:"ref"`
+	VisionModel string `json:"visionModel"`
+}
+
+// ThreadVisionModelChangedParams reports a mid-session vision-model change.
+type ThreadVisionModelChangedParams struct {
+	ThreadID    string `json:"threadId"`
+	Ref         string `json:"ref"`
+	VisionModel string `json:"visionModel"`
+}
+
 type TaskListParams struct {
 	Ref string `json:"ref,omitempty"`
 }
@@ -1467,6 +1705,17 @@ type PathsCompleteResponse struct {
 	Data []string `json:"data"`
 }
 
+// DirsCreateParams requests creation of a working directory and any missing
+// parents for a Spawn preflight.
+type DirsCreateParams struct {
+	Path string `json:"path"`
+}
+
+type DirsCreateResponse struct {
+	Path    string `json:"path"`
+	Created bool   `json:"created"`
+}
+
 // ProjectsRecentParams selects how many recent project directories the hub
 // returns. Limit <= 0 means the hub default (the session creation flows'
 // 15-option dropdown cap).
@@ -1489,6 +1738,30 @@ type PathValidateResponse struct {
 	Path  string `json:"path"`
 	Valid bool   `json:"valid"`
 	Error string `json:"error,omitempty"`
+}
+
+// GitHeadParams selects the working directory whose git HEAD should be read.
+type GitHeadParams struct {
+	CWD string `json:"cwd"`
+}
+
+// GitHeadResponse reports a branch name, detached short SHA, or an empty
+// string when the working directory has no readable git HEAD.
+type GitHeadResponse struct {
+	Head string `json:"head"`
+}
+
+// MobilePairingParams supplies the authenticated web application's explicit
+// origin. The hub validates it before embedding its auth token in a pairing
+// URL, unless configured MobileBaseURL takes precedence.
+type MobilePairingParams struct {
+	Origin string `json:"origin"`
+}
+
+// MobilePairingResponse carries the reusable /auth bootstrap URL scanned by
+// the phone.
+type MobilePairingResponse struct {
+	AuthURL string `json:"authUrl"`
 }
 
 type HarnessListParams struct{}
@@ -1601,6 +1874,20 @@ type ModelListParams struct {
 type ModelDescriptor struct {
 	Provider string `json:"provider"`
 	Model    string `json:"model"`
+	// The remaining fields are optional because daemon and remote-source model
+	// lists may know only the launchable identity. Hub responses fill these from
+	// the embedded catalog when available. Pointer scalars preserve an explicit
+	// false/zero from a live provider instead of treating it as unknown.
+	DisplayName           string   `json:"displayName,omitempty"`
+	ContextWindow         *int     `json:"contextWindow,omitempty"`
+	SupportsTools         *bool    `json:"supportsTools,omitempty"`
+	SupportsVision        *bool    `json:"supportsVision,omitempty"`
+	MaxOutputTokens       *int     `json:"maxOutputTokens,omitempty"`
+	SupportsWebSearch     *bool    `json:"supportsWebSearch,omitempty"`
+	SupportsReasoning     *bool    `json:"supportsReasoning,omitempty"`
+	InputCostPerMillion   *float64 `json:"inputCostPerMillion,omitempty"`
+	OutputCostPerMillion  *float64 `json:"outputCostPerMillion,omitempty"`
+	ReasoningEffortLevels []string `json:"reasoningEffortLevels,omitempty"`
 }
 
 type ModelListDiagnostic struct {
@@ -1716,7 +2003,9 @@ type AgentMessageResetParams struct {
 // AttemptCap is the honest denominator to render instead of MaxAttempts once
 // it differs: the full policy budget until the current retry group has a
 // consume-phase failure, then the early-stop bound that will actually govern
-// it. GroupElapsedMS is wall-clock time since the retry group's first
+// it. Both are zero when a rate limit is being retried against a wall-clock
+// budget instead of an attempt count, so clients should render the bare attempt
+// number. GroupElapsedMS is wall-clock time since the retry group's first
 // attempt (one model call), so a client can render how long the call has
 // been running.
 type ThreadModelRetryParams struct {
@@ -1859,6 +2148,162 @@ type EvenerJobParams struct {
 type EvenerAuthUpdatedParams struct {
 	Provider     string `json:"provider,omitempty"`
 	ActiveSource string `json:"activeSource,omitempty"`
+}
+
+// NavigationTargetKind identifies one exact invalidation target variant.
+type NavigationTargetKind string
+
+const (
+	NavigationTargetManifest          NavigationTargetKind = "manifest"
+	NavigationTargetSection           NavigationTargetKind = "section"
+	NavigationTargetPinCatalog        NavigationTargetKind = "pin_catalog"
+	NavigationTargetPinSection        NavigationTargetKind = "pin_section"
+	NavigationTargetCatalog           NavigationTargetKind = "catalog"
+	NavigationTargetProject           NavigationTargetKind = "project"
+	NavigationTargetAllLoadedProjects NavigationTargetKind = "all_loaded_projects"
+)
+
+// AllNavigationTargetKinds is the complete wire-level target-kind set.
+var AllNavigationTargetKinds = []NavigationTargetKind{
+	NavigationTargetManifest,
+	NavigationTargetSection,
+	NavigationTargetPinCatalog,
+	NavigationTargetPinSection,
+	NavigationTargetCatalog,
+	NavigationTargetProject,
+	NavigationTargetAllLoadedProjects,
+}
+
+// NavigationInvalidationTarget identifies one loaded navigation resource that
+// clients must revalidate. Revision is omitted only by the wildcard target.
+type NavigationInvalidationTarget struct {
+	Kind       NavigationTargetKind `json:"kind"`
+	Section    string               `json:"section,omitempty"`
+	SectionID  string               `json:"sectionId,omitempty"`
+	Catalog    string               `json:"catalog,omitempty"`
+	ProjectKey string               `json:"projectKey,omitempty"`
+	Revision   uint64               `json:"revision,omitempty"`
+}
+
+// MarshalJSON emits only the fields valid for target's kind. Every scoped
+// target includes a revision, including revision zero; the wildcard has no
+// revision or selector.
+func (target NavigationInvalidationTarget) MarshalJSON() ([]byte, error) {
+	if err := target.validate(false); err != nil {
+		return nil, err
+	}
+	if target.Kind == NavigationTargetAllLoadedProjects {
+		return json.Marshal(struct {
+			Kind NavigationTargetKind `json:"kind"`
+		}{Kind: target.Kind})
+	}
+	return json.Marshal(struct {
+		Kind       NavigationTargetKind `json:"kind"`
+		Section    string               `json:"section,omitempty"`
+		SectionID  string               `json:"sectionId,omitempty"`
+		Catalog    string               `json:"catalog,omitempty"`
+		ProjectKey string               `json:"projectKey,omitempty"`
+		Revision   uint64               `json:"revision"`
+	}{
+		Kind:       target.Kind,
+		Section:    target.Section,
+		SectionID:  target.SectionID,
+		Catalog:    target.Catalog,
+		ProjectKey: target.ProjectKey,
+		Revision:   target.Revision,
+	})
+}
+
+// UnmarshalJSON rejects unknown fields and every invalid target variant so an
+// incomplete or widened invalidation cannot silently reach a client.
+func (target *NavigationInvalidationTarget) UnmarshalJSON(data []byte) error {
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(data, &fields); err != nil {
+		return err
+	}
+	if fields == nil {
+		return errors.New("navigation invalidation target must be an object")
+	}
+	for name := range fields {
+		switch name {
+		case "kind", "section", "sectionId", "catalog", "projectKey", "revision":
+		default:
+			return fmt.Errorf("navigation invalidation target has unknown field %q", name)
+		}
+	}
+	var decoded struct {
+		Kind       NavigationTargetKind `json:"kind"`
+		Section    string               `json:"section"`
+		SectionID  string               `json:"sectionId"`
+		Catalog    string               `json:"catalog"`
+		ProjectKey string               `json:"projectKey"`
+		Revision   uint64               `json:"revision"`
+	}
+	if err := json.Unmarshal(data, &decoded); err != nil {
+		return err
+	}
+	_, hasRevision := fields["revision"]
+	if decoded.Kind == NavigationTargetAllLoadedProjects && hasRevision {
+		return fmt.Errorf("navigation target %q permits no selector or revision", decoded.Kind)
+	}
+	candidate := NavigationInvalidationTarget{
+		Kind:       decoded.Kind,
+		Section:    decoded.Section,
+		SectionID:  decoded.SectionID,
+		Catalog:    decoded.Catalog,
+		ProjectKey: decoded.ProjectKey,
+		Revision:   decoded.Revision,
+	}
+	if err := candidate.validate(!hasRevision); err != nil {
+		return err
+	}
+	*target = candidate
+	return nil
+}
+
+func (target NavigationInvalidationTarget) validate(revisionMissing bool) error {
+	if target.Kind == NavigationTargetAllLoadedProjects {
+		if target.Section != "" || target.SectionID != "" || target.Catalog != "" || target.ProjectKey != "" || target.Revision != 0 {
+			return fmt.Errorf("navigation target %q permits no selector or revision", target.Kind)
+		}
+		return nil
+	}
+	if revisionMissing {
+		return fmt.Errorf("navigation target %q requires revision", target.Kind)
+	}
+	switch target.Kind {
+	case NavigationTargetManifest, NavigationTargetPinCatalog:
+		if target.Section != "" || target.SectionID != "" || target.Catalog != "" || target.ProjectKey != "" {
+			return fmt.Errorf("navigation target %q permits no selector", target.Kind)
+		}
+	case NavigationTargetSection:
+		if target.Section == "" || target.SectionID != "" || target.Catalog != "" || target.ProjectKey != "" {
+			return fmt.Errorf("navigation target %q requires only section", target.Kind)
+		}
+	case NavigationTargetPinSection:
+		if target.Section != "" || target.SectionID == "" || target.Catalog != "" || target.ProjectKey != "" {
+			return fmt.Errorf("navigation target %q requires only sectionId", target.Kind)
+		}
+	case NavigationTargetCatalog:
+		if target.Section != "" || target.SectionID != "" || target.Catalog == "" || target.ProjectKey != "" {
+			return fmt.Errorf("navigation target %q requires only catalog", target.Kind)
+		}
+	case NavigationTargetProject:
+		if target.Section != "" || target.SectionID != "" || target.Catalog != "" || target.ProjectKey == "" {
+			return fmt.Errorf("navigation target %q requires only projectKey", target.Kind)
+		}
+	default:
+		return fmt.Errorf("unknown navigation target kind %q", target.Kind)
+	}
+	return nil
+}
+
+// NavigationInvalidatedPayload is the evener/navigation/invalidated
+// notification body. Sequence orders notifications within GenerationID.
+type NavigationInvalidatedPayload struct {
+	GenerationID string                         `json:"generationId"`
+	Sequence     uint64                         `json:"sequence"`
+	Targets      []NavigationInvalidationTarget `json:"targets"`
 }
 
 // EvenerLaunchUpdatedParams is the params shape for the evener/launch/updated
@@ -2061,6 +2506,7 @@ type LaunchConfigLayer struct {
 	SystemPromptAppendText      string            `json:"systemPromptAppendText,omitempty"`
 	SystemPromptAppend          []string          `json:"systemPromptAppend,omitempty"`
 	ModelFallbacks              []string          `json:"modelFallbacks,omitempty"`
+	EnabledPlugins              *[]string         `json:"enabledPlugins,omitempty"`
 	MCPs                        []MCPServerSpec   `json:"mcps,omitempty"`
 	Env                         map[string]string `json:"env,omitempty"`
 	Verbose                     *bool             `json:"verbose,omitempty"`
@@ -2158,6 +2604,48 @@ type LaunchConfigTrustRepoParams struct {
 type PluginCheckNowResponse struct {
 	Updated []string `json:"updated,omitempty"`
 	Errors  []string `json:"errors,omitempty"`
+}
+
+// PluginPreviewParams requests the side-effect-free launch plugin inventory
+// for a working directory and optional per-launch overrides.
+type PluginPreviewParams struct {
+	CWD             string             `json:"cwd"`
+	LaunchOverrides *LaunchConfigLayer `json:"launchOverrides,omitempty"`
+}
+
+// PluginPreviewResponse is the launch plugin inventory and structured
+// diagnostics returned by evener/plugin/preview.
+type PluginPreviewResponse struct {
+	Plugins         []PluginLaunchCandidate `json:"plugins"`
+	Diagnostics     []PluginDiagnostic      `json:"diagnostics,omitempty"`
+	SelectionErrors []PluginSelectionError  `json:"selectionErrors,omitempty"`
+}
+
+type PluginLaunchCandidate struct {
+	Name         string `json:"name"`
+	Version      string `json:"version,omitempty"`
+	Description  string `json:"description,omitempty"`
+	Source       string `json:"source"`
+	Marketplace  string `json:"marketplace,omitempty"`
+	Path         string `json:"path,omitempty"`
+	Selected     bool   `json:"selected"`
+	SkillCount   int    `json:"skillCount"`
+	AgentCount   int    `json:"agentCount"`
+	CommandCount int    `json:"commandCount"`
+	HookCount    int    `json:"hookCount"`
+	MCPCount     int    `json:"mcpCount"`
+}
+
+type PluginDiagnostic struct {
+	Name    string `json:"name,omitempty"`
+	Path    string `json:"path,omitempty"`
+	Source  string `json:"source,omitempty"`
+	Message string `json:"message"`
+}
+
+type PluginSelectionError struct {
+	Name   string `json:"name"`
+	Reason string `json:"reason"`
 }
 
 // MarketplaceSourceInput is the wire shape of a marketplace source. Kind

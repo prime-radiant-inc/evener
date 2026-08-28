@@ -118,3 +118,71 @@ describe("save", () => {
     await waitFor(() => expect(screen.getByText("post-save warning")).toBeTruthy());
   });
 });
+
+describe("resolved-default labels", () => {
+  // A boolean field is the readable case: its unset marker is the generic
+  // "(default)", which the resolve's effective layer turns into
+  // "true (default)" / "false (default)".
+  const BOOL_SCHEMA: LaunchOptionSchemaResponse = {
+    options: [
+      {
+        field: "sandbox_net",
+        wireField: "sandboxNet",
+        label: "Sandbox network egress",
+        group: "Sandbox",
+        kind: "boolean",
+        perLaunch: true,
+        defaultableLayers: ["global", "project"],
+      },
+    ],
+  };
+
+  function boolOptionLabels(): (string | null)[] {
+    const select = screen.getByLabelText("Sandbox network egress") as HTMLSelectElement;
+    return Array.from(select.options).map((o) => o.textContent);
+  }
+
+  test("an unset field names the effective layer's value once the initial resolve lands", async () => {
+    const fake = connectFakeClient();
+    fake.on("evener/launch/schema", () => BOOL_SCHEMA);
+    fake.on("evener/launch/getLayer", () => ({}));
+    fake.on("evener/launch/resolve", () => ({
+      effective: { sandboxNet: true },
+      layers: {},
+      provenance: {},
+    }));
+    render(<LaunchServerSection sectionId="launch-evener" />);
+
+    await screen.findByLabelText("Sandbox network egress");
+    await waitFor(() => expect(boolOptionLabels()).toEqual(["true (default)", "true", "false"]));
+  });
+
+  test("a failed resolve leaves the plain (default) marker", async () => {
+    const fake = connectFakeClient();
+    fake.on("evener/launch/schema", () => BOOL_SCHEMA);
+    fake.on("evener/launch/getLayer", () => ({}));
+    fake.on("evener/launch/resolve", () => {
+      throw new Error("resolve failed");
+    });
+    render(<LaunchServerSection sectionId="launch-evener" />);
+
+    await screen.findByLabelText("Sandbox network egress");
+    expect(boolOptionLabels()).toEqual(["(default)", "true", "false"]);
+  });
+
+  test("saving refreshes the labels from setLayer's own returned resolved config", async () => {
+    const fake = connectFakeClient();
+    fake.on("evener/launch/schema", () => BOOL_SCHEMA);
+    fake.on("evener/launch/getLayer", () => ({}));
+    fake.on("evener/launch/resolve", () => ({ effective: { sandboxNet: true }, layers: {}, provenance: {} }));
+    fake.on("evener/launch/setLayer", () => ({ effective: { sandboxNet: false }, layers: {}, provenance: {} }));
+    render(<LaunchServerSection sectionId="launch-evener" />);
+
+    await screen.findByLabelText("Sandbox network egress");
+    await waitFor(() => expect(boolOptionLabels()).toEqual(["true (default)", "true", "false"]));
+
+    const user = userEvent.setup();
+    await user.click(screen.getByRole("button", { name: "Save launch defaults" }));
+    await waitFor(() => expect(boolOptionLabels()).toEqual(["false (default)", "true", "false"]));
+  });
+});

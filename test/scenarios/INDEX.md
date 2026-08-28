@@ -43,11 +43,6 @@ the area they exercise.
   checked alongside, since it is what makes the absence assertions mean
   anything (kata `rjc5`; replaces the retired `spawn-picker-enter-noop`
   card, kata `v0hg`).
-- `spawn-failure-ux-post-ws5.md` — the three remaining spawn-failure
-  classes (bogus model id, working dir that doesn't exist, harness
-  binary the hub can't execute) come back from `POST /api/spawn` as
-  legible errors rather than buried-stderr 500s. Browser-free.
-
 ## Session workspace
 
 - `tui-workspace-navigation.md` — evener tui dashboard + session
@@ -94,15 +89,16 @@ the area they exercise.
   `tmux send-keys`; verifies state transitions to `closed` and
   transcript preserves partial output (kata `9sck`; surfaced kata
   `4yvd` — palette gates on stale capabilities mid-turn).
-- `web-steer-in-idle-fails-fast.md` — verifies optimistic-rendering
-  reject path (kata wymv): clicking "send as steer" in IDLE returns
-  Unavailable; pending chip flips to .optimistic-failed with retry
-  link.
+- `web-steer-no-active-turn-guard.md` — verifies the Composer's browser
+  guard: Shift+Enter in IDLE sends no RPC, preserves the text, and shows a
+  visible `no active turn` toast. AppWire v3's idle carrier acceptance is a
+  separate invariant.
 - `web-steer-success-reconciles.md` — happy path: pending pulse
   appears on click, replaced by authoritative STEERING divider when
   the daemon's evener/steering/injected notification arrives.
-- `tui-steer-in-idle-fails-fast.md` — TUI counterpart of
-  web-steer-in-idle-fails-fast; Ctrl+S keybind in IDLE.
+- `tui-steer-in-idle-fails-fast.md` — TUI's distinct Ctrl+S/optimistic pending
+  rejection path; it does not pin the web Composer's browser guard or the
+  AppWire v3 idle carrier contract.
 - `tui-steer-success-reconciles.md` — TUI counterpart of the success
   reconcile; spinner prefix replaced by authoritative steering.
 - `lazy-transcript-loading.md` — a large transcript cold-loads only the
@@ -168,7 +164,7 @@ the Past index's Recent list.
   scopes the request to.
 - `model-picker-badges-match-catalog-data.md` — the rendered capability
   badges (tools / vision / reasoning / web-search / context window /
-  max output / price) match both `/api/models?diagnostics=1` and the
+  max output / price) match the typed AppWire `model/list` response and the
   embedded catalog's raw LiteLLM data; found and fixed a real
   spawn-picker data-source bug.
 - `model-picker-dated-snapshot-sorts-last.md` — inside a provider group
@@ -302,8 +298,8 @@ shape (refs, snippets, scan stats, window headers, Turn numbering).
   Session B discovers Session A by content (`find({query})`), gets A's
   `transcript_ref`, and reads it to reconstruct A's work — B is never
   handed A's ref. Makes the bucket-sharing precondition explicit.
-- `transcript-subagent-audit-children-of.md` — a parent starts a delegate
-  job; `find({children_of:"<parent ref>"})` enumerates the child (kind
+- `transcript-subagent-audit-children-of.md` — a parent starts a stable
+  delegate resource; `find({children_of:"<parent ref>"})` enumerates the child (kind
   `subagent`, `parent_ref` set, no transcript opened), then an outline +
   range read judges whether the child actually ran the commands it claims
   (the delegation trust-but-verify loop).
@@ -319,21 +315,20 @@ shape (refs, snippets, scan stats, window headers, Turn numbering).
 ## Job control (CLI)
 
 - `subagent-cancel-runaway.md` — `job_stop` stops a long-running delegate
-  job, then `delegate_send` targets the delegate_id to
+  resource, then `delegate_send` targets the delegate_id to
   continue the preserved child conversation and complete a shorter follow-up.
-- `subagent-list-and-output.md` — `job_list` enumerates a delegate job and
-  `read_transcript(transcript_ref="job:<job_id>")` peeks the result twice
-  without consuming or hiding it.
+- `subagent-list-and-output.md` — `job_list` orients on a stable delegate
+  resource and `read_transcript` reads its session transcript twice without
+  consuming or hiding it.
 - `job-shell-lifecycle.md` — the shell tool's whole job-capable
   lifecycle: foreground inline result, a nonzero exit reported honestly
   rather than hidden, `mode: "background"` launch-and-return,
   `max_runtime_ms` killing a runaway into `stopped`/`run_timeout`, and
   the complete-or-handle output window.
 - `job-stop-and-children.md` — `job_stop` lands `cancelled` /
-  `stopped_by_parent` with retained output still readable (stopping
-  deletes nothing), `max_wait_ms` makes the stop call itself wait for
-  finalization, and `include_children` fells the delegate's visible
-  nested shell job too.
+  `stopped_by_parent` with retained shell output still readable (stopping
+  deletes nothing), and `max_wait_ms` makes the stop call itself wait for
+  finalization.
 - `job-list-and-recovery.md` — `job_list` as the authoritative durable
   inventory: `status[]`/`type[]` filters, newest-first ordering, the
   short-job race (a job that finished before any running-filtered list
@@ -344,10 +339,10 @@ shape (refs, snippets, scan stats, window headers, Turn numbering).
   the single parent-visible `job_id` (routing-if-live, so a confirmed
   stop rather than `not_controllable`), and its output stays readable
   after the delegate is finished.
-- `job-notification-semantics.md` — exactly one terminal notification
-  per notification-armed job (shell and delegate asserted separately),
-  the `<job-notification>` block's exact field set, and fires that land
-  mid-turn queueing to the turn boundary batched and without loss.
+- `job-notification-semantics.md` — exactly one terminal notification for
+  each notification-armed shell job, the `<job-notification>` block's exact
+  field set, and fires that land mid-turn queueing to the turn boundary
+  batched and without loss.
 - `job-restart-durability.md` — `kill -9` mid-job: restart finalizes the
   orphaned `running` record exactly once as `stopped`/`runtime_lost`
   with a stable `terminal_generation`, pre-crash output stays readable,
@@ -356,17 +351,12 @@ shape (refs, snippets, scan stats, window headers, Turn numbering).
   command failure.
 - `job-delegate-result-schema.md` — `delegate.result_schema` end to end:
   a complying result returns `structured_result_valid: true` inline and
-  again on a later `job:` transcript read, a violating one is reported honestly
-  (validity false plus a machine-readable reason, no invented result),
-  and a resumed turn inherits the original schema.
+  again from the delegate session transcript, a violating one is reported
+  honestly (validity false plus a machine-readable reason, no invented
+  result), and a resumed turn inherits the original schema.
 - `job-send-message-surface.md` — the handle split: a `job_id` handed to
   `delegate_send` is rejected with guidance toward the `delegate_id`, a
-  RUNNING delegate takes a live steer with no new job, and an IDLE one automatically starts its next job in the same conversation.
-- `job-notification-wake.md` — the proactive completion wake
-  (serve-mode ONLY, driven through the hub): a parent starts a non-blocking
-  delegate and ends its turn; when the child reaches a terminal state later,
-  Evener wakes the parent with `<job-notification ...>` and the woken model
-  reads the result from the notification excerpt.
+  RUNNING delegate takes a live steer with no new activation job, and an IDLE one automatically starts its next private run in the same conversation.
 - `job-delegate-wait-no-poll.md` — a parent that delegated its whole task
   and has no independent work ends its turn and waits for the notification
   instead of looping `job_status`; falsifies the polling-loop regression from
@@ -380,10 +370,9 @@ shape (refs, snippets, scan stats, window headers, Turn numbering).
   the OWNER-SCOPED rule (the root hears only the coordinator, never a
   worker), and the cascade stop.
 - `recursion-deaf-coordinator-drivedown.md` — the design-spec §9
-  headline: an IDLE coordinator is driven so its model gets a
-  notification turn for its workers' completions, while the root's
-  rail shows only the coordinator's terminal (owner-scoped, asserted
-  on the coordinator's own transcript).
+  headline: an IDLE coordinator is driven so its model receives direct
+  delegate notifications for its workers, while the root's rail shows
+  only the coordinator's direct delegate notification (owner-scoped).
 - `job-watch-observer-snide-thread.md` - observer commentary stays in
   the observer transcript while watch frames carry enough metadata for
   useful sidecar work.
@@ -430,12 +419,6 @@ shape (refs, snippets, scan stats, window headers, Turn numbering).
   parent-source observer gets event payloads, never a cross-session
   read (renamed from `sidecar-test-triage-output-match`, kata
   `f9gn`).
-- `sidecar-handoff-packager-job-notification.md` - handoff sidecar
-  packages a completed delegate result from a `job.notification`
-  frame, and pins the observer read grant: the delivery mints a durable
-  read on the named job, the frame names the `read_transcript` call
-  that spends it, `job_status` stays denied, and the observer's own
-  callback jobs mint nothing.
 - `sidecar-feedback-governor-communicate.md` - loop governor reports
   repeated-tool-choice risk from an explicit caller frame.
 - `sidecar-quality-auditor-communicate.md` - quality auditor flags a
@@ -468,7 +451,7 @@ cards read is produced by the `job-watch-*` cards above.
 ## Sidebar (rebuilt)
 
 Live end-to-end coverage for the rebuilt client-rendered sidebar
-(`cmd/evener-hub/assets/sidebar.js` + `/api/tree`): needs-you, favorites/Pinned,
+(`cmd/evener-hub/frontend/src/shell/rail/Rail.tsx` + `evener/navigation/read`): needs-you, favorites/Pinned,
 top-level active-project session rows, and the row menu. Each card was
 verified against a real hub + a real model turn (`openai/gpt-5.4-mini`).
 
@@ -476,20 +459,20 @@ verified against a real hub + a real model turn (`openai/gpt-5.4-mini`).
   project's session rows survive a `doResync()` triggered by live activity in
   a different project; surfaced a real (non-blocking) bug where a collapsed
   project's `aria-expanded` renders the literal string `"undefined"`.
-- `sidebar-favorite-pinned-across-reload.md` — `POST /api/favorite` is
-  reflected in `/api/tree`'s `favorites[]` and renders as a Pinned row that
+- `sidebar-favorite-pinned-across-reload.md` — the persisted pin mutation is
+  reflected in the AppWire navigation manifest/pin-section resources and
+  renders as a Pinned row that
   survives a hard reload; confirms no `localStorage` favorite cache exists.
-- `sidebar-project-delete-full-cycle.md` — `POST /api/project/delete`'s full
-  state machine: path-mismatch 400, live-session 409 (files intact),
-  post-shutdown 200 (files removed), the open-workspace `/new` redirect, and
-  that a re-created project at the same working dir is not silently
-  archived.
+- `sidebar-project-delete-full-cycle.md` — `evener/project/delete`'s full
+  state machine: invalid path rejection, live-session conflict (files intact),
+  post-shutdown deletion (files removed), open-pane behavior, and that a
+  re-created project at the same working dir is not silently archived.
 - `sidebar-rename-live-and-ended.md` — row-menu rename on a live session
   survives its own post-POST resync and a subsequent real compaction turn
   (namer suppression via `name_source:"user"`); rename on an ended session
   edits the meta file directly with no rollback toast. Notes a possible
   follow-up bug: `/api/sessions/<id>`'s detail `title` field doesn't reflect
-  a live session's rename the way `/api/tree` and the meta file do.
+  a live session's rename the way the navigation projection and the meta file do.
 - `sidebar-archived-testruns-reachability.md` — the collapsed-by-default
   `Archived (N)` and `Test runs (N)` sections end to end: a project's full
   archive→unarchive round-trip via the row menu, and a
@@ -512,8 +495,8 @@ verified against a real hub + a real model turn (`openai/gpt-5.4-mini`).
 - `sidebar-project-order-lastactivity-feel.md` — a just-touched project
   surfaces at the top, promptly. The `LastActivity` comparator is
   already pinned by hubcore fuzz scenarios, so this card covers the
-  layer they cannot see: a completed turn propagating into `/api/tree`'s
-  memoized `Past.AllMetas()` input.
+  layer they cannot see: a completed turn propagating into the navigation
+  projection's memoized `Past.AllMetas()` input.
 
 ## Cost display & Display settings (Track C)
 

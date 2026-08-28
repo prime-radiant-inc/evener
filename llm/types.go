@@ -523,7 +523,7 @@ type RateLimitInfo struct {
 // AdapterTimeout defines granular timeout configuration for adapter-level HTTP operations.
 type AdapterTimeout struct {
 	Connect    time.Duration `json:"connect"`     // time to establish the network connection (default: 10s)
-	Request    time.Duration `json:"request"`     // whole non-stream call, or streaming response-header wait (default: 120s)
+	Request    time.Duration `json:"request"`     // whole non-stream call or streaming HTTP attempt, including body lifetime (default: 120s)
 	StreamRead time.Duration `json:"stream_read"` // max time between consecutive stream events (default: 30s)
 }
 

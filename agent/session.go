@@ -20,6 +20,7 @@ import (
 	"primeradiant.com/evener/agent/internal/hooks"
 	"primeradiant.com/evener/agent/internal/installid"
 	"primeradiant.com/evener/agent/internal/mcp"
+	"primeradiant.com/evener/agent/internal/modelavailability"
 	"primeradiant.com/evener/agent/internal/tool"
 	"primeradiant.com/evener/agent/mcpconfig"
 	"primeradiant.com/evener/agent/plugin"
@@ -64,18 +65,20 @@ func (s *Session) nextJobTreeRevision(kind events.EventKind) (string, uint64, bo
 // history, registered tools, context-management state, subagents, plugins, MCP
 // connections, and persistence settings.
 type Session struct {
-	id                     string
-	cfg                    SessionConfig
-	delegateController     *delegateTreeController
-	delegateRootSessionID  string
-	owningDelegateID       string
-	ownsDelegateController bool
-	artifactStore          artifactStore
-	ownsArtifactStore      bool
-	client                 *llm.Client
-	cheap                  *cheapmodel.Caller
-	profile                *provider.Profile
-	resolveProfile         func(ref string) (*provider.Profile, error) // cross-provider resolver; may be nil
+	id                       string
+	cfg                      SessionConfig
+	delegateController       *delegateTreeController
+	delegateRootSessionID    string
+	owningDelegateID         string
+	ownsDelegateController   bool
+	artifactStore            artifactStore
+	ownsArtifactStore        bool
+	client                   *llm.Client
+	cheap                    *cheapmodel.Caller
+	profile                  *provider.Profile
+	resolveProfile           func(ref string) (*provider.Profile, error) // cross-provider resolver; may be nil
+	delegateModelDescription string
+	modelSnapshot            *modelavailability.Snapshot
 	// lastDroppedModelFallbacks records the cfg.ModelFallbacks entries dropped
 	// by the most recent SetModel's post-switch revalidation (entries that no
 	// longer validate against the new profile). Nil until a switch drops any.
@@ -181,7 +184,8 @@ type Session struct {
 	//   flag and kickFunc callback, the naming name-state, envTracker,
 	//   envContextState, currentRoundRecorder, salvagedTurnRound, and the worktree
 	//   occupancy fields (worktreeRestoreEnv, worktreeCurrentPath,
-	//   worktreeCurrentManaged, worktreeGitVersionOK, worktreeLiveWorkStub). It
+	//   worktreeCurrentManaged, worktreeGitVersionOK, worktreeLiveWorkStub), and
+	//   detachedProcesses. It
 	//   does NOT guard reg — the tool.Registry self-synchronizes.
 	mu sync.Mutex
 
@@ -233,7 +237,21 @@ type Session struct {
 	// responseSideEffectsMu serializes a response's user-visible side-effect
 	// bundle (emit + appendTurn + counter bump) against teardown.
 	// LOCK ORDER: responseSideEffectsMu > mu (Close acquires it before mu).
-	responseSideEffectsMu         sync.Mutex
+	responseSideEffectsMu sync.Mutex
+	// drainAbandonedMu guards drainAbandonedChildren and drainGraceChildren. It is a lock of its own,
+	// not mu, because every drain walk and every drive path reads the set while
+	// holding a subagent row's lock, and mu sits above those.
+	// LOCK ORDER: drainAbandonedMu is a leaf — nothing is acquired under it.
+	drainAbandonedMu sync.Mutex
+	// drainAbandonedChildren maps a direct child SESSION id to the exact
+	// delegate generation the drain gave up waiting on. A resumed generation
+	// under the same child session must not inherit the old gate.
+	drainAbandonedChildren map[string]drainAbandonedChild
+	// drainGraceChildren holds delegates whose first grace window completed and
+	// whose second continuous-stall window is in progress. It is transient to one
+	// DrainJobTree invocation and generation-scoped for the same reason as the
+	// final abandonment record.
+	drainGraceChildren            map[string]drainGraceChild
 	toolEventsWG                  sync.WaitGroup  // in-flight ToolCallStart/End emit pairs; Close() joins before closing events
 	sendersWG                     sync.WaitGroup  // detached event emitters (subagent runs, session namer); Add happens under mu gated on closing so it happens-before Close()'s join
 	disposeWG                     sync.WaitGroup  // in-flight in-turn dispose ops (manage_worktree op=dispose); admitted via beginDispose() under mu gated on closing so the Add happens-before Close()'s join, then Close() joins before draining (spec §P1)
@@ -274,8 +292,9 @@ type Session struct {
 
 	reg *tool.Registry
 
-	steeringQueue []steeringMessage
-	followups     []string
+	steeringQueue    []steeringMessage
+	visionTurnOwners []*struct{ _ byte }
+	followups        []string
 
 	// activeProvenance is the causal provenance carried by the input currently
 	// being processed. It is stamped onto every event the turn emits, reset to
@@ -356,6 +375,21 @@ type Session struct {
 	// communicate/result tool state (transient, reset each processOneInput call)
 	comm communicateResult
 
+	// terminalCommunicateAccepted latches that a communicate with
+	// end_turn=true completed a turn while TurnEndsProcess: the model has
+	// explicitly ended the turn that ends the process. Unlike comm it is never
+	// reset — the one-shot drain and the round loop read it to refuse to
+	// resurrect a run the model already declared over (issue #329). Guarded by
+	// mu.
+	terminalCommunicateAccepted bool
+	// terminalNotificationCut is captured at the same acceptance boundary. It
+	// identifies exactly which durable terminal generations and in-memory queue
+	// entries existed before the terminal communicate, so a completion that
+	// lands before DrainJobTree enters cannot be mistaken for a leftover.
+	// Guarded by mu; queue sequence assignment is guarded separately by
+	// pendingJobNotifsMu.
+	terminalNotificationCut terminalNotificationCut
+
 	// askPending is the per-turn pending set of questions posted by ask_user
 	// calls this turn (spec §5.1): its length lets a round-boundary check tell
 	// whether the round just posted question(s). The transcript remains the
@@ -428,6 +462,10 @@ type Session struct {
 	// mutex.
 	pendingJobNotifsMu sync.Mutex
 	pendingJobNotifs   []jobNotification
+	// nextJobNotifSeq gives every queue entry a process-lifetime identity. The
+	// terminal acceptance cut snapshots this watermark while jm.mu prevents a
+	// finalizer from crossing its durable-pending/running-map boundary.
+	nextJobNotifSeq uint64
 	// notifyWakeHolds counts in-flight holdJobNotificationWake holds, and
 	// notifyWakeDeferred records that a wake was suppressed while held. Guarded
 	// by pendingJobNotifsMu.
@@ -437,6 +475,12 @@ type Session struct {
 	jobNotifyRetry     notificationRetry
 
 	jobManager *jobManager
+
+	// detachedProcesses contains processes this session explicitly launched with
+	// mode:"detached". They are not managed jobs (and must not hold the one-shot
+	// drain open), but they remain session-owned for end_turn warnings until the
+	// launcher's completion receipt closes. Guarded by mu.
+	detachedProcesses []sessionDetachedProcess
 
 	// context management
 	contextMgr *contextmgr.Manager
@@ -579,6 +623,11 @@ type Session struct {
 
 	// stuck detection
 	loopDetectionCount int // how many times loop detection has fired
+	// loopEffortEscalated records that loop detection bumped the session's
+	// reasoning effort ("Your reasoning effort has been increased"). While set,
+	// a lower per-task effort override no longer wins over the escalated
+	// configured effort — the steering message must not lie. Guarded by s.mu.
+	loopEffortEscalated bool
 
 	// transcript writer (nil when StateDir is empty, or when opening it failed)
 	transcript *transcript.Writer
@@ -640,6 +689,11 @@ type Session struct {
 	promptSourceLog      []promptSource
 }
 
+type sessionDetachedProcess struct {
+	pid  int
+	done <-chan struct{}
+}
+
 type notificationRetry struct {
 	active     bool
 	delay      time.Duration
@@ -687,11 +741,13 @@ const (
 func (s *Session) enqueueJobNotification(n jobNotification) {
 	s.pendingJobNotifsMu.Lock()
 	defer s.pendingJobNotifsMu.Unlock()
+	s.assignJobNotificationSeqLocked(&n)
 	s.pendingJobNotifs = append(s.pendingJobNotifs, n)
 }
 
 func (s *Session) enqueueJobNotificationAndNotify(n jobNotification) {
 	s.pendingJobNotifsMu.Lock()
+	s.assignJobNotificationSeqLocked(&n)
 	s.pendingJobNotifs = append(s.pendingJobNotifs, n)
 	held := s.notifyWakeHolds > 0
 	if held {
@@ -751,9 +807,20 @@ func (s *Session) requeueJobNotifications(notifs []jobNotification) {
 		return
 	}
 	s.pendingJobNotifsMu.Lock()
+	for i := range notifs {
+		s.assignJobNotificationSeqLocked(&notifs[i])
+	}
 	s.pendingJobNotifs = append(notifs, s.pendingJobNotifs...)
 	s.scheduleJobNotificationRetryLocked()
 	s.pendingJobNotifsMu.Unlock()
+}
+
+func (s *Session) assignJobNotificationSeqLocked(n *jobNotification) {
+	if n == nil || n.queueSeq != 0 {
+		return
+	}
+	s.nextJobNotifSeq++
+	n.queueSeq = s.nextJobNotifSeq
 }
 
 func (s *Session) drainJobNotifications() []jobNotification {
@@ -1125,6 +1192,87 @@ func (s *Session) SetModel(model string) error {
 	// re-acquires s.mu via s.Meta(), so the lock must be released first.
 	s.maybeAutoSave()
 	return nil
+}
+
+// SetVisionModel changes the vision side-channel routing for future image
+// reads. The ref is "" (describe with the session's active model), "off"
+// (disable the side-channel), a bare model on the active provider, or
+// "provider/model" to pin a provider instance, which must be registered in
+// the client. It takes effect on the next image read and persists with the
+// session config; it never alters the active model itself.
+func (s *Session) SetVisionModel(ref string) error {
+	ref = strings.TrimSpace(ref)
+	ref = canonicalVisionModelOff(ref)
+	s.mu.Lock()
+	if s.closingOrClosedLocked() {
+		s.mu.Unlock()
+		return nil
+	}
+	if err := s.validateVisionModelRefLocked(ref); err != nil {
+		s.mu.Unlock()
+		return err
+	}
+	old := s.cfg.VisionModel
+	oldCanonical := canonicalVisionModelOff(old)
+	if oldCanonical == ref {
+		canonicalized := old != oldCanonical
+		if canonicalized {
+			s.cfg.VisionModel = oldCanonical
+		}
+		s.mu.Unlock()
+		if canonicalized {
+			s.maybeAutoSave()
+		}
+		return nil
+	}
+	s.cfg.VisionModel = ref
+	s.mu.Unlock()
+	s.emit(events.EventVisionModelChanged, events.VisionModelChangedData{OldVisionModel: oldCanonical, NewVisionModel: ref})
+	s.maybeAutoSave()
+	return nil
+}
+
+// canonicalVisionModelOff normalizes only the complete bare off sentinel.
+// Provider-qualified refs such as "off/model" must remain ordinary refs.
+func canonicalVisionModelOff(ref string) string {
+	if !strings.Contains(ref, "/") && strings.EqualFold(strings.TrimSpace(ref), visionModelOff) {
+		return visionModelOff
+	}
+	return ref
+}
+
+func (s *Session) validateVisionModelRefLocked(ref string) error {
+	if ref == "" || strings.EqualFold(ref, visionModelOff) {
+		return nil
+	}
+	prov, model, ok := strings.Cut(ref, "/")
+	if ok && (prov == "" || model == "") {
+		return fmt.Errorf("invalid vision model ref %q: want \"model\" or \"provider/model\"", ref)
+	}
+	if ok && !strings.EqualFold(prov, s.profile.ID()) && !sessionClientHasProvider(s.client, prov) {
+		return fmt.Errorf("vision model provider %q is not configured or has no credential (active provider %q)", prov, s.profile.ID())
+	}
+	return nil
+}
+
+func sessionClientHasProvider(client *llm.Client, name string) bool {
+	if client == nil {
+		return false
+	}
+	for _, p := range client.ProviderNames() {
+		if strings.EqualFold(p, name) {
+			return true
+		}
+	}
+	return false
+}
+
+// VisionModel returns the session's configured vision side-channel setting
+// ("", "off", or a model ref) for thread-read snapshots.
+func (s *Session) VisionModel() string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.cfg.VisionModel
 }
 
 // buildModelSwitchMarkerText renders the persisted model-switch marker text:

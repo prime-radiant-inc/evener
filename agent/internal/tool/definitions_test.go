@@ -387,6 +387,21 @@ func TestDefTaskListDescriptionStatesInProgressInvariant(t *testing.T) {
 	}
 }
 
+func TestDefTaskListEffortEnumIncludesInherit(t *testing.T) {
+	def := DefTaskList([]string{"low", "medium", "high"})
+	tasks := def.Parameters["properties"].(map[string]any)["tasks"].(map[string]any)
+	item := tasks["items"].(map[string]any)
+	schema := item["properties"].(map[string]any)["reasoning_effort"].(map[string]any)
+	enum, ok := schema["enum"].([]string)
+	if !ok {
+		t.Fatalf("reasoning_effort enum missing: %#v", schema)
+	}
+	want := []string{"low", "medium", "high", "inherit"}
+	if !reflect.DeepEqual(enum, want) {
+		t.Fatalf("reasoning_effort enum = %v, want %v", enum, want)
+	}
+}
+
 func TestDefUpdateGoalShape(t *testing.T) {
 	def := DefUpdateGoal()
 	if def.Name != "update_goal" {
@@ -675,8 +690,8 @@ func TestDefManageWorktreeDescriptionCarriesUsagePolicy(t *testing.T) {
 }
 
 // TestDefAskUserSchema locks the ask_user input schema to spec §4.2: questions
-// 1-4 per call, each with optional header (<=12 chars)/question/options (2-5 of
-// {label, detail, recommended?}), multi_select, why, and if_unanswered.
+// 1-4 per call, each with optional header/question/options (2-5 of {label,
+// detail, recommended?}), multi_select, why, and if_unanswered.
 func TestDefAskUserSchema(t *testing.T) {
 	def := DefAskUser()
 	if def.Name != "ask_user" {
@@ -702,8 +717,11 @@ func TestDefAskUserSchema(t *testing.T) {
 			t.Fatalf("missing question property %q", k)
 		}
 	}
-	if props["header"].(map[string]any)["maxLength"] != 12 {
-		t.Fatal("header maxLength != 12")
+	if props["header"].(map[string]any)["type"] != "string" {
+		t.Fatal("header is not a string")
+	}
+	if _, ok := props["header"].(map[string]any)["maxLength"]; ok {
+		t.Fatal("header must not have a hard maxLength")
 	}
 	opts := props["options"].(map[string]any)
 	if opts["minItems"] != 2 || opts["maxItems"] != 5 {
@@ -800,5 +818,36 @@ func TestDefAskUserDescriptionIsSpecVerbatim(t *testing.T) {
 		if !strings.Contains(def.Description, want) {
 			t.Fatalf("description missing %q; got: %s", want, def.Description)
 		}
+	}
+}
+
+func TestDefDelegateWithSandboxIncludesVerifiedModelChoices(t *testing.T) {
+	def := DefDelegateWithSandbox(nil, DelegateSandboxSchema{
+		Available:        true,
+		Modes:            []string{"off"},
+		ModelDescription: "Verified at startup (snapshot v1): openai/gpt-5, vertex/gemini-2.5.",
+	})
+	props := def.Parameters["properties"].(map[string]any)
+	model := props["model"].(map[string]any)
+	if got := model["description"].(string); !strings.Contains(got, "openai/gpt-5") {
+		t.Fatalf("model description = %q", got)
+	}
+}
+
+func TestDefDelegateWithoutSandboxIncludesVerifiedModelChoices(t *testing.T) {
+	def := DefDelegateWithSandbox(nil, DelegateSandboxSchema{
+		ModelDescription: "Verified at startup (snapshot v1): openai/gpt-5.",
+	})
+	props := def.Parameters["properties"].(map[string]any)
+	model := props["model"].(map[string]any)
+	if got := model["description"].(string); !strings.Contains(got, "openai/gpt-5") {
+		t.Fatalf("model description = %q", got)
+	}
+}
+
+func TestDefModelListIsBoundedReadOnlyContract(t *testing.T) {
+	def := DefModelList()
+	if def.Name != "model_list" || def.Parameters["additionalProperties"] != false {
+		t.Fatalf("definition = %#v", def)
 	}
 }

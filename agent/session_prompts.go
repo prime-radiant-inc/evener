@@ -2,7 +2,9 @@ package agent
 
 import (
 	"embed"
+	"encoding/json"
 	"fmt"
+	"math"
 	"os"
 	"path/filepath"
 	"strings"
@@ -11,6 +13,7 @@ import (
 	"primeradiant.com/evener/agent/execenv"
 	"primeradiant.com/evener/agent/internal/promptpath"
 	"primeradiant.com/evener/agent/sandbox"
+	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/envvars"
 	"primeradiant.com/evener/internal/bundled"
 	"primeradiant.com/evener/llm"
@@ -26,6 +29,27 @@ var projectPromptDir = func(env execenv.ExecutionEnvironment, workingDir string)
 }
 
 var globalPromptDir = promptpath.GlobalPromptsDir
+
+func renderResourceCapsJSON(cpus float64, memoryMB int64) string {
+	if cpus <= 0 || math.IsNaN(cpus) || math.IsInf(cpus, 0) {
+		cpus = 0
+	}
+	if memoryMB < 0 {
+		memoryMB = 0
+	}
+	if cpus == 0 && memoryMB == 0 {
+		return ""
+	}
+	caps := schema.ResourceCaps{
+		CPUs:     cpus,
+		MemoryMB: memoryMB,
+	}
+	payload, err := json.Marshal(caps)
+	if err != nil {
+		return ""
+	}
+	return string(payload)
+}
 
 func prependSystemPromptToUserMessage(systemPrompt string, user llm.Message) llm.Message {
 	combined := user
@@ -101,6 +125,10 @@ func (s *Session) buildPromptData(env execenv.ExecutionEnvironment) promptData {
 	if agentName == "" {
 		agentName = defaultAgentName
 	}
+	var resourceCapsJSON string
+	if resources := s.envInfo.Resources; resources != nil {
+		resourceCapsJSON = renderResourceCapsJSON(resources.CPUs, resources.MemoryMB)
+	}
 
 	data := promptData{
 		NonInteractive:           s.cfg.NonInteractive,
@@ -116,6 +144,7 @@ func (s *Session) buildPromptData(env execenv.ExecutionEnvironment) promptData {
 		Today:                    s.envInfo.Today,
 		Model:                    s.profile.Model(),
 		KnowledgeCutoff:          s.envInfo.KnowledgeCutoff,
+		ResourceCapsJSON:         resourceCapsJSON,
 		Sandbox:                  sandboxPromptLine(env),
 		Capabilities:             capabilityPreambleLines(capabilityFactsFromEnv(env, s.capabilities)),
 		GitModifiedFiles:         s.envInfo.GitModifiedFiles,
@@ -130,14 +159,6 @@ func (s *Session) buildPromptData(env execenv.ExecutionEnvironment) promptData {
 	}
 
 	// Skills
-	hasUseSkill := false
-	for _, td := range s.profile.ToolDefinitions() {
-		if td.Name == "use_skill" {
-			hasUseSkill = true
-			break
-		}
-	}
-	data.HasUseSkill = hasUseSkill
 	for skillName, sm := range s.skills {
 		data.Skills = append(data.Skills, skillEntry{
 			Name: sm.Name, CatalogName: skillName, Description: sm.Description,
@@ -152,6 +173,7 @@ func (s *Session) buildPromptData(env execenv.ExecutionEnvironment) promptData {
 	// Prompting with canonical names while the API receives mapped names such as
 	// exec_command/grep_files/find_files is contradictory and confuses tool use.
 	actualDefs := append([]llm.ToolDefinition(nil), s.cachedToolDefs...)
+	data.HasUseSkill = toolNameSetFromDefinitions(actualDefs)["use_skill"]
 	data.CallableToolNames = toolNamesFromDefinitions(actualDefs)
 	data.UnavailableProfileToolNames = unavailableToolNames(profileDefs, actualDefs)
 
@@ -213,39 +235,58 @@ func (s *Session) canPromptDelegation() bool {
 	return true
 }
 
-// sandboxPromptLine renders the environment-section sandbox line for a sandboxed
-// env ("<mode> (network on|off) — fixed for this session"), so the model knows the
-// immutable box it runs under. When a kernel wrapper has provisioned a real
-// scratch directory, its path is appended (kata g8q6): a spawned shell command
-// learns the scratch dir through $TMPDIR/$EVENER_SCRATCH_DIR, but the model's own
-// file tools (write_file, read_file, …) never see process environment
-// variables, so without this line a model has no way to discover the one
-// directory its file tools can actually write to outside the worktree — it was
+// sandboxPromptLine renders the environment-section sandbox line for an env whose
+// file tools are confined, so the model knows the immutable box it runs under —
+// its mode and network when an OS sandbox enforces it, and which half is enforced
+// when only the file tools do (see sandboxPromptBoundary). When a scratch
+// directory has been provisioned, its path is appended (kata g8q6): a spawned
+// shell command learns the scratch dir through $TMPDIR/$EVENER_SCRATCH_DIR, but
+// the model's own file tools (write_file, read_file, …) never see process
+// environment variables, so without this line a model has no way to discover the
+// one directory its file tools can actually write to outside the worktree — it was
 // observed guessing a literal "/tmp/...", which every sandboxed mode denies.
-// Empty for an unsandboxed env so the line is omitted entirely (byte-identical
-// prompt to today). Takes the resolved env directly — the prompt-render path
-// holds s.mu, so it must not re-fetch via s.currentEnv().
+// Empty for an env whose file tools are unconfined, so the line is omitted
+// entirely (byte-identical prompt to today). Takes the resolved env directly —
+// the prompt-render path holds s.mu, so it must not re-fetch via s.currentEnv().
 func sandboxPromptLine(env execenv.ExecutionEnvironment) string {
 	le, ok := env.(*execenv.LocalExecutionEnvironment)
-	if !ok || le.Sandbox == nil || !le.Sandbox.Enforced() {
+	if !ok || le.Sandbox == nil || !le.Sandbox.FileToolConfined() {
 		return ""
 	}
-	netStr := "on"
-	if !le.Sandbox.Network {
-		netStr = "off"
-	}
-	line := fmt.Sprintf("%s (network %s) — fixed for this session", le.Sandbox.Mode, netStr)
-	if le.Wrapper != nil {
-		if scratch := le.Wrapper.SessionTmp(); scratch != "" {
-			line += ". Scratch directory (read-write even in this sandbox; also $" +
-				envvars.TmpDir.Name + " / $" + envvars.EVENERScratchDir.Name + " for shell commands): " + scratch
-			if le.Sandbox.Mode == sandbox.ModeReadOnly {
-				line += ". Read-only delegates may write only inside this scratch directory; all other writes are denied."
+	line := sandboxPromptBoundary(le.Sandbox)
+	if scratch := le.SessionScratchDir(); scratch != "" {
+		line += ". Scratch directory (read-write even in this sandbox; also $" +
+			envvars.TmpDir.Name + " / $" + envvars.EVENERScratchDir.Name + " for shell commands): " + scratch
+		if le.Sandbox.Mode == sandbox.ModeReadOnly || le.Sandbox.WriteBlocked {
+			if le.Sandbox.Enforced() {
+				line += ". Read-only delegates may write only inside this scratch directory; all other writes are denied"
+			} else {
+				line += ". Your file tools may write only inside this scratch directory; all other file-tool writes are denied"
 			}
-			line += ". In your final human-readable handoff, report this absolute scratch path and the absolute paths of any artifacts your parent should retain; cleanup is manual."
 		}
+		line += ". In your final human-readable handoff, report this absolute scratch path and the absolute paths of any artifacts your parent should retain; cleanup is manual."
 	}
 	return line
+}
+
+// sandboxPromptBoundary states what the box actually holds. An enforced policy
+// names its mode and network decision. A write-blocked policy with no OS sandbox
+// — a read-only delegate on a host with no backend — must not name its mode:
+// "off" would describe the ABSENT kernel box rather than the boundary the model
+// actually runs under, and reporting it as an ordinary read-only sandbox would
+// overstate. It says which half is enforced and which half is on the model's
+// honour, because a degradation nobody discloses is how a delegate deleted its
+// parent's deliverable.
+func sandboxPromptBoundary(rp *sandbox.ResolvedPolicy) string {
+	if !rp.Enforced() {
+		boundary, _ := degradedReadOnlyBoundaryFor(rp.Mode, rp.WriteBlocked)
+		return "read-only for your file tools — fixed for this session. This host has no sandbox backend, so the boundary is ENFORCED for your file tools (every file-tool write outside your scratch directory is denied) and ADVISORY for your shell: " + boundary.shellDisclosure("your shell") + ". Do not write outside the scratch directory. Your file tools will not traverse a symlinked directory either; if one is refused, name the real path instead of retrying"
+	}
+	netStr := "on"
+	if !rp.Network {
+		netStr = "off"
+	}
+	return fmt.Sprintf("%s (network %s) — fixed for this session", rp.Mode, netStr)
 }
 
 // renderSystemPrompt renders the system prompt using the template resolver. It

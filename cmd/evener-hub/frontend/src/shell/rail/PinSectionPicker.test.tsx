@@ -1,33 +1,24 @@
 import { cleanup, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { afterAll, afterEach, beforeEach, describe, expect, test, vi } from "vitest";
-import type { PinSectionSummary, TreeNode } from "../../stores/tree";
+import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
+import type { NavigationPinSectionCatalog, NavigationSessionSummary } from "../../protocol/types.gen";
+import { navigationStore, resetNavigationStoreForTests } from "../../stores/navigation/store";
+import { keyID, type ResourceState } from "../../stores/navigation/types";
 import sheetStyles from "../../widgets/sheet/sheet.module.css";
-import * as railActions from "./actions";
+import type { PinSectionSummary } from "./actions";
 import { RailRequestError } from "./actions";
 import { PinSectionPicker, type PinSectionPickerProps } from "./PinSectionPicker";
 
-// A hoisted vi.mock("./actions", ...) used to sit here, swapping the module
-// in the shared module registry - under isolate:false that registry is
-// shared by every file in the worker, so whichever file (this one, or
-// actions.test.ts's own real listPinSections calls) happens to instantiate
-// this module graph FIRST in the worker's lifetime permanently wins, and a
-// vi.mock registered afterward cannot retroactively change an
-// already-instantiated consumer's binding (see shell/DockRegion.test.tsx's
-// own comment on the same class of bug). vi.spyOn mutates only the one
-// property this file cares about, on the SAME shared module object every
-// other file also reads from, and mockRestore() in afterAll hands the real
-// listPinSections back for whatever file runs next.
-//
-// Re-spied in beforeEach below, not just once here: some other file sharing
-// this worker calling the GLOBAL vi.restoreAllMocks() would silently hand the
-// real listPinSections back before this file's own tests run (see
-// shell/palette/commands.test.ts's own comment on the same hazard).
-let mockedListPinSections = vi.spyOn(railActions, "listPinSections");
+// PinSectionPicker now reads pin sections from the navigation store's
+// bounded pin-catalog resource (loadPinCatalog + selectPinSections) instead
+// of the legacy unbounded GET /api/pin-sections. Each test seeds the store
+// with a pin_catalog resource and stubs loadPinCatalog so the picker's mount
+// effect resolves without a real network fetch.
+const generation = "generation_test";
+const pinKey = { kind: "pin_catalog" as const, offset: 0, limit: 100 };
 
-function session(overrides: Partial<TreeNode> = {}): TreeNode {
+function session(overrides: Partial<NavigationSessionSummary> = {}): NavigationSessionSummary {
   return {
-    row_id: "project:p1:local:s1",
     ref: "local:s1",
     host_id: "local",
     session_id: "s1",
@@ -54,22 +45,64 @@ function props(overrides: Partial<PinSectionPickerProps> = {}): PinSectionPicker
   };
 }
 
-afterEach(cleanup);
+function pinCatalogResource(sections: PinSectionSummary[], remaining = 0): ResourceState {
+  return {
+    key: pinKey,
+    data: {
+      generation_id: generation,
+      revision: 1,
+      pin_sections: sections.map((s) => ({ id: s.id, name: s.name, count: s.member_count })),
+      remaining,
+    },
+    loadedRevision: 1,
+    targetRevision: 1,
+    forceToken: 0,
+    etag: "a",
+    loading: false,
+    stale: false,
+    error: null,
+    generationID: generation,
+  };
+}
+
+function seedPinCatalog(sections: PinSectionSummary[], remaining = 0): ResourceState {
+  const resource = pinCatalogResource(sections, remaining);
+  navigationStore.setState({
+    mode: "v1",
+    resources: new Map([[keyID(resource.key), resource]]),
+  });
+  return resource;
+}
+
+// Replaces loadPinCatalog on the store state so it resolves to the
+// currently-seeded pin_catalog resource without a network fetch. Returns a
+// vi.fn so tests can assert call counts and override per-call behavior.
+type LoadPinCatalog = (offset?: number, limit?: number) => Promise<ResourceState<NavigationPinSectionCatalog>>;
+function stubLoadPinCatalog(): ReturnType<typeof vi.fn<LoadPinCatalog>> {
+  const impl = async () =>
+    navigationStore.getState().resources.get(keyID(pinKey)) as ResourceState<NavigationPinSectionCatalog>;
+  const fn = vi.fn(impl) as ReturnType<typeof vi.fn<LoadPinCatalog>>;
+  navigationStore.setState({ loadPinCatalog: fn as LoadPinCatalog });
+  return fn;
+}
+
+afterEach(() => {
+  cleanup();
+  resetNavigationStoreForTests();
+});
 
 beforeEach(() => {
   vi.clearAllMocks();
-  mockedListPinSections = vi.spyOn(railActions, "listPinSections");
-  mockedListPinSections.mockResolvedValue([RESEARCH, CLIENT, PERSONAL]);
-});
-
-afterAll(() => {
-  mockedListPinSections.mockRestore();
+  resetNavigationStoreForTests();
+  seedPinCatalog([RESEARCH, CLIENT, PERSONAL]);
+  stubLoadPinCatalog();
 });
 
 describe("PinSectionPicker", () => {
   test("fetches summaries on every mount and announces loading", async () => {
-    let resolveFirst!: (sections: PinSectionSummary[]) => void;
-    mockedListPinSections.mockImplementationOnce(
+    const fn = navigationStore.getState().loadPinCatalog as ReturnType<typeof vi.fn>;
+    let resolveFirst!: (value: ResourceState) => void;
+    fn.mockImplementationOnce(
       () =>
         new Promise((resolve) => {
           resolveFirst = resolve;
@@ -78,23 +111,26 @@ describe("PinSectionPicker", () => {
 
     const first = render(<PinSectionPicker {...props()} />);
     expect(screen.getByRole("status").textContent).toMatch(/loading sections/i);
-    expect(mockedListPinSections).toHaveBeenCalledTimes(1);
-    resolveFirst([CLIENT]);
+    expect(fn).toHaveBeenCalledTimes(1);
+    // Re-seed with just [CLIENT] so the resolved catalog shows one section.
+    seedPinCatalog([CLIENT]);
+    resolveFirst(navigationStore.getState().resources.get(keyID(pinKey)) as ResourceState);
     await screen.findByRole("button", { name: "Client" });
     first.unmount();
 
     render(<PinSectionPicker {...props()} />);
     await screen.findByRole("button", { name: "Client" });
-    expect(mockedListPinSections).toHaveBeenCalledTimes(2);
+    expect(fn).toHaveBeenCalledTimes(2);
   });
 
   test("lists hidden empty sections in deterministic case-insensitive alphabetical order", async () => {
-    mockedListPinSections.mockResolvedValue([
+    seedPinCatalog([
       { id: "z", name: "research", member_count: 0 },
       { id: "b", name: "Client", member_count: 3 },
       { id: "a", name: "client", member_count: 0 },
       { id: "p", name: "Personal", member_count: 1 },
     ]);
+    stubLoadPinCatalog();
     render(<PinSectionPicker {...props()} />);
 
     const list = await screen.findByRole("list", { name: /pin sections/i });
@@ -111,16 +147,34 @@ describe("PinSectionPicker", () => {
   });
 
   test("refreshes stale section choices when assigning a concurrently deleted section returns not-found", async () => {
-    mockedListPinSections.mockResolvedValueOnce([CLIENT, PERSONAL]).mockResolvedValueOnce([PERSONAL]);
+    const fn = navigationStore.getState().loadPinCatalog as ReturnType<typeof vi.fn<LoadPinCatalog>>;
     const notFound = new RailRequestError("pin section not found", 404);
     const onAssign = vi.fn().mockRejectedValue(notFound);
     render(<PinSectionPicker {...props({ onAssign })} />);
 
-    await userEvent.setup().click(await screen.findByRole("button", { name: "Client" }));
+    // Wait for the mount-effect loadPinCatalog to resolve so "Client"
+    // appears, then arm the 404-refresh call to stay pending until we've
+    // re-seeded the store without "client".
+    const clientButton = await screen.findByRole("button", { name: "Client" });
+    let resolveRefresh!: (value: ResourceState<NavigationPinSectionCatalog>) => void;
+    fn.mockImplementationOnce(
+      () =>
+        new Promise((resolve) => {
+          resolveRefresh = resolve;
+        }),
+    );
+
+    await userEvent.setup().click(clientButton);
 
     expect((await screen.findByRole("alert")).textContent).toBe("pin section not found");
-    await waitFor(() => expect(mockedListPinSections).toHaveBeenCalledTimes(2));
-    expect(screen.queryByRole("button", { name: "Client" })).toBeNull();
+    // Re-seed the store without "client" so the refreshed catalog reflects
+    // the deletion, then release the pending loadPinCatalog call.
+    seedPinCatalog([PERSONAL]);
+    await waitFor(() => expect(fn).toHaveBeenCalledTimes(2));
+    resolveRefresh(
+      navigationStore.getState().resources.get(keyID(pinKey)) as ResourceState<NavigationPinSectionCatalog>,
+    );
+    await waitFor(() => expect(screen.queryByRole("button", { name: "Client" })).toBeNull());
     expect(screen.getByRole("button", { name: "Personal" })).toBeTruthy();
   });
 

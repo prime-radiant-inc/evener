@@ -235,7 +235,12 @@ func toolBatchPanicError(value any) error {
 // images themselves — they immediately write code) and injects the description as
 // steering so the agent can use it. It returns the abort error if the turn is
 // canceled mid-persist.
-func (s *Session) persistToolResults(ctx context.Context, calls []llm.ToolCallData, results []tool.ExecResult) error {
+func (s *Session) persistToolResults(ctx context.Context, calls []llm.ToolCallData, results []tool.ExecResult) (retErr error) {
+	defer func() {
+		if retErr != nil {
+			s.removeAllTurnOwnedSteering()
+		}
+	}()
 	// Aggregate all tool results into a single TurnToolResults turn.
 	var parts []llm.ContentPart
 	for _, r := range results {
@@ -261,23 +266,39 @@ func (s *Session) persistToolResults(ctx context.Context, calls []llm.ToolCallDa
 
 	for i, r := range results {
 		if len(r.ImageData) > 0 {
-			if desc := s.describeImage(ctx, r); desc != "" {
+			vision := s.describeImageCall(ctx, r)
+			path := ""
+			if i < len(calls) {
+				var args map[string]any
+				if json.Unmarshal(calls[i].Arguments, &args) == nil {
+					path, _ = args["file_path"].(string)
+				}
+			}
+			if vision.outcome == visionSideChannelOwnedTimeout || vision.outcome == visionSideChannelProviderFailure {
+				owner := &struct{ _ byte }{}
+				if abortErr := s.withResponseSideEffects(ctx, func() {
+					s.trySteerTurnOwnedMessage(steeringMessage{Text: visionFailureSteering(path, vision), Kind: events.SteeringKindImageDescription}, owner)
+				}); abortErr != nil {
+					return abortErr
+				}
+				if err := ctx.Err(); err != nil {
+					return err
+				}
+			} else if vision.outcome == visionSideChannelParentCanceled {
+				return ctx.Err()
+			} else if vision.description != "" {
+				desc := vision.description + "\n" + formatVisionSideChannelStats(vision)
 				// Include the file path so the agent can correlate descriptions to
 				// specific files when multiple images/documents are read in one round.
 				label := "Image description (from vision)"
 				if strings.HasPrefix(r.ImageMediaType, "application/pdf") {
 					label = "Document description (from content analysis)"
 				}
-				if i < len(calls) {
-					var args map[string]any
-					if json.Unmarshal(calls[i].Arguments, &args) == nil {
-						if path, ok := args["file_path"].(string); ok {
-							label += " for " + path
-						}
-					}
+				if path != "" {
+					label += " for " + path
 				}
 				if abortErr := s.withResponseSideEffects(ctx, func() {
-					s.SteerKind(label+": "+desc+"\n<system-reminder>Visual descriptions are summaries. They may miss or mischaracterize details.</system-reminder>",
+					s.SteerKind(label+": "+desc+"\n<system-reminder>Vision output is model-generated and is not byte-exact OCR. It may omit, misread, or silently normalize rendered text even when asked to transcribe it. Do not treat it as authoritative for exact-match or byte-exact transcription; use a real OCR tool or inspect the source instead.</system-reminder>",
 						events.SteeringKindImageDescription)
 				}); abortErr != nil {
 					return abortErr
@@ -401,6 +422,7 @@ func (s *Session) injectPostToolSteering(ctx context.Context, calls []llm.ToolCa
 				s.emit(events.EventLoopDetection, events.LoopDetectionData{Message: warning})
 				s.appendSteeringTurn(warning, events.SteeringKindLoopDetected)
 			}); abortErr != nil {
+				s.removeAllTurnOwnedSteering()
 				return false, abortErr
 			}
 		}
@@ -408,6 +430,7 @@ func (s *Session) injectPostToolSteering(ctx context.Context, calls []llm.ToolCa
 
 	drained, err := s.drainPostToolWatchSends(ctx)
 	if err != nil {
+		s.removeAllTurnOwnedSteering()
 		return false, err
 	}
 	yieldToObserverCallback := drained.observerHandoff
@@ -415,15 +438,23 @@ func (s *Session) injectPostToolSteering(ctx context.Context, calls []llm.ToolCa
 		hooks.beforeSteering()
 	}
 
-	// Inject any queued steering messages before the next model call.
+	// Inject any queued steering messages before the next model call. A terminal
+	// communicate result owns this input's boundary, so leave client-authored
+	// steering durable pending work for wakeForPendingSteering and
+	// EntrySteeringCarrier. Consuming it here would mark it incorporated in a
+	// result that ends the turn without a model request that can act on it.
 	if abortErr := s.withResponseSideEffects(ctx, func() {
-		if s.hasPendingSteering() {
-			yieldToObserverCallback = false
+		if !s.Communicated() {
+			if s.hasPendingSteering() {
+				yieldToObserverCallback = false
+			}
+			s.injectDrainedSteering()
 		}
-		s.injectDrainedSteering()
 	}); abortErr != nil {
+		s.removeAllTurnOwnedSteering()
 		return false, abortErr
 	}
+	s.finishTurnOwnedSteering()
 	if hooks, ok := ctx.Value(sessionToolRoundHooksKey{}).(sessionToolRoundHooks); ok && hooks.beforeTaskReminder != nil {
 		hooks.beforeTaskReminder()
 	}
@@ -469,13 +500,13 @@ func (s *Session) drainPostToolWatchSends(ctx context.Context) (watchSendDrainRe
 // returns done=false when nothing was delivered and no ask was posted, or a
 // Stop hook blocked a communicate-only completion, meaning the turn should
 // continue to the next round.
-func (s *Session) deliverIfCommunicated(ctx context.Context, askedThisRound bool) (done bool, text string) {
+func (s *Session) deliverIfCommunicated(ctx context.Context, askedThisRound bool) (done bool, text string, err error) {
 	s.mu.Lock()
 	delivered := s.comm.called
 	text = s.comm.reply
 	s.mu.Unlock()
 	if !delivered && !askedThisRound {
-		return false, ""
+		return false, "", nil
 	}
 	boundaryState := SessionIdle
 	if askedThisRound {
@@ -494,9 +525,24 @@ func (s *Session) deliverIfCommunicated(ctx context.Context, askedThisRound bool
 		}
 		if stopResult.Blocked {
 			// Don't finish — keep looping.
-			return false, ""
+			return false, "", nil
+		}
+	}
+	if delivered && s.cfg.TurnEndsProcess {
+		// The model has explicitly ended the turn that ends the process. Capture
+		// the exact notification cut before the boundary transition so the
+		// one-shot drain cannot mistake a completion landing before its own entry
+		// for a pre-terminal leftover (issue #329).
+		if hook := s.cfg.testOnly.beforeTerminalCommunicateAccept; hook != nil {
+			hook()
+		}
+		if err := s.acceptTerminalCommunicate(); err != nil {
+			return false, "", fmt.Errorf("capture terminal notification cut: %w", err)
 		}
 	}
 	s.finishProcessingAtBoundary(ctx, boundaryState)
-	return true, text
+	if hook := s.cfg.testOnly.afterCommunicateBoundary; hook != nil {
+		hook(s)
+	}
+	return true, text, nil
 }

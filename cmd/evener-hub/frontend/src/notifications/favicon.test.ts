@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, test } from "vitest";
-import type { AttentionSummary } from "../stores/tree";
+import type { AttentionSummary } from "../protocol/types.gen";
 import { applyFavicon, buildFaviconDataURI, dotColorFor } from "./favicon";
 
 function summary(needsYou: number, error: number, working: number): AttentionSummary {

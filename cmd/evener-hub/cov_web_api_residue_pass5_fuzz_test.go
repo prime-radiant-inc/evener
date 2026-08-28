@@ -115,7 +115,6 @@ func FuzzWebAPIResiduePass5(f *testing.F) {
 
 		_ = canonicalRouteID("local:x")
 
-		call(web.handleApiSearch, http.MethodGet, "/api/search?q=no-match", "")
 		_ = evenerErrorInfoFromData(nil)
 		_ = evenerErrorInfoFromData(map[string]any{"evenerErrorInfo": 1})
 		webNil := NewWebServer(hubcore.WebConfig{})
@@ -125,17 +124,8 @@ func FuzzWebAPIResiduePass5(f *testing.F) {
 		call(func(w http.ResponseWriter, r *http.Request) { web.handleAPIClear(w, r, "remote:live") }, "POST", "/", "")
 		call(func(w http.ResponseWriter, r *http.Request) { web.handleAPIModel(w, r, "remote:live") }, "POST", "/", `{"model":"/"}`)
 		call(func(w http.ResponseWriter, r *http.Request) { web.handleAPIReasoningEffort(w, r, "remote:live") }, "POST", "/", `{`)
-		call(web.handleAPIDirCreate, http.MethodGet, "/", "")
-		call(web.handleAPIDirCreate, "POST", "/", `{`)
-		call(web.handleAPIDirCreate, "POST", "/", `{"path":"~"}`)
-
-		call(func(w http.ResponseWriter, r *http.Request) { web.handleAPIRename(w, r, "ended") }, "POST", "/", `{"name":""}`)
-		call(func(w http.ResponseWriter, r *http.Request) { web.handleAPIRename(w, r, "ended") }, "POST", "/", `{"name":"new"}`)
-		web.refreshRenamedMeta("missing", "fallback")
-		web.refreshRenamedMeta("ended", "fallback")
 		if err := os.Remove(filepath.Join(state, "sessions", "ended.meta.json")); err != nil && !os.IsNotExist(err) {
 			t.Fatal(err)
 		}
-		web.refreshRenamedMeta("ended", "fallback")
 	})
 }

@@ -1955,21 +1955,25 @@ func TestTaskListSchema_EffortEnum_MatchesCatalog(t *testing.T) {
 	if len(expectedLevels) == 0 {
 		t.Fatalf("minimax/minimax-m2.7 not in catalog or has no effort levels")
 	}
+	// The schema enum additionally carries the "inherit" sentinel so
+	// strict-mode providers (which force-require the property) let the model
+	// decline to override the session's effort.
+	expectedEnum := append(append([]string(nil), expectedLevels...), "inherit")
 
 	// Test openrouter-anthropic profile path.
 	orAnthro := newOpenRouterAnthropicProfile(model)
 	effortEnumORAnthro := extractTaskListEffortEnum(t, orAnthro)
-	if !stringSliceEqual(effortEnumORAnthro, expectedLevels) {
+	if !stringSliceEqual(effortEnumORAnthro, expectedEnum) {
 		t.Fatalf("openrouter-anthropic task_list effort enum mismatch:\n  got:  %v\n  want: %v",
-			effortEnumORAnthro, expectedLevels)
+			effortEnumORAnthro, expectedEnum)
 	}
 
 	// Test minimax direct profile path.
 	minimax := newMiniMaxProfile(model)
 	effortEnumMinimax := extractTaskListEffortEnum(t, minimax)
-	if !stringSliceEqual(effortEnumMinimax, expectedLevels) {
+	if !stringSliceEqual(effortEnumMinimax, expectedEnum) {
 		t.Fatalf("minimax task_list effort enum mismatch:\n  got:  %v\n  want: %v",
-			effortEnumMinimax, expectedLevels)
+			effortEnumMinimax, expectedEnum)
 	}
 
 	// Both paths should produce the same enum.

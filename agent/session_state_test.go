@@ -1,6 +1,8 @@
 package agent
 
 import (
+	"encoding/json"
+	"strings"
 	"testing"
 	"time"
 
@@ -189,5 +191,26 @@ func TestResumedSubagentMetaSurvivesAutosave(t *testing.T) {
 	}
 	if saved.DivergenceTurn != 0 {
 		t.Errorf("autosave invented a divergence turn (%d) for a spawned delegate, want 0", saved.DivergenceTurn)
+	}
+}
+
+// TestMeta_VisionModelSurvivesRoundTrip pins that the SessionMeta population
+// path in agent/session_state.go carries cfg.VisionModel through to the wire
+// form with the correct JSON tag.
+func TestMeta_VisionModelSurvivesRoundTrip(t *testing.T) {
+	t.Parallel()
+	sess := newSession(t, withConfig(SessionConfig{VisionModel: "anthropic/claude-haiku-4-5"}))
+
+	meta := sess.Meta()
+	if meta.VisionModel != "anthropic/claude-haiku-4-5" {
+		t.Fatalf("Meta().VisionModel = %q, want %q", meta.VisionModel, "anthropic/claude-haiku-4-5")
+	}
+
+	data, err := json.Marshal(meta)
+	if err != nil {
+		t.Fatalf("marshal meta: %v", err)
+	}
+	if !strings.Contains(string(data), `"vision_model":"anthropic/claude-haiku-4-5"`) {
+		t.Fatalf("meta JSON missing vision_model: %s", data)
 	}
 }

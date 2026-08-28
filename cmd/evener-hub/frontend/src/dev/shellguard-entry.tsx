@@ -8,14 +8,14 @@
 // the only honest reproduction is a real browser measuring real boxes.
 //
 // Renders the REAL AppShell (rail + DockRegion + chrome) against a FakeClient
-// with /api/tree stubbed to a tree far taller than any viewport, the same
-// shape AppShell.test.tsx's own fixtures use. window.measureShell() returns
-// the document's scroll size beside the viewport, the rail body scroll
-// metrics, and the boxes (if any) whose bottoms escape the viewport - which
-// is the answer the fix has to be aimed at.
+// advertising a navigation capability, with AppWire navigation reads scripted
+// to a tree far taller than any viewport. window.measureShell() returns the
+// document's scroll size beside the viewport, the rail body scroll metrics,
+// and the boxes (if any) whose bottoms escape the viewport - which is the
+// answer the fix has to be aimed at.
 import { createRoot } from "react-dom/client";
 import { FakeClient } from "../protocol/testing/fakeClient";
-import { type TreeNode, type TreeProject, type TreeResponse, treeStore } from "../stores/tree";
+import type { NavigationReadParams, NavigationReadResponse } from "../protocol/types.gen";
 import "../styles/tokens.css";
 import "../styles/global.css";
 
@@ -28,26 +28,11 @@ window.addEventListener("unhandledrejection", (event) => {
   target.__shellGuardErrors = [...(target.__shellGuardErrors ?? []), event.reason?.stack ?? String(event.reason)];
 });
 
-function session(projectKey: string, projectName: string, index: number): TreeNode {
-  return {
-    row_id: `project:${projectKey}:local:s${index}`,
-    ref: `local:${projectKey}-s${index}`,
-    host_id: "local",
-    session_id: `${projectKey}-s${index}`,
-    title: `${projectName} session ${index}`,
-    project: projectName,
-    state: "idle",
-    kind: "session",
-    live: true,
-    children: [],
-  };
-}
-
 // 12 projects x 10 sessions, every project expanded by default: ~130 tree
 // rows, several times taller than the 900px viewport the guard measures at.
 const PROJECT_COUNT = 12;
 const SESSION_COUNT = 10;
-const projects: TreeProject[] = Array.from({ length: PROJECT_COUNT }, (_, p) => {
+const projectSummaries = Array.from({ length: PROJECT_COUNT }, (_, p) => {
   const key = `proj${p}`;
   const name = `project-${p}`;
   return {
@@ -55,40 +40,116 @@ const projects: TreeProject[] = Array.from({ length: PROJECT_COUNT }, (_, p) => 
     name,
     working_dir: `/home/user/${name}`,
     default_expanded: true,
-    sessions: Array.from({ length: SESSION_COUNT }, (_, s) => session(key, name, s)),
+    session_count: SESSION_COUNT,
   };
 });
+const navigationSessions = (projectKey: string, projectName: string) =>
+  Array.from({ length: SESSION_COUNT }, (_, s) => ({
+    ref: `local:${projectKey}-s${s}`,
+    host_id: "local",
+    session_id: `${projectKey}-s${s}`,
+    title: `${projectName} session ${s}`,
+    project: projectName,
+    state: "idle",
+    kind: "session",
+    live: false,
+    children: [],
+  }));
 
-const TALL_TREE: TreeResponse = {
-  generated_at: "2026-01-01T00:00:00Z",
+const NAVIGATION_MANIFEST = {
+  generation_id: "shellguard-generation",
+  revision: 1,
   sources: [],
-  live: [],
-  needs_you: [],
-  pin_sections: [],
-  projects,
-  archived_projects: [],
-  test_runs: [],
   attentionSummary: { needsYou: 0, error: 0, working: 0 },
+  sections: { live: { count: 0 }, needs_you: { count: 0 }, pin_sections: { count: 0 } },
+  catalogs: { projects: { count: PROJECT_COUNT }, archived_projects: { count: 0 }, test_runs: { count: 0 } },
+};
+const EMPTY_SECTION = {
+  generation_id: "shellguard-generation",
+  revision: 1,
+  sessions: [],
+  remaining: 0,
+  truncated: false,
+};
+const EMPTY_PIN_CATALOG = {
+  generation_id: "shellguard-generation",
+  revision: 1,
+  pin_sections: [],
+  remaining: 0,
+};
+const EMPTY_PROJECT_CATALOG = {
+  generation_id: "shellguard-generation",
+  revision: 1,
+  projects: projectSummaries,
+  remaining: 0,
+};
+const EMPTY_PIN_SECTION = {
+  generation_id: "shellguard-generation",
+  revision: 1,
+  sessions: [],
+  remaining: 0,
+  truncated: false,
 };
 
-// treeStore reads /api/tree over plain fetch (not the appwire socket), so the
-// stub lives on window.fetch. Installed at module evaluation, before the
-// AppShell render below can fire its first refresh.
-const realFetch = window.fetch.bind(window);
-window.fetch = (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
-  const url = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
-  if (url.startsWith("/api/tree")) {
-    return Promise.resolve(
-      new Response(JSON.stringify(TALL_TREE), { status: 200, headers: { "content-type": "application/json" } }),
-    );
+function projectResource(key: string) {
+  const summary = projectSummaries.find((p) => p.key === key);
+  const sessions = summary ? navigationSessions(key, summary.name) : [];
+  const tier = { sessions, remaining: 0 };
+  return {
+    generation_id: "shellguard-generation",
+    revision: 1,
+    key,
+    current: tier,
+    recent: { sessions: [], remaining: 0 },
+    archived: { sessions: [], remaining: 0 },
+    truncated: false,
+  };
+}
+
+function navigationRead(params: NavigationReadParams): NavigationReadResponse {
+  const response = (data: unknown): NavigationReadResponse => ({
+    status: "ok",
+    generationId: "shellguard-generation",
+    revision: 1,
+    etag: '"shellguard-etag"',
+    data,
+  });
+  switch (params.resource) {
+    case "manifest":
+      return response(NAVIGATION_MANIFEST);
+    case "section":
+      return response(EMPTY_SECTION);
+    case "pin_catalog":
+      return response(EMPTY_PIN_CATALOG);
+    case "pin_section":
+      return response(EMPTY_PIN_SECTION);
+    case "catalog":
+      return response(EMPTY_PROJECT_CATALOG);
+    case "project":
+      if (params.projectKey === undefined) throw new Error("project navigation read requires projectKey");
+      return response(projectResource(params.projectKey));
+    case "project_page":
+      return response({
+        generation_id: "shellguard-generation",
+        revision: 1,
+        key: params.projectKey,
+        tier: params.tier,
+        offset: params.offset,
+        sessions: [],
+        remaining: 0,
+        truncated: false,
+      });
+    case "location":
+      return response({
+        generation_id: "shellguard-generation",
+        revision: 1,
+        ref: params.ref,
+        top_level_ref: params.ref,
+        top_level: true,
+      });
   }
-  if (url.startsWith("/api/")) {
-    return Promise.resolve(
-      new Response(JSON.stringify({}), { status: 200, headers: { "content-type": "application/json" } }),
-    );
-  }
-  return realFetch(input, init);
-};
+  throw new Error(`unsupported navigation resource: ${params.resource}`);
+}
 
 const rootEl = document.getElementById("root");
 if (!rootEl) throw new Error("shellguard.html is missing #root");
@@ -102,6 +163,27 @@ window.history.replaceState({}, "", "/");
 async function boot(): Promise<void> {
   const { AppShell } = await import("../shell/AppShell");
   const fake = new FakeClient("ready");
+  fake.on("evener/navigation/read", navigationRead);
+  fake.scriptConnect(() => ({
+    serverInfo: { name: "fake-evener-hub", version: "0.0.0" },
+    protocolVersion: "evener-appwire-v3",
+    sourceId: "fake",
+    features: {
+      threadList: true,
+      threadTurnsList: true,
+      turnStart: true,
+      turnSteer: true,
+      threadClear: true,
+      threadShutdown: true,
+      forkFromTurn: true,
+      tasks: true,
+      transcriptList: true,
+      modelList: true,
+      directoryComplete: true,
+      auth: true,
+    },
+    navigation: { version: 1, generationId: "shellguard-generation", sequence: 0 },
+  }));
   createRoot(root).render(<AppShell client={fake} />);
 }
 
@@ -270,7 +352,7 @@ target.measureShell = measureShell;
 target.settledShell = (async () => {
   await booted;
   const deadline = performance.now() + 15_000;
-  const expectedRows = PROJECT_COUNT * SESSION_COUNT;
+  const expectedRows = PROJECT_COUNT * (1 + SESSION_COUNT); // every project row plus every expanded session row
   for (;;) {
     // Every project row plus every session row is in the accessibility tree
     // only once the rail has rendered the full expanded tree.
@@ -278,11 +360,9 @@ target.settledShell = (async () => {
     const errors = (window as typeof window & { __shellGuardErrors?: string[] }).__shellGuardErrors;
     if (errors && errors.length > 0) throw new Error(`shell harness page errors: ${errors.join("\n")}`);
     if (performance.now() > deadline) {
-      const treeState = treeStore.getState();
       throw new Error(
         `shell harness: expected at least ${expectedRows} tree rows, found ${document.querySelectorAll('[role="treeitem"]').length} ` +
-          `(tree loaded: ${treeState.tree !== null}, error: ${treeState.error ?? "none"}, ` +
-          `rail settings button: ${document.querySelector("[data-testid='rail-settings']") !== null}, ` +
+          `(rail settings button: ${document.querySelector("[data-testid='rail-settings']") !== null}, ` +
           `body children: ${[...document.body.children].map((el) => el.tagName).join(",")}, ` +
           `root children: ${root.children.length}, pathname: ${window.location.pathname})`,
       );

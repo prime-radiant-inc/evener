@@ -197,6 +197,44 @@ func TestClientRequestWrappersRoundTrip(t *testing.T) {
 		{"ThreadShutdown", MethodThreadShutdown, `{"ref":"local:th"}`, EmptyResponse{}, func(ctx context.Context, c *Client) error {
 			return c.ThreadShutdown(ctx, ThreadShutdownParams{Ref: "local:th"})
 		}},
+		{"ArchiveSet", MethodEvenerArchiveSet, `{"kind":"project","id":"project-key","workingDir":"/tmp/project","archived":true}`, ArchiveResponse{
+			OK: true,
+			Navigation: NavigationMutation{
+				GenerationID: "generation-a",
+				Targets:      []NavigationInvalidationTarget{{Kind: NavigationTargetProject, ProjectKey: "project-key", Revision: 3}},
+			},
+		}, func(ctx context.Context, c *Client) error {
+			out, err := c.ArchiveSet(ctx, ArchiveParams{
+				Kind:       ArchiveTargetProject,
+				ID:         "project-key",
+				WorkingDir: "/tmp/project",
+				Archived:   true,
+			})
+			if err != nil {
+				return err
+			}
+			if !out.OK || out.Navigation.GenerationID != "generation-a" || len(out.Navigation.Targets) != 1 {
+				return errors.New("ArchiveSet decode mismatch")
+			}
+			return nil
+		}},
+		{"SessionDelete", MethodEvenerSessionDelete, `{"ref":"local:th"}`, SessionDeleteResponse{
+			Deleted: []string{"th"},
+			Skipped: []DeletionSkip{},
+			Navigation: NavigationMutation{
+				GenerationID: "generation-a",
+				Targets:      []NavigationInvalidationTarget{{Kind: NavigationTargetProject, ProjectKey: "project-key", Revision: 4}},
+			},
+		}, func(ctx context.Context, c *Client) error {
+			out, err := c.SessionDelete(ctx, SessionDeleteParams{Ref: "local:th"})
+			if err != nil {
+				return err
+			}
+			if len(out.Deleted) != 1 || out.Deleted[0] != "th" || len(out.Skipped) != 0 || out.Navigation.GenerationID != "generation-a" {
+				return errors.New("SessionDelete decode mismatch")
+			}
+			return nil
+		}},
 		{"TurnInterrupt", MethodTurnInterrupt, `{"ref":"local:th","clientMutationId":"cm_interrupt"}`, EmptyResponse{}, func(ctx context.Context, c *Client) error {
 			return c.TurnInterrupt(ctx, TurnInterruptParams{Ref: "local:th", ClientMutationID: "cm_interrupt"})
 		}},
@@ -232,6 +270,16 @@ func TestClientRequestWrappersRoundTrip(t *testing.T) {
 			}
 			if len(out.Data) != 2 {
 				return errors.New("PathsComplete decode mismatch")
+			}
+			return nil
+		}},
+		{"DirsCreate", MethodEvenerDirsCreate, `{"path":"/tmp/new"}`, DirsCreateResponse{Path: "/tmp/new", Created: true}, func(ctx context.Context, c *Client) error {
+			out, err := c.DirsCreate(ctx, DirsCreateParams{Path: "/tmp/new"})
+			if err != nil {
+				return err
+			}
+			if out.Path != "/tmp/new" || !out.Created {
+				return errors.New("DirsCreate decode mismatch")
 			}
 			return nil
 		}},
@@ -419,6 +467,11 @@ func TestClientRequestWrappersRoundTrip(t *testing.T) {
 			return err
 		}},
 		{"PluginList", MethodEvenerPluginList, `{}`, map[string]any{}, func(ctx context.Context, c *Client) error { _, err := c.PluginList(ctx); return err }},
+		{"PluginPreview", MethodEvenerPluginPreview, `{"cwd":"/tmp","launchOverrides":{"enabledPlugins":[]}}`, map[string]any{}, func(ctx context.Context, c *Client) error {
+			empty := []string{}
+			_, err := c.PluginPreview(ctx, PluginPreviewParams{CWD: "/tmp", LaunchOverrides: &LaunchConfigLayer{EnabledPlugins: &empty}})
+			return err
+		}},
 		{"PluginInstall", MethodEvenerPluginInstall, `{"plugin":"fmt","marketplace":"acme"}`, map[string]any{}, func(ctx context.Context, c *Client) error {
 			_, err := c.PluginInstall(ctx, PluginRefParams{Plugin: "fmt", Marketplace: "acme"})
 			return err

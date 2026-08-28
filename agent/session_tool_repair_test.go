@@ -30,6 +30,39 @@ func editTool(t *testing.T) *tool.RegisteredTool {
 	return reg.Get("edit_file")
 }
 
+func TestExecTool_DelegateRejectsUnsupportedWaitWithoutStarting(t *testing.T) {
+	s := newSession(t, withoutGitSnapshot())
+	s.stateDir = t.TempDir()
+
+	for _, tc := range []struct {
+		name string
+		args string
+	}{
+		{name: "max_wait_ms", args: `{"task":"must not start","max_wait_ms":1000}`},
+		{name: "block", args: `{"task":"must not start","block":true}`},
+		{name: "block_timeout_ms", args: `{"task":"must not start","block_timeout_ms":1000}`},
+		{name: "background", args: `{"task":"must not start","background":true}`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			before := len(s.delegateController.Snapshot().rows)
+			res := s.execTool(context.Background(), llm.ToolCallData{
+				ID:        "delegate-unsupported-" + tc.name,
+				Name:      "delegate",
+				Arguments: json.RawMessage(tc.args),
+			}, "")
+			if !res.IsError {
+				t.Fatalf("delegate with unsupported %s succeeded: %s", tc.name, res.FullOutput)
+			}
+			if !strings.Contains(res.FullOutput, tc.name) {
+				t.Fatalf("delegate error omitted unsupported parameter %s: %s", tc.name, res.FullOutput)
+			}
+			if got := len(s.delegateController.Snapshot().rows); got != before {
+				t.Fatalf("invalid delegate call started %d delegate(s), want none", got-before)
+			}
+		})
+	}
+}
+
 func TestPrepareToolCall_AliasesArgs(t *testing.T) {
 	et := editTool(t)
 	call := llm.ToolCallData{ID: "c1", Name: "edit_file",
@@ -135,6 +168,22 @@ func TestPrepareToolCall_LengthStopWithValidArgs(t *testing.T) {
 	}
 }
 
+func TestPrepareToolCall_TaskListInheritEffortIsValid(t *testing.T) {
+	reg := tool.NewRegistry()
+	if err := reg.Register(regTool(tool.DefTaskList([]string{"low", "medium", "high"}))); err != nil {
+		t.Fatalf("register task_list: %v", err)
+	}
+	call := llm.ToolCallData{ID: "inherit", Name: "task_list",
+		Arguments: json.RawMessage(`{"action":"append","tasks":[{"type":"implement","description":"step","prompt":"do it","reasoning_effort":"inherit"}]}`)}
+	res := prepareToolCall(call, reg.Get("task_list"), []string{"task_list"}, "task_list", "")
+	if res.PrevalErr != "" {
+		t.Fatalf("inherit effort rejected: %s", res.PrevalErr)
+	}
+	if len(res.Changes) != 0 {
+		t.Fatalf("inherit effort unexpectedly repaired: %+v", res.Changes)
+	}
+}
+
 // Regression guard: drives the REAL DefTaskList/DefAskUser definitions
 // end-to-end through prepareToolCall so a future schema edit that drifts the
 // repair package's hand-built fixtures out of sync fails loudly here, not
@@ -160,29 +209,12 @@ func TestPrepareToolCall_NestedSchemaErrors_NameRealFieldAndContainer(t *testing
 		}
 	})
 
-	t.Run("ask_user question header too long", func(t *testing.T) {
+	t.Run("ask_user accepts a long question header", func(t *testing.T) {
 		call := llm.ToolCallData{ID: "c2", Name: "ask_user",
 			Arguments: json.RawMessage(`{"questions":[{"header":"way too long for a chip label","question":"q","options":[{"label":"a","detail":"a"},{"label":"b","detail":"b"}]}]}`)}
 		res := prepareToolCall(call, reg.Get("ask_user"), []string{"ask_user"}, "ask_user", "")
-		want := "ask_user: argument \"questions[0].header\" exceeds maxLength (12). Value \"way too long for a chip label\" is 29 characters."
-		if res.PrevalErr != want {
-			t.Fatalf("PrevalErr =\n%s\nwant:\n%s", res.PrevalErr, want)
-		}
-		if strings.Contains(res.PrevalErr, "Required arguments") {
-			t.Fatalf("message must not include the generic required-arguments line: %q", res.PrevalErr)
-		}
-	})
-
-	// Issue #193 repro: a header exceeding the documented maxLength (12)
-	// must surface the actual constraint and value/length, not the misleading
-	// "Required arguments" message that claims question/options were missing.
-	t.Run("ask_user header Module & repo is 13 chars", func(t *testing.T) {
-		call := llm.ToolCallData{ID: "c3", Name: "ask_user",
-			Arguments: json.RawMessage(`{"questions":[{"header":"Module & repo","question":"q","options":[{"label":"a","detail":"a"},{"label":"b","detail":"b"}]}]}`)}
-		res := prepareToolCall(call, reg.Get("ask_user"), []string{"ask_user"}, "ask_user", "")
-		want := "ask_user: argument \"questions[0].header\" exceeds maxLength (12). Value \"Module & repo\" is 13 characters."
-		if res.PrevalErr != want {
-			t.Fatalf("PrevalErr =\n%s\nwant:\n%s", res.PrevalErr, want)
+		if res.PrevalErr != "" {
+			t.Fatalf("long header was rejected: %s", res.PrevalErr)
 		}
 	})
 

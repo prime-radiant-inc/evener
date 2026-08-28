@@ -563,6 +563,7 @@ func TestDelegateResourceSupervision_FatalNudgeRunStopsOwnedShell(t *testing.T) 
 		testOnly: testConfig{
 			skipGitSnapshot:     true,
 			minimalSystemPrompt: true,
+			sandboxProber:       bwrapCapableProber(fixture.workspace),
 			subagentAfterFinalStatePublish: func(*subagent) {
 				close(finalStatePublished)
 			},
@@ -913,6 +914,7 @@ func TestDelegateResourceSupervision_OrdinaryMissingTerminalCleanupPrecedesPacke
 		testOnly: testConfig{
 			skipGitSnapshot:     true,
 			minimalSystemPrompt: true,
+			sandboxProber:       bwrapCapableProber(fixture.workspace),
 			subagentAfterFinalStatePublish: func(*subagent) {
 				close(finalStatePublished)
 			},
@@ -1025,6 +1027,7 @@ func TestDelegateResourceSupervision_SubtreeStopSuppressesSubagentStop(t *testin
 	pluginDir := writeStableSubagentStopPlugin(t, marker, `{}`)
 	fixture := newColdStableDelegateFixtureConfigured(t, "", func(descriptor *delegatestore.Descriptor) {
 		descriptor.Config.PluginDirs = []string{pluginDir}
+		descriptor.ToolNameCeiling = append(descriptor.ToolNameCeiling, "write_file")
 	})
 	entered := make(chan struct{})
 	release := make(chan struct{})
@@ -1056,6 +1059,8 @@ func TestDelegateResourceSupervision_BlockingSubagentStopContinuesOnlyOnceWithPe
 	pluginDir := writeStableSubagentStopPlugin(t, marker, `{"decision":"block","reason":"address hook feedback"}`)
 	fixture := newColdStableDelegateFixtureConfigured(t, "", func(descriptor *delegatestore.Descriptor) {
 		descriptor.Config.PluginDirs = []string{pluginDir}
+		// This fixture's SubagentStop hook persistently writes the marker.
+		descriptor.ToolNameCeiling = append(descriptor.ToolNameCeiling, "write_file")
 	})
 	enteredHookContinuation := make(chan struct{})
 	releaseHookContinuation := make(chan struct{})
@@ -1735,6 +1740,9 @@ func runStableSubagentStopHook(t *testing.T, blocking bool) stableSubagentStopOb
 	pluginDir := writeStableSubagentStopPlugin(t, marker, decision)
 	fixture := newColdStableDelegateFixtureConfigured(t, "", func(descriptor *delegatestore.Descriptor) {
 		descriptor.Config.PluginDirs = []string{pluginDir}
+		// The hook appends to a persistent marker, so this is intentionally a
+		// mutating fixture rather than a read-only role.
+		descriptor.ToolNameCeiling = append(descriptor.ToolNameCeiling, "write_file")
 	})
 	continuationSawHook := false
 	fixture.adapter.steps = []func(llm.Request) llm.Response{
@@ -1795,6 +1803,7 @@ func restoreSupervisionRoot(t *testing.T, fixture coldStableDelegateFixture, clo
 		testOnly: testConfig{
 			skipGitSnapshot:     true,
 			minimalSystemPrompt: true,
+			sandboxProber:       bwrapCapableProber(fixture.workspace),
 		},
 	}
 	if clock != nil {

@@ -18,7 +18,7 @@ import (
 // reason to mint a phantom "no-project" group named after the worktree leaf.
 // Two distinct dead lanes of the SAME project make the failure mode visible
 // pre-fix: two archived stubs sharing Key "no-project", which the rail then
-// hydrates from a single /api/tree/project?key=no-project detail — the
+// hydrates from a single navigation project-read detail — the
 // replicated archived rows this regression test guards.
 func TestAPITreeDeletedWorktreeSessionsStayInOriginalProject(t *testing.T) {
 	root := t.TempDir()

@@ -29,10 +29,15 @@ func (a *listerAdapter) ListModels(context.Context) ([]llm.ModelInfo, error) {
 
 func TestListModelsFunc(t *testing.T) {
 	c := llm.NewClient()
+	supportsWebSearch := false
 	c.Register(&listerAdapter{
 		name: "stub",
 		models: []llm.ModelInfo{
-			{ID: "m1", DisplayName: "Model One"},
+			{
+				ID: "m1", DisplayName: "Model One", ContextWindow: 64_000,
+				CapabilitiesAdvertised: true, SupportsVision: true,
+				SupportsWebSearch: &supportsWebSearch,
+			},
 			{ID: "m2", DisplayName: "Model Two"},
 		},
 	})
@@ -41,9 +46,14 @@ func TestListModelsFunc(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ListModelsFunc: %v", err)
 	}
-	if len(items) != 2 || items[0].ID != "m1" || items[0].DisplayName != "Model One" ||
-		items[1].ID != "m2" || items[1].DisplayName != "Model Two" {
+	if len(items) != 2 || items[0].Model != "m1" || items[0].DisplayName != "Model One" ||
+		items[1].Model != "m2" || items[1].DisplayName != "Model Two" {
 		t.Fatalf("mapped items = %+v", items)
+	}
+	if items[0].ContextWindow == nil || *items[0].ContextWindow != 64_000 ||
+		items[0].SupportsVision == nil || !*items[0].SupportsVision ||
+		items[0].SupportsWebSearch == nil || *items[0].SupportsWebSearch {
+		t.Fatalf("mapped metadata = %+v", items[0])
 	}
 
 	// An unknown provider surfaces the client's error through the closure.

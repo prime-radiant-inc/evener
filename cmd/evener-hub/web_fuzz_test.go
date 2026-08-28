@@ -20,8 +20,8 @@ const fuzzSessionID = sandboxSessionID
 // fuzzReadOnlyRoutes is the allowlist of GET-only, non-mutating, non-networked
 // hub routes the handler fuzz drives — the single canonical list in
 // internal/fuzzroutes, shared with the corpus harvester so the two can't drift.
-// Mutating routes (/api/spawn, /api/upgrade, /api/dirs/create, the action verbs),
-// routes that shell out (/api/git/head), and provider-probing routes (/api/models)
+// Mutating routes (including the retired /api/spawn slot and the action verbs),
+// routes that shell out (/api/git/head), and provider-probing model-list calls
 // are excluded so a fuzzed request can never touch the real environment.
 var fuzzReadOnlyRoutes = fuzzroutes.ReadOnly
 
@@ -103,7 +103,7 @@ func FuzzWebHandler(f *testing.F) {
 		{9, ""},                   // /_partials/settings (defaults to general)
 		{12, ""},                  // /api/tree
 		{13, ""},                  // /api/health
-		{14, ""},                  // /api/search
+		{14, ""},                  // former /api/search route; index retained for corpus stability
 		{16, ""},                  // /settings
 	}
 	for _, s := range seeds {

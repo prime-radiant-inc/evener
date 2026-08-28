@@ -1,6 +1,7 @@
 package hub
 
 import (
+	"context"
 	"path/filepath"
 	"sort"
 	"testing"
@@ -18,14 +19,33 @@ func TestHubRouterMatchesCatalog(t *testing.T) {
 	cfg := hubcore.WebConfig{
 		Past:                hubcore.NewPastIndex(""),
 		ProvidersConfigPath: filepath.Join(t.TempDir(), "providers.toml"),
+		HubStateRoot:        t.TempDir(),
 	}
-	server := newHubAppServer(cfg, appsource.NewRegistry())
-	got := excludeHubMethods(server.Router().Methods(), appwire.ConnectionMethodNames())
+	web := NewWebServer(cfg)
+	got := excludeHubMethods(web.appRPC.Router().Methods(), appwire.ConnectionMethodNames())
 	want := appwire.CatalogMethodNames(appwire.ScopeHub)
 
 	miss, extra := setDiff(want, got)
 	if len(miss) > 0 || len(extra) > 0 {
 		t.Fatalf("hub router vs appwire catalog mismatch:\n  cataloged but NOT registered: %v\n  registered but NOT cataloged: %v\nUpdate appwire/protocol.go (and run `make generate`).", miss, extra)
+	}
+}
+
+func TestHubInitializeAdvertisesNavigationCapability(t *testing.T) {
+	server := newHubAppServer(hubcore.WebConfig{Past: hubcore.NewPastIndex("")}, appsource.NewRegistry())
+	message := server.NewConnection("test").HandleMessage(context.Background(), appwire.RequestMessage(appwire.NewIntID(1), appwire.MethodInitialize, appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}))
+	if message.Response == nil {
+		t.Fatalf("initialize response = %#v, want success", message)
+	}
+	response, ok := message.Response.Result.(appwire.InitializeResponse)
+	if !ok {
+		t.Fatalf("initialize result = %T, want appwire.InitializeResponse", message.Response.Result)
+	}
+	if response.Navigation == nil {
+		t.Fatal("navigation capability is absent")
+	}
+	if response.Navigation.Version != 1 {
+		t.Fatalf("navigation version = %d, want 1", response.Navigation.Version)
 	}
 }
 

@@ -134,26 +134,41 @@ func hubLaunchConfigRoot(cfg hubcore.WebConfig) string {
 }
 
 func newHubAppServer(cfg hubcore.WebConfig, sources *appsource.Registry) *appserver.Server {
+	return newHubAppServerWithNavigation(cfg, sources, nil)
+}
+
+func newHubAppServerWithNavigation(cfg hubcore.WebConfig, sources *appsource.Registry, navigation *NavigationService) *appserver.Server {
+	capability := &appwire.NavigationCapability{Version: 1}
+	var capabilityProvider func() *appwire.NavigationCapability
+	if navigation != nil {
+		capability = nil
+		capabilityProvider = func() *appwire.NavigationCapability {
+			return navigation.Capability()
+		}
+	}
 	server := appserver.NewServer(appserver.ServerConfig{
-		ServerName: "evener-hub",
-		Version:    Version,
-		SourceID:   "local",
+		ServerName:           "evener-hub",
+		Version:              Version,
+		SourceID:             "local",
+		Navigation:           capability,
+		NavigationCapability: capabilityProvider,
 		Logf: func(format string, args ...any) {
 			fmt.Fprintf(os.Stderr, "[hub] "+format+"\n", args...)
 		},
 		Features: appwire.FeatureSet{
-			ThreadList:        true,
-			ThreadTurnsList:   true,
-			TurnStart:         true,
-			TurnSteer:         true,
-			ThreadClear:       false,
-			ThreadShutdown:    true,
-			ForkFromTurn:      true,
-			Tasks:             true,
-			TranscriptList:    true,
-			ModelList:         true,
-			DirectoryComplete: true,
-			Auth:              true,
+			ThreadList:                true,
+			ThreadTurnsList:           true,
+			TurnStart:                 true,
+			TurnSteer:                 true,
+			ThreadClear:               false,
+			ThreadShutdown:            true,
+			ForkFromTurn:              true,
+			Tasks:                     true,
+			TranscriptList:            true,
+			ModelList:                 true,
+			DirectoryComplete:         true,
+			Auth:                      true,
+			TranscriptDisplaySettings: true,
 		},
 	})
 	hubStateRoot := cfg.HubStateRoot
@@ -177,16 +192,23 @@ func newHubAppServer(cfg hubcore.WebConfig, sources *appsource.Registry) *appser
 		observeHubRelayFunctions(relayFunctions)
 	}
 	registerThreadHandlers(server, cfg, sources, relayFunctions)
+	registerThreadNameSetHandler(server, cfg, sources, navigation)
 	registerAuthHandlers(server, authController)
 	registerInstanceHandlers(server, instancesController)
 	// launch.toml is user-editable configuration, so its root is the config
 	// root, not hubStateRoot (machine-generated state).
 	launchController := newHubLaunchController(hubLaunchConfigRoot(cfg))
 	registerLaunchHandlers(server, launchController)
-	pluginsController := newHubPluginsController(cfg.PluginRoot)
+	pluginsController := newHubPluginsController(cfg.PluginRoot, hubLaunchConfigRoot(cfg))
 	registerPluginHandlers(server, pluginsController)
+	registerMobilePairingHandler(server, cfg)
+	registerNavigationReadHandler(server, navigation)
+	registerFavoriteHandler(server, cfg, navigation)
+	registerArchiveHandler(server, cfg, func() *NavigationService { return navigation })
+	registerSessionDeleteHandler(server, nil)
 	registerMiscHandlers(server, cfg, sources)
 	registerPluginAutoUpgradeHandlers(server, plugins.NewManager(cfg.PluginRoot))
+	registerTranscriptDisplayHandlers(server, cfg.TranscriptDisplayStore)
 	return server
 }
 
@@ -519,8 +541,8 @@ func registerThreadHandlers(
 	appserver.HandleTyped(server.Router(), appwire.MethodThreadModelSet, func(ctx context.Context, params appwire.ThreadModelSetParams) (appwire.EmptyResponse, error) {
 		return appwire.EmptyResponse{}, setThreadModelWithResume(ctx, cfg, sources, params)
 	})
-	appserver.HandleTyped(server.Router(), appwire.MethodEvenerThreadNameSet, func(ctx context.Context, params appwire.ThreadNameSetParams) (appwire.EmptyResponse, error) {
-		return setThreadNameWithResume(ctx, cfg, sources, params)
+	appserver.HandleTyped(server.Router(), appwire.MethodThreadVisionModelSet, func(ctx context.Context, params appwire.ThreadVisionModelSetParams) (appwire.EmptyResponse, error) {
+		return appwire.EmptyResponse{}, setThreadVisionModelWithResume(ctx, cfg, sources, params)
 	})
 	appserver.HandleTyped(server.Router(), appwire.MethodThreadReasoningEffortSet, func(ctx context.Context, params appwire.ThreadReasoningEffortSetParams) (appwire.EmptyResponse, error) {
 		return withDeletionTargetOwnership(cfg, params.Ref, "", "", func() (appwire.EmptyResponse, error) {
@@ -691,6 +713,9 @@ func registerPluginHandlers(server *appserver.Server, pluginsController *hubPlug
 	appserver.HandleTyped(server.Router(), appwire.MethodEvenerPluginList, func(_ context.Context, _ appwire.EmptyParams) (appwire.PluginListResponse, error) {
 		return pluginsController.ListPlugins()
 	})
+	appserver.HandleTyped(server.Router(), appwire.MethodEvenerPluginPreview, func(ctx context.Context, params appwire.PluginPreviewParams) (appwire.PluginPreviewResponse, error) {
+		return pluginsController.Preview(ctx, params)
+	})
 	appserver.HandleTyped(server.Router(), appwire.MethodEvenerPluginInstall, func(ctx context.Context, params appwire.PluginRefParams) (appwire.PluginListResponse, error) {
 		resp, err := pluginsController.Install(ctx, params)
 		if err == nil {
@@ -751,11 +776,13 @@ func notifyPluginUpdated(server *appserver.Server) {
 // count (issue #35): the 15 most recently used projects.
 const recentProjectDirsLimit = 15
 
-// registerMiscHandlers registers the remaining hub RPC handlers: model list,
-// task list, transcript list, directory completion, path validation, and the
-// harness descriptor list.
+// registerMiscHandlers registers hub RPC handlers that are not owned by a
+// focused controller registration.
 func registerMiscHandlers(server *appserver.Server, cfg hubcore.WebConfig, sources *appsource.Registry) {
 	appserver.HandleTyped(server.Router(), appwire.MethodEvenerUpgrade, hubUpgrade)
+	appserver.HandleTyped(server.Router(), appwire.MethodEvenerSearch, func(_ context.Context, params appwire.SearchParams) (appwire.SearchResponse, error) {
+		return hubSearch(cfg, params), nil
+	})
 	appserver.HandleTyped(server.Router(), appwire.MethodModelList, func(ctx context.Context, params appwire.ModelListParams) (appwire.ModelListResponse, error) {
 		return hubModelList(ctx, cfg, sources, params)
 	})
@@ -774,6 +801,9 @@ func registerMiscHandlers(server *appserver.Server, cfg hubcore.WebConfig, sourc
 	appserver.HandleTyped(server.Router(), appwire.MethodEvenerPathsComplete, func(_ context.Context, params appwire.PathsCompleteParams) (appwire.PathsCompleteResponse, error) {
 		return fspaths.CompletePaths(params)
 	})
+	appserver.HandleTyped(server.Router(), appwire.MethodEvenerDirsCreate, func(_ context.Context, params appwire.DirsCreateParams) (appwire.DirsCreateResponse, error) {
+		return hubDirsCreate(cfg, params)
+	})
 	appserver.HandleTyped(server.Router(), appwire.MethodEvenerProjectsRecent, func(_ context.Context, params appwire.ProjectsRecentParams) (appwire.ProjectsRecentResponse, error) {
 		limit := params.Limit
 		if limit <= 0 {
@@ -790,6 +820,9 @@ func registerMiscHandlers(server *appserver.Server, cfg hubcore.WebConfig, sourc
 	})
 	appserver.HandleTyped(server.Router(), appwire.MethodEvenerPathValidate, func(_ context.Context, params appwire.PathValidateParams) (appwire.PathValidateResponse, error) {
 		return fspaths.ValidateLaunchPath(params), nil
+	})
+	appserver.HandleTyped(server.Router(), appwire.MethodEvenerGitHead, func(ctx context.Context, params appwire.GitHeadParams) (appwire.GitHeadResponse, error) {
+		return hubGitHead(ctx, cfg, params), nil
 	})
 	appserver.HandleTyped(server.Router(), appwire.MethodEvenerHarnessesList, func(context.Context, appwire.HarnessListParams) (appwire.HarnessListResponse, error) {
 		return appwire.HarnessListResponse{Data: launchHarnessDescriptors(cfg)}, nil
@@ -818,8 +851,11 @@ func registerMiscHandlers(server *appserver.Server, cfg hubcore.WebConfig, sourc
 // Loading is fail-soft (plugin.LoadAllFailSoft), so one broken or mid-edit
 // plugin dir cannot blank out the whole command catalog.
 func hubCommandList(cfg hubcore.WebConfig) (appwire.CommandListResponse, error) {
-	dirs := plugins.NewManager(cfg.PluginRoot).EnabledPluginDirs(cfg.PluginDirs)
-	loaded, _ := plugin.LoadAllFailSoft(dirs)
+	resolution, err := plugins.NewManager(cfg.PluginRoot).ResolveForLaunch(cfg.PluginDirs, nil)
+	if err != nil {
+		_, _ = fmt.Fprintf(os.Stderr, "warning: listing plugins: %v\n", err)
+	}
+	loaded, _ := plugin.LoadAllFailSoft(resolution.SelectedDirs)
 	evenerwide, _ := plugin.DiscoverEvenerWideCommands(nil)
 	merged := plugin.MergeCommands(loaded, evenerwide)
 	var commands []appwire.CommandDescriptor

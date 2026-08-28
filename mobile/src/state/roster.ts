@@ -7,12 +7,12 @@
 // generation changed during the await (e.g. a profile switch bumped it), the
 // late result is silently dropped so it cannot overwrite a newer state.
 //
-// Event refresh: when sessionsVisible is true, tree/changed, attention/changed,
-// and thread/status/changed notifications schedule a debounced refresh through
-// the injected scheduler. The scheduler key is scoped to the current generation
-// so a pending refresh from an old generation is invalidated by a generation
-// bump. Two rapid signals coalesce into one refresh because they share the
-// same key.
+// Event refresh: when sessionsVisible is true, canonical notifications that can
+// create, close, reclassify, queue, rename, or change attention for a roster
+// entry schedule a debounced refresh through the injected scheduler. The
+// scheduler key is scoped to the current generation so a pending refresh from
+// an old generation is invalidated by a generation bump. Two rapid signals
+// coalesce into one refresh because they share the same key.
 //
 // Last-good retention: on refresh error the store keeps the existing entries
 // and sets the error message. Pull-to-refresh calls refresh(service) again.
@@ -123,10 +123,13 @@ function derive(
 }
 
 // Notification methods that should trigger a roster refresh.
-const REFRESH_METHODS = new Set<string>([
-  "evener/tree/changed",
-  "evener/attention/changed",
+const REFRESH_METHODS = new Set<AnyNotification["method"]>([
+  "thread/started",
+  "thread/closed",
   "thread/status/changed",
+  "thread/queueChanged",
+  "evener/thread/name/changed",
+  "evener/attention/changed",
 ]);
 
 export interface CreateRosterStoreOptions {

@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"time"
 
 	"primeradiant.com/evener/agent/events"
 	"primeradiant.com/evener/agent/execenv"
@@ -47,7 +48,7 @@ func (s *Session) disposeDelegateLanesAtClose(ctx context.Context) {
 
 	// The whole close cascade shares ONE budget (spec §P0, Implementation-order
 	// item 4): reuse an incoming cascade deadline, or mint one here when this is
-	// the initiating close. laneClosePassBudget bounds evaluation + disposal git
+	// the initiating close. LaneClosePassBudget bounds evaluation + disposal git
 	// work only — never the touch+unlock tail below.
 	budgetCtx, cancel := ensureCloseBudget(ctx)
 	defer cancel()
@@ -177,7 +178,7 @@ var closeBudgetMintHook func()
 // ensureCloseBudget returns a context carrying the shared close-cascade deadline.
 // When ctx already carries a deadline (a descendant reached through the close
 // cascade), it is reused unchanged so per-session budgets never stack; otherwise
-// this is the initiating close and a fresh laneClosePassBudget deadline is minted.
+// this is the initiating close and a fresh LaneClosePassBudget deadline is minted.
 func ensureCloseBudget(ctx context.Context) (context.Context, context.CancelFunc) {
 	if _, ok := ctx.Deadline(); ok {
 		return ctx, func() {}
@@ -185,7 +186,28 @@ func ensureCloseBudget(ctx context.Context) (context.Context, context.CancelFunc
 	if closeBudgetMintHook != nil {
 		closeBudgetMintHook()
 	}
-	return context.WithTimeout(ctx, laneClosePassBudget)
+	return context.WithTimeout(ctx, LaneClosePassBudget)
+}
+
+// closeStopJoinContext reserves half of the shared close budget for the
+// bounded joins and teardown that follow the delegate stop. A stop driver can
+// be parked forever behind an uncancellable tool call; letting that driver
+// consume the entire cascade deadline makes the later bounded joins nominal
+// only and turns an abandoned subtree into a full-budget shutdown. If this is
+// a descendant close, halve the remaining inherited budget instead so a nested
+// stop cannot consume the time its parent has left.
+func closeStopJoinContext(ctx context.Context) (context.Context, context.CancelFunc) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	budget := LaneClosePassBudget / 2
+	if deadline, ok := ctx.Deadline(); ok {
+		remaining := time.Until(deadline)
+		if remaining < budget {
+			budget = remaining / 2
+		}
+	}
+	return context.WithTimeout(ctx, budget)
 }
 
 // touchUnlockLaneTail runs the budget-exempt tail for a lane the close pass could

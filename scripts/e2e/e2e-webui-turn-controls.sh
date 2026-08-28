@@ -34,8 +34,8 @@
 #   scripts/e2e/e2e-webui-turn-controls.sh --stop RUN_DIR # kill a prior run, remove RUN_DIR
 #
 # OUTPUT: fakellm and the hub keep running in the background after this
-# script exits — that is the point, so a browser or a follow-up REST call has
-# something to attach to. Nothing here needs, reads, or sets a real provider
+# script exits — that is the point, so a browser or the TUI has something to
+# attach to. Nothing here needs, reads, or sets a real provider
 # credential.
 # END-USAGE (--help prints everything above this line)
 set -euo pipefail
@@ -204,11 +204,10 @@ Ready. $mode_line
   Open the UI (visit once per browser, then navigate freely):
     $hub_addr/auth?token=$token
 
-  Spawn a session that will sit in a long turn:
-    curl -s -X POST -H "Content-Type: application/json" \\
-      -H "Authorization: Bearer $token" \\
-      -d '{"prompt":"read NOTES.md and keep working","model":"fake/fake-test-model","working_dir":"$workspace","harness":"evener","branch":"","access_mode":"full","agent":"default","launch_overrides":{}}' \\
-      $hub_addr/api/spawn
+  Start a session through the AppWire-backed UI:
+    visit $hub_addr/auth?token=$token, then navigate to /new
+    and use working directory $workspace, model fake/fake-test-model,
+    and prompt "read NOTES.md and keep working"
 
   Watch what actually reached the model each round:
     tail -f $run/fakellm.log

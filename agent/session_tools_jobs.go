@@ -444,6 +444,15 @@ func stableDelegateStatusTool(s *Session, delegateID string, maxChars int) (any,
 // child-owned pending is a drive signal, not the parent's news to hear:
 // settling it there would silence the child's own undelivered notification.
 func consumeTerminalJobNotification(s *Session, jm *jobManager, rec *jobstore.JobRecord) {
+	markTerminalJobNotificationConsumed(s, jm, rec, true)
+}
+
+// markTerminalJobNotificationConsumed persists the consumed disposition and,
+// when removeQueued is true, applies the ordinary status-read behavior of
+// removing matching queue entries. Terminal-drain cuts pass false: they have
+// already removed only the exact pre-cut queue identities, and removing by job
+// ID here could erase a fresh post-cut generation of the same job.
+func markTerminalJobNotificationConsumed(s *Session, jm *jobManager, rec *jobstore.JobRecord, removeQueued bool) {
 	if jm == nil || rec == nil || rec.TerminalGen == "" {
 		return
 	}
@@ -468,7 +477,7 @@ func consumeTerminalJobNotification(s *Session, jm *jobManager, rec *jobstore.Jo
 		return
 	}
 	rec.NotifyState = jobstore.NotifyConsumed
-	if jm.consume != nil {
+	if removeQueued && jm.consume != nil {
 		jm.consume(rec.JobID)
 	}
 	// Settle the parent's forwarded COPY too, for the same reason a delivery
@@ -684,6 +693,7 @@ func projectStableDelegateListItem(now time.Time, visible stableDelegateVisibleR
 		Depth:                visible.depth,
 		Task:                 snapshot.descriptor.Task,
 		AgentType:            snapshot.descriptor.AgentType,
+		Tools:                append([]string(nil), snapshot.descriptor.ToolNameCeiling...),
 		Model:                snapshot.descriptor.ResolvedModel,
 		ReasoningEffort:      snapshot.descriptor.Config.ReasoningEffort,
 		ParentDelegateID:     stringPtrOrNil(snapshot.parentID),
@@ -1009,6 +1019,7 @@ type stableDelegateStatusResult struct {
 	Task               string                 `json:"task"`
 	Description        string                 `json:"description,omitempty"`
 	AgentType          string                 `json:"agent_type"`
+	Tools              []string               `json:"tools,omitempty"`
 	Model              string                 `json:"model,omitempty"`
 	ReasoningEffort    string                 `json:"reasoning_effort,omitempty"`
 	Resumable          bool                   `json:"resumable"`
@@ -1032,6 +1043,7 @@ func projectStableDelegateStatus(now time.Time, snapshot delegateSnapshot) stabl
 		Task:               descriptor.Task,
 		Description:        descriptor.Description,
 		AgentType:          descriptor.AgentType,
+		Tools:              append([]string(nil), descriptor.ToolNameCeiling...),
 		Model:              descriptor.ResolvedModel,
 		ReasoningEffort:    descriptor.Config.ReasoningEffort,
 		Resumable:          snapshot.resumable,
@@ -1116,21 +1128,22 @@ type recentWatchEntry struct {
 }
 
 type jobListEntry struct {
-	ID               string  `json:"id"`
-	JobID            string  `json:"job_id,omitempty"`
-	Kind             string  `json:"kind"`
-	Type             string  `json:"type"`
-	Status           string  `json:"status"`
-	Phase            string  `json:"phase,omitempty"`
-	Reason           *string `json:"reason,omitempty"`
-	Description      string  `json:"description"`
-	Task             string  `json:"task,omitempty"`
-	AgentType        string  `json:"agent_type,omitempty"`
-	Model            string  `json:"model,omitempty"`
-	ReasoningEffort  string  `json:"reasoning_effort,omitempty"`
-	ParentJobID      *string `json:"parent_job_id,omitempty"`
-	ParentDelegateID *string `json:"parent_delegate_id,omitempty"`
-	OwnerSessionID   string  `json:"owner_session_id"`
+	ID               string   `json:"id"`
+	JobID            string   `json:"job_id,omitempty"`
+	Kind             string   `json:"kind"`
+	Type             string   `json:"type"`
+	Status           string   `json:"status"`
+	Phase            string   `json:"phase,omitempty"`
+	Reason           *string  `json:"reason,omitempty"`
+	Description      string   `json:"description"`
+	Task             string   `json:"task,omitempty"`
+	AgentType        string   `json:"agent_type,omitempty"`
+	Tools            []string `json:"tools,omitempty"`
+	Model            string   `json:"model,omitempty"`
+	ReasoningEffort  string   `json:"reasoning_effort,omitempty"`
+	ParentJobID      *string  `json:"parent_job_id,omitempty"`
+	ParentDelegateID *string  `json:"parent_delegate_id,omitempty"`
+	OwnerSessionID   string   `json:"owner_session_id"`
 	// VisibleToSessionID is internal visibility routing — in a plain list it always
 	// equals the owner, so it is kept for tooling but omitted from the model wire.
 	VisibleToSessionID string `json:"-"`
@@ -1285,6 +1298,7 @@ type delegateSendResult struct {
 	Task                   string                  `json:"task,omitempty"`
 	Description            string                  `json:"description,omitempty"`
 	AgentType              string                  `json:"agent_type,omitempty"`
+	Tools                  []string                `json:"tools,omitempty"`
 	RequestedModel         string                  `json:"requested_model,omitempty"`
 	ResolvedProfileID      string                  `json:"resolved_profile_id,omitempty"`
 	ResolvedModel          string                  `json:"resolved_model,omitempty"`
@@ -1398,6 +1412,7 @@ func marshalDelegateSendResult(res sendMessageResult, maxChars int) (any, error)
 		Task:                res.Task,
 		Description:         res.Description,
 		AgentType:           res.AgentType,
+		Tools:               append([]string(nil), res.Tools...),
 		RequestedModel:      res.RequestedModel,
 		ResolvedProfileID:   res.ResolvedProfileID,
 		ResolvedModel:       res.ResolvedModel,
@@ -1658,6 +1673,53 @@ func sessionRunningJobIDs(s *Session) []string {
 	for _, rec := range recs {
 		ids = append(ids, rec.JobID)
 	}
+	return ids
+}
+
+// sessionRunningWorkIDs combines managed jobs with detached processes owned by
+// this session. Detached processes deliberately stay out of the job manager and
+// drain accounting, but an end_turn warning must still name one while its own
+// completion receipt is open.
+func sessionRunningWorkIDs(s *Session) []string {
+	ids := sessionRunningJobIDs(s)
+	return append(ids, s.runningDetachedProcessIDs()...)
+}
+
+func (s *Session) recordDetachedProcess(process execenv.DetachedProcess) {
+	if s == nil || process.PID <= 0 || process.Done == nil {
+		// Without a completion receipt we cannot distinguish a live process from a
+		// stale PID safely, so do not manufacture an end-turn warning.
+		return
+	}
+	s.mu.Lock()
+	s.detachedProcesses = append(s.detachedProcesses, sessionDetachedProcess{
+		pid:  process.PID,
+		done: process.Done,
+	})
+	s.mu.Unlock()
+}
+
+// runningDetachedProcessIDs returns only processes whose launcher's completion
+// receipt is still open. The receipt belongs to this exact launch, so a later
+// process reusing the same PID can never be mistaken for a live owned process.
+func (s *Session) runningDetachedProcessIDs() []string {
+	if s == nil {
+		return nil
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	alive := s.detachedProcesses[:0]
+	ids := make([]string, 0, len(s.detachedProcesses))
+	for _, process := range s.detachedProcesses {
+		select {
+		case <-process.done:
+			continue
+		default:
+			alive = append(alive, process)
+			ids = append(ids, fmt.Sprintf("detached process (pid %d)", process.pid))
+		}
+	}
+	s.detachedProcesses = alive
 	return ids
 }
 

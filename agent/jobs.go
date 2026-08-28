@@ -219,11 +219,17 @@ var defaultCloseGrace = 5 * time.Second
 // Package vars, not consts, so tests can override and restore them without
 // waiting wall-clock time.
 var (
-	// laneClosePassBudget bounds the P0 close disposal and the P3 close pass
-	// TOGETHER — one shared deadline per close cascade. It bounds git/history
-	// work only; the budget-exempt touch+unlock tail runs after expiry, so
-	// shutdown never blocks on git yet no lane is left locked.
-	laneClosePassBudget = 30 * time.Second
+	// LaneClosePassBudget bounds the P0 close disposal and the P3 close pass
+	// TOGETHER — one shared deadline per close cascade (ensureCloseBudget mints
+	// it), and since #382 it also bounds close's WaitGroup joins. It bounds
+	// git/history work only; the budget-exempt touch+unlock tail runs after
+	// expiry, so shutdown never blocks on git yet no lane is left locked.
+	//
+	// Exported for the same reason as DrainStallTimeout: the only end-to-end
+	// shape that exercises a teardown blocked on an uncancellable operation is a
+	// whole one-shot `evener run`, which lives in another module. Nothing in
+	// production assigns it.
+	LaneClosePassBudget = 30 * time.Second
 	// laneTailWarnThreshold is the lane count above which the budget-exempt
 	// touch+unlock tail earns a second aggregated warning (a pathological
 	// session leaked far more lanes than a close pass can collect).
@@ -480,11 +486,17 @@ type jobNotification struct {
 	// payload: a job.notification watch carries the completed job's status.
 	Kind                                                       jobNotificationKind
 	JobID, JobType, Status, Reason, Description, TranscriptRef string
-	ExhaustionBudget                                           string
-	ExhaustionLimit                                            int
-	Resumable                                                  *bool
-	OutputBytes                                                int64
-	ExitCode                                                   *int
+	// TerminalGen is the exact durable terminal generation represented by a
+	// terminal notification. queueSeq is its in-memory queue identity. Together
+	// they let terminal acceptance distinguish a pre-cut leftover from a later
+	// completion even if a job ID appears in both sets.
+	TerminalGen      string
+	queueSeq         uint64
+	ExhaustionBudget string
+	ExhaustionLimit  int
+	Resumable        *bool
+	OutputBytes      int64
+	ExitCode         *int
 	// Provenance is the causal origin carried with this notification: the
 	// triggering watch's lineage so the notification turn it drives stamps the
 	// same origin and a same-watch retrigger is suppressed.
@@ -1359,6 +1371,7 @@ func (jm *jobManager) reconcileLostJobsWithLoad(loadJobs func() (map[string]*job
 		if jm.enqueue != nil {
 			jm.enqueue(jobNotification{
 				JobID:            finished.JobID,
+				TerminalGen:      finished.TerminalGen,
 				JobType:          string(rec.Type),
 				Status:           string(finished.Status),
 				Reason:           finished.Reason,
@@ -1986,6 +1999,7 @@ func (jm *jobManager) armFinalizedJob(run *runningJob, terminal *terminalJob) er
 		// notices first, then the terminal.
 		ownNotices = append(ownNotices, jobNotification{
 			JobID:            run.rec.JobID,
+			TerminalGen:      terminal.generation,
 			JobType:          string(run.rec.Type),
 			Status:           string(terminal.status),
 			Reason:           terminal.reason,
@@ -2139,6 +2153,7 @@ func (jm *jobManager) armPendingTerminalNotifications() error {
 		if jm.enqueue != nil {
 			jm.enqueue(jobNotification{
 				JobID:            rec.JobID,
+				TerminalGen:      rec.TerminalGen,
 				JobType:          string(rec.Type),
 				Status:           string(rec.Status),
 				Reason:           rec.Reason,

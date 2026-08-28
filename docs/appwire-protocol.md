@@ -98,6 +98,7 @@ no router (reserved).
 | `thread/model/set` | both | `ThreadModelSetParams` | `EmptyResponse` | Changes the session's model/provider. |
 | `evener/thread/name/set` | both | `ThreadNameSetParams` | `EmptyResponse` | Sets a user-chosen session title (rename). |
 | `thread/reasoning-effort/set` | both | `ThreadReasoningEffortSetParams` | `EmptyResponse` | Sets reasoning effort, normalizing and validating the value. |
+| `thread/vision-model/set` | both | `ThreadVisionModelSetParams` | `EmptyResponse` | Sets the vision side-channel routing ("", "off", or a model ref). |
 | `thread/compact/start` | both | `ThreadCompactStartParams` | `EmptyResponse` | Starts a context-compaction pass on the session. |
 | `thread/shutdown` | both | `ThreadShutdownParams` | `EmptyResponse` | Shuts the session down (the daemon runs it asynchronously). |
 | `turn/start` | both | `TurnStartParams` | `TurnStartResponse` | Starts a new user turn and reserves a turn ID. |
@@ -114,8 +115,17 @@ no router (reserved).
 | `evener/thread/transcripts/list` | hub | `ThreadTranscriptListParams` | `ThreadTranscriptListResponse` | Lists transcript targets (subagents/related threads) for a ref. |
 | `evener/subagentPreview` | hub | `EvenerSubagentPreviewParams` | `EvenerSubagentPreviewResponse` | Reads a bounded lazy preview of a subagent transcript's latest direct items. |
 | `evener/paths/complete` | hub | `PathsCompleteParams` | `PathsCompleteResponse` | Path autocompletion for a prefix. |
+| `evener/dirs/create` | hub | `DirsCreateParams` | `DirsCreateResponse` | Creates a missing working directory and its parents for Spawn preflight. |
 | `evener/projects/recent` | hub | `ProjectsRecentParams` | `ProjectsRecentResponse` | Lists the most recently used project working directories (session creation path-dropdown options; default cap 15). |
 | `evener/path/validate` | hub | `PathValidateParams` | `PathValidateResponse` | Validates a launch path. |
+| `evener/git/head` | hub | `GitHeadParams` | `GitHeadResponse` | Reads git HEAD for a working directory. |
+| `evener/mobile/pairing` | hub | `MobilePairingParams` | `MobilePairingResponse` | Creates a validated mobile pairing URL for the authenticated web application. |
+| `evener/navigation/read` | hub | `NavigationReadParams` | `NavigationReadResponse` | Reads one bounded, revisioned hub navigation resource, optionally conditional on its ETag. |
+| `evener/favorite/set` | hub | `FavoriteSetParams` | `FavoriteSetResponse` | Sets or clears a project favorite and returns the committed navigation invalidation targets. |
+| `evener/archive/set` | hub | `ArchiveParams` | `ArchiveResponse` | Sets or clears an explicit project or session archive decision and returns its committed navigation receipt. |
+| `evener/project/delete` | hub | `ProjectDeleteParams` | `ProjectDeleteResponse` | Deletes every removable session in one path-validated local project and returns detailed outcomes plus its committed navigation receipt. |
+| `evener/session/delete` | hub | `SessionDeleteParams` | `SessionDeleteResponse` | Deletes one ended or confirmed-crashed local session; live or concurrently reserved targets are returned in skipped, and successful cleanup includes its committed navigation receipt. |
+| `evener/search` | hub | `SearchParams` | `SearchResponse` | Searches live and persisted sessions for the hub command palette. |
 | `evener/harnesses/list` | hub | `HarnessListParams` | `HarnessListResponse` | Lists available harness descriptors. |
 | `evener/upgrade` | hub | `UpgradeParams` | `UpgradeResponse` | Performs or reports a evener binary upgrade. |
 | `evener/auth/status` | hub | `AuthStatusParams` | `AuthStatusResponse` | Reports auth/credential status for a provider. |
@@ -139,6 +149,7 @@ no router (reserved).
 | `evener/instance/remove` | hub | `InstanceRemoveParams` | `InstanceListResponse` | Removes a provider instance; returns the updated list. |
 | `evener/instance/setDefault` | hub | `InstanceSetDefaultParams` | `InstanceListResponse` | Sets the default provider instance; returns the updated list. |
 | `evener/plugin/checkNow` | hub | `EmptyParams` | `PluginCheckNowResponse` | Runs one auto-upgrade daemon pass on demand; broadcasts evener/plugin/updated per plugin actually upgraded. |
+| `evener/plugin/preview` | hub | `PluginPreviewParams` | `PluginPreviewResponse` | Previews the plugins selected for a launch without starting a session or executing plugin commands. |
 | `evener/marketplace/list` | hub | `EmptyParams` | `MarketplaceListResponse` | Lists registered plugin marketplaces. |
 | `evener/marketplace/add` | hub | `MarketplaceAddParams` | `MarketplaceListResponse` | Registers a plugin marketplace; returns the updated list. |
 | `evener/marketplace/remove` | hub | `MarketplaceNameParams` | `MarketplaceListResponse` | Unregisters a plugin marketplace; returns the updated list. |
@@ -153,6 +164,8 @@ no router (reserved).
 | `evener/plugin/setAutoUpgrade` | hub | `PluginSetAutoUpgradeParams` | `PluginListResponse` | Sets an installed plugin's auto-upgrade flag; returns the updated list. |
 | `evener/command/list` | hub | `EmptyParams` | `CommandListResponse` | Lists loaded slash commands (name, plugin, description, source: plugin, project, or user) for catalog/autocomplete display. |
 | `evener/settings/overview` | hub | `EmptyParams` | `SettingsOverviewResponse` | Returns the settings overview field bag: hub/runtime, storage, agent roster, codex launch configs, and probed MCP servers — the six template-only settings sections' data. |
+| `evener/settings/transcriptDisplay/get` | hub | `EmptyParams` | `TranscriptDisplayDefaults` | Reads the canonical Desktop and Mobile transcript-display defaults. |
+| `evener/settings/transcriptDisplay/patch` | hub | `TranscriptDisplayDefaultsPatchParams` | `TranscriptDisplayPatchResponse` | Updates one transcript-display default using an expected revision and returns the canonical value. |
 | `evener/sandbox/escalation/resolve` | both | `SandboxEscalationResolveParams` | `EmptyResponse` | Delivers a human's approve/deny decision for a pending sandbox-exemption escalation (M7); the daemon unblocks the waiting tool-exec goroutine, the hub relays. |
 
 ## Notifications (server → client)
@@ -169,6 +182,7 @@ Pushed to subscribed connections; no `id`. The web client maps these in
 | `evener/thread/name/changed` | `ThreadNameChangedParams` | The session title changed (generated or user-renamed). |
 | `thread/model/changed` | `ThreadModelChangedParams` | The session's model/provider changed mid-session (thread/model/set or an equivalent switch). |
 | `thread/reasoning-effort/changed` | `ThreadReasoningEffortChangedParams` | The session's reasoning effort changed mid-session (thread/reasoning-effort/set). |
+| `thread/vision-model/changed` | `ThreadVisionModelChangedParams` | The session's vision side-channel routing changed mid-session (thread/vision-model/set). |
 | `turn/started` | `TurnStartedParams` | A new turn began (inProgress). |
 | `turn/completed` | `TurnCompletedParams` | A turn reached a terminal state (completed/failed/interrupted). |
 | `item/started` | `ItemLifecycleParams` | A thread item began streaming. |
@@ -187,13 +201,14 @@ Pushed to subscribed connections; no `id`. The web client maps these in
 | `evener/auth/updated` | `EvenerAuthUpdatedParams` | Broadcast after a successful auth mutation. Clients refresh auth state. |
 | `evener/launch/updated` | `EvenerLaunchUpdatedParams` | Broadcast after a launch layer/trust mutation. Clients refresh launch config. |
 | `evener/attention/changed` | `AttentionChangedPayload` | Hub-derived attention transitions for live sessions plus authoritative badge summary. Hub-originated; never sent by daemons. |
+| `evener/navigation/invalidated` | `NavigationInvalidatedPayload` | Hub-derived scoped navigation-resource invalidation. Clients conditionally revalidate only the named loaded resources. |
 | `evener/marketplace/updated` | `EmptyParams` | Broadcast after a marketplace mutation (add/remove/refresh); no payload. Clients refresh the marketplace list. |
 | `evener/plugin/updated` | `EmptyParams` | Broadcast after a plugin mutation (install/upgrade/remove/enable/disable/setAutoUpgrade); no payload. Clients refresh the plugin list. |
 | `evener/thread/resync` | `ThreadResyncParams` | Hub-originated hint asking clients to re-read one thread after relay recovery. |
 | `evener/task/updated` | `TaskUpdatedParams` | The session's task-list progress (total/done) changed. |
 | `evener/sandbox/escalation/requested` | `SandboxEscalationRequested` | A harness-raised, human-gated sandbox-exemption approval card (M7); the tool-exec goroutine blocks until answered via evener/sandbox/escalation/resolve. |
 | `evener/sandbox/escalation/resolved` | `SandboxEscalationResolved` | A previously-raised sandbox escalation left the pending set — resolved, turn-interrupted, or cleared by session close (M7); every OTHER subscribed client clears its now-stale copy of the card. |
-| `evener/tree/changed` | `EmptyParams` | Broadcast after tree-relevant state changes (roster delta, past-index change, or an archive/favorite/rename/project-delete mutation); no payload. Clients refetch /api/tree (debounced). Hub-originated; never sent by daemons. |
+| `evener/settings/transcriptDisplay/changed` | `TranscriptDisplayChangedParams` | Broadcast after a transcript-display default changes; carries the layout, revision, and canonical configuration. |
 
 ## Type reference
 
@@ -220,6 +235,24 @@ An embedded type contributes its own fields inline.
 | `ref` | `string` |  |  |
 | `turnId` | `string` |  |  |
 | `itemId` | `string` |  |  |
+
+
+### `ArchiveParams`
+
+| Field | Go type | Omitempty | Embedded |
+|-------|---------|-----------|----------|
+| `kind` | `appwire.ArchiveTargetKind` |  |  |
+| `id` | `string` |  |  |
+| `workingDir` | `string` | yes |  |
+| `archived` | `bool` |  |  |
+
+
+### `ArchiveResponse`
+
+| Field | Go type | Omitempty | Embedded |
+|-------|---------|-----------|----------|
+| `ok` | `bool` |  |  |
+| `navigation` | `appwire.NavigationMutation` |  |  |
 
 
 ### `AttentionChangedPayload`
@@ -378,6 +411,21 @@ An embedded type contributes its own fields inline.
 | `commands` | `[]appwire.CommandDescriptor` |  |  |
 
 
+### `DirsCreateParams`
+
+| Field | Go type | Omitempty | Embedded |
+|-------|---------|-----------|----------|
+| `path` | `string` |  |  |
+
+
+### `DirsCreateResponse`
+
+| Field | Go type | Omitempty | Embedded |
+|-------|---------|-----------|----------|
+| `path` | `string` |  |  |
+| `created` | `bool` |  |  |
+
+
 ### `EmptyParams`
 
 _(no fields)_
@@ -506,6 +554,37 @@ _(no fields)_
 | `truncated` | `bool` |  |  |
 
 
+### `FavoriteSetParams`
+
+| Field | Go type | Omitempty | Embedded |
+|-------|---------|-----------|----------|
+| `kind` | `string` |  |  |
+| `id` | `string` |  |  |
+| `favorited` | `bool` |  |  |
+
+
+### `FavoriteSetResponse`
+
+| Field | Go type | Omitempty | Embedded |
+|-------|---------|-----------|----------|
+| `ok` | `bool` |  |  |
+| `navigation` | `appwire.NavigationMutation` |  |  |
+
+
+### `GitHeadParams`
+
+| Field | Go type | Omitempty | Embedded |
+|-------|---------|-----------|----------|
+| `cwd` | `string` |  |  |
+
+
+### `GitHeadResponse`
+
+| Field | Go type | Omitempty | Embedded |
+|-------|---------|-----------|----------|
+| `head` | `string` |  |  |
+
+
 ### `GoalSetParams`
 
 | Field | Go type | Omitempty | Embedded |
@@ -550,6 +629,7 @@ _(no fields)_
 | `protocolVersion` | `string` |  |  |
 | `sourceId` | `string` |  |  |
 | `features` | `appwire.FeatureSet` |  |  |
+| `navigation` | `*appwire.NavigationCapability` | yes |  |
 
 
 ### `InstanceCreateParams`
@@ -827,6 +907,7 @@ _(no fields)_
 | `systemPromptAppendText` | `string` | yes |  |
 | `systemPromptAppend` | `[]string` | yes |  |
 | `modelFallbacks` | `[]string` | yes |  |
+| `enabledPlugins` | `*[]string` | yes |  |
 | `mcps` | `[]appwire.MCPServerSpec` | yes |  |
 | `env` | `map[string]string` | yes |  |
 | `verbose` | `*bool` | yes |  |
@@ -918,6 +999,20 @@ _(no fields)_
 | `name` | `string` |  |  |
 
 
+### `MobilePairingParams`
+
+| Field | Go type | Omitempty | Embedded |
+|-------|---------|-----------|----------|
+| `origin` | `string` |  |  |
+
+
+### `MobilePairingResponse`
+
+| Field | Go type | Omitempty | Embedded |
+|-------|---------|-----------|----------|
+| `authUrl` | `string` |  |  |
+
+
 ### `ModelListParams`
 
 | Field | Go type | Omitempty | Embedded |
@@ -933,6 +1028,42 @@ _(no fields)_
 | `data` | `[]appwire.ModelDescriptor` |  |  |
 | `diagnostics` | `[]appwire.ModelListDiagnostic` | yes |  |
 | `recent` | `[]appwire.ModelDescriptor` | yes |  |
+
+
+### `NavigationInvalidatedPayload`
+
+| Field | Go type | Omitempty | Embedded |
+|-------|---------|-----------|----------|
+| `generationId` | `string` |  |  |
+| `sequence` | `uint64` |  |  |
+| `targets` | `[]appwire.NavigationInvalidationTarget` |  |  |
+
+
+### `NavigationReadParams`
+
+| Field | Go type | Omitempty | Embedded |
+|-------|---------|-----------|----------|
+| `resource` | `string` |  |  |
+| `section` | `string` | yes |  |
+| `sectionId` | `string` | yes |  |
+| `catalog` | `string` | yes |  |
+| `projectKey` | `string` | yes |  |
+| `tier` | `string` | yes |  |
+| `ref` | `string` | yes |  |
+| `offset` | `*uint32` | yes |  |
+| `limit` | `*uint32` | yes |  |
+| `etag` | `string` | yes |  |
+
+
+### `NavigationReadResponse`
+
+| Field | Go type | Omitempty | Embedded |
+|-------|---------|-----------|----------|
+| `status` | `string` |  |  |
+| `generationId` | `string` |  |  |
+| `revision` | `uint64` |  |  |
+| `etag` | `string` |  |  |
+| `data` | `jsontext.Value` | yes |  |
 
 
 ### `PathValidateParams`
@@ -983,6 +1114,23 @@ _(no fields)_
 | `plugins` | `[]appwire.PluginEntry` |  |  |
 
 
+### `PluginPreviewParams`
+
+| Field | Go type | Omitempty | Embedded |
+|-------|---------|-----------|----------|
+| `cwd` | `string` |  |  |
+| `launchOverrides` | `*appwire.LaunchConfigLayer` | yes |  |
+
+
+### `PluginPreviewResponse`
+
+| Field | Go type | Omitempty | Embedded |
+|-------|---------|-----------|----------|
+| `plugins` | `[]appwire.PluginLaunchCandidate` |  |  |
+| `diagnostics` | `[]appwire.PluginDiagnostic` | yes |  |
+| `selectionErrors` | `[]appwire.PluginSelectionError` | yes |  |
+
+
 ### `PluginRefParams`
 
 | Field | Go type | Omitempty | Embedded |
@@ -998,6 +1146,23 @@ _(no fields)_
 | `plugin` | `string` |  |  |
 | `marketplace` | `string` |  |  |
 | `autoUpgrade` | `bool` |  |  |
+
+
+### `ProjectDeleteParams`
+
+| Field | Go type | Omitempty | Embedded |
+|-------|---------|-----------|----------|
+| `key` | `string` |  |  |
+| `workingDir` | `string` |  |  |
+
+
+### `ProjectDeleteResponse`
+
+| Field | Go type | Omitempty | Embedded |
+|-------|---------|-----------|----------|
+| `deleted` | `[]string` |  |  |
+| `skipped` | `[]appwire.ProjectDeleteSkip` |  |  |
+| `navigation` | `appwire.NavigationMutation` |  |  |
 
 
 ### `ProjectsRecentParams`
@@ -1059,6 +1224,37 @@ _(no fields)_
 | `threadId` | `string` |  |  |
 | `ref` | `string` |  |  |
 | `escalationId` | `string` |  |  |
+
+
+### `SearchParams`
+
+| Field | Go type | Omitempty | Embedded |
+|-------|---------|-----------|----------|
+| `query` | `string` | yes |  |
+
+
+### `SearchResponse`
+
+| Field | Go type | Omitempty | Embedded |
+|-------|---------|-----------|----------|
+| `live` | `[]appwire.SearchResult` |  |  |
+| `past` | `[]appwire.SearchResult` |  |  |
+
+
+### `SessionDeleteParams`
+
+| Field | Go type | Omitempty | Embedded |
+|-------|---------|-----------|----------|
+| `ref` | `string` |  |  |
+
+
+### `SessionDeleteResponse`
+
+| Field | Go type | Omitempty | Embedded |
+|-------|---------|-----------|----------|
+| `deleted` | `[]string` |  |  |
+| `skipped` | `[]appwire.DeletionSkip` |  |  |
+| `navigation` | `appwire.NavigationMutation` |  |  |
 
 
 ### `SettingsOverviewResponse`
@@ -1401,6 +1597,23 @@ _(no fields)_
 | `nextCursor` | `string` | yes |  |
 
 
+### `ThreadVisionModelChangedParams`
+
+| Field | Go type | Omitempty | Embedded |
+|-------|---------|-----------|----------|
+| `threadId` | `string` |  |  |
+| `ref` | `string` |  |  |
+| `visionModel` | `string` |  |  |
+
+
+### `ThreadVisionModelSetParams`
+
+| Field | Go type | Omitempty | Embedded |
+|-------|---------|-----------|----------|
+| `ref` | `string` |  |  |
+| `visionModel` | `string` |  |  |
+
+
 ### `ToolOutputDeltaParams`
 
 | Field | Go type | Omitempty | Embedded |
@@ -1411,6 +1624,41 @@ _(no fields)_
 | `itemId` | `string` |  |  |
 | `callId` | `string` |  |  |
 | `delta` | `string` |  |  |
+
+
+### `TranscriptDisplayChangedParams`
+
+| Field | Go type | Omitempty | Embedded |
+|-------|---------|-----------|----------|
+| `layout` | `appwire.TranscriptViewportClass` |  |  |
+| `revision` | `uint64` |  |  |
+| `config` | `appwire.TranscriptDisplayConfig` |  |  |
+
+
+### `TranscriptDisplayDefaults`
+
+| Field | Go type | Omitempty | Embedded |
+|-------|---------|-----------|----------|
+| `desktop` | `appwire.TranscriptDisplayDefault` |  |  |
+| `mobile` | `appwire.TranscriptDisplayDefault` |  |  |
+
+
+### `TranscriptDisplayDefaultsPatchParams`
+
+| Field | Go type | Omitempty | Embedded |
+|-------|---------|-----------|----------|
+| `layout` | `appwire.TranscriptViewportClass` |  |  |
+| `expectedRevision` | `uint64` |  |  |
+| `config` | `appwire.TranscriptDisplayConfig` |  |  |
+
+
+### `TranscriptDisplayPatchResponse`
+
+| Field | Go type | Omitempty | Embedded |
+|-------|---------|-----------|----------|
+| `layout` | `appwire.TranscriptViewportClass` |  |  |
+| `revision` | `uint64` |  |  |
+| `config` | `appwire.TranscriptDisplayConfig` |  |  |
 
 
 ### `TurnCancelQueuedParams`

@@ -161,7 +161,9 @@ func taskListParamsForExplain() map[string]any {
 	}
 }
 
-// askUserParamsForExplain mirrors DefAskUser's questions-item schema.
+// askUserParamsForExplain mirrors DefAskUser's questions-item schema. It stays
+// free of presentation-only limits so the fixture catches drift in the real
+// tool definition rather than preserving an obsolete header constraint.
 func askUserParamsForExplain() map[string]any {
 	return map[string]any{
 		"type":                 "object",
@@ -174,7 +176,7 @@ func askUserParamsForExplain() map[string]any {
 				"items": map[string]any{
 					"type": "object",
 					"properties": map[string]any{
-						"header":   map[string]any{"type": "string", "maxLength": 12},
+						"header":   map[string]any{"type": "string"},
 						"question": map[string]any{"type": "string"},
 						"options": map[string]any{
 							"type":     "array",
@@ -189,6 +191,16 @@ func askUserParamsForExplain() map[string]any {
 		},
 		"required": []string{"questions"},
 	}
+}
+
+// askUserParamsWithHeaderMaxLengthForExplain is a deliberately constrained
+// variant used only to exercise ExplainSchemaError's generic maxLength
+// formatter. The real ask_user schema intentionally does not impose this cap.
+func askUserParamsWithHeaderMaxLengthForExplain() map[string]any {
+	params := askUserParamsForExplain()
+	item := params["properties"].(map[string]any)["questions"].(map[string]any)["items"].(map[string]any)
+	item["properties"].(map[string]any)["header"] = map[string]any{"type": "string", "maxLength": 12}
+	return params
 }
 
 func TestExplainSchemaError_ArrayItemMissingRequiredField(t *testing.T) {
@@ -207,7 +219,7 @@ func TestExplainSchemaError_ArrayItemMissingRequiredField(t *testing.T) {
 }
 
 func TestExplainSchemaError_NestedPropertyWrongTypeOrValue(t *testing.T) {
-	params := askUserParamsForExplain()
+	params := askUserParamsWithHeaderMaxLengthForExplain()
 	args := map[string]any{
 		"questions": []any{map[string]any{
 			"header":   strings.Repeat("x", 20),
@@ -244,7 +256,7 @@ func TestExplainSchemaError_ConstraintClasses(t *testing.T) {
 		{
 			name:     "maxLength",
 			toolName: "ask_user",
-			params:   askUserParamsForExplain(),
+			params:   askUserParamsWithHeaderMaxLengthForExplain(),
 			args: map[string]any{"questions": []any{map[string]any{
 				"header": strings.Repeat("x", 20), "question": "q", "options": []any{},
 			}}},

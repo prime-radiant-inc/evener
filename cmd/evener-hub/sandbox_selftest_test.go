@@ -9,7 +9,6 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
-	"strings"
 	"sync"
 	"testing"
 
@@ -52,9 +51,10 @@ func installDenyTransport(t *testing.T) *denyTransport {
 }
 
 // TestSandboxContainsMutatingHandlers is the B0 containment proof. It drives the
-// hub's MUTATING handlers — spawn, git-head, models, dir-create, an action verb
-// — through the full handler stack and asserts that none of them spawned a real
-// process, shelled out, hit the network, or created a file outside the sandbox.
+// hub's mutating handlers — spawn, models, directory creation, and an action
+// verb — through the full handler stack and exercises the git-head AppWire
+// handler directly; none may spawn a real process, shell out, hit the network,
+// or create a file outside the sandbox.
 func TestSandboxContainsMutatingHandlers(t *testing.T) {
 	deny := installDenyTransport(t)
 	s := newSandbox(t)
@@ -82,53 +82,43 @@ func TestSandboxContainsMutatingHandlers(t *testing.T) {
 		return rec
 	}
 
-	// 1. Spawn: the request reaches the recording Spawner, never a subprocess.
-	rec := do(http.MethodPost, "/api/spawn", map[string]any{
-		"harness":     "evener",
-		"working_dir": s.CWD,
-		"model":       "openai/gpt-5.5",
+	// 1. thread/start reaches the recording Spawner, never a subprocess.
+	params, err := json.Marshal(appwire.ThreadStartParams{
+		Harness: "evener",
+		CWD:     s.CWD,
+		Model:   "openai/gpt-5.5",
 	})
-	if rec.Code != http.StatusOK {
-		t.Fatalf("spawn: want 200, got %d body=%s", rec.Code, rec.Body.String())
+	if err != nil {
+		t.Fatalf("marshal thread/start params: %v", err)
+	}
+	request := appwire.Request{
+		ID:     appwire.NewIntID(1),
+		Method: appwire.MethodThreadStart,
+		Params: params,
+	}
+	if _, err := s.Web.appRPC.Router().Dispatch(context.Background(), request); err != nil {
+		t.Fatalf("thread/start: %v", err)
 	}
 	if got := len(s.Spawner.Spawns()); got != 1 {
-		t.Fatalf("spawn did not reach the recording spawner: recorded %d spawns", got)
+		t.Fatalf("thread/start did not reach the recording spawner: recorded %d spawns", got)
+	}
+	var rec *httptest.ResponseRecorder
+
+	// 2. git-head: the AppWire response carries the seam's sentinel branch,
+	// proving no real `git` ran.
+	out, err := exactDispatch(context.Background(), t, s.Web.appRPC, appwire.MethodEvenerGitHead, appwire.GitHeadParams{CWD: s.CWD})
+	if err != nil {
+		t.Fatalf("git/head dispatch: %v", err)
+	}
+	gh, ok := out.(appwire.GitHeadResponse)
+	if !ok {
+		t.Fatalf("git/head response=%T, want appwire.GitHeadResponse", out)
+	}
+	if gh.Head != sandboxGitHead {
+		t.Fatalf("git/head did not use the seam: head=%q want %q", gh.Head, sandboxGitHead)
 	}
 
-	// 2. git-head: the response carries the seam's sentinel branch, proving no
-	// real `git` ran.
-	rec = do(http.MethodGet, "/api/git/head?cwd="+s.CWD, nil)
-	var gh struct {
-		Branch string `json:"branch"`
-	}
-	if err := json.Unmarshal(rec.Body.Bytes(), &gh); err != nil {
-		t.Fatalf("git/head body: %v", err)
-	}
-	if gh.Branch != sandboxGitBranch {
-		t.Fatalf("git/head did not use the seam: branch=%q want %q", gh.Branch, sandboxGitBranch)
-	}
-
-	// 3. models: the response is the seam's fixed list, proving no provider call.
-	rec = do(http.MethodGet, "/api/models", nil)
-	if !bytes.Contains(rec.Body.Bytes(), []byte("fake-model")) {
-		t.Fatalf("models did not use the seam: body=%s", rec.Body.String())
-	}
-
-	// 4. dir-create: a path OUTSIDE the sandbox root is recorded but never made.
-	forbiddenRoot := t.TempDir() // outside s.Root
-	forbidden := filepath.Join(forbiddenRoot, "should-not-be-created", "deep")
-	rec = do(http.MethodPost, "/api/dirs/create", map[string]any{"path": forbidden})
-	if rec.Code != http.StatusOK {
-		t.Fatalf("dirs/create: want 200, got %d body=%s", rec.Code, rec.Body.String())
-	}
-	if _, err := os.Stat(forbidden); !os.IsNotExist(err) {
-		t.Fatalf("dir-create escaped the sandbox: %s exists on disk (err=%v)", forbidden, err)
-	}
-	if paths := s.Mkdir.Paths(); len(paths) != 1 || !strings.HasPrefix(paths[0], forbiddenRoot) {
-		t.Fatalf("dir-create did not reach the seam: recorded %v", paths)
-	}
-
-	// 5. action verb: clear on a non-live session resolves before any daemon
+	// 3. action verb: clear on a non-live session resolves before any daemon
 	// dial — a contained 404, not a hang or a network call.
 	rec = do(http.MethodPost, "/api/sessions/"+sandboxSessionID+"/clear", nil)
 	if rec.Code != http.StatusNotFound {

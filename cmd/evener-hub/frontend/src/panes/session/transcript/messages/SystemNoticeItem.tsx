@@ -24,10 +24,20 @@
 // item.
 
 import type { ItemModel, TurnModel } from "../../../../protocol/model";
+import type { TranscriptMetadataVisibility } from "../../../../transcriptDisplay/projector";
+import {
+  disclosureScopeForSession,
+  expandDetailsByDefault,
+  useTranscriptRenderContext,
+} from "../../../../transcriptDisplay/renderContext";
 import { FailureGlyph, Markdown } from "../../../../widgets";
-import { isDisclosureOpen, toggleDisclosure } from "../../../../widgets/disclosure/disclosureStore";
+import {
+  disclosureDefault,
+  isDisclosureOpen,
+  scopedDisclosureId,
+  toggleDisclosure,
+} from "../../../../widgets/disclosure/disclosureStore";
 import { requireClass } from "../../../../widgets/internal/requireClass";
-import { itemScopeKey } from "../tools/subagentModuleStore";
 import { SYSTEM_PROMPT_ITEM_ID } from "../transcriptVisibility";
 import { asTurnError } from "../turnFailure";
 import { type ItemRenderProps, registerItemRenderer } from "../types";
@@ -97,11 +107,15 @@ function scaffoldLabel(item: ItemModel): string {
 // other message body uses, since the wire's own text is markdown (## headers
 // etc.) that would otherwise show as literal, unformatted characters.
 function ScaffoldDisclosure({ item, sessionRef }: { item: ItemModel; sessionRef?: string }) {
+  const context = useTranscriptRenderContext();
+  const { config } = context;
+  const disclosureScope = disclosureScopeForSession(context, sessionRef);
   // Open/closed state lives in the shared disclosureStore keyed by session ref
   // plus item id, so an expanded scaffold survives a remount without colliding
   // with the same item id in another session. Collapsed by default.
-  const disclosureKey = itemScopeKey(sessionRef, item.id);
-  const open = isDisclosureOpen(disclosureKey, false);
+  const disclosureKey = scopedDisclosureId(disclosureScope, item.id);
+  const disclosureFallback = expandDetailsByDefault(config) || disclosureDefault(disclosureScope, item.id, false);
+  const open = isDisclosureOpen(disclosureKey, disclosureFallback);
   return (
     <details className={CLASS.scaffold} data-testid="system-notice-scaffold" open={open}>
       {/* biome-ignore lint/a11y/noStaticElementInteractions: <summary> is natively keyboard-operable; controlled to keep the store the single source of truth (see ToolCallItem.tsx) */}
@@ -109,7 +123,7 @@ function ScaffoldDisclosure({ item, sessionRef }: { item: ItemModel; sessionRef?
         className={CLASS.scaffoldSummary}
         onClick={(e) => {
           e.preventDefault();
-          toggleDisclosure(disclosureKey, false);
+          toggleDisclosure(disclosureKey, disclosureFallback);
         }}
       >
         {scaffoldLabel(item)} · {formatCharCount(item.text.length)}
@@ -224,8 +238,28 @@ function FailureLine({ item, turn }: { item: ItemModel; turn: TurnModel }) {
   );
 }
 
-function SystemLine({ item, turn, sessionRef }: { item: ItemModel; turn: TurnModel; sessionRef?: string }) {
+function isCompactHookFailure(item: ItemModel, hookExits: TranscriptMetadataVisibility["hookExits"]): boolean {
+  return (
+    item.eventKind === "hook_completed" &&
+    hookExits !== "all" &&
+    typeof item.exitCode === "number" &&
+    item.exitCode !== 0
+  );
+}
+
+function SystemLine({
+  item,
+  turn,
+  sessionRef,
+  metadata,
+}: {
+  item: ItemModel;
+  turn: TurnModel;
+  sessionRef?: string;
+  metadata: TranscriptMetadataVisibility;
+}) {
   if (isTurnFailureItem(item)) return <FailureLine item={item} turn={turn} />;
+  if (isCompactHookFailure(item, metadata.hookExits)) return <FailureLine item={item} turn={turn} />;
   if (isScaffoldItem(item)) return <ScaffoldDisclosure item={item} sessionRef={sessionRef} />;
   if (isRoundTimingsItem(item)) return <RoundTimingsLine item={item} />;
   return (
@@ -235,7 +269,17 @@ function SystemLine({ item, turn, sessionRef }: { item: ItemModel; turn: TurnMod
   );
 }
 
-function SystemGroup({ run, turn, sessionRef }: { run: SystemRun; turn: TurnModel; sessionRef?: string }) {
+function SystemGroup({
+  run,
+  turn,
+  sessionRef,
+  metadata,
+}: {
+  run: SystemRun;
+  turn: TurnModel;
+  sessionRef?: string;
+  metadata: TranscriptMetadataVisibility;
+}) {
   const count = run.items.length;
   // Every SystemGroup caller already checked shouldGroup(run), i.e.
   // count >= MIN_GROUP_SIZE - so items[0] always exists. That guarantee
@@ -247,8 +291,12 @@ function SystemGroup({ run, turn, sessionRef }: { run: SystemRun; turn: TurnMode
   // Open/closed state lives in the shared disclosureStore keyed by session ref
   // plus the run's first item id - the run's stable identity across renders -
   // so an expanded group survives a remount without cross-session collision.
-  const disclosureKey = itemScopeKey(sessionRef, firstItem.id);
-  const open = isDisclosureOpen(disclosureKey, false);
+  const context = useTranscriptRenderContext();
+  const { config } = context;
+  const disclosureScope = disclosureScopeForSession(context, sessionRef);
+  const disclosureKey = scopedDisclosureId(disclosureScope, firstItem.id);
+  const disclosureFallback = expandDetailsByDefault(config) || disclosureDefault(disclosureScope, firstItem.id, false);
+  const open = isDisclosureOpen(disclosureKey, disclosureFallback);
   return (
     <details className={CLASS.group} data-testid="system-notice-group" open={open}>
       {/* biome-ignore lint/a11y/noStaticElementInteractions: <summary> is natively keyboard-operable; controlled to keep the store the single source of truth (see ToolCallItem.tsx) */}
@@ -256,14 +304,14 @@ function SystemGroup({ run, turn, sessionRef }: { run: SystemRun; turn: TurnMode
         className={CLASS.summary}
         onClick={(e) => {
           e.preventDefault();
-          toggleDisclosure(disclosureKey, false);
+          toggleDisclosure(disclosureKey, disclosureFallback);
         }}
       >
         {count} system events · {first}
       </summary>
       <div className={CLASS.groupBody}>
         {run.items.map((it) => (
-          <SystemLine key={it.id} item={it} turn={turn} sessionRef={sessionRef} />
+          <SystemLine key={it.id} item={it} turn={turn} sessionRef={sessionRef} metadata={metadata} />
         ))}
       </div>
     </details>
@@ -284,16 +332,48 @@ function SystemGroup({ run, turn, sessionRef }: { run: SystemRun; turn: TurnMode
 // because its render is cheap - one linear systemRunFor scan plus a few
 // divs, no markdown/diff work - unlike the heavy renderers ignoringTurn
 // exists to protect.
+function renderSystemRunFor(
+  turnItems: ItemModel[],
+  itemId: string,
+  metadata: TranscriptMetadataVisibility,
+): SystemRun | undefined {
+  const run = systemRunFor(turnItems, itemId);
+  if (!run) return undefined;
+  const index = run.items.findIndex((candidate) => candidate.id === itemId);
+  if (index < 0) return undefined;
+  const current = run.items[index];
+  if (!current) return undefined;
+
+  const isCritical = (candidate: ItemModel) => isCompactHookFailure(candidate, metadata.hookExits);
+  if (!run.items.some(isCritical)) return run;
+  if (isCritical(current)) return { items: [current], isFirst: true };
+
+  let start = index;
+  while (start > 0) {
+    const previous = run.items[start - 1];
+    if (!previous || isCritical(previous)) break;
+    start -= 1;
+  }
+  let end = index;
+  while (end < run.items.length - 1) {
+    const next = run.items[end + 1];
+    if (!next || isCritical(next)) break;
+    end += 1;
+  }
+  return { items: run.items.slice(start, end + 1), isFirst: start === index };
+}
+
 export function SystemNoticeItem({ item, turn, sessionRef }: ItemRenderProps) {
-  const run = systemRunFor(turn.items, item.id);
+  const { metadata } = useTranscriptRenderContext();
+  const run = renderSystemRunFor(turn.items, item.id, metadata);
   if (!run) return null; // defensive - the registry only dispatches systemMessage items here
 
   if (shouldGroup(run)) {
     if (!run.isFirst) return null; // absorbed into the run's first member
-    return <SystemGroup run={run} turn={turn} sessionRef={sessionRef} />;
+    return <SystemGroup run={run} turn={turn} sessionRef={sessionRef} metadata={metadata} />;
   }
 
-  return <SystemLine item={item} turn={turn} sessionRef={sessionRef} />;
+  return <SystemLine item={item} turn={turn} sessionRef={sessionRef} metadata={metadata} />;
 }
 
 registerItemRenderer("systemMessage", SystemNoticeItem);

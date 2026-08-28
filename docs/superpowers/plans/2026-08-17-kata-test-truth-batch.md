@@ -168,7 +168,13 @@ Both failures are deterministic in this worktree (not load flakes — the first 
 
 **Files:**
 - Investigate: the scenario citation audit (find it: it caught kata 2pm8's seven stale citations and was exercised by PR #84 / commit 4444bda2a; `scripts/scenario-cite-migrate` and the `scenarioneedle` audit are nearby search anchors; `make lint` is the gate surface that wrongly passes today).
-- Modify: the audit, to cover the shape it misses; and `test/scenarios/web-steer-in-idle-fails-fast.md:148`, to cite the true location.
+- Modify: the audit, to cover the shape it misses; and the then-live
+  `test/scenarios/web-steer-in-idle-fails-fast.md:148`, to cite the true location.
+
+> **Historical note (superseded 2026-08-26, Task 29 / issue #171):** This kata
+> predates the retirement of Part A. Its cited card path and daemon-refusal
+> premise are preserved as history; the live browser-guard card is now
+> `test/scenarios/web-steer-no-active-turn-guard.md`.
 
 **Interfaces:** none consumed from or produced for other tasks.
 

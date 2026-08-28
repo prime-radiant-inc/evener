@@ -29,6 +29,8 @@ export type { DiffBlockProps } from "./diffblock";
 export { DiffBlock } from "./diffblock";
 export type { DiffTableCell, DiffTableColumn, DiffTableProps, DiffTableRow } from "./difftable";
 export { DiffTable } from "./difftable";
+export type { DisclosureProps } from "./disclosure";
+export { Disclosure } from "./disclosure";
 export type { DropzoneProps } from "./dropzone";
 export { Dropzone } from "./dropzone";
 export type { EmptyStateProps } from "./emptystate";
@@ -58,11 +60,13 @@ export type { MenuEntry, MenuItem, MenuProps, MenuSeparator } from "./menu";
 export { isSeparator, Menu } from "./menu";
 export type { MeterProps, MeterTone } from "./meter";
 export { Meter } from "./meter";
-// ModelCatalog is both the component and the /api/models envelope type. The
+// ModelCatalog is both the component and the typed model/list catalog shape. The
 // plain re-export carries BOTH meanings; only the pure-type members need
 // `export type` (a second `export type { ModelCatalog }` would duplicate it).
 export type { ModelCatalogEntry, ModelCatalogPanelProps, ModelCatalogProps } from "./modelCatalog";
 export { ModelCatalog, ModelCatalogPanel } from "./modelCatalog";
+export type { OpenButtonProps } from "./openbutton";
+export { OpenButton, OpenIcon } from "./openbutton";
 export type { PaneScaffoldProps } from "./panescaffold";
 // --- data batch (W2T4) ---
 export { PaneScaffold } from "./panescaffold";
@@ -76,6 +80,8 @@ export type { RadioGroupOption, RadioGroupProps } from "./radiogroup";
 export { RadioGroup } from "./radiogroup";
 export type { RecommendationCardAlternative, RecommendationCardProps } from "./recommendationcard";
 export { RecommendationCard } from "./recommendationcard";
+export type { SegmentedControlOption, SegmentedControlProps } from "./segmentedcontrol";
+export { SegmentedControl } from "./segmentedcontrol";
 export type { SelectOption, SelectProps } from "./select";
 export { Select } from "./select";
 export { SendIcon } from "./sendicon";

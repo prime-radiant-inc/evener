@@ -464,6 +464,7 @@ func (c *delegateTreeController) CompleteStartInput(claim delegateInputClaim, co
 	}
 	live.binding.ready = true
 	live.activityAt = c.now()
+	live.productiveActivityAt = live.activityAt
 	c.evidenceVersion++
 	plans := delegateMutationPlans{updates: []delegateUpdatePlan{c.capturedPlanLocked(lease.delegateID)}}
 	plans.deliveries = append(plans.deliveries, c.replayDeliveriesForOwnerLocked(lease.delegateID)...)
@@ -809,6 +810,7 @@ func (c *delegateTreeController) CommitStart(reservation *delegateStartReservati
 		live.waiters[record.generation] = record.waiter
 	}
 	live.activityAt = startedAt
+	live.productiveActivityAt = startedAt
 	live.quietSequence = 1
 	live.quietNotified = false
 	live.quietClaim = nil

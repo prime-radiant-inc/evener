@@ -15,6 +15,7 @@ import (
 	"primeradiant.com/evener/agent/internal/agenttest"
 	"primeradiant.com/evener/agent/plugin"
 	"primeradiant.com/evener/agent/provider"
+	"primeradiant.com/evener/agent/sandbox"
 	"primeradiant.com/evener/agent/skill"
 	taskpkg "primeradiant.com/evener/agent/task"
 	"primeradiant.com/evener/llm"
@@ -89,7 +90,7 @@ func safzRegisterSkill(t *testing.T, sess *Session) {
 // never blocks on emit. env selects the execution environment (a Local env when
 // the target needs the working_dir override + env-policy branches; a DenyEnv when
 // a child actually runs, so no real process/disk is ever touched).
-func safzNewParent(t *testing.T, clk *agenttest.FakeClock, maxDepth int, childScript []int, env execenv.ExecutionEnvironment) *Session {
+func safzNewParent(t *testing.T, clk *agenttest.FakeClock, maxDepth int, childScript []int, env execenv.ExecutionEnvironment, sandboxProbers ...sandbox.Prober) *Session {
 	t.Helper()
 	client := llm.NewClient()
 	client.Register(&safzEnumerableAdapter{
@@ -104,6 +105,9 @@ func safzNewParent(t *testing.T, clk *agenttest.FakeClock, maxDepth int, childSc
 		MaxToolRoundsPerInput: 6,
 		LLMSleep:              func(context.Context, time.Duration) error { return nil },
 		ResolveProfile:        safzResolveProfile,
+	}
+	if len(sandboxProbers) != 0 {
+		cfg.testOnly.sandboxProber = sandboxProbers[0]
 	}
 	cfg.testOnly.childClientFactory = func() *llm.Client {
 		cc := llm.NewClient()

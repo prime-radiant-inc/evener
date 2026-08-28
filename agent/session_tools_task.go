@@ -11,7 +11,27 @@ import (
 	"primeradiant.com/evener/agent/execenv"
 	"primeradiant.com/evener/agent/internal/tool"
 	taskpkg "primeradiant.com/evener/agent/task"
+	"primeradiant.com/evener/llm"
 )
+
+// normalizeTaskEffort maps the "inherit" sentinel to "" (no override: the task
+// runs at the session's configured effort). The sentinel exists because OpenAI
+// strict mode force-requires every schema property, so a model there cannot
+// simply omit reasoning_effort the way the non-strict (Anthropic) path can.
+func normalizeTaskEffort(effort string) string {
+	if strings.EqualFold(strings.TrimSpace(effort), "inherit") {
+		return ""
+	}
+	return llm.NormalizeReasoningEffort(effort)
+}
+
+func validateTaskEffort(effort string) (string, error) {
+	normalized := normalizeTaskEffort(effort)
+	if err := llm.ValidateReasoningEffort(normalized); err != nil {
+		return "", err
+	}
+	return normalized, nil
+}
 
 // formatTaskList renders the task list as plain text, like a to-do list: one task
 // per line as "<id>. [<status>] <type> — <description>" with dependencies and any
@@ -124,7 +144,11 @@ func registerTaskTools(reg *tool.Registry, deps *toolDeps) {
 					}
 					reasoningEffort := ""
 					if re, ok := m["reasoning_effort"].(string); ok {
-						reasoningEffort = re
+						var err error
+						reasoningEffort, err = validateTaskEffort(re)
+						if err != nil {
+							return nil, err
+						}
 					}
 					items = append(items, taskpkg.TaskInput{
 						Type:            taskType,
@@ -183,7 +207,11 @@ func registerTaskTools(reg *tool.Registry, deps *toolDeps) {
 						u.DependsOn = &depIDs
 					}
 					if re, ok := m["reasoning_effort"].(string); ok {
-						u.ReasoningEffort = re
+						var err error
+						u.ReasoningEffort, err = validateTaskEffort(re)
+						if err != nil {
+							return nil, err
+						}
 					}
 					updates = append(updates, u)
 				}
@@ -232,9 +260,6 @@ func registerTaskTools(reg *tool.Registry, deps *toolDeps) {
 				if manuallyStartedID != 0 {
 					for _, t := range mutation.After {
 						if t.ID == manuallyStartedID {
-							if t.ReasoningEffort != "" {
-								deps.taskGuard.SetReasoningEffort(t.ReasoningEffort)
-							}
 							// Inside the task_list handler: the tool is registered by
 							// construction, so the steering may name it.
 							deps.steer(formatCurrentTaskSteering(t, true), events.SteeringKindCurrentTask)
@@ -266,9 +291,6 @@ func registerTaskTools(reg *tool.Registry, deps *toolDeps) {
 							next := eligible[0]
 							if auto, err := store.UpdateWithSnapshot([]taskpkg.TaskUpdate{{ID: next.ID, Status: taskpkg.TaskInProgress}}); err == nil {
 								finalTasks = auto.After
-								if next.ReasoningEffort != "" {
-									deps.taskGuard.SetReasoningEffort(next.ReasoningEffort)
-								}
 								deps.steer(formatCurrentTaskSteering(next, true), events.SteeringKindCurrentTask)
 							}
 						} else {
@@ -276,8 +298,18 @@ func registerTaskTools(reg *tool.Registry, deps *toolDeps) {
 							// signal the agent that the list is exhausted.
 							allDone := taskListAllDone(finalTasks)
 							if allDone && len(finalTasks) > 0 {
-								deps.steer(taskReminderAllDone(deps.resultToolName()), events.SteeringKindTasksDone)
-								msg.WriteString("All tasks complete. ")
+								var blockingDelegateIDs []string
+								if deps.blockingDelegateIDs != nil {
+									blockingDelegateIDs = deps.blockingDelegateIDs()
+								}
+								deps.sendTaskCompletionSteering(taskReminderAllDoneWhileDelegatesRun(deps.resultToolName(), blockingDelegateIDs), blockingDelegateIDs)
+								if len(blockingDelegateIDs) == 0 {
+									msg.WriteString("All tasks complete. ")
+								} else {
+									msg.WriteString("All tasks complete; waiting for delegate(s) ")
+									msg.WriteString(strings.Join(blockingDelegateIDs, ", "))
+									msg.WriteString(". ")
+								}
 							}
 						}
 					}

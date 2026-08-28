@@ -99,8 +99,8 @@ if command -v curl >/dev/null 2>&1; then
 		webasset_routes=""
 	fi
 
-	for route in / /api/health /api/models /api/tree "/api/search?q=x" \
-		/api/spawn-schema /credentials /auth \
+	for route in / /api/health "/api/search?q=x" \
+		/credentials /auth \
 		/api/sessions/nonexistent /doc/file /nonexistent-route; do
 		curl -fsS --max-time 5 "$base$route" >/dev/null 2>&1 || true
 	done
@@ -118,8 +118,7 @@ if command -v curl >/dev/null 2>&1; then
 		done
 	fi
 
-	# a couple of POSTs against validate/create (error paths, no real spawn).
-	curl -fsS --max-time 5 -X POST "$base/api/path/validate" -d '{}' >/dev/null 2>&1 || true
+	# Stop the coverage hub.
 	kill -TERM "$hub_pid" 2>/dev/null || true
 	wait "$hub_pid" 2>/dev/null || true
 fi

@@ -84,15 +84,15 @@ const modelSwitchEnumerationTimeout = 8 * time.Second
 func resolveModelSwitchTarget(client *llm.Client, profile *provider.Profile) (*provider.Profile, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), modelSwitchEnumerationTimeout)
 	defer cancel()
-	filled, models, ok := fillLiveModelMetadata(ctx, client, profile)
-	if !ok {
+	filled, enumeration := fillLiveModelMetadata(ctx, client, profile)
+	if enumeration.err != nil {
 		// Fail open unconditionally: a non-enumerable instance (adapter
 		// doesn't implement ModelLister) and any enumeration failure
 		// (timeout, auth error, etc.) both accept the switch, with no live
 		// metadata to fill.
 		return filled, nil
 	}
-	if err := validateModelSwitchMembership(client, filled, models); err != nil {
+	if err := validateModelSwitchMembership(client, filled, enumeration.models); err != nil {
 		return filled, err
 	}
 	return filled, nil
@@ -163,7 +163,7 @@ func formatModelAlternatives(models []llm.ModelInfo, tag string, cat *llm.ModelC
 
 // modelSwitchVisible delegates to the shared llm.ModelCatalog.VisibleLiveModel
 // rule so the in-session model-switch path, the launch-check path, and the hub
-// /api/models path share one visibility rule and cannot drift. See
+// model-list path share one visibility rule and cannot drift. See
 // VisibleLiveModel for the live-API-first tool-support resolution this
 // implements.
 func modelSwitchVisible(behaviorTag string, live llm.ModelInfo, cat *llm.ModelCatalog) bool {

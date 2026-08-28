@@ -73,7 +73,7 @@ func TestLaunchOptionValue_AllFields(t *testing.T) {
 	}
 	for _, tc := range tests {
 		t.Run(tc.field, func(t *testing.T) {
-			value, editValue := launchOptionValue(appwire.LaunchOption{Field: tc.field}, layer)
+			value, editValue := launchOptionValue(appwire.LaunchOption{Field: tc.field}, layer, appwire.LaunchConfigLayer{})
 			if value != tc.wantValue {
 				t.Errorf("value = %q, want %q", value, tc.wantValue)
 			}
@@ -87,7 +87,7 @@ func TestLaunchOptionValue_AllFields(t *testing.T) {
 func TestLaunchOptionValue_Defaults(t *testing.T) {
 	empty := appwire.LaunchConfigLayer{}
 	for _, field := range []string{"agent", "max_rounds", "no_project_prompts", "verbose", "system_prompt_text"} {
-		value, _ := launchOptionValue(appwire.LaunchOption{Field: field}, empty)
+		value, _ := launchOptionValue(appwire.LaunchOption{Field: field}, empty, appwire.LaunchConfigLayer{})
 		if value != "(default)" {
 			t.Errorf("field %q value = %q, want (default)", field, value)
 		}
@@ -97,11 +97,11 @@ func TestLaunchOptionValue_Defaults(t *testing.T) {
 func TestLaunchOptionValue_ModelFallbacksVariants(t *testing.T) {
 	// nil → unset default; empty non-nil → explicit empty; populated → count.
 	nilLayer := appwire.LaunchConfigLayer{ModelFallbacks: nil}
-	if v, e := launchOptionValue(appwire.LaunchOption{Field: "model_fallbacks"}, nilLayer); v != "(default)" || e != "(default)" {
+	if v, e := launchOptionValue(appwire.LaunchOption{Field: "model_fallbacks"}, nilLayer, appwire.LaunchConfigLayer{}); v != "(default)" || e != "(default)" {
 		t.Fatalf("nil fallbacks = (%q,%q), want (default),(default)", v, e)
 	}
 	emptyLayer := appwire.LaunchConfigLayer{ModelFallbacks: []string{}}
-	if v, e := launchOptionValue(appwire.LaunchOption{Field: "model_fallbacks"}, emptyLayer); v != "0 entries (explicit)" || e != "[]" {
+	if v, e := launchOptionValue(appwire.LaunchOption{Field: "model_fallbacks"}, emptyLayer, appwire.LaunchConfigLayer{}); v != "0 entries (explicit)" || e != "[]" {
 		t.Fatalf("empty fallbacks = (%q,%q), want explicit,[]", v, e)
 	}
 }

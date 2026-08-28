@@ -948,6 +948,26 @@ func TestProviderCredentialPreflightAcceptsOllama(t *testing.T) {
 	}
 }
 
+func TestValidateEvenerLaunchContractRejectsIncompatibleProtocolBinary(t *testing.T) {
+	evenerBinary := filepath.Join(t.TempDir(), "old-evener")
+	writeFakeEvener(t, evenerBinary, `#!/bin/sh
+case " $* " in
+  *" --protocol evener-appwire-v3 "*)
+    printf '{"protocol":"evener-appwire-v2"}\n'
+    exit 0
+    ;;
+esac
+echo 'unsupported appwire protocol' >&2
+exit 2
+`)
+
+	err := validateEvenerLaunchContract(context.Background(), evenerBinary, "", nil)
+	if err == nil {
+		t.Fatal("validateEvenerLaunchContract accepted an evener-appwire-v2 child binary")
+	}
+	assertHubLaunchError(t, err)
+}
+
 // A launch-check that never produced a verdict was stopped for one of two
 // unrelated reasons — the evenerLaunchCheckTimeout budget ran out, or the caller
 // that asked for the answer went away — and checkCtx.Err() is non-nil for both.

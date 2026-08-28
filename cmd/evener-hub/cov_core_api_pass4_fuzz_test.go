@@ -90,7 +90,7 @@ func FuzzCoreAPIPass4(f *testing.F) {
 		web := NewWebServer(hubcore.WebConfig{
 			HubAddr: "127.0.0.1:9180", Past: past, Roster: hubcore.NewRosterWithEntries(),
 			PokeAttention: func() { poke++ },
-			GitHeadBranch: func(context.Context, string) (string, error) {
+			ResolveGitHead: func(context.Context, string) (string, error) {
 				if variant&1 != 0 {
 					return "", errors.New("git failed")
 				}
@@ -107,8 +107,6 @@ func FuzzCoreAPIPass4(f *testing.F) {
 			return rec
 		}
 
-		call(http.MethodGet, "/api/search?q=live", "")
-		call(http.MethodGet, "/api/search?q=", "")
 		call(http.MethodGet, "/api/health", "")
 		call(http.MethodPost, "/api/health", "")
 		direct := func(fn func(http.ResponseWriter, *http.Request), method, target, body string) *httptest.ResponseRecorder {
@@ -117,10 +115,6 @@ func FuzzCoreAPIPass4(f *testing.F) {
 			fn(rec, req)
 			return rec
 		}
-		direct(web.handleAPISpawnSchema, http.MethodGet, "/api/spawn/schema", "")
-		direct(web.handleAPISpawnSchema, http.MethodPost, "/api/spawn/schema", "")
-		direct(web.handleAPIUpgrade, http.MethodGet, "/api/upgrade", "")
-		direct(web.handleAPIUpgrade, http.MethodPost, "/api/upgrade", "{")
 		call(http.MethodPost, "/api/sessions/remote:thread/clear", "")
 		direct(func(w http.ResponseWriter, r *http.Request) { web.handleAPIClear(w, r, "remote:thread") }, http.MethodGet, "/clear", "")
 		direct(func(w http.ResponseWriter, r *http.Request) { web.handleAPIClear(w, r, "local:missing") }, http.MethodPost, "/clear", "")
@@ -130,36 +124,20 @@ func FuzzCoreAPIPass4(f *testing.F) {
 		call(http.MethodPost, "/api/sessions/remote:thread/reasoning-effort", `{"reasoning_effort":" high "}`)
 		direct(func(w http.ResponseWriter, r *http.Request) { web.handleAPIReasoningEffort(w, r, "remote:thread") }, http.MethodGet, "/effort", "")
 		direct(func(w http.ResponseWriter, r *http.Request) { web.handleAPIReasoningEffort(w, r, "local:missing") }, http.MethodPost, "/effort", `{}`)
-		call(http.MethodPost, "/api/sessions/remote:thread/rename", `{"name":" renamed "}`)
 		call(http.MethodPost, "/api/sessions/remote:thread/model", `{`)
-		call(http.MethodGet, "/api/git/head?cwd="+workingDir, "")
-		call(http.MethodGet, "/api/git/head?cwd=/definitely/missing/pass4", "")
-		call(http.MethodPost, "/api/git/head", "")
-		direct(web.handleAPIPathValidate, http.MethodGet, "/api/path/validate?path="+workingDir+"&kind=directory", "")
-		direct(web.handleAPIPathValidate, http.MethodPost, "/api/path/validate", "")
-		direct(web.handleAPIDirCreate, http.MethodPost, "/api/dirs/create", `{}`)
-		direct(web.handleAPIDirCreate, http.MethodPost, "/api/dirs/create", `{"path":"relative"}`)
-		direct(web.handleAPIDirCreate, http.MethodPost, "/api/dirs/create", `{"path":"`+workingDir+`"}`)
+		_ = hubGitHead(context.Background(), web.cfg, appwire.GitHeadParams{CWD: workingDir})
+		_ = hubGitHead(context.Background(), web.cfg, appwire.GitHeadParams{CWD: "/definitely/missing/pass4"})
+		_ = hubGitHead(context.Background(), web.cfg, appwire.GitHeadParams{})
 		filePath := filepath.Join(root, "already-file")
 		if err := os.WriteFile(filePath, []byte("x"), 0o644); err != nil {
 			t.Fatal(err)
 		}
-		direct(web.handleAPIDirCreate, http.MethodPost, "/api/dirs/create", `{"path":"`+filePath+`"}`)
-		direct(web.handleAPIDirCreate, http.MethodPost, "/api/dirs/create", `{"path":"`+filepath.Join(root, "created-dir")+`"}`)
-		web.cfg.MkdirAll = func(string, os.FileMode) error { return errors.New("mkdir failed") }
-		direct(web.handleAPIDirCreate, http.MethodPost, "/api/dirs/create", `{"path":"`+filepath.Join(root, "new-dir")+`"}`)
 
-		call(http.MethodPost, "/api/sessions/local:ended/rename", `{"name":" ended renamed "}`)
-		call(http.MethodPost, "/api/sessions/local:missing/rename", `{"name":"x"}`)
-		call(http.MethodPost, "/api/sessions/local:ended/rename", `{`)
-		call(http.MethodPost, "/api/project/delete", `{`)
-		call(http.MethodPost, "/api/project/delete", `{}`)
-		call(http.MethodGet, "/api/project/delete", "")
-		projectBody := `{"key":"` + testProjectID(t, workingDir) + `","working_dir":"` + workingDir + `"}`
+		projectParams := appwire.ProjectDeleteParams{Key: testProjectID(t, workingDir), WorkingDir: workingDir}
 		web.cfg.Roster = hubcore.NewRosterWithEntries(hubcore.LiveEntry{SessionID: "ended", Status: "active"})
-		direct(web.handleAPIProjectDelete, http.MethodPost, "/api/project/delete", projectBody)
+		_, _ = web.projectDelete(context.Background(), projectParams)
 		web.cfg.Roster = hubcore.NewRosterWithEntries()
-		direct(web.handleAPIProjectDelete, http.MethodPost, "/api/project/delete", projectBody)
+		_, _ = web.projectDelete(context.Background(), projectParams)
 
 		// Exercise the real process boundary for both a repository and an error.
 		repo := filepath.Join(root, "repo")
@@ -179,12 +157,12 @@ func FuzzCoreAPIPass4(f *testing.F) {
 				t.Fatalf("git %v: %v: %s", args, err, out)
 			}
 		}
-		_, _ = gitHeadBranch(context.Background(), repo)
+		_, _ = resolveGitHead(context.Background(), repo)
 		if out, err := exec.Command("git", "-C", repo, "checkout", "-q", "--detach").CombinedOutput(); err != nil {
 			t.Fatalf("detach: %v: %s", err, out)
 		}
-		_, _ = gitHeadBranch(context.Background(), repo)
-		_, _ = gitHeadBranch(context.Background(), filepath.Join(root, "missing"))
+		_, _ = resolveGitHead(context.Background(), repo)
+		_, _ = resolveGitHead(context.Background(), filepath.Join(root, "missing"))
 
 		_ = warningPayload([]byte(`{"warning":{"message":"nested"},"source":"daemon","title":"Title","hint":"Hint"}`))
 		_ = warningPayload([]byte(`{"message":"plain"}`))

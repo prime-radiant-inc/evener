@@ -109,10 +109,8 @@ These are the findings most likely to bite a rewrite that "looks equivalent." Ea
 
 ### 1.7 Branch/worktree chip
 
-- [ ] Free-text picker is seeded from the chip's current display text, blanked out if that text is literally the placeholder string `"(default)"` (`spawn.js:1391-1392`)
-- [ ] Setting `working_dir` (whether via chip pick or sticky-default replay) triggers `resolveAndSetHeadBranch`, which fetches `GET /api/git/head?cwd=` and fills the branch chip's DISPLAY text (not its hidden wire value) with the resolved HEAD ref, stashing the raw value in `display.dataset.resolvedHead` so "(default)" can later be explained (`spawn.js:365-367, 372-393`)
-- [ ] Branch auto-resolution is skipped once an explicit branch value exists — checked once before firing the fetch, and checked AGAIN after the fetch resolves, so a value the user picked while the request was in flight can't be clobbered by a late response (`spawn.js:375, 383-384`)
-- [ ] Branch auto-resolution is REST-only: when `window.EvenerAppwire` is present the function no-ops entirely, because appwire has no `git/head` RPC yet (`spawn.js:376-379`)
+- [ ] Setting the working directory resolves `evener/git/head` and displays the returned HEAD beside the directory; it is read-only and is neither persisted nor sent when starting a thread (`Spawn.tsx`, `branch.ts`)
+- [ ] Resolution failures and directories without a readable git HEAD leave the readout empty; stale responses are ignored after the working directory changes (`Spawn.tsx`, `branch.ts`)
 
 ### 1.8 Access-mode chip
 
@@ -122,7 +120,7 @@ These are the findings most likely to bite a rewrite that "looks equivalent." Ea
 ### 1.9 Sticky defaults / prefill layering (localStorage)
 
 - [ ] Per-project sticky-defaults key is `evener-hub.spawn-defaults.<workingDir|"global">`, a JSON blob (`spawn.js:51-53`)
-- [ ] On load, `harness`/`branch`/`access_mode` defaults are applied BEFORE `working_dir`, specifically so the HEAD-branch auto-resolution that `working_dir` triggers can already see whether an explicit branch default won (`spawn.js:1132-1138`, code comment at 1133-1134)
+- [ ] On load, project defaults restore harness, model, access mode, and reasoning effort; branch is derived from the current working directory rather than storage (`Spawn.tsx`, `spawnDefaults.ts`)
 - [ ] Model sticky-default is applied only when the current harness uses evener models AND a stored default value exists; otherwise `applyHarnessModelPolicy` runs instead to decide whether the chip should be blanked (`spawn.js:1145-1149`)
 - [ ] If the server didn't prefill `working_dir` (no `?dir=` etc.) and no stored default supplies one either, the GLOBAL `evener-hub.spawn-defaults.global.working_dir` key is consulted as a last resort (`spawn.js:84-88`)
 - [ ] The global model default (`evener-hub.spawn-defaults.global.model`) layers UNDER a more specific per-project model default when both exist (`spawn.js:81-83`)
@@ -169,19 +167,19 @@ These are the findings most likely to bite a rewrite that "looks equivalent." Ea
 
 ### 1.13 Working-directory preflight
 
-- [ ] Before spawning, `GET /api/path/validate?path=&kind=dir` is checked; a failure of the CHECK ITSELF fails OPEN (spawn proceeds anyway) so a flaky validator never blocks a real spawn (`spawn.js:573-580`, code comment at 568-572)
+- [ ] Before spawning, `evener/path/validate` is checked; a failure of the CHECK ITSELF fails OPEN (spawn proceeds anyway) so a flaky validator never blocks a real spawn (`spawn.js:573-580`, code comment at 568-572)
 - [ ] Deterministic "not fixable by creating a directory" errors — literal strings `path is not a directory`, `absolute path required`, `path is required` — render an inline error and abort instead of offering to create (`spawn.js:582-588`)
 - [ ] Any other invalid-path reason offers an IN-FORM (not native `confirm()`) dialog: `` The directory `<path>` doesn't exist yet. Create it and start the session? `` with Cancel / "Create & start" buttons; "Create & start" receives initial focus (`spawn.js:527-566, 589-591`)
 - [ ] Declining aborts the submit with NO error shown (`spawn.js:559-561, 591`)
-- [ ] Accepting POSTs `/api/dirs/create`; on a non-OK response the inline error uses the response body's `.error` field when present, else falls back to `HTTP <status>` (`spawn.js:592-606`)
+- [ ] Requesting `evener/dirs/create` over the authenticated AppWire connection; a server error's message reaches the existing inline launch-error path (`spawn.js:592-606`)
 
 ### 1.14 Submission & result handling
 
 - [ ] Submit handler always calls `e.preventDefault()` and rebuilds the entire payload from `FormData` — there is no native form POST path (`spawn.js:1243-1245`)
 - [ ] Payload shape: `{launch_overrides, prompt, harness, model, working_dir, branch, access_mode, agent, reasoning_effort, attachments}` (`spawn.js:1270-1288`)
-- [ ] Prefers `window.EvenerAppwire.startThread(body)`; REST fallback POSTs `/api/spawn` with `attachments` re-encoded into `items: [{type:"image", mediaType, data(base64), name}]` and the raw `attachments` key stripped from the body first (`spawn.js:1305-1330`)
+- [ ] Starts sessions through the typed AppWire `thread/start` request; there is no REST fallback (`panes/spawn/startThread.ts`)
 - [ ] `spawnEncodeAttachmentData` base64-encodes in `0x8000`-byte chunks (avoids `String.fromCharCode.apply` argument-count blowups on large images) and duck-types ArrayBuffer/typed-array/cross-realm buffers rather than using `instanceof`, specifically to survive JSDOM-originated buffers in tests (`spawn.js:11-38`, code comment at 11-15)
-- [ ] REST failure path parses the response body as JSON looking for an `.error` field, falling back to the raw text for older plain-text error responses (`spawn.js:419-427, 1327`)
+- [ ] AppWire start failures surface the structured error through the pane's normal error handling (`panes/spawn/startThread.ts`)
 - [ ] Spawn button is disabled and relabeled `spawning…` for the duration of the request, restored to the literal HTML `spawn <kbd>⌘↵</kbd>` on failure (`spawn.js:1303-1304, 1339`)
 - [ ] On success, the pending-attachment bag is cleared AND the paste marker-counter reset (`EvenerComposerAttachments.resetMarkerCounter`) BEFORE navigating away, so a back-button return can't resend the same images (`spawn.js:1331-1336`)
 - [ ] Success navigates via `window.location.href = "/s/" + encodeURIComponent(routeID)`; `routeID` strips a leading `local:` prefix from whichever of `ref` / `session_id` / `sessionId` is present, preferring a non-`local:` `ref` first (`spawn.js:404-417, 1337`)
@@ -217,7 +215,7 @@ These are the findings most likely to bite a rewrite that "looks equivalent." Ea
 
 - [ ] Queries are debounced 150ms before hitting the backend (`search.js:46, 903-917`)
 - [ ] An empty (trimmed) query clears results locally without any backend call (`search.js:904-909`)
-- [ ] Prefers `window.EvenerAppwire.search(query)`; REST fallback is `GET /api/search?q=` (`search.js:911-913`)
+- [ ] Uses the shared AppWire connection for `evener/search(query)`; there is no REST fallback (`search.js:911-913`)
 - [ ] Results render up to three sections, in this fixed order: "Live", `"Past · N"`, `"In session · N"` (`search.js:919-946`)
 - [ ] In-session matches are computed entirely CLIENT-SIDE by scanning `.user-message, .assistant-message, .system-line` under `#conversation` for a case-insensitive substring match, tracking a 1-based turn counter as it walks (`search.js:961-982`)
 - [ ] In-session snippet building shows ~40 characters of context on each side of the match, with a leading/trailing `…` only when truncated, and `<mark>` around the exact matched substring (`search.js:984-992`)
@@ -332,15 +330,15 @@ All from `search.js:326-517` unless noted:
 
 ### 3.6 Baseline fetch & edge-fire gating
 
-- [ ] Baseline comes from `GET /api/tree?summary=1` — deliberately summary-only, never the full tree, since this client only needs the badge counts (`notifications.js:222-227`, code comment at 220-221)
-- [ ] Baseline is (re-)fetched on init AND on every appwire reconnect (a dropped connection can miss broadcasts, so reconnect re-syncs rather than trusting the gap stayed empty) (`notifications.js:222-227, 288-289`)
-- [ ] `summary` stays `null` until that first baseline resolves; ALL edge-firing (OS + sound) is suppressed until a baseline exists — specifically so reloading the hub can never re-alert on attention that was ALREADY true before the page opened (`notifications.js:46-50, 217-221, 258, 261`)
-- [ ] Title/favicon counts (`applyCounts`) update UNCONDITIONALLY on every `evener/attention/changed` broadcast — even before a baseline exists, even while unfocused, even on a non-leader tab. Only the OS/sound edge-fire is gated on those conditions (`notifications.js:256-260`)
-- [ ] Edge-fire additionally requires the document be unfocused (checked AGAIN here, on top of the per-channel checks in §3.4/§3.5) and this tab be the elected leader (`notifications.js:261-263`)
-- [ ] Only entries that just transitioned INTO `needs_you`/`error` FROM something else fire at all — a level that was already alarming before the broadcast stays silent (`notifications.js:264-267`)
-- [ ] Within a qualifying transition, `loudScope` narrows further: `"asks"` (default) fires ONLY for an `askPending` transition or an `error`; `"all"` fires for every qualifying transition (`notifications.js:268-269`)
-- [ ] `os` and `sound` prefs are checked independently of each other even after the transition/loudScope gate passes — either, both, or neither can fire per event (`notifications.js:270-271`)
-- [ ] `renderer.js` dispatches a `evener hub:thread-status` DOM event on a live `THREAD_STATUS_CHANGED` frame for the currently-open thread; this module listens and re-fetches the baseline immediately, ahead of the next hub-side attention tick (`notifications.js:291-294`, out-of-scope caller)
+- [ ] Baseline comes from the AppWire `evener/navigation/read` `manifest` resource — the bounded navigation response carries `attentionSummary`, so this client never needs to fetch the full tree just for badge counts (`cmd/evener-hub/frontend/src/stores/navigation/store.ts:471-483`, `cmd/evener-hub/frontend/src/stores/navigation/store.ts:593-598`)
+- [ ] Baseline is (re-)fetched on init AND on every AppWire reconnect (a dropped connection can miss broadcasts, so reconnect re-syncs rather than trusting the gap stayed empty) (`cmd/evener-hub/frontend/src/notifications/index.ts:104-108,129-147`, `cmd/evener-hub/frontend/src/stores/navigation/store.ts:471-483`)
+- [ ] `summary` stays `null` until that first baseline resolves; ALL edge-firing (OS + sound) is suppressed until a baseline exists — specifically so reloading the hub can never re-alert on attention that was ALREADY true before the page opened (`cmd/evener-hub/frontend/src/notifications/index.ts:33,40-67`)
+- [ ] Title/favicon counts (`applyCounts`) update UNCONDITIONALLY on every `evener/attention/changed` broadcast — even before a baseline exists, even while unfocused, even on a non-leader tab. Only the OS/sound edge-fire is gated on those conditions (`cmd/evener-hub/frontend/src/notifications/index.ts:40-43,84-88`)
+- [ ] Edge-fire additionally requires the document be unfocused (checked AGAIN here, on top of the per-channel checks in §3.4/§3.5) and this tab be the elected leader (`cmd/evener-hub/frontend/src/notifications/index.ts:68-75`)
+- [ ] Only entries that just transitioned INTO `needs_you`/`error` FROM something else fire at all — a level that was already alarming before the broadcast stays silent (`cmd/evener-hub/frontend/src/notifications/attention.ts:48-58`)
+- [ ] Within a qualifying transition, `loudScope` narrows further: `"asks"` (default) fires ONLY for an `askPending` transition or an `error`; `"all"` fires for every qualifying transition (`cmd/evener-hub/frontend/src/notifications/attention.ts:48-58`)
+- [ ] `os` and `sound` prefs are checked independently of each other even after the transition/loudScope gate passes — either, both, or neither can fire per event (`cmd/evener-hub/frontend/src/notifications/index.ts:68-75`)
+- [ ] `evener/attention/changed` notifications update the navigation store's attention summary and changed entries, and the notifications engine consumes that store for counts and edge detection (`cmd/evener-hub/frontend/src/stores/navigation/store.ts:593-598`, `cmd/evener-hub/frontend/src/notifications/index.ts:110-114`)
 
 ### 3.7 Single-tab election
 

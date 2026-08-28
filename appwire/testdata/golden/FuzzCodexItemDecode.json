@@ -63,6 +63,7 @@
           "forkFromTurn": false,
           "shutdown": false,
           "changeModel": false,
+          "changeVisionModel": false,
           "queue": false,
           "goal": false,
           "rename": false
@@ -170,6 +171,7 @@
           "forkFromTurn": false,
           "shutdown": false,
           "changeModel": false,
+          "changeVisionModel": false,
           "queue": false,
           "goal": false,
           "rename": false

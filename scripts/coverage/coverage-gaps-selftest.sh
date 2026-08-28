@@ -81,11 +81,32 @@ assert_has "$out" "no such profile" "the missing profile is named"
 bash "$script" "$profile" --by bogus >"$out" 2>&1
 assert_eq "$?" "2" "an unknown --by value is a usage error"
 
+help_header_ok() {
+	local help=$1
+	[[ "$help" == Usage:* || "$help" == *$'\nUsage:'* ]] &&
+		[[ "$help" != "set -uo pipefail"* && "$help" != *$'\nset -uo pipefail'* ]]
+}
+
 help_out="$(bash "$script" --help 2>&1)"
-if echo "$help_out" | grep -q "^Usage:" && ! echo "$help_out" | grep -q "^set -uo pipefail"; then
+if help_header_ok "$help_out"; then
 	ok "--help prints the whole header and stops at the script body"
 else
 	bad "--help is truncated or overran the header: $help_out"
 fi
+
+large_help_out=$'Usage: coverage-gaps.sh [options]\n'"$(printf 'valid help documentation\n%.0s' {1..4096})"
+large_help_status=0
+help_header_ok "$large_help_out" || large_help_status=$?
+assert_eq "$large_help_status" "0" "a large valid help stream is accepted without SIGPIPE status 141"
+
+malformed_help_out=$'Usage: coverage-gaps.sh [options]\nset -uo pipefail\n'
+malformed_help_status=0
+help_header_ok "$malformed_help_out" || malformed_help_status=$?
+assert_eq "$malformed_help_status" "1" "help containing the script body marker is rejected"
+
+missing_usage_help_out=$'coverage-gaps.sh [options]\n'
+missing_usage_help_status=0
+help_header_ok "$missing_usage_help_out" || missing_usage_help_status=$?
+assert_eq "$missing_usage_help_status" "1" "help without a Usage header is rejected"
 
 selftest_summary

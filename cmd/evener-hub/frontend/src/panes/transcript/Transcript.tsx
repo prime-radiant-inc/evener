@@ -11,32 +11,25 @@
 // (ensureThread/releaseThread, thread/read - no new data path), so a session
 // pane and a transcript pane open on the same ref share one ThreadModel.
 //
-// The composition duplicates the session pane's transcript region rather than
-// sharing a component: Session.tsx is frozen this wave and its transcript
-// engine lives in a concurrently-edited stream's directory, so a shared
-// <TranscriptBody> extraction isn't reachable here - a conscious, boundary-
-// forced divergence (T8 sweep). It couples only to the engine's STABLE seams
-// (useTranscript, TurnBlock, LoadOlderRow) and deliberately omits the live
-// flow-overlay/new-content-pill machinery, which is a live-session affordance.
-import { useEffect, useMemo, useRef } from "react";
+// Both live and read-only panes now hand their hydrated model to the shared
+// TranscriptBody. The read-only surface injects only its older-row affordance
+// and deliberately omits live flow-overlay/new-content-pill machinery.
+import { useEffect, useMemo, useRef, useState } from "react";
+import { useStore } from "zustand";
 import type { PaneProps } from "../../shell/paneRegistry";
+import { navigate, paneToURL } from "../../shell/routing";
 import { connectionStore } from "../../stores/connection";
 import { threadsStore } from "../../stores/threads";
-import { EmptyState, PaneScaffold, VirtualList, type VirtualListHandle } from "../../widgets";
-import { requireClass } from "../../widgets/internal/requireClass";
+import { transcriptDisplayStore } from "../../stores/transcriptDisplay";
+import { resolveEffectiveConfig } from "../../transcriptDisplay/config";
+import { EmptyState, PaneScaffold, type VirtualListHandle } from "../../widgets";
+import { VisuallyHidden } from "../../widgets/internal/VisuallyHidden";
 import { NOW_TICK_MS, SessionNowContext, useNowTick } from "../session/liveness";
-import { exchangeOpenersFor } from "../session/transcript/exchangeOpeners";
 import { LoadOlderRow } from "../session/transcript/flow/LoadOlderRow";
-import { TurnBlock } from "../session/transcript/TurnBlock";
+import { TranscriptBody } from "../session/transcript/TranscriptBody";
+import { TranscriptDetailControl } from "../session/transcript/TranscriptDetailControl";
 import { useTranscript } from "../session/transcript/useTranscript";
 import { JobLog } from "./JobLog";
-// Side-effect barrels: register every message item renderer and every tool
-// descriptor the moment this pane loads, exactly as SessionPane does, so a
-// transcript pane opened before any session pane still renders every item type
-// (the registries must never depend on import order).
-import "../session/transcript/messages";
-import "../session/transcript/tools";
-import styles from "./transcript.module.css";
 
 export interface TranscriptParams {
   ref: string;
@@ -50,17 +43,7 @@ export interface TranscriptParams {
   parentRef?: string;
 }
 
-const CLASS = {
-  body: requireClass(styles.body, "transcript.module.css", "body"),
-  list: requireClass(styles.list, "transcript.module.css", "list"),
-};
-
-// Same average-turn guess SessionPane feeds VirtualList's `dynamic` mode - real
-// heights are measured post-mount per turn (see the VirtualList widget's own
-// dynamic-mode comment).
-const ESTIMATED_TURN_HEIGHT = 96;
-
-export default function Transcript({ params }: PaneProps<TranscriptParams>) {
+export default function Transcript({ params, paneId }: PaneProps<TranscriptParams>) {
   // A "job:<id>" ref is a shell job's output log, not a thread: it renders
   // through the job-log surface, which never touches the thread engine (no
   // thread/read, no ensureThread). Refs never change for a mounted pane, so
@@ -68,10 +51,10 @@ export default function Transcript({ params }: PaneProps<TranscriptParams>) {
   if (params.ref.startsWith("job:")) {
     return <JobLog jobRef={params.ref} parentRef={params.parentRef} />;
   }
-  return <ThreadTranscript params={params} />;
+  return <ThreadTranscript params={params} paneId={paneId} />;
 }
 
-function ThreadTranscript({ params }: { params: TranscriptParams }) {
+function ThreadTranscript({ params, paneId }: { params: TranscriptParams; paneId?: string }) {
   const { ref } = params;
   const now = useNowTick(NOW_TICK_MS);
 
@@ -103,6 +86,9 @@ function ThreadTranscript({ params }: { params: TranscriptParams }) {
   // Session.tsx's own comment on the same wiring.
   const { model, loadingOlder, loadOlderReportingError, olderError } = useTranscript(ref);
   const listRef = useRef<VirtualListHandle>(null);
+  const detailTriggerRef = useRef<HTMLButtonElement>(null);
+  const announcementSequence = useRef(0);
+  const [viewAnnouncement, setViewAnnouncement] = useState({ text: "", key: 0 });
 
   // Open at the latest turn once, when content first arrives. anchorToEnd on
   // the VirtualList below keeps the viewport pinned to the TRUE end while the
@@ -113,7 +99,6 @@ function ThreadTranscript({ params }: { params: TranscriptParams }) {
   // view back to the bottom (and the list's own end-anchor keeps a prepend
   // visually anchored either way).
   const turnCount = model?.turns.length ?? 0;
-  const openers = useMemo(() => (model ? exchangeOpenersFor(model.turns) : undefined), [model]);
   const didInitialScrollRef = useRef(false);
   useEffect(() => {
     if (!didInitialScrollRef.current && turnCount > 0) {
@@ -121,6 +106,14 @@ function ThreadTranscript({ params }: { params: TranscriptParams }) {
       listRef.current?.scrollToIndex(turnCount - 1, { align: "end" });
     }
   }, [turnCount]);
+
+  const displayViewport = useStore(transcriptDisplayStore, (state) => state.viewport);
+  const displayLocal = useStore(transcriptDisplayStore, (state) => state.local[displayViewport]);
+  const displayHub = useStore(transcriptDisplayStore, (state) => state.hub[displayViewport]);
+  const displayConfig = useMemo(
+    () => resolveEffectiveConfig({ local: displayLocal, hub: displayHub, layout: displayViewport }),
+    [displayHub, displayLocal, displayViewport],
+  );
 
   if (!model) {
     return (
@@ -130,38 +123,44 @@ function ThreadTranscript({ params }: { params: TranscriptParams }) {
     );
   }
 
-  // VirtualList only ever hands back an in-range index (count-bounded), but
-  // that guarantee crosses a boundary TypeScript can't see - check it for real
-  // so a future bug fails loudly instead of rendering `undefined` (mirrors
-  // SessionPane's own turnAt guard).
-  const turnAt = (index: number) => {
-    const turn = model.turns[index];
-    if (!turn) throw new Error(`VirtualList index ${index} out of range for ${model.turns.length} turns`);
-    return turn;
-  };
-
   const content = (
     <PaneScaffold title={model.name || ref}>
       {model.turns.length === 0 ? (
         <EmptyState title="No turns yet" hint="This thread hasn't sent or received anything yet." />
       ) : (
-        <div className={CLASS.body}>
-          {model.olderCursor && (
-            <LoadOlderRow onLoad={loadOlderReportingError} loading={loadingOlder} error={olderError} />
-          )}
-          <div className={CLASS.list}>
-            <VirtualList
-              ref={listRef}
-              dynamic
-              anchorToEnd
-              count={model.turns.length}
-              estimateSize={() => ESTIMATED_TURN_HEIGHT}
-              getItemKey={(index) => turnAt(index).id}
-              renderRow={(index) => <TurnBlock turn={turnAt(index)} sessionRef={ref} exchangeOpeners={openers} />}
+        <TranscriptBody
+          model={model}
+          config={displayConfig}
+          surface="readOnly"
+          disclosureScope={`transcript:readOnly:${ref}`}
+          sessionRef={ref}
+          viewId={paneId}
+          detailTriggerRef={detailTriggerRef}
+          toolbar={
+            <TranscriptDetailControl
+              layout={displayViewport}
+              triggerRef={detailTriggerRef}
+              onEditHubDefaults={() => {
+                const url = paneToURL("settings", { section: "transcript" });
+                if (url !== null) navigate(url);
+              }}
             />
-          </div>
-        </div>
+          }
+          onAnnounceViewChange={(summary) => {
+            announcementSequence.current += 1;
+            setViewAnnouncement({ text: `Transcript detail: ${summary}`, key: announcementSequence.current });
+          }}
+          loadOlderRow={
+            model.olderCursor && (
+              <LoadOlderRow onLoad={loadOlderReportingError} loading={loadingOlder} error={olderError} />
+            )
+          }
+          listRef={listRef}
+        />
       )}
+      <div role="status" aria-live="polite" data-testid="transcript-view-announcement">
+        <VisuallyHidden key={viewAnnouncement.key}>{viewAnnouncement.text}</VisuallyHidden>
+      </div>
     </PaneScaffold>
   );
   return <SessionNowContext.Provider value={now}>{content}</SessionNowContext.Provider>;

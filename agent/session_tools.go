@@ -8,6 +8,7 @@ import (
 	"maps"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -17,6 +18,7 @@ import (
 	"primeradiant.com/evener/agent/internal/tool"
 	"primeradiant.com/evener/agent/internal/toolname"
 	"primeradiant.com/evener/agent/plugin"
+	"primeradiant.com/evener/agent/provider"
 	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/agent/task"
 	"primeradiant.com/evener/llm"
@@ -87,6 +89,8 @@ type stableDelegateCreateResult struct {
 	ChildSessionID string                      `json:"child_session_id"`
 	Type           string                      `json:"type"`
 	Status         string                      `json:"status"`
+	AgentType      string                      `json:"agent_type,omitempty"`
+	Tools          []string                    `json:"tools,omitempty"`
 	Reason         string                      `json:"reason,omitempty"`
 	Resumable      *bool                       `json:"resumable,omitempty"`
 	TranscriptRef  string                      `json:"transcript_ref"`
@@ -100,7 +104,7 @@ type stableDelegateCreateResult struct {
 func registerStableDelegateTool(reg *tool.Registry, s *Session) error {
 	reg.Remove("delegate")
 	if err := reg.Register(tool.RegisteredTool{
-		Definition: tool.DefDelegate(s.delegateAgentTypeNames()),
+		Definition: s.delegateToolDefinition(),
 		Limit:      schema.ToolOutputLimit{MaxChars: jobToolResultDefaultMaxChar, Strategy: schema.TruncTail},
 		Exec: func(ctx context.Context, env execenv.ExecutionEnvironment, args map[string]any) (any, error) {
 			_ = env
@@ -135,6 +139,9 @@ func stableDelegateSendTool(ctx context.Context, s *Session, args map[string]any
 		wait = int(clampJobBlockTimeout(wait).Milliseconds())
 	}
 	if target == runtimeMessageAliasCaller {
+		if wait > 0 {
+			return nil, errors.New("invalid_request: max_wait_ms is not supported for the caller route; no message was delivered")
+		}
 		if s == nil || s.delegateController == nil {
 			return nil, errors.New("delegate controller is unavailable")
 		}
@@ -186,6 +193,8 @@ func stableDelegateCreateTool(ctx context.Context, s *Session, args map[string]a
 		ChildSessionID: result.ChildSessionID,
 		Type:           result.Type,
 		Status:         string(result.Status),
+		AgentType:      result.AgentType,
+		Tools:          append([]string(nil), result.Tools...),
 		Reason:         result.Reason,
 		Resumable:      result.Resumable,
 		TranscriptRef:  result.TranscriptRef,
@@ -260,28 +269,190 @@ func (s *Session) RegisterTool(name, description string, params map[string]any, 
 	s.reportPromptRenderFailure(promptWarning)
 }
 
+const (
+	// visionReasoningEffort deliberately caps image and document descriptions
+	// below the session's reasoning effort. This side-channel does perception-
+	// shaped work, where inheriting a top-tier effort adds latency without
+	// improving the description contract.
+	visionReasoningEffort = "low"
+	// visionSideChannelTimeout is an explicit caller-owned ceiling. The adapter
+	// timeout remains a defense in depth for provider transports, while this
+	// context also cancels deterministic/non-HTTP adapters and all cleanup
+	// attached to the side-channel call.
+	visionSideChannelTimeout = 2 * time.Minute
+)
+
+var errVisionSideChannelTimeout = errors.New("vision side-channel deadline")
+
+func (s *Session) visionSideChannelDuration() time.Duration {
+	if timeout := s.cfg.testOnly.visionSideChannelTimeout; timeout > 0 {
+		return timeout
+	}
+	return visionSideChannelTimeout
+}
+
+type visionSideChannelOutcome uint8
+
+const (
+	visionSideChannelSuccess visionSideChannelOutcome = iota
+	visionSideChannelOwnedTimeout
+	visionSideChannelParentCanceled
+	visionSideChannelProviderFailure
+)
+
+type visionSideChannelResult struct {
+	description string
+	elapsed     time.Duration
+	usage       llm.Usage
+	outcome     visionSideChannelOutcome
+}
+
 // describeImage makes a side-channel API call with no tools to describe an image
 // using the model's native vision. Returns the text description, or "" on error.
-// The call includes context from the current task so the description is relevant.
 func (s *Session) describeImage(ctx context.Context, r tool.ExecResult) string {
-	if len(r.ImageData) == 0 {
+	return s.describeImageCall(ctx, r).description
+}
+
+// visionSideChannelStats is the machine-readable accounting contract carried
+// in successful image-description steering. Token fields are present only when
+// the provider reported usage; usage_available distinguishes an unavailable
+// report from a real report whose counters happen to be zero.
+type visionSideChannelStats struct {
+	ElapsedMS                int64 `json:"elapsed_ms"`
+	UsageAvailable           bool  `json:"usage_available"`
+	InputTokens              *int  `json:"input_tokens,omitempty"`
+	OutputTokens             *int  `json:"output_tokens,omitempty"`
+	ReasoningTokens          *int  `json:"reasoning_tokens,omitempty"`
+	ReasoningTokensEstimated *int  `json:"reasoning_tokens_estimated,omitempty"`
+	CacheReadTokens          *int  `json:"cache_read_tokens,omitempty"`
+	CacheWriteTokens         *int  `json:"cache_write_tokens,omitempty"`
+	CacheWrite1hTokens       *int  `json:"cache_write_1h_tokens,omitempty"`
+}
+
+const (
+	visionSideChannelStatsOpen  = "<evener:vision_side_channel_stats>"
+	visionSideChannelStatsClose = "</evener:vision_side_channel_stats>"
+	visionRequestContract       = "Observe the image faithfully and answer the caller's request. Vision is non-authoritative for exact text or bytes; use OCR or the source when exactness matters."
+)
+
+func visionUnavailableSteering(path string) string {
+	if path == "" {
+		return "Vision is unavailable. Use OCR or inspect the source data, or continue without vision."
+	}
+	return fmt.Sprintf("Vision is unavailable for %s. Use OCR or inspect the source data, or continue without vision.", strconv.Quote(path))
+}
+
+func visionFailureSteering(path string, result visionSideChannelResult) string {
+	if result.outcome == visionSideChannelProviderFailure {
+		if path == "" {
+			return "Vision is unavailable because the vision provider failed. Use OCR or inspect the source data, or continue without vision."
+		}
+		return fmt.Sprintf("Vision is unavailable for %s because the vision provider failed. Use OCR or inspect the source data, or continue without vision.", strconv.Quote(path))
+	}
+	return visionUnavailableSteering(path)
+}
+
+func formatVisionSideChannelStats(result visionSideChannelResult) string {
+	stats := visionSideChannelStats{
+		ElapsedMS:      result.elapsed.Milliseconds(),
+		UsageAvailable: visionUsageAvailable(result.usage),
+	}
+	if stats.UsageAvailable {
+		stats.InputTokens = new(result.usage.InputTokens)
+		stats.OutputTokens = new(result.usage.OutputTokens)
+		stats.ReasoningTokens = result.usage.ReasoningTokens
+		stats.ReasoningTokensEstimated = result.usage.ReasoningTokensEstimated
+		stats.CacheReadTokens = result.usage.CacheReadTokens
+		stats.CacheWriteTokens = result.usage.CacheWriteTokens
+		stats.CacheWrite1hTokens = result.usage.CacheWrite1hTokens
+	}
+	payload, err := json.Marshal(stats)
+	if err != nil {
 		return ""
+	}
+	return visionSideChannelStatsOpen + string(payload) + visionSideChannelStatsClose
+}
+
+func visionUsageAvailable(usage llm.Usage) bool {
+	return usage.InputTokens != 0 ||
+		usage.OutputTokens != 0 ||
+		usage.TotalTokens != 0 ||
+		usage.ReasoningTokens != nil ||
+		usage.ReasoningTokensEstimated != nil ||
+		usage.CacheReadTokens != nil ||
+		usage.CacheWriteTokens != nil ||
+		usage.CacheWrite1hTokens != nil
+}
+
+// visionModelOff is the reserved bare-word setting that disables the vision
+// side-channel. Only a slash-free value can be the sentinel: a value with a
+// slash always parses as "provider/model", so a provider named "off" stays
+// reachable as "off/some-model".
+const visionModelOff = "off"
+
+// resolveVisionRoute maps the session's vision_model setting to the route the
+// side-channel executes on. "" resolves to the session's active route, "off"
+// (case-insensitive) disables the call, "provider/model" pins a provider, and
+// a bare model resolves on the active provider at call time — so it follows
+// SetModel switches. A malformed "x/" or "/x" value degrades to a bare-model
+// lookup on the active provider rather than an unroutable request.
+func resolveVisionRoute(profile *provider.Profile, setting string) (providerName, modelID string, off bool) {
+	setting = strings.TrimSpace(setting)
+	if setting == "" {
+		return profile.ID(), profile.Model(), false
+	}
+	if strings.EqualFold(setting, visionModelOff) {
+		return "", "", true
+	}
+	if prov, model, ok := strings.Cut(setting, "/"); ok && prov != "" && model != "" {
+		return prov, model, false
+	}
+	return profile.ID(), setting, false
+}
+
+// visionRouteSupportsReasoning gates reasoning_effort for the vision request:
+// the session route uses the profile's own answer (which may carry live
+// provider metadata); any other route answers from the embedded catalog, and
+// an uncatalogued model gets no effort knob rather than one it may reject.
+func visionRouteSupportsReasoning(profile *provider.Profile, providerName, modelID string) bool {
+	if providerName == profile.ID() && modelID == profile.Model() {
+		return profile.SupportsReasoning()
+	}
+	if cat := llm.EmbeddedModelCatalog(); cat != nil {
+		if mi := cat.LookupModelInfo(modelID); mi != nil {
+			return mi.SupportsReasoning
+		}
+	}
+	return false
+}
+
+func (s *Session) describeImageCall(ctx context.Context, r tool.ExecResult) visionSideChannelResult {
+	if len(r.ImageData) == 0 {
+		return visionSideChannelResult{outcome: visionSideChannelSuccess}
 	}
 	// Skip for explorer agents — they're just inventorying files, not analyzing images.
 	if s.cfg.AgentName == "explorer" {
-		return ""
+		return visionSideChannelResult{outcome: visionSideChannelSuccess}
+	}
+
+	// Snapshot the profile under s.mu: the vision side-channel runs during the
+	// round, so a concurrent SetModel (which mutates it under s.mu) must not race
+	// this read (PRI-1958 A2/A4). The fixed low vision cap below is deliberately
+	// independent of the session/task reasoning effort.
+	s.mu.Lock()
+	profile := s.profile
+	visionSetting := s.cfg.VisionModel
+	s.mu.Unlock()
+
+	routeProvider, routeModel, visionOff := resolveVisionRoute(profile, visionSetting)
+	if visionOff {
+		return visionSideChannelResult{outcome: visionSideChannelSuccess}
 	}
 
 	// Use the caller's stated purpose as the vision prompt. The calling LLM
-	// knows what it needs — we just ask the vision model to answer that question.
-	purpose := strings.TrimSpace(r.ImagePurpose)
-	if purpose == "" {
-		purpose = "Describe what you see in this image in thorough detail."
-	}
-
-	var prompt strings.Builder
-	prompt.WriteString(purpose)
-	prompt.WriteString("\n\nBe thorough — the reader cannot see the image and will rely entirely on your description.")
+	// knows what it needs — we just ask the vision model to answer that question
+	// under one unconditional observation contract.
+	prompt := visionPrompt(r.ImagePurpose)
 
 	mt := r.ImageMediaType
 	if mt == "" {
@@ -305,22 +476,9 @@ func (s *Session) describeImage(ctx context.Context, r tool.ExecResult) string {
 		}}
 	}
 
-	// Snapshot the model inputs under s.mu: the vision side-channel runs during
-	// the round, so a concurrent SetModel/SetReasoningEffort (which mutate these
-	// under s.mu) must not race these reads (PRI-1958 A2/A4).
-	effortOverride := ""
-	if s.taskStore != nil {
-		if current, ok := s.taskStore.CurrentInProgress(); ok && current.ReasoningEffort != "" {
-			effortOverride = current.ReasoningEffort
-		}
-	}
-	s.mu.Lock()
-	profile := s.profile
-	effort := strings.TrimSpace(s.cfg.ReasoningEffort)
-	s.mu.Unlock()
-	if effortOverride != "" {
-		effort = effortOverride
-	}
+	visionTimeout := s.visionSideChannelDuration()
+	visionCtx, cancel := context.WithTimeoutCause(ctx, visionTimeout, errVisionSideChannelTimeout)
+	defer cancel()
 	req := llm.Request{
 		Model:    profile.Model(),
 		Provider: profile.ID(),
@@ -328,7 +486,7 @@ func (s *Session) describeImage(ctx context.Context, r tool.ExecResult) string {
 			{
 				Role: llm.RoleUser,
 				Content: []llm.ContentPart{
-					{Kind: llm.ContentText, Text: prompt.String()},
+					{Kind: llm.ContentText, Text: prompt},
 					mediaPart,
 				},
 			},
@@ -336,34 +494,68 @@ func (s *Session) describeImage(ctx context.Context, r tool.ExecResult) string {
 		// No tools — force text-only response.
 		AdapterTimeout: &llm.AdapterTimeout{
 			Connect:    10 * time.Second,
-			Request:    2 * time.Minute,
+			Request:    visionTimeout,
 			StreamRead: 30 * time.Second,
 		},
 	}
-	// Vision descriptions need sufficient reasoning to be accurate.
-	// Floor at "high" regardless of the current task's effort level. Use the
-	// shared rank so "max" (and any future top-tier name) isn't downgraded.
-	if llm.ReasoningEffortRank(effort) < llm.ReasoningEffortRank("high") {
-		effort = "high"
-	}
 	// This request is built manually (not via buildModelRequest), so clamp the
-	// effort to the model's supported levels here too — otherwise a top-tier
-	// alias like "max"/"xhigh" can reach a model that doesn't accept it. Gated
-	// on SupportsReasoning so a model explicitly declared non-reasoning
-	// (providers.toml reasoning=false) never gets reasoning_effort on the wire.
-	if profile.SupportsReasoning() {
-		effort = llm.ClampReasoningEffort(effort, profile.ReasoningEffortLevels())
+	// fixed vision cap to the model's supported levels here too. A model whose
+	// cheapest level is above the cap gets that level rather than a value it
+	// would reject. Gate on SupportsReasoning so non-reasoning models never get
+	// reasoning_effort on the wire.
+	if visionRouteSupportsReasoning(profile, routeProvider, routeModel) {
+		levels := profile.ReasoningEffortLevels()
+		if routeProvider != profile.ID() || routeModel != profile.Model() {
+			if cat := llm.EmbeddedModelCatalog(); cat != nil {
+				if mi := cat.LookupModelInfo(routeModel); mi != nil && len(mi.ReasoningEffortLevels) > 0 {
+					levels = mi.ReasoningEffortLevels
+				}
+			}
+		}
+		effort := llm.ClampReasoningEffort(visionReasoningEffort, levels)
 		req.ReasoningEffort = &effort
 	}
 	s.applyModelRequestMetadata(profile, &req)
 
-	resp, err := s.client.Complete(ctx, req)
+	start := s.sclock().Now()
+	resp, err := s.cheap.CompleteRouted(visionCtx, profile, routeProvider, routeModel, req)
+	elapsed := s.sclock().Now().Sub(start)
+	elapsed = max(elapsed, 0)
 	if err != nil {
-		s.emit(events.EventWarning, events.WarningData{Message: fmt.Sprintf("vision side-channel failed: %v", err)})
-		return ""
+		outcome := visionSideChannelProviderFailure
+		cause := context.Cause(visionCtx)
+		if errors.Is(cause, errVisionSideChannelTimeout) {
+			outcome = visionSideChannelOwnedTimeout
+		} else if ctx.Err() != nil {
+			// Parent cancellation owns races with the side-channel deadline. This
+			// prevents a stale unavailable steering message after a canceled turn.
+			outcome = visionSideChannelParentCanceled
+		} else if errors.Is(visionCtx.Err(), context.DeadlineExceeded) {
+			outcome = visionSideChannelOwnedTimeout
+		}
+		if outcome != visionSideChannelParentCanceled {
+			// Provider errors can contain request URLs, bodies, IDs, or credentials.
+			// The user-facing steering below is deliberately sanitized, so keep the
+			// warning sanitized too rather than reintroducing the raw adapter error.
+			s.emit(events.EventWarning, events.WarningData{Message: "vision side-channel unavailable"})
+		}
+		return visionSideChannelResult{elapsed: elapsed, outcome: outcome}
 	}
 
-	return strings.TrimSpace(resp.Message.Text())
+	return visionSideChannelResult{
+		description: strings.TrimSpace(resp.Message.Text()),
+		elapsed:     elapsed,
+		usage:       resp.Usage,
+		outcome:     visionSideChannelSuccess,
+	}
+}
+
+func visionPrompt(purpose string) string {
+	purpose = strings.TrimSpace(purpose)
+	if purpose == "" {
+		purpose = "Describe what you see in this image in thorough detail."
+	}
+	return purpose + "\n\n" + visionRequestContract
 }
 
 func (s *Session) canonicalToolName(name string) string {
@@ -598,6 +790,7 @@ func (s *Session) execTool(ctx context.Context, call llm.ToolCallData, finishRea
 			FullOutput: prep.PrevalErr,
 			IsError:    true,
 			PrevalOnly: true,
+			Err:        prep.Err,
 		}
 	} else {
 		res = s.reg.ExecuteCall(ctx, s.currentEnv(), call)
@@ -816,6 +1009,18 @@ func (s *Session) appendToolResults(ctx context.Context, calls []llm.ToolCallDat
 	var persistErr error
 	if abortErr := s.withResponseSideEffects(ctx, func() {
 		commits := s.takeDelegateDeliveryCommits(calls)
+		if len(commits) != 0 {
+			if observe := s.cfg.testOnly.delegateDeliveryCommitsTaken; observe != nil {
+				observe()
+			}
+			// This is the last cancellation observation before transcript persistence.
+			// Once it passes, the durable append below owns the commit point and must
+			// finish rather than roll back a write that may already have started.
+			if persistErr = ctx.Err(); persistErr != nil {
+				abortDelegateToolCallDeliveryCommits(commits)
+				return
+			}
+		}
 		persistedParts := projectToolResultsForTranscript(calls, results, parts)
 		live := llm.Message{Role: llm.RoleTool, Content: parts}
 		persisted := llm.Message{Role: llm.RoleTool, Content: persistedParts}
@@ -838,6 +1043,9 @@ func (s *Session) appendToolResults(ctx context.Context, calls []llm.ToolCallDat
 		s.maybeAutoSave()
 		s.announceReadableToolResultImages(results)
 	}); abortErr != nil {
+		// The tool round will not persist, so release any inline delivery receipts
+		// it acquired before cancellation and leave their durable heads replayable.
+		abortDelegateToolCallDeliveryCommits(s.takeDelegateDeliveryCommits(calls))
 		if ctx.Err() != nil && !s.isClosingOrClosed() {
 			s.appendCanceledToolResults(calls, results, abortErr)
 		}
@@ -888,6 +1096,14 @@ type delegateToolCallDeliveryCommit struct {
 	commit     *delegateToolResultCommit
 }
 
+func abortDelegateToolCallDeliveryCommits(commits []delegateToolCallDeliveryCommit) {
+	for _, binding := range commits {
+		if binding.commit != nil {
+			_, _ = binding.commit.Complete(false)
+		}
+	}
+}
+
 func (s *Session) takeDelegateDeliveryCommits(calls []llm.ToolCallData) []delegateToolCallDeliveryCommit {
 	s.delegateDeliveryMu.Lock()
 	defer s.delegateDeliveryMu.Unlock()
@@ -914,11 +1130,7 @@ func (s *Session) appendToolResultsWithDeliveryCommitsDurably(live, persisted ll
 		}
 	}
 	if err := s.writeTranscriptDurable(persistedTurn); err != nil {
-		for _, binding := range commits {
-			if binding.commit != nil {
-				_, _ = binding.commit.Complete(false)
-			}
-		}
+		abortDelegateToolCallDeliveryCommits(commits)
 		return err
 	}
 	s.mu.Lock()
@@ -1019,6 +1231,10 @@ func (s *Session) defaultToolSummaryForAgent(agent plugin.Agent) string {
 	if allowance <= 0 {
 		canonical = removeRootOnlySubagentTools(canonical)
 	}
+	// ask_user is never callable by a subagent, including an all-tools role;
+	// keep the advertised capability set aligned with the unconditional grant
+	// guard rather than the parent's interactive-root registry.
+	canonical = removeStrings(canonical, protectedGrantTools())
 	return formatToolNamesForPrompt(s.providerVisibleToolNames(canonical))
 }
 
@@ -1045,6 +1261,35 @@ func (s *Session) availableAgentEntries() []agentEntry {
 		})
 	}
 	return entries
+}
+
+func (s *Session) delegateCapabilityRoster() string {
+	entries := s.availableAgentEntries()
+	if len(entries) == 0 {
+		return ""
+	}
+	capabilities := make([]string, 0, len(entries))
+	for _, entry := range entries {
+		capabilities = append(capabilities, fmt.Sprintf("%s: %s", entry.Name, entry.DefaultTools))
+	}
+	return strings.Join(capabilities, "; ")
+}
+
+func (s *Session) delegateToolDefinition() llm.ToolDefinition {
+	sandboxSchema := s.delegateSandboxSchemaForEnv(s.env)
+	sandboxSchema.ModelDescription = s.delegateModelDescription
+	definition := tool.DefDelegateWithSandbox(s.delegateAgentTypeNames(), sandboxSchema)
+	roster := s.delegateCapabilityRoster()
+	if roster == "" {
+		return definition
+	}
+	definition.Description += " Role capabilities are listed in the agent_type schema and available-agents prompt."
+	if properties, ok := definition.Parameters["properties"].(map[string]any); ok {
+		if agentType, ok := properties["agent_type"].(map[string]any); ok {
+			agentType["description"] = "Role for the delegate. Choose from the enum; effective capabilities by role: " + roster + "."
+		}
+	}
+	return definition
 }
 
 func (s *Session) delegateAgentTypeNames() []string {
@@ -1090,6 +1335,11 @@ func (s *Session) profileWireToolDefs() []llm.ToolDefinition {
 	nameMap := s.profile.ToolNameMap()
 	defs := s.profile.ToolDefinitions()
 	for i := range defs {
+		if defs[i].Name == "delegate" {
+			sandboxSchema := s.delegateSandboxSchemaForEnv(s.env)
+			sandboxSchema.ModelDescription = s.delegateModelDescription
+			defs[i] = tool.DefDelegateWithSandbox(s.delegateAgentTypeNames(), sandboxSchema)
+		}
 		defs[i] = wireToolDef(defs[i], nameMap, s.resultToolName())
 	}
 	return defs
@@ -1111,7 +1361,7 @@ func (s *Session) rebuildToolDefsCache() {
 	for _, td := range s.profile.ToolDefinitions() {
 		if registered[td.Name] {
 			if td.Name == "delegate" {
-				td = tool.DefDelegate(s.delegateAgentTypeNames())
+				td = s.delegateToolDefinition()
 				// When this session can only grant allowance 0 (own allowance 1),
 				// delegation_allowance has a single legal value — a no-op knob. Hide it
 				// so the model is not offered a parameter it cannot meaningfully set.

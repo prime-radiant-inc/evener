@@ -45,6 +45,7 @@ const CAPABILITIES: ThreadCapabilities = {
   forkFromTurn: true,
   shutdown: true,
   changeModel: true,
+  changeVisionModel: true,
   queue: true,
   goal: true,
   rename: true,
@@ -59,6 +60,7 @@ function testModel(overrides: Partial<ThreadModel> = {}): ThreadModel {
     status: { type: "idle" },
     modelProvider: "anthropic",
     model: "claude-sonnet-4-5",
+    visionModel: "",
     askPending: false,
     pendingEscalations: [],
     turns: [],
@@ -192,7 +194,7 @@ test("a failed turn's idle capabilities re-enable model switching without reload
   await waitFor(() => expect(screen.getAllByRole("option")).toHaveLength(3));
   await user.clear(combobox);
   await user.keyboard("gpt-5.5");
-  await user.click(await screen.findByRole("option", { name: /openai\/gpt-5\.5/i }));
+  await user.click(await screen.findByRole("option", { name: /gpt-5\.5/i }));
   await waitFor(() => expect(called).toEqual({ ref: "ref_a", modelProvider: "openai", model: "gpt-5.5" }));
 });
 

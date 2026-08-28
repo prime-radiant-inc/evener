@@ -28,6 +28,9 @@ func (m *hubModel) applyHubNotification(notification appwire.Notification) tea.C
 		}
 		return nil
 	case appwire.NotifyEvenerMarketplaceUpdated, appwire.NotifyEvenerPluginUpdated:
+		if m.mode == hubModeSpawn && m.client != nil {
+			return m.requestSpawnPluginPreview()
+		}
 		if m.pluginsPanel != nil && m.client != nil {
 			return m.refreshPluginsPanel()
 		}
@@ -214,6 +217,11 @@ func (m *hubModel) applyHubNotification(notification appwire.Notification) tea.C
 		var params appwire.ThreadReasoningEffortChangedParams
 		if json.Unmarshal(notification.Params, &params) == nil {
 			m.detail.ReasoningEffort = params.ReasoningEffort
+		}
+	case appwire.NotifyThreadVisionModelChanged:
+		var params appwire.ThreadVisionModelChangedParams
+		if json.Unmarshal(notification.Params, &params) == nil {
+			m.detail.VisionModel = params.VisionModel
 		}
 	case appwire.NotifyThreadQueueChanged:
 		var params appwire.ThreadQueueChangedParams

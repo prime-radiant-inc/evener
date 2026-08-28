@@ -3,6 +3,8 @@ package agent
 import (
 	"context"
 	"encoding/json"
+	"os"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -109,5 +111,107 @@ func TestCommunicate_EndTurnWarningKeepsTheServeContract(t *testing.T) {
 	}
 	if strings.Contains(warning, "killed at exit") {
 		t.Fatalf("serve warning = %q, want no claim that the job dies: the session outlives the turn", warning)
+	}
+}
+
+// TestCommunicate_EndTurnWarnsForLiveDetachedProcess drives mode:"detached"
+// through the real shell and communicate tool handlers. A detached process is
+// still owned by this session until it exits, so ending a one-shot turn must
+// surface the same warning as a managed background job.
+func TestCommunicate_EndTurnWarnsForLiveDetachedProcess(t *testing.T) {
+	s := newSession(t, withConfig(SessionConfig{
+		MaxSubagentDepth: 1,
+		NoProjectPrompts: true,
+		TurnEndsProcess:  true,
+		testOnly:         testConfig{skipGitSnapshot: true, minimalSystemPrompt: true, noSyncJobStore: true},
+	}))
+	if reporter, ok := s.env.(interface{ DetachSupported() bool }); !ok || !reporter.DetachSupported() {
+		t.Skip("detached execution is unsupported in this environment")
+	}
+
+	res := s.reg.ExecuteCall(context.Background(), s.env, llm.ToolCallData{
+		ID:        "detached-shell",
+		Name:      "shell",
+		Arguments: json.RawMessage(`{"command":"exec sleep 30","mode":"detached"}`),
+	})
+	if res.IsError {
+		t.Fatalf("detached shell returned error: %s", res.Output)
+	}
+	var shellOut struct {
+		PID int `json:"pid"`
+	}
+	if err := json.Unmarshal(toolResultJSON(res), &shellOut); err != nil {
+		t.Fatalf("unmarshal detached shell output: %v (output: %s)", err, res.Output)
+	}
+	if shellOut.PID <= 0 {
+		t.Fatalf("detached shell output = %s, want a positive pid", res.Output)
+	}
+	t.Cleanup(func() {
+		if p, err := os.FindProcess(shellOut.PID); err == nil {
+			_ = p.Kill()
+		}
+	})
+
+	communicate := s.reg.ExecuteCall(context.Background(), s.env, communicateCallArgs("detached-warning", map[string]any{
+		"message":  "done for now",
+		"end_turn": true,
+	}))
+	if communicate.IsError {
+		t.Fatalf("communicate error: %s", communicate.Output)
+	}
+	var response map[string]any
+	if err := json.Unmarshal(toolResultJSON(communicate), &response); err != nil {
+		t.Fatalf("unmarshal communicate output: %v", err)
+	}
+	warning, ok := response["warning"].(string)
+	if !ok || warning == "" {
+		t.Fatalf("expected a warning for live detached pid %d, got: %v", shellOut.PID, response)
+	}
+	if !strings.Contains(warning, strconv.Itoa(shellOut.PID)) {
+		t.Fatalf("warning = %q, want detached process pid %d", warning, shellOut.PID)
+	}
+}
+
+func TestCommunicate_EndTurnDoesNotWarnForExitedDetachedProcess(t *testing.T) {
+	s := newSession(t, withConfig(SessionConfig{
+		MaxSubagentDepth: 1,
+		NoProjectPrompts: true,
+		TurnEndsProcess:  true,
+		testOnly:         testConfig{skipGitSnapshot: true, minimalSystemPrompt: true, noSyncJobStore: true},
+	}))
+	if reporter, ok := s.env.(interface{ DetachSupported() bool }); !ok || !reporter.DetachSupported() {
+		t.Skip("detached execution is unsupported in this environment")
+	}
+
+	res := s.reg.ExecuteCall(context.Background(), s.env, llm.ToolCallData{
+		ID:        "detached-exited-shell",
+		Name:      "shell",
+		Arguments: json.RawMessage(`{"command":"exec true","mode":"detached"}`),
+	})
+	if res.IsError {
+		t.Fatalf("detached shell returned error: %s", res.Output)
+	}
+	s.mu.Lock()
+	if len(s.detachedProcesses) != 1 {
+		s.mu.Unlock()
+		t.Fatalf("detached process records = %d, want one", len(s.detachedProcesses))
+	}
+	done := s.detachedProcesses[0].done
+	s.mu.Unlock()
+	<-done
+
+	communicate := s.reg.ExecuteCall(context.Background(), s.env, communicateCallArgs("detached-exited", map[string]any{
+		"message":  "done for now",
+		"end_turn": true,
+	}))
+	if communicate.IsError {
+		t.Fatalf("communicate error: %s", communicate.Output)
+	}
+	var response map[string]any
+	if err := json.Unmarshal(toolResultJSON(communicate), &response); err != nil {
+		t.Fatalf("unmarshal communicate output: %v", err)
+	}
+	if _, warned := response["warning"]; warned {
+		t.Fatalf("communicate response = %v, want no warning for an exited detached process", response)
 	}
 }

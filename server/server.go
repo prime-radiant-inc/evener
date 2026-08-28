@@ -161,6 +161,31 @@ type DetailedStatus struct {
 	Agents    []string             `json:"agents,omitempty"`
 }
 
+// MarshalJSON preserves an explicit empty plugin inventory while keeping a
+// nil inventory absent for old or unwired sources that cannot report it.
+func (s DetailedStatus) MarshalJSON() ([]byte, error) {
+	type alias DetailedStatus
+	a := alias(s)
+	a.Plugins = nil
+	raw, err := json.Marshal(a)
+	if err != nil {
+		return nil, err
+	}
+	if s.Plugins == nil {
+		return raw, nil
+	}
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &fields); err != nil {
+		return nil, err
+	}
+	plugins, err := json.Marshal(s.Plugins)
+	if err != nil {
+		return nil, err
+	}
+	fields["plugins"] = plugins
+	return json.Marshal(fields)
+}
+
 // StatusInfo is the JSON response for GET /status.
 type StatusInfo struct {
 	SessionID        string             `json:"session_id"`
@@ -229,15 +254,16 @@ type ContextMetrics struct {
 // ActionCapabilities reports which mutating session actions are currently
 // supported by this daemon.
 type ActionCapabilities struct {
-	Send           bool   `json:"send"`
-	Steer          bool   `json:"steer"`
-	Interrupt      bool   `json:"interrupt"`
-	Compact        bool   `json:"compact"`
-	Clear          bool   `json:"clear"`
-	Shutdown       bool   `json:"shutdown"`
-	ChangeModel    bool   `json:"change_model"`
-	Queue          bool   `json:"queue"`
-	ReadOnlyReason string `json:"read_only_reason,omitempty"`
+	Send              bool   `json:"send"`
+	Steer             bool   `json:"steer"`
+	Interrupt         bool   `json:"interrupt"`
+	Compact           bool   `json:"compact"`
+	Clear             bool   `json:"clear"`
+	Shutdown          bool   `json:"shutdown"`
+	ChangeModel       bool   `json:"change_model"`
+	ChangeVisionModel bool   `json:"change_vision_model"`
+	Queue             bool   `json:"queue"`
+	ReadOnlyReason    string `json:"read_only_reason,omitempty"`
 }
 
 // ServerConfig holds configuration for the HTTP server.
@@ -325,9 +351,10 @@ type Server struct {
 	compactFunc                     func(context.Context) error
 	clearFunc                       func(context.Context) error
 	modelFunc                       func(string) error
+	visionModelFunc                 func(string) error
 	nameFunc                        func(string)
 	reasoningEffortFunc             func(string)
-	listModelsFunc                  func(context.Context) ([]ModelsResponseItem, error)
+	listModelsFunc                  func(context.Context) ([]appwire.ModelDescriptor, error)
 	tasksFn                         func() any
 	jobsFn                          func(appwire.JobsListParams) (any, error)
 	jobOutputFn                     func(jobID string, beforeBytes, maxBytes int64) (data any, found bool, err error)
@@ -410,7 +437,6 @@ func NewServer(cfg ServerConfig) *Server {
 	s.mux.HandleFunc("/drain-as-steer", s.handleDrainAsSteer)
 	s.mux.HandleFunc("/compact", s.handleCompact)
 	s.mux.HandleFunc("/model", s.handleModel)
-	s.mux.HandleFunc("/models", s.handleModels)
 	s.mux.HandleFunc("/clear", s.handleClear)
 	s.mux.HandleFunc("/input", s.handleInput)
 	s.mux.HandleFunc("/tasks", s.handleTasks)
@@ -618,6 +644,13 @@ func (s *Server) SetModelFunc(fn func(string) error) {
 	s.mu.Unlock()
 }
 
+// SetVisionModelFunc sets the function called by thread/vision-model/set.
+func (s *Server) SetVisionModelFunc(fn func(string) error) {
+	s.mu.Lock()
+	s.visionModelFunc = fn
+	s.mu.Unlock()
+}
+
 // SetNameFunc sets the function called by the rename appwire method.
 func (s *Server) SetNameFunc(fn func(string)) {
 	s.mu.Lock()
@@ -647,19 +680,8 @@ type ModelRequest struct {
 	Model string `json:"model"`
 }
 
-// ModelsResponseItem is a single model entry in the GET /models response.
-type ModelsResponseItem struct {
-	ID          string `json:"id"`
-	DisplayName string `json:"display_name"`
-}
-
-// ModelsResponse is the JSON response for GET /models.
-type ModelsResponse struct {
-	Models []ModelsResponseItem `json:"models"`
-}
-
-// SetListModelsFunc sets the function called by GET /models.
-func (s *Server) SetListModelsFunc(fn func(context.Context) ([]ModelsResponseItem, error)) {
+// SetListModelsFunc sets the function used by the typed model/list method.
+func (s *Server) SetListModelsFunc(fn func(context.Context) ([]appwire.ModelDescriptor, error)) {
 	s.mu.Lock()
 	s.listModelsFunc = fn
 	s.mu.Unlock()

@@ -102,6 +102,9 @@ func ToArgs(r Resolved) []string {
 			add("--model-fallback", m)
 		}
 	}
+	if e.EnabledPlugins != nil {
+		out = append(out, "--enabled-plugins="+strings.Join(*e.EnabledPlugins, ","))
+	}
 	for _, m := range e.MCPs {
 		spec := m.Name + ":" + m.Command
 		if len(m.Args) > 0 {

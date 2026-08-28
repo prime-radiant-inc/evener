@@ -79,8 +79,7 @@ func coverClient(t *testing.T) {
 	}
 	client, err := NewClient("seed.invalid/base/", &http.Client{Transport: fuzzRoundTripper(func(req *http.Request) (*http.Response, error) {
 		body := `{}`
-		switch req.URL.Path {
-		case "/base/api/models", "/base/api/sessions/local:seed/tasks":
+		if req.URL.Path == "/base/api/sessions/local:seed/tasks" {
 			body = `[]`
 		}
 		return &http.Response{StatusCode: http.StatusOK, Body: io.NopCloser(strings.NewReader(body)), Header: make(http.Header)}, nil
@@ -91,11 +90,7 @@ func coverClient(t *testing.T) {
 	_ = client.URL("plain")
 	_ = client.URL("query?a=b")
 	_, _ = client.Health(ctx)
-	_, _ = client.Tree(ctx)
 	_, _ = client.Session(ctx, ref)
-	_, _ = client.SpawnSchema(ctx)
-	_, _ = client.Spawn(ctx, SpawnRequest{})
-	_, _ = client.Models(ctx)
 	_ = client.Send(ctx, ref, "hello")
 	_, _ = client.Tasks(ctx, ref)
 	_ = client.Interrupt(ctx, ref)

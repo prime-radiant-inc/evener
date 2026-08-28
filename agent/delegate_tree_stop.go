@@ -178,6 +178,10 @@ func (c *delegateTreeController) stopSubtreeLocked(actor delegateActor, targetID
 	appended, err := c.appendLocked(delegatestore.Event{
 		Kind:       delegatestore.EventDelegateSubtreeStopRequested,
 		DelegateID: targetID,
+		// TS is what the fold turns into Aggregate.PendingStopAt: a caller asking
+		// whether the target can still honour this stop needs how LONG it has
+		// been pending, and the request sequence is an ordering, not a clock.
+		TS: c.now(),
 		SubtreeStopRequested: &delegatestore.SubtreeStopRequested{
 			TargetDelegateID: targetID,
 		},
@@ -550,7 +554,10 @@ func (c *delegateTreeController) closeRuntimeTree(ctx context.Context, closeChil
 	children = append(children, pendingCancelPlan.children...)
 	if pending != nil {
 		executeDelegateCancelPlan(pendingCancelPlan)
-		if err := c.joinOrDrainStopForClose(ctx, pending); err != nil {
+		stopCtx, cancelStop := closeStopJoinContext(ctx)
+		err := c.joinOrDrainStopForClose(stopCtx, pending)
+		cancelStop()
+		if err != nil {
 			return err
 		}
 	}
@@ -581,7 +588,10 @@ func (c *delegateTreeController) closeRuntimeTree(ctx context.Context, closeChil
 		}
 		executeDelegateCancelPlan(cancelPlan)
 		children = append(children, cancelPlan.children...)
-		if err := c.drainStopForClose(ctx, c.stopForResult(result)); err != nil {
+		stopCtx, cancelStop := closeStopJoinContext(ctx)
+		err = c.drainStopForClose(stopCtx, c.stopForResult(result))
+		cancelStop()
+		if err != nil {
 			return err
 		}
 	}

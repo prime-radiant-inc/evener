@@ -1,4 +1,4 @@
-import { cleanup, render, screen, waitFor } from "@testing-library/react";
+import { cleanup, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { useState } from "react";
 import { afterEach, describe, expect, test, vi } from "vitest";
@@ -182,6 +182,37 @@ test("the input and add button are disabled while onAdd is pending, and re-enabl
 
   resolveAdd({ ok: true });
   await waitFor(() => expect(input.disabled).toBe(false));
+});
+
+describe("inheritedItems", () => {
+  test("renders inherited rows below the local rows, tagged (default), with no remove button", () => {
+    render(<CollectionEditor<DirItem> {...baseProps({ inheritedItems: [{ path: "/etc/defaults/plugins" }] })} />);
+
+    const rows = within(screen.getByRole("list", { name: "Plugin directories" })).getAllByRole("listitem");
+    expect(rows).toHaveLength(3);
+    const [local1, local2, ghost] = rows as [HTMLElement, HTMLElement, HTMLElement];
+    expect(ghost.textContent).toContain("/etc/defaults/plugins");
+    expect(ghost.textContent).toContain("(default)");
+    // A ghost row is not the caller's to remove - no button at all.
+    expect(within(ghost).queryByRole("button")).toBeNull();
+    // The local rows keep theirs.
+    expect(within(local1).getByRole("button", { name: "Remove /opt/plugins" })).toBeTruthy();
+    expect(within(local2).getByRole("button", { name: "Remove /home/user/.evener/plugins" })).toBeTruthy();
+  });
+
+  test("inherited rows suppress the empty message when there are no local items", () => {
+    render(
+      <CollectionEditor<DirItem> {...baseProps({ items: [], inheritedItems: [{ path: "/etc/defaults/plugins" }] })} />,
+    );
+
+    expect(screen.queryByText("No plugin directories. Add one below.")).toBeNull();
+    expect(screen.getByText("/etc/defaults/plugins")).toBeTruthy();
+  });
+
+  test("the empty message still shows when local and inherited are both empty", () => {
+    render(<CollectionEditor<DirItem> {...baseProps({ items: [], inheritedItems: [] })} />);
+    expect(screen.getByText("No plugin directories. Add one below.")).toBeTruthy();
+  });
 });
 
 describe("renderAddField", () => {

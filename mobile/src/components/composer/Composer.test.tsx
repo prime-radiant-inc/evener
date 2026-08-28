@@ -32,6 +32,7 @@ const ALL_TRUE_CAPS: MobileCapabilities = {
   forkFromTurn: true,
   shutdown: true,
   changeModel: true,
+  changeVisionModel: true,
   queue: true,
   goal: true,
   rename: true,

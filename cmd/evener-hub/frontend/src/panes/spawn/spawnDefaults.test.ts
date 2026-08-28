@@ -64,8 +64,8 @@ describe("defaultsKeyFor", () => {
 
 describe("loadDefaultsBlob", () => {
   test("returns the parsed blob for a project", () => {
-    localStorage.setItem(defaultsKeyFor("/p"), JSON.stringify({ harness: "evener", branch: "main" }));
-    expect(loadDefaultsBlob("/p")).toEqual({ harness: "evener", branch: "main" });
+    localStorage.setItem(defaultsKeyFor("/p"), JSON.stringify({ harness: "evener", access_mode: "read-only" }));
+    expect(loadDefaultsBlob("/p")).toEqual({ harness: "evener", access_mode: "read-only" });
   });
 
   test("returns an empty object when absent or malformed", () => {
@@ -99,14 +99,13 @@ describe("resolveInitialDefaults", () => {
     expect(resolveInitialDefaults({}).model).toBe("openai/gpt-5");
   });
 
-  test("surfaces harness/branch/access/reasoning from the resolved project blob", () => {
+  test("surfaces harness/access/reasoning from the resolved project blob", () => {
     localStorage.setItem(
       defaultsKeyFor("/p"),
-      JSON.stringify({ harness: "evener", branch: "dev", access_mode: "read-only", reasoning_effort: "high" }),
+      JSON.stringify({ harness: "evener", access_mode: "read-only", reasoning_effort: "high" }),
     );
     expect(resolveInitialDefaults({ serverPrefillDir: "/p" })).toMatchObject({
       harness: "evener",
-      branch: "dev",
       accessMode: "read-only",
       reasoningEffort: "high",
       workingDir: "/p",
@@ -116,8 +115,8 @@ describe("resolveInitialDefaults", () => {
 
 describe("saveDefaults", () => {
   test("writes a per-project blob plus the global working_dir on every submit (floor §1.9, spawn.js:100)", () => {
-    saveDefaults({ cwd: "/p", harness: "evener", branch: "main", harnessUsesEvenerModels: true });
-    expect(loadDefaultsBlob("/p")).toMatchObject({ harness: "evener", branch: "main" });
+    saveDefaults({ cwd: "/p", harness: "evener", accessMode: "read-only", harnessUsesEvenerModels: true });
+    expect(loadDefaultsBlob("/p")).toMatchObject({ harness: "evener", access_mode: "read-only" });
     expect(localStorage.getItem(GLOBAL_WORKING_DIR_KEY)).toBe("/p");
   });
 
@@ -159,7 +158,7 @@ describe("modelValidityAgainstList (floor §1.10, spawn.js:154-175)", () => {
 
 describe("sweepStaleModels (floor §1.10)", () => {
   test("clears stale and malformed models across every blob, leaves unknown, and reports discards", () => {
-    localStorage.setItem(defaultsKeyFor("/a"), JSON.stringify({ model: "openai/gpt-4o", branch: "main" }));
+    localStorage.setItem(defaultsKeyFor("/a"), JSON.stringify({ model: "openai/gpt-4o", harness: "evener" }));
     localStorage.setItem(defaultsKeyFor("/b"), JSON.stringify({ model: "legacybare" }));
     localStorage.setItem(defaultsKeyFor("/c"), JSON.stringify({ model: "openrouter/x-anthropic" }));
     localStorage.setItem(defaultsKeyFor("/d"), JSON.stringify({ model: "openai/gpt-5" }));
@@ -167,7 +166,7 @@ describe("sweepStaleModels (floor §1.10)", () => {
     const result = sweepStaleModels(MODELS);
 
     // stale model cleared, blob otherwise preserved
-    expect(loadDefaultsBlob("/a")).toEqual({ branch: "main" });
+    expect(loadDefaultsBlob("/a")).toEqual({ harness: "evener" });
     // malformed model cleared AND the now-empty blob deleted outright
     expect(localStorage.getItem(defaultsKeyFor("/b"))).toBeNull();
     // unknown provider left untouched

@@ -64,17 +64,11 @@ Recent — spawn real sessions.
 2. Wait for both the real turns to finish (poll
    `GET /api/sessions/local:$SID` for `state: idle`) and for the hub's
    past-index rebuild.
-3. `GET /api/models?diagnostics=1` with no `cwd`, then again with
-   `cwd=proj8`, `cwd=proj9`, `cwd=proj13`, and a `cwd` that doesn't
-   exist at all — compare `recent[]` `(provider, model)` pairs and order
-   across all five calls:
-   ```bash
-   for q in "" "&cwd=$proj8" "&cwd=$proj9" "&cwd=$proj13" "&cwd=/nope/xyz"; do
-     curl -s -H "Authorization: Bearer $TOKEN" \
-       "$HUB/api/models?diagnostics=1$q" \
-       | jq -c '[.recent[] | "\(.provider)/\(.model)"]'
-   done
-   ```
+3. Send `model/list` over each of the five authenticated AppWire requests:
+   one with no `cwd`, then with `cwd=proj8`, `cwd=proj9`, `cwd=proj13`, and a
+   `cwd` that does not exist. Compare `result.recent`'s `(provider, model)`
+   pairs and order across all five responses. The direct AppWire recipe is in
+   `docs/developing-evener/agentic-testing.md`.
 4. Cross-check the recency claim against the sessions' own metas — the
    order tracks each session's `updated_at`, not spawn order:
    ```bash
@@ -138,10 +132,10 @@ Recent — spawn real sessions.
   list with the same 5 rows in the same order; the Recent block is
   literally prepended to the provider-grouped items
   (`cmd/evener-tui/hub_commands.go:493-500`).
-- Falsification: `recent[]` differs by `cwd`; `codex-auto-review`
+- Falsification: `result.recent` differs by `cwd`; `codex-auto-review`
   appears in `Recent` (6th distinct, should be evicted); the settings
-  picker's or the TUI's Recent order disagrees with
-  `/api/models?diagnostics=1`; a Recent row is missing its provider
+  picker's or the TUI's Recent order disagrees with the AppWire
+  `model/list` response; a Recent row is missing its provider
   prefix; or a provider-group row is interleaved into the Recent block.
 
 ## Cleanup
@@ -175,11 +169,9 @@ Recent — spawn real sessions.
   regression of `1b717fe72` — file it, don't paper over it with an
   `api_key` line.
 - **The spawn picker's Recent is legitimately narrower than the
-  settings picker's.** `/api/models` Recent is already filtered to
-  models the hub offers (`recentModelEntriesFromDescriptors`,
-  `cmd/evener-hub/web_spawn.go#recentModelEntriesFromDescriptors`), and the *spawn* picker filters
-  it a second time to the harness/cwd-scoped set it actually renders
-  (`mergeScopedCatalog`, `widgets/modelCatalog/scopedCatalog.ts:26-27`).
+  settings picker's.** The spawn `model/list` request is scoped to its
+  harness/cwd, while the settings request is unscoped. The hub filters
+  Recent to models in the response's `data` set before returning it.
   So on a non-default harness, or a cwd whose project config narrows the
   set, the spawn picker's Recent can be a strict subset of step 3's list
   while the settings picker's matches it exactly. Assert
@@ -196,9 +188,8 @@ Recent — spawn real sessions.
   completion.
 - **Recent is capped before it is filtered.** `RecentModels(5)` takes
   the 5 most recent distinct pairs from the index, and *then*
-  `attachRecentModels` / `recentModelEntriesFromDescriptors` drop any
-  the hub no longer offers (`app_models.go#attachRecentModels`,
-  `web_spawn.go:248-264`). So a hub that retired one of the top 5 shows
+  `attachRecentModels` drops any the hub no longer offers
+  (`app_models.go#attachRecentModels`). So a hub that retired one of the top 5 shows
   **4** Recent rows, not 4-plus-the-6th. That is correct; a card
   asserting "always exactly 5" would be wrong.
 - `lunarouter`'s cloudflare tunnel was down for this entire session

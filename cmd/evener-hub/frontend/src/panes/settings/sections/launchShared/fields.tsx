@@ -5,7 +5,7 @@
 // modelList/envMap/mcpServerList) live in collectionFields.tsx instead.
 //
 // modelPicker renders the rich searchable ModelCatalog widget (restoring the
-// legacy settings-pickers.js Appendix A popup): the /api/models catalog with
+// legacy settings-pickers.js Appendix A popup): the model/list catalog with
 // display names, capability badges, cost, and a Recent section. Its
 // value/onChange contract matches the plain free-text input wave 7 shipped
 // with, so the schema/collect path is untouched.
@@ -26,7 +26,7 @@
 // tsx's add-time validation both surface ONLY the custom inline error -
 // no native browser validation bubble.
 
-import type { LaunchOption } from "../../../../protocol/types.gen";
+import type { LaunchConfigLayer, LaunchOption } from "../../../../protocol/types.gen";
 import { extensionsStore } from "../../../../stores/extensions";
 import type { LaunchConfigLayerName } from "../../../../stores/launchConfig";
 import {
@@ -44,7 +44,7 @@ import {
 import { requireClass } from "../../../../widgets/internal/requireClass";
 import { fetchModelCatalog } from "../../../../widgets/modelCatalog/catalogClient";
 import styles from "./fields.module.css";
-import { emptyChoiceLabel, PROMPT_COMPOSITE_SPECS, resolvedEmptyChoice } from "./schema";
+import { emptyChoiceLabel, PROMPT_COMPOSITE_SPECS, resolvedDefaultLabel, resolvedEmptyChoice } from "./schema";
 
 const CLASS = {
   defaultHint: requireClass(styles.defaultHint, "fields.module.css", "defaultHint"),
@@ -144,14 +144,36 @@ export interface ScalarFieldProps {
    * `option.description`, matching FormRow's own error-takes-over-help
    * contract. Never set for any other kind. */
   error?: string;
+  /** The effective layer of the caller's launch/resolve for this cwd
+   * (undefined until it lands or after it fails): a field whose unset marker
+   * is the generic "(default)"/"(use global default)" prepends its entry
+   * here - "true (default)", "high (use global default)" - so the marker
+   * names what a session started now would inherit. */
+  resolvedDefaults?: LaunchConfigLayer;
 }
 
 /** Renders one non-collection LaunchOption per its `kind`. */
-export function ScalarField({ option, layer, value, onChange, globalDefaultHint, error }: ScalarFieldProps) {
+export function ScalarField({
+  option,
+  layer,
+  value,
+  onChange,
+  globalDefaultHint,
+  error,
+  resolvedDefaults,
+}: ScalarFieldProps) {
   const fieldId = `launch-field-${option.field}`;
+  // The resolved-default label for this field's empty marker, or undefined
+  // when there is nothing to name (schema.ts's resolvedDefaultLabel owns the
+  // rules; the custom-wording markers stay exactly as they were).
+  const resolvedLabel = resolvedDefaultLabel(option, layer, resolvedDefaults);
 
   if (option.kind === "radio") {
-    const options: RadioGroupOption[] = [resolvedEmptyChoice(option, layer), ...nonEmptyChoices(option)];
+    const empty = resolvedEmptyChoice(option, layer);
+    const options: RadioGroupOption[] = [
+      { value: "", label: resolvedLabel ?? empty.label },
+      ...nonEmptyChoices(option),
+    ];
     return (
       <div className={CLASS.radioBlock}>
         <RadioGroup label={option.label} value={value} onChange={onChange} options={options} />
@@ -162,14 +184,15 @@ export function ScalarField({ option, layer, value, onChange, globalDefaultHint,
   }
 
   if (option.kind === "select" || option.kind === "boolean") {
+    const empty = resolvedEmptyChoice(option, layer);
     const options: SelectOption[] =
       option.kind === "boolean"
         ? [
-            { value: "", label: resolvedEmptyChoice(option, layer).label },
+            { value: "", label: resolvedLabel ?? empty.label },
             { value: "true", label: "true" },
             { value: "false", label: "false" },
           ]
-        : [resolvedEmptyChoice(option, layer), ...nonEmptyChoices(option)];
+        : [{ value: "", label: resolvedLabel ?? empty.label }, ...nonEmptyChoices(option)];
     return (
       <FormRow label={option.label} htmlFor={fieldId} help={option.description}>
         <Select id={fieldId} value={value} onChange={(e) => onChange(e.target.value)} options={options} />
@@ -190,12 +213,12 @@ export function ScalarField({ option, layer, value, onChange, globalDefaultHint,
     // A composite widget, not a single labelable control, so the field label
     // is a plain span (mirroring the spawn form's own Model field) rather than
     // a FormRow's <label htmlFor> - the ModelCatalog's inner combobox carries
-    // its own accessible name. loadCatalog is the unscoped /api/models call
+    // its own accessible name. loadCatalog is the unscoped model/list call
     // (launch defaults aren't harness/cwd-scoped the way a live spawn is).
     return (
       <div className={CLASS.modelBlock}>
         <span className={CLASS.modelLabel}>{option.label}</span>
-        <ModelCatalog value={value} onChange={onChange} loadCatalog={() => fetchModelCatalog()} />
+        <ModelCatalog value={value} onChange={onChange} loadCatalog={fetchModelCatalog} emptyLabel={resolvedLabel} />
         {option.description && <p className={CLASS.modelHelp}>{option.description}</p>}
         <DefaultHint text={globalDefaultHint} />
       </div>

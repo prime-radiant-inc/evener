@@ -46,10 +46,19 @@
 
 import { memo } from "react";
 import type { ItemModel, TurnModel } from "../../../../protocol/model";
+import {
+  disclosureScopeForSession,
+  expandDetailsByDefault,
+  useTranscriptRenderContext,
+} from "../../../../transcriptDisplay/renderContext";
 import { Chevron, Markdown, ToolIcon } from "../../../../widgets";
-import { isDisclosureOpen, toggleDisclosure } from "../../../../widgets/disclosure/disclosureStore";
+import {
+  disclosureDefault,
+  isDisclosureOpen,
+  scopedDisclosureId,
+  toggleDisclosure,
+} from "../../../../widgets/disclosure/disclosureStore";
 import { requireClass } from "../../../../widgets/internal/requireClass";
-import { itemScopeKey } from "../tools/subagentModuleStore";
 import { type ItemRenderProps, ignoringTurn, registerItemRenderer } from "../types";
 import {
   formatThoughtDuration,
@@ -176,6 +185,12 @@ function thinkBlockPropsEqual(prev: ItemRenderProps, next: ItemRenderProps): boo
 }
 
 export const ThinkBlock = memo(function ThinkBlock({ item, turn, live, sessionRef }: ItemRenderProps) {
+  const context = useTranscriptRenderContext();
+  const { config } = context;
+  const disclosureScope = disclosureScopeForSession(context, sessionRef);
+  const disclosureKey = scopedDisclosureId(disclosureScope, item.id);
+  const disclosureFallback = expandDetailsByDefault(config) || disclosureDefault(disclosureScope, item.id, false);
+  const open = isDisclosureOpen(disclosureKey, disclosureFallback);
   const isLive = (live || item.status === "inProgress") && isCurrentThought(item, turn);
   if (isLive) return <LiveThinkBlock item={item} />;
 
@@ -193,9 +208,6 @@ export const ThinkBlock = memo(function ThinkBlock({ item, turn, live, sessionRe
   // Open/closed state lives in the shared disclosureStore keyed by session ref
   // plus item id, so an expanded thought survives a remount without colliding
   // with the same item id in another session. Collapsed by default.
-  const disclosureKey = itemScopeKey(sessionRef, item.id);
-  const open = isDisclosureOpen(disclosureKey, false);
-
   return (
     <div className={CLASS.block} data-testid="think-block" data-live="false">
       <details className={CLASS.details} open={open}>
@@ -204,7 +216,7 @@ export const ThinkBlock = memo(function ThinkBlock({ item, turn, live, sessionRe
           className={CLASS.summary}
           onClick={(e) => {
             e.preventDefault();
-            toggleDisclosure(disclosureKey, false);
+            toggleDisclosure(disclosureKey, disclosureFallback);
           }}
         >
           {thoughtIcon}

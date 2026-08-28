@@ -114,7 +114,7 @@ function defaultIdFactory(): string {
   return `cmid-${Date.now()}-${defaultIdCounter}`;
 }
 
-// The 11 required capability fields that must be present and boolean in
+// The 12 required capability fields that must be present and boolean in
 // every ThreadCapabilities. Extra keys from future protocol versions are
 // allowed but never retained in the extracted copy.
 const REQUIRED_CAPABILITY_FIELDS = [
@@ -126,13 +126,14 @@ const REQUIRED_CAPABILITY_FIELDS = [
   "forkFromTurn",
   "shutdown",
   "changeModel",
+  "changeVisionModel",
   "queue",
   "goal",
   "rename",
 ] as const;
 
 // Extract and runtime-validate capabilities into a complete plain local
-// ThreadCapabilities copy. All 11 required fields must be present and
+// ThreadCapabilities copy. All 12 required fields must be present and
 // boolean; extra keys are allowed but not retained. Null, non-object,
 // wrong-type, or throwing-getter inputs throw before any state write,
 // leaving the ref+capabilities pair null/fail-closed. The returned copy
@@ -151,6 +152,7 @@ function extractCapabilities(raw: unknown): ThreadCapabilities {
     forkFromTurn: false,
     shutdown: false,
     changeModel: false,
+    changeVisionModel: false,
     queue: false,
     goal: false,
     rename: false,
@@ -626,6 +628,7 @@ function projectOlderTurns(
         forkFromTurn: false,
         shutdown: false,
         changeModel: false,
+        changeVisionModel: false,
         queue: false,
         goal: false,
         rename: false,

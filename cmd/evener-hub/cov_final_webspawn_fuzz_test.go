@@ -5,8 +5,6 @@ package hub
 import (
 	"context"
 	"errors"
-	"net/http"
-	"net/http/httptest"
 	"testing"
 	"time"
 
@@ -63,11 +61,11 @@ func FuzzFinalWebspawn(f *testing.F) {
 			{ID: "plain", ContextWindow: 7, SupportsTools: true, SupportsReasoning: true, ReasoningEffortLevels: []string{"medium"}},
 		}})
 
-		oldLoad := webSpawnLoadClient
-		webSpawnLoadClient = func(...llm.EnvOption) (*llm.Client, providercfg.Config, bool, error) {
+		oldLoad := liveModelLoadClient
+		liveModelLoadClient = func(...llm.EnvOption) (*llm.Client, providercfg.Config, bool, error) {
 			return client, providercfg.Config{}, true, nil
 		}
-		t.Cleanup(func() { webSpawnLoadClient = oldLoad })
+		t.Cleanup(func() { liveModelLoadClient = oldLoad })
 
 		reasoning := false
 		cfg := hubcore.WebConfig{ProviderConfig: &providercfg.Config{Instances: []providercfg.InstanceConfig{{
@@ -78,7 +76,7 @@ func FuzzFinalWebspawn(f *testing.F) {
 		_ = models
 		_ = server.fetchLiveModels(context.Background())
 		server.liveModels.expires = time.Time{}
-		webSpawnLoadClient = func(...llm.EnvOption) (*llm.Client, providercfg.Config, bool, error) {
+		liveModelLoadClient = func(...llm.EnvOption) (*llm.Client, providercfg.Config, bool, error) {
 			return nil, providercfg.Config{}, false, errors.New("load")
 		}
 		_ = server.fetchLiveModels(context.Background())
@@ -90,19 +88,16 @@ func FuzzFinalWebspawn(f *testing.F) {
 		}}
 		registry.Add(source)
 		server.sources = registry
-		for _, rawURL := range []string{"/api/models?harness=remote", "/api/models?harness=remote&diagnostics=1"} {
-			r := httptest.NewRequest(http.MethodGet, rawURL, nil)
-			server.handleApiModels(httptest.NewRecorder(), r)
-		}
+		_, _ = hubModelList(context.Background(), server.cfg, registry, appwire.ModelListParams{Harness: "remote"})
 		source.err = errors.New("remote")
-		server.handleApiModels(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "/api/models?harness=remote", nil))
+		_, _ = hubModelList(context.Background(), server.cfg, registry, appwire.ModelListParams{Harness: "remote"})
 
 		failedLaunch := NewWebServer(hubcore.WebConfig{Spawner: &fakeRPCModelContractSpawner{err: errors.New("launch")}})
-		failedLaunch.handleApiModels(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "/api/models", nil))
+		_, _ = hubModelList(context.Background(), failedLaunch.cfg, failedLaunch.sources, appwire.ModelListParams{})
 
-		entries := []map[string]any{{"provider": "z", "model": "same"}, {"provider": "z", "model": "same"}}
-		sortModelEntriesDatedLast(entries)
-		_ = modelDescriptorsToAPIModels([]appwire.ModelDescriptor{{Provider: "anthropic", Model: "claude-fable-5"}}, nil)
+		entries := []appwire.ModelDescriptor{{Provider: "z", Model: "same"}, {Provider: "z", Model: "same"}}
+		sortModelDescriptors(entries)
+		_ = enrichModelDescriptors([]appwire.ModelDescriptor{{Provider: "anthropic", Model: "claude-fable-5"}}, nil)
 		_ = catalogModelInfo(llm.EmbeddedModelCatalog(), "ollama", "absent")
 		_ = catalogModelInfo(llm.EmbeddedModelCatalog(), "", "definitely-absent")
 	})

@@ -161,7 +161,7 @@ export function useCredentialsStore<T>(selector?: (state: CredentialsStoreState)
 // poll) from ANY of them - InstanceEntry's own activeSource/hasStoredOAuth/
 // hasStoredFile/storedEmail fields are exactly what such a mutation changes,
 // so a browser tab that already loaded the instance list goes stale
-// otherwise. Mirrors stores/tree.ts's (and stores/extensions.ts's) identical
+// otherwise. Mirrors stores/extensions.ts's identical
 // wiring, applied here to this store's one wire-truth list. On the wire
 // evener/auth/updated carries {provider, activeSource} (notifyAuthUpdated,
 // cmd/evener-hub/app_rpc.go:764-767), but its generated
@@ -169,7 +169,7 @@ export function useCredentialsStore<T>(selector?: (state: CredentialsStoreState)
 // into Go's untyped map[string]string - and this refetch is
 // payload-agnostic anyway (nothing reads those fields), so a debounced
 // evener/instance/list refetch is the only option, exactly like
-// evener/tree/changed's own "just refetch" contract.
+// evener/navigation/invalidated's own "just refetch" contract.
 const REFETCH_DEBOUNCE_MS = 250;
 
 let wiredClient: AppwireClientLike | null = null;
@@ -201,7 +201,7 @@ function attachNotifications(client: AppwireClientLike): void {
 }
 
 // Watches connectionStore for the client becoming available and attaches
-// this store's own notification handler to it - see stores/tree.ts's
+// this store's own notification handler to it - see stores/extensions.ts's
 // identical wiring for the full "why react to the store instead of reading
 // it once" rationale (a mount-order race between this module and AppShell's
 // own connect() effect).

@@ -13,6 +13,7 @@ import type {
   AnyNotification,
   InitializeResponse,
   MutationReceipt,
+  NotificationTypes,
   Thread,
   ThreadCapabilities,
   ThreadItem,
@@ -530,6 +531,7 @@ const CAPABILITIES: ThreadCapabilities = {
   forkFromTurn: false,
   shutdown: false,
   changeModel: false,
+  changeVisionModel: false,
   queue: true,
   goal: false,
   rename: false,
@@ -900,12 +902,18 @@ function expectComposerReady(expectedDraft: string): void {
   expect(textbox).toHaveValue(expectedDraft);
 }
 
-function notification(
-  method: AnyNotification["method"],
-  params: JsonObject,
-): AnyNotification {
-  return { method, params } as AnyNotification;
+function notification<K extends AnyNotification["method"]>(
+  method: K,
+  params: NotificationTypes[K],
+) {
+  return { method, params };
 }
+
+const ROSTER_STATUS_CHANGED_PARAMS = {
+  threadId: "roster-thread",
+  ref: "roster-ref",
+  status: { type: "idle" },
+} satisfies NotificationTypes["thread/status/changed"];
 
 async function sendNotification(
   bridge: RustHarnessBridge,
@@ -1155,7 +1163,10 @@ describe("production App live concepts over the real native AppWire bridge", () 
       await expectRawClientFrameRejected(
         bridge,
         connection,
-        { method: "evener/tree/changed", params: {} },
+        {
+          method: "thread/status/changed",
+          params: ROSTER_STATUS_CHANGED_PARAMS,
+        },
         /first|initialize/i,
       );
       await expectRawClientFrameRejected(
@@ -1208,7 +1219,10 @@ describe("production App live concepts over the real native AppWire bridge", () 
       await expectRawClientFrameRejected(
         bridge,
         connection,
-        { method: "evener/tree/changed", params: {} },
+        {
+          method: "thread/status/changed",
+          params: ROSTER_STATUS_CHANGED_PARAMS,
+        },
         /response|additional/i,
       );
       await expectRawClientFrameRejected(
@@ -1236,7 +1250,11 @@ describe("production App live concepts over the real native AppWire bridge", () 
       );
       await expectRawServerFrameRejected(
         bridge,
-        { method: "evener/tree/changed", result: {} },
+        {
+          method: "thread/status/changed",
+          params: ROSTER_STATUS_CHANGED_PARAMS,
+          result: {},
+        },
         /shape|result/i,
       );
       await expectRawServerFrameRejected(
@@ -1275,11 +1293,16 @@ describe("production App live concepts over the real native AppWire bridge", () 
       await expectRawClientFrameRejected(
         bridge,
         connection,
-        { method: "evener/tree/changed", params: {} },
+        {
+          method: "thread/status/changed",
+          params: ROSTER_STATUS_CHANGED_PARAMS,
+        },
         /initialized/i,
       );
       await expect(
-        bridge.notify(notification("evener/tree/changed", {})),
+        bridge.notify(
+          notification("thread/status/changed", ROSTER_STATUS_CHANGED_PARAMS),
+        ),
       ).rejects.toThrow(/initialized/i);
 
       const initializedCount = methodCount(bridge, "initialized") + 1;
@@ -1329,18 +1352,22 @@ describe("production App live concepts over the real native AppWire bridge", () 
       await expectRawClientFrameRejected(
         bridge,
         connection,
-        { method: "evener/tree/changed", error: { code: -1 } },
+        {
+          method: "thread/status/changed",
+          params: ROSTER_STATUS_CHANGED_PARAMS,
+          error: { code: -1 },
+        },
         /shape|error/i,
       );
 
       const clientNotificationCount =
-        methodCount(bridge, "evener/tree/changed") + 1;
+        methodCount(bridge, "thread/status/changed") + 1;
       await sendRawClientFrame(bridge, connection, {
-        method: "evener/tree/changed",
-        params: {},
+        method: "thread/status/changed",
+        params: ROSTER_STATUS_CHANGED_PARAMS,
       });
       await bridge.waitForServerRequest(
-        "evener/tree/changed",
+        "thread/status/changed",
         clientNotificationCount,
       );
 
@@ -1375,7 +1402,11 @@ describe("production App live concepts over the real native AppWire bridge", () 
       );
       await expectRawServerFrameRejected(
         bridge,
-        { method: "evener/tree/changed", result: {} },
+        {
+          method: "thread/status/changed",
+          params: ROSTER_STATUS_CHANGED_PARAMS,
+          result: {},
+        },
         /shape|result/i,
       );
       await expectRawServerFrameRejected(
@@ -1384,7 +1415,9 @@ describe("production App live concepts over the real native AppWire bridge", () 
         /unknown|unmatched/i,
       );
       await bridge.respond(ping, {});
-      await bridge.notify(notification("evener/tree/changed", {}));
+      await bridge.notify(
+        notification("thread/status/changed", ROSTER_STATUS_CHANGED_PARAMS),
+      );
 
       // A second concurrent manual connection must not reset this owner.
       await expectConcurrentRawOpenRejected(bridge);
@@ -1404,7 +1437,9 @@ describe("production App live concepts over the real native AppWire bridge", () 
       connection = await openRawHarnessConnection(bridge);
       await completeRawHandshake(bridge, connection, 70);
       await completeRawPing(bridge, connection, 71);
-      await bridge.notify(notification("evener/tree/changed", {}));
+      await bridge.notify(
+        notification("thread/status/changed", ROSTER_STATUS_CHANGED_PARAMS),
+      );
     } finally {
       const closed = closeRawHarnessConnection(bridge, connection);
       const stopped = bridge.stop();
@@ -1844,7 +1879,10 @@ describe("production App live concepts over the real native AppWire bridge", () 
 
       vi.useFakeTimers();
       fakeTimersActive = true;
-      await sendNotification(bridge, notification("evener/tree/changed", {}));
+      await sendNotification(
+        bridge,
+        notification("thread/status/changed", ROSTER_STATUS_CHANGED_PARAMS),
+      );
       act(() => {
         vi.advanceTimersByTime(300);
       });

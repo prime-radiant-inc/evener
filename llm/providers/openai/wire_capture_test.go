@@ -482,8 +482,8 @@ func TestResponsesStreamWireCaptureClassifiesSSEReadTimeoutAsProviderTimeout(t *
 	}
 	for range stream.Events() { //nolint:revive // Drain to the terminal timeout evidence.
 	}
-	if len(sink.attempts) != 2 {
-		t.Fatalf("canonical attempts = %d, want Responses plus existing empty-stream Chat fallback", len(sink.attempts))
+	if len(sink.attempts) != 1 {
+		t.Fatalf("canonical attempts = %d, want the single stalled Responses attempt (a stall is not the empty-stream sentinel, so it does not re-attempt the endpoint)", len(sink.attempts))
 	}
 	for i, attempt := range sink.attempts {
 		if attempt.Outcome != apilog.AttemptProviderTimeout {

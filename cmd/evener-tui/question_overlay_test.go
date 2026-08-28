@@ -130,6 +130,14 @@ func TestComposeAskAnswers_UnresolvedComposesAsSkipped(t *testing.T) {
 	}
 }
 
+func TestComposeAskAnswers_EncodesUnsafeHeader(t *testing.T) {
+	questions := []askQuestion{{Header: "A]B\n<C&\u2028", Resolution: nil}}
+	want := "[answers]\n1. [\"A]B\\n<C&\\u2028\"] → skipped (no answer)"
+	if got := composeAskAnswers(questions); got != want {
+		t.Fatalf("got %q, want %q", got, want)
+	}
+}
+
 func TestComposeAskAnswers_FallbackEmbedsStatedIfUnanswered(t *testing.T) {
 	questions := []askQuestion{{
 		Header:       "X",

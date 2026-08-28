@@ -94,12 +94,19 @@ type LocalExecutionEnvironment struct {
 	// WithWorkingDirectory alongside Sandbox.
 	Wrapper *sandbox.Wrapper
 
-	// sbMu guards the lazily-built sandboxFS. sbfs is the fd-anchored enforcement
-	// layer, built on first file-tool use from an ENFORCED Sandbox policy and cached
-	// for the environment's lifetime (its root fds are captured once so a later root
-	// swap cannot redirect resolution). It stays nil for off / a nil policy.
+	// sbMu guards the lazily-built fd-anchored file-tool layers. sbfs is the policy
+	// enforcement layer, built on first file-tool use from a file-tool-confined
+	// Sandbox policy and cached for the environment's lifetime (its root fds are
+	// captured once so a later root swap cannot redirect resolution). It stays nil
+	// for plain off / a nil policy.
 	sbMu sync.Mutex
 	sbfs *sandboxFS
+	// scratchFS is the cached fd-anchored layer for an unsandboxed session's
+	// explicitly allocated scratch root. Keeping its root fd for the environment's
+	// lifetime gives the late-bound grant the same root-swap defense as policy roots;
+	// it is closed with sbfs during environment teardown or policy replacement.
+	scratchFS     *sandboxFS
+	scratchFSRoot string
 
 	// sandboxReRootErr records a fail-closed re-root refusal from the
 	// WithWorkingDirectory that produced this env: when re-anchoring Sandbox/Wrapper
@@ -160,16 +167,18 @@ type LocalExecutionEnvironment struct {
 }
 
 // sandbox returns the environment's fd-anchored enforcement layer, or nil when
-// the environment is unsandboxed (a nil policy or off mode) — in which case every
-// file tool keeps its byte-identical afero/os path. The sandboxFS is built once
-// and cached; it is only ever constructed for an enforced policy. It folds in the
-// concrete per-session scratch directory (sessionScratchPath) so the file tools
-// reach the SAME scratch dir a spawned shell command gets via $TMPDIR —
-// regardless of which policy-replacement path built it (EnableSandbox,
-// WithWorkingDirectory's re-root, UseControlPolicy), since they all funnel
-// through this single lazy builder.
+// the environment's file tools are unconfined (a nil policy or plain off mode) —
+// in which case every file tool keeps its byte-identical afero/os path. The gate
+// is FileToolConfined, not Enforced: a write-blocked off policy (a read-only
+// delegate on a host with no sandbox backend) has no OS sandbox but still confines
+// the file tools, which are then the only thing holding its write boundary. The
+// sandboxFS is built once and cached. It folds in the concrete per-session scratch
+// directory (sessionScratchPath) so the file tools reach the SAME scratch dir a
+// spawned shell command gets via $TMPDIR — regardless of which policy-replacement
+// path built it (EnableSandbox, WithWorkingDirectory's re-root, UseControlPolicy),
+// since they all funnel through this single lazy builder.
 func (e *LocalExecutionEnvironment) sandbox() *sandboxFS {
-	if e.Sandbox == nil || !e.Sandbox.Enforced() {
+	if e.Sandbox == nil || !e.Sandbox.FileToolConfined() {
 		return nil
 	}
 	e.sbMu.Lock()
@@ -183,33 +192,99 @@ func (e *LocalExecutionEnvironment) sandbox() *sandboxFS {
 
 // sessionScratchPath returns the concrete per-session scratch directory this
 // env's kernel wrapper already grants spawned processes via $TMPDIR /
-// $EVENER_SCRATCH_DIR (agent/sandbox.ApplyEnvFloor), or "" when unsandboxed. It
-// reads through Wrapper rather than ownedSessionTmp because a re-rooted clone
-// (WithWorkingDirectory) shares the parent's scratch dir via the Wrapper without
-// owning it (ownedSessionTmp is nil there — see its doc comment).
+// $EVENER_SCRATCH_DIR (agent/sandbox.ApplyEnvFloor), or "" when neither layer has
+// one. It reads through Wrapper rather than ownedSessionTmp because a re-rooted
+// clone (WithWorkingDirectory) shares the parent's scratch dir via the Wrapper
+// without owning it (ownedSessionTmp is nil there — see its doc comment).
+//
+// A write-blocked policy with no OS sandbox (a read-only delegate on a host with
+// no sandbox backend) never builds a wrapper to read through, so it falls back to
+// the scratch EnableSandbox provisioned for it, which this env OWNS — the same dir
+// overlaySessionEnv exports to its spawned commands, so the model's file tools and
+// its shell agree on one writable place. Without it the file tools of a
+// write-blocked env would have no writable root at all, breaking WriteBlocked's
+// contract that the session scratch stays writable.
 func (e *LocalExecutionEnvironment) sessionScratchPath() string {
-	if e.Wrapper == nil {
+	if e.Wrapper != nil {
+		return e.Wrapper.SessionTmp()
+	}
+	return e.wrapperlessScratchDir()
+}
+
+// wrapperlessScratchDir returns the already-provisioned per-session scratch of an
+// env with no kernel wrapper, or "" when it has none. It never provisions one:
+// both shapes that have one allocate it eagerly (EnableSandbox for a write-blocked
+// policy, the first spawn for an ordinary unsandboxed session), and allocating
+// from a read path would make a report or a containment check a filesystem side
+// effect.
+func (e *LocalExecutionEnvironment) wrapperlessScratchDir() string {
+	if tmp := e.ownedSessionTmp; tmp != nil {
+		return tmp.Dir
+	}
+	e.unsandboxedScratchMu.Lock()
+	defer e.unsandboxedScratchMu.Unlock()
+	if e.unsandboxedScratch == nil {
 		return ""
 	}
-	return e.Wrapper.SessionTmp()
+	return e.unsandboxedScratch.Dir
+}
+
+// allocatedSessionScratchPath returns an already-provisioned scratch root owned
+// by this environment. It deliberately does not provision one: checking an
+// arbitrary write path must never allocate a new grant as a side effect. Enforced
+// environments are handled by sandbox(), whose policy already folds
+// Wrapper.SessionTmp() into the fd-anchored roots; this accessor is for the
+// otherwise-unconfined environment's late-bound scratch grant.
+func (e *LocalExecutionEnvironment) allocatedSessionScratchPath() string {
+	return e.sessionScratchPath()
+}
+
+// scratchSandboxFor returns the cached fd-anchored layer for an already allocated
+// unsandboxed scratch root when abs is beneath that root. The normal enforced path
+// uses e.sandbox() instead, preserving its full policy (including secret masking
+// and git protection). The root fd is opened before the first operation and held
+// until environment teardown, so a later path-level symlink/root swap cannot
+// redirect the grant.
+func (e *LocalExecutionEnvironment) scratchSandboxFor(abs string) *sandboxFS {
+	if runtimeGOOS != "linux" && runtimeGOOS != "darwin" {
+		return nil
+	}
+	root := e.allocatedSessionScratchPath()
+	if root == "" {
+		return nil
+	}
+	if _, _, ok := containingRoot([]string{root}, filepath.Clean(abs)); !ok {
+		return nil
+	}
+	e.sbMu.Lock()
+	defer e.sbMu.Unlock()
+	if e.scratchFS != nil && e.scratchFSRoot == root {
+		return e.scratchFS
+	}
+	if e.scratchFS != nil {
+		e.scratchFS.close()
+		e.scratchFS = nil
+		e.scratchFSRoot = ""
+	}
+	sfs := newScratchSandboxFS(root)
+	if err := pinScratchSandboxRoot(sfs, root); err != nil {
+		sfs.close()
+		return nil
+	}
+	e.scratchFS = sfs
+	e.scratchFSRoot = root
+	return sfs
 }
 
 // SessionScratchDir reports the per-session scratch directory spawned commands
 // already receive as $EVENER_SCRATCH_DIR/$TMPDIR — the sandboxed env's wrapper tmp,
-// or an unsandboxed env's own lazily provisioned dir — and "" when neither has
-// been provisioned. It deliberately never provisions one: it is a REPORTING
-// accessor (the session prompt's capability preamble), and reporting a path must
-// not create it, nor turn a prompt render into a filesystem side effect.
+// the write-blocked env's own owned dir, or an unsandboxed env's lazily
+// provisioned one — and "" when none has been provisioned. It deliberately never
+// provisions one: it is a REPORTING accessor (the session prompt's capability
+// preamble), and reporting a path must not create it, nor turn a prompt render
+// into a filesystem side effect.
 func (e *LocalExecutionEnvironment) SessionScratchDir() string {
-	if e.Wrapper != nil {
-		return e.Wrapper.SessionTmp()
-	}
-	e.unsandboxedScratchMu.Lock()
-	defer e.unsandboxedScratchMu.Unlock()
-	if e.unsandboxedScratch != nil {
-		return e.unsandboxedScratch.Dir
-	}
-	return ""
+	return e.sessionScratchPath()
 }
 
 // WithSandboxInvocationGrant returns a short-lived clone of this env whose file-tool
@@ -221,6 +296,14 @@ func (e *LocalExecutionEnvironment) SessionScratchDir() string {
 // to any later call. On an off / non-enforced env the grant is meaningless and the
 // env is returned unchanged. The clone never owns the session tmp, so it never
 // disposes it.
+//
+// The gate stays Enforced() rather than FileToolConfined() on purpose: the only
+// policy that separates the two is the write-blocked off box, which only a DELEGATE
+// receives, and escalation refuses a subagent session outright (escalationAllowed),
+// so no such env can reach this. Widening the gate would add a branch nothing can
+// execute — and one whose clone, sharing no owned scratch, would need its own
+// handling. If escalation ever reaches delegates, widen it THEN, with the test that
+// can finally exercise it.
 func (e *LocalExecutionEnvironment) WithSandboxInvocationGrant(path string) ExecutionEnvironment {
 	if e.Sandbox == nil || !e.Sandbox.Enforced() || strings.TrimSpace(path) == "" {
 		return e
@@ -254,6 +337,11 @@ func (e *LocalExecutionEnvironment) invalidateSandboxFS() {
 	if e.sbfs != nil {
 		e.sbfs.close()
 		e.sbfs = nil
+	}
+	if e.scratchFS != nil {
+		e.scratchFS.close()
+		e.scratchFS = nil
+		e.scratchFSRoot = ""
 	}
 }
 
@@ -341,12 +429,19 @@ func (e *LocalExecutionEnvironment) overlaySessionEnv(extra map[string]string) m
 	return overlay
 }
 
-// unsandboxedScratchDir lazily provisions (once) and returns this
-// unsandboxed env's per-session scratch directory, or "" if provisioning
-// failed. A scratch dir is a convenience, never a launch or spawn blocker: a
-// failure silently disables the EVENER_SCRATCH_DIR/TMPDIR export instead of
-// erroring the command.
+// unsandboxedScratchDir lazily provisions (once) and returns this env's
+// per-session scratch directory, or "" if provisioning failed. A scratch dir is a
+// convenience, never a launch or spawn blocker: a failure silently disables the
+// EVENER_SCRATCH_DIR/TMPDIR export instead of erroring the command.
+//
+// A write-blocked env already OWNS one (EnableSandbox provisioned it, and its file
+// tools treat it as their single writable root), so this returns that rather than
+// minting a second: the model's file tools and its shell must name the same
+// directory, and only the owned one is disposed with the env.
 func (e *LocalExecutionEnvironment) unsandboxedScratchDir() string {
+	if tmp := e.ownedSessionTmp; tmp != nil {
+		return tmp.Dir
+	}
 	e.unsandboxedScratchMu.Lock()
 	defer e.unsandboxedScratchMu.Unlock()
 	if e.unsandboxedScratch != nil {
@@ -355,17 +450,23 @@ func (e *LocalExecutionEnvironment) unsandboxedScratchDir() string {
 	if e.unsandboxedScratchFailed {
 		return ""
 	}
-	workspaceRoot := GitRootOrEmpty(e, e.RootDir)
-	if workspaceRoot == "" {
-		workspaceRoot = e.RootDir
-	}
-	tmp, err := sandbox.NewSessionScratch(e.sandboxTmpBase, workspaceRoot)
+	tmp, err := e.newSessionScratch()
 	if err != nil {
 		e.unsandboxedScratchFailed = true
 		return ""
 	}
 	e.unsandboxedScratch = tmp
 	return tmp.Dir
+}
+
+// newSessionScratch creates a fresh per-session scratch directory for this env,
+// anchored at its workspace root so the scratch names the project it belongs to.
+func (e *LocalExecutionEnvironment) newSessionScratch() (*sandbox.SessionScratch, error) {
+	workspaceRoot := GitRootOrEmpty(e, e.RootDir)
+	if workspaceRoot == "" {
+		workspaceRoot = e.RootDir
+	}
+	return sandbox.NewSessionScratch(e.sandboxTmpBase, workspaceRoot)
 }
 
 // retainUnsandboxedScratch releases this env's unsandboxed per-session
@@ -421,13 +522,25 @@ func (e *LocalExecutionEnvironment) EnableSandbox(policy *sandbox.ResolvedPolicy
 	if policy == nil || !policy.Enforced() {
 		e.Sandbox = policy
 		e.Wrapper = nil
+		// A write-blocked off policy has no OS sandbox to provision but still confines
+		// the file tools, whose only writable root is the session scratch. Provision it
+		// here rather than on first use so the scratch path is available to the session
+		// prompt that tells the delegate where it may write — a prompt render must not
+		// create directories, so it can only report one that already exists. The env
+		// OWNS it, exactly as the enforced path below does, so a spawn that fails after
+		// this point disposes it (DisposeSandboxScratch) instead of leaking a directory
+		// AND the flock lease that keeps the crashed-scratch sweeper away from it.
+		//
+		// Best-effort: losing the scratch costs the delegate its one writable place,
+		// which denies writes — the fail-closed direction — and must not block a spawn.
+		if policy != nil && policy.FileToolConfined() {
+			if tmp, err := e.newSessionScratch(); err == nil {
+				e.ownedSessionTmp = tmp
+			}
+		}
 		return nil
 	}
-	workspaceRoot := GitRootOrEmpty(e, e.RootDir)
-	if workspaceRoot == "" {
-		workspaceRoot = e.RootDir
-	}
-	tmp, err := sandbox.NewSessionScratch(e.sandboxTmpBase, workspaceRoot)
+	tmp, err := e.newSessionScratch()
 	if err != nil {
 		// Leave the env unsandboxed: a half-wired sandbox must never run, and the
 		// prior policy/wrapper (torn down above) must not silently persist.
@@ -474,6 +587,11 @@ func (e *LocalExecutionEnvironment) RetainSandboxScratch() {
 		e.sbfs.close()
 		e.sbfs = nil
 	}
+	if e.scratchFS != nil {
+		e.scratchFS.close()
+		e.scratchFS = nil
+		e.scratchFSRoot = ""
+	}
 	e.sbMu.Unlock()
 	if tmp := e.ownedSessionTmp; tmp != nil {
 		_ = tmp.Retain()
@@ -494,6 +612,11 @@ func (e *LocalExecutionEnvironment) DisposeSandboxScratch() {
 	if e.sbfs != nil {
 		e.sbfs.close()
 		e.sbfs = nil
+	}
+	if e.scratchFS != nil {
+		e.scratchFS.close()
+		e.scratchFS = nil
+		e.scratchFSRoot = ""
 	}
 	e.sbMu.Unlock()
 	if tmp := e.ownedSessionTmp; tmp != nil {
@@ -754,8 +877,8 @@ var (
 		return execCommandContext(ctx, name, args...).Output()
 	}
 	shellStat              = os.Stat
-	grepReadFile           = os.ReadFile
-	grepWalk               = filepath.WalkDir
+	grepReadFile           = fs.ReadFile
+	grepWalk               = fs.WalkDir
 	listReadDir            = os.ReadDir
 	streamBeforeSignalOnce = func(func()) {}
 	streamAfterTimer       = func(func()) {}
@@ -853,8 +976,12 @@ func (e *LocalExecutionEnvironment) ReadFile(path string, offsetLine *int, limit
 	var b []byte
 	var err error
 	sfs := e.sandbox()
+	if sfs == nil {
+		sfs = e.scratchSandboxFor(abs)
+	}
 	if sfs != nil {
-		// Sandboxed: race-safe fd read (symlink-refusing, root/denylist-checked).
+		// Sandboxed or explicitly granted scratch: race-safe fd read
+		// (symlink-refusing, root/denylist-checked).
 		// The image/PDF/binary/line-numbering contract below is applied identically
 		// to the returned bytes, so the output is unchanged from the off path.
 		b, err = sfs.readFile("read_file", abs)
@@ -973,6 +1100,13 @@ func (e *LocalExecutionEnvironment) WriteFile(path string, content string) (stri
 		}
 		return fmt.Sprintf("wrote %d bytes to %s", len(content), path), nil
 	}
+	abs := e.resolve(path)
+	if sfs := e.scratchSandboxFor(abs); sfs != nil {
+		if err := sfs.writeFile("write_file", abs, []byte(content), 0o644); err != nil {
+			return "", err
+		}
+		return fmt.Sprintf("wrote %d bytes to %s", len(content), path), nil
+	}
 	abs, err := e.resolveWrite(path)
 	if err != nil {
 		return "", err
@@ -996,8 +1130,13 @@ func (e *LocalExecutionEnvironment) EditFile(path string, oldString string, newS
 	var abs string
 	var b []byte
 	var err error
-	if sfs != nil {
+	if sfs == nil {
 		abs = e.resolve(path)
+		sfs = e.scratchSandboxFor(abs)
+	} else {
+		abs = e.resolve(path)
+	}
+	if sfs != nil {
 		// Deny an edit in a non-writable location up front (read-only mode, outside
 		// the writable roots, or a masked/git-protected surface) before reading, so
 		// the model gets a clean write denial rather than a match/not-found result.
@@ -1418,7 +1557,7 @@ func buildRipgrepArgsWithFilters(outputMode string, caseInsensitive bool, globFi
 // Grep searches path for pattern, honoring the glob filter, case
 // sensitivity, result cap, output mode, and context window the caller asked
 // for.
-func (e *LocalExecutionEnvironment) Grep(pattern string, path string, globFilter string, caseInsensitive bool, maxResults int, outputMode string, contextLines ...int) (string, error) {
+func (e *LocalExecutionEnvironment) Grep(ctx context.Context, pattern string, path string, globFilter string, caseInsensitive bool, maxResults int, outputMode string, contextLines ...int) (string, error) {
 	globFilters, err := expandGrepFilter(globFilter)
 	if err != nil {
 		return "", err
@@ -1437,18 +1576,17 @@ func (e *LocalExecutionEnvironment) Grep(pattern string, path string, globFilter
 		// read-only). Its kernel wrapping is M3 defense-in-depth, not something to
 		// rely on here: correctness over speed for a sandboxed session. grepNative
 		// policy-checks the base itself and skips masked subtrees.
-		return sfs.grepNative(pattern, dir, globFilter, caseInsensitive, maxResults, outputMode, ctxLines)
+		return sfs.grepNative(ctx, pattern, dir, globFilter, caseInsensitive, maxResults, outputMode, ctxLines)
 	}
 
 	rg, err := e.findExecutable("rg")
 	if err != nil {
 		// Fallback to native Go regex search when ripgrep is absent
-		return e.grepNative(pattern, dir, globFilter, caseInsensitive, maxResults, outputMode, ctxLines)
+		return e.grepNative(ctx, pattern, dir, globFilter, caseInsensitive, maxResults, outputMode, ctxLines)
 	}
 
 	args := buildRipgrepArgsWithFilters(outputMode, caseInsensitive, globFilters, pattern, dir, ctxLines)
 
-	ctx := context.Background()
 	if maxResults <= 0 {
 		maxResults = 100
 	}
@@ -1468,7 +1606,7 @@ func (e *LocalExecutionEnvironment) Grep(pattern string, path string, globFilter
 	return res.Stdout + res.Stderr, err
 }
 
-func (e *LocalExecutionEnvironment) grepNative(pattern, path, globFilter string, caseInsensitive bool, maxResults int, outputMode string, contextLines ...int) (string, error) {
+func (e *LocalExecutionEnvironment) grepNative(ctx context.Context, pattern, path, globFilter string, caseInsensitive bool, maxResults int, outputMode string, contextLines ...int) (string, error) {
 	globFilters, err := expandGrepFilter(globFilter)
 	if err != nil {
 		return "", err
@@ -1481,18 +1619,59 @@ func (e *LocalExecutionEnvironment) grepNative(pattern, path, globFilter string,
 	if err != nil {
 		return "", err
 	}
+	path = filepath.Clean(path)
+	// Walk a directory from its own fs.FS root so returned paths remain relative
+	// to the requested directory. An explicitly named file is rooted at its
+	// parent instead; fs.WalkDir needs the basename in that case, while grep's
+	// output contract still treats the file as ".".
+	walkRoot := "."
+	singleFile := false
+	if info, statErr := os.Lstat(path); statErr == nil {
+		if info.Mode()&os.ModeSymlink != 0 {
+			// fs.WalkDir follows a symlink when it is the walk root. Keep the
+			// recursive no-directory-symlink-follow contract by classifying the
+			// target before constructing the DirFS. A symlink to a regular file
+			// remains an explicitly named file and is read through as before.
+			target, targetErr := os.Stat(path)
+			targetRegular := targetErr == nil && target.Mode().IsRegular()
+			if !targetRegular {
+				return "", nil
+			}
+		}
+		if !info.IsDir() {
+			walkRoot = filepath.Base(path)
+			singleFile = true
+			path = filepath.Dir(path)
+		}
+	}
+	// fs.WalkDir does not descend through directory symlinks, matching the
+	// secureDirFS policy on the sandboxed arm while retaining file-symlink
+	// behavior for the unsandboxed fallback.
+	fsys := cancelFS{ctx: ctx, fsys: os.DirFS(path)}
 	// No masking concept off the sandboxed path: no-op skip.
-	ignores := loadIgnoreSet(os.DirFS(path), nil)
+	ignoreFS := fsys
+	if singleFile {
+		// Preserve the old single-file behavior: ignore rules are rooted at the
+		// file argument, which cannot contain a .gitignore tree of its own.
+		ignoreFS = cancelFS{ctx: ctx, fsys: os.DirFS(filepath.Join(path, walkRoot))}
+	}
+	ignores := loadIgnoreSet(ignoreFS, nil)
 	excludedByIgnore := 0
 
-	err = grepWalk(path, func(p string, d fs.DirEntry, err error) error {
+	err = grepWalk(fsys, walkRoot, func(p string, d fs.DirEntry, err error) error {
+		if cancelErr := ctx.Err(); cancelErr != nil {
+			return cancelErr
+		}
 		if err != nil {
 			return nil //nolint:nilerr // best-effort grep: skip unreadable entries and keep walking
 		}
-		relPath, _ := filepath.Rel(path, p)
+		relPath := filepath.FromSlash(p)
+		if singleFile {
+			relPath = "."
+		}
 		relSlash := filepath.ToSlash(relPath)
 		if d.IsDir() {
-			if p != path {
+			if p != "." {
 				if strings.HasPrefix(d.Name(), ".") {
 					return filepath.SkipDir
 				}
@@ -1520,8 +1699,11 @@ func (e *LocalExecutionEnvironment) grepNative(pattern, path, globFilter string,
 				return nil
 			}
 		}
-		data, err := grepReadFile(p)
+		data, err := grepReadFile(fsys, p)
 		if err != nil {
+			if cancelErr := ctx.Err(); cancelErr != nil {
+				return cancelErr
+			}
 			return nil //nolint:nilerr // best-effort grep: skip unreadable files and keep walking
 		}
 		// Skip binary files
@@ -1534,6 +1716,9 @@ func (e *LocalExecutionEnvironment) grepNative(pattern, path, globFilter string,
 		return nil
 	})
 	if err != nil {
+		return "", err
+	}
+	if err := ctx.Err(); err != nil {
 		return "", err
 	}
 	result := a.finish()
@@ -1774,9 +1959,10 @@ func (e *LocalExecutionEnvironment) StreamCommand(ctx context.Context, command, 
 	}
 
 	return &StreamHandle{
-		Pid:    pid,
-		Wait:   wait,
-		Signal: signal,
+		Pid:        pid,
+		Wait:       wait,
+		Signal:     signal,
+		SignalName: func() string { return cmdSignalName(cmd) },
 	}, nil
 }
 
@@ -1837,9 +2023,13 @@ func (e *LocalExecutionEnvironment) DetachCommand(ctx context.Context, command, 
 	}
 	pid := cmd.PID()
 	_ = nullDevice.Close()
-	go func() { _ = cmd.Wait() }()
+	done := make(chan struct{})
+	go func() {
+		_ = cmd.Wait()
+		close(done)
+	}()
 
-	return DetachedProcess{PID: pid}, nil
+	return DetachedProcess{PID: pid, Done: done}, nil
 }
 
 func lookPathInEnv(name string, env []string) (string, bool) {
@@ -2024,8 +2214,9 @@ func (e *LocalExecutionEnvironment) resolve(path string) string {
 
 // resolveWrite is the boundary-enforcing counterpart to resolve. Unlike
 // resolve (which trusts reads), resolveWrite rejects paths that escape the
-// working directory so write_file / edit_file can't reach into the
-// orchestrator's source tree or anywhere else outside the project.
+// working directory or this environment's explicitly allocated scratch root,
+// so write_file / edit_file can't reach into the orchestrator's source tree or
+// another session's temporary files.
 func (e *LocalExecutionEnvironment) resolveWrite(path string) (string, error) {
 	p := strings.TrimSpace(path)
 	if p == "" {
@@ -2036,10 +2227,26 @@ func (e *LocalExecutionEnvironment) resolveWrite(path string) (string, error) {
 		abs = filepath.Join(e.RootDir, abs)
 	}
 	abs = filepath.Clean(abs)
-	if err := e.ensureUnderRoot(abs); err != nil {
+	if err := e.ensureWritePath(abs); err != nil {
 		return "", fmt.Errorf("%s: %w", path, err)
 	}
 	return abs, nil
+}
+
+// ensureWritePath permits the ordinary workspace root and, only after that
+// check fails, the one scratch root already allocated to this environment. The
+// scratch fallback is used on platforms without the fd layer; Linux and macOS
+// route matching operations through scratchSandboxFor first. It deliberately
+// uses the same symlink-aware best-effort canonicalization as the historical
+// workspace check and never treats a caller-supplied absolute path as a grant.
+func (e *LocalExecutionEnvironment) ensureWritePath(abs string) error {
+	if err := e.ensureUnderRoot(abs); err == nil {
+		return nil
+	}
+	if scratch := e.allocatedSessionScratchPath(); scratch != "" && pathWithinRoot(abs, scratch) {
+		return nil
+	}
+	return fmt.Errorf("is outside working directory %q", e.RootDir)
 }
 
 // ensureUnderRoot reports whether the cleaned absolute path equals RootDir
@@ -2049,15 +2256,24 @@ func (e *LocalExecutionEnvironment) resolveWrite(path string) (string, error) {
 // false-positive as escapes. Callers are responsible for cleaning and
 // absolutising the path before calling.
 func (e *LocalExecutionEnvironment) ensureUnderRoot(abs string) error {
-	abs = resolveSymlinksBestEffort(abs)
-	root := resolveSymlinksBestEffort(e.RootDir)
-	if abs == root {
-		return nil
-	}
-	if strings.HasPrefix(abs, root+string(filepath.Separator)) {
+	if pathWithinRoot(abs, e.RootDir) {
 		return nil
 	}
 	return fmt.Errorf("is outside working directory %q", e.RootDir)
+}
+
+// pathWithinRoot applies the existing symlink-aware escape check for an
+// arbitrary authorized root. Missing leaves are resolved through their nearest
+// existing ancestor, while a symlinked component that points outside remains
+// outside. The fd-anchored Unix path performs the final race-safe decision when
+// a scratch target is actually opened.
+func pathWithinRoot(abs, root string) bool {
+	abs = resolveSymlinksBestEffort(abs)
+	root = resolveSymlinksBestEffort(root)
+	if abs == root {
+		return true
+	}
+	return strings.HasPrefix(abs, root+string(filepath.Separator))
 }
 
 // EnsureUnderRoot is the exported form of ensureUnderRoot: it validates that

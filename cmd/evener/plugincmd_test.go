@@ -243,6 +243,110 @@ func TestPluginList_JSONEmpty(t *testing.T) {
 	}
 }
 
+type task3EffectiveListManager struct {
+	pluginManager
+	resolver *plugins.Manager
+}
+
+func (m *task3EffectiveListManager) SeedDefaultMarketplaces() (bool, error) { return false, nil }
+
+func (m *task3EffectiveListManager) ResolveForLaunch(dirs []string, selected *[]string) (plugins.LaunchPluginResolution, error) {
+	return m.resolver.ResolveForLaunch(dirs, selected)
+}
+
+func writeTask3Plugin(t *testing.T, dir, name string) {
+	t.Helper()
+	if err := os.MkdirAll(filepath.Join(dir, ".claude-plugin"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	manifest := `{"name":"` + name + `","version":"1.0.0","description":"` + name + ` description"}`
+	if err := os.WriteFile(filepath.Join(dir, ".claude-plugin", "plugin.json"), []byte(manifest), 0o644); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestPluginListEffective_ResolverOutputAndDisabledExclusion(t *testing.T) {
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	registryRoot := t.TempDir()
+	registry := plugins.NewManager(registryRoot)
+	marketplaceDir := t.TempDir()
+	writeTask3Plugin(t, filepath.Join(marketplaceDir, "plugins", "enabled-plugin"), "enabled-plugin")
+	writeTask3Plugin(t, filepath.Join(marketplaceDir, "plugins", "disabled-plugin"), "disabled-plugin")
+	marketplace := `{"name":"task3-market","owner":{"name":"test"},"plugins":[` +
+		`{"name":"enabled-plugin","source":"./plugins/enabled-plugin"},` +
+		`{"name":"disabled-plugin","source":"./plugins/disabled-plugin"}]}`
+	if err := os.MkdirAll(filepath.Join(marketplaceDir, ".claude-plugin"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(marketplaceDir, ".claude-plugin", "marketplace.json"), []byte(marketplace), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := registry.AddMarketplace(context.Background(), "task3-market", plugins.Source{Kind: plugins.SourceDirectory, Path: marketplaceDir}); err != nil {
+		t.Fatalf("AddMarketplace: %v", err)
+	}
+	if _, err := registry.Install(context.Background(), "enabled-plugin", "task3-market"); err != nil {
+		t.Fatalf("Install enabled: %v", err)
+	}
+	if _, err := registry.Install(context.Background(), "disabled-plugin", "task3-market"); err != nil {
+		t.Fatalf("Install disabled: %v", err)
+	}
+	if err := registry.SetEnabled("disabled-plugin", "task3-market", false); err != nil {
+		t.Fatalf("SetEnabled: %v", err)
+	}
+	explicitDir := t.TempDir()
+	writeTask3Plugin(t, explicitDir, "explicit-plugin")
+
+	manager := &task3EffectiveListManager{pluginManager: registry, resolver: registry}
+	oldManager := newPluginManager
+	newPluginManager = func() pluginManager { return manager }
+	t.Cleanup(func() { newPluginManager = oldManager })
+	var out, errb bytes.Buffer
+	if err := runPlugin([]string{"list", "--effective", "--json", "--plugin-dir", explicitDir}, nil, &out, &errb); err != nil {
+		t.Fatalf("effective list: %v\nstderr: %s", err, errb.String())
+	}
+	var effective effectivePluginListJSON
+	if err := json.Unmarshal(out.Bytes(), &effective); err != nil {
+		t.Fatalf("effective JSON: %v\n%s", err, out.String())
+	}
+	if len(effective.Plugins) != 2 {
+		t.Fatalf("effective plugins = %+v, want explicit and enabled registry candidates", effective.Plugins)
+	}
+	var explicit, installed *effectivePluginJSON
+	for i := range effective.Plugins {
+		candidate := &effective.Plugins[i]
+		switch candidate.Name {
+		case "explicit-plugin":
+			explicit = candidate
+		case "enabled-plugin":
+			installed = candidate
+		case "disabled-plugin":
+			t.Fatal("disabled registry plugin appeared in effective listing")
+		}
+	}
+	if explicit == nil || explicit.Source != plugins.LaunchPluginSourceDirectory || explicit.Path != explicitDir {
+		t.Fatalf("explicit candidate = %+v", explicit)
+	}
+	if installed == nil || installed.Source != plugins.LaunchPluginSourceInstalled || installed.Marketplace != "task3-market" || installed.Path == "" {
+		t.Fatalf("installed candidate = %+v", installed)
+	}
+	if !strings.Contains(out.String(), `"skillCount"`) || !strings.Contains(out.String(), `"mcpCount"`) {
+		t.Fatalf("effective JSON omitted count fields: %s", out.String())
+	}
+
+	out.Reset()
+	errout := bytes.Buffer{}
+	if err := runPlugin([]string{"list", "--json"}, nil, &out, &errout); err != nil {
+		t.Fatalf("ordinary list: %v\nstderr: %s", err, errout.String())
+	}
+	var ordinary []plugins.ListItem
+	if err := json.Unmarshal(out.Bytes(), &ordinary); err != nil {
+		t.Fatalf("ordinary list JSON: %v\n%s", err, out.String())
+	}
+	if len(ordinary) != 2 || strings.HasPrefix(strings.TrimSpace(out.String()), "{") {
+		t.Fatalf("ordinary list = %s, decoded %+v", out.String(), ordinary)
+	}
+}
+
 func TestSplitPluginRef(t *testing.T) {
 	p, m, err := splitPluginRef("widget@acme")
 	if err != nil || p != "widget" || m != "acme" {

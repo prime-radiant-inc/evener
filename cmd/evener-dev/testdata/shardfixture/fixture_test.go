@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"syscall"
 	"testing"
@@ -20,14 +21,33 @@ import (
 // when set, so agent-shards never puts the regex on the command line.
 func TestMain(m *testing.M) {
 	flag.Parse()
-	if runFile := os.Getenv("EVENER_SHARD_RUN_FILE"); runFile != "" {
-		if data, err := os.ReadFile(runFile); err == nil {
-			if pattern := strings.TrimSpace(string(data)); pattern != "" {
-				flag.Set("test.run", pattern)
-			}
-		}
+	if err := configureShardRunFile(); err != nil {
+		_, _ = fmt.Fprintf(os.Stderr, "shardfixture TestMain: %v\n", err)
+		os.Exit(2)
 	}
 	os.Exit(m.Run())
+}
+
+func configureShardRunFile() error {
+	runFile, supplied := os.LookupEnv("EVENER_SHARD_RUN_FILE")
+	if !supplied {
+		return nil
+	}
+	data, err := os.ReadFile(runFile)
+	if err != nil {
+		return fmt.Errorf("EVENER_SHARD_RUN_FILE %q: read failed: %w", runFile, err)
+	}
+	pattern := strings.TrimSpace(string(data))
+	if pattern == "" {
+		return fmt.Errorf("EVENER_SHARD_RUN_FILE %q: run regex is empty", runFile)
+	}
+	if _, err := regexp.Compile(pattern); err != nil {
+		return fmt.Errorf("EVENER_SHARD_RUN_FILE %q: invalid run regex: %w", runFile, err)
+	}
+	if err := flag.Set("test.run", pattern); err != nil {
+		return fmt.Errorf("EVENER_SHARD_RUN_FILE %q: setting test.run failed: %w", runFile, err)
+	}
+	return nil
 }
 
 func TestFixtureAlpha(t *testing.T) { time.Sleep(30 * time.Millisecond) }

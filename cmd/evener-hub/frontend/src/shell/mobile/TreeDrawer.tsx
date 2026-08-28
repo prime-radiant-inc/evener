@@ -15,8 +15,9 @@
 // AppShell's routing glue, DockHost's dockview interactions) - the
 // auto-close effect below already reacts to that, for free, with no
 // bespoke integration code required on the rail's side.
-import { type ReactNode, useEffect, useRef, useState } from "react";
-import { useTreeStore } from "../../stores/tree";
+import { type ReactNode, useEffect, useMemo, useRef, useState } from "react";
+import { selectNeedsYouCount } from "../../stores/navigation/selectors";
+import { useNavigationStore } from "../../stores/navigation/store";
 import { Badge, EmptyState, IconButton, Sheet } from "../../widgets";
 import { useWorkspaceStore } from "../workspace";
 import styles from "./treedrawer.module.css";
@@ -50,7 +51,8 @@ export function TreeDrawer({ children }: TreeDrawerProps) {
   // to what the drawer's own rows show once opened, leaving the trigger
   // unbadged for a session the rows plainly present as needing you
   // (real-browser observation).
-  const needsYou = useTreeStore((s) => s.tree?.needs_you.length ?? 0);
+  const navigation = useNavigationStore();
+  const needsYou = useMemo(() => selectNeedsYouCount(navigation), [navigation]);
 
   // Auto-close on navigation: whatever eventually fills the slot above
   // only ever needs to call openPane() for this to work - see the module

@@ -27,12 +27,129 @@ import (
 	"primeradiant.com/evener/appwire"
 	"primeradiant.com/evener/cmdutil"
 	"primeradiant.com/evener/envvars"
+	"primeradiant.com/evener/internal/plugins"
 	"primeradiant.com/evener/llm"
 	apilog "primeradiant.com/evener/llm/apilog"
 	"primeradiant.com/evener/llm/providercfg"
 	"primeradiant.com/evener/rendezvous"
 	"primeradiant.com/evener/server"
 )
+
+func TestServePluginSelectionValidationPrecedesStartupHooks(t *testing.T) {
+	root := t.TempDir()
+	var order []string
+	deps := defaultServeDeps()
+	deps.resolvePlugins = func(dirs []string, selected *[]string) (plugins.LaunchPluginResolution, error) {
+		order = append(order, "resolve")
+		if !reflect.DeepEqual(dirs, []string{root}) || selected == nil || !reflect.DeepEqual(*selected, []string{"missing-plugin"}) {
+			t.Fatalf("resolver args = dirs %v selected %v", dirs, selected)
+		}
+		return plugins.LaunchPluginResolution{SelectionErrors: []plugins.PluginSelectionError{{Name: "missing-plugin", Reason: "no valid plugin candidate"}}}, nil
+	}
+	deps.ensureConfigDirs = func() error { order = append(order, "ensure-config"); return nil }
+	deps.seedMarketplaces = func() error { order = append(order, "seed-marketplaces"); return nil }
+
+	err := runServeWithDeps([]string{"--plugin-dir", root, "--enabled-plugins=missing-plugin"}, deps)
+	if err == nil || !strings.Contains(err.Error(), "enabled plugin selection is unavailable") {
+		t.Fatalf("serve error = %v, want strict selection error", err)
+	}
+	if !reflect.DeepEqual(order, []string{"resolve"}) {
+		t.Fatalf("startup order = %v, want resolver only", order)
+	}
+}
+
+func TestServePassesResolvedPluginDirsToSessionConfig(t *testing.T) {
+	installServeScriptedProvider(t, &scriptedProvider{name: "openai"})
+	selectedDir := t.TempDir()
+	deps := defaultServeDeps()
+	deps.ensureConfigDirs = func() error { return nil }
+	deps.seedMarketplaces = func() error { return nil }
+	deps.resolvePlugins = func([]string, *[]string) (plugins.LaunchPluginResolution, error) {
+		return plugins.LaunchPluginResolution{SelectedDirs: []string{selectedDir}}, nil
+	}
+	var got []string
+	deps.provisionSandbox = func(_ *execenv.LocalExecutionEnvironment, cfg *agent.SessionConfig, _ string) error {
+		got = append([]string(nil), cfg.PluginDirs...)
+		return errors.New("stop after config")
+	}
+	err := runServeWithDeps([]string{
+		"--model", "openai/gpt-test", "--dir", t.TempDir(), "--state-dir", t.TempDir(),
+		"--enabled-plugins=alpha", "--plugin-dir", selectedDir,
+	}, deps)
+	if err == nil || !strings.Contains(err.Error(), "stop after config") {
+		t.Fatalf("serve error = %v", err)
+	}
+	if !reflect.DeepEqual(got, []string{selectedDir}) {
+		t.Fatalf("session plugin dirs = %v, want %v", got, []string{selectedDir})
+	}
+}
+
+func TestServePluginRootFlagUsesHubValidatedRegistryAfterDisablement(t *testing.T) {
+	hubRoot := filepath.Join(t.TempDir(), "hub-root")
+	hubInstalledDir := filepath.Join(hubRoot, "installed-alpha")
+	writeTask3Plugin(t, hubInstalledDir, "alpha")
+	if err := plugins.SaveRegistry(filepath.Join(hubRoot, "installed_plugins.json"), plugins.Registry{
+		Plugins: map[string][]plugins.InstallEntry{
+			"alpha@acme": {{
+				InstallPath: hubInstalledDir,
+				Version:     "1.0.0",
+				Enabled:     true,
+				Source:      plugins.Source{Kind: plugins.SourceDirectory, Path: hubInstalledDir},
+			}},
+		},
+	}); err != nil {
+		t.Fatalf("SaveRegistry(enabled): %v", err)
+	}
+	selected := []string{"alpha"}
+	if _, err := plugins.NewManager(hubRoot).ResolveForLaunch(nil, &selected); err != nil {
+		t.Fatalf("hub validation ResolveForLaunch: %v", err)
+	}
+	if err := plugins.SaveRegistry(filepath.Join(hubRoot, "installed_plugins.json"), plugins.Registry{
+		Plugins: map[string][]plugins.InstallEntry{
+			"alpha@acme": {{
+				InstallPath: hubInstalledDir,
+				Version:     "1.0.0",
+				Enabled:     false,
+				Source:      plugins.Source{Kind: plugins.SourceDirectory, Path: hubInstalledDir},
+			}},
+		},
+	}); err != nil {
+		t.Fatalf("SaveRegistry(disabled): %v", err)
+	}
+
+	xdgConfigHome := filepath.Join(t.TempDir(), "ambient-config")
+	ambientRoot := filepath.Join(xdgConfigHome, "evener", "plugins")
+	ambientInstalledDir := filepath.Join(ambientRoot, "installed-alpha")
+	writeTask3Plugin(t, ambientInstalledDir, "alpha")
+	if err := plugins.SaveRegistry(filepath.Join(ambientRoot, "installed_plugins.json"), plugins.Registry{
+		Plugins: map[string][]plugins.InstallEntry{
+			"alpha@acme": {{
+				InstallPath: ambientInstalledDir,
+				Version:     "9.9.9",
+				Enabled:     true,
+				Source:      plugins.Source{Kind: plugins.SourceDirectory, Path: ambientInstalledDir},
+			}},
+		},
+	}); err != nil {
+		t.Fatalf("SaveRegistry(ambient): %v", err)
+	}
+	t.Setenv("XDG_CONFIG_HOME", xdgConfigHome)
+
+	deps := defaultServeDeps()
+	deps.ensureConfigDirs = func() error { return nil }
+	deps.seedMarketplaces = func() error { return nil }
+
+	err := runServeWithDeps([]string{
+		"--model", "openai/gpt-test",
+		"--dir", t.TempDir(),
+		"--state-dir", t.TempDir(),
+		"--plugin-root", hubRoot,
+		"--enabled-plugins=alpha",
+	}, deps)
+	if err == nil || !strings.Contains(err.Error(), "enabled plugin selection is unavailable: alpha: no valid plugin candidate") {
+		t.Fatalf("serve error = %v, want disabled hub-root selection failure", err)
+	}
+}
 
 func TestAgentToServerDetailedStatus_DelegatesLossless(t *testing.T) {
 	valid, resumable := true, false
@@ -795,6 +912,18 @@ func TestAgentToServerDetailedStatus_Empty(t *testing.T) {
 	}
 	if len(got.Agents) != 0 {
 		t.Errorf("Agents = %d, want 0", len(got.Agents))
+	}
+}
+
+func TestAgentToServerDetailedStatus_PreservesPluginPresence(t *testing.T) {
+	got := agentToServerDetailedStatus(agent.DetailedStatus{Plugins: []agent.PluginInfo{}})
+	if got.Plugins == nil {
+		t.Fatal("explicit empty Plugins became nil")
+	}
+
+	legacy := agentToServerDetailedStatus(agent.DetailedStatus{})
+	if legacy.Plugins != nil {
+		t.Fatalf("nil Plugins became non-nil: %#v", legacy.Plugins)
 	}
 }
 

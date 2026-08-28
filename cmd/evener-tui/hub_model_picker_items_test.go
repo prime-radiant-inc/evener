@@ -137,3 +137,22 @@ func TestModelPickerItemsFromResponse_NoRecentOmitsGroup(t *testing.T) {
 		t.Fatal("no Recent group should render when resp.Recent is empty")
 	}
 }
+
+func TestVisionModelPickerItemsPrependPseudoEntriesAndFilterCatalog(t *testing.T) {
+	items := visionModelPickerItems([]tuipick.ModelPickerItem{
+		{ID: "openai/gpt-3.5-turbo", Display: "GPT 3.5 Turbo"},
+		{ID: "openai/gpt-4o", Display: "GPT 4o"},
+	})
+	if len(items) != 3 {
+		t.Fatalf("got %d items, want Current, Off, and the one vision-capable catalog model: %#v", len(items), items)
+	}
+	if items[0].ID != "" || items[0].Display != "Current model" {
+		t.Fatalf("first item = %#v, want Current model with empty ID", items[0])
+	}
+	if items[1].ID != "off" || items[1].Display != "Off" {
+		t.Fatalf("second item = %#v, want Off", items[1])
+	}
+	if items[2].ID != "openai/gpt-4o" {
+		t.Fatalf("filtered catalog item = %#v, want vision-capable gpt-4o only", items[2])
+	}
+}

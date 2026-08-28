@@ -127,10 +127,14 @@ describe("createProfileScopedServices", () => {
     scoped.client.onNotification(onNotification);
     scoped.client.onStateChange(onState);
     scoped.client.onHandshakeResult(onHandshake);
-    const notification = {
-      method: "evener/tree/changed",
-      params: { revision: 1 },
-    } as AnyNotification;
+    const notification: AnyNotification = {
+      method: "thread/status/changed",
+      params: {
+        threadId: "thread-1",
+        ref: "ref-1",
+        status: { type: "idle" },
+      },
+    };
     const notificationCallback = callbacks.notification;
     const stateCallback = callbacks.state;
     const handshakeCallback = callbacks.handshake;

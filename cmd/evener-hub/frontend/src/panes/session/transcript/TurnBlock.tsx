@@ -8,24 +8,37 @@
 // get tool calls rendered correctly.
 import "./ToolCallItem";
 import "./tools";
-import { useMemo } from "react";
-import type { ItemModel, TurnModel } from "../../../protocol/model";
-import { usePrefsStore } from "../../../stores/prefs";
+import type { ReactNode } from "react";
+import type { ItemModel, ThreadModel, TurnModel } from "../../../protocol/model";
+import type { ProjectedEntry, ProjectedTurn } from "../../../transcriptDisplay/projector";
+import {
+  disclosureScopeForSession,
+  expandDetailsByDefault,
+  type TranscriptRenderContextValue,
+  useTranscriptRenderContext,
+} from "../../../transcriptDisplay/renderContext";
+import {
+  disclosureDefault,
+  isDisclosureOpen,
+  scopedDisclosureId,
+  toggleDisclosure,
+} from "../../../widgets/disclosure/disclosureStore";
 import { requireClass } from "../../../widgets/internal/requireClass";
+import transcriptStyles from "../session.module.css";
 import { SeenDivider } from "./flow/SeenDivider";
 import { rowRoleFor } from "./layoutRoles";
 import { TurnSeparator } from "./messages";
 import { ToolCallCluster } from "./ToolCallCluster";
 import { TurnFailureEndCap } from "./TurnFailureEndCap";
 import { shouldGroup, toolRunFor } from "./toolGrouping";
+import { toolRendererFor } from "./toolRenderers";
 import { itemScopeKey } from "./tools/subagentModuleStore";
-import { visibleItems } from "./transcriptVisibility";
 import styles from "./turnblock.module.css";
 import { asTurnError } from "./turnFailure";
-import { itemRendererFor } from "./types";
+import { itemRendererFor, threadFingerprintForItem } from "./types";
 
 export interface TurnBlockProps {
-  turn: TurnModel;
+  turn: ProjectedTurn | TurnModel;
   // The owning session's ref, threaded from Session.tsx so the turn-failure
   // end-cap can wire its recovery action (re-issue the turn). Optional: the
   // diagnostic renders without it, only the recovery button is withheld until
@@ -41,11 +54,14 @@ export interface TurnBlockProps {
   // useSeenDivider.ts names as the boundary - defaults false so every
   // other turn is unaffected.
   showSeenDivider?: boolean;
-  // Session view switching anchors at item granularity even though
-  // VirtualList windows whole turns. The flattened source position is shared
-  // by every view; the row index remains the turn VirtualList can scroll to.
+  // VirtualList windows whole turns while scroll coordination anchors at
+  // projected-entry granularity. The projector supplies each entry's stable
+  // source index; this is the row index that contains it.
   viewAnchorIndex?: number;
-  viewAnchorSourceIndexes?: ReadonlyMap<string, number>;
+  /** Suppressed on a fragment that precedes a cross-turn intent group. */
+  showTurnSeparator?: boolean;
+  renderContext?: TranscriptRenderContextValue;
+  thread?: ThreadModel;
 }
 
 const CLASS = {
@@ -69,6 +85,87 @@ export function isItemLive(item: ItemModel): boolean {
   return item.status === "inProgress";
 }
 
+export function projectedEntryAnchor(entry: ProjectedEntry, viewAnchorIndex: number | undefined) {
+  if (viewAnchorIndex === undefined) return undefined;
+  return {
+    "data-view-anchor-id": entry.id,
+    "data-view-anchor-index": viewAnchorIndex,
+    "data-view-anchor-source-index": entry.sourceIndex,
+    "data-view-anchor-turn-id": entry.turnId,
+    "data-view-anchor-message": entry.kind === "item" && entry.isMessage,
+  } as const;
+}
+
+export interface ProjectedIntentGroupProps {
+  entries: readonly Extract<ProjectedEntry, { kind: "intent" }>[];
+  rowId?: string;
+  sourceTurnIds?: readonly string[];
+  viewAnchorIndex?: number;
+  showSeenDivider?: boolean;
+}
+
+export function ProjectedIntentGroup({
+  entries,
+  rowId,
+  sourceTurnIds = [],
+  viewAnchorIndex,
+  showSeenDivider = false,
+}: ProjectedIntentGroupProps) {
+  const context = useTranscriptRenderContext();
+  const { config } = context;
+  const scope = disclosureScopeForSession(context, undefined);
+  const identity = rowId ?? `intent-group:${entries[0]?.id ?? "empty"}:${entries.at(-1)?.id ?? "empty"}`;
+  const disclosureKey = scopedDisclosureId(scope, identity);
+  const fallback = expandDetailsByDefault(config) || disclosureDefault(scope, identity, false);
+  const open = isDisclosureOpen(disclosureKey, fallback);
+  return (
+    <>
+      {showSeenDivider && <SeenDivider />}
+      <details
+        className={transcriptStyles.intentGroup}
+        data-testid="intent-group"
+        data-transcript-row-id={rowId}
+        data-transcript-source-turn-ids={sourceTurnIds.join(",") || undefined}
+        open={open}
+      >
+        {/* biome-ignore lint/a11y/noStaticElementInteractions: summary is natively keyboard-operable */}
+        <summary
+          className={transcriptStyles.intentGroupSummary}
+          onClick={(event) => {
+            event.preventDefault();
+            toggleDisclosure(disclosureKey, fallback);
+          }}
+        >
+          {entries.length} action{entries.length === 1 ? "" : "s"}
+        </summary>
+        <div className={transcriptStyles.intentGroupItems}>
+          {entries.map((entry) => (
+            <div key={entry.id} className={transcriptStyles.intent} {...projectedEntryAnchor(entry, viewAnchorIndex)}>
+              {entry.rationale}
+            </div>
+          ))}
+        </div>
+      </details>
+    </>
+  );
+}
+
+function projectedForDirectTurn(turn: TurnModel): ProjectedTurn {
+  const entries = turn.items.map((item, sourceIndex) => ({
+    kind: "item" as const,
+    id: item.id,
+    turnId: turn.id,
+    sourceIndex,
+    item,
+    isMessage: item.type === "userMessage" || item.type === "agentMessage",
+  }));
+  return { id: turn.id, source: turn, entries, visibleItems: turn.items };
+}
+
+function isProjectedTurn(turn: ProjectedTurn | TurnModel): turn is ProjectedTurn {
+  return "source" in turn && "entries" in turn && "visibleItems" in turn;
+}
+
 export function TurnBlock({
   turn,
   sessionRef,
@@ -76,103 +173,108 @@ export function TurnBlock({
   agentLabel,
   showSeenDivider = false,
   viewAnchorIndex,
-  viewAnchorSourceIndexes,
+  showTurnSeparator = true,
+  renderContext,
+  thread,
 }: TurnBlockProps) {
+  const providerContext = useTranscriptRenderContext();
+  const itemRenderContext = renderContext ?? providerContext;
+  const projectedTurn = isProjectedTurn(turn) ? turn : projectedForDirectTurn(turn);
+  const sourceTurn = projectedTurn.source;
   // A failed turn carries a TurnError (only genuine failures do - the projector
   // sets it alongside status "failed", never on a completed or user-cancelled
   // turn); its presence is the signal to close the turn with a diagnostic
   // end-cap, corroborated by the honest status "failed" the wire stamps.
-  const failure = asTurnError(turn.error);
-  // Settings -> Transcript's hook-exit and prompt-loaded toggles hide whole
-  // items. Apply them HERE, to the turn the renderers receive, rather than
-  // letting each renderer bow out: SystemNoticeItem computes its
-  // consecutive-run grouping from turn.items, so an item hidden any later
-  // would still be counted by the group it was meant to leave. Subscribing
-  // to each toggle individually keeps a flip in Settings re-rendering the
-  // transcript live, and leaves every unrelated pref change inert.
-  const roundTimings = usePrefsStore((s) => s.transcript.roundTimings);
-  const hookExitsAll = usePrefsStore((s) => s.transcript.hookExitsAll);
-  const hookExitsNormal = usePrefsStore((s) => s.transcript.hookExitsNormal);
-  const promptLoaded = usePrefsStore((s) => s.transcript.promptLoaded);
-  const shown = useMemo(
-    () => visibleItems(turn.items, { roundTimings, hookExitsAll, hookExitsNormal, promptLoaded }),
-    [turn.items, roundTimings, hookExitsAll, hookExitsNormal, promptLoaded],
-  );
-  // Reuse the turn object outright when nothing is hidden (visibleItems is
-  // identity-stable then), so the memoized renderers' `turn` prop churns no
-  // more than it already did.
-  const shownTurn = shown === turn.items ? turn : { ...turn, items: shown };
-  const viewAnchorFor = (item: ItemModel) => {
-    const sourceIndex = viewAnchorSourceIndexes?.get(item.id);
-    if (sourceIndex === undefined || viewAnchorIndex === undefined) return undefined;
-    return {
-      "data-view-anchor-id": item.id,
-      "data-view-anchor-index": viewAnchorIndex,
-      "data-view-anchor-source-index": sourceIndex,
-      "data-view-anchor-message": item.type === "userMessage" || item.type === "agentMessage",
-    } as const;
-  };
+  const failure = asTurnError(sourceTurn.error);
+  const visibleItems = projectedTurn.visibleItems;
+  const allItemsVisible =
+    visibleItems.length === sourceTurn.items.length &&
+    visibleItems.every((item, index) => item === sourceTurn.items[index]);
+  const shownTurn: TurnModel = allItemsVisible ? sourceTurn : { ...sourceTurn, items: [...visibleItems] };
+  const viewAnchorFor = (entry: ProjectedEntry) => projectedEntryAnchor(entry, viewAnchorIndex);
+  const renderedEntries: ReactNode[] = [];
+  for (let index = 0; index < projectedTurn.entries.length; index += 1) {
+    const entry = projectedTurn.entries[index];
+    if (!entry) continue;
+    if (entry.kind === "intent") {
+      const group: Extract<ProjectedEntry, { kind: "intent" }>[] = [entry];
+      while (projectedTurn.entries[index + 1]?.kind === "intent") {
+        index += 1;
+        const next = projectedTurn.entries[index];
+        if (next?.kind === "intent") group.push(next);
+      }
+      renderedEntries.push(
+        <ProjectedIntentGroup
+          key={`intent-group:${group[0]?.id}:${group.at(-1)?.id}`}
+          entries={group}
+          viewAnchorIndex={viewAnchorIndex}
+        />,
+      );
+      continue;
+    }
+    const item = entry.item;
+    const run =
+      entry.kind === "item" && item.type === "commandExecution" ? toolRunFor([...visibleItems], item.id) : undefined;
+    if (run && shouldGroup(run)) {
+      if (!run.isFirst) continue;
+      renderedEntries.push(
+        <div
+          key={itemScopeKey(sessionRef, item.id)}
+          className={CLASS.runContent}
+          data-testid="run-content"
+          {...viewAnchorFor(entry)}
+        >
+          <ToolCallCluster
+            items={run.items}
+            turn={shownTurn}
+            sessionRef={sessionRef}
+            renderContext={itemRenderContext}
+            thread={thread}
+          />
+        </div>,
+      );
+      continue;
+    }
+    const ItemRenderer = itemRendererFor(item.type);
+    const renderedItem = (
+      <ItemRenderer
+        item={item}
+        turn={shownTurn}
+        live={isItemLive(item)}
+        sessionRef={sessionRef}
+        opensExchange={exchangeOpeners?.has(item.id)}
+        agentLabel={agentLabel}
+        projectedSummary={entry.kind === "critical" ? entry.summary : undefined}
+        renderContext={itemRenderContext}
+        thread={thread}
+        threadFingerprint={threadFingerprintForItem(
+          item,
+          thread,
+          toolRendererFor(item.toolName ?? "").summarySuffix?.(item, thread),
+        )}
+      />
+    );
+    if (rowRoleFor(item, { opensExchange: exchangeOpeners?.has(item.id) }) === "speaker") {
+      renderedEntries.push(
+        <div key={entry.id} {...viewAnchorFor(entry)}>
+          {renderedItem}
+        </div>,
+      );
+    } else {
+      renderedEntries.push(
+        <div key={entry.id} className={CLASS.runContent} data-testid="run-content" {...viewAnchorFor(entry)}>
+          {renderedItem}
+        </div>,
+      );
+    }
+  }
   return (
     <>
       {showSeenDivider && <SeenDivider />}
-      <div className={CLASS.turn} data-testid="turn-block" data-turn-id={turn.id}>
-        {shown.map((item) => {
-          const run = toolRunFor(shown, item.id);
-          if (run && shouldGroup(run)) {
-            if (!run.isFirst) return null;
-            // A ToolCallCluster renders a run of tool calls, so it is "run"
-            // content and takes the indent too. The key moves to the wrapper
-            // so the cluster's identity is unchanged.
-            return (
-              <div
-                key={itemScopeKey(sessionRef, item.id)}
-                className={CLASS.runContent}
-                data-testid="run-content"
-                {...viewAnchorFor(item)}
-              >
-                <ToolCallCluster items={run.items} turn={shownTurn} sessionRef={sessionRef} />
-              </div>
-            );
-          }
-          const ItemRenderer = itemRendererFor(item.type);
-          // Speaker rows (userMessage, exchange-opening agentMessage) render
-          // unwrapped, full width: their own speaker header is the avatar
-          // row, and the avatar belongs IN the gutter at the margin, not
-          // indented into the content column it heads. Everything else is a
-          // "run" row - including steering, system notices, and warnings,
-          // which indent with everything else (Jesse's consistency call) -
-          // and takes the gutter indent inside the wrapper. layoutRoles.ts
-          // owns this classification; there is no per-type exception set
-          // here.
-          if (rowRoleFor(item, { opensExchange: exchangeOpeners?.has(item.id) }) === "speaker") {
-            return (
-              <div key={item.id} {...viewAnchorFor(item)}>
-                <ItemRenderer
-                  item={item}
-                  turn={shownTurn}
-                  live={isItemLive(item)}
-                  sessionRef={sessionRef}
-                  opensExchange={exchangeOpeners?.has(item.id)}
-                  agentLabel={agentLabel}
-                />
-              </div>
-            );
-          }
-          return (
-            <div key={item.id} className={CLASS.runContent} data-testid="run-content" {...viewAnchorFor(item)}>
-              <ItemRenderer
-                item={item}
-                turn={shownTurn}
-                live={isItemLive(item)}
-                sessionRef={sessionRef}
-                opensExchange={exchangeOpeners?.has(item.id)}
-                agentLabel={agentLabel}
-              />
-            </div>
-          );
-        })}
-        {failure && <TurnFailureEndCap error={failure} turn={turn} sessionRef={sessionRef} />}
-        <TurnSeparator turn={turn} />
+      <div className={CLASS.turn} data-testid="turn-block" data-turn-id={sourceTurn.id}>
+        {renderedEntries}
+        {failure && <TurnFailureEndCap error={failure} turn={sourceTurn} sessionRef={sessionRef} />}
+        {showTurnSeparator && <TurnSeparator turn={sourceTurn} />}
       </div>
     </>
   );

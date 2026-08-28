@@ -610,6 +610,76 @@ func TestJobResultKnownKeysCoversLiveDelegateShapes(t *testing.T) {
 	})
 }
 
+// TestJobResultToolsSurviveTranscriptProjections uses both production delegate
+// marshalers and drives the renderer modes used by a condensed read, an exact
+// expansion, and a bounded continuation preview. The capability list is
+// machine data, so assert its field name and enum values rather than surrounding
+// prose.
+func TestJobResultToolsSurviveTranscriptProjections(t *testing.T) {
+	t.Parallel()
+
+	createWire, err := marshalStableDelegateCreateResult(stableDelegateCreateResult{
+		DelegateID:    "dlg_tools_create",
+		Type:          "delegate",
+		Status:        "completed",
+		Tools:         []string{"shell", "read_file"},
+		TranscriptRef: "local:tools-create",
+	}, 0)
+	if err != nil {
+		t.Fatalf("marshalStableDelegateCreateResult: %v", err)
+	}
+
+	sendResult := delegateSendToolResult(t, "call_tools_send", sendMessageResult{
+		DelegateID:    "dlg_tools_send",
+		Type:          "delegate",
+		Status:        jobstore.StatusCompleted,
+		Action:        "completed",
+		Tools:         []string{"shell", "read_file"},
+		TranscriptRef: "local:tools-send",
+	}, 0)
+	sendWire := toolResultStateOrContent(sendResult)
+
+	for _, tc := range []struct {
+		name   string
+		tool   string
+		callID string
+		wire   string
+	}{
+		{name: "create", tool: "delegate", callID: "call_tools_create", wire: createWire},
+		{name: "send", tool: "delegate_send", callID: "call_tools_send", wire: sendWire},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			r, ok := decodeJobResult(tc.wire)
+			if !ok {
+				t.Fatalf("decodeJobResult rejected %s shape: %s", tc.name, tc.wire)
+			}
+			if !reflect.DeepEqual(r.Tools, []string{"shell", "read_file"}) {
+				t.Fatalf("decoded tools = %#v, want [shell read_file]", r.Tools)
+			}
+
+			for _, projection := range []struct {
+				name string
+				opt  renderOpts
+			}{
+				{name: "condensed", opt: renderOpts{}},
+				{name: "expansion", opt: renderOpts{fullResultFor: new(0)}},
+				{name: "continuation", opt: renderOpts{headTailEvidenceFor: new(0)}},
+			} {
+				t.Run(projection.name, func(t *testing.T) {
+					entries := []transcript.Entry{
+						toolCallEntry(call(tc.callID, tc.tool, `{}`)),
+						toolResultEntry(result(tc.callID, tc.tool, tc.wire, false)),
+					}
+					out := renderMarkdown(transcript.Header{}, entries, 0, projection.opt)
+					if !strings.Contains(out, "tools=[shell,read_file]") {
+						t.Fatalf("%s projection dropped capability tools:\n%s", projection.name, out)
+					}
+				})
+			}
+		})
+	}
+}
+
 // assertKeysKnownToJobResult fails, naming the offending key, if wire (a JSON
 // object) carries a top-level key absent from jobResultKnownKeys
 // (agent/transcript_render.go) — the same allowlist hasNonJobResultKeys checks

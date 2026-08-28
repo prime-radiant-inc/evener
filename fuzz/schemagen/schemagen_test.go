@@ -79,9 +79,9 @@ var fixtures = map[string]map[string]any{
 		},
 		"required": []string{"questions"},
 	},
-	// Mirrors ask_user's per-question header: a string with maxLength (the
-	// constraint TestToolArgsSchemaFuzz caught when schemagen's string
-	// generator first ignored minLength/maxLength entirely).
+	// A generic bounded string: the constraint TestToolArgsSchemaFuzz caught
+	// when schemagen's string generator first ignored minLength/maxLength
+	// entirely. This is not a copy of the ask_user header schema.
 	"bounded_string": {
 		"type":                 "object",
 		"additionalProperties": false,

@@ -1,10 +1,93 @@
 package appwire
 
 import (
+	"bytes"
 	"encoding/json"
+	"reflect"
 	"strings"
 	"testing"
 )
+
+func TestLaunchConfigEnabledPluginsJSONPresence(t *testing.T) {
+	nilRaw, err := json.Marshal(LaunchConfigLayer{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if bytes.Contains(nilRaw, []byte(`"enabledPlugins"`)) {
+		t.Fatalf("nil encoded: %s", nilRaw)
+	}
+
+	empty := []string{}
+	emptyRaw, err := json.Marshal(LaunchConfigLayer{EnabledPlugins: &empty})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Contains(emptyRaw, []byte(`"enabledPlugins":[]`)) {
+		t.Fatalf("empty lost: %s", emptyRaw)
+	}
+
+	var roundTrip LaunchConfigLayer
+	if err := json.Unmarshal(emptyRaw, &roundTrip); err != nil {
+		t.Fatal(err)
+	}
+	if roundTrip.EnabledPlugins == nil || len(*roundTrip.EnabledPlugins) != 0 {
+		t.Fatalf("round trip = %#v", roundTrip.EnabledPlugins)
+	}
+
+	named := []string{"alpha", "beta"}
+	namedRaw, err := json.Marshal(LaunchConfigLayer{EnabledPlugins: &named})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Contains(namedRaw, []byte(`"enabledPlugins":["alpha","beta"]`)) {
+		t.Fatalf("named selection lost: %s", namedRaw)
+	}
+	var namedRoundTrip LaunchConfigLayer
+	if err := json.Unmarshal(namedRaw, &namedRoundTrip); err != nil {
+		t.Fatal(err)
+	}
+	if namedRoundTrip.EnabledPlugins == nil || len(*namedRoundTrip.EnabledPlugins) != 2 || (*namedRoundTrip.EnabledPlugins)[0] != "alpha" || (*namedRoundTrip.EnabledPlugins)[1] != "beta" {
+		t.Fatalf("named round trip = %#v", namedRoundTrip.EnabledPlugins)
+	}
+}
+
+func TestPluginPreviewWireShape(t *testing.T) {
+	empty := []string{}
+	in := PluginPreviewParams{CWD: "/work", LaunchOverrides: &LaunchConfigLayer{EnabledPlugins: &empty}}
+	raw, err := json.Marshal(in)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(raw), `"enabledPlugins":[]`) {
+		t.Fatalf("explicit empty selection lost: %s", raw)
+	}
+	want := PluginPreviewResponse{Plugins: []PluginLaunchCandidate{{
+		Name: "alpha", Version: "1.2.3", Description: "desc", Source: "directory",
+		Marketplace: "acme", Path: "/plugins/alpha", Selected: true,
+		SkillCount: 1, AgentCount: 2, CommandCount: 3, HookCount: 4, MCPCount: 5,
+	}}, Diagnostics: []PluginDiagnostic{{Name: "bad", Path: "/bad", Source: "directory", Message: "invalid"}}, SelectionErrors: []PluginSelectionError{{Name: "missing", Reason: "no valid plugin candidate"}}}
+	raw, err = json.Marshal(want)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got PluginPreviewResponse
+	if err := json.Unmarshal(raw, &got); err != nil {
+		t.Fatal(err)
+	}
+	if len(got.Plugins) != 1 || got.Plugins[0].MCPCount != 5 || got.Diagnostics[0].Source != "directory" || got.SelectionErrors[0].Reason != "no valid plugin candidate" {
+		t.Fatalf("round trip = %+v", got)
+	}
+}
+
+func TestThreadResumeParamsRemainSelectionFree(t *testing.T) {
+	raw, err := json.Marshal(ThreadResumeParams{Ref: "local:session", Session: "session"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(raw), "enabledPlugins") || strings.Contains(string(raw), "launchOverrides") {
+		t.Fatalf("resume wire gained launch selection fields: %s", raw)
+	}
+}
 
 func TestThreadItemOutputImagesJSONRoundTrip(t *testing.T) {
 	item := ThreadItem{
@@ -129,6 +212,105 @@ func TestEvenerDiagnosticsJobsJSONRoundTrip(t *testing.T) {
 		job.Reason != "exit" || job.ExitCode == nil || *job.ExitCode != exitCode ||
 		job.OutputBytes != 0 || job.TranscriptRef != "local:child" || !job.FromWatch || job.ParentDelegateID != "dlg_parent" {
 		t.Fatalf("roundtrip job=%+v", job)
+	}
+}
+
+func TestNavigationReadWireTypesPreservePagingAndRawData(t *testing.T) {
+	zero := uint32(0)
+	params := NavigationReadParams{
+		Resource:   "project_page",
+		Section:    "live",
+		SectionID:  "pin-a",
+		Catalog:    "projects",
+		ProjectKey: "project-a",
+		Tier:       "recent",
+		Ref:        "local:session-a",
+		Offset:     &zero,
+		Limit:      &zero,
+		ETag:       "etag-a",
+	}
+	raw, err := json.Marshal(params)
+	if err != nil {
+		t.Fatalf("marshal params: %v", err)
+	}
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &fields); err != nil {
+		t.Fatalf("unmarshal params fields: %v", err)
+	}
+	for name, want := range map[string]string{
+		"resource":   `"project_page"`,
+		"section":    `"live"`,
+		"sectionId":  `"pin-a"`,
+		"catalog":    `"projects"`,
+		"projectKey": `"project-a"`,
+		"tier":       `"recent"`,
+		"ref":        `"local:session-a"`,
+		"offset":     "0",
+		"limit":      "0",
+		"etag":       `"etag-a"`,
+	} {
+		if got := string(fields[name]); got != want {
+			t.Fatalf("field %q = %s, want %s in %s", name, got, want, raw)
+		}
+	}
+	var decoded NavigationReadParams
+	if err := json.Unmarshal(raw, &decoded); err != nil {
+		t.Fatalf("unmarshal params: %v", err)
+	}
+	if decoded.Offset == nil {
+		t.Fatal("decoded offset is nil; explicit zero must remain distinguishable from omitted")
+	}
+	if *decoded.Offset != 0 {
+		t.Fatalf("decoded offset = %d, want 0", *decoded.Offset)
+	}
+	if decoded.Limit == nil {
+		t.Fatal("decoded limit is nil; explicit zero must remain distinguishable from omitted")
+	}
+	if *decoded.Limit != 0 {
+		t.Fatalf("decoded limit = %d, want 0", *decoded.Limit)
+	}
+
+	withoutPage, err := json.Marshal(NavigationReadParams{Resource: "manifest"})
+	if err != nil {
+		t.Fatalf("marshal unpaged params: %v", err)
+	}
+	if got, want := string(withoutPage), `{"resource":"manifest"}`; got != want {
+		t.Fatalf("omitted paging = %s, want %s", got, want)
+	}
+
+	response := NavigationReadResponse{
+		Status:       "ok",
+		GenerationID: "generation-a",
+		Revision:     7,
+		ETag:         "etag-a",
+		Data:         json.RawMessage(`{"generation_id":"generation-a","revision":7,"sessions":[]}`),
+	}
+	raw, err = json.Marshal(response)
+	if err != nil {
+		t.Fatalf("marshal response: %v", err)
+	}
+	var decodedResponse NavigationReadResponse
+	if err := json.Unmarshal(raw, &decodedResponse); err != nil {
+		t.Fatalf("unmarshal response: %v", err)
+	}
+	if decodedResponse.Status != "ok" || decodedResponse.GenerationID != "generation-a" || decodedResponse.Revision != 7 || decodedResponse.ETag != "etag-a" {
+		t.Fatalf("decoded response envelope = %+v", decodedResponse)
+	}
+	if string(decodedResponse.Data) != string(response.Data) {
+		t.Fatalf("decoded response data = %s, want %s", decodedResponse.Data, response.Data)
+	}
+
+	notModified, err := json.Marshal(NavigationReadResponse{
+		Status:       "not_modified",
+		GenerationID: "generation-a",
+		Revision:     7,
+		ETag:         "etag-a",
+	})
+	if err != nil {
+		t.Fatalf("marshal not-modified response: %v", err)
+	}
+	if got, want := string(notModified), `{"status":"not_modified","generationId":"generation-a","revision":7,"etag":"etag-a"}`; got != want {
+		t.Fatalf("not-modified response = %s, want %s", got, want)
 	}
 }
 
@@ -405,7 +587,7 @@ func TestEvenerThreadCostJSONRoundTrip(t *testing.T) {
 
 // TestModelListResponseRecentJSONRoundTrip verifies the model picker's
 // Recent group rides ModelListResponse as an ordinary struct field (no new
-// appwire method), snake_case on the wire, and round-trips.
+// appwire method), uses the protocol's camelCase keys, and round-trips.
 func TestModelListResponseRecentJSONRoundTrip(t *testing.T) {
 	in := ModelListResponse{
 		Data:   []ModelDescriptor{{Provider: "anthropic", Model: "claude-opus-4-6"}},
@@ -423,7 +605,7 @@ func TestModelListResponseRecentJSONRoundTrip(t *testing.T) {
 	if err := json.Unmarshal(raw, &out); err != nil {
 		t.Fatalf("unmarshal: %v", err)
 	}
-	if len(out.Recent) != 1 || out.Recent[0] != in.Recent[0] {
+	if len(out.Recent) != 1 || !reflect.DeepEqual(out.Recent[0], in.Recent[0]) {
 		t.Fatalf("roundtrip recent=%+v, want %+v", out.Recent, in.Recent)
 	}
 }
@@ -438,6 +620,62 @@ func TestModelListResponseRecentOmitEmpty(t *testing.T) {
 	}
 	if strings.Contains(string(raw), `"recent"`) {
 		t.Fatalf("marshal=%s should have omitted recent", raw)
+	}
+}
+
+func TestModelDescriptorRichMetadataJSONRoundTrip(t *testing.T) {
+	contextWindow := 200_000
+	maxOutputTokens := 8_192
+	supportsTools := true
+	supportsVision := false
+	supportsWebSearch := false
+	supportsReasoning := true
+	inputCost := 3.0
+	outputCost := 15.0
+	in := ModelDescriptor{
+		Provider:              "anthropic",
+		Model:                 "claude-sonnet-4-5",
+		DisplayName:           "Claude Sonnet 4.5",
+		ContextWindow:         &contextWindow,
+		SupportsTools:         &supportsTools,
+		SupportsVision:        &supportsVision,
+		MaxOutputTokens:       &maxOutputTokens,
+		SupportsWebSearch:     &supportsWebSearch,
+		SupportsReasoning:     &supportsReasoning,
+		InputCostPerMillion:   &inputCost,
+		OutputCostPerMillion:  &outputCost,
+		ReasoningEffortLevels: []string{"low", "medium", "high"},
+	}
+	raw, err := json.Marshal(in)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	for _, field := range []string{
+		`"displayName":"Claude Sonnet 4.5"`,
+		`"contextWindow":200000`,
+		`"supportsTools":true`,
+		`"supportsVision":false`,
+		`"supportsWebSearch":false`,
+		`"inputCostPerMillion":3`,
+	} {
+		if !strings.Contains(string(raw), field) {
+			t.Fatalf("marshal=%s missing %s", raw, field)
+		}
+	}
+	var out ModelDescriptor
+	if err := json.Unmarshal(raw, &out); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if !reflect.DeepEqual(out, in) {
+		t.Fatalf("roundtrip=%+v, want %+v", out, in)
+	}
+
+	unknownRaw, err := json.Marshal(ModelDescriptor{Provider: "custom", Model: "mystery"})
+	if err != nil {
+		t.Fatalf("marshal unknown: %v", err)
+	}
+	if strings.Contains(string(unknownRaw), "contextWindow") || strings.Contains(string(unknownRaw), "supportsTools") {
+		t.Fatalf("unknown descriptor emitted absent metadata: %s", unknownRaw)
 	}
 }
 
@@ -512,5 +750,16 @@ func TestAuthDevicePollResponse_StatusOmittedUnlessAuthorized(t *testing.T) {
 	got := string(authorized)
 	if !strings.Contains(got, `"status":{"provider":"openai"`) {
 		t.Fatalf("marshal=%s missing populated status", got)
+	}
+}
+
+func TestThreadVisionModelSetParamsDecode(t *testing.T) {
+	raw := []byte(`{"ref":"local:01X","visionModel":"anthropic/claude-haiku-4-5"}`)
+	var p ThreadVisionModelSetParams
+	if err := json.Unmarshal(raw, &p); err != nil {
+		t.Fatal(err)
+	}
+	if p.Ref != "local:01X" || p.VisionModel != "anthropic/claude-haiku-4-5" {
+		t.Fatalf("params = %+v", p)
 	}
 }

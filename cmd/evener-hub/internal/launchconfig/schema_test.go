@@ -20,7 +20,7 @@ func checkLaunchOptionSchema_FieldCoverage(t *testing.T) {
 		"system_prompt_mode", "system_prompt_file", "system_prompt_text",
 		"system_prompt_append_mode", "system_prompt_append_file", "system_prompt_append_text",
 		"skills_dirs", "plugin_dirs", "mcp_configs", "mcps",
-		"model_fallbacks", "env",
+		"model_fallbacks", "enabled_plugins", "env",
 		"sandbox", "sandbox_net",
 		"verbose", "trace_file", "cpu_profile", "export_atif_path", "export_atif_provider_handles",
 	}
@@ -40,6 +40,23 @@ func checkLaunchOptionSchema_FieldCoverage(t *testing.T) {
 	}
 	if len(got) != len(wantSet) {
 		t.Errorf("schema has %d unique fields, want %d", len(got), len(wantSet))
+	}
+}
+
+func TestLaunchOptionSchemaEnabledPlugins(t *testing.T) {
+	idx := indexOption(LaunchOptionSchema(), "enabled_plugins")
+	if idx < 0 {
+		t.Fatal("schema missing enabled_plugins")
+	}
+	opt := LaunchOptionSchema()[idx]
+	if opt.WireField != "enabledPlugins" || opt.Kind != LaunchControlPluginSelection || !opt.PerLaunch {
+		t.Fatalf("option = %+v", opt)
+	}
+	if len(opt.DefaultableLayers) != 0 {
+		t.Fatalf("DefaultableLayers = %v, want none", opt.DefaultableLayers)
+	}
+	if !opt.DriverSupport["evener"] || len(opt.DriverSupport) != 1 {
+		t.Fatalf("DriverSupport = %v, want evener only", opt.DriverSupport)
 	}
 }
 

@@ -1,6 +1,7 @@
 package execenv
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"os"
@@ -847,7 +848,7 @@ func TestSandboxBrowseBraceAlternatives(t *testing.T) {
 	if len(matches) != 2 {
 		t.Fatalf("sandbox glob brace alternatives = %v, want two matches", matches)
 	}
-	out, err := env.Grep("needle", worktree, "*.{ts,css}", false, 100, "files_with_matches")
+	out, err := env.Grep(context.Background(), "needle", worktree, "*.{ts,css}", false, 100, "files_with_matches")
 	if err != nil {
 		t.Fatalf("sandbox grep brace alternatives: %v", err)
 	}
@@ -917,7 +918,7 @@ func TestGrepDenylistedBaseRefused(t *testing.T) {
 	t.Parallel()
 	for _, mode := range sandboxedModes {
 		env, _, _ := sandboxedEnv(t, mode)
-		_, err := env.Grep("root", "/proc", "", false, 10, "content")
+		_, err := env.Grep(context.Background(), "root", "/proc", "", false, 10, "content")
 		mustDenied(t, err, "%v grep base /proc", mode)
 	}
 }
@@ -947,7 +948,7 @@ func TestGrepNativeSkipsDenylist(t *testing.T) {
 	execLookPath = func(string) (string, error) { return "", errors.New("no rg") }
 	t.Cleanup(func() { execLookPath = orig })
 
-	out, err := env.Grep(pat, home, "", false, 100, "content")
+	out, err := env.Grep(context.Background(), pat, home, "", false, 100, "content")
 	if err != nil {
 		t.Fatalf("native grep: %v", err)
 	}
@@ -990,7 +991,7 @@ func TestGrepSandboxedIgnoresRipgrep(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	out, err := env.Grep(pat, home, "", false, 100, "content")
+	out, err := env.Grep(context.Background(), pat, home, "", false, 100, "content")
 	if err != nil {
 		t.Fatalf("sandboxed grep: %v", err)
 	}
@@ -1022,7 +1023,7 @@ func TestGlobGrepOffIdentical(t *testing.T) {
 	orig := execLookPath
 	execLookPath = func(string) (string, error) { return "", errors.New("no rg") }
 	t.Cleanup(func() { execLookPath = orig })
-	out, err := off.Grep("hit", worktree, "", false, 100, "content")
+	out, err := off.Grep(context.Background(), "hit", worktree, "", false, 100, "content")
 	if err != nil {
 		t.Fatalf("off native grep: %v", err)
 	}

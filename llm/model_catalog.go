@@ -237,7 +237,7 @@ var nonChatModelSubstrings = []string{
 
 // IsChatModelID reports whether modelID names a text-completion model rather than
 // an embedding, audio, image, or moderation model. It is a substring check on the
-// lowercased ID, matching the skip rule the launch-check and hub /api/models paths
+// lowercased ID, matching the skip rule the launch-check and hub model-list paths
 // previously duplicated. A nil or empty ID reports false.
 func IsChatModelID(modelID string) bool {
 	if modelID == "" {
@@ -305,7 +305,7 @@ func (c *ModelCatalog) ResolveLiveModelInfo(behaviorTag, modelID string) *ModelI
 //
 // This consolidates the visibility rule previously duplicated (and drifted)
 // between cmd/evener/internal/launchcheck.launchCheckModelVisible and
-// cmd/evener-hub/web_spawn.go's fetchLiveModels.
+// cmd/evener-hub/app_models.go's fetchLiveModels.
 //
 // live is the ModelInfo returned by the provider's ListModels call. It carries
 // capability data parsed from the live /models response (SupportsTools,

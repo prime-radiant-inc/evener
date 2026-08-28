@@ -44,6 +44,68 @@ function withTimeout(promise, ms, operation) {
   ]).finally(() => clearTimeout(timer));
 }
 
+export function devtoolsHttpURL(endpoint, pathname) {
+  const announced = new URL(endpoint.url);
+  const host = endpoint.host ?? announced.hostname;
+  const port = endpoint.port ?? Number(announced.port || 80);
+  return `http://${host}:${port}${pathname}`;
+}
+
+function abortReason(signal) {
+  return signal?.reason ?? new Error("operation aborted");
+}
+
+function delay(ms, signal) {
+  if (!signal) return new Promise((resolve) => setTimeout(resolve, ms));
+  if (signal.aborted) return Promise.reject(abortReason(signal));
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(() => {
+      signal.removeEventListener("abort", abort);
+      resolve();
+    }, ms);
+    const abort = () => {
+      clearTimeout(timer);
+      reject(abortReason(signal));
+    };
+    signal.addEventListener("abort", abort, { once: true });
+  });
+}
+
+const startupFailures = new WeakSet();
+
+function raceWithFailure(promise, failure) {
+  if (!failure) return promise;
+  return Promise.race([
+    promise,
+    failure.then((error) => {
+      startupFailures.add(error);
+      throw error;
+    }),
+  ]);
+}
+
+function raceWithAbort(promise, signal) {
+  if (!signal) return promise;
+  if (signal.aborted) return Promise.reject(abortReason(signal));
+  return new Promise((resolve, reject) => {
+    const abort = () => reject(abortReason(signal));
+    signal.addEventListener("abort", abort, { once: true });
+    promise.then(resolve, reject).finally(() => signal.removeEventListener("abort", abort));
+  });
+}
+
+export function createStartupDeadline(ms = 30000) {
+  const controller = new AbortController();
+  const timer = setTimeout(
+    () => controller.abort(new Error(`browser startup deadline exceeded after ${ms}ms`)),
+    ms,
+  );
+  return {
+    signal: controller.signal,
+    clear: () => clearTimeout(timer),
+  };
+}
+
 /**
  * Poll a URL until it answers OK; the error names what never came up.
  *
@@ -56,16 +118,18 @@ function withTimeout(promise, ms, operation) {
  * Chrome that could not launch must not abort - or be blamed for - the wait on
  * a Vite that is coming up fine.
  */
-export async function waitForHttp(url, label, launchFailed = () => null) {
+export async function waitForHttp(url, label, launchFailed = () => null, { signal, failure = null, fetchImpl = fetch } = {}) {
   for (let attempt = 0; attempt < 300; attempt++) {
+    if (signal?.aborted) throw abortReason(signal);
     const launchError = launchFailed();
     if (launchError) throw launchError;
     try {
-      if ((await fetch(url)).ok) return;
-    } catch {
+      if ((await raceWithFailure(raceWithAbort(fetchImpl(url, signal ? { signal } : undefined), signal), failure)).ok) return;
+    } catch (error) {
+      if (startupFailures.has(error) || signal?.aborted) throw startupFailures.has(error) ? error : abortReason(signal);
       // The child process is still starting.
     }
-    await new Promise((resolve) => setTimeout(resolve, 100));
+    await raceWithFailure(delay(100, signal), failure);
   }
   throw new Error(`${label} never came up at ${url}`);
 }
@@ -75,8 +139,8 @@ export async function waitForHttp(url, label, launchFailed = () => null) {
  * send() rejects on a CDP error response so a failing command can never read
  * as a successful measurement. Callers close() in a finally.
  */
-export async function connectPage(cdpPort) {
-  const targets = await (await fetch(`http://127.0.0.1:${cdpPort}/json/list`)).json();
+export async function connectPage(endpoint) {
+  const targets = await (await fetch(devtoolsHttpURL(endpoint, "/json/list"))).json();
   const target = targets.find((entry) => entry.type === "page");
   if (!target) throw new Error("chrome exposed no page target");
 

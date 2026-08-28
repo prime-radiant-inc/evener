@@ -8,7 +8,7 @@
 // and it has no dependency on provider credentials or the shared dev server.
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { applyViewport, clearViewportOverride, connectPage, evaluate, navigateTo, waitForFonts, waitForHttp } from "../browserGuardCdp.mjs";
+import { applyViewport, clearViewportOverride, connectPage, createStartupDeadline, devtoolsHttpURL, evaluate, navigateTo, waitForFonts, waitForHttp } from "../browserGuardCdp.mjs";
 import { describeBrowserStartupFailure, startBrowserGuard } from "../browserGuardProcess.mjs";
 
 const FRONTEND = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..");
@@ -37,8 +37,8 @@ function describeBox(box) {
   return `${box.left.toFixed(1)},${box.top.toFixed(1)} ${box.width.toFixed(1)}x${box.height.toFixed(1)}`;
 }
 
-async function measureAt(cdpPort, vitePort, width) {
-  const page = await connectPage(cdpPort);
+async function measureAt(cdpEndpoint, vitePort, width) {
+  const page = await connectPage(cdpEndpoint);
   const { send } = page;
   try {
     await applyViewport(send, { width, height: 900 });
@@ -60,6 +60,7 @@ async function measureAt(cdpPort, vitePort, width) {
     // before staging settles the fonts of a page that has not asked for them
     // yet and measureSpawn still runs mid-swap.
     await waitForFonts(send);
+    await evaluate(send, "window.openSpawnPlugins(); new Promise((resolve) => requestAnimationFrame(resolve))");
     return JSON.parse(await evaluate(send, "JSON.stringify(window.measureSpawn())"));
   } finally {
     await clearViewportOverride(send);
@@ -162,8 +163,8 @@ function assertResult(result, expectedWidth) {
     if (card.attach !== null && card.attach.width < TAP_MIN_PX - 0.5) {
       failures.push(`the attach button is ${card.attach.width}px wide, below the ${TAP_MIN_PX}px touch floor`);
     }
-    // Model left this list for the card (issue #198), so five rows, not six.
-    if (result.rows.length !== 5) failures.push(`expected 5 mobile setting rows, found ${result.rows.length}`);
+    // Model lives in the prompt card (issue #198); Plugins is the sixth row.
+    if (result.rows.length !== 6) failures.push(`expected 6 mobile setting rows, found ${result.rows.length}`);
     if (result.rows.some((row) => row.label === "Model")) {
       failures.push("the mobile setting rows still carry a Model row - the prompt card owns that setting now");
     }
@@ -228,6 +229,51 @@ function assertResult(result, expectedWidth) {
   }
 
   if (result.overflow.length > 0) failures.push(`horizontal overflow: ${result.overflow.join("; ")}`);
+
+  const pluginSurface = mobile ? result.plugins.row : result.plugins.summary;
+  if (pluginSurface === null || pluginSurface.width <= 1 || pluginSurface.height <= 1) {
+    failures.push(`plugin ${mobile ? "row" : "summary"} is not visible at ${expectedWidth}px`);
+  }
+  if (mobile && result.plugins.row !== null && result.plugins.row.height < TAP_MIN_PX - 0.5) {
+    failures.push(`plugin row is ${result.plugins.row.height}px tall, below the ${TAP_MIN_PX}px touch floor`);
+  }
+  if (mobile && result.plugins.sheet === null) {
+    failures.push("plugin sheet did not open on the phone surface");
+  } else if (mobile && result.plugins.sheet !== null) {
+    if (result.plugins.sheet.width > expectedWidth + 1 || result.plugins.sheet.left < -1) {
+      failures.push(`plugin sheet escapes the viewport: ${JSON.stringify(result.plugins.sheet)}`);
+    }
+    if (result.plugins.sheet.height < 120) failures.push(`plugin sheet is too short to be usable: ${JSON.stringify(result.plugins.sheet)}`);
+  }
+  // The panel owns no filter and no scroll container: rows render the source
+  // subheading, counts and description under each name, and the list grows to
+  // fit them.
+  if (result.plugins.metadata === null || result.plugins.metadata.width <= 1 || result.plugins.metadata.height <= 1) {
+    failures.push(`plugin row metadata (source/counts/description) is not measurable at ${expectedWidth}px`);
+  }
+  if (result.plugins.listOverflowY !== "visible") {
+    failures.push(
+      `plugin list is a scroll container (overflow-y: ${result.plugins.listOverflowY}) at ${expectedWidth}px - it should expand to fit`,
+    );
+  }
+  if (result.plugins.switches.length === 0) {
+    failures.push(`plugin switches are not measurable at ${expectedWidth}px`);
+  } else if (mobile) {
+    for (const [index, control] of result.plugins.switches.entries()) {
+      if (control.width < TAP_MIN_PX - 0.5 || control.height < TAP_MIN_PX - 0.5) {
+        failures.push(`plugin switch ${index} is ${control.width}x${control.height}, below the ${TAP_MIN_PX}px touch floor`);
+      }
+    }
+  } else {
+    for (const [index, control] of result.plugins.switches.entries()) {
+      if (Math.abs(control.width - 32) > 1 || Math.abs(control.height - 18) > 1) {
+        failures.push(`desktop plugin switch ${index} changed dimensions: ${JSON.stringify(control)}`);
+      }
+    }
+  }
+  if (pluginSurface !== null && result.plugins.start !== null && pluginSurface.top < result.plugins.start.bottom - 1) {
+    failures.push(`plugin surface overlaps the prompt Start action: ${JSON.stringify({ pluginSurface, start: result.plugins.start })}`);
+  }
   return failures;
 }
 
@@ -244,7 +290,8 @@ async function main() {
     // commonest environment failure there is and it reached here unframed.
     throw new Error(describeBrowserStartupFailure({ error, subsystem: "launch" }));
   }
-  const { vitePort, cdpPort, cleanup } = guard;
+  const { vitePort, cleanup } = guard;
+  let cdpEndpoint;
 
   let failed = 0;
   try {
@@ -255,11 +302,14 @@ async function main() {
         describeBrowserStartupFailure({ error: error, subsystem: "vite", viteStderr: guard.getViteError() }),
       );
     }
+    const startupDeadline = createStartupDeadline();
     try {
+      cdpEndpoint = await guard.waitForChrome({ signal: startupDeadline.signal });
       await waitForHttp(
-        `http://127.0.0.1:${cdpPort}/json/version`,
+        devtoolsHttpURL(cdpEndpoint, "/json/version"),
         "chrome devtools endpoint",
         guard.getChromeLaunchError,
+        { signal: startupDeadline.signal, failure: guard.getChromeFailure() },
       );
     } catch (error) {
       throw new Error(
@@ -272,9 +322,11 @@ async function main() {
           viteStderr: guard.getViteError(),
         }),
       );
+    } finally {
+      startupDeadline.clear();
     }
     for (const width of WIDTHS) {
-      const result = await measureAt(cdpPort, vitePort, width);
+      const result = await measureAt(cdpEndpoint, vitePort, width);
       const failures = assertResult(result, width);
       if (failures.length === 0) {
         console.log(

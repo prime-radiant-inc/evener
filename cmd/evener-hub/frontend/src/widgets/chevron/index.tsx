@@ -10,7 +10,7 @@
 // flagged it as easy to miss when deciding whether a collapsed row had more to
 // inspect (see toolcallitem.module.css's own note). This draws a stroked
 // chevron on the app's 16x16 icon grid (the same grammar as CloseIcon,
-// BackIcon and OpenBesideIcon), at a size that is a design decision rather
+// BackIcon and openbutton's OpenIcon), at a size that is a design decision rather
 // than a font's.
 //
 // Structural: a text glyph's box is its line box - 6x18 at caption size, far

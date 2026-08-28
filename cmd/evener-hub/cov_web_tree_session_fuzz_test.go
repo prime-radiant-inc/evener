@@ -104,9 +104,6 @@ func FuzzCovWebTreeSessionHandlers(f *testing.F) {
 		sb := newSandbox(t)
 		h := sb.Web.Handler()
 		routes := []struct{ method, path string }{
-			{http.MethodPost, "/api/tree"},
-			{http.MethodPost, "/api/tree/project"},
-			{http.MethodGet, "/api/tree/project"},
 			{http.MethodGet, "/api/sessions/not-a-ref"},
 			{http.MethodPost, "/api/sessions/local%3A" + sandboxSessionID + "/fork"},
 			{http.MethodPost, "/s/" + sandboxSessionID + "/send"},
@@ -139,14 +136,6 @@ func FuzzCovWebTreeSessionHandlers(f *testing.F) {
 				rec := httptest.NewRecorder()
 				sb.Web.handleSessionAction(rec, req, "missing", action)
 			}
-		}
-		for _, target := range []string{"/api/tree?summary=1", "/api/tree", "/api/tree/project?key=missing"} {
-			rec := httptest.NewRecorder()
-			sb.Web.handleAPITree(rec, httptest.NewRequest(http.MethodGet, target, nil))
-		}
-		for _, target := range []string{"/api/tree/project", "/api/tree/project?key=missing"} {
-			rec := httptest.NewRecorder()
-			sb.Web.handleAPITreeProject(rec, httptest.NewRequest(http.MethodGet, target, nil))
 		}
 		_ = sb.Web.archiveDecisions()
 		_, _ = sb.Web.favoriteDecisions()

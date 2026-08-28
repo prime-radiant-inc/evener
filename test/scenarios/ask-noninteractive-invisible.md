@@ -5,8 +5,9 @@ registration-seam gate: `registerAskTool` never runs when `cfg.NonInteractive` i
 tool is unregistered (and therefore unadvertised to the provider) rather than present-but-
 blocked. Exercises both named surfaces: a hub-spawned `non_interactive:true` session (the
 same `SessionConfig.NonInteractive` flag `serve --non-interactive` sets — confirmed by
-`cmd/evener-hub/web_spawn.go:89` threading the spawn request's `non_interactive` straight into
-the daemon's launch overrides) and the one-shot `evener <prompt>` CLI, which hardcodes
+`cmd/evener-hub/app_threadlifecycle.go:102-105` threading the AppWire
+`nonInteractive` value straight into the daemon's launch overrides) and the one-shot
+`evener <prompt>` CLI, which hardcodes
 `NonInteractive: true` unconditionally (`cmd/evener/main.go`/`run.go` — no flag needed or
 available to turn it off).
 
@@ -31,16 +32,20 @@ available to turn it off).
 
 ## Steps
 
-1. **Hub-spawned non-interactive session.** Spawn with `"non_interactive": true` and a
-   prompt that explicitly tries to invoke `ask_user` by name:
+1. **Hub-started non-interactive session.** Send `thread/start` over the authenticated
+   `/rpc` connection with `nonInteractive: true` and a prompt that explicitly tries to
+   invoke `ask_user` by name:
    ```bash
    tmpdir1=$(mktemp -d -t evener-e2e-ask-ni-hub-XXXXX)
-   body=$(jq -n --arg wd "$tmpdir1" '{
-     prompt: "Call the tool named ask_user right now, asking header \"Confirm\" question \"Should we proceed?\" with options Yes and No. If no such tool exists in your tool list, say so plainly and proceed on your own best judgment instead.",
-     model: "openai/gpt-5.5", working_dir: $wd, harness: "evener", branch: "", access_mode: "full", agent: "default",
-     non_interactive: true, launch_overrides: {}
+   # Send this object as params in {"id":2,"method":"thread/start",...}
+   # over the authenticated AppWire connection described in the runbook.
+   params=$(jq -n --arg wd "$tmpdir1" '{
+     harness: "evener", cwd: $wd, model: "openai/gpt-5.5",
+     input: [{type: "text", text: "Call the tool named ask_user right now, asking header \"Confirm\" question \"Should we proceed?\" with options Yes and No. If no such tool exists in your tool list, say so plainly and proceed on your own best judgment instead."}],
+     nonInteractive: true
    }')
-   SID1=$(curl -s -X POST -H "Content-Type: application/json" -H "Authorization: Bearer $TOKEN" -d "$body" "$HUB/api/spawn" | jq -r '.session_id')
+   # Send {"id":2,"method":"thread/start","params":$params} and set
+   # SID1 to the local ID from result.thread.evener.ref.
    for i in $(seq 1 60); do
      st=$(curl -s -H "Authorization: Bearer $TOKEN" "$HUB/api/sessions/local:$SID1" | jq -r '.state // ""')
      [ "$st" = "awaiting" ] && break
