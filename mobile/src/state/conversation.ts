@@ -78,6 +78,15 @@ export interface LiveActivitySink {
     n: AnyNotification,
     identity: ActivityIdentity,
   ): NotificationOutcome;
+  // I2: Narrow strict sink for a capabilities-only refresh. Updates only the
+  // capabilities for the exact current identity and an open view; returns
+  // false on stale/missing/wrong identity. The conversation cap-refresh writer
+  // calls this independently of the notification stream, publishing refreshed
+  // caps to the bound activity sink BEFORE committing conversation caps.
+  setLiveCapabilities(
+    capabilities: ThreadCapabilities,
+    identity: ActivityIdentity,
+  ): boolean;
   reset(): void;
 }
 
@@ -93,7 +102,9 @@ interface RequestBinding {
   readonly ref: string;
   readonly generation: number;
   readonly service: LiveConversationService;
-  readonly sink: LiveActivitySink;
+  // C1: sink is null for plain open() (no projected sink), non-null for
+  // openProjected. Both paths validate exact service identity.
+  readonly sink: LiveActivitySink | null;
 }
 
 // Production-owned drain scheduler with per-key completion promises. Each
@@ -637,6 +648,9 @@ export function createConversationStore() {
           return; // zero read
         }
       }
+      // captureBinding only returns non-null when boundSink is non-null, so
+      // binding.sink is always non-null here.
+      if (binding.sink === null) return;
       await storeGet?.().rehydrate(binding.service, binding.sink);
     });
   }
@@ -680,6 +694,46 @@ export function createConversationStore() {
     };
   }
 
+  // C1: Capture a service-specific operation binding for loadOlder and
+  // mutations. The supplied service MUST equal boundService (wrong service
+  // after B bound => zero request/state). sink is boundSink (null for plain
+  // open, non-null for openProjected). epoch/ref/gen are captured from
+  // current state. Returns null if no service is bound or ref is null.
+  function captureOperationBinding(
+    service: ConversationService,
+  ): RequestBinding | null {
+    if (boundService === null) return null;
+    // C1: The supplied service must be the exact bound service object.
+    // A wrong service (serviceA called after B is bound) is rejected at
+    // the boundary before any request.
+    if ((service as LiveConversationService) !== boundService) return null;
+    const state = storeGet?.();
+    if (state === undefined || state.ref === null) return null;
+    return {
+      epoch: bindingEpoch,
+      ref: state.ref,
+      generation: state.conversationGeneration,
+      service: boundService,
+      sink: boundSink,
+    };
+  }
+
+  // C1: Verify a captured operation binding is still current. Checks
+  // epoch/ref/gen AND that boundService still equals the binding's service
+  // AND boundSink still equals the binding's sink (null for plain open,
+  // non-null for openProjected). A rebind with different objects suppresses.
+  function isOperationBindingCurrent(binding: RequestBinding): boolean {
+    const state = storeGet?.();
+    if (state === undefined) return false;
+    return (
+      binding.epoch === bindingEpoch &&
+      binding.ref === state.ref &&
+      binding.generation === state.conversationGeneration &&
+      boundService === binding.service &&
+      boundSink === binding.sink
+    );
+  }
+
   // I1: Verify a captured binding is still current. If the epoch, ref,
   // generation, OR service/sink object identity changed (rebind with
   // different objects), the request is stale and must be suppressed — never
@@ -696,28 +750,13 @@ export function createConversationStore() {
     );
   }
 
-  // I1: Cap-specific binding validation. For openProjected, checks the full
-  // tuple (epoch/service/sink/ref/gen). For plain open(), boundService/
-  // boundSink are null — checks epoch/ref/gen and service identity only
-  // (sink is null for both the binding and the store, so null === null).
-  // A rebind to serviceB/sinkB with same gen/mutation suppresses A's caps.
+  // C1: Cap-specific binding validation using isOperationBindingCurrent.
+  // For openProjected: checks epoch/service/sink/ref/gen. For plain open:
+  // boundService is set (after successful open), boundSink is null — the
+  // binding's sink is also null, so null === null. A rebind to serviceB/
+  // sinkB with same gen/mutation suppresses A's caps.
   function isCapBindingCurrent(binding: RequestBinding): boolean {
-    const state = storeGet?.();
-    if (state === undefined) return false;
-    if (binding.epoch !== bindingEpoch) return false;
-    if (binding.ref !== state.ref) return false;
-    if (binding.generation !== state.conversationGeneration) return false;
-    // For openProjected: boundService === binding.service (both set).
-    // For plain open: boundService is null, binding.service is the passed
-    // service. They won't match — but that's OK because for plain open
-    // there's no rebind concern. We check service identity via the passed
-    // service object directly.
-    if (boundService !== null) {
-      // openProjected path — full service identity check.
-      if (boundService !== binding.service) return false;
-      if (boundSink !== binding.sink) return false;
-    }
-    return true;
+    return isOperationBindingCurrent(binding);
   }
 
   // Request one authoritative reread through the store-owned drain scheduler.
@@ -756,18 +795,12 @@ export function createConversationStore() {
     gen: number,
     mutationId: number,
   ): Promise<void> {
-    // I1: Capture the binding tuple. For openProjected, captureBinding()
-    // provides epoch+ref+gen+service+sink. For plain open(), captureBinding()
-    // returns null (boundService/boundSink are null), so capture a
-    // service-specific tuple from the passed service.
-    const projectedBinding = captureBinding();
-    const binding: RequestBinding = projectedBinding ?? {
-      epoch: bindingEpoch,
-      ref,
-      generation: gen,
-      service: service as LiveConversationService,
-      sink: boundSink as LiveActivitySink,
-    };
+    // C1: Capture the binding from the SUPPLIED service, not the current
+    // boundService. captureOperationBinding validates that the supplied
+    // service === boundService and captures epoch/ref/gen/sink. A wrong
+    // service (A after B bound) returns null and the effect is suppressed.
+    const binding = captureOperationBinding(service);
+    if (binding === null) return Promise.resolve();
     const capKey = `cap:${ref}:${mutationId}`;
     // I2: scheduler.request returns a per-key completion promise — resolves
     // when this key's effect completes/skips/errors, even while unrelated
@@ -799,6 +832,21 @@ export function createConversationStore() {
       if (g().conversationGeneration === gen && refreshed !== null) {
         const currentConv = g().conversation;
         if (currentConv !== null) {
+          // D (I2 completion seam): publish refreshed caps to the bound
+          // activity sink under exact current identity BEFORE conversation
+          // capabilities. A false/stale sink suppresses conversation cap
+          // publication — the two stores stay atomically consistent. The
+          // plain-open path (no sink) still updates conversation caps.
+          const identity: ActivityIdentity = {
+            threadId: currentConv.id,
+            ref,
+            generation: gen,
+          };
+          const sinkAccepted =
+            boundSink !== null
+              ? boundSink.setLiveCapabilities(refreshed, identity)
+              : true;
+          if (!sinkAccepted) return;
           // I2: increment capability-owner revision for this publication.
           capabilityOwnerRev += 1;
           storeSet?.({
@@ -820,6 +868,12 @@ export function createConversationStore() {
   // revision in public state.
   function getDraftRevision(): number {
     return draftRevision;
+  }
+  // I1: Returns the current error-owner revision — passed to
+  // handleMutationError so it can compare against the captured
+  // entryErrorRev without exposing the revision in public state.
+  function getErrorOwnerRev(): number {
+    return errorOwnerRev;
   }
   // F9: Rehydrate operation token — incremented on each rehydrate call so
   // a stale rehydrate (from an older operation) cannot overwrite a newer
@@ -1036,6 +1090,10 @@ export function createConversationStore() {
             status: "open",
             olderCursor: null,
           });
+          // C1: Track the plain-open service as boundService with a null
+          // sink so loadOlder/mutations/cap-refresh validate exact service
+          // identity via captureOperationBinding.
+          boundService = service as LiveConversationService;
           // Subscribe to notifications for this thread.
           service.subscribeNotifications((n) => {
             if (gen !== conversationGen) return;
@@ -1163,8 +1221,36 @@ export function createConversationStore() {
         // I1: If the service or sink objects differ from the current binding,
         // increment bindingEpoch BEFORE assignment so queued effects captured
         // with the old service/sink are suppressed.
+        // I5: The rebind transition itself settles any old pending/loading
+        // ownership so A's late completion makes ZERO state changes — no
+        // permanent UI state stuck. This is the new binding transition, not
+        // A's completion. A pending mutation or loadingOlder from the old
+        // binding is invalidated by incrementing its operation tokens.
         if (service !== boundService || sink !== boundSink) {
           bindingEpoch += 1;
+          // I5: Invalidate old page/loading ownership so a held loadOlder
+          // completion from A cannot write loadingOlder/items/cursor.
+          loadOlderToken += 1;
+          // I5: Settle any held pending mutation from the old binding so a
+          // held mutation completion from A cannot write pending/error/draft.
+          // Only clear if the current pending mutation belongs to the old
+          // binding (it always does — rehydrate is same-generation, and a
+          // new binding means the old one's mutation is stale).
+          const heldMutation = get().pendingMutation;
+          if (
+            heldMutation !== null &&
+            heldMutation !== undefined &&
+            heldMutation.status === "pending"
+          ) {
+            // Settle the old pending mutation — it belongs to A's binding.
+            // Do NOT write error (a newer error owner may own it). Just
+            // clear the pending state so it's not permanently stuck.
+            set({ pendingMutation: null, pendingSend: null });
+          }
+          // I5: Settle held loadingOlder from the old binding.
+          if (get().loadingOlder) {
+            set({ loadingOlder: false });
+          }
         }
         // I1: Capture the binding epoch at entry — if it changed during the
         // await (open/close/reset/openProjected/openProjected/rehydrate), this
@@ -1385,10 +1471,19 @@ export function createConversationStore() {
             olderCursor: mergedCursor,
             draft: currentState.draft,
           };
-          if (errorUnchanged && !mutationOwnsError) {
+          if (
+            errorUnchanged &&
+            !mutationOwnsError &&
+            currentState.error !== null
+          ) {
+            // I1: Only include error: null when the current error is actually
+            // non-null. Clearing an already-null error would spuriously
+            // increment errorOwnerRev (ABA-null), blocking a pending
+            // mutation from writing its error after a rehydrate clear-to-null.
             set({ ...commitBase, error: null });
           } else {
-            // A mutation or page operation owns the error — preserve it.
+            // A mutation or page operation owns the error, or error is already
+            // null — preserve it (do not spuriously increment errorOwnerRev).
             set(commitBase);
           }
         } catch (err) {
@@ -1418,13 +1513,26 @@ export function createConversationStore() {
         if (state.olderCursor === null) return;
         const cursor = state.olderCursor ?? "";
         const gen = state.conversationGeneration;
+        // C1: Capture a service-specific operation binding. If the supplied
+        // service is wrong (A after B bound), binding is null — zero request.
+        const opBinding = captureOperationBinding(service);
+        if (opBinding === null) return;
         // Task 2A-Ops-2: Operation token for loadOlder — a stale success/failure
         // from an older operation must make no state change at all after a
         // newer conversation or newer page operation owns those fields.
         const olderToken = ++loadOlderToken;
+        // I1: Capture the error-owner revision BEFORE the call. A current page
+        // failure always settles its own loadingOlder, but writes error only if
+        // its captured error owner is unchanged; a newer mutation/page error
+        // survives.
+        const entryErrorRev = errorOwnerRev;
         set({ loadingOlder: true });
         try {
           const result = await service.loadOlder(cursor);
+          // C1: Recheck the exact operation binding after the await. If the
+          // binding changed (rebind to B), A's completion makes ZERO state
+          // changes — no items/cursor/loading.
+          if (!isOperationBindingCurrent(opBinding)) return;
           // Fix round 1 I2: generation/identity-stale — perform ZERO set calls
           // (including loadingOlder). The newer conversation owns all fields.
           if (get().conversationGeneration !== gen) return;
@@ -1443,6 +1551,11 @@ export function createConversationStore() {
             const deduped: MobileTimelineItem[] = [];
             for (const item of result.items) {
               if (existingIds.has(item.id)) continue;
+              // I3: Defense-in-depth — filter question rows at the state merge
+              // boundary too, not only in the service's projectOlderTurns. A
+              // pending ask cannot legitimately be older than newer continuation
+              // turns; page-local projection otherwise resurrects settled calls.
+              if (item.kind === "question") continue;
               existingIds.add(item.id);
               deduped.push(item);
             }
@@ -1501,17 +1614,31 @@ export function createConversationStore() {
             });
           }
         } catch (err) {
-          // Fix round 1 I2: generation/identity-stale — perform ZERO set calls
-          // (including loadingOlder and error). Only set error/loadingOlder if
-          // the generation hasn't changed AND this operation still owns the fields.
+          // C1: Recheck the exact operation binding after the await. If the
+          // binding changed (rebind to B), A's completion makes ZERO state
+          // changes — no loadingOlder/error.
+          if (!isOperationBindingCurrent(opBinding)) return;
+          // I1: A current page failure always settles its own loadingOlder,
+          // but writes error only if its captured error owner is unchanged;
+          // a newer mutation/page error/clear/ABA survives.
           if (
             get().conversationGeneration === gen &&
             olderToken === loadOlderToken
           ) {
-            set({
-              loadingOlder: false,
-              error: err instanceof Error ? err.message : String(err),
-            });
+            // I1: always settle loadingOlder (this page owns it), but only
+            // write error if the error-owner revision hasn't changed. A
+            // newer clear-to-null or ABA-null owns error — revision equality
+            // ONLY, no || currentError === null shortcut.
+            if (entryErrorRev === errorOwnerRev) {
+              set({
+                loadingOlder: false,
+                error: err instanceof Error ? err.message : String(err),
+              });
+            } else {
+              // A newer error owner published (even to null) — preserve it,
+              // only settle loadingOlder.
+              set({ loadingOlder: false });
+            }
           }
         }
       },
@@ -1525,6 +1652,10 @@ export function createConversationStore() {
         const state = get();
         if (state.conversation === null) return;
         requireCap(state.conversation, "send", "send");
+        // C1: Capture a service-specific operation binding. If the supplied
+        // service is wrong (A after B bound), zero request/state change.
+        const opBinding = captureOperationBinding(service);
+        if (opBinding === null) return;
         const draftText = state.draft;
         const gen = state.conversationGeneration;
         const mutationId = ++mutationIdCounter;
@@ -1547,16 +1678,35 @@ export function createConversationStore() {
           pendingMutation: mutation,
           error: null,
         });
+        // I1: Capture the error-owner revision AFTER installing the pending
+        // mutation + error-clear (the set wrapper incremented errorOwnerRev
+        // for the error: null transition). A newer error owner that writes
+        // during the await will increment errorOwnerRev past this captured
+        // value, so this mutation's success/failure cannot clear or overwrite
+        // it.
+        const entryErrorRev = errorOwnerRev;
         try {
           await service.send(input);
+          // C1: Recheck the exact operation binding after the await.
+          if (!isOperationBindingCurrent(opBinding)) return;
           // F4: Check mutationId — out-of-order completion cannot clear a
           // newer mutation's state.
           if (get().pendingMutation?.mutationId === mutationId) {
-            set({ pendingSend: null, pendingMutation: null, error: null });
+            // I1: Clear pending fields unconditionally (this mutation owns
+            // them), but clear error only if the error-owner revision is
+            // unchanged — revision equality ONLY, no || error === null
+            // shortcut. A newer clear-to-null or ABA-null owns error.
+            if (entryErrorRev === errorOwnerRev) {
+              set({ pendingSend: null, pendingMutation: null, error: null });
+            } else {
+              set({ pendingSend: null, pendingMutation: null });
+            }
             // I1: mutation settled (success) — drain deferred trailing reread.
             drainTrailingReread();
           }
         } catch (err) {
+          // C1: Recheck the exact operation binding after the await.
+          if (!isOperationBindingCurrent(opBinding)) return;
           await handleMutationError(
             err,
             service,
@@ -1566,7 +1716,9 @@ export function createConversationStore() {
             mutation,
             draftText,
             revisionAtSubmit,
+            entryErrorRev,
             getDraftRevision,
+            getErrorOwnerRev,
             set,
             get,
             requestCapabilityRefresh,
@@ -1581,6 +1733,9 @@ export function createConversationStore() {
         const state = get();
         if (state.conversation === null) return;
         requireCap(state.conversation, "steer", "steer");
+        // C1: Capture a service-specific operation binding.
+        const opBinding = captureOperationBinding(service);
+        if (opBinding === null) return;
         const draftText = state.draft;
         const gen = state.conversationGeneration;
         const mutationId = ++mutationIdCounter;
@@ -1602,14 +1757,26 @@ export function createConversationStore() {
           pendingMutation: mutation,
           error: null,
         });
+        // I1: Capture error-owner revision AFTER installing pending+error-clear.
+        const entryErrorRev = errorOwnerRev;
         try {
           await service.steer(input);
+          // C1: Recheck the exact operation binding after the await.
+          if (!isOperationBindingCurrent(opBinding)) return;
           if (get().pendingMutation?.mutationId === mutationId) {
-            set({ pendingMutation: null, error: null });
+            // I1: clear error only if error-owner revision is unchanged —
+            // revision equality ONLY.
+            if (entryErrorRev === errorOwnerRev) {
+              set({ pendingMutation: null, error: null });
+            } else {
+              set({ pendingMutation: null });
+            }
             // I1: mutation settled (success) — drain deferred trailing reread.
             drainTrailingReread();
           }
         } catch (err) {
+          // C1: Recheck the exact operation binding after the await.
+          if (!isOperationBindingCurrent(opBinding)) return;
           await handleMutationError(
             err,
             service,
@@ -1619,7 +1786,9 @@ export function createConversationStore() {
             mutation,
             draftText,
             revisionAtSubmit,
+            entryErrorRev,
             getDraftRevision,
+            getErrorOwnerRev,
             set,
             get,
             requestCapabilityRefresh,
@@ -1634,6 +1803,9 @@ export function createConversationStore() {
         const state = get();
         if (state.conversation === null) return;
         requireCap(state.conversation, "queue", "queue");
+        // C1: Capture a service-specific operation binding.
+        const opBinding = captureOperationBinding(service);
+        if (opBinding === null) return;
         const draftText = state.draft;
         const gen = state.conversationGeneration;
         const mutationId = ++mutationIdCounter;
@@ -1654,14 +1826,26 @@ export function createConversationStore() {
           pendingMutation: mutation,
           error: null,
         });
+        // I1: Capture error-owner revision AFTER installing pending+error-clear.
+        const entryErrorRev = errorOwnerRev;
         try {
           await service.queue(input);
+          // C1: Recheck the exact operation binding after the await.
+          if (!isOperationBindingCurrent(opBinding)) return;
           if (get().pendingMutation?.mutationId === mutationId) {
-            set({ pendingMutation: null, error: null });
+            // I1: clear error only if error-owner revision is unchanged —
+            // revision equality ONLY.
+            if (entryErrorRev === errorOwnerRev) {
+              set({ pendingMutation: null, error: null });
+            } else {
+              set({ pendingMutation: null });
+            }
             // I1: mutation settled (success) — drain deferred trailing reread.
             drainTrailingReread();
           }
         } catch (err) {
+          // C1: Recheck the exact operation binding after the await.
+          if (!isOperationBindingCurrent(opBinding)) return;
           await handleMutationError(
             err,
             service,
@@ -1671,7 +1855,9 @@ export function createConversationStore() {
             mutation,
             draftText,
             revisionAtSubmit,
+            entryErrorRev,
             getDraftRevision,
+            getErrorOwnerRev,
             set,
             get,
             requestCapabilityRefresh,
@@ -1686,6 +1872,9 @@ export function createConversationStore() {
         const state = get();
         if (state.conversation === null) return;
         requireCap(state.conversation, "interrupt", "interrupt");
+        // C1: Capture a service-specific operation binding.
+        const opBinding = captureOperationBinding(service);
+        if (opBinding === null) return;
         const gen = state.conversationGeneration;
         const mutationId = ++mutationIdCounter;
         const revisionAtSubmit = draftRevision;
@@ -1702,14 +1891,26 @@ export function createConversationStore() {
         // F10: any new mutation clears legacy pendingSend.
         // Fix round 1 I3: atomically clear prior error with new pending mutation.
         set({ pendingSend: null, pendingMutation: mutation, error: null });
+        // I1: Capture error-owner revision AFTER installing pending+error-clear.
+        const entryErrorRev = errorOwnerRev;
         try {
           await service.interrupt();
+          // C1: Recheck the exact operation binding after the await.
+          if (!isOperationBindingCurrent(opBinding)) return;
           if (get().pendingMutation?.mutationId === mutationId) {
-            set({ pendingMutation: null, error: null });
+            // I1: clear error only if error-owner revision is unchanged —
+            // revision equality ONLY.
+            if (entryErrorRev === errorOwnerRev) {
+              set({ pendingMutation: null, error: null });
+            } else {
+              set({ pendingMutation: null });
+            }
             // I1: mutation settled (success) — drain deferred trailing reread.
             drainTrailingReread();
           }
         } catch (err) {
+          // C1: Recheck the exact operation binding after the await.
+          if (!isOperationBindingCurrent(opBinding)) return;
           await handleMutationError(
             err,
             service,
@@ -1719,7 +1920,9 @@ export function createConversationStore() {
             mutation,
             null,
             revisionAtSubmit,
+            entryErrorRev,
             getDraftRevision,
+            getErrorOwnerRev,
             set,
             get,
             requestCapabilityRefresh,
@@ -2279,7 +2482,9 @@ async function handleMutationError(
   mutation: ConversationMutationState,
   draftSnapshot: string | null,
   revisionAtSubmit: number,
+  entryErrorRev: number,
   getDraftRevision: () => number,
+  getErrorOwnerRev: () => number,
   set: (partial: Partial<ConversationState>) => void,
   get: () => ConversationState,
   requestCapabilityRefresh: (
@@ -2310,14 +2515,34 @@ async function handleMutationError(
     // restore if the draft revision has NOT changed since the mutation
     // cleared the draft. Type-then-delete produces "" but increments the
     // revision, so it counts as an edit and prevents restore.
+    // I1: A current mutation failure may install failed pending/draft
+    // restoration, but must NOT overwrite a newer error owner. Only write
+    // error if the captured error-owner revision is unchanged OR the current
+    // error is null (a rehydrate clear-to-null is not a newer error owner —
+    // it increments errorOwnerRev but writes null, not a real error). ABA
+    // same text/null protection applies to stale rehydrates that try to CLEAR
+    // a newer mutation's error — that is handled in the rehydrate success
+    // path via entryErrorRev comparison. Here, the mutation failure owns the
+    // error write unless a newer mutation/page wrote a non-null error.
     const shouldRestore =
       draftSnapshot !== null && getDraftRevision() === revisionAtSubmit;
-    set({
-      pendingMutation: { ...mutation, status: "failed" },
-      pendingSend: null,
-      ...(shouldRestore ? { draft: draftSnapshot } : {}),
-      error: err instanceof Error ? err.message : String(err),
-    });
+    const newError = err instanceof Error ? err.message : String(err);
+    if (entryErrorRev === getErrorOwnerRev()) {
+      set({
+        pendingMutation: { ...mutation, status: "failed" },
+        pendingSend: null,
+        ...(shouldRestore ? { draft: draftSnapshot } : {}),
+        error: newError,
+      });
+    } else {
+      // A newer error owner published a non-null error — preserve it. Only
+      // install the failed pending/draft restoration.
+      set({
+        pendingMutation: { ...mutation, status: "failed" },
+        pendingSend: null,
+        ...(shouldRestore ? { draft: draftSnapshot } : {}),
+      });
+    }
   }
 }
 
