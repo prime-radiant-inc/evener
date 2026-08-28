@@ -106,7 +106,7 @@ func (s *WebServer) sessionDeleteResponse(
 ) (appwire.SessionDeleteResponse, error) {
 	wireSkipped := make([]appwire.DeletionSkip, len(skipped))
 	for i, skip := range skipped {
-		wireSkipped[i] = appwire.DeletionSkip{ID: skip.ID, Reason: skip.Reason}
+		wireSkipped[i] = appwire.DeletionSkip(skip)
 	}
 	response := appwire.SessionDeleteResponse{
 		Deleted:    append([]string{}, deleted...),
