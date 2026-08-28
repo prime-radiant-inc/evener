@@ -6,7 +6,7 @@ import (
 
 	"primeradiant.com/evener/appwire"
 	"primeradiant.com/evener/cmd/evener-hub/internal/hubcore"
-	"primeradiant.com/evener/cmd/evener-hub/internal/strutil"
+	"primeradiant.com/evener/envvars"
 )
 
 // fetchStatus reads the daemon's bounded typed thread snapshot, returning nil
@@ -19,7 +19,7 @@ func (s *WebServer) fetchStatus(le hubcore.LiveEntry) *daemonStatus {
 	if !ok {
 		return nil
 	}
-	threadID := strutil.FirstNonEmpty(le.SessionID, le.Entry.SessionID, le.ThreadID)
+	threadID := envvars.FirstNonEmpty(le.SessionID, le.Entry.SessionID, le.ThreadID)
 	if threadID == "" {
 		return nil
 	}
@@ -30,7 +30,7 @@ func (s *WebServer) fetchStatus(le hubcore.LiveEntry) *daemonStatus {
 		return nil
 	}
 	thread := resp.Thread
-	responseThreadID := strutil.FirstNonEmpty(thread.SessionID, thread.ID)
+	responseThreadID := envvars.FirstNonEmpty(thread.SessionID, thread.ID)
 	if responseThreadID != threadID {
 		return nil
 	}
