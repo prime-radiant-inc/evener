@@ -1007,6 +1007,15 @@ async function main() {
         );
       }
       if (
+        !result.currentWork.found ||
+        !result.currentWork.controlsFound ||
+        !result.currentWork.sharedPaneWithoutOverflow ||
+        !result.currentWork.orderedAboveComposer
+      ) {
+        widthFailed = true;
+        console.log(`${width}px ... FAIL - current work and compose controls geometry: ${JSON.stringify(result.currentWork)}`);
+      }
+      if (
         width === 390 &&
         (!result.subagentCard.found ||
           !result.subagentCard.contained ||

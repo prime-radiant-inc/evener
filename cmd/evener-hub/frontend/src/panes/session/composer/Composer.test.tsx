@@ -370,11 +370,35 @@ function pendingAskTurns(): Pick<Thread, "turns"> {
 test("while ask_pending is open, the AskDock replacement surface is exposed and the message textbox is hidden", async () => {
   await mountComposer("ref_a", {
     ...pendingAskTurns(),
+    evener: {
+      ref: "ref_a",
+      capabilities: FULL_CAPABILITIES,
+      queue: { revision: 0 },
+      tasks: { total: 1, done: 0, current: { id: 1, description: "Finish the focused composer test" } },
+      goal: { objective: "Keep the session focused", status: "active", iterations: 1 },
+    },
   });
 
   expect(screen.getByText("Answer the agent’s questions.")).toBeTruthy();
   expect(screen.getByText("Ship now?")).toBeTruthy();
   expect(screen.queryByRole("textbox", { name: /message/i })).toBeNull();
+  expect(screen.queryByTestId("current-work")).toBeNull();
+});
+
+test("renders current work directly before the compose card", async () => {
+  await mountComposer("ref_a", {
+    evener: {
+      ref: "ref_a",
+      capabilities: FULL_CAPABILITIES,
+      queue: { revision: 0 },
+      tasks: { total: 1, done: 0, current: { id: 1, description: "Finish the focused composer test" } },
+      goal: { objective: "Keep the session focused", status: "active", iterations: 1 },
+    },
+  });
+
+  const currentWork = screen.getByTestId("current-work");
+  const composerCard = screen.getByTestId("composer-input-card");
+  expect(currentWork.compareDocumentPosition(composerCard) & Node.DOCUMENT_POSITION_FOLLOWING).not.toBe(0);
 });
 
 test("the composer region fills pane height and bottom-anchors the replacement slot", () => {

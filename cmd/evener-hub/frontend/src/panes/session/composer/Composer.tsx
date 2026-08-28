@@ -57,6 +57,7 @@ import { AttachIcon } from "./attachments/AttachIcon";
 import { imageFilesFromClipboard } from "./attachments/clipboard";
 import { type PendingAttachment, type TextEditor, useAttachments } from "./attachments/useAttachments";
 import { type BuiltinMatch, matchBuiltinInvocation, runBuiltinCommand } from "./builtinCommand";
+import { CurrentWork } from "./CurrentWork";
 import styles from "./composer.module.css";
 import { consumeComposerFocus, useComposerFocusRequest } from "./composerFocus";
 import { clearDraft, readDraft, writeDraft } from "./draft";
@@ -1118,6 +1119,7 @@ export function Composer({ ref }: ComposerProps) {
           ))}
         </div>
       )}
+      {!askPending && <CurrentWork task={model.tasks?.current?.description} goal={model.goal?.objective} />}
       {(!ended || showFollowUpCard) && (
         <div className={CLASS.formAnchor}>
           {/* Anchored above the control row inside the card below, opening

@@ -1,0 +1,90 @@
+.currentWork {
+  display: flex;
+  align-items: center;
+  min-width: 0;
+  gap: var(--space-2);
+  color: var(--ink-mid);
+  font-family: var(--font-sans);
+  font-size: var(--font-size-ui);
+  line-height: 1.4;
+}
+
+.task,
+.goal {
+  display: flex;
+  align-items: center;
+  min-width: 0;
+  gap: var(--space-1);
+}
+
+.task {
+  flex: 1 1 auto;
+  color: var(--ink-hi);
+  font-weight: 600;
+}
+
+.goal {
+  flex: 0 1 auto;
+}
+
+.dot {
+  flex: none;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--accent);
+}
+
+.flag {
+  flex: none;
+  width: 14px;
+  height: 14px;
+  color: var(--ink-mid);
+  fill: none;
+  stroke: currentColor;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  stroke-width: 1.75;
+}
+
+.label {
+  flex: none;
+  color: var(--ink-mid);
+  font-weight: 500;
+}
+
+.value {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.divider {
+  flex: none;
+  width: 1px;
+  align-self: stretch;
+  background: var(--edge);
+}
+
+@container (max-width: 559px) {
+  .currentWork {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr);
+    gap: var(--space-1);
+  }
+
+  .task,
+  .goal {
+    min-width: 0;
+  }
+
+  .goal {
+    grid-column: 1;
+    padding-left: calc(6px + var(--space-1));
+  }
+
+  .divider {
+    display: none;
+  }
+}

@@ -109,7 +109,21 @@ const snapshot: ThreadReadResponse = {
       contextPressure: 0.673,
       workMillis: 754_000,
       activeTurnStartedAt: 1,
-      goal: { status: "awaiting stakeholder approval for compact session footer geometry", iterations: 12 },
+      tasks: {
+        total: 4,
+        done: 1,
+        current: {
+          id: 2,
+          description:
+            "Verify that the responsive focus sentence keeps a long live task readable without pushing the composer controls outside the session pane",
+        },
+      },
+      goal: {
+        objective:
+          "Keep the session focused on proving the current task and goal remain independently ellipsized across every supported composer width",
+        status: "awaiting stakeholder approval for compact session footer geometry",
+        iterations: 12,
+      },
       reasoningEffort: "high",
       reasoningEffortLevels: ["low", "medium", "high"],
       supportsReasoning: true,
@@ -1238,6 +1252,17 @@ function measure() {
   const context = pane.querySelector<HTMLElement>('[data-testid="status-row-context"]');
   const queue = pane.querySelector<HTMLElement>('[data-testid="status-row-queue"]');
   const model = pane.querySelector<HTMLElement>('[data-testid="model-switch-value"]');
+  const currentWork = pane.querySelector<HTMLElement>('[data-testid="current-work"]');
+  const composerCard = pane.querySelector<HTMLElement>('[data-testid="composer-input-card"]');
+  // The fixture has active status and interrupt capability, but no active turn
+  // ID, so Composer correctly renders Stop but not the busy-only Steer. These
+  // are the actual controls it must render at every width. The card alone is
+  // not a controls check: each control is measured below.
+  const controlTestIds = ["composer-attach", "composer-stop", "composer-submit"];
+  const composeControls = controlTestIds.map((testId) => ({
+    testId,
+    element: pane.querySelector<HTMLElement>(`[data-testid="${testId}"]`),
+  }));
   const subagentCard = pane.querySelector<HTMLElement>('[data-testid="subagent-row"]');
   const subagentQuote = subagentCard?.querySelector<HTMLElement>('[data-testid="subagent-quote"]');
   const subagentStats = subagentCard?.querySelector<HTMLElement>('[data-testid="subagent-stats"]');
@@ -1255,6 +1280,39 @@ function measure() {
   const scrollRoots = [pane, ...Array.from(document.querySelectorAll<HTMLElement>('[role="dialog"]'))];
   const scrollContainers = Array.from(new Set(scrollRoots.flatMap((root) => actualScrollContainers(root))));
   const quoteFontSize = subagentQuote ? Number.parseFloat(getComputedStyle(subagentQuote).fontSize) : 0;
+  const paneBox = pane.getBoundingClientRect();
+  const currentWorkBox = currentWork?.getBoundingClientRect();
+  const composerCardBox = composerCard?.getBoundingClientRect();
+  const containedInPane = (box: DOMRect | undefined) =>
+    !!box && box.left >= paneBox.left - 1 && box.right <= paneBox.right + 1;
+  const containedInCard = (box: DOMRect | undefined) =>
+    !!box &&
+    !!composerCardBox &&
+    box.left >= composerCardBox.left - 1 &&
+    box.right <= composerCardBox.right + 1 &&
+    box.top >= composerCardBox.top - 1 &&
+    box.bottom <= composerCardBox.bottom + 1;
+  const controls = composeControls.map(({ testId, element }) => {
+    const box = element?.getBoundingClientRect();
+    return {
+      testId,
+      present: visible(element),
+      containedInCard: containedInCard(box),
+      containedInPane: containedInPane(box),
+      box,
+    };
+  });
+  const controlsDoNotOverlap = controls.every((control, index) =>
+    controls.slice(index + 1).every((other) => {
+      if (!control.box || !other.box) return false;
+      return (
+        control.box.right <= other.box.left + 1 ||
+        other.box.right <= control.box.left + 1 ||
+        control.box.bottom <= other.box.top + 1 ||
+        other.box.bottom <= control.box.top + 1
+      );
+    }),
+  );
   function statusGeometry(element: HTMLElement | null) {
     if (element === null) return null;
     const style = getComputedStyle(element);
@@ -1309,6 +1367,22 @@ function measure() {
         context: statusGeometry(context),
         queue: statusGeometry(queue),
       },
+    },
+    currentWork: {
+      found: visible(currentWork),
+      composerCardFound: visible(composerCard),
+      controlsFound: controls.every((control) => control.present),
+      controlsContained: controls.every((control) => control.containedInCard && control.containedInPane),
+      controlsDoNotOverlap,
+      controls: controls.map(({ box: _box, ...control }) => control),
+      sharedPaneWithoutOverflow:
+        !!currentWork &&
+        !!composerCard &&
+        currentWork.scrollWidth <= currentWork.clientWidth + 1 &&
+        composerCard.scrollWidth <= composerCard.clientWidth + 1 &&
+        containedInPane(currentWorkBox) &&
+        containedInPane(composerCardBox),
+      orderedAboveComposer: !!currentWorkBox && !!composerCardBox && currentWorkBox.bottom <= composerCardBox.top + 1,
     },
   };
 }
