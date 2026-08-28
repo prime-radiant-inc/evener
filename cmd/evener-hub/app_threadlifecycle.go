@@ -338,9 +338,6 @@ func resumeFailureError(cfg hubcore.WebConfig, sessionID string, err error) erro
 		return err
 	}
 	remedy := fmt.Sprintf("kill %d", blocker.PID)
-	if blocker.Address != "" {
-		remedy = fmt.Sprintf("curl -X POST http://%s/shutdown (or kill %d)", blocker.Address, blocker.PID)
-	}
 	return fmt.Errorf(
 		"session %s is still held by live daemon pid %d (AppWire protocol %q; this hub speaks %q), which the hub can neither route to nor replace. Stop it and resume again: %s. Replacement spawn failed: %w",
 		sessionID, blocker.PID, blocker.Protocol, appwire.ProtocolVersion, remedy, err)
