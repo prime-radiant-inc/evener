@@ -409,8 +409,8 @@ type Session struct {
 	// (via ResolveSandboxEscalation) sends the decision to exactly that channel and
 	// removes it. Cancel-all on turn interrupt and Close drains it to deny. The
 	// payload lets the daemon snapshot pending escalations onto thread/read (so a
-	// fresh/other client surfaces the card on entry) and report an attention flag on
-	// /status (so the owning session lights up cross-session) — both HUMAN-CLIENT
+	// fresh/other client surfaces the card on entry) and report an attention flag in
+	// AppWire status (so the owning session lights up cross-session) — both HUMAN-CLIENT
 	// surfaces, never the model's. Guarded by s.mu. Deliberately NOT persisted: an
 	// escalation is invisible to the model and never replayed, so a crash leaves an
 	// interrupted tool call for orphan-repair, not a pending escalation.

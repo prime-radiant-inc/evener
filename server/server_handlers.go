@@ -3,7 +3,6 @@ package server
 import (
 	"encoding/json"
 	"net/http"
-	"sort"
 	"strings"
 
 	"primeradiant.com/evener/appwire"
@@ -287,76 +286,6 @@ func (s *Server) handleTasks(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	_ = json.NewEncoder(w).Encode(fn())
-}
-
-func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodGet {
-		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
-		return
-	}
-	s.mu.RLock()
-	status := s.status
-	envelope := s.appEnvelope
-	descendantSessionIDs := make([]string, 0, len(s.appDescendants))
-	var descendantStates map[string]string
-	for id, projection := range s.appDescendants {
-		if projection != nil && projection.thread.Status.Type != appwire.ThreadStatusClosed {
-			descendantSessionIDs = append(descendantSessionIDs, id)
-			if state := projection.thread.Status.Type; state != "" {
-				if descendantStates == nil {
-					descendantStates = make(map[string]string, len(s.appDescendants))
-				}
-				descendantStates[id] = state
-			}
-		}
-	}
-	processing := s.processing
-	// One answer, the same one thread/read is given. This endpoint used to
-	// build its own: Send and Queue off the raw processing flag with no turn
-	// reservation, Interrupt off the per-turn cancelFunc, Steer off neither.
-	// Two surfaces describing one session cannot be allowed to disagree about
-	// whether it is working (katas vewa, 5gdv).
-	threadStatus := appStatus(status.State, processing, strings.TrimSpace(s.appReservedTurnID) != "")
-	active := threadStatus == appwire.ThreadStatusActive
-	closed := threadStatus == appwire.ThreadStatusClosed
-	steerAvailable := s.steerFunc != nil || s.steerWithImagesFunc != nil
-	capabilities := ActionCapabilities{
-		Send:              !active && !closed,
-		Steer:             steerAvailable,
-		Interrupt:         s.interruptWired && active && !closed,
-		Compact:           s.compactFunc != nil && !closed,
-		Clear:             s.clearFunc != nil && !active && !closed,
-		Shutdown:          s.shutdownFunc != nil,
-		ChangeModel:       s.modelFunc != nil && !closed,
-		ChangeVisionModel: s.visionModelFunc != nil && !closed,
-		Queue:             s.queueFunc != nil && active && !closed,
-	}
-	s.mu.RUnlock()
-	sort.Strings(descendantSessionIDs)
-
-	// /status answers from the same materialized envelope thread/read does. The
-	// two used to pull the same seven session callbacks independently, which is
-	// two sources for one value; now there is one, and the endpoints cannot
-	// disagree.
-	status.ContextPressure = envelope.ContextPressure
-	status.ContextUsed = envelope.ContextMetrics.Used
-	status.ContextWindow = envelope.ContextMetrics.Window
-	status.ContextRemaining = envelope.ContextMetrics.Remaining
-	status.Detailed = envelope.Detailed
-	status.DescendantSessionIDs = descendantSessionIDs
-	status.DescendantStates = descendantStates
-	status.WorkMillis = envelope.WorkMillis
-	status.Usage = envelope.Usage
-	status.ActiveTurnStartedAt = envelope.ActiveTurnStartedAt
-	status.FailedToolCalls = envelope.FailedToolCalls
-	status.PendingAsk = envelope.AskPending
-	// The pending-escalation BIT is the snapshot's own emptiness. Keeping a
-	// separate callback for it would be a second source for one fact.
-	status.PendingEscalation = len(envelope.PendingEscalations) > 0
-	status.Capabilities = capabilities
-
-	w.Header().Set("Content-Type", "application/json")
-	_ = json.NewEncoder(w).Encode(status)
 }
 
 func (s *Server) handleInterrupt(w http.ResponseWriter, r *http.Request) {

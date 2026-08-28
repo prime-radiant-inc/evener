@@ -21,7 +21,7 @@ import (
 // own mutex under the gate; now the read copies this value and reaches nothing.
 //
 // THE ONE RULE: a field here has exactly one writing FUNCTION, refreshFacets,
-// and exactly one reader, the copy in appThread/handleStatus. Never wire a
+// and exactly one reader, the copy in appThread. Never wire a
 // callback beside a field as a fallback: a field with two sources is how a
 // stale value survives a refactor while still reading as correct.
 //

@@ -999,7 +999,7 @@ func runServeWithDeps(args []string, deps serveDeps) error {
 	// Belt-and-suspenders with the Bridge/projector SessionStart fix (spec
 	// §5.4 "two touchpoints"): the session's SessionStart event may already be
 	// sitting in its buffered event channel by the time the bridge goroutine
-	// above is scheduled to drain it, so thread/read and /status could observe
+	// above is scheduled to drain it, so thread/read could observe
 	// the server's zero-value status -- empty model/profile, default state --
 	// until then. That is not a test-only race: it is this daemon's own
 	// startup path, and any real client (TUI, hub-spawned session) that dials
@@ -1217,7 +1217,7 @@ func printServeSandboxLine(w io.Writer, line string) {
 // its Processing shadow-write for this message: the session-level entry gate
 // (agent/session_lifecycle.go's processInputKindWithProvenance, spec §5.3)
 // refuses autonomous wakes while a question is pending, before any state
-// transition — so the /status shadow must not flip to active around a wake
+// transition — so the AppWire status shadow must not flip to active around a wake
 // the session will refuse (the flicker's active→awaiting edge would re-fire
 // the OS notification, notifications.js Task 11). Mirrors the gate's
 // predicate exactly — hasPendingAsk, not raw state (attention-status-model
@@ -1329,7 +1329,7 @@ func clientHasProvider(client *llm.Client, name string) bool {
 }
 
 // evenerUsageFromLLM maps a session's cumulative llm.Usage to the wire
-// appwire.EvenerUsage shown in /status and thread/read. Returns nil when every
+// appwire.EvenerUsage shown in thread/read. Returns nil when every
 // total (including CacheReadTokens) is zero — a fresh session, an old daemon
 // that never seeded usage, or a Codex thread — so the status row hides the
 // usage cluster rather than rendering ↑0 ↓0 (WS2 A7).

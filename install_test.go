@@ -4,8 +4,8 @@ import (
 	"archive/tar"
 	"bytes"
 	"compress/gzip"
+	"context"
 	"crypto/sha256"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"io/fs"
@@ -24,6 +24,7 @@ import (
 
 	agentplugin "primeradiant.com/evener/agent/plugin"
 	"primeradiant.com/evener/agent/skill"
+	"primeradiant.com/evener/appwire"
 	"primeradiant.com/evener/rendezvous"
 )
 
@@ -184,7 +185,7 @@ func TestInstallHomeGeneratedHome(t *testing.T) {
 	status := installedServeStatus(t, fixtureRoot, env, evenerBin)
 
 	if status.Detailed == nil {
-		t.Fatal("installed evener serve /status omitted detailed status")
+		t.Fatal("installed evener serve AppWire thread omitted diagnostics")
 	}
 	installedSkillNames := status.Detailed.SkillNames()
 	assertContainsAll(t, "bundled agents", status.Detailed.Agents, expectedAgents)
@@ -886,20 +887,31 @@ api_key = "sk-install-test"
 	})
 
 	client := http.Client{Timeout: 2 * time.Second}
-	resp, err := client.Get("http://" + entry.Address + "/status")
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	transport, err := appwire.DialWebSocket(ctx, entry.Endpoint, &client)
 	if err != nil {
-		t.Fatalf("get installed evener serve /status: %v\nstdout:\n%s\nstderr:\n%s", err, stdout.String(), stderr.String())
+		t.Fatalf("dial installed evener serve AppWire: %v\nstdout:\n%s\nstderr:\n%s", err, stdout.String(), stderr.String())
 	}
-	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusOK {
-		t.Fatalf("status code = %d, want 200", resp.StatusCode)
+	wireClient := appwire.NewClient(transport)
+	wireClient.Start(ctx)
+	defer wireClient.Close()
+	if _, err := wireClient.Initialize(ctx, appwire.InitializeParams{ClientInfo: appwire.ClientInfo{Name: "install-test", Version: "test"}}); err != nil {
+		t.Fatalf("initialize installed evener serve AppWire: %v", err)
 	}
-
-	var status installedStatus
-	if err := json.NewDecoder(resp.Body).Decode(&status); err != nil {
-		t.Fatalf("decode /status: %v", err)
+	response, err := wireClient.ThreadRead(ctx, appwire.ThreadReadParams{})
+	if err != nil {
+		t.Fatalf("read installed evener serve thread: %v", err)
 	}
-	return status
+	diagnostics := response.Thread.Evener.Diagnostics
+	if diagnostics == nil {
+		return installedStatus{}
+	}
+	detailed := &installedDetailedStatus{Agents: diagnostics.Agents}
+	for _, skill := range diagnostics.Skills {
+		detailed.Skills = append(detailed.Skills, installedSkillInfo{Name: skill.Name})
+	}
+	return installedStatus{Detailed: detailed}
 }
 
 type installedStatus struct {

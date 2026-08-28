@@ -44,7 +44,7 @@ type sandboxGranter interface {
 
 // escalationWaiter is one blocked, unresolved escalation: the buffered channel its
 // tool-exec goroutine parks on, plus the redacted card payload the daemon
-// snapshots onto thread/read and reports on /status. The payload is the same
+// snapshots onto thread/read. The payload is the same
 // human-facing event data emitted on the stream — never anything the model sees.
 type escalationWaiter struct {
 	ch   chan sandbox.EscalationDecision
@@ -235,7 +235,7 @@ func (s *Session) ResolveSandboxEscalation(id string, approve bool) error {
 }
 
 // HasPendingEscalations reports whether any sandbox-exemption escalation is
-// currently blocked awaiting a human. The daemon surfaces it on /status as an
+// currently blocked awaiting a human. The daemon surfaces it on AppWire as an
 // attention flag so the owning session lights up cross-session (the hub's
 // needs-you badge) — it is a HUMAN-CLIENT signal, never shown to the model.
 func (s *Session) HasPendingEscalations() bool {
