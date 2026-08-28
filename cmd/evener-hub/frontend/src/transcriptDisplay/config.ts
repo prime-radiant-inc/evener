@@ -50,7 +50,7 @@ export const CONTENT_LEVELS = ["chat", "intent", "tools", "activity", "full"] as
 export const HOOK_EXIT_DETAILS = ["none", "successful", "all"] as const;
 
 const CONTENT_VECTORS: Readonly<Record<ContentLevel, ContentVector>> = {
-  chat: { toolIntent: false, toolCalls: false, reasoning: false, expandByDefault: false },
+  chat: { toolIntent: true, toolCalls: false, reasoning: false, expandByDefault: false },
   intent: { toolIntent: true, toolCalls: false, reasoning: false, expandByDefault: false },
   tools: { toolIntent: true, toolCalls: true, reasoning: false, expandByDefault: false },
   activity: { toolIntent: true, toolCalls: true, reasoning: true, expandByDefault: false },

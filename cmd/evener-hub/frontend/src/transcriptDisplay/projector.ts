@@ -18,6 +18,7 @@ export type ProjectedEntry =
       sourceIndex: number;
       sourceItemId: string;
       rationale: string;
+      failed: boolean;
     }
   | {
       kind: "critical";
@@ -172,6 +173,7 @@ function intentEntry(item: ItemModel, turnId: string, sourceIndex: number): Proj
     sourceIndex,
     sourceItemId: item.id,
     rationale,
+    failed: hasItemFailure(item),
   };
 }
 
@@ -223,16 +225,17 @@ function decisionFor(
 
     // Questions and approvals are interaction rows at every regular level.
     if (interaction) return "critical";
-    // The ordinary item shape has no projected summary field. Keep a
-    // purpose-less call on the critical path at every level so its renderer
+    // The ordinary item shape has no projected summary field. At tool-call
+    // levels, keep a purpose-less call on the critical path so its renderer
     // receives the exact neutral summary instead of inventing one from the
-    // tool name.
+    // tool name. Intent-only levels use the proxy's rationale field instead.
     if (vector.toolCalls && missingPurpose) return "critical";
     if (vector.toolCalls) return "item";
-    if (failure || active || (isTerminalTurn(turn) && !vector.toolCalls)) return "critical";
     if (vector.toolIntent) return "intent";
-    // Chat omits routine action rows, but a call with no purpose is not
-    // routine-readable content: keep it as the neutral critical contract.
+    if (failure || active || (isTerminalTurn(turn) && !vector.toolCalls)) return "critical";
+    // A Custom vector may disable both calls and intent. Even there, a call
+    // with no purpose is not routine-readable content: keep its neutral
+    // critical contract rather than inventing a summary from the tool name.
     return missingPurpose ? "critical" : "hidden";
   }
 

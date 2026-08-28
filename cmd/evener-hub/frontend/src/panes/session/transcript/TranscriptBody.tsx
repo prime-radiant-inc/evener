@@ -1,7 +1,7 @@
 import type { ReactNode, RefObject } from "react";
 import { useMemo, useRef } from "react";
 import { useStore } from "zustand";
-import type { ThreadModel } from "../../../protocol/model";
+import type { ThreadModel, TurnModel } from "../../../protocol/model";
 import { transcriptDisplayStore } from "../../../stores/transcriptDisplay";
 import { configFingerprint, type TranscriptDisplayConfigV1 } from "../../../transcriptDisplay/config";
 import {
@@ -17,6 +17,7 @@ import { exchangeOpenersFor } from "./exchangeOpeners";
 import { FlowOverlay } from "./flow/FlowOverlay";
 import { useTranscriptViewRegistration } from "./flow/useTranscriptScroll";
 import { ProjectedIntentGroup, TurnBlock } from "./TurnBlock";
+import { asTurnError } from "./turnFailure";
 import "./messages";
 import "./tools";
 import styles from "../session.module.css";
@@ -38,6 +39,7 @@ export interface TranscriptIntentGroupRow {
   readonly entries: readonly IntentEntry[];
   readonly sourceTurnIndexes: readonly number[];
   readonly sourceTurnIds: readonly string[];
+  readonly separatorTurn?: TurnModel;
 }
 
 export type TranscriptBodyRow = TranscriptTurnRow | TranscriptIntentGroupRow;
@@ -59,6 +61,7 @@ interface CrossTurnIntentRun {
   readonly entries: readonly IntentEntry[];
   readonly sourceTurnIndexes: readonly number[];
   readonly sourceTurnIds: readonly string[];
+  readonly separatorTurn?: TurnModel;
 }
 
 function entryKey(turnIndex: number, entry: ProjectedEntry): string {
@@ -95,25 +98,20 @@ function turnRow(
 /**
  * Converts projected turns into the stable rows consumed by both the virtual
  * and preview layouts. A contiguous intent run that crosses a turn boundary
- * becomes one row; any visible item/critical/message entry breaks that run.
- * Single-turn intent groups remain inside TurnBlock so ordinary turn chrome is
- * unchanged.
+ * becomes one row; any visible item/critical/message entry or source turn with
+ * a renderable failure end cap breaks that run.
+ * Single-turn intent groups remain inside TurnBlock except for a terminal run:
+ * that run gets its eventual first-action row identity before a following turn
+ * streams in, while separator metadata preserves its ordinary turn chrome.
  */
 export function transcriptRowsForProjection(projection: TranscriptProjection): readonly TranscriptBodyRow[] {
   const flat: FlatEntry[] = projection.turns.flatMap((turn, turnIndex) =>
     turn.entries.map((entry) => ({ entry, turnIndex })),
   );
   const crossRunByEntry = new Map<string, CrossTurnIntentRun>();
-  let flatIndex = 0;
-  while (flatIndex < flat.length) {
-    const first = flat[flatIndex];
-    if (first?.entry.kind !== "intent") {
-      flatIndex += 1;
-      continue;
-    }
-    let end = flatIndex + 1;
-    while (end < flat.length && flat[end]?.entry.kind === "intent") end += 1;
-    const run = flat.slice(flatIndex, end);
+  const registerIntentRun = (start: number, end: number) => {
+    if (start >= end) return;
+    const run = flat.slice(start, end);
     const sourceTurnIndexes = [...new Set(run.map((item) => item.turnIndex))];
     let adjacentTurns = sourceTurnIndexes.length > 1;
     for (let index = 1; index < sourceTurnIndexes.length; index += 1) {
@@ -124,17 +122,42 @@ export function transcriptRowsForProjection(projection: TranscriptProjection): r
         break;
       }
     }
-    if (adjacentTurns) {
-      const entries = run.map((item) => item.entry).filter((entry): entry is IntentEntry => entry.kind === "intent");
-      const sourceTurnIds = sourceTurnIndexes.map((turnIndex) => projection.turns[turnIndex]?.id ?? "");
-      const group: CrossTurnIntentRun = {
-        id: `intent-group:${entries[0]?.id}:${entries.at(-1)?.id}`,
-        entries,
-        sourceTurnIndexes,
-        sourceTurnIds,
-      };
-      for (const item of run) crossRunByEntry.set(entryKey(item.turnIndex, item.entry), group);
+    const terminalSingleTurn = sourceTurnIndexes.length === 1 && end === flat.length;
+    if (!adjacentTurns && !terminalSingleTurn) return;
+    const entries = run.map((item) => item.entry).filter((entry): entry is IntentEntry => entry.kind === "intent");
+    const sourceTurnIds = sourceTurnIndexes.map((turnIndex) => projection.turns[turnIndex]?.id ?? "");
+    const finalSourceTurnIndex = sourceTurnIndexes.at(-1);
+    const group: CrossTurnIntentRun = {
+      id: `intent-group:${entries[0]?.id}`,
+      entries,
+      sourceTurnIndexes,
+      sourceTurnIds,
+      separatorTurn:
+        end === flat.length && finalSourceTurnIndex !== undefined
+          ? projection.turns[finalSourceTurnIndex]?.source
+          : undefined,
+    };
+    for (const item of run) crossRunByEntry.set(entryKey(item.turnIndex, item.entry), group);
+  };
+  let flatIndex = 0;
+  while (flatIndex < flat.length) {
+    const first = flat[flatIndex];
+    if (first?.entry.kind !== "intent") {
+      flatIndex += 1;
+      continue;
     }
+    let end = flatIndex + 1;
+    while (end < flat.length && flat[end]?.entry.kind === "intent") end += 1;
+    let cleanStart = flatIndex;
+    for (let cursor = flatIndex; cursor < end; cursor += 1) {
+      const candidate = flat[cursor];
+      const sourceTurn = candidate === undefined ? undefined : projection.turns[candidate.turnIndex]?.source;
+      if (sourceTurn && asTurnError(sourceTurn.error)) {
+        registerIntentRun(cleanStart, cursor);
+        cleanStart = cursor + 1;
+      }
+    }
+    registerIntentRun(cleanStart, end);
     flatIndex = end;
   }
 
@@ -164,6 +187,7 @@ export function transcriptRowsForProjection(projection: TranscriptProjection): r
           entries: run.entries,
           sourceTurnIndexes: run.sourceTurnIndexes,
           sourceTurnIds: run.sourceTurnIds,
+          separatorTurn: run.separatorTurn,
         });
         emittedRuns.add(run);
       }
@@ -297,6 +321,7 @@ export function TranscriptBody({
             entries={row.entries}
             rowId={row.id}
             sourceTurnIds={row.sourceTurnIds}
+            separatorTurn={row.separatorTurn}
             viewAnchorIndex={index}
             showSeenDivider={showSeenDivider && row.sourceTurnIds.includes(seenTurnId ?? "")}
           />

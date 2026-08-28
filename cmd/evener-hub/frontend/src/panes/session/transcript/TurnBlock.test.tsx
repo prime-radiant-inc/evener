@@ -324,7 +324,7 @@ test("with both hook toggles off, only a non-zero hook survives as a compact cri
   expect(screen.getByTestId("system-notice-failure")).toBeTruthy();
 });
 
-test("a blank-purpose critical tool uses the projected neutral summary without a raw command summary", () => {
+test("a blank-purpose tool uses the projected neutral summary without a raw command summary", () => {
   const config = makeTranscriptDisplayConfig({ kind: "preset", level: "chat" });
   const blankPurpose = item({
     id: "critical-blank-purpose",
@@ -336,14 +336,182 @@ test("a blank-purpose critical tool uses the projected neutral summary without a
   });
   const { rerender } = render(withConfig(config, <TurnBlock turn={turn([blankPurpose], {}, config)} />));
 
-  expect(screen.getAllByTestId("tool-call-item")).toHaveLength(1);
-  expect(screen.getByTestId("tool-row-summary").textContent).toBe("Action summary unavailable");
+  expect(screen.queryAllByTestId("tool-call-item")).toHaveLength(0);
+  expect(screen.getByText("Action summary unavailable")).toBeTruthy();
   expect(screen.queryByText("Ran echo should-not-be-recomputed")).toBeNull();
 
   const tools = makeTranscriptDisplayConfig({ kind: "preset", level: "tools" });
   rerender(withConfig(tools, <TurnBlock turn={turn([blankPurpose], {}, tools)} />));
   expect(screen.getAllByTestId("tool-call-item")).toHaveLength(1);
   expect(screen.getByTestId("tool-row-summary").textContent).toBe("Action summary unavailable");
+});
+
+test("Chat renders a closed action group that expands reasons without tool UI (catches missing Chat intent)", () => {
+  const config = makeTranscriptDisplayConfig({ kind: "preset", level: "chat" });
+  const action = item({
+    id: "chat-action",
+    type: "commandExecution",
+    toolName: "shell",
+    description: "Run focused checks",
+    output: "private tool output",
+    status: "completed",
+  });
+  render(withConfig(config, <TurnBlock turn={turn([action], { status: "completed" }, config)} />));
+
+  const group = screen.getByTestId("intent-group");
+  expect(group.hasAttribute("open")).toBe(false);
+  expect(screen.queryByTestId("tool-call-item")).toBeNull();
+
+  const summary = group.querySelector("summary");
+  if (summary === null) throw new Error("Chat intent summary did not render");
+  fireEvent.click(summary);
+  expect(group.hasAttribute("open")).toBe(true);
+  expect(screen.getByText("Run focused checks")).toBeTruthy();
+  expect(screen.queryByText("private tool output")).toBeNull();
+  expect(screen.queryByTestId("tool-call-item")).toBeNull();
+});
+
+test("Intent renders an open action group without a tool row (catches closed Intent default)", () => {
+  const config = makeTranscriptDisplayConfig({ kind: "preset", level: "intent" });
+  const action = item({
+    id: "intent-action",
+    type: "commandExecution",
+    toolName: "read_file",
+    description: "Read the configuration",
+    output: "private file output",
+    status: "completed",
+  });
+  render(withConfig(config, <TurnBlock turn={turn([action], { status: "completed" }, config)} />));
+
+  expect(screen.getByTestId("intent-group").hasAttribute("open")).toBe(true);
+  expect(screen.getByText("Read the configuration")).toBeTruthy();
+  expect(screen.queryByText("private file output")).toBeNull();
+  expect(screen.queryByTestId("tool-call-item")).toBeNull();
+});
+
+test("named Intent opens only its action group while generic interaction and system disclosures stay closed", () => {
+  const config = makeTranscriptDisplayConfig({ kind: "preset", level: "intent" }, { promptEvents: true });
+  const ordinaryAction = item({
+    id: "intent-ordinary",
+    type: "commandExecution",
+    toolName: "read_file",
+    description: "Read the configuration",
+    status: "completed",
+  });
+  const interaction = item({
+    id: "intent-question",
+    type: "commandExecution",
+    toolName: "ask_user",
+    description: "Ask about mode",
+    argumentsJSON: JSON.stringify({
+      questions: [{ header: "Mode", question: "Choose", options: [{ label: "Fast", detail: "" }] }],
+    }),
+    status: "completed",
+  });
+  const systemPrompt = systemItem("intent-system-prompt", {
+    eventKind: "system_prompt",
+    text: "System prompt details",
+    status: "completed",
+  });
+  render(
+    withConfig(
+      config,
+      <TurnBlock turn={turn([ordinaryAction, interaction, systemPrompt], { status: "completed" }, config)} />,
+    ),
+  );
+
+  expect(screen.getByTestId("intent-group").hasAttribute("open")).toBe(true);
+  expect(screen.getByTestId("tool-row-trigger").getAttribute("aria-expanded")).toBe("false");
+  expect(screen.getByTestId("system-notice-scaffold").hasAttribute("open")).toBe(false);
+});
+
+test("failed intent proxy renders the accessible FailureGlyph and neutral missing summary (catches full tool row)", () => {
+  const config = makeTranscriptDisplayConfig({ kind: "preset", level: "intent" });
+  const failedAction = item({
+    id: "failed-intent-action",
+    type: "commandExecution",
+    toolName: "shell",
+    description: "   ",
+    error: "command failed",
+    output: "sensitive failure output",
+    status: "failed",
+  });
+  render(withConfig(config, <TurnBlock turn={turn([failedAction], { status: "completed" }, config)} />));
+
+  expect(screen.getByTestId("intent-group")).toBeTruthy();
+  expect(screen.getByText("Action summary unavailable")).toBeTruthy();
+  expect(screen.getByRole("img", { name: "Failed" })).toBeTruthy();
+  expect(screen.queryByTestId("tool-call-item")).toBeNull();
+  expect(screen.queryByText("sensitive failure output")).toBeNull();
+});
+
+test("a growing Chat group keeps its first-action identity and manually opened state (catches last-id key)", () => {
+  const config = makeTranscriptDisplayConfig({
+    kind: "custom",
+    toolIntent: true,
+    toolCalls: false,
+    reasoning: false,
+    expandByDefault: false,
+  });
+  const first = item({
+    id: "stream-first",
+    type: "commandExecution",
+    description: "First action",
+    status: "completed",
+  });
+  const second = item({
+    id: "stream-second",
+    type: "commandExecution",
+    description: "Second action",
+    status: "completed",
+  });
+  const { rerender } = render(withConfig(config, <TurnBlock turn={turn([first], { status: "completed" }, config)} />));
+  const group = screen.getByTestId("intent-group");
+  const summary = group.querySelector("summary");
+  if (summary === null) throw new Error("Chat streaming summary did not render");
+  fireEvent.click(summary);
+  expect(group.hasAttribute("open")).toBe(true);
+
+  rerender(withConfig(config, <TurnBlock turn={turn([first, second], { status: "completed" }, config)} />));
+
+  expect(screen.getByTestId("intent-group")).toBe(group);
+  expect(group.textContent).toContain("2 actions");
+  expect(group.hasAttribute("open")).toBe(true);
+});
+
+test("a growing Intent group keeps its first-action identity and manually closed state (catches last-id key)", () => {
+  const config = makeTranscriptDisplayConfig({
+    kind: "custom",
+    toolIntent: true,
+    toolCalls: false,
+    reasoning: false,
+    expandByDefault: true,
+  });
+  const first = item({
+    id: "stream-first",
+    type: "commandExecution",
+    description: "First action",
+    status: "completed",
+  });
+  const second = item({
+    id: "stream-second",
+    type: "commandExecution",
+    description: "Second action",
+    status: "completed",
+  });
+  const { rerender } = render(withConfig(config, <TurnBlock turn={turn([first], { status: "completed" }, config)} />));
+  const group = screen.getByTestId("intent-group");
+  const summary = group.querySelector("summary");
+  if (summary === null) throw new Error("Intent streaming summary did not render");
+  expect(group.hasAttribute("open")).toBe(true);
+  fireEvent.click(summary);
+  expect(group.hasAttribute("open")).toBe(false);
+
+  rerender(withConfig(config, <TurnBlock turn={turn([first, second], { status: "completed" }, config)} />));
+
+  expect(screen.getByTestId("intent-group")).toBe(group);
+  expect(group.textContent).toContain("2 actions");
+  expect(group.hasAttribute("open")).toBe(false);
 });
 
 test("hookExitsAll renders full hook rows; hookExitsNormal keeps success rows plus a compact failure", () => {

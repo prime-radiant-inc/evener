@@ -460,6 +460,21 @@ async function verifyShortSessionMenu(cdpEndpoint, url) {
   }
 }
 
+async function verifyChatFocus(cdpEndpoint, url) {
+  const page = await connectPage(cdpEndpoint);
+  const { send } = page;
+  try {
+    await applyViewport(send, { width: 1024, height: 900, mobile: false });
+    await navigateTo(page, url);
+    await evaluate(send, "window.settled");
+    await waitForFonts(send);
+    return await evaluate(send, "window.inspectChatFocus()");
+  } finally {
+    await clearViewportOverride(send);
+    page.close();
+  }
+}
+
 function assertFieldsets(detail, label) {
   const failures = [];
   if (!detail || !Number.isFinite(detail.rootRemPx) || detail.rootRemPx <= 0) {
@@ -861,6 +876,24 @@ async function main() {
       console.log(`short mobile menu ... FAIL - ${shortMenuFailures.join("; ")}`);
     } else {
       console.log("short mobile menu ... PASS - popup contained, scrollable, and last action keyboard/touch reachable");
+    }
+
+    const chatFocus = await verifyChatFocus(
+      cdpEndpoint,
+      `http://127.0.0.1:${vitePort}/overflowharness.html?w=1024`,
+    );
+    if (
+      !chatFocus.toolsRowFocused ||
+      !chatFocus.groupFound ||
+      chatFocus.groupOpen ||
+      !chatFocus.summaryIsActive ||
+      chatFocus.rationaleIsActive ||
+      !chatFocus.summaryVisible
+    ) {
+      failed++;
+      console.log(`Chat focus transition ... FAIL - ${JSON.stringify(chatFocus)}`);
+    } else {
+      console.log("Chat focus transition ... PASS - closed action summary visibly owns focus");
     }
 
     const panelCollapse = await verifyPanelCollapse(

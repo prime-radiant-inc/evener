@@ -17,6 +17,7 @@ import {
   type TranscriptRenderContextValue,
   useTranscriptRenderContext,
 } from "../../../transcriptDisplay/renderContext";
+import { FailureGlyph } from "../../../widgets";
 import {
   disclosureDefault,
   isDisclosureOpen,
@@ -100,6 +101,7 @@ export interface ProjectedIntentGroupProps {
   entries: readonly Extract<ProjectedEntry, { kind: "intent" }>[];
   rowId?: string;
   sourceTurnIds?: readonly string[];
+  separatorTurn?: TurnModel;
   viewAnchorIndex?: number;
   showSeenDivider?: boolean;
 }
@@ -108,15 +110,17 @@ export function ProjectedIntentGroup({
   entries,
   rowId,
   sourceTurnIds = [],
+  separatorTurn,
   viewAnchorIndex,
   showSeenDivider = false,
 }: ProjectedIntentGroupProps) {
   const context = useTranscriptRenderContext();
   const { config } = context;
   const scope = disclosureScopeForSession(context, undefined);
-  const identity = rowId ?? `intent-group:${entries[0]?.id ?? "empty"}:${entries.at(-1)?.id ?? "empty"}`;
+  const identity = rowId ?? `intent-group:${entries[0]?.id ?? "empty"}`;
   const disclosureKey = scopedDisclosureId(scope, identity);
-  const fallback = expandDetailsByDefault(config) || disclosureDefault(scope, identity, false);
+  const namedIntent = config.content.kind === "preset" && config.content.level === "intent";
+  const fallback = namedIntent || expandDetailsByDefault(config) || disclosureDefault(scope, identity, false);
   const open = isDisclosureOpen(disclosureKey, fallback);
   return (
     <>
@@ -141,11 +145,13 @@ export function ProjectedIntentGroup({
         <div className={transcriptStyles.intentGroupItems}>
           {entries.map((entry) => (
             <div key={entry.id} className={transcriptStyles.intent} {...projectedEntryAnchor(entry, viewAnchorIndex)}>
+              {entry.failed && <FailureGlyph />}
               {entry.rationale}
             </div>
           ))}
         </div>
       </details>
+      {separatorTurn && <TurnSeparator turn={separatorTurn} />}
     </>
   );
 }
@@ -204,11 +210,7 @@ export function TurnBlock({
         if (next?.kind === "intent") group.push(next);
       }
       renderedEntries.push(
-        <ProjectedIntentGroup
-          key={`intent-group:${group[0]?.id}:${group.at(-1)?.id}`}
-          entries={group}
-          viewAnchorIndex={viewAnchorIndex}
-        />,
+        <ProjectedIntentGroup key={`intent-group:${group[0]?.id}`} entries={group} viewAnchorIndex={viewAnchorIndex} />,
       );
       continue;
     }

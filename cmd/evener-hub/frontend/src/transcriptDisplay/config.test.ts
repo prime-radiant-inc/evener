@@ -25,9 +25,17 @@ import {
 describe("transcript display config", () => {
   const LEVELS = ["chat", "intent", "tools", "activity", "full"] as const;
 
+  test("Chat enables intent proxies without expanding them (catches toolIntent=false)", () => {
+    expect(presetContent("chat")).toMatchObject({ toolIntent: true, toolCalls: false, expandByDefault: false });
+  });
+
+  test("Intent keeps generic detail expansion disabled", () => {
+    expect(presetContent("intent")).toMatchObject({ toolIntent: true, toolCalls: false, expandByDefault: false });
+  });
+
   test("expands the five cumulative content presets", () => {
     expect(presetContent("chat")).toEqual({
-      toolIntent: false,
+      toolIntent: true,
       toolCalls: false,
       reasoning: false,
       expandByDefault: false,

@@ -35,8 +35,6 @@ interface DetailPanelProps {
   onChange(value: ReturnType<typeof resolveEffectiveConfig>): void;
   onClearLocal(): void;
   onEditHubDefaults(): void;
-  showActions: boolean;
-  mobile: boolean;
   editButtonRef: RefObject<HTMLButtonElement | null>;
 }
 
@@ -78,10 +76,9 @@ function DetailPanel({
   onChange,
   onClearLocal,
   onEditHubDefaults,
-  showActions,
-  mobile,
   editButtonRef,
 }: DetailPanelProps) {
+  const isMobile = layout === "mobile";
   const layoutName = layout === "desktop" ? "Desktop" : "Mobile";
   const statusMessages: string[] = [];
   if (hubLoading) statusMessages.push("Loading hub default…");
@@ -94,7 +91,7 @@ function DetailPanel({
 
   return (
     <div
-      className={mobile ? CLASS.sheetContent : `${CLASS.panel} ${CLASS.content}`}
+      className={isMobile ? CLASS.sheetContent : `${CLASS.panel} ${CLASS.content}`}
       data-testid="transcript-detail-control"
     >
       <p className={CLASS.scope}>{localExists ? `Local ${layoutName} view` : "Using hub default"}</p>
@@ -113,7 +110,7 @@ function DetailPanel({
         </div>
       )}
       <TranscriptDetailEditor value={effectiveConfig} compact onChange={onChange} />
-      {showActions && (
+      {!isMobile && (
         <DetailActions
           localExists={localExists}
           editButtonRef={editButtonRef}
@@ -135,6 +132,15 @@ export function TranscriptDetailControl({ open, onClose, layout, onEditHubDefaul
   const hubSupport = useTranscriptDisplayStore((state) => state.hubSupport);
   const storageWarning = useTranscriptDisplayStore((state) => state.storageWarning);
   const effectiveConfig = resolveEffectiveConfig({ local, hub, layout });
+  const localExists = local !== undefined;
+
+  function setLocal(next: ReturnType<typeof resolveEffectiveConfig>): void {
+    transcriptDisplayStore.getState().setLocal(layout, next);
+  }
+
+  function clearLocal(): void {
+    transcriptDisplayStore.getState().clearLocal(layout);
+  }
 
   function editHubDefaults(): void {
     onClose();
@@ -144,26 +150,24 @@ export function TranscriptDetailControl({ open, onClose, layout, onEditHubDefaul
   const panel = (
     <DetailPanel
       layout={layout}
-      localExists={local !== undefined}
+      localExists={localExists}
       effectiveConfig={effectiveConfig}
       hubLoading={hubLoading}
       hubError={hubError}
       hubSupport={hubSupport}
       storageWarning={storageWarning}
-      onChange={(next) => transcriptDisplayStore.getState().setLocal(layout, next)}
-      onClearLocal={() => transcriptDisplayStore.getState().clearLocal(layout)}
+      onChange={setLocal}
+      onClearLocal={clearLocal}
       onEditHubDefaults={editHubDefaults}
-      showActions={!isMobile}
-      mobile={isMobile}
       editButtonRef={editButtonRef}
     />
   );
 
   const footer = (
     <DetailActions
-      localExists={local !== undefined}
+      localExists={localExists}
       editButtonRef={editButtonRef}
-      onClearLocal={() => transcriptDisplayStore.getState().clearLocal(layout)}
+      onClearLocal={clearLocal}
       onEditHubDefaults={editHubDefaults}
     />
   );

@@ -860,12 +860,11 @@ async function inspectDetail(includeAdvanced = true): Promise<DetailGeometry> {
   ];
   const fieldsets = Array.from(panel.querySelectorAll<HTMLElement>("fieldset"));
   const fieldsetBoxes = fieldsets.map(geometryOf);
-  const editorStyle = editor ? getComputedStyle(editor) : null;
-  const editorContainerWidth = editor
-    ? editor.clientWidth -
-      (Number.parseFloat(editorStyle?.paddingLeft ?? "0") || 0) -
-      (Number.parseFloat(editorStyle?.paddingRight ?? "0") || 0)
-    : 0;
+  const editorStyle = getComputedStyle(editor);
+  const editorContainerWidth =
+    editor.clientWidth -
+    (Number.parseFloat(editorStyle.paddingLeft) || 0) -
+    (Number.parseFloat(editorStyle.paddingRight) || 0);
   const columnLefts: number[] = [];
   for (const box of fieldsetBoxes) {
     if (!columnLefts.some((left) => Math.abs(left - box.left) <= 0.5)) columnLefts.push(box.left);
@@ -900,15 +899,6 @@ async function inspectDetail(includeAdvanced = true): Promise<DetailGeometry> {
           other.bottom <= box.top + 1,
       ),
   );
-  let overlayScroll = {
-    connected: true,
-    contained: true,
-    scrollable: false,
-    beforeTop: 0,
-    afterTop: 0,
-    scrollHeight: 0,
-    clientHeight: 0,
-  };
   const scrollPanel = owner.parentElement;
   if (!scrollPanel) throw new Error("Verbosity Dialog/Sheet scroll owner is missing");
   const beforeTop = scrollPanel.scrollTop;
@@ -917,7 +907,7 @@ async function inspectDetail(includeAdvanced = true): Promise<DetailGeometry> {
   scrollPanel.dispatchEvent(new Event("scroll"));
   await waitForStablePanel(panel);
   const scrolledPanelBox = geometryOf(panel);
-  overlayScroll = {
+  const overlayScroll = {
     connected: panel.isConnected,
     contained:
       scrolledPanelBox.left >= -1 &&
@@ -930,6 +920,7 @@ async function inspectDetail(includeAdvanced = true): Promise<DetailGeometry> {
     scrollHeight: scrollPanel.scrollHeight,
     clientHeight: scrollPanel.clientHeight,
   };
+  const overflowingElements = horizontalOverflowElements(panel);
   return {
     found: true,
     mobile,
@@ -943,11 +934,11 @@ async function inspectDetail(includeAdvanced = true): Promise<DetailGeometry> {
       panelBox.top >= -1 &&
       panelBox.bottom <= window.innerHeight + 1,
     panel: panelBox,
-    horizontalOverflowCount: horizontalOverflowElements(panel).length,
+    horizontalOverflowCount: overflowingElements.length,
     targets,
     fieldsetsFound: fieldsets.length,
     effectiveTargets,
-    overflowElements: horizontalOverflowElements(panel).map(
+    overflowElements: overflowingElements.map(
       (element) =>
         `${element.tagName.toLowerCase()}.${element.className || "(no-class)"} ` +
         `${element.scrollWidth}/${element.clientWidth}x${element.scrollHeight}/${element.clientHeight}`,
@@ -1097,6 +1088,64 @@ function visibilityProbe(): VisibilityProbe {
     };
   } finally {
     host.remove();
+  }
+}
+
+interface ChatFocusMeasurement {
+  toolsRowFocused: boolean;
+  groupFound: boolean;
+  groupOpen: boolean;
+  summaryIsActive: boolean;
+  rationaleIsActive: boolean;
+  summaryVisible: boolean;
+  activeTag: string | null;
+  activeTestId: string | null;
+}
+
+async function inspectChatFocus(): Promise<ChatFocusMeasurement> {
+  const pane = document.getElementById("oh-pane");
+  if (!pane) throw new Error("Chat focus harness pane never mounted");
+  const layout = transcriptDisplayStore.getState().viewport;
+  const original = transcriptDisplayStore.getState().local[layout];
+  const waitFor = async <T,>(read: () => T | null | undefined, label: string): Promise<T> => {
+    for (let frame = 0; frame < 180; frame += 1) {
+      const value = read();
+      if (value !== null && value !== undefined) return value;
+      await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
+    }
+    throw new Error(`Chat focus harness did not settle: ${label}`);
+  };
+  try {
+    transcriptDisplayStore.getState().setLocal(layout, makeTranscriptDisplayConfig({ kind: "preset", level: "tools" }));
+    const toolTrigger = await waitFor(
+      () => pane.querySelector<HTMLElement>('[data-view-anchor-id="i3b"] [data-testid="tool-row-trigger"]'),
+      "Tools row trigger",
+    );
+    toolTrigger.focus();
+    const toolsRowFocused = document.activeElement === toolTrigger;
+
+    transcriptDisplayStore.getState().setLocal(layout, makeTranscriptDisplayConfig({ kind: "preset", level: "chat" }));
+    const rationale = await waitFor(
+      () => pane.querySelector<HTMLElement>('[data-view-anchor-id="intent:i3b"]'),
+      "Chat intent rationale",
+    );
+    await new Promise<void>((resolve) => requestAnimationFrame(() => requestAnimationFrame(() => resolve())));
+    const group = rationale.closest<HTMLDetailsElement>('details[data-testid="intent-group"]');
+    const summary = group?.querySelector<HTMLElement>(":scope > summary");
+    const active = document.activeElement;
+    return {
+      toolsRowFocused,
+      groupFound: group !== null,
+      groupOpen: group?.open ?? false,
+      summaryIsActive: active === summary,
+      rationaleIsActive: active === rationale,
+      summaryVisible: summary ? isElementVisible(summary) : false,
+      activeTag: active?.tagName.toLowerCase() ?? null,
+      activeTestId: active instanceof HTMLElement ? (active.dataset.testid ?? null) : null,
+    };
+  } finally {
+    if (original) transcriptDisplayStore.getState().setLocal(layout, original);
+    else transcriptDisplayStore.getState().clearLocal(layout);
   }
 }
 
@@ -1339,10 +1388,12 @@ declare global {
     measure: typeof measure;
     dump: typeof dump;
     inspectDetail: typeof inspectDetail;
+    inspectChatFocus: typeof inspectChatFocus;
     settled: Promise<true>;
   }
 }
 window.measure = measure;
 window.dump = dump;
 window.inspectDetail = inspectDetail;
+window.inspectChatFocus = inspectChatFocus;
 window.settled = settled;
