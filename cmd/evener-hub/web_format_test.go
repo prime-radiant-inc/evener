@@ -30,8 +30,7 @@ func TestActiveTurnRunningForReadsStartedAtAsMillis(t *testing.T) {
 
 // TestWorkspaceDataFromAppThreadCarriesWorkMetrics asserts that
 // thread.Evener.{Usage,WorkMillis,ActiveTurnStartedAt} (WS2) flow onto
-// WorkspaceData, the same way Goal already does (TestHubDetailFromAppThreadCarriesGoal
-// in web_test.go covers the analogous hubapi.SessionDetail mapping).
+// WorkspaceData alongside the other AppWire-derived session projection fields.
 func TestWorkspaceDataFromAppThreadCarriesWorkMetrics(t *testing.T) {
 	usage := &appwire.EvenerUsage{InputTokens: 12, OutputTokens: 34, CacheReadTokens: 5, TotalTokens: 46}
 	wd := workspaceDataFromAppThread(appwire.Thread{
