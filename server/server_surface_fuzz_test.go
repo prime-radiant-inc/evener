@@ -3,9 +3,6 @@ package server
 import (
 	"context"
 	"errors"
-	"net/http"
-	"net/http/httptest"
-	"strings"
 	"testing"
 
 	"primeradiant.com/evener/agent/events"
@@ -46,49 +43,16 @@ func exerciseServerFuzzSurface(t *testing.T) {
 	t.Run("TestClearEndpoint_NoFunc", TestClearEndpoint_NoFunc)
 	t.Run("TestClear_409WhileProcessing", TestClear_409WhileProcessing)
 	t.Run("TestClear_OKWhenIdle", TestClear_OKWhenIdle)
-	t.Run("TestCompactEndpoint", TestCompactEndpoint)
-	t.Run("TestCompactEndpoint_Error", TestCompactEndpoint_Error)
-	t.Run("TestCompactEndpoint_MethodNotAllowed", TestCompactEndpoint_MethodNotAllowed)
-	t.Run("TestCompactEndpoint_NoFunc", TestCompactEndpoint_NoFunc)
 	t.Run("TestDaemonRouterMatchesCatalog", TestDaemonRouterMatchesCatalog)
 	t.Run("TestDaemonThreadReadWindowsAndTurnsListPagesToHead", TestDaemonThreadReadWindowsAndTurnsListPagesToHead)
 	t.Run("TestDaemonTranscriptPreparationPropagatesUnsupportedFormat", TestDaemonTranscriptPreparationPropagatesUnsupportedFormat)
-	t.Run("TestDrainAsSteerEndpoint_ClosedSession", TestDrainAsSteerEndpoint_ClosedSession)
-	t.Run("TestDrainAsSteerEndpoint_InvalidJSON", TestDrainAsSteerEndpoint_InvalidJSON)
-	t.Run("TestDrainAsSteerEndpoint_NoContent", TestDrainAsSteerEndpoint_NoContent)
-	t.Run("TestDrainAsSteerEndpoint_NoFunc", TestDrainAsSteerEndpoint_NoFunc)
-	t.Run("TestDrainAsSteerEndpoint_RejectsEmpty", TestDrainAsSteerEndpoint_RejectsEmpty)
-	t.Run("TestDrainAsSteerEndpoint_RejectsWhenIdle", TestDrainAsSteerEndpoint_RejectsWhenIdle)
-	t.Run("TestDrainAsSteerEndpoint_WithInputBypassesEmptyQueue", TestDrainAsSteerEndpoint_WithInputBypassesEmptyQueue)
 	t.Run("TestHandleAppThreadReasoningEffortSet_CallsFuncWithTrimmedValue", TestHandleAppThreadReasoningEffortSet_CallsFuncWithTrimmedValue)
 	t.Run("TestHandleAppThreadReasoningEffortSet_NoneNormalizesToEmpty", TestHandleAppThreadReasoningEffortSet_NoneNormalizesToEmpty)
 	t.Run("TestHandleAppThreadReasoningEffortSet_RejectsUnknownEffort", TestHandleAppThreadReasoningEffortSet_RejectsUnknownEffort)
 	t.Run("TestHandleAppThreadReasoningEffortSet_UnavailableWhenFuncUnset", TestHandleAppThreadReasoningEffortSet_UnavailableWhenFuncUnset)
 	t.Run("TestAppThreadPendingAskTrueFalseTrueAfterRestart", TestAppThreadPendingAskTrueFalseTrueAfterRestart)
-	t.Run("TestInputEndpoint_Accepted", TestInputEndpoint_Accepted)
-	t.Run("TestInputEndpoint_ClosedSessionConflict", TestInputEndpoint_ClosedSessionConflict)
-	t.Run("TestInputEndpoint_Conflict", TestInputEndpoint_Conflict)
-	t.Run("TestInputEndpoint_EmptyTextAndNoImages", TestInputEndpoint_EmptyTextAndNoImages)
-	t.Run("TestInputEndpoint_FullChannel", TestInputEndpoint_FullChannel)
-	t.Run("TestInputEndpoint_ImageOnly", TestInputEndpoint_ImageOnly)
-	t.Run("TestInputEndpoint_InvalidJSON", TestInputEndpoint_InvalidJSON)
-	t.Run("TestInputEndpoint_TextAndImage", TestInputEndpoint_TextAndImage)
-	t.Run("TestIntegration_InputToAppwire", TestIntegration_InputToAppwire)
 	t.Run("TestIntegration_StatusUpdates", TestIntegration_StatusUpdates)
-	t.Run("TestInterruptEndpoint", TestInterruptEndpoint)
-	t.Run("TestInterruptEndpoint_MethodNotAllowed", TestInterruptEndpoint_MethodNotAllowed)
-	t.Run("TestInterruptEndpoint_NoCancelFunc", TestInterruptEndpoint_NoCancelFunc)
 	t.Run("TestMergeAppThreadItem", TestMergeAppThreadItem)
-	t.Run("TestModelEndpoint", TestModelEndpoint)
-	t.Run("TestModelEndpoint_EmptyModel", TestModelEndpoint_EmptyModel)
-	t.Run("TestModelEndpoint_InvalidJSON", TestModelEndpoint_InvalidJSON)
-	t.Run("TestModelEndpoint_NoFunc", TestModelEndpoint_NoFunc)
-	t.Run("TestQueueEndpoint_Accepted", TestQueueEndpoint_Accepted)
-	t.Run("TestQueueEndpoint_FuncError", TestQueueEndpoint_FuncError)
-	t.Run("TestQueueEndpoint_InvalidJSON", TestQueueEndpoint_InvalidJSON)
-	t.Run("TestQueueEndpoint_NoFunc", TestQueueEndpoint_NoFunc)
-	t.Run("TestQueueEndpoint_RejectsEmptyText", TestQueueEndpoint_RejectsEmptyText)
-	t.Run("TestQueueEndpoint_RejectsWhenIdle", TestQueueEndpoint_RejectsWhenIdle)
 	t.Run("TestReserveAppTurnIDForStartIsAtomic", TestReserveAppTurnIDForStartIsAtomic)
 	t.Run("TestServerAppWireErrorEventNotifiesSubscribers", TestServerAppWireErrorEventNotifiesSubscribers)
 	t.Run("TestServerAppWireGoalSetEmptyObjectiveRoutesThroughGoalFunc", TestServerAppWireGoalSetEmptyObjectiveRoutesThroughGoalFunc)
@@ -136,22 +100,11 @@ func exerciseServerFuzzSurface(t *testing.T) {
 	t.Run("TestServerSameOriginGuardAllowsLocalhostAlias", TestServerSameOriginGuardAllowsLocalhostAlias)
 	t.Run("TestServerSameOriginGuardRejectsBadHost", TestServerSameOriginGuardRejectsBadHost)
 	t.Run("TestServerSameOriginGuardRejectsBadOrigin", TestServerSameOriginGuardRejectsBadOrigin)
-	t.Run("TestShutdown_503WhenUnregistered", TestShutdown_503WhenUnregistered)
-	t.Run("TestShutdown_InvokesCallback", TestShutdown_InvokesCallback)
-	t.Run("TestShutdown_RejectsGET", TestShutdown_RejectsGET)
-	t.Run("TestShutdown_WritesResponseBeforeCallback", TestShutdown_WritesResponseBeforeCallback)
 	t.Run("TestAppThreadReportsAwaitingAndSendCapability", TestAppThreadReportsAwaitingAndSendCapability)
-	t.Run("TestSteerEndpoint", TestSteerEndpoint)
-	t.Run("TestSteerEndpoint_EmptyText", TestSteerEndpoint_EmptyText)
-	t.Run("TestSteerEndpoint_MethodNotAllowed", TestSteerEndpoint_MethodNotAllowed)
-	t.Run("TestSteerEndpoint_NoFunc", TestSteerEndpoint_NoFunc)
 	t.Run("TestSubmitContinuation", TestSubmitContinuation)
 	t.Run("TestSubmitContinuation_DropIfFull", TestSubmitContinuation_DropIfFull)
 	t.Run("TestSubmitNotification_DropIfFull", TestSubmitNotification_DropIfFull)
 	t.Run("TestSubmitNotification_PushesEntryNotification", TestSubmitNotification_PushesEntryNotification)
-	t.Run("TestTasksEndpoint", TestTasksEndpoint)
-	t.Run("TestTasksEndpoint_MethodNotAllowed", TestTasksEndpoint_MethodNotAllowed)
-	t.Run("TestTasksEndpoint_NoFunc", TestTasksEndpoint_NoFunc)
 }
 
 func exerciseServerFuzzResiduals(_ *testing.T) {
@@ -202,7 +155,6 @@ func exerciseServerFuzzResiduals(_ *testing.T) {
 	}
 	exerciseAppWireResiduals()
 	exerciseProjectionResiduals()
-	exerciseHTTPResiduals()
 }
 
 func exerciseAppWireResiduals() {
@@ -330,24 +282,4 @@ func exerciseProjectionResiduals() {
 	ch <- events.SessionEvent{Kind: events.EventSessionEnd}
 	close(ch)
 	Bridge(NewServer(ServerConfig{}), ch)
-}
-
-func exerciseHTTPResiduals() {
-	s := NewServer(ServerConfig{})
-	call := func(method, path, body string) {
-		s.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(method, path, strings.NewReader(body)))
-	}
-	for _, path := range []string{"/queue", "/drain-as-steer", "/clear", "/model", "/input"} {
-		call(http.MethodGet, path, "")
-	}
-	s.SetState(appwire.ThreadStatusClosed)
-	call(http.MethodPost, "/queue", `{"text":"x"}`)
-	s.SetState("")
-	s.SetProcessing(true)
-	s.SetDrainAsSteerFunc(func() error { return nil })
-	call(http.MethodPost, "/drain-as-steer", `{"text":"x"}`)
-	s.SetDrainAsSteerWithInputFunc(func(string, []ImageAttachment) error { return errors.New("drain") })
-	call(http.MethodPost, "/drain-as-steer", `{"text":"x"}`)
-	call(http.MethodPost, "/clear", "")
-	call(http.MethodPost, "/model", `{}`)
 }
