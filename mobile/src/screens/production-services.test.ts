@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
+import type { AnyNotification } from "../../../cmd/evener-hub/frontend/src/protocol/types.gen";
 import type {
   ConversationClientLike,
   LiveConversationService,
@@ -39,11 +40,72 @@ describe("createProfileScopedServices", () => {
       scoped.conversationService;
 
     expect(createClient).toHaveBeenCalledWith(PROFILE);
-    expect(scoped.client).toBe(client);
+    expect(scoped.client).not.toBe(client);
+    expect(scoped.client.setActive).toBeTypeOf("function");
     expect(scoped.rosterService).toBeDefined();
     expect(scoped.rosterStore).toBeDefined();
     expect(scoped.newSessionService).toBeDefined();
     expect(liveConversationService).toBeDefined();
+  });
+
+  it("gates state, notification, and request delivery while the scope lease is inactive", async () => {
+    const callbacks: {
+      notification?: (notification: AnyNotification) => void;
+      state?: (state: string) => void;
+    } = {};
+    const request = vi.fn(() => Promise.resolve({}));
+    const client: ConversationClientLike & {
+      connect: () => Promise<unknown>;
+      close: () => void;
+      onStateChange: (handler: (state: string) => void) => () => void;
+    } = {
+      request,
+      onNotification: vi.fn((handler) => {
+        callbacks.notification = handler;
+        return () => {};
+      }),
+      connect: vi.fn(() => Promise.resolve({})),
+      close: vi.fn(),
+      onStateChange: vi.fn((handler) => {
+        callbacks.state = handler;
+        return () => {};
+      }),
+    };
+    const scoped = createProfileScopedServices(PROFILE, () => client);
+    const onNotification = vi.fn();
+    const onState = vi.fn();
+    scoped.client.onNotification(onNotification);
+    scoped.client.onStateChange(onState);
+    const notification = {
+      method: "evener/tree/changed",
+      params: { revision: 1 },
+    } as AnyNotification;
+    const notificationCallback = callbacks.notification;
+    const stateCallback = callbacks.state;
+    if (notificationCallback === undefined || stateCallback === undefined) {
+      throw new Error("lease-aware callbacks were not installed");
+    }
+
+    notificationCallback(notification);
+    stateCallback("ready");
+    expect(onNotification).toHaveBeenCalledTimes(1);
+    expect(onState).toHaveBeenCalledTimes(1);
+
+    scoped.client.setActive(false);
+    notificationCallback(notification);
+    stateCallback("closed");
+    await expect(
+      scoped.client.request("thread/list", { limit: 501 }),
+    ).rejects.toThrow("profile scope is inactive");
+    expect(onNotification).toHaveBeenCalledTimes(1);
+    expect(onState).toHaveBeenCalledTimes(1);
+    expect(request).not.toHaveBeenCalled();
+
+    scoped.client.setActive(true);
+    notificationCallback(notification);
+    stateCallback("ready");
+    expect(onNotification).toHaveBeenCalledTimes(2);
+    expect(onState).toHaveBeenCalledTimes(2);
   });
 });
 
