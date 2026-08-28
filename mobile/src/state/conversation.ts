@@ -372,6 +372,11 @@ export interface LiveConversationState extends ConversationState {
     service: LiveConversationService,
     activitySink: LiveActivitySink,
   ): Promise<void>;
+  // Plan3 host projection: returns a fresh immutable snapshot of the private
+  // truncatedItemIds set. The caller (live-concept projector) uses this to
+  // mark items truncated:true/false without suffix inference. The returned
+  // Set is a copy — mutating it cannot affect the store's internal ownership.
+  getTruncatedItemIds(): ReadonlySet<string>;
 }
 
 // Extract threadId/ref from a notification's params, returning null if the
@@ -2451,6 +2456,12 @@ export function createConversationStore() {
           conversationGeneration: conversationGen,
         });
       },
+
+      // Plan3 host projection: fresh snapshot of the private truncatedItemIds.
+      // Returns a new Set so the caller cannot mutate internal ownership.
+      getTruncatedItemIds() {
+        return new Set(truncatedItemIds);
+      },
     };
   });
 }
@@ -2517,13 +2528,15 @@ async function handleMutationError(
     // revision, so it counts as an edit and prevents restore.
     // I1: A current mutation failure may install failed pending/draft
     // restoration, but must NOT overwrite a newer error owner. Only write
-    // error if the captured error-owner revision is unchanged OR the current
-    // error is null (a rehydrate clear-to-null is not a newer error owner —
-    // it increments errorOwnerRev but writes null, not a real error). ABA
-    // same text/null protection applies to stale rehydrates that try to CLEAR
-    // a newer mutation's error — that is handled in the rehydrate success
-    // path via entryErrorRev comparison. Here, the mutation failure owns the
-    // error write unless a newer mutation/page wrote a non-null error.
+    // error if the captured error-owner revision is unchanged — revision
+    // equality ONLY, no || currentError === null shortcut. Revision
+    // equality preserves ANY newer error owner including a clear-to-null
+    // (which increments errorOwnerRev but writes null) and an ABA same
+    // text/null re-set. A stale rehydrate that tries to CLEAR a newer
+    // mutation's error is handled in the rehydrate success path via
+    // entryErrorRev comparison. Here, the mutation failure owns the error
+    // write only when no newer owner (null or non-null) advanced the
+    // revision during the await.
     const shouldRestore =
       draftSnapshot !== null && getDraftRevision() === revisionAtSubmit;
     const newError = err instanceof Error ? err.message : String(err);
@@ -2535,8 +2548,9 @@ async function handleMutationError(
         error: newError,
       });
     } else {
-      // A newer error owner published a non-null error — preserve it. Only
-      // install the failed pending/draft restoration.
+      // A newer error owner published (non-null error, null clear, or ABA
+      // same text/null re-set) — preserve it. Only install the failed
+      // pending/draft restoration.
       set({
         pendingMutation: { ...mutation, status: "failed" },
         pendingSend: null,

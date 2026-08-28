@@ -56,6 +56,7 @@ const OPTS = {
   olderCursor: null,
   projectLabel: "My Project",
   updatedLabel: null,
+  truncatedItemIds: new Set<string>(),
 } as const;
 
 function deterministicAllocator(prefix: string): OpaqueKeyAllocator {
@@ -174,6 +175,7 @@ describe("createLiveConversationProjector", () => {
       olderCursor: null,
       projectLabel: "Project",
       updatedLabel: null,
+      truncatedItemIds: new Set<string>(),
     });
     expect(view.threadKey).not.toBe("raw-ref-secret-123");
     expect(typeof view.threadKey).toBe("string");
@@ -190,6 +192,7 @@ describe("createLiveConversationProjector", () => {
       olderCursor: null,
       projectLabel: "Project",
       updatedLabel: null,
+      truncatedItemIds: new Set<string>(),
     });
     expect(view.threadKey).not.toContain("ref");
     expect(view.threadKey).not.toContain("abc");
@@ -203,12 +206,14 @@ describe("createLiveConversationProjector", () => {
       olderCursor: null,
       projectLabel: "Project",
       updatedLabel: null,
+      truncatedItemIds: new Set<string>(),
     });
     const b = p.project(conv, {
       ref: "ref-X",
       olderCursor: null,
       projectLabel: "Project",
       updatedLabel: null,
+      truncatedItemIds: new Set<string>(),
     });
     expect(a.view.threadKey).toBe(b.view.threadKey);
   });
@@ -221,12 +226,14 @@ describe("createLiveConversationProjector", () => {
       olderCursor: null,
       projectLabel: "Project",
       updatedLabel: null,
+      truncatedItemIds: new Set<string>(),
     });
     const b = p.project(conv, {
       ref: "ref-B",
       olderCursor: null,
       projectLabel: "Project",
       updatedLabel: null,
+      truncatedItemIds: new Set<string>(),
     });
     expect(a.view.threadKey).not.toBe(b.view.threadKey);
   });
@@ -241,6 +248,7 @@ describe("createLiveConversationProjector", () => {
       olderCursor: null,
       projectLabel: "Display Project Name",
       updatedLabel: null,
+      truncatedItemIds: new Set<string>(),
     });
     expect(view.project).toBe("Display Project Name");
     expect(view.project).not.toBe("session-secret-1");
@@ -254,6 +262,7 @@ describe("createLiveConversationProjector", () => {
       olderCursor: null,
       projectLabel: "Project",
       updatedLabel: "2 minutes ago",
+      truncatedItemIds: new Set<string>(),
     });
     expect(withLabel.updatedLabel).toBe("2 minutes ago");
 
@@ -262,6 +271,7 @@ describe("createLiveConversationProjector", () => {
       olderCursor: null,
       projectLabel: "Project",
       updatedLabel: null,
+      truncatedItemIds: new Set<string>(),
     });
     expect(nullLabel.updatedLabel).toBeNull();
   });
@@ -281,6 +291,7 @@ describe("createLiveConversationProjector", () => {
       olderCursor: "page-1",
       projectLabel: "Project",
       updatedLabel: null,
+      truncatedItemIds: new Set<string>(),
     });
     expect(withCursor.olderAvailable).toBe(true);
 
@@ -289,6 +300,7 @@ describe("createLiveConversationProjector", () => {
       olderCursor: null,
       projectLabel: "Project",
       updatedLabel: null,
+      truncatedItemIds: new Set<string>(),
     });
     expect(nullCursor.olderAvailable).toBe(false);
   });
@@ -745,6 +757,7 @@ describe("createLiveConversationProjector", () => {
       olderCursor: "page-1",
       projectLabel: "Project",
       updatedLabel: null,
+      truncatedItemIds: new Set<string>(),
     });
     const bLabels = b.view.items.map((i) => i.sequenceLabel);
     expect(bLabels[2]).toBe(recentLabels[0]);
@@ -772,6 +785,7 @@ describe("createLiveConversationProjector", () => {
       olderCursor: "page-1",
       projectLabel: "Project",
       updatedLabel: null,
+      truncatedItemIds: new Set<string>(),
     });
     expect(b.view.items[1]?.key).toBe(recentKey);
   });
@@ -828,6 +842,7 @@ describe("createLiveConversationProjector", () => {
       olderCursor: "page-1",
       projectLabel: "Project",
       updatedLabel: null,
+      truncatedItemIds: new Set<string>(),
     });
     expect(b.view.questions[0]?.key).toBe(qKey);
     expect(b.view.questions[0]?.options[0]?.key).toBe(optKey);
@@ -902,6 +917,7 @@ describe("createLiveConversationProjector", () => {
       olderCursor: null,
       projectLabel: "Display Project",
       updatedLabel: null,
+      truncatedItemIds: new Set<string>(),
     });
     const json = JSON.stringify(view);
     expect(json).not.toContain("session-secret-1");
@@ -995,7 +1011,34 @@ describe("createLiveConversationProjector", () => {
     expect(count).toBe(1);
   });
 
-  it("store-capped marker text within cap is recognized as truncated (no duplicate)", () => {
+  // --- Plan3: truncation marker ambiguity resolved via store set, not suffix ---
+
+  it("within-cap genuine content ending marker with ID absent => truncated false, body unchanged", () => {
+    const p = createLiveConversationProjector();
+    const marker = "… truncated";
+    const genuineContent = `Hello world ${marker}`;
+    expect(utf8Bytes(genuineContent)).toBeLessThanOrEqual(65536);
+    const conv = makeConversation({
+      items: [
+        {
+          kind: "assistant",
+          id: "genuine-marker",
+          markdown: genuineContent,
+          streaming: false,
+        },
+      ],
+    });
+    // ID absent from truncatedItemIds — projector must NOT infer from suffix.
+    const { view } = p.project(conv, {
+      ...OPTS,
+      truncatedItemIds: new Set<string>(),
+    });
+    const item = view.items.find((i) => i.kind === "assistant");
+    expect(item?.truncated).toBe(false);
+    expect(item?.body).toBe(genuineContent);
+  });
+
+  it("store-capped content with ID present => truncated true, body/marker unchanged", () => {
     const p = createLiveConversationProjector();
     const marker = "… truncated";
     const markerByteLen = utf8Bytes(marker);
@@ -1012,13 +1055,46 @@ describe("createLiveConversationProjector", () => {
         },
       ],
     });
-    const { view } = p.project(conv, { ...OPTS });
+    // ID present in truncatedItemIds — the store's authoritative set marks it.
+    const { view } = p.project(conv, {
+      ...OPTS,
+      truncatedItemIds: new Set(["capped-ok"]),
+    });
     const item = view.items.find((i) => i.kind === "assistant");
     expect(item?.truncated).toBe(true);
     expect(utf8Bytes(item?.body ?? "")).toBeLessThanOrEqual(65536);
     const body = item?.body ?? "";
     const count = body.split(marker).length - 1;
     expect(count).toBe(1);
+  });
+
+  it("projector-oversized input => truncated true and exactly one marker regardless of set", () => {
+    const p = createLiveConversationProjector();
+    const marker = "… truncated";
+    const largeText = "x".repeat(70_000);
+    const conv = makeConversation({
+      items: [
+        {
+          kind: "assistant",
+          id: "oversized-1",
+          markdown: largeText,
+          streaming: false,
+        },
+      ],
+    });
+    // Even with an empty truncatedItemIds set, the projector itself truncates
+    // oversized content and marks truncated: true.
+    const { view } = p.project(conv, {
+      ...OPTS,
+      truncatedItemIds: new Set<string>(),
+    });
+    const item = view.items.find((i) => i.kind === "assistant");
+    expect(item?.truncated).toBe(true);
+    const body = item?.body ?? "";
+    const count = body.split(marker).length - 1;
+    expect(count).toBe(1);
+    expect(body.endsWith(marker)).toBe(true);
+    expect(utf8Bytes(body)).toBeLessThanOrEqual(65536);
   });
 
   it("multibyte truncation produces valid Unicode (no replacement chars)", () => {
@@ -1218,6 +1294,7 @@ describe("createLiveConversationProjector", () => {
       olderCursor: null,
       projectLabel: "P",
       updatedLabel: null,
+      truncatedItemIds: new Set<string>(),
     });
     const keyA = a.view.items[0]?.key;
 
@@ -1226,6 +1303,7 @@ describe("createLiveConversationProjector", () => {
       olderCursor: null,
       projectLabel: "P",
       updatedLabel: null,
+      truncatedItemIds: new Set<string>(),
     });
     const keyB = b.view.items[0]?.key;
     expect(keyA).not.toBe(keyB);
@@ -1237,6 +1315,7 @@ describe("createLiveConversationProjector", () => {
       olderCursor: null,
       projectLabel: "P",
       updatedLabel: null,
+      truncatedItemIds: new Set<string>(),
     });
     expect(a2.view.items[0]?.key).not.toBe(keyA);
 
@@ -1245,6 +1324,7 @@ describe("createLiveConversationProjector", () => {
       olderCursor: null,
       projectLabel: "P",
       updatedLabel: null,
+      truncatedItemIds: new Set<string>(),
     });
     expect(b2.view.items[0]?.key).toBe(keyB);
   });
@@ -1259,6 +1339,7 @@ describe("createLiveConversationProjector", () => {
       olderCursor: null,
       projectLabel: "P",
       updatedLabel: null,
+      truncatedItemIds: new Set<string>(),
     });
     const keyA = a.view.items[0]?.key;
 
@@ -1269,6 +1350,7 @@ describe("createLiveConversationProjector", () => {
       olderCursor: null,
       projectLabel: "P",
       updatedLabel: null,
+      truncatedItemIds: new Set<string>(),
     });
     expect(b.view.items[0]?.key).not.toBe(keyA);
   });
@@ -1297,12 +1379,14 @@ describe("createLiveConversationProjector", () => {
       olderCursor: null,
       projectLabel: "P",
       updatedLabel: null,
+      truncatedItemIds: new Set<string>(),
     });
     const b = p.project(conv, {
       ref: "ref-B",
       olderCursor: null,
       projectLabel: "P",
       updatedLabel: null,
+      truncatedItemIds: new Set<string>(),
     });
     expect(a.view.items[0]?.key).not.toBe(b.view.items[0]?.key);
   });
@@ -1319,6 +1403,7 @@ describe("createLiveConversationProjector", () => {
       olderCursor: null,
       projectLabel: "P",
       updatedLabel: null,
+      truncatedItemIds: new Set<string>(),
     });
     const keyA = a.view.items[0]?.key;
 
@@ -1327,6 +1412,7 @@ describe("createLiveConversationProjector", () => {
       olderCursor: null,
       projectLabel: "P",
       updatedLabel: null,
+      truncatedItemIds: new Set<string>(),
     });
     const keyB = b.view.items[0]?.key;
     expect(keyA).not.toBe(keyB);
@@ -1338,6 +1424,7 @@ describe("createLiveConversationProjector", () => {
       olderCursor: null,
       projectLabel: "P",
       updatedLabel: null,
+      truncatedItemIds: new Set<string>(),
     });
     expect(b2.view.items[0]?.key).toBe(keyB);
 
@@ -1346,6 +1433,7 @@ describe("createLiveConversationProjector", () => {
       olderCursor: null,
       projectLabel: "P",
       updatedLabel: null,
+      truncatedItemIds: new Set<string>(),
     });
     expect(a2.view.items[0]?.key).not.toBe(keyA);
   });
@@ -1360,6 +1448,7 @@ describe("createLiveConversationProjector", () => {
       olderCursor: null,
       projectLabel: "P",
       updatedLabel: null,
+      truncatedItemIds: new Set<string>(),
     });
     const keyA = a.view.items[0]?.key;
 
@@ -1370,6 +1459,7 @@ describe("createLiveConversationProjector", () => {
       olderCursor: null,
       projectLabel: "P",
       updatedLabel: null,
+      truncatedItemIds: new Set<string>(),
     });
     expect(a2.view.items[0]?.key).toBe(keyA);
   });
@@ -1533,6 +1623,7 @@ describe("createLiveConversationProjector", () => {
         olderCursor: null,
         projectLabel: "P",
         updatedLabel: null,
+        truncatedItemIds: new Set<string>(),
       });
     } catch (e) {
       msg = e instanceof Error ? e.message : String(e);

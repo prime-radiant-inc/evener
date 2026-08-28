@@ -10264,6 +10264,234 @@ describe("ConversationStore", () => {
     });
   });
 
+  // --- Plan3: getTruncatedItemIds accessor — snapshot immutability + freeze/unfreeze ---
+
+  describe("Plan3: getTruncatedItemIds — snapshot cannot mutate internal ownership", () => {
+    it("returns an empty set when no items are truncated", async () => {
+      const service = new FakeConversationService();
+      service.openConv = makeConversation({
+        items: [
+          {
+            kind: "assistant",
+            id: "small",
+            markdown: "short",
+            streaming: false,
+          },
+        ],
+      });
+      const store = createConversationStore();
+      await store.getState().open(service, "ref-1");
+      const snapshot = store.getState().getTruncatedItemIds();
+      expect(snapshot.size).toBe(0);
+    });
+
+    it("returns a fresh snapshot — mutating the returned set does not affect the store", async () => {
+      const service = new FakeConversationService();
+      const oversized = "x".repeat(MAX_ITEM_BYTES + 100);
+      service.openConv = makeConversation({
+        items: [
+          {
+            kind: "assistant",
+            id: "big",
+            markdown: oversized,
+            streaming: false,
+          },
+        ],
+      });
+      const store = createConversationStore();
+      await store.getState().open(service, "ref-1");
+      const snapshot = store.getState().getTruncatedItemIds();
+      expect(snapshot.has("big")).toBe(true);
+
+      // Mutate the returned snapshot — must not affect internal ownership.
+      (snapshot as Set<string>).delete("big");
+      (snapshot as Set<string>).add("injected");
+
+      // The store's internal set is unchanged.
+      const snapshot2 = store.getState().getTruncatedItemIds();
+      expect(snapshot2.has("big")).toBe(true);
+      expect(snapshot2.has("injected")).toBe(false);
+
+      // The delta freeze still works — a delta to "big" is blocked.
+      store.getState().applyNotification({
+        method: "item/agentMessage/delta",
+        params: {
+          threadId: "thread-1",
+          ref: "ref-1",
+          turnId: "t1",
+          itemId: "big",
+          delta: " appended",
+        },
+      } as AnyNotification);
+      const item = store
+        .getState()
+        .conversation?.items.find((i) => i.id === "big");
+      if (item?.kind === "assistant") {
+        expect(item.markdown.endsWith("… truncated")).toBe(true);
+        expect(item.markdown).not.toContain("appended");
+      }
+    });
+
+    it("each call returns a fresh independent snapshot", async () => {
+      const service = new FakeConversationService();
+      const oversized = "x".repeat(MAX_ITEM_BYTES + 100);
+      service.openConv = makeConversation({
+        items: [
+          {
+            kind: "assistant",
+            id: "big",
+            markdown: oversized,
+            streaming: false,
+          },
+        ],
+      });
+      const store = createConversationStore();
+      await store.getState().open(service, "ref-1");
+      const s1 = store.getState().getTruncatedItemIds();
+      const s2 = store.getState().getTruncatedItemIds();
+      expect(s1).not.toBe(s2); // different Set objects
+      expect(s1.has("big")).toBe(true);
+      expect(s2.has("big")).toBe(true);
+      (s1 as Set<string>).delete("big");
+      expect(s2.has("big")).toBe(true); // s2 unaffected by s1 mutation
+    });
+  });
+
+  describe("Plan3: getTruncatedItemIds — tracks authoritative freeze/unfreeze", () => {
+    it("freeze on open with oversized content, unfreeze on rehydrate with short content", async () => {
+      const service = new FakeConversationService();
+      const oversized = "x".repeat(MAX_ITEM_BYTES + 100);
+      service.readProjectionResult = {
+        conversation: makeConversation({
+          items: [
+            {
+              kind: "assistant",
+              id: "X",
+              markdown: oversized,
+              streaming: false,
+            },
+          ],
+        }),
+        activity: {
+          tasks: [],
+          work: [],
+          usage: {},
+          capabilities: ALL_TRUE_CAPS as MobileCapabilities,
+        },
+        olderCursor: null,
+      };
+      const store = createConversationStore();
+      await store.getState().openProjected(service, createFakeSink(), "ref-1");
+
+      // Oversized item is frozen.
+      expect(store.getState().getTruncatedItemIds().has("X")).toBe(true);
+
+      // Rehydrate with short content — unfreezes.
+      service.readProjectionResult = {
+        conversation: makeConversation({
+          items: [
+            {
+              kind: "assistant",
+              id: "X",
+              markdown: "short",
+              streaming: false,
+            },
+          ],
+        }),
+        activity: {
+          tasks: [],
+          work: [],
+          usage: {},
+          capabilities: ALL_TRUE_CAPS as MobileCapabilities,
+        },
+        olderCursor: null,
+      };
+      await store.getState().rehydrate(service, createFakeSink());
+      expect(store.getState().getTruncatedItemIds().has("X")).toBe(false);
+    });
+
+    it("freeze via delta, unfreeze via item/agentMessage/reset", async () => {
+      const service = new FakeConversationService();
+      service.openConv = makeConversation({
+        items: [
+          {
+            kind: "assistant",
+            id: "item-1",
+            markdown: "x".repeat(MAX_ITEM_BYTES - 100),
+            streaming: true,
+          },
+        ],
+      });
+      const store = createConversationStore();
+      await store.getState().open(service, "ref-1");
+      expect(store.getState().getTruncatedItemIds().has("item-1")).toBe(false);
+
+      // Delta that pushes past the cap — freezes.
+      store.getState().applyNotification({
+        method: "item/agentMessage/delta",
+        params: {
+          threadId: "thread-1",
+          ref: "ref-1",
+          turnId: "t1",
+          itemId: "item-1",
+          delta: "x".repeat(200),
+        },
+      } as AnyNotification);
+      expect(store.getState().getTruncatedItemIds().has("item-1")).toBe(true);
+
+      // Reset unfreezes before clearing the markdown.
+      store.getState().applyNotification({
+        method: "item/agentMessage/reset",
+        params: {
+          threadId: "thread-1",
+          ref: "ref-1",
+          turnId: "t1",
+          itemId: "item-1",
+        },
+      } as AnyNotification);
+      expect(store.getState().getTruncatedItemIds().has("item-1")).toBe(false);
+
+      // Delta now applies — not frozen.
+      store.getState().applyNotification({
+        method: "item/agentMessage/delta",
+        params: {
+          threadId: "thread-1",
+          ref: "ref-1",
+          turnId: "t1",
+          itemId: "item-1",
+          delta: "new text",
+        },
+      } as AnyNotification);
+      const item = store
+        .getState()
+        .conversation?.items.find((i) => i.id === "item-1");
+      if (item?.kind === "assistant") {
+        expect(item.markdown).toBe("new text");
+      }
+    });
+
+    it("reset clears truncatedItemIds", async () => {
+      const service = new FakeConversationService();
+      const oversized = "x".repeat(MAX_ITEM_BYTES + 100);
+      service.openConv = makeConversation({
+        items: [
+          {
+            kind: "assistant",
+            id: "big",
+            markdown: oversized,
+            streaming: false,
+          },
+        ],
+      });
+      const store = createConversationStore();
+      await store.getState().open(service, "ref-1");
+      expect(store.getState().getTruncatedItemIds().has("big")).toBe(true);
+
+      store.getState().reset();
+      expect(store.getState().getTruncatedItemIds().size).toBe(0);
+    });
+  });
+
   describe("C1: wrong-service send/steer/queue/interrupt => zero A calls", () => {
     for (const kind of ["send", "steer", "queue", "interrupt"] as const) {
       it(`wrong-service ${kind} => zero B calls, zero state change`, async () => {
@@ -10340,7 +10568,7 @@ describe("ConversationStore", () => {
       expect(store.getState().error).toBeNull();
     });
 
-    it("mutation success after newer clear-to-null: clears pending, preserves null", async () => {
+    it("rehydrate already-null during mutation: no spurious errorOwnerRev increment, send clears pending", async () => {
       const service = new FakeConversationService();
       const sink = createFakeSink();
       const store = createConversationStore();
@@ -10364,15 +10592,70 @@ describe("ConversationStore", () => {
       expect(store.getState().pendingMutation?.status).toBe("pending");
 
       // While send is in-flight, a rehydrate with SAME sink clears error.
-      // Error is already null — rehydrate does NOT increment errorOwnerRev.
+      // Error is already null — rehydrate does NOT increment errorOwnerRev
+      // (the already-null guard prevents ABA-null from a no-op clear).
       await store.getState().rehydrate(service, sink);
       expect(store.getState().error).toBeNull();
 
       // Now the send succeeds. Since errorOwnerRev did NOT change (rehydrate
       // didn't clear a non-null error), the send CAN clear error (to null).
+      // This exercises the already-null no-spurious-increment path, NOT a
+      // genuine newer clear-to-null race.
       resolveSendHolder.fn?.(makeReceipt());
       await sendP;
       expect(store.getState().pendingMutation).toBeNull();
+      expect(store.getState().error).toBeNull();
+    });
+
+    it("mutation success after genuine newer clear-to-null: revision changed, send preserves null owner (no error write)", async () => {
+      // Genuine newer null-owner race: during the send's await, a page
+      // failure sets a non-null error (incrementing errorOwnerRev), then a
+      // rehydrate clears it to null (a REAL clear of non-null, incrementing
+      // errorOwnerRev again). When the send succeeds, entryErrorRev !==
+      // errorOwnerRev — the send must NOT include error: null in its set.
+      // It still clears pendingMutation (its own field) but leaves error to
+      // the newer owner (which is null).
+      const service = new FakeConversationService();
+      const sink = createFakeSink();
+      const store = createConversationStore();
+      await store.getState().openProjected(service, sink, "ref-1");
+
+      // Start a send that hangs — captures entryErrorRev while error is null
+      // (the send action clears error on submit).
+      const resolveSendHolder: { fn?: (r: MutationReceipt) => void } = {};
+      const hangSend = new Promise<MutationReceipt>((r) => {
+        resolveSendHolder.fn = r;
+      });
+      service.sendShouldReject = null;
+      service.send = async () => hangSend;
+      const sendP = store.getState().send(service, textInput("y"));
+      expect(store.getState().pendingMutation?.status).toBe("pending");
+      expect(store.getState().error).toBeNull();
+
+      // While send is in-flight, set error via a page failure, then rehydrate
+      // clears it to null — this is a real newer clear-to-null (error was
+      // non-null).
+      store.setState({ olderCursor: "cursor-1" });
+      service.olderItems = Promise.reject(new Error("page boom")) as never;
+      await store
+        .getState()
+        .loadOlder(service)
+        .catch(() => {});
+      expect(store.getState().error).toBe("page boom");
+
+      // Rehydrate with SAME sink clears the non-null error — increments
+      // errorOwnerRev. This is a real newer error owner (clear of non-null).
+      await store.getState().rehydrate(service, sink);
+      expect(store.getState().error).toBeNull();
+
+      // Now the send succeeds. entryErrorRev !== errorOwnerRev (the rehydrate
+      // advanced it). The send must NOT write error: null — the newer owner
+      // (the rehydrate's clear) owns the null. The send only clears
+      // pendingMutation (its own field).
+      resolveSendHolder.fn?.(makeReceipt());
+      await sendP;
+      expect(store.getState().pendingMutation).toBeNull();
+      // Error stays null — owned by the rehydrate's clear, not the send.
       expect(store.getState().error).toBeNull();
     });
 
@@ -10685,6 +10968,103 @@ describe("ConversationStore", () => {
         await mutationP.catch(() => {});
 
         expect(snapshotState(store)).toEqual(stateAfterRebind);
+        // No additional A mutation calls after rebind.
+        const callsAAfter =
+          serviceA.sendCallCount +
+          serviceA.steerCallCount +
+          serviceA.queueCallCount +
+          serviceA.interruptCallCount;
+        expect(callsAAfter).toBe(callsA);
+      });
+    }
+
+    // Table: late A SUCCESS for send/steer/queue/interrupt
+    for (const kind of ["send", "steer", "queue", "interrupt"] as const) {
+      it(`mutation: controlled A->B then late A ${kind} success => entire state unchanged`, async () => {
+        const serviceA = new FakeConversationService();
+        serviceA.readProjectionResult = {
+          conversation: makeConversation({ id: "thread-A" }),
+          activity: {
+            tasks: [],
+            work: [],
+            usage: {},
+            capabilities: ALL_TRUE_CAPS as MobileCapabilities,
+          },
+          olderCursor: null,
+        };
+        const sinkA = createFakeSink();
+        const store = createConversationStore();
+        await store.getState().openProjected(serviceA, sinkA, "ref-A");
+
+        // Start a mutation on A that hangs then succeeds.
+        const resolveMutationHolder: { fn?: (r: MutationReceipt) => void } = {};
+        const hangSuccess = new Promise<MutationReceipt>((r) => {
+          resolveMutationHolder.fn = r;
+        });
+        if (kind === "send") {
+          serviceA.sendShouldReject = null;
+          serviceA.send = async () => hangSuccess;
+        } else if (kind === "steer") {
+          serviceA.steer = async () => hangSuccess;
+        } else if (kind === "queue") {
+          serviceA.queue = async () => hangSuccess;
+        } else {
+          serviceA.interrupt = async () => hangSuccess;
+        }
+
+        let mutationP: Promise<void>;
+        if (kind === "send")
+          mutationP = store.getState().send(serviceA, textInput("x"));
+        else if (kind === "steer")
+          mutationP = store.getState().steer(serviceA, textInput("x"));
+        else if (kind === "queue")
+          mutationP = store.getState().queue(serviceA, textInput("x"));
+        else mutationP = store.getState().interrupt(serviceA);
+
+        // Rebind to B — the rebind transition settles A's pending mutation
+        // (set pendingMutation: null) and increments the binding epoch.
+        const serviceB = new FakeConversationService();
+        serviceB.readProjectionResult = {
+          conversation: makeConversation({ id: "thread-B" }),
+          activity: {
+            tasks: [],
+            work: [],
+            usage: {},
+            capabilities: ALL_TRUE_CAPS as MobileCapabilities,
+          },
+          olderCursor: null,
+        };
+        const sinkB = createFakeSink();
+        await store.getState().rehydrate(serviceB, sinkB);
+
+        // A's pending mutation was settled by the rebind — verify it is null.
+        expect(store.getState().pendingMutation).toBeNull();
+
+        // Snapshot the entire public state after rebind.
+        const stateAfterRebind = snapshotState(store);
+        const conversationRef = store.getState().conversation;
+        const callsA =
+          serviceA.sendCallCount +
+          serviceA.steerCallCount +
+          serviceA.queueCallCount +
+          serviceA.interruptCallCount;
+        const readsA = serviceA.readProjectionCalls.length;
+        const writesA = sinkA.setLiveViewCalls.length;
+
+        // A's mutation succeeds — zero state change. The operation binding
+        // is stale (isOperationBindingCurrent returns false because the
+        // binding epoch/service/sink changed), so the success path returns
+        // before any set() call. No Zustand set, no notification.
+        resolveMutationHolder.fn?.(makeReceipt());
+        await mutationP;
+
+        // C1/I5: entire public state must be identical (deep equality).
+        expect(snapshotState(store)).toEqual(stateAfterRebind);
+        // The conversation object reference must be preserved (no new set).
+        expect(store.getState().conversation).toBe(conversationRef);
+        // No additional A reads or sink writes after rebind.
+        expect(serviceA.readProjectionCalls.length).toBe(readsA);
+        expect(sinkA.setLiveViewCalls.length).toBe(writesA);
         // No additional A mutation calls after rebind.
         const callsAAfter =
           serviceA.sendCallCount +
