@@ -468,7 +468,10 @@ async function verifyChatFocus(cdpEndpoint, url) {
     await navigateTo(page, url);
     await evaluate(send, "window.settled");
     await waitForFonts(send);
-    return await evaluate(send, "window.inspectChatFocus()");
+    // Keep the async inspection reachable from the page global while CDP
+    // awaits it. Linux Chrome may otherwise collect the bare returned Promise
+    // between animation frames and reject Runtime.evaluate with -32000.
+    return await evaluate(send, "window.__overflowGuardChatFocus = window.inspectChatFocus()");
   } finally {
     await clearViewportOverride(send);
     page.close();
