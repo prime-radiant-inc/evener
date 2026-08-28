@@ -1,6 +1,6 @@
 # Provider Registry and Capability Resolution
 
-**Date:** 2026-08-28 (revision 2, after adversarial review)
+**Date:** 2026-08-28 (revision 3: review round 1 folded in, rulings on Bedrock global routing and token counting applied)
 **Status:** Draft for review
 **Replaces:** the LiteLLM-vendored model catalog, `providercfg.CompatConfig`,
 `openaicompat.ProviderQuirks` presets, the vendor wrapper adapter packages, the
@@ -834,28 +834,34 @@ dedicated client and is not supported here. So:
 - `amazon-bedrock`: `anthropic` protocol, `base_url =
   https://bedrock-mantle.{AWS_REGION}.api.aws/anthropic/v1`, `auth = header`,
   `auth_header = x-api-key`, `api_key_env = [AWS_BEARER_TOKEN_BEDROCK]`,
-  `ModelsEndpoint = "-"`, `CountTokensEndpoint = "-"`, `StructuredOutput =
-  false`, `WebSearch = false` (both listed as unsupported on that page;
-  models.dev marks the Sonnet 5 rows `structured_output: true`, so the
-  overlay pins it). The `AWS_REGION` variable selects the regional
-  endpoint; Anthropic lists the global endpoint as available for Fable 5,
-  Opus 5/4.8/4.7, Sonnet 5, and Haiku 4.5 without saying how it is
-  addressed, so the overlay carries only the regional form until that is
-  verified.
+  `ModelsEndpoint = "-"`, `CountTokensEndpoint = "-"` (estimate-only; exact
+  counting is tracked in
+  [#565](https://github.com/prime-radiant-inc/evener/issues/565)),
+  `StructuredOutput = false`, `WebSearch = false` (both listed as
+  unsupported on that page; models.dev marks the Sonnet 5 rows
+  `structured_output: true`, so the overlay pins it).
+- **Global vs regional routing** is expressed in the model id, not the
+  host: `bedrock-mantle` hosts are regional (AWS lists fourteen,
+  `bedrock-mantle.<region>.api.aws`), and AWS's cross-Region inference
+  routes a request whose model is a `global.`, `us.`, `eu.`, `jp.`, or
+  `au.` inference-profile id across the profile's regions. models.dev lists
+  those rows (`global.anthropic.claude-opus-5`, `us.anthropic.claude-fable-5`,
+  …) alongside the in-region ids (`anthropic.claude-opus-5`), so
+  `bedrock/global.anthropic.claude-opus-5` resolves to its own row and sends
+  that id verbatim; §7.2's prefix strip only serves ids the catalog lacks.
+  Jesse verified the global profile live on 2026-08-28; no `Warnings` entry
+  is attached to profile ids.
 - **OpenAI-shaped models**: models.dev marks them `@ai-sdk/amazon-bedrock/mantle`
   with `api: https://bedrock-mantle.${AWS_REGION}.api.aws/openai/v1` and
   `shape: responses` (or `/v1` + `completions`); the converter turns that
   into a model-level transport with bearer auth from the same
   `AWS_BEARER_TOKEN_BEDROCK` (AWS documents the bearer path for both the
   `bedrock-mantle` and `bedrock-runtime` OpenAI-compatible endpoints).
-- Catalog ids: models.dev lists the Messages-endpoint spellings
-  (`anthropic.claude-opus-5`, `anthropic.claude-sonnet-5`,
-  `anthropic.claude-fable-5`) alongside legacy ARN-style rows
-  (`us.anthropic.claude-sonnet-4-5-20250929-v1:0`); the legacy rows resolve
-  for metadata but the endpoint above only serves the models on Anthropic's
-  table (Fable 5, Opus 5/4.8/4.7, Sonnet 5, Haiku 4.5, Mythos Preview).
-  Whether inference-profile ids (`us.`, `global.`) are accepted there is not
-  stated on the page; `Warnings` flags them until verified.
+- Catalog ids: models.dev also lists legacy ARN-style rows
+  (`us.anthropic.claude-sonnet-4-5-20250929-v1:0`); they resolve for
+  metadata, but the endpoint above only serves the models on Anthropic's
+  table (Fable 5, Opus 5/4.8/4.7, Sonnet 5, Haiku 4.5, Mythos Preview), so a
+  request for an older id fails at the provider with its own message.
 
 Claude Opus 4.6 and earlier on Bedrock use the legacy `InvokeModel` path
 (ARN ids, AWS event-stream framing, SigV4, `anthropic_version:
@@ -876,7 +882,8 @@ scope and would be added only if someone needs those model versions.
   endpoints support Claude Sonnet 4.6 and earlier").
 - `auth = gcp-adc` (§8.1); `api_key_env` is empty. `ModelsEndpoint = "-"`,
   `CountTokensEndpoint = "-"` (Vertex's count-tokens is a separate publisher
-  call; estimate-only until someone needs it).
+  call; estimate-only, exact counting tracked in
+  [#565](https://github.com/prime-radiant-inc/evener/issues/565)).
 - **Gemini** (`google-vertex`): `google` protocol, `endpoint =
   /publishers/google/models/{model}:streamGenerateContent?alt=sse`.
 - **Claude** (`google-vertex-anthropic`): `anthropic` protocol, `endpoint =
@@ -1139,9 +1146,17 @@ building the new packages beside the old ones and cutting over last.
    the LiteLLM data, the wrapper packages, `openaicompat`, and the old
    `openai` adapter deleted; `docs/llm-providers.md` rewritten around §3–§10.
    (~net −4,000 lines including tests.)
-4. **Vertex ADC** (optional, additive): the `gcp-adc` authenticator over
-   `golang.org/x/oauth2/google`. Azure and Bedrock need nothing beyond
-   steps 1–3. (~150 lines.)
+4. **Cloud providers** (later phase, additive): the `gcp-adc`
+   authenticator over `golang.org/x/oauth2/google` (~150 lines), plus
+   live-verified (opt-in `EVENER_LIVE_TESTS=1`) coverage for Azure, Bedrock,
+   and Vertex against the overlay entries of §9. Nothing in steps 1–3 is
+   provisional for them: the transport fields (`Auth`, `AuthHeader`,
+   `BaseURL`/`Endpoint` templates with `{VAR}`, the `-` endpoint sentinel,
+   `Body` constants, model-level `Transport` overlays, `WireID`) and the
+   `Fields` baselines are designed for these three from the start, and the
+   §13 golden `Resolved` records for `azure/…`, `bedrock/…`, and `vertex/…`
+   are written in step 1 so the data model is proven before any cloud call
+   is made.
 
 ## 15. Decisions taken and open questions
 
@@ -1161,15 +1176,14 @@ Decided:
   `NonDefaultEligible` interface goes away.
 - The snapshot embeds all 207 providers (439 KB gzipped); hidden rows cost
   nothing at runtime.
+- Bedrock global routing ships now, as `global.` inference-profile model ids
+  on the regional `bedrock-mantle` host (Jesse verified live, 2026-08-28).
+- Vertex and Bedrock token counting is estimate-only; exact counting is
+  [#565](https://github.com/prime-radiant-inc/evener/issues/565).
+- Azure, Bedrock, and Vertex may land as a later phase (§14 step 4), but the
+  data model and transport axis support them from step 1.
 
-Open, for Jesse:
-
-1. **Bedrock global endpoint**: Anthropic's page says the global endpoint
-   exists for the current models but not how it is addressed. Ship regional
-   only and add global once verified live?
-2. **Vertex count-tokens and Bedrock count-tokens**: estimate-only until
-   someone needs exact counts there, or implement Vertex's
-   `count-tokens:rawPredict` in step 4?
+No open questions remain.
 
 ## Review log
 
@@ -1190,3 +1204,8 @@ endpoints (§4, §8.1); `ThinkingDisplay` inside the adaptive branch and
 `Transport.Body` parent rule (§8.3); the additive implementation order
 (§14); appwire/frontend/`envvars` scope (§10, §11.3); `KindQuotaExceeded`
 (§12).
+
+Revision 3 applies Jesse's rulings on the two open questions (Bedrock
+global routing via `global.` profile ids, §9.3; estimate-only token counting
+with #565, §9.3–§9.4) and states in §14 that the cloud providers may be a
+later phase while the data model supports them from step 1.
