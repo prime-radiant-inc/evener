@@ -74,9 +74,11 @@ pub trait SecureStore: Send + Sync {
     fn delete(&self, profile_id: &str) -> Result<(), ProfileError>;
 }
 
-/// Pairing probe: unauthenticated `/api/health` (mobile API version) plus an
+/// Pairing probe and network-policy enforcement boundary: implementations must
+/// resolve and pin every network phase through the applicable `NetworkPolicy`.
+/// Production probes unauthenticated `/api/health` (mobile API version) plus an
 /// authenticated harmless endpoint, both with redirects disabled. Injected so
-/// tests are deterministic and never touch the network.
+/// profile lifecycle tests are deterministic and never touch the network.
 pub trait PairingProbe: Send + Sync {
     /// Returns the mobile API version on success.
     fn probe(&self, origin: &str, token: &str, mode: ReleaseMode) -> Result<i64, ProfileError>;
@@ -290,7 +292,9 @@ pub struct ProfileStore {
     secure: Arc<dyn SecureStore>,
     probe: Arc<dyn PairingProbe>,
     clock: Arc<dyn Clock>,
-    policy: Arc<NetworkPolicy>,
+    /// The policy shared with the production probe. `PairingProbe` owns policy
+    /// enforcement so confirmation performs no duplicate synchronous resolve.
+    _policy: Arc<NetworkPolicy>,
     /// Pending previews keyed by opaque ID.
     pending: Arc<Mutex<HashMap<String, PendingPreview>>>,
     expiry_scheduler: Arc<dyn PreviewExpiryScheduler>,
@@ -329,7 +333,7 @@ impl ProfileStore {
             secure,
             probe,
             clock,
-            policy,
+            _policy: policy,
             pending: Arc::new(Mutex::new(HashMap::new())),
             expiry_scheduler,
             generation: AtomicU64::new(0),
@@ -501,15 +505,8 @@ impl ProfileStore {
         let origin = pending.pairing.origin().to_owned();
         let token = pending.pairing.token();
 
-        // Validate origin against network policy (re-resolve on this boundary).
-        self.policy
-            .resolve(pending.pairing.url(), mode)
-            .map_err(|e| ProfileError::ProbeFailed {
-                origin: origin.clone(),
-                message: e.to_string(),
-            })?;
-
-        // Authenticated probe (health + AppWire upgrade, redirects disabled).
+        // The probe is the bounded policy-enforcement boundary for both health
+        // and AppWire resolution. Do not resolve synchronously on this caller.
         let mobile_api_version =
             self.probe
                 .probe(&origin, token, mode)
@@ -1054,10 +1051,9 @@ fn make_store(
     probe: Arc<dyn PairingProbe>,
     clock: Arc<StepClock>,
 ) -> ProfileStore {
-    // Profile tests use HTTPS origins, which the policy allows public or
-    // private; any successful resolution suffices. AlwaysPrivateResolver
-    // resolves every hostname to a private IPv4 so confirm_pairing's policy
-    // check succeeds without live DNS.
+    // Fake probes stand in for the policy-enforcing production probe in these
+    // profile-only lifecycle tests. The production-shaped policy contract is
+    // covered with RealPairingProbe in profile_runtime tests.
     let policy = Arc::new(NetworkPolicy::new(Box::new(
         crate::network_policy::AlwaysPrivateResolver,
     )));

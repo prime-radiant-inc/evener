@@ -40,9 +40,8 @@ pub fn run() {
                 profile_runtime::SystemDnsResolver,
             )));
 
-            // Real HTTP pairing probe: re-resolves through the same network
-            // policy and connects TCP to the validated pinned IP using
-            // blocking std::net HTTP/1.1 (no tokio runtime re-entry).
+            // Real pairing probe: resolves both health and AppWire through the
+            // same network policy on one caller-bounded dedicated worker.
             let probe: Arc<dyn profile::PairingProbe> =
                 Arc::new(profile_runtime::RealPairingProbe::new(policy.clone()));
 
