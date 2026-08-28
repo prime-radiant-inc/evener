@@ -47,7 +47,11 @@
 //     TOOL-CALL line: inline at the end of the summary when there is one,
 //     which - with a purpose present - is the demoted second line, not the
 //     rationale line. A purpose-only row (no summary) trails them on the
-//     purpose line instead, the one line it has. The one exception: a
+//     purpose line instead, the one line it has: a sibling flex item AFTER
+//     the trigger button (never nested inside it - a button inside a button
+//     is not valid), sprung to the line's end by the trigger's own flex-grow,
+//     the same placement the notification card's head gives "Open subagent"
+//     (notificationcard.module.css's .action). The one exception: a
 //     descriptor whose summary quotes its target verbatim (read_file's
 //     openBesideInline) anchors the control mid-summary via trailingAfter -
 //     between the file name and the line range it opens.
@@ -73,6 +77,7 @@ const CLASS = {
   clampedHead: requireClass(styles.clampedHead, "toolcallitem.module.css", "clampedHead"),
   clampedTail: requireClass(styles.clampedTail, "toolcallitem.module.css", "clampedTail"),
   summaryTrailing: requireClass(styles.summaryTrailing, "toolcallitem.module.css", "summaryTrailing"),
+  purposeTrailing: requireClass(styles.purposeTrailing, "toolcallitem.module.css", "purposeTrailing"),
   summaryMeta: requireClass(styles.summaryMeta, "toolcallitem.module.css", "summaryMeta"),
   chevron: requireClass(styles.chevron, "toolcallitem.module.css", "chevron"),
 };
@@ -282,6 +287,20 @@ export function ToolRow({
         <ToolIcon kind={icon} />
       </span>
     ) : null;
+  // A purpose-only row has no tool-call line for affordances to ride, so they
+  // ride the DISCLOSURE line - the one line it has (see the grammar above).
+  // The disclosure trigger is a <button>, so the control cannot nest inside
+  // it: the slot follows the trigger as a sibling flex item of the row, and
+  // the stylesheet (data-purpose-trailing) drops the trigger's full-width
+  // basis so the two share line 1, the trigger's own grow springing the
+  // control to the line's end - the placement the notification card's head
+  // gives "Open subagent".
+  const purposeLineTrailing =
+    hasPurpose && !hasSummary && anchorSplit === undefined && trailing !== undefined && trailing !== null ? (
+      <span className={CLASS.purposeTrailing} data-testid="tool-row-purpose-trailing">
+        {trailing}
+      </span>
+    ) : null;
   // The collapsed second line's middle-truncation, WITH the inline-affordance
   // variant: when anchorSplit places the trailing control mid-summary, the
   // control becomes a flex item of the clamped line between the anchor's end
@@ -440,7 +459,13 @@ export function ToolRow({
     : undefined;
 
   return (
-    <div className={CLASS.row} data-testid="tool-row" data-purpose={hasPurpose ? "true" : undefined} title={title}>
+    <div
+      className={CLASS.row}
+      data-testid="tool-row"
+      data-purpose={hasPurpose ? "true" : undefined}
+      data-purpose-trailing={purposeLineTrailing !== null ? "true" : undefined}
+      title={title}
+    >
       {hasPurpose ? (
         <button
           type="button"
@@ -465,6 +490,7 @@ export function ToolRow({
           {statusNode}
         </>
       )}
+      {purposeLineTrailing}
       {!hasPurpose && <div className={CLASS.summaryLine}>{summaryContent}</div>}
       {!hasPurpose && (
         <button
@@ -479,7 +505,7 @@ export function ToolRow({
           {chevron}
         </button>
       )}
-      {hasPurpose && <div className={CLASS.summaryLine}>{summaryContent}</div>}
+      {hasPurpose && purposeLineTrailing === null && <div className={CLASS.summaryLine}>{summaryContent}</div>}
     </div>
   );
 }

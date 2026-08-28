@@ -19,41 +19,10 @@
 // effect. The DocParams type is imported type-only (erased, no side effect).
 // The namespace import of paneActions (not a named one) lets the test spy
 // openBeside through the module object, the reliable vitest seam.
-import type { MouseEvent } from "react";
 import * as paneActions from "../../../shell/paneActions";
 import { useThreadsStore } from "../../../stores/threads";
-import { IconButton } from "../../../widgets";
+import { OpenButton } from "../../../widgets";
 import type { DocParams } from "../../doc/openDoc";
-
-// The traditional "open out of the box" glyph - a box with its top-right
-// corner open and an arrow leaving through it - in the app's 16x16 stroke
-// grammar (same geometry as PopoutHeaderAction.tsx's PopoutIcon, at this
-// control's 14px size), currentColor so it inherits IconButton's variant
-// colour exactly as the text label it replaced did (kata 3qnd - the
-// surrounding pane chrome, Pop out/Fork from here, is all icons; this was
-// the one text label left).
-export function OpenBesideIcon() {
-  return (
-    <svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true">
-      <path
-        d="M12.5 8.5V12.5H3.5V3.5H7.5"
-        stroke="currentColor"
-        strokeWidth="1.5"
-        strokeLinecap="round"
-        strokeLinejoin="round"
-        fill="none"
-      />
-      <path
-        d="M8 8L13 3M9.5 3H13V6.5"
-        stroke="currentColor"
-        strokeWidth="1.5"
-        strokeLinecap="round"
-        strokeLinejoin="round"
-        fill="none"
-      />
-    </svg>
-  );
-}
 
 // cwdRelative expresses filePath relative to cwd, or undefined when it is not
 // inside the cwd (so the affordance is withheld). Handles both shapes execenv's
@@ -101,16 +70,19 @@ export function FileOpenBesideButton({ absPath, sessionRef }: { absPath: string;
   const params = fileDocParams(absPath, sessionRef, cwd);
   if (params === undefined) return null; // out-of-cwd / not hydrated yet → no affordance
   const docParams = params;
-  function open(e: MouseEvent<HTMLButtonElement>) {
-    // The button lives inside the row's <summary>; stop the click reaching the
-    // summary's own toggle handler so opening a file never also flips the row.
-    e.stopPropagation();
-    paneActions.openBeside({ type: "doc", params: docParams });
-  }
   // "Open beside" stays a literal, contiguous prefix (not "Open <path>
   // beside") so every existing /open beside/i query - ToolCallItem.test.tsx's
   // own affordance tests among them - still finds this control unchanged;
   // the path is appended for the same specificity the old dynamic title had.
   const name = `Open beside: ${docParams.path}`;
-  return <IconButton label={name} title={name} icon={<OpenBesideIcon />} variant="quiet" size="sm" onClick={open} />;
+  // The presentation is the standard open affordance (widgets/openbutton),
+  // which owns the glyph and the stopPropagation this row's disclosure needs.
+  return (
+    <OpenButton
+      iconOnly
+      size="sm"
+      label={name}
+      onClick={() => paneActions.openBeside({ type: "doc", params: docParams })}
+    />
+  );
 }

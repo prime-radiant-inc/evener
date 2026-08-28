@@ -644,6 +644,49 @@ test("with a purpose, a trailing affordance rides the tool-call line, not the ra
   expect(screen.getByTestId("tool-row-purpose").contains(button)).toBe(false);
 });
 
+// A purpose-only row (the delegate card: purpose, no summary) has no
+// tool-call line, so its affordance rides the DISCLOSURE line - a sibling
+// flex item AFTER the trigger button (never nested inside it - a button in a
+// button is not valid), sprung to the line's end by the trigger's own
+// flex-grow. The same placement the notification card's head gives "Open
+// subagent"; before this, the control dropped onto a second line of its own.
+test("a purpose-only row trails its affordance on the disclosure line, not a line of its own", () => {
+  render(
+    <ToolRow
+      summary=""
+      purpose="Proving family scheduler quiescence"
+      failed={false}
+      expandable
+      expanded={false}
+      onToggle={() => {}}
+      trailing={<button type="button">Open transcript</button>}
+    />,
+  );
+  const row = screen.getByTestId("tool-row");
+  const button = screen.getByRole("button", { name: "Open transcript" });
+  // Exactly one rendering, in the purpose-line slot, outside the trigger.
+  expect(screen.getAllByRole("button", { name: "Open transcript" })).toHaveLength(1);
+  expect(screen.getByTestId("tool-row-purpose-trailing").contains(button)).toBe(true);
+  expect(screen.getByTestId("tool-row-trigger").contains(button)).toBe(false);
+  // No second line at all: nothing renders a summary element or summaryLine.
+  expect(screen.queryByTestId("tool-row-summary")).toBeNull();
+  expect(row.getAttribute("data-purpose-trailing")).toBe("true");
+  // The stylesheet keeps trigger and control on one line: the trigger gives
+  // up the full-width flex basis a purpose-bearing row otherwise assigns.
+  const css = rowCss();
+  expect(css).toMatch(/\.row\[data-purpose-trailing="true"\] \.trigger\s*\{[^}]*flex:\s*1 1 auto/);
+});
+
+// Without an affordance a purpose-only row changes shape not at all: no
+// slot, no data attribute, and the (empty) summaryLine stays as it was.
+test("a purpose-only row with no affordance renders no purpose-line trailing slot", () => {
+  render(
+    <ToolRow summary="" purpose="Just a rationale." failed={false} expandable expanded={false} onToggle={() => {}} />,
+  );
+  expect(screen.queryByTestId("tool-row-purpose-trailing")).toBeNull();
+  expect(screen.getByTestId("tool-row").getAttribute("data-purpose-trailing")).toBe(null);
+});
+
 // --- trailingAfter: the affordance rides INLINE mid-summary (read_file's
 // "open beside" lands between the file name and the line range). The caller
 // supplies the COMPLETE PREFIX of `summary` up to and including the anchor

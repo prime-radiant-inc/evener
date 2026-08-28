@@ -1,6 +1,4 @@
-import type { MouseEvent } from "react";
-import { IconButton } from "../../../widgets";
-import { OpenBesideIcon } from "../transcript/fileOpenBeside";
+import { OpenButton } from "../../../widgets";
 import { openTranscript } from "../transcript/openTranscript";
 
 export function ActivityTranscriptAction({
@@ -14,19 +12,14 @@ export function ActivityTranscriptAction({
   if (!trimmedTranscriptRef) return null;
   const resolvedTranscriptRef = trimmedTranscriptRef;
 
-  function handleClick(event: MouseEvent<HTMLButtonElement>) {
-    event.stopPropagation();
-    openTranscript(resolvedTranscriptRef, parentRef);
-  }
-
+  // The standard open affordance (widgets/openbutton) owns the glyph and the
+  // stopPropagation; this wrapper only wires it to transcript navigation.
   return (
-    <IconButton
-      label="Open transcript beside"
-      title="Open transcript beside"
-      icon={<OpenBesideIcon />}
-      variant="quiet"
+    <OpenButton
+      iconOnly
       size="sm"
-      onClick={handleClick}
+      label="Open transcript beside"
+      onClick={() => openTranscript(resolvedTranscriptRef, parentRef)}
     />
   );
 }
