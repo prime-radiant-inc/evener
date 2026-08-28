@@ -1202,6 +1202,7 @@ func (s *Session) SetModel(model string) error {
 // session config; it never alters the active model itself.
 func (s *Session) SetVisionModel(ref string) error {
 	ref = strings.TrimSpace(ref)
+	ref = canonicalVisionModelOff(ref)
 	s.mu.Lock()
 	if s.closingOrClosedLocked() {
 		s.mu.Unlock()
@@ -1212,15 +1213,32 @@ func (s *Session) SetVisionModel(ref string) error {
 		return err
 	}
 	old := s.cfg.VisionModel
-	if old == ref {
+	oldCanonical := canonicalVisionModelOff(old)
+	if oldCanonical == ref {
+		canonicalized := old != oldCanonical
+		if canonicalized {
+			s.cfg.VisionModel = oldCanonical
+		}
 		s.mu.Unlock()
+		if canonicalized {
+			s.maybeAutoSave()
+		}
 		return nil
 	}
 	s.cfg.VisionModel = ref
 	s.mu.Unlock()
-	s.emit(events.EventVisionModelChanged, events.VisionModelChangedData{OldVisionModel: old, NewVisionModel: ref})
+	s.emit(events.EventVisionModelChanged, events.VisionModelChangedData{OldVisionModel: oldCanonical, NewVisionModel: ref})
 	s.maybeAutoSave()
 	return nil
+}
+
+// canonicalVisionModelOff normalizes only the complete bare off sentinel.
+// Provider-qualified refs such as "off/model" must remain ordinary refs.
+func canonicalVisionModelOff(ref string) string {
+	if !strings.Contains(ref, "/") && strings.EqualFold(strings.TrimSpace(ref), visionModelOff) {
+		return visionModelOff
+	}
+	return ref
 }
 
 func (s *Session) validateVisionModelRefLocked(ref string) error {

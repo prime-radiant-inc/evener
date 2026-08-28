@@ -54,6 +54,24 @@ func TestModelPicker_Escape(t *testing.T) {
 	}
 }
 
+func TestModelPickerEmptyIDSelectionIsDistinctFromCancellation(t *testing.T) {
+	items := []ModelPickerItem{{ID: "", Display: "Current model"}}
+
+	selectedModel, _ := NewModelPicker(items, "", 80).Update(tea.KeyMsg{Type: tea.KeyEnter})
+	selected := selectedModel.(ModelPicker)
+	if !selected.Done() || selected.Cancelled() || selected.Selected() != "" {
+		t.Fatalf("empty-ID selection = done:%v cancelled:%v selected:%q, want selected empty ID without cancellation", selected.Done(), selected.Cancelled(), selected.Selected())
+	}
+
+	for _, key := range []tea.KeyType{tea.KeyEscape, tea.KeyCtrlC} {
+		cancelledModel, _ := NewModelPicker(items, "", 80).Update(tea.KeyMsg{Type: key})
+		cancelled := cancelledModel.(ModelPicker)
+		if !cancelled.Done() || !cancelled.Cancelled() || cancelled.Selected() != "" {
+			t.Fatalf("%v = done:%v cancelled:%v selected:%q, want cancellation without selection", key, cancelled.Done(), cancelled.Cancelled(), cancelled.Selected())
+		}
+	}
+}
+
 func TestModelPicker_ActiveHighlight(t *testing.T) {
 	items := []ModelPickerItem{
 		{ID: "gpt-4o", Display: "gpt-4o"},

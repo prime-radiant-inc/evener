@@ -37,6 +37,8 @@ export interface ModelSwitchTriggerProps {
    * §H: no rollback of an already-closed picker). */
   onPick: (entry: ModelCatalogEntry) => void;
   disabled?: boolean;
+  /** Visually-hidden action suffix for the trigger's accessible name. */
+  actionLabel?: string;
   "data-testid"?: string;
   /** Hook for the visible label span, so a test can read the value without the
    * screen-reader suffix riding along in the button's own textContent. */
@@ -57,6 +59,7 @@ export function ModelSwitchTrigger({
   loadCatalog,
   onPick,
   disabled = false,
+  actionLabel = "change model",
   "data-testid": testId,
   valueTestId,
 }: ModelSwitchTriggerProps) {
@@ -143,7 +146,7 @@ export function ModelSwitchTrigger({
               whitespace-only text node between them survives that trim and
               renders nothing of its own (an all-whitespace anonymous flex item
               is not laid out). */}
-          <span className={CLASS.srOnly}>— change model</span>
+          <span className={CLASS.srOnly}>— {actionLabel}</span>
         </button>
       }
     >

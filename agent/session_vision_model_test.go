@@ -84,7 +84,7 @@ func TestDescribeImage_RoutesToConfiguredProvider(t *testing.T) {
 	}
 }
 
-func TestSetVisionModelValidatesAndEmits(t *testing.T) {
+func TestSetVisionModelRejectsInvalidRefs(t *testing.T) {
 	t.Parallel()
 	sess := s3cov_visionSession(t, SessionConfig{}, func(req llm.Request) llm.Response {
 		return llm.Response{Message: llm.Assistant("vision")}
@@ -98,6 +98,117 @@ func TestSetVisionModelValidatesAndEmits(t *testing.T) {
 	}
 	if err := sess.SetVisionModel("anthropic/"); err == nil {
 		t.Fatal("malformed ref with an empty model must fail")
+	}
+}
+
+func TestSetVisionModelCanonicalizesOffAndSuppressesSemanticNoopEvent(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	c := llm.NewClient()
+	c.Register(&fakeAdapter{name: "openai", steps: []func(req llm.Request) llm.Response{
+		func(req llm.Request) llm.Response { return llm.Response{Message: llm.Assistant("vision")} },
+	}})
+	sess, err := NewSession(c, NewOpenAIProfile("m"), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{StateDir: dir})
+	if err != nil {
+		t.Fatalf("NewSession: %v", err)
+	}
+
+	var changes []events.VisionModelChangedData
+	done := make(chan struct{})
+	sess.ConsumeEventsLossless(func(ev events.SessionEvent) {
+		if ev.Kind == events.EventVisionModelChanged {
+			changes = append(changes, ev.Data.(events.VisionModelChangedData))
+		}
+	}, func() { close(done) })
+
+	if err := sess.SetVisionModel("OFF"); err != nil {
+		t.Fatalf("SetVisionModel(OFF): %v", err)
+	}
+	if err := sess.SetVisionModel("OfF"); err != nil {
+		t.Fatalf("SetVisionModel(OfF): %v", err)
+	}
+	if got := sess.VisionModel(); got != "off" {
+		t.Fatalf("VisionModel() = %q, want canonical off", got)
+	}
+	persisted, err := schema.LoadSessionMeta(dir, sess.ID())
+	if err != nil {
+		t.Fatalf("LoadSessionMeta: %v", err)
+	}
+	if persisted.VisionModel != "off" {
+		t.Fatalf("persisted VisionModel = %q, want canonical off", persisted.VisionModel)
+	}
+	sess.Close()
+	<-done
+	if len(changes) != 1 || changes[0] != (events.VisionModelChangedData{OldVisionModel: "", NewVisionModel: "off"}) {
+		t.Fatalf("vision events = %#v, want one canonical off transition", changes)
+	}
+}
+
+func TestSetVisionModelCanonicalizesLegacyOffSpellingWithoutEvent(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	c := llm.NewClient()
+	c.Register(&fakeAdapter{name: "openai", steps: []func(req llm.Request) llm.Response{
+		func(req llm.Request) llm.Response { return llm.Response{Message: llm.Assistant("vision")} },
+	}})
+	sess, err := NewSession(c, NewOpenAIProfile("m"), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{StateDir: dir, VisionModel: "OFF"})
+	if err != nil {
+		t.Fatalf("NewSession: %v", err)
+	}
+
+	var changes int
+	done := make(chan struct{})
+	sess.ConsumeEventsLossless(func(ev events.SessionEvent) {
+		if ev.Kind == events.EventVisionModelChanged {
+			changes++
+		}
+	}, func() { close(done) })
+
+	if err := sess.SetVisionModel("OfF"); err != nil {
+		t.Fatalf("SetVisionModel(OfF): %v", err)
+	}
+	if got := sess.VisionModel(); got != "off" {
+		t.Fatalf("VisionModel() = %q, want canonical off", got)
+	}
+	persisted, err := schema.LoadSessionMeta(dir, sess.ID())
+	if err != nil {
+		t.Fatalf("LoadSessionMeta: %v", err)
+	}
+	if persisted.VisionModel != "off" {
+		t.Fatalf("persisted VisionModel = %q, want canonical off", persisted.VisionModel)
+	}
+	sess.Close()
+	<-done
+	if changes != 0 {
+		t.Fatalf("legacy off canonicalization emitted %d events, want none", changes)
+	}
+}
+
+func TestSetVisionModelPreservesQualifiedOffRef(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	c := llm.NewClient()
+	c.Register(&fakeAdapter{name: "openai", steps: []func(req llm.Request) llm.Response{
+		func(req llm.Request) llm.Response { return llm.Response{Message: llm.Assistant("vision")} },
+	}})
+	c.Register(&fakeAdapter{name: "off", steps: []func(req llm.Request) llm.Response{
+		func(req llm.Request) llm.Response { return llm.Response{Message: llm.Assistant("vision")} },
+	}})
+	sess, err := NewSession(c, NewOpenAIProfile("m"), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{StateDir: dir})
+	if err != nil {
+		t.Fatalf("NewSession: %v", err)
+	}
+	t.Cleanup(func() { sess.Close() })
+	go func() {
+		for range sess.Events() {
+		}
+	}()
+
+	if err := sess.SetVisionModel("off/model"); err != nil {
+		t.Fatalf("SetVisionModel(off/model): %v", err)
+	}
+	if got := sess.VisionModel(); got != "off/model" {
+		t.Fatalf("VisionModel() = %q, want qualified off ref unchanged", got)
 	}
 }
 
