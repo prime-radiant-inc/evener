@@ -85,6 +85,7 @@ interface ActiveProfileGraph {
     "profileId" | "origin" | "generation"
   >;
   readonly scoped: ProfileScopedServices;
+  active: boolean;
   disposed: boolean;
   unsubscribeRoster: () => void;
   unsubscribeState: () => void;
@@ -284,7 +285,12 @@ export function RootShell({ services, stores }: RootShellProps): JSX.Element {
         pendingDisposal.cancelled = true;
         pendingProfileGraphDisposalRef.current = null;
       }
-      return () => scheduleProfileGraphDisposal(currentGraph);
+      currentGraph.active = true;
+      currentGraph.scoped.client.setActive(true);
+      return () => {
+        deactivateProfileGraph(currentGraph);
+        scheduleProfileGraphDisposal(currentGraph);
+      };
     }
 
     if (pendingDisposal !== null) {
@@ -335,6 +341,7 @@ export function RootShell({ services, stores }: RootShellProps): JSX.Element {
     const graph: ActiveProfileGraph = {
       scope: targetScope,
       scoped,
+      active: true,
       disposed: false,
       unsubscribeRoster: () => {},
       unsubscribeState: () => {},
@@ -348,7 +355,7 @@ export function RootShell({ services, stores }: RootShellProps): JSX.Element {
 
     const setReachability = (state: string): void => {
       const reachability = mapClientState(state);
-      if (reachability !== null && !graph.disposed) {
+      if (reachability !== null && graph.active && !graph.disposed) {
         connection.getState().setReachability(profile.id, reachability);
       }
     };
@@ -360,6 +367,7 @@ export function RootShell({ services, stores }: RootShellProps): JSX.Element {
       .then(() => {
         if (
           graph.disposed ||
+          !graph.active ||
           activeProfileGraphRef.current !== graph ||
           !sameProfileScope(ownedProfileScopeRef.current, graph.scope)
         ) {
@@ -372,6 +380,7 @@ export function RootShell({ services, stores }: RootShellProps): JSX.Element {
       .catch(() => {
         if (
           !graph.disposed &&
+          graph.active &&
           activeProfileGraphRef.current === graph &&
           sameProfileScope(ownedProfileScopeRef.current, graph.scope)
         ) {
@@ -379,7 +388,10 @@ export function RootShell({ services, stores }: RootShellProps): JSX.Element {
         }
       });
 
-    return () => scheduleProfileGraphDisposal(graph);
+    return () => {
+      deactivateProfileGraph(graph);
+      scheduleProfileGraphDisposal(graph);
+    };
   }, [
     activeProfileId,
     activeProfileOrigin,
@@ -733,10 +745,16 @@ function sameProfileScope(
 
 function disposeProfileGraph(graph: ActiveProfileGraph): void {
   if (graph.disposed) return;
+  deactivateProfileGraph(graph);
   graph.disposed = true;
   graph.unsubscribeRoster();
   graph.unsubscribeState();
   graph.scoped.client.close();
+}
+
+function deactivateProfileGraph(graph: ActiveProfileGraph): void {
+  graph.active = false;
+  graph.scoped.client.setActive(false);
 }
 
 function safeConceptStorage(storage: ConceptStorage): ConceptStorage {
