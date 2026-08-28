@@ -68,6 +68,46 @@ final class QRScannerTests: XCTestCase {
         XCTAssertEqual(sessionFactory.makeCount, 2)
     }
 
+    func testSystemScannerMarshalsAuthorizedScanLifecycleToMainThread() throws {
+        let started = expectation(description: "capture session started")
+        let completed = expectation(description: "scan completed")
+        let permission = FakeCameraPermission(state: .authorized)
+        let sessionFactory = ThreadRecordingQRScanSessionFactory(started: started)
+        let presenter = ThreadRecordingQRScanPresenter()
+        let scanner = SystemQRScanner(
+            permission: permission,
+            sessionFactory: sessionFactory,
+            presenter: presenter
+        )
+        let completionThread = ThreadObservation()
+
+        DispatchQueue.global(qos: .userInitiated).async {
+            XCTAssertFalse(Thread.isMainThread, "test must enter the real scanner off-main")
+            scanner.scan { result in
+                completionThread.recordCurrentThread()
+                if case .failure(let error) = result {
+                    XCTFail("expected scan success, got \(error)")
+                }
+                completed.fulfill()
+            }
+        }
+
+        wait(for: [started], timeout: 1)
+        let session = try XCTUnwrap(sessionFactory.session)
+        XCTAssertTrue(sessionFactory.makeWasMain, "session creation must run on main")
+        XCTAssertTrue(presenter.presentWasMain, "native presentation must run on main")
+        XCTAssertTrue(session.startWasMain, "capture start must be owned from main")
+
+        DispatchQueue.global(qos: .userInitiated).async {
+            session.emitCode("https://hub.example.test/auth?token=native-only")
+        }
+
+        wait(for: [completed], timeout: 1)
+        XCTAssertTrue(session.stopWasMain, "terminal cleanup must return to main")
+        XCTAssertTrue(presenter.dismissWasMain, "native dismissal must run on main")
+        XCTAssertTrue(completionThread.wasMain, "terminal completion must run on main")
+    }
+
     func testSystemScannerDeniedNeverBuildsOrPresentsSession() throws {
         let permission = FakeCameraPermission(state: .denied)
         let sessionFactory = FakeQRScanSessionFactory()
@@ -215,6 +255,130 @@ private final class FakeQRScanPresenter: QRScanPresenting {
 
     func dismiss() { dismissCount += 1 }
     func cancel() { onCancel?() }
+}
+
+private final class ThreadObservation {
+    private let lock = NSLock()
+    private var value = false
+
+    var wasMain: Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        return value
+    }
+
+    func recordCurrentThread() {
+        lock.lock()
+        value = Thread.isMainThread
+        lock.unlock()
+    }
+}
+
+private final class ThreadRecordingQRScanSession: QRScanSession {
+    private let lock = NSLock()
+    private let started: XCTestExpectation
+    private var _startWasMain = false
+    private var _stopWasMain = false
+    var onCode: ((String) -> Void)?
+
+    init(started: XCTestExpectation) {
+        self.started = started
+    }
+
+    var startWasMain: Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        return _startWasMain
+    }
+
+    var stopWasMain: Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        return _stopWasMain
+    }
+
+    func installPreview(in view: UIView) {}
+
+    func start() {
+        lock.lock()
+        _startWasMain = Thread.isMainThread
+        lock.unlock()
+        started.fulfill()
+    }
+
+    func stop() {
+        lock.lock()
+        _stopWasMain = Thread.isMainThread
+        lock.unlock()
+    }
+
+    func emitCode(_ code: String) { onCode?(code) }
+}
+
+private final class ThreadRecordingQRScanSessionFactory: QRScanSessionBuilding {
+    private let lock = NSLock()
+    private let started: XCTestExpectation
+    private var _makeWasMain = false
+    private var _session: ThreadRecordingQRScanSession?
+
+    init(started: XCTestExpectation) {
+        self.started = started
+    }
+
+    var makeWasMain: Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        return _makeWasMain
+    }
+
+    var session: ThreadRecordingQRScanSession? {
+        lock.lock()
+        defer { lock.unlock() }
+        return _session
+    }
+
+    func makeSession(
+        onCode: @escaping (String) -> Void,
+        onFailure: @escaping (Error) -> Void
+    ) throws -> QRScanSession {
+        let session = ThreadRecordingQRScanSession(started: started)
+        session.onCode = onCode
+        lock.lock()
+        _makeWasMain = Thread.isMainThread
+        _session = session
+        lock.unlock()
+        return session
+    }
+}
+
+private final class ThreadRecordingQRScanPresenter: QRScanPresenting {
+    private let lock = NSLock()
+    private var _presentWasMain = false
+    private var _dismissWasMain = false
+
+    var presentWasMain: Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        return _presentWasMain
+    }
+
+    var dismissWasMain: Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        return _dismissWasMain
+    }
+
+    func present(session: QRScanSession, onCancel: @escaping () -> Void) throws {
+        lock.lock()
+        _presentWasMain = Thread.isMainThread
+        lock.unlock()
+    }
+
+    func dismiss() {
+        lock.lock()
+        _dismissWasMain = Thread.isMainThread
+        lock.unlock()
+    }
 }
 
 private final class FakeQRScanner: QRScanning {

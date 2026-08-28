@@ -285,7 +285,13 @@ final class SystemQRScanner: QRScanning {
         }
         activeOperation = operation
         lock.unlock()
-        operation.start()
+        if Thread.isMainThread {
+            operation.start()
+        } else {
+            DispatchQueue.main.async {
+                operation.start()
+            }
+        }
     }
 }
 
@@ -296,6 +302,7 @@ private final class SystemQRScanOperation {
     private let completion: (Result<String, Error>) -> Void
     private let lock = NSLock()
     private var completed = false
+    private var captureStarted = false
     private var session: QRScanSession?
     private var presented = false
     var onFinished: (() -> Void)?
@@ -313,6 +320,7 @@ private final class SystemQRScanOperation {
     }
 
     func start() {
+        dispatchPrecondition(condition: .onQueue(.main))
         switch permission.state {
         case .authorized:
             beginCapture()
@@ -320,18 +328,27 @@ private final class SystemQRScanOperation {
             finish(.failure(QRScanError.permissionDenied))
         case .notDetermined:
             permission.request { [weak self] granted in
-                if granted {
-                    self?.beginCapture()
-                } else {
-                    self?.finish(.failure(QRScanError.permissionDenied))
-                }
+                self?.handlePermissionResponse(granted)
+            }
+        }
+    }
+
+    private func handlePermissionResponse(_ granted: Bool) {
+        performOnMain { [weak self] in
+            guard let self else { return }
+            if granted {
+                self.beginCapture()
+            } else {
+                self.finish(.failure(QRScanError.permissionDenied))
             }
         }
     }
 
     private func beginCapture() {
+        dispatchPrecondition(condition: .onQueue(.main))
         lock.lock()
-        let shouldStart = !completed
+        let shouldStart = !completed && !captureStarted
+        if shouldStart { captureStarted = true }
         lock.unlock()
         guard shouldStart else { return }
         do {
@@ -352,6 +369,13 @@ private final class SystemQRScanOperation {
     }
 
     private func finish(_ result: Result<String, Error>) {
+        performOnMain { [weak self] in
+            self?.finishOnMain(result)
+        }
+    }
+
+    private func finishOnMain(_ result: Result<String, Error>) {
+        dispatchPrecondition(condition: .onQueue(.main))
         lock.lock()
         guard !completed else {
             lock.unlock()
@@ -368,6 +392,14 @@ private final class SystemQRScanOperation {
         if shouldDismiss { presenter.dismiss() }
         onFinished?()
         completion(result)
+    }
+
+    private func performOnMain(_ action: @escaping () -> Void) {
+        if Thread.isMainThread {
+            action()
+        } else {
+            DispatchQueue.main.async(execute: action)
+        }
     }
 }
 
