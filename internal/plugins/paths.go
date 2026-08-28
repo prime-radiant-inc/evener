@@ -42,24 +42,6 @@ func DefaultRoot() string {
 	return filepath.Join(dir, "evener", "plugins")
 }
 
-// legacyRootFor returns what root would have been before the Serf→Evener
-// rename (see cmd/evener-migrate), or "" if root doesn't have the
-// DefaultRoot shape (.../evener/plugins) — e.g. a caller-supplied custom
-// root, which has no legacy equivalent to reroot from.
-//
-// installLocation/installPath values stored in known_marketplaces.json and
-// installed_plugins.json before a machine was migrated still carry this
-// legacy prefix; loadMarketplaces and LoadRegistry rewrite it to the current
-// root at load time so a stale value self-heals without requiring a fresh
-// evener-migrate run.
-func legacyRootFor(root string) string {
-	parent := filepath.Dir(root)
-	if filepath.Base(parent) != "evener" {
-		return ""
-	}
-	return filepath.Join(filepath.Dir(parent), "serf", filepath.Base(root))
-}
-
 func (m *Manager) registryPath() string { return filepath.Join(m.Root, "installed_plugins.json") }
 func (m *Manager) marketplacesFile() string {
 	return filepath.Join(m.Root, "known_marketplaces.json")

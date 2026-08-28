@@ -1,8 +1,8 @@
-package legacypaths
+package migrate
 
 import "testing"
 
-func TestRewrite(t *testing.T) {
+func TestRewritePathPrefix(t *testing.T) {
 	tests := []struct {
 		name    string
 		content string
@@ -87,9 +87,9 @@ func TestRewrite(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got, n := Rewrite(tt.content, tt.old, tt.new)
+			got, n := rewritePathPrefix(tt.content, tt.old, tt.new)
 			if got != tt.want || n != tt.wantN {
-				t.Errorf("Rewrite(%q, %q, %q) = (%q, %d), want (%q, %d)",
+				t.Errorf("rewritePathPrefix(%q, %q, %q) = (%q, %d), want (%q, %d)",
 					tt.content, tt.old, tt.new, got, n, tt.want, tt.wantN)
 			}
 		})
