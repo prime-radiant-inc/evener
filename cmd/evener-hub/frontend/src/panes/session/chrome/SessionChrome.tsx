@@ -146,7 +146,7 @@ export function SessionChrome({ ref: sessionRef, placement = "footer" }: Session
     >
       {placement === "composer" ? (
         <div className={CLASS.body} data-testid="session-chrome-inline-status">
-          <StatusRow sessionRef={sessionRef} model={model} now={now} />
+          <StatusRow sessionRef={sessionRef} model={model} now={now} showVisionModel={false} />
           {/* Production mounts ONLY this placement (Composer.tsx), so the
               goal chip must ride here too — footer-only left it unreachable
               in the real app. */}
