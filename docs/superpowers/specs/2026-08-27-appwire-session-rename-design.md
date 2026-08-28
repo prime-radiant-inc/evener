@@ -15,20 +15,11 @@ deletion, or any other session mutation.
 
 ## Contract
 
-Keep the existing AppWire contract unchanged:
-
-```go
-type ThreadNameSetParams struct {
-	Ref  string `json:"ref"`
-	Name string `json:"name"`
-}
-```
-
-`evener/thread/name/set` continues to return an empty response. The hub must
-validate the ref, trim the requested name, reject an empty normalized name, and
-pass the canonical ref and normalized name to live sources. AppWire errors
-remain visible to the caller; the web UI toasts the error and leaves the rename
-dialog open.
+Keep `appwire.ThreadNameSetParams` and the existing empty response unchanged.
+The hub must validate the ref, trim the requested name, reject an empty
+normalized name, and pass the canonical ref and normalized name to live
+sources. AppWire errors remain visible to the caller; the web UI toasts the
+error and leaves the rename dialog open.
 
 ## Server behavior
 
