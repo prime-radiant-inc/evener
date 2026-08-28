@@ -74,7 +74,7 @@ skills_dirs = ["/g"]
 	writeFile(t, filepath.Join(stateRoot, "projects", pid, "meta.toml"), `schema = 1
 cwd = "`+cwd+`"
 [trust]
-hash = "`+repoHash+`"
+hashes = ["`+repoHash+`"]
 decision = "trusted"
 `)
 	writeFile(t, filepath.Join(cwd, ".evener", "launch.local.toml"), `skills_dirs = ["/p"]`)
@@ -174,7 +174,7 @@ func checkResolve_RejectedRepoSkippedSilently(t *testing.T) {
 	writeFile(t, filepath.Join(stateRoot, "projects", pid, "meta.toml"), `schema = 1
 cwd = "`+cwd+`"
 [trust]
-hash = "`+hash+`"
+hashes = ["`+hash+`"]
 decision = "rejected"
 `)
 	got, _ := Resolve(stateRoot, cwd, Layer{})
@@ -200,7 +200,7 @@ func checkResolve_RepoPathsExpandedAndValidated(t *testing.T) {
 	writeFile(t, filepath.Join(stateRoot, "projects", pid, "meta.toml"), `schema = 1
 cwd = "`+cwd+`"
 [trust]
-hash = "`+hash+`"
+hashes = ["`+hash+`"]
 decision = "trusted"
 `)
 	got, _ := Resolve(stateRoot, cwd, Layer{})
