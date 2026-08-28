@@ -578,8 +578,11 @@ func TestTUITmuxE2E_BrowseAndFork(t *testing.T) {
 	if forks := hub.Forks(); len(forks) != 0 {
 		t.Fatalf("invalid fork selection should not call hub: %+v", forks)
 	}
+	// Same sync rule as the /fork exit in SessionCommandsAndNavigation:
+	// "enter send" is visible in browse mode, so sync the transition on the
+	// action bar's disappearance, not on the hint text.
 	app.SendKeys("i")
-	app.WaitFor("enter send")
+	app.WaitForWithout([]string{"esc/i/q: compose"}, "enter send")
 	app.SendKeys("Escape")
 	app.WaitFor("esc/i/q: compose")
 	// These k presses must move the browse cursor up to the user message.
@@ -704,8 +707,13 @@ func TestTUITmuxE2E_CapabilityGates(t *testing.T) {
 		"/fork  browse and fork a user message  disabled: source does not advertise fork",
 		"/shutdown  stop this resumable session  disabled: source does not advertise shutdown",
 	)
+	// "enter send" is on screen while the palette is open (overlays do not
+	// change the footer), so it cannot prove the Escape was consumed — if
+	// the next text lands in the same pty read, "\x1b<text>" parses as
+	// alt+<key> and the palette stays open. Sync on the palette's
+	// disappearance instead.
 	app.SendKeys("Escape")
-	app.WaitFor("enter send")
+	app.WaitForWithout([]string{"Command palette"}, "enter send")
 
 	// Send is read-only when the source does not advertise it: the composer
 	// keeps the draft and the hub never receives the turn.

@@ -1099,9 +1099,10 @@ func TestHubModelBrowseKeepsComposerVisibleAndTyping(t *testing.T) {
 // must re-examine that e2e sync.
 func TestHubModelBrowseFooterStillShowsEnterSend(t *testing.T) {
 	m := newSessionHubModel(nil)
-	m.detail.Capabilities.Fork = true
+	// Any ChipContext field switches the composer to the mode-aware hint bar
+	// that carries "enter send" (composer_panel.go's View); SourceLabel is
+	// the lightest trip.
 	m.detail.SourceLabel = "codex-local"
-	m.detail.Model = "gpt-5.3-codex"
 	m.width = 140
 	m.height = 40
 	m.session.width = 140
