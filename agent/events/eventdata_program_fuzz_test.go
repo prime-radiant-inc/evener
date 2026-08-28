@@ -98,6 +98,7 @@ func eventDataProgramCases(text string, n int, flag bool) []eventDataProgramCase
 		{SessionNameChangedData{Name: text, Source: text}, EventSessionNameChanged},
 		{ModelChangedData{OldProvider: text, OldModel: text, NewProvider: text, NewModel: text, ReasoningEffortLevels: []string{text}, SupportsReasoning: flag}, EventModelChanged},
 		{ReasoningEffortChangedData{ReasoningEffort: text}, EventReasoningEffortChanged},
+		{VisionModelChangedData{OldVisionModel: text, NewVisionModel: text}, EventVisionModelChanged},
 		{TurnLimitData{MaxTurns: n, MaxToolRoundsPerInput: n}, EventTurnLimit},
 		{LoopDetectionData{Message: text}, EventLoopDetection},
 		{CommunicateData{CallID: text, EndTurn: flag, Message: text}, EventCommunicate},
