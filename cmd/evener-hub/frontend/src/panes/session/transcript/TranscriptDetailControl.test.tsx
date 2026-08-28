@@ -334,23 +334,13 @@ test("CSS keeps live detail layout-only with no private motion or chrome", () =>
   const panelBody = directPanelRules[0]?.[3] ?? "";
   const panelProperties = [...panelBody.matchAll(/(?:^|;)\s*([a-z-]+)\s*:/g)].map((match) => match[1]).sort();
   expect(panelProperties).toEqual(
-    [
-      "box-sizing",
-      "container-name",
-      "container-type",
-      "inline-size",
-      "max-block-size",
-      "overflow-y",
-      "padding",
-      "scrollbar-gutter",
-    ].sort(),
+    ["box-sizing", "container-name", "container-type", "inline-size", "max-block-size", "overflow-y", "padding"].sort(),
   );
   expect(panelBody).toMatch(/box-sizing:\s*border-box/);
   expect(panelBody).toMatch(/inline-size:\s*min\(42rem, calc\(100vw - var\(--space-8\)\)\)/);
   expect(panelBody).toMatch(/padding:\s*var\(--space-4\)/);
   expect(panelBody).toMatch(/max-block-size:\s*calc\(100dvh - var\(--space-8\)\)/);
   expect(panelBody).toMatch(/overflow-y:\s*auto/);
-  expect(panelBody).toMatch(/scrollbar-gutter:\s*stable/);
   expect(panelBody).not.toMatch(/background|box-shadow|border-radius/);
   expect(panelBody).not.toMatch(/(?:^|[;\n])\s*border(?:-[a-z-]+)?\s*:/);
   const statusMatch = /\.detailStatus,\s*\.detailWarning\s*\{([^}]*)\}/.exec(css);
