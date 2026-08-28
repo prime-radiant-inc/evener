@@ -1,6 +1,7 @@
 import type { LiveConceptIntent, LiveConceptState } from "../contract";
 import type { LiveWorkItem } from "../model";
 import { formatDuration, formatUsage } from "../shared/format";
+import { usageAxLabel, workItemAxLabel } from "../smoke-semantics";
 import { StatusDisclosure } from "./StatusDisclosure";
 
 // Live adaptation of the Field Notes work surface. Renders the live work tree
@@ -45,6 +46,7 @@ function WorkTree({
             data-work-parent-id={parentKey ?? "root"}
             data-work-depth={depth}
             data-current-work={item.tone === "running" ? "true" : undefined}
+            aria-label={workItemAxLabel(item)}
           >
             <p className="fn-work-node__context" data-ledger-annotation>
               Level {depth + 1} · Parent: {parentTitle ?? "Session"}
@@ -153,7 +155,7 @@ export function WorkView({ state, dispatch }: WorkViewProps) {
       <section
         className="fn-usage"
         data-work-usage
-        aria-labelledby="fn-usage-title"
+        aria-label={usageAxLabel(usage)}
       >
         <header>
           <p className="fn-eyebrow">Resource view</p>

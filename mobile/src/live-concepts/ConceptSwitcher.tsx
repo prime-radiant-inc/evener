@@ -155,6 +155,7 @@ export function ConceptSwitcher({
                 className="live-concept-switcher__choice"
                 data-concept-choice={choice.id}
                 data-concept-selected={isSelected ? "true" : "false"}
+                aria-label={`Switch to ${choice.label}`}
                 aria-pressed={isSelected}
                 onClick={() => handleSelect(choice.id)}
               >

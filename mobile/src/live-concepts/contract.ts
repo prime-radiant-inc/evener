@@ -36,6 +36,10 @@ export interface LiveComposerView {
   canQueue: boolean;
   canInterrupt: boolean;
   pending: ConversationMutationState | null;
+  accepted?: {
+    kind: "send" | "steer" | "queue" | "interrupt";
+    receipt: number;
+  } | null;
   error: string | null;
 }
 
@@ -122,6 +126,7 @@ export interface LiveConceptRuntime {
   activityStore: BoundStore<LiveActivityState>;
   native: NativeBridge;
   profileId: string | null;
+  connectionEvidence?: LiveConnectionView["evidence"];
 }
 
 export interface LiveConceptHostProps {

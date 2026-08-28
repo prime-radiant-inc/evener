@@ -10,6 +10,7 @@ import { type ReactElement, StrictMode } from "react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type {
   AnyNotification,
+  InitializeResponse,
   MethodName,
   MethodTypes,
   Thread,
@@ -57,6 +58,26 @@ const ALL_CAPABILITIES: ThreadCapabilities = {
   rename: true,
 };
 
+const TEST_INITIALIZE_RESULT: InitializeResponse = {
+  serverInfo: { name: "test-hub", version: "0.0.0-test" },
+  protocolVersion: "evener-appwire-v3",
+  sourceId: "test-source",
+  features: {
+    threadList: true,
+    threadTurnsList: true,
+    turnStart: true,
+    turnSteer: true,
+    threadClear: true,
+    threadShutdown: true,
+    forkFromTurn: true,
+    tasks: true,
+    transcriptList: true,
+    modelList: true,
+    directoryComplete: true,
+    auth: true,
+  },
+};
+
 interface Deferred<T> {
   readonly promise: Promise<T>;
   readonly resolve: (value: T) => void;
@@ -82,7 +103,7 @@ function createDeferred<T>(): Deferred<T> {
 }
 
 interface ProductionClientControls {
-  readonly connect?: Deferred<unknown>;
+  readonly connect?: Deferred<InitializeResponse>;
   readonly list?: Deferred<MethodTypes["thread/list"]["result"]>;
   readonly read?: Deferred<MethodTypes["thread/read"]["result"]>;
   readonly turns?: Deferred<MethodTypes["thread/turns/list"]["result"]>;
@@ -155,7 +176,9 @@ class ProductionClientFake implements ProfileClientTransport {
     private readonly controls: ProductionClientControls = {},
   ) {
     this.connect = vi.fn(
-      () => this.controls.connect?.promise ?? Promise.resolve({}),
+      () =>
+        this.controls.connect?.promise ??
+        Promise.resolve(TEST_INITIALIZE_RESULT),
     );
     this.close = vi.fn(() => this.closed.resolve());
   }
@@ -449,11 +472,11 @@ async function preparePendingOlderTransition() {
     ],
   };
   const threadB = makeThread({ id: "thread-b", ref: "ref-b", name: "Scope B" });
-  const connectA = createDeferred<unknown>();
+  const connectA = createDeferred<InitializeResponse>();
   const listA = createDeferred<MethodTypes["thread/list"]["result"]>();
   const readA = createDeferred<MethodTypes["thread/read"]["result"]>();
   const turnsA = createDeferred<MethodTypes["thread/turns/list"]["result"]>();
-  const connectB = createDeferred<unknown>();
+  const connectB = createDeferred<InitializeResponse>();
   const listB = createDeferred<MethodTypes["thread/list"]["result"]>();
   const harness = renderProductionShell(
     (profile) =>
@@ -472,7 +495,7 @@ async function preparePendingOlderTransition() {
   );
   await act(async () => {
     await harness.stores.connection.getState().refresh();
-    connectA.resolve({});
+    connectA.resolve(TEST_INITIALIZE_RESULT);
     await connectA.promise;
     listA.resolve({ data: [threadA] });
     await listA.promise;
@@ -531,6 +554,31 @@ describe("RootShell — three-tab bottom bar", () => {
     expect(
       screen.queryByRole("tab", { name: /sessions/i }),
     ).not.toBeInTheDocument();
+  });
+});
+
+describe("RootShell — live connection evidence", () => {
+  it("surfaces strict handshake identity and generations without raw origin", async () => {
+    renderProductionShell(
+      (_profile) =>
+        new ProductionClientFake(
+          makeThread({
+            id: "thread-a",
+            ref: "raw-ref-never-in-aria",
+            name: "Known live session",
+          }),
+        ),
+      { preseedConnection: true },
+    );
+
+    const root = await screen.findByRole("region", {
+      name: /Evener concept; concept Stillwater; surface sessions; connection connected; server 0\.0\.0-test; protocol evener-appwire-v3; profile generation 0; lifecycle active 0; handshake 1; app com\.primeradiant\.evener 0\.1\.0; origin sha256:/,
+    });
+    expect(root).toBeVisible();
+    expect(root.getAttribute("aria-label")).not.toContain("hub.example.com");
+    expect(root.getAttribute("aria-label")).not.toContain(
+      "raw-ref-never-in-aria",
+    );
   });
 });
 
@@ -938,7 +986,7 @@ describe("RootShell — profile-scope ownership", () => {
   });
 
   it("retains one graph through StrictMode replay and a stable rerender, then disposes once", async () => {
-    const connect = createDeferred<unknown>();
+    const connect = createDeferred<InitializeResponse>();
     const harness = renderProductionShell(
       () =>
         new ProductionClientFake(
@@ -968,7 +1016,7 @@ describe("RootShell — profile-scope ownership", () => {
     expect(client.close).not.toHaveBeenCalled();
 
     await act(async () => {
-      connect.resolve({});
+      connect.resolve(TEST_INITIALIZE_RESULT);
       await connect.promise;
     });
     expect(await screen.findByText("Alpha")).toBeInTheDocument();
@@ -981,7 +1029,7 @@ describe("RootShell — profile-scope ownership", () => {
   });
 
   it("deactivates callbacks synchronously when unmounted before a pending connect reaction", async () => {
-    const connect = createDeferred<unknown>();
+    const connect = createDeferred<InitializeResponse>();
     const harness = renderProductionShell(
       () =>
         new ProductionClientFake(
@@ -999,7 +1047,7 @@ describe("RootShell — profile-scope ownership", () => {
       "reconnecting",
     );
 
-    connect.resolve({});
+    connect.resolve(TEST_INITIALIZE_RESULT);
     harness.unmount();
     const stateCallback = client.stateCallbacks[0];
     if (stateCallback === undefined)
@@ -1020,7 +1068,7 @@ describe("RootShell — profile-scope ownership", () => {
   it.each(["resolve", "reject"] as const)(
     "invalidates an in-flight roster request before final-unmount %s settlement",
     async (outcome) => {
-      const connect = createDeferred<unknown>();
+      const connect = createDeferred<InitializeResponse>();
       const list = createDeferred<MethodTypes["thread/list"]["result"]>();
       const thread = makeThread({
         id: "thread-final-list",
@@ -1041,7 +1089,7 @@ describe("RootShell — profile-scope ownership", () => {
       }
       const refresh = vi.spyOn(scoped.rosterStore.getState(), "refresh");
       await act(async () => {
-        connect.resolve({});
+        connect.resolve(TEST_INITIALIZE_RESULT);
         await connect.promise;
       });
       const refreshResult = refresh.mock.results[0]?.value;
@@ -1089,7 +1137,7 @@ describe("RootShell — profile-scope ownership", () => {
     "invalidates an in-flight conversation read before final-unmount %s settlement",
     async (outcome) => {
       const getConversationStore = captureNextConversationStore();
-      const connect = createDeferred<unknown>();
+      const connect = createDeferred<InitializeResponse>();
       const list = createDeferred<MethodTypes["thread/list"]["result"]>();
       const read = createDeferred<MethodTypes["thread/read"]["result"]>();
       const thread = makeThread({
@@ -1103,7 +1151,7 @@ describe("RootShell — profile-scope ownership", () => {
       );
       await act(async () => {
         await harness.stores.connection.getState().refresh();
-        connect.resolve({});
+        connect.resolve(TEST_INITIALIZE_RESULT);
         await connect.promise;
         list.resolve({ data: [thread] });
         await list.promise;
@@ -1251,7 +1299,7 @@ describe("RootShell — profile-scope ownership", () => {
     const clientB = scenario.harness.clients[1];
     if (clientB === undefined) throw new Error("missing controlled B graph");
     await act(async () => {
-      scenario.connectB.resolve({});
+      scenario.connectB.resolve(TEST_INITIALIZE_RESULT);
       await scenario.connectB.promise;
       scenario.listB.resolve({ data: [scenario.threadB] });
       await scenario.listB.promise;
@@ -1296,8 +1344,8 @@ describe("RootShell — profile-scope ownership", () => {
   });
 
   it("replaces a pending connect exactly once and ignores its late completion and callback", async () => {
-    const connectA = createDeferred<unknown>();
-    const connectB = createDeferred<unknown>();
+    const connectA = createDeferred<InitializeResponse>();
+    const connectB = createDeferred<InitializeResponse>();
     const listB = createDeferred<MethodTypes["thread/list"]["result"]>();
     const threadA = makeThread({
       id: "thread-a",
@@ -1343,7 +1391,7 @@ describe("RootShell — profile-scope ownership", () => {
     expect(screen.queryByText("Scope B")).toBeNull();
 
     await act(async () => {
-      connectA.resolve({});
+      connectA.resolve(TEST_INITIALIZE_RESULT);
       await connectA.promise;
     });
     expect(clientA.requests).toHaveLength(0);
@@ -1354,7 +1402,7 @@ describe("RootShell — profile-scope ownership", () => {
     expect(clientA.requests).toHaveLength(0);
 
     await act(async () => {
-      connectB.resolve({});
+      connectB.resolve(TEST_INITIALIZE_RESULT);
       await connectB.promise;
     });
     expect(clientB.requests).toEqual([
@@ -1376,7 +1424,7 @@ describe("RootShell — profile-scope ownership", () => {
       makeThread({ id: "thread-a3", ref: "ref-a3", name: "Scope A3" }),
     ];
     const controls = threads.map(() => ({
-      connect: createDeferred<unknown>(),
+      connect: createDeferred<InitializeResponse>(),
       list: createDeferred<MethodTypes["thread/list"]["result"]>(),
       read: createDeferred<MethodTypes["thread/read"]["result"]>(),
     }));
@@ -1405,7 +1453,7 @@ describe("RootShell — profile-scope ownership", () => {
       await harness.stores.connection.getState().refresh();
     });
     await act(async () => {
-      controlA1.connect.resolve({});
+      controlA1.connect.resolve(TEST_INITIALIZE_RESULT);
       await controlA1.connect.promise;
       controlA1.list.resolve({ data: [threadA1] });
       await controlA1.list.promise;
@@ -1455,7 +1503,7 @@ describe("RootShell — profile-scope ownership", () => {
       throw new Error("missing scope B controls");
     }
     await act(async () => {
-      controlB.connect.resolve({});
+      controlB.connect.resolve(TEST_INITIALIZE_RESULT);
       await controlB.connect.promise;
       controlB.list.resolve({ data: [threadB] });
       await controlB.list.promise;
@@ -1482,7 +1530,7 @@ describe("RootShell — profile-scope ownership", () => {
       throw new Error("missing scope A3 controls");
     }
     await act(async () => {
-      controlA3.connect.resolve({});
+      controlA3.connect.resolve(TEST_INITIALIZE_RESULT);
       await controlA3.connect.promise;
       controlA3.list.resolve({ data: [threadA3] });
       await controlA3.list.promise;
@@ -1493,7 +1541,7 @@ describe("RootShell — profile-scope ownership", () => {
   });
 
   it("disposes a pending scope when the active profile is removed and ignores late work", async () => {
-    const connect = createDeferred<unknown>();
+    const connect = createDeferred<InitializeResponse>();
     const list = createDeferred<MethodTypes["thread/list"]["result"]>();
     const thread = makeThread({
       id: "thread-a",
@@ -1510,7 +1558,7 @@ describe("RootShell — profile-scope ownership", () => {
       await harness.stores.connection.getState().refresh();
     });
     await act(async () => {
-      connect.resolve({});
+      connect.resolve(TEST_INITIALIZE_RESULT);
       await connect.promise;
     });
     expect(client.requests).toHaveLength(1);
@@ -1541,8 +1589,8 @@ describe("RootShell — profile-scope ownership", () => {
   });
 
   it("contains rejected connect and read operations within their exact owner scopes", async () => {
-    const rejectedConnect = createDeferred<unknown>();
-    const acceptedConnect = createDeferred<unknown>();
+    const rejectedConnect = createDeferred<InitializeResponse>();
+    const acceptedConnect = createDeferred<InitializeResponse>();
     const acceptedList = createDeferred<MethodTypes["thread/list"]["result"]>();
     const rejectedRead = createDeferred<MethodTypes["thread/read"]["result"]>();
     const thread = makeThread({
@@ -1581,7 +1629,7 @@ describe("RootShell — profile-scope ownership", () => {
     if (retryClient === undefined) throw new Error("missing retry client");
     expect(failedClient.close).toHaveBeenCalledTimes(1);
     await act(async () => {
-      acceptedConnect.resolve({});
+      acceptedConnect.resolve(TEST_INITIALIZE_RESULT);
       await acceptedConnect.promise;
       acceptedList.resolve({ data: [thread] });
       await acceptedList.promise;

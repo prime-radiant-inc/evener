@@ -250,7 +250,20 @@ function buildState(
     textScale: "standard",
     reducedMotion,
     surface,
-    connection: { status: "connected" },
+    connection: {
+      status: "connected",
+      evidence: {
+        serverVersion: "hub-commit-1",
+        protocolVersion: "evener-appwire-v3",
+        appVersion: "0.1.0",
+        bundleId: "com.primeradiant.evener",
+        originDigest: `sha256:${"a".repeat(64)}`,
+        profileGeneration: 7,
+        lifecycleGeneration: 3,
+        lifecyclePhase: "foreground",
+        handshakeGeneration: 2,
+      },
+    },
     roster: rosterView(),
     conversation: conversationView(),
     activity: activityView(),
@@ -261,6 +274,7 @@ function buildState(
       canQueue: true,
       canInterrupt: false,
       pending: null,
+      accepted: { kind: "send", receipt: 9 },
       error: null,
     },
     ui: {
@@ -302,6 +316,25 @@ describe("constellationModule", () => {
 /* --------------------------------- sessions -------------------------------- */
 
 describe("Constellation sessions surface", () => {
+  it("exposes the same opaque roster identities through tappable AX labels", () => {
+    renderConstellation(buildState({ surface: "sessions" }));
+    expect(
+      screen.getByRole("region", {
+        name: /Evener concept; concept Constellation; surface sessions; connection connected; server hub-commit-1/,
+      }),
+    ).toBeVisible();
+    expect(
+      screen.getByRole("button", {
+        name: /Session session-a; Wire handshake; project .*; status attention/,
+      }),
+    ).toBeVisible();
+    expect(
+      screen.getByRole("status", {
+        name: /Evener roster; concept Constellation; retained \d+; has-more (true|false)/,
+      }),
+    ).toBeVisible();
+  });
+
   it("renders grouped roster rows with group headers and counts", () => {
     renderConstellation(buildState({ surface: "sessions" }));
     const main = screen.getByRole("main");
@@ -662,25 +695,22 @@ describe("Constellation composer modes", () => {
         },
       }),
     );
-    expect(screen.getByRole("button", { name: "Send" })).toHaveAttribute(
-      "aria-pressed",
-      "false",
-    );
-    expect(screen.getByRole("button", { name: "Steer" })).toHaveAttribute(
-      "aria-pressed",
-      "true",
-    );
-    expect(screen.getByRole("button", { name: "Queue" })).toHaveAttribute(
-      "aria-pressed",
-      "false",
-    );
+    expect(
+      screen.getByRole("button", { name: "Use send mode" }),
+    ).toHaveAttribute("aria-pressed", "false");
+    expect(
+      screen.getByRole("button", { name: "Use steer mode" }),
+    ).toHaveAttribute("aria-pressed", "true");
+    expect(
+      screen.getByRole("button", { name: "Use queue mode" }),
+    ).toHaveAttribute("aria-pressed", "false");
   });
 
   it("dispatches setComposerMode when a mode button is activated", () => {
     const { dispatch } = renderConstellation(
       buildState({ surface: "conversation" }),
     );
-    fireEvent.click(screen.getByRole("button", { name: "Steer" }));
+    fireEvent.click(screen.getByRole("button", { name: "Use steer mode" }));
     expect(dispatch).toHaveBeenCalledWith({
       type: "setComposerMode",
       mode: "steer",
@@ -702,9 +732,15 @@ describe("Constellation composer modes", () => {
         },
       }),
     );
-    expect(screen.getByRole("button", { name: "Send" })).toBeDisabled();
-    expect(screen.getByRole("button", { name: "Steer" })).not.toBeDisabled();
-    expect(screen.getByRole("button", { name: "Queue" })).not.toBeDisabled();
+    expect(
+      screen.getByRole("button", { name: "Use send mode" }),
+    ).toBeDisabled();
+    expect(
+      screen.getByRole("button", { name: "Use steer mode" }),
+    ).not.toBeDisabled();
+    expect(
+      screen.getByRole("button", { name: "Use queue mode" }),
+    ).not.toBeDisabled();
   });
 
   it("disables the steer mode when canSteer is false", () => {
@@ -722,8 +758,12 @@ describe("Constellation composer modes", () => {
         },
       }),
     );
-    expect(screen.getByRole("button", { name: "Steer" })).toBeDisabled();
-    expect(screen.getByRole("button", { name: "Send" })).not.toBeDisabled();
+    expect(
+      screen.getByRole("button", { name: "Use steer mode" }),
+    ).toBeDisabled();
+    expect(
+      screen.getByRole("button", { name: "Use send mode" }),
+    ).not.toBeDisabled();
   });
 
   it("disables the queue mode when canQueue is false", () => {
@@ -741,7 +781,9 @@ describe("Constellation composer modes", () => {
         },
       }),
     );
-    expect(screen.getByRole("button", { name: "Queue" })).toBeDisabled();
+    expect(
+      screen.getByRole("button", { name: "Use queue mode" }),
+    ).toBeDisabled();
   });
 
   it("enables the textarea when any text mode is available and no pending", () => {

@@ -443,12 +443,17 @@ describe("ConversationStore", () => {
         expect(pending).not.toBeNull();
         expect(pending?.status).toBe("pending");
         expect(pending?.kind).toBe(kind);
+        expect(store.getState().lastAcceptedMutation).toBeNull();
 
         // Resolve and await
         resolveFn?.();
         await p;
         // After resolution, pending should be cleared
         expect(store.getState().pendingMutation).toBeNull();
+        expect(store.getState().lastAcceptedMutation).toEqual({
+          kind,
+          receipt: expect.any(Number),
+        });
       });
 
       it(`${kind}: records exact draft snapshot in mutation state`, async () => {
@@ -513,6 +518,7 @@ describe("ConversationStore", () => {
         // Failed mutation state PERSISTS (not cleared to null)
         expect(store.getState().pendingMutation).not.toBeNull();
         expect(store.getState().pendingMutation?.status).toBe("failed");
+        expect(store.getState().lastAcceptedMutation).toBeNull();
         // Draft should be restored for send/steer/queue (interrupt doesn't
         // snapshot draft, so it's not restored)
         if (kind === "interrupt") {

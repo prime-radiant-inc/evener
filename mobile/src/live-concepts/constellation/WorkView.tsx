@@ -3,6 +3,7 @@ import type { LiveActivityView, LiveWorkItem } from "../model";
 import { Disclosure } from "../shared/Disclosure";
 import { formatDuration, formatUsage } from "../shared/format";
 import { StatusLabel } from "../shared/StatusLabel";
+import { usageAxLabel, workItemAxLabel } from "../smoke-semantics";
 
 export interface WorkViewProps {
   state: LiveConceptState;
@@ -62,6 +63,7 @@ function WorkTree({
             data-current-work={
               item.node.tone === "running" ? "true" : undefined
             }
+            aria-label={workItemAxLabel(item.node)}
           >
             <p className="co-work-node__context">
               Level {item.depth + 1} · Parent: {item.parentTitle ?? "Session"}
@@ -146,7 +148,7 @@ export function WorkView({ state, dispatch }: WorkViewProps) {
       <section
         className="co-usage"
         data-work-usage
-        aria-labelledby="co-usage-title"
+        aria-label={usageAxLabel(usage)}
       >
         <header>
           <p className="co-eyebrow">Resource view</p>

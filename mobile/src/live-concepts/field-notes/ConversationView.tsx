@@ -6,6 +6,7 @@ import type {
 import type { LiveQuestionView, LiveTranscriptItem } from "../model";
 import { Icon } from "../shared/Icon";
 import { StatusLabel } from "../shared/StatusLabel";
+import { mutationAxLabel, transcriptItemAxLabel } from "../smoke-semantics";
 import { StatusDisclosure } from "./StatusDisclosure";
 
 // Live adaptation of the Field Notes conversation surface. Preserves the
@@ -329,6 +330,7 @@ export function ConversationView({ state, dispatch }: ConversationViewProps) {
                 data-current-record={isCurrent ? "true" : undefined}
                 data-streaming={item.streaming ? "true" : undefined}
                 data-truncated={item.truncated ? "true" : undefined}
+                aria-label={transcriptItemAxLabel(item)}
                 key={item.key}
               >
                 <div className="fn-chronology-stamp" data-chronology-marker>
@@ -356,11 +358,22 @@ export function ConversationView({ state, dispatch }: ConversationViewProps) {
           className="fn-composer-pending"
           data-composer-pending
           role="status"
+          aria-label={mutationAxLabel(composer) ?? undefined}
           aria-live="polite"
         >
           <span>
             {composer.pending.kind} is {composer.pending.status}…
           </span>
+        </section>
+      ) : null}
+
+      {composer.pending === null && composer.accepted ? (
+        <section
+          className="fn-composer-status"
+          role="status"
+          aria-label={mutationAxLabel(composer) ?? undefined}
+        >
+          {composer.accepted.kind} accepted
         </section>
       ) : null}
 
@@ -378,6 +391,7 @@ export function ConversationView({ state, dispatch }: ConversationViewProps) {
             return (
               <button
                 type="button"
+                aria-label={`Use ${mode} mode`}
                 aria-pressed={state.ui.composerMode === mode}
                 disabled={!capability || pending}
                 key={mode}

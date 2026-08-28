@@ -13,6 +13,17 @@ export type DisplayTone =
 
 export interface LiveConnectionView {
   status: "connecting" | "connected" | "offline" | "error";
+  evidence?: {
+    serverVersion: string;
+    protocolVersion: string;
+    appVersion: string;
+    bundleId: string;
+    originDigest: string;
+    profileGeneration: number;
+    lifecycleGeneration: number;
+    lifecyclePhase: "active" | "inactive" | "background" | "foreground";
+    handshakeGeneration: number;
+  };
 }
 
 export interface LiveRosterRow {
