@@ -30,7 +30,7 @@ import { installMobileViewport } from "../testing/mobileViewport";
 import { resetAskDockStoreForTests } from "./askDock/askDockStore";
 import { Composer as ComposerView } from "./Composer";
 import { requestComposerFocus, resetComposerFocusStoreForTests } from "./composerFocus";
-import { draftStorageKey } from "./draft";
+import { draftStorageKey, readDraft } from "./draft";
 import {
   flushPendingTurnsProjectionForTests,
   refreshPendingTurnsProjection,
@@ -437,7 +437,123 @@ test("clicking the current goal confirms before replacing an existing draft", as
   expect(document.activeElement).toBe(textarea());
 });
 
-test("clicking the current task toggles the desktop tasks pane for this session", async () => {
+test("editing the goal confirms before replacing a draft that contains only attachments", async () => {
+  installStalledDecodeStub();
+  const user = userEvent.setup();
+  await mountComposer("ref_a", { evener: currentWorkEvener({ goal: true }) });
+  act(() => pastePngInto(textarea()));
+  fireEvent.change(textarea(), { target: { value: "" } });
+  expect(screen.getByRole("button", { name: "Remove shot.png" })).toBeTruthy();
+
+  await user.click(screen.getByRole("button", { name: "Edit goal: Keep the session focused" }));
+
+  expect(screen.getByRole("dialog", { name: "Replace draft?" })).toBeTruthy();
+  expect(screen.getByRole("button", { name: "Remove shot.png" })).toBeTruthy();
+});
+
+test("confirmed goal replacement clears settled attachments and persists an ordinary goal draft", async () => {
+  installCanvasStubs();
+  const user = userEvent.setup();
+  await mountComposer("ref_a", { evener: currentWorkEvener({ goal: true }) });
+  act(() => pastePngInto(textarea()));
+  await screen.findByRole("button", { name: "View shot.png" });
+  fireEvent.change(textarea(), { target: { value: "" } });
+
+  await user.click(screen.getByRole("button", { name: "Edit goal: Keep the session focused" }));
+  await user.click(screen.getByRole("button", { name: "Replace draft" }));
+
+  expect(textarea().value).toBe("/goal Keep the session focused");
+  expect(screen.queryByRole("button", { name: "Remove shot.png" })).toBeNull();
+  expect(readDraft("ref_a")).toBe("/goal Keep the session focused");
+});
+
+test("confirmed goal replacement invalidates pending attachments without later changing the goal command", async () => {
+  const gate = installGatedDecodeStub();
+  const user = userEvent.setup();
+  await mountComposer("ref_a", { evener: currentWorkEvener({ goal: true }) });
+  act(() => pastePngInto(textarea()));
+  fireEvent.change(textarea(), { target: { value: "" } });
+
+  await user.click(screen.getByRole("button", { name: "Edit goal: Keep the session focused" }));
+  await user.click(screen.getByRole("button", { name: "Replace draft" }));
+  expect(textarea().value).toBe("/goal Keep the session focused");
+
+  await act(async () => {
+    await gate.release();
+  });
+  expect(textarea().value).toBe("/goal Keep the session focused");
+  expect(screen.queryAllByRole("button", { name: /^Remove/ })).toHaveLength(0);
+  expect(readDraft("ref_a")).toBe("/goal Keep the session focused");
+});
+
+test("confirmed goal replacement exits recovery without deleting its durable recovery row", async () => {
+  const storage = new MutationOutboxIndexedDB();
+  setMutationStorageForTests(storage);
+  const recovered = await seedRejectedRecovery(storage, "ref_a", "recover this later");
+  const user = userEvent.setup();
+  await mountComposer("ref_a", {
+    status: { type: "idle" },
+    evener: currentWorkEvener({ goal: true }),
+  });
+  await flushPendingTurnsProjectionForTests();
+  expect(textarea().value).toBe("recover this later");
+
+  await user.click(screen.getByRole("button", { name: "Edit goal: Keep the session focused" }));
+  await user.click(screen.getByRole("button", { name: "Replace draft" }));
+  await flushPendingTurnsProjectionForTests();
+
+  expect(textarea().value).toBe("/goal Keep the session focused");
+  expect(readDraft("ref_a")).toBe("/goal Keep the session focused");
+  expect(await storage.getRecovery(recovered.clientMutationId)).toBeDefined();
+  expect(screen.getByText("recover this later")).toBeTruthy();
+});
+
+test("goal replacement closes slash completion and resets selection", async () => {
+  useCommandCatalog.setState({ commands: REVIEW_RELEASE_CATALOG, loaded: true });
+  const user = userEvent.setup();
+  await mountComposer("ref_a", { evener: currentWorkEvener({ goal: true }) });
+  await user.type(textarea(), "hi /re");
+  await user.keyboard("{ArrowDown}");
+  expect(slashOptions()[1]?.getAttribute("aria-selected")).toBe("true");
+
+  await user.click(screen.getByRole("button", { name: "Edit goal: Keep the session focused" }));
+  await user.click(screen.getByRole("button", { name: "Replace draft" }));
+  expect(screen.queryByTestId("composer-slash-menu")).toBeNull();
+
+  await user.clear(textarea());
+  await user.type(textarea(), "hi /re");
+  expect(slashOptions()[0]?.getAttribute("aria-selected")).toBe("true");
+});
+
+test("goal replacement focus waits until an ended follow-up textarea mounts", async () => {
+  const user = userEvent.setup();
+  let overrides: Partial<Thread> = {
+    status: { type: "closed" },
+    evener: {
+      ...currentWorkEvener({ goal: true }),
+      capabilities: { ...FULL_CAPABILITIES, send: false },
+    },
+  };
+  const fake = await mountComposer("ref_a", overrides);
+  fake.on("thread/read", () => readResponse("ref_a", overrides));
+  expect(screen.queryByRole("textbox", { name: /^message$/i })).toBeNull();
+
+  await user.click(screen.getByRole("button", { name: "Edit goal: Keep the session focused" }));
+  expect(readDraft("ref_a")).toBe("/goal Keep the session focused");
+
+  overrides = {
+    ...overrides,
+    evener: { ...currentWorkEvener({ goal: true }), capabilities: FULL_CAPABILITIES },
+  };
+  await act(async () => {
+    fake.emitNotification({ method: "evener/thread/resync", params: { threadId: "thr_ref_a", ref: "ref_a" } });
+  });
+
+  await waitFor(() => expect(document.activeElement).toBe(textarea()));
+  expect(textarea().value).toBe("/goal Keep the session focused");
+});
+
+test("clicking the current task twice keeps one Tasks pane open and focuses it", async () => {
   const user = userEvent.setup();
   await mountComposer("ref_a", {
     evener: currentWorkEvener({ task: true }),
@@ -445,6 +561,20 @@ test("clicking the current task toggles the desktop tasks pane for this session"
 
   await user.click(screen.getByRole("button", { name: "Open tasks: Finish the focused composer test" }));
   expect(isPaneOpen(workspaceStore.getState(), "sessionTasks", { ref: "ref_a" })).toBe(true);
+  const tasksPane = workspaceStore
+    .getState()
+    .panes.find((pane) => pane.type === "sessionTasks" && (pane.params as { ref?: string }).ref === "ref_a");
+  if (!tasksPane) throw new Error("missing Tasks pane");
+  workspaceStore.setState({ focusedPaneId: null });
+  expect(workspaceStore.getState().focusedPaneId).not.toBe(tasksPane.id);
+
+  await user.click(screen.getByRole("button", { name: "Open tasks: Finish the focused composer test" }));
+  expect(
+    workspaceStore
+      .getState()
+      .panes.filter((pane) => pane.type === "sessionTasks" && (pane.params as { ref?: string }).ref === "ref_a"),
+  ).toHaveLength(1);
+  expect(workspaceStore.getState().focusedPaneId).toBe(tasksPane.id);
 });
 
 test("clicking the current task opens the existing mobile tasks sheet for this session", async () => {

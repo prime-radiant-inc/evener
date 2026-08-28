@@ -47,7 +47,7 @@ const states = [
     name: "empty",
     task: "   ",
     goal: "\n\t",
-    label: undefined,
+    label: "",
     hasTask: false,
     hasGoal: false,
     hasDivider: false,
@@ -59,17 +59,36 @@ afterEach(cleanup);
 test.each(states)("renders the $name state", ({ task, goal, label, hasTask, hasGoal, hasDivider }) => {
   render(<CurrentWork task={task} goal={goal} onOpenTasks={vi.fn()} onEditGoal={vi.fn()} />);
 
-  if (!label) {
-    expect(screen.queryByTestId("current-work")).toBeNull();
-    return;
-  }
-
-  expect(screen.getByRole("status", { name: label }).getAttribute("aria-atomic")).toBe("true");
+  const status = screen.getByRole("status");
+  expect(status.getAttribute("aria-atomic")).toBe("true");
+  expect(status.textContent).toBe(label);
+  expect(screen.queryByTestId("current-work") !== null).toBe(hasTask || hasGoal);
   expect(screen.queryByTestId("current-work-task") !== null).toBe(hasTask);
   expect(screen.queryByTestId("current-work-goal") !== null).toBe(hasGoal);
   expect(screen.queryByTestId("current-work-divider") !== null).toBe(hasDivider);
   if (hasTask) expect(screen.getByText("Task")).toBeTruthy();
   if (hasGoal) expect(screen.getByText("Goal")).toBeTruthy();
+});
+
+test("keeps one text-content live region while task and goal change", () => {
+  const view = render(
+    <CurrentWork task="Inspect the diff" goal="Keep focus" onOpenTasks={vi.fn()} onEditGoal={vi.fn()} />,
+  );
+  const status = screen.getByRole("status");
+  expect(status.textContent).toBe("Task: Inspect the diff. Goal: Keep focus");
+
+  view.rerender(<CurrentWork task="Ship it" onOpenTasks={vi.fn()} onEditGoal={vi.fn()} />);
+  expect(screen.getByRole("status")).toBe(status);
+  expect(status.textContent).toBe("Task: Ship it");
+
+  view.rerender(<CurrentWork task=" " goal={"\n"} onOpenTasks={vi.fn()} onEditGoal={vi.fn()} />);
+  expect(screen.getByRole("status")).toBe(status);
+  expect(status.textContent).toBe("");
+  expect(screen.queryByTestId("current-work")).toBeNull();
+
+  view.rerender(<CurrentWork goal="Finish safely" onOpenTasks={vi.fn()} onEditGoal={vi.fn()} />);
+  expect(screen.getByRole("status")).toBe(status);
+  expect(status.textContent).toBe("Goal: Finish safely");
 });
 
 test("renders task and goal values as keyboard-accessible link actions with full-text titles", async () => {

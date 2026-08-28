@@ -63,7 +63,7 @@ import { type PendingAttachment, type TextEditor, useAttachments } from "./attac
 import { type BuiltinMatch, matchBuiltinInvocation, runBuiltinCommand } from "./builtinCommand";
 import { CurrentWork } from "./CurrentWork";
 import styles from "./composer.module.css";
-import { consumeComposerFocus, useComposerFocusRequest } from "./composerFocus";
+import { consumeComposerFocus, requestComposerFocus, useComposerFocusRequest } from "./composerFocus";
 import { clearDraft, readDraft, writeDraft } from "./draft";
 import { QueueStrip, submitWithPendingTracking, usePendingTurnEntries } from "./queue";
 import {
@@ -171,6 +171,10 @@ export function Composer({ ref }: ComposerProps) {
   // clearIfUnchanged's own submittedText snapshot for the classic drain
   // path below).
   const lastDrainSnapshotRef = useRef<{ text: string; markers: Set<number> } | null>(null);
+  // Invalidates the post-request cleanup captured by a submit that predates a
+  // canonical goal replacement. In particular, old marker ids may be reused
+  // after attachments.reset(), so stale cleanup must not strip new content.
+  const submissionVersionRef = useRef(0);
 
   // Restore-on-mount is unconditional, not leak-guarded: under dockview a
   // session pane's `ref` never changes across a mounted Composer's
@@ -190,7 +194,6 @@ export function Composer({ ref }: ComposerProps) {
   const recoveryOwnsLocalDraftRef = useRef(false);
   const [busyAction, setBusyAction] = useState<BusyAction>(null);
   const [pendingGoalReplacement, setPendingGoalReplacement] = useState<string | null>(null);
-  const focusComposerAfterGoalDialogRef = useRef(false);
   // Whether a FINISHED session's collapsed follow-up field currently has focus,
   // which is what expands it from its one-line resting state. Only read on that
   // path (see the ended card's minLines below); harmless everywhere else.
@@ -335,28 +338,42 @@ export function Composer({ ref }: ComposerProps) {
   attachmentItemsRef.current = attachments.items;
   const recoveryEntries = useRecoveryEntries(ref);
 
-  useEffect(() => {
-    if (pendingGoalReplacement !== null || !focusComposerAfterGoalDialogRef.current) return;
-    focusComposerAfterGoalDialogRef.current = false;
-    textareaRef.current?.focus();
-  }, [pendingGoalReplacement]);
-
-  const replaceDraftWithGoal = (objective: string, focus = true): void => {
+  const replaceComposerWithGoalDraft = (objective: string): void => {
+    // Invalidate queued recovery work before clearing ownership. Any operation
+    // already beyond its initial owner check is prevented by this version from
+    // clearing the ordinary draft written below when it eventually settles.
+    recoveryWriteVersionRef.current += 1;
+    recoveryOwnsLocalDraftRef.current = false;
+    setActiveRecoveryId(null);
+    attachments.reset();
+    setSlashToken(null);
+    setSlashHighlighted(0);
+    lastDrainSnapshotRef.current = null;
+    submissionVersionRef.current += 1;
     const command = `/goal ${objective}`;
     textEditor.write(command, command.length);
     setPendingGoalReplacement(null);
-    if (focus) textareaRef.current?.focus();
+    requestComposerFocus(ref);
   };
 
   const editGoal = (objective: string): void => {
-    if (textRef.current.trim() !== "") {
+    if (
+      textRef.current.trim() !== "" ||
+      attachmentItemsRef.current.length > 0 ||
+      activeRecoveryIdRef.current !== null
+    ) {
       setPendingGoalReplacement(objective);
       return;
     }
-    replaceDraftWithGoal(objective);
+    replaceComposerWithGoalDraft(objective);
   };
 
-  const openTasks = (): void => {
+  const showTasks = (): void => {
+    if (isMobile) tasksPanelRef.current?.open();
+    else workspaceStore.getState().openPane("sessionTasks", { ref }, { slot: "secondary" });
+  };
+
+  const toggleTasks = (): void => {
     if (isMobile) tasksPanelRef.current?.open();
     else workspaceStore.getState().togglePane("sessionTasks", { ref });
   };
@@ -413,6 +430,7 @@ export function Composer({ ref }: ComposerProps) {
         });
       recoveryWrites.current = operation;
       void operation.catch((error) => {
+        if (activeRecoveryIdRef.current !== clientMutationId) return;
         toasts.push(
           "error",
           `Couldn't save recovered message: ${error instanceof Error ? error.message : String(error)}`,
@@ -560,10 +578,12 @@ export function Composer({ ref }: ComposerProps) {
   const consumedComposerFocusIdRef = useRef<number | null>(null);
   useEffect(() => {
     if (!composerFocusRequest || composerFocusRequest.id === consumedComposerFocusIdRef.current) return;
+    const textarea = textareaRef.current;
+    if (!textarea) return;
+    textarea.focus();
     consumedComposerFocusIdRef.current = composerFocusRequest.id;
-    textareaRef.current?.focus();
     consumeComposerFocus(ref);
-  }, [composerFocusRequest, ref]);
+  });
 
   if (!model) return null; // Session.tsx only mounts this once its own model is hydrated; defensive only.
 
@@ -862,6 +882,7 @@ export function Composer({ ref }: ComposerProps) {
   async function submitAction(kind: "send" | "queue" | "steer" | "drain"): Promise<void> {
     const submittedText = textRef.current;
     const submittedMarkers = new Set(attachments.items.map((item) => item.marker));
+    const submissionVersion = submissionVersionRef.current;
     const payload = attachments.toInputAttachments();
     const submittedRecoveryId = activeRecoveryIdRef.current;
     let wonRecoveryResend = true;
@@ -896,8 +917,10 @@ export function Composer({ ref }: ComposerProps) {
         if (!wonRecoveryResend) toasts.push("info", "This message was already sent in another tab.");
         if (textRef.current !== submittedText) writeDraft(ref, textRef.current);
       }
-      clearIfUnchanged(submittedText);
-      attachments.clearSubmitted(submittedMarkers);
+      if (submissionVersionRef.current === submissionVersion) {
+        clearIfUnchanged(submittedText);
+        attachments.clearSubmitted(submittedMarkers);
+      }
     } catch {
       // The local durable write failed. The submitted composer payload stays
       // untouched and no network request was eligible to start.
@@ -1159,7 +1182,7 @@ export function Composer({ ref }: ComposerProps) {
           <CurrentWork
             task={model.tasks?.current?.description}
             goal={model.goal?.objective}
-            onOpenTasks={openTasks}
+            onOpenTasks={showTasks}
             onEditGoal={() => editGoal((model.goal?.objective ?? "").trim())}
           />
         </>
@@ -1171,12 +1194,11 @@ export function Composer({ ref }: ComposerProps) {
           confirmLabel="Replace draft"
           cancelLabel="Keep draft"
           onConfirm={() => {
-            focusComposerAfterGoalDialogRef.current = true;
-            replaceDraftWithGoal(pendingGoalReplacement, false);
+            replaceComposerWithGoalDraft(pendingGoalReplacement);
           }}
           onCancel={() => setPendingGoalReplacement(null)}
         >
-          This will discard the text currently in the composer.
+          This will discard the current composer contents.
         </ConfirmDialog>
       )}
       {(!ended || showFollowUpCard) && (
@@ -1249,7 +1271,7 @@ export function Composer({ ref }: ComposerProps) {
                           onClick={() => fileInputRef.current?.click()}
                         />
                       </Tooltip>
-                      <SessionChrome ref={ref} placement="composer" onOpenTasks={openTasks} />
+                      <SessionChrome ref={ref} placement="composer" onOpenTasks={toggleTasks} />
                     </div>
                   )
                 }

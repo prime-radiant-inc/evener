@@ -376,7 +376,7 @@ test("mobile Session actions opens the full Verbosity bottom Sheet", async () =>
   }
 });
 
-test("menu Tasks item toggles the sessionTasks workspace pane on desktop", async () => {
+test("menu Tasks item toggles the sessionTasks workspace pane open and closed on desktop", async () => {
   const user = userEvent.setup();
   const fake = connectFakeClient();
   fake.on("thread/read", () => readResponse("ref_a"));
@@ -387,6 +387,10 @@ test("menu Tasks item toggles the sessionTasks workspace pane on desktop", async
   await user.click(screen.getByRole("menuitem", { name: /Tasks/ }));
 
   expect(isPaneOpen(workspaceStore.getState(), "sessionTasks", { ref: "ref_a" })).toBe(true);
+
+  await user.click(screen.getByRole("button", { name: /session actions/i }));
+  await user.click(screen.getByRole("menuitem", { name: /Tasks/ }));
+  expect(isPaneOpen(workspaceStore.getState(), "sessionTasks", { ref: "ref_a" })).toBe(false);
 });
 
 test("menu offers Pin/Archive/Delete when the session is in the tree; omits them otherwise", async () => {
