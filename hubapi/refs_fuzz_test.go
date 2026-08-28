@@ -91,7 +91,6 @@ func coverClient(t *testing.T) {
 	_ = client.URL("query?a=b")
 	_, _ = client.Health(ctx)
 	_, _ = client.Session(ctx, ref)
-	_, _ = client.Spawn(ctx, SpawnRequest{})
 	_ = client.Send(ctx, ref, "hello")
 	_, _ = client.Tasks(ctx, ref)
 	_ = client.Interrupt(ctx, ref)

@@ -433,7 +433,7 @@ func checkAuthGuard_RejectsWrongQueryToken(t *testing.T) {
 func checkAuthGuard_IgnoresQueryTokenOnPOST(t *testing.T) {
 	guard := AuthGuard("secret")
 	h := guard(okHandler())
-	req := httptest.NewRequest(http.MethodPost, "/api/spawn?token=secret", nil)
+	req := httptest.NewRequest(http.MethodPost, "/api/project/delete?token=secret", nil)
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, req)
 	if rec.Code != http.StatusUnauthorized {

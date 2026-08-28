@@ -21,7 +21,6 @@ import (
 	"testing"
 
 	"primeradiant.com/evener/appwire"
-	"primeradiant.com/evener/cmd/evener-hub/internal/appsource"
 	"primeradiant.com/evener/cmd/evener-hub/internal/hubcore"
 	"primeradiant.com/evener/internal/appserver"
 	"primeradiant.com/evener/rendezvous"
@@ -41,105 +40,6 @@ func imageInputItems(input []appwire.InputItem) []appwire.InputItem {
 // opaque payload; the size and content don't matter since the wire treats
 // it as []byte.
 var testImageBytes = []byte{0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a}
-
-// TestWeb_ApiSpawn_ForwardsImageItemsToThreadStart drives the
-// /api/spawn HTTP entry point with an "items" array containing an image
-// attachment and asserts that the resulting ThreadStart appwire call (and
-// downstream TurnStart) carries the same image bytes through to the
-// configured source (kata t5j6 path 1).
-func TestWeb_ApiSpawn_ForwardsImageItemsToThreadStart(t *testing.T) {
-	workDir := t.TempDir()
-	codex := appserver.NewServer(appserver.ServerConfig{ServerName: "codex-test", SourceID: "codex", AdapterNativeInitialize: true})
-
-	// The codex source maps the wire-level "items" array into the turn's
-	// input. We observe MethodTurnStart on the downstream codex server using
-	// the raw map shape so we can read the codex-native "input" array that
-	// codexInput() emits for image items.
-	gotTurnInput := make(chan []any, 1)
-	appserver.HandleTyped(codex.Router(), appwire.MethodThreadStart, func(_ context.Context, _ map[string]any) (map[string]any, error) {
-		return map[string]any{"thread": map[string]any{
-			"id":        "th_codex_img",
-			"sessionId": "th_codex_img",
-			"status":    map[string]any{"type": "idle"},
-			"source":    "appServer",
-		}}, nil
-	})
-	appserver.HandleTyped(codex.Router(), appwire.MethodTurnStart, func(_ context.Context, params map[string]any) (map[string]any, error) {
-		if input, ok := params["input"].([]any); ok {
-			select {
-			case gotTurnInput <- input:
-			default:
-			}
-		}
-		return map[string]any{"turn": map[string]any{
-			"id":        "turn_codex",
-			"items":     []any{},
-			"itemsView": "full",
-			"status":    "inProgress",
-		}}, nil
-	})
-	codexHTTP := httptest.NewServer(http.HandlerFunc(codex.ServeWebSocket))
-	defer codexHTTP.Close()
-
-	web := NewWebServer(hubcore.WebConfig{
-		HubAddr: "127.0.0.1:9180",
-		Past:    hubcore.NewPastIndex(""),
-		CodexSources: []appsource.CodexSourceConfig{{
-			ID:       "codex",
-			Endpoint: "ws" + strings.TrimPrefix(codexHTTP.URL, "http"),
-		}},
-	})
-
-	reqBody := map[string]any{
-		"harness":     "codex",
-		"prompt":      "describe this",
-		"model":       "gpt-5.1-codex",
-		"working_dir": workDir,
-		"items": []map[string]any{{
-			"type":      "image",
-			"mediaType": "image/png",
-			"data":      testImageBytes,
-			"name":      "shot.png",
-		}},
-	}
-	payload, err := json.Marshal(reqBody)
-	if err != nil {
-		t.Fatal(err)
-	}
-	req := httptest.NewRequest(http.MethodPost, "/api/spawn", bytes.NewReader(payload))
-	req.Host = "127.0.0.1:9180"
-	req.Header.Set("Origin", "http://127.0.0.1:9180")
-	req.Header.Set("Content-Type", "application/json")
-	rec := httptest.NewRecorder()
-	web.Handler().ServeHTTP(rec, req)
-	if rec.Code != http.StatusOK {
-		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
-	}
-	var input []any
-	select {
-	case input = <-gotTurnInput:
-	default:
-		t.Fatalf("codex TurnStart was not invoked with an input array")
-	}
-	// Codex shape: input is a list of {type, ...} entries. There must be one
-	// image entry whose payload matches what we sent. codex represents image
-	// items as {type:"input_image", image_url:"data:<media>;base64,<...>"} —
-	// the exact field name depends on codexInput; we just need any entry
-	// whose marshaled bytes contain our base64-encoded payload.
-	wantB64 := base64.StdEncoding.EncodeToString(testImageBytes)
-	sawImage := false
-	for _, entry := range input {
-		raw, _ := json.Marshal(entry)
-		if strings.Contains(string(raw), wantB64) {
-			sawImage = true
-			break
-		}
-	}
-	if !sawImage {
-		raw, _ := json.Marshal(input)
-		t.Fatalf("codex TurnStart input did not include the attachment bytes; got input=%s want base64=%s", raw, wantB64)
-	}
-}
 
 // TestWeb_Send_ImageAttachmentsForwardedToDaemonStartTurn drives Path 5:
 // POST /s/<id>/send with an Images field must produce a TurnStart wire

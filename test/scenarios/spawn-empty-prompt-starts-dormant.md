@@ -22,9 +22,8 @@ checkable:
   `len(params.Input) > 0` (`cmd/evener-hub/app_threadlifecycle.go#hubThreadStart`).
 - **Client**: `buildInput` pushes a text item only `if (text.trim())`,
   and sends it UNTRIMMED when it does
-  (`panes/spawn/startThread.ts:39-45`). The REST shim does the same:
-  `inputItemsForText` returns nil for a whitespace-only prompt
-  (`cmd/evener-hub/web_session.go#inputItemsForText`).
+  (`panes/spawn/startThread.ts:39-45`). A whitespace-only prompt therefore
+  reaches AppWire as an empty `input` array.
 - **Presentation**: the fact rides beside the state, not inside it —
   `hubcore.TreeNode.Dormant` (`cmd/evener-hub/internal/hubcore/tree.go#Dormant`),
   wired to the navigation API as `"dormant"`
@@ -59,17 +58,15 @@ and the session pane's empty state; anything else, grep `data-testid` in
 
 ## Steps
 
-### Browser-free (REST + wire; run these first, they carry the exact assertions)
+### Browser-free (AppWire + REST reads; run these first, they carry the exact assertions)
 
-1. `POST /api/spawn` with an **empty** `prompt` and no `items`:
-   ```bash
-   resp=$(curl -s -X POST -H "Content-Type: application/json" \
-     -H "Authorization: Bearer $TOKEN" \
-     -d "{\"prompt\":\"\",\"model\":\"$MODEL\",\"working_dir\":\"$tmpdir\",
-          \"harness\":\"evener\",\"access_mode\":\"full\",\"agent\":\"default\",
-          \"launch_overrides\":{}}" "$HUB/api/spawn")
-   SID=$(echo "$resp" | jq -r '.session_id')
+1. Send `thread/start` over the authenticated `/rpc` connection described
+   in the runbook, with an empty `input` array:
+   ```json
+   {"id":2,"method":"thread/start","params":{"harness":"evener","cwd":"<tmpdir>","model":"<MODEL>","input":[]}}
    ```
+   Capture `result.thread.evener.ref` from the response and use its local
+   session ID as `SID`.
 2. Poll `GET /api/sessions/local:$SID` for a few seconds and record
    `.state` and `.active_turn_id` throughout.
 3. Poll the authenticated `/rpc` AppWire connection with
@@ -78,21 +75,18 @@ and the session pane's empty state; anything else, grep `data-testid` in
    navigation location appears, then read its `session.dormant` field.
 4. Read the on-disk transcript: `go run ./cmd/evener doctor transcript
    "$SID" --state-dir "$state" --format outline --range last:20`.
-5. Repeat step 1 with a whitespace-only prompt (`"   \n  "`). The
-   outcome must be identical — that is `inputItemsForText`'s
-   `strings.TrimSpace(text) == ""` branch.
 
 ### Browser (the UI half: does the pane actually offer the blank submit, and does the rail say so)
 
-6. Navigate to `/auth?token=$TOKEN&next=/new`. Leave the prompt textarea
+5. Navigate to `/auth?token=$TOKEN&next=/new`. Leave the prompt textarea
    (`[data-testid="spawn-prompt-card"]`, `aria-label="Prompt"`)
    completely empty. Attach nothing. Set the working directory to a path
    that exists.
-7. Click `[data-testid="spawn-submit"]` (labelled `Spawn`; it reads
+6. Click `[data-testid="spawn-submit"]` (labelled `Spawn`; it reads
    `Spawning…` while busy — `Spawn.tsx:558,562`). `⌘↵` / `Ctrl+Enter` in
    the textarea reaches the same `handleSpawn` via `handlePromptKeyDown`
    (`Spawn.tsx:363-369`); exercise both.
-8. Read the pane you land on, and the rail row for it:
+7. Read the pane you land on, and the rail row for it:
    ```javascript
    ({
      port: location.port,                                  // page-identity check, always
@@ -108,10 +102,13 @@ and the session pane's empty state; anything else, grep `data-testid` in
    ```
    Substitute the literal `SID` from step 1 into that selector before
    evaluating — the browser has no shell variable.
+8. Repeat the browser submission with a whitespace-only prompt (`"   \n  "`).
+   The outcome must match the empty-prompt case.
 
 ## Expected
 
-- **Steps 1-2 (wire, exact)**: HTTP 200 with a `ref`/`session_id`. The
+- **Steps 1-2 (wire, exact)**: a successful `thread/start` response with a
+  `result.thread.evener.ref`. The
   session reaches `state: idle` and **never** reports `active`, and
   `active_turn_id` stays empty throughout. Falsify: a 4xx/5xx, or any
   poll catching `state: active` / a non-empty `active_turn_id` — a turn
@@ -125,11 +122,10 @@ and the session pane's empty state; anything else, grep `data-testid` in
   present, so the rebuild has run).
 - **Step 4 (transcript)**: zero turns. Falsify: any `USER_INPUT` turn,
   especially one carrying a `{"kind":"text","text":""}` part.
-- **Step 5**: byte-identical outcome to steps 1-4.
-- **Step 6-7 (submit is not blocked)**: no error toast — specifically
+- **Steps 5-7 (submit is not blocked)**: no error toast — specifically
   nothing reading `Prompt is empty.` — and the page navigates away from
   `/new`. Falsify: a toast, or the pane staying put.
-- **Step 8 (pane + rail)**: `path` decodes to `/s/local:<SID>`;
+- **Step 7 (pane + rail)**: `path` decodes to `/s/local:<SID>`;
   `emptyTitle` and `emptyHint` are both true (`EmptyTranscript`'s
   zero-turn, not-active branch, `panes/session/Session.tsx:96-101`);
   `turns` is 0; the composer is present and focusable below it
@@ -140,6 +136,8 @@ and the session pane's empty state; anything else, grep `data-testid` in
   Falsify: the pane shows
   `Waiting for the first reply` (the active branch — a turn started), or
   the rail row shows a relative age where `Not started` belongs.
+- **Step 8**: the whitespace-only submission has the same no-error,
+  navigation, and dormant-pane/rail result as the empty submission.
 
 ## Cleanup
 
@@ -170,7 +168,7 @@ and the session pane's empty state; anything else, grep `data-testid` in
   not one you have already messaged. The dropped age moves into the
   row's `title` tooltip alongside the words `not started`
   (`rowTooltip`, `RailRow.tsx:415-431`).
-- **The post-spawn URL percent-escapes the colon.** `paneToURL` builds
+- **The post-start URL percent-escapes the colon.** `paneToURL` builds
   `/s/${encodeURIComponent(ref)}` (`shell/routing.ts:93-96`), so
   `location.pathname` reads `/s/local%3A<SID>` after a spawn navigation
   and `/s/local:<SID>` when you type it. Decode before comparing. A bare

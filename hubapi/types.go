@@ -21,7 +21,6 @@ type HealthResponse struct {
 
 type HealthCapabilities struct {
 	TranscriptFollow bool `json:"transcript_follow"`
-	Spawn            bool `json:"spawn"`
 	Fork             bool `json:"fork"`
 	RemoteSources    bool `json:"remote_sources"`
 }
@@ -145,25 +144,11 @@ type SessionCapabilities struct {
 	ReadOnlyReason string `json:"read_only_reason,omitempty"`
 }
 
-// SpawnRequest is the JSON body for POST /api/spawn.
-// Prompt is the current field; Task is accepted for legacy callers only.
-type SpawnRequest struct {
-	Prompt          string `json:"prompt,omitempty"`
-	Task            string `json:"task,omitempty"` // Deprecated: use Prompt.
-	Harness         string `json:"harness,omitempty"`
-	Model           string `json:"model,omitempty"`
-	WorkingDir      string `json:"working_dir,omitempty"`
-	Agent           string `json:"agent,omitempty"`
-	ReasoningEffort string `json:"reasoning_effort,omitempty"`
-}
-
-type SpawnResponse struct {
+type RefResponse struct {
 	Ref       string `json:"ref"`
 	HostID    string `json:"host_id"`
 	SessionID string `json:"session_id"`
 }
-
-type RefResponse = SpawnResponse
 
 type ForkRequest struct {
 	Turn          int    `json:"turn"`

@@ -111,11 +111,6 @@ func FuzzWebWorkspacePass5(f *testing.F) {
 		case 9:
 			web.renderSessionTasks(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "/", nil), "remote:thread")
 			web.renderSessionTasks(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "/", nil), "missing")
-		case 10:
-			_ = launchHarnessIDs(web.cfg)
-			for _, body := range []string{"{", `{}`, `{"prompt":"x"}`} {
-				web.handleApiSpawn(httptest.NewRecorder(), httptest.NewRequest(http.MethodPost, "/api/spawn", strings.NewReader(body)))
-			}
 		case 11:
 			_, _ = hubModelList(context.Background(), web.cfg, web.sources, appwire.ModelListParams{Harness: "unknown"})
 			models := enrichModelDescriptors([]appwire.ModelDescriptor{{Provider: "openai", Model: "gpt-4o"}, {}, {Provider: "z", Model: "m-20251101"}}, nil)

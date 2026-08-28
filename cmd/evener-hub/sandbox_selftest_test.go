@@ -82,18 +82,27 @@ func TestSandboxContainsMutatingHandlers(t *testing.T) {
 		return rec
 	}
 
-	// 1. Spawn: the request reaches the recording Spawner, never a subprocess.
-	rec := do(http.MethodPost, "/api/spawn", map[string]any{
-		"harness":     "evener",
-		"working_dir": s.CWD,
-		"model":       "openai/gpt-5.5",
+	// 1. thread/start reaches the recording Spawner, never a subprocess.
+	params, err := json.Marshal(appwire.ThreadStartParams{
+		Harness: "evener",
+		CWD:     s.CWD,
+		Model:   "openai/gpt-5.5",
 	})
-	if rec.Code != http.StatusOK {
-		t.Fatalf("spawn: want 200, got %d body=%s", rec.Code, rec.Body.String())
+	if err != nil {
+		t.Fatalf("marshal thread/start params: %v", err)
+	}
+	request := appwire.Request{
+		ID:     appwire.NewIntID(1),
+		Method: appwire.MethodThreadStart,
+		Params: params,
+	}
+	if _, err := s.Web.appRPC.Router().Dispatch(context.Background(), request); err != nil {
+		t.Fatalf("thread/start: %v", err)
 	}
 	if got := len(s.Spawner.Spawns()); got != 1 {
-		t.Fatalf("spawn did not reach the recording spawner: recorded %d spawns", got)
+		t.Fatalf("thread/start did not reach the recording spawner: recorded %d spawns", got)
 	}
+	var rec *httptest.ResponseRecorder
 
 	// 2. git-head: the AppWire response carries the seam's sentinel branch,
 	// proving no real `git` ran.

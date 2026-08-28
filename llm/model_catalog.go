@@ -305,7 +305,7 @@ func (c *ModelCatalog) ResolveLiveModelInfo(behaviorTag, modelID string) *ModelI
 //
 // This consolidates the visibility rule previously duplicated (and drifted)
 // between cmd/evener/internal/launchcheck.launchCheckModelVisible and
-// cmd/evener-hub/web_spawn.go's fetchLiveModels.
+// cmd/evener-hub/app_models.go's fetchLiveModels.
 //
 // live is the ModelInfo returned by the provider's ListModels call. It carries
 // capability data parsed from the live /models response (SupportsTools,

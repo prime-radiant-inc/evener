@@ -121,12 +121,6 @@ func (c *Client) Session(ctx context.Context, ref Ref) (SessionDetail, error) {
 	return out, err
 }
 
-func (c *Client) Spawn(ctx context.Context, req SpawnRequest) (SpawnResponse, error) {
-	var out SpawnResponse
-	err := c.post(ctx, "/api/spawn", req, &out)
-	return out, err
-}
-
 func (c *Client) Send(ctx context.Context, ref Ref, text string) error {
 	return c.post(ctx, "/api/sessions/"+ref.PathEscaped()+"/send", map[string]string{"text": text}, nil)
 }

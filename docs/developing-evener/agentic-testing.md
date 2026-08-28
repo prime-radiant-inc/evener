@@ -106,7 +106,7 @@ kill -0 "$HUBPID" || { echo "hub failed to start on $PORT" >&2; exit 1; }
 curl -s -o /dev/null -w "%{http_code}\n" "$HUB/"  # → 401 (auth required; means it answered)
 
 # 7. Grab the auth token from the isolated $HOME. The browser needs it
-#    in the URL query and the curl REST shim needs it as a Bearer
+#    in the URL query; HTTP and AppWire clients use it as a Bearer
 #    header.
 TOKEN=$(cat "$HOME/.local/state/evener/auth-token")
 ```
@@ -246,9 +246,10 @@ scripts/e2e/e2e-ratelimited-provider.sh --retry-after 5
 
 prints the run directory, fake429's address, and the exact `evener tui
 --hub-addr ... --auth-token ... --no-auto-start-hub` command to attach.
-Spawn a session with `"model":"ratelimited/fake-model"` (see "Spawning a
-session via the REST shim" below) and every completion call it makes will
-429. Tear down with `scripts/e2e/e2e-ratelimited-provider.sh --stop RUN_DIR`
+Start a session with `model: "ratelimited/fake-model"` through AppWire
+`thread/start` (see "Starting a session via AppWire" below) and every
+completion call it makes will 429. Tear down with
+`scripts/e2e/e2e-ratelimited-provider.sh --stop RUN_DIR`
 (kills fake429 and the hub, removes the run directory).
 
 ## Hermetic workdir per scenario
@@ -263,60 +264,45 @@ tmpdir=$(mktemp -d -t evener-e2e-XXXXX)
 
 For transcript isolation, pass a per-scenario `EVENER_STATE_DIR` in
 `launch_overrides.env`. This keeps the spawned daemon's sessions and
-logs under one directory while still using the hub REST shim:
+logs under one directory while still using the typed AppWire launch path:
 
 ```bash
 state=$(mktemp -d -t evener-e2e-state-XXXXX)
-body=$(jq -n \
-  --arg prompt "$prompt" \
-  --arg model "$model" \
-  --arg wd "$tmpdir" \
-  --arg state "$state" \
-  '{
-    prompt:$prompt,
-    model:$model,
-    working_dir:$wd,
-    harness:"evener",
-    branch:"",
-    access_mode:"full",
-    agent:"default",
-    launch_overrides:{env:{EVENER_STATE_DIR:$state}}
-  }')
 ```
 
 If the scenario needs an `AGENTS.md` (see pacing trick below), write
-it before spawning. Pass `tmpdir` as `working_dir` in the spawn
-payload.
+it before starting. Pass `tmpdir` as `cwd` in the `thread/start` params.
 
-## Spawning a session via the REST shim
+## Starting a session via AppWire
 
-The hub's `/api/spawn` endpoint creates a session and starts a turn.
-Copy-paste skeleton:
+The shipped web UI and TUI start sessions with the typed AppWire
+`thread/start` method. For a browser-free scenario, build the method's
+camelCase parameter object and send it over the authenticated AppWire socket
+described in [Driving AppWire directly](#driving-appwire-directly-the-browser-free-lever):
 
 ```bash
-resp=$(curl -s -X POST -H "Content-Type: application/json" \
-  -H "Authorization: Bearer $TOKEN" \
-  -d "{
-    \"prompt\":\"please run \\\"echo hello\\\" via exec_command then stop\",
-    \"model\":\"anthropic/claude-haiku-4-5-20251001\",
-    \"working_dir\":\"$tmpdir\",
-    \"harness\":\"evener\",
-    \"branch\":\"\",
-    \"access_mode\":\"full\",
-    \"agent\":\"default\",
-    \"launch_overrides\":{}
-  }" \
-  "$HUB/api/spawn")
-SID=$(echo "$resp" | jq -r '.session_id')
+params=$(jq -n \
+  --arg prompt "$prompt" \
+  --arg model "$model" \
+  --arg cwd "$tmpdir" \
+  --arg state "$state" \
+  '{
+    harness:"evener",
+    cwd:$cwd,
+    input:(if $prompt == "" then [] else [{type:"text", text:$prompt}] end),
+    model:$model,
+    launchOverrides:{env:{EVENER_STATE_DIR:$state}}
+  }')
 ```
 
-`SID` is a 22-character UUIDv7 base62 payload. The session's
-appwire ref is `local:$SID`.
+Send `{"id":2,"method":"thread/start","params":<params>}` after
+`initialize`. The response's `result.thread.evener.ref` is the canonical
+session reference; a local session has the form `local:<SID>`.
 
 ### Polling for state transitions
 
 The state vocabulary is fixed and shared by the web rail, the TUI, and
-this REST shim: `idle`, `active`, `awaiting`, `warning`, `errored`,
+AppWire: `idle`, `active`, `awaiting`, `warning`, `errored`,
 `ended`, `notLoaded` (`hubcore.NormalizeState`,
 `cmd/evener-hub/internal/hubcore/tree.go#NormalizeState`, normalizing
 `appwire.ThreadStatus*`, `appwire/types.go:138-145`). A running turn is
@@ -427,8 +413,8 @@ The response has `status`, `generationId`, `revision`, and `etag`; `status`
 `not_modified` omits `data`. There is no HTTP `/api/navigation` equivalent.
 
 A session to aim a gating assertion at costs nothing and needs no
-provider credential: spawn with an empty `prompt` and the daemon launches
-without running a turn — a *dormant* session, which reports `state:"idle"`
+provider credential: start with an empty AppWire `input` and the daemon
+launches without running a turn — a *dormant* session, which reports `state:"idle"`
 like any other quiet session and is only distinguishable by the `dormant`
 field (`hubapi/types.go:115-119`). No completion request is ever made.
 
@@ -506,7 +492,7 @@ So the driving surface is the DOM, and only the DOM:
    sees").
 3. `localStorage` under the `evener.prefs.*` / `evener.rail.*` contracts, for
    preconditions, seeded **before** the first page load.
-4. The REST shim and the on-disk transcript, for anything the DOM can
+4. The HTTP session APIs and the on-disk transcript, for anything the DOM can
    only hint at.
 
 ### Coordinate browser ownership first (kata `8ecz`)

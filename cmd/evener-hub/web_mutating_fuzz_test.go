@@ -20,11 +20,13 @@ type mutRoute struct {
 }
 
 // mutatingRoutes are exactly the routes the Phase-4 read-only handler fuzz
-// excluded: the spawn POST, the live-models seam read, and the session/turn
-// action verbs (clear/model/effort/interrupt/compact/shutdown/send/fork under
-// /api/sessions, and steer/queue/drain-as-steer under /s). Under the B0 sandbox
-// every one of these is contained: spawn hits the recording spawner, models its
-// seam, and the action verbs resolve "not live" before any daemon dial.
+// excluded: the append-only retired /api/spawn slot and the live-git
+// seam reads, and the session/turn action verbs (clear/model/effort/interrupt/
+// compact/shutdown/send/fork under /api/sessions, and steer/queue/drain-as-steer
+// under /s). The retired spawn slot stays in this position so route-indexed
+// fuzz corpora remain compatible; it now exercises ordinary unknown-route
+// handling. Under the B0 sandbox, the live routes are contained: git-head its
+// seam, and action verbs resolve "not live" before any daemon dial.
 var mutatingRoutes = []mutRoute{
 	{http.MethodPost, "/api/spawn", true},
 	{http.MethodGet, "/api/models?harness={id}", false},
@@ -68,8 +70,8 @@ func isServerFault(code int) bool {
 //   - never panic (an unrecovered panic crashes the worker → a reported crasher);
 //   - no server fault (isServerFault: a 500 or non-deliberate 5xx is a defect);
 //   - never serve the out-of-root secret (path-escape tripwire);
-//   - never dial the network (the deny-transport tripwire) — no spawn reaches a
-//     real subprocess and no model call reaches a provider.
+//   - never dial the network (the deny-transport tripwire) — no launch path
+//     reaches a real subprocess, and no model/git call reaches a provider.
 //
 // The recording spawner and recording mkdir guarantee no real process or
 // directory is ever materialized regardless of input, so those escapes need no
@@ -94,14 +96,11 @@ func FuzzWebMutatingHandler(f *testing.F) {
 		body     string
 	}{
 		{"/api/spawn", "", `{"harness":"evener","working_dir":"` + s.CWD + `","model":"openai/gpt-5.5"}`},
-		// Spawn with a prompt + a single valid image attachment + the optional
-		// launch fields, so the full handleApiSpawn body (item loop, launch-overrides
-		// plumbing) runs rather than the bare model-only shape.
+		// Keep the retired route's optional-payload seed in its original position;
+		// the route-indexed corpus remains append-only after the route removal.
 		{"/api/spawn", "", `{"harness":"evener","working_dir":"` + s.CWD + `","model":"openai/gpt-5.5","prompt":"hi","agent":"engineer","reasoning_effort":"high","non_interactive":true,"launch_overrides":{"maxRounds":3},"items":[{"type":"input_image","mediaType":"image/png","data":"aGVsbG8="}]}`},
-		// Nine image items trips the SendMaxImageItems (8) count limit in
-		// validateAppWireInputItems → the 413 rejection branch handleApiSpawn never
-		// otherwise reaches. Empty Data keeps the seed small (the per-image byte
-		// limit is 8 MiB, not worth a multi-MiB corpus entry).
+		// Keep the retired route's image-limit seed in its original position too;
+		// changing route-indexed inputs would invalidate existing corpus entries.
 		{"/api/spawn", "", `{"harness":"evener","working_dir":"` + s.CWD + `","items":[{"type":"image"},{"type":"image"},{"type":"image"},{"type":"image"},{"type":"image"},{"type":"image"},{"type":"image"},{"type":"image"},{"type":"image"}]}`},
 		{"/api/models?harness={id}", "evener", ""},
 		{"/api/models?harness={id}", "codex", ""},

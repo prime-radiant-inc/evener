@@ -21,7 +21,7 @@ describe("ACCESS_MODE_OPTIONS", () => {
 });
 
 describe("sandboxForAccessMode", () => {
-  test("maps each access mode 1:1 to its sandbox value (mirrors web_spawn.go)", () => {
+  test("maps each access mode 1:1 to its sandbox value", () => {
     expect(sandboxForAccessMode("full")).toBe("off");
     expect(sandboxForAccessMode("read-only")).toBe("read-only");
     expect(sandboxForAccessMode("workspace-write")).toBe("workspace-write");
