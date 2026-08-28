@@ -2,7 +2,9 @@ import {
   type ReactElement,
   useCallback,
   useEffect,
+  useLayoutEffect,
   useMemo,
+  useReducer,
   useRef,
   useSyncExternalStore,
 } from "react";
@@ -200,6 +202,11 @@ export function LiveConceptHost({
     (state) => state.sessionsVisible,
     false,
   );
+  const rosterGeneration = useNullableStoreValue(
+    runtime.rosterStore,
+    (state) => state.generation,
+    0,
+  );
 
   const rawRef = runtime.conversationStore((state) => state.ref);
   const mobileConversation = runtime.conversationStore(
@@ -211,10 +218,47 @@ export function LiveConceptHost({
     (state) => state.pendingMutation,
   );
   const conversationError = runtime.conversationStore((state) => state.error);
+  const conversationGeneration = runtime.conversationStore(
+    (state) => state.conversationGeneration,
+  );
   const activityView = runtime.activityStore((state) => state.view);
 
+  interface ProfileSourceSnapshot {
+    profileId: string | null;
+    rosterStore: LiveConceptHostRuntime["rosterStore"];
+    rosterGeneration: number;
+    conversationStore: LiveConceptHostRuntime["conversationStore"];
+    conversationGeneration: number;
+  }
+
+  const profileSourceSnapshot = useRef<ProfileSourceSnapshot | null>(null);
+  if (profileSourceSnapshot.current === null) {
+    profileSourceSnapshot.current = {
+      profileId: runtime.profileId,
+      rosterStore: runtime.rosterStore,
+      rosterGeneration,
+      conversationStore: runtime.conversationStore,
+      conversationGeneration,
+    };
+  }
+  const acceptedProfileSource = profileSourceSnapshot.current;
+  const profileBlocked = acceptedProfileSource.profileId !== runtime.profileId;
+  const rosterSourceAdvanced =
+    runtime.rosterStore === null ||
+    runtime.rosterStore !== acceptedProfileSource.rosterStore ||
+    rosterGeneration !== acceptedProfileSource.rosterGeneration;
+  const conversationSourceAdvanced =
+    runtime.conversationStore !== acceptedProfileSource.conversationStore ||
+    conversationGeneration !== acceptedProfileSource.conversationGeneration;
+  const profileSourcesReady =
+    rosterSourceAdvanced && conversationSourceAdvanced;
+  const projectionProfileGate = useMemo(
+    () => ({ profileId: runtime.profileId, blocked: profileBlocked }),
+    [profileBlocked, runtime.profileId],
+  );
+
   const rosterProjection = useMemo<ProjectedRoster>(() => {
-    if (runtime.rosterStore === null) {
+    if (projectionProfileGate.blocked || runtime.rosterStore === null) {
       return { view: EMPTY_ROSTER, refsByKey: EMPTY_REFS };
     }
     try {
@@ -238,6 +282,7 @@ export function LiveConceptHost({
     rosterQuery,
     runtime.rosterStore,
     sessionsVisible,
+    projectionProfileGate,
   ]);
 
   const conversationResult = useMemo<{
@@ -247,7 +292,11 @@ export function LiveConceptHost({
     } | null;
     failed: boolean;
   }>(() => {
-    if (mobileConversation === null || rawRef === null) {
+    if (
+      projectionProfileGate.blocked ||
+      mobileConversation === null ||
+      rawRef === null
+    ) {
       return { projection: null, failed: false };
     }
     try {
@@ -274,13 +323,18 @@ export function LiveConceptHost({
     rosterEntries,
     rosterProjector,
     runtime.conversationStore,
+    projectionProfileGate,
   ]);
 
   const activityResult = useMemo<{
     view: LiveActivityView | null;
     operational: ActivityOperationalMap | null;
   }>(() => {
-    if (activityView === null || conversationResult.projection === null) {
+    if (
+      projectionProfileGate.blocked ||
+      activityView === null ||
+      conversationResult.projection === null
+    ) {
       return { view: null, operational: null };
     }
     try {
@@ -291,7 +345,12 @@ export function LiveConceptHost({
     } catch {
       return { view: null, operational: null };
     }
-  }, [activityProjector, activityView, conversationResult.projection]);
+  }, [
+    activityProjector,
+    activityView,
+    conversationResult.projection,
+    projectionProfileGate,
+  ]);
 
   const rosterRefs = useRef<ReadonlyMap<string, string>>(EMPTY_REFS);
   const currentConversationProjection = useRef<{
@@ -305,17 +364,66 @@ export function LiveConceptHost({
   currentConversationProjection.current = conversationResult.projection;
   currentActivityOperational.current = activityResult.operational;
 
-  const previousProfileId = useRef(runtime.profileId);
-  useEffect(() => {
-    if (previousProfileId.current === runtime.profileId) return;
-    previousProfileId.current = runtime.profileId;
-    conversationProjector.reset();
-    activityProjector.reset();
-    rosterRefs.current = EMPTY_REFS;
-    currentConversationProjection.current = null;
-    currentActivityOperational.current = null;
-    uiStore.getState().resetProfileScope();
-  }, [activityProjector, conversationProjector, runtime.profileId, uiStore]);
+  const cleanedProfileTransition = useRef<{
+    from: string | null;
+    to: string | null;
+  } | null>(null);
+  const [, forceAcceptedProfileRender] = useReducer(
+    (revision: number) => revision + 1,
+    0,
+  );
+  useLayoutEffect(() => {
+    const accepted = profileSourceSnapshot.current;
+    if (accepted === null) return;
+    if (accepted.profileId === runtime.profileId) {
+      profileSourceSnapshot.current = {
+        profileId: runtime.profileId,
+        rosterStore: runtime.rosterStore,
+        rosterGeneration,
+        conversationStore: runtime.conversationStore,
+        conversationGeneration,
+      };
+      return;
+    }
+
+    const cleaned = cleanedProfileTransition.current;
+    if (
+      cleaned === null ||
+      cleaned.from !== accepted.profileId ||
+      cleaned.to !== runtime.profileId
+    ) {
+      conversationProjector.reset();
+      activityProjector.reset();
+      rosterRefs.current = EMPTY_REFS;
+      currentConversationProjection.current = null;
+      currentActivityOperational.current = null;
+      uiStore.getState().resetProfileScope();
+      cleanedProfileTransition.current = {
+        from: accepted.profileId,
+        to: runtime.profileId,
+      };
+    }
+
+    if (!profileSourcesReady) return;
+    profileSourceSnapshot.current = {
+      profileId: runtime.profileId,
+      rosterStore: runtime.rosterStore,
+      rosterGeneration,
+      conversationStore: runtime.conversationStore,
+      conversationGeneration,
+    };
+    forceAcceptedProfileRender();
+  }, [
+    activityProjector,
+    conversationGeneration,
+    conversationProjector,
+    profileSourcesReady,
+    rosterGeneration,
+    runtime.conversationStore,
+    runtime.profileId,
+    runtime.rosterStore,
+    uiStore,
+  ]);
 
   useEffect(
     () => () => {
@@ -363,15 +471,25 @@ export function LiveConceptHost({
       : (reachabilityByProfile[runtime.profileId] ?? "unknown");
   const conversation = conversationResult.projection?.view ?? null;
   const composer: LiveComposerView = {
-    draft,
-    canSend: mobileConversation?.capabilities.send ?? false,
-    canSteer: mobileConversation?.capabilities.steer ?? false,
-    canQueue: mobileConversation?.capabilities.queue ?? false,
-    canInterrupt: mobileConversation?.capabilities.interrupt ?? false,
-    pending: projectPendingMutation(pendingMutation),
-    error: conversationResult.failed
-      ? "Unable to display conversation"
-      : conversationError,
+    draft: profileBlocked ? "" : draft,
+    canSend: profileBlocked
+      ? false
+      : (mobileConversation?.capabilities.send ?? false),
+    canSteer: profileBlocked
+      ? false
+      : (mobileConversation?.capabilities.steer ?? false),
+    canQueue: profileBlocked
+      ? false
+      : (mobileConversation?.capabilities.queue ?? false),
+    canInterrupt: profileBlocked
+      ? false
+      : (mobileConversation?.capabilities.interrupt ?? false),
+    pending: profileBlocked ? null : projectPendingMutation(pendingMutation),
+    error: profileBlocked
+      ? null
+      : conversationResult.failed
+        ? "Unable to display conversation"
+        : conversationError,
   };
   const state: LiveConceptState = {
     concept,

@@ -14,7 +14,11 @@ import type { NativeBridge } from "../native/client";
 import type { ConversationService } from "../services/conversation";
 import { createActivityStore } from "../state/activity";
 import { createConnectionStore } from "../state/connection";
-import { createConversationStore } from "../state/conversation";
+import {
+  createConversationStore,
+  MAX_ITEM_BYTES,
+  truncateText,
+} from "../state/conversation";
 import { createNavigationStore } from "../state/navigation";
 import { createPreferencesStore } from "../state/preferences";
 import { createRosterStore } from "../state/roster";
@@ -135,15 +139,14 @@ function makeHarness(profileId = "profile-a") {
 async function openConversation(
   harness: ReturnType<typeof makeHarness>,
   value: MobileConversation,
+  ref = "private-conversation-ref",
 ): Promise<void> {
   const service = {
     open: vi.fn(async () => value),
     subscribeNotifications: vi.fn(() => () => undefined),
   } as unknown as ConversationService;
   await act(async () => {
-    await harness.runtime.conversationStore
-      .getState()
-      .open(service, "private-conversation-ref");
+    await harness.runtime.conversationStore.getState().open(service, ref);
   });
 }
 
@@ -260,6 +263,11 @@ describe("LiveConceptHost ownership", () => {
   it("projects roster, conversation with truncation ownership, and strict activity", async () => {
     const harness = makeHarness();
     const oversized = "x".repeat(70_000);
+    const expectedFrozenBody = truncateText(oversized, MAX_ITEM_BYTES);
+    const genuineLiteralMarker = "genuine short content … truncated";
+    expect(new TextEncoder().encode(expectedFrozenBody)).toHaveLength(
+      MAX_ITEM_BYTES,
+    );
     await openConversation(
       harness,
       conversation([
@@ -269,8 +277,36 @@ describe("LiveConceptHost ownership", () => {
           markdown: oversized,
           streaming: false,
         },
+        {
+          kind: "assistant",
+          id: "literal-marker-item",
+          markdown: genuineLiteralMarker,
+          streaming: false,
+        },
       ]),
     );
+    expect(
+      harness.runtime.conversationStore
+        .getState()
+        .getTruncatedItemIds()
+        .has("truncated-source-item"),
+    ).toBe(true);
+    expect(
+      harness.runtime.conversationStore
+        .getState()
+        .getTruncatedItemIds()
+        .has("literal-marker-item"),
+    ).toBe(false);
+    expect(
+      harness.runtime.conversationStore
+        .getState()
+        .conversation?.items.find(
+          (item) => item.id === "truncated-source-item",
+        ),
+    ).toMatchObject({
+      kind: "assistant",
+      markdown: expectedFrozenBody,
+    });
     harness.runtime.conversationStore.setState({
       olderCursor: "private-older-cursor",
     });
@@ -302,6 +338,7 @@ describe("LiveConceptHost ownership", () => {
     );
 
     const sessions = render(<LiveConceptHost {...harness.props} />);
+    const serializedSurfaces = [document.body.innerHTML];
     expect(screen.getByText("Roster projector sentinel")).toBeInTheDocument();
     act(() => harness.runtime.rosterStore?.getState().setSearch("no-match"));
     sessions.rerender(
@@ -316,10 +353,30 @@ describe("LiveConceptHost ownership", () => {
     expect(
       sessions.container.querySelector(".sw-updated-label")?.textContent,
     ).not.toBe("");
-    expect(document.querySelector('[data-truncated="true"]')).not.toBeNull();
+    const assistantRows = sessions.container.querySelectorAll(
+      ".sw-transcript-item--assistant",
+    );
+    expect(assistantRows).toHaveLength(2);
+    expect(assistantRows[0]).toHaveAttribute("data-truncated", "true");
+    expect(assistantRows[0]?.textContent).toBe(expectedFrozenBody);
+    expect(assistantRows[1]).toHaveAttribute("data-truncated", "false");
+    expect(assistantRows[1]?.textContent).toBe(genuineLiteralMarker);
+    serializedSurfaces.push(document.body.innerHTML);
     sessions.rerender(<LiveConceptHost {...harness.props} surface="work" />);
     expect(screen.getByText("Activity projector sentinel")).toBeInTheDocument();
-    expect(document.body.textContent).not.toContain("private-job-id");
+    serializedSurfaces.push(document.body.innerHTML);
+    const serialized = serializedSurfaces.join("\n");
+    for (const rawIdentifier of [
+      "private-conversation-ref",
+      "thread-private-id",
+      "session-private-id",
+      "truncated-source-item",
+      "literal-marker-item",
+      "private-older-cursor",
+      "private-job-id",
+    ]) {
+      expect(serialized).not.toContain(rawIdentifier);
+    }
   });
 
   it("maps injected platform, appearance, text scale, and independent capabilities", async () => {
@@ -375,8 +432,44 @@ describe("LiveConceptHost ownership", () => {
     expect(screen.getByRole("button", { name: /Interrupt/i })).toBeEnabled();
   });
 
-  it("clears only thread-keyed local UI after a profile ID change", () => {
+  it("fails closed across a profile change until live stores advance", async () => {
     const harness = makeHarness();
+    await openConversation(
+      harness,
+      conversation([
+        {
+          kind: "user",
+          id: "old-profile-item-id",
+          text: "Old profile transcript sentinel",
+        },
+      ]),
+    );
+    const oldConversationGeneration =
+      harness.runtime.conversationStore.getState().conversationGeneration;
+    harness.runtime.activityStore.getState().setLiveView(
+      {
+        tasks: [{ status: "active", count: 1 }],
+        work: [
+          {
+            kind: "job",
+            label: "Old profile activity sentinel",
+            tone: "running",
+            diagnostics: {
+              rawId: "old-profile-job-id",
+              operationName: "shell",
+              statusClass: "running",
+            },
+          },
+        ],
+        usage: {},
+        capabilities,
+      },
+      {
+        threadId: "thread-private-id",
+        ref: "private-conversation-ref",
+        generation: oldConversationGeneration,
+      },
+    );
     act(() => {
       harness.uiStore.getState().setConcept("constellation");
       harness.uiStore.getState().setWorkOpen(true);
@@ -394,15 +487,75 @@ describe("LiveConceptHost ownership", () => {
         offset: 8,
       });
     });
-    const { rerender } = render(<LiveConceptHost {...harness.props} />);
+    const { container, rerender } = render(
+      <LiveConceptHost {...harness.props} />,
+    );
     expect(harness.uiStore.getState().expandedToolKeys).toContain("tool-key");
+    const oldRosterButton = screen.getByRole("button", {
+      name: /Roster projector sentinel/,
+    });
+    const oldOpaqueKey = oldRosterButton
+      .closest("[data-session-id]")
+      ?.getAttribute("data-session-id");
+    expect(oldOpaqueKey).toBeTruthy();
+    expect(oldOpaqueKey).not.toBe("private-conversation-ref");
+    fireEvent.click(oldRosterButton);
+    expect(harness.callbacks.onOpenConversation).toHaveBeenCalledWith(
+      "private-conversation-ref",
+    );
+    harness.callbacks.onOpenConversation.mockClear();
+
+    rerender(<LiveConceptHost {...harness.props} surface="conversation" />);
+    expect(
+      screen.getByText("Old profile transcript sentinel"),
+    ).toBeInTheDocument();
+    rerender(<LiveConceptHost {...harness.props} surface="work" />);
+    expect(
+      screen.getByText("Old profile activity sentinel"),
+    ).toBeInTheDocument();
+
+    const oldRosterState = harness.runtime.rosterStore?.getState();
+    const oldConversationState = harness.runtime.conversationStore.getState();
+    const oldActivityState = harness.runtime.activityStore.getState();
+    const runtimeB = { ...harness.runtime, profileId: "profile-b" };
 
     rerender(
       <LiveConceptHost
         {...harness.props}
-        runtime={{ ...harness.runtime, profileId: "profile-b" }}
+        runtime={runtimeB}
+        surface="sessions"
       />,
     );
+
+    expect(document.body.innerHTML).not.toContain("Roster projector sentinel");
+    rerender(
+      <LiveConceptHost
+        {...harness.props}
+        runtime={runtimeB}
+        surface="conversation"
+      />,
+    );
+    expect(document.body.innerHTML).not.toContain(
+      "Old profile transcript sentinel",
+    );
+    rerender(
+      <LiveConceptHost {...harness.props} runtime={runtimeB} surface="work" />,
+    );
+    expect(document.body.innerHTML).not.toContain(
+      "Old profile activity sentinel",
+    );
+    expect(harness.runtime.rosterStore?.getState()).toBe(oldRosterState);
+    expect(harness.runtime.conversationStore.getState()).toBe(
+      oldConversationState,
+    );
+    expect(harness.runtime.activityStore.getState()).toBe(oldActivityState);
+
+    act(() => {
+      container.appendChild(oldRosterButton);
+    });
+    fireEvent.click(oldRosterButton);
+    expect(harness.callbacks.onOpenConversation).not.toHaveBeenCalled();
+    oldRosterButton.remove();
 
     const state = harness.uiStore.getState();
     expect(state.concept).toBe("constellation");
@@ -413,6 +566,94 @@ describe("LiveConceptHost ownership", () => {
     expect(state.questionDrafts).toEqual({});
     expect(state.focusedItemKey).toBeNull();
     expect(state.scrollAnchors).toEqual({});
+
+    act(() => {
+      harness.runtime.rosterStore?.getState().reset();
+      harness.runtime.rosterStore?.setState({
+        entries: [
+          {
+            ref: "new-profile-ref",
+            title: "New profile roster sentinel",
+            project: "New profile project",
+            status: "active",
+            updatedAt: 1_800_000_000_000,
+            attention: "recent",
+          },
+        ],
+        sessionsVisible: true,
+      });
+      harness.runtime.conversationStore.getState().reset();
+      harness.runtime.activityStore.getState().reset();
+    });
+    await openConversation(
+      harness,
+      {
+        ...conversation([
+          {
+            kind: "user",
+            id: "new-profile-item-id",
+            text: "New profile transcript sentinel",
+          },
+        ]),
+        id: "new-profile-thread-id",
+        sessionId: "new-profile-session-id",
+        name: "New profile conversation",
+      },
+      "new-profile-ref",
+    );
+    const newConversationGeneration =
+      harness.runtime.conversationStore.getState().conversationGeneration;
+    act(() => {
+      harness.runtime.activityStore.getState().setLiveView(
+        {
+          tasks: [{ status: "done", count: 1 }],
+          work: [
+            {
+              kind: "job",
+              label: "New profile activity sentinel",
+              tone: "terminal",
+              diagnostics: {
+                rawId: "new-profile-job-id",
+                operationName: "shell",
+                statusClass: "completed",
+              },
+            },
+          ],
+          usage: {},
+          capabilities,
+        },
+        {
+          threadId: "new-profile-thread-id",
+          ref: "new-profile-ref",
+          generation: newConversationGeneration,
+        },
+      );
+    });
+
+    rerender(
+      <LiveConceptHost
+        {...harness.props}
+        runtime={runtimeB}
+        surface="sessions"
+      />,
+    );
+    expect(screen.getByText("New profile roster sentinel")).toBeInTheDocument();
+    rerender(
+      <LiveConceptHost
+        {...harness.props}
+        runtime={runtimeB}
+        surface="conversation"
+      />,
+    );
+    expect(
+      screen.getByText("New profile transcript sentinel"),
+    ).toBeInTheDocument();
+    rerender(
+      <LiveConceptHost {...harness.props} runtime={runtimeB} surface="work" />,
+    );
+    expect(
+      screen.getByText("New profile activity sentinel"),
+    ).toBeInTheDocument();
   });
 
   it("does not erase valid local state on initial mount or render prototype content", () => {
