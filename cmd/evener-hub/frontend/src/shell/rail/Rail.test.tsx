@@ -1,5 +1,7 @@
-import { act, cleanup, fireEvent, render, screen } from "@testing-library/react";
+import { act, cleanup, fireEvent, render as renderUI, screen } from "@testing-library/react";
+import type { ReactElement } from "react";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
+import { FakeClient } from "../../protocol/testing/fakeClient";
 import type {
   NavigationInvalidatedPayload,
   NavigationManifest,
@@ -10,6 +12,7 @@ import { navigationStore, resetNavigationStoreForTests } from "../../stores/navi
 import { keyID, type ResourceKey, type ResourceState } from "../../stores/navigation/types";
 import { threadsStore } from "../../stores/threads";
 import { getToasts, resetToastStoreForTests } from "../../widgets/toast/store";
+import { ClientProvider } from "../clientContext";
 import { resetWorkspaceStoreForTests } from "../workspace";
 import { adaptNavigationResources, Rail } from "./Rail";
 import { EXPANSION_STORAGE_KEY } from "./railExpansion";
@@ -122,6 +125,10 @@ function catalogResource(
     { kind: "catalog", catalog: "projects", offset: 0, limit: 100 },
     { generation_id: "g1", revision: 1, projects, remaining: 0 },
   );
+}
+
+function render(ui: ReactElement, client = new FakeClient()) {
+  return renderUI(ui, { wrapper: ({ children }) => <ClientProvider client={client}>{children}</ClientProvider> });
 }
 
 beforeEach(() => {
@@ -590,18 +597,18 @@ describe("resource-backed Rail", () => {
     const applyNavigationMutation = vi.fn().mockResolvedValue(undefined);
     installState([catalogResource([{ key: "p", name: "Project", session_count: 0 }])]);
     navigationStore.setState({ applyNavigationMutation });
-    const fetchMock = vi
-      .fn()
-      .mockResolvedValue(jsonResponse({ ok: true, navigation: { generation_id: "g1", targets: [] } }));
-    vi.stubGlobal("fetch", fetchMock);
-    render(<Rail />);
+    const client = new FakeClient();
+    client.on("evener/favorite/set", (params) => {
+      expect(params).toEqual({ kind: "project", id: "p", favorited: true });
+      return { ok: true, navigation: { generation_id: "g1", targets: [] } };
+    });
+    render(<Rail />, client);
     fireEvent.click(screen.getByRole("button", { name: /actions for project/i }));
     fireEvent.click(screen.getByRole("menuitem", { name: "Add to pinned" }));
     await act(async () => undefined);
-    expect(fetchMock).toHaveBeenCalledWith(
-      "/api/favorite",
-      expect.objectContaining({ body: JSON.stringify({ kind: "project", id: "p", favorited: true }) }),
-    );
+    expect(client.calls).toEqual([
+      { method: "evener/favorite/set", params: { kind: "project", id: "p", favorited: true } },
+    ]);
     expect(applyNavigationMutation).toHaveBeenCalledTimes(1);
   });
   test("routes unpin and delete through rendered session dialogs and receipt convergence", async () => {

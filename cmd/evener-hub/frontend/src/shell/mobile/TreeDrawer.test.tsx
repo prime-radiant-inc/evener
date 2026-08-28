@@ -2,8 +2,10 @@ import { act, cleanup, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { lazy } from "react";
 import { afterAll, afterEach, beforeAll, beforeEach, expect, test } from "vitest";
+import { FakeClient } from "../../protocol/testing/fakeClient";
 import { navigationStore, resetNavigationStoreForTests } from "../../stores/navigation/store";
 import { keyID } from "../../stores/navigation/types";
+import { ClientProvider } from "../clientContext";
 import { registerPaneForTests } from "../paneRegistry";
 import { resetWorkspaceStoreForTests, workspaceStore } from "../workspace";
 import { TreeDrawer } from "./TreeDrawer";
@@ -174,7 +176,9 @@ test("the drawer-hosted RailHost carries the full sidebar chrome", async () => {
   const user = userEvent.setup();
   render(
     <TreeDrawer>
-      <RailHost />
+      <ClientProvider client={new FakeClient()}>
+        <RailHost />
+      </ClientProvider>
     </TreeDrawer>,
   );
   await user.click(screen.getByRole("button", { name: "Sessions" }));

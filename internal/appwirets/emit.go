@@ -381,5 +381,5 @@ var navigationRESTRoots = []any{
 	hubapi.NavigationProjectPage{},
 	hubapi.NavigationSessionLocation{},
 	hubapi.NavigationSessionSummary{},
-	hubapi.NavigationMutation{},
+	appwire.NavigationMutation{},
 }

@@ -118,6 +118,7 @@ no router (reserved).
 | `evener/projects/recent` | hub | `ProjectsRecentParams` | `ProjectsRecentResponse` | Lists the most recently used project working directories (session creation path-dropdown options; default cap 15). |
 | `evener/path/validate` | hub | `PathValidateParams` | `PathValidateResponse` | Validates a launch path. |
 | `evener/navigation/read` | hub | `NavigationReadParams` | `NavigationReadResponse` | Reads one bounded, revisioned hub navigation resource, optionally conditional on its ETag. |
+| `evener/favorite/set` | hub | `FavoriteSetParams` | `FavoriteSetResponse` | Sets or clears a project favorite and returns the committed navigation invalidation targets. |
 | `evener/search` | hub | `SearchParams` | `SearchResponse` | Searches live and persisted sessions for the hub command palette. |
 | `evener/harnesses/list` | hub | `HarnessListParams` | `HarnessListResponse` | Lists available harness descriptors. |
 | `evener/upgrade` | hub | `UpgradeParams` | `UpgradeResponse` | Performs or reports a evener binary upgrade. |
@@ -523,6 +524,23 @@ _(no fields)_
 | `ref` | `string` |  |  |
 | `items` | `[]appwire.ThreadItem` |  |  |
 | `truncated` | `bool` |  |  |
+
+
+### `FavoriteSetParams`
+
+| Field | Go type | Omitempty | Embedded |
+|-------|---------|-----------|----------|
+| `kind` | `string` |  |  |
+| `id` | `string` |  |  |
+| `favorited` | `bool` |  |  |
+
+
+### `FavoriteSetResponse`
+
+| Field | Go type | Omitempty | Embedded |
+|-------|---------|-----------|----------|
+| `ok` | `bool` |  |  |
+| `navigation` | `appwire.NavigationMutation` |  |  |
 
 
 ### `GoalSetParams`

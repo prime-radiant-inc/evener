@@ -1106,14 +1106,9 @@ describe("session row", () => {
     });
   }
 
-  // Favorite is scoped for the same reason as Archive, and the server proves
-  // it: POST /api/favorite accepts a subagent id and writes the decision, but
-  // the Pinned tier is drawn only from a project's top-level Current+Recent
-  // sessions (web_api_tree.go), so the row never appears there and never comes
-  // back favorite:true - a menu item that silently does nothing. On a cluster
-  // it is worse: the id is a synthetic SHA-derived "cluster:<hex>" naming no
-  // session at all, so it writes a decision row nothing will ever clean up.
-  // Both verified against a live hub.
+  // Favorite is scoped for the same reason as Archive: session rows use the
+  // separate session-pin action, while cluster rows have a synthetic
+  // "cluster:<hex>" identity rather than an independently pinnable session.
   for (const kind of ["subagent", "fork", "cluster"]) {
     test(`menu omits pin and unpin on a ${kind} row`, async () => {
       render(<RailRow node={sessionRailNode(apiNode({ kind }))} info={info()} actions={actions()} />);

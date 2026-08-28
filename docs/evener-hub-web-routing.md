@@ -35,8 +35,9 @@ left to fragment-route.
   `project_page`, and `location` resources provide bounded rows and ownership
   details. The canonical request shapes, pagination rules, and response
   envelope are maintained in the [AppWire navigation resource matrix](developing-evener/agentic-testing.md).
-- `POST /api/favorite` — set or clear a session's or project's favorite
-  (Pinned) decision.
+- `evener/favorite/set` — set or clear a project's favorite (Pinned) decision;
+  the typed method retains the explicit rejection for obsolete session-shaped
+  favorite requests.
 - `POST /api/project/delete` — delete every session under a project.
 - `POST /api/sessions/{ref}/rename` — rename a session.
 
@@ -49,8 +50,8 @@ left to fragment-route.
 - Project identity is the full working directory, not its basename — two
   same-named projects at different paths get distinct slug-based keys
   instead of colliding into one node.
-- Sessions and projects can be favorited (`POST /api/favorite`); favorited
-  sessions surface in a Pinned tier.
+- Project favorites use the typed `evener/favorite/set` method; favorited
+  sessions surface in a Pinned tier through the separate session-pin API.
 - A project and every session under it can be deleted in one action
   (`POST /api/project/delete`).
 - Test-run sessions are classified into their own tier server-side, in

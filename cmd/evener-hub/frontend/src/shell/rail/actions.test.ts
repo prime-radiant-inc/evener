@@ -1,5 +1,6 @@
 // @vitest-environment node
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
+import { FakeClient } from "../../protocol/testing/fakeClient";
 import {
   assignSessionPin,
   deletePinSection,
@@ -52,13 +53,6 @@ const JSON_INIT = (body: unknown) => ({
 });
 
 describe("named pin sections", () => {
-  test("returns the backend navigation receipt without discarding its targets", async () => {
-    const navigation = { generation_id: "generation-2", targets: [{ kind: "pin_catalog" as const, revision: 7 }] };
-    fetchMock.mockResolvedValueOnce(jsonResponse({ ok: true, navigation }));
-
-    await expect(setFavorite("project", "p", true)).resolves.toEqual({ ok: true, navigation });
-  });
-
   test("lists all pin sections with same-origin credentials and parses the response", async () => {
     const sections = [{ id: "section/one", name: "Research", member_count: 2 }];
     fetchMock.mockResolvedValueOnce(jsonResponse(sections));
@@ -164,18 +158,29 @@ describe("named pin sections", () => {
 });
 
 describe("setFavorite", () => {
-  test("works for kind=project", async () => {
-    fetchMock.mockResolvedValueOnce(jsonResponse({ ok: true }));
-    await setFavorite("project", "proj-key", false);
-    expect(fetchMock).toHaveBeenCalledWith(
-      "/api/favorite",
-      JSON_INIT({ kind: "project", id: "proj-key", favorited: false }),
-    );
+  test("uses the typed AppWire method and preserves navigation targets", async () => {
+    const client = new FakeClient();
+    const response = {
+      ok: true as const,
+      navigation: { generation_id: "generation-2", targets: [{ kind: "pin_catalog" as const, revision: 7 }] },
+    };
+    client.on("evener/favorite/set", (params) => {
+      expect(params).toEqual({ kind: "project", id: "proj-key", favorited: false });
+      return response;
+    });
+
+    await expect(setFavorite(client, "project", "proj-key", false)).resolves.toEqual(response);
+    expect(client.calls).toEqual([
+      { method: "evener/favorite/set", params: { kind: "project", id: "proj-key", favorited: false } },
+    ]);
   });
 
-  test("rejects with the server's error message on failure", async () => {
-    fetchMock.mockResolvedValueOnce(jsonResponse({ error: "favorite store error: boom" }, 500));
-    await expect(setFavorite("project", "x", true)).rejects.toThrow("favorite store error: boom");
+  test("propagates AppWire failures", async () => {
+    const client = new FakeClient();
+    client.on("evener/favorite/set", () => {
+      throw new Error("favorite store error: boom");
+    });
+    await expect(setFavorite(client, "project", "x", true)).rejects.toThrow("favorite store error: boom");
   });
 });
 

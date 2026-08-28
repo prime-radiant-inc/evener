@@ -706,10 +706,10 @@ func TestCovHandleAPISessionDeleteNoPast(t *testing.T) {
 	}
 }
 
-// --- web_api_favorite.go: topLevelFavoriteSessionID ---
+// --- web_api_pin_section.go: topLevelFavoriteSessionID ---
 
 // TestCovTopLevelFavoriteSessionIDClusterPrefix covers the cluster-prefix
-// rejection (web_api_favorite.go:55-56).
+// rejection (web_api_pin_section.go).
 func TestCovTopLevelFavoriteSessionIDClusterPrefix(t *testing.T) {
 	web := NewWebServer(hubcore.WebConfig{HubAddr: "127.0.0.1:9180"})
 	if _, ok := web.topLevelFavoriteSessionID(context.TODO(), "cluster:foo"); ok {

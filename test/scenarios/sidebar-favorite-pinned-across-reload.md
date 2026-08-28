@@ -225,7 +225,7 @@ raise SystemExit("seeded section missing from /api/pin-sections")'
 
 1. Pick a visible project row.
 2. Use the ordinary project favorite control/menu to favorite it.
-3. Raw API cross-check that project favorite behavior still uses `/api/favorite` project semantics, not `/api/session-pin`.
+3. AppWire cross-check that the project favorite mutation uses `evener/favorite/set` project semantics, not `evener/session-pin`.
 4. Browser assertion: the project's favorite state changes as before.
 5. Unfavorite it and verify the project row returns to its original state.
 

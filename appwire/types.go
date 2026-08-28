@@ -55,6 +55,7 @@ const (
 	MethodEvenerProjectsRecent        = "evener/projects/recent"
 	MethodEvenerPathValidate          = "evener/path/validate"
 	MethodEvenerNavigationRead        = "evener/navigation/read"
+	MethodEvenerFavoriteSet           = "evener/favorite/set"
 	MethodEvenerSearch                = "evener/search"
 	MethodEvenerHarnessesList         = "evener/harnesses/list"
 	MethodEvenerUpgrade               = "evener/upgrade"
@@ -228,6 +229,45 @@ type NavigationReadResponse struct {
 	Revision     uint64          `json:"revision"`
 	ETag         string          `json:"etag"`
 	Data         json.RawMessage `json:"data,omitempty"`
+}
+
+// FavoriteSetParams selects the project favorite decision to persist. Kind is
+// retained so the typed method preserves the explicit rejection for the
+// obsolete session-favorite request shape.
+type FavoriteSetParams struct {
+	Kind      string `json:"kind"`
+	ID        string `json:"id"`
+	Favorited bool   `json:"favorited"`
+}
+
+// FavoriteSetResponse acknowledges the committed favorite decision and gives
+// clients the exact navigation targets to converge before the invalidation
+// notification arrives.
+type FavoriteSetResponse struct {
+	OK         bool               `json:"ok"`
+	Navigation NavigationMutation `json:"navigation"`
+}
+
+// NavigationMutation is returned by hub-owned mutations after navigation
+// state has committed, so clients can converge before the matching AppWire
+// event. Targets is intentionally a plain slice so existing hubapi callers
+// can assign their named NavigationArray values to it.
+type NavigationMutation struct {
+	GenerationID string                         `json:"generation_id"` //nolint:tagliatelle // wire field uses the established snake_case name
+	Targets      []NavigationInvalidationTarget `json:"targets"`
+}
+
+// MarshalJSON keeps the navigation wire contract's arrays non-null even for a
+// zero-value mutation.
+func (mutation NavigationMutation) MarshalJSON() ([]byte, error) {
+	targets := mutation.Targets
+	if targets == nil {
+		targets = []NavigationInvalidationTarget{}
+	}
+	return json.Marshal(struct {
+		GenerationID string                         `json:"generation_id"` //nolint:tagliatelle // wire field uses the established snake_case name
+		Targets      []NavigationInvalidationTarget `json:"targets"`
+	}{GenerationID: mutation.GenerationID, Targets: targets})
 }
 
 // SearchParams selects matching live and past sessions for the hub command

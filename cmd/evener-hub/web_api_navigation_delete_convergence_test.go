@@ -27,7 +27,7 @@ func assertDeleteNavigation(t *testing.T, web *WebServer, body []byte, kind appw
 	if len(events) != 1 {
 		t.Fatalf("typed navigation events=%d, want one: %+v", len(events), events)
 	}
-	responseTargets := []appwire.NavigationInvalidationTarget(response.Navigation.Targets)
+	responseTargets := response.Navigation.Targets
 	if response.Navigation.GenerationID != events[0].GenerationID || !reflect.DeepEqual(responseTargets, events[0].Targets) {
 		t.Fatalf("response navigation=%+v, publication=%+v", response.Navigation, events[0])
 	}
@@ -298,7 +298,7 @@ func TestRESTDeleteNavigationConvergence(t *testing.T) {
 			t.Fatal(err)
 		}
 		events := web.navigation.DrainPublications()
-		decodedTargets := []appwire.NavigationInvalidationTarget(decoded.Navigation.Targets)
+		decodedTargets := decoded.Navigation.Targets
 		if len(events) != 1 || decoded.Navigation.GenerationID != events[0].GenerationID || !reflect.DeepEqual(decodedTargets, events[0].Targets) {
 			t.Fatalf("session convergence=%+v events=%+v", decoded.Navigation, events)
 		}

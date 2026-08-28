@@ -69,8 +69,12 @@ type remoteThreadFetch struct {
 // onChange hook — archive and favorite decisions live in
 // ArchiveStore/FavoriteStore — so they need an explicit nudge every time.
 func (s *WebServer) notifyMutation() {
-	if s.cfg.PokeAttention != nil {
-		s.cfg.PokeAttention()
+	pokeMutationAttention(s.cfg)
+}
+
+func pokeMutationAttention(cfg hubcore.WebConfig) {
+	if cfg.PokeAttention != nil {
+		cfg.PokeAttention()
 	}
 }
 

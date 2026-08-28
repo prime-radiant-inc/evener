@@ -110,11 +110,10 @@ func TestCovWebCoreAPIHelpersAndRoutes(t *testing.T) {
 func TestCovWebCoreAPIDecisionValidation(t *testing.T) {
 	root := t.TempDir()
 	archive := hubcore.NewArchiveStore(filepath.Join(root, "decisions.db"))
-	favorite := hubcore.NewFavoriteStore(filepath.Join(root, "decisions.db"))
 	poked := 0
-	web := NewWebServer(hubcore.WebConfig{Archive: archive, Favorite: favorite, PokeAttention: func() { poked++ }})
+	web := NewWebServer(hubcore.WebConfig{Archive: archive, PokeAttention: func() { poked++ }})
 
-	for _, endpoint := range []string{"archive", "favorite"} {
+	for _, endpoint := range []string{"archive"} {
 		for _, tc := range []struct{ method, body string }{
 			{http.MethodGet, ""}, {http.MethodPost, "{"},
 			{http.MethodPost, `{"kind":"bad","id":"x"}`},
@@ -124,11 +123,9 @@ func TestCovWebCoreAPIDecisionValidation(t *testing.T) {
 		}
 	}
 	_ = covWebRequest(t, NewWebServer(hubcore.WebConfig{}), http.MethodPost, "/api/archive", `{"kind":"session","id":"x","archived":true}`)
-	_ = covWebRequest(t, NewWebServer(hubcore.WebConfig{}), http.MethodPost, "/api/favorite", `{"kind":"project","id":"x","favorited":true}`)
 	_ = covWebRequest(t, web, http.MethodPost, "/api/archive", `{"kind":"session","id":"02wMz5Txv1C3Hut0M8GCeB","archived":true}`)
 	_ = covWebRequest(t, web, http.MethodPost, "/api/archive", `{"kind":"project","id":"/a/proj","archived":false}`)
-	_ = covWebRequest(t, web, http.MethodPost, "/api/favorite", `{"kind":"project","id":"project-test-0123456789","favorited":true}`)
-	if poked != 2 {
+	if poked != 1 {
 		t.Fatalf("pokes=%d", poked)
 	}
 
@@ -138,7 +135,6 @@ func TestCovWebCoreAPIDecisionValidation(t *testing.T) {
 	}
 	bad := NewWebServer(hubcore.WebConfig{Archive: hubcore.NewArchiveStore(badPath), Favorite: hubcore.NewFavoriteStore(badPath)})
 	_ = covWebRequest(t, bad, http.MethodPost, "/api/archive", `{"kind":"session","id":"x","archived":true}`)
-	_ = covWebRequest(t, bad, http.MethodPost, "/api/favorite", `{"kind":"project","id":"x","favorited":true}`)
 }
 
 func TestCovWebCoreAPIDeleteAndRenameValidation(t *testing.T) {

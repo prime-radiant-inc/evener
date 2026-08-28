@@ -368,6 +368,17 @@ export interface EvenerUsage {
   totalTokens?: number;
 }
 
+export interface FavoriteSetParams {
+  kind: string;
+  id: string;
+  favorited: boolean;
+}
+
+export interface FavoriteSetResponse {
+  ok: boolean;
+  navigation: NavigationMutation;
+}
+
 export interface FeatureSet {
   threadList: boolean;
   threadTurnsList: boolean;
@@ -1767,6 +1778,7 @@ export const METHOD_NAMES = [
   "evener/projects/recent",
   "evener/path/validate",
   "evener/navigation/read",
+  "evener/favorite/set",
   "evener/search",
   "evener/harnesses/list",
   "evener/upgrade",
@@ -1926,6 +1938,7 @@ export interface MethodTypes {
   "evener/projects/recent": { params: ProjectsRecentParams; result: ProjectsRecentResponse };
   "evener/path/validate": { params: PathValidateParams; result: PathValidateResponse };
   "evener/navigation/read": { params: NavigationReadParams; result: NavigationReadResponse };
+  "evener/favorite/set": { params: FavoriteSetParams; result: FavoriteSetResponse };
   "evener/search": { params: SearchParams; result: SearchResponse };
   "evener/harnesses/list": { params: HarnessListParams; result: HarnessListResponse };
   "evener/upgrade": { params: UpgradeParams; result: UpgradeResponse };

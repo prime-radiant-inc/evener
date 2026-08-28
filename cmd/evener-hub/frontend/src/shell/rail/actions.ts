@@ -1,11 +1,8 @@
-// actions.ts wraps the REST endpoints the rail's row menu drives:
-// favorite/rename/archive/delete-project. Each request shape here is
-// copied from its Go handler's own doc comment/body struct
-// (cmd/evener-hub/web_api_{favorite,rename,archive,project_delete}.go) - see
-// each function's own comment for exactly which handler it targets. No
-// optimistic UI: callers await the response's exact navigation targets before
-// removing their overlay.
-import type { NavigationMutation } from "../../protocol/types.gen";
+// actions.ts wraps the AppWire and REST mutations the rail's row menu drives.
+// No optimistic UI: callers await the response's exact navigation targets
+// before removing their overlay.
+import type { AppwireClientLike } from "../../protocol/testing/fakeClient";
+import type { FavoriteSetResponse, NavigationMutation } from "../../protocol/types.gen";
 
 /** Wire shape of GET /api/pin-sections — { id, name, member_count }. */
 export interface PinSectionSummary {
@@ -17,9 +14,7 @@ export interface PinSectionSummary {
 export interface NavigationMutationReceipt {
   navigation: NavigationMutation;
 }
-export interface FavoriteMutationResponse extends NavigationMutationReceipt {
-  ok: true;
-}
+export type FavoriteMutationResponse = FavoriteSetResponse;
 
 export interface ProjectDeleteResult {
   deleted: string[];
@@ -72,9 +67,14 @@ async function postJSON<T>(url: string, body: unknown): Promise<T> {
   return (await res.json()) as T;
 }
 
-/** POST /api/favorite for project rows only. Body: {kind:"project", id, favorited}. */
-export async function setFavorite(kind: "project", id: string, favorited: boolean): Promise<FavoriteMutationResponse> {
-  return postJSON("/api/favorite", { kind, id, favorited });
+/** Sets a project favorite through the typed hub AppWire method. */
+export async function setFavorite(
+  client: AppwireClientLike,
+  kind: "project",
+  id: string,
+  favorited: boolean,
+): Promise<FavoriteMutationResponse> {
+  return client.request("evener/favorite/set", { kind, id, favorited });
 }
 
 export interface SessionPinAssignment {
