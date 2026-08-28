@@ -68,6 +68,41 @@ final class QRScannerTests: XCTestCase {
         XCTAssertEqual(sessionFactory.makeCount, 2)
     }
 
+    func testSystemScannerRejectsNewScanUntilDeferredDismissalCompletes() throws {
+        let permission = FakeCameraPermission(state: .authorized)
+        let sessionFactory = FakeQRScanSessionFactory()
+        let presenter = FakeQRScanPresenter(automaticallyCompletesDismissal: false)
+        let scanner = SystemQRScanner(
+            permission: permission,
+            sessionFactory: sessionFactory,
+            presenter: presenter
+        )
+        var firstResults: [Result<String, Error>] = []
+        var secondResults: [Result<String, Error>] = []
+
+        scanner.scan { firstResults.append($0) }
+        let firstSession = try XCTUnwrap(sessionFactory.session)
+        firstSession.emitCode("first")
+
+        XCTAssertEqual(firstSession.stopCount, 1)
+        XCTAssertEqual(presenter.dismissCount, 1)
+        XCTAssertTrue(firstResults.isEmpty, "the operation must remain active until UIKit finishes dismissal")
+
+        scanner.scan { secondResults.append($0) }
+
+        XCTAssertEqual(sessionFactory.makeCount, 1, "a dismissing scanner still owns the modal lifetime")
+        XCTAssertEqual(secondResults.count, 1)
+        XCTAssertThrowsError(try secondResults[0].get())
+
+        presenter.completeDismissal()
+
+        XCTAssertEqual(firstResults.count, 1)
+        XCTAssertEqual(try firstResults[0].get(), "first")
+
+        scanner.scan { _ in }
+        XCTAssertEqual(sessionFactory.makeCount, 2, "the next scan is admitted after dismissal completion")
+    }
+
     func testSystemScannerMarshalsAuthorizedScanLifecycleToMainThread() throws {
         let started = expectation(description: "capture session started")
         let completed = expectation(description: "scan completed")
@@ -106,6 +141,115 @@ final class QRScannerTests: XCTestCase {
         XCTAssertTrue(session.stopWasMain, "terminal cleanup must return to main")
         XCTAssertTrue(presenter.dismissWasMain, "native dismissal must run on main")
         XCTAssertTrue(completionThread.wasMain, "terminal completion must run on main")
+    }
+
+    func testSystemScannerMarshalsBackgroundPermissionGrantLifecycleToMainThread() throws {
+        let started = expectation(description: "capture session started")
+        let completed = expectation(description: "scan completed")
+        let permissionDelivered = expectation(description: "permission delivered from background")
+        let permission = FakeCameraPermission(state: .notDetermined)
+        let sessionFactory = ThreadRecordingQRScanSessionFactory(started: started)
+        let presenter = ThreadRecordingQRScanPresenter()
+        let scanner = SystemQRScanner(
+            permission: permission,
+            sessionFactory: sessionFactory,
+            presenter: presenter
+        )
+        let completionThread = ThreadObservation()
+
+        scanner.scan { result in
+            completionThread.recordCurrentThread()
+            if case .failure(let error) = result {
+                XCTFail("expected scan success, got \(error)")
+            }
+            completed.fulfill()
+        }
+
+        DispatchQueue.global(qos: .userInitiated).async {
+            XCTAssertFalse(Thread.isMainThread)
+            permission.resolve(true)
+            permissionDelivered.fulfill()
+        }
+
+        wait(for: [permissionDelivered, started], timeout: 1)
+        let session = try XCTUnwrap(sessionFactory.session)
+        XCTAssertTrue(sessionFactory.makeWasMain, "session creation must return to main")
+        XCTAssertTrue(presenter.presentWasMain, "presentation must return to main")
+        XCTAssertTrue(session.startWasMain, "capture start must return to main")
+
+        session.emitCode("granted-off-main")
+
+        wait(for: [completed], timeout: 1)
+        XCTAssertTrue(session.stopWasMain)
+        XCTAssertTrue(presenter.dismissWasMain)
+        XCTAssertTrue(completionThread.wasMain)
+    }
+
+    func testSystemScannerAcceptsDuplicatePermissionCompletionOnlyOnce() throws {
+        let permission = FakeCameraPermission(state: .notDetermined)
+        let sessionFactory = FakeQRScanSessionFactory()
+        let presenter = FakeQRScanPresenter()
+        let scanner = SystemQRScanner(
+            permission: permission,
+            sessionFactory: sessionFactory,
+            presenter: presenter
+        )
+        var results: [Result<String, Error>] = []
+
+        scanner.scan { results.append($0) }
+        permission.resolve(true)
+        permission.resolve(true)
+
+        XCTAssertEqual(sessionFactory.makeCount, 1)
+        XCTAssertEqual(presenter.presentCount, 1)
+
+        try XCTUnwrap(sessionFactory.session).emitCode("once")
+
+        XCTAssertEqual(results.count, 1)
+        XCTAssertEqual(try results[0].get(), "once")
+    }
+
+    func testSystemScannerSerializesConcurrentScanEntries() throws {
+        let started = expectation(description: "one capture session started")
+        let bothEntriesReturned = expectation(description: "both scan entries returned")
+        bothEntriesReturned.expectedFulfillmentCount = 2
+        let bothResultsDelivered = expectation(description: "both scan results delivered")
+        bothResultsDelivered.expectedFulfillmentCount = 2
+        let gate = DispatchSemaphore(value: 0)
+        let permission = FakeCameraPermission(state: .authorized)
+        let sessionFactory = ThreadRecordingQRScanSessionFactory(started: started)
+        let presenter = ThreadRecordingQRScanPresenter()
+        let scanner = SystemQRScanner(
+            permission: permission,
+            sessionFactory: sessionFactory,
+            presenter: presenter
+        )
+        let results = LockedScanResults()
+
+        for entry in 0..<2 {
+            DispatchQueue.global(qos: .userInitiated).async {
+                gate.wait()
+                scanner.scan { result in
+                    results.record(entry: entry, result: result)
+                    bothResultsDelivered.fulfill()
+                }
+                bothEntriesReturned.fulfill()
+            }
+        }
+        gate.signal()
+        gate.signal()
+
+        wait(for: [bothEntriesReturned, started], timeout: 1)
+        XCTAssertEqual(sessionFactory.makeCount, 1)
+        XCTAssertEqual(presenter.presentCount, 1)
+        XCTAssertEqual(results.failureCount, 1, "exactly one concurrent entry must be rejected")
+
+        try XCTUnwrap(sessionFactory.session).emitCode("winner")
+        wait(for: [bothResultsDelivered], timeout: 1)
+
+        XCTAssertEqual(results.count, 2)
+        XCTAssertEqual(results.successCount, 1)
+        XCTAssertEqual(results.failureCount, 1)
     }
 
     func testSystemScannerDeniedNeverBuildsOrPresentsSession() throws {
@@ -189,24 +333,108 @@ final class QRScannerTests: XCTestCase {
         XCTAssertEqual(session.stopCount, 1)
         XCTAssertEqual(presenter.dismissCount, 1)
     }
+
+    func testPresentationResolverRecursesThroughNestedContainersAndPresentation() {
+        let final = UIViewController()
+        let presentingLeaf = PresentedViewController(presented: final)
+        let innerNavigation = UINavigationController(rootViewController: presentingLeaf)
+        let tabs = UITabBarController()
+        tabs.viewControllers = [UIViewController(), innerNavigation]
+        tabs.selectedIndex = 1
+        let outerNavigation = UINavigationController(rootViewController: tabs)
+
+        XCTAssertTrue(QRScanPresentationResolver.topViewController(from: outerNavigation) === final)
+    }
+
+    func testPresentationResolverSelectsVisibleAttachedKeyWindowFromForegroundScene() {
+        let backgroundRoot = UIViewController()
+        let detachedRoot = UIViewController()
+        let hiddenRoot = UIViewController()
+        let fallbackRoot = UIViewController()
+        let keyRoot = UIViewController()
+        let scenes = [
+            QRScanSceneCandidate(
+                identifier: "background",
+                activationState: .background,
+                windows: [.init(rootViewController: backgroundRoot, isKeyWindow: true, isHidden: false, alpha: 1, isAttached: true)]
+            ),
+            QRScanSceneCandidate(
+                identifier: "foreground-a",
+                activationState: .foregroundActive,
+                windows: [
+                    .init(rootViewController: detachedRoot, isKeyWindow: true, isHidden: false, alpha: 1, isAttached: false),
+                    .init(rootViewController: hiddenRoot, isKeyWindow: true, isHidden: true, alpha: 1, isAttached: true),
+                    .init(rootViewController: fallbackRoot, isKeyWindow: false, isHidden: false, alpha: 1, isAttached: true),
+                ]
+            ),
+            QRScanSceneCandidate(
+                identifier: "foreground-b",
+                activationState: .foregroundActive,
+                windows: [.init(rootViewController: keyRoot, isKeyWindow: true, isHidden: false, alpha: 1, isAttached: true)]
+            ),
+        ]
+
+        XCTAssertTrue(QRScanPresentationResolver.rootViewController(from: scenes) === keyRoot)
+    }
+
+    func testPresentationResolverUsesDeterministicVisibleWindowFallback() {
+        let transparentRoot = UIViewController()
+        let fallbackRoot = UIViewController()
+        let laterRoot = UIViewController()
+        let scenes = [
+            QRScanSceneCandidate(
+                identifier: "foreground-b",
+                activationState: .foregroundActive,
+                windows: [.init(rootViewController: laterRoot, isKeyWindow: false, isHidden: false, alpha: 1, isAttached: true)]
+            ),
+            QRScanSceneCandidate(
+                identifier: "foreground-a",
+                activationState: .foregroundActive,
+                windows: [
+                    .init(rootViewController: transparentRoot, isKeyWindow: true, isHidden: false, alpha: 0, isAttached: true),
+                    .init(rootViewController: fallbackRoot, isKeyWindow: false, isHidden: false, alpha: 1, isAttached: true),
+                ]
+            ),
+        ]
+
+        XCTAssertTrue(QRScanPresentationResolver.rootViewController(from: scenes) === fallbackRoot)
+    }
 }
 
 private final class FakeCameraPermission: CameraPermissionProviding {
-    var state: CameraPermissionState
-    var requestCount = 0
+    private let lock = NSLock()
+    private var storedState: CameraPermissionState
+    private var storedRequestCount = 0
     private var completion: ((Bool) -> Void)?
 
     init(state: CameraPermissionState) {
-        self.state = state
+        storedState = state
+    }
+
+    var state: CameraPermissionState {
+        lock.lock()
+        defer { lock.unlock() }
+        return storedState
+    }
+
+    var requestCount: Int {
+        lock.lock()
+        defer { lock.unlock() }
+        return storedRequestCount
     }
 
     func request(completion: @escaping (Bool) -> Void) {
-        requestCount += 1
+        lock.lock()
+        storedRequestCount += 1
         self.completion = completion
+        lock.unlock()
     }
 
     func resolve(_ granted: Bool) {
-        state = granted ? .authorized : .denied
+        lock.lock()
+        storedState = granted ? .authorized : .denied
+        let completion = completion
+        lock.unlock()
         completion?(granted)
     }
 }
@@ -246,15 +474,84 @@ private final class FakeQRScanSessionFactory: QRScanSessionBuilding {
 private final class FakeQRScanPresenter: QRScanPresenting {
     var presentCount = 0
     var dismissCount = 0
+    private let automaticallyCompletesDismissal: Bool
     private var onCancel: (() -> Void)?
+    private var dismissalCompletion: (() -> Void)?
+
+    init(automaticallyCompletesDismissal: Bool = true) {
+        self.automaticallyCompletesDismissal = automaticallyCompletesDismissal
+    }
 
     func present(session: QRScanSession, onCancel: @escaping () -> Void) throws {
         presentCount += 1
         self.onCancel = onCancel
     }
 
-    func dismiss() { dismissCount += 1 }
+    func dismiss(completion: @escaping () -> Void) {
+        dismissCount += 1
+        if automaticallyCompletesDismissal {
+            completion()
+        } else {
+            dismissalCompletion = completion
+        }
+    }
+
+    func completeDismissal() {
+        let completion = dismissalCompletion
+        dismissalCompletion = nil
+        completion?()
+    }
+
     func cancel() { onCancel?() }
+}
+
+private final class PresentedViewController: UIViewController {
+    private let storedPresentedViewController: UIViewController
+
+    init(presented: UIViewController) {
+        storedPresentedViewController = presented
+        super.init(nibName: nil, bundle: nil)
+    }
+
+    @available(*, unavailable)
+    required init?(coder: NSCoder) { nil }
+
+    override var presentedViewController: UIViewController? {
+        storedPresentedViewController
+    }
+}
+
+private final class LockedScanResults {
+    private let lock = NSLock()
+    private var results: [(Int, Result<String, Error>)] = []
+
+    var count: Int {
+        lock.lock()
+        defer { lock.unlock() }
+        return results.count
+    }
+
+    var successCount: Int {
+        lock.lock()
+        defer { lock.unlock() }
+        return results.reduce(into: 0) { count, entry in
+            if case .success = entry.1 { count += 1 }
+        }
+    }
+
+    var failureCount: Int {
+        lock.lock()
+        defer { lock.unlock() }
+        return results.reduce(into: 0) { count, entry in
+            if case .failure = entry.1 { count += 1 }
+        }
+    }
+
+    func record(entry: Int, result: Result<String, Error>) {
+        lock.lock()
+        results.append((entry, result))
+        lock.unlock()
+    }
 }
 
 private final class ThreadObservation {
@@ -319,6 +616,7 @@ private final class ThreadRecordingQRScanSessionFactory: QRScanSessionBuilding {
     private let lock = NSLock()
     private let started: XCTestExpectation
     private var _makeWasMain = false
+    private var _makeCount = 0
     private var _session: ThreadRecordingQRScanSession?
 
     init(started: XCTestExpectation) {
@@ -337,6 +635,12 @@ private final class ThreadRecordingQRScanSessionFactory: QRScanSessionBuilding {
         return _session
     }
 
+    var makeCount: Int {
+        lock.lock()
+        defer { lock.unlock() }
+        return _makeCount
+    }
+
     func makeSession(
         onCode: @escaping (String) -> Void,
         onFailure: @escaping (Error) -> Void
@@ -344,6 +648,7 @@ private final class ThreadRecordingQRScanSessionFactory: QRScanSessionBuilding {
         let session = ThreadRecordingQRScanSession(started: started)
         session.onCode = onCode
         lock.lock()
+        _makeCount += 1
         _makeWasMain = Thread.isMainThread
         _session = session
         lock.unlock()
@@ -355,6 +660,7 @@ private final class ThreadRecordingQRScanPresenter: QRScanPresenting {
     private let lock = NSLock()
     private var _presentWasMain = false
     private var _dismissWasMain = false
+    private var _presentCount = 0
 
     var presentWasMain: Bool {
         lock.lock()
@@ -368,16 +674,24 @@ private final class ThreadRecordingQRScanPresenter: QRScanPresenting {
         return _dismissWasMain
     }
 
+    var presentCount: Int {
+        lock.lock()
+        defer { lock.unlock() }
+        return _presentCount
+    }
+
     func present(session: QRScanSession, onCancel: @escaping () -> Void) throws {
         lock.lock()
+        _presentCount += 1
         _presentWasMain = Thread.isMainThread
         lock.unlock()
     }
 
-    func dismiss() {
+    func dismiss(completion: @escaping () -> Void) {
         lock.lock()
         _dismissWasMain = Thread.isMainThread
         lock.unlock()
+        completion()
     }
 }
 

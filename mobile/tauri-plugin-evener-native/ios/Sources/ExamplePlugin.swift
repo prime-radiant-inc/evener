@@ -238,7 +238,7 @@ protocol QRScanSessionBuilding {
 
 protocol QRScanPresenting: AnyObject {
     func present(session: QRScanSession, onCancel: @escaping () -> Void) throws
-    func dismiss()
+    func dismiss(completion: @escaping () -> Void)
 }
 
 /// The real production scanner is driven through injectable permission,
@@ -302,6 +302,7 @@ private final class SystemQRScanOperation {
     private let completion: (Result<String, Error>) -> Void
     private let lock = NSLock()
     private var completed = false
+    private var finalized = false
     private var captureStarted = false
     private var session: QRScanSession?
     private var presented = false
@@ -384,12 +385,32 @@ private final class SystemQRScanOperation {
         completed = true
         let session = self.session
         let shouldDismiss = presented
-        self.session = nil
-        presented = false
         lock.unlock()
 
         session?.stop()
-        if shouldDismiss { presenter.dismiss() }
+        if shouldDismiss {
+            presenter.dismiss { [self] in
+                performOnMain { [self] in
+                    finalizeOnMain(result)
+                }
+            }
+        } else {
+            finalizeOnMain(result)
+        }
+    }
+
+    private func finalizeOnMain(_ result: Result<String, Error>) {
+        dispatchPrecondition(condition: .onQueue(.main))
+        lock.lock()
+        guard !finalized else {
+            lock.unlock()
+            return
+        }
+        finalized = true
+        session = nil
+        presented = false
+        lock.unlock()
+
         onFinished?()
         completion(result)
     }
@@ -507,8 +528,70 @@ private final class AVCaptureQRScanSession: NSObject, QRScanSession, AVCaptureMe
     }
 }
 
+struct QRScanWindowCandidate {
+    let rootViewController: UIViewController?
+    let isKeyWindow: Bool
+    let isHidden: Bool
+    let alpha: CGFloat
+    let isAttached: Bool
+}
+
+struct QRScanSceneCandidate {
+    let identifier: String
+    let activationState: UIScene.ActivationState
+    let windows: [QRScanWindowCandidate]
+}
+
+enum QRScanPresentationResolver {
+    static func rootViewController(from scenes: [QRScanSceneCandidate]) -> UIViewController? {
+        let activeScenes = scenes
+            .filter { $0.activationState == .foregroundActive }
+            .sorted { $0.identifier < $1.identifier }
+        let isVisibleAndAttached: (QRScanWindowCandidate) -> Bool = {
+            $0.isAttached && !$0.isHidden && $0.alpha > 0 && $0.rootViewController != nil
+        }
+
+        for scene in activeScenes {
+            if let window = scene.windows.first(where: {
+                isVisibleAndAttached($0) && $0.isKeyWindow
+            }) {
+                return window.rootViewController
+            }
+        }
+        for scene in activeScenes {
+            if let window = scene.windows.first(where: isVisibleAndAttached) {
+                return window.rootViewController
+            }
+        }
+        return nil
+    }
+
+    static func topViewController(from root: UIViewController?) -> UIViewController? {
+        var current = root
+        var visited: Set<ObjectIdentifier> = []
+        while let controller = current {
+            let identifier = ObjectIdentifier(controller)
+            guard visited.insert(identifier).inserted else { return controller }
+
+            let next: UIViewController?
+            if let presented = controller.presentedViewController {
+                next = presented
+            } else if let navigation = controller as? UINavigationController {
+                next = navigation.visibleViewController
+            } else if let tabs = controller as? UITabBarController {
+                next = tabs.selectedViewController
+            } else {
+                next = nil
+            }
+            guard let next, next !== controller else { return controller }
+            current = next
+        }
+        return nil
+    }
+}
+
 private final class UIKitQRScanPresenter: QRScanPresenting {
-    private weak var scannerController: QRScannerViewController?
+    private var scannerController: QRScannerViewController?
 
     func present(session: QRScanSession, onCancel: @escaping () -> Void) throws {
         guard let presenter = Self.topViewController() else {
@@ -520,28 +603,38 @@ private final class UIKitQRScanPresenter: QRScanPresenting {
         presenter.present(scanner, animated: true)
     }
 
-    func dismiss() {
-        let scanner = scannerController
-        scannerController = nil
-        scanner?.dismiss(animated: true)
+    func dismiss(completion: @escaping () -> Void) {
+        guard let scanner = scannerController else {
+            completion()
+            return
+        }
+        scanner.dismiss(animated: true) { [self, scanner] in
+            if scannerController === scanner {
+                scannerController = nil
+            }
+            completion()
+        }
     }
 
     private static func topViewController() -> UIViewController? {
-        let root = UIApplication.shared.connectedScenes
-            .compactMap { $0 as? UIWindowScene }
-            .flatMap(\.windows)
-            .first(where: \.isKeyWindow)?.rootViewController
-        var current = root
-        while let presented = current?.presentedViewController {
-            current = presented
+        let scenes = UIApplication.shared.connectedScenes.compactMap { connectedScene -> QRScanSceneCandidate? in
+            guard let scene = connectedScene as? UIWindowScene else { return nil }
+            return QRScanSceneCandidate(
+                identifier: scene.session.persistentIdentifier,
+                activationState: scene.activationState,
+                windows: scene.windows.map { window in
+                    QRScanWindowCandidate(
+                        rootViewController: window.rootViewController,
+                        isKeyWindow: window.isKeyWindow,
+                        isHidden: window.isHidden,
+                        alpha: window.alpha,
+                        isAttached: window.windowScene === scene
+                    )
+                }
+            )
         }
-        if let navigation = current as? UINavigationController {
-            return navigation.visibleViewController
-        }
-        if let tabs = current as? UITabBarController {
-            return tabs.selectedViewController
-        }
-        return current
+        let root = QRScanPresentationResolver.rootViewController(from: scenes)
+        return QRScanPresentationResolver.topViewController(from: root)
     }
 }
 
