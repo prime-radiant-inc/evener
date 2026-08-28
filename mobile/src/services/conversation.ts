@@ -515,5 +515,10 @@ function projectOlderTurns(
       queue: { revision: 0 },
     },
   };
-  return projectThread(thread).items;
+  // I3: Filter out actionable question rows from historical pages. A pending
+  // ask cannot legitimately be older than newer continuation turns, and
+  // page-local projection otherwise resurrects settled calls. All other
+  // projected page items/order/dedupe/cursor are preserved — only question
+  // rows are omitted.
+  return projectThread(thread).items.filter((item) => item.kind !== "question");
 }
