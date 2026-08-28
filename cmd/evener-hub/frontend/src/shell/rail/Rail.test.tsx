@@ -1,4 +1,4 @@
-import { act, cleanup, fireEvent, render as renderUI, screen } from "@testing-library/react";
+import { act, cleanup, fireEvent, render as renderUI, screen, within } from "@testing-library/react";
 import type { ReactElement } from "react";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { FakeClient } from "../../protocol/testing/fakeClient";
@@ -278,6 +278,56 @@ describe("resource-backed Rail", () => {
       ),
     ]);
     expect(adaptNavigationResources(navigationStore.getState()).pinSections).toEqual([]);
+  });
+  test("tracks an empty section before converging its first pin assignment", async () => {
+    const row = summary({ title: "First pin" });
+    const order: string[] = [];
+    const trackPinSection = vi.fn((sectionID: string) => order.push(`track:${sectionID}`));
+    const applyNavigationMutation = vi.fn(async () => {
+      order.push("apply");
+      navigationStore.setState((state) => {
+        const resources = new Map(state.resources);
+        const loaded = resource(
+          { kind: "pin_section", sectionId: "empty", offset: 0, limit: 50 },
+          { generation_id: "g1", revision: 2, sessions: [row], remaining: 0, truncated: false },
+        );
+        resources.set(keyID(loaded.key), loaded);
+        return { resources };
+      });
+    });
+    installState([
+      sectionResource("live", [row]),
+      resource(
+        { kind: "pin_catalog", offset: 0, limit: 100 },
+        { generation_id: "g1", revision: 1, pin_sections: [{ id: "empty", name: "Empty", count: 0 }], remaining: 0 },
+      ),
+    ]);
+    navigationStore.setState({
+      trackPinSection,
+      applyNavigationMutation,
+      loadPinCatalog: vi.fn().mockResolvedValue(undefined),
+    });
+    const client = new FakeClient();
+    client.on("evener/session-pin/assign", () => ({
+      ok: true,
+      changed: true,
+      assignment: { session_ref: row.ref, section: { id: "empty", name: "Empty", member_count: 1 } },
+      navigation: {
+        generation_id: "g1",
+        targets: [{ kind: "pin_section", sectionId: "empty", revision: 2 }],
+      },
+    }));
+
+    render(<Rail />, client);
+    fireEvent.click(screen.getByRole("button", { name: /actions for first pin/i }));
+    fireEvent.click(screen.getByRole("menuitem", { name: "Pin this session…" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Empty" }));
+    await act(async () => undefined);
+
+    expect(order).toEqual(["track:empty", "apply"]);
+    const pinnedSection = screen.getByRole("heading", { name: "Empty" }).closest("section");
+    if (!pinnedSection) throw new Error("pinned section missing");
+    expect(within(pinnedSection).getByText("First pin")).toBeTruthy();
   });
   test("uses location lookup to reveal an unloaded project rather than scanning a tree", async () => {
     const lookupLocation = vi.fn().mockResolvedValue(undefined);

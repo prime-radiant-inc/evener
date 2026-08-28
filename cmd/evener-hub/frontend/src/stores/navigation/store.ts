@@ -55,6 +55,7 @@ export interface NavigationStoreState {
   ): Promise<ResourceState<NavigationProjectCatalog>>;
   loadPinCatalog(offset?: number, limit?: number): Promise<ResourceState<NavigationPinSectionCatalog>>;
   loadPinSection(sectionId: string, offset?: number, limit?: number): Promise<ResourceState<NavigationSectionResource>>;
+  trackPinSection(sectionId: string): void;
   loadProject(projectKey: string): Promise<ResourceState<NavigationProjectResource>>;
   loadProjectPage(
     projectKey: string,
@@ -80,6 +81,7 @@ const initial = (): Omit<
   | "loadCatalog"
   | "loadPinCatalog"
   | "loadPinSection"
+  | "trackPinSection"
   | "loadProject"
   | "loadProjectPage"
   | "lookupLocation"
@@ -397,6 +399,11 @@ function actions() {
       load<NavigationPinSectionCatalog>({ kind: "pin_catalog", offset, limit }),
     loadPinSection: (sectionId: string, offset = 0, limit = PAGE_LIMIT) =>
       load<NavigationSectionResource>({ kind: "pin_section", sectionId, offset, limit }),
+    trackPinSection: (sectionId: string) => {
+      if (!revalidator || !activeClient) return;
+      const resourceKey = key({ kind: "pin_section", sectionId, offset: 0, limit: PAGE_LIMIT });
+      revalidator.track(resourceKey, requestFor(resourceKey, activeClient));
+    },
     loadProject: (projectKey: string) => withProjectRecovery(projectKey),
     loadProjectPage: (projectKey: string, tier: "current" | "recent" | "archived", offset = 0, limit = PAGE_LIMIT) =>
       load<NavigationProjectPage>({ kind: "project_page", projectKey, tier, offset, limit }),

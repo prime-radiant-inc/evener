@@ -810,19 +810,16 @@ function NavigationRail({ onHide, width, onWidthChange, revealTarget, onRevealCo
       runAction(
         () => assignSessionPin(client, session.ref, target),
         "Couldn't assign pinned session",
-        section
-          ? {
-              kind: "sessionPin",
-              ref: session.ref,
-              source: session,
-              section: { ...section, member_count: section.member_count },
-            }
-          : (result) => ({
-              kind: "sessionPin",
-              ref: session.ref,
-              source: session,
-              section: { ...result.assignment.section },
-            }),
+        (result) => {
+          const assignedSection = section ?? result.assignment.section;
+          navigationStore.getState().trackPinSection(assignedSection.id);
+          return {
+            kind: "sessionPin",
+            ref: session.ref,
+            source: session,
+            section: { ...assignedSection },
+          };
+        },
         true,
       ),
     onUnpinRequest: (session) =>

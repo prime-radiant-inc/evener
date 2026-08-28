@@ -770,6 +770,47 @@ test("zero-count pin descriptors and collapsed projects do not issue requests", 
   expect(calls.some((params) => params.resource === "project" && params.projectKey === "collapsed")).toBe(false);
 });
 
+test("tracking an unseen empty pin section lets its first assignment converge in one targeted read", async () => {
+  let assigned = false;
+  const calls: NavigationReadParams[] = [];
+  await init((params) => {
+    calls.push(params);
+    if (params.resource === "manifest")
+      return wire(
+        emptyManifest({ sections: { live: { count: 0 }, needs_you: { count: 0 }, pin_sections: { count: 1 } } }),
+      );
+    if (params.resource === "pin_catalog")
+      return wire(
+        { pin_sections: [{ id: "empty", count: assigned ? 1 : 0 }], remaining: 0 },
+        "ok",
+        assigned ? '"catalog-two"' : '"catalog-one"',
+        assigned ? 2 : 1,
+      );
+    if (params.resource === "pin_section")
+      return wire(
+        { sessions: assigned ? [{ ref: "local:a", children: [] }] : [], remaining: 0 },
+        "ok",
+        '"section-two"',
+        2,
+      );
+    throw new Error(`unexpected navigation read: ${JSON.stringify(params)}`);
+  });
+  expect(calls.filter((params) => params.resource === "pin_section")).toHaveLength(0);
+
+  navigationStore.getState().trackPinSection("empty");
+  assigned = true;
+  await navigationStore.getState().applyNavigationMutation({
+    generation_id: generation,
+    targets: [
+      { kind: "pin_catalog", revision: 2 },
+      { kind: "pin_section", sectionId: "empty", revision: 2 },
+    ],
+  });
+
+  expect(calls.filter((params) => params.resource === "pin_section")).toHaveLength(1);
+  expect(selectPinSections(navigationStore.getState())[0]?.sessions.map((session) => session.ref)).toEqual(["local:a"]);
+});
+
 test("unavailable project recovery refreshes its owning loaded catalog once and retries once", async () => {
   let projectCalls = 0;
   let catalogCalls = 0;
