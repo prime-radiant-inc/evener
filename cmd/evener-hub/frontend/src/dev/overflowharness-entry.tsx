@@ -951,8 +951,8 @@ async function inspectDetail(includeAdvanced = true): Promise<DetailGeometry> {
     sheetBottomAnchored: mobile && panelBox.bottom >= window.innerHeight - 1,
     dialogCentered:
       !mobile &&
-      Math.abs((panelBox.left + panelBox.right) / 2 - window.innerWidth / 2) <= 1 &&
-      Math.abs((panelBox.top + panelBox.bottom) / 2 - window.innerHeight / 2) <= 1,
+      Math.abs((panelBox.left + panelBox.right) / 2 - document.documentElement.clientWidth / 2) <= 1 &&
+      Math.abs((panelBox.top + panelBox.bottom) / 2 - document.documentElement.clientHeight / 2) <= 1,
     overlayScroll,
   };
 }
