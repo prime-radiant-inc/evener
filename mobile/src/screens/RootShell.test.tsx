@@ -280,7 +280,9 @@ describe("RootShell — production AppWire services", () => {
     expect(client.request).not.toHaveBeenCalled();
     resolveConnect({});
     await vi.waitFor(() =>
-      expect(client.request).toHaveBeenCalledWith("thread/list", {}),
+      expect(client.request).toHaveBeenCalledWith("thread/list", {
+        limit: 501,
+      }),
     );
 
     stores.connection.setState({ generation: 2 });
