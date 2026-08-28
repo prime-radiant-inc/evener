@@ -78,6 +78,16 @@ const TEST_INITIALIZE_RESULT: InitializeResponse = {
   },
 };
 
+function handshakeVersion(
+  version: string,
+  name = "test-hub",
+): InitializeResponse {
+  return {
+    ...TEST_INITIALIZE_RESULT,
+    serverInfo: { name, version },
+  };
+}
+
 interface Deferred<T> {
   readonly promise: Promise<T>;
   readonly resolve: (value: T) => void;
@@ -167,19 +177,25 @@ class ProductionClientFake implements ProfileClientTransport {
   readonly notificationUnsubscribes: Array<ReturnType<typeof vi.fn>> = [];
   readonly stateCallbacks: Array<(state: string) => void> = [];
   readonly stateUnsubscribes: Array<ReturnType<typeof vi.fn>> = [];
+  readonly handshakeCallbacks: Array<(result: InitializeResponse) => void> = [];
+  readonly handshakeUnsubscribes: Array<ReturnType<typeof vi.fn>> = [];
   private readonly notificationHandlers = new Set<
     (notification: AnyNotification) => void
+  >();
+  private readonly handshakeHandlers = new Set<
+    (result: InitializeResponse) => void
   >();
 
   constructor(
     readonly thread: Thread | null,
     private readonly controls: ProductionClientControls = {},
   ) {
-    this.connect = vi.fn(
-      () =>
-        this.controls.connect?.promise ??
-        Promise.resolve(TEST_INITIALIZE_RESULT),
-    );
+    this.connect = vi.fn(async () => {
+      const result =
+        (await this.controls.connect?.promise) ?? TEST_INITIALIZE_RESULT;
+      this.emitHandshake(result);
+      return result;
+    });
     this.close = vi.fn(() => this.closed.resolve());
   }
 
@@ -226,6 +242,18 @@ class ProductionClientFake implements ProfileClientTransport {
     const unsubscribe = vi.fn();
     this.stateUnsubscribes.push(unsubscribe);
     return unsubscribe;
+  }
+
+  onHandshakeResult(handler: (result: InitializeResponse) => void): () => void {
+    this.handshakeCallbacks.push(handler);
+    this.handshakeHandlers.add(handler);
+    const unsubscribe = vi.fn(() => this.handshakeHandlers.delete(handler));
+    this.handshakeUnsubscribes.push(unsubscribe);
+    return unsubscribe;
+  }
+
+  emitHandshake(result: InitializeResponse): void {
+    for (const handler of this.handshakeHandlers) handler(result);
   }
 
   emit(notification: AnyNotification): void {
@@ -558,7 +586,7 @@ describe("RootShell — three-tab bottom bar", () => {
 });
 
 describe("RootShell — live connection evidence", () => {
-  it("surfaces strict handshake identity and generations without raw origin", async () => {
+  it("uses a concise landmark and separate visible connection status", async () => {
     renderProductionShell(
       (_profile) =>
         new ProductionClientFake(
@@ -572,13 +600,117 @@ describe("RootShell — live connection evidence", () => {
     );
 
     const root = await screen.findByRole("region", {
-      name: /Evener concept; concept Stillwater; surface sessions; connection connected; server 0\.0\.0-test; protocol evener-appwire-v3; profile generation 0; lifecycle active 0; handshake 1; app com\.primeradiant\.evener 0\.1\.0; origin sha256:/,
+      name: "Stillwater sessions",
+    });
+    const status = await screen.findByRole("status", {
+      name: "Connected to test-hub 0.0.0-test; protocol evener-appwire-v3; app version 0.1.0",
     });
     expect(root).toBeVisible();
-    expect(root.getAttribute("aria-label")).not.toContain("hub.example.com");
-    expect(root.getAttribute("aria-label")).not.toContain(
+    expect(status).toHaveTextContent(/Connected to test-hub 0\.0\.0-test/i);
+    for (const value of [
+      "hub.example.com",
       "raw-ref-never-in-aria",
+      "sha256:",
+      "generation",
+      "com.primeradiant.evener",
+    ]) {
+      expect(root.getAttribute("aria-label")).not.toContain(value);
+      expect(status.getAttribute("aria-label")).not.toContain(value);
+    }
+  });
+
+  it("updates visible server identity after an automatic reconnect handshake", async () => {
+    const harness = renderProductionShell(
+      () =>
+        new ProductionClientFake(
+          makeThread({
+            id: "thread-a",
+            ref: "ref-a",
+            name: "Known live session",
+          }),
+        ),
+      { preseedConnection: true },
     );
+    await screen.findByRole("status", {
+      name: /Connected to test-hub 0\.0\.0-test/,
+    });
+
+    act(() => {
+      harness.clients[0]?.emitHandshake(handshakeVersion("2.0.0", "new-hub"));
+    });
+
+    expect(
+      await screen.findByRole("status", {
+        name: /Connected to new-hub 2\.0\.0/,
+      }),
+    ).toBeVisible();
+    expect(
+      screen.queryByRole("status", {
+        name: /Connected to test-hub 0\.0\.0-test/,
+      }),
+    ).toBeNull();
+  });
+
+  it("ignores handshake results from a deactivated profile graph", async () => {
+    const harness = renderProductionShell(
+      (profile) =>
+        new ProductionClientFake(
+          makeThread({
+            id: `thread-${profile.id}`,
+            ref: `ref-${profile.id}`,
+            name: `Session ${profile.name}`,
+          }),
+        ),
+      { preseedConnection: true },
+    );
+    await screen.findByRole("status", {
+      name: /Connected to test-hub 0\.0\.0-test/,
+    });
+    act(() => {
+      harness.stores.connection.setState({
+        activeProfileId: "p2",
+        generation: 1,
+      });
+    });
+    await vi.waitFor(() => expect(harness.clients).toHaveLength(2));
+    act(() => {
+      harness.clients[1]?.emitHandshake(
+        handshakeVersion("2.0.0", "current-hub"),
+      );
+    });
+    await screen.findByRole("status", {
+      name: /Connected to current-hub 2\.0\.0/,
+    });
+
+    act(() => {
+      harness.clients[0]?.emitHandshake(handshakeVersion("9.9.9", "stale-hub"));
+    });
+    expect(
+      screen.queryByRole("status", { name: /stale-hub|9\.9\.9/ }),
+    ).toBeNull();
+    expect(
+      screen.getByRole("status", { name: /current-hub 2\.0\.0/ }),
+    ).toBeVisible();
+  });
+
+  it("subscribes once and publishes one initial handshake under StrictMode", async () => {
+    const harness = renderProductionShell(
+      () =>
+        new ProductionClientFake(
+          makeThread({
+            id: "thread-a",
+            ref: "ref-a",
+            name: "Known live session",
+          }),
+        ),
+      { preseedConnection: true, strict: true },
+    );
+    await screen.findByRole("status", {
+      name: /Connected to test-hub 0\.0\.0-test/,
+    });
+    expect(harness.clients).toHaveLength(1);
+    expect(harness.clients[0]?.connect).toHaveBeenCalledTimes(1);
+    expect(harness.clients[0]?.handshakeCallbacks).toHaveLength(1);
   });
 });
 

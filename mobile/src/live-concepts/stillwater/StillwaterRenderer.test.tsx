@@ -39,15 +39,10 @@ function buildState(
     connection: {
       status: "connected",
       evidence: {
+        serverName: "test-hub",
         serverVersion: "hub-commit-1",
         protocolVersion: "evener-appwire-v3",
         appVersion: "0.1.0",
-        bundleId: "com.primeradiant.evener",
-        originDigest: `sha256:${"a".repeat(64)}`,
-        profileGeneration: 7,
-        lifecycleGeneration: 3,
-        lifecyclePhase: "foreground",
-        handshakeGeneration: 2,
       },
     },
     roster: {
@@ -336,23 +331,28 @@ describe.each(surfaces)("StillwaterRenderer on %s surface", (surface) => {
 });
 
 describe("StillwaterRenderer sessions surface", () => {
-  it("exposes a user-meaningful AX root, roster result, and tappable opaque row identity", () => {
-    renderSurface(buildState({ surface: "sessions" }));
+  it("exposes concise landmarks, roster results, and title-based row actions", () => {
+    const { container } = renderSurface(buildState({ surface: "sessions" }));
     expect(
       screen.getByRole("region", {
-        name: /Evener concept; concept Stillwater; surface sessions; connection connected; server hub-commit-1; protocol evener-appwire-v3; profile generation 7; lifecycle foreground 3; handshake 2; app com\.primeradiant\.evener 0\.1\.0; origin sha256:/,
+        name: "Stillwater sessions",
       }),
     ).toBeVisible();
     expect(
       screen.getByRole("status", {
-        name: "Evener roster; concept Stillwater; retained 3; has-more false",
+        name: "Stillwater sessions; 3 sessions; complete list",
       }),
     ).toBeVisible();
     expect(
       screen.getByRole("button", {
-        name: "Session sess-1; Fix auth flow; project evener/mobile; status attention",
+        name: "Open Fix auth flow; status attention",
       }),
     ).toBeVisible();
+    expect(container.querySelector("[aria-label*='sess-1']")).toBeNull();
+    expect(container.querySelector("[aria-label*='sha256:']")).toBeNull();
+    expect(
+      container.querySelector("[aria-label*='com.primeradiant.evener']"),
+    ).toBeNull();
   });
 
   it("renders grouped roster rows and opens a conversation by key", () => {
@@ -472,35 +472,58 @@ describe("StillwaterRenderer sessions surface", () => {
 });
 
 describe("StillwaterRenderer conversation surface", () => {
-  it("exposes draft, accepted receipt, and real transcript lifecycle AX semantics", () => {
-    renderSurface(
-      buildState({
-        surface: "conversation",
-        composer: {
-          ...buildState().composer,
-          draft: "draft-sentinel",
-          accepted: { kind: "send", receipt: 9 },
-        },
-      }),
-    );
+  it("exposes concise mutation and transcript lifecycle semantics without private content", () => {
+    const state = buildState({
+      surface: "conversation",
+      composer: {
+        ...buildState().composer,
+        draft: "draft-sentinel",
+        accepted: { kind: "send", receipt: 9 },
+      },
+    });
+    const { container, dispatch, rerender } = renderSurface(state);
     expect(screen.getByRole("textbox", { name: "Message" })).toHaveValue(
       "draft-sentinel",
     );
     expect(
       screen.getByRole("status", {
-        name: "Evener mutation; kind send; status accepted; receipt 9",
+        name: "Send accepted; update 9",
       }),
     ).toBeVisible();
     expect(
       screen.getByRole("article", {
-        name: "Evener transcript item; id msg-2; kind assistant; status streaming; label 2; content Looking into it...",
+        name: "Assistant response; streaming",
       }),
     ).toBeVisible();
     expect(
       screen.getByRole("article", {
-        name: "Evener transcript item; id msg-3; kind tool; status completed; label read_file; content Read auth.ts — 240 lines",
+        name: "Tool read_file; completed",
       }),
     ).toBeVisible();
+    expect(
+      screen.getByRole("region", { name: "Session Fix auth flow" }),
+    ).toBeVisible();
+    expect(container.querySelector("[aria-label*='msg-2']")).toBeNull();
+    expect(
+      container.querySelector("[aria-label*='Looking into it']"),
+    ).toBeNull();
+    expect(container.querySelector("[aria-label*='Read auth.ts']")).toBeNull();
+    expect(screen.queryByText("Read auth.ts — 240 lines")).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "read_file" }));
+    expect(dispatch).toHaveBeenCalledWith({ type: "toggleTool", key: "msg-3" });
+    rerender(
+      <StillwaterRenderer
+        state={{
+          ...state,
+          ui: {
+            ...state.ui,
+            expandedToolKeys: new Set(["msg-3"]),
+          },
+        }}
+        dispatch={dispatch}
+      />,
+    );
+    expect(screen.getByText("Read auth.ts — 240 lines")).toBeVisible();
   });
 
   it("renders transcript items with streaming and truncated markers", () => {
@@ -911,7 +934,7 @@ describe("StillwaterRenderer conversation surface", () => {
       },
     });
     const { dispatch } = renderSurface(state);
-    expect(screen.getByText(/sending/i)).toBeVisible();
+    expect(screen.getByText("Send pending")).toBeVisible();
     fireEvent.click(screen.getByRole("button", { name: /interrupt/i }));
     expect(dispatch).toHaveBeenCalledWith({ type: "interrupt" });
   });
@@ -1008,18 +1031,19 @@ describe("StillwaterRenderer conversation surface", () => {
 });
 
 describe("StillwaterRenderer work surface", () => {
-  it("exposes work kinds and usage through AX labels", () => {
-    renderSurface(buildState({ surface: "work" }));
+  it("exposes concise work and usage labels without internal keys", () => {
+    const { container } = renderSurface(buildState({ surface: "work" }));
     expect(
       screen.getByRole("article", {
-        name: /Evener work item; id task-1; kind task; status running; title Fix auth flow/,
+        name: "Task Fix auth flow; status running",
       }),
     ).toBeVisible();
     expect(
       screen.getByRole("region", {
-        name: /Evener usage; tokens 12,500; cost \$0\.42; duration 2m; context 65%/,
+        name: "Usage summary",
       }),
     ).toBeVisible();
+    expect(container.querySelector("[aria-label*='task-1']")).toBeNull();
   });
 
   it("renders work hierarchy with nested children", () => {

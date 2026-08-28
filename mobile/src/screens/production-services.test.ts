@@ -63,12 +63,16 @@ describe("createProfileScopedServices", () => {
       connect: () => Promise<InitializeResponse>;
       close: () => void;
       onStateChange: (handler: (state: string) => void) => () => void;
+      onHandshakeResult: (
+        handler: (result: InitializeResponse) => void,
+      ) => () => void;
     } = {
       request: vi.fn(),
       onNotification: vi.fn(() => () => {}),
       connect: vi.fn(() => Promise.resolve(TEST_INITIALIZE_RESULT)),
       close: vi.fn(),
       onStateChange: vi.fn(() => () => {}),
+      onHandshakeResult: vi.fn(() => () => {}),
     };
     const createClient = vi.fn(() => client);
 
@@ -89,12 +93,16 @@ describe("createProfileScopedServices", () => {
     const callbacks: {
       notification?: (notification: AnyNotification) => void;
       state?: (state: string) => void;
+      handshake?: (result: InitializeResponse) => void;
     } = {};
     const request = vi.fn(() => Promise.resolve({}));
     const client: ConversationClientLike & {
       connect: () => Promise<InitializeResponse>;
       close: () => void;
       onStateChange: (handler: (state: string) => void) => () => void;
+      onHandshakeResult: (
+        handler: (result: InitializeResponse) => void,
+      ) => () => void;
     } = {
       request,
       onNotification: vi.fn((handler) => {
@@ -107,42 +115,69 @@ describe("createProfileScopedServices", () => {
         callbacks.state = handler;
         return () => {};
       }),
+      onHandshakeResult: vi.fn((handler) => {
+        callbacks.handshake = handler;
+        return () => {};
+      }),
     };
     const scoped = createProfileScopedServices(PROFILE, () => client);
     const onNotification = vi.fn();
     const onState = vi.fn();
+    const onHandshake = vi.fn();
     scoped.client.onNotification(onNotification);
     scoped.client.onStateChange(onState);
+    scoped.client.onHandshakeResult(onHandshake);
     const notification = {
       method: "evener/tree/changed",
       params: { revision: 1 },
     } as AnyNotification;
     const notificationCallback = callbacks.notification;
     const stateCallback = callbacks.state;
-    if (notificationCallback === undefined || stateCallback === undefined) {
+    const handshakeCallback = callbacks.handshake;
+    if (
+      notificationCallback === undefined ||
+      stateCallback === undefined ||
+      handshakeCallback === undefined
+    ) {
       throw new Error("lease-aware callbacks were not installed");
     }
 
     notificationCallback(notification);
     stateCallback("ready");
+    handshakeCallback(TEST_INITIALIZE_RESULT);
     expect(onNotification).toHaveBeenCalledTimes(1);
     expect(onState).toHaveBeenCalledTimes(1);
+    expect(onHandshake).toHaveBeenCalledTimes(1);
 
     scoped.client.setActive(false);
     notificationCallback(notification);
     stateCallback("closed");
+    handshakeCallback({
+      ...TEST_INITIALIZE_RESULT,
+      serverInfo: { name: "stale", version: "9.9.9" },
+    });
     await expect(
       scoped.client.request("thread/list", { limit: 501 }),
     ).rejects.toThrow("profile scope is inactive");
     expect(onNotification).toHaveBeenCalledTimes(1);
     expect(onState).toHaveBeenCalledTimes(1);
+    expect(onHandshake).toHaveBeenCalledTimes(1);
     expect(request).not.toHaveBeenCalled();
 
     scoped.client.setActive(true);
     notificationCallback(notification);
     stateCallback("ready");
+    handshakeCallback({
+      ...TEST_INITIALIZE_RESULT,
+      serverInfo: { name: "current", version: "2.0.0" },
+    });
     expect(onNotification).toHaveBeenCalledTimes(2);
     expect(onState).toHaveBeenCalledTimes(2);
+    expect(onHandshake).toHaveBeenLastCalledWith(
+      expect.objectContaining({
+        serverInfo: { name: "current", version: "2.0.0" },
+      }),
+    );
   });
 
   it("holds an inactive in-flight request for replay and suppresses it on final close", async () => {
@@ -157,12 +192,16 @@ describe("createProfileScopedServices", () => {
       connect: () => Promise<InitializeResponse>;
       close: () => void;
       onStateChange: (handler: (state: string) => void) => () => void;
+      onHandshakeResult: (
+        handler: (result: InitializeResponse) => void,
+      ) => () => void;
     } = {
       request,
       onNotification: vi.fn(() => () => {}),
       connect: vi.fn(() => Promise.resolve(TEST_INITIALIZE_RESULT)),
       close,
       onStateChange: vi.fn(() => () => {}),
+      onHandshakeResult: vi.fn(() => () => {}),
     };
     const scoped = createProfileScopedServices(PROFILE, () => client);
 
@@ -195,12 +234,16 @@ describe("createProfileScopedServices", () => {
       connect: () => Promise<InitializeResponse>;
       close: () => void;
       onStateChange: (handler: (state: string) => void) => () => void;
+      onHandshakeResult: (
+        handler: (result: InitializeResponse) => void,
+      ) => () => void;
     } = {
       request,
       onNotification: vi.fn(() => () => {}),
       connect: vi.fn(() => Promise.resolve(TEST_INITIALIZE_RESULT)),
       close,
       onStateChange: vi.fn(() => () => {}),
+      onHandshakeResult: vi.fn(() => () => {}),
     };
     const scoped = createProfileScopedServices(PROFILE, () => client);
     const resolvingResult = scoped.client.request("thread/list", {

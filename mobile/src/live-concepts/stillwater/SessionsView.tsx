@@ -1,6 +1,6 @@
+import { rosterAxLabel, rosterRowAxLabel } from "../accessibility-semantics";
 import type { LiveConceptIntent, LiveConceptState } from "../contract";
 import { StatusLabel } from "../shared/StatusLabel";
-import { rosterAxLabel, rosterRowAxLabel } from "../smoke-semantics";
 
 export interface SessionsViewProps {
   state: LiveConceptState;

@@ -1,3 +1,7 @@
+import {
+  mutationAxLabel,
+  transcriptItemAxLabel,
+} from "../accessibility-semantics";
 import type {
   LiveConceptIntent,
   LiveConceptState,
@@ -7,7 +11,6 @@ import type { LiveTranscriptItem } from "../model";
 import { Disclosure } from "../shared/Disclosure";
 import { Icon } from "../shared/Icon";
 import { StatusLabel } from "../shared/StatusLabel";
-import { mutationAxLabel, transcriptItemAxLabel } from "../smoke-semantics";
 
 export interface ConversationViewProps {
   state: LiveConceptState;
@@ -256,7 +259,10 @@ export function ConversationView({ state, dispatch }: ConversationViewProps) {
 
   return (
     <div className="co-conversation co-route-enter">
-      <section className="co-session-summary" aria-label="Session summary">
+      <section
+        className="co-session-summary"
+        aria-label={`Session ${conversation.title}`}
+      >
         <div>
           <p className="co-eyebrow">{conversation.project}</p>
           <h2>{conversation.title}</h2>
@@ -331,10 +337,7 @@ export function ConversationView({ state, dispatch }: ConversationViewProps) {
           aria-live="polite"
           aria-label={mutationAxLabel(composer) ?? undefined}
         >
-          <span>
-            {composer.pending.status === "failed" ? "Failed" : "Sending"}{" "}
-            {composer.pending.kind}…
-          </span>
+          <span>{mutationAxLabel(composer)}</span>
         </section>
       ) : null}
 
@@ -344,7 +347,7 @@ export function ConversationView({ state, dispatch }: ConversationViewProps) {
           role="status"
           aria-label={mutationAxLabel(composer) ?? undefined}
         >
-          {composer.accepted.kind} accepted
+          {mutationAxLabel(composer)}
         </section>
       ) : null}
 

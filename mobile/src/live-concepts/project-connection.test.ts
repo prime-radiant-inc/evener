@@ -3,7 +3,9 @@
 // LiveConnectionView. Exact mapping (from the brief):
 //
 //   initial or loading                       => connecting
-//   ready + reachable/reconnecting/unknown   => connected
+//   ready + reachable                        => connected
+//   ready + reconnecting                     => reconnecting
+//   ready + unknown                          => connecting
 //   ready + unreachable                       => offline
 //   error                                     => error
 
@@ -29,14 +31,14 @@ describe("projectLiveConnection", () => {
     expect(view.status).toBe("connected");
   });
 
-  it("maps ready + reconnecting => connected", () => {
+  it("maps ready + reconnecting => reconnecting", () => {
     const view = projectLiveConnection("ready", "reconnecting");
-    expect(view.status).toBe("connected");
+    expect(view.status).toBe("reconnecting");
   });
 
-  it("maps ready + unknown => connected", () => {
+  it("maps ready + unknown => connecting", () => {
     const view = projectLiveConnection("ready", "unknown");
-    expect(view.status).toBe("connected");
+    expect(view.status).toBe("connecting");
   });
 
   it("maps ready + unreachable => offline", () => {

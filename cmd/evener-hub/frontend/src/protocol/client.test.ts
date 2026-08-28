@@ -9,11 +9,7 @@ import {
   decodeInitializeResponse,
   RECONNECT_BASE_MS,
 } from "./client";
-import {
-  ConnectionClosedError,
-  RequestTimeoutError,
-  WireError,
-} from "./errors";
+import { ConnectionClosedError, RequestTimeoutError, WireError } from "./errors";
 import { FAKE_INITIALIZE_RESULT, FakeSocket } from "./testing/fakeSocket";
 import { rpcURLFromLocation } from "./transport";
 
@@ -60,30 +56,21 @@ afterEach(() => {
 
 describe("rpcURLFromLocation", () => {
   test("upgrades https to wss", () => {
-    expect(
-      rpcURLFromLocation({ protocol: "https:", host: "example.com" }),
-    ).toBe("wss://example.com/rpc");
+    expect(rpcURLFromLocation({ protocol: "https:", host: "example.com" })).toBe("wss://example.com/rpc");
   });
 
   test("upgrades http to ws", () => {
-    expect(
-      rpcURLFromLocation({ protocol: "http:", host: "localhost:5173" }),
-    ).toBe("ws://localhost:5173/rpc");
+    expect(rpcURLFromLocation({ protocol: "http:", host: "localhost:5173" })).toBe("ws://localhost:5173/rpc");
   });
 });
 
 describe("decodeInitializeResponse", () => {
   test("accepts and preserves the exact typed handshake identity", () => {
-    expect(decodeInitializeResponse(FAKE_INITIALIZE_RESULT)).toEqual(
-      FAKE_INITIALIZE_RESULT,
-    );
+    expect(decodeInitializeResponse(FAKE_INITIALIZE_RESULT)).toEqual(FAKE_INITIALIZE_RESULT);
   });
 
   test.each([
-    [
-      "missing server version",
-      { ...FAKE_INITIALIZE_RESULT, serverInfo: { name: "hub" } },
-    ],
+    ["missing server version", { ...FAKE_INITIALIZE_RESULT, serverInfo: { name: "hub" } }],
     ["empty protocol", { ...FAKE_INITIALIZE_RESULT, protocolVersion: "" }],
     [
       "malformed features",
@@ -92,14 +79,9 @@ describe("decodeInitializeResponse", () => {
         features: { ...FAKE_INITIALIZE_RESULT.features, tasks: "yes" },
       },
     ],
-    [
-      "extra top-level key",
-      { ...FAKE_INITIALIZE_RESULT, bearerToken: "never" },
-    ],
+    ["extra top-level key", { ...FAKE_INITIALIZE_RESULT, bearerToken: "never" }],
   ])("rejects %s", (_name, value) => {
-    expect(() => decodeInitializeResponse(value)).toThrow(
-      "invalid initialize response",
-    );
+    expect(() => decodeInitializeResponse(value)).toThrow("invalid initialize response");
   });
 });
 
@@ -215,9 +197,7 @@ describe("AppwireClient", () => {
 
     expect(second).toBe(first);
     expect(socketsCreated).toBe(1);
-    expect(
-      sentFrames(fake).filter((f) => f.method === "initialize"),
-    ).toHaveLength(1);
+    expect(sentFrames(fake).filter((f) => f.method === "initialize")).toHaveLength(1);
   });
 
   test("connect after a successful connection is closed rejects as closed without creating a socket", async () => {
@@ -240,9 +220,7 @@ describe("AppwireClient", () => {
 
     client.close();
     const afterClose = client.connect();
-    const rejection = expect(afterClose).rejects.toBeInstanceOf(
-      ConnectionClosedError,
-    );
+    const rejection = expect(afterClose).rejects.toBeInstanceOf(ConnectionClosedError);
 
     await rejection;
     expect(sockets).toHaveLength(1);
@@ -261,13 +239,9 @@ describe("AppwireClient", () => {
 
     client.close();
     const firstConnect = client.connect();
-    const firstRejection = expect(firstConnect).rejects.toBeInstanceOf(
-      ConnectionClosedError,
-    );
+    const firstRejection = expect(firstConnect).rejects.toBeInstanceOf(ConnectionClosedError);
     const secondConnect = client.connect();
-    const secondRejection = expect(secondConnect).rejects.toBeInstanceOf(
-      ConnectionClosedError,
-    );
+    const secondRejection = expect(secondConnect).rejects.toBeInstanceOf(ConnectionClosedError);
     const socketsCreated = sockets.length;
 
     // A second close makes a socket-producing mutation settle its connect
@@ -323,12 +297,89 @@ describe("AppwireClient", () => {
     expect(client.state).toBe("closed");
 
     const afterFailure = client.connect();
-    const terminalRejection = expect(afterFailure).rejects.toBeInstanceOf(
-      ConnectionClosedError,
-    );
+    const terminalRejection = expect(afterFailure).rejects.toBeInstanceOf(ConnectionClosedError);
 
     await terminalRejection;
     expect(socketsCreated).toBe(1);
+  });
+
+  test("publishes each strictly decoded initial and reconnect handshake exactly once", async () => {
+    const sockets: FakeSocket[] = [];
+    const client = new AppwireClient({
+      url: "ws://x/rpc",
+      socketFactory: () => {
+        const socket = new FakeSocket();
+        sockets.push(socket);
+        return socket;
+      },
+    });
+    const versions: string[] = [];
+    client.onHandshakeResult((result) => {
+      versions.push(result.serverInfo.version);
+    });
+
+    const connecting = client.connect();
+    const initialSocket = sockets[0];
+    if (!initialSocket) throw new Error("expected initial socket");
+    initialSocket.open();
+    await flushUntil(() => initialSocket.sent.length > 0);
+    const initial = lastSentFrame(initialSocket);
+    initialSocket.receive({
+      id: initial.id,
+      result: FAKE_INITIALIZE_RESULT,
+    });
+    await connecting;
+    expect(versions).toEqual(["0.0.0-test"]);
+
+    initialSocket.closeFromServer(1006);
+    await vi.advanceTimersByTimeAsync(RECONNECT_BASE_MS);
+    const reconnectSocket = sockets[1];
+    if (!reconnectSocket) throw new Error("expected reconnect socket");
+    reconnectSocket.open();
+    await flushUntil(() => reconnectSocket.sent.length > 0);
+    const reconnect = lastSentFrame(reconnectSocket);
+    reconnectSocket.receive({
+      id: reconnect.id,
+      result: {
+        ...FAKE_INITIALIZE_RESULT,
+        serverInfo: { name: "new-hub", version: "2.0.0" },
+      },
+    });
+    await flushUntil(() => client.state === "ready");
+
+    expect(versions).toEqual(["0.0.0-test", "2.0.0"]);
+  });
+
+  test("does not publish a malformed reconnect handshake", async () => {
+    const sockets: FakeSocket[] = [];
+    const client = new AppwireClient({
+      url: "ws://x/rpc",
+      socketFactory: () => {
+        const socket = new FakeSocket({ autoInitialize: sockets.length === 0 });
+        sockets.push(socket);
+        return socket;
+      },
+    });
+    const versions: string[] = [];
+    client.onHandshakeResult((result) => versions.push(result.serverInfo.version));
+
+    const connecting = client.connect();
+    sockets[0]?.open();
+    await connecting;
+    sockets[0]?.closeFromServer(1006);
+    await vi.advanceTimersByTimeAsync(RECONNECT_BASE_MS);
+    const reconnectSocket = sockets[1];
+    if (!reconnectSocket) throw new Error("expected reconnect socket");
+    reconnectSocket.open();
+    await flushUntil(() => reconnectSocket.sent.length > 0);
+    const reconnect = lastSentFrame(reconnectSocket);
+    reconnectSocket.receive({
+      id: reconnect.id,
+      result: { protocolVersion: APPWIRE_PROTOCOL_VERSION },
+    });
+    await flushUntil(() => client.state === "reconnecting");
+
+    expect(versions).toEqual(["0.0.0-test"]);
   });
 
   test("request resolves the matching id and types the result", async () => {
@@ -383,16 +434,11 @@ describe("AppwireClient", () => {
     });
     await connectReady(fake, client);
 
-    const reqPromise = client.request(
-      "thread/list",
-      { limit: 10 },
-      { timeoutMs: 5000 },
-    );
+    const reqPromise = client.request("thread/list", { limit: 10 }, { timeoutMs: 5000 });
     // Attach the rejection expectation before advancing the fake clock: once
     // attached it installs a handler synchronously, so the promise is never
     // observably unhandled when the timer callback rejects it below.
-    const rejection =
-      expect(reqPromise).rejects.toBeInstanceOf(RequestTimeoutError);
+    const rejection = expect(reqPromise).rejects.toBeInstanceOf(RequestTimeoutError);
     await vi.advanceTimersByTimeAsync(5000);
 
     await rejection;
@@ -445,9 +491,7 @@ describe("AppwireClient", () => {
     fake.open();
     expect(client.state).toBe("connecting");
 
-    await expect(client.request("thread/list", { limit: 1 })).rejects.toThrow(
-      /thread\/list/,
-    );
+    await expect(client.request("thread/list", { limit: 1 })).rejects.toThrow(/thread\/list/);
 
     void client.request("ping", {});
     expect(sentFrames(fake).some((f) => f.method === "ping")).toBe(true);
@@ -621,9 +665,7 @@ describe("AppwireClient", () => {
     await flushUntil(() => fake.sent.length > 0);
     // Attach before close() so the rejection is never observably unhandled
     // (same reasoning as the timeout test above).
-    const rejection = expect(connecting).rejects.toBeInstanceOf(
-      ConnectionClosedError,
-    );
+    const rejection = expect(connecting).rejects.toBeInstanceOf(ConnectionClosedError);
 
     client.close();
 
@@ -646,9 +688,7 @@ describe("AppwireClient", () => {
 
     const connecting = client.connect();
     // Deliberately never call fake.open().
-    const rejection = expect(connecting).rejects.toBeInstanceOf(
-      ConnectionClosedError,
-    );
+    const rejection = expect(connecting).rejects.toBeInstanceOf(ConnectionClosedError);
 
     client.close();
 

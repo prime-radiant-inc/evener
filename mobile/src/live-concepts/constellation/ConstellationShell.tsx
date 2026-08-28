@@ -1,11 +1,11 @@
 import type { ReactNode } from "react";
+import { conceptRootAxLabel } from "../accessibility-semantics";
 import type {
   LiveConceptIntent,
   LiveConceptRendererProps,
   LiveConceptState,
 } from "../contract";
 import { Icon } from "../shared/Icon";
-import { conceptRootAxLabel } from "../smoke-semantics";
 
 export interface ConstellationShellProps {
   state: LiveConceptState;

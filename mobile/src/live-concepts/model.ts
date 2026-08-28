@@ -12,17 +12,12 @@ export type DisplayTone =
   | "unknown";
 
 export interface LiveConnectionView {
-  status: "connecting" | "connected" | "offline" | "error";
+  status: "connecting" | "reconnecting" | "connected" | "offline" | "error";
   evidence?: {
+    serverName: string;
     serverVersion: string;
     protocolVersion: string;
     appVersion: string;
-    bundleId: string;
-    originDigest: string;
-    profileGeneration: number;
-    lifecycleGeneration: number;
-    lifecyclePhase: "active" | "inactive" | "background" | "foreground";
-    handshakeGeneration: number;
   };
 }
 

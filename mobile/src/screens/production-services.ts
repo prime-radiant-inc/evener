@@ -47,6 +47,7 @@ export interface ProfileClientTransport extends ConversationClientLike {
   connect(): Promise<InitializeResponse>;
   close(): void;
   onStateChange(handler: (state: string) => void): () => void;
+  onHandshakeResult(handler: (result: InitializeResponse) => void): () => void;
 }
 
 export interface ProfileAppwireClient extends ProfileClientTransport {
@@ -129,6 +130,12 @@ class LeaseAwareProfileClient implements ProfileAppwireClient {
   onNotification(handler: (notification: AnyNotification) => void): () => void {
     return this.transport.onNotification((notification) => {
       if (this.active) handler(notification);
+    });
+  }
+
+  onHandshakeResult(handler: (result: InitializeResponse) => void): () => void {
+    return this.transport.onHandshakeResult((result) => {
+      if (this.active && !this.disposed) handler(result);
     });
   }
 

@@ -29,10 +29,7 @@ import {
   createLiveConceptUiStore,
 } from "../live-concepts/live-ui-store";
 import type { LiveConnectionView } from "../live-concepts/model";
-import {
-  MOBILE_APP_BUNDLE_ID,
-  MOBILE_APP_VERSION,
-} from "../services/appwireSocket";
+import { MOBILE_APP_VERSION } from "../services/appwireSocket";
 import { createActivityStore } from "../state/activity";
 import { createAttachmentStore } from "../state/attachments";
 import type { Reachability } from "../state/connection";
@@ -48,7 +45,6 @@ import {
 import { Sheet } from "../ui/Sheet";
 import { Loading } from "../ui/States";
 import { type StatusKind, StatusMark } from "../ui/StatusMark";
-import { digestProfileOrigin } from "./live-connection-evidence";
 import { NewSessionScreen } from "./NewSessionScreen";
 import { OnboardingScreen } from "./OnboardingScreen";
 import type { ProfileScopedServices } from "./production-services";
@@ -98,6 +94,7 @@ interface ActiveProfileGraph {
   invalidateSources: () => void;
   unsubscribeRoster: () => void;
   unsubscribeState: () => void;
+  unsubscribeHandshake: () => void;
 }
 
 interface PendingProfileGraphDisposal {
@@ -140,16 +137,7 @@ export function RootShell({ services, stores }: RootShellProps): JSX.Element {
   const [conceptSwitcherOpen, setConceptSwitcherOpen] = useState(false);
   const [addingServer, setAddingServer] = useState(false);
   const [showVoice, setShowVoice] = useState(false);
-  const [originDigest, setOriginDigest] = useState<string | null>(null);
-  const [handshake, setHandshake] = useState<{
-    readonly result: InitializeResponse;
-    readonly generation: number;
-  } | null>(null);
-  const handshakeGenerationRef = useRef(0);
-  const [lifecycle, setLifecycle] = useState<{
-    readonly phase: "active" | "inactive" | "background" | "foreground";
-    readonly generation: number;
-  }>({ phase: "active", generation: 0 });
+  const [handshake, setHandshake] = useState<InitializeResponse | null>(null);
 
   // RootShell owns exactly one identity for every cross-concept production
   // store. They stay alive while renderers change and are reset together when
@@ -239,23 +227,6 @@ export function RootShell({ services, stores }: RootShellProps): JSX.Element {
     void connection.getState().refresh();
   }, [connection]);
 
-  useEffect(() => {
-    let current = true;
-    setOriginDigest(null);
-    if (activeProfileOrigin !== null) {
-      void digestProfileOrigin(activeProfileOrigin)
-        .then((value) => {
-          if (current) setOriginDigest(value);
-        })
-        .catch(() => {
-          if (current) setOriginDigest(null);
-        });
-    }
-    return () => {
-      current = false;
-    };
-  }, [activeProfileOrigin]);
-
   // Content-size consumption and lifecycle refresh under one monotonic guard.
   // A generation counter prevents unmount and an older/slower read from
   // overwriting a newer foreground result.
@@ -282,10 +253,6 @@ export function RootShell({ services, stores }: RootShellProps): JSX.Element {
 
     // Lifecycle subscription: foreground refreshes both profiles and content size.
     const unsubscribe = services.native.onLifecycle((state) => {
-      setLifecycle((prior) => ({
-        phase: state,
-        generation: prior.generation + 1,
-      }));
       if (state === "foreground") {
         generation += 1;
         void connection.getState().refresh();
@@ -394,6 +361,7 @@ export function RootShell({ services, stores }: RootShellProps): JSX.Element {
       },
       unsubscribeRoster: () => {},
       unsubscribeState: () => {},
+      unsubscribeHandshake: () => {},
     };
     activeProfileGraphRef.current = graph;
     graph.unsubscribeRoster = connectRosterNotifications(
@@ -409,11 +377,22 @@ export function RootShell({ services, stores }: RootShellProps): JSX.Element {
       }
     };
     graph.unsubscribeState = scoped.client.onStateChange(setReachability);
+    graph.unsubscribeHandshake = scoped.client.onHandshakeResult((result) => {
+      if (
+        graph.disposed ||
+        !graph.active ||
+        activeProfileGraphRef.current !== graph ||
+        !sameProfileScope(ownedProfileScopeRef.current, graph.scope)
+      ) {
+        return;
+      }
+      setHandshake(result);
+    });
     setReachability("connecting");
 
     void scoped.client
       .connect()
-      .then((result) => {
+      .then(() => {
         if (
           graph.disposed ||
           !graph.active ||
@@ -422,11 +401,6 @@ export function RootShell({ services, stores }: RootShellProps): JSX.Element {
         ) {
           return;
         }
-        handshakeGenerationRef.current += 1;
-        setHandshake({
-          result,
-          generation: handshakeGenerationRef.current,
-        });
         connection.getState().setReachability(profile.id, "reachable");
         setLiveServices(scoped);
         void scoped.rosterStore.getState().refresh(scoped.rosterService);
@@ -528,18 +502,13 @@ export function RootShell({ services, stores }: RootShellProps): JSX.Element {
   });
 
   const connectionEvidence: LiveConnectionView["evidence"] | undefined =
-    handshake === null || originDigest === null
+    handshake === null
       ? undefined
       : {
-          serverVersion: handshake.result.serverInfo.version,
-          protocolVersion: handshake.result.protocolVersion,
+          serverName: handshake.serverInfo.name,
+          serverVersion: handshake.serverInfo.version,
+          protocolVersion: handshake.protocolVersion,
           appVersion: MOBILE_APP_VERSION,
-          bundleId: MOBILE_APP_BUNDLE_ID,
-          originDigest,
-          profileGeneration: activeProfileGeneration,
-          lifecycleGeneration: lifecycle.generation,
-          lifecyclePhase: lifecycle.phase,
-          handshakeGeneration: handshake.generation,
         };
 
   const runtime = useMemo(
@@ -825,6 +794,7 @@ function disposeProfileGraph(graph: ActiveProfileGraph): void {
   graph.disposed = true;
   graph.unsubscribeRoster();
   graph.unsubscribeState();
+  graph.unsubscribeHandshake();
   graph.scoped.client.close();
 }
 

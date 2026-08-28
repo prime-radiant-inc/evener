@@ -1,7 +1,7 @@
+import { rosterAxLabel, rosterRowAxLabel } from "../accessibility-semantics";
 import type { LiveConceptIntent, LiveConceptState } from "../contract";
 import type { LiveRosterRow } from "../model";
 import { StatusLabel } from "../shared/StatusLabel";
-import { rosterAxLabel, rosterRowAxLabel } from "../smoke-semantics";
 
 // Live adaptation of the Field Notes sessions surface. Renders the live
 // roster view (groups and rows) with current-record state markers, the live

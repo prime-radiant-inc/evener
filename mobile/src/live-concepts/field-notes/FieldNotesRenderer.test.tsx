@@ -60,15 +60,10 @@ function baseState(
     connection: {
       status: "connected",
       evidence: {
+        serverName: "test-hub",
         serverVersion: "hub-commit-1",
         protocolVersion: "evener-appwire-v3",
         appVersion: "0.1.0",
-        bundleId: "com.primeradiant.evener",
-        originDigest: `sha256:${"a".repeat(64)}`,
-        profileGeneration: 7,
-        lifecycleGeneration: 3,
-        lifecyclePhase: "foreground",
-        handshakeGeneration: 2,
       },
     } satisfies LiveConnectionView,
     roster: emptyRoster(),
@@ -377,23 +372,26 @@ describe("Field Notes concept-switch trigger", () => {
 // ---------------------------------------------------------------------------
 
 describe("Field Notes sessions surface", () => {
-  it("exposes the same opaque roster identities through tappable AX labels", () => {
+  it("exposes concise landmarks and title-based roster actions", () => {
     renderState(baseState({ surface: "sessions", roster: rosterWithRows() }));
+    const container = document.body;
     expect(
       screen.getByRole("region", {
-        name: /Evener concept; concept Field Notes; surface sessions; connection connected; server hub-commit-1/,
+        name: "Field Notes sessions",
       }),
     ).toBeVisible();
     expect(
       screen.getByRole("button", {
-        name: "Session session-a; Refactor renderer module; project evener-mobile; status attention",
+        name: "Open Refactor renderer module; status attention",
       }),
     ).toBeVisible();
     expect(
       screen.getByRole("status", {
-        name: "Evener roster; concept Field Notes; retained 2; has-more false",
+        name: "Field Notes sessions; 2 sessions; complete list",
       }),
     ).toBeVisible();
+    expect(container.querySelector("[aria-label*='session-a']")).toBeNull();
+    expect(container.querySelector("[aria-label*='sha256:']")).toBeNull();
   });
 
   it("renders roster groups and rows from the live contract", () => {
@@ -540,6 +538,33 @@ describe("Field Notes sessions surface", () => {
 // ---------------------------------------------------------------------------
 
 describe("Field Notes conversation surface", () => {
+  it("names the visible conversation and transcript lifecycle without keys or bodies", () => {
+    renderState(
+      baseState({
+        surface: "conversation",
+        conversation: conversationWithItems(),
+      }),
+    );
+    const container = document.body;
+    expect(
+      screen.getByRole("region", { name: "Session Compile typed modules" }),
+    ).toBeVisible();
+    expect(
+      screen.getByRole("article", {
+        name: "Assistant response; streaming",
+      }),
+    ).toBeVisible();
+    expect(
+      screen.getByRole("article", { name: "Tool read_file; completed" }),
+    ).toBeVisible();
+    expect(container.querySelector("[aria-label*='item-2']")).toBeNull();
+    expect(
+      container.querySelector("[aria-label*='Reading the live']"),
+    ).toBeNull();
+    expect(container.querySelector("[aria-label*='Read 24 lines']")).toBeNull();
+    expect(screen.queryByText("Read 24 lines from renderer.")).toBeNull();
+  });
+
   it("keeps transcript items in stable DOM order using adapter sequenceLabel markers", () => {
     renderState(
       baseState({

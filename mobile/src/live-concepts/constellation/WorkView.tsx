@@ -1,9 +1,9 @@
+import { usageAxLabel, workItemAxLabel } from "../accessibility-semantics";
 import type { LiveConceptIntent, LiveConceptState } from "../contract";
 import type { LiveActivityView, LiveWorkItem } from "../model";
 import { Disclosure } from "../shared/Disclosure";
 import { formatDuration, formatUsage } from "../shared/format";
 import { StatusLabel } from "../shared/StatusLabel";
-import { usageAxLabel, workItemAxLabel } from "../smoke-semantics";
 
 export interface WorkViewProps {
   state: LiveConceptState;
@@ -145,11 +145,7 @@ export function WorkView({ state, dispatch }: WorkViewProps) {
         <WorkTree items={hierarchy} state={state} dispatch={dispatch} />
       </section>
 
-      <section
-        className="co-usage"
-        data-work-usage
-        aria-label={usageAxLabel(usage)}
-      >
+      <section className="co-usage" data-work-usage aria-label={usageAxLabel()}>
         <header>
           <p className="co-eyebrow">Resource view</p>
           <h2 id="co-usage-title">Usage</h2>
