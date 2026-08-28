@@ -1,37 +1,37 @@
 // marketplacesPlugins/index.tsx is the "Marketplaces & Plugins" settings
-// section (#12 - parity-m7-settings.md §12) - the wave's second-dominant
-// piece after Credentials. Orchestrates the 3 sub-sections
-// (Marketplaces/Browse/Installed): fetches both lists in parallel on mount
-// (mirroring the legacy's own `Promise.all([refreshMarketplaces(),
-// refreshInstalled()])`), and owns `expandedMarketplaces` - lifted here
-// rather than owned by BrowseSection alone, because MarketplacesSection's
-// Refresh action needs to read it too (see that component's own comment).
+// section (#12 - parity-m7-settings.md §12), Segmented Workspace redesign:
+// one list at a time behind a page-level SegmentedControl (Installed /
+// Browse / Marketplaces) instead of the three stacked sub-sections the
+// parity wave shipped. Per-plugin actions live in the PluginDetailSheet
+// opened from an Installed row, so each segment stays a single-purpose
+// list. The orchestrator's jobs are unchanged in kind: the initial parallel
+// fetch (mirroring the legacy's own Promise.all), the top-level
+// loading/error gate, and the lifted `expandedMarketplaces` (see
+// MarketplacesSection's own comment for why Refresh needs to read it); on
+// top of those it owns the two new page-level states, activeSegment and
+// selectedPlugin.
 import { useEffect, useState } from "react";
 import { friendlyErrorMessage } from "../../../../protocol/errors";
 import { connectionStore } from "../../../../stores/connection";
 import { extensionsStore, useExtensionsStore } from "../../../../stores/extensions";
-import { EmptyState, Skeleton } from "../../../../widgets";
+import { EmptyState, SegmentedControl, Skeleton } from "../../../../widgets";
 import { requireClass } from "../../../../widgets/internal/requireClass";
 import { BrowseSection } from "./BrowseSection";
 import { InstalledSection } from "./InstalledSection";
 import { MarketplacesSection } from "./MarketplacesSection";
 import styles from "./marketplacesPlugins.module.css";
+import { PluginDetailSheet } from "./PluginDetailSheet";
 
 const CLASS = {
   page: requireClass(styles.page, "marketplacesPlugins.module.css", "page"),
-  pageTitle: requireClass(styles.pageTitle, "marketplacesPlugins.module.css", "pageTitle"),
-  pageHelp: requireClass(styles.pageHelp, "marketplacesPlugins.module.css", "pageHelp"),
 };
 
+type SegmentId = "installed" | "browse" | "marketplaces";
+
 /**
- * The settings section for #12. Every mutation across the 3 sub-sections
- * goes straight through stores/extensions.ts (each RPC response already
- * carries the updated list - see that store's own doc comment), so this
- * orchestrator's only jobs are the initial parallel fetch, the top-level
- * loading/error gate (matching the legacy's own "initial load throws ->
- * replace the entire root with one message, no partial UI, no retry"
- * behavior - templates/partials/settings/plugins-manager.html:326-329),
- * and lifting `expandedMarketplaces`.
+ * The settings section for #12. Every mutation across the segments goes
+ * straight through stores/extensions.ts (each RPC response already carries
+ * the updated list - see that store's own doc comment).
  */
 export function MarketplacesPluginsSection() {
   const marketplaces = useExtensionsStore((s) => s.marketplaces);
@@ -41,6 +41,8 @@ export function MarketplacesPluginsSection() {
   const pluginsLoading = useExtensionsStore((s) => s.pluginsLoading);
   const pluginsError = useExtensionsStore((s) => s.pluginsError);
   const [expandedMarketplaces, setExpandedMarketplaces] = useState<Set<string>>(new Set());
+  const [activeSegment, setActiveSegment] = useState<SegmentId>("installed");
+  const [selectedPlugin, setSelectedPlugin] = useState<{ plugin: string; marketplace: string } | null>(null);
 
   // Mirrors DirListSetting's own mount-effect shape (see that component's
   // comment): waits for the shared client to actually be ready before
@@ -58,30 +60,54 @@ export function MarketplacesPluginsSection() {
     return connectionStore.subscribe(tryStart);
   }, []);
 
+  function handleSegmentChange(segment: SegmentId) {
+    setActiveSegment(segment);
+    // The detail sheet belongs to the Installed list; navigating away from
+    // the segment that opened it closes it rather than leaving an inspector
+    // floating over an unrelated list.
+    setSelectedPlugin(null);
+  }
+
   const loadError = marketplacesError ?? pluginsError;
   const stillLoading = (marketplacesLoading || marketplaces === null) && (pluginsLoading || plugins === null);
 
+  if (loadError !== null) {
+    return (
+      <section className={CLASS.page}>
+        <EmptyState title="Failed to load" hint={friendlyErrorMessage(loadError)} />
+      </section>
+    );
+  }
+  if (stillLoading) {
+    return (
+      <section className={CLASS.page}>
+        <Skeleton />
+      </section>
+    );
+  }
+
+  const pluginCount = plugins?.length ?? 0;
+  const marketplaceCount = marketplaces?.length ?? 0;
+
   return (
     <section className={CLASS.page}>
-      <h2 className={CLASS.pageTitle}>Marketplaces &amp; Plugins</h2>
-      <p className={CLASS.pageHelp}>
-        Marketplaces are catalogs of installable plugins. Register a marketplace, browse its catalog, and install what
-        you need — installed, enabled plugins load into every new evener session.
-      </p>
-      {loadError !== null ? (
-        <EmptyState title="Failed to load" hint={friendlyErrorMessage(loadError)} />
-      ) : stillLoading ? (
-        <Skeleton />
-      ) : (
-        <>
-          <MarketplacesSection expandedMarketplaces={expandedMarketplaces} />
-          <BrowseSection
-            expandedMarketplaces={expandedMarketplaces}
-            setExpandedMarketplaces={setExpandedMarketplaces}
-          />
-          <InstalledSection />
-        </>
+      <SegmentedControl
+        label="View"
+        value={activeSegment}
+        onChange={(value) => handleSegmentChange(value as SegmentId)}
+        options={[
+          { value: "installed", label: `Installed (${pluginCount})` },
+          { value: "browse", label: "Browse" },
+          { value: "marketplaces", label: `Marketplaces (${marketplaceCount})` },
+        ]}
+        fullWidth
+      />
+      {activeSegment === "installed" && <InstalledSection onSelect={setSelectedPlugin} />}
+      {activeSegment === "browse" && (
+        <BrowseSection expandedMarketplaces={expandedMarketplaces} setExpandedMarketplaces={setExpandedMarketplaces} />
       )}
+      {activeSegment === "marketplaces" && <MarketplacesSection expandedMarketplaces={expandedMarketplaces} />}
+      <PluginDetailSheet target={selectedPlugin} onClose={() => setSelectedPlugin(null)} />
     </section>
   );
 }

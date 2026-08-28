@@ -63,23 +63,27 @@ On first use, Evener creates:
 - `${XDG_STATE_HOME:-$HOME/.local/state}/evener/projects/<project-id>/` for saved
   per-project session state. The project ID is readable (derived from the
   canonical project path) and ends with a 10-character base62 suffix.
-- `${XDG_CONFIG_HOME:-$HOME/.config}/evener/skills` for standalone user skills.
+- `${XDG_CONFIG_HOME:-$HOME/.config}/evener/skills` for standalone user skills,
+  discovered automatically.
 - `${XDG_CONFIG_HOME:-$HOME/.config}/evener/plugins` for user plugins.
 
-The user skill and plugin directories are extension roots; installing Evener
-does not automatically enable their contents. Add standalone skill paths to
-`skills_dirs` and plugin paths to `plugin_dirs` in
+The user skill and plugin directories are extension roots. Standalone user
+skills and user-global commands are enabled automatically. Add additional
+standalone skill paths to `skills_dirs` and plugin paths to `plugin_dirs` in
 `${XDG_CONFIG_HOME:-$HOME/.config}/evener/launch.toml`, or pass them with the
 corresponding CLI flags for a single run. Plugin-contained skills live under
-that plugin and become available through the plugin path.
-
+that plugin and become available through the plugin path. User-global slash
+commands are read automatically from
+`${XDG_CONFIG_HOME:-$HOME/.config}/evener/commands` when present.
 Install does not create provider credentials. Hosted/auth-required providers
 can be configured through the hub or TUI credentials UI, supported provider
-environment variables such as `OPENAI_API_KEY`, or OpenAI OAuth. Local/auth-none
+environment variables such as `OPENAI_API_KEY`, or OpenAI OAuth (which signs
+in to the separate `openai-codex` instance, not `openai`). Local/auth-none
 providers such as Ollama may not need credentials. The default credentials file
 is `${XDG_CONFIG_HOME:-$HOME/.config}/evener/credentials.toml`; when
 `EVENER_PROVIDERS_CONFIG` points to a custom `providers.toml`, the credentials
-file is beside it. See [docs/developing-evener/environment.md](docs/developing-evener/environment.md)
+file is beside it unless `EVENER_CREDENTIALS_CONFIG` names a different one. See
+[docs/developing-evener/environment.md](docs/developing-evener/environment.md)
 for the complete environment variable reference.
 
 ## Quick start: the hub and web UI
@@ -94,7 +98,7 @@ The hub listens on `127.0.0.1:9180` and prints an authorization URL at
 startup:
 
 ```
-[hub] auth URL (visit once per browser): http://127.0.0.1:9180/auth?token=...
+[hub] auth URL (visit once per browser): http://127.0.0.1:9180/auth/<token>
 ```
 
 Open that URL. It sets a cookie that authorizes the browser; later visits to
@@ -229,7 +233,7 @@ its shell tool and redirects the command's own logs:
 
 ### Provider and model
 
-Evener takes a provider-qualified model in one value: `--model <provider/model>`. Providers: `openai`, `anthropic`, `google`, `minimax`, `openrouter`, `openrouter-anthropic`, `kimi`, `glm`, `ollama`.
+Evener takes a provider-qualified model in one value: `--model <provider/model>`. Every provider with a resolvable credential is usable with no config file: `anthropic`, `openai-codex`, `openai`, `google`, `groq`, `zai`, `deepseek`, `openrouter`, `xai`, `mistral`, `cerebras`, `togetherai`, `moonshotai`, `kimi-for-coding`, `minimax`, `zai-coding-plan`, `google-vertex-anthropic`, `google-vertex`, `amazon-bedrock`, `azure`, `ollama`. A `providers.toml` entry adds anything else. See [docs/llm-providers.md](docs/llm-providers.md).
 
 Use `--model` or set `EVENER_MODEL` to the same `provider/model` format.
 
@@ -244,7 +248,7 @@ variables:
 |---|---|
 | `EVENER_MODEL` | Default model as `provider/model` (used when `--model` is omitted) |
 | `EVENER_REASONING_EFFORT` | Default reasoning effort |
-| `EVENER_PROVIDERS_CONFIG` | Path to `providers.toml` |
+| `EVENER_PROVIDERS_CONFIG` | Path to `providers.toml`. Set and empty means "no user layer" — see [docs/llm-provider-config-and-launch.md](docs/llm-provider-config-and-launch.md) |
 | `OPENAI_API_KEY` | OpenAI API key |
 | `ANTHROPIC_API_KEY` | Anthropic API key |
 | `GEMINI_API_KEY` | Google Gemini API key |
@@ -259,12 +263,39 @@ variables:
 |---|---|
 | `--model <provider/model>` | LLM model identifier (required unless resuming an existing session) |
 | `--dir <path>` | Working directory (default: current directory) |
+| `--enabled-plugins <name,...>` | Load exactly these otherwise-loadable plugins for this new session; an empty value loads none |
 | `--output-schema <json>` | Inline JSON Schema replacing the default `communicate.output` schema |
 | `--verbose` | Emit NDJSON events to stderr (replaces human-readable output) |
 | `--resume <id>` | Resume a previous session by ID |
 | `--resume-with <id>` | Start a new prompt using a previous session's context |
 | `--resume-last` | Resume the most recent session |
 | `--list-sessions` | List saved sessions and exit |
+
+### Per-session plugin selection
+
+Inspect the effective plugins available to a new direct-CLI session with:
+
+```bash
+evener plugin list --effective --json
+```
+
+To allow only particular manifest names for one new session, pass a
+comma-separated list. An explicit empty value loads no plugins:
+
+```bash
+evener --enabled-plugins=alpha,beta "task"
+evener --enabled-plugins= "task"
+```
+
+Omitting `--enabled-plugins` uses the current defaults: every otherwise-loadable
+plugin, including globally enabled installed plugins and explicit plugin
+directories. The flag is new-session-only and cannot replace the plugin set of
+an existing resumed session. It selects manifest names from that otherwise-
+loadable set; globally disabled plugins remain unavailable. The selected set is
+stored with the new session, so resumes, forks, and delegates inherit it.
+
+This does not change persistent plugin state. `evener plugin enable` and
+`evener plugin disable` remain the global controls for future default sessions.
 
 ### Structured output
 

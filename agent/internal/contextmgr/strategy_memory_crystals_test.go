@@ -141,11 +141,20 @@ func TestMemoryCrystalsStrategy_InjectCrystals(t *testing.T) {
 		schema.NewTurn(schema.TurnAssistant, llm.Assistant("working")),
 	}
 
-	s.injectCrystals(&history)
+	var reported int
+	var reportedCalled bool
+	ctx := WithPostFoldInjectionCallback(context.Background(), func(n int) { reported = n; reportedCalled = true })
+	s.injectCrystals(ctx, &history)
 
 	// Should have 3 turns: original 2 + crystal steering.
 	if len(history) != 3 {
 		t.Fatalf("expected 3 turns, got %d", len(history))
+	}
+	// No pre-existing crystal turn to remove: net +1 turn appended, and the
+	// caller (compactionEmitFunc, issue #634) needs that reported so it can
+	// add it back into the fold-removal delta it measures.
+	if !reportedCalled || reported != 1 {
+		t.Errorf("expected post-fold injection report of 1, got %d (called=%v)", reported, reportedCalled)
 	}
 
 	// Crystal should be the last turn.
@@ -178,7 +187,16 @@ func TestMemoryCrystalsStrategy_InjectCrystals_RemovesOld(t *testing.T) {
 		schema.NewTurn(schema.TurnAssistant, llm.Assistant("working")),
 	}
 
-	s.injectCrystals(&history)
+	var reportedCalled bool
+	ctx := WithPostFoldInjectionCallback(context.Background(), func(int) { reportedCalled = true })
+	s.injectCrystals(ctx, &history)
+
+	// Steady state (one marker replaced by another): net turn-count delta is
+	// 0, so nothing should be reported — reportPostFoldInjection no-ops on a
+	// zero delta exactly like shrinkTurnHistoryBaseline no-ops on shrink<=0.
+	if reportedCalled {
+		t.Error("net-zero injection (old marker removed, new one added) must not report — nothing for the caller to correct")
+	}
 
 	// Old crystal should be removed, new one appended.
 	crystalCount := 0
@@ -195,6 +213,75 @@ func TestMemoryCrystalsStrategy_InjectCrystals_RemovesOld(t *testing.T) {
 	last := history[len(history)-1]
 	if !strings.Contains(last.Message.Text(), "new crystal") {
 		t.Error("expected new crystal content")
+	}
+}
+
+// TestMemoryCrystalsStrategy_InjectCrystals_MultipleMarkersBeforeBoundary
+// pins per-removal boundary correction: the marker-removal loop must count
+// every pre-boundary removal rather than record only the LAST matching
+// marker's index, since a scenario with two crystal markers -- an earlier one
+// before the N4 boundary and the LAST one sitting exactly at (or after) it --
+// would otherwise see only the last one, find it >= boundary, and skip the
+// correction entirely, even though the earlier removal also shifted every
+// in-flight turn left by one. Markers are normally replaced, not accumulated
+// (in practice at most one exists at a time), so this constructs the
+// atypical case directly rather than trying to reach it through AfterAction/
+// ManageContext's normal one-marker discipline.
+//
+// Ground truth (hand-derived): boundary=3, so the marker at index 1 is
+// before it (removal shifts left) and the marker at index 3 is AT it
+// (removal is boundary-neutral, per the same "at or after" semantics the
+// single-marker case already uses). A last-match-only count (index 3 >=
+// boundary) would report -1 (no correction applied to the -1 raw delta from
+// removing 2 markers and adding 1) and the caller's shrink math would then
+// place the boundary one position too far right; counting exactly the one
+// pre-boundary removal reports 0.
+func TestMemoryCrystalsStrategy_InjectCrystals_MultipleMarkersBeforeBoundary(t *testing.T) {
+	cm := NewManager(NewOpenAIProfile("gpt-5.2"), nil, cheapmodel.New(nil))
+	s := NewMemoryCrystalsStrategy(cm)
+	s.crystals = []MemoryCrystal{
+		{Turn: 9, Action: "test", Facts: "new crystal"},
+	}
+
+	history := []schema.Turn{
+		schema.NewTurn(schema.TurnUserInput, llm.User("task")),                                            // index 0
+		schema.NewTurn(schema.TurnSteering, llm.User("[MEMORY CRYSTALS]\nold crystal 1\n[END CRYSTALS]")), // index 1: before the boundary
+		schema.NewTurn(schema.TurnAssistant, llm.Assistant("working")),                                    // index 2
+		schema.NewTurn(schema.TurnSteering, llm.User("[MEMORY CRYSTALS]\nold crystal 2\n[END CRYSTALS]")), // index 3: AT the boundary
+		schema.NewTurn(schema.TurnUserInput, llm.User("in-flight")),                                       // index 4
+	}
+	const boundary = 3
+
+	var reported int
+	var reportedCalled bool
+	ctx := WithBaselineQuery(context.Background(), func() (int, bool) { return boundary, true })
+	ctx = WithPostFoldInjectionCallback(ctx, func(n int) { reported = n; reportedCalled = true })
+	s.injectCrystals(ctx, &history)
+
+	// The correct correction is exactly 0 (raw delta -1 from removing 2
+	// markers and adding 1, plus 1 for the single pre-boundary removal at
+	// index 1), which reportPostFoldInjection's own n==0 guard turns into no
+	// callback at all — the same no-op-on-net-zero semantics
+	// InjectCrystals_RemovesOld already pins for the single-marker case. Old
+	// (last-match-only) code computes -1 instead (no correction applied,
+	// since the last match's index 3 is not < boundary 3) and WOULD have
+	// fired the callback with that wrong value.
+	if reportedCalled {
+		t.Errorf("expected no post-fold injection report (net correction is exactly 0), got %d — old last-match-only code would report -1 here", reported)
+	}
+
+	// Ground truth: with only one net turn actually needing to move (two
+	// markers removed, one appended, exactly one of the removals before the
+	// boundary), the surviving in-flight turn must land exactly one position
+	// left of its original index.
+	idx := -1
+	for i, t := range history {
+		if t.Message.Text() == "in-flight" {
+			idx = i
+		}
+	}
+	if idx != 2 {
+		t.Fatalf("in-flight turn landed at index %d, want 2 (original index 4, shifted left by the 2 removals ahead of it)", idx)
 	}
 }
 

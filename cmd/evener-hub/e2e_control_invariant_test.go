@@ -158,8 +158,9 @@ func TestE2E_ControlInvariantDuringPreTurnWorkOnTheFirstTurn(t *testing.T) {
 	t.Logf("on the first turn, before any model round, the wire published status=active activeTurnId=%s", firstTurn)
 
 	receipt, interruptErr := clientRequest[appwire.TurnInterruptResponse](ctx, client, appwire.MethodTurnInterrupt, appwire.TurnInterruptParams{
-		Ref:              ref,
-		ClientMutationID: newMutationID(t),
+		Ref:                ref,
+		ClientMutationID:   newMutationID(t),
+		ExpectedInstanceID: localInstanceIDForTestRef(ref),
 	})
 	requireStopLandsDuringPreTurnWork(ctx, t, provider, receipt, interruptErr, "on the first turn")
 	t.Logf("a Stop pressed on the FIRST turn, with no queue and no turn boundary, while the wire showed status=active activeTurnId=%s, was applied", firstTurn)
@@ -369,9 +370,10 @@ func TestE2E_PushedActiveStatusAlwaysCarriesStop(t *testing.T) {
 	// Send does mid-turn. The drain loop runs it as a second turn the moment
 	// turn 1 ends -- the window this test is about.
 	if _, err := clientRequest[appwire.TurnQueueResponse](ctx, client, appwire.MethodTurnQueue, appwire.TurnQueueParams{
-		Ref:              ref,
-		ClientMutationID: newMutationID(t),
-		Input:            []appwire.InputItem{{Type: "text", Text: queuedText}},
+		Ref:                ref,
+		ClientMutationID:   newMutationID(t),
+		ExpectedInstanceID: localInstanceIDForTestRef(ref),
+		Input:              []appwire.InputItem{{Type: "text", Text: queuedText}},
 	}); err != nil {
 		t.Fatalf("turn/queue: %v", err)
 	}
@@ -505,9 +507,10 @@ func TestE2E_ControlInvariantDuringPreTurnWorkAtATurnBoundary(t *testing.T) {
 	// after the first ends, and holds itself in that turn's pre-turn work.
 	// Without a queued message the session simply settles idle.
 	if _, err := clientRequest[appwire.TurnQueueResponse](ctx, client, appwire.MethodTurnQueue, appwire.TurnQueueParams{
-		Ref:              ref,
-		ClientMutationID: newMutationID(t),
-		Input:            []appwire.InputItem{{Type: "text", Text: "/park"}},
+		Ref:                ref,
+		ClientMutationID:   newMutationID(t),
+		ExpectedInstanceID: localInstanceIDForTestRef(ref),
+		Input:              []appwire.InputItem{{Type: "text", Text: "/park"}},
 	}); err != nil {
 		t.Fatalf("turn/queue: %v", err)
 	}
@@ -673,8 +676,9 @@ func TestE2E_ControlInvariantDuringPreTurnWorkAtATurnBoundary(t *testing.T) {
 	// own "is this session quiesced" precondition, and turn 2 being claimed is
 	// what makes that answer no (kata vewa).
 	receipt, interruptErr := clientRequest[appwire.TurnInterruptResponse](ctx, client, appwire.MethodTurnInterrupt, appwire.TurnInterruptParams{
-		Ref:              ref,
-		ClientMutationID: newMutationID(t),
+		Ref:                ref,
+		ClientMutationID:   newMutationID(t),
+		ExpectedInstanceID: localInstanceIDForTestRef(ref),
 	})
 	requireStopLandsDuringPreTurnWork(ctx, t, provider, receipt, interruptErr, "at the turn boundary")
 	t.Logf("a Stop pressed %s after the window opened, while the wire showed status=%s activeTurnId=%s, was applied",

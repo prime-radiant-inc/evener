@@ -27,7 +27,11 @@
 }
 
 /* Not a band across the block: an overlay strip in its top-right corner, out
- * of the content flow, so the block's whole height is content. */
+ * of the content flow, so the block's whole height is content. At rest it has
+ * no background so the copy icon reads as bare chrome; the hover wash appears
+ * only when the block itself is hovered (or focused via keyboard, mirroring
+ * .copy's opacity gate below) - matching the corner-copy pattern in
+ * usermessageitem.module.css's .actions. */
 .header {
   position: absolute;
   top: var(--space-1);
@@ -37,8 +41,13 @@
   align-items: center;
   gap: var(--space-2);
   padding: var(--space-1) var(--space-2);
-  background: var(--hover-1);
+  background: transparent;
   border-radius: var(--radius-chip);
+}
+
+.root:hover .header,
+.header:focus-within {
+  background: var(--hover-1);
 }
 
 .language {

@@ -73,6 +73,15 @@
 
 import { useStore } from "zustand";
 import { createStore } from "zustand/vanilla";
+import {
+  dualWriteLegacyPreferences,
+  encodeLocalConfig,
+  type LegacyPreferenceKey,
+  type LegacyPreferenceValues,
+  legacyConfigFromValues,
+  type TranscriptDisplayConfigV1,
+  type TranscriptViewportClass,
+} from "../transcriptDisplay/config";
 
 export type ThemePref = "system" | "light" | "dark";
 export type PhoneDensityPref = "compact" | "comfortable";
@@ -109,6 +118,20 @@ export interface PrefsStoreState {
 
 const KEY_PREFIX = "evener.prefs.";
 
+const TRANSCRIPT_DISPLAY_LOCAL_KEYS: Record<TranscriptViewportClass, string> = {
+  desktop: "transcriptDisplay.desktop",
+  mobile: "transcriptDisplay.mobile",
+};
+
+const LEGACY_TRANSCRIPT_KEYS: readonly LegacyPreferenceKey[] = [
+  "transcriptRoundTimings",
+  "transcriptTokenCounts",
+  "transcriptHookExitsAll",
+  "transcriptHookExitsNormal",
+  "transcriptPromptLoaded",
+  "showCost",
+];
+
 // --- localStorage access: every read/write is best-effort - a private
 // browsing mode that throws on storage access must never be fatal to the
 // settings UI.
@@ -137,6 +160,75 @@ function removeRaw(name: string): void {
     // Best-effort, same rationale as writeRaw.
   }
 }
+
+// These adapters deliberately name the only compatibility keys that the
+// transcript-display store may touch. Callers cannot use them to turn this
+// module into a general localStorage wrapper.
+export function readLegacyPreference(key: LegacyPreferenceKey): string | null {
+  return readRaw(key);
+}
+
+export function hasLegacyPreference(key: LegacyPreferenceKey): boolean {
+  return readLegacyPreference(key) !== null;
+}
+
+export function writeLegacyBooleanPreference(key: LegacyPreferenceKey, value: boolean): void {
+  writeBool(key, value);
+}
+
+export function removeLegacyPreference(key: LegacyPreferenceKey): void {
+  removeRaw(key);
+}
+
+export function readTranscriptDisplayLocal(layout: TranscriptViewportClass): string | null {
+  return readRaw(TRANSCRIPT_DISPLAY_LOCAL_KEYS[layout]);
+}
+
+export function hasTranscriptDisplayLocal(layout: TranscriptViewportClass): boolean {
+  return readTranscriptDisplayLocal(layout) !== null;
+}
+
+export function writeTranscriptDisplayLocal(layout: TranscriptViewportClass, encodedConfig: string): void {
+  writeRaw(TRANSCRIPT_DISPLAY_LOCAL_KEYS[layout], encodedConfig);
+}
+
+export function writeTranscriptDisplayConfig(layout: TranscriptViewportClass, config: TranscriptDisplayConfigV1): void {
+  writeTranscriptDisplayLocal(layout, encodeLocalConfig(config));
+}
+
+export function removeTranscriptDisplayLocal(layout: TranscriptViewportClass): void {
+  removeRaw(TRANSCRIPT_DISPLAY_LOCAL_KEYS[layout]);
+}
+
+export const readLegacyPref = readLegacyPreference;
+export const hasLegacyPref = hasLegacyPreference;
+export const writeLegacyBool = writeLegacyBooleanPreference;
+export const removeLegacyPref = removeLegacyPreference;
+
+/**
+ * Convert the six pre-v1 global transcript keys once, before the new
+ * layout-specific store loads. Existing keys are intentionally retained.
+ */
+export function migrateLegacyTranscriptDisplay(): TranscriptDisplayConfigV1 | undefined {
+  if (hasTranscriptDisplayLocal("desktop") || hasTranscriptDisplayLocal("mobile")) return undefined;
+  const values: LegacyPreferenceValues = Object.fromEntries(
+    LEGACY_TRANSCRIPT_KEYS.map((key) => [key, readLegacyPreference(key)]),
+  ) as LegacyPreferenceValues;
+  const config = legacyConfigFromValues(values);
+  if (config === undefined) return undefined;
+  writeTranscriptDisplayConfig("desktop", config);
+  writeTranscriptDisplayConfig("mobile", config);
+  return config;
+}
+
+export const migrateLegacyPrefs = migrateLegacyTranscriptDisplay;
+
+/** Keep old transcript consumers in sync without changing their 1/0 wire. */
+export function dualWriteTranscriptDisplayLegacy(config: TranscriptDisplayConfigV1): void {
+  dualWriteLegacyPreferences(config, writeLegacyBooleanPreference);
+}
+
+export const dualWriteLegacyPrefs = dualWriteTranscriptDisplayLegacy;
 
 // "1"/"0", not JS's "true"/"false": every boolean this store persists
 // (enterToSend, showCost, every transcript.* and notifications.* member)

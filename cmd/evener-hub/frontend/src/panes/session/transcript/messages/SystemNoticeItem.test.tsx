@@ -5,6 +5,8 @@ import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, beforeAll, beforeEach, expect, test } from "vitest";
 import type { ItemModel, TurnModel } from "../../../../protocol/model";
 import { prefsStore, resetPrefsStoreForTests } from "../../../../stores/prefs";
+import { makeTranscriptDisplayConfig } from "../../../../transcriptDisplay/config";
+import { TranscriptRenderProvider } from "../../../../transcriptDisplay/renderContext";
 import { resetDisclosureStoreForTests } from "../../../../widgets/disclosure/disclosureStore";
 import { TurnBlock } from "../TurnBlock";
 import { SYSTEM_PROMPT_ITEM_ID } from "../transcriptVisibility";
@@ -62,6 +64,20 @@ function turnWith(items: ItemModel[]): TurnModel {
   return { id: "turn_1", status: "completed", items };
 }
 
+// At activity level (the default config when no provider is used),
+// expandByDefault is now true — scaffold disclosures and system-event groups
+// auto-expand. Tests that need a collapsed-by-default disclosure use a
+// tools-level config where expandByDefault is false.
+const toolsConfig = makeTranscriptDisplayConfig({ kind: "preset", level: "tools" });
+
+function renderTurnTools(turn: TurnModel, sessionRef?: string) {
+  return render(
+    <TranscriptRenderProvider config={toolsConfig} surface="readOnly" disclosureScope="sni:tools">
+      <TurnBlock turn={turn} sessionRef={sessionRef} />
+    </TranscriptRenderProvider>,
+  );
+}
+
 test('self-registers under the wire\'s system-message item type ("systemMessage")', () => {
   expect(itemRendererFor("systemMessage")).toBe(SystemNoticeItem);
 });
@@ -91,7 +107,9 @@ test("two consecutive systemMessage items (run of 2) both render standalone, not
 
 test("three consecutive systemMessage items group into one collapsed disclosure", () => {
   const items = [item("a"), item("b"), item("c")];
-  render(<TurnBlock turn={turnWith(items)} />);
+  // At activity level the group auto-expands; use tools level to test the
+  // collapsed default.
+  renderTurnTools(turnWith(items));
   const group = screen.getByTestId("system-notice-group") as HTMLDetailsElement;
   expect(group.tagName).toBe("DETAILS");
   expect(group.open).toBe(false);
@@ -103,11 +121,15 @@ test("three consecutive systemMessage items group into one collapsed disclosure"
 test("the same scaffold item id has independent disclosure state in different sessions", () => {
   showSystemPrompt();
   const shared = item("same_item", { eventKind: "system_prompt", text: "You are a helpful assistant." });
+  // At activity level the scaffold auto-expands; use tools level to test
+  // independent collapsed state. Use separate disclosureScopes per session
+  // so disclosureScopeForSession creates per-session scopes.
+  const toolsConfigScoped = makeTranscriptDisplayConfig({ kind: "preset", level: "tools" });
   render(
-    <>
+    <TranscriptRenderProvider config={toolsConfigScoped} surface="readOnly">
       <TurnBlock turn={turnWith([shared])} sessionRef="session_a" />
       <TurnBlock turn={turnWith([shared])} sessionRef="session_b" />
-    </>,
+    </TranscriptRenderProvider>,
   );
 
   const scaffolds = screen.getAllByTestId("system-notice-scaffold") as HTMLDetailsElement[];
@@ -132,14 +154,16 @@ test("the group's summary names the count and the first event", () => {
 // survives the remount that would reset a native uncontrolled <details>.
 test("an expanded system-events group stays open across an unmount+remount (store-backed by the run's first item id)", () => {
   const items = [item("a"), item("b"), item("c")];
-  const { unmount } = render(<TurnBlock turn={turnWith(items)} />);
+  // At activity level the group auto-expands; use tools level to test the
+  // collapsed→expanded→remount-persisted transition.
+  const { unmount } = renderTurnTools(turnWith(items));
   const group = screen.getByTestId("system-notice-group") as HTMLDetailsElement;
   expect(group.open).toBe(false);
   fireEvent.click(group.querySelector("summary")!);
   expect((screen.getByTestId("system-notice-group") as HTMLDetailsElement).open).toBe(true);
 
   unmount();
-  render(<TurnBlock turn={turnWith(items)} />);
+  renderTurnTools(turnWith(items));
   expect((screen.getByTestId("system-notice-group") as HTMLDetailsElement).open).toBe(true);
 });
 
@@ -187,7 +211,9 @@ test("a systemMessage item with blank text falls back to a sentence-case categor
 
 test("a system_prompt eventKind item renders as a collapsed scaffold disclosure, even when its text is short", () => {
   showSystemPrompt();
-  render(<TurnBlock turn={turnWith([item("a", { text: "short", eventKind: "system_prompt" })])} />);
+  // At activity level the scaffold auto-expands; use tools level to test the
+  // collapsed default.
+  renderTurnTools(turnWith([item("a", { text: "short", eventKind: "system_prompt" })]));
   const scaffold = screen.getByTestId("system-notice-scaffold") as HTMLDetailsElement;
   expect(scaffold.tagName).toBe("DETAILS");
   expect(scaffold.open).toBe(false);
@@ -197,7 +223,9 @@ test("a system_prompt eventKind item renders as a collapsed scaffold disclosure,
 test("an expanded system prompt keeps its summary and Markdown body in full-width rows", () => {
   showSystemPrompt();
   const text = `## Identity\n\n${"You are a careful assistant. ".repeat(1000)}`;
-  render(<TurnBlock turn={turnWith([item("prompt", { text, eventKind: "system_prompt" })])} />);
+  // At activity level the scaffold auto-expands; use tools level to test the
+  // collapsed default and structure.
+  renderTurnTools(turnWith([item("prompt", { text, eventKind: "system_prompt" })]));
   const scaffold = screen.getByTestId("system-notice-scaffold") as HTMLDetailsElement;
   const summary = scaffold.querySelector("summary");
   const body = scaffold.querySelector('[data-testid="system-notice-scaffold-body"]');

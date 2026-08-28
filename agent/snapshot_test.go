@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -12,17 +13,29 @@ import (
 	"primeradiant.com/evener/agent/execenv"
 	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/llm"
+	"primeradiant.com/evener/llm/registry"
 )
 
 // snapshotFakeAdapter is a minimal adapter for session restore and auto-save tests.
 type snapshotFakeAdapter struct {
 	name string
+	// liveModels, when set, scripts the adapter's llm.LiveModelLister
+	// listing; an unscripted fake cannot list models at all.
+	liveModels func(ctx context.Context) ([]registry.Model, error)
 
 	mu       sync.Mutex
 	requests []llm.Request
 }
 
 func (a *snapshotFakeAdapter) Name() string { return a.name }
+
+// LiveModels implements llm.LiveModelLister when a test scripts a listing.
+func (a *snapshotFakeAdapter) LiveModels(ctx context.Context) ([]registry.Model, error) {
+	if a.liveModels == nil {
+		return nil, errors.New("snapshot fake adapter does not list models")
+	}
+	return a.liveModels(ctx)
+}
 func (a *snapshotFakeAdapter) Complete(ctx context.Context, req llm.Request) (llm.Response, error) {
 	_ = ctx
 	a.mu.Lock()
@@ -46,7 +59,7 @@ func TestSession_AutoSave_WritesMetaAfterProcessInput(t *testing.T) {
 	c := llm.NewClient()
 	c.Register(&snapshotFakeAdapter{name: "openai"})
 
-	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{
+	sess, err := NewSession(c, withTestSessionNamer(c, NewOpenAIProfile("gpt-5.2")), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{
 		MaxToolRoundsPerInput: 200,
 		StateDir:              dir,
 	})
@@ -120,7 +133,7 @@ func TestSession_AutoSave_PersistsToolResults(t *testing.T) {
 		},
 	})
 
-	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{
+	sess, err := NewSession(c, withTestSessionNamer(c, NewOpenAIProfile("gpt-5.2")), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{
 		MaxToolRoundsPerInput: 200,
 		StateDir:              dir,
 	})
@@ -210,7 +223,7 @@ func TestSession_AutoSave_DoesNotPersistMidToolRound(t *testing.T) {
 		},
 	})
 
-	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{
+	sess, err := NewSession(c, withTestSessionNamer(c, NewOpenAIProfile("gpt-5.2")), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{
 		MaxToolRoundsPerInput: 200,
 		StateDir:              dir,
 	})
@@ -310,7 +323,7 @@ func TestRestoreSession_AutoSaveContinues(t *testing.T) {
 	c.Register(&snapshotFakeAdapter{name: "openai"})
 
 	// Phase 1: Create a new session with auto-save and process input.
-	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{
+	sess, err := NewSession(c, withTestSessionNamer(c, NewOpenAIProfile("gpt-5.2")), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{
 		MaxToolRoundsPerInput: 200,
 		StateDir:              dir,
 	})
@@ -351,7 +364,7 @@ func TestRestoreSession_AutoSaveContinues(t *testing.T) {
 
 	// Phase 2: Restore from meta + transcript and process more input.
 	meta := list[0]
-	sess2, err := RestoreSessionFromMeta(c, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(dir), meta, dir)
+	sess2, err := RestoreSessionFromMeta(c, withTestSessionNamer(c, NewOpenAIProfile("gpt-5.2")), execenv.NewLocalExecutionEnvironment(dir), meta, dir)
 	if err != nil {
 		t.Fatalf("RestoreSessionFromMeta: %v", err)
 	}
@@ -431,7 +444,7 @@ func TestRestoreSession_RestoresCheapModelRouting(t *testing.T) {
 
 	// ...and a resume from that meta (with a cheap-less base profile, as the hub
 	// does not re-pass the launch arg) restores the cheap routing.
-	sess2, err := RestoreSessionFromMeta(c, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(dir), meta, dir)
+	sess2, err := RestoreSessionFromMeta(c, withTestSessionNamer(c, NewOpenAIProfile("gpt-5.2")), execenv.NewLocalExecutionEnvironment(dir), meta, dir)
 	if err != nil {
 		t.Fatalf("RestoreSessionFromMeta: %v", err)
 	}
@@ -508,7 +521,7 @@ func TestMetaTurnCount_CountsModelResponses(t *testing.T) {
 	c.Register(f)
 
 	dir := t.TempDir()
-	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(dir),
+	sess, err := NewSession(c, withTestSessionNamer(c, NewOpenAIProfile("gpt-5.2")), execenv.NewLocalExecutionEnvironment(dir),
 		SessionConfig{StateDir: dir})
 	if err != nil {
 		t.Fatalf("NewSession: %v", err)
@@ -661,18 +674,6 @@ func TestSessionDisplayName(t *testing.T) {
 				t.Fatalf("SessionDisplayName() = %q, want %q", got, tt.want)
 			}
 		})
-	}
-}
-
-func TestSessionMeta_OriginalPrompt_ReadsLegacyOriginalTask(t *testing.T) {
-	t.Parallel()
-	data := []byte(`{"id":"01TEST0001","original_task":"fix the bug in handler"}`)
-	var got schema.SessionMeta
-	if err := json.Unmarshal(data, &got); err != nil {
-		t.Fatalf("unmarshal: %v", err)
-	}
-	if got.OriginalPrompt != "fix the bug in handler" {
-		t.Fatalf("OriginalPrompt: got %q, want %q", got.OriginalPrompt, "fix the bug in handler")
 	}
 }
 

@@ -25,8 +25,8 @@ const (
 	// The string must stay byte-equal to appwire.ThreadStatusAwaiting
 	// ("awaiting"): every status pass-through switch on the wire journey
 	// defaults unrecognized strings to idle, so changing this string would
-	// silently downgrade an awaiting session to idle across /status, the
-	// roster, and the NeedsYou tier.
+	// silently downgrade an awaiting session to idle across AppWire, the roster,
+	// and the NeedsYou tier.
 	SessionAwaiting SessionState = "awaiting"
 	// SessionClosed indicates the session has been closed.
 	SessionClosed SessionState = "closed"
@@ -119,7 +119,6 @@ func (s *Session) Meta() schema.SessionMeta {
 	if s.fork.divergence > 0 {
 		parentID = s.fork.parentID
 		divergence = s.fork.divergence
-		isSubagent = false
 	} else if parentID == "" {
 		// A live spawn wins; the persisted parent covers the resume that left the
 		// carrier empty, so the delegate keeps the parent row the hub nests it
@@ -143,7 +142,9 @@ func (s *Session) Meta() schema.SessionMeta {
 		ProfileID:                s.profile.ID(),
 		Model:                    s.profile.Model(),
 		CheapModel:               s.profile.CheapModelRefString(),
+		VisionModel:              s.cfg.VisionModel,
 		Config:                   s.cfg.toSnapshot(),
+		ReasoningEffortEscalated: s.loopEffortEscalated,
 		EnvInfo:                  s.envInfo,
 		CreatedAt:                s.createdAt,
 		UpdatedAt:                now,

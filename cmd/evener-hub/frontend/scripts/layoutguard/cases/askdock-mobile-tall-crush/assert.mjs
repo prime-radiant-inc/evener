@@ -1,4 +1,5 @@
-// Geometric contract for the mobile ask dock (see case.json's description).
+// Geometric contract for the mobile ask dock as the transcript's trailing
+// row (see case.json's description):
 //
 //   A. An option's label never overlaps its own detail text, compared
 //      LINE BOX by line box: label and detail are inline siblings in one
@@ -7,17 +8,24 @@
 //      same-line glyph boxes are a meaningful overlap signal.
 //   B. No option row escapes the card horizontally: option labels are
 //      inline bold text (the fixed-height chip this case was originally
-//      authored against is gone), so a long valid label WRAPS onto as many
-//      lines as it needs instead of painting outside its box or pushing
-//      the row past the card's edge.
-//   C. The dock's own box stays inside the host pane: the pane clips
-//      overflow:hidden, so a dock taller than the pane puts its own bottom
-//      (note row, batch footer, Send answers) out of reach entirely.
-//   D. A dock whose content exceeds its box is internally scrollable
-//      (overflow-y: auto/scroll) - that, not pane growth, is how a tall
-//      batch stays answerable.
-//   E. The transcript keeps at least 20% of the host height: a pending ask
-//      must not erase the conversation it asks about.
+//      authored against is gone), so a long or UNBROKEN label WRAPS onto
+//      as many lines as it needs instead of painting outside its box or
+//      pushing the row past the card's edge.
+//   C. The dock sizes to its content: no internal scroll boundary
+//      (scrollHeight ~= clientHeight, overflow-y visible). Clipping here
+//      would strand the note row and Send answers behind a scrollbar the
+//      reader can't reach by scrolling the transcript - and in the real
+//      mount it would lie to the virtual list's measureElement.
+//   D. The transcript owns the scrolling: a tall batch makes its
+//      scrollHeight exceed its client height with overflow-y auto, so the
+//      whole batch stays reachable by ordinary transcript scrolling.
+//   E. The pending ask changes no allocation: the transcript's client
+//      height and the footer's box are identical with the dock present and
+//      hidden. (The old design's "transcript keeps 20% of the pane" floor
+//      is obsolete: the dock no longer competes for the pane's flex space
+//      at all.)
+//   F. The transcript box stays inside the host pane and the footer below
+//      it, and the outer document never scrolls.
 export default function assert(m) {
   const failures = [];
 
@@ -34,26 +42,50 @@ export default function assert(m) {
     }
   }
 
-  if (!m.dock.containedInHost) {
+  const { withDock, withoutDock } = m;
+
+  if (withDock.dock.scrollHeight > withDock.dock.clientHeight + 1) {
     failures.push(
-      `dock escapes the host pane (dock ${m.dock.rect.top}..${m.dock.rect.bottom}, host ${m.host.top}..${m.host.bottom}) - the pane's overflow:hidden clips whatever hangs out, Send answers included`,
+      `dock clips its own content (${withDock.dock.scrollHeight}px content in ${withDock.dock.clientHeight}px box) - the dock must size to content and let the transcript scroll`,
     );
   }
-
-  if (m.dock.scrollHeight > m.dock.clientHeight + 1 && m.dock.overflowY !== "auto" && m.dock.overflowY !== "scroll") {
-    failures.push(
-      `dock content (${m.dock.scrollHeight}px) exceeds its box (${m.dock.clientHeight}px) with overflow-y: ${m.dock.overflowY} - unreachable, not scrollable`,
-    );
+  if (withDock.dock.overflowY !== "visible") {
+    failures.push(`dock carries its own overflow-y: ${withDock.dock.overflowY} - scrolling belongs to the transcript`);
   }
 
-  const transcriptFloor = 0.2 * m.host.height;
-  if (m.transcriptHeight < transcriptFloor) {
+  if (withDock.transcriptScrollHeight <= withDock.transcriptClientHeight) {
     failures.push(
-      `transcript squeezed to ${m.transcriptHeight}px of a ${m.host.height}px host (floor: 20%); dock ${m.dock.rect.top}..${m.dock.rect.bottom}, ${m.dock.clientHeight}px client/${m.dock.scrollHeight}px content - the ask consumed the conversation`,
+      `a tall batch did not extend the transcript's scroll region (${withDock.transcriptScrollHeight}px content in ${withDock.transcriptClientHeight}px)`,
     );
+  }
+  if (withDock.transcriptOverflowY !== "auto" && withDock.transcriptOverflowY !== "scroll") {
+    failures.push(`transcript overflow belongs to ${withDock.transcriptOverflowY}, not the transcript`);
+  }
+
+  if (withDock.transcriptClientHeight !== withoutDock.transcriptClientHeight) {
+    failures.push(
+      `the pending ask changed the transcript's allocation (${withoutDock.transcriptClientHeight}px without it, ${withDock.transcriptClientHeight}px with)`,
+    );
+  }
+  if (Math.abs(withDock.footerRect.top - withoutDock.footerRect.top) > 1) {
+    failures.push(`the pending ask moved the footer (${withoutDock.footerRect.top}px -> ${withDock.footerRect.top}px)`);
+  }
+
+  if (withDock.transcriptRect.bottom > withDock.footerRect.top + 1) {
+    failures.push(
+      `transcript overlaps the footer by ${(withDock.transcriptRect.bottom - withDock.footerRect.top).toFixed(1)}px`,
+    );
+  }
+  if (withDock.footerRect.bottom > m.host.bottom + 1) {
+    failures.push(`footer escapes the host pane by ${(withDock.footerRect.bottom - m.host.bottom).toFixed(1)}px`);
+  }
+  if (m.documentHeight > m.viewport.h + 1) {
+    failures.push(`outer document scrolls: ${m.documentHeight}px document in ${m.viewport.h}px viewport`);
   }
 
   if (!m.sendButtonPresent) failures.push("Send answers button missing from the harness");
 
-  return failures.length === 0 ? { pass: true, reason: "ask dock geometry holds at phone width" } : { pass: false, reason: failures.join("; ") };
+  return failures.length === 0
+    ? { pass: true, reason: "ask dock geometry holds at phone width: labels wrap inside the card, the dock sizes to content, and the transcript owns the scroll" }
+    : { pass: false, reason: failures.join("; ") };
 }

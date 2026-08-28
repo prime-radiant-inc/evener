@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"context"
 	"testing"
 
 	"primeradiant.com/evener/agent/execenv"
@@ -90,5 +91,22 @@ func TestFrozenDescriptorTakesTurnEndsProcessFromTheLiveParent(t *testing.T) {
 				t.Fatal("frozen-descriptor merge dropped a descriptor-scoped field; the helper must still start from the snapshot")
 			}
 		})
+	}
+}
+
+func TestFrozenDescriptorTakesLifetimeContextFromLiveParent(t *testing.T) {
+	owner, cancelOwner := context.WithCancel(context.Background())
+	got := subagentConfigFromFrozenDescriptor(
+		SessionConfig{NoProjectPrompts: true}.toSnapshot(),
+		SessionConfig{LifetimeContext: owner},
+	)
+	if got.LifetimeContext == nil {
+		t.Fatal("frozen delegate dropped the live parent's lifetime context")
+	}
+	cancelOwner()
+	select {
+	case <-got.LifetimeContext.Done():
+	default:
+		t.Fatal("frozen delegate lifetime outlived the live parent")
 	}
 }

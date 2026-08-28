@@ -153,7 +153,7 @@ func TestReadTranscriptRetainedValidation(t *testing.T) {
 		{name: "session search", args: map[string]any{"transcript_ref": "current", "output_match": "line"}, want: "invalid_request: output_match applies only to job: and artifact: refs"},
 		{name: "artifact format", args: map[string]any{"transcript_ref": ref, "format": "markdown"}, want: "invalid_request: format is not supported for artifact: refs"},
 		{name: "artifact range", args: map[string]any{"transcript_ref": ref, "range": "1-2"}, want: "invalid_request: range applies only to session transcript refs"},
-		{name: "artifact expansion", args: map[string]any{"transcript_ref": ref, "expand_turn": float64(0)}, want: "invalid_request: expand_turn applies only to session transcript refs"},
+		{name: "artifact expansion", args: map[string]any{"transcript_ref": ref, "expand_turn": float64(1)}, want: "invalid_request: expand_turn applies only to session transcript refs"},
 		{name: "artifact beyond eof", args: map[string]any{"transcript_ref": ref, "offset_bytes": float64(6)}, want: "invalid_request: offset_bytes 6 is beyond EOF 5; valid byte interval is [0,5]"},
 		{name: "malformed artifact", args: map[string]any{"transcript_ref": "artifact:not-valid"}, want: "invalid_request: artifact transcript_ref must be a valid artifact:<id>"},
 		{name: "expired artifact", args: map[string]any{"transcript_ref": unknownRef}, want: "artifact_expired:"},

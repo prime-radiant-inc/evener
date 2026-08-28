@@ -2,8 +2,6 @@ package hub
 
 import (
 	"context"
-	"os"
-	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -12,7 +10,7 @@ import (
 	authopenai "primeradiant.com/evener/auth/openai"
 	"primeradiant.com/evener/cmd/evener-hub/internal/hubcore"
 	"primeradiant.com/evener/cmd/evener-hub/internal/launchconfig"
-	"primeradiant.com/evener/internal/credentials"
+	"primeradiant.com/evener/llm/registry"
 )
 
 func FuzzSpawnCredentialOrchestrationPass4(f *testing.F) {
@@ -21,46 +19,10 @@ func FuzzSpawnCredentialOrchestrationPass4(f *testing.F) {
 	}
 	f.Fuzz(func(t *testing.T, mode byte) {
 		root := t.TempDir()
-		store, err := credentials.LoadStore(filepath.Join(root, "credentials.toml"))
-		if err != nil {
-			t.Fatal(err)
-		}
-		_ = store.Set("openrouter", "stored-key")
 
-		// Exercise the no-config type map, including explicit launch-env
-		// clearing, no-auth providers, aliases, and unknown providers.
-		for _, tc := range []struct {
-			provider string
-			env      []string
-		}{
-			{"", nil}, {"openrouter", []string{"OPENROUTER_API_KEY="}},
-			{"OpenRouter", []string{"OPENROUTER_API_KEY=from-launch"}},
-			{"ollama", nil}, {"google", []string{"GOOGLE_API_KEY=g"}},
-			{"unknown", nil}, {"openai-compatible", []string{"OPENAI_COMPATIBLE_BASE_URL= http://local/v1 "}},
-		} {
-			_ = validateProviderCredentials(tc.provider, store, tc.env, "")
-		}
-		_ = validateProviderCredentials("openrouter", nil, nil, "")
-
-		cfgDir := t.TempDir()
-		cfgPath := filepath.Join(cfgDir, "providers.toml")
-		configs := []string{
-			"not = [valid",
-			"schema = 1\ndefault = \"inline\"\n[instances.inline]\ntype = \"openai\"\napi_key = \"inline-key\"\n",
-			"schema = 1\ndefault = \"local\"\n[instances.local]\ntype = \"openai\"\napi_style = \"chat-completions\"\nbase_url = \"http://local/v1\"\n",
-			"schema = 1\ndefault = \"local\"\n[instances.local]\ntype = \"openai\"\napi_style = \"chat-completions\"\n",
-			"schema = 1\ndefault = \"work\"\n[instances.work]\ntype = \"openai\"\n",
-			"schema = 1\ndefault = \"router\"\n[instances.router]\ntype = \"openrouter\"\n",
-		}
-		if err := os.WriteFile(cfgPath, []byte(configs[int(mode)%len(configs)]), 0o600); err != nil {
-			t.Fatal(err)
-		}
-		env := []string{"XDG_STATE_HOME=" + root, "OPENAI_COMPATIBLE_BASE_URL=http://env/v1", "OPENROUTER_API_KEY=router-key"}
-		for _, provider := range []string{"inline", "local", "work", "router", "absent"} {
-			_ = validateProviderCredentials(provider, store, env, cfgPath)
-		}
-		_ = validateProviderCredentials("openrouter", store, nil, filepath.Join(root, "missing.toml"))
-
+		// Walk the spawn gate over every registry shape: nothing named, a
+		// credential-less curated provider, an instance on each auth scheme,
+		// and a name nothing declares.
 		stateDir := authopenai.DefaultStateDirWithStateHome(root)
 		validRecord := func(source string, expiry time.Time, refresh string) authopenai.AuthRecord {
 			return authopenai.AuthRecord{
@@ -78,13 +40,22 @@ func FuzzSpawnCredentialOrchestrationPass4(f *testing.F) {
 		if err := authopenai.SaveAuth(stateDir, "work", records[int(mode)%len(records)]); err != nil {
 			t.Fatal(err)
 		}
-		_ = authopenai.SaveAuth(stateDir, "openai", validRecord(authopenai.AuthSourceOAuth, time.Now().Add(time.Hour), "refresh"))
-		_ = openAIInstanceOAuthUsable(stateDir, "work")
-		_ = openAIStoredOAuthUsable([]string{"XDG_STATE_HOME=" + root})
-		_ = validateProviderCredentials("work", store, []string{"XDG_STATE_HOME=" + root, "OPENAI_API_KEY="}, cfgPath)
-		_ = openAIInstanceOAuthUsable(filepath.Join(root, "missing"), "work")
-		_ = openAICompatibleBaseURLInEnv(nil)
-		_ = providerCredentialInEnv("openrouter", nil)
+		instanceSets := []map[string]registry.Provider{
+			nil,
+			{"inline": {Base: "openai", APIKey: "inline-key"}},
+			{"local": {Base: "openai-compatible", Transport: registry.Transport{BaseURL: "http://local/v1", Auth: registry.AuthNone}}},
+			{"local": {Base: "openai-compatible", Transport: registry.Transport{BaseURL: "http://local/v1", Auth: registry.AuthOptionalBearer}}},
+			{"work": {Base: "openai-codex"}},
+			{"router": {Base: "openrouter"}},
+		}
+		gate := newSpawnGateRegistry(t, stateDir,
+			map[string]string{"OPENROUTER_API_KEY": "router-key"},
+			instanceSets[int(mode)%len(instanceSets)])
+		for _, provider := range []string{"", "inline", "local", "work", "router", "absent", "openrouter", "ollama"} {
+			_ = validateProviderCredentials(provider, gate)
+		}
+		_ = validateProviderCredentials("openrouter", nil)
+		_ = validateProviderCredentials("openrouter", hubcore.NewProviderRegistry(nil))
 
 		// The executable makes the launch contract either succeed or fail. On
 		// success it also publishes rendezvous for Spawn/Resume.
@@ -101,7 +72,7 @@ printf '{"pid":%s,"address":"127.0.0.1:1","started_at":"2999-01-01T00:00:00Z"}' 
 `, "PROTOCOL", appwire.ProtocolVersion)
 		bin := fuzzExecutable(t, body)
 		runDir := t.TempDir()
-		h := HubSpawner{Cfg: Config{SpawnTimeout: time.Second}, EvenerBinary: bin, RunDir: runDir, Creds: store}
+		h := HubSpawner{Cfg: Config{SpawnTimeout: time.Second}, EvenerBinary: bin, RunDir: runDir, Registry: gate}
 		replay := 9
 		resolved := launchconfig.Resolved{}
 		resolved.Effective.AppReplaySize = &replay

@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 
 	"primeradiant.com/evener/appwire"
+	"primeradiant.com/evener/envvars"
 )
 
 func mapCodexThreadStatus(status codexThreadStatus) appwire.ThreadStatus {
@@ -24,7 +25,7 @@ func mapCodexThreadStatus(status codexThreadStatus) appwire.ThreadStatus {
 func mapCodexTurn(turn codexTurn) appwire.Turn {
 	out := appwire.Turn{
 		ID:          turn.ID,
-		ItemsView:   firstNonEmpty(turn.ItemsView, "full"),
+		ItemsView:   envvars.FirstNonEmpty(turn.ItemsView, "full"),
 		Status:      mapCodexTurnStatus(turn.Status),
 		StartedAt:   turn.StartedAt,
 		CompletedAt: turn.CompletedAt,
@@ -32,7 +33,7 @@ func mapCodexTurn(turn codexTurn) appwire.Turn {
 	}
 	if turn.Error != nil {
 		out.Error = &appwire.TurnError{
-			Message:           firstNonEmpty(turn.Error.Message, turn.Error.AdditionalDetails),
+			Message:           envvars.FirstNonEmpty(turn.Error.Message, turn.Error.AdditionalDetails),
 			AdditionalDetails: turn.Error.AdditionalDetails,
 			Source:            "codex",
 		}

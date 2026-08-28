@@ -190,17 +190,17 @@ func coverageLocks(t *testing.T) {
 	})
 	boom := errors.New("boom")
 	lockMkdirAll = func(string, os.FileMode) error { return boom }
-	if _, err := acquireLock("x/lock", 0); err == nil {
+	if _, err := acquireLock(context.Background(), "x/lock", 0); err == nil {
 		t.Fatal("want mkdir error")
 	}
 	lockMkdirAll = func(string, os.FileMode) error { return nil }
 	lockOpenFile = func(string, int, os.FileMode) (lockFile, error) { return nil, boom }
-	if _, err := acquireLock("x/lock", 0); err == nil {
+	if _, err := acquireLock(context.Background(), "x/lock", 0); err == nil {
 		t.Fatal("want open error")
 	}
 	lockOpenFile = func(string, int, os.FileMode) (lockFile, error) { return &coverageLockFile{}, nil }
 	lockFlock = func(int, int) error { return boom }
-	if _, err := acquireLock("x/lock", 0); err == nil {
+	if _, err := acquireLock(context.Background(), "x/lock", 0); err == nil {
 		t.Fatal("want flock error")
 	}
 
@@ -208,7 +208,7 @@ func coverageLocks(t *testing.T) {
 	n := 0
 	lockNow = func() time.Time { n++; return time.Unix(int64(n), 0) }
 	lockSleep = func(time.Duration) {}
-	if _, err := acquireLock("x/lock", 0); err == nil {
+	if _, err := acquireLock(context.Background(), "x/lock", 0); err == nil {
 		t.Fatal("want timeout")
 	}
 
@@ -223,7 +223,7 @@ func coverageLocks(t *testing.T) {
 	lockNow = func() time.Time { return time.Unix(0, 0) }
 	var sleeps []time.Duration
 	lockSleep = func(d time.Duration) { sleeps = append(sleeps, d) }
-	release, err := acquireLock("x/lock", time.Hour)
+	release, err := acquireLock(context.Background(), "x/lock", time.Hour)
 	if err != nil {
 		t.Fatal(err)
 	}

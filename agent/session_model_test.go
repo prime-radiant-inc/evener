@@ -16,6 +16,8 @@ import (
 
 	"primeradiant.com/evener/agent/events"
 	"primeradiant.com/evener/agent/execenv"
+	"primeradiant.com/evener/agent/internal/agenttest"
+	"primeradiant.com/evener/agent/internal/contextmgr"
 	"primeradiant.com/evener/agent/internal/goal"
 	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/identifier"
@@ -33,7 +35,7 @@ func TestSession_StreamOpenFailureHonorsRetryBudget(t *testing.T) {
 	c.Register(f)
 
 	policy := llm.RetryPolicy{MaxRetries: 0}
-	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{
+	sess, err := NewSession(c, withTestSessionNamer(c, NewOpenAIProfile("gpt-5.2")), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{
 		LLMRetryPolicy: &policy,
 	})
 	if err != nil {
@@ -76,7 +78,7 @@ func TestSession_StreamErrorReturnsSessionToIdle(t *testing.T) {
 	c.Register(f)
 
 	policy := llm.RetryPolicy{MaxRetries: 0}
-	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{
+	sess, err := NewSession(c, withTestSessionNamer(c, NewOpenAIProfile("gpt-5.2")), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{
 		LLMRetryPolicy: &policy,
 	})
 	if err != nil {
@@ -117,7 +119,7 @@ func TestSession_RetriesMidStreamFailure(t *testing.T) {
 
 	noSleep := func(context.Context, time.Duration) error { return nil }
 	policy := llm.RetryPolicy{MaxRetries: 5, BaseDelay: time.Millisecond}
-	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{
+	sess, err := NewSession(c, withTestSessionNamer(c, NewOpenAIProfile("gpt-5.2")), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{
 		LLMRetryPolicy: &policy,
 		LLMSleep:       noSleep,
 	})
@@ -163,7 +165,7 @@ func TestSession_RetriesAfterPartialOutputAndResets(t *testing.T) {
 
 	noSleep := func(context.Context, time.Duration) error { return nil }
 	policy := llm.RetryPolicy{MaxRetries: 3, BaseDelay: time.Millisecond}
-	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{
+	sess, err := NewSession(c, withTestSessionNamer(c, NewOpenAIProfile("gpt-5.2")), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{
 		LLMRetryPolicy: &policy,
 		LLMSleep:       noSleep,
 	})
@@ -269,7 +271,7 @@ func TestSession_StreamErrorFlushesMetaJSON_AfterPauseTurnGap(t *testing.T) {
 	c.Register(f)
 
 	policy := llm.RetryPolicy{MaxRetries: 0}
-	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{
+	sess, err := NewSession(c, withTestSessionNamer(c, NewOpenAIProfile("gpt-5.2")), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{
 		StateDir:       dir,
 		LLMRetryPolicy: &policy,
 	})
@@ -324,7 +326,7 @@ func TestSession_EmitsReasoningSummaryDelta(t *testing.T) {
 	c.Register(f)
 
 	policy := llm.RetryPolicy{MaxRetries: 0}
-	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{StateDir: dir, LLMRetryPolicy: &policy})
+	sess, err := NewSession(c, withTestSessionNamer(c, NewOpenAIProfile("gpt-5.2")), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{StateDir: dir, LLMRetryPolicy: &policy})
 	if err != nil {
 		t.Fatalf("NewSession: %v", err)
 	}
@@ -382,7 +384,7 @@ func TestSession_StreamErrorFlushesMetaJSON_FirstTurn(t *testing.T) {
 	c.Register(f)
 
 	policy := llm.RetryPolicy{MaxRetries: 0}
-	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{
+	sess, err := NewSession(c, withTestSessionNamer(c, NewOpenAIProfile("gpt-5.2")), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{
 		StateDir:       dir,
 		LLMRetryPolicy: &policy,
 	})
@@ -462,7 +464,7 @@ func TestSession_StreamErrorFlushesMetaJSON_AfterHappyTurn(t *testing.T) {
 	c.Register(f)
 
 	policy := llm.RetryPolicy{MaxRetries: 0}
-	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{
+	sess, err := NewSession(c, withTestSessionNamer(c, NewOpenAIProfile("gpt-5.2")), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{
 		StateDir:       dir,
 		LLMRetryPolicy: &policy,
 	})
@@ -531,7 +533,7 @@ func TestSession_EmptyResponseExhaustedFlushesMeta(t *testing.T) {
 	}
 	c.Register(f)
 
-	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{
+	sess, err := NewSession(c, withTestSessionNamer(c, NewOpenAIProfile("gpt-5.2")), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{
 		StateDir: dir,
 	})
 	if err != nil {
@@ -581,7 +583,7 @@ func TestSession_BareTextWithoutResultToolFlushesMeta(t *testing.T) {
 	}
 	c.Register(f)
 
-	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{
+	sess, err := NewSession(c, withTestSessionNamer(c, NewOpenAIProfile("gpt-5.2")), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{
 		StateDir: dir,
 	})
 	if err != nil {
@@ -644,7 +646,7 @@ func TestSession_MaxToolRoundsExitFlushesMeta(t *testing.T) {
 	}
 	c.Register(f)
 
-	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{
+	sess, err := NewSession(c, withTestSessionNamer(c, NewOpenAIProfile("gpt-5.2")), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{
 		StateDir:              dir,
 		MaxToolRoundsPerInput: 1,
 	})
@@ -697,7 +699,7 @@ func TestSession_CtxCancellationFlushesMeta(t *testing.T) {
 	}
 	c.Register(f)
 
-	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{
+	sess, err := NewSession(c, withTestSessionNamer(c, NewOpenAIProfile("gpt-5.2")), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{
 		StateDir: dir,
 	})
 	if err != nil {
@@ -777,7 +779,7 @@ func TestSession_PanicFlushesMeta(t *testing.T) {
 	}
 	c.Register(f)
 
-	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{
+	sess, err := NewSession(c, withTestSessionNamer(c, NewOpenAIProfile("gpt-5.2")), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{
 		StateDir: dir,
 	})
 	if err != nil {
@@ -857,7 +859,7 @@ func TestSession_ProviderAbortKeepsSessionIdle(t *testing.T) {
 		},
 	})
 
-	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{})
+	sess, err := NewSession(c, withTestSessionNamer(c, NewOpenAIProfile("gpt-5.2")), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{})
 	if err != nil {
 		t.Fatalf("NewSession: %v", err)
 	}
@@ -896,7 +898,7 @@ func TestSession_WebSearch_FlagSetOnRequest(t *testing.T) {
 	}
 	c.Register(f)
 
-	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{})
+	sess, err := NewSession(c, withTestSessionNamer(c, NewOpenAIProfile("gpt-5.2")), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{})
 	if err != nil {
 		t.Fatalf("NewSession: %v", err)
 	}
@@ -915,6 +917,80 @@ func TestSession_WebSearch_FlagSetOnRequest(t *testing.T) {
 	}
 	if !reqs[0].WebSearch {
 		t.Fatalf("WebSearch flag not set on request")
+	}
+}
+
+// TestSession_WebSearch_FlagNotSetWhenBaseURLDiverges pins that an
+// instance with its own base_url no longer inherits the vendor's
+// provider-level web_search (llm/registry's endpoint gate), so the request
+// this session builds must not carry the flag - a gateway that does not
+// implement the hosted tool rejects it, ending the session on turn one.
+// "gw" is the fixture's base=openai instance pointed at a different
+// base_url (profile_testhelpers_test.go); it never sets web_search itself.
+//
+// This test only proves the session's own derivation (providerWebSearchEnabled
+// -> profile.SupportsWebSearch -> registry.BoolValue) reads a gated profile
+// correctly - BoolValue collapses nil and false alike, so it would pass
+// unchanged whether the registry stripped WebSearch to nil or to false. It
+// cannot, on its own, see a fail-open gap at the wire-building layer, where
+// a caller that sets Request.WebSearch directly (bypassing
+// providerWebSearchEnabled entirely - cmd/llmcall's --web-search flag, for
+// one) would hit a protocol adapter's own gate (caps.WebSearch == nil ||
+// *caps.WebSearch), which treats nil as permissive. The wire-layer leak is
+// pinned separately and directly in llm/providers/responses
+// (TestBuildBody_WebSearchNilCapsIsFailOpen); this test closes the gap at
+// its own layer instead by also asserting the resolved Caps.WebSearch
+// pointer itself is explicit false, not nil, so a registry regression back
+// to nil'ing the cap fails here even though req.WebSearch would still read
+// false.
+func TestSession_WebSearch_FlagNotSetWhenBaseURLDiverges(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	c := llm.NewClient()
+	f := &fakeAdapter{
+		name: "gw",
+		steps: []func(req llm.Request) llm.Response{
+			func(req llm.Request) llm.Response {
+				return wrapCommunicateResponse(llm.Response{
+					Message: llm.Message{
+						Role:    llm.RoleAssistant,
+						Content: []llm.ContentPart{{Kind: llm.ContentText, Text: "done"}},
+					},
+					Finish: llm.FinishReason{Reason: "stop"},
+					Usage:  llm.Usage{InputTokens: 10, OutputTokens: 5, TotalTokens: 15},
+				})
+			},
+		},
+	}
+	c.Register(f)
+
+	profile := resolveTestProfile("gw", nil, "gpt-5.2")
+	if profile.SupportsWebSearch() {
+		t.Fatal("pre-condition: gw must not resolve web_search (its base_url diverges from openai's default)")
+	}
+	if ws := profile.Resolved().Caps.WebSearch; ws == nil || *ws {
+		t.Fatalf("pre-condition: gw's resolved Caps.WebSearch must be an explicit false, not nil (nil is fail-open at the adapter layer): %v", ws)
+	}
+
+	sess, err := NewSession(c, withTestSessionNamer(c, profile), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{})
+	if err != nil {
+		t.Fatalf("NewSession: %v", err)
+	}
+	defer sess.Close()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second) // TRIPWIRE: scripted in-process adapter, no real I/O; only fires on a genuine hang.
+	defer cancel()
+	_, err = sess.ProcessInput(ctx, "hello", nil)
+	if err != nil {
+		t.Fatalf("ProcessInput: %v", err)
+	}
+
+	reqs := f.Requests()
+	if len(reqs) == 0 {
+		t.Fatalf("no requests captured")
+	}
+	if reqs[0].WebSearch {
+		t.Fatalf("WebSearch flag set on request for a base_url-diverged instance")
 	}
 }
 
@@ -951,7 +1027,7 @@ func TestSession_PauseTurn_ContinuesLoop(t *testing.T) {
 	}
 	c.Register(f)
 
-	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{})
+	sess, err := NewSession(c, withTestSessionNamer(c, NewOpenAIProfile("gpt-5.2")), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{})
 	if err != nil {
 		t.Fatalf("NewSession: %v", err)
 	}
@@ -1020,7 +1096,7 @@ func TestSession_PauseTurn_DoesNotCountAsToolRound(t *testing.T) {
 	}
 	c.Register(f)
 
-	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{
+	sess, err := NewSession(c, withTestSessionNamer(c, NewOpenAIProfile("gpt-5.2")), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{
 		MaxToolRoundsPerInput: 2, // Only 2 real rounds allowed.
 	})
 	if err != nil {
@@ -1079,7 +1155,7 @@ func TestSession_RecordInputTokens_SkipsWebSearchResponse(t *testing.T) {
 		},
 	})
 
-	sess, err := NewSession(c, newAnthropicProfile("claude-opus-4-6"), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{})
+	sess, err := NewSession(c, withTestSessionNamer(c, newAnthropicProfile("claude-opus-4-6")), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{})
 	if err != nil {
 		t.Fatalf("NewSession: %v", err)
 	}
@@ -1156,7 +1232,7 @@ func TestSession_ContentFilterRecovery_CompactsAndRetries(t *testing.T) {
 	c := llm.NewClient()
 	c.Register(f)
 
-	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{
+	sess, err := NewSession(c, withTestSessionNamer(c, NewOpenAIProfile("gpt-5.2")), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{
 		MaxToolRoundsPerInput: 20,
 		LLMRetryPolicy:        &llm.RetryPolicy{MaxRetries: 0}, // no transport retries
 	})
@@ -1244,7 +1320,7 @@ func TestSession_ContentFilterRecovery_FailsOnSecondFilterHit(t *testing.T) {
 	c := llm.NewClient()
 	c.Register(f)
 
-	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{
+	sess, err := NewSession(c, withTestSessionNamer(c, NewOpenAIProfile("gpt-5.2")), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{
 		MaxToolRoundsPerInput: 20,
 		LLMRetryPolicy:        &llm.RetryPolicy{MaxRetries: 0},
 	})
@@ -1275,6 +1351,561 @@ func TestSession_ContentFilterRecovery_FailsOnSecondFilterHit(t *testing.T) {
 	sess.Close()
 }
 
+// testContentFilterRecoveryAdjustsBaseline pins the N4 in-flight-turn
+// boundary (turnHistoryBaseline) through a content-filter ForceCompact retry
+// (issue #634). It ground-truths the expected baseline against the ACTUAL
+// post-fold position of the turn that was at the baseline — found by its
+// unique text in the resulting history — rather than a hand-derived formula
+// for it: ForceCompact always runs both the checkpoint AND (given a real
+// client, which every test session has) the summarize layer, and when
+// withGoalSteering injects a turn between them, summarize's own
+// preserve-last-PreserveRecentTurns cutoff shifts to include it, folding one
+// MORE original turn than it would at S=0. A simple preLen-postLen turn-count
+// delta can't see that reshuffle; only checking where the marked turn
+// actually landed can.
+//
+// withGoalSteering activates a goal before the fold, so goalCompactionSteering
+// (agent/session_goal.go) unconditionally injects one TurnSteering turn
+// mid-fold — the same mechanism a pinned note or a PreCompact plugin hook uses
+// (session_compaction.go's runPreCompactHook), all three of which
+// compactionEmitFunc's emitFn fires synchronously through the same *history
+// pointer the caller measures before/after length on. Without a case that
+// injects at least one turn, the shrink amount always equals a plain turn
+// count delta and any bug in how injected turns are handled is invisible.
+//
+// Drives handleModelError directly (the same direct-call pattern
+// TestDelegateControllerModelRequestUsesOutgoingReplayScope uses for
+// prepareModelRequestWithError) against history seeded past PreserveRecentTurns
+// so ForceCompact's checkpoint layer actually folds turns away — a no-op fix
+// would pass against a fold-free history, so this forces a real shrink.
+func testContentFilterRecoveryAdjustsBaseline(t *testing.T, withGoalSteering bool) {
+	t.Helper()
+	s := newTestSession(t)
+	seedNumberedSessionHistory(t, s, 12) // > PreserveRecentTurns(6): forces an actual checkpoint fold
+	if withGoalSteering {
+		s.getOrCreateGoalStore().Set("Ship the feature", time.Now()) // goalCompactionSteering injects 1 turn, unconsumed, every fold
+	}
+
+	preHistory := currentHistory(t, s)
+	baselineIdx := len(preHistory) - 3 // last 3 turns simulate the in-flight turn
+	baselineText := preHistory[baselineIdx].Message.Text()
+	s.mu.Lock()
+	s.turnHistoryBaseline = baselineIdx
+	s.mu.Unlock()
+
+	contentFilterErr := llm.ErrorFromHTTPStatus(
+		"openai", 400, "content filter triggered",
+		map[string]any{"error": map[string]any{"code": "invalid_prompt"}},
+		nil,
+	)
+	retried := false
+	retry, err := s.handleModelError(context.Background(), contentFilterErr, llm.Request{}, &retried, false)
+	if err != nil {
+		t.Fatalf("handleModelError: %v", err)
+	}
+	if !retry {
+		t.Fatal("expected content-filter retry to request a retry")
+	}
+
+	postHistory := currentHistory(t, s)
+	if len(postHistory) >= len(preHistory) {
+		t.Fatalf("test setup didn't force an actual fold: history len %d -> %d", len(preHistory), len(postHistory))
+	}
+	wantBaseline := indexOfTurnText(postHistory, baselineText)
+	if wantBaseline < 0 {
+		t.Fatalf("in-flight turn %q did not survive the fold — test setup invalid", baselineText)
+	}
+
+	s.mu.Lock()
+	gotBaseline := s.turnHistoryBaseline
+	s.mu.Unlock()
+
+	if gotBaseline != wantBaseline {
+		t.Errorf("turnHistoryBaseline = %d after a %d-turn fold (history %d -> %d), want %d (the in-flight turn's actual post-fold index)",
+			gotBaseline, len(preHistory)-len(postHistory), len(preHistory), len(postHistory), wantBaseline)
+	}
+}
+
+func TestSession_ContentFilterRecovery_AdjustsTurnHistoryBaselineOnFold(t *testing.T) {
+	t.Parallel()
+	testContentFilterRecoveryAdjustsBaseline(t, false)
+}
+
+func TestSession_ContentFilterRecovery_AdjustsTurnHistoryBaselineOnFold_WithInjectedSteering(t *testing.T) {
+	t.Parallel()
+	testContentFilterRecoveryAdjustsBaseline(t, true)
+}
+
+// TestHandleModelError_ContentFilterRetry_PreservesConcurrentAppendDuringSlowFold
+// pins merge-back for handleModelError's content-filter ForceCompact retry:
+// it snapshots s.history and folds UNLOCKED (ForceCompact's Layer 2
+// summarization can be slow), so republishing the snapshot unconditionally
+// would silently drop a turn appended to s.history by another goroutine
+// while the fold ran (e.g. a queued tool result), which sits past the
+// snapshot's length — the same data-loss class Compact() guards against.
+//
+// No sleep-based synchronization: a scripted cheap-model adapter blocks on a
+// channel inside Layer 2's LLM call, mirroring
+// TestSessionCompact_PreservesConcurrentAppendDuringSlowFold's approach for
+// this different entry point.
+func TestHandleModelError_ContentFilterRetry_PreservesConcurrentAppendDuringSlowFold(t *testing.T) {
+	t.Parallel()
+	const blockingProvider = "cfr-blocking-cheap"
+	entered := make(chan struct{})
+	proceed := make(chan struct{})
+	client := llm.NewClient()
+	client.Register(&fakeAdapter{name: "openai"})
+	client.Register(&agenttest.ScriptedAdapter{
+		Provider: blockingProvider,
+		Responder: func(req llm.Request) llm.Response {
+			close(entered)
+			<-proceed
+			return llm.Response{Message: llm.Assistant("[CONTEXT SUMMARY]\nsummary\n[END SUMMARY]")}
+		},
+	})
+	profile := WithCheapModel(NewOpenAIProfile("gpt-5.2"), blockingProvider+"/model")
+
+	s := newSession(t, withClient(client), withProfile(profile), withoutGitSnapshot())
+	seedNumberedSessionHistory(t, s, 12) // > PreserveRecentTurns(6): forces an actual checkpoint fold, and ForceCompact always attempts Layer 2 given a real client
+
+	contentFilterErr := llm.ErrorFromHTTPStatus(
+		"openai", 400, "content filter triggered",
+		map[string]any{"error": map[string]any{"code": "invalid_prompt"}},
+		nil,
+	)
+	retried := false
+	type result struct {
+		retry bool
+		err   error
+	}
+	resultCh := make(chan result, 1)
+	go func() {
+		retry, err := s.handleModelError(context.Background(), contentFilterErr, llm.Request{}, &retried, false)
+		resultCh <- result{retry, err}
+	}()
+
+	<-entered // the fold is now blocked inside Layer 2's LLM call, past its unlocked snapshot
+
+	const concurrentText = "concurrent append during content-filter fold"
+	s.mu.Lock()
+	s.history = append(s.history, schema.NewTurn(schema.TurnUserInput, llm.User(concurrentText)))
+	s.mu.Unlock()
+
+	close(proceed) // let the fold finish
+
+	res := <-resultCh
+	if res.err != nil {
+		t.Fatalf("handleModelError: %v", res.err)
+	}
+	if !res.retry {
+		t.Fatal("expected content-filter retry to request a retry")
+	}
+
+	if indexOfTurnText(currentHistory(t, s), concurrentText) < 0 {
+		t.Fatal("turn appended to s.history while the content-filter fold ran unlocked did not survive publication")
+	}
+}
+
+// testManageContextShrinksBaselineOnFold pins turnHistoryBaseline through
+// prepareModelRequestWithError's pre-existing mid-turn ManageContext fold —
+// the computation issue #634 asked the content-filter fix to mirror, which
+// turned out to inherit the same injected-turns under-shrink (see
+// testContentFilterRecoveryAdjustsBaseline). No prior test exercised this
+// shrink branch at all (round 0 only sets the baseline fresh); this covers it
+// at both S=0 (regression pin: must stay unchanged) and, via withGoalSteering,
+// S=1 (correctness pin: must now track the fold exactly, ground-truthed the
+// same way as the content-filter test).
+//
+// Drives prepareModelRequestWithError directly at round 1 (the same
+// direct-call pattern TestDelegateControllerModelRequestUsesOutgoingReplayScope
+// uses), with pressure forced above CheckpointThreshold so MaybeCompact's
+// checkpoint layer actually folds. elicitNoteFn is stubbed to return no note:
+// maybeElicitNoteBeforeCompaction is on by default and would otherwise pin a
+// real note under this forced pressure, adding an uncontrolled extra injected
+// turn on top of the one withGoalSteering deliberately adds.
+func testManageContextShrinksBaselineOnFold(t *testing.T, withGoalSteering bool) {
+	t.Helper()
+	s := newTestSession(t)
+	s.elicitNoteFn = func(context.Context, []schema.Turn) (string, error) { return "", nil }
+	seedNumberedSessionHistory(t, s, 12) // > PreserveRecentTurns(6): forces an actual checkpoint fold
+	if withGoalSteering {
+		s.getOrCreateGoalStore().Set("Ship the feature", time.Now()) // goalCompactionSteering injects 1 turn, unconsumed, every fold
+	}
+	forcePressureAbove(t, s, 0.85) // > CheckpointThreshold(0.80), < SummarizeThreshold(0.95): checkpoint layer only
+
+	preHistory := currentHistory(t, s)
+	baselineIdx := len(preHistory) - 3 // last 3 turns simulate the in-flight turn
+	baselineText := preHistory[baselineIdx].Message.Text()
+	s.mu.Lock()
+	s.turnHistoryBaseline = baselineIdx
+	s.mu.Unlock()
+
+	var timings events.RoundTimings
+	_, _, _, _, _, _, err := s.prepareModelRequestWithError(context.Background(), 1, &timings)
+	if err != nil {
+		t.Fatalf("prepareModelRequestWithError: %v", err)
+	}
+
+	postHistory := currentHistory(t, s)
+	if len(postHistory) >= len(preHistory) {
+		t.Fatalf("test setup didn't force an actual fold: history len %d -> %d", len(preHistory), len(postHistory))
+	}
+	wantBaseline := indexOfTurnText(postHistory, baselineText)
+	if wantBaseline < 0 {
+		t.Fatalf("in-flight turn %q did not survive the fold — test setup invalid", baselineText)
+	}
+
+	s.mu.Lock()
+	gotBaseline := s.turnHistoryBaseline
+	s.mu.Unlock()
+
+	if gotBaseline != wantBaseline {
+		t.Errorf("turnHistoryBaseline = %d after a %d-turn fold (history %d -> %d), want %d (the in-flight turn's actual post-fold index)",
+			gotBaseline, len(preHistory)-len(postHistory), len(preHistory), len(postHistory), wantBaseline)
+	}
+}
+
+func TestSession_ManageContext_ShrinksBaselineOnFold(t *testing.T) {
+	t.Parallel()
+	testManageContextShrinksBaselineOnFold(t, false)
+}
+
+func TestSession_ManageContext_ShrinksBaselineOnFold_WithInjectedSteering(t *testing.T) {
+	t.Parallel()
+	testManageContextShrinksBaselineOnFold(t, true)
+}
+
+// testManageContextShrinksBaselineWithStrategy pins turnHistoryBaseline
+// through a memory-crystals-strategy ManageContext fold, parameterized over
+// which injection sources fire on the same fold:
+//
+//   - withGoalSteering activates a goal so runPreCompactHook's
+//     goalCompactionSteering injects a turn — the hook-side contribution,
+//     counted via len(pendingSteering).
+//   - withCrystal seeds one crystal via AfterAction so the strategy's own
+//     post-fold append fires — the strategy-side contribution, counted via
+//     contextmgr.WithPostFoldInjectionCallback (strategyInjected).
+//
+// (false, true) is the strategy-only pin
+// (TestSession_ManageContext_ShrinksBaselineOnFold_WithStrategyInjectedSteering):
+// a non-default context strategy appends its own steering turn AFTER
+// MaybeCompact returns,
+// not through runPreCompactHook, so compactionEmitFunc's injectedTurns()
+// alone couldn't see it and managedLen (measured after the whole strategy
+// call) silently absorbed the extra turn.
+//
+// (true, false) proves the callback no-op path composes: with a strategy
+// capable of self-injection present but not triggered (no crystal seeded),
+// only the hook's turn should count — nothing is double-counted or dropped
+// just because a WithPostFoldInjectionCallback-aware strategy is in play.
+//
+// (true, true) is the composition that must hold explicitly: both
+// sources fire on the SAME fold (a legal config — an active goal alongside a
+// self-injecting strategy), S=2, proving compactionEmitFunc's injectedTurns()
+// sums len(pendingSteering) and strategyInjected correctly rather than one
+// clobbering, doubling, or masking the other.
+//
+// All three variants are ground-truthed against the actual post-fold
+// position of a uniquely-marked turn, not a re-derived formula.
+func testManageContextShrinksBaselineWithStrategy(t *testing.T, withGoalSteering, withCrystal bool) {
+	t.Helper()
+	s := newSession(t, withConfig(SessionConfig{
+		MaxSubagentDepth: 1,
+		ContextStrategy:  "memory-crystals",
+		NoProjectPrompts: true,
+		testOnly:         testConfig{skipGitSnapshot: true},
+	}))
+	s.elicitNoteFn = func(context.Context, []schema.Turn) (string, error) { return "", nil }
+	seedNumberedSessionHistory(t, s, 12) // multiple of 3 (AfterAction's crystallize cadence) and > PreserveRecentTurns(6)
+	if withGoalSteering {
+		s.getOrCreateGoalStore().Set("Ship the feature", time.Now()) // goalCompactionSteering injects 1 turn, unconsumed, every fold
+	}
+
+	mc, ok := s.strategy.(*contextmgr.MemoryCrystalsStrategy)
+	if !ok {
+		t.Fatalf("expected *contextmgr.MemoryCrystalsStrategy, got %T", s.strategy)
+	}
+	if withCrystal {
+		if err := mc.AfterAction(context.Background(), currentHistory(t, s), s.client); err != nil {
+			t.Fatalf("AfterAction: %v", err)
+		}
+	}
+	forcePressureAbove(t, s, 0.85) // > CheckpointThreshold(0.80), < SummarizeThreshold(0.95): checkpoint layer only
+
+	preHistory := currentHistory(t, s)
+	baselineIdx := len(preHistory) - 3 // last 3 turns simulate the in-flight turn
+	baselineText := preHistory[baselineIdx].Message.Text()
+	s.mu.Lock()
+	s.turnHistoryBaseline = baselineIdx
+	s.mu.Unlock()
+
+	var timings events.RoundTimings
+	_, _, _, _, _, _, err := s.prepareModelRequestWithError(context.Background(), 1, &timings)
+	if err != nil {
+		t.Fatalf("prepareModelRequestWithError: %v", err)
+	}
+
+	postHistory := currentHistory(t, s)
+	if len(postHistory) >= len(preHistory) {
+		t.Fatalf("test setup didn't force an actual fold: history len %d -> %d", len(preHistory), len(postHistory))
+	}
+
+	foundCrystalMarker := false
+	foundGoalMarker := false
+	for _, turn := range postHistory {
+		if turn.Kind != schema.TurnSteering {
+			continue
+		}
+		if strings.Contains(turn.Message.Text(), "[MEMORY CRYSTALS]") {
+			foundCrystalMarker = true
+		}
+		if turn.SteeringKind == events.SteeringKindGoalObjective {
+			foundGoalMarker = true
+		}
+	}
+	if withCrystal != foundCrystalMarker {
+		t.Fatalf("memory-crystals steering turn present=%v, want %v (withCrystal) — test setup doesn't exercise what it claims", foundCrystalMarker, withCrystal)
+	}
+	if withGoalSteering != foundGoalMarker {
+		t.Fatalf("goal-objective steering turn present=%v, want %v (withGoalSteering) — test setup doesn't exercise what it claims", foundGoalMarker, withGoalSteering)
+	}
+
+	wantBaseline := indexOfTurnText(postHistory, baselineText)
+	if wantBaseline < 0 {
+		t.Fatalf("in-flight turn %q did not survive the fold — test setup invalid", baselineText)
+	}
+
+	s.mu.Lock()
+	gotBaseline := s.turnHistoryBaseline
+	s.mu.Unlock()
+
+	if gotBaseline != wantBaseline {
+		t.Errorf("turnHistoryBaseline = %d after a %d-turn fold (history %d -> %d), want %d (the in-flight turn's actual post-fold index)",
+			gotBaseline, len(preHistory)-len(postHistory), len(preHistory), len(postHistory), wantBaseline)
+	}
+}
+
+func TestSession_ManageContext_ShrinksBaselineOnFold_WithStrategyInjectedSteering(t *testing.T) {
+	t.Parallel()
+	testManageContextShrinksBaselineWithStrategy(t, false, true)
+}
+
+// TestSession_ManageContext_ShrinksBaselineOnFold_WithGoalSteering_StrategyPresentButInactive
+// proves the callback no-op path composes: a memory-crystals strategy is
+// active (so WithPostFoldInjectionCallback is wired the same way the S=2 test
+// below exercises it) but never triggers (no crystal seeded), while a goal
+// injects through runPreCompactHook. The count must be exactly the hook's
+// one turn — no double-count or drop just because a
+// WithPostFoldInjectionCallback-capable strategy happens to be configured.
+func TestSession_ManageContext_ShrinksBaselineOnFold_WithGoalSteering_StrategyPresentButInactive(t *testing.T) {
+	t.Parallel()
+	testManageContextShrinksBaselineWithStrategy(t, true, false)
+}
+
+// TestSession_ManageContext_ShrinksBaselineOnFold_WithGoalAndStrategyInjectedSteering
+// is the S=2 composition: an active goal
+// (hook-side injection) and a self-injecting strategy (strategy-side
+// injection) both fire on the same fold — a legal config the two isolated
+// S=1 variants above cannot see, since compactionEmitFunc's injectedTurns()
+// claim is precisely that it SUMS the two sources rather than reporting
+// whichever fired.
+func TestSession_ManageContext_ShrinksBaselineOnFold_WithGoalAndStrategyInjectedSteering(t *testing.T) {
+	t.Parallel()
+	testManageContextShrinksBaselineWithStrategy(t, true, true)
+}
+
+// TestSession_ManageContext_ShrinksBaselineOnFold_MarkerBeforeBaseline pins
+// marker-before-baseline correction: a strategy marker (memory-crystals here)
+// planted in an EARLIER turn can end up sitting BEFORE turnHistoryBaseline by
+// the time a LATER turn's fold refreshes it. Removing a pre-baseline marker
+// shifts every in-flight turn left by one; the marker's own re-append (always
+// at the end, after baseline) does not restore that. The net turn-count delta
+// from that swap is 0 (one removed, one added), so
+// WithPostFoldInjectionCallback's plain net-delta report can't see the shift
+// -- it needs to know the removal specifically happened before the boundary,
+// not just that a removal and an append happened somewhere.
+//
+// Sequence: round 0 seeds a crystal and plants its marker at the tail, which
+// becomes part of "prior" history once baseline is captured at the end of
+// round 0. Three more turns are appended directly (simulating tool-round
+// activity), landing after baseline. Pressure is then forced high enough that
+// round 1's checkpoint folds a prefix that preserves the marker as a distinct
+// turn (not yet swallowed into the checkpoint) but still ahead of the new
+// in-flight turns -- exactly the shape that requires the marker to be
+// refreshed (removed and re-appended) while it is behind the boundary.
+// Ground-truthed against the actual post-fold position of the first
+// genuinely in-flight turn, not a re-derived formula.
+func TestSession_ManageContext_ShrinksBaselineOnFold_MarkerBeforeBaseline(t *testing.T) {
+	t.Parallel()
+	s := newSession(t, withConfig(SessionConfig{
+		MaxSubagentDepth: 1,
+		ContextStrategy:  "memory-crystals",
+		NoProjectPrompts: true,
+		testOnly:         testConfig{skipGitSnapshot: true},
+	}))
+	s.elicitNoteFn = func(context.Context, []schema.Turn) (string, error) { return "", nil }
+	seedNumberedSessionHistory(t, s, 12) // multiple of 3 (AfterAction's crystallize cadence) and > PreserveRecentTurns(6)
+
+	mc, ok := s.strategy.(*contextmgr.MemoryCrystalsStrategy)
+	if !ok {
+		t.Fatalf("expected *contextmgr.MemoryCrystalsStrategy, got %T", s.strategy)
+	}
+	if err := mc.AfterAction(context.Background(), currentHistory(t, s), s.client); err != nil {
+		t.Fatalf("AfterAction: %v", err)
+	}
+
+	// Round 0: plants the crystal marker (first injection, no prior marker to
+	// remove) and captures baseline immediately after -- the marker is
+	// "prior" content, exactly like production's round==0 reset.
+	var timings events.RoundTimings
+	if _, _, _, _, _, _, err := s.prepareModelRequestWithError(context.Background(), 0, &timings); err != nil {
+		t.Fatalf("prepareModelRequestWithError round 0: %v", err)
+	}
+
+	afterRoundZero := currentHistory(t, s)
+	foundMarkerAfterRoundZero := false
+	for _, turn := range afterRoundZero {
+		if turn.Kind == schema.TurnSteering && strings.Contains(turn.Message.Text(), "[MEMORY CRYSTALS]") {
+			foundMarkerAfterRoundZero = true
+		}
+	}
+	if !foundMarkerAfterRoundZero {
+		t.Fatal("round 0 didn't plant a memory-crystals marker -- test setup invalid")
+	}
+
+	// Simulate tool-round activity after round 0: turns appended directly,
+	// landing after baseline (which round 0 just set to len(history) at that
+	// point) -- these, not the marker, are the true in-flight turns.
+	const inFlight0, inFlight1, inFlight2 = "inflight 0", "inflight 1", "inflight 2"
+	s.mu.Lock()
+	s.history = append(s.history,
+		schema.NewTurn(schema.TurnUserInput, llm.User(inFlight0)),
+		schema.NewTurn(schema.TurnUserInput, llm.User(inFlight1)),
+		schema.NewTurn(schema.TurnUserInput, llm.User(inFlight2)),
+	)
+	baselineIdx := s.turnHistoryBaseline
+	s.mu.Unlock()
+
+	preHistory := currentHistory(t, s)
+	if baselineIdx < 0 || baselineIdx >= len(preHistory) || preHistory[baselineIdx].Message.Text() != inFlight0 {
+		t.Fatalf("test setup invalid: turnHistoryBaseline=%d does not point at %q in %d-turn history", baselineIdx, inFlight0, len(preHistory))
+	}
+	markerIdx := indexOfSteeringMarker(preHistory, "[MEMORY CRYSTALS]")
+	if markerIdx < 0 || markerIdx >= baselineIdx {
+		t.Fatalf("test setup invalid: crystal marker at index %d is not before baseline %d", markerIdx, baselineIdx)
+	}
+
+	forcePressureAbove(t, s, 0.85) // > CheckpointThreshold(0.80), < SummarizeThreshold(0.95): checkpoint layer only, small enough cutoff to preserve the marker as a distinct turn
+
+	if _, _, _, _, _, _, err := s.prepareModelRequestWithError(context.Background(), 1, &timings); err != nil {
+		t.Fatalf("prepareModelRequestWithError round 1: %v", err)
+	}
+
+	postHistory := currentHistory(t, s)
+	if len(postHistory) >= len(preHistory) {
+		t.Fatalf("test setup didn't force an actual fold: history len %d -> %d", len(preHistory), len(postHistory))
+	}
+	wantBaseline := indexOfTurnText(postHistory, inFlight0)
+	if wantBaseline < 0 {
+		t.Fatalf("in-flight turn %q did not survive the fold -- test setup invalid", inFlight0)
+	}
+
+	s.mu.Lock()
+	gotBaseline := s.turnHistoryBaseline
+	s.mu.Unlock()
+
+	if gotBaseline != wantBaseline {
+		t.Errorf("turnHistoryBaseline = %d after a %d-turn fold (history %d -> %d), want %d (the in-flight turn's actual post-fold index)",
+			gotBaseline, len(preHistory)-len(postHistory), len(preHistory), len(postHistory), wantBaseline)
+	}
+}
+
+// indexOfSteeringMarker returns the index of the first TurnSteering turn
+// whose message text contains marker, or -1 if none matches.
+func indexOfSteeringMarker(history []schema.Turn, marker string) int {
+	for i, t := range history {
+		if t.Kind == schema.TurnSteering && strings.Contains(t.Message.Text(), marker) {
+			return i
+		}
+	}
+	return -1
+}
+
+// TestPrepareModelRequestWithError_DoesNotClobberConcurrentPublish pins
+// atomic snapshot capture in prepareModelRequestWithError's inline fold-retry
+// loop: historyTurns and snapRevision must be captured under ONE lock (as
+// foldWithForceCompact does), because capturing snapRevision separately --
+// after maybeElicitNoteBeforeCompaction's potentially multi-second call --
+// lets a competing publish landing in that window bump s.historyRevision
+// BEFORE snapRevision is read, so the later equality check in
+// publishFoldedHistory passes and
+// the stale fold (built from the pre-competing-fold snapshot) clobbers the
+// competing publish. This is the inline-loop counterpart of
+// TestSessionCompact_DoesNotClobberConcurrentCompaction.
+//
+// No sleep-based synchronization: s.elicitNoteFn is a direct test seam that
+// blocks on a channel, standing in for maybeElicitNoteBeforeCompaction's real
+// (potentially slow) LLM call. The competing publish is simulated directly
+// through publishFoldedHistory -- the same primitive any real competing
+// publisher (Compact(), applyPendingForceCompact, the content-filter retry)
+// goes through -- landing precisely in the vulnerable window.
+func TestPrepareModelRequestWithError_DoesNotClobberConcurrentPublish(t *testing.T) {
+	t.Parallel()
+	s := newTestSession(t)
+	seedNumberedSessionHistory(t, s, 12) // > PreserveRecentTurns(6): forces an actual checkpoint fold once pressure is high
+
+	entered := make(chan struct{})
+	proceed := make(chan struct{})
+	s.elicitNoteFn = func(context.Context, []schema.Turn) (string, error) {
+		close(entered)
+		<-proceed
+		return "", nil
+	}
+
+	forcePressureAbove(t, s, 0.85) // > CheckpointThreshold(0.80): maybeElicitNoteBeforeCompaction's pressure guard passes, so it reaches (and blocks in) the seam above
+
+	var timings events.RoundTimings
+	prepErr := make(chan error, 1)
+	go func() {
+		_, _, _, _, _, _, err := s.prepareModelRequestWithError(context.Background(), 1, &timings)
+		prepErr <- err
+	}()
+
+	<-entered // blocked inside maybeElicitNoteBeforeCompaction, past historyTurns' snapshot but before snapRevision was (buggily) read separately
+
+	// Simulate a competing fold's publish landing in exactly this window,
+	// directly through publishFoldedHistory -- the same seam every real
+	// ForceCompact/ManageContext caller now shares.
+	const competingMarker = "competing fold's published summary"
+	competingResult := []schema.Turn{
+		schema.NewTurn(schema.TurnSummary, llm.User("[CONTEXT SUMMARY]\n"+competingMarker+"\n[END SUMMARY]")),
+	}
+	s.mu.Lock()
+	snapLen := len(s.history)
+	snapRevision := s.historyRevision
+	_, publishedCompeting := s.publishFoldedHistory(snapLen, snapRevision, competingResult)
+	s.mu.Unlock()
+	if !publishedCompeting {
+		t.Fatal("test setup: the simulated competing publish itself unexpectedly conflicted")
+	}
+
+	close(proceed) // let the blocked elicit-note call return
+
+	if err := <-prepErr; err != nil {
+		t.Fatalf("prepareModelRequestWithError: %v", err)
+	}
+
+	found := false
+	for _, turn := range currentHistory(t, s) {
+		if strings.Contains(turn.Message.Text(), competingMarker) {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatal("the competing fold's published content is gone — a stale fold clobbered it instead of detecting the conflict and retrying")
+	}
+}
+
 func TestSession_AssistantTextStart_IncludesModel(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
@@ -1291,7 +1922,7 @@ func TestSession_AssistantTextStart_IncludesModel(t *testing.T) {
 		},
 	})
 
-	sess, err := NewSession(c, NewOpenAIProfile("test-model-42"), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{})
+	sess, err := NewSession(c, withTestSessionNamer(c, NewOpenAIProfile("test-model-42")), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{})
 	if err != nil {
 		t.Fatalf("NewSession: %v", err)
 	}
@@ -1372,7 +2003,7 @@ func TestSession_StreamsCommunicateToolArgumentsAsAssistantDeltas(t *testing.T) 
 	}
 	c.Register(f)
 
-	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{})
+	sess, err := NewSession(c, withTestSessionNamer(c, NewOpenAIProfile("gpt-5.2")), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{})
 	if err != nil {
 		t.Fatalf("NewSession: %v", err)
 	}
@@ -1405,12 +2036,15 @@ func TestSession_StreamsCommunicateToolArgumentsAsAssistantDeltas(t *testing.T) 
 
 	var deltas []string
 	for _, ev := range evs {
-		if ev.Kind != events.EventAssistantTextDelta {
+		if ev.Kind != events.EventCommunicatePreviewDelta {
 			continue
 		}
-		data, ok := ev.Data.(events.AssistantTextDeltaData)
+		data, ok := ev.Data.(events.CommunicatePreviewDeltaData)
 		if !ok {
-			t.Fatalf("ASSISTANT_TEXT_DELTA data type = %T", ev.Data)
+			t.Fatalf("COMMUNICATE_PREVIEW_DELTA data type = %T", ev.Data)
+		}
+		if data.CallID != "c1" {
+			t.Fatalf("preview call id = %q, want c1", data.CallID)
 		}
 		deltas = append(deltas, data.Delta)
 	}
@@ -1480,7 +2114,7 @@ func TestAssistantTextEnd_EnrichedData(t *testing.T) {
 		},
 	})
 
-	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{})
+	sess, err := NewSession(c, withTestSessionNamer(c, NewOpenAIProfile("gpt-5.2")), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{})
 	if err != nil {
 		t.Fatalf("NewSession: %v", err)
 	}
@@ -1543,6 +2177,12 @@ func TestAssistantTextEnd_EnrichedData(t *testing.T) {
 		t.Fatalf("model: got %q want %q", endData.Model, "gpt-5.2")
 	}
 
+	// Verify provider: with Model it names the instance/model reference the
+	// round's cost resolves from (spec §7.5).
+	if endData.Provider != "openai" {
+		t.Fatalf("provider: got %q want %q", endData.Provider, "openai")
+	}
+
 	// Verify usage is present and has expected values.
 	usage := endData.Usage
 	if usage.InputTokens != 100 {
@@ -1578,7 +2218,7 @@ func TestSession_ProvideErrorReturnsErrorToCaller(t *testing.T) {
 
 	// Zero retries so the test runs fast: one attempt, fail, propagate.
 	policy := llm.RetryPolicy{MaxRetries: 0}
-	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.4"), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{
+	sess, err := NewSession(c, withTestSessionNamer(c, NewOpenAIProfile("gpt-5.4")), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{
 		LLMRetryPolicy: &policy,
 	})
 	if err != nil {
@@ -1637,7 +2277,7 @@ func TestSession_NonRetryableProviderErrorLeavesSessionIdle(t *testing.T) {
 	policy := llm.RetryPolicy{MaxRetries: 0}
 	sess, err := NewSession(
 		client,
-		WithProviderID(newKimiAnthropicProfile("k3"), "kimi-anthropic"),
+		namedInstanceProfile("kimi-anthropic", "kimi-for-coding", "k3"),
 		execenv.NewLocalExecutionEnvironment(t.TempDir()),
 		SessionConfig{LLMRetryPolicy: &policy},
 	)
@@ -1725,7 +2365,7 @@ func TestSession_AgentQuiescenceReturnsNilError(t *testing.T) {
 	}
 	c.Register(f)
 
-	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{})
+	sess, err := NewSession(c, withTestSessionNamer(c, NewOpenAIProfile("gpt-5.2")), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{})
 	if err != nil {
 		t.Fatalf("NewSession: %v", err)
 	}
@@ -1760,7 +2400,7 @@ func TestSession_ProviderErrorDoesNotRecordAssistantTurn(t *testing.T) {
 	c.Register(f)
 
 	policy := llm.RetryPolicy{MaxRetries: 0}
-	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.4"), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{
+	sess, err := NewSession(c, withTestSessionNamer(c, NewOpenAIProfile("gpt-5.4")), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{
 		StateDir:       dir,
 		LLMRetryPolicy: &policy,
 	})
@@ -1812,7 +2452,7 @@ func TestSession_SingleAttemptMetadataRecorded(t *testing.T) {
 			},
 		},
 	})
-	sess, err := NewSession(client, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{StateDir: dir})
+	sess, err := NewSession(client, withTestSessionNamer(client, NewOpenAIProfile("gpt-5.2")), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{StateDir: dir})
 	if err != nil {
 		t.Fatalf("NewSession: %v", err)
 	}
@@ -1864,6 +2504,11 @@ func TestSession_SingleAttemptMetadataRecorded(t *testing.T) {
 		assistant.ResponseStorageScopeFingerprint != "" {
 		t.Fatalf("anchor eligibility metadata should stay empty in Phase 1A: %+v", assistant)
 	}
+	// An override serves this session, so no API attempt is begun and the
+	// turn records no wire protocol.
+	if assistant.ResponseProtocol != "" {
+		t.Fatalf("ResponseProtocol = %q, want empty for an override-served turn", assistant.ResponseProtocol)
+	}
 }
 
 func TestSession_SanitizesCustomAdapterEndpointMetadata(t *testing.T) {
@@ -1897,7 +2542,7 @@ func TestSession_SanitizesCustomAdapterEndpointMetadata(t *testing.T) {
 					},
 				},
 			})
-			sess, err := NewSession(client, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{StateDir: dir})
+			sess, err := NewSession(client, withTestSessionNamer(client, NewOpenAIProfile("gpt-5.2")), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{StateDir: dir})
 			if err != nil {
 				t.Fatalf("NewSession: %v", err)
 			}
@@ -1965,7 +2610,7 @@ func TestProviderErrorEmitsStructuredCause(t *testing.T) {
 	c.Register(f)
 
 	policy := llm.RetryPolicy{MaxRetries: 0}
-	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{
+	sess, err := NewSession(c, withTestSessionNamer(c, NewOpenAIProfile("gpt-5.2")), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{
 		LLMRetryPolicy: &policy,
 	})
 	if err != nil {
@@ -2031,7 +2676,7 @@ func TestProviderErrorTranscriptRemainsSemanticOnly(t *testing.T) {
 	c.Register(f)
 
 	policy := llm.RetryPolicy{MaxRetries: 0}
-	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{
+	sess, err := NewSession(c, withTestSessionNamer(c, NewOpenAIProfile("gpt-5.2")), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{
 		StateDir:       dir,
 		LLMRetryPolicy: &policy,
 	})
@@ -2079,7 +2724,7 @@ func TestNonProviderErrorOmitsCause(t *testing.T) {
 	c.Register(f)
 
 	policy := llm.RetryPolicy{MaxRetries: 0}
-	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{
+	sess, err := NewSession(c, withTestSessionNamer(c, NewOpenAIProfile("gpt-5.2")), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{
 		LLMRetryPolicy: &policy,
 	})
 	if err != nil {
@@ -2150,7 +2795,7 @@ func TestSession_EmitsRetryEventWhenRateLimitedAtStreamOpen(t *testing.T) {
 
 	noSleep := func(context.Context, time.Duration) error { return nil }
 	policy := llm.RetryPolicy{MaxRetries: 2, BaseDelay: time.Millisecond, MaxDelay: time.Second}
-	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{
+	sess, err := NewSession(c, withTestSessionNamer(c, NewOpenAIProfile("gpt-5.2")), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{
 		LLMRetryPolicy: &policy,
 		LLMSleep:       noSleep,
 	})

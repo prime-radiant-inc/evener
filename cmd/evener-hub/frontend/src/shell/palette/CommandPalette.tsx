@@ -7,15 +7,25 @@
 // panel - all ported from search.js, adapted to React state instead of
 // imperative innerHTML.
 import { type KeyboardEvent, useEffect, useMemo, useRef, useState } from "react";
+import { useStore } from "zustand";
 import { requestComposerFocus } from "../../panes/session/composer/composerFocus";
 import { requestQuoteInsert } from "../../panes/session/composer/quoteInsert";
 import { errorText, isHubLaunchError } from "../../protocol/errors";
-import type { CommandDescriptor } from "../../protocol/types.gen";
+import type {
+  CommandDescriptor,
+  NavigationSessionSummary,
+  SearchResponse,
+  SearchResult,
+} from "../../protocol/types.gen";
 import { useCommandCatalog } from "../../stores/commandCatalog";
+import { useConnectionStore } from "../../stores/connection";
+import { selectNeedsYouRows, selectNextSectionOffset, selectSectionRemaining } from "../../stores/navigation/selectors";
+import { navigationStore, useNavigationStore } from "../../stores/navigation/store";
+import { keyID } from "../../stores/navigation/types";
 import { threadsStore } from "../../stores/threads";
-import { type TreeNode as ApiTreeNode, useTreeStore } from "../../stores/tree";
 import { Chip, Dialog, KeyHint, StatusDot, useToasts } from "../../widgets";
 import { requireClass } from "../../widgets/internal/requireClass";
+import { useClient } from "../clientContext";
 import { openNeedsYouSession } from "../rail/needsYouCycle";
 import { cadenceStateFor } from "../rail/RailRow";
 import { navigate } from "../routing";
@@ -31,20 +41,13 @@ import {
   rememberableId,
   type ScopedCommand,
   sessionScopedHandoffMatch,
+  visibleCatalogCommands,
 } from "./commands";
 import { computeMode } from "./mode";
 import { buildPaletteContext, focusedModel } from "./paletteContext";
 import { closePalette, usePaletteStore } from "./paletteController";
 import { rememberCommand } from "./recentCommands";
-import {
-  fetchSearch,
-  findInSessionMatches,
-  type HighlightPart,
-  highlightParts,
-  type InSessionMatch,
-  type SearchResponse,
-  type SearchResult,
-} from "./search";
+import { fetchSearch, findInSessionMatches, type HighlightPart, highlightParts, type InSessionMatch } from "./search";
 
 const CLASS = {
   palette: requireClass(styles.palette, "commandpalette.module.css", "palette"),
@@ -79,13 +82,6 @@ const CLASS = {
 // this palette even has a "/" command mode or a "?" shortcut view.
 const SEARCH_PLACEHOLDER = "search live + past sessions · / for commands · ? for shortcuts";
 const SEARCH_DEBOUNCE_MS = 150;
-
-// A stable empty-array reference for the needsYouNodes selector below: `?? []`
-// would otherwise allocate a fresh array every render when tree is null (or
-// every time useTreeStore's own tree reference changes with no needs_you of
-// its own), and zustand's useStore re-renders on referential inequality - a
-// fresh empty array every render is an infinite render loop, not a no-op.
-const NO_NEEDS_YOU: readonly ApiTreeNode[] = [];
 
 interface HelpRow {
   keys: string[];
@@ -149,7 +145,7 @@ type PaletteItem =
   | { kind: "arg"; item: CommandArgsEnumItem }
   // UX fix: the empty-query view's needs-you list (Mod+J's palette-visible
   // counterpart) - one row per tree.needs_you entry.
-  | { kind: "needsYou"; node: ApiTreeNode }
+  | { kind: "needsYou"; node: NavigationSessionSummary }
   // 2026-08-14: the ONE row a session-scoped command name prefix-match
   // resolves to (sessionScopedHandoffMatch) - see activateHandoff's own doc
   // comment. hasFocusedSession decides both the row's own copy and whether
@@ -216,9 +212,12 @@ export function CommandPalette() {
 function PaletteBody({ initialQuery }: { initialQuery: string }) {
   const toasts = useToasts();
   const catalogCommands = useCommandCatalog((state) => state.commands);
+  const searchClient = useClient();
+  const connectionState = useConnectionStore((state) => state.state);
   // UX fix: the empty-query view's needs-you list (Mod+J's palette-visible
   // counterpart, needsYouCycle.ts's own tree-order source of truth).
-  const needsYouNodes = useTreeStore((s) => s.tree?.needs_you ?? NO_NEEDS_YOU);
+  const navigation = useNavigationStore();
+  const needsYouNodes = useMemo(() => selectNeedsYouRows(navigation), [navigation]);
   const inputRef = useRef<HTMLInputElement>(null);
 
   const [query, setQuery] = useState(initialQuery);
@@ -232,6 +231,22 @@ function PaletteBody({ initialQuery }: { initialQuery: string }) {
   const [enumStatus, setEnumStatus] = useState<"idle" | "loading" | "loaded" | "error">("idle");
   const [enumItems, setEnumItems] = useState<CommandArgsEnumItem[]>([]);
   const searchTokenRef = useRef(0);
+  const requestedNeedsPages = useRef(new Set<string>());
+
+  const mode = computeMode({ query, hasSelectedCommand: selectedCommand !== null });
+  useEffect(() => {
+    if (mode !== "search" || query.trim()) return;
+    const needsYouCount = needsYouNodes.length;
+    const initialDemand = needsYouCount === 0 && (navigation.manifest?.data?.sections.needs_you.count ?? 0) > 0;
+    const overflowDemand =
+      needsYouCount > 0 && activeIndex >= needsYouCount - 1 && selectSectionRemaining("needs_you", navigation) > 0;
+    if (!initialDemand && !overflowDemand) return;
+    const offset = selectNextSectionOffset("needs_you", navigation);
+    const pageID = keyID({ kind: "section", section: "needs_you", offset, limit: 50 });
+    if (requestedNeedsPages.current.has(pageID)) return;
+    requestedNeedsPages.current.add(pageID);
+    void navigationStore.getState().loadSection("needs_you", offset);
+  }, [activeIndex, mode, navigation, needsYouNodes.length, query]);
 
   // The palette's context is fixed at open time - focus is trapped inside the
   // overlay, so the focused session can't change while it's open. Computing it
@@ -241,8 +256,19 @@ function PaletteBody({ initialQuery }: { initialQuery: string }) {
   // focusedModel(), so turn-state guards stay current. (buildPaletteContext is
   // a stable module import, so the empty dep array needs no suppression.)
   const ctx = useMemo(() => buildPaletteContext(), []);
-  const mode = computeMode({ query, hasSelectedCommand: selectedCommand !== null });
-
+  const activeThread = useStore(threadsStore, (state) =>
+    ctx.sessionRef !== null ? state.threads.get(ctx.sessionRef) : undefined,
+  );
+  const activePluginNames = useMemo<ReadonlySet<string> | null | undefined>(() => {
+    if (ctx.sessionRef === null) return undefined;
+    const diagnostics = activeThread?.diagnostics;
+    if (!diagnostics?.plugins) return null;
+    return new Set(diagnostics.plugins.map((plugin) => plugin.name));
+  }, [activeThread, ctx.sessionRef]);
+  const visibleCatalog = useMemo(
+    () => visibleCatalogCommands(catalogCommands, activePluginNames),
+    [activePluginNames, catalogCommands],
+  );
   const ui: PaletteUi = {
     clearToSearch: () => {
       setSelectedCommand(null);
@@ -263,16 +289,26 @@ function PaletteBody({ initialQuery }: { initialQuery: string }) {
   // Debounced search (§2.3): an empty query clears locally with no backend
   // call; otherwise a stale-drop token guards out-of-order responses.
   useEffect(() => {
-    if (mode !== "search") return;
+    if (mode !== "search") {
+      searchTokenRef.current += 1;
+      return;
+    }
     const q = query.trim();
     if (!q) {
+      searchTokenRef.current += 1;
+      setSearchResp(null);
+      setSearchFailed(false);
+      return;
+    }
+    if (!searchClient || connectionState !== "ready") {
+      searchTokenRef.current += 1;
       setSearchResp(null);
       setSearchFailed(false);
       return;
     }
     const timer = setTimeout(() => {
       const token = ++searchTokenRef.current;
-      fetchSearch(q).then(
+      fetchSearch(q, searchClient).then(
         (resp) => {
           if (searchTokenRef.current === token) {
             setSearchResp(resp);
@@ -287,8 +323,11 @@ function PaletteBody({ initialQuery }: { initialQuery: string }) {
         },
       );
     }, SEARCH_DEBOUNCE_MS);
-    return () => clearTimeout(timer);
-  }, [mode, query]);
+    return () => {
+      clearTimeout(timer);
+      searchTokenRef.current += 1;
+    };
+  }, [connectionState, mode, query, searchClient]);
 
   // Load an enum command's option source once on entering args mode (§2.6): a
   // thenable shows Loading… then resolves to options or a "couldn't load"
@@ -346,10 +385,10 @@ function PaletteBody({ initialQuery }: { initialQuery: string }) {
         selectedCommand,
         enumItems,
         showingHelp,
-        catalogCommands,
+        catalogCommands: visibleCatalog,
         needsYouNodes,
       }),
-    [mode, query, ctx, searchResp, selectedCommand, enumItems, showingHelp, catalogCommands, needsYouNodes],
+    [mode, query, ctx, searchResp, selectedCommand, enumItems, showingHelp, visibleCatalog, needsYouNodes],
   );
 
   // Reset the active row whenever the row list is rebuilt (§2.3/§2.4:
@@ -496,11 +535,9 @@ function PaletteBody({ initialQuery }: { initialQuery: string }) {
     }
     if (item.kind === "live" || item.kind === "past") {
       closePalette();
-      // By the qualified ref, and only that: the hub's own searchResult doc
-      // comment (cmd/evener-hub/web_types.go) states that a bare id cannot be
-      // used to open a hit, and `ref` ships on every row. A bare-id URL no
-      // longer routes (shell/routing.ts's isRef), and naming a session
-      // differently from the rail is what used to open it twice in two panes.
+      // The AppWire SearchResult contract carries the qualified ref every row
+      // uses to open a session. A bare-id URL does not route, and naming a
+      // session differently from the rail can open it twice in two panes.
       const url = `/s/${encodeURIComponent(item.result.ref)}`;
       if (newTab) window.open(url, "_blank");
       else navigate(url);
@@ -532,7 +569,7 @@ function PaletteBody({ initialQuery }: { initialQuery: string }) {
       // The typed name prefixes a session-scoped command (built-in or
       // plugin): hand off to the composer rather than falling through to a
       // raw send - see activateHandoff's own doc comment.
-      if (sessionScopedHandoffMatch(query, catalogCommands)) {
+      if (sessionScopedHandoffMatch(query, visibleCatalog)) {
         activateHandoff();
         return;
       }
@@ -683,7 +720,7 @@ function buildView(args: {
   enumItems: CommandArgsEnumItem[];
   showingHelp: boolean;
   catalogCommands: CommandDescriptor[];
-  needsYouNodes: readonly ApiTreeNode[];
+  needsYouNodes: readonly NavigationSessionSummary[];
 }): ResultsView {
   const { mode, query, ctx, searchResp, selectedCommand, enumItems, showingHelp, catalogCommands, needsYouNodes } =
     args;

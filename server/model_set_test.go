@@ -3,8 +3,6 @@ package server
 import (
 	"context"
 	"errors"
-	"net/http"
-	"net/http/httptest"
 	"strings"
 	"testing"
 
@@ -95,67 +93,6 @@ func TestHandleAppThreadModelSet_JoinsSlashedModelUnconditionally(t *testing.T) 
 	}
 }
 
-func TestHandleModel_RejectsWhileTurnActive(t *testing.T) {
-	s := NewServer(ServerConfig{})
-	called := false
-	s.SetModelFunc(func(string) error { called = true; return nil })
-	s.SetProcessing(true)
-
-	req := httptest.NewRequest(http.MethodPost, "/model", strings.NewReader(`{"model":"claude-x"}`))
-	w := httptest.NewRecorder()
-	s.handleModel(w, req)
-
-	if w.Code < 400 {
-		t.Fatalf("expected an error status while processing, got %d", w.Code)
-	}
-	if called {
-		t.Fatal("model hook must not be invoked while a turn is active")
-	}
-}
-
-func TestHandleModel_HookErrorReturnsError(t *testing.T) {
-	s := NewServer(ServerConfig{})
-	hookErr := errors.New("unknown instance: nope")
-	s.SetModelFunc(func(string) error { return hookErr })
-
-	req := httptest.NewRequest(http.MethodPost, "/model", strings.NewReader(`{"model":"claude-x"}`))
-	w := httptest.NewRecorder()
-	s.handleModel(w, req)
-
-	if w.Code < 400 {
-		t.Fatalf("expected an error status from the hook error, got %d", w.Code)
-	}
-	if !strings.Contains(w.Body.String(), hookErr.Error()) {
-		t.Fatalf("response body should carry the hook message, got: %s", w.Body.String())
-	}
-}
-
-func TestHandleModel_SuccessReturnsNoContent(t *testing.T) {
-	s := NewServer(ServerConfig{})
-	var got string
-	called := false
-	s.SetModelFunc(func(m string) error { got = m; called = true; return nil })
-
-	req := httptest.NewRequest(http.MethodPost, "/model", strings.NewReader(`{"model":"claude-x"}`))
-	w := httptest.NewRecorder()
-	s.handleModel(w, req)
-
-	if w.Code != 204 {
-		t.Fatalf("expected 204 No Content, got %d: %s", w.Code, w.Body.String())
-	}
-	if !called || got != "claude-x" {
-		t.Fatalf("hook not called as expected: called=%v got=%q", called, got)
-	}
-}
-
-// TestHandleAppThreadModelSet_ThreadReadReflectsNewModelWithNoInterveningTurn
-// pins the G2 snapshot-freshness fix (Task 4d): the daemon's cached session
-// info (status.Model) must refresh SYNCHRONOUSLY on the model-hook path, so
-// thread/read reports the new model immediately after thread/model/set
-// returns — with NO intervening turn and no EventSessionStart round trip.
-// This is the same wiring shape cmd/evener/serve.go's SetModelFunc closure
-// uses: on a successful model hook, call UpdateSessionInfo with the new
-// provider/model before returning.
 func TestHandleAppThreadModelSet_ThreadReadReflectsNewModelWithNoInterveningTurn(t *testing.T) {
 	s := NewServer(ServerConfig{})
 	s.SetStatus(StatusInfo{SessionID: "s1", Model: "gpt-5.4", Profile: "openai"})
@@ -177,5 +114,41 @@ func TestHandleAppThreadModelSet_ThreadReadReflectsNewModelWithNoInterveningTurn
 	}
 	if thread.Thread.ModelProvider != "anthropic/claude-opus-4-6" {
 		t.Fatalf("thread/read ModelProvider = %q, want anthropic/claude-opus-4-6 with no intervening turn", thread.Thread.ModelProvider)
+	}
+}
+
+func TestHandleAppThreadVisionModelSet_RejectsWhileProcessing(t *testing.T) {
+	s := NewServer(ServerConfig{})
+	called := false
+	s.SetVisionModelFunc(func(string) error { called = true; return nil })
+	s.SetProcessing(true)
+
+	if _, err := s.handleAppThreadVisionModelSet(context.Background(), appwire.ThreadVisionModelSetParams{VisionModel: "off"}); err == nil {
+		t.Fatal("expected an error while a turn is processing")
+	}
+	if called {
+		t.Fatal("vision-model hook must not be invoked while a turn is active")
+	}
+}
+
+func TestHandleAppThreadVisionModelSet_HookReceivesTheSetting(t *testing.T) {
+	s := NewServer(ServerConfig{})
+	var got string
+	s.SetVisionModelFunc(func(v string) error { got = v; return nil })
+
+	if _, err := s.handleAppThreadVisionModelSet(context.Background(), appwire.ThreadVisionModelSetParams{VisionModel: "anthropic/claude-x"}); err != nil {
+		t.Fatalf("set: %v", err)
+	}
+	if got != "anthropic/claude-x" {
+		t.Fatalf("hook got %q, want the ref unchanged", got)
+	}
+}
+
+func TestHandleAppThreadVisionModelSet_HookErrorSurfacesAsWireError(t *testing.T) {
+	s := NewServer(ServerConfig{})
+	s.SetVisionModelFunc(func(string) error { return errors.New("vision model provider \"nope\" is not configured") })
+
+	if _, err := s.handleAppThreadVisionModelSet(context.Background(), appwire.ThreadVisionModelSetParams{VisionModel: "nope/m"}); err == nil {
+		t.Fatal("hook error must surface")
 	}
 }

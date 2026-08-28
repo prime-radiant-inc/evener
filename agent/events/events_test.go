@@ -97,6 +97,7 @@ func TestNewDerivesCorrectKind(t *testing.T) {
 		{"RoundTimings", events.RoundTimings{Round: 1}, events.EventRoundTimings},
 		{"GoalContinuation", events.GoalContinuationData{Text: "continue"}, events.EventGoalContinuation},
 		{"GoalEnded", events.GoalEndedData{Status: "done", Iterations: 1}, events.EventGoalEnded},
+		{"GoalUpdated", events.GoalUpdatedData{Goal: &events.GoalStateData{Objective: "ship", Status: "active"}}, events.EventGoalUpdated},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -253,6 +254,7 @@ func TestToStreamEvent_AgentOnlyEventsReturnNil(t *testing.T) {
 		events.RoundTimings{},
 		events.GoalContinuationData{},
 		events.GoalEndedData{},
+		events.GoalUpdatedData{},
 	}
 	for _, data := range agentOnly {
 		t.Run(string(events.New(data).Kind), func(t *testing.T) {

@@ -80,6 +80,37 @@ func TestInjectPostToolSteering_PersistsTaskReminderKind(t *testing.T) {
 	}
 }
 
+func TestInjectPostToolSteering_LoopDetectionKeepsVisionCleanupOwnedUntilDrainCompletes(t *testing.T) {
+	t.Parallel()
+	s := newTestSession(t)
+	enableLoopDetection := true
+	s.cfg.EnableLoopDetection = &enableLoopDetection
+	s.cfg.LoopDetectionWindow = 2
+	s.Steer("unrelated")
+	owner := &struct{ _ byte }{}
+	if !s.trySteerTurnOwnedMessage(steeringMessage{Text: "vision unavailable"}, owner) {
+		t.Fatal("failed to queue turn-owned steering")
+	}
+
+	calls := []llm.ToolCallData{
+		{Name: "read_file", Arguments: json.RawMessage(`{"file_path":"same"}`)},
+		{Name: "read_file", Arguments: json.RawMessage(`{"file_path":"same"}`)},
+	}
+	results := []tool.ExecResult{{}, {}}
+	var toolSigs []string
+	var toolSigFailed []bool
+	drainErr := errors.New("watch drain failed")
+	ctx := context.WithValue(context.Background(), sessionToolRoundHooksKey{}, sessionToolRoundHooks{drainErr: drainErr})
+	if _, err := s.injectPostToolSteering(ctx, calls, results, &toolSigs, &toolSigFailed); !errors.Is(err, drainErr) {
+		t.Fatalf("injectPostToolSteering error = %v, want %v", err, drainErr)
+	}
+
+	remaining := s.drainSteering()
+	if len(remaining) != 1 || remaining[0].Text != "unrelated" {
+		t.Fatalf("steering after aborted drain = %#v, want only unrelated entry", remaining)
+	}
+}
+
 func TestDelegateAttention_DeliveryCommitUsesCallerToolResultFsync(t *testing.T) {
 	c, _ := newDelegateControllerTestHarness(t, 1, 1)
 	seedDelegateControllerIdle(t, c, "dlg_target", "")

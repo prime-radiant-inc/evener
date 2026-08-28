@@ -481,22 +481,25 @@ not just display, so it lands with the picker work.
   (and a second openai-type instance `work2`), runs a live session through it
   (prompt assembly, a streamed call, an error, a `/model` switch to `work2`, a
   resume), and asserts: the `openai` behavior fires by **tag** (prompt-cache,
-  the `tools.provider-openai_append.md` section, cheap model, Codex gate); the
+  the `tools.provider-openai_append.md` section, Codex gate); the
   response/error/diagnostic report the instance name `work`; the model picker and
   launch-check accept `work`; switching `work → work2` preserves the
-  output-schema/decisions overrides. Any site still keyed on the literal `"openai"`
-  fails here. **This test — not the §4.2 list — is what proves completeness**, and
-  it is the gate every 1a task closes against.
+  output-schema/decisions overrides; and an unset auxiliary route uses the active
+  `work` instance/model independently of the tag. Any site still keyed on the
+  literal `"openai"` fails here. **This test — not the §4.2 list — is what proves
+  completeness**, and it is the gate every 1a task closes against.
 - **Behavior-tag + switching (1a):** for an `openai`-type instance named `work`,
-  assert prompt-cache, the `tools.provider-openai_append.md` section, cheap model,
-  fallback guard, Codex gate, **and the compat catalog context-window lookup** key
-  on the tag; a `chat-completions` instance gets none of the `openai`-tag
-  behavior. `SetModel("other-instance/model")` switches via the session;
-  `WithModel` never changes the instance; a bare `/model` rebuilds the catalog
-  window; cross-tag `model_fallbacks` errors, same-tag cross-instance is allowed.
+  assert prompt-cache, the `tools.provider-openai_append.md` section, fallback
+  guard, Codex gate, **and the compat catalog context-window lookup** key on the
+  tag; a `chat-completions` instance gets none of the `openai`-tag behavior.
+  Auxiliary routing is separate: an unset route uses the active instance/model,
+  while explicit config supplies the provider/model pair.
+  `SetModel("other-instance/model")` switches via the session; `WithModel` never
+  changes the instance; a bare `/model` rebuilds the catalog window; cross-tag
+  `model_fallbacks` errors, same-tag cross-instance is allowed.
 - **Gemini:** `google`-named instance routes (adapter under `google`); sections/
-  cheap-model on tag `google`; `ListModels("google")` still returns Gemini data
-  (ingest normalization kept).
+  behavior key on tag `google`; `ListModels("google")` still returns Gemini data
+  (ingest normalization kept). Auxiliary routing remains independent of the tag.
 - **Identity:** a streamed **and** non-streamed error from instance `work`
   reports `work`; `context.Canceled` stays unlabeled.
 - **Selection/resume:** resolver builds a custom instance, rejects unknowns;

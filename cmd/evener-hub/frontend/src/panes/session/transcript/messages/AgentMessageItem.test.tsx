@@ -2,18 +2,22 @@ import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { cleanup, render, screen, within } from "@testing-library/react";
+import type { ReactNode } from "react";
 import { afterEach, expect, test } from "vitest";
 import type { ItemModel, TurnModel } from "../../../../protocol/model";
+import { SessionNowContext } from "../../liveness";
 import { ignoringTurn, itemRendererFor } from "../types";
 import { AgentMessageItem } from "./AgentMessageItem";
-import { formatClockTime } from "./format";
 
 afterEach(cleanup);
 
 const turn: TurnModel = { id: "turn_1", status: "inProgress", items: [] };
 
 const STARTED_AT = "2026-07-29T12:41:00Z";
-const TIME = formatClockTime(STARTED_AT)!;
+const TIME = "5m ago";
+const NOW = Date.parse("2026-07-29T12:46:00Z");
+const renderMessage = (ui: ReactNode) =>
+  render(ui, { wrapper: ({ children }) => <SessionNowContext value={NOW}>{children}</SessionNowContext> });
 
 function item(overrides: Partial<ItemModel> = {}): ItemModel {
   return { id: "item_1", turnId: "turn_1", type: "agentMessage", text: "", ...overrides };
@@ -31,13 +35,13 @@ test("is memoized ignoring turn identity - a fresh turn object on every streamin
 // --- settled: Markdown ------------------------------------------------------
 
 test("settled renders through Markdown - a markdown token actually gets parsed, not shown as literal source", () => {
-  render(<AgentMessageItem item={item({ text: "**bold text**" })} turn={turn} live={false} />);
+  renderMessage(<AgentMessageItem item={item({ text: "**bold text**" })} turn={turn} live={false} />);
   const strong = screen.getByText("bold text");
   expect(strong.tagName).toBe("STRONG");
 });
 
 test("settled with blank text and no pendingText renders nothing at all", () => {
-  const { container } = render(<AgentMessageItem item={item({ text: "" })} turn={turn} live={false} />);
+  const { container } = renderMessage(<AgentMessageItem item={item({ text: "" })} turn={turn} live={false} />);
   expect(container.firstChild).toBeNull();
 });
 
@@ -48,7 +52,7 @@ test("settled with blank text and no pendingText renders nothing at all", () => 
 // preview (widgets/markdown/streaming.ts).
 
 test("live parses markdown WHILE streaming - emphasis renders as emphasis, not literal source", () => {
-  const { container } = render(
+  const { container } = renderMessage(
     <AgentMessageItem item={item({ pendingText: ["**bold", " text**"] })} turn={turn} live={true} />,
   );
   expect(container.querySelector("strong")?.textContent).toBe("bold text");
@@ -56,7 +60,7 @@ test("live parses markdown WHILE streaming - emphasis renders as emphasis, not l
 });
 
 test("live auto-closes a marker truncated at the stream tail - bold renders before its closer arrives", () => {
-  const { container } = render(
+  const { container } = renderMessage(
     <AgentMessageItem item={item({ pendingText: ["the answer is **bo"] })} turn={turn} live={true} />,
   );
   expect(container.querySelector("strong")?.textContent).toBe("bo");
@@ -64,7 +68,7 @@ test("live auto-closes a marker truncated at the stream tail - bold renders befo
 });
 
 test("auto-close is preview-only: a genuinely unterminated SETTLED source stays literal", () => {
-  const { container } = render(
+  const { container } = renderMessage(
     <AgentMessageItem item={item({ text: "the answer is **bo" })} turn={turn} live={false} />,
   );
   expect(container.querySelector("strong")).toBeNull();
@@ -72,17 +76,21 @@ test("auto-close is preview-only: a genuinely unterminated SETTLED source stays 
 });
 
 test("live with no pendingText yet (item just started, zero deltas so far) renders nothing rather than an empty shell", () => {
-  const { container } = render(<AgentMessageItem item={item({ pendingText: undefined })} turn={turn} live={true} />);
+  const { container } = renderMessage(
+    <AgentMessageItem item={item({ pendingText: undefined })} turn={turn} live={true} />,
+  );
   expect(container.firstChild).toBeNull();
 });
 
 test("live with an empty pendingText array is treated the same as no pendingText", () => {
-  const { container } = render(<AgentMessageItem item={item({ pendingText: [] })} turn={turn} live={true} />);
+  const { container } = renderMessage(<AgentMessageItem item={item({ pendingText: [] })} turn={turn} live={true} />);
   expect(container.firstChild).toBeNull();
 });
 
 test("incremental growth: re-rendering with more pendingText chunks grows the streamed content without duplication", () => {
-  const { rerender } = render(<AgentMessageItem item={item({ pendingText: ["Hel"] })} turn={turn} live={true} />);
+  const { rerender } = renderMessage(
+    <AgentMessageItem item={item({ pendingText: ["Hel"] })} turn={turn} live={true} />,
+  );
   expect(screen.getByTestId("agent-message-stream").textContent?.trim()).toBe("Hel");
   rerender(<AgentMessageItem item={item({ pendingText: ["Hel", "lo"] })} turn={turn} live={true} />);
   expect(screen.getByTestId("agent-message-stream").textContent?.trim()).toBe("Hello");
@@ -95,7 +103,7 @@ test("incremental growth: re-rendering with more pendingText chunks grows the st
 
 test("live streaming settles cleanly: the stream wrapper unmounts, settled Markdown takes over, no duplicated content", () => {
   const liveItem = item({ pendingText: ["Hel", "lo"] });
-  const { rerender } = render(<AgentMessageItem item={liveItem} turn={turn} live={true} />);
+  const { rerender } = renderMessage(<AgentMessageItem item={liveItem} turn={turn} live={true} />);
   expect(screen.getByTestId("agent-message-stream").textContent?.trim()).toBe("Hello");
 
   const settledItem = { ...liveItem, text: "Hello", pendingText: undefined };
@@ -113,7 +121,7 @@ test("live streaming settles cleanly: the stream wrapper unmounts, settled Markd
 
 test("rapid-settle: a single-chunk live frame immediately followed by settlement still lands correctly", () => {
   const liveItem = item({ pendingText: ["Done."] });
-  const { rerender } = render(<AgentMessageItem item={liveItem} turn={turn} live={true} />);
+  const { rerender } = renderMessage(<AgentMessageItem item={liveItem} turn={turn} live={true} />);
   expect(screen.getByTestId("agent-message-stream").textContent?.trim()).toBe("Done.");
 
   const settledItem = { ...liveItem, text: "Done.", pendingText: undefined };
@@ -127,13 +135,13 @@ test("rapid-settle: settling WITHOUT ever having rendered live (turn/completed a
   // idempotent-finalize) - the item can go from not-yet-rendered straight
   // to settled with full text, no live frame ever observed by this
   // component instance.
-  render(<AgentMessageItem item={item({ text: "straight to settled" })} turn={turn} live={false} />);
+  renderMessage(<AgentMessageItem item={item({ text: "straight to settled" })} turn={turn} live={false} />);
   expect(screen.queryByTestId("agent-message-stream")).toBeNull();
   expect(screen.getByText("straight to settled")).toBeTruthy();
 });
 
 test("both live and settled render inside the same stable wrapper testid", () => {
-  const { container, rerender } = render(
+  const { container, rerender } = renderMessage(
     <AgentMessageItem item={item({ pendingText: ["x"] })} turn={turn} live={true} />,
   );
   expect(container.querySelector('[data-testid="agent-message-item"]')).toBeTruthy();
@@ -146,7 +154,7 @@ test("both live and settled render inside the same stable wrapper testid", () =>
 // boundaries only (opensExchange), in BOTH the live and settled branches.
 
 test("exchange-opening agent message shows the speaker header: name, meta, and a decorative avatar", () => {
-  render(
+  renderMessage(
     <AgentMessageItem
       item={item({ text: "the reply", startedAt: STARTED_AT })}
       turn={turn}
@@ -167,7 +175,7 @@ test("exchange-opening agent message shows the speaker header: name, meta, and a
 });
 
 test("the speaker header renders in the LIVE branch too - the eyebrow appeared in both, and the header keeps that parity", () => {
-  render(
+  renderMessage(
     <AgentMessageItem
       item={item({ pendingText: ["streaming"], startedAt: STARTED_AT })}
       turn={turn}
@@ -183,7 +191,7 @@ test("the speaker header renders in the LIVE branch too - the eyebrow appeared i
 
 test("the speaker header survives the live-to-settled transition on the same instance", () => {
   const liveItem = item({ pendingText: ["Hi"], startedAt: STARTED_AT });
-  const { rerender } = render(
+  const { rerender } = renderMessage(
     <AgentMessageItem item={liveItem} turn={turn} live={true} opensExchange agentLabel="k3" />,
   );
   expect(screen.getByTestId("agent-speaker-header")).toBeTruthy();
@@ -204,21 +212,23 @@ test("the speaker header survives the live-to-settled transition on the same ins
 // a dangling separator, and no meta element at all when both are absent.
 
 test("meta with label only (no startedAt): just the label, no dangling separator", () => {
-  render(<AgentMessageItem item={item({ text: "r" })} turn={turn} live={false} opensExchange agentLabel="k3" />);
+  renderMessage(<AgentMessageItem item={item({ text: "r" })} turn={turn} live={false} opensExchange agentLabel="k3" />);
   const header = screen.getByTestId("agent-speaker-header");
   expect(header.textContent).toBe("Agentk3");
   expect(header.textContent).not.toContain("·");
 });
 
 test("meta with time only (no agentLabel): just the time, no dangling separator", () => {
-  render(<AgentMessageItem item={item({ text: "r", startedAt: STARTED_AT })} turn={turn} live={false} opensExchange />);
+  renderMessage(
+    <AgentMessageItem item={item({ text: "r", startedAt: STARTED_AT })} turn={turn} live={false} opensExchange />,
+  );
   const header = screen.getByTestId("agent-speaker-header");
   expect(header.textContent).toBe(`Agent${TIME}`);
   expect(header.textContent).not.toContain("·");
 });
 
 test("meta with neither label nor time: no meta element at all, just the name", () => {
-  render(<AgentMessageItem item={item({ text: "r" })} turn={turn} live={false} opensExchange />);
+  renderMessage(<AgentMessageItem item={item({ text: "r" })} turn={turn} live={false} opensExchange />);
   const header = screen.getByTestId("agent-speaker-header");
   expect(header.textContent).toBe("Agent");
   // One child: the name span only - an empty meta span would still carry
@@ -227,7 +237,7 @@ test("meta with neither label nor time: no meta element at all, just the name", 
 });
 
 test("meta with an unparseable startedAt drops the time rather than guessing", () => {
-  render(
+  renderMessage(
     <AgentMessageItem
       item={item({ text: "r", startedAt: "not a timestamp" })}
       turn={turn}
@@ -240,7 +250,7 @@ test("meta with an unparseable startedAt drops the time rather than guessing", (
 });
 
 test("continuation fragments render no header, no avatar, no opens-exchange marker", () => {
-  render(
+  renderMessage(
     <AgentMessageItem
       item={item({ text: "more work", startedAt: STARTED_AT })}
       turn={turn}
@@ -256,7 +266,7 @@ test("continuation fragments render no header, no avatar, no opens-exchange mark
 });
 
 test("mid-exchange LIVE fragments render no header either - the trigger is opensExchange, not liveness", () => {
-  render(<AgentMessageItem item={item({ pendingText: ["work"] })} turn={turn} live={true} agentLabel="k3" />);
+  renderMessage(<AgentMessageItem item={item({ pendingText: ["work"] })} turn={turn} live={true} agentLabel="k3" />);
   expect(screen.queryByTestId("agent-speaker-header")).toBeNull();
   expect(screen.queryByTestId("speaker-avatar")).toBeNull();
 });
@@ -309,7 +319,7 @@ test("the opener's gap resolves the tokens.css --speaker-gap", () => {
 // fully rounded, the SAME wrapper live and settled.
 
 test("every fragment renders its prose inside the bubble wrapper, live and settled", () => {
-  const { rerender } = render(<AgentMessageItem item={item({ pendingText: ["x"] })} turn={turn} live={true} />);
+  const { rerender } = renderMessage(<AgentMessageItem item={item({ pendingText: ["x"] })} turn={turn} live={true} />);
   const liveBubble = screen.getByTestId("agent-bubble");
   expect(liveBubble.contains(screen.getByTestId("agent-message-stream"))).toBe(true);
   rerender(<AgentMessageItem item={item({ text: "x", pendingText: undefined })} turn={turn} live={false} />);
@@ -318,7 +328,7 @@ test("every fragment renders its prose inside the bubble wrapper, live and settl
 });
 
 test("an opener bubble sits in the column under the speaker header; a continuation bubbles with no header and no avatar", () => {
-  render(
+  renderMessage(
     <AgentMessageItem item={item({ text: "the reply" })} turn={turn} live={false} opensExchange agentLabel="k3" />,
   );
   const root = screen.getByTestId("agent-message-item");
@@ -329,7 +339,7 @@ test("an opener bubble sits in the column under the speaker header; a continuati
 });
 
 test("a continuation fragment's bubble carries the uniform-radius continuation class", () => {
-  render(<AgentMessageItem item={item({ text: "more work" })} turn={turn} live={false} agentLabel="k3" />);
+  renderMessage(<AgentMessageItem item={item({ text: "more work" })} turn={turn} live={false} agentLabel="k3" />);
   const bubble = screen.getByTestId("agent-bubble");
   expect(bubble.className).toContain("continuation");
   expect(screen.queryByTestId("agent-speaker-header")).toBeNull();
@@ -371,3 +381,19 @@ test("the stream caret's blink sits behind the reduced-motion gate, keeping the 
   expect(gate).not.toBeNull();
   expect(gate![1]).toMatch(/\.stream\s*>\s*div\s*>\s*:last-child::after\s*\{[^}]*animation:\s*none/);
 });
+
+for (const live of [false, true]) {
+  test(`continuation message exposes its timestamp while live=${live}`, () => {
+    const { container } = renderMessage(
+      <AgentMessageItem
+        item={item({ text: "reply", pendingText: ["reply"], startedAt: STARTED_AT })}
+        turn={turn}
+        live={live}
+      />,
+    );
+    const time = container.querySelector("time");
+    expect(time?.dateTime).toBe("2026-07-29T12:41:00.000Z");
+    expect(time?.textContent).toBe("5m ago");
+    expect(time?.title).toBeTruthy();
+  });
+}

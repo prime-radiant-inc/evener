@@ -21,8 +21,10 @@ function widgetDirNames(): string[] {
 }
 
 function gallerySectionNames(): string[] {
+  // `*.test.tsx` modules are intentionally excluded: they test gallery
+  // sections but are not themselves real sections discovered by WidgetGallery.
   return readdirSync(GALLERY_SECTIONS_DIR, { withFileTypes: true })
-    .filter((entry) => entry.isFile() && entry.name.endsWith(".tsx"))
+    .filter((entry) => entry.isFile() && entry.name.endsWith(".tsx") && !entry.name.endsWith(".test.tsx"))
     .map((entry) => entry.name.replace(/\.tsx$/, ""))
     .sort();
 }

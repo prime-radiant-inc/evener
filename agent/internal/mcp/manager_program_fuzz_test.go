@@ -366,7 +366,7 @@ func mcpProgramServerWithTools(t *testing.T, replies map[string]string) (*mcpsdk
 
 func mcpProgramExecute(ctx context.Context, t *testing.T, reg *tool.Registry, env *agenttest.DenyEnv, name, message string) tool.ExecResult {
 	t.Helper()
-	raw, err := json.Marshal(map[string]string{"message": message, "purpose": "fuzz manager routing"})
+	raw, err := json.Marshal(map[string]string{"message": message, "intent": "fuzz manager routing"})
 	if err != nil {
 		t.Fatalf("marshal MCP args: %v", err)
 	}

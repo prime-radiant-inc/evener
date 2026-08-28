@@ -528,7 +528,7 @@ func authRecordFromTokens(now time.Time, tokens TokenSet) AuthRecord {
 		Provider:     "openai",
 		Source:       AuthSourceOAuth,
 		ObtainedAt:   now,
-		TokenType:    firstNonEmpty(tokens.TokenType, "Bearer"),
+		TokenType:    envvars.FirstNonEmpty(tokens.TokenType, "Bearer"),
 		Scope:        tokens.Scope,
 		AccessToken:  tokens.AccessToken,
 		RefreshToken: tokens.RefreshToken,
@@ -558,9 +558,9 @@ func refreshedAuthRecord(now time.Time, current AuthRecord, tokens TokenSet) Aut
 }
 
 func applyClaims(record *AuthRecord, claims TokenClaims) {
-	record.Email = firstNonEmpty(claims.Email, record.Email)
-	record.AccountID = firstNonEmpty(claims.AccountID, record.AccountID)
-	record.WorkspaceID = firstNonEmpty(claims.WorkspaceID, record.WorkspaceID)
+	record.Email = envvars.FirstNonEmpty(claims.Email, record.Email)
+	record.AccountID = envvars.FirstNonEmpty(claims.AccountID, record.AccountID)
+	record.WorkspaceID = envvars.FirstNonEmpty(claims.WorkspaceID, record.WorkspaceID)
 }
 
 func needsRefresh(now, expiry time.Time) bool {
@@ -653,15 +653,6 @@ func waitForLoginCompletion(
 		return CallbackResult{}, err
 	}
 	return CallbackResult{}, context.DeadlineExceeded
-}
-
-func firstNonEmpty(values ...string) string {
-	for _, value := range values {
-		if strings.TrimSpace(value) != "" {
-			return value
-		}
-	}
-	return ""
 }
 
 func defaultBrowserOpener(rawURL string) error {

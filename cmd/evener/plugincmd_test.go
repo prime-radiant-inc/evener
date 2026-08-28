@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -243,6 +244,112 @@ func TestPluginList_JSONEmpty(t *testing.T) {
 	}
 }
 
+type task3EffectiveListManager struct {
+	pluginManager
+	resolver *plugins.Manager
+}
+
+func (m *task3EffectiveListManager) SeedDefaultMarketplaces(context.Context) (bool, error) {
+	return false, nil
+}
+
+func (m *task3EffectiveListManager) ResolveForLaunch(ctx context.Context, dirs []string, selected *[]string) (plugins.LaunchPluginResolution, error) {
+	return m.resolver.ResolveForLaunch(ctx, dirs, selected)
+}
+
+func writeTask3Plugin(t *testing.T, dir, name string) {
+	t.Helper()
+	if err := os.MkdirAll(filepath.Join(dir, ".claude-plugin"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	manifest := `{"name":"` + name + `","version":"1.0.0","description":"` + name + ` description"}`
+	if err := os.WriteFile(filepath.Join(dir, ".claude-plugin", "plugin.json"), []byte(manifest), 0o644); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestPluginListEffective_ResolverOutputAndDisabledExclusion(t *testing.T) {
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	registryRoot := t.TempDir()
+	registry := plugins.NewManager(registryRoot)
+	marketplaceDir := t.TempDir()
+	writeTask3Plugin(t, filepath.Join(marketplaceDir, "plugins", "enabled-plugin"), "enabled-plugin")
+	writeTask3Plugin(t, filepath.Join(marketplaceDir, "plugins", "disabled-plugin"), "disabled-plugin")
+	marketplace := `{"name":"task3-market","owner":{"name":"test"},"plugins":[` +
+		`{"name":"enabled-plugin","source":"./plugins/enabled-plugin"},` +
+		`{"name":"disabled-plugin","source":"./plugins/disabled-plugin"}]}`
+	if err := os.MkdirAll(filepath.Join(marketplaceDir, ".claude-plugin"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(marketplaceDir, ".claude-plugin", "marketplace.json"), []byte(marketplace), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := registry.AddMarketplace(context.Background(), "task3-market", plugins.Source{Kind: plugins.SourceDirectory, Path: marketplaceDir}); err != nil {
+		t.Fatalf("AddMarketplace: %v", err)
+	}
+	if _, err := registry.Install(context.Background(), "enabled-plugin", "task3-market"); err != nil {
+		t.Fatalf("Install enabled: %v", err)
+	}
+	if _, err := registry.Install(context.Background(), "disabled-plugin", "task3-market"); err != nil {
+		t.Fatalf("Install disabled: %v", err)
+	}
+	if err := registry.SetEnabled(context.Background(), "disabled-plugin", "task3-market", false); err != nil {
+		t.Fatalf("SetEnabled: %v", err)
+	}
+	explicitDir := t.TempDir()
+	writeTask3Plugin(t, explicitDir, "explicit-plugin")
+
+	manager := &task3EffectiveListManager{pluginManager: registry, resolver: registry}
+	oldManager := newPluginManager
+	newPluginManager = func() pluginManager { return manager }
+	t.Cleanup(func() { newPluginManager = oldManager })
+	var out, errb bytes.Buffer
+	if err := runPlugin([]string{"list", "--effective", "--json", "--plugin-dir", explicitDir}, nil, &out, &errb); err != nil {
+		t.Fatalf("effective list: %v\nstderr: %s", err, errb.String())
+	}
+	var effective effectivePluginListJSON
+	if err := json.Unmarshal(out.Bytes(), &effective); err != nil {
+		t.Fatalf("effective JSON: %v\n%s", err, out.String())
+	}
+	if len(effective.Plugins) != 2 {
+		t.Fatalf("effective plugins = %+v, want explicit and enabled registry candidates", effective.Plugins)
+	}
+	var explicit, installed *effectivePluginJSON
+	for i := range effective.Plugins {
+		candidate := &effective.Plugins[i]
+		switch candidate.Name {
+		case "explicit-plugin":
+			explicit = candidate
+		case "enabled-plugin":
+			installed = candidate
+		case "disabled-plugin":
+			t.Fatal("disabled registry plugin appeared in effective listing")
+		}
+	}
+	if explicit == nil || explicit.Source != plugins.LaunchPluginSourceDirectory || explicit.Path != explicitDir {
+		t.Fatalf("explicit candidate = %+v", explicit)
+	}
+	if installed == nil || installed.Source != plugins.LaunchPluginSourceInstalled || installed.Marketplace != "task3-market" || installed.Path == "" {
+		t.Fatalf("installed candidate = %+v", installed)
+	}
+	if !strings.Contains(out.String(), `"skillCount"`) || !strings.Contains(out.String(), `"mcpCount"`) {
+		t.Fatalf("effective JSON omitted count fields: %s", out.String())
+	}
+
+	out.Reset()
+	errout := bytes.Buffer{}
+	if err := runPlugin([]string{"list", "--json"}, nil, &out, &errout); err != nil {
+		t.Fatalf("ordinary list: %v\nstderr: %s", err, errout.String())
+	}
+	var ordinary []plugins.ListItem
+	if err := json.Unmarshal(out.Bytes(), &ordinary); err != nil {
+		t.Fatalf("ordinary list JSON: %v\n%s", err, out.String())
+	}
+	if len(ordinary) != 2 || strings.HasPrefix(strings.TrimSpace(out.String()), "{") {
+		t.Fatalf("ordinary list = %s, decoded %+v", out.String(), ordinary)
+	}
+}
+
 func TestSplitPluginRef(t *testing.T) {
 	p, m, err := splitPluginRef("widget@acme")
 	if err != nil || p != "widget" || m != "acme" {
@@ -379,7 +486,7 @@ func TestPluginCheckNow_SkipsDirectorySourcePlugin(t *testing.T) {
 	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
 	installDirectoryPluginForTest(t, "widget", "local")
 	m := plugins.NewManager("")
-	if err := m.SetAutoUpgrade("widget", "local", true); err != nil {
+	if err := m.SetAutoUpgrade(context.Background(), "widget", "local", true); err != nil {
 		t.Fatalf("SetAutoUpgrade: %v", err)
 	}
 
@@ -471,5 +578,120 @@ func TestPluginGc_JSON(t *testing.T) {
 	}
 	if got := strings.TrimSpace(out.String()); got != "[]" {
 		t.Fatalf("gc --json with nothing to remove = %q, want []", got)
+	}
+}
+
+// Nothing may create the user config root before the legacy-data guard has
+// looked at it, and every plugin verb works under that root: first-run seeding
+// writes known_marketplaces.json into it, and the registry and store paths
+// hang off it. A guard that runs second reads its own target as already
+// migrated and leaves a user's <config>/serf — configuration and credentials —
+// stranded. Saying how the command works reaches none of that, so usage
+// answers without the guard and without a root.
+func TestPluginCommandChecksForLegacyDataBeforeTouchingTheStore(t *testing.T) {
+	tests := []struct {
+		name string
+		args []string
+		// wantErr is empty for the answers that never reach the store.
+		wantErr string
+	}{
+		{name: "list reaches the store", args: []string{"list"}, wantErr: "legacy Serf data"},
+		{name: "--help does not", args: []string{"--help"}},
+		{name: "no arguments does not", args: nil},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			home := t.TempDir()
+			config := filepath.Join(home, ".config")
+			t.Setenv("HOME", home)
+			t.Setenv("XDG_CONFIG_HOME", config)
+			t.Setenv("XDG_STATE_HOME", t.TempDir())
+			if err := os.MkdirAll(filepath.Join(config, "serf"), 0o700); err != nil {
+				t.Fatal(err)
+			}
+
+			var stdout, stderr bytes.Buffer
+			err := runPlugin(test.args, nil, &stdout, &stderr)
+			switch {
+			case test.wantErr != "":
+				if err == nil || !strings.Contains(err.Error(), test.wantErr) {
+					t.Fatalf("plugin %v error = %v, want %q", test.args, err, test.wantErr)
+				}
+			case err != nil:
+				t.Fatalf("plugin %v error = %v, want the usage text", test.args, err)
+			case !strings.Contains(stderr.String(), "Usage: evener plugin"):
+				t.Fatalf("plugin %v stderr = %q, want the usage text", test.args, stderr.String())
+			}
+			if _, err := os.Stat(filepath.Join(config, "evener")); !errors.Is(err, os.ErrNotExist) {
+				t.Errorf("the config root was created: stat err = %v", err)
+			}
+		})
+	}
+}
+
+// doctor is a read-only diagnostic: it reports on the store rather than
+// building one, so it takes only the read-only half of the startup guard.
+// Creating the config tree for a diagnostic would both mutate what it reports
+// on and fail outright on a read-only config home — while a legacy tree still
+// has to stop it, for the same reason it stops every other verb.
+func TestPluginDoctorTakesOnlyTheReadOnlyHalfOfTheGuard(t *testing.T) {
+	tests := []struct {
+		name    string
+		arrange func(t *testing.T, config string)
+		wantErr string
+	}{
+		{
+			name:    "a writable config home stays untouched",
+			arrange: func(*testing.T, string) {},
+		},
+		{
+			name: "a read-only config home is not a failure",
+			arrange: func(t *testing.T, config string) {
+				if os.Geteuid() == 0 {
+					t.Skip("root writes a read-only directory, so there is no read-only home to plant")
+				}
+				if err := os.Chmod(config, 0o500); err != nil {
+					t.Fatal(err)
+				}
+				t.Cleanup(func() { _ = os.Chmod(config, 0o700) })
+			},
+		},
+		{
+			name: "legacy data still stops it",
+			arrange: func(t *testing.T, config string) {
+				if err := os.MkdirAll(filepath.Join(config, "serf"), 0o700); err != nil {
+					t.Fatal(err)
+				}
+			},
+			wantErr: "legacy Serf data",
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			home := t.TempDir()
+			config := filepath.Join(home, ".config")
+			if err := os.MkdirAll(config, 0o700); err != nil {
+				t.Fatal(err)
+			}
+			t.Setenv("HOME", home)
+			t.Setenv("XDG_CONFIG_HOME", config)
+			t.Setenv("XDG_STATE_HOME", t.TempDir())
+			test.arrange(t, config)
+
+			var stdout, stderr bytes.Buffer
+			err := runPlugin([]string{"doctor"}, nil, &stdout, &stderr)
+			if test.wantErr != "" {
+				if err == nil || !strings.Contains(err.Error(), test.wantErr) {
+					t.Fatalf("plugin doctor error = %v, want %q", err, test.wantErr)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("plugin doctor error = %v, want a diagnostic that needs nothing created", err)
+			}
+			if _, err := os.Stat(filepath.Join(config, "evener")); !errors.Is(err, os.ErrNotExist) {
+				t.Errorf("doctor created the config root: stat err = %v", err)
+			}
+		})
 	}
 }

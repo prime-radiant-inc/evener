@@ -3,7 +3,7 @@
 // (marketplacesPlugins/index.tsx) - see MarketplacesSection's own comment
 // for why (its Refresh action needs to read this component's expansion
 // state).
-import { type Dispatch, type SetStateAction, useEffect, useState } from "react";
+import { type Dispatch, type SetStateAction, useEffect, useRef, useState } from "react";
 import { errorText } from "../../../../protocol/errors";
 import type { MarketplaceCatalogPlugin, MarketplaceEntry } from "../../../../protocol/types.gen";
 import { extensionsStore, type MarketplaceCatalogEntry, useExtensionsStore } from "../../../../stores/extensions";
@@ -14,8 +14,6 @@ import { sourceLabel } from "./sourceLabel";
 
 const CLASS = {
   section: requireClass(styles.section, "marketplacesPlugins.module.css", "section"),
-  header: requireClass(styles.header, "marketplacesPlugins.module.css", "header"),
-  title: requireClass(styles.title, "marketplacesPlugins.module.css", "title"),
   filterRow: requireClass(styles.filterRow, "marketplacesPlugins.module.css", "filterRow"),
   tree: requireClass(styles.tree, "marketplacesPlugins.module.css", "tree"),
   treeNode: requireClass(styles.treeNode, "marketplacesPlugins.module.css", "treeNode"),
@@ -62,12 +60,16 @@ export function BrowseSection({ expandedMarketplaces, setExpandedMarketplaces }:
   // last keystroke, first lazily loads every not-yet-cached marketplace's
   // catalog (filterLoading shows "Loading marketplaces…" tree-wide meanwhile
   // - see the render below), then auto-expands every marketplace with a
-  // match and collapses the rest.
+  // match and collapses the rest. The empty-query collapse is skipped on
+  // the initial mount so lifted expansion state (from a prior Browse visit)
+  // survives the segment round trip instead of being clobbered.
+  const filterTouched = useRef(false);
   useEffect(() => {
     if (trimmedQuery === "") {
-      setExpandedMarketplaces(new Set());
+      if (filterTouched.current) setExpandedMarketplaces(new Set());
       return;
     }
+    filterTouched.current = true;
     let cancelled = false;
     const timer = setTimeout(() => {
       void (async () => {
@@ -152,9 +154,6 @@ export function BrowseSection({ expandedMarketplaces, setExpandedMarketplaces }:
 
   return (
     <section className={CLASS.section}>
-      <header className={CLASS.header}>
-        <h3 className={CLASS.title}>Browse</h3>
-      </header>
       <div className={CLASS.filterRow}>
         <Input
           value={filterQuery}
@@ -164,7 +163,7 @@ export function BrowseSection({ expandedMarketplaces, setExpandedMarketplaces }:
       </div>
       <ul aria-label="Marketplace browse tree" className={CLASS.tree}>
         {marketplaces.length === 0 ? (
-          <li className={CLASS.empty}>No marketplaces registered. Add one above to browse plugins.</li>
+          <li className={CLASS.empty}>No marketplaces registered. Add one from the Marketplaces tab.</li>
         ) : trimmedQuery !== "" && filterLoading ? (
           <li className={CLASS.empty}>Loading marketplaces…</li>
         ) : trimmedQuery !== "" && visibleMarketplaces.length === 0 ? (

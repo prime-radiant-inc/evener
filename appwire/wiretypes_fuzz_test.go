@@ -49,6 +49,7 @@ var launchConfigLayerSchema = map[string]any{
 		"systemPromptAppendText":      map[string]any{"type": "string"},
 		"systemPromptAppend":          stringArraySchema,
 		"modelFallbacks":              stringArraySchema,
+		"enabledPlugins":              stringArraySchema,
 		"mcps": map[string]any{
 			"type": "array",
 			"items": map[string]any{

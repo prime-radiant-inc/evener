@@ -32,6 +32,10 @@ func PathsFor(stateRoot, cwd string) (Paths, error) {
 	if err != nil {
 		return Paths{}, err
 	}
+	return pathsForProject(stateRoot, cwd, project), nil
+}
+
+func pathsForProject(stateRoot, cwd string, project identifier.Project) Paths {
 	projectDir := filepath.Join(stateRoot, "projects", project.ID)
 	return Paths{
 		Global:        filepath.Join(stateRoot, "launch.toml"),
@@ -40,7 +44,7 @@ func PathsFor(stateRoot, cwd string) (Paths, error) {
 		ProjectFile:   filepath.Join(cwd, ".evener", "launch.local.toml"),
 		LegacyProject: filepath.Join(projectDir, "launch.toml"),
 		Meta:          filepath.Join(projectDir, "meta.toml"),
-	}, nil
+	}
 }
 
 // ValidateRepoRelativePath ensures `path` (when resolved against repoRoot)

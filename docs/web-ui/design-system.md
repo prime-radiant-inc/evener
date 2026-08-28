@@ -188,6 +188,7 @@ during implementation (noted inline); this table is the one to trust.
 |---|---|---|
 | **Button** | `{variant?: "primary"\|"quiet"\|"danger"; size?: "sm"\|"md"; icon?: ReactNode; children: ReactNode; onClick?; disabled?; type?: "button"\|"submit"\|"reset"} & Omit<ButtonHTMLAttributes, those>` | `forwardRef<HTMLButtonElement>`; spreads unrecognized native attributes (aria-\*, data-\*, id, ...) onto the `<button>` — `className` stays computed-only, never caller-overridable. The canonical exemplar every other widget's file layout/CSS/test style mirrors. |
 | **IconButton** | `{label: string; icon: ReactNode; variant?; size?; onClick?; disabled?; type?} & Omit<ButtonHTMLAttributes, those \| "aria-label">` | Icon-only Button; `label` is required and becomes `aria-label` (no visible text). `forwardRef` + rest-spread, mirroring Button — reuses Button's CSS classes directly (read-only import), which does NOT carry over ref-forwarding/prop-spreading, so this is fixed independently. |
+| **OpenButton** | `{label?: string; word?: string ("open"); iconOnly?: boolean; size?: "xs"\|"sm"; href?: string; onClick?; tabIndex?; title?}` | The standard "open out of this surface" affordance: the box-arrow **OpenIcon** glyph (exported alongside) after `word`, or glyph-only (`iconOnly`) for dense rows. Every open-out site routes through it — delegate/delegate_send rows' "Open transcript", notification cards' "Open subagent", tool rows' "Open beside", the activity tree's nested glyph, settings' "open in editor" (`href` renders an `<a>` new-tab/no-opener/no-referrer instead of a `<button>`). Owns `stopPropagation` because it always rides something clickable (a disclosure head, a tool row, a tree row). **Its rendering is planned to change** — centralization here is what makes that a one-place change. |
 | **Cadence** | `{state: "idle"\|"working"\|"needs-you"\|"failed"\|"ended"; frameTimes: number[]; now: number}` | The signature widget — see §1. Pure (no timers, no `Date.now()`); ticks render as SVG `<rect>`s, age→opacity in 4 buckets (15s each, half-open `Math.floor` boundaries); needs-you tints the freshest ticks amber too ("trailing edge"), not just the dot. |
 | **Chip** | `{children: ReactNode; tone?: "neutral"\|"attention"\|"alive"\|"danger"; onRemove?: () => void}` | Small labeled pill; `onRemove` renders a remove button, `aria-label` derived from string children or `"Remove"`. |
 | **Badge** | `{count: number; tone?: "neutral"\|"attention"\|"alive"\|"danger"}` | Numeric count indicator, caps display at "99+". |
@@ -206,6 +207,8 @@ during implementation (noted inline); this table is the one to trust.
 | **Input** | `{value: string; onChange; placeholder?; disabled?; type?: "text"\|"password"\|"email"\|"search"\|"number"\|"tel"\|"url"; id?; name?}` | Controlled only; labeling is the consumer's job via `<label htmlFor>`. |
 | **Textarea** | `{value: string; onChange; placeholder?; disabled?; autoGrow?: boolean; rows?; id?; name?}` | `autoGrow` counts literal `"\n"` occurrences, not wrapped lines. |
 | **Select** | `{value: string; onChange; options: {value; label}[]; disabled?; id?; name?}` | Native `<select>`, restyled — no custom listbox (Combobox covers richer cases). |
+| **SegmentedControl** | `{label: string; value: T; options: readonly SegmentedControlOption<T>[]; onChange(value: T); disabled?; size?: "sm"\|"md"; fullWidth?; id?; "aria-describedby"?}` (`T extends string`) | Two-to-six concise choices; horizontal radiogroup of native buttons with roving focus, neutral selected state, `md` default, and optional full-width track. |
+| **Disclosure** | `{summary: ReactNode; children: ReactNode; disabled?; "data-testid"?} & ({id: string; defaultOpen?; open?: never; onOpenChange?: never} \| {open: boolean; onOpenChange(open: boolean); id?: never; defaultOpen?: never})` | Native `<details>/<summary>` with persistent store-backed or controlled state; disabled summaries are inert, removed from the tab order, and attenuated without dimming an open body. |
 | **Switch** | `{checked: boolean; onChange: (checked: boolean) => void; disabled?; label: string}` | `role="switch"` on a real `<button>`, not a styled checkbox; `label` is required and always-visible, wired via `aria-labelledby`. |
 | **KeyHint** | `{keys: string[]}` | One `<kbd>` per key, "+"-separated; the literal key name `"Mod"` renders as ⌘ on Apple platforms, `Ctrl` elsewhere. |
 | **Combobox** | `{options: T[]; onQuery; onPick; renderOption?; "aria-label"?; "aria-labelledby"?}` (generic over `T extends {id; label}`) | ARIA 1.2 combobox-with-listbox-popup; real focus never leaves the input. `aria-label`/`aria-labelledby` forward to BOTH the input and the popup listbox (fix-wave: the listbox had no name of its own — see §4) — they're two roles describing one picker, sharing one label source. Debounces `onQuery` 150ms. Never traps focus. |
@@ -310,8 +313,8 @@ budgeted. Three budgets, all on `--motion-easing-standard` (`ease-out`):
 Forbidden, unchanged: idle pulses, shimmer loops on live data, anything that animates during
 silence (the honest-liveness rule — a "working" indicator that looks identical whether the agent
 is streaming or hung is worse than no indicator). Every widget with motion of its own respects
-`prefers-reduced-motion: reduce` (currently: Cadence, Dialog, Disclosure, Menu, SelectionQuote,
-Sheet, StatusDot, Switch) — collapses to instant, no exceptions.
+`prefers-reduced-motion: reduce` (currently: Cadence, Dialog, Disclosure, Menu, SegmentedControl,
+SelectionQuote, Sheet, StatusDot, Switch) — collapses to instant, no exceptions.
 
 ---
 
@@ -472,6 +475,52 @@ filter that matches a session command's name (built-in or plugin) shows exactly 
 text into the focused session's composer and moves focus there, closing the palette; the palette
 itself never executes a session mutation or makes a wire call for one. With no session focused,
 the same row explains that there's nowhere to hand off to yet, rather than silently doing nothing.
+
+## 10. Collection pages: segmented workspaces and detail sheets
+
+**The pattern (2026-08-29): when one page holds several same-weight collections, segment them —
+never stack them.** The first collection page this shipped on is Settings → Marketplaces &
+Plugins (`panes/settings/sections/marketplacesPlugins/`), which previously stacked three
+sections (registered marketplaces, the browse tree, the installed list) down one long scroll.
+It is now the reference implementation for the two idioms below; any future page with the same
+shape (several sibling lists, plus per-item detail and actions) should reuse them rather than
+inventing a third layout.
+
+**One list at a time, chosen by a page-level SegmentedControl.** Each sibling collection becomes
+a segment; the segment labels carry the counts (`Installed (7)`, `Marketplaces (3)`), and the
+per-section headers — title plus count — are deleted, because duplicating that identity under
+the segment control is noise. The default segment is the one the user maintains most (Installed,
+not Browse). Switching segments is a page-level navigation act: page-scoped overlays owned by
+the outgoing segment close (see the sheet rule below), while per-segment UI state that is
+expensive to rebuild (the browse tree's expansion and its lazy catalog cache) is lifted to the
+page so it survives the round trip.
+
+**Rows are single tappable targets; actions live in a detail sheet.** A collection row carries
+identity and status only — `StatusDot`, name, state chips, one mono meta line
+(`@ marketplace · v1.2.0`) — and a trailing chevron; it is one full-width `<button>`, so the
+whole row is the target on desktop and touch alike. A row NEVER grows a trailing cluster of
+small action buttons (the pre-redesign installed row had four): every action on the item moves
+into the item's **detail sheet**, a `Sheet` with `side="right"` on desktop and `side="bottom"`
+at the mobile breakpoint (chosen via `useIsMobile`, the same source the shell uses). The sheet
+is the item's inspector: state chips, its catalog description (pulled lazily through the browse
+cache — re-open is free), a meta table, and its actions. Binary state (Enabled, Auto-upgrade)
+is a `Switch` row inside the sheet, disabled while its RPC is in flight; the primary mutation
+is a footer `Button`; the destructive action keeps its `ConfirmDialog` even though that nests a
+second modal over the sheet — `OverlayPanel` instances stack in DOM order, each traps and
+restores focus down the stack, and its `preventDefault` on Escape is what keeps the settings
+pane's own document-level Escape handler from closing the pane out from under an open overlay.
+
+**The meta table idiom.** Inside an inspector, facts render as label/value rows: a fixed-width
+(96px) caption-color label column, values in the UI font, and `var(--font-mono)` for anything
+machine-shaped — versions, sources, paths — truncating with ellipsis rather than wrapping.
+This is the same vocabulary as the list row's meta line, one zoom level up.
+
+**An inspector is only as alive as its subject.** The detail sheet reads its entity from the
+store rather than a prop snapshot, so cross-client changes land while it is open; when the
+entity disappears from the store (its own Remove completing, or another client's), the sheet
+closes itself instead of offering actions on a ghost, and a failed Remove keeps the sheet and
+dialog open for retry. Segments own their overlays: switching away closes the sheet, coming
+back does not reopen it.
 
 ## 11. Mobile forms and honest cold starts
 

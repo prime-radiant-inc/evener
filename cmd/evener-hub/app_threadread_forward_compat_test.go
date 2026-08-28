@@ -1,6 +1,7 @@
 package hub
 
 import (
+	"context"
 	"os"
 	"path/filepath"
 	"testing"
@@ -32,7 +33,7 @@ func TestPastThreadReadFailsWholeSessionOnOneUnknownTurnField(t *testing.T) {
 	path := filepath.Join(entry.StateDir, "sessions", entry.Meta.ID+".transcript.jsonl")
 	appendUnknownTurnField(t, path)
 
-	resp, found, err := pastThreadReadResponse(cfg, params)
+	resp, found, err := pastThreadReadResponse(context.Background(), cfg, params)
 	if !found || err == nil {
 		t.Fatalf("past thread/read = (%+v, %v, %v), want found=true with a decode error", resp, found, err)
 	}
@@ -40,7 +41,7 @@ func TestPastThreadReadFailsWholeSessionOnOneUnknownTurnField(t *testing.T) {
 		t.Fatalf("past thread/read returned %d turns despite the decode error; want none — a partial result here would mean the all-or-nothing failure this test pins had silently stopped being all-or-nothing", len(resp.Thread.Turns))
 	}
 
-	page, found, err := pastThreadTurnsList(cfg, appwire.ThreadTurnsListParams{Ref: params.Ref, Limit: 1})
+	page, found, err := pastThreadTurnsList(context.Background(), cfg, appwire.ThreadTurnsListParams{Ref: params.Ref, Limit: 1})
 	if !found || err == nil || page.Data != nil {
 		t.Fatalf("past thread/turns/list = (%+v, %v, %v), want found=true with a decode error and no data", page, found, err)
 	}

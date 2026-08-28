@@ -14,7 +14,7 @@ import (
 )
 
 func scriptedDelegateCallWithAllowance(id, task string, allowance int) llm.Response {
-	args, _ := json.Marshal(map[string]any{"task": task, "delegation_allowance": allowance})
+	args, _ := json.Marshal(map[string]any{"prompt": task, "delegation_allowance": allowance})
 	return scriptedToolCalls(llm.ToolCallData{ID: id, Name: "delegate", Arguments: args, Type: "function"})
 }
 

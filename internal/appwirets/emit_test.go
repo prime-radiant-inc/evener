@@ -18,6 +18,7 @@ import (
 
 	"primeradiant.com/evener/agent/events"
 	"primeradiant.com/evener/appwire"
+	"primeradiant.com/evener/hubapi"
 )
 
 func TestEmitStruct(t *testing.T) {
@@ -247,6 +248,21 @@ func TestTypeExprThreadItemEventKind(t *testing.T) {
 	got := typeExpr(reflect.TypeFor[appwire.ThreadItemEventKind]())
 	if got != "ThreadItemEventKind" {
 		t.Fatalf("typeExpr(ThreadItemEventKind) = %q, want %q", got, "ThreadItemEventKind")
+	}
+}
+
+func TestTypeExprNavigationTargetKindIsExactLiteralUnion(t *testing.T) {
+	got := typeExpr(reflect.TypeFor[appwire.NavigationTargetKind]())
+	want := `"manifest" | "section" | "pin_catalog" | "pin_section" | "catalog" | "project" | "all_loaded_projects"`
+	if got != want {
+		t.Fatalf("typeExpr(NavigationTargetKind) = %q, want %q", got, want)
+	}
+}
+
+func TestTypeExprNavigationArrayRendersAsSlice(t *testing.T) {
+	got := typeExpr(reflect.TypeFor[hubapi.NavigationArray[string]]())
+	if got != "string[]" {
+		t.Fatalf("typeExpr(NavigationArray[string]) = %q, want string[]", got)
 	}
 }
 
@@ -654,6 +670,31 @@ func TestGeneratedFileCurrentIncludesJobActivityTypes(t *testing.T) {
 		if !strings.Contains(out, "export interface "+name+" {") {
 			t.Fatalf("generated output missing %s", name)
 		}
+	}
+}
+
+func TestEmitCatalogIncludesNavigationRESTContracts(t *testing.T) {
+	out := EmitCatalog()
+	for _, name := range []string{
+		"NavigationManifest",
+		"NavigationSectionResource",
+		"NavigationPinSectionCatalog",
+		"NavigationProjectCatalog",
+		"NavigationProjectResource",
+		"NavigationProjectPage",
+		"NavigationSessionLocation",
+		"NavigationSessionSummary",
+		"NavigationMutation",
+	} {
+		if !strings.Contains(out, "export interface "+name+" {") {
+			t.Fatalf("generated output missing %s", name)
+		}
+	}
+	if body := interfaceBody(t, out, "NavigationSessionSummary"); !strings.Contains(body, "\n  children: NavigationSessionSummary[];") {
+		t.Fatalf("NavigationSessionSummary.children = %s, want NavigationSessionSummary[]", body)
+	}
+	if body := interfaceBody(t, out, "NavigationInvalidationTarget"); !strings.Contains(body, "\n  kind: \"manifest\" | \"section\" | \"pin_catalog\" | \"pin_section\" | \"catalog\" | \"project\" | \"all_loaded_projects\";\n") {
+		t.Fatalf("NavigationInvalidationTarget.kind is not the exact literal union: %s", body)
 	}
 }
 

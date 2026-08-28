@@ -114,6 +114,27 @@ func (m hubModel) updateSessionKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, cmd
 	}
 
+	if m.sessionVisionModelPicker != nil {
+		updated, cmd := m.sessionVisionModelPicker.Update(msg)
+		picker := updated.(tuipick.ModelPicker)
+		m.sessionVisionModelPicker = &picker
+		if picker.Done() {
+			selected := picker.Selected()
+			m.sessionVisionModelPicker = nil
+			if !picker.Cancelled() {
+				ref, ok := m.currentRef()
+				if !ok {
+					m.addSessionSystem("Session ref is invalid.")
+					return m, nil
+				}
+				m.addSessionSystem("Updating vision model...")
+				return m, sendHubVisionModelAction(m.client, ref, selected)
+			}
+			m.session.refreshViewport()
+		}
+		return m, cmd
+	}
+
 	if m.sessionEffortPicker != nil {
 		updated, cmd := m.sessionEffortPicker.Update(msg)
 		picker := updated.(tuipick.ModelPicker)
@@ -254,7 +275,7 @@ func (m hubModel) updateSessionKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.authLoginProvider = ""
 			m.authLoginFlowID = ""
 			m.session.resetInput()
-			m.addSessionSystem("OpenAI login cancelled.")
+			m.addSessionSystem("Sign-in cancelled.")
 			return m, nil
 		case "enter":
 			redirectURL := strings.TrimSpace(m.session.input.Value())
@@ -264,7 +285,7 @@ func (m hubModel) updateSessionKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			provider := m.authLoginProvider
 			flowID := m.authLoginFlowID
 			m.session.resetInput()
-			m.addSessionSystem("Finishing OpenAI login...")
+			m.addSessionSystem("Finishing sign-in for " + authStatusInstanceName(authStatus{Provider: provider}) + "...")
 			return m, completeHubAuthLogin(m.client, provider, flowID, redirectURL)
 		}
 	}
@@ -328,7 +349,7 @@ func (m hubModel) updateSessionKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			if turnID := strings.TrimSpace(m.detail.ActiveTurnID); turnID != "" {
 				if ref, ok := m.currentRef(); ok {
 					m.addSessionSystem("Interrupting active turn. Press ctrl+c again to quit.")
-					return m, sendHubAction(m.client, ref, "interrupt")
+					return m, sendHubAction(m.client, ref, "interrupt", m.detail.InstanceID)
 				}
 			}
 		}
@@ -397,7 +418,7 @@ func (m hubModel) updateSessionKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.session.resetInput()
 			m.session.refreshViewport()
 			attachments := m.snapshotPendingAttachmentsForSubmit()
-			return m, sendHubQueue(m.client, ref, text, draft, attachments)
+			return m, sendHubQueue(m.client, ref, text, draft, attachments, m.detail.InstanceID)
 		}
 		if composerMode == hubComposerModeReadOnly || !m.sessionCanStartTurn() {
 			reason := m.sessionComposerReadOnlyReason()
@@ -419,7 +440,7 @@ func (m hubModel) updateSessionKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.session.resetInput()
 		m.session.refreshViewport()
 		attachments := m.snapshotPendingAttachmentsForSubmit()
-		return m, sendHubInput(m.client, ref, text, draft, attachments)
+		return m, sendHubInput(m.client, ref, text, draft, attachments, m.detail.InstanceID)
 	}
 
 	prevHeight := m.session.input.Height()
@@ -454,7 +475,7 @@ func (m *hubModel) runHubSlashCommand(cmd, args string) tea.Cmd {
 		if args != "" {
 			text += " " + args
 		}
-		return sendHubInput(m.client, ref, text, text, nil)
+		return sendHubInput(m.client, ref, text, text, nil, m.detail.InstanceID)
 	}
 	if definition.Scopes&hubCommandSession == 0 {
 		m.addSessionSystem("Unknown command: /" + cmd + ". Type /help for available commands.")
@@ -512,7 +533,7 @@ func (m hubModel) handleSessionForceSteer() (tea.Model, tea.Cmd) {
 	}
 	if pending == "" && !hasAttachments {
 		// Pure drain of the existing queue. Clear nothing on the composer.
-		return m, sendHubDrainAsSteer(m.client, ref, "", "", nil, m.detail.Queue.Revision, len(m.sessionQueue))
+		return m, sendHubDrainAsSteer(m.client, ref, "", "", nil, m.detail.Queue.Revision, len(m.sessionQueue), m.detail.InstanceID)
 	}
 	// Composer has text and/or attachments. sendHubDrainAsSteer sends the
 	// payload on turn/drainAsSteer so the daemon folds it into the same
@@ -523,7 +544,7 @@ func (m hubModel) handleSessionForceSteer() (tea.Model, tea.Cmd) {
 	m.session.resetInput()
 	m.session.refreshViewport()
 	attachments := m.snapshotPendingAttachmentsForSubmit()
-	return m, sendHubDrainAsSteer(m.client, ref, pending, draft, attachments, m.detail.Queue.Revision, len(m.sessionQueue))
+	return m, sendHubDrainAsSteer(m.client, ref, pending, draft, attachments, m.detail.Queue.Revision, len(m.sessionQueue), m.detail.InstanceID)
 }
 
 func isQueuedDrainPartial(err error) bool {

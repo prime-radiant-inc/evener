@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 
 	"primeradiant.com/evener/agent/events"
@@ -80,6 +81,35 @@ type retryTracker struct {
 // in-flight event emitters to finish, and closes the events channel.
 func (s *Session) Close() {
 	s.close(context.Background(), true)
+}
+
+// joinWithinCloseBudget waits for wg, giving up when the close cascade's shared
+// budget expires and saying so. The joins it replaces exist for DELIVERY
+// ORDERING — an in-flight tool's end event, a detached emitter's event, reaching
+// the stream before it closes — which is a nicety, not a safety property:
+// sendEvent takes eventsMu and re-checks eventsClosed, so a straggler that
+// emits after this gives up is dropped, never a send on a closed channel.
+//
+// Weighed against that: a goroutine parked in an operation nothing can cancel
+// (an uncancellable tool call in a delegate the drain has already abandoned)
+// holds the WaitGroup forever, and an unbounded join converts a bounded drain
+// into an unbounded process. Losing an event that was never going to arrive is
+// the cheaper failure.
+//
+// The waiter goroutine is not leaked in any lasting sense: it holds nothing and
+// exits the moment the WaitGroup does drain.
+func (s *Session) joinWithinCloseBudget(ctx context.Context, wg *sync.WaitGroup, what string) {
+	joined := make(chan struct{})
+	go func() {
+		defer close(joined)
+		wg.Wait()
+	}()
+	select {
+	case <-joined:
+	case <-ctx.Done():
+		s.emit(events.EventWarning, events.WarningData{Message: fmt.Sprintf(
+			"close budget expired joining %s; their remaining events are dropped", what)})
+	}
 }
 
 func (s *Session) releaseAPILogRoute() {
@@ -178,6 +208,12 @@ func (s *Session) close(ctx context.Context, cleanupEnv bool) {
 		// store stays open until worktree disposal has recorded its evidence.
 		if err := s.closeOwnedDelegateRuntimeTree(budgetCtx); err != nil {
 			s.emit(events.EventWarning, events.WarningData{Message: fmt.Sprintf("delegate tree close incomplete: %v", err)})
+			// A hopeless stop has already consumed its dedicated half of the
+			// cascade budget. Do not spend the remaining half joining the same
+			// wedged child again through its generic Session.Close path.
+			if errors.Is(err, context.DeadlineExceeded) {
+				cancelBudget()
+			}
 		}
 
 		// Step 4: reacquire the pair and drain the subagent map. Marking closing
@@ -312,11 +348,16 @@ func (s *Session) close(ctx context.Context, cleanupEnv bool) {
 		s.mu.Lock()
 		s.state = SessionClosed
 		s.mu.Unlock()
-		s.toolEventsWG.Wait()
+		s.joinWithinCloseBudget(budgetCtx, &s.toolEventsWG, "in-flight tool events")
 		// Join detached event emitters (subagent runs, session namer) so their
 		// events are delivered before the channel closes. They are already
-		// cancelled above (child Close + cancelFunc), so this returns promptly.
-		s.sendersWG.Wait()
+		// cancelled above (child Close + cancelFunc), so this normally returns
+		// promptly — but "cancelled" is not the same as "returns", which is the
+		// whole of #317: a delegate parked inside an uncancellable tool call holds
+		// both of these WaitGroups forever, and an unbudgeted join here made the
+		// drain's give-up worthless because run.go prints its answer only after
+		// Close(). Both joins are therefore bounded by the shared close budget.
+		s.joinWithinCloseBudget(budgetCtx, &s.sendersWG, "detached event emitters")
 		s.releaseAPILogRoute()
 		// Close under eventsMu so a caller-owned emit() (Enqueue/DrainAsSteer or
 		// the ProcessInput loop — goroutines the session cannot join) can never
@@ -328,7 +369,15 @@ func (s *Session) close(ctx context.Context, cleanupEnv bool) {
 	})
 }
 
-func (s *Session) discardRestoredCandidate() {
+// discardRestoredCandidate tears down a restore candidate nothing ever adopted.
+// ownsEnv says whether the candidate's execution environment is one built FOR it
+// (a working-dir re-root and/or a per-delegate box) rather than the parent's own:
+// prepareSubagentEnvironment returns the parent's environment untouched when the
+// delegate needs neither, and a shared environment belongs to the live parent
+// still working in it. It is the same distinction close() makes before retaining
+// a child's scratch (subagent.ownsEnv), read here so an aborted candidate never
+// deletes a scratch dir out from under its parent.
+func (s *Session) discardRestoredCandidate(ownsEnv bool) {
 	s.closeOnce.Do(func() {
 		s.responseSideEffectsMu.Lock()
 		s.mu.Lock()
@@ -349,24 +398,23 @@ func (s *Session) discardRestoredCandidate() {
 			_ = s.jobManager.store.Close()
 		}
 		for _, sub := range subs {
-			sub.sess.discardRestoredCandidate()
+			sub.sess.discardRestoredCandidate(sub.ownsEnv)
 		}
 		if s.ownsArtifactStore && s.artifactStore != nil {
 			_ = s.artifactStore.Close()
 		}
 		_ = s.closeOwnedDelegateStore()
-		// restoreDelegateChildEnvironment always hands a restored delegate a
-		// FRESH environment (a re-rooted clone, and its own per-lane sandbox
-		// scratch when sandboxed) — never the parent's shared one. A discarded
-		// candidate was never adopted by anything, so unlike close()'s
-		// RetainSandboxScratch (which hands a normally torn-down delegate's
-		// scratch to a human), there is no one left to retain it for; dispose it
-		// outright, mirroring disposeUnadoptedSubagentSession's unadopted-env
-		// discipline on the create-path twin of this abort. A no-op on a shared
-		// or never-sandboxed env (DisposeSandboxScratch is a no-op without an
-		// owned tmp).
-		if le, ok := s.currentEnv().(*execenv.LocalExecutionEnvironment); ok {
-			le.DisposeSandboxScratch()
+		// A discarded candidate was never adopted by anything, so unlike a normal
+		// teardown (which RETAINS both scratch dirs for the human handoff), there
+		// is no one left to retain them for. Both go: the sandbox-owned one AND
+		// the one an unsandboxed env — the default shape — mints on its first
+		// command, whose lease would otherwise be held for the life of the
+		// process. Only ever for an env built FOR this candidate: a shared one
+		// belongs to the live parent still working in it. Byte for byte the same
+		// two decisions disposeUnadoptedSubagentSession makes on the create-path
+		// twin of this abort.
+		if ownsEnv {
+			disposeUnadoptedScratch(s.currentEnv())
 		}
 		if s.mcpMgr != nil {
 			s.mcpMgr.Close()
@@ -467,12 +515,10 @@ const (
 	runNoToolCalls
 )
 
-// routeNoToolCalls decides the no-tool-calls route for a round from the input kind
-// and whether the round had no content. It is pure and total over EntryKind: only
-// a non-empty notification turn finishes idle; everything else (including any
-// empty round) routes through the retry budget.
-func routeNoToolCalls(kind EntryKind, noContent bool) noCallsRoute {
-	if kind == EntryNotification && !noContent {
+// routeNoToolCalls lets notification acknowledgements finish idle. After a
+// terminal communicate, notification silence must not resurrect the run (#329).
+func routeNoToolCalls(kind EntryKind, noContent bool, afterTerminalCommunicate bool) noCallsRoute {
+	if kind == EntryNotification && (!noContent || afterTerminalCommunicate) {
 		return finishIdle
 	}
 	return runNoToolCalls
@@ -481,7 +527,7 @@ func routeNoToolCalls(kind EntryKind, noContent bool) noCallsRoute {
 // drainInputs is the snapshot the drain loop feeds selectDrainNextAction after a
 // completed (non-error) turn: the kind of the turn that just ran, whether a goal
 // continuation is already deferred, the popped follow-up text and queued message
-// (its text plus image count), whether any job notifications are pending, and
+// (its text plus image count), whether any notification work is pending, and
 // whether the turn just rested SessionAwaiting (spec §5.3's drain-ladder gate).
 type drainInputs struct {
 	RanKind              EntryKind
@@ -505,7 +551,7 @@ const (
 	// notification pending, the resulting turn is the deferred continuation (if the
 	// fold arms one) or idle.
 	armGoalGate
-	// runNotification runs a pending job-notification turn next.
+	// runNotification runs a pending notification turn next.
 	runNotification
 	// runDeferredContInline runs an already-deferred goal continuation inline.
 	runDeferredContInline
@@ -717,7 +763,7 @@ func (s *Session) processInputKindWithProvenance(ctx context.Context, input stri
 					// the model includes the interrupt notice in history.
 					// This is the user-visible "interrupted here" marker
 					// in the transcript that consumers (TUI / hub) render.
-					interruptMsg := "<SYSTEM-REMINDER>The user interrupted the previous turn before it completed. Any partial tool output above is incomplete. Wait for the user's next message before continuing.</SYSTEM-REMINDER>"
+					interruptMsg := systemReminderBlock("The user interrupted the previous turn before it completed. Any partial tool output above is incomplete. Wait for the user's next message before continuing.")
 					s.appendSteeringTurn(interruptMsg, events.SteeringKindInterrupted)
 				}
 				if emitEnd {
@@ -804,7 +850,7 @@ func (s *Session) processInputKindWithProvenance(ctx context.Context, input stri
 		// goal-gate fold are side effects kept here; selectDrainNextAction is the pure
 		// priority decision over their results. popQueueHead is reached only when no
 		// follow-up is pending (it consumes a queued message), matching the original
-		// short-circuit; peekNotifications is likewise consulted only at its ladder
+		// short-circuit; notification work is likewise consulted only at its ladder
 		// rung and only for a non-notification, non-awaiting turn.
 		//
 		// awaiting reflects the boundary state the turn that just ran left behind
@@ -850,8 +896,15 @@ func (s *Session) processInputKindWithProvenance(ctx context.Context, input stri
 		noFollowUpOrQueued := strings.TrimSpace(fu) == "" &&
 			strings.TrimSpace(queued.Text) == "" && len(queued.Images) == 0
 		notificationsPending := false
-		if noFollowUpOrQueued && !awaiting && ranKind != EntryNotification {
-			notificationsPending = s.peekNotifications() > 0
+		// After a terminal communicate, notification work is left to the one-shot
+		// drain rather than run here: a completion the model was never shown is
+		// delivered there, so its reply REPLACES the run's answer instead of
+		// being joined onto it as a further output of this call (#865). Every
+		// one-shot turn path is followed by DrainJobTree (cmd/evener run,
+		// drainForFinalization), and the drain's own turn gate reads the same
+		// two signals.
+		if noFollowUpOrQueued && !awaiting && ranKind != EntryNotification && !s.hasAcceptedTerminalCommunicate() {
+			notificationsPending = s.peekNotifications() > 0 || s.hasPendingRootDelegateAttention()
 		}
 		action, skipGoalGate := selectDrainNextAction(drainInputs{
 			RanKind:              ranKind,
@@ -909,13 +962,13 @@ func (s *Session) processInputKindWithProvenance(ctx context.Context, input stri
 				haveDeferredCont = true
 			}
 		}
-		// Notification interleave (priority 3): a pending job notification runs
+		// Notification interleave (priority 3): pending notification work runs
 		// AFTER the fold above but BEFORE the deferred continuation, so it is
 		// transparent to goal accounting (the just-finished continuation already
-		// folded). The queue is consumed inside acceptNotificationInput when the
-		// EntryNotification turn runs (an empty queue there is a no-op, but the peek
-		// guards against it). After a notification turn this rung is skipped (selector
-		// gate) because job notifications may have been requeued.
+		// folded). Job notifications and root delegate attention are consumed inside
+		// acceptNotificationInput when the EntryNotification turn runs. After a
+		// notification turn this rung is skipped (selector gate) because notification
+		// work may have been requeued.
 		if action == runNotification {
 			next = ""
 			nextImages = nil
@@ -984,14 +1037,71 @@ func (s *Session) processInputKindWithProvenance(ctx context.Context, input stri
 	}
 }
 
+func delegateEntryRequiresReport(kind EntryKind) bool {
+	switch kind {
+	case EntryUserInput, EntryContinuation, EntrySteeringCarrier:
+		return true
+	default:
+		return false
+	}
+}
+
 func (s *Session) processOneInput(ctx context.Context, input string, images []ImageAttachment, kind EntryKind, inputProvenance *provenance.Causal) (out string, progressed bool, err error) {
+	communicatePreviewCalls := map[string]struct{}{}
+	defer func() {
+		for callID := range communicatePreviewCalls {
+			s.emit(events.EventCommunicatePreviewReset, events.CommunicatePreviewResetData{CallID: callID})
+		}
+	}()
+	var rootAttentionIDs []string
+	rootAttentionAccepted := false
+	// Consume the mid-turn deliveries this turn's settled rounds presented,
+	// at every exit that ran the turn. A delivery injected as steering while
+	// this turn ran rode the turn's requests; leaving it for the wake it
+	// armed runs a redundant notification turn whose request carries nothing
+	// new.
+	//
+	// Two rules govern the failure path (see finishRootDelegateAttentionTurn
+	// for the coverage contract): a resolution failure joins the turn's error
+	// only when there IS a begin snapshot — an accepted notification turn's
+	// established contract — and every other coverage-only failure warns and
+	// leaves the item pending, because coverage is an optimization over the
+	// wake path and must not fail an otherwise successful turn.
+	//
+	// Register BEFORE the autosave/recover defer below so that on panic the
+	// recover unwinds first and marks err: a panicking turn never settled, and
+	// this defer must read a non-nil err to skip consuming coverage on the
+	// success path.
+	defer func() {
+		if kind == EntryNotification && !rootAttentionAccepted {
+			return
+		}
+		finishErr := s.finishRootDelegateAttentionTurn(rootAttentionIDs, err)
+		if finishErr == nil {
+			return
+		}
+		// rootAttentionAccepted is set only in the notification branch, so this
+		// predicate is exactly "an accepted notification turn with a non-empty
+		// begin snapshot" — the begin-snapshot contract that joins failures.
+		if rootAttentionAccepted && len(rootAttentionIDs) != 0 {
+			err = errors.Join(err, finishErr)
+			return
+		}
+		s.emit(events.EventWarning, warningDataFromError("mid-turn delegate attention consumption failed; left pending for its wake", finishErr))
+	}()
 	// Flush meta.json on every exit from this function — normal return, error
 	// return, ctx cancellation, retry-budget exhaustion, or panic. Without
 	// this, in-memory modelResponses bumps that happen between happy-path
 	// autosaves (e.g. pause_turn, empty-response retries that exhaust) stay
 	// stranded if any exit path is taken before the next tool round. Kata ztne.
+	//
+	// On panic, mark err before re-panicking. The attention-finish defer above
+	// unwinds right after this one and must read a non-nil err: a panicking
+	// turn never settled, and consuming its covered attention on the success
+	// path would durably resolve items the model never finished answering.
 	defer func() {
 		if r := recover(); r != nil {
+			err = fmt.Errorf("session turn panicked: %v", r)
 			s.maybeAutoSave()
 			panic(r)
 		}
@@ -1040,6 +1150,10 @@ func (s *Session) processOneInput(ctx context.Context, input string, images []Im
 	s.mu.Unlock()
 	s.delegateDeliveryMu.Unlock()
 
+	// Attention coverage credits only what this turn's requests present.
+	// Clear a previous turn's marks before any path below can finish this one.
+	s.resetRootDelegateAttentionCoverage()
+
 	select {
 	case <-ctx.Done():
 		s.emit(events.EventError, errorDataFromError(ctx.Err()))
@@ -1055,8 +1169,6 @@ func (s *Session) processOneInput(ctx context.Context, input string, images []Im
 	var runningTurnID string
 	defer func() { s.releaseRunningTurnID(runningTurnID) }()
 
-	var rootAttentionIDs []string
-	rootAttentionAccepted := false
 	if kind == EntryNotification {
 		// Take the name first, and in ONE atomic take-or-refuse against the
 		// durable store. Asking whether the name is free and then taking it
@@ -1080,12 +1192,12 @@ func (s *Session) processOneInput(ctx context.Context, input string, images []Im
 			// serve loop republishes that from WireState.
 			s.finishNotificationNoop()
 			// Ask for another wake. Nothing else will: the EntryNotification
-			// that got us here is consumed, the drain loop's tail gate counts
-			// job notifications alone (peekNotifications reads pendingJobNotifs
-			// and nothing else), and for delegate attention the wake flag we
-			// deliberately did NOT consume is itself what suppresses a new one
-			// -- armRootDelegateAttention notifies only when the flag is clear,
-			// and the retry scheduler returns early while it is set.
+			// that got us here is consumed, and the drain loop deliberately does
+			// not run another notification immediately after an EntryNotification
+			// turn. For delegate attention, the wake flag we deliberately did NOT
+			// consume is itself what suppresses a new one --
+			// armRootDelegateAttention notifies only when the flag is clear, and
+			// the retry scheduler returns early while it is set.
 			//
 			// The wake is guaranteed rather than best-effort, but it is PACED
 			// rather than immediate (kata ajg5). An immediate notify() pushes
@@ -1134,14 +1246,6 @@ func (s *Session) processOneInput(ctx context.Context, input string, images []Im
 		// Named: drop any backoff this session accumulated standing down.
 		s.resetRunningTurnNameRetry()
 		rootAttentionIDs = s.beginRootDelegateAttentionTurn()
-		defer func() {
-			if !rootAttentionAccepted || len(rootAttentionIDs) == 0 {
-				return
-			}
-			if finishErr := s.finishRootDelegateAttentionTurn(rootAttentionIDs, err); finishErr != nil {
-				err = errors.Join(err, finishErr)
-			}
-		}()
 	}
 
 	// Name the turn before the event that opens it, so the AppWire projection
@@ -1183,12 +1287,21 @@ func (s *Session) processOneInput(ctx context.Context, input string, images []Im
 	} else if err := s.acceptUserInput(ctx, input, images, inputProvenance, kind == EntryUserInput); err != nil {
 		return "", false, err
 	}
+	if delegateEntryRequiresReport(kind) && s.delegateController != nil {
+		if lease, ok := ctx.Value(delegateRunLeaseContextKey{}).(delegateLease); ok {
+			if err := s.delegateController.escalateCompletionRequirement(lease); err != nil {
+				return "", false, err
+			}
+		}
+	}
 
 	var toolSigs []string
 	var toolSigFailed []bool
 	var lastText string // accumulated assistant text for round-limit return
 	ctxWarned := false
 	contentFilterRetried := false // track whether we've already tried recovering from a content filter error
+	localAdmissionCompacted := false
+	providerContextRecovered := false
 	var tracker retryTracker
 
 	// Continuation (goal) turns clamp the per-input round cap to GoalTurnMaxRounds
@@ -1226,15 +1339,25 @@ func (s *Session) processOneInput(ctx context.Context, input string, images []Im
 		default:
 		}
 
-		profile, sys, _, req, reqEffort, prepareErr := s.prepareModelRequestWithError(ctx, round, &timings)
+		profile, sys, _, req, fullHistory, reqEffort, prepareErr := s.prepareModelRequestWithError(ctx, round, &timings)
 		if prepareErr != nil {
+			if isLocalContextCompactionError(prepareErr) && !localAdmissionCompacted && s.contextMgr != nil {
+				s.emit(events.EventWarning, warningDataFromError(
+					"Local context admission failed; compacting context and retrying: "+prepareErr.Error(), prepareErr))
+				localAdmissionCompacted = true
+				s.forceCompactForModelRecovery(ctx)
+				continue
+			}
 			return "", progressed, prepareErr
 		}
 		// --- Phase: LLMCall ---
 		tPhaseStart := s.sclock().Now()
 
 		s.noteParentJobActivity(jobPhaseAwaitingModel)
-		modelResp, req, attempt, err := s.callModelWithFallback(ctx, profile, req, reqEffort, round)
+		modelResp, req, attempt, err := s.callModelWithFallback(ctx, profile, req, fullHistory, reqEffort, round)
+		for _, callID := range modelResp.CommunicatePreviewCallIDs {
+			communicatePreviewCalls[callID] = struct{}{}
+		}
 		resp := modelResp.Response
 
 		timings.LLMCall = time.Since(tPhaseStart)
@@ -1246,12 +1369,42 @@ func (s *Session) processOneInput(ctx context.Context, input string, images []Im
 		}
 
 		if err != nil {
-			retry, ferr := s.handleModelError(ctx, err, req, &contentFilterRetried)
+			if isLocalContextCompactionError(err) && !localAdmissionCompacted && s.contextMgr != nil {
+				s.emit(events.EventWarning, warningDataFromError(
+					"Local context admission failed; compacting context and retrying: "+err.Error(), err))
+				localAdmissionCompacted = true
+				s.forceCompactForModelRecovery(ctx)
+				continue
+			}
+			if isLocalContextBudgetError(err) {
+				return "", progressed, err
+			}
+			if isProviderContextLengthError(err) && !providerContextRecovered && s.contextMgr != nil {
+				failedProvider, failedModel := strings.TrimSpace(req.Provider), strings.TrimSpace(req.Model)
+				if failedProvider == "" {
+					failedProvider = profile.ID()
+				}
+				if failedModel == "" {
+					failedModel = profile.Model()
+				}
+				s.emit(events.EventWarning, warningDataFromError(
+					"Context length exceeded: Provider context disagreement for "+failedProvider+"/"+failedModel+"; compacting context and retrying: "+err.Error(), err))
+				providerContextRecovered = true
+				s.forceCompactForModelRecovery(ctx)
+				continue
+			}
+			retry, ferr := s.handleModelError(ctx, err, req, &contentFilterRetried, providerContextRecovered)
 			if retry {
+				s.resetCommunicatePreviews(communicatePreviewCalls)
 				continue
 			}
 			return "", progressed, ferr
 		}
+		// The round settled, so its staged attention is now covered. A round
+		// that failed — or was retried after compaction folded the steering
+		// turn away — never reaches here, so coverage always means
+		// "presented in a settled call of this turn".
+		s.promoteStagedRootDelegateAttention()
 
 		if abortErr := errors.Join(s.abortResponseProcessing(ctx), sessionLifecycleFault(ctx, "abort_after_log")); abortErr != nil {
 			return "", progressed, abortErr
@@ -1322,8 +1475,23 @@ func (s *Session) processOneInput(ctx context.Context, input string, images []Im
 			// toward a no-op communicate — the text is already in the transcript, and a
 			// system-initiated turn carries no user awaiting a reply. A truly empty
 			// (no-content) response is a model glitch and still routes through the
-			// empty-retry path below.
-			if routeNoToolCalls(kind, noContent) == finishIdle {
+			// empty-retry path below — EXCEPT after a terminal communicate, where
+			// silence means "nothing to add to a finished run" and retrying would
+			// resurrect it (issue #329).
+			if kind == EntryDelegateAttention && !noContent && s.delegateController != nil {
+				if lease, ok := ctx.Value(delegateRunLeaseContextKey{}).(delegateLease); ok {
+					allowDelegateNoAction, recordErr := s.delegateController.recordAttentionNoAction(lease)
+					if recordErr != nil {
+						return "", progressed, recordErr
+					}
+					if allowDelegateNoAction {
+						s.finishProcessingAtBoundary(ctx, SessionIdle)
+						return "", progressed, nil
+					}
+				}
+			}
+			route := routeNoToolCalls(kind, noContent, s.hasAcceptedTerminalCommunicate())
+			if route == finishIdle {
 				s.finishProcessingAtBoundary(ctx, SessionIdle)
 				return "", progressed, nil
 			}
@@ -1404,7 +1572,11 @@ func (s *Session) processOneInput(ctx context.Context, input string, images []Im
 		// §5.1) — either ends the turn; deliverIfCommunicated decides the
 		// boundary state and composes them.
 		askedThisRound := s.askPendingCount() > askBefore
-		if done, text := s.deliverIfCommunicated(ctx, askedThisRound); done {
+		done, text, deliverErr := s.deliverIfCommunicated(ctx, askedThisRound)
+		if deliverErr != nil {
+			return "", progressed, deliverErr
+		}
+		if done {
 			return text, progressed, nil
 		}
 		if yieldToObserverCallback || sessionLifecycleFault(ctx, "yield_observer") != nil {
@@ -1446,7 +1618,7 @@ func (s *Session) acceptUserInput(ctx context.Context, input string, images []Im
 	// provenance with the input's provenance, or empty provenance for ordinary
 	// external user input.
 	s.replaceActiveProvenance(inputProvenance)
-	s.repairOrphanedToolResults("before accepting new input")
+	s.repairOrphanedToolResults(context.Background(), "before accepting new input")
 
 	// Count conversation turns (user input -> model response pairs), not LLM round-trips.
 	// Check the limit before incrementing so MaxTurns=N allows exactly N inputs.
@@ -1535,7 +1707,11 @@ func (s *Session) acceptUserInput(ctx context.Context, input string, images []Im
 				return failure
 			}
 		}
-		if err := s.appendClientMutationTranscript(turn); err != nil {
+		if err := s.appendTurnAfterTranscriptWrite(
+			turn,
+			func() error { return s.appendClientMutationTranscriptLocked(turn) },
+			func() { s.history = append(s.history, turn) },
+		); err != nil {
 			s.mu.Lock()
 			s.turns--
 			s.mu.Unlock()
@@ -1555,9 +1731,6 @@ func (s *Session) acceptUserInput(ctx context.Context, input string, images []Im
 			}
 			return fmt.Errorf("append claimed user input: %w", err)
 		}
-		s.mu.Lock()
-		s.history = append(s.history, turn)
-		s.mu.Unlock()
 		if err := s.markClaimedUserTranscriptIncorporated(queuedIdentity.ClientMutationID); err != nil {
 			return fmt.Errorf("incorporate claimed user input: %w", err)
 		}
@@ -1611,7 +1784,7 @@ func (s *Session) acceptContinuationInput(_ context.Context, input, stableTurnID
 	// A goal continuation is a fresh top-level input: reset active provenance so
 	// the continuation turn's events do not inherit a prior watch origin.
 	s.replaceActiveProvenance(nil)
-	s.repairOrphanedToolResults("before accepting goal continuation")
+	s.repairOrphanedToolResults(context.Background(), "before accepting goal continuation")
 
 	// Surface only a compact marker to the UI, not the full rendered continuation
 	// prompt: the appwire projection turns EventGoalContinuation into a systemMessage,
@@ -1630,14 +1803,14 @@ func (s *Session) acceptContinuationInput(_ context.Context, input, stableTurnID
 
 func (s *Session) acceptDelegateAttentionInput() {
 	s.replaceActiveProvenance(nil)
-	s.repairOrphanedToolResults("before accepting delegate attention")
+	s.repairOrphanedToolResults(context.Background(), "before accepting delegate attention")
 }
 
 // acceptNotificationInput records a job-completion notification turn at the
 // start of an input turn. It mirrors acceptContinuationInput's framing — the
 // drained queue is delivered to the model as a schema.TurnSteering reminder (a
 // user-role message that expandHistory passes through without rendering a user
-// bubble), so prepareModelRequest rebuilds the request from s.history and the
+// bubble), so prepareModelRequestWithError rebuilds the request from s.history and the
 // reminder reaches the model THIS turn. Unlike acceptUserInput it skips the
 // namer, the UserPromptSubmit hooks, the MaxTurns check, and the s.turns++
 // accounting (a notification is not a user turn).
@@ -1678,7 +1851,7 @@ func (s *Session) acceptNotificationInput(ctx context.Context, turnID string) (p
 		return false
 	}
 
-	s.repairOrphanedToolResults("before accepting notification")
+	s.repairOrphanedToolResults(context.Background(), "before accepting notification")
 
 	// A notification turn adopts the union of the provenance carried by the
 	// notifications it delivers, so events the turn emits (and any watch it
@@ -1713,9 +1886,7 @@ func (s *Session) acceptNotificationInput(ctx context.Context, turnID string) (p
 	//
 	// The announce precedes every content event of the turn. A boundary that
 	// came after would leave that content attributed to the turn before it.
-	if s.servedByDaemon() {
-		s.emit(events.EventTurnStarted, events.TurnStartedData{TurnID: turnID})
-	}
+	s.emit(events.EventTurnStarted, events.TurnStartedData{TurnID: turnID})
 	if reminder != "" {
 		s.emit(events.EventSteeringInjected, events.SteeringInjectedData{Text: reminder, Kind: events.SteeringKindNotification})
 	}
@@ -1725,6 +1896,7 @@ func (s *Session) acceptNotificationInput(ctx context.Context, turnID string) (p
 	if len(deliveredFailures) == 0 {
 		s.resetJobNotificationRetry()
 	}
+	s.countJobNotificationsDelivered(len(jobNotifs) - len(deliveredFailures))
 	// Settle caller-targeted watch sends only after the durable reminder turn
 	// persisted (above): the durable pending survives an appendSteeringTurnDurably
 	// failure for re-token (at-least-once contract, spec §4.3).
@@ -1764,7 +1936,7 @@ func (s *Session) acceptSteeringCarrierInput(ctx context.Context, turnID string)
 		s.finishNotificationNoop()
 		return false
 	}
-	s.repairOrphanedToolResults("before accepting steering carrier")
+	s.repairOrphanedToolResults(context.Background(), "before accepting steering carrier")
 	// The announce precedes every content event of the turn, the same as
 	// acceptNotificationInput's boundary: content emitted before it would be
 	// attributed to the turn before this one.
@@ -1815,6 +1987,9 @@ func (s *Session) filterDeliverableJobNotifications(raw []jobNotification) ([]de
 			continue
 		}
 		if n.isWatch() {
+			if n.WatchID != "" && !n.Terminal && !s.timerWatchIsLive(n.WatchID) {
+				continue // the timer was cleared after this tick was built
+			}
 			survivors = append(survivors, deliverableJobNotification{notification: n})
 			continue
 		}
@@ -1843,6 +2018,22 @@ func (s *Session) filterDeliverableJobNotifications(raw []jobNotification) ([]de
 	durableSurvivors, injected := classifyDurableNotifications(durableRaw, recs, alreadyInjected)
 	survivors = append(survivors, durableSurvivors...)
 	return survivors, nil, injected
+}
+
+// timerWatchIsLive reports whether the timer with this id is still installed.
+// A timer's key is reconstructible from its id because its slot is the id, so
+// this is one map lookup under jm.mu, taken with pendingJobNotifsMu released.
+// With no manager to ask it fails OPEN: this answer only ever decides a drop,
+// and delivering a tick whose timer cannot be checked beats losing it.
+func (s *Session) timerWatchIsLive(watchID string) bool {
+	jm := s.jobManager
+	if jm == nil {
+		return true
+	}
+	key := watchKey{VisibleSessionID: jm.sessionID, Target: runtimeMessageAliasCaller, Slot: watchID}
+	jm.mu.Lock()
+	defer jm.mu.Unlock()
+	return jm.watches[key] != nil
 }
 
 // classifyDurableNotifications is the pure durable-notification classification

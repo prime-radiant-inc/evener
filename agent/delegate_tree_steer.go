@@ -15,6 +15,21 @@ import (
 
 var errDelegateTranscriptUnavailable = errors.New("delegate transcript is unavailable")
 
+type delegateCompletionDecision uint8
+
+const (
+	delegateCompletionUseExistingTerminal delegateCompletionDecision = iota
+	delegateCompletionFinishNoAction
+	delegateCompletionNeedsNudge
+)
+
+func (c *delegateTreeController) completionDecision(lease delegateLease) (delegateCompletionDecision, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	decision := c.reduceCompletionDecisionIntent(finishIntent{lease: lease})
+	return decision.completion, decision.err
+}
+
 type delegateSteeringAdmission struct {
 	entryID    string
 	provenance *provenance.Causal
@@ -186,6 +201,9 @@ func (c *delegateTreeController) CompleteSteerPersistence(claim *delegateSteerin
 				if entry.timestamp.After(live.activityAt) {
 					live.activityAt = entry.timestamp
 				}
+				if entry.timestamp.After(live.productiveActivityAt) {
+					live.productiveActivityAt = entry.timestamp
+				}
 			}
 			c.evidenceVersion++
 			return delegateMutationPlans{updates: []delegateUpdatePlan{c.capturedPlanLocked(claim.delegateID)}}, nil
@@ -203,6 +221,9 @@ func (c *delegateTreeController) CompleteSteerPersistence(claim *delegateSteerin
 	})
 	if entry.timestamp.After(live.activityAt) {
 		live.activityAt = entry.timestamp
+	}
+	if entry.timestamp.After(live.productiveActivityAt) {
+		live.productiveActivityAt = entry.timestamp
 	}
 	c.evidenceVersion++
 	return delegateMutationPlans{updates: []delegateUpdatePlan{c.capturedPlanLocked(claim.delegateID)}}, nil
@@ -296,6 +317,14 @@ func (c *delegateTreeController) CompleteModelRequest(claim *delegateModelReques
 		}
 	}
 	history, bound := projectDelegatePendingSteers(history, pending, lateIDs)
+	if len(bound) != 0 {
+		if err := c.escalateCompletionRequirementLocked(claim.lease); err != nil {
+			c.releaseModelClaimLocked(claim.token)
+			c.evidenceVersion++
+			c.mu.Unlock()
+			return nil, err
+		}
+	}
 	var consumedProvenance *provenance.Causal
 	for entryID := range bound {
 		consumedProvenance = provenance.Union(consumedProvenance, claim.steeringProvenance[entryID])
@@ -451,12 +480,13 @@ func (s *Session) appendDelegateSteeringDurablyWithMetadata(message, stableTurnI
 	turn.SteeringSource = source
 	turn.SteeringKind = kind
 	turn.StableTurnID = stableTurnID
-	if err := s.writeTranscriptDurable(turn); err != nil {
+	if err := s.appendTurnAfterTranscriptWrite(
+		turn,
+		func() error { return s.writeTranscriptDurableLocked(turn) },
+		func() { s.history = append(s.history, turn) },
+	); err != nil {
 		return delegateTranscriptEntry{}, err
 	}
-	s.mu.Lock()
-	s.history = append(s.history, turn)
-	s.mu.Unlock()
 	return delegateTranscriptEntry{entryID: turn.StableTurnID, timestamp: turn.Timestamp}, nil
 }
 

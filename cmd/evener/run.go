@@ -8,6 +8,7 @@ import (
 	"io"
 	"os"
 	"strings"
+	"time"
 
 	"primeradiant.com/evener/agent"
 	"primeradiant.com/evener/agent/events"
@@ -19,23 +20,14 @@ import (
 	"primeradiant.com/evener/internal/apptranscript"
 	"primeradiant.com/evener/internal/plugins"
 	"primeradiant.com/evener/llm"
-	_ "primeradiant.com/evener/llm/providers/anthropic"
-	_ "primeradiant.com/evener/llm/providers/glm"
-	_ "primeradiant.com/evener/llm/providers/google"
-	_ "primeradiant.com/evener/llm/providers/kimi"
-	_ "primeradiant.com/evener/llm/providers/kimi_anthropic"
-	_ "primeradiant.com/evener/llm/providers/minimax"
-	_ "primeradiant.com/evener/llm/providers/ollama"
-	_ "primeradiant.com/evener/llm/providers/openai"
-	_ "primeradiant.com/evener/llm/providers/openaicompat"
-	_ "primeradiant.com/evener/llm/providers/openrouter"
-	_ "primeradiant.com/evener/llm/providers/openrouter_anthropic"
+	_ "primeradiant.com/evener/llm/providers/all"
 )
 
 type runConfig struct {
 	prompt                    string
 	model                     string
 	fastCheapModel            string // --fast-cheap-model override for auxiliary side calls
+	visionModel               string // --vision-model override for the image-description side-channel
 	workDir                   string
 	stateDir                  string   // --state-dir override
 	systemPrompt              string   // --system-prompt file path
@@ -57,15 +49,17 @@ type runConfig struct {
 	stdout                    io.Writer
 	stderr                    io.Writer
 
-	skillsDirs                  []string // extra skill directories
-	mcpServers                  []string // --mcp inline specs
-	mcpConfigs                  []string // --mcp-config file paths
-	pluginDirs                  []string // --plugin-dir directories
-	noDefaultMarketplaces       bool     // --no-default-marketplaces
-	systemPromptAsUser          bool     // --system-prompt-as-user
-	openAIResponsesContinuation string   // --openai-responses-continuation
-	sandboxMode                 string   // --sandbox mode name (default "off")
-	sandboxNet                  string   // --sandbox-net on|off
+	skillsDirs                  []string      // extra skill directories
+	mcpServers                  []string      // --mcp inline specs
+	mcpConfigs                  []string      // --mcp-config file paths
+	pluginDirs                  []string      // --plugin-dir directories
+	enabledPlugins              *[]string     // --enabled-plugins selection; nil means omitted
+	noDefaultMarketplaces       bool          // --no-default-marketplaces
+	systemPromptAsUser          bool          // --system-prompt-as-user
+	openAIResponsesContinuation string        // --openai-responses-continuation
+	runTimeout                  time.Duration // --timeout; zero disables
+	sandboxMode                 string        // --sandbox mode name (default "off")
+	sandboxNet                  string        // --sandbox-net on|off
 
 	// Resume options.
 	resume       string // session ID to resume
@@ -82,8 +76,8 @@ var runLoadClient = cmdutil.LoadClient
 var (
 	runGetwd                = os.Getwd
 	runEnsureUserConfigDirs = cmdutil.EnsureUserConfigDirs
-	runSeedMarketplaces     = func() error {
-		_, err := plugins.NewManager("").SeedDefaultMarketplaces()
+	runSeedMarketplaces     = func(ctx context.Context) error {
+		_, err := plugins.NewManager("").SeedDefaultMarketplaces(ctx)
 		return err
 	}
 	runAttachAPILogger  = cmdutil.AttachSessionAPILogger
@@ -97,9 +91,21 @@ var (
 	runDrainJobTree = func(sess *agent.Session, ctx context.Context) (string, error) {
 		return sess.DrainJobTree(ctx)
 	}
+	runResolvePlugins = func(ctx context.Context, explicit []string, enabled *[]string) (plugins.LaunchPluginResolution, error) {
+		return plugins.NewManager("").ResolveForLaunch(ctx, explicit, enabled)
+	}
 )
 
 func run(ctx context.Context, cfg runConfig) error {
+	if err := rejectPluginSelectionWithResume(cfg.enabledPlugins, cfg.resume, cfg.resumeLast); err != nil {
+		return err
+	}
+	if cfg.runTimeout > 0 {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, cfg.runTimeout)
+		defer cancel()
+	}
+	ctx = llm.WithRunBudget(ctx)
 	if cfg.stdout == nil {
 		cfg.stdout = os.Stdout
 	}
@@ -113,15 +119,38 @@ func run(ctx context.Context, cfg runConfig) error {
 		}
 		cfg.workDir = wd
 	}
+	// Before anything that can create the user config root: the legacy-data
+	// guard inside EnsureUserConfigDirs reads an existing root as already
+	// migrated, and resolving a requested bundled plugin materializes it under
+	// exactly that root. Running the guard second would strand a user's legacy
+	// configuration and credentials silently.
 	if err := runEnsureUserConfigDirs(); err != nil {
+		return err
+	}
+	resolvedPlugins, err := runResolvePlugins(ctx, cfg.pluginDirs, cfg.enabledPlugins)
+	if fatal := fatalLaunchPluginError(err, cfg.enabledPlugins); fatal != nil {
+		return fatal
+	}
+	if err != nil {
+		fmt.Fprintf(cfg.stderr, "warning: listing installed plugins: %v\n", err) //nolint:errcheck
+	}
+	renderLaunchPluginDiagnostics(cfg.stderr, resolvedPlugins.Diagnostics)
+	if err := resolvedPlugins.ValidateSelection(); err != nil {
 		return err
 	}
 	// --no-default-marketplaces opts out of seeding on this bare-evener path only;
 	// serve and plugin subcommands always seed (best-effort, first-run-only).
 	if !cfg.noDefaultMarketplaces {
-		if err := runSeedMarketplaces(); err != nil {
-			fmt.Fprintf(os.Stderr, "warning: seeding default marketplaces: %v\n", err)
+		if err := runSeedMarketplaces(ctx); err != nil {
+			fmt.Fprintf(os.Stderr, "warning: seeding default marketplaces: %v\n", err) //nolint:errcheck
 		}
+	}
+	// Seeding waits on the plugin store lock, and reports what it could not do
+	// as a warning — right for a marketplace it failed to fetch, wrong for a
+	// caller that has left. Everything after this builds a client and a
+	// session, so the interrupt is read here rather than carried into them.
+	if err := startupInterrupted(ctx, "seeding default marketplaces"); err != nil {
+		return err
 	}
 	openAIResponsesContinuation := resolveOpenAIResponsesContinuation(cfg.openAIResponsesContinuation, nil)
 
@@ -139,7 +168,6 @@ func run(ctx context.Context, cfg runConfig) error {
 			return fmt.Errorf("resolve project state: %w", err)
 		}
 	}
-
 	// --list-sessions: print and exit.
 	if cfg.listSessions {
 		return listSessions(cfg, stateDir)
@@ -186,9 +214,16 @@ func run(ctx context.Context, cfg runConfig) error {
 		return err
 	}
 
-	client, provCfg, hasProvConfig, err := runLoadClient(llm.WithStateDir(stateDir))
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	client, err := runLoadClient(stateDir)
 	if err != nil {
 		return fmt.Errorf("LLM client setup: %w", err)
+	}
+	printRegistryNotices(cfg.stderr, client.Registry())
+	if err := ctx.Err(); err != nil {
+		return err
 	}
 
 	reserveSession, closeAPILog, err := runAttachAPILogger(client, stateDir, cfg.stderr)
@@ -196,17 +231,53 @@ func run(ctx context.Context, cfg runConfig) error {
 		return err
 	}
 	defer closeAPILog() //nolint:errcheck
-	if meta != nil {
+	var resumeWithChildID string
+	resumeWithRollbackAllowed := false
+	resumeWithCommitted := false
+	if meta != nil && cfg.resumeWith != "" {
+		childConfig := meta.Config.Clone()
+		childConfig.PluginDirs = append([]string(nil), resolvedPlugins.SelectedDirs...)
+		childID, err := agent.AsideSessionWithConfig(stateDir, meta.ID, childConfig)
+		if err != nil {
+			return fmt.Errorf("create resume-with session: %w", err)
+		}
+		resumeWithChildID = childID
+		resumeWithRollbackAllowed = true
+		defer func() {
+			if resumeWithCommitted || !resumeWithRollbackAllowed {
+				return
+			}
+			if err := agent.RemoveSessionArtifacts(stateDir, resumeWithChildID); err != nil {
+				fmt.Fprintf(cfg.stderr, "warning: could not roll back resume-with session %s: %v\n", resumeWithChildID, err) //nolint:errcheck
+			}
+		}()
+		if err := reserveSession(resumeWithChildID); err != nil {
+			if errors.Is(err, llm.ErrAPILogTargetLocked) {
+				resumeWithRollbackAllowed = false
+			}
+			return err
+		}
+		childMeta, err := schema.LoadSessionMeta(stateDir, childID)
+		if err != nil {
+			return fmt.Errorf("load resume-with session: %w", err)
+		}
+		meta = &childMeta
+	}
+	if meta != nil && resumeWithChildID == "" {
 		if err := reserveSession(meta.ID); err != nil {
 			return err
 		}
 	}
 
-	profile, err := buildInitialProfile(provCfg, modelRef, cfg.outputSchema)
+	profile, err := buildInitialProfile(client, modelRef, cfg.outputSchema)
 	if err != nil {
 		return err
 	}
 	profile, err = applyFastCheapModel(profile, cfg.fastCheapModel, client)
+	if err != nil {
+		return err
+	}
+	visionModel, err := applyVisionModel(profile, cfg.visionModel, client)
 	if err != nil {
 		return err
 	}
@@ -218,9 +289,13 @@ func run(ctx context.Context, cfg runConfig) error {
 	// and never blocks launch — it falls back to "" (inherited PATH unchanged)
 	// on any failure.
 	env.LoginPATH = execenv.LoginShellPATH()
+	if err := startupInterrupted(ctx, "probing the login shell PATH"); err != nil {
+		return err
+	}
 
 	var sess *agent.Session
 	baseSessionCfg := agent.SessionConfig{
+		LifetimeContext:             ctx,
 		MaxToolRoundsPerInput:       cmdutil.MaxRoundsToConfig(cfg.maxRounds),
 		ShareTasksWithChildren:      cfg.shareTaskStore,
 		ResultToolName:              cfg.resultToolName,
@@ -234,15 +309,16 @@ func run(ctx context.Context, cfg runConfig) error {
 		SkillsDirs:                  cfg.skillsDirs,
 		MCPConfigFiles:              cfg.mcpConfigs,
 		MCPInline:                   cfg.mcpServers,
-		PluginDirs:                  plugins.NewManager("").EnabledPluginDirs(cfg.pluginDirs),
+		PluginDirs:                  resolvedPlugins.SelectedDirs,
 		ContextStrategy:             cfg.contextStrategy,
 		ExportATIFPath:              cfg.exportATIF,
 		ExportATIFProviderHandles:   cfg.exportATIFProviderHandles,
+		VisionModel:                 visionModel,
 		NonInteractive:              true,
 		TurnEndsProcess:             true,
 		SystemPromptAsUser:          cfg.systemPromptAsUser,
 		OpenAIResponsesContinuation: openAIResponsesContinuation,
-		ResolveProfile:              cmdutil.BuildResolveProfile(provCfg, hasProvConfig),
+		ResolveProfile:              cmdutil.BuildResolveProfile(client),
 	}
 	if cfg.maxSubagentDepth >= 0 {
 		baseSessionCfg.MaxSubagentDepth = cfg.maxSubagentDepth
@@ -267,18 +343,34 @@ func run(ctx context.Context, cfg runConfig) error {
 		if err := runProvisionSandbox(env, &baseSessionCfg, env.WorkingDirectory()); err != nil {
 			return err
 		}
+		// Provisioning allocates the session scratch and the lease under it,
+		// which nothing releases until a session owns this environment.
+		if err := startupInterrupted(ctx, "provisioning the sandbox"); err != nil {
+			env.DisposeUnadoptedScratch()
+			return err
+		}
 	}
 	if meta != nil {
 		sess, err = runRestoreSession(client, profile, env, *meta, agent.RestoreSessionConfig{
+			LifetimeContext:             ctx,
 			StateDir:                    stateDir,
 			Project:                     project,
 			ResolveProfile:              baseSessionCfg.ResolveProfile,
 			AcquireSessionOwnership:     reserveSession,
+			OwnershipAlreadyAcquired:    true,
 			OpenAIResponsesContinuation: openAIResponsesContinuation,
 			TurnEndsProcess:             baseSessionCfg.TurnEndsProcess,
 		})
 		if err != nil {
+			// A resume provisions this environment's sandbox from the
+			// session's persisted mode inside the restore, and the restore can
+			// fail after that with no session built to own the scratch and the
+			// flock lease it took.
+			env.DisposeUnadoptedScratch()
 			return fmt.Errorf("restore session: %w", err)
+		}
+		if resumeWithChildID != "" {
+			resumeWithCommitted = true
 		}
 		if effort.Set {
 			sess.SetReasoningEffort(effort.Value)
@@ -291,10 +383,19 @@ func run(ctx context.Context, cfg runConfig) error {
 	} else {
 		sess, err = runNewSession(client, profile, env, baseSessionCfg)
 		if err != nil {
+			// The session that would have owned whatever this environment
+			// provisioned was never built.
+			env.DisposeUnadoptedScratch()
 			return fmt.Errorf("session creation: %w", err)
 		}
 	}
 	defer sess.Close()
+	// The session is live, and everything past here is the turn itself. An
+	// interrupt that arrived while it was being built ends the run instead,
+	// and the deferred Close takes the session down on the way out.
+	if err := startupInterrupted(ctx, "creating the session"); err != nil {
+		return err
+	}
 
 	// One startup line, loudly, states exactly what this host enforces (read from
 	// the env's resolved policy so it never overstates). Empty for an unsandboxed
@@ -443,7 +544,11 @@ func drainEventsHuman(eventCh <-chan events.SessionEvent, w io.Writer) <-chan st
 				}
 			case events.EventWarning:
 				if d, ok := ev.Data.(events.WarningData); ok {
-					fmt.Fprintf(w, "[warning] %s\n", d.Message) //nolint:errcheck
+					if d.Code != "" {
+						fmt.Fprintf(w, "[warning:%s] %s\n", d.Code, d.Message) //nolint:errcheck
+					} else {
+						fmt.Fprintf(w, "[warning] %s\n", d.Message) //nolint:errcheck
+					}
 				}
 			case events.EventError:
 				if d, ok := ev.Data.(events.ErrorData); ok {

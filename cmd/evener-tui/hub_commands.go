@@ -118,6 +118,11 @@ type hubSessionModelsMsg struct {
 	err    error
 }
 
+type hubVisionModelsMsg struct {
+	models []tuipick.ModelPickerItem
+	err    error
+}
+
 type hubSpawnOptionsMsg struct {
 	harnesses                   []string
 	harnessKinds                map[string]string
@@ -290,6 +295,47 @@ func fetchHubSessionModels(client *appwire.Client, workingDir string) tea.Cmd {
 	}
 }
 
+// fetchHubVisionSessionModels loads the session's launchable models and filters
+// them to the vision-capable ones, prepending the two pseudo-entries of the
+// vision setting: current-model and off.
+func fetchHubVisionSessionModels(client *appwire.Client, workingDir string) tea.Cmd {
+	workingDir = strings.TrimSpace(workingDir)
+	return func() tea.Msg {
+		resp, err := client.ModelList(context.Background(), appwire.ModelListParams{CWD: workingDir})
+		if err != nil {
+			return hubVisionModelsMsg{err: err}
+		}
+		// Recent descriptors are the same rows the picker's Recent group is
+		// built from, so both halves of the item list can be matched.
+		descriptors := append(append([]appwire.ModelDescriptor(nil), resp.Recent...), resp.Data...)
+		return hubVisionModelsMsg{models: visionModelPickerItems(descriptors, modelPickerItemsFromResponse(resp, false))}
+	}
+}
+
+// visionModelPickerItems keeps the picker items whose descriptor reports vision
+// support, prepending the two pseudo-entries of the vision setting. A
+// descriptor that says nothing about vision is not vision-capable: the picker
+// only offers a model the registry vouches for.
+func visionModelPickerItems(models []appwire.ModelDescriptor, items []tuipick.ModelPickerItem) []tuipick.ModelPickerItem {
+	capable := make(map[string]bool, len(models))
+	for _, descriptor := range models {
+		if descriptor.SupportsVision == nil || !*descriptor.SupportsVision {
+			continue
+		}
+		capable[strings.TrimSpace(descriptor.Provider)+"/"+strings.TrimSpace(descriptor.Model)] = true
+	}
+	out := []tuipick.ModelPickerItem{
+		{ID: "", Display: "Current model"},
+		{ID: "off", Display: "Off"},
+	}
+	for _, item := range items {
+		if capable[item.ID] {
+			out = append(out, item)
+		}
+	}
+	return out
+}
+
 func fetchHubSpawnOptions(client *appwire.Client, workingDir string) tea.Cmd {
 	workingDir = strings.TrimSpace(workingDir)
 	return func() tea.Msg {
@@ -365,9 +411,9 @@ func logoutHubAuth(client *appwire.Client, provider string) tea.Cmd {
 	}
 }
 
-// datedSnapshotSuffix and prettifyModelDisplayName are duplicated from
-// cmd/evener-hub/web_spawn.go (a different binary/package; llm/model_catalog.go
-// isn't owned by this track — see the plan's Global Constraints).
+// datedSnapshotSuffix and prettifyModelDisplayName are duplicated from the hub
+// model-picker implementation in cmd/evener-hub/app_models.go because the TUI
+// and hub are separate binaries.
 var datedSnapshotSuffix = regexp.MustCompile(`-\d{8}(-v\d+)?$`)
 
 func isDatedSnapshotModelID(ref string) bool {
@@ -403,32 +449,28 @@ func formatModelContextWindow(n int) string {
 	}
 }
 
-// modelInfoMetaTail builds the model picker row's compact caps/ctx/price
-// tail from a direct llm.EmbeddedModelCatalog() lookup. Unlike the web's
-// catalogModelInfo, this has no providers.toml/behaviorTag to resolve the
-// tag-qualified fallback — the TUI process has no such config — so it only
-// tries the canonicalized bare lookup (LookupModelInfo). A nil mi (model not
-// in the embedded catalog) yields "": the uncatalogued-model rule (still
-// render name+provider+id, no badges) applies.
-func modelInfoMetaTail(mi *llm.ModelInfo) string {
-	if mi == nil {
-		return ""
-	}
+// modelInfoMetaTail builds the model picker row's compact caps/ctx/price tail
+// from the descriptor the hub delivered, whose fields come from the registry's
+// resolved row (spec §7.5). A field the row does not carry is simply left out:
+// a descriptor with no metadata at all yields "", the uncatalogued-model rule
+// (still render name+provider+id, no badges), and a priceless row renders no
+// cost rather than a fabricated "$0.00/$0.00".
+func modelInfoMetaTail(descriptor appwire.ModelDescriptor) string {
 	var parts []string
-	if mi.ContextWindow > 0 {
-		parts = append(parts, formatModelContextWindow(mi.ContextWindow)+" ctx")
+	if descriptor.ContextWindow != nil && *descriptor.ContextWindow > 0 {
+		parts = append(parts, formatModelContextWindow(*descriptor.ContextWindow)+" ctx")
 	}
-	if mi.InputCostPerMillion != nil && mi.OutputCostPerMillion != nil {
-		parts = append(parts, fmt.Sprintf("$%.2f/$%.2f", *mi.InputCostPerMillion, *mi.OutputCostPerMillion))
+	if descriptor.InputCostPerMillion != nil && descriptor.OutputCostPerMillion != nil {
+		parts = append(parts, fmt.Sprintf("$%.2f/$%.2f", *descriptor.InputCostPerMillion, *descriptor.OutputCostPerMillion))
 	}
 	var caps []string
-	if mi.SupportsTools {
+	if boolValue(descriptor.SupportsTools) {
 		caps = append(caps, "tools")
 	}
-	if mi.SupportsVision {
+	if boolValue(descriptor.SupportsVision) {
 		caps = append(caps, "vision")
 	}
-	if mi.SupportsReasoning {
+	if boolValue(descriptor.SupportsReasoning) {
 		caps = append(caps, "reasoning")
 	}
 	if len(caps) > 0 {
@@ -437,14 +479,17 @@ func modelInfoMetaTail(mi *llm.ModelInfo) string {
 	return strings.Join(parts, " · ")
 }
 
+// boolValue reads an optional descriptor capability: nil and false both mean
+// the model does not have it.
+func boolValue(p *bool) bool { return p != nil && *p }
+
 // buildModelPickerItems enriches raw model descriptors into picker items
-// (display name, ID, catalog meta, provider group) without reordering them.
+// (display name, ID, descriptor meta, provider group) without reordering them.
 // Callers that need the provider-grouped, dated-snapshot-last presentation
 // order should use modelPickerItems instead; callers that must preserve the
 // input order (e.g. the server's recency-ordered Recent list) should call
 // this directly.
 func buildModelPickerItems(models []appwire.ModelDescriptor, rawModelID bool) []tuipick.ModelPickerItem {
-	cat := llm.EmbeddedModelCatalog()
 	items := make([]tuipick.ModelPickerItem, 0, len(models))
 	for _, option := range models {
 		model := strings.TrimSpace(option.Model)
@@ -457,11 +502,7 @@ func buildModelPickerItems(models []appwire.ModelDescriptor, rawModelID bool) []
 		if rawModelID {
 			id = model
 		}
-		var meta string
-		if cat != nil {
-			meta = modelInfoMetaTail(cat.LookupModelInfo(model))
-		}
-		items = append(items, tuipick.ModelPickerItem{ID: id, Display: display, Group: provider, Meta: meta})
+		items = append(items, tuipick.ModelPickerItem{ID: id, Display: display, Group: provider, Meta: modelInfoMetaTail(option)})
 	}
 	return items
 }
@@ -553,11 +594,12 @@ func modelDiagnosticDisabledReason(diagnostic appwire.ModelListDiagnostic) strin
 	return reason
 }
 
-func sendHubInput(client *appwire.Client, ref appwire.Ref, text string, draft string, attachments []*clipboard.PastedImage) tea.Cmd {
+func sendHubInput(client *appwire.Client, ref appwire.Ref, text string, draft string, attachments []*clipboard.PastedImage, expectedInstanceIDs ...string) tea.Cmd {
 	trackedAttachmentSubmit := len(attachments) > 0
 	// Minted here rather than inside the closure: one user action is one
 	// mutation, whatever happens to the command afterwards.
 	mutationID, idErr := newClientMutationID()
+	expectedInstanceID := mutationInstanceID(ref, expectedInstanceIDs...)
 	return func() tea.Msg {
 		if idErr != nil {
 			return hubSendMsg{ref: ref.String(), text: text, draft: draft, trackedAttachmentSubmit: trackedAttachmentSubmit, submittedAttachments: attachments, err: idErr}
@@ -567,9 +609,10 @@ func sendHubInput(client *appwire.Client, ref appwire.Ref, text string, draft st
 			return hubSendMsg{ref: ref.String(), text: text, draft: draft, trackedAttachmentSubmit: trackedAttachmentSubmit, submittedAttachments: attachments, err: err}
 		}
 		resp, err := client.TurnStart(context.Background(), appwire.TurnStartParams{
-			Ref:              ref.String(),
-			ClientMutationID: mutationID,
-			Input:            appendTextInput(text, items),
+			Ref:                ref.String(),
+			ClientMutationID:   mutationID,
+			ExpectedInstanceID: expectedInstanceID,
+			Input:              appendTextInput(text, items),
 		})
 		return hubSendMsg{ref: ref.String(), text: text, draft: draft, turnID: resp.Turn.ID, trackedAttachmentSubmit: trackedAttachmentSubmit, submittedAttachments: attachments, err: err}
 	}
@@ -598,11 +641,12 @@ func fetchHubTasksSync(ctx context.Context, client *appwire.Client, ref appwire.
 	return tasks, nil
 }
 
-func sendHubAction(client *appwire.Client, ref appwire.Ref, action string) tea.Cmd {
+func sendHubAction(client *appwire.Client, ref appwire.Ref, action string, expectedInstanceIDs ...string) tea.Cmd {
 	// Only the interrupt branch is a retry-safe turn mutation; the rest are
 	// thread-level calls the guard does not cover. Minted unconditionally so the
 	// identity is fixed to the action, not to the branch taken at run time.
 	mutationID, idErr := newClientMutationID()
+	expectedInstanceID := mutationInstanceID(ref, expectedInstanceIDs...)
 	return func() tea.Msg {
 		var err error
 		switch action {
@@ -611,8 +655,9 @@ func sendHubAction(client *appwire.Client, ref appwire.Ref, action string) tea.C
 				return hubActionMsg{action: action, err: idErr}
 			}
 			err = client.TurnInterrupt(context.Background(), appwire.TurnInterruptParams{
-				Ref:              ref.String(),
-				ClientMutationID: mutationID,
+				Ref:                ref.String(),
+				ClientMutationID:   mutationID,
+				ExpectedInstanceID: expectedInstanceID,
 			})
 		case "compact":
 			err = client.ThreadCompactStart(context.Background(), appwire.ThreadCompactStartParams{Ref: ref.String()})
@@ -627,16 +672,78 @@ func sendHubAction(client *appwire.Client, ref appwire.Ref, action string) tea.C
 	}
 }
 
-// reasoningEffortLevelKnown reports whether level (case-insensitively)
-// appears in the session's snapshot-cached reasoning-effort levels, so
-// /effort <level> can be rejected client-side without a wire round trip.
-func reasoningEffortLevelKnown(levels []string, level string) bool {
+// sessionEffortLevels is the ladder /effort works from: the model's own when
+// it states one, else the canonical vocabulary. A reasoning model with no
+// stated ladder still takes an effort — the session sends its default on
+// every request and the request builder passes any level through unclamped —
+// so the picker offers the tiers instead of denying they exist. Callers gate
+// on SupportsReasoning first; a model that does not reason has no ladder at
+// all, not an unstated one.
+func sessionEffortLevels(levels []string) []string {
+	if len(levels) > 0 {
+		return append([]string(nil), levels...)
+	}
+	return llm.ReasoningEffortVocabulary()
+}
+
+// effortChoices lists what /effort accepts for a reasoning session: the
+// model's ladder plus the always-settable explicit off. The session stores
+// "none" and carries it on every request; the adapters are what put an off on
+// the wire, and only for a model whose ladder lists an off level.
+func effortChoices(levels []string) []string {
 	for _, l := range levels {
-		if strings.EqualFold(l, level) {
+		if strings.EqualFold(l, string(llm.ReasoningEffortNone)) {
+			return append([]string(nil), levels...)
+		}
+	}
+	return append(append([]string(nil), levels...), llm.ReasoningEffortNone)
+}
+
+// effortDisplay labels a picker choice the way the hub surfaces do: an off
+// level says "off" only where the model's ladder can express one, and
+// "provider default" where an explicit none merely omits the field.
+func effortDisplay(level string, levels []string) string {
+	if llm.NormalizeReasoningEffort(level) != llm.ReasoningEffortNone {
+		return level
+	}
+	for _, l := range levels {
+		if strings.EqualFold(l, llm.ReasoningEffortNone) {
+			return "none (off)"
+		}
+	}
+	return "none (provider default)"
+}
+
+// reasoningEffortLevelSettable reports whether level (case-insensitively,
+// with disable aliases normalized) is one of effortChoices, so
+// /effort <level> can be rejected client-side without a wire round trip.
+func reasoningEffortLevelSettable(levels []string, level string) bool {
+	normalized := llm.NormalizeReasoningEffort(level)
+	for _, l := range effortChoices(levels) {
+		if strings.EqualFold(l, normalized) {
 			return true
 		}
 	}
 	return false
+}
+
+// visionModelRefKnown reports whether ref parses as a vision-model setting —
+// "", "off", a bare model, or "provider/model" — so /vision-model can reject
+// a malformed ref client-side without a wire round trip.
+func visionModelRefKnown(ref string) bool {
+	ref = strings.TrimSpace(ref)
+	if ref == "" || strings.EqualFold(ref, "off") {
+		return true
+	}
+	prov, model, ok := strings.Cut(ref, "/")
+	return !ok || (prov != "" && model != "")
+}
+
+func sendHubVisionModelAction(client *appwire.Client, ref appwire.Ref, visionModel string) tea.Cmd {
+	return func() tea.Msg {
+		err := client.ThreadVisionModelSet(context.Background(), appwire.ThreadVisionModelSetParams{Ref: ref.String(), VisionModel: visionModel})
+		return hubActionMsg{action: "vision-model", err: err}
+	}
 }
 
 func sendHubEffortAction(client *appwire.Client, ref appwire.Ref, level string) tea.Cmd {
@@ -690,9 +797,17 @@ func textInput(text string) []appwire.InputItem {
 	return []appwire.InputItem{{Type: "text", Text: text}}
 }
 
-func sendHubClear(client *appwire.Client, ref appwire.Ref) tea.Cmd {
+func sendHubClear(client *appwire.Client, ref appwire.Ref, expectedInstanceID string) tea.Cmd {
+	mutationID, idErr := newClientMutationID()
 	return func() tea.Msg {
-		resp, err := client.ThreadClear(context.Background(), appwire.ThreadClearParams{Ref: ref.String()})
+		if idErr != nil {
+			return hubClearMsg{resp: hubRefResponse{Ref: ref.String()}, err: idErr}
+		}
+		resp, err := client.ThreadClear(context.Background(), appwire.ThreadClearParams{
+			Ref:                ref.String(),
+			ClientMutationID:   mutationID,
+			ExpectedInstanceID: expectedInstanceID,
+		})
 		return hubClearMsg{resp: hubRefResponse{Ref: resp.Ref}, err: err}
 	}
 }

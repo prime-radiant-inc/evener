@@ -194,7 +194,7 @@ func (r *Runner) Summary() map[plugin.HookEvent]int {
 // ACTUALLY run — i.e. their handler type is one runHook executes (command/prompt)
 // AND their matcher is a valid regex (MatchHooks does not skip it). Hooks with an
 // unsupported handler type or an invalid matcher are dispatch-time dead and are
-// excluded. Events with zero runnable hooks are omitted. This backs the /status
+// excluded. Events with zero runnable hooks are omitted. This backs the AppWire
 // "active supported hooks" count; Summary (above) counts every registered hook.
 func (r *Runner) SupportedSummary() map[plugin.HookEvent]int {
 	out := make(map[plugin.HookEvent]int)
@@ -223,7 +223,7 @@ var supportedHandlerTypes = map[string]bool{
 // hookCanRun reports whether a registered hook can fire at dispatch: its handler
 // type is supported and its matcher compiles. It mirrors the two places that
 // silently skip a hook — runHook (unsupported type) and MatchHooks (invalid
-// matcher) — so /status does not advertise a hook that can never run.
+// matcher) — so diagnostics do not advertise a hook that can never run.
 func hookCanRun(hook plugin.RegisteredHook) bool {
 	if !supportedHandlerTypes[hook.Type] {
 		return false

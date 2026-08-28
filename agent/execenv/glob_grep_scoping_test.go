@@ -1,6 +1,7 @@
 package execenv
 
 import (
+	"context"
 	"os"
 	"path/filepath"
 	"strings"
@@ -115,7 +116,7 @@ func TestGrepNative_ExcludesDotDirsAndGitignoredByDefault(t *testing.T) {
 	}
 
 	env := NewLocalExecutionEnvironment(dir)
-	result, err := env.grepNative("needle", dir, "", false, 100, "files_with_matches")
+	result, err := env.grepNative(context.Background(), "needle", dir, "", false, 100, "files_with_matches")
 	if err != nil {
 		t.Fatalf("grepNative: %v", err)
 	}
@@ -247,7 +248,7 @@ func TestGrepNative_ReportsExclusionWhenFullyFiltered(t *testing.T) {
 	dir := writeScopingFixture(t)
 	env := NewLocalExecutionEnvironment(dir)
 
-	result, err := env.grepNative("module\\.exports", dir, "", false, 100, "content")
+	result, err := env.grepNative(context.Background(), "module\\.exports", dir, "", false, 100, "content")
 	if err != nil {
 		t.Fatalf("grepNative: %v", err)
 	}
@@ -265,7 +266,7 @@ func TestSandboxedGrepNative_ReportsExclusionWhenFullyFiltered(t *testing.T) {
 	env, _, worktree := sandboxedEnv(t, sandbox.ModeReadOnly)
 	writeScopingFixtureAt(t, worktree)
 
-	result, err := env.Grep("module\\.exports", worktree, "", false, 100, "content")
+	result, err := env.Grep(context.Background(), "module\\.exports", worktree, "", false, 100, "content")
 	if err != nil {
 		t.Fatalf("Grep: %v", err)
 	}
@@ -299,7 +300,7 @@ func TestSandboxedGrepNative_ExcludesDotDirsAndGitignoredByDefault(t *testing.T)
 		}
 	}
 
-	result, err := env.Grep("needle", worktree, "", false, 100, "files_with_matches")
+	result, err := env.Grep(context.Background(), "needle", worktree, "", false, 100, "files_with_matches")
 	if err != nil {
 		t.Fatalf("Grep: %v", err)
 	}

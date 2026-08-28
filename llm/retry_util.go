@@ -52,11 +52,16 @@ func retryableError(err error) bool {
 // Retry runs fn and retries retryable errors with exponential backoff and jitter.
 //
 // Semantics:
-// - policy.MaxRetries is the number of retries (not counting the initial attempt).
-// - Jitter is +/- 50% (factor in [0.5, 1.5]) per unified-llm-spec.md.
-// - If err provides RetryAfter:
-//   - if RetryAfter <= policy.MaxDelay (or MaxDelay <= 0), it overrides calculated backoff.
-//   - if RetryAfter > policy.MaxDelay, Retry aborts immediately (no retry) per spec.
+//   - policy.MaxRetries is the number of retries (not counting the initial attempt).
+//   - Jitter is +/- 50% (factor in [0.5, 1.5]) per unified-llm-spec.md.
+//   - A rate-limited error keeps retrying past MaxRetries while the wall budget
+//     has room; all other retryable errors remain attempt-counted.
+//   - If err provides RetryAfter, it overrides calculated backoff. For an
+//     attempt-counted policy, a value over MaxDelay still declines the retry per
+//     the existing spec. A wall-budgeted rate limit honors the provider's longer
+//     wait: ignoring Retry-After would be the surprising choice and immediately
+//     re-enter the provider's throttle. The wait is clipped at the wall-budget
+//     boundary, where the original error is returned.
 func Retry[T any](ctx context.Context, policy RetryPolicy, sleep SleepFunc, randFloat func() float64, fn func() (T, error)) (T, error) {
 	var zero T
 	if sleep == nil {
@@ -66,6 +71,8 @@ func Retry[T any](ctx context.Context, policy RetryPolicy, sleep SleepFunc, rand
 		randFloat = rand.Float64
 	}
 	maxRetries := max(policy.MaxRetries, 0)
+	start := policy.now()
+	ownerBudget := ownedRunBudget(ctx)
 
 	for attempt := 0; ; attempt++ {
 		v, err := fn()
@@ -75,7 +82,14 @@ func Retry[T any](ctx context.Context, policy RetryPolicy, sleep SleepFunc, rand
 		if ctx.Err() != nil {
 			return zero, ctx.Err()
 		}
-		if !retryableError(err) || attempt == maxRetries {
+		if !retryableError(err) {
+			return zero, err
+		}
+		if policy.WallBudgetedRateLimit(err) {
+			if !rateLimitBudgetRemains(ctx, policy, err, start, ownerBudget) {
+				return zero, rateLimitBudgetExhausted(ctx, err)
+			}
+		} else if attempt >= maxRetries {
 			return zero, err
 		}
 
@@ -83,22 +97,86 @@ func Retry[T any](ctx context.Context, policy RetryPolicy, sleep SleepFunc, rand
 		if !ok {
 			return zero, err
 		}
+		if policy.WallBudgetedRateLimit(err) {
+			remaining := rateLimitRemaining(ctx, policy, start, ownerBudget)
+			if remaining <= 0 {
+				return zero, rateLimitBudgetExhausted(ctx, err)
+			}
+			if delay > remaining {
+				// Do not start a wait that would carry the group beyond its wall
+				// budget. Sleeping the remaining slice makes the elapsed budget
+				// deterministic, then the original provider error is returned.
+				delay = remaining
+			}
+		}
 		if policy.OnRetry != nil {
 			policy.OnRetry(err, attempt+1, delay)
 		}
 		if err := sleep(ctx, delay); err != nil {
 			return zero, err
 		}
+		if policy.WallBudgetedRateLimit(err) && !rateLimitBudgetRemains(ctx, policy, err, start, ownerBudget) {
+			return zero, rateLimitBudgetExhausted(ctx, err)
+		}
 	}
 }
 
+func rateLimitBudgetExhausted(ctx context.Context, original error) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if _, ok := ctx.Deadline(); !ok {
+		return original
+	}
+	if hasRunBudget(ctx) {
+		return runBudgetError{}
+	}
+	return context.DeadlineExceeded
+}
+
+func rateLimitShutdownReserve(policy RetryPolicy) time.Duration {
+	if policy.RateLimitShutdownReserve > 0 {
+		return policy.RateLimitShutdownReserve
+	}
+	return defaultRateLimitShutdownReserve
+}
+
+func ownedRunBudget(ctx context.Context) time.Duration {
+	if !hasRunBudget(ctx) {
+		return 0
+	}
+	if deadline, ok := ctx.Deadline(); ok {
+		return time.Until(deadline)
+	}
+	return 0
+}
+
+func rateLimitRemaining(ctx context.Context, policy RetryPolicy, start time.Time, ownerBudget time.Duration) time.Duration {
+	if hasRunBudget(ctx) {
+		if ownerBudget > 0 {
+			// Snapshot native duration at group start, then consume it using
+			// the policy clock; fake clocks may use another epoch.
+			return ownerBudget - policy.now().Sub(start) - rateLimitShutdownReserve(policy)
+		}
+	}
+	return policy.RateLimitWallBudget - policy.now().Sub(start)
+}
+
+func rateLimitBudgetRemains(ctx context.Context, policy RetryPolicy, err error, start time.Time, ownerBudget time.Duration) bool {
+	return policy.WallBudgetedRateLimit(err) && rateLimitRemaining(ctx, policy, start, ownerBudget) > 0
+}
+
 func retryDelay(policy RetryPolicy, randFloat func() float64, err error, n int) (time.Duration, bool) {
-	// Prefer server-provided Retry-After when present.
+	// Prefer a positive server-provided Retry-After when present. Non-positive
+	// values mean retry immediately according to the header, but an immediate
+	// retry is unsafe for wall-budgeted rate limits; use calculated backoff.
 	var e Error
-	if errors.As(err, &e) && e.RetryAfter() != nil {
-		d := max(*e.RetryAfter(), 0)
-		if policy.MaxDelay > 0 && d > policy.MaxDelay {
-			// Spec: do not retry if server asks us to wait longer than max_delay.
+	if errors.As(err, &e) && e.RetryAfter() != nil && *e.RetryAfter() > 0 {
+		d := *e.RetryAfter()
+		if policy.MaxDelay > 0 && d > policy.MaxDelay && !policy.WallBudgetedRateLimit(err) {
+			// Attempt-counted policies retain the existing spec behavior. A
+			// wall-budgeted rate limit deliberately honors the provider's
+			// directive even when it exceeds MaxDelay.
 			return 0, false
 		}
 		return d, true

@@ -1,0 +1,32 @@
+.frame {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-5);
+  width: 100%;
+  max-width: 480px;
+}
+
+/* Each demo is a relative box so the banner's position: absolute anchors
+   here instead of the page - mirrors AppShell's .shell in miniature. */
+.stage {
+  position: relative;
+  min-height: 56px;
+  border: 1px solid var(--edge);
+  border-radius: var(--radius-pane);
+  overflow: hidden;
+}
+
+/* The content the banner overlays - quiet, so the warning tint reads. */
+.underlay {
+  padding: var(--space-4);
+  color: var(--ink-low);
+  font-family: var(--font-sans);
+  font-size: var(--font-size-ui);
+}
+
+.note {
+  margin: 0 0 var(--space-3);
+  color: var(--ink-mid);
+  font-family: var(--font-sans);
+  font-size: var(--font-size-ui);
+}

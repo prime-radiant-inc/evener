@@ -213,15 +213,9 @@ func appendDiagnosticsSections(b *strings.Builder, ds *appwire.EvenerDiagnostics
 			p.Name, version, p.SkillCount, p.AgentCount, p.HookCount)
 	}
 
-	fmt.Fprintf(b, "\n\nHooks (%d):", len(ds.Hooks))
-	if len(ds.Hooks) > 0 {
-		parts := make([]string, 0, len(ds.Hooks))
-		for event, count := range ds.Hooks {
-			parts = append(parts, fmt.Sprintf("%s: %d", event, count))
-		}
-		sort.Strings(parts)
-		b.WriteString("\n  ")
-		b.WriteString(strings.Join(parts, "  "))
+	fmt.Fprintf(b, "\n\nHook Events (%d):", len(ds.HookEvents))
+	for _, he := range ds.HookEvents {
+		fmt.Fprintf(b, "\n  %s: %d", he.Event, he.Count)
 	}
 
 	fmt.Fprintf(b, "\n\nJobs (%d):", len(ds.Jobs))
@@ -279,26 +273,13 @@ func writeWrappedStatusList(b *strings.Builder, label string, items []string, wi
 }
 
 func taskSummary(tasks []taskpkg.Task) string {
-	if len(tasks) == 0 {
-		return "0/0 done"
-	}
-	done := 0
-	active := 0
-	for _, task := range tasks {
-		switch task.Status {
-		case taskpkg.TaskDone, taskpkg.TaskCancelled:
-			done++
-		case taskpkg.TaskInProgress:
-			active++
-		}
-	}
-	summary := fmt.Sprintf("%d/%d done", done, len(tasks))
-	if active > 0 {
-		summary += fmt.Sprintf(", %d active", active)
-	}
-	return summary
+	return taskpkg.Summarize(tasks).ProgressText()
 }
 
+// authSummary is the session-status pane's one-line credential field. It
+// shares authSourceLabel with /auth rather than carrying a second reading of
+// activeSource: the two disagreeing about the same instance is the drift this
+// wave was filed for.
 func authSummary(auth appwire.AuthStatusResponse) string {
 	provider := strings.TrimSpace(auth.Provider)
 	if provider == "" {
@@ -307,28 +288,23 @@ func authSummary(auth appwire.AuthStatusResponse) string {
 	if !auth.Supported {
 		return provider + " not supported"
 	}
-	if !auth.SignedIn {
-		return provider + " signed out"
+	status := authStatusFromAppWire(auth)
+	summary := provider + " " + authSourceLabel(status)
+	if account := authStatusEmail(status); account != "" {
+		summary += " " + account
 	}
-	source := strings.TrimSpace(auth.ActiveSource)
-	if source == "" {
-		source = "signed in"
-	}
-	account := strings.TrimSpace(auth.Email)
-	if account == "" {
-		account = strings.TrimSpace(auth.StoredEmail)
-	}
-	if account == "" {
-		return provider + " " + source
-	}
-	return provider + " " + source + " " + account
+	return summary
 }
 
+// authProviderForStatus is the instance the status pane asks about: the
+// session's own, or nothing when it has no profile. Nothing means the hub's
+// normalizeAuthProvider picks the default — one definition of it, on the side
+// that owns the registry, the same rule authProviderArg follows for /auth.
+// Naming an instance here instead is what let the pane report a different one
+// than /auth answered for, and naming "openai" client-side is what once made
+// /logout delete the platform API key while reporting an OAuth sign-out.
 func authProviderForStatus(detail hubSessionDetail) string {
-	if provider := strings.TrimSpace(detail.Profile); provider != "" {
-		return provider
-	}
-	return "openai"
+	return strings.TrimSpace(detail.Profile)
 }
 
 func hubErrorReason(err error) string {

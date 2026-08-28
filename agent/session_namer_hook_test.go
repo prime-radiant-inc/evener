@@ -199,7 +199,7 @@ func TestSessionInitialPromptNamerSkipsWhilePending(t *testing.T) {
 	}
 }
 
-func TestSessionProcessInput_LaunchesInitialPromptNamer(t *testing.T) {
+func TestSessionProcessInput_LaunchesInitialPromptNamerWithoutConfiguredCheapModel(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
 	client := llm.NewClient()
@@ -208,7 +208,7 @@ func TestSessionProcessInput_LaunchesInitialPromptNamer(t *testing.T) {
 			return toolCallResponse(communicateCall("c1", "done"))
 		},
 	}})
-	profile := WithCheapModel(NewOpenAIProfile("gpt-5.2"), "gpt-4.1-nano")
+	profile := NewOpenAIProfile("gpt-5.2")
 	sess, err := NewSession(client, profile, execenv.NewLocalExecutionEnvironment(dir), SessionConfig{StateDir: dir})
 	if err != nil {
 		t.Fatalf("NewSession: %v", err)
@@ -284,6 +284,49 @@ func TestSessionNameFromCompactionTurn_RefreshesPromptName(t *testing.T) {
 	meta := sess.Meta()
 	if meta.Name != "Compacted Parser Fixes" || meta.NameSource != sessionNameSourceCompaction {
 		t.Fatalf("meta name/source = %q/%q, want compaction refresh", meta.Name, meta.NameSource)
+	}
+}
+
+// TestSessionNameFromCompactionTurn_SendsCurrentTitleToLLM proves the session's
+// existing title crosses into the naming request on the compaction refresh
+// path: the model can then keep a goal-level title instead of re-deriving one
+// from checkpoint text that may have lost the original goal (roborev #826).
+func TestSessionNameFromCompactionTurn_SendsCurrentTitleToLLM(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	adapter := &fakeAdapter{
+		name: "openai",
+		steps: []func(req llm.Request) llm.Response{
+			func(req llm.Request) llm.Response {
+				joined := messagesText(req.Messages)
+				if !strings.Contains(joined, "Current title: Fix Parser Crashes") {
+					t.Errorf("naming request missing current title: %q", joined)
+				}
+				return llm.Response{Message: llm.Assistant(`{"name":"Fix Parser Crashes"}`)}
+			},
+		},
+	}
+	client := llm.NewClient()
+	client.Register(adapter)
+	profile := WithCheapModel(NewOpenAIProfile("gpt-5.2"), "gpt-4.1-nano")
+	sess, err := NewSession(client, profile, execenv.NewLocalExecutionEnvironment(dir), SessionConfig{StateDir: dir})
+	if err != nil {
+		t.Fatalf("NewSession: %v", err)
+	}
+	defer sess.Close()
+
+	sess.mu.Lock()
+	sess.naming.value = "Fix Parser Crashes"
+	sess.naming.source = sessionNameSourcePrompt
+	sess.naming.updated = time.Now().UTC()
+	sess.mu.Unlock()
+
+	turn := schema.NewTurn(schema.TurnCheckpoint, llm.User("[CONTEXT CHECKPOINT]\nWorking Notes: debugging test failures"))
+	if err := sess.nameSessionFromCompactionTurn(context.Background(), turn); err != nil {
+		t.Fatalf("nameSessionFromCompactionTurn: %v", err)
+	}
+	if got := sess.Meta().Name; got != "Fix Parser Crashes" {
+		t.Fatalf("Name = %q, want preserved title", got)
 	}
 }
 

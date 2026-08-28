@@ -10,6 +10,7 @@ import (
 	"sync"
 	"syscall"
 	"testing"
+	"time"
 
 	"primeradiant.com/evener/agent/sandbox"
 )
@@ -331,4 +332,80 @@ func TestCleanupReleasesUnsandboxedScratchLease(t *testing.T) {
 		t.Fatalf("lease still held after Cleanup (leak): %v", err)
 	}
 	_ = syscall.Flock(int(f.Fd()), syscall.LOCK_UN)
+}
+
+// TestUnsandboxedScratchDirGitProbeDoesNotSelfDeadlock pins the one
+// working-directory shape that used to drive the lazy scratch mint through a
+// `git rev-parse` subprocess, and through that into itself.
+//
+// structuralWorktreeRoot stops at the FIRST ".git" entry it finds walking up
+// from cwd and reports a miss ("", false) when that entry is neither a
+// directory nor a parseable "gitdir:" pointer; hasGitEntryAncestor, walking the
+// same chain, only checks that the entry EXISTS. So a directory whose nearest
+// ".git" is a regular file that is not a gitdir pointer — a checkout left
+// half-written by an interrupted `git worktree add`/`git submodule` step, a
+// ".git" file restored from an archive, a stray file with that name — misses
+// structurally and still reaches the git-subprocess fallback. An INTACT linked
+// worktree or submodule does not qualify: its "gitdir:" pointer parses, so the
+// structural resolver answers without forking.
+//
+// Every spawn builds its environment through overlaySessionEnv, which mints the
+// scratch dir, so a mint that forks git re-enters unsandboxedScratchDir and
+// blocks forever on the non-reentrant mutex it is already holding (and, once
+// that lock is reordered away, on gitRootCache.lookup's mutex, which is held
+// across the same probe). The mint must therefore resolve its workspace anchor
+// without spawning anything at all.
+func TestUnsandboxedScratchDirGitProbeDoesNotSelfDeadlock(t *testing.T) {
+	repo := filepath.Join(t.TempDir(), "repo")
+	work := filepath.Join(repo, "work")
+	if err := os.MkdirAll(work, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(repo, ".git"), []byte("not a gitdir pointer\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := structuralWorktreeRoot(work); ok {
+		t.Fatal("layout no longer misses structuralWorktreeRoot; this test would not exercise the git fallback")
+	}
+	if !hasGitEntryAncestor(work) {
+		t.Fatal("layout has no .git ancestor; this test would not exercise the git fallback")
+	}
+
+	env := NewLocalExecutionEnvironment(work)
+	env.sandboxTmpBase = t.TempDir()
+	env.inheritedEnv = func() []string { return []string{"PATH=/usr/bin:/bin"} }
+
+	// Concurrent callers also pin the once-only invariant on this path: the
+	// mint may not race-allocate a second scratch dir for the same env.
+	const callers = 8
+	results := make(chan string, callers)
+	for range callers {
+		go func() { results <- envToMap(env.commandEnvironment(nil))["EVENER_SCRATCH_DIR"] }()
+	}
+
+	// TRIPWIRE: minting a scratch dir is a handful of stat/mkdir calls, well
+	// under a millisecond; this ceiling only fires when the mint wedges.
+	deadline := time.NewTimer(30 * time.Second)
+	defer deadline.Stop()
+	got := make([]string, 0, callers)
+	for range callers {
+		select {
+		case scratch := <-results:
+			got = append(got, scratch)
+		case <-deadline.C:
+			t.Fatalf("scratch mint deadlocked: only %d of %d callers returned", len(got), callers)
+		}
+	}
+
+	if strings.TrimSpace(got[0]) == "" {
+		t.Fatalf("EVENER_SCRATCH_DIR missing from an unsandboxed command env in a repo with an unparseable .git file")
+	}
+	if info, err := os.Stat(got[0]); err != nil || !info.IsDir() {
+		t.Fatalf("EVENER_SCRATCH_DIR %q must exist and be a directory: %v", got[0], err)
+	}
+	for i, scratch := range got {
+		if scratch != got[0] {
+			t.Fatalf("caller %d got scratch dir %q, want %q (every caller must share one dir)", i, scratch, got[0])
+		}
+	}
 }

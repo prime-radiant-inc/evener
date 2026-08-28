@@ -7,26 +7,24 @@ is accepted as graceful-skip, not enforced.
 
 ## Problem
 
-The fast/cheap model evener uses for auxiliary "side calls" is locked to the
-**same provider** as the main model. Two enforcement points:
+At design time, the fast/cheap model evener used for auxiliary "side calls" was
+locked to the **same provider** as the main model. Two enforcement points:
 
-1. `applyFastCheapModel` (`cmd/evener/serve.go:492`) rejects a cheap model whose
-   provider differs from the active provider (error at `:501`). Today it also
-   requires a fully-qualified `provider/model` — `cmdutil.ParseModelRef`
-   (`cmdutil/cmdutil.go:113`) rejects a bare model name. So the current contract
-   is: "`provider/model`, and the provider must equal the active provider."
-2. The cheap model is only a *model name* swapped within the **same profile**:
-   `CheapModel()` returns a bare string (`agent/provider/profile.go:337`),
-   `WithCheapModel` stores a name on a clone of the main profile
-   (`agent/provider/profile_overrides.go`), and side-call sites issue requests
-   with `Provider: <mainProfile>.ID()`.
+1. `applyFastCheapModel` (`cmd/evener/serve.go:492`) rejected a cheap model
+   whose provider differed from the active provider (error at `:501`). It also
+   required a fully-qualified `provider/model`: `cmdutil.ParseModelRef`
+   (`cmdutil/cmdutil.go:113`) rejected a bare model name. The contract was
+   "`provider/model`, and the provider must equal the active provider."
+2. The cheap setting stored only a *model name* within the **same profile**.
+   `WithCheapModel` cloned the main profile, and side-call sites paired that
+   model with `Provider: <mainProfile>.ID()`.
 
 ## Motivation
 
 Acute for the **Kimi coding plan**: it exposes one model (`kimi-for-coding`), so
-`CheapModel()` falls through to `default: p.model` (`profile.go:351`) and every
-side call runs on the full, expensive coding model. A user on
-main=`kimi-anthropic` wants cheap calls on a cheap Anthropic/OpenAI/Google model.
+an unset fast/cheap route uses the full coding model. A user on
+main=`kimi-anthropic` may instead want auxiliary calls on an inexpensive
+Anthropic/OpenAI/Google model.
 
 ## Non-goal / do not conflate
 
@@ -37,44 +35,24 @@ self-contained (own short system prompt, no main tool surface — verified: none
 set `Tools`/`ProviderOptions`/`ReasoningEffort`), so cross-provider is safe for
 them in a way it is not for fallbacks. Keep the fallback guard as-is.
 
-## Side-call inventory (verified — 9 request constructions)
+## Side-call inventory
 
-Two **distinct families** with different semantics — this distinction drove the
-review and the design:
+Most auxiliary consumers—including web fetch, fork summaries, memory crystals,
+recursive distillation, checkpoint prediction, and eval probes—route through the
+session-scoped `cheapmodel.Caller`. `Caller.Complete` resolves
+`Profile.CheapModelRef()`: an explicit fast/cheap route wins, while an unset
+route uses the active provider and model. The caller also learns model refusals
+and can retry an explicit cheap route on the active model.
 
-**A. `CheapModel()` sites (6) — provider-default fallback, always non-empty.**
-Each builds `llm.Request{Provider: p.ID(), Model: p.CheapModel()}` + `Complete`:
+Two consumers retain additional policy:
 
-| Site | file:line |
-|---|---|
-| web_fetch Q&A | `agent/tool_web_fetch.go:124-125` |
-| fork summarize | `agent/internal/contextmgr/fork_summarize.go:23-24` |
-| memory crystals | `agent/internal/contextmgr/strategy_memory_crystals.go:148-149` |
-| recursive distill (×2) | `agent/internal/contextmgr/strategy_recursive_distill.go:163-164, 193-194` |
-| checkpoint prediction | `agent/internal/contextmgr/strategy_checkpoint_pred.go:220-221` |
-
-In each, the profile (`cp`/`p`) is already in hand, so adding a routing helper is
-a local change.
-
-**B. `ConfiguredCheapModel()` sites (2) — empty when unset; gate behavior.** These
-do **not** use `CheapModel()` and must not be folded into a blanket swap:
-- **Session namer** (`agent/session_namer.go`): the ONLY `GenerateObject`
-  side call (`:62`, strict JSON-schema validation via `generate_object.go:55`).
-  `sessionNamerEnabled` gates the namer on `ConfiguredCheapModel() != ""`
-  (`:87-92`); `sessionNamerModel` falls back to `profile.Model()` (the MAIN
-  model). Provider is `profile.ID()` (`:65`).
-- **Summarizer** (`agent/internal/contextmgr/context_manager.go:1125-1145`):
-  does NOT call `CheapModel()`. It calls `summarizationModels(sumProfile)`
-  (`:961-977`), which keys on `ConfiguredCheapModel()` and returns a **fallback
-  chain** `[configuredCheap, activeMain]`, then loops issuing
-  `llm.Request{Model: model, Provider: sumProfile.ID()}` (`:1135`) — both models
-  to the **same (main) provider**.
-
-**Not a side call** (correctly excluded): eval probes
-(`agent/eval_probes.go:81-92`) use a plain `Complete` + `parseBinaryJudge` text
-parse — **no `GenerateObject`, no schema**. They are still a `CheapModel()` site
-(`:82-83`) and route like family A, but carry no structured-output requirement.
-`tool_web_search.go` and `session_tools.go` use `p.Model()` (main), excluded.
+- **Session namer** (`agent/session_namer.go`) is the only `GenerateObject` side
+  call. `sessionNamerEnabled` uses `ConfiguredCheapModel() != ""` as its enable
+  gate, so naming remains disabled when no fast/cheap model was chosen.
+- **Summarizer** (`agent/internal/contextmgr/context_manager.go`) uses
+  `CompleteConfigured`, which reports whether the shared caller reached the
+  active model. It may retry a broader class of eligible configured-route
+  failures on that active model without repeating a route already attempted.
 
 ## What a side call actually needs — and the two real caveats
 
@@ -96,32 +74,34 @@ provider-specific behaviors do matter and the original spec missed both:
 2. **Context window.** Side-call inputs are clamped to FIXED char budgets tuned
    for large windows (`maxHistoryChars = 80_000`, `webFetchMaxContent =
    100_000` ≈ 25-33K tokens; checkpoint pred 30_000), independent of the cheap
-   model's window. With the default cheap models (≥128K) this is fine; a
-   pathologically small cross-provider cheap model could overflow. Document a
+   model's window. Common configured cheap models have large windows, but a
+   pathologically small cross-provider model could overflow. Document a
    minimum-window expectation; do not size dynamically (YAGNI).
 
 ## Design
 
-Profile carries an optional cheap **provider** alongside the cheap model. Keep
-`CheapModel()` / `ConfiguredCheapModel()` semantics **unchanged**; add provider
-routing on top so default behavior is preserved exactly.
+Profile carries an optional cheap **provider** alongside the explicitly
+configured cheap model. `ConfiguredCheapModel()` returns only that explicit
+model; `CheapModelRef()` returns the configured route or the active
+provider/model when no route was configured.
 
 - New field `cheapProvider string` on `Profile` (empty ⇒ same as main).
 - `WithCheapModel(p, ref)`:
   - `ref` = `provider/model` ⇒ set `cheapProvider` + `cheapModel`.
   - `ref` = bare `model` ⇒ set `cheapModel`, leave `cheapProvider` empty
-    (same-provider — newly accepted; today bare is rejected at the flag layer).
+    (same-provider; the flag layer accepts bare refs).
 - `CheapProvider() string` ⇒ `cheapProvider` if set, else `p.ID()`.
-- `CheapModelRef() (provider, model string)` ⇒ `(CheapProvider(), CheapModel())`
-  — used by the **6 family-A sites** (one-line swap each).
+- `CheapModelRef() (provider, model string)` returns
+  `(CheapProvider(), ConfiguredCheapModel())` when configured and
+  `(p.ID(), p.Model())` otherwise.
 - **Namer**: keep the `ConfiguredCheapModel() != ""` enable gate and
   `sessionNamerModel` unchanged; only change the request's `Provider` to
   `CheapProvider()`. Behavior preserved when no cheap is configured (namer still
   disabled).
-- **Summarizer**: change `summarizationModels` to return `(provider, model)`
-  pairs — `[(CheapProvider(), configuredCheap), (p.ID(), activeMain)]` — and have
-  the loop route each pair to its own provider. The cheap entry goes to the cheap
-  provider; the main-model fallback stays on the main provider.
+- **Summarizer**: call `cheapmodel.Caller.CompleteConfigured`, which resolves the
+  configured route and reports whether it reached the active model. For a
+  broader eligible configured-route failure, call the distinct active route
+  once when the shared caller has not already done so.
 
 Rejected: Option B (resolve a full second profile). Heavier; buys quirks/options
 the side calls don't use. Only revisit if a side call later needs the cheap
@@ -144,36 +124,29 @@ providers**, not `ResolveProfileFromConfig`:
 - If `ref` is cross-provider, require `client.ProviderNames()` to contain the
   cheap provider; else error early with a clear message naming it.
 - Same-provider/bare refs need no provider check.
-- Call-time defense: if a side call's cheap provider is somehow unroutable, fall
-  back to the main provider's `CheapModel()` rather than failing a summarization
-  mid-session (cheap calls are advisory).
+- Call-time defense: when an explicit cheap route is refused, the shared caller
+  can retry on the active provider/model rather than failing an advisory side
+  call immediately.
 
-## Resume / persistence (must-have — feature evaporates without it)
+## Resume / persistence
 
-Today the cheap setting is lost on hub resume: `cmd/evener-hub/spawn.go:256-258`
-sets `resumeResolved.Effective.FastCheapModel = ""`, and `SessionMeta`
-(`agent/schema/snapshot.go`) persists only `ProfileID`/`Model`. A resumed Kimi
-session silently reverts side calls to the expensive main model.
-
-Fix: persist the cheap ref and rebuild it on restore.
-- Add a `CheapModel` (and provider) field to `SessionMeta`; write it at snapshot
-  time; on `RestoreSessionFromMetaWithConfig` (`serve.go:219`) re-apply via
-  `WithCheapModel`.
-- Stop clearing `FastCheapModel` in `spawn.go` resume args (or re-pass it from
-  the persisted launch config) so the relaunched `evener serve` re-applies it.
-- Verify which mechanism is authoritative (launch-config replay vs. SessionMeta)
-  and use one; do not double-apply.
+`SessionMeta.CheapModel` is the authoritative persisted ref. Session snapshots
+write `CheapModelRefString()`, and `RestoreSessionFromMetaWithConfig` reapplies a
+non-empty value with `WithCheapModel`. Hub resume clears the launch-time
+`FastCheapModel` override so restore does not apply the route twice.
 
 ## Touch points
 
 - `agent/provider/profile.go`: `cheapProvider` field, `CheapProvider()`,
   `CheapModelRef()`.
 - `agent/provider/profile_overrides.go`: `WithCheapModel` parses `provider/model`.
-- 6 family-A sites: route via `CheapModelRef()`.
+- Shared side-call consumers: route through `cheapmodel.Caller`, which resolves
+  `CheapModelRef()`.
 - `agent/session_namer.go`: request `Provider` ⇒ `CheapProvider()` (gate
   unchanged).
-- `agent/internal/contextmgr/context_manager.go`: `summarizationModels` ⇒
-  `(provider, model)` pairs + loop routing.
+- `agent/internal/contextmgr/context_manager.go`: use `CompleteConfigured` for
+  the first route and retain one active-model retry for the summarizer's broader
+  eligible failure classes.
 - `cmd/evener/serve.go:492` `applyFastCheapModel`: new signature + client-registered
   validation + relaxed provider-match; **parse** bare vs `provider/model`.
 - Resume: `SessionMeta` field + restore re-apply + `spawn.go:256-258`.

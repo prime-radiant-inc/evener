@@ -46,7 +46,7 @@ test("delegate cards with the same ids read stable status only from their own se
     callId: "call_a",
     text: "",
     description: "Shared delegate",
-    argumentsJSON: JSON.stringify({ task: "shared task" }),
+    argumentsJSON: JSON.stringify({ prompt: "shared task" }),
     output: JSON.stringify({ delegate_id: "dlg_shared", status: "running" }),
   };
   render(

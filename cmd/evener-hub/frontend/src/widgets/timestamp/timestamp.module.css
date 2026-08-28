@@ -1,0 +1,24 @@
+/* A relative-time label with the absolute instant on hover (native <time
+ * title>). Not a control: no focus ring, no tab stop — the visible relative
+ * text plus the machine-readable dateTime attribute is the full accessible
+ * contract, and the absolute-on-hover is a mouse convenience. The dotted
+ * underline appears only on hover to signal "hover for the exact time"
+ * (the <abbr>/help-cursor idiom), never at rest, so it never reads as a link. */
+
+.time {
+  flex: none;
+  font-family: var(--font-sans);
+  font-size: var(--font-size-caption);
+  color: var(--ink-low);
+  white-space: nowrap;
+  cursor: help;
+  border-bottom: 1px dotted transparent;
+  transition:
+    color var(--motion-duration-hover) var(--motion-easing-standard),
+    border-color var(--motion-duration-hover) var(--motion-easing-standard);
+}
+
+.time:hover {
+  color: var(--ink-mid);
+  border-bottom-color: var(--edge-strong);
+}

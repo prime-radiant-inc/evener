@@ -10,7 +10,7 @@ import (
 	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/appwire"
 	"primeradiant.com/evener/cmd/evener-hub/internal/hubcore"
-	"primeradiant.com/evener/cmd/evener-hub/internal/strutil"
+	"primeradiant.com/evener/envvars"
 	"primeradiant.com/evener/hubapi"
 )
 
@@ -36,7 +36,7 @@ func workspaceDataFromAppThread(thread appwire.Thread) WorkspaceData {
 		title = thread.Preview
 	}
 	if title == "" {
-		title = strutil.FirstNonEmpty(thread.SessionID, thread.ID)
+		title = envvars.FirstNonEmpty(thread.SessionID, thread.ID)
 	}
 	state := hubcore.NormalizeState(thread.Status.Type)
 	data := WorkspaceData{
@@ -57,8 +57,10 @@ func workspaceDataFromAppThread(thread appwire.Thread) WorkspaceData {
 		WorkMillis:          thread.Evener.WorkMillis,
 		Usage:               thread.Evener.Usage,
 		ActiveTurnStartedAt: thread.Evener.ActiveTurnStartedAt,
+		// Cost is the daemon's own figure, priced from the session's registry
+		// row; the web renders what it was told rather than re-deriving it.
+		Cost: thread.Evener.Cost,
 	}
-	data.Cost = appwire.EstimateCost(data.Model, data.Usage)
 	if goal := thread.Evener.Goal; goal != nil {
 		data.GoalStatus = goal.Status
 		data.GoalIterations = goal.Iterations
@@ -169,13 +171,6 @@ func compactSessionPromptTitle(prompt string) string {
 		return prompt
 	}
 	return strings.TrimSpace(prompt[:maxLen-1]) + "…"
-}
-
-func searchPastTitle(pe hubcore.PastEntry) string {
-	if title := strings.TrimSpace(pe.Meta.Name); title != "" {
-		return title
-	}
-	return hubcore.ShortID(pe.Meta.ID)
 }
 
 // stateLabel returns the unified display word (Track A §1) for a normalized

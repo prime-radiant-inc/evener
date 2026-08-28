@@ -85,7 +85,11 @@ func hubThreadList(ctx context.Context, cfg hubcore.WebConfig, sources *appsourc
 					liveIDs[key] = struct{}{}
 				}
 			}
-			thread = mergePastMetadataForList(cfg, source.ID(), thread)
+			var err error
+			thread, err = mergePastMetadataForList(ctx, cfg, source.ID(), thread)
+			if err != nil {
+				return appwire.ThreadListResponse{}, err
+			}
 			if appThreadMatches(thread, params) {
 				threads = append(threads, thread)
 			}
@@ -99,6 +103,9 @@ func hubThreadList(ctx context.Context, cfg hubcore.WebConfig, sources *appsourc
 		for _, entry := range cfg.Past.Search(params.SearchTerm, limit, 0) {
 			if _, ok := liveIDs[threadListSourceKey("local", entry.ID)]; ok {
 				continue
+			}
+			if err := ctx.Err(); err != nil {
+				return appwire.ThreadListResponse{}, err
 			}
 			thread := pastEntryThreadForList(cfg, entry)
 			if appThreadMatches(thread, params) {
@@ -207,12 +214,15 @@ func sourceExplicitlyRequestedForList(sourceID string, params appwire.ThreadList
 	return slices.Contains(params.SourceIDs, sourceID)
 }
 
-func mergePastMetadataForList(cfg hubcore.WebConfig, sourceID string, live appwire.Thread) appwire.Thread {
+// mergePastMetadataForList enriches live with persisted metadata without
+// loading transcript history. Missing metadata leaves the live thread intact;
+// cancellation stops the caller's sweep.
+func mergePastMetadataForList(ctx context.Context, cfg hubcore.WebConfig, sourceID string, live appwire.Thread) (appwire.Thread, error) {
 	if cfg.Past == nil {
-		return live
+		return live, nil
 	}
 	if threadListSourceID(sourceID, live) != "local" {
-		return live
+		return live, nil
 	}
 	var entry hubcore.PastEntry
 	var ok bool
@@ -226,7 +236,10 @@ func mergePastMetadataForList(cfg hubcore.WebConfig, sourceID string, live appwi
 		}
 	}
 	if !ok {
-		return live
+		return live, nil
+	}
+	if err := ctx.Err(); err != nil {
+		return appwire.Thread{}, err
 	}
 	past := pastEntryThreadForList(cfg, entry)
 	if live.ID == "" {
@@ -265,7 +278,7 @@ func mergePastMetadataForList(cfg hubcore.WebConfig, sourceID string, live appwi
 	if live.Evener.Profile == "" {
 		live.Evener.Profile = past.Evener.Profile
 	}
-	return live
+	return live, nil
 }
 
 // pastEntryThreadForList is deliberately metadata-only. pastEntryThread also

@@ -176,8 +176,23 @@ export const STATUS_TONE: Record<TaskStatus, ChipTone> = {
   cancelled: "neutral",
 };
 
+function hasTaskOutcomes(tasks: NonNullable<ThreadModel["tasks"]>): boolean {
+  return tasks.cancelled !== undefined || tasks.remaining !== undefined;
+}
+
+function taskMeterValue(tasks: NonNullable<ThreadModel["tasks"]>): number {
+  return hasTaskOutcomes(tasks) ? tasks.done + (tasks.cancelled ?? 0) : tasks.done;
+}
+
+export function taskAggregateLabel(tasks: NonNullable<ThreadModel["tasks"]>): string {
+  if (hasTaskOutcomes(tasks)) {
+    return `${tasks.done} done, ${tasks.cancelled ?? 0} cancelled, ${tasks.remaining ?? 0} remaining (${tasks.total} total)`;
+  }
+  return `${tasks.done}/${tasks.total}`;
+}
+
 function triggerLabel(tasks: ThreadModel["tasks"]): string {
-  return tasks ? `Tasks ${tasks.done}/${tasks.total}` : "Tasks";
+  return tasks ? `Tasks ${taskAggregateLabel(tasks)}` : "Tasks";
 }
 
 // The one name this panel's failure goes by. Both reports of it - the toast
@@ -570,13 +585,19 @@ export function TasksPanelBody({ sessionRef, model }: TasksPanelBodyProps) {
         {model.tasks && (
           <div className={CLASS.bodyHead} data-testid="tasks-body-head">
             <Meter
-              label={`Task progress: ${model.tasks.done} of ${model.tasks.total} complete`}
-              value={model.tasks.done}
+              label={
+                hasTaskOutcomes(model.tasks)
+                  ? `Task progress: ${taskAggregateLabel(model.tasks)}`
+                  : `Task progress: ${model.tasks.done} of ${model.tasks.total} complete`
+              }
+              value={taskMeterValue(model.tasks)}
               max={model.tasks.total}
               tone="neutral"
             />
             <span className={CLASS.count}>
-              {model.tasks.done}/{model.tasks.total} done
+              {hasTaskOutcomes(model.tasks)
+                ? taskAggregateLabel(model.tasks)
+                : `${model.tasks.done}/${model.tasks.total} done`}
             </span>
           </div>
         )}

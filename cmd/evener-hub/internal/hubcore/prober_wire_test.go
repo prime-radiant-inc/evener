@@ -1,6 +1,8 @@
 package hubcore
 
 import (
+	"context"
+	"net/http"
 	"net/http/httptest"
 	"reflect"
 	"strings"
@@ -9,6 +11,7 @@ import (
 	"primeradiant.com/evener/agent/events"
 	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/appwire"
+	"primeradiant.com/evener/internal/appserver"
 	"primeradiant.com/evener/rendezvous"
 	"primeradiant.com/evener/server"
 )
@@ -23,6 +26,25 @@ type wireProbeEnvelopeSource struct {
 	detailed    server.DetailedStatus
 }
 
+func TestStatusProberRejectsMismatchedRootSnapshots(t *testing.T) {
+	rpc := appserver.NewServer(appserver.ServerConfig{ServerName: "status-test", SourceID: "local"})
+	appserver.HandleTyped(rpc.Router(), appwire.MethodThreadRead, func(context.Context, appwire.ThreadReadParams) (appwire.ThreadReadResponse, error) {
+		return appwire.ThreadReadResponse{Thread: appwire.Thread{ID: "root-a", SessionID: "root-a", Status: appwire.ThreadStatus{Type: appwire.ThreadStatusIdle}}}, nil
+	})
+	appserver.HandleTyped(rpc.Router(), appwire.MethodThreadList, func(context.Context, appwire.ThreadListParams) (appwire.ThreadListResponse, error) {
+		return appwire.ThreadListResponse{Data: []appwire.Thread{{ID: "root-b", SessionID: "root-b", Status: appwire.ThreadStatus{Type: appwire.ThreadStatusIdle}}}}, nil
+	})
+	httpSrv := httptest.NewServer(http.HandlerFunc(rpc.ServeWebSocket))
+	defer httpSrv.Close()
+
+	got := (&StatusProber{client: httpSrv.Client()}).Probe(rendezvous.Entry{
+		Endpoint: "ws" + strings.TrimPrefix(httpSrv.URL, "http"),
+	})
+	if got.OK {
+		t.Fatalf("mismatched thread/read and thread/list roots produced a live probe: %+v", got)
+	}
+}
+
 func (s wireProbeEnvelopeSource) ContextPressure() float64 { return 0 }
 func (s wireProbeEnvelopeSource) ContextMetrics() server.ContextMetrics {
 	return server.ContextMetrics{}
@@ -32,7 +54,6 @@ func (s wireProbeEnvelopeSource) ClientMutationProjection() (appwire.QueueState,
 	return appwire.QueueState{}, nil
 }
 func (s wireProbeEnvelopeSource) TaskAggregate() *appwire.TaskAggregate { return nil }
-func (s wireProbeEnvelopeSource) GoalStatus() (string, int, bool)       { return "", 0, false }
 func (s wireProbeEnvelopeSource) WorkMetrics() (int64, *appwire.EvenerUsage, int64) {
 	return 0, nil, 0
 }
@@ -42,28 +63,14 @@ func (s wireProbeEnvelopeSource) PendingEscalations() []appwire.SandboxEscalatio
 	return s.escalations
 }
 func (s wireProbeEnvelopeSource) ReasoningInfo() (string, []string, bool) { return "", nil, false }
+func (s wireProbeEnvelopeSource) VisionModel() string                     { return "" }
 func (s wireProbeEnvelopeSource) SessionMeta() schema.SessionMeta         { return schema.SessionMeta{} }
 
-// TestStatusProberAgreesWithServerStatusInfoAcrossTheWire decodes a REAL
-// server.Server's /status response through the REAL StatusProber -- no
-// hand-authored JSON on either end.
-//
-// server.StatusInfo (server/server.go) and this package's statusInfo
-// (prober.go) are two independent declarations of the same wire contract by
-// design (see prober.go's comment); nothing merges them. Every other pin
-// proves just one side against a literal string authored IN THAT SAME
-// PACKAGE: TestStatusWirePinsFailedToolCallsAndPendingEscalationJSONKeys
-// (server package) decodes the server's own encode into an untyped map, and
-// fuzzScenarioStatusProber_DecodesPendingAsk/_DecodesPendingEscalation (this
-// package) feed the prober a hand-rolled literal. Both catch an uncoordinated
-// rename, but neither catches a coordinated one: an edit that renames a tag
-// in one declaration and "fixes" that same package's adjacent literal to
-// match still passes both pins while the cross-process contract breaks,
-// because neither literal is ever checked against the other declaration.
-// This test removes the hand-authored literal from both ends, so a rename on
-// EITHER declaration with no matching change on the other fails here
-// regardless of which adjacent test the author remembered to update.
-func TestStatusProberAgreesWithServerStatusInfoAcrossTheWire(t *testing.T) {
+// TestStatusProberReadsAppWireStatusIncludingNonAgentJobs drives a real daemon
+// AppWire server through the real typed client. The shell row proves status is
+// not inferred only from delegate descendants; the legacy delegate job row
+// proves descendants remain the sole agent projection and are not duplicated.
+func TestStatusProberReadsAppWireStatusIncludingNonAgentJobs(t *testing.T) {
 	srv := server.NewServer(server.ServerConfig{})
 	srv.SetAppIdentity("local", "th_wire_1")
 	srv.SetState("active")
@@ -71,7 +78,9 @@ func TestStatusProberAgreesWithServerStatusInfoAcrossTheWire(t *testing.T) {
 		askPending:  true,
 		escalations: []appwire.SandboxEscalationRequested{{EscalationID: "esc_1", Tool: "read_file"}},
 		detailed: server.DetailedStatus{Jobs: []server.JobStatusInfo{
-			{JobType: "delegate", Status: "running", TranscriptRef: "local:child-1"},
+			{JobID: "job_shell", JobType: "shell", Status: "running", OutputBytes: 17},
+			{JobID: "job_done", JobType: "shell", Status: "completed"},
+			{JobID: "job_delegate", JobType: "delegate", Status: "running", TranscriptRef: "local:child-1"},
 		}},
 	})
 	srv.RefreshThreadEnvelope()
@@ -106,10 +115,20 @@ func TestStatusProberAgreesWithServerStatusInfoAcrossTheWire(t *testing.T) {
 		Data:      events.SessionEndData{Reason: "shutdown", State: "closed"},
 	})
 
-	httpSrv := httptest.NewServer(srv)
+	httpSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/status" {
+			http.NotFound(w, r)
+			return
+		}
+		srv.ServeHTTP(w, r)
+	}))
 	defer httpSrv.Close()
 
-	got := (&StatusProber{}).Probe(rendezvous.Entry{Address: strings.TrimPrefix(httpSrv.URL, "http://")})
+	got := (&StatusProber{client: httpSrv.Client()}).Probe(rendezvous.Entry{
+		Address:  strings.TrimPrefix(httpSrv.URL, "http://"),
+		Protocol: appwire.ProtocolVersion,
+		Endpoint: "ws" + strings.TrimPrefix(httpSrv.URL, "http") + "/rpc",
+	})
 
 	if !got.OK {
 		t.Fatal("expected ok=true probing a real server")
@@ -131,6 +150,108 @@ func TestStatusProberAgreesWithServerStatusInfoAcrossTheWire(t *testing.T) {
 	}
 	wantStates := map[string]string{"child-1": "active", "child-2": "idle", "grandchild-1": "active"}
 	if !reflect.DeepEqual(got.RunningSubagentStates, wantStates) {
-		t.Errorf("running subagent states = %v, want %v: server.StatusInfo.DescendantStates and the prober's descendant_states tag no longer agree", got.RunningSubagentStates, wantStates)
+		t.Errorf("running subagent states = %v, want %v", got.RunningSubagentStates, wantStates)
+	}
+	if len(got.RunningJobs) != 1 {
+		t.Fatalf("running jobs = %+v, want only the non-agent shell job", got.RunningJobs)
+	}
+	job := got.RunningJobs[0]
+	if job.JobID != "job_shell" || job.JobType != "shell" || job.Status != "running" || job.OutputBytes != 17 {
+		t.Fatalf("running job = %+v, want shell identity and status from Evener.Diagnostics.Jobs", job)
+	}
+}
+
+func TestStatusProberProjectsQuiescedStableDelegateAsIdle(t *testing.T) {
+	// A retained child can still have an active descendant projection even after
+	// its stable delegate run has settled. The stable delegate lifecycle is the
+	// authoritative no-current-run signal for the parent-side projection.
+	prober, entry := startProbeDaemon(t, probeDaemonConfig{
+		sessionID: "th_wire_quiesced",
+		descendants: map[string]string{
+			"child-quiesced": appwire.ThreadStatusActive,
+		},
+		source: wireProbeEnvelopeSource{detailed: server.DetailedStatus{Delegates: []server.DelegateStatusInfo{{
+			DelegateID: "dlg_quiesced", ChildSessionID: "child-quiesced",
+			Lifecycle: "idle", Phase: "idle", Status: "idle", Resumable: true,
+		}}}},
+	})
+	got := prober.Probe(entry)
+	if !got.OK {
+		t.Fatal("expected ok=true probing a real server")
+	}
+	if want := []string{"child-quiesced"}; !reflect.DeepEqual(got.RunningSubagentIDs, want) {
+		t.Fatalf("running subagent ids = %v, want %v so the retained child remains visible", got.RunningSubagentIDs, want)
+	}
+	if got.RunningSubagentStates["child-quiesced"] != appwire.ThreadStatusIdle {
+		t.Fatalf("quiesced child state = %q, want idle from stable delegate diagnostics", got.RunningSubagentStates["child-quiesced"])
+	}
+}
+
+func TestStatusProberPreservesRunningStableDelegateAsActive(t *testing.T) {
+	prober, entry := startProbeDaemon(t, probeDaemonConfig{
+		sessionID: "th_wire_running",
+		descendants: map[string]string{
+			"child-running": appwire.ThreadStatusActive,
+		},
+		source: wireProbeEnvelopeSource{detailed: server.DetailedStatus{Delegates: []server.DelegateStatusInfo{{
+			DelegateID: "dlg_running", ChildSessionID: "child-running",
+			Lifecycle: "running", Phase: "running", Status: "running", Resumable: true,
+		}}}},
+	})
+	got := prober.Probe(entry)
+	if !got.OK {
+		t.Fatal("expected ok=true probing a real server")
+	}
+	if got.RunningSubagentStates["child-running"] != appwire.ThreadStatusActive {
+		t.Fatalf("running child state = %q, want active from the child projection", got.RunningSubagentStates["child-running"])
+	}
+}
+
+func TestStatusProberDoesNotMaskChildResumeBetweenSnapshots(t *testing.T) {
+	rpc := appserver.NewServer(appserver.ServerConfig{ServerName: "status-test", SourceID: "local"})
+	var calls []string
+	record := func(name string) {
+		calls = append(calls, name)
+	}
+	root := func(lifecycle string) appwire.Thread {
+		return appwire.Thread{
+			ID: "root", SessionID: "root", Status: appwire.ThreadStatus{Type: appwire.ThreadStatusIdle},
+			Evener: appwire.EvenerThread{Diagnostics: &appwire.EvenerDiagnostics{
+				Delegates: []appwire.EvenerDelegateInfo{{
+					ChildSessionID: "child-resumed", Lifecycle: lifecycle, Phase: lifecycle, Status: lifecycle,
+				}},
+			}},
+		}
+	}
+	appserver.HandleTyped(rpc.Router(), appwire.MethodThreadList, func(context.Context, appwire.ThreadListParams) (appwire.ThreadListResponse, error) {
+		record("list")
+		return appwire.ThreadListResponse{Data: []appwire.Thread{
+			root(""),
+			{ID: "child-resumed", SessionID: "child-resumed", Status: appwire.ThreadStatus{Type: appwire.ThreadStatusActive}},
+		}}, nil
+	})
+	appserver.HandleTyped(rpc.Router(), appwire.MethodThreadRead, func(context.Context, appwire.ThreadReadParams) (appwire.ThreadReadResponse, error) {
+		record("read")
+		listWasFirst := len(calls) > 0 && calls[0] == "list"
+		lifecycle := "idle"
+		if listWasFirst {
+			lifecycle = "running"
+		}
+		return appwire.ThreadReadResponse{Thread: root(lifecycle)}, nil
+	})
+	httpSrv := httptest.NewServer(http.HandlerFunc(rpc.ServeWebSocket))
+	defer httpSrv.Close()
+
+	got := (&StatusProber{client: httpSrv.Client()}).Probe(rendezvous.Entry{
+		Endpoint: "ws" + strings.TrimPrefix(httpSrv.URL, "http"),
+	})
+	if !got.OK {
+		t.Fatal("expected ok=true probing a real server")
+	}
+	if got.RunningSubagentStates["child-resumed"] != appwire.ThreadStatusActive {
+		t.Fatalf("resumed child state = %q, want active from the newer lifecycle snapshot", got.RunningSubagentStates["child-resumed"])
+	}
+	if !reflect.DeepEqual(calls, []string{"list", "read"}) {
+		t.Fatalf("probe snapshot calls = %v, want list before read to avoid masking a resume", calls)
 	}
 }

@@ -11,6 +11,7 @@ import (
 	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/appwire"
 	"primeradiant.com/evener/llm"
+	"primeradiant.com/evener/llm/registry"
 )
 
 func TestAppEventProjectorProjectsAssistantDelta(t *testing.T) {
@@ -115,6 +116,24 @@ func TestProject_ReasoningEffortChanged(t *testing.T) {
 	}
 }
 
+func TestProject_VisionModelChanged(t *testing.T) {
+	p := NewAppEventProjector("th1", "local:th1")
+	out := p.Project(events.SessionEvent{
+		Kind: events.EventVisionModelChanged,
+		Data: events.VisionModelChangedData{OldVisionModel: "", NewVisionModel: "off"},
+	})
+	if len(out) != 1 || out[0].Method != appwire.NotifyThreadVisionModelChanged {
+		t.Fatalf("want one thread/vision-model/changed notification, got %+v", out)
+	}
+	params, ok := out[0].Params.(appwire.ThreadVisionModelChangedParams)
+	if !ok {
+		t.Fatalf("params type = %T, want appwire.ThreadVisionModelChangedParams", out[0].Params)
+	}
+	if params.ThreadID != "th1" || params.Ref != "local:th1" || params.VisionModel != "off" {
+		t.Fatalf("params = %+v", params)
+	}
+}
+
 // TestProject_ModelThenEffortNotificationOrdering pins the client-facing
 // contract for a switch that also clamps effort: the model-changed
 // notification (which carries the new reasoning-effort ladder) is delivered
@@ -156,14 +175,141 @@ func TestProject_TaskUpdated(t *testing.T) {
 	p := NewAppEventProjector("th1", "local:th1")
 	out := p.Project(events.SessionEvent{
 		Kind: events.EventTaskUpdated,
-		Data: events.TaskUpdatedData{Total: 3, Done: 1},
+		Data: events.TaskUpdatedData{
+			Total: 3, Done: 1, Current: &events.TaskSummaryData{ID: 2, Description: "live current task"},
+			TaskStoreOwnerSessionID: "owner-session",
+			TaskPublicationEpoch:    7,
+			TaskPublicationRevision: 42,
+		},
 	})
 	if len(out) != 1 || out[0].Method != appwire.NotifyEvenerTaskUpdated {
 		t.Fatalf("want one evener/task/updated notification, got %+v", out)
 	}
 	params, ok := out[0].Params.(appwire.TaskUpdatedParams)
-	if !ok || params.Total != 3 || params.Done != 1 {
-		t.Fatalf("params = %+v, want Total=3 Done=1", out[0].Params)
+	if !ok || params.Total != 3 || params.Done != 1 || params.Current == nil || params.Current.ID != 2 || params.Current.Description != "live current task" {
+		t.Fatalf("params = %+v, want Total=3 Done=1 Current={ID:2 Description:live current task}", out[0].Params)
+	}
+	if out[0].TaskStoreOwnerSessionID != "owner-session" {
+		t.Fatalf("notification owner = %q, want owner-session", out[0].TaskStoreOwnerSessionID)
+	}
+	if out[0].TaskPublicationEpoch != 7 || out[0].TaskPublicationRevision != 42 ||
+		p.TaskPublicationEpoch() != 7 || p.TaskPublicationRevision() != 42 {
+		t.Fatalf("notification/projector publication = %d:%d/%d:%d, want 7:42", out[0].TaskPublicationEpoch, out[0].TaskPublicationRevision, p.TaskPublicationEpoch(), p.TaskPublicationRevision())
+	}
+	wired, err := json.Marshal(params)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(wired), "owner") || strings.Contains(string(wired), "revision") || strings.Contains(string(wired), "epoch") || strings.Contains(string(wired), "taskStoreOwnerSessionId") {
+		t.Fatalf("public task params leaked internal routing metadata: %s", wired)
+	}
+}
+
+func TestProject_TaskUpdatedPreservesFullyCancelledState(t *testing.T) {
+	p := NewAppEventProjector("th1", "local:th1")
+	out := p.Project(events.SessionEvent{
+		Kind: events.EventTaskUpdated,
+		Data: events.TaskUpdatedData{Total: 3, Cancelled: 3, Remaining: 0},
+	})
+	if len(out) != 1 {
+		t.Fatalf("notifications = %+v, want one task update", out)
+	}
+	params, ok := out[0].Params.(appwire.TaskUpdatedParams)
+	if !ok || params.Total != 3 || params.Done != 0 || params.Cancelled != 3 || params.Remaining != 0 || params.Current != nil {
+		t.Fatalf("params = %+v, want fully cancelled task state", out[0].Params)
+	}
+}
+
+func TestProject_SessionStartCarriesCurrentWorkSeed(t *testing.T) {
+	p := NewAppEventProjector("th1", "local:th1")
+	out := p.Project(events.SessionEvent{Kind: events.EventSessionStart, Data: events.SessionStartData{
+		TaskStoreOwnerSessionID: "owner-session",
+		TaskPublicationEpoch:    7,
+		TaskPublicationRevision: 41,
+		CurrentWork: &events.CurrentWorkSeedData{
+			Tasks: &events.TaskStateData{Total: 3, Done: 1, Cancelled: 1, Remaining: 1, Current: &events.TaskSummaryData{ID: 2, Description: "seeded task"}},
+			Goal:  &events.GoalStateData{Objective: "seeded objective", Status: "active", Iterations: 2},
+		},
+	}})
+
+	thread := notificationThread(t, out, appwire.NotifyThreadStarted)
+	if thread.Evener.Tasks == nil || thread.Evener.Tasks.Total != 3 || thread.Evener.Tasks.Done != 1 || thread.Evener.Tasks.Cancelled != 1 || thread.Evener.Tasks.Remaining != 1 ||
+		thread.Evener.Tasks.Current == nil || thread.Evener.Tasks.Current.Description != "seeded task" {
+		t.Fatalf("started tasks = %+v, want complete current-work seed", thread.Evener.Tasks)
+	}
+	if thread.Evener.Goal == nil || thread.Evener.Goal.Objective != "seeded objective" || thread.Evener.Goal.Status != "active" || thread.Evener.Goal.Iterations != 2 {
+		t.Fatalf("started goal = %+v, want complete current-work seed", thread.Evener.Goal)
+	}
+	if out[0].TaskStoreOwnerSessionID != "owner-session" {
+		t.Fatalf("started notification owner = %q, want owner-session", out[0].TaskStoreOwnerSessionID)
+	}
+	if out[0].TaskPublicationEpoch != 7 || out[0].TaskPublicationRevision != 41 ||
+		p.TaskPublicationEpoch() != 7 || p.TaskPublicationRevision() != 41 {
+		t.Fatalf("started notification/projector publication = %d:%d/%d:%d, want 7:41", out[0].TaskPublicationEpoch, out[0].TaskPublicationRevision, p.TaskPublicationEpoch(), p.TaskPublicationRevision())
+	}
+	wired, err := json.Marshal(out[0].Params)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(wired), "taskPublication") || strings.Contains(string(wired), "task_publication") || strings.Contains(string(wired), "epoch") ||
+		strings.Contains(string(wired), `"revision":41`) || strings.Contains(string(wired), "owner") {
+		t.Fatalf("public thread-start params leaked internal routing metadata: %s", wired)
+	}
+}
+
+func TestProject_SessionStartExplicitNoGoalSeed(t *testing.T) {
+	p := NewAppEventProjector("th1", "local:th1")
+	out := p.Project(events.SessionEvent{Kind: events.EventSessionStart, Data: events.SessionStartData{
+		CurrentWork: &events.CurrentWorkSeedData{Tasks: &events.TaskStateData{}},
+	}})
+	thread := notificationThread(t, out, appwire.NotifyThreadStarted)
+	if thread.Evener.Tasks == nil {
+		t.Fatal("started tasks = nil, want authoritative present zero")
+	}
+	if thread.Evener.Goal != nil {
+		t.Fatalf("started goal = %+v, want explicit nil", thread.Evener.Goal)
+	}
+}
+
+func TestProject_SessionStartWithoutCurrentWorkRemainsCompatible(t *testing.T) {
+	p := NewAppEventProjector("th1", "local:th1")
+	out := p.Project(events.SessionEvent{Kind: events.EventSessionStart, Data: events.SessionStartData{}})
+	thread := notificationThread(t, out, appwire.NotifyThreadStarted)
+	if thread.Evener.Tasks != nil || thread.Evener.Goal != nil {
+		t.Fatalf("legacy started current work = tasks:%+v goal:%+v, want both unknown", thread.Evener.Tasks, thread.Evener.Goal)
+	}
+}
+
+func TestProject_GoalUpdated(t *testing.T) {
+	p := NewAppEventProjector("th1", "local:th1")
+	out := p.Project(events.SessionEvent{
+		Kind: events.EventGoalUpdated,
+		Data: events.GoalUpdatedData{Goal: &events.GoalStateData{
+			Objective: "ship focus sentence", Status: "active", Iterations: 1,
+		}},
+	})
+	if len(out) != 1 || out[0].Method != appwire.NotifyEvenerGoalUpdated {
+		t.Fatalf("want one evener/goal/updated notification, got %+v", out)
+	}
+	params, ok := out[0].Params.(appwire.GoalUpdatedParams)
+	if !ok || params.ThreadID != "th1" || params.Ref != "local:th1" || params.Goal == nil ||
+		params.Goal.Objective != "ship focus sentence" || params.Goal.Status != "active" || params.Goal.Iterations != 1 {
+		t.Fatalf("params = %+v, want active goal state", out[0].Params)
+	}
+}
+
+func TestProject_GoalUpdatedClear(t *testing.T) {
+	p := NewAppEventProjector("th1", "local:th1")
+	out := p.Project(events.SessionEvent{
+		Kind: events.EventGoalUpdated,
+		Data: events.GoalUpdatedData{Goal: nil},
+	})
+	if len(out) != 1 || out[0].Method != appwire.NotifyEvenerGoalUpdated {
+		t.Fatalf("want one evener/goal/updated clear notification, got %+v", out)
+	}
+	params, ok := out[0].Params.(appwire.GoalUpdatedParams)
+	if !ok || params.ThreadID != "th1" || params.Ref != "local:th1" || params.Goal != nil {
+		t.Fatalf("params = %+v, want explicit nil goal", out[0].Params)
 	}
 }
 
@@ -905,22 +1051,30 @@ func TestProjectorTurnEndedPreservesInterruptStatus(t *testing.T) {
 // TestProjectorAccumulatesPerTurnUsageAcrossRounds verifies the completed
 // Turn's Usage is the turn's own total across every round (not a
 // cumulative-session figure) — each EventAssistantTextEnd's usage is summed
-// until the turn itself completes, and Cost is estimated from the model seen
-// on those rounds.
+// until the turn itself completes, and Cost is estimated at the cost the
+// instance and model seen on those rounds resolve to.
 func TestProjectorAccumulatesPerTurnUsageAcrossRounds(t *testing.T) {
 	projector := NewAppEventProjector("th_1", "local:th_1")
+	projector.SetCostLookup(func(provider, model string) *registry.Cost {
+		if provider != "anthropic" || model != "claude-opus-4-5" {
+			return nil
+		}
+		return &registry.Cost{Input: 5, Output: 25}
+	})
 	projector.Project(events.SessionEvent{Kind: events.EventUserInput, SessionID: "th_1", Data: events.UserInputData{Text: "hello"}})
 	projector.Project(events.SessionEvent{Kind: events.EventAssistantTextStart, SessionID: "th_1", Data: events.AssistantTextStartData{Model: "claude-opus-4-5"}})
 	projector.Project(events.SessionEvent{Kind: events.EventAssistantTextEnd, SessionID: "th_1", Data: events.AssistantTextEndData{
-		Text:  "first round",
-		Usage: llm.Usage{InputTokens: 100, OutputTokens: 50},
-		Model: "claude-opus-4-5",
+		Text:     "first round",
+		Usage:    llm.Usage{InputTokens: 100, OutputTokens: 50},
+		Model:    "claude-opus-4-5",
+		Provider: "anthropic",
 	}})
 	projector.Project(events.SessionEvent{Kind: events.EventAssistantTextStart, SessionID: "th_1", Data: events.AssistantTextStartData{Model: "claude-opus-4-5"}})
 	projector.Project(events.SessionEvent{Kind: events.EventAssistantTextEnd, SessionID: "th_1", Data: events.AssistantTextEndData{
-		Text:  "second round",
-		Usage: llm.Usage{InputTokens: 20, OutputTokens: 10},
-		Model: "claude-opus-4-5",
+		Text:     "second round",
+		Usage:    llm.Usage{InputTokens: 20, OutputTokens: 10},
+		Model:    "claude-opus-4-5",
+		Provider: "anthropic",
 	}})
 	sessionEnd := projector.Project(events.SessionEvent{Kind: events.EventSessionEnd, SessionID: "th_1", Data: events.SessionEndData{Reason: "input_complete", State: "idle"}})
 
@@ -934,8 +1088,62 @@ func TestProjectorAccumulatesPerTurnUsageAcrossRounds(t *testing.T) {
 	if turn.Usage.OutputTokens != 60 {
 		t.Fatalf("turn.Usage.OutputTokens=%d, want 60", turn.Usage.OutputTokens)
 	}
-	if !strings.HasPrefix(turn.Cost, "~$") {
-		t.Fatalf("turn.Cost=%q, want ~$ prefix", turn.Cost)
+	// 120/1e6*5 + 60/1e6*25 = 0.0006 + 0.0015 = 0.0021 -> "~$0.00"
+	if turn.Cost != "~$0.00" {
+		t.Fatalf("turn.Cost=%q, want ~$0.00 from the looked-up registry cost", turn.Cost)
+	}
+}
+
+// TestProjectorTurnCostComesFromTheRegistryLookup pins where the per-turn
+// cost comes from (spec §7.5): the lookup is keyed on the provider and model
+// the round reported, and its Cost — not a catalog entry keyed on the model
+// id alone — is what the turn is priced at.
+func TestProjectorTurnCostComesFromTheRegistryLookup(t *testing.T) {
+	var gotProvider, gotModel string
+	projector := NewAppEventProjector("th_1", "local:th_1")
+	projector.SetCostLookup(func(provider, model string) *registry.Cost {
+		gotProvider, gotModel = provider, model
+		return &registry.Cost{Input: 3, Output: 15}
+	})
+	projector.Project(events.SessionEvent{Kind: events.EventUserInput, SessionID: "th_1", Data: events.UserInputData{Text: "hello"}})
+	projector.Project(events.SessionEvent{Kind: events.EventAssistantTextEnd, SessionID: "th_1", Data: events.AssistantTextEndData{
+		Text:     "answer",
+		Usage:    llm.Usage{InputTokens: 1_000_000, OutputTokens: 100_000},
+		Model:    "claude-sonnet-4-5",
+		Provider: "work",
+	}})
+	sessionEnd := projector.Project(events.SessionEvent{Kind: events.EventSessionEnd, SessionID: "th_1", Data: events.SessionEndData{Reason: "input_complete", State: "idle"}})
+
+	turn := notificationTurn(t, sessionEnd, appwire.NotifyTurnCompleted)
+	if gotProvider != "work" || gotModel != "claude-sonnet-4-5" {
+		t.Fatalf("cost lookup called with (%q, %q), want (\"work\", \"claude-sonnet-4-5\")", gotProvider, gotModel)
+	}
+	// 1_000_000/1e6*3 + 100_000/1e6*15 = 3.00 + 1.50 = 4.50
+	if turn.Cost != "~$4.50" {
+		t.Fatalf("turn.Cost=%q, want ~$4.50", turn.Cost)
+	}
+}
+
+// TestProjectorWithoutCostLookupLeavesTurnCostEmpty pins the flag-day rule
+// (spec §14.1): with nothing to price against, the turn reports its usage and
+// no cost at all rather than a fabricated "~$0.00".
+func TestProjectorWithoutCostLookupLeavesTurnCostEmpty(t *testing.T) {
+	projector := NewAppEventProjector("th_1", "local:th_1")
+	projector.Project(events.SessionEvent{Kind: events.EventUserInput, SessionID: "th_1", Data: events.UserInputData{Text: "hello"}})
+	projector.Project(events.SessionEvent{Kind: events.EventAssistantTextEnd, SessionID: "th_1", Data: events.AssistantTextEndData{
+		Text:     "answer",
+		Usage:    llm.Usage{InputTokens: 100, OutputTokens: 50},
+		Model:    "claude-opus-4-5",
+		Provider: "anthropic",
+	}})
+	sessionEnd := projector.Project(events.SessionEvent{Kind: events.EventSessionEnd, SessionID: "th_1", Data: events.SessionEndData{Reason: "input_complete", State: "idle"}})
+
+	turn := notificationTurn(t, sessionEnd, appwire.NotifyTurnCompleted)
+	if turn.Usage == nil {
+		t.Fatalf("turn.Usage=nil, want the turn's own usage regardless of pricing")
+	}
+	if turn.Cost != "" {
+		t.Fatalf("turn.Cost=%q, want empty with no cost lookup installed", turn.Cost)
 	}
 }
 
@@ -1641,6 +1849,60 @@ func TestAppEventProjectorProjectsAgentOnlyEventsAsSystemAnnouncements(t *testin
 			description: "Tool call repaired",
 			contains:    []string{"edit_file", "invalid character"},
 			notContains: []string{`unicode_repair::invalid \u escape → �`},
+		},
+		{
+			name: "tool call repaired: fill_required",
+			event: events.SessionEvent{Kind: events.EventToolCallRepaired, SessionID: "th_1", Data: events.ToolCallRepairedData{
+				ToolName: "communicate",
+				CallID:   "c1",
+				Changes:  []string{"fill_required:output:filled message"},
+			}},
+			description: "Tool call repaired",
+			contains:    []string{"communicate", "filled", "message"},
+			notContains: []string{"fill_required:output:filled message", "adjusted the"},
+		},
+		{
+			name: "tool call repaired: fill_required three keys",
+			event: events.SessionEvent{Kind: events.EventToolCallRepaired, SessionID: "th_1", Data: events.ToolCallRepairedData{
+				ToolName: "communicate",
+				CallID:   "c1",
+				Changes: []string{
+					"fill_required:output:filled message",
+					"fill_required:output:filled data",
+					"fill_required:output:filled artifacts",
+				},
+			}},
+			description: "Tool call repaired",
+			contains: []string{
+				`filled the required "message" key`,
+				`filled the required "data" key`,
+				`filled the required "artifacts" key`,
+			},
+			notContains: []string{
+				"fill_required:output:filled message",
+				"fill_required:output:filled data",
+				"fill_required:output:filled artifacts",
+				"adjusted the",
+			},
+		},
+		{
+			name: "tool call repaired: nested fill_required three keys",
+			event: events.SessionEvent{Kind: events.EventToolCallRepaired, SessionID: "th_1", Data: events.ToolCallRepairedData{
+				ToolName: "communicate",
+				CallID:   "c1",
+				Changes: []string{
+					"fill_required:output.message:filled default",
+					"fill_required:output.data:filled default",
+					"fill_required:output.artifacts:filled default",
+				},
+			}},
+			description: "Tool call repaired",
+			contains: []string{
+				`filled the required "message" key`,
+				`filled the required "data" key`,
+				`filled the required "artifacts" key`,
+			},
+			notContains: []string{"fill_required:output.message:filled default", `"default"`},
 		},
 		{
 			name: "tool call repaired: multiple changes",
@@ -2467,18 +2729,18 @@ func notificationTurnID(t *testing.T, items []AppNotification, method string) st
 }
 
 // Issue #26: live tool frames feed the web UI's inline subagent activity line,
-// which renders the tool call's purpose. The started item carries the purpose
+// which renders the tool call's intent. The started item carries the intent
 // in Description; the completed item must carry it too (derived from the
 // call's arguments, mirroring apptranscript.ToolIntentFromArguments) so the
-// activity line stays on the purpose when the tool finishes.
-func TestAppEventProjectorToolCallEndCarriesPurposeDescription(t *testing.T) {
+// activity line stays on the intent when the tool finishes.
+func TestAppEventProjectorToolCallEndCarriesIntentDescription(t *testing.T) {
 	projector := NewAppEventProjector("th_1", "local:th_1")
 	projector.Project(events.SessionEvent{Kind: events.EventUserInput, SessionID: "th_1", Data: events.UserInputData{Text: "hello"}})
 
 	projector.Project(events.SessionEvent{Kind: events.EventToolCallStart, SessionID: "th_1", Data: events.ToolCallStartData{
 		ToolName:      "shell",
 		CallID:        "call_1",
-		ArgumentsJSON: `{"command":"go test ./...","purpose":"run the full test suite"}`,
+		ArgumentsJSON: `{"command":"go test ./...","intent":"run the full test suite"}`,
 		Description:   "run the full test suite",
 	}})
 	out := projector.Project(events.SessionEvent{Kind: events.EventToolCallEnd, SessionID: "th_1", Data: events.ToolCallEndData{
@@ -2488,10 +2750,12 @@ func TestAppEventProjectorToolCallEndCarriesPurposeDescription(t *testing.T) {
 	}})
 	item := notificationThreadItem(t, out, appwire.NotifyItemCompleted)
 	if item.Description != "run the full test suite" {
-		t.Fatalf("completed tool item should carry the purpose-derived Description, got %q", item.Description)
+		t.Fatalf("completed tool item should carry the intent-derived Description, got %q", item.Description)
 	}
 
-	// The intent field is honored too, matching ToolIntentFromArguments.
+	// Description is derived from the arguments' intent field when the
+	// started event carries no explicit Description, matching
+	// ToolIntentFromArguments.
 	projector.Project(events.SessionEvent{Kind: events.EventToolCallStart, SessionID: "th_1", Data: events.ToolCallStartData{
 		ToolName:      "grep",
 		CallID:        "call_2",
@@ -2507,7 +2771,7 @@ func TestAppEventProjectorToolCallEndCarriesPurposeDescription(t *testing.T) {
 		t.Fatalf("completed tool item should derive Description from the intent field, got %q", item.Description)
 	}
 
-	// No purpose in the arguments: Description stays empty rather than
+	// No intent in the arguments: Description stays empty rather than
 	// falling back to a raw command dump.
 	projector.Project(events.SessionEvent{Kind: events.EventToolCallStart, SessionID: "th_1", Data: events.ToolCallStartData{
 		ToolName:      "shell",
@@ -2521,7 +2785,7 @@ func TestAppEventProjectorToolCallEndCarriesPurposeDescription(t *testing.T) {
 	}})
 	item = notificationThreadItem(t, out, appwire.NotifyItemCompleted)
 	if item.Description != "" {
-		t.Fatalf("purpose-less tool call should have empty Description, got %q", item.Description)
+		t.Fatalf("intent-less tool call should have empty Description, got %q", item.Description)
 	}
 }
 

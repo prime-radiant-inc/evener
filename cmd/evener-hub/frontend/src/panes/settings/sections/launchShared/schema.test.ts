@@ -13,6 +13,7 @@ import {
   optionSupportsLayer,
   PROMPT_COMPOSITE_SPECS,
   PROMPT_DEPENDENT_WIRE_FIELDS,
+  resolvedDefaultLabel,
   resolvedEmptyChoice,
   schemaPathKind,
 } from "./schema";
@@ -206,6 +207,74 @@ describe("resolvedEmptyChoice / emptyChoiceLabel", () => {
   });
 });
 
+describe("resolvedDefaultLabel", () => {
+  const booleanOpt = opt({ field: "sandbox_net", wireField: "sandboxNet", kind: "boolean" });
+  const selectOpt = opt({
+    field: "reasoning_effort",
+    wireField: "reasoningEffort",
+    kind: "select",
+    choices: [
+      { value: "", label: "(default)" },
+      { value: "high", label: "high" },
+    ],
+  });
+
+  test("undefined when there is no effective layer (the resolve hasn't landed or failed)", () => {
+    expect(resolvedDefaultLabel(selectOpt, "global", undefined)).toBeUndefined();
+  });
+
+  test("undefined when the effective layer doesn't set the field, or sets it empty", () => {
+    expect(resolvedDefaultLabel(selectOpt, "global", {})).toBeUndefined();
+    expect(resolvedDefaultLabel(selectOpt, "global", { reasoningEffort: "" })).toBeUndefined();
+  });
+
+  test("a boolean names the resolved value in the field's own true/false wording", () => {
+    expect(resolvedDefaultLabel(booleanOpt, "global", { sandboxNet: true })).toBe("true (default)");
+    expect(resolvedDefaultLabel(booleanOpt, "global", { sandboxNet: false })).toBe("false (default)");
+  });
+
+  test("the project layer keeps its own marker wording, value prepended", () => {
+    expect(resolvedDefaultLabel(booleanOpt, "project", { sandboxNet: true })).toBe("true (use global default)");
+    expect(resolvedDefaultLabel(selectOpt, "project", { reasoningEffort: "high" })).toBe("high (use global default)");
+  });
+
+  test("a select whose empty marker is the generic one names the resolved value", () => {
+    expect(resolvedDefaultLabel(selectOpt, "global", { reasoningEffort: "high" })).toBe("high (default)");
+  });
+
+  test("a modelPicker names the resolved model", () => {
+    const modelOpt = opt({ field: "model", wireField: "model", kind: "modelPicker" });
+    expect(resolvedDefaultLabel(modelOpt, "global", { model: "anthropic/claude-sonnet-4" })).toBe(
+      "anthropic/claude-sonnet-4 (default)",
+    );
+  });
+
+  test("a schema-supplied custom empty label is NOT rewritten - it already says what unset means", () => {
+    // sandbox's own "" choice is "(inherit)"; the Go "(default: off)" family
+    // likewise stays verbatim (out of scope for resolved labels).
+    const sandboxOpt = opt({
+      field: "sandbox",
+      wireField: "sandbox",
+      kind: "select",
+      choices: [
+        { value: "", label: "(inherit)" },
+        { value: "off", label: "off" },
+      ],
+    });
+    expect(resolvedDefaultLabel(sandboxOpt, "global", { sandbox: "workspace-write" })).toBeUndefined();
+    const continuationOpt = opt({
+      field: "openai_responses_continuation",
+      wireField: "openAIResponsesContinuation",
+      kind: "select",
+      choices: [
+        { value: "", label: "(default: off)" },
+        { value: "off", label: "off" },
+      ],
+    });
+    expect(resolvedDefaultLabel(continuationOpt, "global", { openAIResponsesContinuation: "auto" })).toBeUndefined();
+  });
+});
+
 describe("buildFormState (populate) + collectConfig (collect) round-trip", () => {
   const options: LaunchOption[] = [
     opt({ field: "agent", wireField: "agent", kind: "text", group: "Agent", defaultableLayers: ["global", "project"] }),
@@ -370,5 +439,60 @@ describe("buildFormState (populate) + collectConfig (collect) round-trip", () =>
     state.scalars.systemPromptMode = "inline";
     state.scalars.systemPromptText = "be nice";
     expect(collectConfig(options, state).systemPromptText).toBe("be nice");
+  });
+});
+
+describe("resolvedDefaultLabel with runtime-resolved effective layers", () => {
+  const integerOpt = opt({
+    field: "max_subagent_depth",
+    wireField: "maxSubagentDepth",
+    kind: "integer",
+  });
+  const maxRoundsOpt = opt({
+    field: "max_rounds",
+    wireField: "maxRounds",
+    kind: "integer",
+  });
+
+  test("an integer field names the resolved number", () => {
+    expect(resolvedDefaultLabel(integerOpt, "global", { maxSubagentDepth: 2 })).toBe("2 (default)");
+    expect(resolvedDefaultLabel(integerOpt, "project", { maxSubagentDepth: 50 })).toBe("50 (use global default)");
+  });
+
+  test("max_rounds -1 names unlimited, matching the flag's own wording", () => {
+    expect(resolvedDefaultLabel(maxRoundsOpt, "global", { maxRounds: -1 })).toBe("unlimited (default)");
+  });
+
+  test("max_rounds 0 also names unlimited, matching applyDefaults' 0→-1 conversion", () => {
+    expect(resolvedDefaultLabel(maxRoundsOpt, "global", { maxRounds: 0 })).toBe("unlimited (default)");
+  });
+
+  test("an integer field with no resolved value stays undefined", () => {
+    expect(resolvedDefaultLabel(integerOpt, "global", {})).toBeUndefined();
+    expect(resolvedDefaultLabel(integerOpt, "global", { maxSubagentDepth: undefined })).toBeUndefined();
+  });
+});
+
+describe("resolvedDefaultLabel with dynamic builtin labels", () => {
+  test("fast_cheap_model names 'primary model' from builtinDefaultLabel when the effective layer is unset", () => {
+    const modelOpt = {
+      ...opt({ field: "fast_cheap_model", wireField: "fastCheapModel", kind: "modelPicker" }),
+      builtinDefaultLabel: "primary model",
+    };
+    // The effective layer leaves fast_cheap_model unset (its default is the
+    // primary model, a runtime ref the resolve can't compute), so the label
+    // falls back to the schema's builtinDefaultLabel.
+    expect(resolvedDefaultLabel(modelOpt, "global", {})).toBe("primary model (default)");
+    expect(resolvedDefaultLabel(modelOpt, "project", {})).toBe("primary model (use global default)");
+  });
+
+  test("fast_cheap_model with an explicit effective value names that value", () => {
+    const modelOpt = {
+      ...opt({ field: "fast_cheap_model", wireField: "fastCheapModel", kind: "modelPicker" }),
+      builtinDefaultLabel: "primary model",
+    };
+    expect(resolvedDefaultLabel(modelOpt, "global", { fastCheapModel: "openai/gpt-4o-mini" })).toBe(
+      "openai/gpt-4o-mini (default)",
+    );
   });
 });

@@ -1,23 +1,34 @@
-.PHONY: tools generate clean refresh-model-catalog help
+.PHONY: tools tools-golangci tools-gitleaks generate clean refresh-model-catalog help
 
 # tools installs the CI-pinned lint/scanner versions from .tool-versions, so
 # a local `make lint` runs exactly what CI runs.
 ## Install the CI-pinned golangci-lint and gitleaks versions from
 ## .tool-versions, so a local make lint runs exactly what CI runs.
 tools:
+	@$(MAKE) --no-print-directory tools-golangci
+	@$(MAKE) --no-print-directory tools-gitleaks
+
+## Install the CI-pinned golangci-lint version from .tool-versions.
+tools-golangci:
 	@set -eu; \
 	golangci=$$(awk '$$1=="golangci-lint" {print $$2}' .tool-versions); \
+	curl -sSfL https://raw.githubusercontent.com/golangci/golangci-lint/HEAD/install.sh | sh -s -- -b "$$(go env GOPATH)/bin" "v$$golangci"
+
+## Install the CI-pinned gitleaks version from .tool-versions.
+tools-gitleaks:
+	@set -eu; \
 	gitleaks=$$(awk '$$1=="gitleaks" {print $$2}' .tool-versions); \
-	curl -sSfL https://raw.githubusercontent.com/golangci/golangci-lint/HEAD/install.sh | sh -s -- -b "$$(go env GOPATH)/bin" "v$$golangci"; \
 	go install github.com/zricethezav/gitleaks/v8@v$$gitleaks
 
-# refresh-model-catalog replaces the vendored LiteLLM model-catalog snapshot
-# with the current upstream and runs the catalog sanity tests. The vendored
-# file must never be hand-edited (evener-curated data lives in
-# evener_model_catalog_overrides.json); use `--check` via the script directly
-# for a dry-run delta report.
-## Replace the vendored LiteLLM model-catalog snapshot with the current
-## upstream and run the catalog sanity tests.
+# refresh-model-catalog replaces the embedded models.dev snapshot in
+# llm/registry/data/ (models.dev.json.gz plus the meta recording when and
+# with which ETag it was fetched) with the current upstream, then runs the
+# converter tests and the overlay report. The snapshot is never hand-edited:
+# evener's corrections live beside it in providers_overlay.toml, which the
+# registry layers on at load. Run the script directly with `--check` for a
+# dry-run delta report.
+## Replace the embedded models.dev snapshot in llm/registry/data/ with the
+## current upstream and run the converter tests and overlay report.
 refresh-model-catalog:
 	@scripts/ops/refresh-model-catalog.sh
 

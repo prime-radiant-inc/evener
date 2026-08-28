@@ -2,6 +2,7 @@ package execenv
 
 import (
 	"bytes"
+	"context"
 	"errors"
 	"os"
 	"path/filepath"
@@ -166,7 +167,7 @@ func grepNativeEnv(t *testing.T, seed map[string]string) *LocalExecutionEnvironm
 
 func TestGrepFallback_ContentMode(t *testing.T) {
 	env := grepNativeEnv(t, map[string]string{"a.txt": "alpha needle\nbeta\n"})
-	out, err := env.Grep("needle", "", "", false, 100, "")
+	out, err := env.Grep(context.Background(), "needle", "", "", false, 100, "")
 	if err != nil {
 		t.Fatalf("Grep: %v", err)
 	}
@@ -180,7 +181,7 @@ func TestGrepFallback_FilesWithMatchesMode(t *testing.T) {
 		"a.txt": "needle here\n",
 		"b.txt": "no match\n",
 	})
-	out, err := env.Grep("needle", "", "", false, 100, "files_with_matches")
+	out, err := env.Grep(context.Background(), "needle", "", "", false, 100, "files_with_matches")
 	if err != nil {
 		t.Fatalf("Grep: %v", err)
 	}
@@ -197,7 +198,7 @@ func TestGrepFallback_CountMode_Sorted(t *testing.T) {
 		"a.txt": "hit\nhit\n",
 		"b.txt": "hit\n",
 	})
-	out, err := env.Grep("hit", "", "", false, 100, "count")
+	out, err := env.Grep(context.Background(), "hit", "", "", false, 100, "count")
 	if err != nil {
 		t.Fatalf("Grep: %v", err)
 	}
@@ -208,7 +209,7 @@ func TestGrepFallback_CountMode_Sorted(t *testing.T) {
 
 func TestGrepFallback_CaseInsensitive(t *testing.T) {
 	env := grepNativeEnv(t, map[string]string{"a.txt": "HELLO World\n"})
-	out, err := env.Grep("hello", "", "", true, 100, "")
+	out, err := env.Grep(context.Background(), "hello", "", "", true, 100, "")
 	if err != nil {
 		t.Fatalf("Grep: %v", err)
 	}
@@ -222,7 +223,7 @@ func TestGrepFallback_GlobFilter(t *testing.T) {
 		"keep.go":  "needle\n",
 		"skip.txt": "needle\n",
 	})
-	out, err := env.Grep("needle", "", "*.go", false, 100, "")
+	out, err := env.Grep(context.Background(), "needle", "", "*.go", false, 100, "")
 	if err != nil {
 		t.Fatalf("Grep: %v", err)
 	}
@@ -237,7 +238,7 @@ func TestGrepFallback_MaxResultsCap(t *testing.T) {
 		content.WriteString("needle\n")
 	}
 	env := grepNativeEnv(t, map[string]string{"many.txt": content.String()})
-	out, err := env.Grep("needle", "", "", false, 3, "")
+	out, err := env.Grep(context.Background(), "needle", "", "", false, 3, "")
 	if err != nil {
 		t.Fatalf("Grep: %v", err)
 	}
@@ -249,7 +250,7 @@ func TestGrepFallback_MaxResultsCap(t *testing.T) {
 
 func TestGrepFallback_InvalidRegex(t *testing.T) {
 	env := grepNativeEnv(t, map[string]string{"a.txt": "x\n"})
-	_, err := env.Grep("[invalid", "", "", false, 100, "")
+	_, err := env.Grep(context.Background(), "[invalid", "", "", false, 100, "")
 	if err == nil || !strings.Contains(err.Error(), "invalid regex") {
 		t.Fatalf("expected 'invalid regex' error, got %v", err)
 	}
@@ -262,7 +263,7 @@ func TestGrepFallback_SkipsBinaryAndHidden(t *testing.T) {
 		".hidden.txt":     "needle hidden file\n",
 		".dir/nested.txt": "needle hidden dir\n",
 	})
-	out, err := env.Grep("needle", "", "", false, 100, "")
+	out, err := env.Grep(context.Background(), "needle", "", "", false, 100, "")
 	if err != nil {
 		t.Fatalf("Grep: %v", err)
 	}

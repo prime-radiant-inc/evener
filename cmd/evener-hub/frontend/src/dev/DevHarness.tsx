@@ -9,10 +9,12 @@
 // DevHarness.module.css and kata j3t1.
 import { useEffect, useState } from "react";
 import { AppwireClient } from "../protocol/client";
+import type { AppwireClientLike } from "../protocol/testing/fakeClient";
 import { rpcURLFromLocation } from "../protocol/transport";
 import type { Thread } from "../protocol/types.gen";
 import { connectionStore, useConnectionStore } from "../stores/connection";
 import { useThreadsStore } from "../stores/threads";
+import { initTranscriptDisplay } from "../stores/transcriptDisplay";
 import styles from "./DevHarness.module.css";
 
 // bootstrapClient wires a real AppwireClient into connectionStore exactly
@@ -26,16 +28,30 @@ import styles from "./DevHarness.module.css";
 // vitest, not even a fire-and-forgotten one. The client-already-set check
 // covers the remaining case (dev/prod): idempotency across a remount (e.g.
 // Fast Refresh) so a live connection is never dropped and re-dialed.
-function bootstrapClient(): void {
-  if (import.meta.env.MODE === "test") return;
+export function bootstrapClient(injectedClient?: AppwireClientLike): void {
   if (connectionStore.getState().client) return;
-  const client = new AppwireClient({ url: rpcURLFromLocation(window.location) });
+  if (import.meta.env.MODE === "test" && injectedClient === undefined) return;
+  initTranscriptDisplay();
+  const client = injectedClient ?? new AppwireClient({ url: rpcURLFromLocation(window.location) });
   connectionStore.getState().connect(client);
-  void client.connect();
+  void client.connect().then(
+    (info) => {
+      if (connectionStore.getState().client !== client || client.state === "closed") return;
+      connectionStore.setState({ serverInfo: info.serverInfo, features: info.features });
+    },
+    () => {
+      // The client's state-change listener already publishes the failed
+      // handshake as a closed connection.
+    },
+  );
 }
 
-export function DevHarness() {
-  useEffect(bootstrapClient, []);
+export interface DevHarnessProps {
+  client?: AppwireClientLike;
+}
+
+export function DevHarness({ client: injectedClient }: DevHarnessProps = {}) {
+  useEffect(() => bootstrapClient(injectedClient), [injectedClient]);
 
   const connectionState = useConnectionStore((s) => s.state);
   const client = useConnectionStore((s) => s.client);

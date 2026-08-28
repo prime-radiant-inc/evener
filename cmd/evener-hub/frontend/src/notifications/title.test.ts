@@ -2,11 +2,12 @@ import type { ComponentType } from "react";
 import { lazy } from "react";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, test } from "vitest";
 import type { ThreadModel } from "../protocol/model";
+import type { AttentionSummary, NavigationSessionLocation } from "../protocol/types.gen";
 import { type PaneProps, registerPaneForTests } from "../shell/paneRegistry";
 import { resetWorkspaceStoreForTests, workspaceStore } from "../shell/workspace";
+import { navigationStore, resetNavigationStoreForTests } from "../stores/navigation/store";
+import { keyID } from "../stores/navigation/types";
 import { resetThreadsStoreForTests, threadsStore } from "../stores/threads";
-import type { AttentionSummary } from "../stores/tree";
-import { resetTreeStoreForTests, treeStore } from "../stores/tree";
 import { applyTitle, baseTitle, formatTitle } from "./title";
 
 function summary(needsYou: number, error: number): AttentionSummary {
@@ -38,7 +39,7 @@ afterAll(() => {
 beforeEach(() => {
   resetWorkspaceStoreForTests();
   resetThreadsStoreForTests();
-  resetTreeStoreForTests();
+  resetNavigationStoreForTests();
   document.title = "";
 });
 afterEach(() => {
@@ -76,32 +77,46 @@ describe("baseTitle", () => {
     expect(baseTitle()).toBe("New session · evener hub");
   });
 
-  test("with no hydrated thread, the tree store's title backs the tab title", () => {
-    treeStore.setState({
-      tree: {
-        generated_at: "2026-01-01T00:00:00Z",
-        sources: [],
-        live: [
+  test("with no hydrated thread, the location summary backs the tab title", () => {
+    const location: NavigationSessionLocation = {
+      generation_id: "generation_test",
+      revision: 1,
+      ref: "local:r2",
+      top_level_ref: "local:r2",
+      top_level: true,
+      session: {
+        ref: "local:r2",
+        host_id: "local",
+        session_id: "local:r2",
+        title: "Fix Four Open Issues",
+        project: "test-project",
+        state: "idle",
+        kind: "session",
+        live: true,
+        children: [],
+      },
+    };
+    const key = { kind: "location", ref: "local:r2" } as const;
+    navigationStore.setState({
+      mode: "v1",
+      clientGenerationID: "generation_test",
+      resources: new Map([
+        [
+          keyID(key),
           {
-            row_id: "row_r2",
-            ref: "local:r2",
-            host_id: "local",
-            session_id: "local:r2",
-            title: "Fix Four Open Issues",
-            project: "test-project",
-            state: "idle",
-            kind: "session",
-            live: true,
-            children: [],
+            key,
+            data: location,
+            loadedRevision: 1,
+            targetRevision: null,
+            forceToken: 0,
+            etag: "etag",
+            loading: false,
+            stale: false,
+            error: null,
+            generationID: "generation_test",
           },
         ],
-        needs_you: [],
-        pin_sections: [],
-        projects: [],
-        archived_projects: [],
-        test_runs: [],
-        attentionSummary: { needsYou: 0, error: 0, working: 0 },
-      },
+      ]),
     });
     workspaceStore.getState().openPane("doc", { ref: "local:r2" });
     expect(baseTitle()).toBe("Fix Four Open Issues · evener hub");

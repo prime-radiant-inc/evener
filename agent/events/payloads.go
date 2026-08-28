@@ -33,7 +33,22 @@ type SessionStartData struct {
 	// agent.SessionAwaiting) reaches the wire instead of an assumed idle. A
 	// fresh session always starts idle and leaves this empty; downstream
 	// consumers already default an empty/unrecognized value to idle.
-	State string `json:"state,omitempty"`
+	State                   string               `json:"state,omitempty"`
+	CurrentWork             *CurrentWorkSeedData `json:"current_work,omitempty"`
+	TaskStoreOwnerSessionID string               `json:"task_store_owner_session_id,omitempty"`
+	// TaskPublicationEpoch identifies the process-local TaskStore incarnation;
+	// TaskPublicationRevision orders its snapshots. Both are in-process routing
+	// metadata and never enter event JSON.
+	TaskPublicationEpoch    uint64 `json:"-"`
+	TaskPublicationRevision uint64 `json:"-"`
+}
+
+// CurrentWorkSeedData is the self-contained task and goal state carried at
+// session start. A nil seed means unknown; within a present seed, nil Goal is
+// an authoritative clear and nil Tasks means task state is unavailable.
+type CurrentWorkSeedData struct {
+	Tasks *TaskStateData `json:"tasks,omitempty"`
+	Goal  *GoalStateData `json:"goal"`
 }
 
 // SessionEndData is the payload for an EventSessionEnd event.
@@ -84,6 +99,23 @@ type AssistantTextDeltaData struct {
 // assistant message, which consumers already track.
 type AssistantTextResetData struct{}
 
+// CommunicatePreviewStartData opens a provisional communicate item scoped to a
+// single tool call. It is only committed by the matching successful call.
+type CommunicatePreviewStartData struct {
+	CallID string `json:"call_id"`
+}
+
+// CommunicatePreviewDeltaData carries text for a provisional communicate item.
+type CommunicatePreviewDeltaData struct {
+	CallID string `json:"call_id"`
+	Delta  string `json:"delta"`
+}
+
+// CommunicatePreviewResetData discards a failed provisional communicate item.
+type CommunicatePreviewResetData struct {
+	CallID string `json:"call_id"`
+}
+
 // ModelRetryData is the payload for an EventModelRetry event: a model call
 // failed with a retryable error and will be tried again after DelayMS.
 //
@@ -98,7 +130,10 @@ type AssistantTextResetData struct{}
 // until the current retry group has a consume-phase failure, then the
 // early-stop bound the streak rule will actually enforce. Rendering
 // MaxAttempts once that has happened promises retries the early-stop rule
-// won't spend. GroupElapsedMS is wall-clock time since the retry group's
+// won't spend. Both are zero when the failure is a rate limit the policy
+// retries against a wall-clock budget instead of an attempt count; consumers
+// should render the bare attempt number in that case. GroupElapsedMS is
+// wall-clock time since the retry group's
 // first attempt (one model call, spanning every retry within it), so a
 // client can render how long the current call has been running rather than
 // just an attempt count.
@@ -123,11 +158,15 @@ type ReasoningSummaryDeltaData struct {
 }
 
 // AssistantTextEndData is the payload for an EventAssistantTextEnd event.
+// Provider is the registry instance the round dispatched on; with Model it
+// forms the instance/model reference the round's cost resolves from
+// (spec §7.5). It is omitted by producers that never knew one.
 type AssistantTextEndData struct {
 	Text         string    `json:"text"`
 	Usage        llm.Usage `json:"usage"`
 	FinishReason string    `json:"finish_reason"`
 	Model        string    `json:"model"`
+	Provider     string    `json:"provider,omitempty"`
 	Reasoning    string    `json:"reasoning,omitempty"`
 }
 
@@ -361,7 +400,31 @@ type SteeringInjectedData struct {
 	// Kind names what was injected (events.SteeringKind*). Optional and
 	// additive; absent means the daemon did not say, and the UI shows no kind.
 	Kind string `json:"kind,omitempty"`
+	// TaskCompletion carries the structured dependencies associated with a
+	// tasks-done steering message. It is nil for every other steering kind.
+	TaskCompletion *TaskCompletionSteeringData `json:"task_completion,omitempty"`
 }
+
+// TaskCompletionSteeringData identifies live work that still blocks session
+// completion after the task list itself reaches a terminal state.
+type TaskCompletionSteeringData struct {
+	CompletionState     TaskCompletionState `json:"completion_state"`
+	BlockingDelegateIDs []string            `json:"blocking_delegate_ids"`
+}
+
+// TaskCompletionState is the machine-readable disposition of a terminal task
+// list. It distinguishes a session ready to finish from one still waiting on
+// work that the session explicitly treated as blocking.
+type TaskCompletionState string
+
+const (
+	// TaskCompletionReadyForFinalOutput means no live dependency still blocks
+	// the session after its task list reaches a terminal state.
+	TaskCompletionReadyForFinalOutput TaskCompletionState = "ready_for_final_output"
+	// TaskCompletionWaitingForBlockingDelegates means one or more synchronous
+	// delegate results must arrive before the session decides whether to finish.
+	TaskCompletionWaitingForBlockingDelegates TaskCompletionState = "waiting_for_blocking_delegates"
+)
 
 // QueueChangedData carries an authoritative snapshot of the per-session
 // input queue after a mutation (kata r80p). Preview entries are FIFO with
@@ -382,12 +445,37 @@ type QueueChangedData struct {
 	Texts             []string `json:"texts,omitempty"`
 }
 
+// TaskSummaryData is the current task summary carried by a TaskUpdatedData
+// snapshot. It deliberately exposes only enough state for a status row.
+type TaskSummaryData struct {
+	ID          int    `json:"id"`
+	Description string `json:"description"`
+}
+
+// TaskStateData is an authoritative task-list progress snapshot.
+type TaskStateData struct {
+	Total     int              `json:"total"`
+	Done      int              `json:"done"`
+	Cancelled int              `json:"cancelled"`
+	Remaining int              `json:"remaining"`
+	Current   *TaskSummaryData `json:"current,omitempty"`
+}
+
 // TaskUpdatedData is the payload for an EventTaskUpdated event: the current
 // task-list progress after an append or status change, so subscribers refresh
 // the task-status row without re-polling.
 type TaskUpdatedData struct {
-	Total int `json:"total"`
-	Done  int `json:"done"`
+	Total                   int              `json:"total"`
+	Done                    int              `json:"done"`
+	Cancelled               int              `json:"cancelled"`
+	Remaining               int              `json:"remaining"`
+	Current                 *TaskSummaryData `json:"current,omitempty"`
+	TaskStoreOwnerSessionID string           `json:"task_store_owner_session_id,omitempty"`
+	// TaskPublicationEpoch and TaskPublicationRevision are internal ordering
+	// metadata assigned by the shared TaskStore publication serializer. They never
+	// enter event JSON.
+	TaskPublicationEpoch    uint64 `json:"-"`
+	TaskPublicationRevision uint64 `json:"-"`
 }
 
 // SessionNameChangedData is the payload for an EventSessionNameChanged event.
@@ -422,6 +510,14 @@ type ReasoningEffortChangedData struct {
 	ReasoningEffort string `json:"reasoning_effort,omitempty"`
 }
 
+// VisionModelChangedData is the payload for an EventVisionModelChanged event:
+// SetVisionModel committed a new vision side-channel setting ("", "off", or a
+// model ref). Old and new let subscribers diff the change.
+type VisionModelChangedData struct {
+	OldVisionModel string `json:"old_vision_model"`
+	NewVisionModel string `json:"new_vision_model"`
+}
+
 // TurnLimitData is the payload for an EventTurnLimit event.
 type TurnLimitData struct {
 	MaxTurns              int `json:"max_turns,omitempty"`
@@ -435,6 +531,7 @@ type LoopDetectionData struct {
 
 // CommunicateData is the payload for an EventCommunicate event.
 type CommunicateData struct {
+	CallID  string `json:"call_id,omitempty"`
 	EndTurn bool   `json:"end_turn"`
 	Message string `json:"message"`
 }
@@ -459,10 +556,15 @@ type CompactionTurnData struct {
 	Text string `json:"text"`
 }
 
+// WarningCodeDelegateAbandonedByDrain identifies a drain abandonment warning.
+const WarningCodeDelegateAbandonedByDrain = "delegate_abandoned_by_drain"
+
 // WarningData is the payload for an EventWarning event.
 type WarningData struct {
 	Message           string `json:"message"`
 	Source            string `json:"source,omitempty"`
+	Code              string `json:"code,omitempty"`
+	DelegateID        string `json:"delegate_id,omitempty"`
 	Title             string `json:"title,omitempty"`
 	Hint              string `json:"hint,omitempty"`
 	ApproxTokens      int    `json:"approx_tokens,omitempty"`
@@ -682,6 +784,19 @@ type GoalEndedData struct {
 	Status     string `json:"status"`
 	Reason     string `json:"reason,omitempty"`
 	Iterations int    `json:"iterations"`
+}
+
+// GoalStateData is the complete client-facing state of a session goal.
+type GoalStateData struct {
+	Objective  string `json:"objective"`
+	Status     string `json:"status"`
+	Iterations int    `json:"iterations"`
+}
+
+// GoalUpdatedData is the payload for EventGoalUpdated. Goal is deliberately
+// not omitempty: nil is an explicit clear and must serialize as "goal":null.
+type GoalUpdatedData struct {
+	Goal *GoalStateData `json:"goal"`
 }
 
 // TurnEndedData is the payload for an EventTurnEnded event.

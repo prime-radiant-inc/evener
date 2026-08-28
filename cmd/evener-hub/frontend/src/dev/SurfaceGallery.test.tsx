@@ -1,40 +1,39 @@
 import { cleanup, render, screen } from "@testing-library/react";
 import { afterEach, expect, test } from "vitest";
 import { resetAskDockStoreForTests } from "../panes/session/composer/askDock/askDockStore";
+import { resetNavigationStoreForTests } from "../stores/navigation/store";
 import { resetThreadsStoreForTests } from "../stores/threads";
-import { resetTreeStoreForTests } from "../stores/tree";
 import { resetDisclosureStoreForTests } from "../widgets/disclosure/disclosureStore";
-import SurfaceGallery from "./SurfaceGallery";
+import SurfaceGallery, { SURFACE_GALLERY_SECTIONS } from "./SurfaceGallery";
 
 afterEach(() => {
   cleanup();
   resetThreadsStoreForTests();
   resetAskDockStoreForTests();
   resetDisclosureStoreForTests();
-  resetTreeStoreForTests();
+  resetNavigationStoreForTests();
 });
 
-// Unlike WidgetGallery.test.tsx's widgets<->gallery-sections completeness
-// contract, surfaces are opt-in (this task's own instructions): this test
-// only asserts the gallery renders and mounts every currently-registered
-// section without throwing, plus that the priority surfaces named in the
-// task exist by their own heading. No 1:1 manifest is enforced.
-test("renders without throwing, with the intro note and every discovered section", () => {
-  render(<SurfaceGallery />);
+test("renders without throwing, with the intro note", () => {
+  render(<SurfaceGallery sections={[]} />);
   expect(screen.getByText(/surface gallery/i)).toBeTruthy();
-  // Every section renders an <h2> heading (WidgetGallery's own convention,
-  // reused here) - if any section threw during render, this whole test
-  // would already have failed before reaching this assertion.
-  const headings = screen.getAllByRole("heading", { level: 2 }).map((h) => h.textContent);
-  expect(headings.length).toBeGreaterThan(0);
+});
+
+test.each(SURFACE_GALLERY_SECTIONS)("mounts discovered section $path without throwing", (section) => {
+  render(<SurfaceGallery sections={[section]} />);
+  expect(screen.getAllByRole("heading", { level: 2 }).length).toBeGreaterThan(0);
 });
 
 test("the transcript section is registered", () => {
-  render(<SurfaceGallery />);
+  const transcript = SURFACE_GALLERY_SECTIONS.find(({ path }) => path.endsWith("/transcript.tsx"));
+  if (!transcript) throw new Error("transcript section is not registered");
+  render(<SurfaceGallery sections={[transcript]} />);
   expect(screen.getByRole("heading", { level: 2, name: "Transcript" })).toBeTruthy();
 });
 
 test("the session chrome section is registered", () => {
-  render(<SurfaceGallery />);
+  const chrome = SURFACE_GALLERY_SECTIONS.find(({ path }) => path.endsWith("/chrome.tsx"));
+  if (!chrome) throw new Error("session chrome section is not registered");
+  render(<SurfaceGallery sections={[chrome]} />);
   expect(screen.getByRole("heading", { level: 2, name: "Session chrome" })).toBeTruthy();
 });

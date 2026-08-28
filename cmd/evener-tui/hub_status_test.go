@@ -6,9 +6,23 @@ import (
 	"testing"
 
 	"github.com/charmbracelet/lipgloss"
+	taskpkg "primeradiant.com/evener/agent/task"
 	"primeradiant.com/evener/appwire"
 	"primeradiant.com/evener/cmd/evener-tui/internal/tuitheme"
 )
+
+func TestTaskSummaryUsesSharedOutcomeCounts(t *testing.T) {
+	tasks := []taskpkg.Task{
+		{Status: taskpkg.TaskDone},
+		{Status: taskpkg.TaskCancelled},
+		{Status: taskpkg.TaskOpen},
+		{Status: taskpkg.TaskInProgress},
+	}
+	const want = "1 done, 1 cancelled, 2 remaining (4 total)"
+	if got := taskSummary(tasks); got != want {
+		t.Fatalf("taskSummary() = %q, want %q", got, want)
+	}
+}
 
 // TestRenderHubSessionStatusWithoutDiagnosticsMatchesThinSummary guards the
 // existing contract: when EvenerDiagnostics is nil, the rendered status is
@@ -71,9 +85,9 @@ func TestRenderHubSessionStatusRendersDiagnosticsSections(t *testing.T) {
 			Plugins: []appwire.EvenerPluginInfo{
 				{Name: "superpowers", Version: "5.1.0", SkillCount: 30, AgentCount: 2, HookCount: 4},
 			},
-			Hooks: map[string]int{
-				"SessionStart":     2,
-				"UserPromptSubmit": 1,
+			HookEvents: []appwire.EvenerHookEventStatus{
+				{Event: "SessionStart", Count: 2},
+				{Event: "UserPromptSubmit", Count: 1},
 			},
 			Jobs: []appwire.EvenerJobInfo{
 				{JobID: "job_1", JobType: "delegate", Status: "running"},
@@ -102,7 +116,7 @@ func TestRenderHubSessionStatusRendersDiagnosticsSections(t *testing.T) {
 		"writing-plans",
 		"Plugins (1):",
 		"superpowers v5.1.0 (30 skills, 2 agents, 4 hooks)",
-		"Hooks (2):",
+		"Hook Events (2):",
 		"SessionStart: 2",
 		"UserPromptSubmit: 1",
 		"Jobs (1):",

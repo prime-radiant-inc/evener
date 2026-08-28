@@ -14,6 +14,7 @@ type ErrorInfo string
 
 const (
 	ErrorInvalidParams          ErrorInfo = "invalidParams"
+	ErrorResourceNotFound       ErrorInfo = "resourceNotFound"
 	ErrorMethodNotFound         ErrorInfo = "methodNotFound"
 	ErrorProviderUnavailable    ErrorInfo = "providerUnavailable"
 	ErrorSessionUnavailable     ErrorInfo = "sessionUnavailable"
@@ -67,6 +68,14 @@ func InvalidParams(message string) WireError {
 	}
 }
 
+func ResourceNotFound(message string) WireError {
+	return WireError{
+		Code:    CodeInvalidParams,
+		Message: message,
+		Data:    ErrorData{EvenerErrorInfo: ErrorResourceNotFound},
+	}
+}
+
 func InvalidRequest(message string) WireError {
 	return WireError{
 		Code:    CodeInvalidRequest,
@@ -96,6 +105,33 @@ func Conflict(message string) WireError {
 		Code:    CodeConflict,
 		Message: message,
 		Data:    ErrorData{EvenerErrorInfo: ErrorConflict},
+	}
+}
+
+func MutationNotAccepted(clientMutationID, message string) WireError {
+	return WireError{
+		Code:    CodeConflict,
+		Message: message,
+		Data: ErrorData{
+			EvenerErrorInfo:  ErrorConflict,
+			ClientMutationID: clientMutationID,
+			MutationOutcome:  MutationOutcomeNotAccepted,
+			RetryDisposition: RetryDispositionNone,
+		},
+	}
+}
+
+func MutationUnknown(clientMutationID, message string) WireError {
+	return WireError{
+		Code:    CodeInternalError,
+		Message: message,
+		Data: ErrorData{
+			EvenerErrorInfo:  ErrorMutationOutcomeUnknown,
+			ClientMutationID: clientMutationID,
+			MutationOutcome:  MutationOutcomeUnknown,
+			RetryDisposition: RetryDispositionBlocked,
+			Cause:            "persistenceUnavailable",
+		},
 	}
 }
 

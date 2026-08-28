@@ -6,7 +6,8 @@
 // steering/system/reasoning), T1 itself registers ONLY "commandExecution"
 // (ToolCallItem, which dispatches into toolRenderers.ts).
 import type { ComponentType } from "react";
-import type { ItemModel, TurnModel } from "../../../protocol/model";
+import type { ItemModel, ThreadModel, TurnModel } from "../../../protocol/model";
+import type { TranscriptRenderContextValue } from "../../../transcriptDisplay/renderContext";
 import { RawItemView } from "./RawItemView";
 
 export interface ItemRenderProps {
@@ -21,6 +22,15 @@ export interface ItemRenderProps {
   opensExchange?: boolean;
   // The session's short model/provider label, threaded from Session.tsx.
   agentLabel?: string;
+  // Context is threaded for memoized/custom renderers that prefer props; the
+  // built-in renderers consume the same value through TranscriptRenderContext.
+  renderContext?: TranscriptRenderContextValue;
+  // A projector-owned compact summary for a critical entry. When present,
+  // renderers must not reconstruct a routine summary from raw tool fields.
+  projectedSummary?: string;
+  /** Snapshot inputs relevant to this item; stable when an unrelated delta lands. */
+  threadFingerprint?: string;
+  thread?: ThreadModel;
 }
 
 const registry = new Map<string, ComponentType<ItemRenderProps>>();
@@ -64,6 +74,43 @@ export function ignoringTurn(prev: ItemRenderProps, next: ItemRenderProps): bool
     prev.live === next.live &&
     prev.sessionRef === next.sessionRef &&
     prev.opensExchange === next.opensExchange &&
-    prev.agentLabel === next.agentLabel
+    prev.agentLabel === next.agentLabel &&
+    prev.projectedSummary === next.projectedSummary &&
+    prev.renderContext === next.renderContext &&
+    prev.threadFingerprint === next.threadFingerprint
   );
+}
+
+export function threadFingerprintForItem(
+  item: ItemModel,
+  thread: ThreadModel | undefined,
+  summarySuffix?: string,
+): string {
+  if (item.type !== "commandExecution") return "";
+  if (thread === undefined) return "";
+  let after = false;
+  const laterSameTool: Array<[string, string | undefined, boolean | undefined, string]> = [];
+  for (const turn of thread.turns) {
+    for (const candidate of turn.items) {
+      if (candidate.id === item.id) {
+        after = true;
+        continue;
+      }
+      if (after && candidate.toolName === item.toolName) {
+        laterSameTool.push([candidate.id, candidate.error, candidate.prevalOnly, candidate.status ?? ""]);
+      }
+    }
+  }
+  return JSON.stringify({
+    cwd: thread.cwd,
+    delegates: thread.delegates?.map((delegate) => [
+      delegate.delegateId,
+      delegate.status,
+      delegate.terminal,
+      delegate.outcome,
+      delegate.latestActivityAt,
+    ]),
+    laterSameTool,
+    summarySuffix,
+  });
 }

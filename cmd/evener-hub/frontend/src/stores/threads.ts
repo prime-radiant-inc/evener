@@ -16,7 +16,7 @@ import {
   applyNotification,
   collectAuthoritativeMutationIds,
   hydrateThread,
-  notificationTargetsThread,
+  notificationRoutingKey,
   prependOlderTurns,
   resolvePendingEscalation,
 } from "../protocol/reducer";
@@ -170,25 +170,19 @@ export interface ThreadsStoreState {
   cancelQueued(ref: string, index: number, expectedEntryId: string): Promise<void>;
   setModel(ref: string, modelProvider: string, model: string): Promise<void>;
   setReasoningEffort(ref: string, level: string): Promise<void>;
+  setVisionModel(ref: string, visionModel: string): Promise<void>;
   // Sets or clears the session's /goal objective (an empty objective
   // clears it). Returns whether the goal loop started immediately (false
   // when cleared, or when a turn is already running and the goal picks up
-  // after it) - the goal is set either way. No live push exists for goal
-  // state (appwire/protocol.go's Notifications catalog has no goal-changed
-  // entry): reflecting this locally is left to the caller (T5 owns that
-  // "snapshot + optimistic local update" per the wave plan), not this
-  // store, which stays a plain fire-and-report wire call like setModel/
-  // setReasoningEffort/rename/compact/shutdown above.
+  // after it). A successful response commits the known goal state locally;
+  // the structured goal update push keeps every other client synchronized.
   setGoal(ref: string, objective: string): Promise<GoalSetResponse>;
   rename(ref: string, name: string): Promise<void>;
   compact(ref: string): Promise<void>;
-  // Clears the thread's conversation. Unlike the actions above, thread/clear
-  // has no corresponding live notification, so its response's fresh Thread
-  // snapshot is the only signal the transcript is now empty; this action
-  // applies that snapshot to whichever of threads/watchedThreads track
-  // `ref` (mirroring resolveEscalation's own dual-map update below) so the
-  // pane doesn't keep showing stale turns until some unrelated future
-  // notification or reconnect.
+  // Clears the thread's conversation through the durable mutation outbox. The
+  // daemon's response carries the replacement snapshot; the dispatcher hands
+  // it to applyClearResponse before settling the intent so both real and lean
+  // views switch to the new instance together.
   clearThread(ref: string): Promise<void>;
   shutdown(ref: string): Promise<void>;
   // Forks a thread from a source turn, or - with opts.aside - forks the
@@ -247,6 +241,19 @@ const refCounts = new Map<string, number>();
 // claims the ref. An ensure that fails after its pane lifecycle was retired
 // must not roll back a replacement lifecycle's claim.
 const ensureGenerations = new Map<string, number>();
+// A generation changes at every local goal request and every accepted goal
+// authority (a matching notification or full hydration). A request response may
+// publish its derived local state only while its generation is still current, so
+// neither a later request nor accepted authoritative state that arrived during
+// the await can be overwritten by that delayed response. This is independent of
+// producer age: an older producer that sends no goal notification leaves the
+// request generation current and keeps the existing immediate local commit
+// behavior.
+const goalUpdateGenerations = new Map<string, number>();
+
+function invalidateGoalResponseFallback(ref: string): void {
+  goalUpdateGenerations.set(ref, (goalUpdateGenerations.get(ref) ?? 0) + 1);
+}
 const inflightHydrates = new Map<string, Promise<ThreadModel | null>>();
 const inflightHydrateClients = new Map<string, AppwireClientLike>();
 const inflightHydrateEpochs = new Map<string, number>();
@@ -278,6 +285,211 @@ type PendingThreadHydration = {
 // then fold them onto the returned snapshot before publishing it.
 const pendingThreadHydrations = new Map<string, PendingThreadHydration>();
 const pendingWatchedHydrations = new Map<string, PendingThreadHydration>();
+
+// --- Notification routing index ---------------------------------------------
+//
+// handleNotification fires for EVERY notification on the socket. During a
+// streaming turn that is dozens of delta frames per second, and its old shape
+// ran notificationTargetsThread over EVERY entry of threads/watchedThreads for
+// EVERY frame — O(tracked threads) per token. notificationRoutingKey
+// (protocol/reducer.ts) is the single source of the routing precedence: a
+// frame targets models by its own params.ref first, else by its
+// params.threadId, else nothing. The models a frame can target are therefore
+// fully determined by the frame's own keys, and only threadId needs an index:
+// the ref route is the map itself (model.ref === its map key — every model
+// enters a map through hydrateThread(resp, ref, ...), see the put/remove
+// helpers below, which are the only membership paths).
+//
+// byThreadId: threadId -> Set<ref>  (several models may share a threadId: the
+// same thread watched lean in watchedThreads while pane-owned in threads, or
+// distinct refs the daemon maps to one id). A threadId-routed frame resolves
+// each ref back through the map at route time, so it always folds onto the
+// live model — a stale model object cannot linger, only a stale ref could,
+// and one ref per slot is exactly what the map's own key invariant already
+// guarantees.
+//
+// Index stability — why model identity changes never desynchronize it:
+// applyNotification, prependOlderTurns and resolvePendingEscalation all build
+// their results with `...model`, and hydrateThread is the ONLY function that
+// ever sets a model's ref/threadId (protocol/reducer.ts). A model's routing
+// keys are therefore stable for its lifetime in a map, so the index only
+// needs maintenance on membership changes (add/replace/remove) — a reducer
+// fold that produces a new model object under the same keys costs ZERO index
+// work. The put helpers' ref invariant is the loud failure mode: a future
+// code path that somehow violated it throws there rather than silently
+// mis-routing.
+type ThreadModelIndex = Map<string, Set<string>>;
+
+function newThreadModelIndex(): ThreadModelIndex {
+  return new Map();
+}
+
+// Record ref under model.threadId. `previous` is the model being replaced in
+// the same map slot (or undefined for a pure add); a replace whose threadId
+// moved is handled exactly — both memberships are updated.
+function putThreadModelIndex(index: ThreadModelIndex, previous: ThreadModel | undefined, model: ThreadModel): void {
+  if (previous && previous.threadId !== model.threadId) removeThreadModelIndex(index, previous);
+  let refs = index.get(model.threadId);
+  if (!refs) {
+    refs = new Set();
+    index.set(model.threadId, refs);
+  }
+  refs.add(model.ref);
+}
+
+function removeThreadModelIndex(index: ThreadModelIndex, model: ThreadModel): void {
+  const refs = index.get(model.threadId);
+  if (!refs) return;
+  refs.delete(model.ref);
+  if (refs.size === 0) index.delete(model.threadId);
+}
+
+// routeByNotificationKey selects the models a frame targets: the single
+// model for a ref-routed frame (no wrapper array), the model list for a
+// threadId-routed frame, or null when the frame routes nowhere. Routing
+// equivalence with the pre-index scan lives on applyToMap — one-line version:
+// ref route = map.get(ref), threadId route = byThreadId.get(threadId)
+// resolved through the map. `skippedRefs` mirrors the scan's own exclusion
+// set (a pending hydration owns the ref for this frame).
+function routeByNotificationKey(
+  map: Map<string, ThreadModel>,
+  index: ThreadModelIndex,
+  n: AnyNotification,
+  skippedRefs: ReadonlySet<string> | undefined,
+): ThreadModel | ThreadModel[] | null {
+  const key = notificationRoutingKey(n);
+  if (!key) return null;
+  if ("ref" in key) {
+    const model = map.get(key.ref);
+    // model.ref === map key is the store's invariant (see the put helpers);
+    // the check keeps this route exactly equivalent to the scan even for a
+    // model that somehow violates it, instead of folding onto it.
+    if (!model || model.ref !== key.ref) return null;
+    return skippedRefs?.has(model.ref) ? null : model;
+  }
+  const refs = index.get(key.threadId);
+  if (!refs) return null;
+  const candidates: ThreadModel[] = [];
+  for (const ref of refs) {
+    if (skippedRefs?.has(ref)) continue;
+    const model = map.get(ref);
+    if (model) candidates.push(model);
+  }
+  return candidates.length > 0 ? candidates : null;
+}
+
+const threadsIndex = newThreadModelIndex();
+const watchedThreadsIndex = newThreadModelIndex();
+
+// Shared empty pending-ref set: handleNotification's steady state (no
+// hydration in flight) allocates nothing per frame.
+const EMPTY_PENDING_REFS: ReadonlySet<string> = new Set();
+
+// The membership maintenance surface for threads/watchedThreads — the ONLY
+// places a model enters or leaves either map, so no future mutation site can
+// forget its index line. Each computes the next map at the call site and
+// passes a plain patch to setState (matching the release paths' shape): a
+// zustand updater must stay a pure compute-next-state function, not a home
+// for module-level side effects an updater rerun would replay.
+//
+// putThreadModel is exported for the dev harness seeders
+// (dev/surface-sections/composer.tsx, dev/overflowharness-entry.tsx), which
+// seed fixture panes exactly the way production hydration publishes real
+// ones — through the same membership path, index maintenance included, so
+// dev-seeded models are routable by ref AND threadId like any other.
+// assertModelRefMatchesKey guards BOTH membership paths — pure add and
+// replace. The replace path used to be the only one that threw, but a pure
+// add filed under a key its own ref contradicts breaks the same map key ===
+// model.ref invariant every ref-routed frame's map.get (and the index) leans
+// on, so it throws for the same reason: loudly, before it can mis-route.
+function assertModelRefMatchesKey(
+  ref: string,
+  model: ThreadModel,
+  watched: boolean,
+  previous: ThreadModel | undefined,
+): void {
+  if (model.ref === ref) return;
+  const mapName = watched ? "watched " : "";
+  if (!previous) {
+    throw new Error(
+      `threads store: added ${mapName}model ref disagrees with map key (${ref} != ${model.ref}) — map key and model.ref must agree`,
+    );
+  }
+  throw new Error(
+    `threads store: replaced ${mapName}model ref moved (${previous.ref} -> ${model.ref}) — map key and model.ref must agree`,
+  );
+}
+
+export function putThreadModel(ref: string, model: ThreadModel): void {
+  putThreadModels(ref, model, undefined);
+}
+
+function putWatchedThreadModel(ref: string, model: ThreadModel): void {
+  putThreadModels(ref, undefined, model);
+}
+
+// putThreadModels is the dual-map variant the combined actions use: the SAME
+// model (or its two per-map resolutions) lands in threads and watchedThreads
+// through ONE setState, so a synchronous subscriber between the two halves
+// of the update — the split the sequential putThreadModel +
+// putWatchedThreadModel pair introduced — cannot observe threads updated
+// while watchedThreads still holds the stale model. `threadModel`/
+// `watchedModel` are the models to file (the caller computes them first:
+// hydrateThread for clearThread, resolvePendingEscalation for
+// resolveEscalation); pass undefined for either to leave that map untouched,
+// matching the old single-setState patch shape exactly. Both routing indexes
+// are maintained in the same step, and both put helpers' ref invariant is
+// re-checked here (the same assertModelRefMatchesKey) rather than trusted.
+function putThreadModels(
+  ref: string,
+  threadModel: ThreadModel | undefined,
+  watchedModel: ThreadModel | undefined,
+): void {
+  const state = threadsStore.getState();
+  const previousThread = state.threads.get(ref);
+  const previousWatched = state.watchedThreads.get(ref);
+  if (threadModel) assertModelRefMatchesKey(ref, threadModel, false, previousThread);
+  if (watchedModel) assertModelRefMatchesKey(ref, watchedModel, true, previousWatched);
+
+  const patch: Partial<ThreadsStoreState> = {};
+  if (threadModel) {
+    putThreadModelIndex(threadsIndex, previousThread, threadModel);
+    patch.threads = new Map(state.threads).set(ref, threadModel);
+  }
+  if (watchedModel) {
+    putThreadModelIndex(watchedThreadsIndex, previousWatched, watchedModel);
+    patch.watchedThreads = new Map(state.watchedThreads).set(ref, watchedModel);
+  }
+  if (!threadModel && !watchedModel) return;
+  threadsStore.setState(patch);
+}
+
+function removeThreadModel(ref: string): void {
+  const removed = threadsStore.getState().threads.get(ref);
+  if (removed) removeThreadModelIndex(threadsIndex, removed);
+  threadsStore.setState((s) => {
+    if (!s.threads.has(ref) && !s.frameTimes.has(ref) && !s.deletedRefs.has(ref)) return s;
+    const nextThreads = new Map(s.threads);
+    nextThreads.delete(ref);
+    const nextFrameTimes = new Map(s.frameTimes);
+    nextFrameTimes.delete(ref);
+    const nextDeletedRefs = new Set(s.deletedRefs);
+    nextDeletedRefs.delete(ref);
+    return { threads: nextThreads, frameTimes: nextFrameTimes, deletedRefs: nextDeletedRefs };
+  });
+}
+
+function removeWatchedThreadModel(ref: string): void {
+  const removed = threadsStore.getState().watchedThreads.get(ref);
+  if (removed) removeThreadModelIndex(watchedThreadsIndex, removed);
+  threadsStore.setState((s) => {
+    if (!s.watchedThreads.has(ref)) return s;
+    const nextWatchedThreads = new Map(s.watchedThreads);
+    nextWatchedThreads.delete(ref);
+    return { watchedThreads: nextWatchedThreads };
+  });
+}
+
 // One owned hydration lifecycle per (ref, owner kind, owner generation). It
 // exists only while that owner still needs a first authoritative model and the
 // newest attempt has failed: the attempt that failed schedules exactly one
@@ -337,6 +549,15 @@ let dispatchReadyEpoch = -1;
 const pinnedMutationRefs = new Set<string>();
 const dispatchableMutationRefs = new Set<string>();
 
+// Refs this connection generation holds a wire subscription for. thread/read
+// with subscribe:true is how a subscription is created, and every re-read of
+// a tracked ref (ensureThread retry, onReady resync, watchThread upgrade)
+// used to send it again — additively and with a fresh capture cycle, because
+// nothing recorded "already subscribed on THIS socket". A new connection
+// carries no subscriptions, so rewireClient and the onReady path both clear
+// the set; the next read of a still-tracked ref re-subscribes as before.
+const wireSubscribedRefs = new Set<string>();
+
 interface MutationRuntime {
   storage: MutationOutboxIndexedDB;
   dispatcher: MutationDispatcher;
@@ -359,6 +580,30 @@ function notifyMutationPersistence(targetRefs: Iterable<string>): void {
   for (const listener of mutationPersistenceListeners) listener(refs);
 }
 
+function applyClearResponse(targetRef: string, response: ThreadClearResponse): void {
+  const now = Date.now();
+  const model = hydrateThread({ thread: response.thread }, targetRef, now);
+  // A clear response is a newer authoritative cut than any thread/read that
+  // was already in flight for this ref. Retire those reads before publishing
+  // the replacement so a late pre-clear snapshot cannot overwrite it.
+  pendingThreadHydrations.delete(targetRef);
+  pendingWatchedHydrations.delete(targetRef);
+  // One setState for both maps (putThreadModels), so a synchronous subscriber
+  // never sees threads cleared while watchedThreads still holds the old turns;
+  // both routing indexes are maintained in the same step.
+  const stateBefore = threadsStore.getState();
+  putThreadModels(
+    targetRef,
+    stateBefore.threads.has(targetRef) ? model : undefined,
+    stateBefore.watchedThreads.has(targetRef) ? model : undefined,
+  );
+  if (stateBefore.threads.has(targetRef)) {
+    threadsStore.setState((state) => ({
+      hydrations: new Map(state.hydrations).set(targetRef, (state.hydrations.get(targetRef) ?? 0) + 1),
+    }));
+  }
+}
+
 function currentDispatchClient(targetRef?: string): AppwireClientLike | null {
   if (wiredClient !== dispatchReadyClient || readyEpoch !== dispatchReadyEpoch) return null;
   if (targetRef && !dispatchableMutationRefs.has(targetRef)) return null;
@@ -369,6 +614,10 @@ function dropUnpinnedModel(ref: string): void {
   if (pinnedMutationRefs.has(ref) || (refCounts.get(ref) ?? 0) > 0) return;
   // Nothing owns this ref any more, so no scheduled retry may outlive it.
   retireOwnedHydration("thread", ref);
+  // The model is leaving `threads` here, so its index membership leaves with
+  // it (see putThreadModel/removeThreadModel — the membership paths).
+  const dropped = threadsStore.getState().threads.get(ref);
+  if (dropped) removeThreadModelIndex(threadsIndex, dropped);
   threadsStore.setState((state) => {
     if (!state.threads.has(ref) && !state.frameTimes.has(ref) && !state.hydrations.has(ref)) return state;
     const threads = new Map(state.threads);
@@ -446,6 +695,7 @@ function getMutationRuntime(): MutationRuntime | null {
     onStorageChange: (targetRefs) => {
       if (isCurrentMutationRuntime(runtime)) notifyMutationPersistence(targetRefs);
     },
+    onClearResponse: applyClearResponse,
   });
   const outbox = new MutationOutbox(storage, {
     isReady: () => isCurrentMutationRuntime(runtime) && currentDispatchClient() !== null,
@@ -526,10 +776,14 @@ export async function updateRecoveryMutation(
   return true;
 }
 
-export async function discardRecoveryMutation(clientMutationId: string, targetRef: string): Promise<boolean> {
+export async function discardRecoveryMutation(
+  clientMutationId: string,
+  targetRef: string,
+  shouldDiscard?: () => boolean,
+): Promise<boolean> {
   const runtime = requireMutationRuntime();
   await runtime.start;
-  const discarded = await runtime.storage.discardRecovery(clientMutationId);
+  const discarded = await runtime.storage.discardRecovery(clientMutationId, shouldDiscard);
   if (discarded) notifyMutationPersistence([targetRef]);
   return discarded;
 }
@@ -591,16 +845,22 @@ const watchIncludeTurns = new Map<string, boolean>();
 // was released before either response arrived.
 const watchHydratedIncludeTurns = new Map<string, boolean>();
 
-// Every tracked ref gets exactly these params on both the first subscribe
-// (ensureThread) and every re-subscribe (onReady after reconnect):
-// replaceSubscription is always false — additive, layering onto whatever the
-// daemon already tracks for this client rather than resetting it.
-function readParams(ref: string) {
+// Both hydrate paths (open-pane and watched) read a ref with exactly these
+// params, differing only in includeTurns: replaceSubscription is always
+// false — additive, layering onto whatever the daemon already tracks for this
+// client rather than resetting it.
+//
+// subscribe is true only when this connection generation holds no wire
+// subscription for the ref yet (see wireSubscribeDecision): a re-read of an
+// already-subscribed ref sends subscribe:false so the server skips the
+// buffered-capture cycle a second subscribe would run, and
+// releaseThread's unsubscribe is what drops the entry again.
+function threadReadParams(ref: string, includeTurns: boolean, subscribe: boolean) {
   return {
     ref,
-    includeTurns: true,
+    includeTurns,
     itemsView: "full",
-    subscribe: true,
+    subscribe,
     replaceSubscription: false,
     turnLimit: 40,
   } as const;
@@ -611,6 +871,56 @@ interface ThreadHydration {
   response: ThreadReadResponse;
 }
 
+// sendThreadUnsubscribe drops this client's wire subscription to a ref the
+// last holder of just released. Fire-and-forget on purpose: the local release
+// is already complete and cannot be rolled back, so a failed or racing
+// unsubscribe must not block navigation — the hub's idle-relay teardown and
+// the server's connection-close cleanup (RemoveConnection) are both
+// idempotent backstops for a lost message.
+function sendThreadUnsubscribe(ref: string): void {
+  const client = wiredClient;
+  if (client?.state !== "ready") return;
+  void client.request("thread/unsubscribe", { ref }).catch(() => {
+    // Swallow: see above. A dropped unsubscribe costs only a kept server-side
+    // subscription until the connection or the relay's idle timer ends it.
+  });
+}
+
+// The shared subscribe decision for both hydrate paths (open-pane and
+// watched): a read subscribes only when this connection generation holds no
+// wire subscription for the ref yet, and marks it held only after the read
+// succeeds — a failed read's subscribe never took effect server-side, so its
+// retry must send subscribe:true again.
+//
+// The membership set is NOT derivable from refCounts/watchRefCounts: those
+// count local interest (incremented synchronously, before any wire call),
+// while this records a fact about the wire (a subscribe that completed).
+// A count>0 with no held entry is exactly the pending-hydration and
+// failed-read-retry window, and deriving subscribe:false there would strand
+// the ref unsubscribed.
+//
+// markSubscribed re-checks holders after the read resolves: a release that
+// ran mid-flight left no holder, and that release saw the set WITHOUT this
+// ref (so it sent no unsubscribe). Recording the entry now would leak the
+// server-side subscription this read just created until connection close —
+// so the zero-holder read sends its own unsubscribe instead. A pinned
+// outbox ref is the deliberate exception: it holds no pane but must keep
+// its subscription for the mutation replay.
+function wireSubscribeDecision(ref: string): { subscribe: boolean; markSubscribed: () => void } {
+  const subscribe = !wireSubscribedRefs.has(ref);
+  return {
+    subscribe,
+    markSubscribed: () => {
+      if (!subscribe) return;
+      if ((refCounts.get(ref) ?? 0) <= 0 && (watchRefCounts.get(ref) ?? 0) <= 0 && !pinnedMutationRefs.has(ref)) {
+        sendThreadUnsubscribe(ref);
+        return;
+      }
+      wireSubscribedRefs.add(ref);
+    },
+  };
+}
+
 async function hydrateAndSubscribe(
   client: AppwireClientLike,
   ref: string,
@@ -618,8 +928,9 @@ async function hydrateAndSubscribe(
   pending: PendingThreadHydration,
 ): Promise<ThreadHydration> {
   let response: ThreadReadResponse;
+  const { subscribe, markSubscribed } = wireSubscribeDecision(ref);
   try {
-    response = await client.request("thread/read", readParams(ref));
+    response = await client.request("thread/read", threadReadParams(ref, true, subscribe));
   } catch (err) {
     // thread/read is answered from the daemon's in-memory snapshot, so a
     // rejection here is a transport failure, not a slow file read and not a
@@ -628,6 +939,7 @@ async function hydrateAndSubscribe(
     scheduleOwnedHydrationRetry("thread", ref, pending);
     throw err;
   }
+  markSubscribed();
   const model = hydrateThread(response, ref, now);
   applyHydrationResponseCut(pending, ref, model);
   return { model, response };
@@ -652,18 +964,10 @@ function markThreadDeletedIfFenced(ref: string, err: unknown): void {
   });
 }
 
-// Lean watches omit turns until an expanded card asks for them.
-function watchReadParams(ref: string, includeTurns = false) {
-  return {
-    ref,
-    includeTurns,
-    itemsView: "full",
-    subscribe: true,
-    replaceSubscription: false,
-    turnLimit: 40,
-  } as const;
-}
-
+// Lean watches omit turns until an expanded card asks for them; the shared
+// threadReadParams carries the rest (subscribe:false for a ref this
+// connection generation already subscribes — the read still refreshes the
+// snapshot).
 async function hydrateAndSubscribeWatch(
   client: AppwireClientLike,
   ref: string,
@@ -672,13 +976,15 @@ async function hydrateAndSubscribeWatch(
   includeTurns = false,
 ): Promise<ThreadModel> {
   let resp: ThreadReadResponse;
+  const { subscribe, markSubscribed } = wireSubscribeDecision(ref);
   try {
-    resp = await client.request("thread/read", watchReadParams(ref, includeTurns));
+    resp = await client.request("thread/read", threadReadParams(ref, includeTurns, subscribe));
   } catch (err) {
     markThreadDeletedIfFenced(ref, err);
     scheduleOwnedHydrationRetry("watched", ref, pending);
     throw err;
   }
+  markSubscribed();
   const model = hydrateThread(resp, ref, now);
   applyHydrationResponseCut(pending, ref, model);
   return model;
@@ -727,7 +1033,9 @@ function buildInput(text: string, attachments?: InputAttachment[]): InputItem[] 
   const input: InputItem[] = [];
   if (text.trim()) input.push({ type: "text", text });
   for (const att of attachments ?? []) {
-    input.push({ type: "image", mediaType: att.mediaType, data: att.data, name: att.name });
+    const image: InputItem = { type: "image", mediaType: att.mediaType, data: att.data };
+    if (att.name !== undefined) image.name = att.name;
+    input.push(image);
   }
   return input;
 }
@@ -747,18 +1055,28 @@ function durableAttachments(attachments?: InputAttachment[]): MutationAttachment
   }));
 }
 
+function trackedThreadModel(ref: string): ThreadModel | undefined {
+  const state = threadsStore.getState();
+  return state.threads.get(ref) ?? state.watchedThreads.get(ref);
+}
+
+function threadInstanceID(model: ThreadModel | undefined): string | undefined {
+  return model?.instanceId ?? model?.threadId;
+}
+
 function composerMutationIntent(
   ref: string,
   route: ComposerMutationRoute,
   text: string,
   attachments?: InputAttachment[],
 ): MutationIntent {
-  const model = threadsStore.getState().threads.get(ref);
+  const model = trackedThreadModel(ref);
   // Translated HERE, not inside buildInput: this is the submit boundary. The
   // untranslated text rides along as composerText so a record that fails and
   // lands in recovery can be restored into a composer with its marker anchors
   // intact - the tiles remove those anchors, and prose is not one.
   const input = buildInput(translateAttachmentMarkers(text, attachments), attachments);
+  const expectedInstanceId = threadInstanceID(model);
   const base = {
     targetRef: ref,
     threadId: model?.threadId,
@@ -769,7 +1087,7 @@ function composerMutationIntent(
     return {
       ...base,
       method: "turn/start",
-      payload: { ref, input },
+      payload: { ref, expectedInstanceId, input },
       optimisticDisplay: { method: "turn/start", input },
     };
   }
@@ -778,7 +1096,7 @@ function composerMutationIntent(
     return {
       ...base,
       method,
-      payload: { ref, input },
+      payload: { ref, expectedInstanceId, input },
       optimisticDisplay: { method, input },
     };
   }
@@ -789,7 +1107,7 @@ function composerMutationIntent(
   return {
     ...base,
     method: "turn/drainAsSteer",
-    payload: { ref, expectedQueueRevision, input },
+    payload: { ref, expectedInstanceId, expectedQueueRevision, input },
     optimisticDisplay: { method: "turn/drainAsSteer", input },
   };
 }
@@ -841,6 +1159,25 @@ function mapConflict(err: unknown): Error {
     return new ConflictError(err.message);
   }
   return err instanceof Error ? err : new Error(String(err));
+}
+
+function clearMutationIntent(ref: string): MutationIntent {
+  const model = trackedThreadModel(ref);
+  if (!model) throw new Error(`threads store: cannot clear unhydrated thread ${ref}`);
+  const expectedInstanceId = threadInstanceID(model);
+  if (!expectedInstanceId) throw new Error(`threads store: thread ${ref} has no instance identity`);
+  return {
+    targetRef: ref,
+    threadId: model.threadId,
+    method: "thread/clear",
+    payload: { ref, expectedInstanceId },
+    attachments: [],
+    optimisticDisplay: { method: "thread/clear" },
+  };
+}
+
+function expectedInstanceID(ref: string): string | undefined {
+  return threadInstanceID(trackedThreadModel(ref));
 }
 
 function notificationRef(n: AnyNotification): string | undefined {
@@ -904,6 +1241,32 @@ function targetsPendingHydration(n: AnyNotification, pending: PendingThreadHydra
 
 function pendingHydrationRouting(ref: string, model: ThreadModel | undefined): PendingHydrationRouting {
   return { ref, threadId: model?.threadId };
+}
+
+// Collects the refs a notification must skip in applyToMap because a pending
+// hydration owns them for this frame — either the frame targets the pending
+// record's own routing (so it is buffered for replay onto the eventual
+// snapshot) or it is a contradictory ref-targeted frame: it belongs to this
+// subscription's identity space, but its thread identity is unsafe to replay
+// onto the stale model, so it is dropped. Only called when the pending map is
+// non-empty (handleNotification guards), so the steady state allocates
+// nothing for this.
+function collectPendingRefs(
+  pendingHydrations: Map<string, PendingThreadHydration>,
+  n: AnyNotification,
+  refs: Set<string>,
+  targetedRefs?: Set<string>,
+): void {
+  const ref = notificationRef(n);
+  for (const [pendingRef, pending] of pendingHydrations) {
+    if (targetsPendingHydration(n, pending)) {
+      bufferPendingNotification(pending, n);
+      refs.add(pendingRef);
+      targetedRefs?.add(pendingRef);
+    } else if (ref === pendingRef) {
+      refs.add(pendingRef);
+    }
+  }
 }
 
 function beginThreadHydration(
@@ -976,17 +1339,17 @@ function publishThreadHydration(ref: string, pending: PendingThreadHydration, mo
   const { model: hydrated, appliedAt } = replayHydrationNotifications(model, pending.notifications);
 
   pendingThreadHydrations.delete(ref);
+  putThreadModel(ref, hydrated);
+  invalidateGoalResponseFallback(ref);
   threadsStore.setState((s) => {
-    const nextThreads = new Map(s.threads);
-    nextThreads.set(ref, hydrated);
     const hydrations = new Map(s.hydrations);
     hydrations.set(ref, (hydrations.get(ref) ?? 0) + 1);
-    if (appliedAt.length === 0) return { threads: nextThreads, hydrations };
+    if (appliedAt.length === 0) return { hydrations };
     const nextFrameTimes = new Map(s.frameTimes);
     let times = nextFrameTimes.get(ref) ?? [];
     for (const now of appliedAt) times = appendFrameTime(times, now);
     nextFrameTimes.set(ref, times);
-    return { threads: nextThreads, frameTimes: nextFrameTimes, hydrations };
+    return { frameTimes: nextFrameTimes, hydrations };
   });
   settleOwnedHydration("thread", ref, hydrated);
   return hydrated;
@@ -1047,24 +1410,64 @@ function publishWatchedHydration(
 
 // Fold one notification into matching models; real-pane updates also append
 // the same timestamp to their liveness trace.
+//
+// Routing equivalence argument (why routeByNotificationKey is the scan):
+// notificationTargetsThread (protocol/reducer.ts) targets a model by
+// params.ref first, else by params.threadId, and both are read off the
+// frame's own params — method-agnostic, so the equivalence holds for EVERY
+// notification, in the generated catalog or not, and no per-method gate or
+// fallback scan is needed:
+//   - ref present: exactly the model with model.ref === params.ref, which is
+//     map.get(params.ref) (model.ref === map key, hydrateThread
+//     construction). A ref matching no map entry means the scan would select
+//     nothing.
+//   - ref absent, threadId present: exactly the models with
+//     model.threadId === params.threadId, which is byThreadId.get(threadId)
+//     resolved through the map. The reducer never rewrites threadId (only
+//     hydrateThread sets it), so the index is authoritative.
+//   - both absent: notificationTargetsThread returns false for every model —
+//     the scan is a guaranteed no-op, and routeByNotificationKey's null
+//     return produces the same result (no changedRefs, no frame-time writes).
+// A reducer fold that produces a new model object keeps its ref/threadId
+// (index-stability note above), so routing needs NO re-index here. For a
+// ref-routed frame the router returns the single model directly (no wrapper
+// array); changedRefs order differs from the scan's map-iteration order, but
+// its only consumer (handleNotification's frameTimes loop) is
+// order-insensitive, and applyToMap is module-private.
 function applyToMap(
   map: Map<string, ThreadModel>,
+  index: ThreadModelIndex,
   n: AnyNotification,
   now: number,
   skippedRefs?: ReadonlySet<string>,
-): { next: Map<string, ThreadModel> | null; changedRefs: string[] } {
+): { next: Map<string, ThreadModel> | null; changedRefs: string[]; acceptedRefs: string[] } {
   let next: Map<string, ThreadModel> | null = null;
   const changedRefs: string[] = [];
-  for (const [ref, model] of map) {
-    if (skippedRefs?.has(ref)) continue;
-    if (!notificationTargetsThread(n, model)) continue;
-    const updated = applyNotification(model, n, now);
-    if (updated === model) continue;
-    next ??= new Map(map);
-    next.set(ref, updated);
-    changedRefs.push(ref);
+  const acceptedRefs: string[] = [];
+  const routed = routeByNotificationKey(map, index, n, skippedRefs);
+  if (!routed) return { next, changedRefs, acceptedRefs };
+  const accept = (model: ThreadModel): void => {
+    acceptedRefs.push(model.ref);
+  };
+  if (Array.isArray(routed)) {
+    for (const model of routed) {
+      accept(model);
+      const updated = applyNotification(model, n, now);
+      if (updated === model) continue;
+      next ??= new Map(map);
+      next.set(model.ref, updated);
+      changedRefs.push(model.ref);
+    }
+    return { next, changedRefs, acceptedRefs };
   }
-  return { next, changedRefs };
+  accept(routed);
+  const updated = applyNotification(routed, n, now);
+  if (updated !== routed) {
+    next = new Map(map);
+    next.set(routed.ref, updated);
+    changedRefs.push(routed.ref);
+  }
+  return { next, changedRefs, acceptedRefs };
 }
 
 function handleNotification(n: AnyNotification): void {
@@ -1089,29 +1492,49 @@ function handleNotification(n: AnyNotification): void {
   }
   const now = Date.now();
   const { threads, frameTimes, watchedThreads } = threadsStore.getState();
-  const pendingRefs = new Set<string>();
-  for (const [ref, pending] of pendingThreadHydrations) {
-    if (targetsPendingHydration(n, pending)) {
-      bufferPendingNotification(pending, n);
-      pendingRefs.add(ref);
-    } else if (notificationRef(n) === ref) {
-      // Do not let a contradictory ref-targeted frame mutate the stale model
-      // through applyToMap. It belongs to this subscription's identity space,
-      // but its thread identity is unsafe to replay here, so drop it.
-      pendingRefs.add(ref);
-    }
+  const acceptedGoalRefs = new Set<string>();
+  // Pending-hydration routing: pendingThreadHydrations/pendingWatchedHydrations
+  // are intentionally left as plain map iterations (NOT indexed). They are
+  // usually tiny — at most one entry per in-flight thread/read (bounded by
+  // concurrent pane mounts and reconnect fan-out), not per tracked thread —
+  // and targetsPendingHydration's decision depends on the pending record's
+  // own learned routing (ref/threadId), so an index would add maintenance
+  // surface to every hydration begin/publish/release for no measurable win.
+  // The hot path this store pays per delta is the threads/watchedThreads
+  // fan-out, which IS indexed (see applyToMap).
+  let pendingRefs: ReadonlySet<string> = EMPTY_PENDING_REFS;
+  if (pendingThreadHydrations.size > 0) {
+    const refs = new Set<string>();
+    const targeted = n.method === "evener/goal/updated" ? new Set<string>() : undefined;
+    collectPendingRefs(pendingThreadHydrations, n, refs, targeted);
+    if (refs.size > 0) pendingRefs = refs;
+    if (targeted) for (const ref of targeted) acceptedGoalRefs.add(ref);
   }
-  const pendingWatchedRefs = new Set<string>();
-  for (const [ref, pending] of pendingWatchedHydrations) {
-    if (targetsPendingHydration(n, pending)) {
-      bufferPendingNotification(pending, n);
-      pendingWatchedRefs.add(ref);
-    } else if (notificationRef(n) === ref) {
-      pendingWatchedRefs.add(ref);
-    }
+  let pendingWatchedRefs: ReadonlySet<string> = EMPTY_PENDING_REFS;
+  if (pendingWatchedHydrations.size > 0) {
+    const refs = new Set<string>();
+    const targeted = n.method === "evener/goal/updated" ? new Set<string>() : undefined;
+    collectPendingRefs(pendingWatchedHydrations, n, refs, targeted);
+    if (refs.size > 0) pendingWatchedRefs = refs;
+    if (targeted) for (const ref of targeted) acceptedGoalRefs.add(ref);
   }
-  const { next: nextThreads, changedRefs: changedThreads } = applyToMap(threads, n, now, pendingRefs);
-  const { next: nextWatchedThreads } = applyToMap(watchedThreads, n, now, pendingWatchedRefs);
+  const {
+    next: nextThreads,
+    changedRefs: changedThreads,
+    acceptedRefs: acceptedThreads,
+  } = applyToMap(threads, threadsIndex, n, now, pendingRefs);
+  const { next: nextWatchedThreads, acceptedRefs: acceptedWatchedThreads } = applyToMap(
+    watchedThreads,
+    watchedThreadsIndex,
+    n,
+    now,
+    pendingWatchedRefs,
+  );
+  if (n.method === "evener/goal/updated") {
+    for (const ref of acceptedThreads) acceptedGoalRefs.add(ref);
+    for (const ref of acceptedWatchedThreads) acceptedGoalRefs.add(ref);
+    for (const ref of acceptedGoalRefs) invalidateGoalResponseFallback(ref);
+  }
   if (!nextThreads && !nextWatchedThreads) return;
 
   const patch: Partial<ThreadsStoreState> = {};
@@ -1136,7 +1559,8 @@ function storeWatchedModel(ref: string, model: ThreadModel, includeTurns: boolea
   const hydratedRich = watchHydratedIncludeTurns.get(ref) ?? false;
   if (!includeTurns && hydratedRich) return;
   watchHydratedIncludeTurns.set(ref, hydratedRich || includeTurns);
-  threadsStore.setState((s) => ({ watchedThreads: new Map(s.watchedThreads).set(ref, model) }));
+  invalidateGoalResponseFallback(ref);
+  putWatchedThreadModel(ref, model);
 }
 
 function ownedHydrationsFor(kind: HydrationOwnerKind): Map<string, OwnedHydration> {
@@ -1451,6 +1875,11 @@ async function handleReady(client: AppwireClientLike, epoch: number, targetRef?:
 function rewireClient(client: AppwireClientLike): void {
   if (client === wiredClient) return;
   readyEpoch += 1;
+  // A different client is a different connection: every wire subscription
+  // this generation tracked belongs to a socket that is gone, so drop the
+  // whole set — handleReady's re-reads re-subscribe the still-tracked refs on
+  // the new client.
+  wireSubscribedRefs.clear();
   retireAllOwnedHydrations();
   dispatchReadyClient = null;
   dispatchReadyEpoch = -1;
@@ -1461,6 +1890,10 @@ function rewireClient(client: AppwireClientLike): void {
   unwireNotification = client.onNotification(handleNotification);
   unwireReady = client.onReady(() => {
     readyEpoch += 1;
+    // onReady is the SAME client reconnecting: its old connection's
+    // subscriptions are server-side gone too, even though the client object
+    // survives. handleReady re-subscribes the still-tracked refs.
+    wireSubscribedRefs.clear();
     retireAllOwnedHydrations();
     dispatchReadyClient = null;
     dispatchReadyEpoch = -1;
@@ -1590,6 +2023,18 @@ async function requireReadyClient(timeoutMs = REQUIRE_READY_TIMEOUT_MS): Promise
     client = requireClient();
   }
   return client;
+}
+
+function replaceThread(
+  models: Map<string, ThreadModel>,
+  ref: string,
+  update: (model: ThreadModel) => ThreadModel,
+): Map<string, ThreadModel> {
+  const current = models.get(ref);
+  if (!current) return models;
+  const next = new Map(models);
+  next.set(ref, update(current));
+  return next;
 }
 
 export const threadsStore = createStore<ThreadsStoreState>(() => ({
@@ -1728,23 +2173,18 @@ export const threadsStore = createStore<ThreadsStoreState>(() => ({
     inflightHydrateClients.delete(ref);
     inflightHydrateEpochs.delete(ref);
     pendingThreadHydrations.delete(ref);
-    // No wire call exists for "stop pushing me updates for this ref" (no
-    // thread/read subscribe:false, no unsubscribe method) — the daemon keeps
-    // sending; removing it from `threads` just stops handleNotification's
-    // per-model scan from matching it, so nothing routes here anymore.
+    // A watched lifecycle may still hold this ref (watchRefCounts), and its
+    // model stays; only the pane's own tracking goes. Unsubscribe the wire
+    // subscription when this was the last holder of either kind, so the hub
+    // stops relaying a thread nobody renders and its relay can idle out.
+    if (wireSubscribedRefs.has(ref) && (watchRefCounts.get(ref) ?? 0) <= 0) {
+      wireSubscribedRefs.delete(ref);
+      sendThreadUnsubscribe(ref);
+    }
     // frameTimes is dropped in lockstep — an untracked ref has no business
     // holding onto a liveness trace a future ensureThread() of the same ref
     // should start fresh, the same way it re-reads a fresh model.
-    threadsStore.setState((s) => {
-      if (!s.threads.has(ref) && !s.frameTimes.has(ref) && !s.deletedRefs.has(ref)) return s;
-      const nextThreads = new Map(s.threads);
-      nextThreads.delete(ref);
-      const nextFrameTimes = new Map(s.frameTimes);
-      nextFrameTimes.delete(ref);
-      const nextDeletedRefs = new Set(s.deletedRefs);
-      nextDeletedRefs.delete(ref);
-      return { threads: nextThreads, frameTimes: nextFrameTimes, deletedRefs: nextDeletedRefs };
-    });
+    removeThreadModel(ref);
   },
 
   // watchThread is the transcript/tools stream's own sanctioned addition:
@@ -1877,12 +2317,13 @@ export const threadsStore = createStore<ThreadsStoreState>(() => ({
     // the same ref starts lean again (yd16 §4.2).
     watchIncludeTurns.delete(ref);
     watchHydratedIncludeTurns.delete(ref);
-    threadsStore.setState((s) => {
-      if (!s.watchedThreads.has(ref)) return s;
-      const nextWatchedThreads = new Map(s.watchedThreads);
-      nextWatchedThreads.delete(ref);
-      return { watchedThreads: nextWatchedThreads };
-    });
+    // The open-pane lifecycle may still hold this ref; only when it is gone
+    // too does the wire subscription have no remaining holder.
+    if (wireSubscribedRefs.has(ref) && (refCounts.get(ref) ?? 0) <= 0) {
+      wireSubscribedRefs.delete(ref);
+      sendThreadUnsubscribe(ref);
+    }
+    removeWatchedThreadModel(ref);
   },
 
   async loadOlderTurns(ref) {
@@ -1902,11 +2343,7 @@ export const threadsStore = createStore<ThreadsStoreState>(() => ({
     // clobbered by prepending onto a stale snapshot.
     const current = threadsStore.getState().threads.get(ref);
     if (!current) return;
-    threadsStore.setState((s) => {
-      const next = new Map(s.threads);
-      next.set(ref, prependOlderTurns(current, resp));
-      return { threads: next };
-    });
+    putThreadModel(ref, prependOlderTurns(current, resp));
   },
 
   async send(ref, text, attachments) {
@@ -1928,7 +2365,12 @@ export const threadsStore = createStore<ThreadsStoreState>(() => ({
     // drain, a cold client -- and stale in the race where a turn rolls over
     // between the click and the request. Neither refusal is what the button
     // means. "Stop" means stop what you are doing.
-    await enqueueMutation(ref, "turn/interrupt", { ref }, { method: "turn/interrupt" });
+    await enqueueMutation(
+      ref,
+      "turn/interrupt",
+      { ref, expectedInstanceId: expectedInstanceID(ref) },
+      { method: "turn/interrupt" },
+    );
   },
 
   async drainAsSteer(ref, text, attachments) {
@@ -1942,7 +2384,7 @@ export const threadsStore = createStore<ThreadsStoreState>(() => ({
     await enqueueMutation(
       ref,
       "turn/promoteQueuedAsSteer",
-      { ref, index, expectedEntryId },
+      { ref, index, expectedInstanceId: expectedInstanceID(ref), expectedEntryId },
       { method: "turn/promoteQueuedAsSteer", index, expectedEntryId },
     );
   },
@@ -1951,7 +2393,7 @@ export const threadsStore = createStore<ThreadsStoreState>(() => ({
     await enqueueMutation(
       ref,
       "turn/cancelQueued",
-      { ref, index, expectedEntryId },
+      { ref, index, expectedInstanceId: expectedInstanceID(ref), expectedEntryId },
       { method: "turn/cancelQueued", index, expectedEntryId },
     );
   },
@@ -1974,10 +2416,30 @@ export const threadsStore = createStore<ThreadsStoreState>(() => ({
     }
   },
 
-  async setGoal(ref, objective) {
+  async setVisionModel(ref, visionModel) {
     const client = requireClient();
     try {
-      return await client.request("goal/set", { ref, objective });
+      await client.request("thread/vision-model/set", { ref, visionModel });
+    } catch (err) {
+      throw mapConflict(err);
+    }
+  },
+
+  async setGoal(ref, objective) {
+    const client = requireClient();
+    const generation = (goalUpdateGenerations.get(ref) ?? 0) + 1;
+    goalUpdateGenerations.set(ref, generation);
+    try {
+      const response = await client.request("goal/set", { ref, objective });
+      if (goalUpdateGenerations.get(ref) !== generation) return response;
+      const goal = objective === "" ? null : { objective, status: "active", iterations: 0 };
+      threadsStore.setState((state) => {
+        const threads = replaceThread(state.threads, ref, (model) => ({ ...model, goal }));
+        const watchedThreads = replaceThread(state.watchedThreads, ref, (model) => ({ ...model, goal }));
+        if (threads === state.threads && watchedThreads === state.watchedThreads) return state;
+        return { threads, watchedThreads };
+      });
+      return response;
     } catch (err) {
       throw mapConflict(err);
     }
@@ -2002,28 +2464,15 @@ export const threadsStore = createStore<ThreadsStoreState>(() => ({
   },
 
   async clearThread(ref) {
-    const client = requireClient();
-    let resp: ThreadClearResponse;
-    try {
-      resp = await client.request("thread/clear", { ref });
-    } catch (err) {
-      throw mapConflict(err);
-    }
-    const now = Date.now();
-    threadsStore.setState((s) => {
-      const patch: Partial<ThreadsStoreState> = {};
-      if (s.threads.has(ref)) {
-        const next = new Map(s.threads);
-        next.set(ref, hydrateThread({ thread: resp.thread }, ref, now));
-        patch.threads = next;
-      }
-      if (s.watchedThreads.has(ref)) {
-        const next = new Map(s.watchedThreads);
-        next.set(ref, hydrateThread({ thread: resp.thread }, ref, now));
-        patch.watchedThreads = next;
-      }
-      return Object.keys(patch).length > 0 ? patch : s;
-    });
+    const runtime = requireMutationRuntime();
+    await runtime.start;
+    await enqueueMutationIntent(clearMutationIntent(ref));
+    // A clear is fenced by the model's instance id, so it can dispatch while
+    // an older resync read is in flight. Its response is the newer cut and
+    // retires that read in applyClearResponse.
+    dispatchableMutationRefs.add(ref);
+    await runtime.dispatcher.dispatchTargets([ref]);
+    await refreshMutationPins(runtime, [ref]);
   },
 
   async shutdown(ref) {
@@ -2130,28 +2579,22 @@ export const threadsStore = createStore<ThreadsStoreState>(() => ({
     } catch (err) {
       throw mapConflict(err);
     }
-    threadsStore.setState((s) => {
-      const patch: Partial<ThreadsStoreState> = {};
-      const model = s.threads.get(ref);
-      if (model) {
-        const resolved = resolvePendingEscalation(model, escalationId);
-        if (resolved !== model) {
-          const next = new Map(s.threads);
-          next.set(ref, resolved);
-          patch.threads = next;
-        }
-      }
-      const watchedModel = s.watchedThreads.get(ref);
-      if (watchedModel) {
-        const resolved = resolvePendingEscalation(watchedModel, escalationId);
-        if (resolved !== watchedModel) {
-          const next = new Map(s.watchedThreads);
-          next.set(ref, resolved);
-          patch.watchedThreads = next;
-        }
-      }
-      return Object.keys(patch).length > 0 ? patch : s;
-    });
+    // One setState for both maps (putThreadModels), same as clearThread:
+    // two sequential puts would let a synchronous subscriber see the
+    // escalation cleared in threads but not yet in watchedThreads. Both
+    // resolutions are computed first, then filed together; each is dropped
+    // when the resolver made no change (same-reference no-op), matching the
+    // old single-setState patch shape exactly.
+    const stateBefore = threadsStore.getState();
+    const model = stateBefore.threads.get(ref);
+    const resolvedModel = model ? resolvePendingEscalation(model, escalationId) : undefined;
+    const watchedModel = stateBefore.watchedThreads.get(ref);
+    const resolvedWatched = watchedModel ? resolvePendingEscalation(watchedModel, escalationId) : undefined;
+    putThreadModels(
+      ref,
+      resolvedModel !== undefined && resolvedModel !== model ? resolvedModel : undefined,
+      resolvedWatched !== undefined && resolvedWatched !== watchedModel ? resolvedWatched : undefined,
+    );
   },
 }));
 
@@ -2198,6 +2641,7 @@ export function resetThreadsStoreForTests(): void {
   dispatchReadyEpoch = -1;
   refCounts.clear();
   ensureGenerations.clear();
+  goalUpdateGenerations.clear();
   inflightHydrates.clear();
   inflightHydrateClients.clear();
   inflightHydrateEpochs.clear();
@@ -2211,6 +2655,9 @@ export function resetThreadsStoreForTests(): void {
   watchGenerations.clear();
   watchIncludeTurns.clear();
   watchHydratedIncludeTurns.clear();
+  wireSubscribedRefs.clear();
+  threadsIndex.clear();
+  watchedThreadsIndex.clear();
   modelsCache = null;
   inflightModelsList = null;
   unwireNotification?.();
@@ -2244,4 +2691,21 @@ export function resetThreadsStoreForTests(): void {
     },
     true,
   );
+}
+
+// Read-only snapshot of the thread-id routing indexes for the store's own
+// tests: the differential test asserts key-set consistency with the maps
+// after every notification — every tracked model's threadId is indexed under
+// its ref, and nothing the maps dropped lingers in an index — which is what
+// makes a stale index fail immediately instead of only when a random
+// sequence happens to diverge. (The ref route needs no test-visible index:
+// it IS the map.)
+export function threadRoutingIndexesForTests(): {
+  threadsByThreadId: ReadonlyMap<string, ReadonlySet<string>>;
+  watchedByThreadId: ReadonlyMap<string, ReadonlySet<string>>;
+} {
+  return {
+    threadsByThreadId: threadsIndex,
+    watchedByThreadId: watchedThreadsIndex,
+  };
 }

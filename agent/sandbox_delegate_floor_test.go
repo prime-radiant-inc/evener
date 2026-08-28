@@ -56,6 +56,33 @@ func TestBuildDelegateSandboxPolicy_ModeFloor(t *testing.T) {
 	}
 }
 
+// TestReadOnlyDelegateSandbox_RestrictedParentBlocksWrites keeps the restricted
+// parent's narrower read surface while removing every persistent write root. A
+// read-only child under a restricted parent must not fall back to the parent's
+// ordinary workspace-write scope just because ModeReadOnly and ModeRestricted are
+// incomparable in the normal mode lattice.
+func TestReadOnlyDelegateSandbox_RestrictedParentBlocksWrites(t *testing.T) {
+	lane, home := sbxLane(t)
+	facts := sbxBwrapFacts(home)
+	parent := sbxDelegateSession(t, facts)
+	sbxSetParentMode(t, parent, facts, lane, sandbox.ModeRestricted)
+
+	policy, err := parent.readOnlyDelegateSandbox()
+	if err != nil {
+		t.Fatalf("readOnlyDelegateSandbox: %v", err)
+	}
+	if policy == nil || policy.Mode != sandbox.ModeRestricted || !policy.WriteBlocked {
+		t.Fatalf("restricted read-only delegate policy = %+v, want restricted/write-blocked", policy)
+	}
+	rp, err := sandbox.Resolve(*policy, facts, lane)
+	if err != nil {
+		t.Fatalf("Resolve restricted read-only delegate policy: %v", err)
+	}
+	if len(rp.FileTool.WriteRoots) != 0 || len(rp.Spawned.WriteRoots) != 0 {
+		t.Fatalf("write-blocked policy retained persistent write roots: file=%v spawned=%v", rp.FileTool.WriteRoots, rp.Spawned.WriteRoots)
+	}
+}
+
 // TestBuildDelegateSandboxPolicy_FloorErrorNamesAxisAndAllowedSet: the floor refusal
 // must not read as false for the incomparable pair (a read-only parent refusing a
 // restricted child — restricted is intuitively tighter; the real reason is the WRITE
@@ -90,7 +117,7 @@ func TestBuildDelegateSandboxPolicy_OffWithNetRefused(t *testing.T) {
 	for _, net := range []*bool{new(false), new(true)} {
 		if _, err := buildDelegateSandboxPolicy("off", net, sandbox.ModeOff, true); err == nil {
 			t.Errorf("sandbox=off with an explicit sandbox_net (%v) must be refused", *net)
-		} else if !strings.Contains(err.Error(), "invalid_request:") || !strings.Contains(err.Error(), `no effect with sandbox="off"`) {
+		} else if !strings.Contains(err.Error(), "invalid_request:") || !strings.Contains(err.Error(), "applies no network confinement") {
 			t.Errorf("refusal must explain off applies no network confinement, got %v", err)
 		}
 	}
@@ -102,7 +129,7 @@ func TestBuildDelegateSandboxPolicy_OffWithNetRefused(t *testing.T) {
 	// refusal (the mode is present, so it does not hit the mode-absent guard).
 	if _, err := resolveDelegateSandboxRequest("off", new(false), sandbox.ModeOff, true); err == nil {
 		t.Error("resolveDelegateSandboxRequest must refuse an explicit sandbox=off + sandbox_net")
-	} else if !strings.Contains(err.Error(), `no effect with sandbox="off"`) {
+	} else if !strings.Contains(err.Error(), "applies no network confinement") {
 		t.Errorf("refusal must name the off+net contradiction, got %v", err)
 	}
 }

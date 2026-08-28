@@ -87,7 +87,7 @@ func TestCommunicate_ToolChoiceNotForced_OnEveryRequest(t *testing.T) {
 	}
 	c.Register(f)
 
-	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{})
+	sess, err := NewSession(c, withTestSessionNamer(c, NewOpenAIProfile("gpt-5.2")), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{})
 	if err != nil {
 		t.Fatalf("NewSession: %v", err)
 	}
@@ -134,7 +134,7 @@ func TestCommunicate_ResultExitsLoop(t *testing.T) {
 	}
 	c.Register(f)
 
-	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{})
+	sess, err := NewSession(c, withTestSessionNamer(c, NewOpenAIProfile("gpt-5.2")), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{})
 	if err != nil {
 		t.Fatalf("NewSession: %v", err)
 	}
@@ -178,7 +178,7 @@ func TestCommunicate_StatusMessageContinuesTurn(t *testing.T) {
 	}
 	c.Register(f)
 
-	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{})
+	sess, err := NewSession(c, withTestSessionNamer(c, NewOpenAIProfile("gpt-5.2")), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{})
 	if err != nil {
 		t.Fatalf("NewSession: %v", err)
 	}
@@ -204,7 +204,7 @@ func TestCommunicateRejectsLegacyAwaitReply(t *testing.T) {
 	c := llm.NewClient()
 	c.Register(&fakeAdapter{name: "openai"})
 
-	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{})
+	sess, err := NewSession(c, withTestSessionNamer(c, NewOpenAIProfile("gpt-5.2")), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{})
 	if err != nil {
 		t.Fatalf("NewSession: %v", err)
 	}
@@ -259,7 +259,7 @@ func TestCommunicate_StructuredOutputExitsLoop(t *testing.T) {
 	}
 	c.Register(f)
 
-	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{})
+	sess, err := NewSession(c, withTestSessionNamer(c, NewOpenAIProfile("gpt-5.2")), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{})
 	if err != nil {
 		t.Fatalf("NewSession: %v", err)
 	}
@@ -317,7 +317,7 @@ func TestCommunicate_FirstTerminalResultWins(t *testing.T) {
 	}
 	c.Register(f)
 
-	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{})
+	sess, err := NewSession(c, withTestSessionNamer(c, NewOpenAIProfile("gpt-5.2")), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{})
 	if err != nil {
 		t.Fatalf("NewSession: %v", err)
 	}
@@ -350,13 +350,6 @@ type communicateSessionRoutedAdapter struct {
 	status     llm.ToolCallData
 	childDone  llm.ToolCallData
 	parentDone llm.ToolCallData
-
-	// childRequestSeen closes the instant the first child (delegate) model
-	// request arrives, so a caller can await that event directly instead of
-	// polling requestCounts(). It is the actual completion signal for "the
-	// delegate reached its model call" -- requestCounts() only reports state
-	// a poll would otherwise have to catch mid-transition.
-	childRequestSeen chan struct{}
 }
 
 func (*communicateSessionRoutedAdapter) Name() string { return "openai" }
@@ -376,9 +369,6 @@ func (a *communicateSessionRoutedAdapter) Complete(_ context.Context, req llm.Re
 		}
 	} else {
 		a.childRequests++
-		if a.childRequests == 1 && a.childRequestSeen != nil {
-			close(a.childRequestSeen)
-		}
 		response = toolCallResponse(a.childDone)
 	}
 	response.Provider = a.Name()
@@ -408,7 +398,7 @@ func TestCommunicate_StatusBatchedWithDelegateDoesNotEndTurn(t *testing.T) {
 	c := llm.NewClient()
 
 	delegateArgs, _ := json.Marshal(map[string]any{
-		"task": "Return CHILD_DONE.",
+		"prompt": "Return CHILD_DONE.",
 	})
 	delegate := llm.ToolCallData{
 		ID:        "delegate_1",
@@ -423,15 +413,39 @@ func TestCommunicate_StatusBatchedWithDelegateDoesNotEndTurn(t *testing.T) {
 	childDone := communicateCall("child_done", "CHILD_DONE")
 	parentDone := communicateCall("parent_done", "Parent saw the delegate complete.")
 	f := &communicateSessionRoutedAdapter{
-		delegate:         delegate,
-		status:           status,
-		childDone:        childDone,
-		parentDone:       parentDone,
-		childRequestSeen: make(chan struct{}),
+		delegate:   delegate,
+		status:     status,
+		childDone:  childDone,
+		parentDone: parentDone,
 	}
 	c.Register(f)
 
-	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{StateDir: t.TempDir()})
+	rootIdle := make(chan struct{})
+	deliveryClassified := make(chan bool, 1)
+	var releaseChild sync.Once
+	t.Cleanup(func() { releaseChild.Do(func() { close(rootIdle) }) })
+	var boundaryOnce sync.Once
+	var deliveryWasDeferred bool
+	var sess *Session
+	cfg := SessionConfig{StateDir: t.TempDir()}
+	cfg.testOnly.subagentAfterFinalStatePublish = func(*subagent) { <-rootIdle }
+	cfg.testOnly.afterCommunicateBoundary = func(s *Session) {
+		if s != sess {
+			return
+		}
+		boundaryOnce.Do(func() {
+			releaseChild.Do(func() { close(rootIdle) })
+			deliveryWasDeferred = <-deliveryClassified
+		})
+	}
+	cfg.testOnly.delegateDeliveryClassified = func(s *Session, deferred bool) {
+		if s == sess {
+			deliveryClassified <- deferred
+		}
+	}
+
+	var err error
+	sess, err = NewSession(c, withTestSessionNamer(c, NewOpenAIProfile("gpt-5.2")), execenv.NewLocalExecutionEnvironment(dir), cfg)
 	if err != nil {
 		t.Fatalf("NewSession: %v", err)
 	}
@@ -446,19 +460,11 @@ func TestCommunicate_StatusBatchedWithDelegateDoesNotEndTurn(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ProcessInput: %v", err)
 	}
-	// The delegate child runs asynchronously and the parent turn does not wait
-	// for it, so Close here would cancel a child that has not yet reached its
-	// model call. Await the child's own completion signal (its adapter Complete
-	// call closes childRequestSeen) rather than polling requestCounts(), so
-	// this observes the transition itself instead of racing to catch it.
-	// TRIPWIRE: the child is a scripted in-process adapter call with no real
-	// I/O, so it normally closes the channel in well under a second; 30s only
-	// fires if the child genuinely never reaches its model call.
-	awaitWithin(t, 30*time.Second, "child delegate model request", func() {
-		<-f.childRequestSeen
-	})
 	sess.Close()
 
+	if !deliveryWasDeferred {
+		t.Fatal("delegate completion crossed the terminal boundary instead of waiting for the ProcessInput drain")
+	}
 	if strings.TrimSpace(out) != "Parent saw the delegate complete." {
 		t.Fatalf("ProcessInput returned %q, want parent final", out)
 	}
@@ -482,8 +488,10 @@ func TestCommunicateCapturesRawStructuredOutput(t *testing.T) {
 		resultToolName: func() string {
 			return "communicate"
 		},
-		setCommunicateResult:     func(string, string, string) {},
-		setCommunicateStructured: func(raw any) { captured = raw },
+		setCommunicateTerminal: func(_ context.Context, _, _, _ string, raw any) bool {
+			captured = raw
+			return true
+		},
 	}
 	reg := tool.NewRegistry()
 	registerCommunicateTool(reg, deps)
@@ -526,8 +534,10 @@ func TestCommunicateCapturesEmptyRawStructuredOutputForCustomSchema(t *testing.T
 		resultToolName: func() string {
 			return "communicate"
 		},
-		setCommunicateResult:     func(string, string, string) {},
-		setCommunicateStructured: func(raw any) { captured = raw },
+		setCommunicateTerminal: func(_ context.Context, _, _, _ string, raw any) bool {
+			captured = raw
+			return true
+		},
 	}
 	reg := tool.NewRegistry()
 	def := tool.DefCommunicateNamed("communicate")
@@ -587,7 +597,7 @@ func TestCommunicate_BareTextFallback(t *testing.T) {
 	}
 	c.Register(f)
 
-	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{})
+	sess, err := NewSession(c, withTestSessionNamer(c, NewOpenAIProfile("gpt-5.2")), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{})
 	if err != nil {
 		t.Fatalf("NewSession: %v", err)
 	}
@@ -612,7 +622,7 @@ func TestCommunicate_InboxDrainsSteering(t *testing.T) {
 	c := llm.NewClient()
 	c.Register(&fakeAdapter{name: "openai"})
 
-	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{})
+	sess, err := NewSession(c, withTestSessionNamer(c, NewOpenAIProfile("gpt-5.2")), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{})
 	if err != nil {
 		t.Fatalf("NewSession: %v", err)
 	}
@@ -690,7 +700,7 @@ func TestCommunicate_ClientSteeringBeforeResultProjectsValidNextRequest(t *testi
 	client := llm.NewClient()
 	client.Register(adapter)
 
-	sess, err := NewSession(client, newAnthropicProfile("k3"), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{
+	sess, err := NewSession(client, withTestSessionNamer(client, newAnthropicProfile("k3")), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{
 		StateDir: dir,
 		testOnly: testConfig{
 			metaFS: afero.NewMemMapFs(),
@@ -743,6 +753,105 @@ func TestCommunicate_ClientSteeringBeforeResultProjectsValidNextRequest(t *testi
 	}
 }
 
+func TestCommunicate_TerminalClientSteeringRunsAfterTheTerminalResult(t *testing.T) {
+	t.Parallel()
+	const steerText = "commit them"
+	const firstCallID = "communicate_terminal_race"
+	const secondCallID = "communicate_steering_carrier"
+
+	reachedTool := make(chan struct{})
+	wake := make(chan struct{}, 1)
+	var sess *Session
+	var steerErr error
+	var requestErr error
+	var once sync.Once
+
+	adapter := &fakeAdapter{
+		name: "anthropic",
+		steps: []func(req llm.Request) llm.Response{
+			func(llm.Request) llm.Response {
+				return toolCallResponse(communicateCall(firstCallID, "Initial work complete."))
+			},
+			func(req llm.Request) llm.Response {
+				requestErr = validateSteeredCommunicateHistory(req.Messages, firstCallID, steerText)
+				return toolCallResponse(communicateCall(secondCallID, "Committed."))
+			},
+		},
+	}
+	client := llm.NewClient()
+	client.Register(adapter)
+
+	sess, err := NewSession(client, withTestSessionNamer(client, newAnthropicProfile("k3")), execenv.NewLocalExecutionEnvironment(t.TempDir()), SessionConfig{
+		StateDir: t.TempDir(),
+		testOnly: testConfig{
+			execToolCheckpoint: func(name string) {
+				if name != "before_side_effects" {
+					return
+				}
+				once.Do(func() {
+					close(reachedTool)
+					_, steerErr = sess.AcceptClientMutationSteer(appwire.TurnSteerParams{
+						ClientMutationID: "steer_terminal_race",
+						Input:            []appwire.InputItem{{Type: "text", Text: steerText}},
+					})
+				})
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("NewSession: %v", err)
+	}
+	t.Cleanup(sess.Close)
+	sess.SetPendingUserInputWakeFunc(func() {
+		select {
+		case wake <- struct{}{}:
+		default:
+		}
+	})
+
+	if _, err := sess.ProcessInput(context.Background(), "finish the current work", nil); err != nil {
+		t.Fatalf("first ProcessInput: %v", err)
+	}
+	if steerErr != nil {
+		t.Fatalf("AcceptClientMutationSteer: %v", steerErr)
+	}
+	select {
+	case <-reachedTool:
+	default:
+		t.Fatal("terminal communicate race checkpoint was not reached")
+	}
+
+	select {
+	case <-wake:
+		// The scripted in-process adapter and channel wake should complete well
+		// within this bound; 5s only fires on a genuine synchronization hang.
+		// TRIPWIRE: deterministic in-process wake, not synchronization; this
+		// bound is far above the expected completion time and catches hangs.
+	case <-time.After(5 * time.Second):
+		t.Fatal("pending steering wake did not arrive")
+	}
+	if _, ran, err := sess.ProcessPendingUserInput(context.Background(), nil); err != nil {
+		t.Fatalf("ProcessPendingUserInput: %v", err)
+	} else if !ran {
+		t.Fatal("terminal communicate consumed accepted steering; no carrier turn ran")
+	}
+	if requestErr != nil {
+		t.Fatal(requestErr)
+	}
+	if got := len(adapter.Requests()); got != 2 {
+		t.Fatalf("provider requests = %d, want initial terminal turn plus carrier turn", got)
+	}
+
+	snapshot := sess.clientMutations.snapshot()
+	if len(snapshot.PendingExecutions) != 0 || len(snapshot.SteeringOrder) != 0 {
+		t.Fatalf("client steering remains pending after carrier: pending=%v order=%v", snapshot.PendingExecutions, snapshot.SteeringOrder)
+	}
+	record := snapshot.Journal["steer_terminal_race"]
+	if record.ExecutionState != "incorporated" || record.OperationState != clientMutationOperationTerminal {
+		t.Fatalf("steering mutation state = operation=%q execution=%q, want terminal/incorporated", record.OperationState, record.ExecutionState)
+	}
+}
+
 func validateSteeredCommunicateHistory(messages []llm.Message, callID, steering string) error {
 	callIndex := -1
 	resultIndex := -1
@@ -786,7 +895,7 @@ func TestCommunicate_DrainedImageSteeringRequeuesForPostToolInjection(t *testing
 	c := llm.NewClient()
 	c.Register(&fakeAdapter{name: "openai"})
 
-	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{})
+	sess, err := NewSession(c, withTestSessionNamer(c, NewOpenAIProfile("gpt-5.2")), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{})
 	if err != nil {
 		t.Fatalf("NewSession: %v", err)
 	}
@@ -828,7 +937,7 @@ func TestCommunicate_SchemaRejectsMalformedOutput(t *testing.T) {
 	c := llm.NewClient()
 	c.Register(&fakeAdapter{name: "openai"})
 
-	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{})
+	sess, err := NewSession(c, withTestSessionNamer(c, NewOpenAIProfile("gpt-5.2")), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{})
 	if err != nil {
 		t.Fatalf("NewSession: %v", err)
 	}
@@ -855,13 +964,13 @@ func TestCommunicate_SchemaRejectsMalformedOutput(t *testing.T) {
 	}
 }
 
-func TestCommunicate_SchemaRejectsPurposeInsideOutput(t *testing.T) {
+func TestCommunicate_SchemaRejectsIntentInsideOutput(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
 	c := llm.NewClient()
 	c.Register(&fakeAdapter{name: "openai"})
 
-	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{})
+	sess, err := NewSession(c, withTestSessionNamer(c, NewOpenAIProfile("gpt-5.2")), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{})
 	if err != nil {
 		t.Fatalf("NewSession: %v", err)
 	}
@@ -874,7 +983,7 @@ func TestCommunicate_SchemaRejectsPurposeInsideOutput(t *testing.T) {
 			"message":   "RESULT_LIST_DIR visible-item.txt",
 			"data":      map[string]any{},
 			"artifacts": []any{},
-			"purpose":   "final_result",
+			"intent":    "final_result",
 		},
 	})
 	res := sess.reg.ExecuteCall(context.Background(), sess.env, llm.ToolCallData{
@@ -886,18 +995,18 @@ func TestCommunicate_SchemaRejectsPurposeInsideOutput(t *testing.T) {
 	if !res.IsError {
 		t.Fatalf("expected schema error, got success: %s", res.Output)
 	}
-	if !strings.Contains(res.Output, "additionalProperties") || !strings.Contains(res.Output, "purpose") {
-		t.Fatalf("expected output.purpose schema error, got: %s", res.Output)
+	if !strings.Contains(res.Output, "additionalProperties") || !strings.Contains(res.Output, "intent") {
+		t.Fatalf("expected output.intent schema error, got: %s", res.Output)
 	}
 }
 
-func TestCommunicate_SchemaRejectsTopLevelPurpose(t *testing.T) {
+func TestCommunicate_SchemaRejectsTopLevelIntent(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
 	c := llm.NewClient()
 	c.Register(&fakeAdapter{name: "openai"})
 
-	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{})
+	sess, err := NewSession(c, withTestSessionNamer(c, NewOpenAIProfile("gpt-5.2")), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{})
 	if err != nil {
 		t.Fatalf("NewSession: %v", err)
 	}
@@ -906,7 +1015,7 @@ func TestCommunicate_SchemaRejectsTopLevelPurpose(t *testing.T) {
 	rawArgs, _ := json.Marshal(map[string]any{
 		"message":  "RESULT_LIST_DIR visible-item.txt",
 		"end_turn": true,
-		"purpose":  "final_result",
+		"intent":   "final_result",
 		"output": map[string]any{
 			"message":   "",
 			"data":      map[string]any{},
@@ -922,18 +1031,18 @@ func TestCommunicate_SchemaRejectsTopLevelPurpose(t *testing.T) {
 	if !res.IsError {
 		t.Fatalf("expected schema error, got success: %s", res.Output)
 	}
-	if !strings.Contains(res.Output, "additionalProperties") || !strings.Contains(res.Output, "purpose") {
-		t.Fatalf("expected top-level purpose schema error, got: %s", res.Output)
+	if !strings.Contains(res.Output, "additionalProperties") || !strings.Contains(res.Output, "intent") {
+		t.Fatalf("expected top-level intent schema error, got: %s", res.Output)
 	}
 }
 
-func TestCommunicate_ModelFacingSchemaOmitsPurpose(t *testing.T) {
+func TestCommunicate_ModelFacingSchemaOmitsIntent(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
 	c := llm.NewClient()
 	c.Register(&fakeAdapter{name: "openai"})
 
-	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{})
+	sess, err := NewSession(c, withTestSessionNamer(c, NewOpenAIProfile("gpt-5.2")), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{})
 	if err != nil {
 		t.Fatalf("NewSession: %v", err)
 	}
@@ -953,30 +1062,30 @@ func TestCommunicate_ModelFacingSchemaOmitsPurpose(t *testing.T) {
 		t.Fatal("communicate tool not advertised")
 	}
 	props, _ := communicate.Parameters["properties"].(map[string]any)
-	if _, ok := props["purpose"]; ok {
-		t.Fatalf("communicate should not advertise purpose: %#v", props["purpose"])
+	if _, ok := props["intent"]; ok {
+		t.Fatalf("communicate should not advertise intent: %#v", props["intent"])
 	}
 	output, _ := props["output"].(map[string]any)
 	outProps, _ := output["properties"].(map[string]any)
-	if _, ok := outProps["purpose"]; ok {
-		t.Fatalf("communicate.output should not advertise purpose: %#v", outProps["purpose"])
+	if _, ok := outProps["intent"]; ok {
+		t.Fatalf("communicate.output should not advertise intent: %#v", outProps["intent"])
 	}
 	if readFile == nil {
 		t.Fatal("read_file tool not advertised")
 	}
 	readProps, _ := readFile.Parameters["properties"].(map[string]any)
-	if _, ok := readProps["purpose"]; !ok {
-		t.Fatal("read_file should still advertise purpose")
+	if _, ok := readProps["intent"]; !ok {
+		t.Fatal("read_file should still advertise intent")
 	}
 }
 
-func TestCommunicate_ModelFacingSchemaOmitsPurposeForResultAlias(t *testing.T) {
+func TestCommunicate_ModelFacingSchemaOmitsIntentForResultAlias(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
 	c := llm.NewClient()
 	c.Register(&fakeAdapter{name: "openai"})
 
-	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{
+	sess, err := NewSession(c, withTestSessionNamer(c, NewOpenAIProfile("gpt-5.2")), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{
 		ResultToolName: "respond",
 	})
 	if err != nil {
@@ -995,8 +1104,8 @@ func TestCommunicate_ModelFacingSchemaOmitsPurposeForResultAlias(t *testing.T) {
 		t.Fatal("result alias not advertised")
 	}
 	props, _ := respond.Parameters["properties"].(map[string]any)
-	if _, ok := props["purpose"]; ok {
-		t.Fatalf("result alias should not advertise purpose: %#v", props["purpose"])
+	if _, ok := props["intent"]; ok {
+		t.Fatalf("result alias should not advertise intent: %#v", props["intent"])
 	}
 }
 
@@ -1015,7 +1124,7 @@ func TestCommunicate_EmitsEvent(t *testing.T) {
 	}
 	c.Register(f)
 
-	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{})
+	sess, err := NewSession(c, withTestSessionNamer(c, NewOpenAIProfile("gpt-5.2")), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{})
 	if err != nil {
 		t.Fatalf("NewSession: %v", err)
 	}
@@ -1079,7 +1188,7 @@ func TestCommunicate_AvailableImmediately(t *testing.T) {
 	}
 	c.Register(f)
 
-	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{})
+	sess, err := NewSession(c, withTestSessionNamer(c, NewOpenAIProfile("gpt-5.2")), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{})
 	if err != nil {
 		t.Fatalf("NewSession: %v", err)
 	}

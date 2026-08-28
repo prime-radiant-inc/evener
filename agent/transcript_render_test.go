@@ -999,40 +999,56 @@ func TestRenderMarkdown_ResultToolResultNotOrphaned(t *testing.T) {
 	}
 }
 
-// TestRenderMarkdown_PurposeField verifies purpose: appears only when an explicit
-// purpose/intent/description argument is present.
-func TestRenderMarkdown_PurposeField(t *testing.T) {
+// TestRenderMarkdown_IntentField verifies intent: appears only when an explicit
+// intent argument is present.
+func TestRenderMarkdown_IntentField(t *testing.T) {
 	t.Parallel()
-	t.Run("purpose present when explicit purpose arg given", func(t *testing.T) {
+	t.Run("intent present when explicit intent arg given", func(t *testing.T) {
 		entries := []transcript.Entry{
-			toolCallEntry(call("c1", "shell", `{"command":"ls","purpose":"list the directory"}`)),
+			toolCallEntry(call("c1", "shell", `{"command":"ls","intent":"list the directory"}`)),
 			toolResultEntry(result("c1", "shell", "file.go", false)),
 		}
 		out := renderMarkdown(transcript.Header{}, entries, 0, renderOpts{})
-		if !strings.Contains(out, "purpose: list the directory") {
-			t.Errorf("expected purpose segment from explicit purpose arg, got:\n%s", out)
+		if !strings.Contains(out, "intent: list the directory") {
+			t.Errorf("expected intent segment from explicit intent arg, got:\n%s", out)
 		}
 	})
 
-	t.Run("no purpose segment when absent", func(t *testing.T) {
+	t.Run("no intent segment when absent", func(t *testing.T) {
 		entries := []transcript.Entry{
 			toolCallEntry(call("c1", "shell", `{"command":"ls"}`)),
 			toolResultEntry(result("c1", "shell", "file.go", false)),
 		}
 		out := renderMarkdown(transcript.Header{}, entries, 0, renderOpts{})
-		if strings.Contains(out, "purpose:") {
-			t.Errorf("purpose segment must be omitted when no purpose/intent/description arg, got:\n%s", out)
+		if strings.Contains(out, "intent:") {
+			t.Errorf("intent segment must be omitted when no intent arg, got:\n%s", out)
 		}
 	})
 
-	t.Run("intent and description also recognized", func(t *testing.T) {
+	t.Run("intent from non-shell tool arg", func(t *testing.T) {
 		entries := []transcript.Entry{
 			toolCallEntry(call("c1", "grep", `{"pattern":"x","intent":"find the symbol"}`)),
 			toolResultEntry(result("c1", "grep", "match", false)),
 		}
 		out := renderMarkdown(transcript.Header{}, entries, 0, renderOpts{})
-		if !strings.Contains(out, "purpose: find the symbol") {
-			t.Errorf("expected purpose from intent arg, got:\n%s", out)
+		if !strings.Contains(out, "intent: find the symbol") {
+			t.Errorf("expected intent from intent arg, got:\n%s", out)
+		}
+	})
+
+	// Issue #709: entries recorded before the purpose->intent tool-param
+	// rename (7512a736e, 2026-08-29) carry the model's stated reason under
+	// "purpose", not "intent". read_transcript renders those pre-rename
+	// entries too (a resumed session's transcript file spans both eras), so
+	// the intent line must still appear instead of silently dropping.
+	t.Run("intent falls back to purpose for pre-rename entries", func(t *testing.T) {
+		entries := []transcript.Entry{
+			toolCallEntry(call("c1", "shell", `{"command":"ls","purpose":"list the directory"}`)),
+			toolResultEntry(result("c1", "shell", "file.go", false)),
+		}
+		out := renderMarkdown(transcript.Header{}, entries, 0, renderOpts{})
+		if !strings.Contains(out, "intent: list the directory") {
+			t.Errorf("expected intent segment from legacy purpose arg, got:\n%s", out)
 		}
 	})
 }
@@ -1056,8 +1072,9 @@ func TestToolInputSummary(t *testing.T) {
 		{"glob shows pattern", "glob", `{"pattern":"**/*.go"}`, "**/*.go", ""},
 		{"web_fetch shows host not full url", "web_fetch", `{"url":"https://example.com/a/b?c=d","question":"what"}`, "example.com", ""},
 		{"web_search shows query", "web_search", `{"query":"golang testing"}`, "golang testing", ""},
-		{"delegate shows task/type/max_wait_ms", "delegate", `{"task":"do thing","agent_type":"explorer","max_wait_ms":5000}`, "max_wait_ms=5000", "background"},
-		{"delegate omits max_wait_ms when zero", "delegate", `{"task":"do thing","agent_type":"explorer","max_wait_ms":0}`, "explorer", "max_wait_ms"},
+		{"delegate shows task/type/max_wait_ms", "delegate", `{"prompt":"do thing","agent_type":"explorer","max_wait_ms":5000}`, "max_wait_ms=5000", "background"},
+		{"delegate shows a legacy task brief", "delegate", `{"task":"legacy brief","agent_type":"explorer"}`, "legacy brief", "background"},
+		{"delegate omits max_wait_ms when zero", "delegate", `{"prompt":"do thing","agent_type":"explorer","max_wait_ms":0}`, "explorer", "max_wait_ms"},
 		{"job_send_message shows id/message", "job_send_message", `{"target":"job_01J","message":"continue"}`, "job_01J", ""},
 		{"delegate_send shows delegate/message", "delegate_send", `{"to":"dlg_01J","message":"continue"}`, "dlg_01J", ""},
 		{"use_skill shows skill", "use_skill", `{"skill_name":"brainstorming"}`, "brainstorming", ""},
@@ -1965,7 +1982,7 @@ func TestRenderMarkdown_DelegateToolCallAppears(t *testing.T) {
 	})
 	entries := []transcript.Entry{
 		// seq 0: assistant turn issuing a delegate call.
-		toolCallEntry(call("call_delegate", "delegate", `{"task":"investigate the render path","agent_type":"explorer"}`)),
+		toolCallEntry(call("call_delegate", "delegate", `{"prompt":"investigate the render path","agent_type":"explorer"}`)),
 		// seq 1: the paired delegate result.
 		toolResultEntry(result("call_delegate", "delegate", body, false)),
 	}
@@ -2022,7 +2039,7 @@ func TestRenderMarkdown_BatchedDelegateToolCallsAppear(t *testing.T) {
 	calls := make([]*llm.ToolCallData, len(specs))
 	results := make([]*llm.ToolResultData, len(specs))
 	for i, sp := range specs {
-		calls[i] = call(sp.callID, "delegate", fmt.Sprintf(`{"task":"batched research task %d"}`, i))
+		calls[i] = call(sp.callID, "delegate", fmt.Sprintf(`{"prompt":"batched research task %d"}`, i))
 		body := delegateCreateBody(t, stableDelegateCreateResult{
 			DelegateID:    sp.delegateID,
 			Type:          "delegate",
@@ -2070,7 +2087,7 @@ func TestRenderOutline_DelegateToolCallAppears(t *testing.T) {
 		TranscriptRef: childRef,
 	})
 	entries := []transcript.Entry{
-		toolCallEntry(call("call_del", "delegate", `{"task":"map the render path"}`)),
+		toolCallEntry(call("call_del", "delegate", `{"prompt":"map the render path"}`)),
 		toolResultEntry(result("call_del", "delegate", body, false)),
 	}
 	out, _, _ := renderOutline(entries, 0, len(entries)-1)
@@ -2107,7 +2124,7 @@ func TestRenderOutline_BatchedDelegateToolCallsAppear(t *testing.T) {
 	calls := make([]*llm.ToolCallData, len(specs))
 	results := make([]*llm.ToolResultData, len(specs))
 	for i, sp := range specs {
-		calls[i] = call(sp.callID, "delegate", fmt.Sprintf(`{"task":"outline batch task %d"}`, i))
+		calls[i] = call(sp.callID, "delegate", fmt.Sprintf(`{"prompt":"outline batch task %d"}`, i))
 		body := delegateCreateBody(t, stableDelegateCreateResult{
 			DelegateID:    sp.delegateID,
 			Type:          "delegate",

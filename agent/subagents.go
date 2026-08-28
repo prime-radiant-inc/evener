@@ -23,6 +23,7 @@ import (
 	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/agent/skill"
 	taskpkg "primeradiant.com/evener/agent/task"
+	"primeradiant.com/evener/agent/transcript"
 )
 
 const delegateSalvagedDraftNote = "partial draft salvaged in the child transcript — resume it with delegate_send rather than re-dispatching"
@@ -158,21 +159,47 @@ type preparedSubagentRun struct {
 	treeSlot *treeReservation
 }
 
+// disposeUnadoptedScratch drops every per-session scratch directory env
+// provisioned — the sandbox-owned one and the one an unsandboxed environment
+// mints on its first command — releasing each lease with its directory. Every
+// caller is a path that provisioned an environment and then failed before any
+// session adopted it: both releases belong to a session's own teardown, so
+// without this nothing ever runs them and each failure leaves a directory and a
+// live lease behind. A no-op for an environment with no scratch to drop,
+// including one that is not local. It must run only on an environment built for
+// the failed thing, never on a shared parent's, whose scratch the parent is
+// still working in.
+func disposeUnadoptedScratch(env execenv.ExecutionEnvironment) {
+	if local, ok := env.(*execenv.LocalExecutionEnvironment); ok {
+		local.DisposeUnadoptedScratch()
+	}
+}
+
 // disposeUnadoptedSubagentSession tears down a child that never became a
-// tracked/adopted delegate. Normal session cleanup retains sandbox scratch for
-// the human handoff, but an unadopted fresh environment has no owner left to
-// perform that handoff, so its scratch is rolled back here.
+// tracked/adopted delegate. It is the create-path twin of
+// discardRestoredCandidate and makes the same decisions it does. Normal teardown
+// RETAINS both of a session's scratch dirs for the human handoff — the leases go,
+// the directories stay — but an unadopted child has no owner left to hand
+// anything to, so both go: the sandbox-owned one and the one an unsandboxed
+// environment (the default shape) mints on its first command. Only for an
+// environment built FOR this child, though: a shared one belongs to the live
+// parent still working in it.
 func disposeUnadoptedSubagentSession(sess *Session, ownsEnv bool) {
 	if sess == nil {
 		return
 	}
-	sess.Close()
+	// The environment's Cleanup is never this child's to run, whichever
+	// environment it holds. A shared one is the live parent's outright; a FRESH
+	// clone still shares the parent's PROCESS TABLE, since WithWorkingDirectory
+	// copies runningPIDs by pointer, so cleaning up a clone signals the parent's
+	// in-flight tools too. The child's own processes live in that same map and
+	// end with the environment that owns it — the same skip the parent's own
+	// teardown makes for its children.
+	sess.close(context.Background(), false)
 	if !ownsEnv {
 		return
 	}
-	if le, ok := sess.currentEnv().(*execenv.LocalExecutionEnvironment); ok {
-		le.DisposeSandboxScratch()
-	}
+	disposeUnadoptedScratch(sess.currentEnv())
 }
 
 func (p *preparedSubagentRun) disposeUnadopted() {
@@ -261,6 +288,17 @@ func baseSubagentToolPolicy(agent *plugin.Agent, canDelegate bool) (allTools boo
 		// automatic compaction to run unsteered. The untyped surface already
 		// keeps it (deny-list path), so listing tools: must not take it away.
 		allowed = appendUniqueStrings(allowed, "compact_context")
+		// Root-only job and delegation tools in a typed role's list are
+		// allowance-gated: granted, the role keeps them and gains job_watch
+		// to supervise its delegates; a leaf loses them, on every spawn
+		// path, exactly as the untyped surface does.
+		if canDelegate {
+			if hasString(allowed, "delegate") {
+				allowed = appendUniqueStrings(allowed, "job_watch")
+			}
+		} else {
+			allowed = removeRootOnlySubagentTools(allowed)
+		}
 		return false, allowed, nil
 	default:
 		if canDelegate {
@@ -268,6 +306,25 @@ func baseSubagentToolPolicy(agent *plugin.Agent, canDelegate bool) (allTools boo
 		}
 		return false, nil, rootOnlySubagentTools()
 	}
+}
+
+// subagentToolScopeIsReadOnly reports whether an explicitly tool-scoped agent
+// has any direct workspace mutation capability. Shell is intentionally not in
+// this list: the bundled explorer/reviewer/verifier roles need shell for
+// inspection, but a shell is still a write-capable process unless the child's
+// execution environment supplies a kernel boundary. The boundary is therefore
+// derived from the structured tool scope, never from role prose.
+func subagentToolScopeIsReadOnly(allTools bool, allowed []string) bool {
+	if allTools || len(allowed) == 0 {
+		return false
+	}
+	for _, name := range allowed {
+		switch name {
+		case "write_file", "edit_file", "apply_patch", "manage_worktree":
+			return false
+		}
+	}
+	return true
 }
 
 func frozenSubagentToolNames(allTools bool, allowed, denied []string) []string {
@@ -338,7 +395,7 @@ func frozenStableDelegateSandboxMatches(env execenv.ExecutionEnvironment, want *
 	if got == nil || want == nil {
 		return got == nil && want == nil
 	}
-	if got.Mode != want.Mode || !slices.Equal(got.DenylistAdd, want.DenylistAdd) || !slices.Equal(got.DenylistRemove, want.DenylistRemove) || !slices.Equal(got.ExtraWritableRoots, want.ExtraWritableRoots) || !slices.Equal(got.ExtraReadRoots, want.ExtraReadRoots) {
+	if got.Mode != want.Mode || got.WriteBlocked != want.WriteBlocked || !slices.Equal(got.DenylistAdd, want.DenylistAdd) || !slices.Equal(got.DenylistRemove, want.DenylistRemove) || !slices.Equal(got.ExtraWritableRoots, want.ExtraWritableRoots) || !slices.Equal(got.ExtraReadRoots, want.ExtraReadRoots) {
 		return false
 	}
 	if got.Network == nil || want.Network == nil {
@@ -566,11 +623,11 @@ func (s *Session) prepareSubagentRunWithModelSelection(
 ) (*preparedSubagentRun, error) {
 	return s.prepareSubagentRunFromSelection(
 		ctx, task, workingDir, maxTurns, agentType, reasoningEffort,
-		parentTasks, grantTools, selection, nil,
+		parentTasks, grantTools, selection, nil, nil,
 	)
 }
 
-func (s *Session) prepareStableDelegateRun(ctx context.Context, descriptor delegatestore.Descriptor, watchParent bool, selection subagentModelSelection) (*preparedSubagentRun, error) {
+func (s *Session) prepareStableDelegateRun(ctx context.Context, descriptor delegatestore.Descriptor, watchParent bool, selection subagentModelSelection, inheritedContext []transcript.Entry) (*preparedSubagentRun, error) {
 	if selection.profile == nil || selection.profile.ID() != descriptor.ResolvedProfileID || selection.profile.Model() != descriptor.ResolvedModel {
 		actual := "<nil>"
 		if selection.profile != nil {
@@ -593,7 +650,7 @@ func (s *Session) prepareStableDelegateRun(ctx context.Context, descriptor deleg
 	selection.agent = nil
 	return s.prepareSubagentRunFromSelection(
 		ctx, descriptor.Task, descriptor.WorkingDir, 0, descriptor.AgentType, descriptor.Config.ReasoningEffort,
-		nil, nil, selection, &descriptor,
+		nil, nil, selection, &descriptor, inheritedContext,
 	)
 }
 
@@ -607,6 +664,7 @@ func (s *Session) prepareStableDelegateRun(ctx context.Context, descriptor deleg
 func subagentConfigFromFrozenDescriptor(frozenConfig schema.ConfigSnapshot, parentCfg SessionConfig) SessionConfig {
 	subCfg := configFromSnapshot(frozenConfig.Clone())
 	subCfg.Project = parentCfg.Project
+	subCfg.LifetimeContext = parentCfg.LifetimeContext
 	subCfg.LLMRetryPolicy = parentCfg.LLMRetryPolicy
 	subCfg.LLMSleep = parentCfg.LLMSleep
 	subCfg.clock = parentCfg.clock
@@ -634,10 +692,10 @@ func (s *Session) prepareSubagentRunFromSelection(
 	grantTools []string,
 	selection subagentModelSelection,
 	frozen *delegatestore.Descriptor,
+	inheritedContext []transcript.Entry,
 ) (*preparedSubagentRun, error) {
 	s.mu.Lock()
 	depth := s.depth
-	allowance := s.delegationAllowance
 	parentCfg := s.cfg
 	subscriberCount := s.subscriberCountFn
 	s.mu.Unlock()
@@ -672,6 +730,7 @@ func (s *Session) prepareSubagentRunFromSelection(
 	}
 	subCfg.spawn.parentSessionID = s.id
 	subCfg.spawn.subagentTask = task
+	subCfg.spawn.inheritedContext = inheritedContext
 	subCfg.spawn.depth = depth + 1
 	subCfg.spawn.parentSteer = s.SteerWithProvenance
 	subCfg.spawn.parentSystemNotification = s.routeSystemNotification
@@ -800,7 +859,10 @@ func (s *Session) prepareSubagentRunFromSelection(
 		allowedTools = append([]string(nil), frozen.ToolNameCeiling...)
 		subCfg.spawn.toolNameCeiling = append([]string(nil), allowedTools...)
 	} else {
-		allTools, allowedTools, deniedTools = baseSubagentToolPolicy(agent, allowance > 0)
+		// The policy follows the CHILD's granted allowance, not this session's:
+		// a leaf spawned by a coordinator must not inherit the coordinator's
+		// job-supervision tools.
+		allTools, allowedTools, deniedTools = baseSubagentToolPolicy(agent, childCanDelegate)
 		if subCfg.spawn.parentWatchGranted && !allTools {
 			if len(allowedTools) > 0 {
 				allowedTools = appendUniqueStrings(allowedTools, "job_watch")
@@ -852,6 +914,13 @@ func (s *Session) prepareSubagentRunFromSelection(
 	if v, ok := ctx.Value(ctxDelegateSandboxPolicy).(*sandbox.SandboxPolicy); ok {
 		reqSandbox = v
 	}
+	if reqSandbox == nil && subagentToolScopeIsReadOnly(allTools, allowedTools) {
+		var sandboxErr error
+		reqSandbox, sandboxErr = s.readOnlyDelegateSandbox()
+		if sandboxErr != nil {
+			return nil, fmt.Errorf("read-only delegate sandbox: %w", sandboxErr)
+		}
+	}
 	preparedEnv, hasPreparedEnv := ctx.Value(delegatePreparedEnvironmentContextKey{}).(delegatePreparedEnvironment)
 	subEnv := preparedEnv.env
 	ownsFreshEnv := preparedEnv.ownsFresh
@@ -892,12 +961,12 @@ func (s *Session) prepareSubagentRunFromSelection(
 	}
 	if err != nil {
 		// A fresh environment that failed before session adoption never reaches the
-		// session cleanup path, so dispose any scratch it provisioned. A worktree-only
-		// re-root has no owned scratch, making this safe when reqSandbox is nil.
+		// session cleanup path, so dispose every scratch it provisioned: the
+		// sandbox-owned one AND the one an unsandboxed environment mints on its
+		// first command, which the construction above reaches through its own git
+		// snapshot. A prepared environment belongs to whoever prepared it.
 		if ownsFreshEnv && !hasPreparedEnv {
-			if le, ok := subEnv.(*execenv.LocalExecutionEnvironment); ok {
-				le.DisposeSandboxScratch()
-			}
+			disposeUnadoptedScratch(subEnv)
 		}
 		return nil, err
 	}
@@ -926,10 +995,18 @@ func (s *Session) prepareSubagentRunFromSelection(
 	}
 	if len(defaultTasks) > 0 {
 		subStore := subSess.getOrCreateTaskStore()
-		populateErr := subStore.PopulateFromTemplates(defaultTasks, parentTasks)
-		if fault := s.subagentPrepareFault("task_populate"); fault != nil {
-			populateErr = fault
-		}
+		populateErr := subStore.MutateAndPublish(func(epoch, revision uint64) error {
+			err := subStore.PopulateFromTemplates(defaultTasks, parentTasks)
+			if fault := s.subagentPrepareFault("task_populate"); fault != nil {
+				err = fault
+			}
+			if err != nil {
+				return err
+			}
+			summary := taskpkg.Summarize(subStore.View())
+			subSess.emit(events.EventTaskUpdated, taskUpdatedData(summary, subSess.taskStoreOwnerSessionID(), epoch, revision))
+			return nil
+		})
 		if err := populateErr; err != nil {
 			// Non-fatal: surface as a warning so the spawn still proceeds but the
 			// failure is observable instead of silently swallowed.
@@ -1022,7 +1099,7 @@ func (s *Session) prepareSubagentRunFromSelection(
 	// child keeps running. Child cancellation is handled by subSess.Close(),
 	// including when the parent session closes. The per-run context lets
 	// parent stops interrupt this run without destroying the child session.
-	runCtx, runCancel := context.WithCancel(context.Background())
+	runCtx, runCancel := context.WithCancel(s.sessionCtx)
 	sub.mu.Lock()
 	sub.cancel = runCancel
 	sub.cancelRequested = false
@@ -1491,6 +1568,7 @@ func (a *subagent) run(ctx context.Context, input string, inputProvenance *prove
 	var err error
 	var restoreParentDriveNotify func()
 	var finish delegateFinish
+	var noActionClaim *delegateSettlementClaim
 	iteration := 0
 	for {
 		iteration++
@@ -1517,10 +1595,22 @@ func (a *subagent) run(ctx context.Context, input string, inputProvenance *prove
 				cancelRequested = true
 			}
 		}
+		var needsNudge bool
+		if stableRun && a.sess.delegateController != nil {
+			decision, decisionErr := a.sess.delegateController.completionDecision(lease)
+			if decisionErr != nil {
+				err = errors.Join(err, decisionErr)
+				needsNudge = false
+			} else {
+				needsNudge = decision == delegateCompletionNeedsNudge
+			}
+		} else {
+			needsNudge = !a.sess.Communicated()
+		}
 		shouldNudge := nudgeAvailable && !cancelRequested &&
 			!budgetExhausted &&
 			a.nudgeEnabled &&
-			!a.sess.Communicated() &&
+			needsNudge &&
 			(err == nil || errors.Is(err, errBareTextWithoutResultTool) || errors.Is(err, errEmptyResponseExhausted))
 		if shouldNudge {
 			nudgeAvailable = false
@@ -1533,18 +1623,41 @@ func (a *subagent) run(ctx context.Context, input string, inputProvenance *prove
 		}
 		restoreParentDriveNotify = nil
 		if err == nil {
-			a.sess.mu.Lock()
-			parentDriveNotify := a.sess.notifyFunc
-			a.sess.mu.Unlock()
-			a.mu.Lock()
-			a.finalizing = true
-			a.mu.Unlock()
-			drained, drainErr := a.sess.DrainJobTree(ctx)
-			restoreParentDriveNotify = parentDriveNotify
-			if drainErr != nil {
-				err = drainErr
-			} else if drained != "" {
-				res = drained
+			res, restoreParentDriveNotify, err = a.drainForFinalization(ctx, res)
+		}
+		if stableRun && a.sess.delegateController != nil && nudgeAvailable && !cancelRequested && !budgetExhausted && a.nudgeEnabled &&
+			(err == nil || errors.Is(err, errBareTextWithoutResultTool) || errors.Is(err, errEmptyResponseExhausted)) {
+			decision, decisionErr := a.sess.delegateController.completionDecision(lease)
+			if decisionErr != nil {
+				err = errors.Join(err, decisionErr)
+			} else if decision == delegateCompletionNeedsNudge {
+				nudgeAvailable = false
+				if restoreParentDriveNotify != nil {
+					a.sess.SetNotifyFunc(restoreParentDriveNotify)
+					restoreParentDriveNotify = nil
+				}
+				a.mu.Lock()
+				a.finalizing = false
+				a.mu.Unlock()
+				res, err = a.sess.processInputWithProvenance(ctx, communicateNudge(a.sess.resultToolName()), nil, a.followUpProvenance(inputProvenance))
+				a.mu.Lock()
+				cancelRequested = a.cancelRequested
+				a.mu.Unlock()
+				settlementMode = delegateSettlementModeForRun(err, cancelRequested)
+				boundary, boundaryErr := a.sess.delegateController.SupervisionBoundary(lease, settlementMode)
+				if boundaryErr != nil && !errors.Is(boundaryErr, errDelegateTargetBusy) {
+					err = errors.Join(err, boundaryErr)
+				}
+				switch boundary {
+				case delegateSupervisionContinue:
+					input = "Continue with the newly received steering before settling."
+					kind = EntryContinuation
+					continue
+				case delegateSupervisionSuppress:
+				}
+				if err == nil {
+					res, restoreParentDriveNotify, err = a.drainForFinalization(ctx, res)
+				}
 			}
 		}
 		if observer := a.sess.cfg.testOnly.subagentBeforeSettlement; observer != nil {
@@ -1567,7 +1680,7 @@ func (a *subagent) run(ctx context.Context, input string, inputProvenance *prove
 			finish = a.stableDelegateFinish(res, err)
 			break
 		}
-		settlementClaim, continueRun, settleErr := a.sess.delegateController.BeginFinalization(lease, settlementMode)
+		settlementClaim, continueRun, settleErr := a.sess.delegateController.BeginRunFinalization(lease, settlementMode, err)
 		if settleErr != nil {
 			if !errors.Is(settleErr, errDelegateTargetBusy) {
 				err = errors.Join(err, settleErr)
@@ -1620,6 +1733,18 @@ func (a *subagent) run(ctx context.Context, input string, inputProvenance *prove
 			err = a.gateFatalRunError(err)
 		}
 		finish = a.stableDelegateFinish(res, err)
+		decision, decisionErr := a.sess.delegateController.completionDecision(lease)
+		if decisionErr != nil {
+			err = errors.Join(err, decisionErr)
+		} else if err == nil && decision == delegateCompletionFinishNoAction {
+			prepared, prepareErr := a.sess.delegateController.prepareNoAction(settlementClaim, finish)
+			if prepareErr != nil {
+				err = errors.Join(err, prepareErr)
+			} else if prepared {
+				noActionClaim = settlementClaim
+				break
+			}
+		}
 		plans, settleErr := a.sess.delegateController.CompleteSettlement(settlementClaim, finish.packet)
 		if executeErr := a.sess.executeDelegateMutationPlans(plans); settleErr == nil {
 			settleErr = executeErr
@@ -1635,8 +1760,6 @@ func (a *subagent) run(ctx context.Context, input string, inputProvenance *prove
 		}
 		break
 	}
-	exhaustion, budgetExhausted := budgetExhaustionFromError(err)
-
 	a.sess.mu.Lock()
 	turns := a.sess.turns
 	a.sess.mu.Unlock()
@@ -1657,16 +1780,12 @@ func (a *subagent) run(ctx context.Context, input string, inputProvenance *prove
 	a.running = false
 	a.turnsUsed = turns
 	a.endedAt = &finalizeTime
-	switch {
-	case a.cancelRequested && errors.Is(err, context.Canceled):
-		a.status = SubagentCancelled
-	case budgetExhausted:
-		a.status = SubagentExhausted
-		a.err = exhaustion
-	case err != nil:
-		a.status = SubagentFailed
-	default:
-		a.status = SubagentCompleted
+	runEnd := classifyRunEnd(err, a.cancelRequested)
+	a.status = runEnd.status
+	// The payload is non-nil exactly when the run published Exhausted
+	// (classifier contract), so its presence alone is the overwrite decision.
+	if runEnd.exhaustion != nil {
+		a.err = runEnd.exhaustion
 	}
 	done := a.done
 	a.endEmitted = true
@@ -1676,7 +1795,13 @@ func (a *subagent) run(ctx context.Context, input string, inputProvenance *prove
 	}
 	if stableRun && a.sess.delegateController != nil {
 		finish.endedAt = finalizeTime
-		plans, finishErr := a.sess.delegateController.FinishGeneration(lease, finish)
+		var plans delegateMutationPlans
+		var finishErr error
+		if noActionClaim != nil {
+			plans, finishErr = a.sess.delegateController.FinishNoAction(noActionClaim)
+		} else {
+			plans, finishErr = a.sess.delegateController.FinishGeneration(lease, finish)
+		}
 		if executeErr := a.sess.executeDelegateMutationPlans(plans); finishErr == nil {
 			finishErr = executeErr
 		}
@@ -1713,25 +1838,83 @@ func (a *subagent) run(ctx context.Context, input string, inputProvenance *prove
 	}
 }
 
+func (a *subagent) drainForFinalization(ctx context.Context, result string) (string, func(), error) {
+	a.sess.mu.Lock()
+	parentDriveNotify := a.sess.notifyFunc
+	a.sess.mu.Unlock()
+	a.mu.Lock()
+	a.finalizing = true
+	a.mu.Unlock()
+	drained, err := a.sess.DrainJobTree(ctx)
+	if err != nil {
+		return result, parentDriveNotify, err
+	}
+	if drained != "" {
+		result = drained
+	}
+	return result, parentDriveNotify, nil
+}
+
+// runEndClass is the shared classification of a delegate run's terminal error.
+type runEndClass struct {
+	mode   delegateSettlementMode
+	fatal  bool
+	status SubagentStatus
+	// exhaustion is non-nil exactly when status == SubagentExhausted; its
+	// presence is the caller's decision to replace the run error, so a
+	// cancelled run whose error also carries a budget component never sees it.
+	exhaustion *budgetExhaustionError
+}
+
+// classifyRunEnd maps a run error plus the local cancel request onto the
+// settlement-mode, fatality, and status projections in one pattern-match over
+// the run-end taxonomy. It is pure: no locking, I/O, Session, or controller
+// access. Load-bearing pins:
+//
+//   - Settlement mode is terminal when cancelRequested regardless of err,
+//     while SubagentCancelled additionally requires errors.Is(err,
+//     context.Canceled): "this runtime can no longer settle ordinarily" vs
+//     "the user stopped this run".
+//   - Budget exhaustion is tested BEFORE the bare-text/empty-response
+//     sentinels (so Join(bareText, exhaustion) settles terminally), and a
+//     joined exhaustion+Canceled under cancel still publishes Cancelled with
+//     no exhaustion payload — the error is kept verbatim there.
+//   - context.Canceled is never fatal even when cancelRequested is false —
+//     a host interrupt, not a user stop.
+//   - errors.Is/errors.As semantics are preserved for wrapped and joined
+//     (errors.Join) error values.
+func classifyRunEnd(err error, cancelRequested bool) runEndClass {
+	exhaustion, budgetExhausted := budgetExhaustionFromError(err)
+	ordinary := !budgetExhausted && (err == nil ||
+		errors.Is(err, errBareTextWithoutResultTool) || errors.Is(err, errEmptyResponseExhausted))
+	nonFatal := ordinary || budgetExhausted || errors.Is(err, context.Canceled)
+	var cls runEndClass
+	if !cancelRequested && ordinary {
+		cls.mode = delegateSettlementOrdinary
+	} else {
+		cls.mode = delegateSettlementTerminal
+	}
+	cls.fatal = !nonFatal
+	switch {
+	case cancelRequested && errors.Is(err, context.Canceled):
+		cls.status = SubagentCancelled
+	case budgetExhausted:
+		cls.status = SubagentExhausted
+		cls.exhaustion = exhaustion
+	case err != nil:
+		cls.status = SubagentFailed
+	default:
+		cls.status = SubagentCompleted
+	}
+	return cls
+}
+
 func delegateSettlementModeForRun(err error, cancelRequested bool) delegateSettlementMode {
-	if cancelRequested {
-		return delegateSettlementTerminal
-	}
-	if _, exhausted := budgetExhaustionFromError(err); exhausted {
-		return delegateSettlementTerminal
-	}
-	if err == nil || errors.Is(err, errBareTextWithoutResultTool) || errors.Is(err, errEmptyResponseExhausted) {
-		return delegateSettlementOrdinary
-	}
-	return delegateSettlementTerminal
+	return classifyRunEnd(err, cancelRequested).mode
 }
 
 func stableDelegateFatalRun(err error) bool {
-	if err == nil || errors.Is(err, context.Canceled) || errors.Is(err, errBareTextWithoutResultTool) || errors.Is(err, errEmptyResponseExhausted) {
-		return false
-	}
-	_, exhausted := budgetExhaustionFromError(err)
-	return !exhausted
+	return classifyRunEnd(err, false).fatal
 }
 
 func stableDelegateFinish(sess *Session, result string, runErr error) delegateFinish {
@@ -1824,6 +2007,7 @@ type delegateTerminalPacketMetadata struct {
 	Task              string                          `json:"task,omitempty"`
 	Description       string                          `json:"description,omitempty"`
 	AgentType         string                          `json:"agent_type,omitempty"`
+	Tools             []string                        `json:"tools,omitempty"`
 	RequestedModel    string                          `json:"requested_model,omitempty"`
 	ResolvedProfileID string                          `json:"resolved_profile_id,omitempty"`
 	ResolvedModel     string                          `json:"resolved_model,omitempty"`
@@ -1946,6 +2130,7 @@ func delegateTerminalMetadataFromRun(inputs delegateTerminalRunInputs) delegateT
 		Task:              inputs.descriptor.Task,
 		Description:       inputs.descriptor.Description,
 		AgentType:         inputs.descriptor.AgentType,
+		Tools:             append([]string(nil), inputs.descriptor.ToolNameCeiling...),
 		RequestedModel:    inputs.descriptor.RequestedModel,
 		ResolvedProfileID: inputs.descriptor.ResolvedProfileID,
 		ResolvedModel:     inputs.descriptor.ResolvedModel,
@@ -1993,6 +2178,13 @@ func (a *subagent) runSubagentStopHook(ctx context.Context, res string, err erro
 	}
 	for _, m := range stopResult.UserMessages {
 		a.sess.deliverHookUserMessage(m)
+	}
+	if stopResult.Blocked || len(stopResult.ModelContext) != 0 || len(stopResult.UserMessages) != 0 {
+		if lease, stableRun := ctx.Value(delegateRunLeaseContextKey{}).(delegateLease); stableRun && a.sess.delegateController != nil {
+			if escalationErr := a.sess.delegateController.escalateCompletionRequirement(lease); escalationErr != nil {
+				return res, errors.Join(err, escalationErr)
+			}
+		}
 	}
 	if !stopResult.Blocked {
 		return res, err

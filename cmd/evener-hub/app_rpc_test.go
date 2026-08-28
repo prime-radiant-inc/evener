@@ -27,26 +27,48 @@ import (
 	"primeradiant.com/evener/cmd/evener-hub/internal/codexlaunch"
 	"primeradiant.com/evener/cmd/evener-hub/internal/fspaths"
 	"primeradiant.com/evener/cmd/evener-hub/internal/hubcore"
+	"primeradiant.com/evener/cmdutil"
 	"primeradiant.com/evener/identifier"
 	"primeradiant.com/evener/internal/appserver"
+	"primeradiant.com/evener/internal/credentials"
 	"primeradiant.com/evener/internal/selfupdate"
 	"primeradiant.com/evener/llm"
-	"primeradiant.com/evener/llm/providercfg"
+	"primeradiant.com/evener/llm/registry"
 	"primeradiant.com/evener/rendezvous"
 )
 
+func TestHubRPCPluginPreviewRoute(t *testing.T) {
+	server := appserver.NewServer(appserver.ServerConfig{ServerName: "hub", SourceID: "local"})
+	registerPluginHandlers(server, newHubPluginsController(t.TempDir(), t.TempDir()))
+	out, err := server.Router().Dispatch(context.Background(), appwire.Request{
+		Method: appwire.MethodEvenerPluginPreview,
+		Params: json.RawMessage(`{"cwd":"/tmp"}`),
+	})
+	if err != nil {
+		t.Fatalf("preview route: %v", err)
+	}
+	if _, ok := out.(appwire.PluginPreviewResponse); !ok {
+		t.Fatalf("preview route response = %T, want PluginPreviewResponse", out)
+	}
+}
+
 func TestHubRPCThreadListUsesAppWireRendezvous(t *testing.T) {
 	runDir := t.TempDir()
-	writeRendezvous(t, runDir, rendezvous.Entry{
+	entry := rendezvous.Entry{
 		PID:       101,
 		Protocol:  appwire.ProtocolVersion,
 		Endpoint:  "ws://127.0.0.1:1/rpc",
 		SourceID:  "local",
 		ThreadID:  "th_1",
 		SessionID: "sess_1",
+	}
+	roster := hubcore.NewRosterWithEntries(hubcore.LiveEntry{
+		Entry:  entry,
+		Status: appwire.ThreadStatusActive,
+		RunningJobs: []appwire.EvenerJobInfo{{
+			JobID: "job_shell", JobType: "shell", Status: "running",
+		}},
 	})
-	roster := hubcore.NewRoster(runDir, nil)
-	roster.Refresh()
 
 	hub := newHubRPCTestServer(t, hubcore.WebConfig{
 		RunDir: runDir,
@@ -71,6 +93,83 @@ func TestHubRPCThreadListUsesAppWireRendezvous(t *testing.T) {
 	}
 	if len(resp.Data) != 1 || resp.Data[0].ID != "th_1" || resp.Data[0].Evener.Ref != "local:th_1" {
 		t.Fatalf("threads=%+v", resp.Data)
+	}
+	if resp.Data[0].Evener.Diagnostics == nil || len(resp.Data[0].Evener.Diagnostics.Jobs) != 1 {
+		t.Fatalf("typed hub status omitted running non-agent jobs: %+v", resp.Data[0].Evener.Diagnostics)
+	}
+	job := resp.Data[0].Evener.Diagnostics.Jobs[0]
+	if job.JobID != "job_shell" || job.JobType != "shell" || job.Status != "running" {
+		t.Fatalf("typed hub running job = %+v, want shell identity and status", job)
+	}
+}
+
+func TestHubRPCSteersSurvivingDaemonAfterHubRestart(t *testing.T) {
+	const (
+		daemonProtocol = "evener-appwire-v3"
+		threadID       = "th_compatible"
+		mutationID     = "mutation-compatible-steer"
+	)
+
+	steered := make(chan appwire.TurnSteerParams, 1)
+	runDir := t.TempDir()
+	daemonHTTP := startAppwireTestDaemonWithProtocol(t, runDir, threadID, daemonProtocol, func(daemon *appserver.Server) {
+		appserver.HandleTyped(daemon.Router(), appwire.MethodTurnSteer, func(_ context.Context, params appwire.TurnSteerParams) (appwire.TurnSteerResponse, error) {
+			steered <- params
+			return appwire.TurnSteerResponse{Receipt: appwire.MutationReceipt{
+				ClientMutationID: params.ClientMutationID,
+				Disposition:      appwire.MutationDispositionApplied,
+				ThreadID:         threadID,
+				ProjectionState:  appwire.MutationProjectionReflected,
+			}}, nil
+		})
+	})
+	defer daemonHTTP.Close()
+
+	roster := hubcore.NewRoster(runDir, fakeProber{sessionID: threadID, status: appwire.ThreadStatusActive})
+	roster.Refresh()
+
+	resumeCalls := 0
+	hub := newHubRPCTestServer(t, hubcore.WebConfig{
+		RunDir:      runDir,
+		Roster:      roster,
+		Past:        hubcore.NewPastIndex(""),
+		ResumeLocks: hubcore.NewResumeLocks(),
+		Spawner: &fakeRPCSpawner{resume: func(context.Context, hubcore.ResumeRequest) (rendezvous.Entry, error) {
+			resumeCalls++
+			return rendezvous.Entry{}, errors.New("surviving daemon must be reused")
+		}},
+	})
+	defer hub.Close()
+	client := dialHubRPC(t, hub)
+	defer client.Close()
+	if _, err := client.Initialize(t.Context(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
+		t.Fatalf("Initialize: %v", err)
+	}
+	resumed, err := client.ThreadResume(t.Context(), appwire.ThreadResumeParams{Session: threadID})
+	if err != nil {
+		t.Fatalf("ThreadResume: %v", err)
+	}
+	if resumed.Thread.ID != threadID || resumeCalls != 0 {
+		t.Fatalf("resume = %+v, replacement calls = %d", resumed.Thread, resumeCalls)
+	}
+
+	var response appwire.TurnSteerResponse
+	err = client.Request(t.Context(), appwire.MethodTurnSteer, appwire.TurnSteerParams{
+		Ref:                "local:" + threadID,
+		ThreadID:           threadID,
+		ClientMutationID:   mutationID,
+		ExpectedInstanceID: threadID,
+		Input:              []appwire.InputItem{{Type: "text", Text: "survived the hub restart"}},
+	}, &response)
+	if err != nil {
+		t.Fatalf("TurnSteer: %v", err)
+	}
+	if response.Receipt.ClientMutationID != mutationID || response.Receipt.ThreadID != threadID {
+		t.Fatalf("receipt = %+v", response.Receipt)
+	}
+	params := <-steered
+	if params.ClientMutationID != mutationID || inputTextForTest(params.Input) != "survived the hub restart" {
+		t.Fatalf("daemon steer params = %+v", params)
 	}
 }
 
@@ -505,10 +604,11 @@ func TestDeletionFenceTurnStartDoesNotWaitForRelayWhileOwningTarget(t *testing.T
 	<-placeholderPublished
 
 	raw, err := json.Marshal(appwire.TurnStartParams{
-		ThreadID:         threadID,
-		Ref:              ref,
-		ClientMutationID: "turn-start-relay-ownership",
-		Input:            []appwire.InputItem{{Type: "text", Text: "continue"}},
+		ThreadID:           threadID,
+		Ref:                ref,
+		ClientMutationID:   "turn-start-relay-ownership",
+		ExpectedInstanceID: threadID,
+		Input:              []appwire.InputItem{{Type: "text", Text: "continue"}},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -948,7 +1048,7 @@ func TestAppItemsFromReplayTurnAcceptsCurrentToolCallKind(t *testing.T) {
 			ToolCall: &llm.ToolCallData{
 				ID:        "call_read",
 				Name:      "read_file",
-				Arguments: []byte(`{"file_path":"/tmp/example.txt","purpose":"Inspect example output."}`),
+				Arguments: []byte(`{"file_path":"/tmp/example.txt","intent":"Inspect example output."}`),
 			},
 		}}},
 	}, toolNames)
@@ -1492,6 +1592,27 @@ func TestHubThreadListOrdersLiveThreadsUsingPastTimestamps(t *testing.T) {
 	}
 	if resp.Data[0].UpdatedAt != liveUpdated.Unix() || resp.Data[0].CreatedAt != base.Add(-2*time.Hour).Unix() {
 		t.Fatalf("live timestamps=%+v", resp.Data[0])
+	}
+}
+
+// TestMergePastMetadataForList_PropagatesContextCancellation covers the
+// contract that mergePastMetadataForList must propagate ctx cancellation
+// and deadline errors from pastEntryThread rather than silently falling
+// back to the unenriched live thread -- a canceled thread-list request must
+// stop, not keep sweeping later threads. The delegate journal fixture
+// (seedPastSessionWithActivity) matters here: without it, pastEntryThread's
+// own ctx-aware step (pastEntryDelegateStatus -> agent.LoadSessionDelegateStatus,
+// gated on delegates.jsonl existing at all) is never reached, so a canceled
+// ctx would go unnoticed for a different, uninteresting reason.
+func TestMergePastMetadataForList_PropagatesContextCancellation(t *testing.T) {
+	cfg, rootID, _, _ := seedPastSessionWithActivity(t, 1)
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	live := appwire.Thread{ID: rootID}
+
+	_, err := mergePastMetadataForList(ctx, cfg, "local", live)
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("err = %v, want context.Canceled -- a canceled request must not silently fall back to the live thread unenriched", err)
 	}
 }
 
@@ -2634,6 +2755,104 @@ func TestHubRPCThreadReadSubscribeOverridesSourceReadRelayPolicy(t *testing.T) {
 	}
 }
 
+// thread/unsubscribe must drop the calling connection's downstream
+// subscription — the registry entry thread/read's relay created — so the
+// relay's idle ticker sees SubscriberCount zero and can retire, and a second
+// call stays a quiet no-op.
+func TestHubRPCThreadUnsubscribeDropsDownstreamSubscription(t *testing.T) {
+	const threadID = "th_unsub"
+	source := &relayBroadcastSource{
+		id: "codex",
+		thread: appwire.Thread{
+			ID:        threadID,
+			SessionID: threadID,
+			Source:    "codex",
+			Evener:    appwire.EvenerThread{Ref: "codex:" + threadID, Capabilities: appwire.ThreadCapabilities{Send: true}},
+		},
+		notifications: make(chan appwire.Notification, 4),
+		subscribed:    make(chan struct{}, 1),
+		canceled:      make(chan struct{}, 1),
+	}
+	srv := httptest.NewUnstartedServer(nil)
+	web := NewWebServer(hubcore.WebConfig{HubAddr: srv.Listener.Addr().String(), Past: hubcore.NewPastIndex("")})
+	web.sources.Add(source)
+	srv.Config.Handler = web.Handler()
+	srv.Start()
+	defer srv.Close()
+
+	client := dialHubRPC(t, srv)
+	defer client.Close()
+	if _, err := client.Initialize(context.Background(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
+		t.Fatalf("Initialize: %v", err)
+	}
+	if _, err := client.ThreadRead(context.Background(), appwire.ThreadReadParams{Ref: "codex:" + threadID, Subscribe: true}); err != nil {
+		t.Fatalf("ThreadRead: %v", err)
+	}
+	expectRelaySubscription(t, source.subscribed)
+	if got := web.appRPC.SubscriberCount("codex:" + threadID); got != 1 {
+		t.Fatalf("subscriber count after subscribed read = %d, want 1", got)
+	}
+
+	if _, err := client.ThreadUnsubscribe(context.Background(), appwire.ThreadUnsubscribeParams{Ref: "codex:" + threadID}); err != nil {
+		t.Fatalf("ThreadUnsubscribe: %v", err)
+	}
+	if got := web.appRPC.SubscriberCount("codex:" + threadID); got != 0 {
+		t.Fatalf("subscriber count after unsubscribe = %d, want 0", got)
+	}
+
+	// The relay's notifications no longer reach this connection.
+	source.notifications <- appwire.Notification{
+		Method: appwire.NotifyAgentMessageDelta,
+		Params: testRawJSON(t, appwire.AgentMessageDeltaParams{
+			ThreadID: threadID,
+			Ref:      "codex:" + threadID,
+			TurnID:   "turn_1",
+			ItemID:   "item_1",
+			Delta:    "after unsubscribe",
+		}),
+	}
+	select {
+	case got := <-client.Notifications():
+		t.Fatalf("notification delivered after unsubscribe: %+v", got)
+	case <-time.After(200 * time.Millisecond):
+	}
+
+	// Idempotent: unsubscribing again succeeds quietly.
+	if _, err := client.ThreadUnsubscribe(context.Background(), appwire.ThreadUnsubscribeParams{Ref: "codex:" + threadID}); err != nil {
+		t.Fatalf("second ThreadUnsubscribe: %v", err)
+	}
+	if got := web.appRPC.SubscriberCount("codex:" + threadID); got != 0 {
+		t.Fatalf("subscriber count after second unsubscribe = %d, want 0", got)
+	}
+}
+
+// The fallback branch: when no source resolves (an exited session removed
+// its rendezvous entry), an unsubscribe still quietly succeeds. The handler
+// resolves through the plain registry (sourceForThread, never the
+// managed-launch path), so no launcher is even consulted — an unsubscribe is
+// a "stop caring" operation and must not spawn.
+func TestHubRPCThreadUnsubscribeUnresolvedSourceIsQuiet(t *testing.T) {
+	srv := httptest.NewUnstartedServer(nil)
+	web := NewWebServer(hubcore.WebConfig{HubAddr: srv.Listener.Addr().String(), Past: hubcore.NewPastIndex("")})
+	srv.Config.Handler = web.Handler()
+	srv.Start()
+	defer srv.Close()
+
+	client := dialHubRPC(t, srv)
+	defer client.Close()
+	if _, err := client.Initialize(context.Background(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
+		t.Fatalf("Initialize: %v", err)
+	}
+	// A ref whose source never existed: quiet success, no error.
+	if _, err := client.ThreadUnsubscribe(context.Background(), appwire.ThreadUnsubscribeParams{Ref: "codex:th_missing"}); err != nil {
+		t.Fatalf("ThreadUnsubscribe for unresolvable source: %v", err)
+	}
+	// The same for a bare threadID with no ref.
+	if _, err := client.ThreadUnsubscribe(context.Background(), appwire.ThreadUnsubscribeParams{ThreadID: "th_missing"}); err != nil {
+		t.Fatalf("ThreadUnsubscribe for unresolvable thread: %v", err)
+	}
+}
+
 func TestHubRPCThreadReadRecoversEstablishedRelayAfterSourceClose(t *testing.T) {
 	const threadID = "th_recover"
 	results := make(chan relaySubscribeResult)
@@ -3655,6 +3874,1069 @@ func TestHubRelayStopDuringInitializationCancelsSharedHandleAndAllowsFreshStart(
 	}
 }
 
+func TestHubRelayKeyStopKeepsCanonicalSiblingAndListener(t *testing.T) {
+	const (
+		rootRef  = "local:stop-root"
+		childRef = "local:stop-child"
+	)
+	lease := &scriptedRelaySessionLease{
+		readFunc: func(params appwire.ThreadReadParams) (appsource.RelayReadResult, error) {
+			ref, err := appwire.ParseRef(params.Ref)
+			if err != nil {
+				return appsource.RelayReadResult{}, err
+			}
+			return appsource.RelayReadResult{
+				Response: appwire.ThreadReadResponse{Thread: appwire.Thread{
+					ID: ref.ThreadID, Source: ref.SourceID,
+					Evener: appwire.EvenerThread{Ref: params.Ref},
+				}},
+				Handoff: &guardedRelayHandoff{prepareAllowed: true, commitAllowed: true},
+			}, nil
+		},
+		deliveries: make(chan appsource.RelayDelivery),
+	}
+	source := &relaySessionTestSource{
+		lease: lease,
+		resolveRelay: func(appwire.ThreadReadParams) (appwire.Ref, error) {
+			return appwire.ParseRef(rootRef)
+		},
+	}
+	relays := newHubRelayFunctions(
+		appserver.NewServer(appserver.ServerConfig{ServerName: "relay-test", SourceID: "local"}),
+		hubcore.WebConfig{},
+		appsource.NewRegistry(),
+	)
+	read := func(ref string) {
+		t.Helper()
+		result, err := relays.readThread(context.Background(), source, appwire.ThreadReadParams{Ref: ref, Subscribe: true})
+		if err != nil {
+			t.Fatalf("readThread(%q): %v", ref, err)
+		}
+		result.finish(false)
+	}
+	read(rootRef)
+	read(childRef)
+	if got := source.acquireCallCount(); got != 1 {
+		t.Fatalf("initial relay acquisitions = %d, want one canonical handle", got)
+	}
+
+	relays.stopRelay(childRef)
+	if got := lease.closeCallCount(); got != 0 {
+		t.Fatalf("lease closes after child-key stop = %d, want 0 while root remains", got)
+	}
+	read(childRef)
+	if got := source.acquireCallCount(); got != 1 {
+		t.Fatalf("relay acquisitions after child rebind = %d, want existing canonical handle", got)
+	}
+	if got := lease.listenCallCount(); got != 1 {
+		t.Fatalf("RelaySession Listen calls after child rebind = %d, want one retained listener", got)
+	}
+	relays.stopRelay(rootRef)
+	relays.stopRelay(childRef)
+}
+
+func TestHubRelayKeyStopDefersFinalTeardownForInFlightCommand(t *testing.T) {
+	const relayKey = "local:stop-in-flight"
+	readEntered := make(chan struct{})
+	releaseRead := make(chan struct{})
+	leaseClosed := make(chan struct{})
+	lease := &scriptedRelaySessionLease{
+		readResult: appsource.RelayReadResult{
+			Response: appwire.ThreadReadResponse{Thread: appwire.Thread{
+				ID: "stop-in-flight", Source: "local",
+				Evener: appwire.EvenerThread{Ref: relayKey},
+			}},
+			Handoff: &guardedRelayHandoff{prepareAllowed: true, commitAllowed: true},
+		},
+		readHook: func() {
+			close(readEntered)
+			<-releaseRead
+		},
+		deliveries: make(chan appsource.RelayDelivery),
+		closeHook:  func() { close(leaseClosed) },
+	}
+	source := &relaySessionTestSource{lease: lease}
+	relays := newHubRelayFunctions(
+		appserver.NewServer(appserver.ServerConfig{ServerName: "relay-test", SourceID: "local"}),
+		hubcore.WebConfig{},
+		appsource.NewRegistry(),
+	)
+	type readOutcome struct {
+		read *hubThreadReadResult
+		err  error
+	}
+	readResult := make(chan readOutcome, 1)
+	go func() {
+		read, err := relays.readThread(context.Background(), source, appwire.ThreadReadParams{Ref: relayKey, Subscribe: true})
+		readResult <- readOutcome{read: read, err: err}
+	}()
+	<-readEntered
+
+	relays.stopRelay(relayKey)
+	if got := relays.relayCommandCount(relayKey); got != 1 {
+		close(releaseRead)
+		t.Fatalf("command owners after deferred relay-key stop = %d, want 1", got)
+	}
+	if got := lease.closeCallCount(); got != 0 {
+		close(releaseRead)
+		t.Fatalf("lease closes while stopped key command is in flight = %d, want 0", got)
+	}
+	select {
+	case <-leaseClosed:
+		close(releaseRead)
+		t.Fatal("final canonical lease closed before the in-flight command released")
+	default:
+	}
+
+	close(releaseRead)
+	result := <-readResult
+	if result.err != nil {
+		t.Fatalf("readThread: %v", result.err)
+	}
+	result.read.finish(false)
+	select {
+	case <-leaseClosed:
+	case <-time.After(time.Second):
+		t.Fatal("deferred relay-key stop did not close the final lease after command release")
+	}
+	if got := lease.closeCallCount(); got != 1 {
+		t.Fatalf("final lease closes = %d, want 1", got)
+	}
+}
+
+func TestHubRelayPostStopCommandWaitsForFreshGeneration(t *testing.T) {
+	const relayKey = "local:stop-fresh-generation"
+	readResult := func() appsource.RelayReadResult {
+		return appsource.RelayReadResult{
+			Response: appwire.ThreadReadResponse{Thread: appwire.Thread{
+				ID: "stop-fresh-generation", Source: "local",
+				Evener: appwire.EvenerThread{Ref: relayKey},
+			}},
+			Handoff: &guardedRelayHandoff{prepareAllowed: true, commitAllowed: true},
+		}
+	}
+	oldReadEntered := make(chan struct{})
+	releaseOldRead := make(chan struct{})
+	oldLeaseClosed := make(chan struct{})
+	var oldReadOnce sync.Once
+	oldLease := &scriptedRelaySessionLease{
+		readFunc: func(appwire.ThreadReadParams) (appsource.RelayReadResult, error) {
+			oldReadOnce.Do(func() {
+				close(oldReadEntered)
+				<-releaseOldRead
+			})
+			return readResult(), nil
+		},
+		deliveries: make(chan appsource.RelayDelivery),
+		closeHook:  func() { close(oldLeaseClosed) },
+	}
+	freshLease := &scriptedRelaySessionLease{
+		readFunc: func(appwire.ThreadReadParams) (appsource.RelayReadResult, error) {
+			return readResult(), nil
+		},
+		deliveries: make(chan appsource.RelayDelivery),
+	}
+	var acquireMu sync.Mutex
+	acquisitions := 0
+	source := &relaySessionTestSource{
+		acquireRelay: func(appwire.Ref) (appsource.RelaySessionRoutePublicationLease, error) {
+			acquireMu.Lock()
+			defer acquireMu.Unlock()
+			acquisitions++
+			if acquisitions == 1 {
+				return routeAwareTestLease(oldLease), nil
+			}
+			return routeAwareTestLease(freshLease), nil
+		},
+	}
+	relays := newHubRelayFunctions(
+		appserver.NewServer(appserver.ServerConfig{ServerName: "relay-test", SourceID: "local"}),
+		hubcore.WebConfig{},
+		appsource.NewRegistry(),
+	)
+	type readOutcome struct {
+		read *hubThreadReadResult
+		err  error
+	}
+	startRead := func() <-chan readOutcome {
+		out := make(chan readOutcome, 1)
+		go func() {
+			read, err := relays.readThread(context.Background(), source, appwire.ThreadReadParams{Ref: relayKey, Subscribe: true})
+			out <- readOutcome{read: read, err: err}
+		}()
+		return out
+	}
+	oldResult := startRead()
+	<-oldReadEntered
+	relays.stopRelay(relayKey)
+
+	postStopDeferred := make(chan struct{})
+	previousObserveWait := observeHubRelayWait
+	observeHubRelayWait = func() { close(postStopDeferred) }
+	t.Cleanup(func() { observeHubRelayWait = previousObserveWait })
+	postStopResult := startRead()
+	select {
+	case <-postStopDeferred:
+	case <-time.After(time.Second):
+		close(releaseOldRead)
+		t.Fatal("post-stop command joined the stopped generation instead of waiting")
+	}
+	if got := relays.relayCommandCount(relayKey); got != 1 {
+		close(releaseOldRead)
+		t.Fatalf("stopped generation command owners = %d, want only the original command", got)
+	}
+	if got := oldLease.readCallCount(); got != 1 {
+		close(releaseOldRead)
+		t.Fatalf("stopped generation Read calls = %d, want 1", got)
+	}
+	if got := oldLease.closeCallCount(); got != 0 {
+		close(releaseOldRead)
+		t.Fatalf("old lease closes while original command is in flight = %d, want 0", got)
+	}
+
+	close(releaseOldRead)
+	old := <-oldResult
+	if old.err != nil {
+		t.Fatalf("old readThread: %v", old.err)
+	}
+	old.read.finish(false)
+	select {
+	case <-oldLeaseClosed:
+	case <-time.After(time.Second):
+		t.Fatal("stopped generation did not close after its original command released")
+	}
+	postStop := <-postStopResult
+	if postStop.err != nil {
+		t.Fatalf("post-stop readThread: %v", postStop.err)
+	}
+	postStop.read.finish(false)
+	if got := source.acquireCallCount(); got != 2 {
+		t.Fatalf("relay acquisitions after stopped generation retired = %d, want fresh second generation", got)
+	}
+	if got := oldLease.readCallCount(); got != 1 {
+		t.Fatalf("old generation Read calls after fresh read = %d, want 1", got)
+	}
+	if got := freshLease.readCallCount(); got != 1 || freshLease.listenCallCount() != 1 {
+		t.Fatalf("fresh generation calls: Read=%d Listen=%d, want 1/1", got, freshLease.listenCallCount())
+	}
+
+	rejoined, err := relays.readThread(context.Background(), source, appwire.ThreadReadParams{Ref: relayKey, Subscribe: true})
+	if err != nil {
+		t.Fatalf("fresh generation rejoin: %v", err)
+	}
+	rejoined.finish(false)
+	if got := source.acquireCallCount(); got != 2 {
+		t.Fatalf("relay acquisitions after fresh generation rejoin = %d, want 2", got)
+	}
+	if got := freshLease.listenCallCount(); got != 1 {
+		t.Fatalf("fresh generation Listen calls after rejoin = %d, want 1", got)
+	}
+	relays.stopRelay(relayKey)
+}
+
+func TestHubRelayStopCoversOverlappingPendingGenerations(t *testing.T) {
+	const relayKey = "local:overlapping-pending-stop"
+	canonicalA := appwire.Ref{SourceID: "local", ThreadID: "overlapping-canonical-a"}
+	canonicalB := appwire.Ref{SourceID: "local", ThreadID: "overlapping-canonical-b"}
+	readResult := func() appsource.RelayReadResult {
+		return appsource.RelayReadResult{
+			Response: appwire.ThreadReadResponse{Thread: appwire.Thread{
+				ID: "overlapping-pending-stop", Source: "local",
+				Evener: appwire.EvenerThread{Ref: relayKey},
+			}},
+			Handoff: &guardedRelayHandoff{prepareAllowed: true, commitAllowed: true},
+		}
+	}
+	type heldLease struct {
+		lease   *scriptedRelaySessionLease
+		entered chan struct{}
+		release func()
+		closed  chan struct{}
+	}
+	newHeldLease := func() heldLease {
+		entered := make(chan struct{})
+		releaseRead := make(chan struct{})
+		closed := make(chan struct{})
+		var releaseOnce sync.Once
+		lease := &scriptedRelaySessionLease{
+			readFunc: func(appwire.ThreadReadParams) (appsource.RelayReadResult, error) {
+				close(entered)
+				<-releaseRead
+				return readResult(), nil
+			},
+			deliveries: make(chan appsource.RelayDelivery),
+			closeHook:  func() { close(closed) },
+		}
+		return heldLease{
+			lease:   lease,
+			entered: entered,
+			release: func() { releaseOnce.Do(func() { close(releaseRead) }) },
+			closed:  closed,
+		}
+	}
+	heldA := newHeldLease()
+	heldB := newHeldLease()
+	defer heldA.release()
+	defer heldB.release()
+	freshLease := &scriptedRelaySessionLease{
+		readFunc: func(appwire.ThreadReadParams) (appsource.RelayReadResult, error) {
+			return readResult(), nil
+		},
+		deliveries: make(chan appsource.RelayDelivery),
+	}
+	var resolveMu sync.Mutex
+	resolved := canonicalA
+	acquisitionsA := 0
+	source := &relaySessionTestSource{
+		resolveRelay: func(appwire.ThreadReadParams) (appwire.Ref, error) {
+			resolveMu.Lock()
+			defer resolveMu.Unlock()
+			return resolved, nil
+		},
+		acquireRelay: func(ref appwire.Ref) (appsource.RelaySessionRoutePublicationLease, error) {
+			if ref == canonicalB {
+				return routeAwareTestLease(heldB.lease), nil
+			}
+			acquisitionsA++
+			if acquisitionsA == 1 {
+				return routeAwareTestLease(heldA.lease), nil
+			}
+			return routeAwareTestLease(freshLease), nil
+		},
+	}
+	relays := newHubRelayFunctions(
+		appserver.NewServer(appserver.ServerConfig{ServerName: "relay-test", SourceID: "local"}),
+		hubcore.WebConfig{},
+		appsource.NewRegistry(),
+	)
+	type readOutcome struct {
+		read *hubThreadReadResult
+		err  error
+	}
+	startRead := func() <-chan readOutcome {
+		out := make(chan readOutcome, 1)
+		go func() {
+			read, err := relays.readThread(context.Background(), source, appwire.ThreadReadParams{Ref: relayKey, Subscribe: true})
+			out <- readOutcome{read: read, err: err}
+		}()
+		return out
+	}
+	readA := startRead()
+	<-heldA.entered
+	resolveMu.Lock()
+	resolved = canonicalB
+	resolveMu.Unlock()
+	readB := startRead()
+	<-heldB.entered
+	if got := relays.relayCommandCount(relayKey); got != 2 {
+		t.Fatalf("overlapping pending command owners = %d, want 2", got)
+	}
+
+	relays.stopRelay(relayKey)
+	if got := relays.relayCommandCount(relayKey); got != 2 {
+		t.Fatalf("stopped overlapping pending command owners = %d, want 2", got)
+	}
+	resolveMu.Lock()
+	resolved = canonicalA
+	resolveMu.Unlock()
+	deferred := make(chan struct{}, 3)
+	previousObserveWait := observeHubRelayWait
+	observeHubRelayWait = func() { deferred <- struct{}{} }
+	t.Cleanup(func() { observeHubRelayWait = previousObserveWait })
+	postStop := startRead()
+	select {
+	case <-deferred:
+	case <-time.After(time.Second):
+		t.Fatal("post-stop command did not defer behind the older hidden pending generation")
+	}
+	if got := heldA.lease.readCallCount(); got != 1 {
+		t.Fatalf("older stopped pending Read calls = %d, want 1", got)
+	}
+	if got := heldB.lease.readCallCount(); got != 1 {
+		t.Fatalf("newer stopped pending Read calls = %d, want 1", got)
+	}
+
+	heldA.release()
+	resultA := <-readA
+	if resultA.err != nil {
+		t.Fatalf("older pending read: %v", resultA.err)
+	}
+	if relays.relayPublished(relayKey) {
+		t.Fatal("older stopped pending read published downstream ownership")
+	}
+	resultA.read.finish(false)
+	select {
+	case <-heldA.closed:
+	case <-time.After(time.Second):
+		t.Fatal("older stopped pending handle did not close after its own command released")
+	}
+	select {
+	case <-deferred:
+	case <-time.After(time.Second):
+		t.Fatal("post-stop command did not remain deferred behind the newer pending generation")
+	}
+	if got := relays.relayCommandCount(relayKey); got != 1 {
+		t.Fatalf("pending command owners after older release = %d, want newer owner only", got)
+	}
+	if got := heldB.lease.closeCallCount(); got != 0 {
+		t.Fatalf("newer pending lease closes before its command release = %d, want 0", got)
+	}
+
+	heldB.release()
+	resultB := <-readB
+	if resultB.err != nil {
+		t.Fatalf("newer pending read: %v", resultB.err)
+	}
+	if relays.relayPublished(relayKey) {
+		t.Fatal("newer stopped pending read published downstream ownership")
+	}
+	resultB.read.finish(false)
+	select {
+	case <-heldB.closed:
+	case <-time.After(time.Second):
+		t.Fatal("newer stopped pending handle did not close after its own command released")
+	}
+	fresh := <-postStop
+	if fresh.err != nil {
+		t.Fatalf("fresh post-stop read: %v", fresh.err)
+	}
+	if !relays.relayPublished(relayKey) {
+		t.Fatal("fresh post-stop generation did not publish downstream ownership")
+	}
+	fresh.read.finish(false)
+	if got := source.acquireCallCount(); got != 3 {
+		t.Fatalf("relay acquisitions after overlapping stop = %d, want two old plus one fresh", got)
+	}
+	if got := freshLease.readCallCount(); got != 1 || freshLease.listenCallCount() != 1 {
+		t.Fatalf("fresh generation calls: Read=%d Listen=%d, want 1/1", got, freshLease.listenCallCount())
+	}
+	if got := heldA.lease.readCallCount(); got != 1 {
+		t.Fatalf("older stale generation Read calls = %d, want no post-stop join", got)
+	}
+	if got := heldB.lease.readCallCount(); got != 1 {
+		t.Fatalf("newer stale generation Read calls = %d, want no post-stop join", got)
+	}
+
+	rejoined, err := relays.readThread(context.Background(), source, appwire.ThreadReadParams{Ref: relayKey, Subscribe: true})
+	if err != nil {
+		t.Fatalf("fresh generation rejoin: %v", err)
+	}
+	rejoined.finish(false)
+	if got := source.acquireCallCount(); got != 3 {
+		t.Fatalf("relay acquisitions after fresh rejoin = %d, want 3", got)
+	}
+	if got := freshLease.listenCallCount(); got != 1 {
+		t.Fatalf("fresh generation listeners after rejoin = %d, want 1", got)
+	}
+	relays.stopRelay(relayKey)
+}
+
+func TestHubRelayCanonicalStopRetiresOnlyNamedHandle(t *testing.T) {
+	canonicalA := appwire.Ref{SourceID: "local", ThreadID: "stop-canonical-a"}
+	canonicalB := appwire.Ref{SourceID: "local", ThreadID: "stop-canonical-b"}
+	newLease := func() *scriptedRelaySessionLease {
+		return &scriptedRelaySessionLease{
+			readFunc: func(params appwire.ThreadReadParams) (appsource.RelayReadResult, error) {
+				ref, err := appwire.ParseRef(params.Ref)
+				if err != nil {
+					return appsource.RelayReadResult{}, err
+				}
+				return appsource.RelayReadResult{
+					Response: appwire.ThreadReadResponse{Thread: appwire.Thread{
+						ID: ref.ThreadID, Source: ref.SourceID,
+						Evener: appwire.EvenerThread{Ref: params.Ref},
+					}},
+					Handoff: &guardedRelayHandoff{prepareAllowed: true, commitAllowed: true},
+				}, nil
+			},
+			deliveries: make(chan appsource.RelayDelivery),
+		}
+	}
+	leaseA := newLease()
+	leaseB := newLease()
+	source := &relaySessionTestSource{
+		resolveRelay: func(params appwire.ThreadReadParams) (appwire.Ref, error) {
+			if params.Ref == canonicalB.String() {
+				return canonicalB, nil
+			}
+			return canonicalA, nil
+		},
+		acquireRelay: func(ref appwire.Ref) (appsource.RelaySessionRoutePublicationLease, error) {
+			if ref == canonicalB {
+				return routeAwareTestLease(leaseB), nil
+			}
+			return routeAwareTestLease(leaseA), nil
+		},
+	}
+	relays := newHubRelayFunctions(
+		appserver.NewServer(appserver.ServerConfig{ServerName: "relay-test", SourceID: "local"}),
+		hubcore.WebConfig{},
+		appsource.NewRegistry(),
+	)
+	read := func(ref string) {
+		t.Helper()
+		result, err := relays.readThread(context.Background(), source, appwire.ThreadReadParams{Ref: ref, Subscribe: true})
+		if err != nil {
+			t.Fatalf("readThread(%q): %v", ref, err)
+		}
+		result.finish(false)
+	}
+	read(canonicalA.String())
+	read(canonicalB.String())
+
+	relays.stopCanonicalRelay(canonicalA)
+	if got := leaseA.closeCallCount(); got != 1 {
+		t.Fatalf("named canonical lease closes = %d, want 1", got)
+	}
+	if got := leaseB.closeCallCount(); got != 0 {
+		t.Fatalf("unrelated canonical lease closes = %d, want 0", got)
+	}
+	read(canonicalB.String())
+	if got := leaseB.listenCallCount(); got != 1 {
+		t.Fatalf("unrelated canonical listener starts = %d, want retained single listener", got)
+	}
+	if got := source.acquireCallCount(); got != 2 {
+		t.Fatalf("acquisitions after unrelated read = %d, want two original canonical handles", got)
+	}
+	relays.stopCanonicalRelay(canonicalB)
+}
+
+func TestHubRelayCanonicalStopRetainsBusyPublishedHandleUntilFreshGeneration(t *testing.T) {
+	const relayKey = "local:canonical-stop-busy"
+	canonical := appwire.Ref{SourceID: "local", ThreadID: "canonical-stop-busy"}
+	readResult := func() appsource.RelayReadResult {
+		return appsource.RelayReadResult{
+			Response: appwire.ThreadReadResponse{Thread: appwire.Thread{
+				ID: "canonical-stop-busy", Source: "local", Evener: appwire.EvenerThread{Ref: relayKey},
+			}},
+			Handoff: &guardedRelayHandoff{prepareAllowed: true, commitAllowed: true},
+		}
+	}
+	oldClosed := make(chan struct{})
+	oldLease := &scriptedRelaySessionLease{
+		readFunc:   func(appwire.ThreadReadParams) (appsource.RelayReadResult, error) { return readResult(), nil },
+		deliveries: make(chan appsource.RelayDelivery),
+		closeHook:  func() { close(oldClosed) },
+	}
+	freshLease := &scriptedRelaySessionLease{
+		readFunc:   func(appwire.ThreadReadParams) (appsource.RelayReadResult, error) { return readResult(), nil },
+		deliveries: make(chan appsource.RelayDelivery),
+	}
+	var acquireMu sync.Mutex
+	acquisitions := 0
+	source := &relaySessionTestSource{
+		resolveRelay: func(appwire.ThreadReadParams) (appwire.Ref, error) { return canonical, nil },
+		acquireRelay: func(appwire.Ref) (appsource.RelaySessionRoutePublicationLease, error) {
+			acquireMu.Lock()
+			defer acquireMu.Unlock()
+			acquisitions++
+			if acquisitions == 1 {
+				return routeAwareTestLease(oldLease), nil
+			}
+			return routeAwareTestLease(freshLease), nil
+		},
+	}
+	relays := newHubRelayFunctions(
+		appserver.NewServer(appserver.ServerConfig{ServerName: "canonical-stop-busy", SourceID: "local"}),
+		hubcore.WebConfig{},
+		appsource.NewRegistry(),
+	)
+	initial, err := relays.readThread(t.Context(), source, appwire.ThreadReadParams{Ref: relayKey, Subscribe: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	initial.finish(false)
+
+	busyEntered := make(chan struct{})
+	releaseBusy := make(chan struct{})
+	oldLease.mu.Lock()
+	oldLease.readHook = func() {
+		close(busyEntered)
+		<-releaseBusy
+	}
+	oldLease.mu.Unlock()
+	type outcome struct {
+		read *hubThreadReadResult
+		err  error
+	}
+	startRead := func() <-chan outcome {
+		out := make(chan outcome, 1)
+		go func() {
+			read, err := relays.readThread(t.Context(), source, appwire.ThreadReadParams{Ref: relayKey, Subscribe: true})
+			out <- outcome{read: read, err: err}
+		}()
+		return out
+	}
+	busyResult := startRead()
+	<-busyEntered
+	relays.stopCanonicalRelay(canonical)
+	if got := oldLease.closeCallCount(); got != 0 {
+		close(releaseBusy)
+		t.Fatalf("canonical stop closed busy published lease: %d", got)
+	}
+	if got := relays.relayCommandCount(relayKey); got != 1 {
+		close(releaseBusy)
+		t.Fatalf("busy published command owners after canonical stop = %d, want 1", got)
+	}
+
+	deferred := make(chan struct{})
+	var deferredOnce sync.Once
+	previousObserveWait := observeHubRelayWait
+	observeHubRelayWait = func() { deferredOnce.Do(func() { close(deferred) }) }
+	t.Cleanup(func() { observeHubRelayWait = previousObserveWait })
+	postStopResult := startRead()
+	select {
+	case <-deferred:
+	case <-time.After(time.Second):
+		close(releaseBusy)
+		t.Fatal("post-canonical-stop command did not defer behind busy handle")
+	}
+	if got := oldLease.readCallCount(); got != 2 {
+		close(releaseBusy)
+		t.Fatalf("old generation Read calls after stop = %d, want initial plus busy only", got)
+	}
+	close(releaseBusy)
+	busy := <-busyResult
+	if busy.err != nil {
+		t.Fatal(busy.err)
+	}
+	if got := oldLease.closeCallCount(); got != 0 {
+		t.Fatalf("canonical stop closed lease before busy handoff released: %d", got)
+	}
+	busy.read.finish(false)
+	select {
+	case <-oldClosed:
+	case <-time.After(time.Second):
+		t.Fatal("busy canonical generation did not close after exact owner release")
+	}
+	postStop := <-postStopResult
+	if postStop.err != nil {
+		t.Fatal(postStop.err)
+	}
+	postStop.read.finish(false)
+	if got := source.acquireCallCount(); got != 2 {
+		t.Fatalf("acquisitions after canonical stop drain = %d, want fresh generation", got)
+	}
+	if got := oldLease.closeCallCount(); got != 1 {
+		t.Fatalf("old canonical lease closes = %d, want once", got)
+	}
+	if got := freshLease.readCallCount(); got != 1 || freshLease.listenCallCount() != 1 {
+		t.Fatalf("fresh canonical calls: Read=%d Listen=%d, want 1/1", got, freshLease.listenCallCount())
+	}
+}
+
+func TestHubRelayCanonicalStopRetainsOverlappingPendingStates(t *testing.T) {
+	const (
+		relayA = "local:canonical-stop-pending-a"
+		relayB = "local:canonical-stop-pending-b"
+	)
+	canonical := appwire.Ref{SourceID: "local", ThreadID: "canonical-stop-pending-owner"}
+	type gate struct {
+		entered chan struct{}
+		release chan struct{}
+	}
+	gates := map[string]gate{
+		relayA: {entered: make(chan struct{}), release: make(chan struct{})},
+		relayB: {entered: make(chan struct{}), release: make(chan struct{})},
+	}
+	resultFor := func(ref string) appsource.RelayReadResult {
+		parsed, err := appwire.ParseRef(ref)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return appsource.RelayReadResult{
+			Response: appwire.ThreadReadResponse{Thread: appwire.Thread{
+				ID: parsed.ThreadID, Source: parsed.SourceID, Evener: appwire.EvenerThread{Ref: ref},
+			}},
+			Handoff: &guardedRelayHandoff{prepareAllowed: true, commitAllowed: true},
+		}
+	}
+	oldClosed := make(chan struct{})
+	oldLease := &scriptedRelaySessionLease{
+		readFunc: func(params appwire.ThreadReadParams) (appsource.RelayReadResult, error) {
+			g := gates[params.Ref]
+			close(g.entered)
+			<-g.release
+			return resultFor(params.Ref), nil
+		},
+		deliveries: make(chan appsource.RelayDelivery),
+		closeHook:  func() { close(oldClosed) },
+	}
+	freshLease := &scriptedRelaySessionLease{
+		readFunc: func(params appwire.ThreadReadParams) (appsource.RelayReadResult, error) {
+			return resultFor(params.Ref), nil
+		},
+		deliveries: make(chan appsource.RelayDelivery),
+	}
+	var acquisitions int
+	var acquireMu sync.Mutex
+	source := &relaySessionTestSource{
+		resolveRelay: func(appwire.ThreadReadParams) (appwire.Ref, error) { return canonical, nil },
+		acquireRelay: func(appwire.Ref) (appsource.RelaySessionRoutePublicationLease, error) {
+			acquireMu.Lock()
+			defer acquireMu.Unlock()
+			acquisitions++
+			if acquisitions == 1 {
+				return routeAwareTestLease(oldLease), nil
+			}
+			return routeAwareTestLease(freshLease), nil
+		},
+	}
+	relays := newHubRelayFunctions(
+		appserver.NewServer(appserver.ServerConfig{ServerName: "canonical-stop-pending", SourceID: "local"}),
+		hubcore.WebConfig{},
+		appsource.NewRegistry(),
+	)
+	type outcome struct {
+		read *hubThreadReadResult
+		err  error
+	}
+	startRead := func(ref string) <-chan outcome {
+		out := make(chan outcome, 1)
+		go func() {
+			read, err := relays.readThread(t.Context(), source, appwire.ThreadReadParams{Ref: ref, Subscribe: true})
+			out <- outcome{read: read, err: err}
+		}()
+		return out
+	}
+	resultA := startRead(relayA)
+	<-gates[relayA].entered
+	resultB := startRead(relayB)
+	<-gates[relayB].entered
+	if got := relays.relayCommandCount(relayA) + relays.relayCommandCount(relayB); got != 2 {
+		t.Fatalf("overlapping canonical pending owners = %d, want 2", got)
+	}
+	relays.stopCanonicalRelay(canonical)
+	if got := oldLease.closeCallCount(); got != 0 {
+		t.Fatalf("canonical stop closed overlapping pending lease: %d", got)
+	}
+
+	deferred := make(chan struct{})
+	var deferredOnce sync.Once
+	previousObserveWait := observeHubRelayWait
+	observeHubRelayWait = func() { deferredOnce.Do(func() { close(deferred) }) }
+	t.Cleanup(func() { observeHubRelayWait = previousObserveWait })
+	postStop := startRead(relayA)
+	select {
+	case <-deferred:
+	case <-time.After(time.Second):
+		close(gates[relayA].release)
+		close(gates[relayB].release)
+		t.Fatal("post-stop command did not defer behind overlapping pending canonical states")
+	}
+
+	close(gates[relayA].release)
+	first := <-resultA
+	if first.err != nil {
+		t.Fatal(first.err)
+	}
+	if relays.relayPublished(relayA) {
+		t.Fatal("stopped pending relay A published")
+	}
+	first.read.finish(false)
+	if got := oldLease.closeCallCount(); got != 0 {
+		t.Fatalf("canonical lease closed with second pending owner: %d", got)
+	}
+	close(gates[relayB].release)
+	second := <-resultB
+	if second.err != nil {
+		t.Fatal(second.err)
+	}
+	if relays.relayPublished(relayB) {
+		t.Fatal("stopped pending relay B published")
+	}
+	second.read.finish(false)
+	select {
+	case <-oldClosed:
+	case <-time.After(time.Second):
+		t.Fatal("overlapping pending canonical handle did not close after all exact owners released")
+	}
+	fresh := <-postStop
+	if fresh.err != nil {
+		t.Fatal(fresh.err)
+	}
+	fresh.read.finish(false)
+	if got := source.acquireCallCount(); got != 2 {
+		t.Fatalf("canonical acquisitions after overlapping drain = %d, want fresh second generation", got)
+	}
+	if got := oldLease.closeCallCount(); got != 1 {
+		t.Fatalf("old overlapping lease closes = %d, want once", got)
+	}
+}
+
+func TestHubRelayCanonicalStopWaitsForInitializingAcquire(t *testing.T) {
+	const relayKey = "local:canonical-stop-initializing"
+	canonical := appwire.Ref{SourceID: "local", ThreadID: "canonical-stop-initializing"}
+	readResult := appsource.RelayReadResult{
+		Response: appwire.ThreadReadResponse{Thread: appwire.Thread{
+			ID: canonical.ThreadID, Source: canonical.SourceID, Evener: appwire.EvenerThread{Ref: relayKey},
+		}},
+		Handoff: &guardedRelayHandoff{prepareAllowed: true, commitAllowed: true},
+	}
+	firstAcquireEntered := make(chan struct{})
+	releaseFirstAcquire := make(chan struct{})
+	secondAcquireEntered := make(chan struct{})
+	oldLease := &scriptedRelaySessionLease{readResult: readResult, deliveries: make(chan appsource.RelayDelivery)}
+	freshLease := &scriptedRelaySessionLease{readResult: readResult, deliveries: make(chan appsource.RelayDelivery)}
+	var acquireMu sync.Mutex
+	acquisitions := 0
+	source := &relaySessionTestSource{
+		resolveRelay: func(appwire.ThreadReadParams) (appwire.Ref, error) { return canonical, nil },
+		acquireRelay: func(appwire.Ref) (appsource.RelaySessionRoutePublicationLease, error) {
+			acquireMu.Lock()
+			acquisitions++
+			call := acquisitions
+			acquireMu.Unlock()
+			if call == 1 {
+				close(firstAcquireEntered)
+				<-releaseFirstAcquire
+				return routeAwareTestLease(oldLease), nil
+			}
+			close(secondAcquireEntered)
+			return routeAwareTestLease(freshLease), nil
+		},
+	}
+	relays := newHubRelayFunctions(
+		appserver.NewServer(appserver.ServerConfig{ServerName: "canonical-stop-initializing", SourceID: "local"}),
+		hubcore.WebConfig{}, appsource.NewRegistry(),
+	)
+	type outcome struct {
+		read *hubThreadReadResult
+		err  error
+	}
+	start := func() <-chan outcome {
+		out := make(chan outcome, 1)
+		go func() {
+			read, err := relays.readThread(t.Context(), source, appwire.ThreadReadParams{Ref: relayKey, Subscribe: true})
+			out <- outcome{read: read, err: err}
+		}()
+		return out
+	}
+	initial := start()
+	<-firstAcquireEntered
+	relays.stopCanonicalRelay(canonical)
+	waiting := make(chan struct{})
+	var waitingOnce sync.Once
+	previousWait := observeHubRelayWait
+	observeHubRelayWait = func() { waitingOnce.Do(func() { close(waiting) }) }
+	t.Cleanup(func() { observeHubRelayWait = previousWait })
+	later := start()
+	select {
+	case <-waiting:
+	case <-secondAcquireEntered:
+		close(releaseFirstAcquire)
+		t.Fatal("post-stop join acquired a fresh lease before stopped initializing acquire drained")
+	case <-time.After(time.Second):
+		close(releaseFirstAcquire)
+		t.Fatal("post-stop join did not reach initializing handle drain wait")
+	}
+	select {
+	case <-secondAcquireEntered:
+		close(releaseFirstAcquire)
+		t.Fatal("fresh acquisition started while stopped initializing acquire remained blocked")
+	default:
+	}
+	close(releaseFirstAcquire)
+	first := <-initial
+	if !errors.Is(first.err, context.Canceled) {
+		if first.read != nil {
+			first.read.finish(false)
+		}
+		t.Fatalf("stopped initializing read error = %v, want context.Canceled", first.err)
+	}
+	if got := oldLease.closeCallCount(); got != 1 {
+		t.Fatalf("late old lease closes = %d, want 1", got)
+	}
+	if got := oldLease.listenCallCount(); got != 0 {
+		t.Fatalf("late old lease Listen calls = %d, want 0 after stop", got)
+	}
+	select {
+	case <-secondAcquireEntered:
+	case <-time.After(time.Second):
+		t.Fatal("fresh acquisition did not start after initializing handle drained")
+	}
+	next := <-later
+	if next.err != nil {
+		t.Fatal(next.err)
+	}
+	next.read.finish(false)
+	if got := source.acquireCallCount(); got != 2 {
+		t.Fatalf("acquisitions after initializing stop = %d, want old plus one fresh", got)
+	}
+	if got := freshLease.listenCallCount(); got != 1 {
+		t.Fatalf("fresh listener starts = %d, want 1", got)
+	}
+}
+
+func TestHubRelayCanonicalStopInitializingAcquireErrorUnblocksFreshGeneration(t *testing.T) {
+	const relayKey = "local:canonical-stop-initializing-error"
+	canonical := appwire.Ref{SourceID: "local", ThreadID: "canonical-stop-initializing-error"}
+	firstAcquireEntered := make(chan struct{})
+	releaseFirstAcquire := make(chan struct{})
+	acquireFailure := errors.New("initial relay acquisition failed")
+	freshLease := &scriptedRelaySessionLease{
+		readResult: appsource.RelayReadResult{
+			Response: appwire.ThreadReadResponse{Thread: appwire.Thread{
+				ID: canonical.ThreadID, Source: canonical.SourceID, Evener: appwire.EvenerThread{Ref: relayKey},
+			}},
+			Handoff: &guardedRelayHandoff{prepareAllowed: true, commitAllowed: true},
+		},
+		deliveries: make(chan appsource.RelayDelivery),
+	}
+	var acquireMu sync.Mutex
+	acquisitions := 0
+	source := &relaySessionTestSource{
+		resolveRelay: func(appwire.ThreadReadParams) (appwire.Ref, error) { return canonical, nil },
+		acquireRelay: func(appwire.Ref) (appsource.RelaySessionRoutePublicationLease, error) {
+			acquireMu.Lock()
+			acquisitions++
+			call := acquisitions
+			acquireMu.Unlock()
+			if call == 1 {
+				close(firstAcquireEntered)
+				<-releaseFirstAcquire
+				return nil, acquireFailure
+			}
+			return routeAwareTestLease(freshLease), nil
+		},
+	}
+	relays := newHubRelayFunctions(
+		appserver.NewServer(appserver.ServerConfig{ServerName: "canonical-stop-initializing-error", SourceID: "local"}),
+		hubcore.WebConfig{}, appsource.NewRegistry(),
+	)
+	type outcome struct {
+		read *hubThreadReadResult
+		err  error
+	}
+	start := func() <-chan outcome {
+		out := make(chan outcome, 1)
+		go func() {
+			read, err := relays.readThread(t.Context(), source, appwire.ThreadReadParams{Ref: relayKey, Subscribe: true})
+			out <- outcome{read: read, err: err}
+		}()
+		return out
+	}
+	initial := start()
+	<-firstAcquireEntered
+	relays.stopCanonicalRelay(canonical)
+	later := start()
+	close(releaseFirstAcquire)
+	first := <-initial
+	if !errors.Is(first.err, acquireFailure) {
+		t.Fatalf("initial acquisition error = %v, want %v", first.err, acquireFailure)
+	}
+	next := <-later
+	if next.err != nil {
+		t.Fatal(next.err)
+	}
+	next.read.finish(false)
+	if got := source.acquireCallCount(); got != 2 {
+		t.Fatalf("acquisitions after stopped initialization error = %d, want 2", got)
+	}
+}
+
+type blockingInitializingListenLease struct {
+	*scriptedRelaySessionLease
+	listenEntered  chan struct{}
+	listenCanceled chan struct{}
+	releaseListen  chan struct{}
+}
+
+func (l *blockingInitializingListenLease) Listen(ctx context.Context) (<-chan appsource.RelayDelivery, error) {
+	close(l.listenEntered)
+	<-ctx.Done()
+	close(l.listenCanceled)
+	<-l.releaseListen
+	return nil, ctx.Err()
+}
+
+func TestHubRelayCanonicalStopRetainsInitializingHandleUntilListenCancellationReturns(t *testing.T) {
+	const relayKey = "local:canonical-stop-initializing-listen"
+	canonical := appwire.Ref{SourceID: "local", ThreadID: "canonical-stop-initializing-listen"}
+	oldBase := &scriptedRelaySessionLease{deliveries: make(chan appsource.RelayDelivery)}
+	oldLease := &blockingInitializingListenLease{
+		scriptedRelaySessionLease: oldBase,
+		listenEntered:             make(chan struct{}),
+		listenCanceled:            make(chan struct{}),
+		releaseListen:             make(chan struct{}),
+	}
+	freshLease := &scriptedRelaySessionLease{
+		readResult: appsource.RelayReadResult{
+			Response: appwire.ThreadReadResponse{Thread: appwire.Thread{
+				ID: canonical.ThreadID, Source: canonical.SourceID, Evener: appwire.EvenerThread{Ref: relayKey},
+			}},
+			Handoff: &guardedRelayHandoff{prepareAllowed: true, commitAllowed: true},
+		},
+		deliveries: make(chan appsource.RelayDelivery),
+	}
+	var acquireMu sync.Mutex
+	acquisitions := 0
+	source := &relaySessionTestSource{
+		resolveRelay: func(appwire.ThreadReadParams) (appwire.Ref, error) { return canonical, nil },
+		acquireRelay: func(appwire.Ref) (appsource.RelaySessionRoutePublicationLease, error) {
+			acquireMu.Lock()
+			defer acquireMu.Unlock()
+			acquisitions++
+			if acquisitions == 1 {
+				return routeAwareTestLease(oldLease), nil
+			}
+			return routeAwareTestLease(freshLease), nil
+		},
+	}
+	relays := newHubRelayFunctions(
+		appserver.NewServer(appserver.ServerConfig{ServerName: "canonical-stop-initializing-listen", SourceID: "local"}),
+		hubcore.WebConfig{}, appsource.NewRegistry(),
+	)
+	type outcome struct {
+		read *hubThreadReadResult
+		err  error
+	}
+	start := func() <-chan outcome {
+		out := make(chan outcome, 1)
+		go func() {
+			read, err := relays.readThread(t.Context(), source, appwire.ThreadReadParams{Ref: relayKey, Subscribe: true})
+			out <- outcome{read: read, err: err}
+		}()
+		return out
+	}
+	initial := start()
+	<-oldLease.listenEntered
+	relays.stopCanonicalRelay(canonical)
+	<-oldLease.listenCanceled
+	if got := oldLease.closeCallCount(); got != 0 {
+		close(oldLease.releaseListen)
+		t.Fatalf("initializing lease closed before Listen cancellation returned: %d", got)
+	}
+	waiting := make(chan struct{})
+	var waitOnce sync.Once
+	previousWait := observeHubRelayWait
+	observeHubRelayWait = func() { waitOnce.Do(func() { close(waiting) }) }
+	t.Cleanup(func() { observeHubRelayWait = previousWait })
+	later := start()
+	select {
+	case <-waiting:
+	case <-time.After(time.Second):
+		close(oldLease.releaseListen)
+		t.Fatal("post-stop join did not wait for initializing Listen termination")
+	}
+	close(oldLease.releaseListen)
+	first := <-initial
+	if !errors.Is(first.err, context.Canceled) {
+		t.Fatalf("stopped initializing Listen error = %v, want context.Canceled", first.err)
+	}
+	if got := oldLease.closeCallCount(); got != 1 {
+		t.Fatalf("stopped initializing Listen lease closes = %d, want 1", got)
+	}
+	next := <-later
+	if next.err != nil {
+		t.Fatal(next.err)
+	}
+	next.read.finish(false)
+	if got := source.acquireCallCount(); got != 2 {
+		t.Fatalf("acquisitions after Listen drain = %d, want old plus one fresh", got)
+	}
+}
+
 func TestHubRelayInitiatingRequestCancellationStopsInitialSubscribeAndAllowsFreshStart(t *testing.T) {
 	const threadID = "th_request_canceled_initializing"
 	initialRelease := make(chan struct{})
@@ -4397,11 +5679,34 @@ func TestHubSourceRegistryRoutesRunningSubagentThroughOwnerDaemon(t *testing.T) 
 		Entry:              entry,
 		SessionID:          "root",
 		RunningSubagentIDs: []string{"child"},
+		RunningJobs: []appwire.EvenerJobInfo{{
+			JobID: "job_shell", JobType: "shell", Status: "running",
+		}},
 	})
 	registry := newHubSourceRegistry(hubcore.WebConfig{Roster: roster})
 	source, ok := registry.Source("local")
 	if !ok {
 		t.Fatal("local source missing")
+	}
+	listed, err := source.ListThreads(context.Background(), appwire.ThreadListParams{})
+	if err != nil {
+		t.Fatalf("list root and running subagent: %v", err)
+	}
+	rootCarriedJob := false
+	childListed := false
+	for _, thread := range listed.Data {
+		switch thread.ID {
+		case "root":
+			rootCarriedJob = thread.Evener.Diagnostics != nil && len(thread.Evener.Diagnostics.Jobs) == 1
+		case "child":
+			childListed = true
+			if thread.Evener.Diagnostics != nil {
+				t.Fatalf("child alias duplicated owner jobs: %+v", thread.Evener.Diagnostics.Jobs)
+			}
+		}
+	}
+	if !rootCarriedJob || !childListed {
+		t.Fatalf("listed threads = %+v, want root job and job-free child alias", listed.Data)
 	}
 	read, err := source.ReadThread(context.Background(), appwire.ThreadReadParams{Ref: "local:child"})
 	if err != nil {
@@ -5277,6 +6582,10 @@ func (s *relayLifecycleSource) SetThreadModel(context.Context, appwire.ThreadMod
 	return appwire.Unavailable("relay lifecycle source does not set models")
 }
 
+func (s *relayLifecycleSource) SetThreadVisionModel(context.Context, appwire.ThreadVisionModelSetParams) error {
+	return appwire.Unavailable("relay lifecycle source does not set vision models")
+}
+
 func (s *relayLifecycleSource) SetThreadName(context.Context, appwire.ThreadNameSetParams) error {
 	return appwire.Unavailable("relay lifecycle source does not set names")
 }
@@ -5741,13 +7050,13 @@ func TestHubRPCTurnMutationsForwardWithoutDynamicCapabilityGates(t *testing.T) {
 		params any
 		result any
 	}{
-		{"start after response loss", appwire.MethodTurnStart, "mutation-start", appwire.TurnStartParams{Ref: "local:th_1", ClientMutationID: "mutation-start", Input: []appwire.InputItem{{Type: "text", Text: "start"}}}, &appwire.TurnStartResponse{}},
-		{"steer", appwire.MethodTurnSteer, "mutation-steer", appwire.TurnSteerParams{Ref: "local:th_1", ClientMutationID: "mutation-steer", Input: []appwire.InputItem{{Type: "text", Text: "steer"}}}, &appwire.TurnSteerResponse{}},
-		{"interrupt", appwire.MethodTurnInterrupt, "mutation-interrupt", appwire.TurnInterruptParams{Ref: "local:th_1", ClientMutationID: "mutation-interrupt"}, &appwire.TurnInterruptResponse{}},
-		{"queue", appwire.MethodTurnQueue, "mutation-queue", appwire.TurnQueueParams{Ref: "local:th_1", ClientMutationID: "mutation-queue", Input: []appwire.InputItem{{Type: "text", Text: "queue"}}}, &appwire.TurnQueueResponse{}},
-		{"drain", appwire.MethodTurnDrainAsSteer, "mutation-drain", appwire.TurnDrainAsSteerParams{Ref: "local:th_1", ClientMutationID: "mutation-drain", ExpectedQueueRevision: 1}, &appwire.TurnDrainAsSteerResponse{}},
-		{"promote", appwire.MethodTurnPromoteQueuedAsSteer, "mutation-promote", appwire.TurnPromoteQueuedAsSteerParams{Ref: "local:th_1", ClientMutationID: "mutation-promote", ExpectedEntryID: "queue_1", Index: 0}, &appwire.TurnPromoteQueuedAsSteerResponse{}},
-		{"cancel", appwire.MethodTurnCancelQueued, "mutation-cancel", appwire.TurnCancelQueuedParams{Ref: "local:th_1", ClientMutationID: "mutation-cancel", ExpectedEntryID: "queue_1", Index: 0}, &appwire.TurnCancelQueuedResponse{}},
+		{"start after response loss", appwire.MethodTurnStart, "mutation-start", appwire.TurnStartParams{Ref: "local:th_1", ClientMutationID: "mutation-start", ExpectedInstanceID: "sess_1", Input: []appwire.InputItem{{Type: "text", Text: "start"}}}, &appwire.TurnStartResponse{}},
+		{"steer", appwire.MethodTurnSteer, "mutation-steer", appwire.TurnSteerParams{Ref: "local:th_1", ClientMutationID: "mutation-steer", ExpectedInstanceID: "sess_1", Input: []appwire.InputItem{{Type: "text", Text: "steer"}}}, &appwire.TurnSteerResponse{}},
+		{"interrupt", appwire.MethodTurnInterrupt, "mutation-interrupt", appwire.TurnInterruptParams{Ref: "local:th_1", ClientMutationID: "mutation-interrupt", ExpectedInstanceID: "sess_1"}, &appwire.TurnInterruptResponse{}},
+		{"queue", appwire.MethodTurnQueue, "mutation-queue", appwire.TurnQueueParams{Ref: "local:th_1", ClientMutationID: "mutation-queue", ExpectedInstanceID: "sess_1", Input: []appwire.InputItem{{Type: "text", Text: "queue"}}}, &appwire.TurnQueueResponse{}},
+		{"drain", appwire.MethodTurnDrainAsSteer, "mutation-drain", appwire.TurnDrainAsSteerParams{Ref: "local:th_1", ClientMutationID: "mutation-drain", ExpectedInstanceID: "sess_1", ExpectedQueueRevision: 1}, &appwire.TurnDrainAsSteerResponse{}},
+		{"promote", appwire.MethodTurnPromoteQueuedAsSteer, "mutation-promote", appwire.TurnPromoteQueuedAsSteerParams{Ref: "local:th_1", ClientMutationID: "mutation-promote", ExpectedInstanceID: "sess_1", ExpectedEntryID: "queue_1", Index: 0}, &appwire.TurnPromoteQueuedAsSteerResponse{}},
+		{"cancel", appwire.MethodTurnCancelQueued, "mutation-cancel", appwire.TurnCancelQueuedParams{Ref: "local:th_1", ClientMutationID: "mutation-cancel", ExpectedInstanceID: "sess_1", ExpectedEntryID: "queue_1", Index: 0}, &appwire.TurnCancelQueuedResponse{}},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
@@ -5790,9 +7099,10 @@ func TestHubRPCTurnMutationsForwardWithoutDynamicCapabilityGates(t *testing.T) {
 	}
 
 	rejected := appwire.TurnQueueParams{
-		Ref:              "local:th_1",
-		ClientMutationID: "mutation-reject",
-		Input:            []appwire.InputItem{{Type: "text", Text: "reject"}},
+		Ref:                "local:th_1",
+		ClientMutationID:   "mutation-reject",
+		ExpectedInstanceID: "sess_1",
+		Input:              []appwire.InputItem{{Type: "text", Text: "reject"}},
 	}
 	var response appwire.TurnQueueResponse
 	err := client.Request(context.Background(), appwire.MethodTurnQueue, rejected, &response)
@@ -5803,6 +7113,45 @@ func TestHubRPCTurnMutationsForwardWithoutDynamicCapabilityGates(t *testing.T) {
 	data, ok := wire.Data.(map[string]any)
 	if !ok ||
 		data["clientMutationId"] != rejected.ClientMutationID ||
+		data["mutationOutcome"] != string(appwire.MutationOutcomeNotAccepted) ||
+		data["retryDisposition"] != string(appwire.RetryDispositionNone) {
+		t.Fatalf("wire=%+v data=%T %#v", wire, wire.Data, wire.Data)
+	}
+}
+
+func TestHubRPCTurnSteerMissingLocalSessionReturnsTerminalRejection(t *testing.T) {
+	runDir := t.TempDir()
+	roster := hubcore.NewRoster(runDir, nil)
+	roster.Refresh()
+	hub := newHubRPCTestServer(t, hubcore.WebConfig{
+		RunDir: runDir,
+		Roster: roster,
+		Past:   hubcore.NewPastIndex(""),
+	})
+	defer hub.Close()
+
+	client := dialHubRPC(t, hub)
+	defer client.Close()
+	if _, err := client.Initialize(context.Background(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
+		t.Fatalf("Initialize: %v", err)
+	}
+
+	params := appwire.TurnSteerParams{
+		Ref:                "local:missing",
+		ClientMutationID:   "mutation-missing-session",
+		ExpectedInstanceID: "missing",
+		Input:              []appwire.InputItem{{Type: "text", Text: "steer"}},
+	}
+	var response appwire.TurnSteerResponse
+	err := client.Request(context.Background(), appwire.MethodTurnSteer, params, &response)
+	var wire appwire.WireError
+	if !errors.As(err, &wire) {
+		t.Fatalf("TurnSteer error %T=%v, want WireError", err, err)
+	}
+	data, ok := wire.Data.(map[string]any)
+	if !ok ||
+		data["evenerErrorInfo"] != string(appwire.ErrorSessionUnavailable) ||
+		data["clientMutationId"] != params.ClientMutationID ||
 		data["mutationOutcome"] != string(appwire.MutationOutcomeNotAccepted) ||
 		data["retryDisposition"] != string(appwire.RetryDispositionNone) {
 		t.Fatalf("wire=%+v data=%T %#v", wire, wire.Data, wire.Data)
@@ -5963,6 +7312,83 @@ func TestHubRPCThreadModelSetResumesPastThread(t *testing.T) {
 	}
 }
 
+func TestHubRPCThreadVisionModelSetResumesPastThread(t *testing.T) {
+	root := t.TempDir()
+	workingDir := t.TempDir()
+	stateDir := filepath.Join(root, "projects", "project-past-0000000000")
+	sessionID := buildRPCParentSessionWithWorkingDir(t, stateDir, workingDir)
+	past := hubcore.NewPastIndex(filepath.Join(root, "projects", "*"))
+	if _, err := past.Rebuild(); err != nil {
+		t.Fatal(err)
+	}
+
+	daemon := appserver.NewServer(appserver.ServerConfig{ServerName: "daemon", SourceID: "local"})
+	appserver.HandleTyped(daemon.Router(), appwire.MethodThreadRead, func(_ context.Context, params appwire.ThreadReadParams) (appwire.ThreadReadResponse, error) {
+		return appwire.ThreadReadResponse{Thread: appwire.Thread{
+			ID:        sessionID,
+			SessionID: sessionID,
+			Source:    "local",
+			Evener: appwire.EvenerThread{
+				Ref:          params.Ref,
+				Capabilities: appwire.ThreadCapabilities{ChangeVisionModel: true},
+			},
+		}}, nil
+	})
+	visionModelCalled := ""
+	appserver.HandleTyped(daemon.Router(), appwire.MethodThreadVisionModelSet, func(_ context.Context, params appwire.ThreadVisionModelSetParams) (appwire.EmptyResponse, error) {
+		if params.Ref != "local:"+sessionID {
+			t.Fatalf("vision model ref=%q", params.Ref)
+		}
+		visionModelCalled = params.VisionModel
+		return appwire.EmptyResponse{}, nil
+	})
+	daemonHTTP := httptest.NewServer(http.HandlerFunc(daemon.ServeWebSocket))
+	defer daemonHTTP.Close()
+
+	runDir := t.TempDir()
+	resumeCalls := 0
+	spawner := &fakeRPCSpawner{
+		resume: func(_ context.Context, req hubcore.ResumeRequest) (rendezvous.Entry, error) {
+			if req.SessionID != sessionID || req.StateDir != stateDir || req.WorkingDir != workingDir {
+				t.Fatalf("resume request=%+v", req)
+			}
+			resumeCalls++
+			entry := rendezvous.Entry{
+				PID:        106,
+				Protocol:   appwire.ProtocolVersion,
+				Endpoint:   "ws" + daemonHTTP.URL[len("http"):],
+				SourceID:   "local",
+				ThreadID:   sessionID,
+				SessionID:  sessionID,
+				WorkingDir: workingDir,
+			}
+			writeRendezvous(t, runDir, entry)
+			return entry, nil
+		},
+	}
+	roster := hubcore.NewRoster(runDir, nil)
+	hub := newHubRPCTestServer(t, hubcore.WebConfig{RunDir: runDir, Roster: roster, Spawner: spawner, Past: past})
+	defer hub.Close()
+	client := dialHubRPC(t, hub)
+	defer client.Close()
+
+	if _, err := client.Initialize(context.Background(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
+		t.Fatalf("Initialize: %v", err)
+	}
+	if err := client.ThreadVisionModelSet(context.Background(), appwire.ThreadVisionModelSetParams{
+		Ref:         "local:" + sessionID,
+		VisionModel: "off",
+	}); err != nil {
+		t.Fatalf("ThreadVisionModelSet: %v", err)
+	}
+	if resumeCalls != 1 {
+		t.Fatalf("resume calls=%d, want 1", resumeCalls)
+	}
+	if visionModelCalled != "off" {
+		t.Fatalf("visionModelCalled=%q", visionModelCalled)
+	}
+}
+
 func TestHubRPCUnsupportedThreadActionReturnsStructuredUnavailable(t *testing.T) {
 	daemon := appserver.NewServer(appserver.ServerConfig{ServerName: "daemon", SourceID: "local"})
 	shutdownCalled := false
@@ -6118,7 +7544,6 @@ func TestHubRPCModelListUsesEvenerLaunchContractWhenDaemonFails(t *testing.T) {
 		RunDir:  runDir,
 		Roster:  roster,
 		Spawner: spawner,
-		Models:  []hubcore.ModelDescriptor{{Provider: "openai", Model: "gpt-stale"}},
 	})
 	defer hub.Close()
 	client := dialHubRPC(t, hub)
@@ -6846,6 +8271,10 @@ func TestHubRPCThreadStartRejectsProviderMissingFromDegradedLaunchContract(t *te
 	}
 }
 
+// TestHubRPCThreadStartAllowsIntentionallySkippedLaunchProvider: a provider
+// the launch contract never enumerated is still launchable when the registry
+// holds the instance (spec §11.3) — an endpoint that lists no models is
+// configured, not broken.
 func TestHubRPCThreadStartAllowsIntentionallySkippedLaunchProvider(t *testing.T) {
 	runDir := t.TempDir()
 	var got hubcore.SpawnRequest
@@ -6862,9 +8291,12 @@ func TestHubRPCThreadStartAllowsIntentionallySkippedLaunchProvider(t *testing.T)
 	}
 	spawner.spawn = func(_ context.Context, req hubcore.SpawnRequest) (rendezvous.Entry, error) {
 		got = req
-		return rendezvous.Entry{PID: 301, ThreadID: "th_openrouter_anthropic", SessionID: "th_openrouter_anthropic"}, nil
+		return rendezvous.Entry{PID: 301, ThreadID: "th_orclaude", SessionID: "th_orclaude"}, nil
 	}
-	hub := newHubRPCTestServer(t, hubcore.WebConfig{RunDir: runDir, Spawner: spawner, Past: hubcore.NewPastIndex("")})
+	reg := newSpawnGateRegistry(t, t.TempDir(), map[string]string{"OPENROUTER_API_KEY": "k"}, map[string]registry.Provider{
+		"orclaude": {Base: "openrouter", Protocol: registry.ProtocolAnthropic},
+	})
+	hub := newHubRPCTestServer(t, hubcore.WebConfig{RunDir: runDir, Spawner: spawner, Past: hubcore.NewPastIndex(""), Registry: reg})
 	defer hub.Close()
 	client := dialHubRPC(t, hub)
 	defer client.Close()
@@ -6873,17 +8305,17 @@ func TestHubRPCThreadStartAllowsIntentionallySkippedLaunchProvider(t *testing.T)
 		t.Fatalf("Initialize: %v", err)
 	}
 	resp, err := client.ThreadStart(context.Background(), appwire.ThreadStartParams{
-		ModelProvider: "openrouter-anthropic",
+		ModelProvider: "orclaude",
 		Model:         "anthropic/claude-3-5-sonnet",
 		CWD:           "/tmp",
 	})
 	if err != nil {
 		t.Fatalf("ThreadStart: %v", err)
 	}
-	if got.Resolved.Effective.Model != "openrouter-anthropic/anthropic/claude-3-5-sonnet" {
+	if got.Resolved.Effective.Model != "orclaude/anthropic/claude-3-5-sonnet" {
 		t.Fatalf("spawn model=%q", got.Resolved.Effective.Model)
 	}
-	if resp.Thread.Evener.Ref != "local:th_openrouter_anthropic" {
+	if resp.Thread.Evener.Ref != "local:th_orclaude" {
 		t.Fatalf("thread=%+v", resp.Thread)
 	}
 }
@@ -7273,7 +8705,7 @@ func TestHubRPCTurnStartEnsuresManagedCodexAppServerAfterExit(t *testing.T) {
 	if _, err := client.Initialize(context.Background(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
 		t.Fatalf("Initialize: %v", err)
 	}
-	if _, err := client.TurnStart(context.Background(), appwire.TurnStartParams{ClientMutationID: "test-mutation", Ref: "codex-managed:th_fake", Input: []appwire.InputItem{{Type: "text", Text: "continue"}}}); err == nil {
+	if _, err := client.TurnStart(context.Background(), appwire.TurnStartParams{ClientMutationID: "test-mutation", ExpectedInstanceID: "th_fake", Ref: "codex-managed:th_fake", Input: []appwire.InputItem{{Type: "text", Text: "continue"}}}); err == nil {
 		t.Fatal("TurnStart succeeded for Codex source")
 	}
 	next := launcherRunningProcess(t, launcher, "codex-managed")
@@ -7638,7 +9070,7 @@ func TestHubRPCThreadResumeNamesLiveIncompatibleDaemonWhenReplacementFails(t *te
 				"evener-appwire-v1",
 				appwire.ProtocolVersion,
 				// the remedy the operator can actually run
-				"http://" + blockerHTTP + "/shutdown",
+				"kill 104",
 				// the underlying cause, preserved
 				spawnFailure,
 			},
@@ -7714,6 +9146,11 @@ func TestHubRPCThreadResumeRoutesConfiguredCodexSource(t *testing.T) {
 		resumeCalled = true
 		if params["threadId"] != "th_codex" {
 			t.Fatalf("thread/resume params=%+v", params)
+		}
+		for _, field := range []string{"pluginDirs", "enabledPlugins"} {
+			if _, present := params[field]; present {
+				t.Fatalf("thread/resume unexpectedly carried launch selection %q: %+v", field, params)
+			}
 		}
 		return map[string]any{"thread": map[string]any{
 			"id":            "th_codex",
@@ -8181,7 +9618,7 @@ func TestHubRPCTurnStartResumesPastThread(t *testing.T) {
 	if _, err := client.Initialize(context.Background(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
 		t.Fatalf("Initialize: %v", err)
 	}
-	if _, err := client.TurnStart(context.Background(), appwire.TurnStartParams{ClientMutationID: "test-mutation", Ref: "local:" + sessionID, Input: []appwire.InputItem{{Type: "text", Text: "resume work"}}}); err != nil {
+	if _, err := client.TurnStart(context.Background(), appwire.TurnStartParams{ClientMutationID: "test-mutation", ExpectedInstanceID: sessionID, Ref: "local:" + sessionID, Input: []appwire.InputItem{{Type: "text", Text: "resume work"}}}); err != nil {
 		t.Fatalf("TurnStart: %v", err)
 	}
 	if gotPrompt != "resume work" {
@@ -8234,7 +9671,7 @@ func TestHubRPCTurnStartResumesPastThreadAfterRelaySubscribeUnavailable(t *testi
 	if _, err := client.Initialize(context.Background(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
 		t.Fatalf("Initialize: %v", err)
 	}
-	if _, err := client.TurnStart(context.Background(), appwire.TurnStartParams{ClientMutationID: "test-mutation", Ref: "local:" + sessionID, Input: []appwire.InputItem{{Type: "text", Text: "resume after relay"}}}); err != nil {
+	if _, err := client.TurnStart(context.Background(), appwire.TurnStartParams{ClientMutationID: "test-mutation", ExpectedInstanceID: sessionID, Ref: "local:" + sessionID, Input: []appwire.InputItem{{Type: "text", Text: "resume after relay"}}}); err != nil {
 		t.Fatalf("TurnStart: %v", err)
 	}
 	if prompt := source.lastStartPrompt(); prompt != "resume after relay" {
@@ -8291,7 +9728,7 @@ func TestHubRPCTurnStartDoesNotResumePastThreadOnLiveStartError(t *testing.T) {
 	if _, err := client.Initialize(context.Background(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
 		t.Fatalf("Initialize: %v", err)
 	}
-	_, err := client.TurnStart(context.Background(), appwire.TurnStartParams{ClientMutationID: "test-mutation", Ref: "local:" + sessionID, Input: []appwire.InputItem{{Type: "text", Text: "resume work"}}})
+	_, err := client.TurnStart(context.Background(), appwire.TurnStartParams{ClientMutationID: "test-mutation", ExpectedInstanceID: sessionID, Ref: "local:" + sessionID, Input: []appwire.InputItem{{Type: "text", Text: "resume work"}}})
 	if err == nil || !strings.Contains(err.Error(), "session is processing") {
 		t.Fatalf("TurnStart err=%v, want live start error", err)
 	}
@@ -8346,7 +9783,7 @@ func TestHubRPCTurnStartDoesNotResumePastThreadOnGenericSubstringError(t *testin
 	if _, err := client.Initialize(context.Background(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
 		t.Fatalf("Initialize: %v", err)
 	}
-	_, err := client.TurnStart(context.Background(), appwire.TurnStartParams{ClientMutationID: "test-mutation", Ref: "local:" + sessionID, Input: []appwire.InputItem{{Type: "text", Text: "resume work"}}})
+	_, err := client.TurnStart(context.Background(), appwire.TurnStartParams{ClientMutationID: "test-mutation", ExpectedInstanceID: sessionID, Ref: "local:" + sessionID, Input: []appwire.InputItem{{Type: "text", Text: "resume work"}}})
 	if err == nil || !strings.Contains(err.Error(), "connection refused") {
 		t.Fatalf("TurnStart err=%v, want live start error", err)
 	}
@@ -8407,7 +9844,7 @@ func TestHubRPCTurnStartResumesPastThreadAndRelaysNotifications(t *testing.T) {
 	if _, err := client.ThreadRead(context.Background(), appwire.ThreadReadParams{Ref: "local:" + sessionID, IncludeTurns: true}); err != nil {
 		t.Fatalf("ThreadRead: %v", err)
 	}
-	if _, err := client.TurnStart(context.Background(), appwire.TurnStartParams{ClientMutationID: "test-mutation", Ref: "local:" + sessionID, Input: []appwire.InputItem{{Type: "text", Text: "resume work"}}}); err != nil {
+	if _, err := client.TurnStart(context.Background(), appwire.TurnStartParams{ClientMutationID: "test-mutation", ExpectedInstanceID: sessionID, Ref: "local:" + sessionID, Input: []appwire.InputItem{{Type: "text", Text: "resume work"}}}); err != nil {
 		t.Fatalf("TurnStart: %v", err)
 	}
 
@@ -8515,7 +9952,7 @@ func TestHubRPCTurnStartResumesPastThreadAfterLocalTransportError(t *testing.T) 
 	if _, err := client.Initialize(context.Background(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
 		t.Fatalf("Initialize: %v", err)
 	}
-	resp, err := client.TurnStart(context.Background(), appwire.TurnStartParams{ClientMutationID: "test-mutation", Ref: "local:" + sessionID, Input: []appwire.InputItem{{Type: "text", Text: "resume work"}}})
+	resp, err := client.TurnStart(context.Background(), appwire.TurnStartParams{ClientMutationID: "test-mutation", ExpectedInstanceID: sessionID, Ref: "local:" + sessionID, Input: []appwire.InputItem{{Type: "text", Text: "resume work"}}})
 	if err != nil {
 		t.Fatalf("TurnStart: %v", err)
 	}
@@ -8637,8 +10074,9 @@ func TestHubRPCTurnStartResumesManagedLaunchRefOnSessionUnavailable(t *testing.T
 		t.Fatalf("Initialize: %v", err)
 	}
 	resp, err := client.TurnStart(context.Background(), appwire.TurnStartParams{ClientMutationID: "test-mutation",
-		Ref:   "codex-managed:th_managed",
-		Input: []appwire.InputItem{{Type: "text", Text: "keep going"}},
+		ExpectedInstanceID: "th_managed",
+		Ref:                "codex-managed:th_managed",
+		Input:              []appwire.InputItem{{Type: "text", Text: "keep going"}},
 	})
 	if err != nil {
 		t.Fatalf("TurnStart: %v", err)
@@ -8729,8 +10167,9 @@ func TestHubRPCTurnStartDoesNotResumeUnknownNonLocalRef(t *testing.T) {
 		t.Fatalf("Initialize: %v", err)
 	}
 	_, err := client.TurnStart(context.Background(), appwire.TurnStartParams{ClientMutationID: "test-mutation",
-		Ref:   "codex:th_unknown",
-		Input: []appwire.InputItem{{Type: "text", Text: "should not resume"}},
+		ExpectedInstanceID: "th_unknown",
+		Ref:                "codex:th_unknown",
+		Input:              []appwire.InputItem{{Type: "text", Text: "should not resume"}},
 	})
 	if err == nil {
 		t.Fatal("TurnStart succeeded, want SessionUnavailable error")
@@ -9315,45 +10754,35 @@ func waitLaunchedCodexExited(t *testing.T, launched *codexlaunch.LaunchedCodex) 
 	}
 }
 
-// TestLaunchProviderAllowsUnreportedModels_KeyedByBehaviorTag verifies that
-// launchProviderAllowsUnreportedModels returns true for any instance name
-// whose behavior tag is "openrouter-anthropic", not just the literal string.
-// A renamed instance like "ora-work" mapped to tag "openrouter-anthropic" must
-// behave identically to the canonical instance name.
-func TestLaunchProviderAllowsUnreportedModels_KeyedByBehaviorTag(t *testing.T) {
-	cfg := &providercfg.Config{
-		Instances: []providercfg.InstanceConfig{
-			{Name: "ora-work", Type: "openrouter-anthropic"},
-		},
+// TestLaunchInstanceExists_AcceptsAProviderTheContractDidNotEnumerate pins
+// the registry-only rule (spec §11.3): a launch model contract that never
+// listed an instance does not make that instance unlaunchable, as long as the
+// registry has it. A name the registry does not have is still refused.
+func TestLaunchInstanceExists_AcceptsAProviderTheContractDidNotEnumerate(t *testing.T) {
+	dir := t.TempDir()
+	tomlPath := writeProvidersToml(t, dir, "[providers.work]\nbase = \"anthropic\"\napi_key = \"sk-inline\"\n")
+	cfg := hubcore.WebConfig{Registry: newTestRegistry(t, t.TempDir(), tomlPath, nil, nil)}
+
+	if !launchInstanceExists(cfg, "work") {
+		t.Error("an instance the registry holds is launchable even when the contract omits it")
 	}
-	// Renamed instance with tag "openrouter-anthropic" must allow unreported models.
-	if !launchProviderAllowsUnreportedModels("ora-work", cfg) {
-		t.Error("renamed openrouter-anthropic instance must allow unreported models")
+	if !launchInstanceExists(cfg, "WORK") {
+		t.Error("the instance name is matched case-insensitively, as the launch ref is")
 	}
-	// Identity fallback (no config): literal name "openrouter-anthropic" still works.
-	if !launchProviderAllowsUnreportedModels("openrouter-anthropic", nil) {
-		t.Error("canonical openrouter-anthropic must allow unreported models with nil config")
+	if launchInstanceExists(cfg, "nowhere") {
+		t.Error("a name the registry does not have must not be launchable")
 	}
-	// A non-openrouter-anthropic instance must not allow unreported models.
-	if launchProviderAllowsUnreportedModels("openrouter", cfg) {
-		t.Error("openrouter instance must not allow unreported models")
+	if launchInstanceExists(hubcore.WebConfig{}, "work") {
+		t.Error("with no registry there is nothing to accept on")
 	}
 }
 
 func TestHubRPCInstanceListRoutesToController(t *testing.T) {
 	dir := t.TempDir()
-	tomlPath := filepath.Join(dir, "providers.toml")
-	cfg := providercfg.Config{
-		Instances: []providercfg.InstanceConfig{
-			{Name: "my-openai", Type: "openai", APIStyle: "responses"},
-		},
-	}
-	if err := providercfg.WriteFile(tomlPath, cfg); err != nil {
-		t.Fatalf("WriteFile: %v", err)
-	}
+	tomlPath := writeProvidersToml(t, dir, "[providers.my-openai]\nbase = \"openai\"\napi_key = \"sk-inline\"\n")
 	hub := newHubRPCTestServer(t, hubcore.WebConfig{
 		Past:                hubcore.NewPastIndex(""),
-		ProviderConfig:      &cfg,
+		Registry:            newTestRegistry(t, t.TempDir(), tomlPath, nil, nil),
 		ProvidersConfigPath: tomlPath,
 		HubStateRoot:        dir,
 	})
@@ -9368,20 +10797,26 @@ func TestHubRPCInstanceListRoutesToController(t *testing.T) {
 	if err := client.Request(context.Background(), appwire.MethodEvenerInstanceList, appwire.EmptyParams{}, &resp); err != nil {
 		t.Fatalf("evener/instance/list: %v", err)
 	}
-	if len(resp.Instances) != 1 || resp.Instances[0].Name != "my-openai" {
-		t.Fatalf("instances=%+v", resp.Instances)
+	found := false
+	for _, inst := range resp.Instances {
+		if inst.Name == "my-openai" {
+			found = true
+		}
 	}
-	if len(resp.AvailableTypes) == 0 {
-		t.Error("AvailableTypes must be non-empty in list response")
+	if !found {
+		t.Fatalf("instances=%+v, want the authored my-openai entry", resp.Instances)
+	}
+	if len(resp.AvailableProviders) == 0 {
+		t.Error("AvailableProviders must be non-empty in list response")
 	}
 	hasOpenAI := false
-	for _, tp := range resp.AvailableTypes {
-		if tp == "openai" {
+	for _, p := range resp.AvailableProviders {
+		if p.ID == "openai" {
 			hasOpenAI = true
 		}
 	}
 	if !hasOpenAI {
-		t.Errorf("AvailableTypes=%v missing expected type \"openai\"", resp.AvailableTypes)
+		t.Errorf("AvailableProviders=%+v missing the openai registry id", resp.AvailableProviders)
 	}
 }
 
@@ -9400,6 +10835,7 @@ func TestHubRPCInstanceCreateBroadcastsAuthUpdated(t *testing.T) {
 	writeMinimalProvidersToml(t, tomlPath)
 	hub := newHubRPCTestServer(t, hubcore.WebConfig{
 		Past:                hubcore.NewPastIndex(""),
+		Registry:            newTestRegistry(t, t.TempDir(), tomlPath, nil, nil),
 		ProvidersConfigPath: tomlPath,
 		HubStateRoot:        dir,
 	})
@@ -9412,7 +10848,7 @@ func TestHubRPCInstanceCreateBroadcastsAuthUpdated(t *testing.T) {
 	}
 
 	var resp appwire.InstanceListResponse
-	if err := client.Request(context.Background(), appwire.MethodEvenerInstanceCreate, appwire.InstanceCreateParams{Type: "anthropic", Name: "mywork"}, &resp); err != nil {
+	if err := client.Request(context.Background(), appwire.MethodEvenerInstanceCreate, appwire.InstanceCreateParams{Base: "anthropic", Name: "mywork"}, &resp); err != nil {
 		t.Fatalf("evener/instance/create: %v", err)
 	}
 
@@ -9436,6 +10872,7 @@ func TestHubRPCInstanceEditBroadcastsAuthUpdated(t *testing.T) {
 	writeMinimalProvidersToml(t, tomlPath)
 	hub := newHubRPCTestServer(t, hubcore.WebConfig{
 		Past:                hubcore.NewPastIndex(""),
+		Registry:            newTestRegistry(t, t.TempDir(), tomlPath, nil, nil),
 		ProvidersConfigPath: tomlPath,
 		HubStateRoot:        dir,
 	})
@@ -9472,6 +10909,7 @@ func TestHubRPCInstanceRemoveBroadcastsAuthUpdated(t *testing.T) {
 	writeMinimalProvidersToml(t, tomlPath)
 	hub := newHubRPCTestServer(t, hubcore.WebConfig{
 		Past:                hubcore.NewPastIndex(""),
+		Registry:            newTestRegistry(t, t.TempDir(), tomlPath, nil, nil),
 		ProvidersConfigPath: tomlPath,
 		HubStateRoot:        dir,
 	})
@@ -9509,6 +10947,7 @@ func TestHubRPCInstanceSetDefaultBroadcastsAuthUpdated(t *testing.T) {
 	writeMinimalProvidersToml(t, tomlPath)
 	hub := newHubRPCTestServer(t, hubcore.WebConfig{
 		Past:                hubcore.NewPastIndex(""),
+		Registry:            newTestRegistry(t, t.TempDir(), tomlPath, nil, nil),
 		ProvidersConfigPath: tomlPath,
 		HubStateRoot:        dir,
 	})
@@ -9559,6 +10998,19 @@ func newHubRPCTestServer(t *testing.T, cfg hubcore.WebConfig) *httptest.Server {
 // starts serving requests.
 func newHubRPCTestServerWithWeb(t *testing.T, cfg hubcore.WebConfig) (*httptest.Server, *WebServer) {
 	t.Helper()
+	if cfg.Registry == nil {
+		// Every auth and instance answer comes from the registry, so a hub
+		// fixture without one answers nothing. Offline, uncached and with no
+		// user layer: what the test's own environment and state root say, and
+		// nothing from the developer's providers.toml.
+		cfg.Registry = hubcore.NewProviderRegistry(func(extra ...registry.Option) (*registry.Registry, *credentials.Store, error) {
+			return cmdutil.LoadRegistry(append(extra,
+				registry.WithOffline(true), registry.WithoutCache(), registry.WithNoUserLayer())...)
+		})
+		if err := cfg.Registry.Reload(); err != nil {
+			t.Fatalf("registry: %v", err)
+		}
+	}
 	srv := httptest.NewUnstartedServer(nil)
 	cfg.HubAddr = srv.Listener.Addr().String()
 	web := NewWebServer(cfg)
@@ -9581,20 +11033,24 @@ func newHubRPCTestServerWithWeb(t *testing.T, cfg hubcore.WebConfig) (*httptest.
 func TestHubRPCRegistersExpectedHandlerSet(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
-	tomlPath := filepath.Join(dir, "providers.toml")
-	provCfg := providercfg.Config{
-		Instances: []providercfg.InstanceConfig{
-			{Name: "my-openai", Type: "openai", APIStyle: "responses"},
-		},
-	}
-	if err := providercfg.WriteFile(tomlPath, provCfg); err != nil {
-		t.Fatalf("WriteFile: %v", err)
+	tomlPath := writeProvidersToml(t, dir, "[providers.my-openai]\nbase = \"openai\"\napi_key = \"sk-inline\"\n")
+	// A temp-dir-backed credentials store, shared with the registry below:
+	// the dispatch loop further down calls every expected method with empty
+	// params, including the credential-mutating evener/auth/* handlers
+	// (apiKey/set, logout, apiKey/clear). A nil CredsStore makes
+	// newHubAuthControllerWithStore fall back to the real on-disk default
+	// (~/.config/evener/credentials.toml via the ambient HOME/XDG env) -
+	// this test must never read or write a developer's actual store.
+	credsStore, loadErr := credentials.LoadStore(filepath.Join(t.TempDir(), "credentials.toml"))
+	if loadErr != nil {
+		t.Fatalf("LoadStore: %v", loadErr)
 	}
 	hub, web := newHubRPCTestServerWithWeb(t, hubcore.WebConfig{
 		Past:                hubcore.NewPastIndex(""),
-		ProviderConfig:      &provCfg,
+		Registry:            newTestRegistry(t, t.TempDir(), tomlPath, credsStore, nil),
 		ProvidersConfigPath: tomlPath,
 		HubStateRoot:        dir,
+		CredsStore:          credsStore,
 	})
 	defer hub.Close()
 	client := dialHubRPC(t, hub)
@@ -9607,6 +11063,7 @@ func TestHubRPCRegistersExpectedHandlerSet(t *testing.T) {
 	expected := []string{
 		appwire.MethodThreadList,
 		appwire.MethodThreadRead,
+		appwire.MethodThreadUnsubscribe,
 		appwire.MethodThreadTurnsList,
 		appwire.MethodEvenerSubagentPreview,
 		appwire.MethodThreadStart,
@@ -9624,6 +11081,7 @@ func TestHubRPCRegistersExpectedHandlerSet(t *testing.T) {
 		appwire.MethodThreadCompactStart,
 		appwire.MethodThreadShutdown,
 		appwire.MethodThreadModelSet,
+		appwire.MethodThreadVisionModelSet,
 		appwire.MethodEvenerThreadNameSet,
 		appwire.MethodThreadReasoningEffortSet,
 		appwire.MethodGoalSet,
@@ -9634,8 +11092,19 @@ func TestHubRPCRegistersExpectedHandlerSet(t *testing.T) {
 		appwire.MethodEvenerAuthLogout,
 		appwire.MethodEvenerAuthList,
 		appwire.MethodEvenerAuthApiKeySet,
+		appwire.MethodEvenerAuthApiKeyClear,
 		appwire.MethodEvenerAuthDeviceStart,
 		appwire.MethodEvenerAuthDevicePoll,
+		appwire.MethodEvenerNavigationRead,
+		appwire.MethodEvenerFavoriteSet,
+		appwire.MethodEvenerArchiveSet,
+		appwire.MethodEvenerProjectDelete,
+		appwire.MethodEvenerSessionDelete,
+		appwire.MethodEvenerPinSectionRename,
+		appwire.MethodEvenerPinSectionDelete,
+		appwire.MethodEvenerSessionPinAssign,
+		appwire.MethodEvenerSessionPinUnpin,
+		appwire.MethodEvenerSearch,
 		appwire.MethodEvenerInstanceList,
 		appwire.MethodEvenerInstanceCreate,
 		appwire.MethodEvenerInstanceEdit,
@@ -9653,11 +11122,16 @@ func TestHubRPCRegistersExpectedHandlerSet(t *testing.T) {
 		appwire.MethodEvenerJobsOutput,
 		appwire.MethodEvenerThreadTranscriptsList,
 		appwire.MethodEvenerPathsComplete,
+		appwire.MethodEvenerDirsCreate,
 		appwire.MethodEvenerProjectsRecent,
 		appwire.MethodEvenerPathValidate,
+		appwire.MethodEvenerGitHead,
+		appwire.MethodEvenerMobilePairing,
 		appwire.MethodEvenerHarnessesList,
 		appwire.MethodEvenerCommandList,
 		appwire.MethodEvenerSettingsOverview,
+		appwire.MethodEvenerSettingsTranscriptDisplayGet,
+		appwire.MethodEvenerSettingsTranscriptDisplayPatch,
 		appwire.MethodEvenerMarketplaceList,
 		appwire.MethodEvenerMarketplaceAdd,
 		appwire.MethodEvenerMarketplaceRemove,
@@ -9671,6 +11145,7 @@ func TestHubRPCRegistersExpectedHandlerSet(t *testing.T) {
 		appwire.MethodEvenerPluginDisable,
 		appwire.MethodEvenerPluginSetAutoUpgrade,
 		appwire.MethodEvenerPluginCheckNow,
+		appwire.MethodEvenerPluginPreview,
 	}
 
 	// The list is a lock, not a sample: nothing may be registered that it does
@@ -9725,5 +11200,95 @@ func TestHubRPCRegistersExpectedHandlerSet(t *testing.T) {
 	var wire appwire.WireError
 	if !errors.As(err, &wire) || wire.Code != appwire.CodeMethodNotFound {
 		t.Fatalf("expected methodNotFound for unknown method, got %T: %v", err, err)
+	}
+}
+
+func TestHubRPCThreadStartEnvModelSatisfiesRequiredGate(t *testing.T) {
+	// A spawn with no model in any launch layer still launches when
+	// EVENER_MODEL is set for the hub process: the agent's own fallback
+	// chain (flag > env > none) would use it. The "model is required"
+	// gate must not reject what the child would have run with anyway —
+	// and the resolve RPC's "(default)" label already names that model,
+	// so the gate and the label must agree.
+	runDir := t.TempDir()
+	launchRoot := t.TempDir()
+	t.Setenv("EVENER_MODEL", "openai/gpt-5")
+	var got hubcore.SpawnRequest
+	spawner := &fakeRPCModelContractSpawner{
+		spawn: func(_ context.Context, req hubcore.SpawnRequest) (rendezvous.Entry, error) {
+			got = req
+			return rendezvous.Entry{
+				PID:       202,
+				Protocol:  appwire.ProtocolVersion,
+				SourceID:  "local",
+				ThreadID:  "th_env_model",
+				SessionID: "sess_env_model",
+			}, nil
+		},
+		contract: appwire.ModelListResponse{Data: []appwire.ModelDescriptor{{
+			Provider: "openai",
+			Model:    "gpt-5",
+		}}},
+	}
+	hub := newHubRPCTestServer(t, hubcore.WebConfig{
+		RunDir:           runDir,
+		HubStateRoot:     t.TempDir(),
+		LaunchConfigRoot: launchRoot,
+		Spawner:          spawner,
+		Past:             hubcore.NewPastIndex(""),
+	})
+	defer hub.Close()
+	client := dialHubRPC(t, hub)
+	defer client.Close()
+
+	if _, err := client.Initialize(context.Background(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
+		t.Fatalf("Initialize: %v", err)
+	}
+	if _, err := client.ThreadStart(context.Background(), appwire.ThreadStartParams{
+		CWD: t.TempDir(),
+	}); err != nil {
+		t.Fatalf("ThreadStart should accept env-model spawn: %v", err)
+	}
+	if got.Resolved.Effective.Model != "openai/gpt-5" {
+		t.Errorf("Model = %q, want env model threaded into spawn", got.Resolved.Effective.Model)
+	}
+}
+
+func TestHubRPCThreadStartEmptyModelRejected(t *testing.T) {
+	// The counterpart to TestHubRPCThreadStartEnvModelSatisfiesRequiredGate:
+	// with no model in any layer, no EVENER_MODEL env, and no per-launch
+	// override, the spawn gate rejects with "model is required". This guards
+	// the branch the env path exists to satisfy.
+	t.Setenv("EVENER_MODEL", "") // ensure ambient env cannot leak a model in
+	runDir := t.TempDir()
+	launchRoot := t.TempDir()
+	spawner := &fakeRPCModelContractSpawner{
+		spawn: func(_ context.Context, _ hubcore.SpawnRequest) (rendezvous.Entry, error) {
+			t.Fatal("spawner should not be called when model is empty")
+			return rendezvous.Entry{}, nil
+		},
+	}
+	hub := newHubRPCTestServer(t, hubcore.WebConfig{
+		RunDir:           runDir,
+		HubStateRoot:     t.TempDir(),
+		LaunchConfigRoot: launchRoot,
+		Spawner:          spawner,
+		Past:             hubcore.NewPastIndex(""),
+	})
+	defer hub.Close()
+	client := dialHubRPC(t, hub)
+	defer client.Close()
+
+	if _, err := client.Initialize(context.Background(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
+		t.Fatalf("Initialize: %v", err)
+	}
+	_, err := client.ThreadStart(context.Background(), appwire.ThreadStartParams{
+		CWD: t.TempDir(),
+	})
+	if err == nil {
+		t.Fatal("ThreadStart should fail when model resolves to empty")
+	}
+	if !strings.Contains(err.Error(), "model is required") {
+		t.Fatalf("error = %v, want error containing \"model is required\"", err)
 	}
 }

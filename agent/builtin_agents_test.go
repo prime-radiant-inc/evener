@@ -67,17 +67,22 @@ func TestBuiltinAgents_LoadsDoctor(t *testing.T) {
 	if !hasSkill {
 		t.Errorf("doctor should auto-inject the doctoring-evener skill, got skills: %v", doc.Skills)
 	}
-	// The doctor needs shell (to run evener-doctor) and edit tools (gated Heal/Extend).
-	wantTools := map[string]bool{"shell": false, "write_file": false}
+	// The doctor inspects through the in-process doctor_evener tool (its
+	// data plane — replacing the shell-out to the CLI, which failed when the
+	// binary wasn't on PATH), carries edit tools for the gated Heal/Extend
+	// tiers, and retains shell for the repair-guardrails validation gate
+	// (go build / go test on a core-tool repair proposal).
+	hasTool := map[string]bool{}
 	for _, tool := range doc.Tools {
-		if _, ok := wantTools[tool]; ok {
-			wantTools[tool] = true
+		hasTool[tool] = true
+	}
+	for _, want := range []string{"doctor_evener", "read_file", "glob", "grep", "write_file", "apply_patch", "shell", "task_list"} {
+		if !hasTool[want] {
+			t.Errorf("doctor should carry the %q tool, got: %v", want, doc.Tools)
 		}
 	}
-	for tool, found := range wantTools {
-		if !found {
-			t.Errorf("doctor should carry the %q tool, got: %v", tool, doc.Tools)
-		}
+	if len(doc.Tools) != 8 {
+		t.Errorf("doctor tool list = %v (%d), want exactly the 8 intended tools — an addition here needs a deliberate decision", doc.Tools, len(doc.Tools))
 	}
 }
 
@@ -472,6 +477,7 @@ func TestSpawnAgent_BlockingWithExplorerAgent(t *testing.T) {
 
 	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{
 		MaxSubagentDepth: 1,
+		testOnly:         testConfig{sandboxProber: bwrapCapableProber(dir)},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -510,6 +516,7 @@ func TestSpawnAgent_PluginAgentGetsComposedPrompt(t *testing.T) {
 
 	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{
 		MaxSubagentDepth: 1,
+		testOnly:         testConfig{sandboxProber: bwrapCapableProber(dir)},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -567,7 +574,7 @@ func TestSpawnAgent_DefaultSubagentGetsComposedPrompt(t *testing.T) {
 	if !strings.Contains(subagentSystemPrompt, "Delegated task limits") {
 		t.Error("default subagent prompt should contain shared delegated-task guidance")
 	}
-	if !strings.Contains(subagentSystemPrompt, "focused subagent") {
+	if !strings.Contains(subagentSystemPrompt, "one delegated unit of work") {
 		t.Error("default subagent prompt should contain subagent persona instructions")
 	}
 }
@@ -767,6 +774,7 @@ func TestSpawnAgent_TaskListPreservedForNamedAgent(t *testing.T) {
 
 	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{
 		MaxSubagentDepth: 1,
+		testOnly:         testConfig{sandboxProber: bwrapCapableProber(dir)},
 	})
 	if err != nil {
 		t.Fatal(err)

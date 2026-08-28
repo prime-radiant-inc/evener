@@ -11,11 +11,12 @@ import (
 	"primeradiant.com/evener/cmd/evener-tui/internal/transcript"
 	"primeradiant.com/evener/cmd/evener-tui/internal/tuiprim"
 	"primeradiant.com/evener/cmd/evener-tui/internal/tuitheme"
+	"primeradiant.com/evener/envvars"
 )
 
 func (m hubModel) sessionHeaderLines() []string {
 	th := tuitheme.ActiveTheme()
-	title := firstNonEmptyString(m.detail.Title, m.detail.SessionID, m.detail.Ref, "untitled session")
+	title := envvars.FirstNonEmpty(m.detail.Title, m.detail.SessionID, m.detail.Ref, "untitled session")
 	state := strings.TrimSpace(m.detail.State)
 	if state == "" {
 		state = "idle"
@@ -49,7 +50,7 @@ func (m hubModel) sessionHeaderLines() []string {
 	addPart := func(key, value string) {
 		addColoredPart(key, value, th.Text)
 	}
-	addPart("src", firstNonEmptyString(m.detail.SourceLabel, sourceLabelFromRefText(m.detail.Ref)))
+	addPart("src", envvars.FirstNonEmpty(m.detail.SourceLabel, sourceLabelFromRefText(m.detail.Ref)))
 	addPart("branch", m.detail.Branch)
 	addPart("model", modeldisplay.AbbreviateModel(m.detail.Model))
 	addPart("effort", m.detail.ReasoningEffort)
@@ -143,15 +144,15 @@ func (m hubModel) hubConnectionLabel() string {
 	return "hub connected"
 }
 
+// sessionAuthReadinessLabel is the status line's terse auth field: the
+// instance the last /auth named and the hub's own credential-source word
+// (spec §10's vocabulary), which is already compact enough for one line.
 func (m hubModel) sessionAuthReadinessLabel() string {
 	if m.authStatusSeen {
-		provider := firstNonEmptyString(m.authStatus.Provider, "provider")
+		provider := envvars.FirstNonEmpty(m.authStatus.Provider, "provider")
 		source := strings.TrimSpace(m.authStatus.ActiveSource)
-		switch source {
-		case "":
+		if source == "" {
 			source = "unknown"
-		case "signed-out":
-			source = "signed out"
 		}
 		return "auth: " + provider + " " + source
 	}
@@ -222,7 +223,7 @@ func (m hubModel) renderSessionMainBody() string {
 		b.WriteString(notices)
 	}
 	if m.forkDraft != nil {
-		branch := firstNonEmptyString(m.detail.Branch, "fork")
+		branch := envvars.FirstNonEmpty(m.detail.Branch, "fork")
 		b.WriteString("\n")
 		b.WriteString(forkDraftHeader(branch, m.forkDraft.EntryIndex, m.sessionHeaderWidth()))
 		b.WriteString("\n")
@@ -303,7 +304,7 @@ func isSubagentRunMessage(msg transcript.ChatMessage) bool {
 // computation and the tuiprim.AppShell. Extracted so syncSessionViewport and sessionView
 // share the same chrome calculation.
 func (m *hubModel) sessionChromeText() (topBar, overlayText, footer string) {
-	title := firstNonEmptyString(m.detail.Title, m.detail.SessionID, m.detail.Ref, "untitled session")
+	title := envvars.FirstNonEmpty(m.detail.Title, m.detail.SessionID, m.detail.Ref, "untitled session")
 	topBar = truncateSessionLine("evener / session / "+title, m.sessionHeaderWidth())
 
 	// Footer is computed before the overlay so the command palette can window
@@ -330,6 +331,10 @@ func (m *hubModel) sessionChromeText() (topBar, overlayText, footer string) {
 	}
 	if m.sessionModelPicker != nil {
 		overlay.WriteString(m.sessionModelPicker.View())
+		overlay.WriteString("\n\n")
+	}
+	if m.sessionVisionModelPicker != nil {
+		overlay.WriteString(m.sessionVisionModelPicker.View())
 		overlay.WriteString("\n\n")
 	}
 	if m.sessionEffortPicker != nil {

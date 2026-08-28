@@ -74,6 +74,101 @@ afterEach(() => {
 });
 
 describe("AppwireClient heartbeat", () => {
+  test("defers heartbeat while an ordinary request is pending, then resumes", async () => {
+    const { factory, sockets } = dialer();
+    const client = new AppwireClient({ url: "ws://x/rpc", socketFactory: factory });
+    await connectReady(sockets, client);
+    const socket = socketAt(sockets, 0);
+
+    const pending = client.request("thread/list", { limit: 1 });
+    const request = sentFrames(socket).find((frame) => frame.method === "thread/list");
+    if (typeof request?.id !== "number") throw new Error("missing thread/list request id");
+
+    await vi.advanceTimersByTimeAsync(HEARTBEAT_INTERVAL_MS + HEARTBEAT_TIMEOUT_MS - 1);
+
+    expect(client.state).toBe("ready");
+    expect(sentFrames(socket).filter((frame) => frame.method === "ping")).toHaveLength(0);
+
+    socket.receive({ id: request.id, result: { data: [], nextCursor: "" } });
+    await pending;
+    await vi.advanceTimersByTimeAsync(HEARTBEAT_INTERVAL_MS);
+
+    expect(sentFrames(socket).filter((frame) => frame.method === "ping")).toHaveLength(1);
+    client.close();
+  });
+
+  test("keeps heartbeat deferred until the last of multiple successful RPCs settles", async () => {
+    const { factory, sockets } = dialer();
+    const client = new AppwireClient({ url: "ws://x/rpc", socketFactory: factory });
+    await connectReady(sockets, client);
+    const socket = socketAt(sockets, 0);
+
+    const first = client.request("thread/list", { limit: 1 });
+    const second = client.request("thread/list", { limit: 2 }, { timeoutMs: HEARTBEAT_INTERVAL_MS + 1 });
+    const requests = sentFrames(socket).filter((frame) => frame.method === "thread/list");
+    if (requests.length !== 2 || typeof requests[0]?.id !== "number" || typeof requests[1]?.id !== "number") {
+      throw new Error("missing concurrent thread/list request ids");
+    }
+
+    await vi.advanceTimersByTimeAsync(HEARTBEAT_INTERVAL_MS);
+    expect(sentFrames(socket).filter((frame) => frame.method === "ping")).toHaveLength(0);
+
+    socket.receive({ id: requests[0].id, result: { data: [], nextCursor: "" } });
+    await first;
+    expect(sentFrames(socket).filter((frame) => frame.method === "ping")).toHaveLength(0);
+
+    socket.receive({ id: requests[1].id, result: { data: [], nextCursor: "" } });
+    await second;
+    await vi.advanceTimersByTimeAsync(HEARTBEAT_INTERVAL_MS);
+    expect(sentFrames(socket).filter((frame) => frame.method === "ping")).toHaveLength(1);
+    client.close();
+  });
+
+  test("resumes heartbeat after the last concurrent RPC ends with a wire error", async () => {
+    const { factory, sockets } = dialer();
+    const client = new AppwireClient({ url: "ws://x/rpc", socketFactory: factory });
+    await connectReady(sockets, client);
+    const socket = socketAt(sockets, 0);
+
+    const first = client.request("thread/list", { limit: 1 });
+    const second = client.request("thread/list", { limit: 2 });
+    const requests = sentFrames(socket).filter((frame) => frame.method === "thread/list");
+    if (requests.length !== 2 || typeof requests[0]?.id !== "number" || typeof requests[1]?.id !== "number") {
+      throw new Error("missing concurrent thread/list request ids");
+    }
+    socket.receive({ id: requests[0].id, result: { data: [], nextCursor: "" } });
+    await first;
+    socket.receive({ id: requests[1].id, error: { code: 409, message: "request rejected" } });
+    await expect(second).rejects.toThrow("request rejected");
+
+    await vi.advanceTimersByTimeAsync(HEARTBEAT_INTERVAL_MS);
+    expect(sentFrames(socket).filter((frame) => frame.method === "ping")).toHaveLength(1);
+    client.close();
+  });
+
+  test("resumes heartbeat after the last concurrent RPC times out", async () => {
+    const { factory, sockets } = dialer();
+    const client = new AppwireClient({ url: "ws://x/rpc", socketFactory: factory });
+    await connectReady(sockets, client);
+    const socket = socketAt(sockets, 0);
+
+    const first = client.request("thread/list", { limit: 1 });
+    const second = client.request("thread/list", { limit: 2 }, { timeoutMs: HEARTBEAT_INTERVAL_MS * 2 });
+    const requests = sentFrames(socket).filter((frame) => frame.method === "thread/list");
+    if (requests.length !== 2 || typeof requests[0]?.id !== "number") throw new Error("missing first request id");
+    socket.receive({ id: requests[0].id, result: { data: [], nextCursor: "" } });
+    await first;
+
+    await vi.advanceTimersByTimeAsync(HEARTBEAT_INTERVAL_MS);
+    expect(sentFrames(socket).filter((frame) => frame.method === "ping")).toHaveLength(0);
+    const timedOut = expect(second).rejects.toThrow(/timed out/);
+    await vi.advanceTimersByTimeAsync(HEARTBEAT_INTERVAL_MS);
+    await timedOut;
+    await vi.advanceTimersByTimeAsync(HEARTBEAT_INTERVAL_MS);
+    expect(sentFrames(socket).filter((frame) => frame.method === "ping")).toHaveLength(1);
+    client.close();
+  });
+
   test("sends a ping every 20s while ready, and again 20s later", async () => {
     const { factory, sockets } = dialer();
     const client = new AppwireClient({ url: "ws://x/rpc", socketFactory: factory });
@@ -107,6 +202,36 @@ describe("AppwireClient heartbeat", () => {
     await vi.advanceTimersByTimeAsync(HEARTBEAT_TIMEOUT_MS);
     expect(client.state).toBe("reconnecting");
     expect(states).toContain("reconnecting");
+  });
+
+  test("after multiple RPCs clear, an unanswered heartbeat detects half-open and reconnects", async () => {
+    const { factory, sockets } = dialer();
+    const client = new AppwireClient({ url: "ws://x/rpc", socketFactory: factory });
+    await connectReady(sockets, client);
+    const socket = socketAt(sockets, 0);
+    const first = client.request("thread/list", { limit: 1 });
+    const second = client.request("thread/list", { limit: 2 });
+    const requests = sentFrames(socket).filter((frame) => frame.method === "thread/list");
+    if (requests.length !== 2 || typeof requests[0]?.id !== "number" || typeof requests[1]?.id !== "number") {
+      throw new Error("missing concurrent thread/list request ids");
+    }
+    await vi.advanceTimersByTimeAsync(HEARTBEAT_INTERVAL_MS);
+    expect(sentFrames(socket).filter((frame) => frame.method === "ping")).toHaveLength(0);
+    socket.receive({ id: requests[0].id, result: { data: [], nextCursor: "" } });
+    socket.receive({ id: requests[1].id, result: { data: [], nextCursor: "" } });
+    await Promise.all([first, second]);
+
+    socket.autoInitialize = false;
+    await vi.advanceTimersByTimeAsync(HEARTBEAT_INTERVAL_MS);
+    expect(sentFrames(socket).filter((frame) => frame.method === "ping")).toHaveLength(1);
+    await vi.advanceTimersByTimeAsync(HEARTBEAT_TIMEOUT_MS);
+    expect(client.state).toBe("reconnecting");
+
+    await vi.advanceTimersByTimeAsync(RECONNECT_BASE_MS);
+    socketAt(sockets, 1).open();
+    await flushUntil(() => client.state === "ready");
+    expect(client.state).toBe("ready");
+    client.close();
   });
 
   test("a heartbeat timeout reconnects when client-side close emits no close event", async () => {
@@ -261,18 +386,21 @@ describe("AppwireClient reconnect", () => {
     expect(notifications).toBe(1);
   });
 
-  test("a pending request at disconnect is rejected exactly once and is not replayed after reconnect", async () => {
+  test("multiple pending requests at disconnect are rejected once and heartbeat resumes after reconnect", async () => {
     const { factory, sockets } = dialer();
     const client = new AppwireClient({ url: "ws://x/rpc", socketFactory: factory });
     await connectReady(sockets, client);
 
-    const reqPromise = client.request("thread/list", { limit: 1 });
-    expect(sentFrames(socketAt(sockets, 0)).filter((f) => f.method === "thread/list")).toHaveLength(1);
+    const first = client.request("thread/list", { limit: 1 });
+    const second = client.request("thread/list", { limit: 2 });
+    expect(sentFrames(socketAt(sockets, 0)).filter((f) => f.method === "thread/list")).toHaveLength(2);
 
     socketAt(sockets, 0).closeFromServer(1006);
 
-    await expect(reqPromise).rejects.toThrow();
-    await expect(reqPromise).rejects.not.toBeInstanceOf(ConnectionClosedError);
+    await expect(first).rejects.toThrow();
+    await expect(first).rejects.not.toBeInstanceOf(ConnectionClosedError);
+    await expect(second).rejects.toThrow();
+    await expect(second).rejects.not.toBeInstanceOf(ConnectionClosedError);
 
     await vi.advanceTimersByTimeAsync(RECONNECT_BASE_MS);
     socketAt(sockets, 1).open();
@@ -281,6 +409,8 @@ describe("AppwireClient reconnect", () => {
     // Only the handshake rides the new socket: a queued turn/start retried
     // blind could double-fire, so the dropped request must never replay.
     expect(sentFrames(socketAt(sockets, 1)).map((f) => f.method)).toEqual(["initialize", "initialized"]);
+    await vi.advanceTimersByTimeAsync(HEARTBEAT_INTERVAL_MS);
+    expect(sentFrames(socketAt(sockets, 1)).filter((f) => f.method === "ping")).toHaveLength(1);
   });
 
   test("requests attempted while reconnecting are rejected synchronously, not queued for replay", async () => {
@@ -484,8 +614,13 @@ describe("AppwireClient close() during heartbeat/reconnect", () => {
     await connectReady(sockets, client);
 
     expect(vi.getTimerCount()).toBeGreaterThan(0); // the heartbeat interval is armed
+    const first = client.request("thread/list", { limit: 1 });
+    const second = client.request("thread/list", { limit: 2 });
 
     client.close();
+
+    await expect(first).rejects.toBeInstanceOf(ConnectionClosedError);
+    await expect(second).rejects.toBeInstanceOf(ConnectionClosedError);
 
     expect(client.state).toBe("closed");
     expect(vi.getTimerCount()).toBe(0);

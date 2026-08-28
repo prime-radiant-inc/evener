@@ -221,7 +221,7 @@ func FuzzExactAppRPC(f *testing.F) {
 			_ = os.WriteFile(filepath.Join(pluginDir2, ".claude-plugin", "plugin.json"), []byte(`{"name":"q"}`), 0o600)
 			_ = os.MkdirAll(filepath.Join(pluginDir2, "commands"), 0o755)
 			_ = os.WriteFile(filepath.Join(pluginDir2, "commands", "a.md"), []byte("---\ndescription: a\n---\na"), 0o600)
-			_, _ = hubCommandList(hubcore.WebConfig{PluginDirs: []string{pluginDir, pluginDir2}})
+			_, _ = hubCommandList(context.Background(), hubcore.WebConfig{PluginDirs: []string{pluginDir, pluginDir2}})
 
 			for _, c := range []struct {
 				m string
@@ -275,7 +275,7 @@ func FuzzExactAppRPC(f *testing.F) {
 				p any
 			}{
 				{appwire.MethodEvenerInstanceList, appwire.EmptyParams{}},
-				{appwire.MethodEvenerInstanceCreate, appwire.InstanceCreateParams{Name: "work", Type: "anthropic"}},
+				{appwire.MethodEvenerInstanceCreate, appwire.InstanceCreateParams{Name: "work", Base: "anthropic"}},
 				{appwire.MethodEvenerInstanceEdit, appwire.InstanceEditParams{Name: "work"}},
 				{appwire.MethodEvenerInstanceSetDefault, appwire.InstanceSetDefaultParams{Name: "work"}},
 				{appwire.MethodEvenerInstanceRemove, appwire.InstanceRemoveParams{Name: "work"}},

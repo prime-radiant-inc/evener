@@ -9,7 +9,7 @@ import (
 // parseMetadata is the "--meta key=value" config decoder; buildSystemPrompt
 // (text-only, no file args) is the system-prompt assembler. The package's flag
 // arg-parser (llmcallMain) is intentionally NOT fuzzed here: it couples parsing
-// with a live llm.NewFromEnv() call and an os.Stdin read, so it is not a safe
+// with a live client load and an os.Stdin read, so it is not a safe
 // no-side-effect seam — its behavior belongs to the Workstream B sandboxed API
 // fuzzing. Oracle: no-panic floor plus, for accepted metadata, every emitted key
 // is non-empty.

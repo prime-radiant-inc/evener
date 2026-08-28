@@ -62,12 +62,6 @@
               <button class="button primary md" data-resume type="button"></button>
               <button class="button secondary md" data-new-session type="button">New session</button>
               <p class="orientation">A session can read and edit the repository, run commands, and delegate work to helpers.</p>
-              <div class="examples" data-examples>
-                <p class="examplesLabel">Try a task to get started</p>
-                <button class="button quiet sm" data-example type="button">Find and fix the root cause of a flaky test</button>
-                <button class="button quiet sm" data-example type="button">Audit error handling across the auth package</button>
-                <button class="button quiet sm" data-example type="button">Explain how requests flow from router to handler</button>
-              </div>
               <div class="hints" data-hints>
                 <div class="hintRow"><span class="kbdStandIn">Mod</span><span class="kbdStandIn">K</span><span>command palette</span></div>
                 <div class="hintRow"><span class="kbdStandIn">Mod</span><span class="kbdStandIn">I</span><span>focus the composer</span></div>
@@ -143,11 +137,9 @@ window.measure = () =>
       candidate,
       body: { rect: bodyRect, clientWidth: body.clientWidth },
       actions: rectOf(root.querySelector("[data-actions]")),
-      examplesDiv: rectOf(root.querySelector("[data-examples]")),
       hints: rectOf(root.querySelector("[data-hints]")),
       resume: resume ? buttonBox(resume, bodyRect) : null,
       newSession: buttonBox(root.querySelector("[data-new-session]"), bodyRect),
-      examples: [...root.querySelectorAll("[data-example]")].map((el) => buttonBox(el, bodyRect)),
     };
   });
 </script>

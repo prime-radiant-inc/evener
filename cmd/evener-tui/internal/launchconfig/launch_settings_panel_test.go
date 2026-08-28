@@ -114,7 +114,7 @@ func TestLaunchSettingsPanel_ProjectSchemaRowsExcludeGlobalOnly(t *testing.T) {
 }
 
 func TestLayerRows_IncludesFastCheapModel(t *testing.T) {
-	rows := layerRows(appwire.LaunchConfigLayer{FastCheapModel: "openai/gpt-5-mini"})
+	rows := layerRows(appwire.LaunchConfigLayer{FastCheapModel: "openai/gpt-5-mini"}, appwire.LaunchConfigLayer{})
 	for _, row := range rows {
 		if row.field == "fast_cheap_model" {
 			if row.value != "openai/gpt-5-mini" {
@@ -133,6 +133,50 @@ func TestApplyEdit_FastCheapModel(t *testing.T) {
 	}
 	if got.FastCheapModel != "openai/gpt-5-mini" {
 		t.Fatalf("FastCheapModel = %q, want openai/gpt-5-mini", got.FastCheapModel)
+	}
+}
+
+// TestLayerRows_ResolvedDefaultLabels: the non-schema fallback rows render a
+// nil pointer field as the resolved effective value with a " (default)"
+// suffix, while the edit value keeps the unset "(default)" placeholder.
+func TestLayerRows_ResolvedDefaultLabels(t *testing.T) {
+	twoHundred := 200
+	tru := true
+	rows := layerRows(appwire.LaunchConfigLayer{}, appwire.LaunchConfigLayer{MaxRounds: &twoHundred, NoProjectPrompts: &tru})
+	byField := make(map[string]layerRow, len(rows))
+	for _, row := range rows {
+		byField[row.field] = row
+	}
+	if row := byField["max_rounds"]; row.value != "200 (default)" || row.editValue != "(default)" {
+		t.Errorf("max_rounds = value %q editValue %q, want 200 (default)/(default)", row.value, row.editValue)
+	}
+	if row := byField["no_project_prompts"]; row.value != "true (default)" || row.editValue != "(default)" {
+		t.Errorf("no_project_prompts = value %q editValue %q, want true (default)/(default)", row.value, row.editValue)
+	}
+	if row := byField["max_subagent_depth"]; row.value != "(default)" {
+		t.Errorf("max_subagent_depth (unset everywhere) = %q, want (default)", row.value)
+	}
+}
+
+// TestLaunchSettingsPanel_ResolvedDefaultLabels: once a resolve lands, an
+// unset field renders the resolved effective value with the "(default)"
+// suffix; before any resolve, the label stays bare "(default)".
+func TestLaunchSettingsPanel_ResolvedDefaultLabels(t *testing.T) {
+	p := NewLaunchSettingsPanel(nil, "/cwd")
+	updated, _ := p.Update(LaunchSchemaResultMsg{Schema: appwire.LaunchOptionSchemaResponse{Options: []appwire.LaunchOption{
+		{Field: "reasoning_effort", Label: "Reasoning effort", Kind: "select", DefaultableLayers: []string{"global"}},
+	}}})
+	p = updated.(LaunchSettingsPanel)
+	updated, _ = p.Update(LaunchLayerResultMsg{Layer: "global", Data: appwire.LaunchConfigLayer{}})
+	p = updated.(LaunchSettingsPanel)
+	if v := p.View(); strings.Contains(v, "high (default)") {
+		t.Fatalf("pre-resolve view should not show a resolved label:\n%s", v)
+	}
+	updated, _ = p.Update(LaunchResolveResultMsg{Resolved: appwire.LaunchConfigResolved{
+		Effective: appwire.LaunchConfigLayer{ReasoningEffort: "high"},
+	}})
+	if v := updated.(LaunchSettingsPanel).View(); !strings.Contains(v, "high (default)") {
+		t.Fatalf("view should render the resolved default label:\n%s", v)
 	}
 }
 
@@ -188,7 +232,7 @@ func TestApplyEdit_SandboxValidatesMode(t *testing.T) {
 }
 
 func TestLayerRows_ListFieldsExposeEditableValues(t *testing.T) {
-	rows := layerRows(appwire.LaunchConfigLayer{SkillsDirs: []string{"/one", "/two"}})
+	rows := layerRows(appwire.LaunchConfigLayer{SkillsDirs: []string{"/one", "/two"}}, appwire.LaunchConfigLayer{})
 	for _, row := range rows {
 		if row.field == "skills_dirs" {
 			if row.value != "2 entries" {

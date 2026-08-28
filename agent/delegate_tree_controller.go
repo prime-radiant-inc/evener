@@ -112,12 +112,34 @@ type delegateLease struct {
 	generation uint64
 }
 
+type delegateCompletionRequirement uint8
+
+const (
+	delegateCompletionAttentionOnly delegateCompletionRequirement = iota
+	delegateCompletionReportRequired
+)
+
+type delegateCompletionOutcome uint8
+
+const (
+	delegateCompletionOutcomeNone delegateCompletionOutcome = iota
+	delegateCompletionOutcomeAttentionNoAction
+)
+
+type delegateGenerationEvidence struct {
+	requirement  delegateCompletionRequirement
+	outcome      delegateCompletionOutcome
+	terminalSeen bool
+	fallback     *delegateFinish
+}
+
 type delegateRuntimeBinding struct {
 	lease      delegateLease
 	runtime    *Session
 	cancel     context.CancelFunc
 	ready      bool
 	inputClaim uint64
+	evidence   *delegateGenerationEvidence
 }
 
 type delegateLiveState struct {
@@ -134,6 +156,7 @@ type delegateLiveState struct {
 	// encountered a finalization failure has completed all retained-runtime writes.
 	recoveryRunnerPending bool
 	activityAt            time.Time
+	productiveActivityAt  time.Time
 	quietSequence         uint64
 	quietNotified         bool
 	quietClaim            *delegateQuietAttentionClaim
@@ -154,12 +177,22 @@ type delegateSnapshot struct {
 	transcriptRef      string
 	notResumableReason string
 	latestActivityAt   time.Time
+	// latestProductiveActivityAt is the one-shot drain's liveness clock.
+	// Provider retry/backoff remains ordinary activity everywhere else, but it
+	// does not move this clock.
+	latestProductiveActivityAt time.Time
 	// pendingStopSeq is the sequence of a subtree stop admitted against this
 	// delegate and not yet completed; 0 when no stop is outstanding. It is what
 	// distinguishes a delegate that was ASKED to stop from one that has.
 	pendingStopSeq uint64
-	lastOutcome    *delegatestore.Outcome
-	latestPacket   *delegatestore.TerminalPacket
+	// pendingStopAt is WHEN that stop was requested, and zero whenever
+	// pendingStopSeq is (or when the journal predates the field). A delegate
+	// under a pending stop cannot report activity at all — admitLeaseLocked
+	// rejects on PendingStopSeq — so time-since-request is the only honest
+	// measure of how long a stop has gone unanswered.
+	pendingStopAt time.Time
+	lastOutcome   *delegatestore.Outcome
+	latestPacket  *delegatestore.TerminalPacket
 }
 
 // stableDelegateWorktreeSnapshot is the process-local read model used by
@@ -351,6 +384,88 @@ func (c *delegateTreeController) ownedStableWorktreeSnapshots(owner *Session) []
 	return rows
 }
 
+// delegateIsAncestorLocked reports whether ancestorID is receiverID or any of
+// its transitive parents in the delegate tree. Callers must hold c.mu. The
+// walk is cycle-guarded: a corrupt journal with a parent loop cannot hang the
+// controller mutex (the same property subtreeMembersLocked's fixed-point
+// closure provides downward).
+func (c *delegateTreeController) delegateIsAncestorLocked(ancestorID, receiverID string) bool {
+	if ancestorID == "" || receiverID == "" {
+		return false
+	}
+	visited := make(map[string]struct{})
+	current := c.durable[receiverID]
+	for current != nil {
+		if receiverID == ancestorID {
+			return true
+		}
+		if current.Descriptor.ParentDelegateID == "" {
+			return false
+		}
+		if _, seen := visited[receiverID]; seen {
+			return false
+		}
+		visited[receiverID] = struct{}{}
+		receiverID = current.Descriptor.ParentDelegateID
+		current = c.durable[receiverID]
+	}
+	return false
+}
+
+// subtreeReceiverKeysForDelegate returns the (childSessionID, delegateID)
+// receiver keys for delegateID and every member of the subtree rooted at it —
+// the identities a stop of delegateID leaves with surviving watches. Takes
+// c.mu itself.
+func (c *delegateTreeController) subtreeReceiverKeysForDelegate(delegateID string) map[string]string {
+	if c == nil || delegateID == "" {
+		return nil
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	members := c.subtreeMembersLocked(delegateID)
+	keys := make(map[string]string, len(members))
+	for id, aggregate := range c.durable {
+		if aggregate == nil {
+			continue
+		}
+		if _, member := members[id]; !member {
+			continue
+		}
+		if child := aggregate.Descriptor.ChildSessionID; child != "" {
+			keys[id] = child
+		}
+	}
+	return keys
+}
+
+// watchClearAuthority reports whether the calling session may clear a
+// receiver-keyed watch whose receiver is receiverDelegateID: the receiver must
+// be the session's own delegate or a descendant of it. Clear authority follows
+// receiver direction — a source delegate may NOT clear its ancestor's watch on
+// it, and a sibling may not clear another sibling's. actorSessionID verifies
+// root identity directly: an empty owningDelegateID alone is NOT evidence of
+// being the root (a non-delegate subagent that inherits the controller also
+// has one), so only the session that IS the root runtime gets the root grant.
+func (c *delegateTreeController) watchClearAuthority(actorSessionID, actorDelegateID, receiverDelegateID string) bool {
+	if c == nil || receiverDelegateID == "" {
+		return false
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if actorDelegateID == "" {
+		if actorSessionID != c.rootSessionID {
+			// A non-delegate subagent that inherited the controller: no
+			// receiver-keyed watch authority at all — it is nobody's
+			// ancestor in the delegate tree.
+			return false
+		}
+		// The root session is the ancestor of every delegate it can stop
+		// (authorizeMutationLocked admits only direct children, plus root).
+		return true
+	}
+	return c.delegateIsAncestorLocked(actorDelegateID, receiverDelegateID)
+}
+
 func (c *delegateTreeController) stableWorktreeSnapshotForOwner(owner *Session, delegateID string) (stableDelegateWorktreeSnapshot, error) {
 	if c == nil || owner == nil {
 		return stableDelegateWorktreeSnapshot{}, errDelegateNotControllable
@@ -410,6 +525,45 @@ func (c *delegateTreeController) stableDelegateOwnedBySessionLocked(owner *Sessi
 		return parentID == "" && owner.id == c.rootSessionID && aggregate.Descriptor.OwnerSessionID == c.rootSessionID
 	}
 	return parentID == owner.owningDelegateID
+}
+
+// hasWakePendingDelegateFor reports whether owner has any direct delegate in a
+// non-terminal phase (running/settling/stopping — a report or terminal
+// notification is guaranteed). It is the goal gate's early-exit existence
+// scan: same delegateRowVisibleTo base-row filter as stableDelegateRowsForSession
+// (see that helper for the visibility rule) and the same wake-capable phase
+// set as Session.hasWakePendingDependents, so the hold keys on exactly the
+// delegates the session can see — but without Snapshot()'s full-tree JSON
+// clones and row sort.
+func (c *delegateTreeController) hasWakePendingDelegateFor(owner *Session) bool {
+	if c == nil || owner == nil || owner.delegateController != c {
+		return false
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	for _, aggregate := range c.durable {
+		if aggregate.Phase != delegatestore.PhaseRunning && aggregate.Phase != delegatestore.PhaseSettling && aggregate.Phase != delegatestore.PhaseStopping {
+			continue
+		}
+		if !delegateRowVisibleTo(owner, aggregate.Descriptor.ParentDelegateID, aggregate.Descriptor.OwnerSessionID) {
+			continue
+		}
+		return true
+	}
+	return false
+}
+
+// delegateRowVisibleTo is the base-row visibility filter the session's stable
+// delegate listings are built on: a row is visible to s when it hangs off s's
+// own delegate slot (parentID == s.owningDelegateID) and is either unowned or
+// owned by s. stableDelegateRowsForSession and the goal gate's
+// hasWakePendingDelegateFor both key on it so the hold cannot see a delegate
+// the session's own listings would not show.
+func delegateRowVisibleTo(s *Session, parentID, ownerSessionID string) bool {
+	if parentID != s.owningDelegateID {
+		return false
+	}
+	return ownerSessionID == "" || ownerSessionID == s.id
 }
 
 // closeStableWorktreeResumability atomically revalidates that a direct-owned
@@ -475,6 +629,68 @@ func (c *delegateTreeController) exactLeaseLocked(lease delegateLease) (*delegat
 		return nil, nil, fmt.Errorf("%w: %s generation %d has no exact binding", errDelegateStaleLease, lease.delegateID, lease.generation)
 	}
 	return aggregate, live, nil
+}
+
+type delegateCompletionSnapshot struct {
+	requirement  delegateCompletionRequirement
+	outcome      delegateCompletionOutcome
+	terminalSeen bool
+	fallback     *delegateFinish
+}
+
+func (c *delegateTreeController) completionEvidenceLocked(lease delegateLease) (*delegateGenerationEvidence, error) {
+	_, live, err := c.exactLeaseLocked(lease)
+	if err != nil {
+		return nil, err
+	}
+	if live.binding == nil || live.binding.lease != lease || live.binding.evidence == nil {
+		return nil, fmt.Errorf("%w: %s generation %d has no exact evidence", errDelegateStaleLease, lease.delegateID, lease.generation)
+	}
+	return live.binding.evidence, nil
+}
+
+func (c *delegateTreeController) escalateCompletionRequirement(lease delegateLease) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.escalateCompletionRequirementLocked(lease)
+}
+
+func (c *delegateTreeController) escalateCompletionRequirementLocked(lease delegateLease) error {
+	decision := c.reduceWorkAdmittedIntent(finishIntent{lease: lease})
+	return decision.err
+}
+
+func (c *delegateTreeController) recordAttentionNoAction(lease delegateLease) (bool, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	decision := c.reduceAttentionNoActionIntent(finishIntent{lease: lease})
+	return decision.recorded, decision.err
+}
+
+func (c *delegateTreeController) recordTerminalSeen(lease delegateLease) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	decision := c.reduceTerminalSeenIntent(finishIntent{lease: lease})
+	return decision.err
+}
+
+func (c *delegateTreeController) completionSnapshot(lease delegateLease) (delegateCompletionSnapshot, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	evidence, err := c.completionEvidenceLocked(lease)
+	if err != nil {
+		return delegateCompletionSnapshot{}, err
+	}
+	snapshot := delegateCompletionSnapshot{
+		requirement:  evidence.requirement,
+		outcome:      evidence.outcome,
+		terminalSeen: evidence.terminalSeen,
+	}
+	if evidence.fallback != nil {
+		fallback := cloneDelegateFinish(*evidence.fallback)
+		snapshot.fallback = &fallback
+	}
+	return snapshot, nil
 }
 
 func (c *delegateTreeController) admitLeaseLocked(lease delegateLease, phases ...delegatestore.Phase) (*delegatestore.Aggregate, *delegateLiveState, error) {
@@ -544,6 +760,40 @@ func (c *delegateTreeController) Snapshot() delegateUpdatePlan {
 	return delegateUpdatePlan{rows: rows}
 }
 
+// blockingDelegateIDs returns this session's direct child delegates whose
+// current run has a live inline waiter. The controller owns both pieces of
+// state, so this is the authoritative dependency check: a running delegate
+// without a waiter is background work, while a waiter that outlived its
+// current run is stale.
+func (c *delegateTreeController) blockingDelegateIDs(rootSessionID, parentDelegateID string) []string {
+	if c == nil {
+		return nil
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if rootSessionID == "" {
+		rootSessionID = c.rootSessionID
+	}
+	ids := make([]string, 0)
+	for id, aggregate := range c.durable {
+		if aggregate == nil || aggregate.Descriptor.OwnerSessionID != rootSessionID || aggregate.Descriptor.ParentDelegateID != parentDelegateID || !aggregate.CurrentRunOpen {
+			continue
+		}
+		live := c.live[id]
+		if live == nil || len(live.waiters) == 0 {
+			continue
+		}
+		for generation, waiter := range live.waiters {
+			if waiter != nil && generation == aggregate.Generation && waiter.generation == aggregate.Generation {
+				ids = append(ids, id)
+				break
+			}
+		}
+	}
+	sort.Strings(ids)
+	return ids
+}
+
 func (c *delegateTreeController) emitDelegateUpdate(plan delegateUpdatePlan) {
 	if c == nil {
 		return
@@ -591,8 +841,13 @@ func (c *delegateTreeController) appendResumabilityClosureLocked(delegateID stri
 
 func (c *delegateTreeController) captureDelegateSnapshotLocked(id string) delegateSnapshot {
 	snapshot := captureDelegateSnapshot(c.durable[id])
-	if live := c.live[id]; live != nil && live.activityAt.After(snapshot.latestActivityAt) {
-		snapshot.latestActivityAt = live.activityAt
+	if live := c.live[id]; live != nil {
+		if live.activityAt.After(snapshot.latestActivityAt) {
+			snapshot.latestActivityAt = live.activityAt
+		}
+		if live.productiveActivityAt.After(snapshot.latestProductiveActivityAt) {
+			snapshot.latestProductiveActivityAt = live.productiveActivityAt
+		}
 	}
 	return snapshot
 }
@@ -612,23 +867,25 @@ func captureDelegateSnapshot(aggregate *delegatestore.Aggregate) delegateSnapsho
 		outcome = &value
 	}
 	return delegateSnapshot{
-		id:                 aggregate.DelegateID,
-		parentID:           aggregate.Descriptor.ParentDelegateID,
-		descriptor:         cloneDelegateStartDescriptor(aggregate.Descriptor),
-		generation:         aggregate.Generation,
-		lifecycle:          lifecycle,
-		phase:              aggregate.Phase,
-		currentRunOpen:     aggregate.CurrentRunOpen,
-		runStartedAt:       aggregate.RunStartedAt,
-		resumable:          aggregate.Resumable,
-		needsAttention:     aggregate.NeedsAttention,
-		revision:           aggregate.ProjectionRevision,
-		transcriptRef:      aggregate.Descriptor.TranscriptRef,
-		notResumableReason: aggregate.NotResumableReason,
-		latestActivityAt:   aggregate.LatestActivityAt,
-		pendingStopSeq:     aggregate.PendingStopSeq,
-		lastOutcome:        outcome,
-		latestPacket:       cloneStableTerminalPacket(aggregate.LatestPacket),
+		id:                         aggregate.DelegateID,
+		parentID:                   aggregate.Descriptor.ParentDelegateID,
+		descriptor:                 cloneDelegateStartDescriptor(aggregate.Descriptor),
+		generation:                 aggregate.Generation,
+		lifecycle:                  lifecycle,
+		phase:                      aggregate.Phase,
+		currentRunOpen:             aggregate.CurrentRunOpen,
+		runStartedAt:               aggregate.RunStartedAt,
+		resumable:                  aggregate.Resumable,
+		needsAttention:             aggregate.NeedsAttention,
+		revision:                   aggregate.ProjectionRevision,
+		transcriptRef:              aggregate.Descriptor.TranscriptRef,
+		notResumableReason:         aggregate.NotResumableReason,
+		latestActivityAt:           aggregate.LatestActivityAt,
+		latestProductiveActivityAt: aggregate.LatestActivityAt,
+		pendingStopSeq:             aggregate.PendingStopSeq,
+		pendingStopAt:              aggregate.PendingStopAt,
+		lastOutcome:                outcome,
+		latestPacket:               cloneStableTerminalPacket(aggregate.LatestPacket),
 	}
 }
 

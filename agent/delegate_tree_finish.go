@@ -3,8 +3,6 @@ package agent
 import (
 	"context"
 	"encoding/json"
-	"errors"
-	"fmt"
 	"strconv"
 	"strings"
 	"time"
@@ -30,10 +28,12 @@ const (
 )
 
 type delegateSettlementClaim struct {
-	token uint64
-	lease delegateLease
-	mode  delegateSettlementMode
-	ready <-chan struct{}
+	token         uint64
+	lease         delegateLease
+	mode          delegateSettlementMode
+	ready         <-chan struct{}
+	runErrorKnown bool
+	runErr        error
 }
 
 // SupervisionBoundary linearizes pending-steer and stop precedence before
@@ -41,20 +41,16 @@ type delegateSettlementClaim struct {
 func (c *delegateTreeController) SupervisionBoundary(lease delegateLease, mode delegateSettlementMode) (delegateSupervisionBoundary, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	aggregate, live, err := c.exactLeaseLocked(lease)
-	if err != nil {
-		return delegateSupervisionSuppress, err
-	}
-	if c.closing || aggregate.Phase == delegatestore.PhaseStopping || aggregate.PendingStopSeq != 0 || live.recoveryRequired {
-		return delegateSupervisionSuppress, nil
-	}
-	if aggregate.Phase != delegatestore.PhaseRunning || !aggregate.Resumable || live.binding == nil || !live.binding.ready {
-		return delegateSupervisionSuppress, errDelegateTargetBusy
-	}
-	if len(live.pendingSteers) != 0 && mode == delegateSettlementOrdinary {
-		return delegateSupervisionContinue, nil
-	}
-	return delegateSupervisionProceed, nil
+	decision := c.reduceSupervisionBoundaryIntent(finishIntent{lease: lease, mode: mode})
+	return decision.boundary, decision.err
+}
+
+// supervisionSuppressedLocked reports whether ordinary supervision must be suppressed
+// (controller closing, generation stopping or stop-pending, or recovery required).
+// The not-running/not-ready path (errDelegateTargetBusy) is not part of this predicate.
+// Caller holds c.mu.
+func (c *delegateTreeController) supervisionSuppressedLocked(aggregate *delegatestore.Aggregate, live *delegateLiveState) bool {
+	return c.closing || aggregate.Phase == delegatestore.PhaseStopping || aggregate.PendingStopSeq != 0 || live.recoveryRequired
 }
 
 // BeginSettlement makes the final pending-steer decision and fences new work
@@ -69,130 +65,62 @@ func (c *delegateTreeController) BeginSettlement(lease delegateLease) (*delegate
 func (c *delegateTreeController) BeginFinalization(lease delegateLease, mode delegateSettlementMode) (*delegateSettlementClaim, bool, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	var live *delegateLiveState
-	switch mode {
-	case delegateSettlementOrdinary:
-		_, admitted, err := c.admitLeaseLocked(lease, delegatestore.PhaseRunning)
-		if err != nil {
-			exactAggregate, exact, exactErr := c.exactLeaseLocked(lease)
-			if exactErr != nil {
-				return nil, false, exactErr
-			}
-			if c.stop == nil {
-				return nil, false, err
-			}
-			_, active := c.stop.active[lease]
-			_, covered := c.stop.members[lease.delegateID]
-			if exactAggregate.Phase != delegatestore.PhaseStopping || exactAggregate.PendingStopSeq != c.stop.requestSeq ||
-				!active || !covered || exact.recoveryRequired || exact.binding == nil || !exact.binding.ready {
-				return nil, false, err
-			}
-			admitted = exact
-			mode = delegateSettlementTerminal
-		}
-		live = admitted
-		if mode == delegateSettlementOrdinary && (len(live.pendingSteers) != 0 || c.hasSteeringClaimLocked(lease)) {
-			return nil, true, nil
-		}
-	case delegateSettlementTerminal:
-		aggregate, exact, err := c.exactLeaseLocked(lease)
-		if err != nil {
-			return nil, false, err
-		}
-		if aggregate.Phase != delegatestore.PhaseRunning && aggregate.Phase != delegatestore.PhaseStopping {
-			return nil, false, errDelegateTargetBusy
-		}
-		if exact.recoveryRequired || exact.binding == nil || !exact.binding.ready {
-			return nil, false, errDelegateTargetBusy
-		}
-		live = exact
-	default:
-		return nil, false, errDelegateTargetBusy
-	}
-	if c.hasSettlementClaimLocked(lease) {
-		return nil, false, errDelegateTargetBusy
-	}
-	c.nextToken++
-	var ready <-chan struct{}
-	if live.quietClaim != nil {
-		ready = live.quietClaim.done
-	} else {
-		closed := make(chan struct{})
-		close(closed)
-		ready = closed
-	}
-	claim := &delegateSettlementClaim{token: c.nextToken, lease: lease, mode: mode, ready: ready}
-	c.settlementClaims[claim.token] = claim
-	if c.stop != nil {
-		if _, active := c.stop.active[lease]; active {
-			if _, covered := c.stop.members[lease.delegateID]; covered {
-				c.stop.settlementClaims[claim.token] = struct{}{}
-				c.signalStopProgressLocked()
-			}
-		}
-	}
-	c.evidenceVersion++
-	return claim, false, nil
+	decision := c.reduceBeginFinalizationIntent(finishIntent{lease: lease, mode: mode})
+	return decision.claim, decision.continued, decision.err
+}
+
+// BeginRunFinalization binds the sampled run error to the exact settlement
+// claim. Packetless no-action authority requires this fact to be known and nil;
+// generic controller callers cannot obtain that authority through a claim whose
+// run result was not supplied.
+func (c *delegateTreeController) BeginRunFinalization(lease delegateLease, mode delegateSettlementMode, runErr error) (*delegateSettlementClaim, bool, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	decision := c.reduceBeginFinalizationIntent(finishIntent{lease: lease, mode: mode, runErrorKnown: true, runErr: runErr})
+	return decision.claim, decision.continued, decision.err
 }
 
 func (c *delegateTreeController) CompleteSettlement(claim *delegateSettlementClaim, supplied *delegatestore.TerminalPacket) (delegateMutationPlans, error) {
 	c.mu.Lock()
-	defer c.mu.Unlock()
-	if claim == nil || claim.mode != delegateSettlementOrdinary || c.settlementClaims[claim.token] != claim {
-		return delegateMutationPlans{}, errDelegateStaleLease
+	plans, cancel, err := c.executeFinishDecisionLocked(c.reduceCompleteSettlementIntent(finishIntent{claim: claim, packet: supplied}))
+	c.mu.Unlock()
+	if cancel != nil {
+		cancel()
 	}
-	if err := c.finalizationReadyLocked(claim); err != nil {
-		return delegateMutationPlans{}, err
-	}
-	aggregate, live, err := c.admitLeaseLocked(claim.lease, delegatestore.PhaseRunning)
-	if err != nil {
-		return delegateMutationPlans{}, err
-	}
-	if aggregate.Trigger == delegatestore.TriggerAttention && len(live.attentionIDs) != 0 {
-		return delegateMutationPlans{}, errDelegateTargetBusy
-	}
-	packet := delegateMissingTerminalPacket()
-	if supplied != nil {
-		packet = cloneDelegateTerminalPacket(*supplied)
-	}
-	if _, err := c.appendLocked(delegatestore.Event{
-		Kind:       delegatestore.EventDelegateTerminalPrepared,
-		DelegateID: claim.lease.delegateID,
-		TerminalPrepared: &delegatestore.TerminalPrepared{
-			Generation: claim.lease.generation,
-			Packet:     packet,
-		},
-	}); err != nil {
-		if live := c.live[claim.lease.delegateID]; live != nil && live.binding != nil && live.binding.lease == claim.lease {
-			live.recoveryRequired = true
-			live.finalizationRecoveryRequired = true
-			live.recoveryRunnerPending = true
-		}
-		return delegateMutationPlans{}, err
-	}
-	c.releaseSettlementClaimLocked(claim.token)
-	c.evidenceVersion++
-	plan := c.capturedPlanLocked(claim.lease.delegateID)
-	return delegateMutationPlans{updates: []delegateUpdatePlan{plan}}, nil
+	return plans, err
 }
 
 func (c *delegateTreeController) AttentionResolutionsForFinalization(claim *delegateSettlementClaim) (delegateMutationPlans, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	if claim == nil || c.settlementClaims[claim.token] != claim {
-		return delegateMutationPlans{}, errDelegateStaleLease
-	}
-	if err := c.finalizationReadyLocked(claim); err != nil {
-		return delegateMutationPlans{}, err
-	}
-	aggregate, live, err := c.exactLeaseLocked(claim.lease)
-	if err != nil {
-		return delegateMutationPlans{}, err
+	decision := c.reduceAttentionResolutionsIntent(finishIntent{claim: claim})
+	if decision.err != nil {
+		return delegateMutationPlans{}, decision.err
 	}
 	return delegateMutationPlans{
-		attention:             c.attentionResolutionPlansLocked(claim.lease, aggregate, live),
+		attention:             decision.attentionPlans,
 		attentionFinalization: claim,
 	}, nil
+}
+
+// prepareNoAction binds the run's ordinary terminal fallback to the exact
+// eligible attention claim before process-local terminal state is published.
+// The claim stays live so only FinishNoAction can consume this authority.
+func (c *delegateTreeController) prepareNoAction(claim *delegateSettlementClaim, fallback delegateFinish) (bool, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	decision := c.reducePrepareNoActionIntent(finishIntent{claim: claim, finish: fallback})
+	return decision.recorded, decision.err
+}
+
+func (c *delegateTreeController) noActionBaseEligibleLocked(aggregate *delegatestore.Aggregate, live *delegateLiveState) bool {
+	return aggregate.Trigger == delegatestore.TriggerAttention && aggregate.PreparedTerminal == nil &&
+		!live.recoveryRequired && live.binding.ready && len(live.attentionIDs) == 0
+}
+
+func noActionEvidenceEligible(evidence *delegateGenerationEvidence) bool {
+	return evidence != nil && evidence.requirement == delegateCompletionAttentionOnly &&
+		evidence.outcome == delegateCompletionOutcomeAttentionNoAction && !evidence.terminalSeen
 }
 
 // RequireFinalizationRecovery latches an exact finalization whose external
@@ -201,27 +129,8 @@ func (c *delegateTreeController) AttentionResolutionsForFinalization(claim *dele
 func (c *delegateTreeController) RequireFinalizationRecovery(claim *delegateSettlementClaim) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	if claim == nil || c.settlementClaims[claim.token] != claim {
-		return errDelegateStaleLease
-	}
-	_, live, err := c.exactLeaseLocked(claim.lease)
-	if err != nil {
-		return err
-	}
-	if !live.recoveryRequired {
-		live.recoveryRequired = true
-	}
-	live.finalizationRecoveryRequired = true
-	live.recoveryRunnerPending = true
-	c.evidenceVersion++
-	if c.stop != nil {
-		if _, active := c.stop.active[claim.lease]; active {
-			if _, covered := c.stop.members[claim.lease.delegateID]; covered {
-				c.signalStopProgressLocked()
-			}
-		}
-	}
-	return nil
+	decision := c.reduceRequireFinalizationRecoveryIntent(finishIntent{claim: claim})
+	return decision.err
 }
 
 // ReportFinalizationQuiesced releases only the process-local runner fence for
@@ -230,29 +139,8 @@ func (c *delegateTreeController) RequireFinalizationRecovery(claim *delegateSett
 func (c *delegateTreeController) ReportFinalizationQuiesced(lease delegateLease, runtime *Session) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	_, live, err := c.exactLeaseLocked(lease)
-	if err != nil {
-		if errors.Is(err, errDelegateStaleLease) {
-			return nil
-		}
-		return err
-	}
-	if live.binding == nil || live.binding.runtime != runtime {
-		return errDelegateStaleLease
-	}
-	if !live.recoveryRequired || !live.recoveryRunnerPending {
-		return nil
-	}
-	live.recoveryRunnerPending = false
-	c.evidenceVersion++
-	if c.stop != nil {
-		if _, active := c.stop.active[lease]; active {
-			if _, covered := c.stop.members[lease.delegateID]; covered {
-				c.signalStopProgressLocked()
-			}
-		}
-	}
-	return nil
+	decision := c.reduceReportQuiescedIntent(finishIntent{lease: lease, runtime: runtime, stalePolicy: finishStaleSwallow})
+	return decision.err
 }
 
 func (c *delegateTreeController) attentionResolutionPlansLocked(lease delegateLease, aggregate *delegatestore.Aggregate, live *delegateLiveState) []delegateAttentionCleanupPlan {
@@ -342,140 +230,51 @@ func (c *delegateTreeController) hasSteeringClaimLocked(lease delegateLease) boo
 
 func (c *delegateTreeController) FinishGeneration(lease delegateLease, finish delegateFinish) (delegateMutationPlans, error) {
 	c.mu.Lock()
-	var cancel context.CancelFunc
-	defer func() {
+	plans, cancel, err := c.executeFinishDecisionLocked(c.reduceGenerationFinishIntent(finishIntent{
+		lease:       lease,
+		finish:      finish,
+		stalePolicy: finishStaleSuppress,
+	}))
+	c.mu.Unlock()
+	if cancel != nil {
+		cancel()
+	}
+	return plans, err
+}
+
+// FinishNoAction is the sole authority for a packetless completed attention
+// generation. Its exact ordinary claim and retained fallback were fenced by
+// prepareNoAction before process-local terminal state publication.
+func (c *delegateTreeController) FinishNoAction(claim *delegateSettlementClaim) (delegateMutationPlans, error) {
+	c.mu.Lock()
+	noAction := c.reduceNoActionFinishIntent(finishIntent{claim: claim})
+	if noAction.err != nil {
 		c.mu.Unlock()
-		if cancel != nil {
-			cancel()
-		}
-	}()
-	aggregate, live, err := c.exactLeaseLocked(lease)
-	if err != nil {
-		if errors.Is(err, errDelegateStaleLease) {
-			return delegateMutationPlans{}, nil
-		}
-		return delegateMutationPlans{}, err
+		return delegateMutationPlans{}, noAction.err
 	}
-	if live.finalizationRecoveryRequired {
-		return delegateMutationPlans{}, errDelegateTargetBusy
+	plans, cancel, err := c.executeFinishDecisionLocked(c.reduceGenerationFinishIntent(finishIntent{
+		lease:              claim.lease,
+		finish:             noAction.finish,
+		authorizedNoAction: true,
+	}))
+	c.mu.Unlock()
+	if cancel != nil {
+		cancel()
 	}
-	if aggregate.Phase == delegatestore.PhaseRunning || aggregate.Phase == delegatestore.PhaseStopping {
-		if err := c.finalizationReadyForLeaseLocked(lease, live); err != nil {
-			return delegateMutationPlans{}, err
-		}
-	}
-	if aggregate.Phase != delegatestore.PhaseStopping && aggregate.Trigger == delegatestore.TriggerAttention && len(live.attentionIDs) != 0 {
-		return delegateMutationPlans{}, errDelegateTargetBusy
-	}
+	return plans, err
+}
 
-	endedAt := finish.endedAt
-	if endedAt.IsZero() {
-		endedAt = c.now()
+func cloneDelegateFinish(finish delegateFinish) delegateFinish {
+	cloned := finish
+	if finish.exhaustionResumable != nil {
+		resumable := *finish.exhaustionResumable
+		cloned.exhaustionResumable = &resumable
 	}
-	outcome := finish.outcome
-	reason := finish.reason
-	disposition := finish.disposition
-	deliveryID := ""
-	var events []delegatestore.Event
-
-	switch aggregate.Phase {
-	case delegatestore.PhaseSettling:
-		if aggregate.PreparedTerminal == nil {
-			return delegateMutationPlans{}, fmt.Errorf("delegate %q settling without prepared terminal", lease.delegateID)
-		}
-		preparedFinish := delegatePreparedFinish(*aggregate.PreparedTerminal)
-		outcome, disposition, reason = preparedFinish.outcome, preparedFinish.disposition, preparedFinish.reason
-		if aggregate.PreparedTerminal.Kind == delegatestore.PacketTerminalError &&
-			!delegateIsMissingTerminalPacket(*aggregate.PreparedTerminal) && finish.outcome != "" && finish.outcome != delegatestore.OutcomeCompleted {
-			outcome = finish.outcome
-			disposition = delegatestore.DispositionTerminalError
-			reason = finish.reason
-		} else if preparedFinish.outcome == delegatestore.OutcomeExhausted {
-			finish = preparedFinish
-		}
-		deliveryID = delegateDeliveryID(lease.delegateID, lease.generation)
-		finished := delegateRunFinishedEvent(lease, outcome, disposition, reason, endedAt, deliveryID, nil)
-		events = []delegatestore.Event{finished}
-
-	case delegatestore.PhaseStopping:
-		// An externally cancelled generation still reports whatever evidence its
-		// own run loop already gathered (task, worktree, scratch path — see
-		// delegateTerminalPacketMetadata) via finish.packet; only fall back to the
-		// bare synthetic packet when the run loop produced none at all (kata
-		// tpb0). The fold layer (applyRunFinished) still has final say: it
-		// replaces this with the bare packet when the owner is outside the
-		// stopped subtree or the packet isn't a terminal-error kind.
-		packet := delegateStoppedTerminalPacket()
-		if finish.packet != nil {
-			packet = cloneDelegateTerminalPacket(*finish.packet)
-		}
-		outcome = delegatestore.OutcomeStopped
-		disposition = delegatestore.DispositionTerminalError
-		reason = "stopped_by_parent"
-		deliveryID = delegateDeliveryID(lease.delegateID, lease.generation)
-		events = []delegatestore.Event{delegateRunFinishedEvent(lease, outcome, disposition, reason, endedAt, deliveryID, &packet)}
-
-	case delegatestore.PhaseRunning:
-		if disposition == delegatestore.DispositionCompletedNoAction {
-			if outcome == "" {
-				outcome = delegatestore.OutcomeCompleted
-			}
-			events = []delegatestore.Event{delegateRunFinishedEvent(lease, outcome, disposition, reason, endedAt, "", nil)}
-			break
-		}
-		packet := delegateTerminalErrorPacket(reason)
-		if finish.packet != nil {
-			packet = cloneDelegateTerminalPacket(*finish.packet)
-		}
-		if outcome == "" {
-			outcome = delegatestore.OutcomeFailed
-		}
-		if outcome == delegatestore.OutcomeCompleted && finish.packet == nil {
-			outcome = delegatestore.OutcomeFailed
-			reason = "missing_terminal"
-			packet = delegateMissingTerminalPacket()
-		}
-		if disposition == "" {
-			disposition = delegatePacketDisposition(packet)
-		}
-		deliveryID = delegateDeliveryID(lease.delegateID, lease.generation)
-		events = []delegatestore.Event{
-			{
-				Kind:       delegatestore.EventDelegateTerminalPrepared,
-				DelegateID: lease.delegateID,
-				TerminalPrepared: &delegatestore.TerminalPrepared{
-					Generation: lease.generation,
-					Packet:     packet,
-				},
-			},
-			delegateRunFinishedEvent(lease, outcome, disposition, reason, endedAt, deliveryID, nil),
-		}
-
-	default:
-		return delegateMutationPlans{}, errDelegateTargetBusy
+	if finish.packet != nil {
+		packet := cloneDelegateTerminalPacket(*finish.packet)
+		cloned.packet = &packet
 	}
-	events = delegateFinishMetadataEvents(events, lease, finish, outcome, reason)
-
-	closure := outcome == delegatestore.OutcomeExhausted && finish.exhaustionResumable != nil && !*finish.exhaustionResumable
-	var closurePlan delegateUpdatePlan
-	var appendErr error
-	if closure {
-		closurePlan, appendErr = c.appendResumabilityClosureLocked(lease.delegateID, events...)
-	} else {
-		_, appendErr = c.appendLocked(events...)
-	}
-	if appendErr != nil {
-		live.recoveryRequired = true
-		live.finalizationRecoveryRequired = true
-		live.recoveryRunnerPending = true
-		return delegateMutationPlans{}, appendErr
-	}
-	plans, generationCancel := c.generationFinishedPlansLocked(lease, deliveryID)
-	if closure {
-		plans.updates[0] = closurePlan
-	}
-	cancel = generationCancel
-	return plans, nil
+	return cloned
 }
 
 func delegateFinishMetadataEvents(events []delegatestore.Event, lease delegateLease, finish delegateFinish, outcome delegatestore.OutcomeStatus, reason string) []delegatestore.Event {

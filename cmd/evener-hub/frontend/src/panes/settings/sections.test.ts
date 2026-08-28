@@ -22,9 +22,9 @@ test("every section id is unique", () => {
   expect(new Set(ids).size).toBe(ids.length);
 });
 
-test("the 5 ungrouped sections are General/Theme/Transcript/Display/Notifications, in this order, first", () => {
+test("the 5 ungrouped sections are General/Theme/Transcript display/Display/Notifications, in this order, first", () => {
   const ungrouped = SETTINGS_SECTIONS.filter((s) => s.cluster === undefined);
-  expect(ungrouped.map((s) => s.label)).toEqual(["General", "Theme", "Transcript", "Display", "Notifications"]);
+  expect(ungrouped.map((s) => s.label)).toEqual(["General", "Theme", "Transcript display", "Display", "Notifications"]);
   expect(SETTINGS_SECTIONS.slice(0, 5)).toEqual(ungrouped);
 });
 
@@ -79,6 +79,7 @@ test("DEFAULT_SECTION_ID names a real, ungrouped section", () => {
 
 test("settingsSectionLabel resolves a known id to its label", () => {
   expect(settingsSectionLabel("theme")).toBe("Theme");
+  expect(settingsSectionLabel("transcript")).toBe("Transcript display");
   expect(settingsSectionLabel("credentials")).toBe("Providers & credentials");
 });
 

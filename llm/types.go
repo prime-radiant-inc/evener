@@ -351,7 +351,6 @@ type Request struct {
 
 	HistoryMode                    HistoryMode           `json:"-"`
 	Continuation                   *ContinuationMetadata `json:"-"`
-	FullHistoryFallbackMessages    []Message             `json:"-"`
 	InputTokensEstimate            int                   `json:"-"`
 	FullHistoryInputTokensEstimate int                   `json:"-"`
 	ContinuationDiagnostic         string                `json:"-"`
@@ -523,7 +522,7 @@ type RateLimitInfo struct {
 // AdapterTimeout defines granular timeout configuration for adapter-level HTTP operations.
 type AdapterTimeout struct {
 	Connect    time.Duration `json:"connect"`     // time to establish the network connection (default: 10s)
-	Request    time.Duration `json:"request"`     // whole non-stream call, or streaming response-header wait (default: 120s)
+	Request    time.Duration `json:"request"`     // whole non-stream call or streaming HTTP attempt, including body lifetime (default: 120s)
 	StreamRead time.Duration `json:"stream_read"` // max time between consecutive stream events (default: 30s)
 }
 
@@ -600,14 +599,17 @@ func (req Request) Validate() error {
 	return nil
 }
 
+// MinimumThinkingBudgetTokens is the smallest thinking budget Anthropic
+// documents accepting; a lower value is wire-rejectable on budget-shaped
+// rows (#714).
+const MinimumThinkingBudgetTokens = 1024
+
 // ReasoningBudget converts a reasoning effort level to a token budget.
 // Returns 0 for unrecognized values.
 func ReasoningBudget(effort string) int {
 	switch strings.ToLower(strings.TrimSpace(effort)) {
-	case "minimal":
-		return 512
-	case "low":
-		return 1024
+	case "minimal", "low":
+		return MinimumThinkingBudgetTokens
 	case "medium":
 		return 8192
 	case "high":
@@ -645,16 +647,17 @@ func ReasoningEffortVocabulary() []string {
 
 // ValidateReasoningEffort reports whether effort is a value NewSession, a
 // delegate dispatch, or a plugin-agent task config may safely accept. The
-// empty string (unset) is always valid. Any of the six known levels is valid,
-// case-insensitive and trimmed. Anything else — including the CLI's
-// disable-alias sugar (none/off/0/etc, already normalized to "" by
-// NormalizeReasoningEffort before reaching this function) — is rejected with
-// an error naming the bad value and the full vocabulary, so a typo or a
-// stale/historical level (e.g. "ultra") fails loudly at config load instead
-// of silently reaching a provider on a session's first turn.
+// empty string (unset) and ReasoningEffortNone (explicit off) are always
+// valid. Any of the six known levels is valid, case-insensitive and trimmed.
+// Anything else — including the CLI's other disable-alias sugar (off/0/etc,
+// already normalized to "none" by NormalizeReasoningEffort before reaching
+// this function) — is rejected with an error naming the bad value and the
+// full vocabulary, so a typo or a stale/historical level (e.g. "ultra") fails
+// loudly at config load instead of silently reaching a provider on a
+// session's first turn.
 func ValidateReasoningEffort(effort string) error {
 	v := strings.ToLower(strings.TrimSpace(effort))
-	if v == "" {
+	if v == "" || v == ReasoningEffortNone {
 		return nil
 	}
 	if _, ok := effortRank[v]; ok {
@@ -663,16 +666,21 @@ func ValidateReasoningEffort(effort string) error {
 	return fmt.Errorf("invalid reasoning_effort %q (expected one of: %s)", effort, strings.Join(ReasoningEffortVocabulary(), ", "))
 }
 
+// ReasoningEffortNone is the canonical configured value for "the user turned
+// thinking off". It is distinct from "" (nothing configured), which lets the
+// session apply a default effort without overriding an explicit off.
+const ReasoningEffortNone = "none"
+
 // NormalizeReasoningEffort lowercases and trims a reasoning-effort value and maps
-// the "disable" aliases (none/null/off/false/0) to "" (no effort). It does not
-// validate the level — unknown non-empty values pass through lowercased. This is
-// the single place the disable-aliases are defined, shared by the CLI resolver
-// and the runtime setter so they cannot drift.
+// the "disable" aliases (none/null/off/false/0) to ReasoningEffortNone. It does
+// not validate the level — unknown non-empty values pass through lowercased.
+// This is the single place the disable-aliases are defined, shared by the CLI
+// resolver and the runtime setter so they cannot drift.
 func NormalizeReasoningEffort(s string) string {
 	v := strings.ToLower(strings.TrimSpace(s))
 	switch v {
-	case "none", "null", "off", "false", "0":
-		return ""
+	case ReasoningEffortNone, "null", "off", "false", "0":
+		return ReasoningEffortNone
 	default:
 		return v
 	}
@@ -698,7 +706,7 @@ func ReasoningEffortRank(effort string) int {
 // supports minimal/low/medium/high).
 func ClampReasoningEffort(requested string, supportedLevels []string) string {
 	req := strings.ToLower(strings.TrimSpace(requested))
-	if req == "" || req == "none" || len(supportedLevels) == 0 {
+	if req == "" || req == ReasoningEffortNone || len(supportedLevels) == 0 {
 		return requested
 	}
 	reqRank, ok := effortRank[req]

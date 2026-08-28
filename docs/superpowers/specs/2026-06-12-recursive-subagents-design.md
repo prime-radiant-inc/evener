@@ -1,5 +1,7 @@
 # Recursive Subagents Design (recursion-minimal, drive-down)
 
+
+> **Current contract / partial supersession (2026-08-26, Task31/PR480).** Any delegate `JobRecord`, public delegate `job_id`, delegate `job.notification`, or `job:` transcript claim in this historical design is not shipped and is superseded. Delegates use stable `dlg_...` resources with private run generations; lifecycle attention is `<delegate-notification>`; delegate conversation/result history uses session transcript refs. `job_...`, `job.notification`, and `job:` output remain shell-only. Non-delegate design material below remains applicable unless a newer evergreen contract says otherwise.
 Date: 2026-06-12 (v3 — §3 rebuilt as drive-down per Jesse's challenge + the second 23-finding /par round; v2's wake-driver §3 and v1's visibility chains are in git history `7a65b6d8` / `b85f9850`)
 Status: awaiting Jesse's review. Implementation gated on the job-control e2e matrix going green.
 Inputs: the Track K dossier; the mailbox design (`docs/superpowers/specs/2026-06-11-job-control-watch-mailbox-design.md`, §3 invariant assumed everywhere); `docs/job-control.md`; two /par rounds (28 + 23 findings — reviewer line citations preserved below where load-bearing).

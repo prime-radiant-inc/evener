@@ -2,6 +2,7 @@ package hub
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"os"
@@ -12,12 +13,15 @@ import (
 	"time"
 
 	"primeradiant.com/evener/agent"
+	"primeradiant.com/evener/agent/plugin"
 	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/agent/transcript"
 	"primeradiant.com/evener/appwire"
 	"primeradiant.com/evener/cmd/evener-hub/internal/hubcore"
 	"primeradiant.com/evener/internal/apptranscript"
+	"primeradiant.com/evener/internal/credentials"
 	"primeradiant.com/evener/llm"
+	"primeradiant.com/evener/llm/registry"
 	"primeradiant.com/evener/rendezvous"
 )
 
@@ -75,6 +79,369 @@ func TestAppThreadReadColdDelegatesMatchReconnectedDetailedStatus(t *testing.T) 
 	}
 }
 
+func TestPastThreadReadCarriesSkillCatalog(t *testing.T) {
+	cfg, entry := seedPastSessionWithSkillFixtures(t)
+	thread, ok, err := pastThreadForRead(context.Background(), cfg, appwire.ThreadReadParams{Ref: "local:" + entry.Meta.ID})
+	if err != nil || !ok {
+		t.Fatalf("pastThreadForRead = %v, %v", err, ok)
+	}
+	if thread.Evener.Diagnostics == nil {
+		t.Fatal("past thread has no diagnostics")
+	}
+	for _, want := range []string{"doctoring-evener", "project-skill", "extra-skill", "fixture-plugin:plugin-skill"} {
+		if !hasSkill(thread.Evener.Diagnostics.Skills, want) {
+			t.Fatalf("skills = %+v, missing %q", thread.Evener.Diagnostics.Skills, want)
+		}
+	}
+	wantNames := []string{"doctoring-evener", "extra-skill", "fixture-plugin:plugin-skill", "project-skill"}
+	if len(thread.Evener.Diagnostics.Skills) != len(wantNames) {
+		t.Fatalf("skill catalog = %+v, want exactly %d entries", thread.Evener.Diagnostics.Skills, len(wantNames))
+	}
+	for i, want := range wantNames {
+		if got := thread.Evener.Diagnostics.Skills[i].Name; got != want {
+			t.Fatalf("skill catalog order = %+v, want %v", thread.Evener.Diagnostics.Skills, wantNames)
+		}
+	}
+	descriptions := map[string]string{
+		"extra-skill":                 "extra description",
+		"fixture-plugin:plugin-skill": "plugin description",
+		"project-skill":               "project description",
+		"doctoring-evener":            "extra override",
+	}
+	for _, got := range thread.Evener.Diagnostics.Skills {
+		if want, ok := descriptions[got.Name]; ok && got.Description != want {
+			t.Fatalf("%s description = %q, want %q", got.Name, got.Description, want)
+		}
+	}
+	for _, got := range thread.Evener.Diagnostics.Skills {
+		if strings.Contains(got.Name, string(filepath.Separator)) {
+			t.Fatalf("skill metadata contains a path: %+v", got)
+		}
+	}
+}
+
+func TestPastThreadReadResponseCarriesSkillCatalog(t *testing.T) {
+	cfg, entry := seedPastSessionWithSkillFixtures(t)
+	response, ok, err := pastThreadReadResponse(context.Background(), cfg, appwire.ThreadReadParams{
+		Ref: "local:" + entry.Meta.ID, IncludeTurns: true, TurnLimit: 1,
+	})
+	if err != nil || !ok {
+		t.Fatalf("pastThreadReadResponse = %v, %v", err, ok)
+	}
+	if response.Thread.Evener.Diagnostics == nil || !hasSkill(response.Thread.Evener.Diagnostics.Skills, "fixture-plugin:plugin-skill") {
+		t.Fatalf("bounded response diagnostics = %+v", response.Thread.Evener.Diagnostics)
+	}
+}
+
+func TestPastThreadSkillCatalogLayerPrecedence(t *testing.T) {
+	t.Run("project overrides embedded", func(t *testing.T) {
+		workingDir := t.TempDir()
+		writeSkillFixture(t, filepath.Join(workingDir, "skills"), "doctoring-evener", "project wins")
+		got := discoverPastThreadSkills(hubcore.PastEntry{Meta: schema.SessionMeta{EnvInfo: schema.EnvironmentInfo{WorkingDir: workingDir}}})
+		if description := skillDescription(got, "doctoring-evener"); description != "project wins" {
+			t.Fatalf("project-over-embedded description = %q", description)
+		}
+	})
+
+	t.Run("skills dirs override project", func(t *testing.T) {
+		workingDir, extraDir := t.TempDir(), t.TempDir()
+		writeSkillFixture(t, filepath.Join(workingDir, "skills"), "layered-skill", "project value")
+		writeSkillFixture(t, extraDir, "layered-skill", "extra value")
+		got := discoverPastThreadSkills(hubcore.PastEntry{Meta: schema.SessionMeta{
+			EnvInfo: schema.EnvironmentInfo{WorkingDir: workingDir}, Config: schema.ConfigSnapshot{SkillsDirs: []string{extraDir}},
+		}})
+		if description := skillDescription(got, "layered-skill"); description != "extra value" {
+			t.Fatalf("SkillsDirs-over-project description = %q", description)
+		}
+	})
+
+	t.Run("plugin metadata is canonical", func(t *testing.T) {
+		pluginDir := writeThreadSkillPlugin(t, t.TempDir(), "metadata-plugin", "plugin-skill", "plugin value")
+		got := discoverPastThreadSkills(hubcore.PastEntry{Meta: schema.SessionMeta{Config: schema.ConfigSnapshot{PluginDirs: []string{pluginDir}}}})
+		if description := skillDescription(got, "metadata-plugin:plugin-skill"); description != "plugin value" {
+			t.Fatalf("plugin description = %q", description)
+		}
+	})
+}
+
+func TestPastThreadSkillCatalogIncludesAutomaticUserSkills(t *testing.T) {
+	xdg := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", xdg)
+	workingDir := t.TempDir()
+	writeSkillFixture(t, filepath.Join(xdg, "evener", "skills"), "cold-user-skill", "user description")
+	writeSkillFixture(t, filepath.Join(xdg, "evener", "skills"), "doctoring-evener", "user override")
+
+	got := discoverPastThreadSkills(hubcore.PastEntry{Meta: schema.SessionMeta{
+		EnvInfo: schema.EnvironmentInfo{WorkingDir: workingDir},
+	}})
+	if description := skillDescription(got, "cold-user-skill"); description != "user description" {
+		t.Fatalf("automatic user skill description = %q, want %q", description, "user description")
+	}
+	if description := skillDescription(got, "doctoring-evener"); description != "user override" {
+		t.Fatalf("automatic user override description = %q, want %q", description, "user override")
+	}
+}
+
+func TestPastThreadSkillCatalogUsesFirstDuplicatePlugin(t *testing.T) {
+	root := t.TempDir()
+	first := writeThreadSkillPlugin(t, root, "duplicate-plugin", "same-skill", "first value")
+	second := writeThreadSkillPlugin(t, root, "duplicate-plugin", "same-skill", "second value")
+	got := discoverPastThreadSkills(hubcore.PastEntry{Meta: schema.SessionMeta{Config: schema.ConfigSnapshot{PluginDirs: []string{first, second}}}})
+	if description := skillDescription(got, "duplicate-plugin:same-skill"); description != "first value" {
+		t.Fatalf("duplicate plugin description = %q, want first plugin value", description)
+	}
+}
+
+func TestPastThreadSkillCatalogUsesFirstManifestDuplicatePlugin(t *testing.T) {
+	root := t.TempDir()
+	first := writeThreadSkillPlugin(t, root, "successful-duplicate", "same-skill", "broken first")
+	writeSkillFile(t, filepath.Join(first, "commands", "broken.md"), "---\ndescription: [\n---\nbody")
+	writeSkillFile(t, filepath.Join(first, "agents", "broken.md"), "---\ndescription: [\n---\nbody")
+	writeSkillFile(t, filepath.Join(first, "hooks", "hooks.json"), "{not json")
+	second := writeThreadSkillPlugin(t, root, "successful-duplicate", "same-skill", "valid later")
+	if _, err := plugin.Load(first); err == nil {
+		t.Fatal("broken first duplicate unexpectedly loaded")
+	}
+	if _, err := plugin.Load(second); err != nil {
+		t.Fatalf("valid later duplicate failed to load: %v", err)
+	}
+	loaded, skipped := plugin.LoadAllFailSoft([]string{first, second})
+	if len(loaded) != 0 || len(skipped) != 2 || skipped[1].Name != "successful-duplicate" {
+		t.Fatalf("startup duplicate selection = loaded=%+v skipped=%+v, want first manifest selected then skipped", loaded, skipped)
+	}
+
+	got := discoverPastThreadSkills(hubcore.PastEntry{Meta: schema.SessionMeta{Config: schema.ConfigSnapshot{
+		PluginDirs: []string{first, second},
+	}}})
+	if description := skillDescription(got, "successful-duplicate:same-skill"); description != "broken first" {
+		t.Fatalf("first-manifest duplicate description = %q, want broken first", description)
+	}
+}
+
+func TestPastThreadSkillLoaderIgnoresMalformedPluginComponents(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		setup func(t *testing.T, dir string)
+	}{
+		{name: "commands", setup: func(t *testing.T, dir string) {
+			writeSkillFile(t, filepath.Join(dir, "commands", "broken.md"), "---\ndescription: [\n---\nbody")
+		}},
+		{name: "agents", setup: func(t *testing.T, dir string) {
+			writeSkillFile(t, filepath.Join(dir, "agents", "broken.md"), "---\ndescription: [\n---\nbody")
+		}},
+		{name: "hooks", setup: func(t *testing.T, dir string) {
+			writeSkillFile(t, filepath.Join(dir, "hooks", "hooks.json"), "{not json")
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := writeThreadSkillPlugin(t, t.TempDir(), "malformed-plugin", "valid-skill", "valid value")
+			tc.setup(t, dir)
+			if _, err := plugin.Load(dir); err == nil {
+				t.Fatal("full plugin loader unexpectedly accepted malformed component")
+			}
+			got := discoverPastThreadSkills(hubcore.PastEntry{Meta: schema.SessionMeta{Config: schema.ConfigSnapshot{PluginDirs: []string{dir}}}})
+			if description := skillDescription(got, "malformed-plugin:valid-skill"); description != "valid value" {
+				t.Fatalf("skill-only loader lost valid skill: description=%q catalog=%+v", description, got)
+			}
+		})
+	}
+}
+
+func TestPastThreadReadCarriesExistingDelegateDiagnosticAlongsideSkills(t *testing.T) {
+	cfg, entry := seedPastSessionWithSkillFixtures(t)
+	delegateDir := filepath.Join(entry.StateDir, "sessions", entry.Meta.ID)
+	if err := os.MkdirAll(delegateDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	descriptor := map[string]any{
+		"child_session_id": entry.Meta.ID, "transcript_ref": "local:" + entry.Meta.ID,
+		"owner_session_id": entry.Meta.ID, "task": "fixture task", "description": "fixture description",
+		"agent_type": "explorer", "resumable": true,
+		"tool_name_ceiling": []string{"communicate"},
+		"config":            map[string]any{},
+	}
+	batch, err := json.Marshal(map[string]any{"events": []any{map[string]any{
+		"kind": "delegate_created", "seq": 1, "ts": time.Unix(10, 0).UTC(),
+		"delegate_id": "dlg_fixture", "created": map[string]any{"descriptor": descriptor},
+	}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	journal := append([]byte("{\"version\":1}\n"), append(batch, '\n')...)
+	if err := os.WriteFile(filepath.Join(delegateDir, "delegates.jsonl"), journal, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	thread, ok, err := pastThreadForRead(context.Background(), cfg, appwire.ThreadReadParams{Ref: "local:" + entry.Meta.ID})
+	if err != nil || !ok {
+		t.Fatalf("pastThreadForRead = %v, %v", err, ok)
+	}
+	if thread.Evener.Diagnostics == nil || len(thread.Evener.Diagnostics.Delegates) != 1 ||
+		!hasSkill(thread.Evener.Diagnostics.Skills, "project-skill") {
+		t.Fatalf("diagnostics = %+v", thread.Evener.Diagnostics)
+	}
+}
+
+// TestPastThreadReadCarriesDelegateDiagnosticEvenWithZeroDelegates is the
+// wire-level test proving pastEntryThread's containment behavior actually
+// reaches API consumers: degrading a corrupt shared delegates.jsonl to zero
+// delegates plus a diagnostic string, rather than hard-failing (see agent's
+// TestLoadSessionDelegateStatus_OversizedDelegateJournalLineDegradesWithDiagnosticInsteadOfFailing,
+// which proves the AGENT-side half of this), must still surface that
+// diagnostic on the WIRE even though there is no delegate left to attach it
+// to. This drives that exact containment case (an unterminated trailing
+// batch line, decoding to zero delegates with a delegate_journal_torn_tail
+// diagnostic -- cheaper to construct here than the oversized-line case, but
+// goes through the identical scanRootDelegateState degrade-to-diagnostic
+// path already proven above) all the way through pastThreadForRead, and
+// asserts the diagnostic lands on the actual appwire.Thread payload's
+// EvenerDiagnostics.DelegateDiagnostics field -- the wire itself, not an
+// internal agent.LoadSessionDelegateStatus return value.
+func TestPastThreadReadCarriesDelegateDiagnosticEvenWithZeroDelegates(t *testing.T) {
+	cfg, entry := seedPastSessionWithSkillFixtures(t)
+	delegateDir := filepath.Join(entry.StateDir, "sessions", entry.Meta.ID)
+	if err := os.MkdirAll(delegateDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	// A valid, terminated version header followed by an unterminated
+	// trailing batch line (no closing bracket, no newline): delegatestore's
+	// ScanEventsFrom treats ANY unterminated final line as a torn tail
+	// (discarded whole, never decoded, regardless of its partial content),
+	// so this decodes to zero events -- zero delegates -- with a
+	// delegate_journal_torn_tail diagnostic, exactly the "corrupt shared
+	// journal, no delegates to attach a per-delegate diagnostic to" shape
+	// the oversized-line case also produces, without needing a real 128 MiB
+	// fixture line.
+	journal := []byte("{\"version\":1}\n{\"events\":[{\"seq\":1")
+	if err := os.WriteFile(filepath.Join(delegateDir, "delegates.jsonl"), journal, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	thread, ok, err := pastThreadForRead(context.Background(), cfg, appwire.ThreadReadParams{Ref: "local:" + entry.Meta.ID})
+	if err != nil || !ok {
+		t.Fatalf("pastThreadForRead = %v, %v", err, ok)
+	}
+	if thread.Evener.Diagnostics == nil {
+		t.Fatal("Diagnostics is nil, want it populated with a delegate-subsystem diagnostic")
+	}
+	if len(thread.Evener.Diagnostics.Delegates) != 0 {
+		t.Fatalf("Delegates = %+v, want empty (nothing survives a torn tail with no complete batch before it)", thread.Evener.Diagnostics.Delegates)
+	}
+	found := false
+	for _, d := range thread.Evener.Diagnostics.DelegateDiagnostics {
+		if strings.Contains(d, "torn_tail") {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("DelegateDiagnostics = %v, want one naming the torn tail -- the wire response must carry this even though delegates is empty", thread.Evener.Diagnostics.DelegateDiagnostics)
+	}
+}
+
+func hasSkill(skills []appwire.EvenerSkillInfo, name string) bool {
+	for _, skill := range skills {
+		if skill.Name == name {
+			return true
+		}
+	}
+	return false
+}
+
+func seedPastSessionWithSkillFixtures(t *testing.T) (hubcore.WebConfig, hubcore.PastEntry) {
+	t.Helper()
+	root := t.TempDir()
+	workingDir := filepath.Join(root, "project")
+	extraDir := filepath.Join(root, "extra-skills")
+	pluginDir := filepath.Join(root, "plugin")
+	writeSkillFixture(t, filepath.Join(workingDir, "skills"), "project-skill", "project description")
+	writeSkillFixture(t, filepath.Join(workingDir, "skills"), "doctoring-evener", "project override")
+	writeSkillFixture(t, extraDir, "extra-skill", "extra description")
+	writeSkillFixture(t, extraDir, "doctoring-evener", "extra override")
+	if err := os.MkdirAll(filepath.Join(pluginDir, ".claude-plugin"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	manifest := []byte(`{"name":"fixture-plugin","mcpServers":123}`)
+	if err := os.WriteFile(filepath.Join(pluginDir, ".claude-plugin", "plugin.json"), manifest, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	writeSkillFixture(t, filepath.Join(pluginDir, "skills"), "plugin-skill", "plugin description")
+
+	stateDir := filepath.Join(root, "state", "projects", "project-repo-0000000000")
+	sessionID := "02wMz5Txv5aIxgf9yVdd0N"
+	if err := os.MkdirAll(filepath.Join(stateDir, "sessions"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	now := time.Unix(1700000000, 0).UTC()
+	if err := schema.SaveSessionMeta(stateDir, schema.SessionMeta{
+		ID: sessionID, ProfileID: "openai", Model: "gpt-5",
+		EnvInfo:   schema.EnvironmentInfo{WorkingDir: workingDir},
+		Config:    schema.ConfigSnapshot{SkillsDirs: []string{extraDir}, PluginDirs: []string{pluginDir}},
+		CreatedAt: now, UpdatedAt: now,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	writer, err := transcript.NewWriter(filepath.Join(stateDir, "sessions", sessionID+".transcript.jsonl"), transcript.Header{SessionID: sessionID, CreatedAt: now, ProfileID: "openai", Model: "gpt-5"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := writer.Close(); err != nil {
+		t.Fatal(err)
+	}
+	idx := hubcore.NewPastIndex(filepath.Join(root, "state", "projects", "*"))
+	if _, err := idx.Rebuild(); err != nil {
+		t.Fatal(err)
+	}
+	entry, ok := idx.Find(sessionID)
+	if !ok {
+		t.Fatal("past entry not found")
+	}
+	return hubcore.WebConfig{Past: idx}, entry
+}
+
+func writeSkillFixture(t *testing.T, parent, name, description string) {
+	t.Helper()
+	dir := filepath.Join(parent, name)
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	content := "---\nname: " + name + "\ndescription: " + description + "\n---\nfixture body\n"
+	if err := os.WriteFile(filepath.Join(dir, "SKILL.md"), []byte(content), 0o600); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func writeThreadSkillPlugin(t *testing.T, root, pluginName, skillName, description string) string {
+	t.Helper()
+	dir := filepath.Join(root, pluginName+"-"+strings.ReplaceAll(description, " ", "-"))
+	if err := os.MkdirAll(filepath.Join(dir, ".claude-plugin"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, ".claude-plugin", "plugin.json"), []byte(`{"name":"`+pluginName+`"}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	writeSkillFixture(t, filepath.Join(dir, "skills"), skillName, description)
+	return dir
+}
+
+func writeSkillFile(t *testing.T, path, content string) {
+	t.Helper()
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func skillDescription(skills []appwire.EvenerSkillInfo, name string) string {
+	for _, skill := range skills {
+		if skill.Name == name {
+			return skill.Description
+		}
+	}
+	return ""
+}
+
 func TestHubThreadReadStableDelegateDoesNotExtractActivationID(t *testing.T) {
 	raw := json.RawMessage(`{"job_id":"job_retired_activation","delegate_id":"dlg_stable","status":"running"}`)
 	item := appwire.ThreadItem{Type: "commandExecution", ToolName: "delegate", Raw: bytes.Clone(raw), Status: appwire.TurnStatusInProgress}
@@ -127,7 +494,7 @@ func TestHubThreadReadStableDelegateIsReadOnly(t *testing.T) {
 
 func requirePastThreadForRead(t testing.TB, cfg hubcore.WebConfig, params appwire.ThreadReadParams) (appwire.Thread, bool) {
 	t.Helper()
-	thread, found, err := pastThreadForRead(cfg, params)
+	thread, found, err := pastThreadForRead(context.Background(), cfg, params)
 	if err != nil {
 		t.Fatalf("pastThreadForRead: %v", err)
 	}
@@ -136,7 +503,7 @@ func requirePastThreadForRead(t testing.TB, cfg hubcore.WebConfig, params appwir
 
 func requirePastThreadReadResponse(t testing.TB, cfg hubcore.WebConfig, params appwire.ThreadReadParams) (appwire.ThreadReadResponse, bool) {
 	t.Helper()
-	resp, found, err := pastThreadReadResponse(cfg, params)
+	resp, found, err := pastThreadReadResponse(context.Background(), cfg, params)
 	if err != nil {
 		t.Fatalf("pastThreadReadResponse: %v", err)
 	}
@@ -145,25 +512,46 @@ func requirePastThreadReadResponse(t testing.TB, cfg hubcore.WebConfig, params a
 
 func requirePastThreadTurnsList(t testing.TB, cfg hubcore.WebConfig, params appwire.ThreadTurnsListParams) (appwire.ThreadTurnsListResponse, bool) {
 	t.Helper()
-	resp, found, err := pastThreadTurnsList(cfg, params)
+	resp, found, err := pastThreadTurnsList(context.Background(), cfg, params)
 	if err != nil {
 		t.Fatalf("pastThreadTurnsList: %v", err)
 	}
 	return resp, found
 }
 
-func requirePastEntryTurns(t testing.TB, entry hubcore.PastEntry) []appwire.Turn {
+func requirePastEntryTurns(t testing.TB, cfg hubcore.WebConfig, entry hubcore.PastEntry) []appwire.Turn {
 	t.Helper()
-	turns, err := pastEntryTurns(entry)
+	turns, err := pastEntryTurns(cfg, entry)
 	if err != nil {
 		t.Fatalf("pastEntryTurns: %v", err)
 	}
 	return turns
 }
 
+// pricingRegistry is the hermetic registry a past thread's dollar figures
+// resolve through: the curated rows for one anthropic instance, offline,
+// uncached, with no user layer and nothing from the developer's own state.
+func pricingRegistry(tb testing.TB) *hubcore.ProviderRegistry {
+	tb.Helper()
+	stateRoot := tb.TempDir()
+	holder := hubcore.NewProviderRegistry(func(extra ...registry.Option) (*registry.Registry, *credentials.Store, error) {
+		r, err := registry.Load(append([]registry.Option{
+			registry.WithOffline(true), registry.WithoutCache(), registry.WithNoUserLayer(),
+			registry.WithStateRoot(stateRoot),
+			registry.WithEnv(func(string) (string, bool) { return "", false }),
+			registry.WithInstances(map[string]registry.Provider{"anthropic": {APIKey: "test"}}),
+		}, extra...)...)
+		return r, nil, err
+	})
+	if err := holder.Reload(); err != nil {
+		tb.Fatalf("registry: %v", err)
+	}
+	return holder
+}
+
 func requirePastEntryThread(t testing.TB, cfg hubcore.WebConfig, entry hubcore.PastEntry, includeTurns bool) appwire.Thread {
 	t.Helper()
-	thread, err := pastEntryThread(cfg, entry, includeTurns)
+	thread, err := pastEntryThread(context.Background(), cfg, entry, includeTurns)
 	if err != nil {
 		t.Fatalf("pastEntryThread: %v", err)
 	}
@@ -433,9 +821,9 @@ func TestPastThreadReadProjectsToolResultOutputImages(t *testing.T) {
 }
 
 // TestPastEntryTurns_StampsCostFromSessionModel verifies pastEntryTurns
-// estimates each turn's Cost from the session's own recorded Model — usage
-// alone (from the transcript) isn't enough to price a turn, since
-// appwire.EstimateCost needs a model to look up catalog rates.
+// estimates each turn's Cost from the row the session's own recorded
+// instance and model resolve to — usage alone (from the transcript) isn't
+// enough to price a turn, since the cost lives on the registry row.
 func TestPastEntryTurns_StampsCostFromSessionModel(t *testing.T) {
 	root := t.TempDir()
 	stateDir := filepath.Join(root, "projects", "project-repo-0000000000")
@@ -466,10 +854,11 @@ func TestPastEntryTurns_StampsCostFromSessionModel(t *testing.T) {
 
 	entry := hubcore.PastEntry{
 		ID:       sessionID,
-		Meta:     schema.SessionMeta{ID: sessionID, Model: "claude-opus-4-5"},
+		Meta:     schema.SessionMeta{ID: sessionID, ProfileID: "anthropic", Model: "claude-opus-4-5"},
 		StateDir: stateDir,
 	}
-	turns := requirePastEntryTurns(t, entry)
+	cfg := hubcore.WebConfig{Registry: pricingRegistry(t)}
+	turns := requirePastEntryTurns(t, cfg, entry)
 	var found bool
 	for _, turn := range turns {
 		if turn.Usage == nil {
@@ -482,6 +871,14 @@ func TestPastEntryTurns_StampsCostFromSessionModel(t *testing.T) {
 	}
 	if !found {
 		t.Fatalf("no turn with usage found: %+v", turns)
+	}
+
+	// Flag day (spec §14.1): with no registry to resolve against there is no
+	// fallback pricing table, so the same turns carry no cost at all.
+	for _, turn := range requirePastEntryTurns(t, hubcore.WebConfig{}, entry) {
+		if turn.Cost != "" {
+			t.Fatalf("turn.Cost=%q with no registry, want empty", turn.Cost)
+		}
 	}
 }
 
@@ -515,37 +912,45 @@ func TestPastEntryThread_CarriesWorkMetrics(t *testing.T) {
 
 // TestPastEntryThread_CarriesCostTotal proves the past-entry hydrate stamps
 // the session-level dollar total on EvenerThread from the cumulative usage at
-// the session model's price — the honest full-session figure, never a page
-// of loaded turns — and honestly omits it when there is no usage or the model
-// is uncataloged (the absent-vs-zero distinction).
+// the cost the session's own ProfileID/Model resolve to on the hub's registry
+// (spec §7.5) — the honest full-session figure, never a page of loaded turns
+// — and honestly omits it when there is no usage, no registry, or no cost on
+// the row (the absent-vs-zero distinction).
 func TestPastEntryThread_CarriesCostTotal(t *testing.T) {
+	cfg := hubcore.WebConfig{Registry: pricingRegistry(t)}
+	usage := schema.CumulativeUsage{InputTokens: 100_000, OutputTokens: 20_000, TotalTokens: 120_000}
+
 	priced := hubcore.PastEntry{
-		Meta: schema.SessionMeta{
-			Model:           "claude-opus-4-5",
-			CumulativeUsage: schema.CumulativeUsage{InputTokens: 100_000, OutputTokens: 20_000, TotalTokens: 120_000},
-		},
+		Meta: schema.SessionMeta{ProfileID: "anthropic", Model: "claude-opus-4-5", CumulativeUsage: usage},
 	}
-	thread := requirePastEntryThread(t, hubcore.WebConfig{}, priced, false)
-	if want := appwire.EstimateCost("claude-opus-4-5", thread.Evener.Usage); thread.Evener.Cost != want || want == "" {
-		t.Fatalf("thread.Evener.Cost = %q, want non-empty %q", thread.Evener.Cost, want)
+	thread := requirePastEntryThread(t, cfg, priced, false)
+	want := appwire.EstimateCost(costFor(cfg.Registry, "anthropic", "claude-opus-4-5"), thread.Evener.Usage)
+	if want == "" {
+		t.Fatal("fixture registry has no cost for anthropic/claude-opus-4-5")
+	}
+	if thread.Evener.Cost != want {
+		t.Fatalf("thread.Evener.Cost = %q, want %q", thread.Evener.Cost, want)
 	}
 	if !strings.HasPrefix(thread.Evener.Cost, "~$") {
 		t.Fatalf("thread.Evener.Cost = %q, want ~$ prefix", thread.Evener.Cost)
 	}
 
-	noUsage := hubcore.PastEntry{Meta: schema.SessionMeta{Model: "claude-opus-4-5"}}
-	if got := requirePastEntryThread(t, hubcore.WebConfig{}, noUsage, false); got.Evener.Cost != "" {
+	noUsage := hubcore.PastEntry{Meta: schema.SessionMeta{ProfileID: "anthropic", Model: "claude-opus-4-5"}}
+	if got := requirePastEntryThread(t, cfg, noUsage, false); got.Evener.Cost != "" {
 		t.Fatalf("no-usage thread.Evener.Cost = %q, want \"\" (absent)", got.Evener.Cost)
 	}
 
-	uncataloged := hubcore.PastEntry{
-		Meta: schema.SessionMeta{
-			Model:           "totally-unknown-model-xyz",
-			CumulativeUsage: schema.CumulativeUsage{InputTokens: 100_000, OutputTokens: 20_000, TotalTokens: 120_000},
-		},
+	unknownInstance := hubcore.PastEntry{
+		Meta: schema.SessionMeta{ProfileID: "no-such-instance", Model: "claude-opus-4-5", CumulativeUsage: usage},
 	}
-	if got := requirePastEntryThread(t, hubcore.WebConfig{}, uncataloged, false); got.Evener.Cost != "" {
-		t.Fatalf("uncataloged-model thread.Evener.Cost = %q, want \"\" (absent, not ~$0.00)", got.Evener.Cost)
+	if got := requirePastEntryThread(t, cfg, unknownInstance, false); got.Evener.Cost != "" {
+		t.Fatalf("unresolvable-reference thread.Evener.Cost = %q, want \"\" (absent, not ~$0.00)", got.Evener.Cost)
+	}
+
+	// Flag day (spec §14.1): a hub with no registry has nothing to price
+	// against and says so, rather than reaching for a bundled catalog.
+	if got := requirePastEntryThread(t, hubcore.WebConfig{}, priced, false); got.Evener.Cost != "" {
+		t.Fatalf("no-registry thread.Evener.Cost = %q, want \"\" (absent)", got.Evener.Cost)
 	}
 }
 
@@ -742,18 +1147,64 @@ func TestPastEntryThreadAdvertisesResumableCapabilities(t *testing.T) {
 	caps := thread.Evener.Capabilities
 
 	want := appwire.ThreadCapabilities{
-		Send:         true,
-		ForkFromTurn: true,
-		Compact:      true,
-		ChangeModel:  true,
-		Shutdown:     true,
-		Goal:         true,
-		Rename:       true,
+		Send:              true,
+		ForkFromTurn:      true,
+		Compact:           true,
+		Clear:             true,
+		ChangeModel:       true,
+		ChangeVisionModel: true,
+		Shutdown:          true,
+		Goal:              true,
+		Rename:            true,
 		// Steer, Interrupt, Queue stay false: turn-in-flight controls with no
 		// active turn on a cold exited session.
 	}
 	if caps != want {
 		t.Fatalf("past thread capabilities:\n got  %+v\n want %+v", caps, want)
+	}
+}
+
+func TestMergePastThreadForReadDoesNotReadSavedTurnsWhenLiveWindowPresent(t *testing.T) {
+	cfg, params := seedBoundedPastThread(t)
+	entry, ok := pastEntryForRead(cfg, params)
+	if !ok {
+		t.Fatal("past thread not found")
+	}
+	path := filepath.Join(entry.StateDir, "sessions", entry.Meta.ID+".transcript.jsonl")
+	if err := os.WriteFile(path, []byte(`{"kind":"header","format_version":1}`+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	liveTurns := []appwire.Turn{{ID: "turn_live", ItemsView: "full"}}
+
+	got, err := mergePastThreadForRead(context.Background(), cfg, params, appwire.Thread{
+		ID:        entry.Meta.ID,
+		SessionID: entry.Meta.ID,
+		Turns:     liveTurns,
+	})
+	if err != nil {
+		t.Fatalf("merge live window with unreadable saved transcript: %v", err)
+	}
+	if !reflect.DeepEqual(got.Turns, liveTurns) {
+		t.Fatalf("merged turns = %+v, want live window %+v", got.Turns, liveTurns)
+	}
+	if got.ModelProvider != entry.Meta.Model || got.CWD != entry.Meta.EnvInfo.WorkingDir {
+		t.Fatalf("merged metadata = model %q cwd %q, want %q %q", got.ModelProvider, got.CWD, entry.Meta.Model, entry.Meta.EnvInfo.WorkingDir)
+	}
+}
+
+func TestMergePastThreadForReadUsesSavedTurnsWhenLiveResponseHasNone(t *testing.T) {
+	cfg, params := seedBoundedPastThread(t)
+	entry, ok := pastEntryForRead(cfg, params)
+	if !ok {
+		t.Fatal("past thread not found")
+	}
+
+	got, err := mergePastThreadForRead(context.Background(), cfg, params, appwire.Thread{ID: entry.Meta.ID, SessionID: entry.Meta.ID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got.Turns) != entry.Meta.TurnCount {
+		t.Fatalf("merged turns = %d, want saved fallback %d", len(got.Turns), entry.Meta.TurnCount)
 	}
 }
 
@@ -795,11 +1246,11 @@ func TestPastThreadTranscriptReadersPropagateUnsupportedFormat(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	resp, found, err := pastThreadReadResponse(cfg, params)
+	resp, found, err := pastThreadReadResponse(context.Background(), cfg, params)
 	if !found || !errors.Is(err, transcript.ErrUnsupportedFormat) || resp.Thread.Turns != nil {
 		t.Fatalf("past thread/read = (%+v, %v, %v), want found empty ErrUnsupportedFormat", resp, found, err)
 	}
-	page, found, err := pastThreadTurnsList(cfg, appwire.ThreadTurnsListParams{Ref: params.Ref, Limit: 1})
+	page, found, err := pastThreadTurnsList(context.Background(), cfg, appwire.ThreadTurnsListParams{Ref: params.Ref, Limit: 1})
 	if !found || !errors.Is(err, transcript.ErrUnsupportedFormat) || page.Data != nil {
 		t.Fatalf("past thread/turns/list = (%+v, %v, %v), want found empty ErrUnsupportedFormat", page, found, err)
 	}
@@ -833,7 +1284,7 @@ func TestPastThreadForRead_PastGateMisses(t *testing.T) {
 		{"thread id absent from the index", hubcore.WebConfig{Past: emptyIndex}, appwire.ThreadReadParams{ThreadID: sessionID}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			thread, found, err := pastThreadForRead(tc.cfg, tc.params)
+			thread, found, err := pastThreadForRead(context.Background(), tc.cfg, tc.params)
 			if found || err != nil || !reflect.DeepEqual(thread, appwire.Thread{}) {
 				t.Fatalf("pastThreadForRead = (%+v, %v, %v), want the empty not-found miss", thread, found, err)
 			}

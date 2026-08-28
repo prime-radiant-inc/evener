@@ -46,30 +46,6 @@ func TestSaveLoadRegistry_RoundTrip(t *testing.T) {
 	}
 }
 
-func TestLoadRegistry_RerootsLegacyInstallPath(t *testing.T) {
-	root := filepath.Join(t.TempDir(), "evener", "plugins")
-	legacyRoot := filepath.Join(filepath.Dir(filepath.Dir(root)), "serf", "plugins")
-	if err := os.MkdirAll(root, 0o755); err != nil {
-		t.Fatal(err)
-	}
-	p := filepath.Join(root, "installed_plugins.json")
-	stalePath := filepath.Join(legacyRoot, "cache", "acme", "widget", "abc123")
-	body := `{"version":2,"plugins":{"widget@acme":[{"installPath":"` + filepath.ToSlash(stalePath) + `","version":"1.0.0","enabled":true}]}}`
-	if err := os.WriteFile(p, []byte(body), 0o644); err != nil {
-		t.Fatal(err)
-	}
-
-	r, err := LoadRegistry(p)
-	if err != nil {
-		t.Fatalf("LoadRegistry: %v", err)
-	}
-	want := filepath.Join(root, "cache", "acme", "widget", "abc123")
-	got := r.Plugins["widget@acme"][0].InstallPath
-	if got != want {
-		t.Fatalf("InstallPath = %q, want %q (rerooted under current plugins root)", got, want)
-	}
-}
-
 func TestLoadRegistry_LeavesNonLegacyInstallPathAlone(t *testing.T) {
 	p := filepath.Join(t.TempDir(), "installed_plugins.json")
 	body := `{"version":2,"plugins":{"widget@acme":[{"installPath":"/store/cache/acme/widget/abc123","version":"1.0.0","enabled":true}]}}`

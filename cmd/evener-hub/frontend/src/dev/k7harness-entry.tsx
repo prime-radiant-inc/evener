@@ -11,6 +11,7 @@ import { createRoot } from "react-dom/client";
 import { SessionChrome } from "../panes/session/chrome/SessionChrome";
 import { FakeClient } from "../protocol/testing/fakeClient";
 import type { Thread, ThreadCapabilities, ThreadReadResponse } from "../protocol/types.gen";
+import { ClientProvider } from "../shell/clientContext";
 import "../styles/tokens.css";
 import "../styles/global.css";
 import { connectionStore } from "../stores/connection";
@@ -31,6 +32,7 @@ const CAPABILITIES: ThreadCapabilities = {
   forkFromTurn: true,
   shutdown: true,
   changeModel: true,
+  changeVisionModel: true,
   queue: true,
   goal: true,
   rename: true,
@@ -103,7 +105,15 @@ function PaneContent() {
   useEffect(() => {
     void threadsStore.getState().ensureThread(REF);
   }, []);
-  return <SessionChrome ref={REF} />;
+  return (
+    <ClientProvider client={fake}>
+      <SessionChrome ref={REF} />
+    </ClientProvider>
+  );
 }
 
-createRoot(root).render(<Harness />);
+createRoot(root).render(
+  <ClientProvider client={fake}>
+    <Harness />
+  </ClientProvider>,
+);

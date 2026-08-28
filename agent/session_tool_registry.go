@@ -18,6 +18,7 @@ import (
 	"primeradiant.com/evener/agent/skill"
 	taskpkg "primeradiant.com/evener/agent/task"
 	"primeradiant.com/evener/llm"
+	"primeradiant.com/evener/llm/registry"
 )
 
 // toolDeps is the dependency surface the core tool handler closures need from
@@ -31,9 +32,10 @@ type toolDeps struct {
 	emit func(kind events.EventKind, data events.EventData)
 
 	// steering queue access for the communicate handler.
-	steer           func(msg, kind string)
-	drainSteering   func() []steeringMessage
-	prependSteering func(entries []steeringMessage)
+	steer               func(msg, kind string)
+	steerTaskCompletion func(msg string, blockingDelegateIDs []string)
+	drainSteering       func() []steeringMessage
+	prependSteering     func(entries []steeringMessage)
 
 	// abort returns a non-nil error when the session is closing (= Session.abortIfClosing).
 	abort func(ctx context.Context) error
@@ -58,7 +60,11 @@ type toolDeps struct {
 	// all guarded by the session's own mutex.
 	taskGuard taskGuard
 
-	// goalGuard exposes goal-store access. The goal store has its own mutex.
+	// blockingDelegateIDs reports this session's live inline-waited delegates.
+	// Background delegates and terminal delegates are intentionally excluded.
+	blockingDelegateIDs func() []string
+
+	// goalGuard exposes goal-store access and the ordered terminal mutation.
 	goalGuard goalGuard
 
 	// worktreeGuard exposes the native worktree lifecycle plumbing (env swap,
@@ -78,14 +84,20 @@ type toolDeps struct {
 	requestForceCompact func(instructions string) error
 	pressure            func() float64
 
-	// setCommunicateResult records a terminal communicate tool result on the
-	// session. Fields stay Session-owned; this is the only writer reachable from
-	// the handler.
-	setCommunicateResult func(message, reply, output string)
-
-	// setCommunicateStructured records the raw output object the model emitted,
-	// before communicate canonicalization, for delegate structured_result capture.
-	setCommunicateStructured func(raw any)
+	// setCommunicateTerminal is the terminal communicate result writer (issue
+	// #570). Live sessions get the Session-owned atomic capture
+	// (Session.acceptCommunicateTerminal): a call's message/reply/output and its
+	// raw structured value are accepted together under one lock — the first
+	// completed terminal call wins BOTH slots, so one call's structured value can
+	// never fill another call's capture. It returns whether this call won.
+	// Direct tool dependency constructions that predate lease-aware stable
+	// delegates may inject simpler writers.
+	//
+	// structured is the raw output value the model emitted, before communicate
+	// canonicalization, for delegate structured_result capture. Nil means the
+	// call carried no explicit structured output; an explicit JSON null is
+	// passed as json.RawMessage("null"), which is non-nil and therefore present.
+	setCommunicateTerminal func(ctx context.Context, message, reply, output string, structured any) bool
 
 	// runningJobIDs lists this session's own running (session-launched,
 	// non-nested) job ids. The communicate handler uses it to warn when
@@ -103,8 +115,9 @@ type toolDeps struct {
 	// reasoningEffortLevels is captured once for the task_list tool definition.
 	reasoningEffortLevels []string
 
-	// webSearchEnabled is the resolved decision (BehaviorTag == "google") for
-	// whether the function-tool web_search should be registered.
+	// webSearchEnabled is the resolved decision (the google protocol on a row
+	// that serves web search) for whether the function-tool web_search should
+	// be registered.
 	webSearchEnabled bool
 
 	// stateDir and sessionID locate the current session's transcript bucket and
@@ -123,6 +136,20 @@ type toolDeps struct {
 	// The store, its paths, and the owning Session remain hidden behind this
 	// read-only closure.
 	openArtifact func(ref string) (artifactReadSeekCloser, error)
+}
+
+// sendTaskCompletionSteering keeps direct toolDeps constructions compatible
+// with the pre-metadata contract: their generic steer callback still delivers
+// the model-visible machine payload and tasks-done kind. Normal sessions take
+// the typed callback branch and retain the parallel event metadata as well.
+func (d *toolDeps) sendTaskCompletionSteering(msg string, blockingDelegateIDs []string) {
+	if d.steerTaskCompletion != nil {
+		d.steerTaskCompletion(msg, blockingDelegateIDs)
+		return
+	}
+	if d.steer != nil {
+		d.steer(msg, events.SteeringKindTasksDone)
+	}
 }
 
 type artifactReadSeekCloser interface {
@@ -150,7 +177,6 @@ func (g readGuard) ReadBeforeWriteWarning(path string) string {
 type taskGuard struct {
 	getOrCreateTaskStore func() *taskpkg.TaskStore
 	markUsed             func()
-	setReasoningEffort   func(effort string)
 }
 
 func (g taskGuard) Store() *taskpkg.TaskStore { return g.getOrCreateTaskStore() }
@@ -159,16 +185,30 @@ func (g taskGuard) Store() *taskpkg.TaskStore { return g.getOrCreateTaskStore() 
 // reminder counters under s.mu).
 func (g taskGuard) MarkUsed() { g.markUsed() }
 
-func (g taskGuard) SetReasoningEffort(effort string) { g.setReasoningEffort(effort) }
-
 // goalGuard is a thin lazy-accessor facade over the session's goal store.
 // The goal store carries its own mutex (unlike taskGuard which uses s.mu).
 type goalGuard struct {
 	getOrCreateGoalStore func() *goal.Store
+	setTerminal          func(goal.Status, string) (goal.Snapshot, bool)
 }
 
 // Store returns the session's goal store, initializing it if needed.
 func (g goalGuard) Store() *goal.Store { return g.getOrCreateGoalStore() }
+
+// SetTerminal commits through the owning Session when available, keeping the
+// mutation and its GOAL_UPDATED event ordered. Direct test constructions fall
+// back to the store-only behavior they had before live goal updates.
+func (g goalGuard) SetTerminal(status goal.Status, reason string, now time.Time) (goal.Snapshot, bool) {
+	if g.setTerminal != nil {
+		return g.setTerminal(status, reason)
+	}
+	store := g.Store()
+	if !store.SetTerminal(status, reason, now) {
+		return goal.Snapshot{}, false
+	}
+	snap, _ := store.Snapshot()
+	return snap, true
+}
 
 // webDeps holds the bound web tool functions. The profile and client stay
 // hidden inside the closures captured here.
@@ -182,13 +222,14 @@ type webDeps struct {
 // unchanged. Built once in registerCoreTools.
 func newToolDeps(s *Session) *toolDeps {
 	return &toolDeps{
-		registerTool:    s.cfg.testOnly.registerTool,
-		emit:            s.emit,
-		steer:           s.SteerKind,
-		drainSteering:   s.drainSteeringForCommunicate,
-		prependSteering: s.prependSteering,
-		abort:           s.abortIfClosing,
-		resultToolName:  s.resultToolName,
+		registerTool:        s.cfg.testOnly.registerTool,
+		emit:                s.emit,
+		steer:               s.SteerKind,
+		steerTaskCompletion: s.SteerTaskCompletion,
+		drainSteering:       s.drainSteeringForCommunicate,
+		prependSteering:     s.prependSteering,
+		abort:               s.abortIfClosing,
+		resultToolName:      s.resultToolName,
 		cmdTimeouts: func() (int, int) {
 			return s.cfg.DefaultCommandTimeoutMS, s.cfg.MaxCommandTimeoutMS
 		},
@@ -204,10 +245,16 @@ func newToolDeps(s *Session) *toolDeps {
 				s.taskToolLastRound = s.totalRounds
 				s.mu.Unlock()
 			},
-			setReasoningEffort: s.SetReasoningEffort,
+		},
+		blockingDelegateIDs: func() []string {
+			if s.delegateController == nil {
+				return nil
+			}
+			return s.delegateController.blockingDelegateIDs(s.delegateRootSessionID, s.owningDelegateID)
 		},
 		goalGuard: goalGuard{
 			getOrCreateGoalStore: s.getOrCreateGoalStore,
+			setTerminal:          s.setGoalTerminal,
 		},
 		worktreeGuard: worktreeGuard{
 			state:         s.worktreeStateSnapshot,
@@ -231,40 +278,18 @@ func newToolDeps(s *Session) *toolDeps {
 			fetch:  s.webFetch,
 			search: s.webSearch,
 		},
-		setPinnedNote:       s.setPinnedNote,
-		requestForceCompact: s.requestForceCompact,
-		pressure:            s.ContextPressure,
-		setCommunicateResult: func(message, reply, output string) {
-			s.mu.Lock()
-			if s.comm.called {
-				s.mu.Unlock()
-				return
-			}
-			s.comm = communicateResult{
-				called: true,
-				text:   message,
-				reply:  reply,
-				output: output,
-			}
-			s.mu.Unlock()
-		},
-		setCommunicateStructured: func(raw any) {
-			s.mu.Lock()
-			if !s.comm.called || s.comm.structured != nil {
-				s.mu.Unlock()
-				return
-			}
-			s.comm.structured = raw
-			s.mu.Unlock()
-		},
-		runningJobIDs:   func() []string { return sessionRunningJobIDs(s) },
-		turnEndsProcess: s.cfg.TurnEndsProcess,
+		setPinnedNote:          s.setPinnedNote,
+		requestForceCompact:    s.requestForceCompact,
+		pressure:               s.ContextPressure,
+		setCommunicateTerminal: s.acceptCommunicateTerminal,
+		runningJobIDs:          func() []string { return sessionRunningWorkIDs(s) },
+		turnEndsProcess:        s.cfg.TurnEndsProcess,
 		skill: func(name string) (skill.SkillMeta, bool) {
 			meta, ok := s.skills[name]
 			return meta, ok
 		},
 		reasoningEffortLevels: s.profile.ReasoningEffortLevels(),
-		webSearchEnabled:      s.profile.BehaviorTag() == "google",
+		webSearchEnabled:      s.profile.Protocol() == registry.ProtocolGoogle && s.profile.SupportsWebSearch(),
 		stateDir:              s.stateDir,
 		sessionID:             s.id,
 		currentMeta:           s.Meta,
@@ -322,8 +347,8 @@ func buildProfileToolRegistry(defs []llm.ToolDefinition) *tool.Registry {
 	reg := tool.NewRegistry()
 	for _, td := range defs {
 		_ = reg.Register(tool.RegisteredTool{
-			Definition:  td,
-			OmitPurpose: td.Name == "communicate",
+			Definition: td,
+			OmitIntent: td.Name == "communicate",
 			Exec: func(ctx context.Context, env execenv.ExecutionEnvironment, args map[string]any) (any, error) {
 				return nil, errors.New("tool executor not wired")
 			},
@@ -356,6 +381,13 @@ func registerCoreTools(reg *tool.Registry, s *Session) error {
 	if err := registerStableDelegateTool(reg, s); err != nil {
 		return err
 	}
+	if s.modelSnapshot != nil {
+		if _, inline := inlineModelSnapshot(*s.modelSnapshot); !inline {
+			if err := registerModelListTool(reg, s); err != nil {
+				return err
+			}
+		}
+	}
 	registerTaskTools(reg, deps)
 	registerGoalTools(reg, deps)
 	registerWorktreeTool(reg, deps)
@@ -375,6 +407,11 @@ func registerCoreTools(reg *tool.Registry, s *Session) error {
 		}
 	}
 	for _, rt := range transcriptTools(deps) {
+		if err := register(rt); err != nil {
+			return err
+		}
+	}
+	for _, rt := range doctorTools(deps) {
 		if err := register(rt); err != nil {
 			return err
 		}

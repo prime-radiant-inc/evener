@@ -1086,6 +1086,39 @@ func TestHubModelBrowseKeepsComposerVisibleAndTyping(t *testing.T) {
 	}
 }
 
+// TestHubModelBrowseFooterStillShowsEnterSend pins the rendering fact the
+// tmux e2e sync for issue #540 depends on: the browse-mode footer keeps the
+// composer panel — including its compose-mode "enter send" hint — on screen
+// (hub_session_view.go's scrollMode branch appends sessionComposerPanel, and
+// the composer panel's mode mapping does not special-case browse). "enter
+// send" therefore names compose chrome, never the browse→compose transition,
+// so TestTUITmuxE2E_SessionCommandsAndNavigation syncs that transition on
+// the DISAPPEARANCE of the browse action bar instead. A change that makes
+// the composer hints browse-aware (e.g. wiring composerFooterHints'
+// "scroll-browse" case into sessionComposerPanel) turns this test red and
+// must re-examine that e2e sync.
+func TestHubModelBrowseFooterStillShowsEnterSend(t *testing.T) {
+	m := newSessionHubModel(nil)
+	// Any ChipContext field switches the composer to the mode-aware hint bar
+	// that carries "enter send" (composer_panel.go's View); SourceLabel is
+	// the lightest trip.
+	m.detail.SourceLabel = "codex-local"
+	m.width = 140
+	m.height = 40
+	m.session.width = 140
+	m.session.height = 40
+	m.session.messages = []transcript.ChatMessage{{Kind: transcript.MsgUser, Text: "request", TurnIndex: 1}}
+	m.enterSessionBrowse(false)
+
+	view := ansiPattern.ReplaceAllString(m.sessionView(), "")
+	if !strings.Contains(view, "esc/i/q: compose") {
+		t.Fatalf("browse footer should show the browse action bar:\n%s", view)
+	}
+	if !strings.Contains(view, "enter send") {
+		t.Fatalf("browse footer should keep the composer panel's compose hints on screen:\n%s", view)
+	}
+}
+
 func TestHubModelBrowseCtrlTTogglesAllToolEntries(t *testing.T) {
 	m := newSessionHubModel(nil)
 	m.width = 100
@@ -2695,8 +2728,8 @@ func TestHubModelStatusUsesHubThreadTasksAndAuth(t *testing.T) {
 		"Dir: /tmp/details",
 		"Turns: 2",
 		"Context: 42% used",
-		"Tasks: 1/2 done, 1 active",
-		"Auth: openai oauth jesse@example.test",
+		"Tasks: 1 done, 0 cancelled, 1 remaining (2 total)",
+		"Auth: openai OAuth jesse@example.test",
 		"Recent errors:",
 		"turn_2: provider quota exceeded",
 	} {
@@ -2773,7 +2806,17 @@ func TestHubModelActionsAndClearUseAppWire(t *testing.T) {
 		appserver.HandleTyped(app.Router(), appwire.MethodThreadClear, func(context.Context, appwire.ThreadClearParams) (appwire.ThreadClearResponse, error) {
 			methods = append(methods, appwire.MethodThreadClear)
 			thread := appwireThread(hubTreeNode{Ref: "local:02NEW", SessionID: "02NEW", Title: "new session", State: "idle", Project: "evener", Live: true}, "/tmp/evener")
-			return appwire.ThreadClearResponse{Thread: thread, Ref: thread.Evener.Ref}, nil
+			return appwire.ThreadClearResponse{
+				Thread: thread,
+				Ref:    thread.Evener.Ref,
+				Receipt: appwire.MutationReceipt{
+					ClientMutationID: "clear-test",
+					Disposition:      appwire.MutationDispositionApplied,
+					ThreadID:         thread.ID,
+					InstanceID:       thread.Evener.InstanceID,
+					ProjectionState:  appwire.MutationProjectionReflected,
+				},
+			}, nil
 		})
 		appserver.HandleTyped(app.Router(), appwire.MethodThreadRead, func(context.Context, appwire.ThreadReadParams) (appwire.ThreadReadResponse, error) {
 			methods = append(methods, appwire.MethodThreadRead)
@@ -4288,7 +4331,8 @@ func appwireThread(node hubTreeNode, cwd string) appwire.Thread {
 		Source:        ref.SourceID,
 		Status:        appwire.ThreadStatus{Type: status},
 		Evener: appwire.EvenerThread{
-			Ref: node.Ref,
+			Ref:        node.Ref,
+			InstanceID: threadID,
 			Capabilities: appwire.ThreadCapabilities{
 				Send:         true,
 				Steer:        true,

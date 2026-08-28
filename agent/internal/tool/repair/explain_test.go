@@ -32,6 +32,32 @@ func TestExplainSchemaError_NamesOffendingField(t *testing.T) {
 	}
 }
 
+func TestExampleForField_NullableScalarType(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		typ  any
+		want string
+	}{
+		{name: "nullable integer", typ: []any{"integer", "null"}, want: `{"expand_turn": 0}`},
+		{name: "nullable string", typ: []any{"string", "null"}, want: `{"output_match": "..."}`},
+		{name: "ambiguous union falls back", typ: []any{"integer", "number"}, want: `{"value": "..."}`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			schema := map[string]any{"type": "object", "properties": map[string]any{"expand_turn": map[string]any{"type": tc.typ}, "output_match": map[string]any{"type": tc.typ}, "value": map[string]any{"type": tc.typ}}}
+			field := "expand_turn"
+			if tc.name == "nullable string" {
+				field = "output_match"
+			}
+			if tc.name == "ambiguous union falls back" {
+				field = "value"
+			}
+			if got := exampleForField(schema, field); got != tc.want {
+				t.Fatalf("exampleForField = %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
 func TestExplainSchemaError_FallbackWhenUnknownField(t *testing.T) {
 	msg := ExplainSchemaError("edit_file", editParamsForExplain(), map[string]any{}, "", "")
 	// Must still list required args + example even without a pinpointed field.
@@ -135,6 +161,11 @@ func TestExplainTruncatedCall(t *testing.T) {
 // taskListParamsForExplain mirrors DefTaskList's updates-item schema (this
 // package must stay dependency-free of agent/internal/tool, so the fixture is
 // hand-built rather than calling the real Def* function).
+// taskListParamsForExplain is a SYNTHETIC action-enum schema shaped like the
+// pre-rework DefTaskList. It exercises the generic branch machinery
+// (actionTag/namedBranch) in isolation; it deliberately does not mirror the
+// current DefTaskList (presence-based add/update arrays, no action), which
+// has no selector for the branch machinery to key on.
 func taskListParamsForExplain() map[string]any {
 	return map[string]any{
 		"type":                 "object",
@@ -153,7 +184,7 @@ func taskListParamsForExplain() map[string]any {
 						"status": map[string]any{"type": "string", "enum": []string{"open", "in_progress", "done", "cancelled"}},
 						"notes":  map[string]any{"type": "string"},
 					},
-					"required": []string{"id", "status"},
+					"required": []string{"id"},
 				},
 			},
 		},
@@ -161,7 +192,9 @@ func taskListParamsForExplain() map[string]any {
 	}
 }
 
-// askUserParamsForExplain mirrors DefAskUser's questions-item schema.
+// askUserParamsForExplain mirrors DefAskUser's questions-item schema. It stays
+// free of presentation-only limits so the fixture catches drift in the real
+// tool definition rather than preserving an obsolete header constraint.
 func askUserParamsForExplain() map[string]any {
 	return map[string]any{
 		"type":                 "object",
@@ -174,7 +207,7 @@ func askUserParamsForExplain() map[string]any {
 				"items": map[string]any{
 					"type": "object",
 					"properties": map[string]any{
-						"header":   map[string]any{"type": "string", "maxLength": 12},
+						"header":   map[string]any{"type": "string"},
 						"question": map[string]any{"type": "string"},
 						"options": map[string]any{
 							"type":     "array",
@@ -191,23 +224,33 @@ func askUserParamsForExplain() map[string]any {
 	}
 }
 
+// askUserParamsWithHeaderMaxLengthForExplain is a deliberately constrained
+// variant used only to exercise ExplainSchemaError's generic maxLength
+// formatter. The real ask_user schema intentionally does not impose this cap.
+func askUserParamsWithHeaderMaxLengthForExplain() map[string]any {
+	params := askUserParamsForExplain()
+	item := params["properties"].(map[string]any)["questions"].(map[string]any)["items"].(map[string]any)
+	item["properties"].(map[string]any)["header"] = map[string]any{"type": "string", "maxLength": 12}
+	return params
+}
+
 func TestExplainSchemaError_ArrayItemMissingRequiredField(t *testing.T) {
 	params := taskListParamsForExplain()
 	args := map[string]any{
 		"action":  "update",
-		"updates": []any{map[string]any{"id": float64(1), "notes": "x"}},
+		"updates": []any{map[string]any{"status": "done", "notes": "x"}},
 	}
 	got := ExplainSchemaError("task_list", params, args, "updates/0", "")
-	want := "task_list: missing required argument \"status\" in updates[0].\n" +
-		"Required arguments in updates[0]: id (integer), status (string).\n" +
-		"Example: {\"action\": \"...\"}"
+	want := "task_list: missing required argument \"id\" in updates[0].\n" +
+		"Required arguments in updates[0]: id (integer).\n" +
+		"Example: {\"updates\": [{\"id\": 0}]}"
 	if got != want {
 		t.Fatalf("got:\n%s\nwant:\n%s", got, want)
 	}
 }
 
 func TestExplainSchemaError_NestedPropertyWrongTypeOrValue(t *testing.T) {
-	params := askUserParamsForExplain()
+	params := askUserParamsWithHeaderMaxLengthForExplain()
 	args := map[string]any{
 		"questions": []any{map[string]any{
 			"header":   strings.Repeat("x", 20),
@@ -244,7 +287,7 @@ func TestExplainSchemaError_ConstraintClasses(t *testing.T) {
 		{
 			name:     "maxLength",
 			toolName: "ask_user",
-			params:   askUserParamsForExplain(),
+			params:   askUserParamsWithHeaderMaxLengthForExplain(),
 			args: map[string]any{"questions": []any{map[string]any{
 				"header": strings.Repeat("x", 20), "question": "q", "options": []any{},
 			}}},
@@ -279,7 +322,7 @@ func TestExplainSchemaError_ConstraintClasses(t *testing.T) {
 			args:             map[string]any{"action": "bogus"},
 			instanceLocation: "action",
 			keyword:          "enum",
-			want:             `task_list: argument "action" is not one of the allowed values: view, append, update. Value is "bogus".`,
+			want:             `task_list: argument "action" is not one of the allowed values: "view", "append", "update". Value is "bogus".`,
 		},
 		{
 			name:     "nested enum",
@@ -291,7 +334,78 @@ func TestExplainSchemaError_ConstraintClasses(t *testing.T) {
 			},
 			instanceLocation: "updates/0/status",
 			keyword:          "enum",
-			want:             `task_list: argument "updates[0].status" is not one of the allowed values: open, in_progress, done, cancelled. Value is "bogus".`,
+			want:             `task_list: argument "updates[0].status" is not one of the allowed values: "open", "in_progress", "done", "cancelled". Value is "bogus".`,
+		},
+		{
+			// Issue #625: a non-string enum's allowed values used to be dropped,
+			// leaving an empty list that fell back to the generic "wrong type or
+			// value" message. Enum values arrive as float64 here, as they do
+			// when a tool schema is JSON-decoded into map[string]any, and render
+			// bare so the model can copy one straight back into the argument.
+			name:     "integer enum",
+			toolName: "my_tool",
+			params: map[string]any{
+				"type": "object",
+				"properties": map[string]any{
+					"n": map[string]any{"type": "integer", "enum": []any{float64(1), float64(2), float64(3)}},
+				},
+				"required": []string{"n"},
+			},
+			args:             map[string]any{"n": float64(5)},
+			instanceLocation: "n",
+			keyword:          "enum",
+			want:             `my_tool: argument "n" is not one of the allowed values: 1, 2, 3. Value is "5".`,
+		},
+		{
+			// A boolean enum's allowed values render bare too. Quoting them
+			// ("true", "false") would assert a JSON string, coaching a retry
+			// with {"flag": "true"} that fails validation the same way.
+			name:     "boolean enum",
+			toolName: "my_tool",
+			params: map[string]any{
+				"type": "object",
+				"properties": map[string]any{
+					"flag": map[string]any{"type": "boolean", "enum": []any{true, false}},
+				},
+				"required": []string{"flag"},
+			},
+			args:             map[string]any{"flag": "yes"},
+			instanceLocation: "flag",
+			keyword:          "enum",
+			want:             `my_tool: argument "flag" is not one of the allowed values: true, false. Value is "yes".`,
+		},
+		{
+			// A genuinely typed Go slice (not []any) renders the same as its
+			// []any equivalent: schema compilation accepts this shape and
+			// preserves it through cloning, so formatEnumValues must too.
+			name:     "typed []int slice enum",
+			toolName: "my_tool",
+			params: map[string]any{
+				"type": "object",
+				"properties": map[string]any{
+					"n": map[string]any{"type": "integer", "enum": []int{1, 2, 3}},
+				},
+				"required": []string{"n"},
+			},
+			args:             map[string]any{"n": 5},
+			instanceLocation: "n",
+			keyword:          "enum",
+			want:             `my_tool: argument "n" is not one of the allowed values: 1, 2, 3. Value is "5".`,
+		},
+		{
+			name:     "typed []bool slice enum",
+			toolName: "my_tool",
+			params: map[string]any{
+				"type": "object",
+				"properties": map[string]any{
+					"flag": map[string]any{"type": "boolean", "enum": []bool{true, false}},
+				},
+				"required": []string{"flag"},
+			},
+			args:             map[string]any{"flag": "yes"},
+			instanceLocation: "flag",
+			keyword:          "enum",
+			want:             `my_tool: argument "flag" is not one of the allowed values: true, false. Value is "yes".`,
 		},
 	}
 	for _, tc := range tests {

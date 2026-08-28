@@ -9,6 +9,15 @@ type subscription struct {
 	generation uint64
 	cut        uint64
 	buffer     []SequencedNotification
+	// withdrawn marks a buffering entry whose connection unsubscribed the
+	// thread mid-capture. The client's unsubscribe already succeeded on the
+	// wire, so the entry is capture bookkeeping, not a live interest:
+	// queries skip it, no records buffer into it, and the capture's
+	// commit/abort resolves it by dropping the thread rather than
+	// resurrecting a subscription the client no longer holds. Living on the
+	// entry, the mark shares its lifetime: removal and replacement dispose
+	// of it for free.
+	withdrawn bool
 }
 
 type connectionSubscriptionSnapshot struct {
@@ -38,6 +47,31 @@ func (s *Subscriptions) Subscribe(connID, threadID string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.subscribeLocked(&subscription{connID: connID, threadID: threadID})
+}
+
+// Unsubscribe removes the connection's subscription to one thread. It is
+// idempotent: unsubscribing a thread this connection never held is a no-op,
+// so a client racing its own re-subscribe can never wedge the registry.
+//
+// A thread currently held by a BUFFERING capture generation marks the entry
+// withdrawn and leaves it in place: the capture displaced the connection's
+// previous subscriptions into its rollback snapshot, and removing the
+// buffering entry here would strand that snapshot (withdrawBuffered matches
+// on the live generation and would bail without restoring). The generation's
+// own commit/abort resolves the entry, either way honoring the drop (see
+// subscription.withdrawn).
+func (s *Subscriptions) Unsubscribe(connID, threadID string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	sub, ok := s.byConn[connID][threadID]
+	if !ok {
+		return
+	}
+	if sub.buffering {
+		sub.withdrawn = true
+		return
+	}
+	s.removeThreadLocked(connID, threadID)
 }
 
 func (s *Subscriptions) ReplaceConnectionSubscriptions(connID, threadID string) {
@@ -88,12 +122,19 @@ func (s *Subscriptions) withdrawBuffered(
 		s.removeConnectionLocked(connID)
 		for i := range rollback.connection.subscriptions {
 			sub := rollback.connection.subscriptions[i]
+			if sub.withdrawn || (current.withdrawn && sub.threadID == threadID) {
+				// The client explicitly unsubscribed this thread mid-capture;
+				// restoring it would resurrect a thread it asked to stop
+				// receiving. Everything else the capture displaced comes back
+				// unchanged.
+				continue
+			}
 			s.subscribeLocked(&sub)
 		}
 		return true
 	}
 	s.removeThreadLocked(connID, threadID)
-	if rollback.threadPrevious != nil {
+	if rollback.threadPrevious != nil && !current.withdrawn && !rollback.threadPrevious.withdrawn {
 		previous := *rollback.threadPrevious
 		s.subscribeLocked(&previous)
 	}
@@ -119,7 +160,9 @@ func (s *Subscriptions) Route(record SequencedNotification) []string {
 	var live []string
 	for connID, sub := range s.byThread[record.ThreadID] {
 		if sub.buffering {
-			sub.buffer = append(sub.buffer, record)
+			if !sub.withdrawn {
+				sub.buffer = append(sub.buffer, record)
+			}
 			continue
 		}
 		live = append(live, connID)
@@ -134,6 +177,12 @@ func (s *Subscriptions) Release(connID, threadID string, generation uint64) ([]S
 	if sub == nil || !sub.buffering || sub.generation != generation {
 		return nil, false
 	}
+	if sub.withdrawn {
+		// The client unsubscribed mid-capture (see subscription.withdrawn):
+		// drop the entry instead of committing it live.
+		s.removeThreadLocked(connID, threadID)
+		return nil, true
+	}
 	release := make([]SequencedNotification, 0, len(sub.buffer))
 	for _, record := range sub.buffer {
 		if record.Seq > sub.cut {
@@ -145,18 +194,26 @@ func (s *Subscriptions) Release(connID, threadID string, generation uint64) ([]S
 	return release, true
 }
 
+// IsSubscribed reports whether the connection holds a live interest in the
+// thread; a withdrawn mid-capture entry does not count (see
+// subscription.withdrawn).
 func (s *Subscriptions) IsSubscribed(connID, threadID string) bool {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
-	_, ok := s.byConn[connID][threadID]
-	return ok
+	sub, ok := s.byConn[connID][threadID]
+	return ok && !sub.withdrawn
 }
 
+// Threads lists the threads the connection holds a live interest in; a
+// withdrawn mid-capture entry does not count (see subscription.withdrawn).
 func (s *Subscriptions) Threads(connID string) []string {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	threads := make([]string, 0, len(s.byConn[connID]))
-	for threadID := range s.byConn[connID] {
+	for threadID, sub := range s.byConn[connID] {
+		if sub.withdrawn {
+			continue
+		}
 		threads = append(threads, threadID)
 	}
 	return threads
@@ -166,16 +223,29 @@ func (s *Subscriptions) Connections(threadID string) []string {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	conns := make([]string, 0, len(s.byThread[threadID]))
-	for connID := range s.byThread[threadID] {
+	for connID, sub := range s.byThread[threadID] {
+		if sub.withdrawn {
+			continue
+		}
 		conns = append(conns, connID)
 	}
 	return conns
 }
 
+// ConnectionCount reports how many connections hold a live interest in the
+// thread, skipping withdrawn entries (see subscription.withdrawn) — counting
+// one would let a subscription the client dropped hold the relay open.
 func (s *Subscriptions) ConnectionCount(threadID string) int {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
-	return len(s.byThread[threadID])
+	count := 0
+	for _, sub := range s.byThread[threadID] {
+		if sub.withdrawn {
+			continue
+		}
+		count++
+	}
+	return count
 }
 
 func (s *Subscriptions) RemoveConnection(connID string) {

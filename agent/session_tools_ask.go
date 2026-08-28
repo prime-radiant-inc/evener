@@ -59,7 +59,7 @@ func (s *Session) askPendingCount() int {
 // HasPendingAsk reports whether the session has an unresolved ask_user
 // question. Exported so a cross-module gate can mirror the entry gate's
 // refusal predicate (session_lifecycle.go's processInputKindWithProvenance,
-// spec §5.3) exactly: cmd/evener/serve.go's pre-dispatch /status shadow-write
+// spec §5.3) exactly: cmd/evener/serve.go's pre-dispatch status shadow-write
 // hold must skip the write for precisely the wakes the entry gate will
 // refuse. Keying on the pending set rather than raw SessionState matters
 // since attention-status-model v5: SessionAwaiting no longer implies a
@@ -161,8 +161,8 @@ func normalizeAskArgs(args map[string]any) (map[string]any, error) {
 }
 
 // parseAskQuestions extracts the askQuestions from an ask_user call's parsed
-// arguments. Schema-level shape (question/option counts, header maxLength,
-// required fields) is already enforced by the registry's JSON-Schema
+// arguments. Schema-level shape (question/option counts, required fields) is
+// already enforced by the registry's JSON-Schema
 // validation before the live Exec below ever runs (spec §5.1) — this checks
 // only the two semantic rules the schema cannot express: option labels
 // unique within a question, and at most one recommended option per

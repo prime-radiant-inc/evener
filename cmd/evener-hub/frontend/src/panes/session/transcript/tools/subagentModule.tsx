@@ -6,13 +6,13 @@ import { useEffect } from "react";
 import { type ItemModel, SYSTEM_PRELUDE_TURN_ID } from "../../../../protocol/model";
 import type { EvenerDelegateInfo } from "../../../../protocol/types.gen";
 import { threadsStore, useThreadsStore } from "../../../../stores/threads";
-import { Chevron, IconButton } from "../../../../widgets";
+import { Chevron, IconButton, Timestamp } from "../../../../widgets";
 import { isDisclosureOpen, toggleDisclosure } from "../../../../widgets/disclosure/disclosureStore";
 import { requireClass } from "../../../../widgets/internal/requireClass";
 import { formatUsagePair } from "../../chrome/activityFormat";
 import { cadenceStateForStatus, useSessionNow } from "../../liveness";
-import { formatClockTimeSeconds, formatElapsed, plainQuoteLine } from "../messages/format";
-import { statedPurposeOf } from "../ToolRow";
+import { formatElapsed, plainQuoteLine } from "../messages/format";
+import { statedIntentOf } from "../ToolRow";
 import type { ToolRenderProps } from "../toolRenderers";
 import { registerToolRenderer } from "../toolRenderers";
 import { parseJSONObject, str } from "./helpers";
@@ -38,6 +38,7 @@ const CLASS = {
   statusGlyph: requireClass(styles.statusGlyph, "subagentmodule.module.css", "statusGlyph"),
   srOnly: requireClass(styles.srOnly, "subagentmodule.module.css", "srOnly"),
   quote: requireClass(styles.quote, "subagentmodule.module.css", "quote"),
+  quoteText: requireClass(styles.quoteText, "subagentmodule.module.css", "quoteText"),
   stats: requireClass(styles.stats, "subagentmodule.module.css", "stats"),
   statsSep: requireClass(styles.statsSep, "subagentmodule.module.css", "statsSep"),
   statsSpring: requireClass(styles.statsSpring, "subagentmodule.module.css", "statsSpring"),
@@ -92,8 +93,8 @@ const STATUS_GLYPH: Record<SubagentRowKind | "attention", string> = {
 //   child's feed otherwise drowns real steps in them (every round produces
 //   one). Excluded by eventKind - the stable typed discriminator, not by
 //   matching the "Round timings" description text.
-// - purpose-less tool calls: a whitespace-only description is ABSENCE, not a
-//   step - the same statedPurposeOf rule the main transcript's tool row
+// - intent-less tool calls: a whitespace-only description is ABSENCE, not a
+//   step - the same statedIntentOf rule the main transcript's tool row
 //   applies, so a line is a quote on one surface iff it is on the other.
 function deriveQuotes(items: ItemModel[]): Quote[] {
   const out: Quote[] = [];
@@ -106,9 +107,9 @@ function deriveQuotes(items: ItemModel[]): Quote[] {
       if (text !== "") out.push({ id: it.id, text, msg: true, startedAt: it.startedAt, completedAt: it.completedAt });
       continue;
     }
-    const purpose = statedPurposeOf(it);
-    if (purpose !== undefined) {
-      out.push({ id: it.id, text: purpose, msg: false, startedAt: it.startedAt, completedAt: it.completedAt });
+    const intent = statedIntentOf(it);
+    if (intent !== undefined) {
+      out.push({ id: it.id, text: intent, msg: false, startedAt: it.startedAt, completedAt: it.completedAt });
     }
   }
   return out;
@@ -301,16 +302,22 @@ function SubagentCard({
                     : live && q.startedAt !== undefined
                       ? "…"
                       : undefined;
-                const stamp = formatClockTimeSeconds(q.startedAt);
-                const meta = [runtime, stamp].filter((s) => s !== undefined).join(" · ");
+                // Relative start time (absolute on hover) replaces the
+                // always-visible wall clock; an unparseable start omits it.
+                const startMs = q.startedAt !== undefined ? Date.parse(q.startedAt) : Number.NaN;
+                const hasStart = !Number.isNaN(startMs);
                 return (
-                  <li
-                    key={q.id}
-                    value={q.ordinal}
-                    className={live ? `${CLASS.quoteItem} ${CLASS.quoteLive}` : CLASS.quoteItem}
-                  >
-                    {q.msg ? <em className={CLASS.quoteMsg}>{q.text}</em> : <span>{q.text}</span>}
-                    {meta && <span className={CLASS.quoteMeta}>{meta}</span>}
+                  <li key={q.id} className={live ? `${CLASS.quoteItem} ${CLASS.quoteLive}` : CLASS.quoteItem}>
+                    <span className={CLASS.quoteText}>
+                      {q.msg ? <em className={CLASS.quoteMsg}>{q.text}</em> : q.text}
+                    </span>
+                    {(runtime !== undefined || hasStart) && (
+                      <span className={CLASS.quoteMeta}>
+                        {runtime !== undefined && <span>{runtime}</span>}
+                        {runtime !== undefined && hasStart && <span className={CLASS.statsSep}>·</span>}
+                        {hasStart && <Timestamp value={startMs} now={nowMs} />}
+                      </span>
+                    )}
                   </li>
                 );
               })}

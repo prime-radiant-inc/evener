@@ -55,8 +55,35 @@ func TestBuildTree_ProjectsRunningInProcessSubagent(t *testing.T) {
 	parent := LiveEntry{PID: 1, SessionID: "parent", Status: appwire.ThreadStatusIdle, RunningSubagentIDs: []string{"child"}}
 	tree := BuildTreeAt(metas, []LiveEntry{parent}, nil, now)
 	child := tree.Projects[0].Current[0].Children[0]
+	if child.State != "idle" {
+		t.Fatalf("running in-process child state = %q, want idle (liveness is not activity)", child.State)
+	}
+	if tree.Projects[0].RollupState != "idle" || tree.Projects[0].Expanded {
+		t.Fatalf("project rollup = %q expanded=%v, want idle/false", tree.Projects[0].RollupState, tree.Projects[0].Expanded)
+	}
+}
+
+// TestBuildTree_ChildOwnLiveEntryBeatsParentProjection proves the removed
+// runningChildIDs override was wrong: a child with its own live entry
+// reporting "active" must keep that state even when its parent's daemon
+// lists it in RunningSubagentIDs with no RunningSubagentStates (which would
+// have fallen back to idle and overwritten the child's own truth).
+func TestBuildTree_ChildOwnLiveEntryBeatsParentProjection(t *testing.T) {
+	now := time.Date(2026, 7, 14, 12, 0, 0, 0, time.UTC)
+	metas := []schema.SessionMeta{
+		{ID: "parent", UpdatedAt: now, EnvInfo: schema.EnvironmentInfo{WorkingDir: "/projects/evener"}},
+		{ID: "child", ParentSessionID: "parent", IsSubagent: true, UpdatedAt: now, EnvInfo: schema.EnvironmentInfo{WorkingDir: "/projects/evener"}},
+	}
+	live := []LiveEntry{
+		// Parent lists child as a running subagent but carries no state for it.
+		{PID: 1, SessionID: "parent", Status: appwire.ThreadStatusIdle, RunningSubagentIDs: []string{"child"}},
+		// Child has its own live entry reporting active — its own daemon truth.
+		{PID: 2, SessionID: "child", Status: appwire.ThreadStatusActive},
+	}
+	tree := BuildTreeAt(metas, live, nil, now)
+	child := tree.Projects[0].Current[0].Children[0]
 	if child.State != "active" {
-		t.Fatalf("running in-process child state = %q, want active", child.State)
+		t.Fatalf("child state = %q, want active (child's own live entry beats parent's no-state projection)", child.State)
 	}
 	if tree.Projects[0].RollupState != "active" || !tree.Projects[0].Expanded {
 		t.Fatalf("project rollup = %q expanded=%v, want active/true", tree.Projects[0].RollupState, tree.Projects[0].Expanded)

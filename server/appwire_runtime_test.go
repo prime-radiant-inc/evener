@@ -2,6 +2,7 @@ package server
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"reflect"
@@ -12,6 +13,13 @@ import (
 	"primeradiant.com/evener/appwire"
 	"primeradiant.com/evener/internal/appserver"
 )
+
+func TestTaskPatchPreservesFullyCancelledOutcome(t *testing.T) {
+	got := taskPatch(appwire.TaskUpdatedParams{Total: 3, Cancelled: 3, Remaining: 0})
+	if got == nil || got.Total != 3 || got.Done != 0 || got.Cancelled != 3 || got.Remaining != 0 || got.Current != nil {
+		t.Fatalf("taskPatch() = %+v, want fully cancelled task state", got)
+	}
+}
 
 func TestAppCapabilities_SteerGatedOnActiveTurn(t *testing.T) {
 	t.Parallel()
@@ -48,6 +56,29 @@ func TestAppCapabilities_SteerGatedOnActiveTurn(t *testing.T) {
 			got := s.appCapabilities(tc.state, tc.processing)
 			if got.Steer != tc.wantSteer {
 				t.Fatalf("Steer = %v, want %v", got.Steer, tc.wantSteer)
+			}
+		})
+	}
+}
+
+func TestAppCapabilities_AdvertisesClearWhenConfiguredAndSettled(t *testing.T) {
+	t.Parallel()
+	s := NewServer(ServerConfig{})
+	s.SetClearFunc(func(context.Context, appwire.ThreadClearParams) error { return nil })
+
+	for _, tc := range []struct {
+		name       string
+		state      string
+		processing bool
+		wantClear  bool
+	}{
+		{name: "idle", state: appwire.ThreadStatusIdle, wantClear: true},
+		{name: "active", state: appwire.ThreadStatusActive, processing: true},
+		{name: "closed", state: appwire.ThreadStatusClosed},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := s.appCapabilities(tc.state, tc.processing).Clear; got != tc.wantClear {
+				t.Fatalf("Clear = %v, want %v", got, tc.wantClear)
 			}
 		})
 	}
@@ -178,6 +209,40 @@ func TestAppDiagnosticsFromDetailedStatus_MCPStatusError(t *testing.T) {
 	}
 	if m.Error != "boom" {
 		t.Errorf("MCP[0].Error = %q, want boom", m.Error)
+	}
+}
+
+func TestAppDiagnosticsFromDetailedStatus_PreservesPluginPresence(t *testing.T) {
+	empty := appDiagnosticsFromDetailedStatus(DetailedStatus{Plugins: []PluginStatusInfo{}})
+	if empty.Plugins == nil {
+		t.Fatal("explicit empty Plugins became nil")
+	}
+	raw, err := json.Marshal(empty)
+	if err != nil {
+		t.Fatalf("marshal empty diagnostics: %v", err)
+	}
+	var wire map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &wire); err != nil {
+		t.Fatalf("decode empty diagnostics: %v", err)
+	}
+	if got := string(wire["plugins"]); got != "[]" {
+		t.Fatalf("serialized empty plugins = %s, want []", got)
+	}
+
+	legacy := appDiagnosticsFromDetailedStatus(DetailedStatus{})
+	if legacy.Plugins != nil {
+		t.Fatalf("nil Plugins became non-nil: %#v", legacy.Plugins)
+	}
+	raw, err = json.Marshal(legacy)
+	if err != nil {
+		t.Fatalf("marshal legacy diagnostics: %v", err)
+	}
+	wire = nil
+	if err := json.Unmarshal(raw, &wire); err != nil {
+		t.Fatalf("decode legacy diagnostics: %v", err)
+	}
+	if _, ok := wire["plugins"]; ok {
+		t.Fatalf("nil plugins must remain absent: %s", raw)
 	}
 }
 

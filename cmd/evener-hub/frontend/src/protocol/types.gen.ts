@@ -15,6 +15,18 @@ export interface AgentMessageResetParams {
   itemId: string;
 }
 
+export interface ArchiveParams {
+  kind: string;
+  id: string;
+  workingDir?: string;
+  archived: boolean;
+}
+
+export interface ArchiveResponse {
+  ok: boolean;
+  navigation: NavigationMutation;
+}
+
 export interface AttentionChanged {
   threadId: string;
   title: string;
@@ -33,6 +45,10 @@ export interface AttentionSummary {
   needsYou: number;
   error: number;
   working: number;
+}
+
+export interface AuthApiKeyClearParams {
+  provider: string;
 }
 
 export interface AuthApiKeySetParams {
@@ -109,6 +125,7 @@ export interface AuthStatusResponse {
   hasStoredOAuth: boolean;
   hasStoredFile?: boolean;
   envVar?: string;
+  shadowedEnvVar?: string;
   email?: string;
   storedEmail?: string;
   accountId?: string;
@@ -150,11 +167,25 @@ export interface CommandListResponse {
   commands: CommandDescriptor[];
 }
 
+export interface DeletionSkip {
+  id: string;
+  reason: string;
+}
+
 export interface DiagnosticCause {
   kind: string;
   provider?: string;
   model?: string;
   status?: number;
+}
+
+export interface DirsCreateParams {
+  path: string;
+}
+
+export interface DirsCreateResponse {
+  path: string;
+  created: boolean;
 }
 
 export interface EmptyParams {
@@ -230,11 +261,19 @@ export interface EvenerDiagnostics {
   mcp?: EvenerMCPServerInfo[];
   skills?: EvenerSkillInfo[];
   plugins?: EvenerPluginInfo[];
-  hooks?: Record<string, number>;
+  hookEvents?: EvenerHookEventStatus[];
   jobs?: EvenerJobInfo[];
   delegates?: EvenerDelegateInfo[];
   turnSlots?: EvenerTurnSlots;
   agents?: string[];
+  delegateDiagnostics?: string[];
+}
+
+export interface EvenerHookEventStatus {
+  event: string;
+  count: number;
+  tier?: string;
+  supported: boolean;
 }
 
 export interface EvenerJobInfo {
@@ -251,6 +290,7 @@ export interface EvenerJobInfo {
   fromWatch?: boolean;
   background?: boolean;
   command?: string;
+  intent?: string;
   parentDelegateId?: string;
   delegateId?: string;
   task?: string;
@@ -292,6 +332,7 @@ export interface EvenerSkillInfo {
 }
 
 export interface EvenerSteeringInjectedParams {
+  startedAt?: number;
   threadId: string;
   ref: string;
   text?: string;
@@ -314,9 +355,11 @@ export interface EvenerSubagentPreviewResponse {
 
 export interface EvenerThread {
   ref: string;
+  instanceId?: string;
   parentRef?: string;
   kind?: string;
   profile?: string;
+  turnCount?: number;
   activeTurnId?: string;
   contextPressure?: number;
   contextUsed?: number;
@@ -338,6 +381,7 @@ export interface EvenerThread {
   reasoningEffort?: string;
   reasoningEffortLevels?: string[];
   supportsReasoning?: boolean;
+  visionModel?: string;
 }
 
 export interface EvenerToolInfo {
@@ -359,6 +403,17 @@ export interface EvenerUsage {
   totalTokens?: number;
 }
 
+export interface FavoriteSetParams {
+  kind: string;
+  id: string;
+  favorited: boolean;
+}
+
+export interface FavoriteSetResponse {
+  ok: boolean;
+  navigation: NavigationMutation;
+}
+
 export interface FeatureSet {
   threadList: boolean;
   threadTurnsList: boolean;
@@ -372,6 +427,15 @@ export interface FeatureSet {
   modelList: boolean;
   directoryComplete: boolean;
   auth: boolean;
+  transcriptDisplaySettings?: boolean;
+}
+
+export interface GitHeadParams {
+  cwd: string;
+}
+
+export interface GitHeadResponse {
+  head: string;
 }
 
 export interface GitInfo {
@@ -390,8 +454,15 @@ export interface GoalSetResponse {
 }
 
 export interface GoalState {
+  objective?: string;
   status: string;
   iterations: number;
+}
+
+export interface GoalUpdatedParams {
+  threadId: string;
+  ref: string;
+  goal: GoalState | null;
 }
 
 export interface HarnessDescriptor {
@@ -420,6 +491,7 @@ export interface InitializeResponse {
   protocolVersion: string;
   sourceId: string;
   features: FeatureSet;
+  navigation?: NavigationCapability;
 }
 
 export interface InputItem {
@@ -434,36 +506,54 @@ export interface InputItem {
 }
 
 export interface InstanceCreateParams {
-  type: string;
   name: string;
-  apiStyle: string;
-  baseUrl: string;
+  base: string;
+  baseUrl?: string;
+  protocol?: string;
+  surface?: string;
+  vars?: Record<string, string>;
+  apiKeyEnv?: string;
+  credentialHeader?: string;
 }
 
 export interface InstanceEditParams {
   name: string;
-  apiStyle: string;
-  baseUrl: string;
+  baseUrl?: string;
+  clearBaseUrl?: boolean;
+  protocol?: string;
+  surface?: string;
+  vars?: Record<string, string>;
 }
 
 export interface InstanceEntry {
   name: string;
-  type: string;
-  apiStyle: string;
-  baseUrl: string;
+  base?: string;
+  providerId: string;
+  protocol: string;
+  surface?: string;
+  auth: string;
+  baseUrl?: string;
+  vars?: Record<string, string>;
+  implicit: boolean;
+  hidden?: boolean;
   isDefault: boolean;
   authModes?: string[];
   activeSource: string;
   hasStoredFile?: boolean;
   hasStoredOAuth: boolean;
   envVar?: string;
+  shadowedEnvVar?: string;
   storedEmail?: string;
   credentialRequired: boolean;
+  warnings?: string[];
 }
 
 export interface InstanceListResponse {
   instances: InstanceEntry[];
-  availableTypes: string[];
+  availableProviders: ProviderDescriptor[];
+  diagnostics?: string[];
+  userLayer?: string;
+  writesRefused?: boolean;
 }
 
 export interface InstanceRemoveParams {
@@ -666,6 +756,7 @@ export interface LaunchConfigLayer {
   systemPromptAppendText?: string;
   systemPromptAppend?: string[];
   modelFallbacks?: string[];
+  enabledPlugins?: string[];
   mcps?: MCPServerSpec[];
   env?: Record<string, string>;
   verbose?: boolean;
@@ -714,6 +805,10 @@ export interface LaunchOption {
   envFallback?: LaunchOptionEnvFallback;
   choices?: LaunchOptionChoice[];
   driverSupport?: Record<string, boolean>;
+  builtinDefault?: string;
+  builtinDefaultInt?: number;
+  builtinDefaultBool?: boolean;
+  builtinDefaultLabel?: string;
 }
 
 export interface LaunchOptionChoice {
@@ -725,7 +820,6 @@ export interface LaunchOptionChoice {
 
 export interface LaunchOptionEnvFallback {
   name: string;
-  secret?: boolean;
 }
 
 export interface LaunchOptionSchemaResponse {
@@ -786,9 +880,28 @@ export interface MarketplaceSourceInput {
   sha?: string;
 }
 
+export interface MobilePairingParams {
+  origin: string;
+}
+
+export interface MobilePairingResponse {
+  authUrl: string;
+}
+
 export interface ModelDescriptor {
   provider: string;
   model: string;
+  displayName?: string;
+  contextWindow?: number;
+  maxInputTokens?: number;
+  supportsTools?: boolean;
+  supportsVision?: boolean;
+  maxOutputTokens?: number;
+  supportsWebSearch?: boolean;
+  supportsReasoning?: boolean;
+  inputCostPerMillion?: number;
+  outputCostPerMillion?: number;
+  reasoningEffortLevels?: string[];
 }
 
 export interface ModelListDiagnostic {
@@ -814,9 +927,199 @@ export interface MutationReceipt {
   clientMutationId: string;
   disposition: string;
   threadId: string;
+  instanceId?: string;
   turnId?: string;
   queueEntryIds?: string[];
   projectionState: string;
+}
+
+export interface NavigationCapability {
+  version: number;
+  generationId: string;
+  sequence: number;
+}
+
+export interface NavigationCatalogs {
+  projects: NavigationResourceDescriptor;
+  archived_projects: NavigationResourceDescriptor;
+  test_runs: NavigationResourceDescriptor;
+}
+
+export interface NavigationInvalidatedPayload {
+  generationId: string;
+  sequence: number;
+  targets: NavigationInvalidationTarget[];
+}
+
+export interface NavigationInvalidationTarget {
+  kind: "manifest" | "section" | "pin_catalog" | "pin_section" | "catalog" | "project" | "all_loaded_projects";
+  section?: string;
+  sectionId?: string;
+  catalog?: string;
+  projectKey?: string;
+  revision?: number;
+}
+
+export interface NavigationJobSummary {
+  job_id: string;
+  job_type: string;
+  status: string;
+  command?: string;
+  task?: string;
+  reason?: string;
+  intent?: string;
+  full_command?: string;
+}
+
+export interface NavigationManifest {
+  generation_id: string;
+  revision: number;
+  sources: Source[];
+  attentionSummary: AttentionSummary;
+  sections: NavigationSections;
+  catalogs: NavigationCatalogs;
+}
+
+export interface NavigationMutation {
+  generation_id: string;
+  targets: NavigationInvalidationTarget[];
+}
+
+export interface NavigationPinSectionCatalog {
+  generation_id: string;
+  revision: number;
+  pin_sections: NavigationPinSectionDescriptor[];
+  remaining: number;
+}
+
+export interface NavigationPinSectionDescriptor {
+  id: string;
+  name: string;
+  count: number;
+}
+
+export interface NavigationProjectCatalog {
+  generation_id: string;
+  revision: number;
+  projects: NavigationProjectSummary[];
+  remaining: number;
+}
+
+export interface NavigationProjectPage {
+  generation_id: string;
+  revision: number;
+  key: string;
+  tier: string;
+  offset: number;
+  sessions: NavigationSessionSummary[];
+  remaining: number;
+  truncated: boolean;
+}
+
+export interface NavigationProjectResource {
+  generation_id: string;
+  revision: number;
+  key: string;
+  current: NavigationTier;
+  recent: NavigationTier;
+  archived: NavigationTier;
+  truncated: boolean;
+}
+
+export interface NavigationProjectSummary {
+  key: string;
+  name: string;
+  working_dir?: string;
+  rollup_state?: string;
+  rollup_live?: number;
+  rollup_attn?: number;
+  default_expanded?: boolean;
+  more_current?: number;
+  more_recent?: number;
+  more_archived?: number;
+  worktrees?: number;
+  is_archived?: boolean;
+  favorite?: boolean;
+  session_count: number;
+}
+
+export interface NavigationReadParams {
+  resource: string;
+  section?: string;
+  sectionId?: string;
+  catalog?: string;
+  projectKey?: string;
+  tier?: string;
+  ref?: string;
+  offset?: number;
+  limit?: number;
+  etag?: string;
+}
+
+export interface NavigationReadResponse {
+  status: string;
+  generationId: string;
+  revision: number;
+  etag: string;
+  data?: unknown;
+}
+
+export interface NavigationResourceDescriptor {
+  count: number;
+}
+
+export interface NavigationSectionResource {
+  generation_id: string;
+  revision: number;
+  sessions: NavigationSessionSummary[];
+  remaining: number;
+  truncated: boolean;
+}
+
+export interface NavigationSections {
+  live: NavigationResourceDescriptor;
+  needs_you: NavigationResourceDescriptor;
+  pin_sections: NavigationResourceDescriptor;
+}
+
+export interface NavigationSessionLocation {
+  generation_id: string;
+  revision: number;
+  ref: string;
+  top_level_ref: string;
+  project_key?: string;
+  top_level: boolean;
+  tier?: string;
+  pin_section_id?: string;
+  session?: NavigationSessionSummary;
+}
+
+export interface NavigationSessionSummary {
+  ref: string;
+  host_id: string;
+  session_id: string;
+  title: string;
+  project: string;
+  state: string;
+  kind: string;
+  branch?: string;
+  cluster_count?: number;
+  favorite?: boolean;
+  rename?: boolean;
+  live: boolean;
+  ask_pending?: boolean;
+  dormant?: boolean;
+  updated_at?: string;
+  more_subagents?: number;
+  omitted_descendants?: number;
+  running_jobs?: NavigationJobSummary[];
+  completed_jobs?: NavigationJobSummary[];
+  children: NavigationSessionSummary[];
+}
+
+export interface NavigationTier {
+  sessions: NavigationSessionSummary[];
+  remaining: number;
 }
 
 export interface OutputImage {
@@ -860,9 +1163,45 @@ export interface PendingMutation {
   projectionState: string;
 }
 
+export interface PinSection {
+  id: string;
+  name: string;
+  memberCount: number;
+}
+
+export interface PinSectionDeleteParams {
+  sectionId: string;
+}
+
+export interface PinSectionDeleteResponse {
+  ok: boolean;
+  changed: boolean;
+  memberCount: number;
+  navigation: NavigationMutation;
+}
+
+export interface PinSectionRenameParams {
+  sectionId: string;
+  name: string;
+}
+
+export interface PinSectionRenameResponse {
+  ok: boolean;
+  changed: boolean;
+  section: PinSection;
+  navigation: NavigationMutation;
+}
+
 export interface PluginCheckNowResponse {
   updated?: string[];
   errors?: string[];
+}
+
+export interface PluginDiagnostic {
+  name?: string;
+  path?: string;
+  source?: string;
+  message: string;
 }
 
 export interface PluginEntry {
@@ -878,13 +1217,44 @@ export interface PluginEntry {
   lastUpdated: number;
 }
 
+export interface PluginLaunchCandidate {
+  name: string;
+  version?: string;
+  description?: string;
+  source: string;
+  marketplace?: string;
+  path?: string;
+  selected: boolean;
+  skillCount: number;
+  agentCount: number;
+  commandCount: number;
+  hookCount: number;
+  mcpCount: number;
+}
+
 export interface PluginListResponse {
   plugins: PluginEntry[];
+}
+
+export interface PluginPreviewParams {
+  cwd: string;
+  launchOverrides?: LaunchConfigLayer;
+}
+
+export interface PluginPreviewResponse {
+  plugins: PluginLaunchCandidate[];
+  diagnostics?: PluginDiagnostic[];
+  selectionErrors?: PluginSelectionError[];
 }
 
 export interface PluginRefParams {
   plugin: string;
   marketplace: string;
+}
+
+export interface PluginSelectionError {
+  name: string;
+  reason: string;
 }
 
 export interface PluginSetAutoUpgradeParams {
@@ -893,12 +1263,38 @@ export interface PluginSetAutoUpgradeParams {
   autoUpgrade: boolean;
 }
 
+export interface ProjectDeleteParams {
+  key: string;
+  workingDir: string;
+}
+
+export interface ProjectDeleteResponse {
+  deleted: string[];
+  skipped: ProjectDeleteSkip[];
+  navigation: NavigationMutation;
+}
+
+export interface ProjectDeleteSkip {
+  id: string;
+  reason: string;
+}
+
 export interface ProjectsRecentParams {
   limit?: number;
 }
 
 export interface ProjectsRecentResponse {
   data: string[];
+}
+
+export interface ProviderDescriptor {
+  id: string;
+  name?: string;
+  protocol: string;
+  auth: string;
+  varsEnv?: string[];
+  apiKeyEnv?: string[];
+  implicit: boolean;
 }
 
 export interface QueueState {
@@ -952,9 +1348,70 @@ export interface SandboxEscalationResolved {
   escalationId: string;
 }
 
+export interface SearchParams {
+  query?: string;
+}
+
+export interface SearchResponse {
+  live: SearchResult[];
+  past: SearchResult[];
+}
+
+export interface SearchResult {
+  id: string;
+  title: string;
+  project: string;
+  state: string;
+  age: string;
+  ref: string;
+}
+
 export interface ServerInfo {
   name: string;
   version: string;
+}
+
+export interface SessionDeleteParams {
+  ref: string;
+}
+
+export interface SessionDeleteResponse {
+  deleted: string[];
+  skipped: DeletionSkip[];
+  navigation: NavigationMutation;
+}
+
+export interface SessionPinAssignParams {
+  sessionRef: string;
+  sectionId?: string;
+  sectionName?: string;
+}
+
+export interface SessionPinAssignResponse {
+  ok: boolean;
+  changed: boolean;
+  assignment: SessionPinAssignment;
+  navigation: NavigationMutation;
+}
+
+export interface SessionPinAssignment {
+  sessionRef: string;
+  section: PinSection;
+}
+
+export interface SessionPinUnpinAssignment {
+  sessionRef: string;
+}
+
+export interface SessionPinUnpinParams {
+  sessionRef: string;
+}
+
+export interface SessionPinUnpinResponse {
+  ok: boolean;
+  changed: boolean;
+  assignment: SessionPinUnpinAssignment;
+  navigation: NavigationMutation;
 }
 
 export interface SettingsAgentEntry {
@@ -1012,9 +1469,19 @@ export interface SettingsStorageOverview {
   stateDir?: string;
 }
 
+export interface Source {
+  id: string;
+  label: string;
+  kind: string;
+  online: boolean;
+}
+
 export interface TaskAggregate {
   total: number;
   done: number;
+  cancelled?: number;
+  remaining?: number;
+  current?: TaskSummary;
 }
 
 export interface TaskListParams {
@@ -1025,11 +1492,19 @@ export interface TaskListResponse {
   data: unknown;
 }
 
+export interface TaskSummary {
+  id: number;
+  description: string;
+}
+
 export interface TaskUpdatedParams {
   threadId: string;
   ref: string;
   total: number;
   done: number;
+  cancelled?: number;
+  remaining?: number;
+  current?: TaskSummary;
 }
 
 export interface Thread {
@@ -1066,6 +1541,7 @@ export interface ThreadCapabilities {
   forkFromTurn: boolean;
   shutdown: boolean;
   changeModel: boolean;
+  changeVisionModel: boolean;
   queue: boolean;
   goal: boolean;
   rename: boolean;
@@ -1073,11 +1549,14 @@ export interface ThreadCapabilities {
 
 export interface ThreadClearParams {
   ref: string;
+  clientMutationId: string;
+  expectedInstanceId: string;
 }
 
 export interface ThreadClearResponse {
   thread: Thread;
   ref: string;
+  receipt: MutationReceipt;
 }
 
 export interface ThreadClosedParams {
@@ -1323,6 +1802,22 @@ export interface ThreadTurnsListResponse {
   nextCursor?: string;
 }
 
+export interface ThreadUnsubscribeParams {
+  threadId?: string;
+  ref?: string;
+}
+
+export interface ThreadVisionModelChangedParams {
+  threadId: string;
+  ref: string;
+  visionModel: string;
+}
+
+export interface ThreadVisionModelSetParams {
+  ref: string;
+  visionModel: string;
+}
+
 export interface ToolOutputDeltaParams {
   threadId: string;
   ref: string;
@@ -1330,6 +1825,62 @@ export interface ToolOutputDeltaParams {
   itemId: string;
   callId: string;
   delta: string;
+}
+
+export interface TranscriptDisplayAdvanced {
+  roundTimings: boolean;
+  tokenCounts: boolean;
+  estimatedCost: boolean;
+  systemEvents: boolean;
+  promptEvents: boolean;
+  hookExits: string;
+}
+
+export interface TranscriptDisplayChangedParams {
+  layout: string;
+  revision: number;
+  config: TranscriptDisplayConfig;
+}
+
+export interface TranscriptDisplayConfig {
+  version: number;
+  content: TranscriptDisplayContent;
+  advanced: TranscriptDisplayAdvanced;
+}
+
+export interface TranscriptDisplayContent {
+  kind: string;
+  level?: string;
+  custom?: TranscriptDisplayCustomContent;
+}
+
+export interface TranscriptDisplayCustomContent {
+  toolIntent: boolean;
+  toolCalls: boolean;
+  reasoning: boolean;
+  expandByDefault: boolean;
+}
+
+export interface TranscriptDisplayDefault {
+  revision: number;
+  config: TranscriptDisplayConfig;
+}
+
+export interface TranscriptDisplayDefaults {
+  desktop: TranscriptDisplayDefault;
+  mobile: TranscriptDisplayDefault;
+}
+
+export interface TranscriptDisplayDefaultsPatchParams {
+  layout: string;
+  expectedRevision: number;
+  config: TranscriptDisplayConfig;
+}
+
+export interface TranscriptDisplayPatchResponse {
+  layout: string;
+  revision: number;
+  config: TranscriptDisplayConfig;
 }
 
 export interface Turn {
@@ -1349,6 +1900,7 @@ export interface TurnCancelQueuedParams {
   ref: string;
   index: number;
   clientMutationId: string;
+  expectedInstanceId: string;
   expectedEntryId: string;
 }
 
@@ -1368,6 +1920,7 @@ export interface TurnCompletedParams {
 export interface TurnDrainAsSteerParams {
   ref: string;
   clientMutationId: string;
+  expectedInstanceId: string;
   expectedQueueRevision: number;
   input?: InputItem[];
 }
@@ -1390,6 +1943,7 @@ export interface TurnInterruptParams {
   ref?: string;
   threadId?: string;
   clientMutationId: string;
+  expectedInstanceId: string;
 }
 
 export interface TurnInterruptResponse {
@@ -1400,6 +1954,7 @@ export interface TurnPromoteQueuedAsSteerParams {
   ref: string;
   index: number;
   clientMutationId: string;
+  expectedInstanceId: string;
   expectedEntryId: string;
 }
 
@@ -1410,6 +1965,7 @@ export interface TurnPromoteQueuedAsSteerResponse {
 export interface TurnQueueParams {
   ref: string;
   clientMutationId: string;
+  expectedInstanceId: string;
   input?: InputItem[];
 }
 
@@ -1421,6 +1977,7 @@ export interface TurnStartParams {
   ref?: string;
   threadId?: string;
   clientMutationId: string;
+  expectedInstanceId: string;
   input?: InputItem[];
 }
 
@@ -1439,6 +1996,7 @@ export interface TurnSteerParams {
   ref?: string;
   threadId?: string;
   clientMutationId: string;
+  expectedInstanceId: string;
   input?: InputItem[];
 }
 
@@ -1478,6 +2036,7 @@ export const METHOD_NAMES = [
   "ping",
   "thread/list",
   "thread/read",
+  "thread/unsubscribe",
   "thread/turns/list",
   "thread/turns/items/list",
   "thread/start",
@@ -1487,6 +2046,7 @@ export const METHOD_NAMES = [
   "thread/model/set",
   "evener/thread/name/set",
   "thread/reasoning-effort/set",
+  "thread/vision-model/set",
   "thread/compact/start",
   "thread/shutdown",
   "turn/start",
@@ -1503,8 +2063,21 @@ export const METHOD_NAMES = [
   "evener/thread/transcripts/list",
   "evener/subagentPreview",
   "evener/paths/complete",
+  "evener/dirs/create",
   "evener/projects/recent",
   "evener/path/validate",
+  "evener/git/head",
+  "evener/mobile/pairing",
+  "evener/navigation/read",
+  "evener/favorite/set",
+  "evener/archive/set",
+  "evener/project/delete",
+  "evener/session/delete",
+  "evener/pin-section/rename",
+  "evener/pin-section/delete",
+  "evener/session-pin/assign",
+  "evener/session-pin/unpin",
+  "evener/search",
   "evener/harnesses/list",
   "evener/upgrade",
   "evener/auth/status",
@@ -1514,6 +2087,7 @@ export const METHOD_NAMES = [
   "evener/auth/logout",
   "evener/auth/list",
   "evener/auth/apiKey/set",
+  "evener/auth/apiKey/clear",
   "evener/auth/device/start",
   "evener/auth/device/poll",
   "evener/launch/resolve",
@@ -1528,6 +2102,7 @@ export const METHOD_NAMES = [
   "evener/instance/remove",
   "evener/instance/setDefault",
   "evener/plugin/checkNow",
+  "evener/plugin/preview",
   "evener/marketplace/list",
   "evener/marketplace/add",
   "evener/marketplace/remove",
@@ -1542,6 +2117,8 @@ export const METHOD_NAMES = [
   "evener/plugin/setAutoUpgrade",
   "evener/command/list",
   "evener/settings/overview",
+  "evener/settings/transcriptDisplay/get",
+  "evener/settings/transcriptDisplay/patch",
   "evener/sandbox/escalation/resolve",
 ] as const;
 
@@ -1555,6 +2132,7 @@ export const NOTIFICATION_NAMES = [
   "evener/thread/name/changed",
   "thread/model/changed",
   "thread/reasoning-effort/changed",
+  "thread/vision-model/changed",
   "turn/started",
   "turn/completed",
   "item/started",
@@ -1573,13 +2151,15 @@ export const NOTIFICATION_NAMES = [
   "evener/auth/updated",
   "evener/launch/updated",
   "evener/attention/changed",
+  "evener/navigation/invalidated",
   "evener/marketplace/updated",
   "evener/plugin/updated",
   "evener/thread/resync",
   "evener/task/updated",
+  "evener/goal/updated",
   "evener/sandbox/escalation/requested",
   "evener/sandbox/escalation/resolved",
-  "evener/tree/changed",
+  "evener/settings/transcriptDisplay/changed",
 ] as const;
 
 export type NotificationName = (typeof NOTIFICATION_NAMES)[number];
@@ -1633,6 +2213,7 @@ export interface MethodTypes {
   "ping": { params: EmptyParams; result: EmptyResponse };
   "thread/list": { params: ThreadListParams; result: ThreadListResponse };
   "thread/read": { params: ThreadReadParams; result: ThreadReadResponse };
+  "thread/unsubscribe": { params: ThreadUnsubscribeParams; result: EmptyResponse };
   "thread/turns/list": { params: ThreadTurnsListParams; result: ThreadTurnsListResponse };
   "thread/turns/items/list": { params: ThreadTurnItemsListParams; result: ThreadTurnItemsListResponse };
   "thread/start": { params: ThreadStartParams; result: ThreadStartResponse };
@@ -1642,6 +2223,7 @@ export interface MethodTypes {
   "thread/model/set": { params: ThreadModelSetParams; result: EmptyResponse };
   "evener/thread/name/set": { params: ThreadNameSetParams; result: EmptyResponse };
   "thread/reasoning-effort/set": { params: ThreadReasoningEffortSetParams; result: EmptyResponse };
+  "thread/vision-model/set": { params: ThreadVisionModelSetParams; result: EmptyResponse };
   "thread/compact/start": { params: ThreadCompactStartParams; result: EmptyResponse };
   "thread/shutdown": { params: ThreadShutdownParams; result: EmptyResponse };
   "turn/start": { params: TurnStartParams; result: TurnStartResponse };
@@ -1658,8 +2240,21 @@ export interface MethodTypes {
   "evener/thread/transcripts/list": { params: ThreadTranscriptListParams; result: ThreadTranscriptListResponse };
   "evener/subagentPreview": { params: EvenerSubagentPreviewParams; result: EvenerSubagentPreviewResponse };
   "evener/paths/complete": { params: PathsCompleteParams; result: PathsCompleteResponse };
+  "evener/dirs/create": { params: DirsCreateParams; result: DirsCreateResponse };
   "evener/projects/recent": { params: ProjectsRecentParams; result: ProjectsRecentResponse };
   "evener/path/validate": { params: PathValidateParams; result: PathValidateResponse };
+  "evener/git/head": { params: GitHeadParams; result: GitHeadResponse };
+  "evener/mobile/pairing": { params: MobilePairingParams; result: MobilePairingResponse };
+  "evener/navigation/read": { params: NavigationReadParams; result: NavigationReadResponse };
+  "evener/favorite/set": { params: FavoriteSetParams; result: FavoriteSetResponse };
+  "evener/archive/set": { params: ArchiveParams; result: ArchiveResponse };
+  "evener/project/delete": { params: ProjectDeleteParams; result: ProjectDeleteResponse };
+  "evener/session/delete": { params: SessionDeleteParams; result: SessionDeleteResponse };
+  "evener/pin-section/rename": { params: PinSectionRenameParams; result: PinSectionRenameResponse };
+  "evener/pin-section/delete": { params: PinSectionDeleteParams; result: PinSectionDeleteResponse };
+  "evener/session-pin/assign": { params: SessionPinAssignParams; result: SessionPinAssignResponse };
+  "evener/session-pin/unpin": { params: SessionPinUnpinParams; result: SessionPinUnpinResponse };
+  "evener/search": { params: SearchParams; result: SearchResponse };
   "evener/harnesses/list": { params: HarnessListParams; result: HarnessListResponse };
   "evener/upgrade": { params: UpgradeParams; result: UpgradeResponse };
   "evener/auth/status": { params: AuthStatusParams; result: AuthStatusResponse };
@@ -1669,6 +2264,7 @@ export interface MethodTypes {
   "evener/auth/logout": { params: AuthLogoutParams; result: AuthLogoutResponse };
   "evener/auth/list": { params: EmptyParams; result: AuthListResponse };
   "evener/auth/apiKey/set": { params: AuthApiKeySetParams; result: AuthStatusResponse };
+  "evener/auth/apiKey/clear": { params: AuthApiKeyClearParams; result: AuthStatusResponse };
   "evener/auth/device/start": { params: AuthDeviceStartParams; result: AuthDeviceStartResponse };
   "evener/auth/device/poll": { params: AuthDevicePollParams; result: AuthDevicePollResponse };
   "evener/launch/resolve": { params: LaunchConfigResolveParams; result: LaunchConfigResolved };
@@ -1683,6 +2279,7 @@ export interface MethodTypes {
   "evener/instance/remove": { params: InstanceRemoveParams; result: InstanceListResponse };
   "evener/instance/setDefault": { params: InstanceSetDefaultParams; result: InstanceListResponse };
   "evener/plugin/checkNow": { params: EmptyParams; result: PluginCheckNowResponse };
+  "evener/plugin/preview": { params: PluginPreviewParams; result: PluginPreviewResponse };
   "evener/marketplace/list": { params: EmptyParams; result: MarketplaceListResponse };
   "evener/marketplace/add": { params: MarketplaceAddParams; result: MarketplaceListResponse };
   "evener/marketplace/remove": { params: MarketplaceNameParams; result: MarketplaceListResponse };
@@ -1697,6 +2294,8 @@ export interface MethodTypes {
   "evener/plugin/setAutoUpgrade": { params: PluginSetAutoUpgradeParams; result: PluginListResponse };
   "evener/command/list": { params: EmptyParams; result: CommandListResponse };
   "evener/settings/overview": { params: EmptyParams; result: SettingsOverviewResponse };
+  "evener/settings/transcriptDisplay/get": { params: EmptyParams; result: TranscriptDisplayDefaults };
+  "evener/settings/transcriptDisplay/patch": { params: TranscriptDisplayDefaultsPatchParams; result: TranscriptDisplayPatchResponse };
   "evener/sandbox/escalation/resolve": { params: SandboxEscalationResolveParams; result: EmptyResponse };
 }
 
@@ -1708,6 +2307,7 @@ export interface NotificationTypes {
   "evener/thread/name/changed": ThreadNameChangedParams;
   "thread/model/changed": ThreadModelChangedParams;
   "thread/reasoning-effort/changed": ThreadReasoningEffortChangedParams;
+  "thread/vision-model/changed": ThreadVisionModelChangedParams;
   "turn/started": TurnStartedParams;
   "turn/completed": TurnCompletedParams;
   "item/started": ItemLifecycleParams;
@@ -1726,13 +2326,15 @@ export interface NotificationTypes {
   "evener/auth/updated": EvenerAuthUpdatedParams;
   "evener/launch/updated": EvenerLaunchUpdatedParams;
   "evener/attention/changed": AttentionChangedPayload;
+  "evener/navigation/invalidated": NavigationInvalidatedPayload;
   "evener/marketplace/updated": EmptyParams;
   "evener/plugin/updated": EmptyParams;
   "evener/thread/resync": ThreadResyncParams;
   "evener/task/updated": TaskUpdatedParams;
+  "evener/goal/updated": GoalUpdatedParams;
   "evener/sandbox/escalation/requested": SandboxEscalationRequested;
   "evener/sandbox/escalation/resolved": SandboxEscalationResolved;
-  "evener/tree/changed": EmptyParams;
+  "evener/settings/transcriptDisplay/changed": TranscriptDisplayChangedParams;
 }
 
 export type AnyNotification = { [K in NotificationName]: { method: K; params: NotificationTypes[K] } }[NotificationName];

@@ -15,6 +15,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"unicode/utf8"
 
 	"github.com/santhosh-tekuri/jsonschema/v5"
 
@@ -23,9 +24,9 @@ import (
 	"primeradiant.com/evener/llm"
 )
 
-const toolPurposeDescription = "A short verb-first gerund phrase naming what this call is doing, e.g. \"Reading the config file\" or \"Searching for the handler\". Keep it to a few words so it renders nicely as an inline activity label."
+const toolIntentDescription = "Describe what you expect to learn or accomplish from this tool call, using a verb-first gerund. Make the expected outcome clear to the user and your future self; e.g. \"Reading config to identify the active profile\" or \"Searching handlers to locate request routing.\""
 
-// maxToolArgumentBytes caps the size of a tool call's raw argument payload
+// MaxToolArgumentBytes caps the size of a tool call's raw argument payload
 // before it is parsed, so a runaway generation can't push a multi-hundred-KB
 // blob through JSON unmarshaling and schema validation for no useful reason.
 // This must stay above agent/jobs.go's maxPersistedStructuredResultJSONBytes
@@ -35,9 +36,38 @@ const toolPurposeDescription = "A short verb-first gerund phrase naming what thi
 // before it ever reached that graceful path. (Cross-package constant:
 // agent/internal/tool cannot import agent to derive this by reference, so
 // keep the two values in sync by comment.)
-const maxToolArgumentBytes = 2 * 1024 * 1024
+const MaxToolArgumentBytes = 2 * 1024 * 1024
 
-func WithPurposeParameter(td llm.ToolDefinition) llm.ToolDefinition {
+// ValidateRawArguments rejects raw tool argument bytes that must never reach a
+// lossy JSON decode or an allocation-heavy schema path. Callers return this
+// bounded diagnostic directly to keep all prevalidation paths consistent.
+func ValidateRawArguments(arguments []byte) error {
+	if len(arguments) > MaxToolArgumentBytes {
+		return fmt.Errorf("tool arguments too large: %d bytes exceeds the %d byte limit", len(arguments), MaxToolArgumentBytes)
+	}
+	if !utf8.Valid(arguments) {
+		return errors.New("invalid tool arguments JSON: input is not valid UTF-8")
+	}
+	return nil
+}
+
+// ctxIntentKey is the context key carrying a tool call's `intent` argument
+// past the registry's strip point (see ExecuteCall): handlers that want it —
+// the shell tool, stamping it onto the job record — read it with IntentFromContext.
+type ctxIntentKey struct{}
+
+// IntentFromContext returns the tool call's `intent` argument threaded onto
+// ctx by the registry, or "" when the call carried none. It exists so a
+// handler can still see intent after the registry removed it from args.
+func IntentFromContext(ctx context.Context) string {
+	if ctx == nil {
+		return ""
+	}
+	intent, _ := ctx.Value(ctxIntentKey{}).(string)
+	return intent
+}
+
+func WithIntentParameter(td llm.ToolDefinition) llm.ToolDefinition {
 	params := CloneSchemaMap(td.Parameters)
 	if params == nil {
 		params = map[string]any{"type": "object"}
@@ -52,27 +82,27 @@ func WithPurposeParameter(td llm.ToolDefinition) llm.ToolDefinition {
 		props = map[string]any{}
 		params["properties"] = props
 	}
-	if _, exists := props["purpose"]; !exists {
-		props["purpose"] = map[string]any{
+	if _, exists := props["intent"]; !exists {
+		props["intent"] = map[string]any{
 			"type":        "string",
-			"description": toolPurposeDescription,
+			"description": toolIntentDescription,
 		}
 	}
 	td.Parameters = params
 	return td
 }
 
-func WithoutPurposeParameter(td llm.ToolDefinition) llm.ToolDefinition {
+func WithoutIntentParameter(td llm.ToolDefinition) llm.ToolDefinition {
 	params := CloneSchemaMap(td.Parameters)
 	props, _ := params["properties"].(map[string]any)
 	if props != nil {
-		delete(props, "purpose")
+		delete(props, "intent")
 	}
 	switch required := params["required"].(type) {
 	case []string:
-		params["required"] = removeRequiredField(required, "purpose")
+		params["required"] = removeRequiredField(required, "intent")
 	case []any:
-		params["required"] = removeRequiredFieldAny(required, "purpose")
+		params["required"] = removeRequiredFieldAny(required, "intent")
 	}
 	td.Parameters = params
 	return td
@@ -243,7 +273,7 @@ type ExecResult struct {
 	// alongside the text output so the model can "see" the image.
 	ImageData      []byte
 	ImageMediaType string
-	ImagePurpose   string // from the caller: what they hope to learn
+	ImageIntent    string // from the caller: what they hope to learn
 
 	// ToolState is an optional JSON-encoded snapshot emitted alongside
 	// Output via the TOOL_CALL_END event. The LLM never sees this — it's a
@@ -282,7 +312,7 @@ type ImageResult struct {
 	Text      string
 	Data      []byte
 	MediaType string
-	Purpose   string // what the caller hopes to learn from this image
+	Intent    string // what the caller hopes to learn from this image
 }
 
 // ParseImageResult checks if ReadFile output is an image response (the [image: ...]
@@ -339,10 +369,16 @@ func ParseDocumentResult(_ string, readFileOutput string) *ImageResult {
 // Execute), its compiled validation schema, output limit, and the agent-layer
 // executor that receives the execenv.ExecutionEnvironment.
 type RegisteredTool struct {
-	llm.Tool    // embeds Definition + Execute
-	Schema      *jsonschema.Schema
-	Limit       schema.ToolOutputLimit
-	OmitPurpose bool
+	llm.Tool   // embeds Definition + Execute
+	Schema     *jsonschema.Schema
+	Limit      schema.ToolOutputLimit
+	OmitIntent bool
+	// NormalizeArgs optionally canonicalizes arguments immediately before schema
+	// validation. It must preserve all non-normalized caller values.
+	NormalizeArgs func(map[string]any) (map[string]any, error)
+	// PreValidate optionally rejects a tool-specific argument shape before the
+	// generic JSON schema validator renders its diagnostic.
+	PreValidate func(args map[string]any) error
 	// Agent-layer executor with environment context.
 	Exec func(ctx context.Context, env execenv.ExecutionEnvironment, args map[string]any) (any, error)
 }
@@ -399,17 +435,17 @@ func (r *Registry) Use(mw toolMiddleware) {
 }
 
 // Register validates and stores a tool in the registry. It rejects an invalid
-// tool name or a missing executor, injects the purpose parameter into work-tool
+// tool name or a missing executor, injects the intent parameter into work-tool
 // definitions, applies a default output limit when none is set, compiles (or
 // reuses) the argument schema, and bridges llm.Tool.Execute from Exec when unset.
 func (r *Registry) Register(t RegisteredTool) error {
 	if err := llm.ValidateToolName(t.Definition.Name); err != nil {
 		return err
 	}
-	if t.OmitPurpose {
-		t.Definition = WithoutPurposeParameter(t.Definition)
+	if t.OmitIntent {
+		t.Definition = WithoutIntentParameter(t.Definition)
 	} else {
-		t.Definition = WithPurposeParameter(t.Definition)
+		t.Definition = WithIntentParameter(t.Definition)
 	}
 	if strings.TrimSpace(t.Definition.Description) == "" {
 		log.Printf("WARNING: tool %q registered with empty description", t.Definition.Name)
@@ -597,6 +633,17 @@ func (r *Registry) Names() []string {
 // each returned as an error result. ImageResult and StateResult values are
 // unpacked into the result's image and state fields.
 func (r *Registry) ExecuteCall(ctx context.Context, env execenv.ExecutionEnvironment, call llm.ToolCallData) ExecResult {
+	return r.executeCall(ctx, env, call, false)
+}
+
+// ExecutePreparedCall runs a session-prepared call. Preparation has already
+// normalized and prevalidated arguments, so it preserves ExecuteCall's generic
+// execution behavior without applying a RegisteredTool.PreValidate twice.
+func (r *Registry) ExecutePreparedCall(ctx context.Context, env execenv.ExecutionEnvironment, call llm.ToolCallData) ExecResult {
+	return r.executeCall(ctx, env, call, true)
+}
+
+func (r *Registry) executeCall(ctx context.Context, env execenv.ExecutionEnvironment, call llm.ToolCallData, prevalidated bool) ExecResult {
 	name := call.Name
 	callID := call.ID
 	if strings.TrimSpace(callID) == "" {
@@ -609,7 +656,9 @@ func (r *Registry) ExecuteCall(ctx context.Context, env execenv.ExecutionEnviron
 	// release the next identical call. Only failures park — a repeated
 	// identical *success* may still be the call that finally sees the world
 	// change, and refusing it would strand a session repeating its result tool.
-	judged := !breakerBypassed(ctx)
+	// model_list is an exact JSON continuation protocol. Repeating a page is a
+	// valid retry, and appending breaker text would corrupt its bounded envelope.
+	judged := !breakerBypassed(ctx) && name != "model_list"
 	if judged {
 		if failStreak, _, snippets := r.breaker.check(name, call.Arguments); failStreak >= breakerThreshold {
 			return truncateResult(name, callID, failureParkText(name, snippets), true, defaultToolLimit(name))
@@ -632,9 +681,8 @@ func (r *Registry) ExecuteCall(ctx context.Context, env execenv.ExecutionEnviron
 		return truncateResult(name, callID, msg, true, defaultToolLimit(name))
 	}
 
-	if len(call.Arguments) > maxToolArgumentBytes {
-		msg := fmt.Sprintf("tool arguments too large: %d bytes exceeds the %d byte limit", len(call.Arguments), maxToolArgumentBytes)
-		return truncateResult(name, callID, msg, true, defaultToolLimit(name))
+	if err := ValidateRawArguments(call.Arguments); err != nil {
+		return truncateResult(name, callID, err.Error(), true, defaultToolLimit(name))
 	}
 
 	var args map[string]any
@@ -657,6 +705,19 @@ func (r *Registry) ExecuteCall(ctx context.Context, env execenv.ExecutionEnviron
 		}
 		args = normalized
 	}
+	if t.NormalizeArgs != nil {
+		normalized, err := t.NormalizeArgs(args)
+		if err != nil {
+			return truncateResult(name, callID, err.Error(), true, t.Limit)
+		}
+		args = normalized
+	}
+
+	if !prevalidated && t.PreValidate != nil {
+		if err := t.PreValidate(args); err != nil {
+			return truncateResult(name, callID, err.Error(), true, t.Limit)
+		}
+	}
 
 	if err := t.Schema.Validate(args); err != nil {
 		msg := fmt.Sprintf("tool args schema validation failed: %v", err)
@@ -673,7 +734,15 @@ func (r *Registry) ExecuteCall(ctx context.Context, env execenv.ExecutionEnviron
 	}
 
 	if name != "read_file" {
-		delete(args, "purpose")
+		intent, _ := args["intent"].(string)
+		delete(args, "intent")
+		// The handler can no longer see intent in args — but the shell tool
+		// stamps it onto the job record (so job surfaces can show why the
+		// model said it is running the command), so keep it reachable on ctx.
+		// Set unconditionally: a nested call reusing a context that already
+		// carries a stale intent would otherwise inherit it when this call
+		// omits intent.
+		ctx = context.WithValue(ctx, ctxIntentKey{}, strings.TrimSpace(intent))
 	}
 	v, err := t.Exec(ctx, env, args)
 	res := dispatchedResult(name, callID, t.Limit, v, err)
@@ -732,7 +801,7 @@ func dispatchedResult(name, callID string, lim schema.ToolOutputLimit, v any, er
 		res := truncateResult(name, callID, img.Text, false, lim)
 		res.ImageData = img.Data
 		res.ImageMediaType = img.MediaType
-		res.ImagePurpose = img.Purpose
+		res.ImageIntent = img.Intent
 		return res
 	}
 

@@ -6,31 +6,56 @@ import userEvent from "@testing-library/user-event";
 import { lazy } from "react";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, test, vi } from "vitest";
 import { sessionPanelPaneType } from "../../panes/sessionPanels";
-import type { TreeNode as ApiTreeNode, TreeProject as ApiTreeProject } from "../../stores/tree";
+import { navigationStore, resetNavigationStoreForTests } from "../../stores/navigation/store";
+import { keyID, type ResourceState } from "../../stores/navigation/types";
 import { Tree, type TreeRowInfo } from "../../widgets";
 import { registerPaneForTests } from "../paneRegistry";
 import { resetWorkspaceStoreForTests, workspaceStore } from "../workspace";
-import * as railActions from "./actions";
 import { activityGloss, cadenceStateFor, RailRow, type RailRowActions } from "./RailRow";
 import railStyles from "./RailRow.module.css";
 import type {
+  CompletedJobsFoldRailNode,
   InactiveFoldRailNode,
+  JobRailNode,
   LoadingRailNode,
   OverflowRailNode,
   ProjectRailNode,
+  RailProject,
+  RailSession,
   SessionRailNode,
 } from "./railNodes";
 
-// "Pin this session…" mounts the real PinSectionPicker, which fetches its
-// section list on mount - stub that fetch. vi.spyOn, not vi.mock: under a
-// shared module registry (isolate:false) some other file (e.g.
-// shell/rail/PinSectionPicker.test.tsx or Rail.test.tsx) may already have
-// loaded "./actions" for real before this file's vi.mock() factory
-// registers, in which case PinSectionPicker.tsx's own
-// `import { listPinSections }` binding is fixed forever and a vi.mock()
-// here can't retroactively change what it calls internally - see
-// PinSectionPicker.test.tsx's own comment on the identical hazard.
-let mockedListPinSections = vi.spyOn(railActions, "listPinSections");
+// "Pin this session…" mounts the real PinSectionPicker, which reads
+// pin sections from the navigation store's bounded pin-catalog resource
+// (loadPinCatalogPages + selectPinSections). Seed the store with a pin_catalog resource and
+// stub loadPinCatalogPages so the picker's mount effect resolves without a
+// real network fetch.
+const pinKey = { kind: "pin_catalog" as const, offset: 0, limit: 100 };
+const generation = "generation_test";
+
+type LoadPinCatalogPages = (force?: boolean) => Promise<void>;
+
+function seedPinCatalogForPicker(): void {
+  const resource: ResourceState = {
+    key: pinKey,
+    data: {
+      generation_id: generation,
+      revision: 1,
+      pin_sections: [{ id: "sec_1", name: "Client", count: 0 }],
+      remaining: 0,
+    },
+    loadedRevision: 1,
+    targetRevision: 1,
+    forceToken: 0,
+    etag: "a",
+    loading: false,
+    stale: false,
+    error: null,
+    generationID: generation,
+  };
+  navigationStore.setState({ mode: "v1", resources: new Map([[keyID(resource.key), resource]]) });
+  navigationStore.setState({ loadPinCatalogPages: vi.fn(async () => undefined) as LoadPinCatalogPages });
+}
 
 function PaneFixture() {
   return <div>pane</div>;
@@ -67,22 +92,20 @@ beforeAll(() => {
 
 afterAll(() => {
   for (const restore of restorePaneFixtures) restore();
-  mockedListPinSections.mockRestore();
 });
 
 beforeEach(() => {
   resetWorkspaceStoreForTests();
-  // Re-spied here, not just once above: shell/rail/Rail.test.tsx's own
-  // afterEach calls vi.restoreAllMocks(), which is a GLOBAL operation - it
-  // un-does this spy the moment ANY test anywhere in the worker restores
-  // mocks, not just that file's own.
-  mockedListPinSections = vi.spyOn(railActions, "listPinSections");
-  mockedListPinSections.mockResolvedValue([{ id: "sec_1", name: "Client", member_count: 0 }]);
+  resetNavigationStoreForTests();
+  seedPinCatalogForPicker();
 });
 
-afterEach(cleanup);
+afterEach(() => {
+  cleanup();
+  resetNavigationStoreForTests();
+});
 
-function apiNode(overrides: Partial<ApiTreeNode> = {}): ApiTreeNode {
+function apiNode(overrides: Partial<RailSession> = {}): RailSession {
   return {
     row_id: "project:p1:local:a",
     ref: "local:a",
@@ -98,15 +121,25 @@ function apiNode(overrides: Partial<ApiTreeNode> = {}): ApiTreeNode {
   };
 }
 
-function apiProject(overrides: Partial<ApiTreeProject> = {}): ApiTreeProject {
-  return { key: "p1", name: "Proj", sessions: [], ...overrides };
+function apiProject(overrides: Partial<RailProject> = {}): RailProject {
+  return {
+    key: "p1",
+    name: "Proj",
+    sessions: [],
+    more_current: 0,
+    more_recent: 0,
+    more_archived: 0,
+    loaded: false,
+    nextOffsets: {},
+    ...overrides,
+  };
 }
 
-function sessionRailNode(session: ApiTreeNode, overrides: Partial<SessionRailNode> = {}): SessionRailNode {
+function sessionRailNode(session: RailSession, overrides: Partial<SessionRailNode> = {}): SessionRailNode {
   return { id: session.row_id, kind: "session", session, expanded: false, children: [], ...overrides };
 }
 
-function projectRailNode(project: ApiTreeProject, children: ProjectRailNode["children"] = []): ProjectRailNode {
+function projectRailNode(project: RailProject, children: ProjectRailNode["children"] = []): ProjectRailNode {
   return { id: `projectnode:${project.key}`, kind: "project", project, expanded: false, children };
 }
 
@@ -120,6 +153,20 @@ function overflowRailNode(count: number): OverflowRailNode {
 
 function inactiveFoldRailNode(count: number): InactiveFoldRailNode {
   return { id: "inactive:parent", kind: "inactiveFold", count, expanded: false, children: [] };
+}
+
+function jobRailNode(overrides: Partial<JobRailNode["job"]> = {}): JobRailNode {
+  return {
+    id: "job:parent:job-1",
+    kind: "job",
+    job: { job_id: "job-1", job_type: "shell", status: "running", row_id: "job:parent:job-1", ...overrides },
+    active: true,
+    children: [],
+  };
+}
+
+function completedJobsFoldRailNode(count: number): CompletedJobsFoldRailNode {
+  return { id: "completed-jobs:parent", kind: "completedJobsFold", count, expanded: false, children: [] };
 }
 
 function info(overrides: Partial<TreeRowInfo> = {}): TreeRowInfo {
@@ -145,7 +192,7 @@ function actions(overrides: Partial<RailRowActions> = {}): RailRowActions {
 // renderRow mounts a top-level local session row with the menu fully
 // populated (renameable, live, deletable), the way the rail's own tiers
 // would render it.
-function renderRow(sessionOverrides: Partial<ApiTreeNode> = {}, acts: RailRowActions = actions()) {
+function renderRow(sessionOverrides: Partial<RailSession> = {}, acts: RailRowActions = actions()) {
   const session = apiNode({ rename: true, ...sessionOverrides });
   render(<RailRow node={sessionRailNode(session)} info={info()} actions={acts} />);
   return session;
@@ -290,6 +337,14 @@ describe("activityGloss", () => {
       ),
     ).toBe("2 subagents working · fix/thing");
   });
+
+  test("reports active jobs alongside active subagents", () => {
+    const session = apiNode({ children: [apiNode({ state: "active" })] });
+    Object.assign(session, {
+      running_jobs: [{ job_id: "job-1", job_type: "shell", status: "running" }],
+    });
+    expect(activityGloss(session)).toBe("1 subagent working · 1 job running");
+  });
 });
 
 describe("loading row", () => {
@@ -380,6 +435,79 @@ describe("inactive-subagent fold row", () => {
     const here = dirname(fileURLToPath(import.meta.url));
     const css = readFileSync(join(here, "RailRow.module.css"), "utf8").replace(/\/\*[\s\S]*?\*\//g, "");
     expect(css).toMatch(/\.signal\s*\{[^}]*width:\s*6px;[^}]*margin-left:\s*-10px;/);
+  });
+});
+
+describe("touch tap floor (RailRow.module.css, pointer: coarse)", () => {
+  // shellguard's tap-target pass measures these in a real phone context; these
+  // source assertions pin the rules themselves (jsdom evaluates no cascade).
+  const CSS = readFileSync(join(dirname(fileURLToPath(import.meta.url)), "RailRow.module.css"), "utf8").replace(
+    /\/\*[\s\S]*?\*\//g,
+    "",
+  );
+  const coarseBlock = CSS.match(/@media \(pointer: coarse\) \{([\s\S]*?)\n\}/)?.[1] ?? null;
+
+  test("row action buttons meet the 44px floor in BOTH dimensions", () => {
+    expect(coarseBlock, "RailRow.module.css is missing its pointer:coarse block").not.toBeNull();
+    const rule = coarseBlock!.match(/\.actions button\s*\{([^}]*)\}/);
+    expect(rule).not.toBeNull();
+    expect(rule![1]).toContain("min-width: var(--tap-min)");
+    expect(rule![1]).toContain("min-height: var(--tap-min)");
+  });
+
+  test("the widened menu trigger centres its glyph instead of hugging an edge", () => {
+    expect(coarseBlock, "RailRow.module.css is missing its pointer:coarse block").not.toBeNull();
+    const rule = coarseBlock!.match(/\.actions button\[aria-haspopup="menu"\]\s*\{([^}]*)\}/);
+    expect(rule).not.toBeNull();
+    expect(rule![1]).toContain("padding: 0");
+    expect(rule![1]).toContain("justify-content: center");
+  });
+});
+
+describe("job rows", () => {
+  test("renders an active job label and green status", () => {
+    render(<RailRow node={jobRailNode({ command: "go test ./..." })} info={info()} actions={actions()} />);
+    expect(screen.getByText("go test ./...")).toBeTruthy();
+    expect(screen.getByTestId("rail-row-job-status").className.split(" ")).toContain(railStyles.activityAlive);
+  });
+
+  test("the tooltip shows the command and the tool call's intent", () => {
+    render(
+      <RailRow
+        node={jobRailNode({
+          command: "go test ./...",
+          intent: "Running the package tests to find the failure",
+        })}
+        info={info()}
+        actions={actions()}
+      />,
+    );
+    expect(screen.getByTitle("go test ./... · Running the package tests to find the failure · running")).toBeTruthy();
+  });
+
+  test("the tooltip prefers the full command when the label was truncated", () => {
+    const long = "echo a".repeat(200);
+    render(
+      <RailRow
+        node={jobRailNode({
+          command: "echo a…",
+          full_command: long,
+        })}
+        info={info()}
+        actions={actions()}
+      />,
+    );
+    expect(screen.getByTitle(`${long} · running`)).toBeTruthy();
+  });
+
+  test("renders a separate completed-jobs disclosure", () => {
+    const toggle = vi.fn();
+    render(
+      <RailRow node={completedJobsFoldRailNode(3)} info={info({ hasChildren: true, toggle })} actions={actions()} />,
+    );
+    expect(screen.getByText("Completed jobs (3)")).toBeTruthy();
+    fireEvent.click(screen.getByText("Completed jobs (3)"));
+    expect(toggle).toHaveBeenCalledTimes(1);
   });
 });
 
@@ -541,6 +669,16 @@ describe("session row", () => {
     });
     render(<RailRow node={sessionRailNode(session)} info={info({ depth: 1 })} actions={actions()} />);
     expect(screen.getByTestId("rail-row-activity").textContent).toBe("2 subagents working · fix/thing");
+  });
+
+  test("shows an active job on a quiet session as green working activity", () => {
+    const session = apiNode({ state: "idle" });
+    Object.assign(session, {
+      running_jobs: [{ job_id: "job-1", job_type: "shell", status: "running" }],
+    });
+    render(<RailRow node={sessionRailNode(session)} info={info({ depth: 1 })} actions={actions()} />);
+    expect(screen.getByTestId("rail-row-signal")).toBeTruthy();
+    expect(screen.getByTestId("rail-row-activity").className.split(" ")).toContain(railStyles.activityAlive);
   });
 
   test("keeps a quiet row without active descendants one line", () => {
@@ -1036,7 +1174,7 @@ describe("session row", () => {
 
   // Delete (kata n15j) is a decision about a TOP-LEVEL LOCAL session: it
   // targets a stable local session ref (identifier.ValidateSessionID via
-  // cmd/evener-hub/web_api_session_delete.go), so it is offered unconditionally
+  // cmd/evener-hub/app_session_delete.go), so it is offered unconditionally
   // for a top-level local row - including a live one, which the server
   // refuses via the same skipped/toast path deleteProject already uses for a
   // session that raced back to live (no client-side liveness gate to
@@ -1071,14 +1209,9 @@ describe("session row", () => {
     });
   }
 
-  // Favorite is scoped for the same reason as Archive, and the server proves
-  // it: POST /api/favorite accepts a subagent id and writes the decision, but
-  // the Pinned tier is drawn only from a project's top-level Current+Recent
-  // sessions (web_api_tree.go), so the row never appears there and never comes
-  // back favorite:true - a menu item that silently does nothing. On a cluster
-  // it is worse: the id is a synthetic SHA-derived "cluster:<hex>" naming no
-  // session at all, so it writes a decision row nothing will ever clean up.
-  // Both verified against a live hub.
+  // Favorite is scoped for the same reason as Archive: session rows use the
+  // separate session-pin action, while cluster rows have a synthetic
+  // "cluster:<hex>" identity rather than an independently pinnable session.
   for (const kind of ["subagent", "fork", "cluster"]) {
     test(`menu omits pin and unpin on a ${kind} row`, async () => {
       render(<RailRow node={sessionRailNode(apiNode({ kind }))} info={info()} actions={actions()} />);
@@ -1204,8 +1337,8 @@ describe("session row", () => {
 
   // A live-tier row's own Tier/PinSectionID/Rename fields must all survive the
   // duplicate projection. RailRow reads pin_section_id/rename directly,
-  // regardless of the session's real decisions, since handleAPITree's Live
-  // loop bypassed the tier-stamping helper entirely. RailRow never gated
+  // regardless of the session's real decisions, since the navigation
+  // projection stamps the live tier separately. RailRow never gated
   // these on tier itself - it just reads session.favorite/session.rename
   // directly, same as every other row - so once the hub fix landed, this
   // was already correct with no rail-side code change; pinned explicitly
@@ -1573,9 +1706,14 @@ describe("shared right slot (RailRow.module.css)", () => {
     // revealed menu right-justifies to the timestamp's own edge (and the
     // shared cell narrows to the glyph's real width). Scoped by attribute
     // so a project row's "+" IconButton keeps its own square geometry.
-    const justifyRule = ruleFor('.actions button[aria-haspopup="menu"]');
+    //
+    // Anchored to the TOP-LEVEL rule (column 0): the same selector also
+    // appears inside @media (pointer: coarse), where the widened tap target
+    // centres the glyph instead - that override is the tap-floor describe's
+    // own assertion above, not this one's.
+    const justifyRule = /\n\.actions button\[aria-haspopup="menu"\]\s*\{([^}]*)\}/.exec(CSS);
     expect(justifyRule, "the row must right-justify the menu trigger's glyph").not.toBeNull();
-    expect(justifyRule).toMatch(/padding:\s*0\s+0\s+0\s+var\(--space-2\)/);
+    expect(justifyRule![1]).toMatch(/padding:\s*0\s+0\s+0\s+var\(--space-2\)/);
   });
 
   // The signal dot keeps a FIXED width and refuses to flex: its outdent

@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -60,6 +61,78 @@ func TestDelegateResourceRuntime_RunningSendPersistsBeforeAck(t *testing.T) {
 	}
 }
 
+func TestDelegateResourceRuntime_RestoresDescriptorPluginDirs(t *testing.T) {
+	pluginDir := makePluginDir(t, "delegate-selected")
+	fixture := newColdStableDelegateFixtureConfigured(t, "", func(descriptor *delegatestore.Descriptor) {
+		descriptor.Config.PluginDirs = []string{pluginDir}
+	})
+	root, err := restoreDelegateResourceBootstrapSession(fixture.client, fixture.profile, fixture.workspace, fixture.meta, fixture.stateDir)
+	if err != nil {
+		t.Fatalf("restore root: %v", err)
+	}
+	defer root.Close()
+	aggregate := delegateAggregateSnapshot(t, root.delegateController, fixture.delegateID)
+	got := subagentConfigFromFrozenDescriptor(aggregate.Descriptor.Config, SessionConfig{PluginDirs: []string{"/parent/plugin"}})
+	if !slices.Equal(got.PluginDirs, []string{pluginDir}) {
+		t.Fatalf("restored delegate PluginDirs = %v, want [%q]", got.PluginDirs, pluginDir)
+	}
+}
+
+func TestRestoredDelegatePostStartPopulationEmitsTaskCorrection(t *testing.T) {
+	fixture := newColdStableDelegateFixtureConfigured(t, "", func(descriptor *delegatestore.Descriptor) {
+		descriptor.TaskTemplates = []taskpkg.TaskTemplate{{
+			Title:  "Restored committed workflow",
+			Prompt: "Resume the committed workflow.",
+		}}
+	})
+	root, err := restoreDelegateResourceBootstrapSession(fixture.client, fixture.profile, fixture.workspace, fixture.meta, fixture.stateDir)
+	if err != nil {
+		t.Fatalf("restore root: %v", err)
+	}
+	defer root.Close()
+	var recorder currentWorkEventRecorder
+	root.SetDescendantEventFunc(recorder.record)
+
+	reservation, err := root.delegateController.ReserveStart(rootDelegateActor(root.id), fixture.delegateID)
+	if err != nil {
+		t.Fatalf("ReserveStart: %v", err)
+	}
+	started, err := root.delegateController.CommitStart(reservation)
+	if err != nil {
+		t.Fatalf("CommitStart: %v", err)
+	}
+	sub, restored, err := (delegateRuntime{owner: root}).restoreIdle(started)
+	if err != nil {
+		t.Fatalf("restoreIdle: %v", err)
+	}
+	if !restored {
+		t.Fatal("restoreIdle unexpectedly reused a resident child")
+	}
+	defer func() {
+		sub.sess.discardRestoredCandidate(sub.ownsEnv)
+		_, _ = root.delegateController.FailCommittedRestart(started.lease, delegatePermanentStartFailure(context.Canceled, "test_cleanup"))
+	}()
+
+	relevant := childCurrentWorkEvents(recorder.snapshot(), fixture.childID)
+	if len(relevant) < 2 {
+		t.Fatalf("restored child current-work events = %#v, want SessionStart then TaskUpdated", relevant)
+	}
+	if relevant[0].Kind != events.EventSessionStart || relevant[1].Kind != events.EventTaskUpdated {
+		t.Fatalf("restored child current-work order = [%s, %s], want start then update", relevant[0].Kind, relevant[1].Kind)
+	}
+	start := relevant[0].Data.(events.SessionStartData)
+	if start.CurrentWork == nil || start.CurrentWork.Tasks == nil || start.CurrentWork.Tasks.Total != 0 {
+		t.Fatalf("restored child start = %+v, want empty pre-fallback tasks", start.CurrentWork)
+	}
+	update := relevant[1].Data.(events.TaskUpdatedData)
+	if update.Current == nil || update.Current.Description != "Restored committed workflow" {
+		t.Fatalf("restored task correction = %+v", update)
+	}
+	if update.TaskStoreOwnerSessionID != fixture.childID {
+		t.Fatalf("restored task correction owner = %q, want child %q", update.TaskStoreOwnerSessionID, fixture.childID)
+	}
+}
+
 func TestDelegateResourceRuntime_RunningSendDoesNotStartSuccessor(t *testing.T) {
 	c, _ := newDelegateControllerTestHarness(t, 1, 1)
 	seedDelegateControllerRunning(t, c, "dlg_target", "")
@@ -71,6 +144,57 @@ func TestDelegateResourceRuntime_RunningSendDoesNotStartSuccessor(t *testing.T) 
 	}
 	if generation := c.durable["dlg_target"].Generation; generation != 1 {
 		t.Fatalf("running send generation = %d, want 1", generation)
+	}
+}
+
+func TestDelegateResourceRuntime_PositiveWaitCannotSteerAfterIdleToRunningTransition(t *testing.T) {
+	c, _ := newDelegateControllerTestHarness(t, 1, 1)
+	delegateID := "dlg_target"
+	seedDelegateControllerIdle(t, c, delegateID, "")
+	root := &Session{delegateController: c, delegateRootSessionID: "root-session"}
+	var liveRuntime *Session
+	var interleavingLease delegateLease
+	root.cfg.testOnly.delegateSendBeforePositiveWaitAdmission = func() {
+		reservation, reserveErr := root.delegateController.ReserveStart(rootDelegateActor("root-session"), delegateID)
+		if reserveErr != nil {
+			t.Fatalf("interleaving ReserveStart: %v", reserveErr)
+		}
+		started, commitErr := root.delegateController.CommitStart(reservation)
+		if commitErr != nil {
+			t.Fatalf("interleaving CommitStart: %v", commitErr)
+		}
+		interleavingLease = started.lease
+		liveRuntime = attachDelegateSteerRuntime(t, root.delegateController, delegateID, afero.NewMemMapFs())
+		if started.lease.generation != 1 {
+			t.Fatalf("interleaving generation = %d, want 1", started.lease.generation)
+		}
+	}
+
+	outcome := (delegateRuntime{owner: root}).send(context.Background(), delegateID, "must not steer", 1000)
+	if outcome.result.Err == nil || !errors.Is(outcome.result.Err, errDelegateTargetBusy) {
+		t.Fatalf("positive-wait interleaving outcome = %#v, want busy refusal", outcome.result)
+	}
+	if outcome.result.Action == "steered" {
+		t.Fatal("positive wait durably steered through the idle-to-running transition")
+	}
+	c = root.delegateController
+	c.mu.Lock()
+	aggregate := c.durable[delegateID]
+	live := c.live[delegateID]
+	pendingSteers := 0
+	if live != nil {
+		pendingSteers = len(live.pendingSteers)
+	}
+	steeringClaims := len(c.steeringClaims)
+	c.mu.Unlock()
+	if aggregate == nil || aggregate.Phase != delegatestore.PhaseRunning || steeringClaims != 0 || pendingSteers != 0 {
+		t.Fatalf("interleaving state = aggregate:%#v steeringClaims:%d pendingSteers:%d", aggregate, steeringClaims, pendingSteers)
+	}
+	if liveRuntime == nil {
+		t.Fatal("interleaving did not install live runtime")
+	}
+	if _, err := c.FinishGeneration(interleavingLease, delegateFinish{}); err != nil {
+		t.Fatalf("finish interleaving generation: %v", err)
 	}
 }
 
@@ -1037,6 +1161,10 @@ func TestDelegateResourceRuntime_GenericStopUsesCanonicalFinish(t *testing.T) {
 	pluginDir := writeStableOnceBlockingStopPlugin(t, marker)
 	fixture := newColdStableDelegateFixtureConfigured(t, "", func(descriptor *delegatestore.Descriptor) {
 		descriptor.Config.PluginDirs = []string{pluginDir}
+		// The Stop hook intentionally writes a marker outside private scratch.
+		// Declare that mutating fixture scope instead of weakening the read-only
+		// role floor for a hook side effect.
+		descriptor.ToolNameCeiling = append(descriptor.ToolNameCeiling, "write_file")
 	})
 	fixture.adapter.steps = []func(llm.Request) llm.Response{
 		func(llm.Request) llm.Response { return finalResponse("before generic Stop continuation") },
@@ -1123,10 +1251,12 @@ func TestDelegateResourceRuntime_StableStopActiveCompletionReportsCancelledByReq
 	if appended, err := sub.sess.appendDelegateNotificationDurably("attention-before-stop", "stop must discard this pending attention"); err != nil || !appended {
 		t.Fatalf("append pending stop attention: appended=%t err=%v", appended, err)
 	}
-	sub.sess.cfg.testOnly.subagentAfterFinalStatePublish = func(*subagent) {
-		close(finalStatePublished)
-		<-releaseFinalization
-	}
+	updateSessionTestConfig(sub.sess, func(cfg *testConfig) {
+		cfg.subagentAfterFinalStatePublish = func(*subagent) {
+			close(finalStatePublished)
+			<-releaseFinalization
+		}
+	})
 	waitCtx := newDelegateStopWaitBarrierContext()
 	result := make(chan stableJobStopInvocation, 1)
 	go func() {
@@ -1271,10 +1401,12 @@ func TestDelegateResourceRuntime_StableStopRetryPreservesAdmissionClassification
 		_ = controller.AbortShellWork(work)
 		releaseFinalizationNow()
 	})
-	sub.sess.cfg.testOnly.subagentAfterFinalStatePublish = func(*subagent) {
-		close(finalStatePublished)
-		<-releaseFinalization
-	}
+	updateSessionTestConfig(sub.sess, func(cfg *testConfig) {
+		cfg.subagentAfterFinalStatePublish = func(*subagent) {
+			close(finalStatePublished)
+			<-releaseFinalization
+		}
+	})
 
 	first, err := jobStopTool(context.Background(), harness.root, map[string]any{
 		"target": harness.fixture.delegateID,
@@ -1482,6 +1614,27 @@ func currentDelegateStop(t *testing.T, controller *delegateTreeController) *dele
 	return controller.stop
 }
 
+// awaitDelegateStopAdmission blocks until the controller durably admits a
+// subtree stop and returns that stop. A test that goes on to trigger
+// settlement (FinishGeneration, releasing the provider) MUST hold the stop it
+// captured here rather than reading controller.stop back afterwards: the
+// reconcile driver clears controller.stop the instant the stop settles, so the
+// later read races the completion it is waiting for.
+func awaitDelegateStopAdmission(t *testing.T, controller *delegateTreeController) *delegateStopState {
+	t.Helper()
+	var stop *delegateStopState
+	// TRIPWIRE: admission is a durable fsync + local drive, measured at
+	// 5-17ms across 1200 samples with the whole module under -race on a
+	// saturated box; 5s only absorbs pathological CI stalls.
+	waitForCondition(t, 5*time.Second, "stable stop admission", func() bool {
+		controller.mu.Lock()
+		defer controller.mu.Unlock()
+		stop = controller.stop
+		return stop != nil
+	})
+	return stop
+}
+
 func stableJobStopState(t *testing.T, invocation stableJobStopInvocation) jobStopResult {
 	t.Helper()
 	if invocation.err != nil {
@@ -1663,13 +1816,15 @@ func TestDelegateResourceRuntime_TerminalPacketUsesProductionActivityBoundary(t 
 func TestDelegateResourceRuntime_StructuredResultExplicitNullIsPresent(t *testing.T) {
 	var captured any
 	deps := &toolDeps{
-		emit:                     func(events.EventKind, events.EventData) {},
-		abort:                    func(context.Context) error { return nil },
-		drainSteering:            func() []steeringMessage { return nil },
-		prependSteering:          func([]steeringMessage) {},
-		resultToolName:           func() string { return "communicate" },
-		setCommunicateResult:     func(string, string, string) {},
-		setCommunicateStructured: func(raw any) { captured = raw },
+		emit:            func(events.EventKind, events.EventData) {},
+		abort:           func(context.Context) error { return nil },
+		drainSteering:   func() []steeringMessage { return nil },
+		prependSteering: func([]steeringMessage) {},
+		resultToolName:  func() string { return "communicate" },
+		setCommunicateTerminal: func(_ context.Context, _, _, _ string, raw any) bool {
+			captured = raw
+			return true
+		},
 	}
 	reg := toolpkg.NewRegistry()
 	def := toolpkg.DefCommunicateNamed("communicate")
@@ -2095,7 +2250,7 @@ func TestDelegateResourceRuntime_ColdIdleUsesCommittedConfigTemplatesAndToolCeil
 	if !restored {
 		t.Fatal("cold idle delegate was reported retained")
 	}
-	defer sub.sess.discardRestoredCandidate()
+	defer sub.sess.discardRestoredCandidate(sub.ownsEnv)
 	if sub.sess.cfg.MaxToolRoundsPerInput != 17 || sub.sess.cfg.ReasoningEffort != "high" {
 		t.Fatalf("restored config = rounds:%d effort:%q", sub.sess.cfg.MaxToolRoundsPerInput, sub.sess.cfg.ReasoningEffort)
 	}
@@ -2108,6 +2263,43 @@ func TestDelegateResourceRuntime_ColdIdleUsesCommittedConfigTemplatesAndToolCeil
 	}
 	if got := len(fixture.adapter.Requests()); got != 0 {
 		t.Fatalf("provider requests during cold construction = %d", got)
+	}
+}
+
+func TestDelegateResourceRuntime_ColdIdleInheritsLiveLifetimeContext(t *testing.T) {
+	fixture := newColdStableDelegateFixture(t, "")
+	root, err := restoreDelegateResourceBootstrapSession(fixture.client, fixture.profile, fixture.workspace, fixture.meta, fixture.stateDir)
+	if err != nil {
+		t.Fatalf("restore root: %v", err)
+	}
+	defer root.Close()
+	owner, cancelOwner := context.WithCancel(context.Background())
+	root.cfg.LifetimeContext = owner
+	reservation, err := root.delegateController.ReserveStart(rootDelegateActor(root.id), fixture.delegateID)
+	if err != nil {
+		t.Fatalf("ReserveStart: %v", err)
+	}
+	started, err := root.delegateController.CommitStart(reservation)
+	if err != nil {
+		t.Fatalf("CommitStart: %v", err)
+	}
+	defer func() {
+		_, _ = root.delegateController.FailCommittedRestart(started.lease, delegatePermanentStartFailure(errors.New("test complete"), "construction_failed"))
+	}()
+	sub, restored, err := (delegateRuntime{owner: root}).restoreIdle(started)
+	if err != nil {
+		t.Fatalf("restoreIdle: %v", err)
+	}
+	if !restored {
+		t.Fatal("cold idle delegate was reported retained")
+	}
+	defer sub.sess.discardRestoredCandidate(sub.ownsEnv)
+
+	cancelOwner()
+	select {
+	case <-sub.sess.sessionCtx.Done():
+	default:
+		t.Fatal("restored stable delegate outlived the live parent lifetime context")
 	}
 }
 
@@ -2134,7 +2326,7 @@ func TestDelegateResourceRuntime_ColdIdleReusesExactSharedRootTaskStore(t *testi
 	if err != nil {
 		t.Fatalf("restoreIdle: %v", err)
 	}
-	defer sub.sess.discardRestoredCandidate()
+	defer sub.sess.discardRestoredCandidate(sub.ownsEnv)
 	if got := sub.sess.getOrCreateTaskStore(); got != want {
 		t.Fatalf("shared TaskStore pointer = %p, want exact root pointer %p", got, want)
 	}

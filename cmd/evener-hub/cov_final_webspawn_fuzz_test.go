@@ -5,8 +5,6 @@ package hub
 import (
 	"context"
 	"errors"
-	"net/http"
-	"net/http/httptest"
 	"testing"
 	"time"
 
@@ -14,12 +12,12 @@ import (
 	"primeradiant.com/evener/cmd/evener-hub/internal/appsource"
 	"primeradiant.com/evener/cmd/evener-hub/internal/hubcore"
 	"primeradiant.com/evener/llm"
-	"primeradiant.com/evener/llm/providercfg"
+	llmregistry "primeradiant.com/evener/llm/registry"
 )
 
 type finalWebspawnLister struct {
 	name   string
-	models []llm.ModelInfo
+	models []llmregistry.Model
 	err    error
 }
 
@@ -30,7 +28,7 @@ func (a finalWebspawnLister) Complete(context.Context, llm.Request) (llm.Respons
 func (a finalWebspawnLister) Stream(context.Context, llm.Request) (llm.Stream, error) {
 	return nil, errors.New("unused")
 }
-func (a finalWebspawnLister) ListModels(context.Context) ([]llm.ModelInfo, error) {
+func (a finalWebspawnLister) LiveModels(context.Context) ([]llmregistry.Model, error) {
 	return a.models, a.err
 }
 
@@ -50,37 +48,29 @@ func FuzzFinalWebspawn(f *testing.F) {
 		client := llm.NewClient()
 		client.Register(finalWebspawnLister{name: "openrouter-anthropic"})
 		client.Register(finalWebspawnLister{name: "broken", err: errors.New("list")})
-		client.Register(finalWebspawnLister{name: "openrouter", models: []llm.ModelInfo{
-			{ID: "unknown-no-tools"},
-			{ID: "gpt-4o", ContextWindow: 123, SupportsTools: true, SupportsReasoning: true, ReasoningEffortLevels: []string{"low"}},
+		client.Register(finalWebspawnLister{name: "openrouter", models: []llmregistry.Model{
+			{ID: "unknown-no-tools", Caps: llmregistry.Caps{Tools: new(false)}},
+			{ID: "gpt-4o", Caps: llmregistry.Caps{ContextWindow: new(123), Tools: new(true), Reasoning: new(true), EffortValues: []string{"low"}}},
 		}})
-		client.Register(finalWebspawnLister{name: "custom", models: []llm.ModelInfo{
+		client.Register(finalWebspawnLister{name: "custom", models: []llmregistry.Model{
 			{ID: "text-embedding-3-small"}, {ID: "whisper-1"}, {ID: "tts-1"},
 			{ID: "dall-e-3"}, {ID: "omni-moderation"}, {ID: "audio-model"},
 			{ID: "transcribe-model"}, {ID: "image-model"},
 			{ID: "gpt-4o"},
 			{ID: "claude-fable-5"},
-			{ID: "plain", ContextWindow: 7, SupportsTools: true, SupportsReasoning: true, ReasoningEffortLevels: []string{"medium"}},
+			{ID: "plain", Caps: llmregistry.Caps{ContextWindow: new(7), Tools: new(true), Reasoning: new(true), EffortValues: []string{"medium"}}},
 		}})
 
-		oldLoad := webSpawnLoadClient
-		webSpawnLoadClient = func(...llm.EnvOption) (*llm.Client, providercfg.Config, bool, error) {
-			return client, providercfg.Config{}, true, nil
-		}
-		t.Cleanup(func() { webSpawnLoadClient = oldLoad })
+		oldLoad := liveModelLoadClient
+		liveModelLoadClient = func(string) (*llm.Client, error) { return client, nil }
+		t.Cleanup(func() { liveModelLoadClient = oldLoad })
 
-		reasoning := false
-		cfg := hubcore.WebConfig{ProviderConfig: &providercfg.Config{Instances: []providercfg.InstanceConfig{{
-			Name: "custom", Models: map[string]providercfg.ModelConfig{"plain": {Reasoning: &reasoning, ContextWindow: 99}},
-		}}}}
-		server := NewWebServer(cfg)
+		server := NewWebServer(hubcore.WebConfig{})
 		models := server.fetchLiveModels(context.Background())
 		_ = models
 		_ = server.fetchLiveModels(context.Background())
 		server.liveModels.expires = time.Time{}
-		webSpawnLoadClient = func(...llm.EnvOption) (*llm.Client, providercfg.Config, bool, error) {
-			return nil, providercfg.Config{}, false, errors.New("load")
-		}
+		liveModelLoadClient = func(string) (*llm.Client, error) { return nil, errors.New("load") }
 		_ = server.fetchLiveModels(context.Background())
 
 		// The non-Evener source path covers successful and failed model listing.
@@ -90,20 +80,15 @@ func FuzzFinalWebspawn(f *testing.F) {
 		}}
 		registry.Add(source)
 		server.sources = registry
-		for _, rawURL := range []string{"/api/models?harness=remote", "/api/models?harness=remote&diagnostics=1"} {
-			r := httptest.NewRequest(http.MethodGet, rawURL, nil)
-			server.handleApiModels(httptest.NewRecorder(), r)
-		}
+		_, _ = hubModelList(context.Background(), server.cfg, registry, appwire.ModelListParams{Harness: "remote"})
 		source.err = errors.New("remote")
-		server.handleApiModels(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "/api/models?harness=remote", nil))
+		_, _ = hubModelList(context.Background(), server.cfg, registry, appwire.ModelListParams{Harness: "remote"})
 
 		failedLaunch := NewWebServer(hubcore.WebConfig{Spawner: &fakeRPCModelContractSpawner{err: errors.New("launch")}})
-		failedLaunch.handleApiModels(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "/api/models", nil))
+		_, _ = hubModelList(context.Background(), failedLaunch.cfg, failedLaunch.sources, appwire.ModelListParams{})
 
-		entries := []map[string]any{{"provider": "z", "model": "same"}, {"provider": "z", "model": "same"}}
-		sortModelEntriesDatedLast(entries)
-		_ = modelDescriptorsToAPIModels([]appwire.ModelDescriptor{{Provider: "anthropic", Model: "claude-fable-5"}}, nil)
-		_ = catalogModelInfo(llm.EmbeddedModelCatalog(), "ollama", "absent")
-		_ = catalogModelInfo(llm.EmbeddedModelCatalog(), "", "definitely-absent")
+		entries := []appwire.ModelDescriptor{{Provider: "z", Model: "same"}, {Provider: "z", Model: "same"}}
+		sortModelDescriptors(entries)
+		_ = withDisplayNames([]appwire.ModelDescriptor{{Provider: "anthropic", Model: "claude-fable-5"}})
 	})
 }

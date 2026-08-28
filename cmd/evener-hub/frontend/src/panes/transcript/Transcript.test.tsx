@@ -8,6 +8,8 @@ import { registerPaneForTests } from "../../shell/paneRegistry";
 import { registerDockviewApi, resetWorkspaceStoreForTests } from "../../shell/workspace";
 import { connectionStore } from "../../stores/connection";
 import { resetThreadsStoreForTests } from "../../stores/threads";
+import { transcriptDisplayStore } from "../../stores/transcriptDisplay";
+import { makeTranscriptDisplayConfig } from "../../transcriptDisplay/config";
 import { resetSubagentModuleStoreForTests } from "../session/transcript/tools/subagentModuleStore";
 import Transcript from "./Transcript";
 
@@ -34,6 +36,7 @@ const CAPABILITIES: ThreadCapabilities = {
   forkFromTurn: true,
   shutdown: true,
   changeModel: true,
+  changeVisionModel: true,
   queue: true,
   goal: true,
   rename: true,
@@ -177,7 +180,7 @@ test("renders the thread's turns through the shared VirtualList/TurnBlock engine
               toolName: "delegate",
               callId: "call_delegate",
               description: "Observed delegate",
-              argumentsJson: JSON.stringify({ task: "inspect the observed thread" }),
+              argumentsJson: JSON.stringify({ prompt: "inspect the observed thread" }),
               output: JSON.stringify({ delegate_id: "dlg_observed", status: "running" }),
               status: "completed",
             },
@@ -194,9 +197,58 @@ test("renders the thread's turns through the shared VirtualList/TurnBlock engine
   );
 
   await waitFor(() => expect(screen.getByTestId("turn-block")).toBeTruthy());
+  expect(screen.getByTestId("transcript-virtual-list")).toBeTruthy();
   expect(screen.getByText("hi from the observed thread")).toBeTruthy();
   await waitFor(() => expect(screen.getByTestId("subagent-row")).toBeTruthy());
   expect(within(screen.getByTestId("subagent-row")).getByText("Status: done")).toBeTruthy();
+});
+
+test("keeps transcript/history and projection announcements without standalone Detail or Verbosity controls", async () => {
+  const fake = connectFakeClient();
+  fake.on("thread/read", () => ({
+    ...readResponse("ref_a", {
+      turns: [
+        {
+          id: "turn_1",
+          status: "completed",
+          itemsView: "full",
+          items: [{ id: "item_1", turnId: "turn_1", type: "userMessage", text: "read me", status: "completed" }],
+        },
+      ],
+    }),
+    olderCursor: "cursor_1",
+  }));
+  fake.on("thread/turns/list", () => {
+    throw new Error("older history unavailable");
+  });
+
+  render(
+    <ClientProvider client={fake}>
+      <Transcript params={{ ref: "ref_a" }} paneId="p1" focused={false} />
+    </ClientProvider>,
+  );
+
+  expect(await screen.findByText("read me")).toBeTruthy();
+  expect(screen.getByTestId("load-older-row").textContent).not.toBe("");
+  expect(screen.queryByRole("button", { name: /^Detail:/ })).toBeNull();
+  expect(screen.queryByRole("menuitem", { name: "Verbosity…" })).toBeNull();
+  transcriptDisplayStore.setState({ viewport: "desktop" });
+  transcriptDisplayStore
+    .getState()
+    .setLocal("desktop", makeTranscriptDisplayConfig({ kind: "preset", level: "activity" }));
+  await waitFor(() =>
+    expect(screen.getByTestId("transcript-view-announcement").textContent).toContain("Transcript detail: Activity"),
+  );
+  const status = screen.getByTestId("transcript-view-announcement");
+  transcriptDisplayStore
+    .getState()
+    .setLocal("desktop", makeTranscriptDisplayConfig({ kind: "preset", level: "activity" }, { roundTimings: true }));
+  await waitFor(() => expect(status.textContent).toContain("Transcript detail: Activity · 1 advanced"));
+  transcriptDisplayStore
+    .getState()
+    .setLocal("desktop", makeTranscriptDisplayConfig({ kind: "preset", level: "activity" }, { tokenCounts: true }));
+  await waitFor(() => expect(status.textContent).toContain("Transcript detail: Activity · 1 advanced"));
+  expect(screen.getByTestId("transcript-view-announcement")).toBe(status);
 });
 
 test("is read-only: renders no composer and no session-chrome footer, even for a fully capable thread", async () => {

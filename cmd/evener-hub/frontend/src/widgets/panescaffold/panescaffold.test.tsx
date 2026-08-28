@@ -163,15 +163,45 @@ test("the body rule scrolls independently of the header and footer", () => {
   expect(css).toContain("overflow-y: auto");
 });
 
-test("the question footer fits short content and caps tall content", () => {
+// The footer used to carry a .footer:has([data-ask-response-dock]) special
+// case while AskDock lived in it; the dock is the transcript's trailing row
+// now (Session.tsx -> TranscriptBody's trailingRow), so the footer is back
+// to the one fixed-slot contract every pane shares.
+test("the header and footer are fixed slots around the scrolling body", () => {
   const here = dirname(fileURLToPath(import.meta.url));
   const css = readFileSync(join(here, "panescaffold.module.css"), "utf8");
   expect(css).toContain("flex: none");
   expect(css).toContain("flex: 1 1 0");
-  expect(css).toContain(".footer:has([data-ask-response-dock])");
-  expect(css).toContain("flex: 0 1 auto");
-  expect(css).toContain("min-height: 0");
-  expect(css).toContain("max-height: 70%");
+  expect(css).not.toContain("data-ask-response-dock");
+});
+
+// The composer's bottom safe-area accommodation lives where it docks - this
+// footer - not on StackHost's container (StackHost.module.css's .host
+// comment): the footer's own chrome fills the home-indicator band while its
+// padding keeps the composer controls above it. env() is 0 on desktop, so
+// the padding resolves to plain --space-3 there.
+test("the footer fills to the screen's bottom edge while keeping its content clear of the home indicator", () => {
+  const here = dirname(fileURLToPath(import.meta.url));
+  // Comments stripped: the rule's own comment names the inset (testing.md's
+  // "a stylesheet assertion that matches its own comment" trap).
+  const css = readFileSync(join(here, "panescaffold.module.css"), "utf8").replace(/\/\*[\s\S]*?\*\//g, "");
+  const footerRule = css.match(/\.footer \{([^}]*)\}/)?.[1] ?? "";
+  expect(footerRule).toContain(
+    "padding-bottom: calc(var(--space-3) + max(0px, env(safe-area-inset-bottom) - var(--keyboard-inset, 0px)))",
+  );
+});
+
+// Footer-less panes (welcome, settings, spawn, doc) had their end-of-scroll
+// content covered by StackHost's blanket host padding; with that gone (the
+// composer owns its own dock), the body's scroll padding carries the inset
+// so the last content still clears the home indicator.
+test("the body keeps end-of-scroll content clear of the home indicator", () => {
+  const here = dirname(fileURLToPath(import.meta.url));
+  const css = readFileSync(join(here, "panescaffold.module.css"), "utf8").replace(/\/\*[\s\S]*?\*\//g, "");
+  const bodyRule = css.match(/\.body \{([^}]*)\}/)?.[1] ?? "";
+  expect(bodyRule).toContain(
+    "padding-bottom: calc(var(--space-4) + max(0px, env(safe-area-inset-bottom) - var(--keyboard-inset, 0px)))",
+  );
 });
 
 // The chrome-store title channel (2026-07-30-mobile-session-layout-design.md,

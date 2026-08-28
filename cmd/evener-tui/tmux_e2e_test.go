@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"reflect"
 	"regexp"
 	"strconv"
 	"strings"
@@ -80,7 +81,7 @@ func TestTUITmuxE2E_DashboardProjectAndSpawn(t *testing.T) {
 	e2ecap.RequireProcessInspect(t)
 	bin := buildTUIBinary(t)
 	hub := newTUIE2EHub(t)
-	defer hub.Close()
+	registerTUIE2EHubCleanup(t, hub)
 	app := startTUITmux(t, bin, hub)
 	defer app.Close()
 
@@ -117,11 +118,18 @@ func TestTUITmuxE2E_DashboardProjectAndSpawn(t *testing.T) {
 	app.WaitFor("EVENER LIVE", "live task", "ended maintenance")
 
 	app.SendKeys("n")
-	app.WaitFor("evener / new session", "Dir:      "+tuiE2EProjectDir, "Prompt (optional):")
+	// The form's model default arrives asynchronously (fetchHubSpawnOptions
+	// round-trips to the hub); submitting before hubSpawnOptionsMsg lands sees
+	// an empty spawnModel and renders "choose a model before starting" — the
+	// startup race that flaked TestTUITmuxE2E_APIErrorsRenderInPlace in CI
+	// (issue #656). Waiting for the populated Model field pins the
+	// happens-before edge the way that test and the harness-cycling spawn
+	// test do.
+	app.WaitFor("evener / new session", "Dir:      "+tuiE2EProjectDir, "Prompt (optional):", "Model:    openai/gpt-5")
 	app.SendKeys("Tab", "Tab", "Tab", "C-u")
 	app.TypeText("/tmp/evener-e2e/custom")
 	app.WaitFor("Dir:      /tmp/evener-e2e/custom")
-	app.SendKeys("Enter")
+	app.SendKeys("Enter", "Tab")
 	app.TypeLine("spawn from dashboard")
 	app.WaitFor("evener / session / spawned session 1")
 	spawns := hub.WaitForSpawns(t, 1)
@@ -138,7 +146,12 @@ func TestTUITmuxE2E_DashboardProjectAndSpawn(t *testing.T) {
 	app.SendKeys("C-o")
 	app.WaitFor("EVENER LIVE", "live task")
 	app.SendKeys("n")
-	app.WaitFor("evener / new session", "Dir:      "+tuiE2EProjectDir, "Prompt (optional):")
+	app.WaitFor("evener / new session", "Dir:      "+tuiE2EProjectDir, "Plugins:  2/2 enabled", "Prompt (optional):")
+	app.SendKeys("Tab", "Tab", "Tab", "Enter", "Enter")
+	app.WaitFor("Plugins for this session", "[x] alpha", "[x] beta")
+	app.SendKeys("Space", "Enter")
+	app.WaitFor("Plugins:  1/2 enabled")
+	app.SendKeys("Tab")
 	app.TypeLine("spawn from project")
 	app.WaitFor("evener / session / spawned session 2")
 	spawns = hub.WaitForSpawns(t, 2)
@@ -147,6 +160,9 @@ func TestTUITmuxE2E_DashboardProjectAndSpawn(t *testing.T) {
 	}
 	if testInputText(spawns[1].Input) != "spawn from project" {
 		t.Fatalf("project spawn prompt=%q, want spawn from project", testInputText(spawns[1].Input))
+	}
+	if spawns[1].LaunchOverrides == nil || spawns[1].LaunchOverrides.EnabledPlugins == nil || !reflect.DeepEqual(*spawns[1].LaunchOverrides.EnabledPlugins, []string{"beta"}) {
+		t.Fatalf("project spawn enabled plugins=%+v, want [beta]", spawns[1].LaunchOverrides)
 	}
 	if spawns[1].ModelProvider != "" || spawns[1].Model != "openai/gpt-5" {
 		t.Fatalf("project spawn model=%s/%s, want openai/gpt-5", spawns[1].ModelProvider, spawns[1].Model)
@@ -174,7 +190,7 @@ func TestTUITmuxE2E_BurstTypedKeysApplyIndividually(t *testing.T) {
 	e2ecap.RequireProcessInspect(t)
 	bin := buildTUIBinary(t)
 	hub := newTUIE2EHub(t)
-	defer hub.Close()
+	registerTUIE2EHubCleanup(t, hub)
 	app := startTUITmux(t, bin, hub)
 	defer app.Close()
 
@@ -192,7 +208,7 @@ func TestTUITmuxE2E_AppShellPreservesLayoutAcrossWidths(t *testing.T) {
 	e2ecap.RequireProcessInspect(t)
 	bin := buildTUIBinary(t)
 	hub := newTUIE2EHub(t)
-	defer hub.Close()
+	registerTUIE2EHubCleanup(t, hub)
 	app := startTUITmux(t, bin, hub)
 	defer app.Close()
 
@@ -228,7 +244,7 @@ func TestTUITmuxE2E_DashboardNarrowWideStates(t *testing.T) {
 	bin := buildTUIBinary(t)
 	hub := newTUIE2EHub(t)
 	hub.SetSessionTitle("01LIVE", "live dashboard task with a title long enough to truncate cleanly")
-	defer hub.Close()
+	registerTUIE2EHubCleanup(t, hub)
 
 	wide := startTUITmuxSized(t, bin, hub, 140, 40)
 	defer wide.Close()
@@ -267,7 +283,7 @@ func TestTUITmuxE2E_DashboardFooterAnchorsToBottom(t *testing.T) {
 	e2ecap.RequireProcessInspect(t)
 	bin := buildTUIBinary(t)
 	hub := newTUIE2EHub(t)
-	defer hub.Close()
+	registerTUIE2EHubCleanup(t, hub)
 	app := startTUITmuxSized(t, bin, hub, 124, 18)
 	defer app.Close()
 
@@ -296,17 +312,15 @@ func TestTUITmuxE2E_DashboardRecentOnlyState(t *testing.T) {
 	bin := buildTUIBinary(t)
 	hub := newTUIE2EHub(t)
 	hub.EndDashboardSessions()
-	defer hub.Close()
+	registerTUIE2EHubCleanup(t, hub)
 	app := startTUITmux(t, bin, hub)
 	defer app.Close()
 
-	screen := app.WaitFor("EVENER LIVE", "0 live", "2 recent", "1 recent", "filter")
-	if strings.Contains(screen, "ended maintenance") || strings.Contains(screen, "ops task") {
-		t.Fatalf("recent-only dashboard should fold ended sessions by default:\n%s", screen)
-	}
-	if strings.Contains(screen, "Prompt (optional):") || strings.Contains(screen, "enter: send") {
-		t.Fatalf("recent-only dashboard rendered session composer content:\n%s", screen)
-	}
+	// Ended sessions fold by default and composer content belongs to session
+	// view, so both are awaited as absences on the same frame as the positives
+	// (WaitForWithout; mid-repaint shape from #694).
+	screen := app.WaitForWithout([]string{"ended maintenance", "ops task", "Prompt (optional):", "enter: send"},
+		"EVENER LIVE", "0 live", "2 recent", "1 recent", "filter")
 	t.Logf("recent-only dashboard capture:\n%s", screen)
 
 	app.SendKeys("Down", "Enter")
@@ -322,7 +336,7 @@ func TestTUITmuxE2E_ProjectHistoryReadOnlyAndResume(t *testing.T) {
 	e2ecap.RequireProcessInspect(t)
 	bin := buildTUIBinary(t)
 	hub := newTUIE2EHub(t)
-	defer hub.Close()
+	registerTUIE2EHubCleanup(t, hub)
 	app := startTUITmux(t, bin, hub)
 	defer app.Close()
 
@@ -357,7 +371,7 @@ func TestTUITmuxE2E_CodexSpawnUsesHarnessModelPicker(t *testing.T) {
 		{ID: "evener", Label: "evener", Kind: "evener"},
 		{ID: "codex-local", Label: "codex-local", Kind: "codex"},
 	})
-	defer hub.Close()
+	registerTUIE2EHubCleanup(t, hub)
 	app := startTUITmux(t, bin, hub)
 	defer app.Close()
 
@@ -392,7 +406,7 @@ func TestTUITmuxE2E_SessionCommandsAndNavigation(t *testing.T) {
 	e2ecap.RequireProcessInspect(t)
 	bin := buildTUIBinary(t)
 	hub := newTUIE2EHub(t)
-	defer hub.Close()
+	registerTUIE2EHubCleanup(t, hub)
 	// The /help output (all session slash commands + the browse keybindings)
 	// is taller than the default 40-row pane's transcript viewport, which pins
 	// to the bottom and scrolls the "Available commands:" header off the top.
@@ -414,8 +428,22 @@ func TestTUITmuxE2E_SessionCommandsAndNavigation(t *testing.T) {
 	// /fork drops into browse mode with the fork prompt and footer hint.
 	app.TypeLine("/fork")
 	app.WaitFor("Select a user message, then press f to fork.", "f: fork selected user message")
+	// The browse→compose transition must be synced on the DISAPPEARANCE of
+	// the browse action bar, not on "enter send": the browse footer keeps the
+	// composer panel — and with it the compose-mode "enter send" hint — on
+	// screen (hub_session_view.go's scrollMode branch), so a plain
+	// WaitFor("enter send") returns while the "i" can still be sitting
+	// unread in the pty. If "/help" is then written before the TUI's input
+	// reader consumes "i", tmux coalesces the two writes into one pty read,
+	// bubbletea reports "i/help" as a single KeyMsg, and browse mode drops
+	// it into the composer as draft text (kata fazd; fall-through pinned by
+	// kata 7hh0) — the TUI never leaves browse mode and /help never runs,
+	// which is the issue #540 flake. A frame showing "enter send" WITHOUT
+	// the browse action bar can only have been rendered from the post-"i"
+	// model, so this wait is a real happens-before edge: the "i" is provably
+	// consumed before "/help" is written.
 	app.SendKeys("i")
-	app.WaitFor("enter send")
+	app.WaitForWithout([]string{"esc/i/q: compose"}, "enter send")
 
 	// /help lists the slash commands and the browse keybindings.
 	app.TypeLine("/help")
@@ -446,22 +474,22 @@ func TestTUITmuxE2E_SessionCommandsAndNavigation(t *testing.T) {
 	openLiveSession(t, app)
 	app.WaitFor("evener / session / live task", "enter send")
 
-	app.TypeLine("/auth openai")
-	app.WaitFor("OpenAI auth: signed out")
+	app.TypeLine("/auth openai-codex")
+	app.WaitFor("openai-codex auth: not configured")
 
-	app.TypeLine("/login openai")
-	app.WaitFor("OpenAI sign-in URL:", "https://auth.example/authorize", "Paste the full OpenAI redirect URL")
+	app.TypeLine("/login openai-codex")
+	app.WaitFor("Sign-in URL for openai-codex:", "https://auth.example/authorize", "Paste the full redirect URL")
 	app.TypeLine("http://localhost:1455/auth/callback?code=abc&state=flow")
-	app.WaitFor("OpenAI login complete. OpenAI auth: oauth (tmux@example.com)")
+	app.WaitFor("Sign-in complete for openai-codex. openai-codex auth: OAuth (tmux@example.com)")
 	completions := hub.WaitForAuthCompletions(t, 1)
 	if completions[0].FlowID != "flow-1" || completions[0].RedirectURL == "" {
 		t.Fatalf("auth completion=%+v, want flow-1 and redirect URL", completions[0])
 	}
 
-	app.TypeLine("/logout openai")
-	app.WaitFor("OpenAI sign-out complete.")
+	app.TypeLine("/logout openai-codex")
+	app.WaitFor("Removed the stored credential for openai-codex.")
 	authCalls := hub.WaitForAuthCalls(t, 4)
-	if got := strings.Join(authCalls, ","); got != "status:openai,login-start:openai,login-complete:openai,logout:openai" {
+	if got := strings.Join(authCalls, ","); got != "status:openai-codex,login-start:openai-codex,login-complete:openai-codex,logout:openai-codex" {
 		t.Fatalf("auth calls=%s", got)
 	}
 
@@ -482,8 +510,13 @@ func TestTUITmuxE2E_SessionCommandsAndNavigation(t *testing.T) {
 
 	app.TypeLine("/details")
 	app.WaitFor("Session:  01LIVE", "Dir:      "+tuiE2EProjectDir)
+	// Same sync rule as the /fork exit above: overlays do not change the
+	// footer, so "enter send" stays on screen while the details panel is
+	// open and cannot prove the Escape was consumed. Sync on the panel
+	// content's disappearance — a frame without it comes only from the
+	// post-Escape model.
 	app.SendKeys("Escape")
-	app.WaitFor("enter send")
+	app.WaitForWithout([]string{"Session:  01LIVE"}, "enter send")
 
 	app.TypeLine("/interrupt")
 	app.WaitFor("Interrupt sent.")
@@ -536,7 +569,7 @@ func TestTUITmuxE2E_BrowseAndFork(t *testing.T) {
 	// scrolling to keep it visible) so a user message can be reached and forked.
 	bin := buildTUIBinary(t)
 	hub := newTUIE2EHub(t)
-	defer hub.Close()
+	registerTUIE2EHubCleanup(t, hub)
 	app := startTUITmux(t, bin, hub)
 	defer app.Close()
 
@@ -550,8 +583,11 @@ func TestTUITmuxE2E_BrowseAndFork(t *testing.T) {
 	if forks := hub.Forks(); len(forks) != 0 {
 		t.Fatalf("invalid fork selection should not call hub: %+v", forks)
 	}
+	// Same sync rule as the /fork exit in SessionCommandsAndNavigation:
+	// "enter send" is visible in browse mode, so sync the transition on the
+	// action bar's disappearance, not on the hint text.
 	app.SendKeys("i")
-	app.WaitFor("enter send")
+	app.WaitForWithout([]string{"esc/i/q: compose"}, "enter send")
 	app.SendKeys("Escape")
 	app.WaitFor("esc/i/q: compose")
 	// These k presses must move the browse cursor up to the user message.
@@ -585,7 +621,7 @@ func TestTUITmuxE2E_FailedForkPreservesDraft(t *testing.T) {
 	bin := buildTUIBinary(t)
 	hub := newTUIE2EHub(t)
 	hub.SetFailFork(true)
-	defer hub.Close()
+	registerTUIE2EHubCleanup(t, hub)
 	app := startTUITmux(t, bin, hub)
 	defer app.Close()
 
@@ -626,7 +662,7 @@ func TestTUITmuxE2E_CapabilityGates(t *testing.T) {
 	bin := buildTUIBinary(t)
 	hub := newTUIE2EHub(t)
 	hub.SetSessionCapabilities("01LIVE", appwire.ThreadCapabilities{})
-	defer hub.Close()
+	registerTUIE2EHubCleanup(t, hub)
 	app := startTUITmux(t, bin, hub)
 	defer app.Close()
 
@@ -676,8 +712,13 @@ func TestTUITmuxE2E_CapabilityGates(t *testing.T) {
 		"/fork  browse and fork a user message  disabled: source does not advertise fork",
 		"/shutdown  stop this resumable session  disabled: source does not advertise shutdown",
 	)
+	// "enter send" is on screen while the palette is open (overlays do not
+	// change the footer), so it cannot prove the Escape was consumed — if
+	// the next text lands in the same pty read, "\x1b<text>" parses as
+	// alt+<key> and the palette stays open. Sync on the palette's
+	// disappearance instead.
 	app.SendKeys("Escape")
-	app.WaitFor("enter send")
+	app.WaitForWithout([]string{"Command palette"}, "enter send")
 
 	// Send is read-only when the source does not advertise it: the composer
 	// keeps the draft and the hub never receives the turn.
@@ -697,7 +738,7 @@ func TestTUITmuxE2E_SessionCommandPalettePreservesDraft(t *testing.T) {
 	e2ecap.RequireProcessInspect(t)
 	bin := buildTUIBinary(t)
 	hub := newTUIE2EHub(t)
-	defer hub.Close()
+	registerTUIE2EHubCleanup(t, hub)
 	app := startTUITmux(t, bin, hub)
 	defer app.Close()
 
@@ -722,7 +763,7 @@ func TestTUITmuxE2E_SessionLeadingSlashOpensPalette(t *testing.T) {
 	e2ecap.RequireProcessInspect(t)
 	bin := buildTUIBinary(t)
 	hub := newTUIE2EHub(t)
-	defer hub.Close()
+	registerTUIE2EHubCleanup(t, hub)
 	app := startTUITmux(t, bin, hub)
 	defer app.Close()
 
@@ -738,7 +779,7 @@ func TestTUITmuxE2E_CtrlCRequiresDoublePressFromSession(t *testing.T) {
 	e2ecap.RequireProcessInspect(t)
 	bin := buildTUIBinary(t)
 	hub := newTUIE2EHub(t)
-	defer hub.Close()
+	registerTUIE2EHubCleanup(t, hub)
 	app := startTUITmux(t, bin, hub)
 	defer app.Close()
 
@@ -760,7 +801,7 @@ func TestTUITmuxE2E_CtrlCRestoreMessageSurvivesAltScreenExit(t *testing.T) {
 	e2ecap.RequireProcessInspect(t)
 	bin := buildTUIBinary(t)
 	hub := newTUIE2EHub(t)
-	defer hub.Close()
+	registerTUIE2EHubCleanup(t, hub)
 	app := startTUITmuxAltScreen(t, bin, hub, 120, 28)
 	defer app.Close()
 
@@ -786,7 +827,7 @@ func TestTUITmuxE2E_ModelPickerShowsAuthRequiredModels(t *testing.T) {
 	bin := buildTUIBinary(t)
 	hub := newTUIE2EHub(t)
 	hub.SetAuthRequiredModels(true)
-	defer hub.Close()
+	registerTUIE2EHubCleanup(t, hub)
 	app := startTUITmux(t, bin, hub)
 	defer app.Close()
 
@@ -818,7 +859,7 @@ func TestTUITmuxE2E_SessionHeaderStatusAndComposerStates(t *testing.T) {
 	hub := newTUIE2EHub(t)
 	hub.SetSessionState("01LIVE", appwire.ThreadStatusActive)
 	hub.SetSessionContextPressure("01LIVE", 0.66)
-	defer hub.Close()
+	registerTUIE2EHubCleanup(t, hub)
 	app := startTUITmux(t, bin, hub)
 	defer app.Close()
 
@@ -836,8 +877,8 @@ func TestTUITmuxE2E_SessionHeaderStatusAndComposerStates(t *testing.T) {
 		"busy: turn_active",
 	)
 
-	app.TypeLine("/auth openai")
-	app.WaitFor("OpenAI auth: signed out", "auth: openai signed out")
+	app.TypeLine("/auth openai-codex")
+	app.WaitFor("openai-codex auth: not configured", "auth: openai-codex none")
 
 	// While a turn is active the composer is in queue mode: Enter enqueues
 	// the multiline draft via turn/queue rather than starting a new turn.
@@ -892,7 +933,7 @@ func TestTUITmuxE2E_HubStreamingAssistantDeltaBeforeRefresh(t *testing.T) {
 	e2ecap.RequireProcessInspect(t)
 	bin := buildTUIBinary(t)
 	hub := newTUIE2EHub(t)
-	defer hub.Close()
+	registerTUIE2EHubCleanup(t, hub)
 	app := startTUITmux(t, bin, hub)
 	defer app.Close()
 
@@ -918,7 +959,7 @@ func TestTUITmuxE2E_HubStreamingToolGroupBeforeRefresh(t *testing.T) {
 	e2ecap.RequireProcessInspect(t)
 	bin := buildTUIBinary(t)
 	hub := newTUIE2EHub(t)
-	defer hub.Close()
+	registerTUIE2EHubCleanup(t, hub)
 	app := startTUITmux(t, bin, hub)
 	defer app.Close()
 
@@ -944,7 +985,7 @@ func TestTUITmuxE2E_APIErrorsRenderInPlace(t *testing.T) {
 	e2ecap.RequireProcessInspect(t)
 	bin := buildTUIBinary(t)
 	hub := newTUIE2EHub(t)
-	defer hub.Close()
+	registerTUIE2EHubCleanup(t, hub)
 	app := startTUITmux(t, bin, hub)
 	defer app.Close()
 
@@ -969,18 +1010,58 @@ func TestTUITmuxE2E_APIErrorsRenderInPlace(t *testing.T) {
 	app.WaitFor("EVENER LIVE", "live task")
 	hub.SetFailSpawn(true)
 	app.SendKeys("n")
-	app.WaitFor("evener / new session", "Prompt (optional):")
+	// The form's model default arrives asynchronously (fetchHubSpawnOptions
+	// round-trips to the hub); submitting before hubSpawnOptionsMsg lands sees
+	// an empty spawnModel and renders "choose a model before starting" instead
+	// of the scripted spawn failure — a startup race a loaded CI runner loses.
+	// Waiting for the populated Model field pins the happens-before edge the
+	// same way the harness-cycling spawn test does.
+	app.WaitFor("evener / new session", "Prompt (optional):", "Model:    openai/gpt-5")
 	app.TypeLine("spawn should fail")
 	app.WaitFor("Hub session start failed.", "cause appwire thread/start: spawn failed", "> spawn should fail")
 }
 
+// tuiE2EStreamBurst is how many agent deltas each round of the stream test
+// hands the hub before it starts capturing. The whole burst is queued up
+// front, so the TUI is still working through the backlog for the poll loop
+// that follows — the pane changes under all but the last of those captures,
+// which is the condition under test.
+//
+// It is sized from both ends: well under appwire.NotificationBufferCap (4096)
+// so the hub never evicts the TUI as a slow consumer mid-test, and small
+// enough that the backlog drains in a fraction of tuiE2EWaitTimeout even on a
+// starved runner — 100 deltas settle in under a second here, against a 60s
+// deadline.
+const tuiE2EStreamBurst = 100
+
 // TestTUITmuxE2E_CaptureStableDuringStream exercises CaptureStable under the
 // exact condition kata nxq6 reported the pane going blank above the composer:
 // a rapid burst of hub notifications re-rendering the pane in a tight loop,
-// no keypresses. Every CaptureStable() result taken during the burst must be
-// a complete frame — the session breadcrumb from the top of the pane and the
-// composer's key hints from the bottom, never one without the other — which
-// is the property a lone Capture() cannot promise.
+// no keypresses. Every capture taken during the burst must be a complete
+// frame — the session breadcrumb from the top of the pane and the composer's
+// key hints from the bottom, never one without the other — which is the
+// property a lone Capture() cannot promise.
+//
+// Stability alone cannot promise it either. Under CI load this test flaked as
+// a "stable" torn frame: the pane never settles during the flood, and two
+// consecutive captures agreed on a mid-write grid — 50 rows of streamed text,
+// no breadcrumb, no composer — for longer than the poll interval. The fix is
+// to require completeness evidence (all anchors present, including the
+// last-written footer) before accepting stability, which is what
+// CaptureStable's anchor arguments do.
+//
+// The burst has to stay inside what the hub will actually carry. An
+// unthrottled broadcast goroutine — the shape this test used to have — pushes
+// deltas at ~120k/s, far past anything the TUI can drain, so Server.Broadcast
+// fills the connection's outbound buffer (appwire.NotificationBufferCap
+// frames) and evicts the TUI as a slow consumer within ~260ms. Everything
+// after that point is reconnect churn, not a render storm: the dropped client
+// logs its keepalive teardown straight into the pane (these E2E runs pass
+// -debug, which disables the alternate screen), scrolling the grid, and with
+// no hub left to notify it the TUI has no reason to repaint over the damage —
+// so the pane stays torn, without breadcrumb or composer, for CaptureStable's
+// whole deadline. Bounded bursts keep the subscription alive, so the storm
+// this test means to create is the one it actually gets.
 func TestTUITmuxE2E_CaptureStableDuringStream(t *testing.T) {
 	t.Parallel()
 	requireTmux(t)
@@ -988,38 +1069,18 @@ func TestTUITmuxE2E_CaptureStableDuringStream(t *testing.T) {
 	e2ecap.RequireProcessInspect(t)
 	bin := buildTUIBinary(t)
 	hub := newTUIE2EHub(t)
-	defer hub.Close()
+	registerTUIE2EHubCleanup(t, hub)
 	app := startTUITmuxSized(t, bin, hub, 200, 50)
 	defer app.Close()
 
 	openLiveSession(t, app)
 	app.WaitFor("evener / session / live task", "initial answer", "enter send")
 
-	stop := make(chan struct{})
-	var wg sync.WaitGroup
-	wg.Go(func() {
-		for {
-			select {
-			case <-stop:
-				return
-			default:
-			}
+	for range 5 {
+		for range tuiE2EStreamBurst {
 			hub.BroadcastAgentDelta("01LIVE", "streamed word ")
 		}
-	})
-	t.Cleanup(func() {
-		close(stop)
-		wg.Wait()
-	})
-
-	for i := range 5 {
-		screen := app.CaptureStable()
-		if !strings.Contains(screen, "evener / session / live task") {
-			t.Fatalf("capture %d: CaptureStable returned a frame missing the session breadcrumb:\n%s", i, screen)
-		}
-		if !strings.Contains(screen, "enter send") {
-			t.Fatalf("capture %d: CaptureStable returned a frame missing the composer hints:\n%s", i, screen)
-		}
+		app.CaptureStable("evener / session / live task", "enter send")
 	}
 }
 
@@ -1431,8 +1492,9 @@ func (a *tmuxTUI) CaptureHistory() string {
 	return normalizePane(string(out))
 }
 
-// CaptureStable returns Capture()'s output once two consecutive captures,
-// tuiE2EPollInterval apart, are byte-identical.
+// CaptureStable returns Capture()'s output once a frame that is BOTH complete
+// and stable is seen: it contains every want (completeness) and is
+// byte-identical to the capture one poll interval before it (stability).
 //
 // A single Capture() is a snapshot of tmux's OWN terminal-grid state, which
 // updates incrementally as bytes arrive from the pty — not a snapshot of what
@@ -1448,6 +1510,23 @@ func (a *tmuxTUI) CaptureHistory() string {
 // It self-heals on its own within milliseconds, which is exactly what makes
 // two matching captures a few ms apart trustworthy where one capture is not.
 //
+// NEITHER heuristic alone is sufficient — this is the lesson of the CI flake
+// that added the anchors:
+//   - Stability alone accepted a torn frame: during a continuous notification
+//     stream the pane never settles, and two consecutive captures agreed on a
+//     mid-write grid (all streamed text, no footer, no breadcrumb) for longer
+//     than the poll interval — a stall long enough to defeat the two-sample
+//     heuristic.
+//   - Anchors alone accept a partial repaint: tmux's grid is incremental, so a
+//     frame's extremes can still hold the PREVIOUS frame's content while the
+//     middle is being rewritten — both anchors present on a torn grid — and
+//     with no wants at all, completeness is vacuous.
+//
+// Pass wants drawn from the frame's extremes, including the composer's footer
+// hints (written last). The two conditions cover each other's failure modes;
+// a stalled mid-write carrying stale anchors for every want at once is the
+// one residual gap, and nothing short of synchronized-output mode closes it.
+//
 // Use this instead of a lone Capture() for any assertion that a substring is
 // ABSENT. WaitFor already retries until its wanted substrings appear, which
 // makes it self-correcting for POSITIVE assertions the same way — but its
@@ -1455,19 +1534,26 @@ func (a *tmuxTUI) CaptureHistory() string {
 // a complete frame, so a negative check (`strings.Contains(screen, unwanted)`
 // on that same screen) can still land mid-render and read an absence that
 // isn't real.
-func (a *tmuxTUI) CaptureStable() string {
+func (a *tmuxTUI) CaptureStable(wants ...string) string {
 	a.t.Helper()
 	deadline := time.Now().Add(tuiE2EWaitTimeout)
 	prev := a.Capture()
 	for time.Now().Before(deadline) {
 		time.Sleep(tuiE2EPollInterval)
 		cur := a.Capture()
-		if cur == prev {
+		complete := true
+		for _, want := range wants {
+			if !strings.Contains(cur, want) {
+				complete = false
+				break
+			}
+		}
+		if complete && cur == prev {
 			return cur
 		}
 		prev = cur
 	}
-	a.t.Fatalf("pane capture never stabilized within %s (still changing every %s — a real, ongoing render, not a capture race)\nlast capture:\n%s", tuiE2EWaitTimeout, tuiE2EPollInterval, prev)
+	a.t.Fatalf("pane never rendered a complete, stable frame (missing %q) within %s — either the pane is still changing every %s (a real, ongoing render), or the wanted anchors never rendered\nlast capture:\n%s", wants, tuiE2EWaitTimeout, tuiE2EPollInterval, prev)
 	return ""
 }
 
@@ -1701,9 +1787,33 @@ func normalizePane(s string) string {
 }
 
 type tuiE2EHub struct {
-	t      *testing.T
-	server *httptest.Server
-	app    *appserver.Server
+	t         *testing.T
+	server    *httptest.Server
+	app       *appserver.Server
+	closeOnce sync.Once
+	closed    chan struct{}
+	// cleanupTrace is test-only instrumentation for the lifecycle regression;
+	// it stays nil for every normal E2E fixture.
+	cleanupTrace chan<- int
+	rpcMu        sync.Mutex
+	rpcWG        sync.WaitGroup
+	rpcClosing   bool
+	rpcStarts    atomic.Int32
+	rpcExits     atomic.Int32
+	rpcJoined    atomic.Bool
+	// rpcExitGate is test-only instrumentation that keeps one handler in its
+	// deferred exit path until the close event-driven rescue releases it.
+	rpcExitGate <-chan struct{}
+	// ready is closed by the HTTP handler, not by httptest.NewServer's
+	// listener setup.  The latter only proves that a port was allocated; it
+	// does not prove that the server goroutine has reached the handler under a
+	// constrained scheduler.
+	ready chan struct{}
+	// changed is a coalescing notification for state observed by the wait
+	// helpers below.  Waiting on handler events avoids turning a 5-second hang
+	// backstop into a timer-driven polling loop.
+	changed       chan struct{}
+	readyRequests atomic.Int32
 
 	mu              sync.Mutex
 	order           []string
@@ -1754,6 +1864,9 @@ func newTUIE2EHub(t *testing.T) *tuiE2EHub {
 		sessions:  map[string]*tuiE2ESession{},
 		actions:   map[string]int{},
 		harnesses: []appwire.HarnessDescriptor{{ID: "evener", Label: "evener", Kind: "evener"}},
+		ready:     make(chan struct{}),
+		changed:   make(chan struct{}, 1),
+		closed:    make(chan struct{}),
 	}
 	h.addSession(&tuiE2ESession{
 		ID:           "01LIVE",
@@ -1837,13 +1950,56 @@ func newTUIE2EHub(t *testing.T) *tuiE2EHub {
 	app := appserver.NewServer(appserver.ServerConfig{ServerName: "evener-hub", SourceID: "local"})
 	h.app = app
 	h.registerHandlers(app)
+	var readyOnce sync.Once
 	h.server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/ready" {
+			h.readyRequests.Add(1)
+			readyOnce.Do(func() { close(h.ready) })
+			w.WriteHeader(http.StatusNoContent)
+			return
+		}
 		if r.URL.Path != "/rpc" {
 			http.NotFound(w, r)
 			return
 		}
+		if !h.beginRPCHandler() {
+			return
+		}
+		defer h.endRPCHandler()
 		app.ServeWebSocket(w, r)
 	}))
+	// Complete one real request through the installed handler before handing
+	// the address to the tmux child.  A bound listener alone is insufficient:
+	// on a loaded runner the child can otherwise spend its entire dial context
+	// waiting for net/http's serve goroutine to be scheduled.
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, h.server.URL+"/ready", nil)
+	if err != nil {
+		cancel()
+		h.server.Close()
+		t.Fatalf("build hub readiness request: %v", err)
+	}
+	resp, err := h.server.Client().Do(req)
+	cancel()
+	if err != nil {
+		h.server.Close()
+		t.Fatalf("hub readiness request: %v", err)
+	}
+	_ = resp.Body.Close()
+	if resp.StatusCode != http.StatusNoContent {
+		h.server.Close()
+		t.Fatalf("hub readiness status=%d, want %d", resp.StatusCode, http.StatusNoContent)
+	}
+	if got := h.readyRequests.Load(); got != 1 {
+		h.server.Close()
+		t.Fatalf("hub readiness handler calls=%d, want 1", got)
+	}
+	select {
+	case <-h.ready:
+	default:
+		h.server.Close()
+		t.Fatal("hub readiness request completed without handler readiness event")
+	}
 	return h
 }
 
@@ -1865,6 +2021,7 @@ func (h *tuiE2EHub) registerHandlers(app *appserver.Server) {
 	appserver.HandleTyped(app.Router(), appwire.MethodThreadList, h.handleThreadList)
 	appserver.HandleTyped(app.Router(), appwire.MethodThreadRead, h.handleThreadRead)
 	appserver.HandleTyped(app.Router(), appwire.MethodModelList, h.handleModelList)
+	appserver.HandleTyped(app.Router(), appwire.MethodEvenerPluginPreview, h.handlePluginPreview)
 	appserver.HandleTyped(app.Router(), appwire.MethodEvenerHarnessesList, h.handleHarnessList)
 	appserver.HandleTyped(app.Router(), appwire.MethodThreadStart, h.handleThreadStart)
 	appserver.HandleTyped(app.Router(), appwire.MethodThreadResume, h.handleThreadResume)
@@ -1891,12 +2048,203 @@ func (h *tuiE2EHub) handleHarnessList(context.Context, appwire.HarnessListParams
 	return appwire.HarnessListResponse{Data: append([]appwire.HarnessDescriptor(nil), h.harnesses...)}, nil
 }
 
+func (h *tuiE2EHub) handlePluginPreview(context.Context, appwire.PluginPreviewParams) (appwire.PluginPreviewResponse, error) {
+	return appwire.PluginPreviewResponse{Plugins: []appwire.PluginLaunchCandidate{
+		{Name: "alpha", Source: "project", Selected: true},
+		{Name: "beta", Source: "marketplace", Selected: true},
+	}}, nil
+}
+
 func (h *tuiE2EHub) URL() string {
 	return h.server.URL
 }
 
 func (h *tuiE2EHub) Close() {
-	h.server.Close()
+	h.closeOnce.Do(func() {
+		if h.cleanupTrace != nil {
+			h.cleanupTrace <- 2
+		}
+		h.rpcMu.Lock()
+		h.rpcClosing = true
+		h.rpcMu.Unlock()
+		// Server.Close does not join hijacked WebSocket handlers. The explicit
+		// wait is safe because beginRPCHandler closes the admission gate before
+		// waiting, so no Add can race with Wait.
+		h.server.Close()
+		h.joinRPCHandlers()
+		if h.cleanupTrace != nil {
+			h.cleanupTrace <- 4
+		}
+		close(h.closed)
+	})
+}
+
+func (h *tuiE2EHub) joinRPCHandlers() {
+	h.rpcWG.Wait()
+	h.rpcJoined.Store(true)
+}
+
+func (h *tuiE2EHub) beginRPCHandler() bool {
+	h.rpcMu.Lock()
+	defer h.rpcMu.Unlock()
+	if h.rpcClosing {
+		return false
+	}
+	h.rpcWG.Add(1)
+	h.rpcStarts.Add(1)
+	return true
+}
+
+func (h *tuiE2EHub) endRPCHandler() {
+	if h.rpcExitGate != nil {
+		<-h.rpcExitGate
+	}
+	if h.cleanupTrace != nil {
+		h.cleanupTrace <- 3
+	}
+	h.rpcExits.Add(1)
+	h.rpcWG.Done()
+}
+
+// registerTUIE2EHubCleanup deliberately uses t.Cleanup rather than defer.
+// The tmux starter registers its cleanup after this function returns, so the
+// testing package's LIFO cleanup order terminates the tmux client before this
+// joining httptest server is closed. That ordering also applies when a later
+// setup assertion calls Fatalf.
+func registerTUIE2EHubCleanup(t *testing.T, hub *tuiE2EHub) {
+	t.Helper()
+	t.Cleanup(hub.Close)
+}
+
+// TestTUITmuxE2EHubCleanupJoinsClientBeforeServer exercises the real WebSocket
+// handler lifetime separately from httptest.Server.Close: hijacked connections
+// are not part of that server's close wait, so the fixture owns an explicit
+// handler join. The event-driven rescue closes the client if a mutation starts
+// hub cleanup first, turning the wrong order into a structural order failure
+// instead of a test hang.
+func TestTUITmuxE2EHubCleanupJoinsClientBeforeServer(t *testing.T) {
+	var hub *tuiE2EHub
+	trace := make(chan int, 4)
+	observed := make(chan int, 4)
+	rescueDone := make(chan struct{})
+	release := make(chan struct{})
+	var releaseOnce sync.Once
+	t.Run("setup-lifecycle", func(t *testing.T) {
+		hub = newTUIE2EHub(t)
+		hub.rpcExitGate = release
+		transport, err := appwire.DialWebSocket(context.Background(), "ws"+strings.TrimPrefix(hub.URL(), "http")+"/rpc", hub.server.Client())
+		if err != nil {
+			t.Fatalf("dial test hub: %v", err)
+		}
+		hub.cleanupTrace = trace
+		go func() {
+			seen := [5]bool{}
+			for !seen[1] || !seen[2] || !seen[3] || !seen[4] {
+				event := <-trace
+				observed <- event
+				seen[event] = true
+				if event == 2 {
+					_ = transport.Close()
+					releaseOnce.Do(func() { close(release) })
+				}
+			}
+			close(rescueDone)
+		}()
+		registerTUIE2EHubCleanup(t, hub)
+		t.Cleanup(func() {
+			trace <- 1
+			_ = transport.Close()
+		})
+	})
+	order := [4]int{<-observed, <-observed, <-observed, <-observed}
+	if order != [4]int{1, 2, 3, 4} {
+		t.Fatalf("cleanup/handler order=%v, want client, hub-start, handler-exit, hub-complete", order)
+	}
+	<-rescueDone
+	select {
+	case <-hub.closed:
+	default:
+		t.Fatal("hub cleanup completed without the joined closed event")
+	}
+	if !hub.rpcJoined.Load() {
+		t.Fatal("hub cleanup completed without joining RPC handlers")
+	}
+}
+
+func TestTUITmuxE2EHubHandlerLifetimeEdges(t *testing.T) {
+	t.Run("zero-handlers-and-repeated-close", func(t *testing.T) {
+		hub := newTUIE2EHub(t)
+		registerTUIE2EHubCleanup(t, hub)
+		hub.Close()
+		hub.Close()
+		if got := hub.rpcStarts.Load(); got != 0 {
+			t.Fatalf("RPC starts=%d, want 0", got)
+		}
+		if got := hub.rpcExits.Load(); got != 0 {
+			t.Fatalf("RPC exits=%d, want 0", got)
+		}
+		if !hub.rpcJoined.Load() {
+			t.Fatal("zero-handler close did not complete the join")
+		}
+	})
+
+	t.Run("accept-error-returns-handler", func(t *testing.T) {
+		hub := newTUIE2EHub(t)
+		registerTUIE2EHubCleanup(t, hub)
+		resp, err := hub.server.Client().Get(hub.URL() + "/rpc")
+		if err != nil {
+			t.Fatalf("GET /rpc: %v", err)
+		}
+		_ = resp.Body.Close()
+		hub.Close()
+		hub.Close()
+		if got := hub.rpcStarts.Load(); got != 1 {
+			t.Fatalf("RPC starts=%d, want 1", got)
+		}
+		if got := hub.rpcExits.Load(); got != 1 {
+			t.Fatalf("RPC exits=%d, want 1", got)
+		}
+		if !hub.rpcJoined.Load() {
+			t.Fatal("accept-error close did not complete the join")
+		}
+	})
+
+	t.Run("multiple-handlers", func(t *testing.T) {
+		hub := newTUIE2EHub(t)
+		first, err := appwire.DialWebSocket(context.Background(), "ws"+strings.TrimPrefix(hub.URL(), "http")+"/rpc", hub.server.Client())
+		if err != nil {
+			t.Fatalf("dial first handler: %v", err)
+		}
+		second, err := appwire.DialWebSocket(context.Background(), "ws"+strings.TrimPrefix(hub.URL(), "http")+"/rpc", hub.server.Client())
+		if err != nil {
+			_ = first.Close()
+			t.Fatalf("dial second handler: %v", err)
+		}
+		registerTUIE2EHubCleanup(t, hub)
+		_ = first.Close()
+		_ = second.Close()
+		hub.Close()
+		hub.Close()
+		if got := hub.rpcStarts.Load(); got != 2 {
+			t.Fatalf("RPC starts=%d, want 2", got)
+		}
+		if got := hub.rpcExits.Load(); got != 2 {
+			t.Fatalf("RPC exits=%d, want 2", got)
+		}
+		if !hub.rpcJoined.Load() {
+			t.Fatal("multiple-handler close did not complete the join")
+		}
+	})
+}
+
+// notify wakes a waiter after a handler has observed a request or changed
+// fixture state. Notifications are intentionally coalesced: every waiter
+// re-checks its predicate, so one wakeup is sufficient for a burst of RPCs.
+func (h *tuiE2EHub) notify() {
+	select {
+	case h.changed <- struct{}{}:
+	default:
+	}
 }
 
 func (h *tuiE2EHub) SetHarnesses(harnesses []appwire.HarnessDescriptor) {
@@ -2033,6 +2381,7 @@ func (h *tuiE2EHub) addSession(s *tuiE2ESession) {
 }
 
 func (h *tuiE2EHub) handleThreadList(context.Context, appwire.ThreadListParams) (appwire.ThreadListResponse, error) {
+	defer h.notify()
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	h.treeGets++
@@ -2058,6 +2407,7 @@ func (h *tuiE2EHub) handleThreadRead(ctx context.Context, params appwire.ThreadR
 }
 
 func (h *tuiE2EHub) handleModelList(_ context.Context, params appwire.ModelListParams) (appwire.ModelListResponse, error) {
+	defer h.notify()
 	h.mu.Lock()
 	authRequired := h.authRequired
 	h.mu.Unlock()
@@ -2066,7 +2416,7 @@ func (h *tuiE2EHub) handleModelList(_ context.Context, params appwire.ModelListP
 	}
 	if authRequired {
 		return appwire.ModelListResponse{
-			Data: []appwire.ModelDescriptor{{Provider: "openai", Model: "gpt-5"}},
+			Data: []appwire.ModelDescriptor{tuiE2EGPT5Descriptor()},
 			Diagnostics: []appwire.ModelListDiagnostic{{
 				Provider: "openai",
 				Title:    "Login required",
@@ -2075,48 +2425,71 @@ func (h *tuiE2EHub) handleModelList(_ context.Context, params appwire.ModelListP
 			}},
 		}, nil
 	}
-	return appwire.ModelListResponse{Data: []appwire.ModelDescriptor{{Provider: "openai", Model: "gpt-5"}}}, nil
+	return appwire.ModelListResponse{Data: []appwire.ModelDescriptor{tuiE2EGPT5Descriptor()}}, nil
+}
+
+// tuiE2EGPT5Descriptor is the model row a real hub delivers: identity plus the
+// capability and cost fields it fills from the registry's resolved row. The
+// picker renders its meta tail from these, so the fixture has to carry them
+// for the popup to lay out the way the daemon's does.
+func tuiE2EGPT5Descriptor() appwire.ModelDescriptor {
+	return appwire.ModelDescriptor{
+		Provider:             "openai",
+		Model:                "gpt-5",
+		ContextWindow:        new(272_000),
+		SupportsTools:        new(true),
+		SupportsVision:       new(true),
+		SupportsReasoning:    new(true),
+		InputCostPerMillion:  new(1.25),
+		OutputCostPerMillion: new(10.0),
+	}
 }
 
 func (h *tuiE2EHub) handleAuthStatus(_ context.Context, params appwire.AuthStatusParams) (appwire.AuthStatusResponse, error) {
+	defer h.notify()
 	h.recordAuthCall("status", params.Provider)
-	return appwire.AuthStatusResponse{Provider: "openai", Supported: true, ActiveSource: "signed-out"}, nil
+	return appwire.AuthStatusResponse{Provider: "openai-codex", Supported: true, ActiveSource: "none", AuthModes: []string{"oauth"}}, nil
 }
 
 func (h *tuiE2EHub) handleAuthLoginStart(_ context.Context, params appwire.AuthLoginStartParams) (appwire.AuthLoginStartResponse, error) {
+	defer h.notify()
 	h.recordAuthCall("login-start", params.Provider)
 	return appwire.AuthLoginStartResponse{
-		Provider: "openai",
+		Provider: "openai-codex",
 		FlowID:   "flow-1",
 		URL:      "https://auth.example/authorize",
 	}, nil
 }
 
 func (h *tuiE2EHub) handleAuthLoginComplete(_ context.Context, params appwire.AuthLoginCompleteParams) (appwire.AuthLoginCompleteResponse, error) {
+	defer h.notify()
 	h.recordAuthCall("login-complete", params.Provider)
 	h.mu.Lock()
 	h.authCompletions = append(h.authCompletions, params)
 	h.mu.Unlock()
 	return appwire.AuthLoginCompleteResponse{
 		Status: appwire.AuthStatusResponse{
-			Provider:     "openai",
+			Provider:     "openai-codex",
 			Supported:    true,
 			SignedIn:     true,
 			ActiveSource: "oauth",
+			AuthModes:    []string{"oauth"},
 			Email:        "tmux@example.com",
 		},
 	}, nil
 }
 
 func (h *tuiE2EHub) handleAuthLogout(_ context.Context, params appwire.AuthLogoutParams) (appwire.AuthLogoutResponse, error) {
+	defer h.notify()
 	h.recordAuthCall("logout", params.Provider)
 	return appwire.AuthLogoutResponse{
 		Removed: true,
-		Status:  appwire.AuthStatusResponse{Provider: "openai", Supported: true, ActiveSource: "signed-out"},
+		Status:  appwire.AuthStatusResponse{Provider: "openai-codex", Supported: true, ActiveSource: "none", AuthModes: []string{"oauth"}},
 	}, nil
 }
 
 func (h *tuiE2EHub) handleThreadStart(_ context.Context, params appwire.ThreadStartParams) (appwire.ThreadStartResponse, error) {
+	defer h.notify()
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	if h.failSpawn {
@@ -2151,6 +2524,7 @@ func (h *tuiE2EHub) handleThreadStart(_ context.Context, params appwire.ThreadSt
 }
 
 func (h *tuiE2EHub) handleThreadResume(_ context.Context, params appwire.ThreadResumeParams) (appwire.ThreadResumeResponse, error) {
+	defer h.notify()
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	h.resumes = append(h.resumes, params)
@@ -2176,6 +2550,7 @@ func (h *tuiE2EHub) handleThreadResume(_ context.Context, params appwire.ThreadR
 }
 
 func (h *tuiE2EHub) handleTurnStart(_ context.Context, params appwire.TurnStartParams) (appwire.TurnStartResponse, error) {
+	defer h.notify()
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	if h.failSend {
@@ -2186,6 +2561,7 @@ func (h *tuiE2EHub) handleTurnStart(_ context.Context, params appwire.TurnStartP
 }
 
 func (h *tuiE2EHub) handleTurnSteer(_ context.Context, params appwire.TurnSteerParams) (appwire.EmptyResponse, error) {
+	defer h.notify()
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	h.steers = append(h.steers, params)
@@ -2193,6 +2569,7 @@ func (h *tuiE2EHub) handleTurnSteer(_ context.Context, params appwire.TurnSteerP
 }
 
 func (h *tuiE2EHub) handleTurnQueue(_ context.Context, params appwire.TurnQueueParams) (appwire.EmptyResponse, error) {
+	defer h.notify()
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	h.queues = append(h.queues, params)
@@ -2200,6 +2577,7 @@ func (h *tuiE2EHub) handleTurnQueue(_ context.Context, params appwire.TurnQueueP
 }
 
 func (h *tuiE2EHub) handleTurnDrainAsSteer(_ context.Context, params appwire.TurnDrainAsSteerParams) (appwire.EmptyResponse, error) {
+	defer h.notify()
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	h.drains = append(h.drains, params)
@@ -2207,6 +2585,7 @@ func (h *tuiE2EHub) handleTurnDrainAsSteer(_ context.Context, params appwire.Tur
 }
 
 func (h *tuiE2EHub) handleTasksList(context.Context, appwire.TaskListParams) (appwire.TaskListResponse, error) {
+	defer h.notify()
 	h.mu.Lock()
 	fail := h.failTasks
 	h.mu.Unlock()
@@ -2217,6 +2596,7 @@ func (h *tuiE2EHub) handleTasksList(context.Context, appwire.TaskListParams) (ap
 }
 
 func (h *tuiE2EHub) handleThreadTranscriptList(_ context.Context, params appwire.ThreadTranscriptListParams) (appwire.ThreadTranscriptListResponse, error) {
+	defer h.notify()
 	id := threadIDFromParams(params.Ref, "")
 	if id != "01LIVE" {
 		return appwire.ThreadTranscriptListResponse{}, appwire.Unavailable("thread not found: " + id)
@@ -2228,23 +2608,27 @@ func (h *tuiE2EHub) handleThreadTranscriptList(_ context.Context, params appwire
 }
 
 func (h *tuiE2EHub) handleTurnInterrupt(context.Context, appwire.TurnInterruptParams) (appwire.EmptyResponse, error) {
+	defer h.notify()
 	h.recordAction("interrupt")
 	return appwire.EmptyResponse{}, nil
 }
 
 func (h *tuiE2EHub) handleThreadCompactStart(context.Context, appwire.ThreadCompactStartParams) (appwire.EmptyResponse, error) {
+	defer h.notify()
 	h.recordAction("compact")
 	return appwire.EmptyResponse{}, nil
 }
 
 func (h *tuiE2EHub) handleThreadModelSet(_ context.Context, params appwire.ThreadModelSetParams) (appwire.EmptyResponse, error) {
+	defer h.notify()
 	h.mu.Lock()
 	h.models = append(h.models, params.Model)
 	h.mu.Unlock()
 	return appwire.EmptyResponse{}, nil
 }
 
-func (h *tuiE2EHub) handleThreadClear(context.Context, appwire.ThreadClearParams) (appwire.ThreadClearResponse, error) {
+func (h *tuiE2EHub) handleThreadClear(_ context.Context, params appwire.ThreadClearParams) (appwire.ThreadClearResponse, error) {
+	defer h.notify()
 	h.recordAction("clear")
 	h.mu.Lock()
 	defer h.mu.Unlock()
@@ -2261,10 +2645,21 @@ func (h *tuiE2EHub) handleThreadClear(context.Context, appwire.ThreadClearParams
 	}
 	h.addSession(s)
 	thread := h.threadFromSessionLocked(s)
-	return appwire.ThreadClearResponse{Thread: thread, Ref: thread.Evener.Ref}, nil
+	return appwire.ThreadClearResponse{
+		Thread: thread,
+		Ref:    thread.Evener.Ref,
+		Receipt: appwire.MutationReceipt{
+			ClientMutationID: params.ClientMutationID,
+			Disposition:      appwire.MutationDispositionApplied,
+			ThreadID:         thread.ID,
+			InstanceID:       thread.Evener.InstanceID,
+			ProjectionState:  appwire.MutationProjectionReflected,
+		},
+	}, nil
 }
 
 func (h *tuiE2EHub) handleThreadFork(_ context.Context, params appwire.ThreadForkParams) (appwire.ThreadForkResponse, error) {
+	defer h.notify()
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	if h.failFork {
@@ -2316,6 +2711,7 @@ func (h *tuiE2EHub) threadFromSessionLocked(s *tuiE2ESession) appwire.Thread {
 		Turns:         append([]appwire.Turn(nil), s.Turns...),
 		Evener: appwire.EvenerThread{
 			Ref:             appwire.Ref{SourceID: "local", ThreadID: s.ID}.String(),
+			InstanceID:      s.ID,
 			ParentRef:       s.ParentRef,
 			Kind:            s.Kind,
 			Profile:         "default",
@@ -2580,12 +2976,16 @@ func (h *tuiE2EHub) WaitForActionCount(t *testing.T, action string, count int) i
 
 func (h *tuiE2EHub) waitFor(t *testing.T, pred func() bool, desc string) {
 	t.Helper()
-	deadline := time.Now().Add(5 * time.Second)
-	for time.Now().Before(deadline) {
+	timer := time.NewTimer(5 * time.Second)
+	defer timer.Stop()
+	for {
 		if pred() {
 			return
 		}
-		time.Sleep(20 * time.Millisecond)
+		select {
+		case <-h.changed:
+		case <-timer.C:
+			t.Fatalf("timed out waiting for %s", desc)
+		}
 	}
-	t.Fatalf("timed out waiting for %s", desc)
 }

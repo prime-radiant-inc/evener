@@ -8,9 +8,8 @@ import (
 	"testing"
 )
 
-// mustMarshalMeta marshals m or fails the test. SessionMeta has a custom
-// UnmarshalJSON but default MarshalJSON; comparing marshaled bytes (not
-// reflect.DeepEqual) keeps time.Time and pointer fields comparable.
+// mustMarshalMeta marshals m or fails the test. Comparing marshaled bytes
+// (not reflect.DeepEqual) keeps time.Time and pointer fields comparable.
 func mustMarshalMeta(t *testing.T, m SessionMeta) []byte {
 	t.Helper()
 	b, err := json.Marshal(m)
@@ -27,9 +26,7 @@ func mustMarshalMeta(t *testing.T, m SessionMeta) []byte {
 //     must survive a second marshal/unmarshal unchanged. This proves
 //     MarshalJSON/UnmarshalJSON agree across the full nested graph
 //     (ConfigSnapshot + GoalSnapshot + maps/slices). The baseline is the
-//     canonical form, not the raw input, which sidesteps the legacy
-//     original_task→OriginalPrompt asymmetry (UnmarshalJSON reads it, MarshalJSON
-//     does not write it).
+//     canonical form, not the raw input.
 //   - Save/Load ROUND-TRIP. SaveSessionMeta + LoadSessionMeta over a t.TempDir
 //     must reproduce the canonical bytes. A dropped or mis-tagged field, or an
 //     atomic-write/read regression, diverges here immediately.
@@ -39,8 +36,6 @@ func FuzzSessionMetaRoundTrip(f *testing.F) {
 		`{"id":"01ABC","profile_id":"openai","model":"gpt-5.5","cheap_model":"gpt-5.4-mini","config":{"max_tool_rounds_per_input":40,"max_turns":0,"tool_output_limits":{"shell":{"ride_whole_bytes":8192}},"agent_name":"engineer","reasoning_effort":"high","skills_dirs":["/a","/b"],"model_fallbacks":["anthropic/claude"],"enable_loop_detection":false},"env_info":{"working_dir":"/home/u/p"},"created_at":"2026-06-01T10:00:00Z","updated_at":"2026-06-01T11:00:00Z","turn_count":7,"last_input_tokens":12000,"name":"Session title","name_source":"prompt","name_updated_at":"2026-06-01T10:05:00Z","original_prompt":"do the thing","goal":{"objective":"ship it","status":"active","iterations":3,"made_progress_once":true,"created_at":"2026-06-01T10:00:00Z","updated_at":"2026-06-01T10:30:00Z"},"pinned_note":"remember this","observed_by":["01OBS1","01OBS2"]}`,
 		// Fork lineage fields.
 		`{"id":"01FORK","profile_id":"anthropic","model":"claude","config":{},"env_info":{},"created_at":"2026-06-02T00:00:00Z","updated_at":"2026-06-02T00:00:00Z","turn_count":0,"parent_session_id":"01PARENT","divergence_turn":4,"fork_label":"main","is_subagent":true}`,
-		// Legacy-only doc: pins the original_task→OriginalPrompt fallback path.
-		`{"original_task":"legacy prompt only"}`,
 		// Minimal / degenerate inputs.
 		`{}`,
 		`null`,

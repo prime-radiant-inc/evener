@@ -55,12 +55,9 @@ export function matchBuiltinInvocation(text: string, builtins: ScopedCommand[]):
 // itself would: an argless command's plain run(), a free-arg command's
 // run(ctx, argsText) verbatim, or - for an enum-arg command like /model -
 // the args.source(ctx) catalog resolved and searched for an item whose id OR
-// label matches the typed text (case-insensitive). /model's own source
-// already calls mergeScopedCatalog (commands.ts's own doc comment on that
-// command) - reusing the registry entry here, rather than re-deriving the
-// catalog in the composer, is what "complete their values from the same
-// merged catalog ModelSwitch uses" means in practice: there is only ONE
-// place that catalog is built, and this is not it.
+// label matches the typed text (case-insensitive). /model's own source reads
+// the same model/list-backed store as ModelSwitch, so the composer does not
+// re-derive a second catalog.
 async function resolveCommandResult(
   command: ScopedCommand,
   argsText: string,

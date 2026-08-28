@@ -93,6 +93,52 @@ type steeringMessage struct {
 	// the caller did not say. Surfaced on SteeringInjectedData and persisted on
 	// the turn so reload labels a steer the way the live path did.
 	Kind string `json:"kind,omitempty"`
+	// TaskCompletion carries typed dependency state for tasks-done steering so
+	// consumers do not need to parse the system-reminder prose.
+	TaskCompletion *events.TaskCompletionSteeringData `json:"task_completion,omitempty"`
+	turnOwner      *struct{ _ byte }                  `json:"-"`
+}
+
+func (s *Session) removeAllTurnOwnedSteering() {
+	s.mu.Lock()
+	if len(s.visionTurnOwners) == 0 {
+		s.mu.Unlock()
+		return
+	}
+	owners := make(map[*struct{ _ byte }]struct{}, len(s.visionTurnOwners))
+	for _, owner := range s.visionTurnOwners {
+		owners[owner] = struct{}{}
+	}
+	filtered := s.steeringQueue[:0]
+	for _, entry := range s.steeringQueue {
+		if _, ok := owners[entry.turnOwner]; !ok {
+			filtered = append(filtered, entry)
+		}
+	}
+	s.steeringQueue = filtered
+	s.visionTurnOwners = nil
+	s.mu.Unlock()
+	s.persistQueuesSnapshot()
+}
+
+func (s *Session) finishTurnOwnedSteering() {
+	s.mu.Lock()
+	s.visionTurnOwners = nil
+	s.mu.Unlock()
+}
+
+func (s *Session) trySteerTurnOwnedMessage(entry steeringMessage, owner *struct{ _ byte }) bool {
+	entry.turnOwner = owner
+	s.mu.Lock()
+	if s.closingOrClosedLocked() || (strings.TrimSpace(entry.Text) == "" && len(entry.Images) == 0) {
+		s.mu.Unlock()
+		return false
+	}
+	s.steeringQueue = append(s.steeringQueue, entry)
+	s.visionTurnOwners = append(s.visionTurnOwners, owner)
+	s.mu.Unlock()
+	s.persistQueuesSnapshot()
+	return true
 }
 
 func steeringInjectedDataFromMessage(msg steeringMessage) events.SteeringInjectedData {
@@ -103,6 +149,17 @@ func steeringInjectedDataFromMessage(msg steeringMessage) events.SteeringInjecte
 		StableTurnID:     msg.StableTurnID,
 		Source:           msg.Source,
 		Kind:             msg.Kind,
+		TaskCompletion:   cloneTaskCompletionSteeringData(msg.TaskCompletion),
+	}
+}
+
+func cloneTaskCompletionSteeringData(data *events.TaskCompletionSteeringData) *events.TaskCompletionSteeringData {
+	if data == nil {
+		return nil
+	}
+	return &events.TaskCompletionSteeringData{
+		CompletionState:     data.CompletionState,
+		BlockingDelegateIDs: append([]string{}, data.BlockingDelegateIDs...),
 	}
 }
 
@@ -117,6 +174,17 @@ func (s *Session) Steer(msg string) {
 // the kind is what a reader's label is built from, and only the site knows it.
 func (s *Session) SteerKind(msg, kind string) {
 	_ = s.trySteerEnqueue(msg, nil, nil, "", kind)
+}
+
+// SteerTaskCompletion queues tasks-done steering with its blocking delegate
+// dependencies available as typed data as well as rendered model context.
+func (s *Session) SteerTaskCompletion(msg string, blockingDelegateIDs []string) {
+	completion := taskCompletionSteeringData(blockingDelegateIDs)
+	_ = s.trySteerMessage(steeringMessage{
+		Text:           msg,
+		Kind:           events.SteeringKindTasksDone,
+		TaskCompletion: &completion,
+	})
 }
 
 // routeSystemNotification delivers a daemon-authored system notification to
@@ -250,24 +318,50 @@ func (s *Session) trySteerWithImagesAndProvenance(msg string, images []ImageAtta
 // for human-sent steering, "" for daemon/system steering). kind names what the
 // daemon injected (events.SteeringKind*), "" when the caller did not say.
 func (s *Session) trySteerEnqueue(msg string, images []ImageAttachment, p *provenance.Causal, source string, kind string) bool {
+	entry := steeringMessage{Text: msg, Provenance: provenance.Clone(p), Source: source, Kind: kind}
+	if len(images) > 0 {
+		entry.Images = append([]ImageAttachment(nil), images...)
+	}
+	return s.trySteerMessage(entry)
+}
+
+func (s *Session) trySteerMessage(entry steeringMessage) bool {
+	return s.trySteerMessageUnlessSuperseded(entry, ungatedFoldRevision)
+}
+
+// steerKindForFold is SteerKind for a fold flush's last-write-wins steering
+// (the task-list and transcript reminders): the steering is refused, at the
+// moment it would be enqueued, once a newer fold has published.
+func (s *Session) steerKindForFold(msg, kind string, publishedRevision int) {
+	_ = s.trySteerMessageUnlessSuperseded(steeringMessage{Text: msg, Kind: kind}, publishedRevision)
+}
+
+// trySteerMessageUnlessSuperseded enqueues entry unless publishedRevision
+// (a fold's publication revision, or ungatedFoldRevision for steering that
+// is not tied to a fold) is older than the newest published fold. The
+// publication-order check runs under the SAME s.mu hold that appends to the
+// queue, so a newer publication cannot slip in between the check and the
+// enqueue: a stale fold's steering is refused rather than landing after
+// the newer fold's own.
+func (s *Session) trySteerMessageUnlessSuperseded(entry steeringMessage, publishedRevision int) bool {
 	s.mu.Lock()
 	if s.closingOrClosedLocked() {
 		s.mu.Unlock()
 		return false
 	}
-	if strings.TrimSpace(msg) == "" && len(images) == 0 {
+	if strings.TrimSpace(entry.Text) == "" && len(entry.Images) == 0 {
 		s.mu.Unlock()
 		return false
 	}
-	entry := steeringMessage{Text: msg, Provenance: provenance.Clone(p), Source: source, Kind: kind}
-	if len(images) > 0 {
-		entry.Images = append([]ImageAttachment(nil), images...)
+	if publishedRevision != ungatedFoldRevision && publishedRevision < s.newestPublishedFoldRevision {
+		s.mu.Unlock()
+		return false
 	}
 	s.steeringQueue = append(s.steeringQueue, entry)
 	s.mu.Unlock()
 	// Client-authored steering is persisted by the mutation store. The legacy
 	// snapshot has one remaining authority: daemon-authored steering.
-	if source != events.SteeringSourceUser {
+	if entry.Source != events.SteeringSourceUser {
 		s.persistQueuesSnapshot()
 	}
 	return true
@@ -891,15 +985,16 @@ func (s *Session) consumeSteeringMessage(msg steeringMessage) bool {
 	t.ClientMutationID = msg.ClientMutationID
 	t.StableTurnID = msg.StableTurnID
 	if msg.ClientMutationID != "" {
-		if err := s.appendClientMutationTranscript(t); err != nil {
+		if err := s.appendTurnAfterTranscriptWrite(
+			t,
+			func() error { return s.appendClientMutationTranscriptLocked(t) },
+			func() { s.history = append(s.history, t) },
+		); err != nil {
 			_ = s.returnClaimedSteering(msg.ClientMutationID)
 			s.reflectDurableClientSteering()
 			s.emit(events.EventWarning, events.WarningData{Message: fmt.Sprintf("transcript write failed: %v", err)})
 			return false
 		}
-		s.mu.Lock()
-		s.history = append(s.history, t)
-		s.mu.Unlock()
 		if err := s.finalizeIncorporatedSteering(msg.ClientMutationID); err != nil {
 			s.emit(events.EventWarning, events.WarningData{Message: fmt.Sprintf("steering incorporation failed: %v", err)})
 			return true
@@ -907,12 +1002,7 @@ func (s *Session) consumeSteeringMessage(msg steeringMessage) bool {
 		s.emit(events.EventSteeringInjected, steeringInjectedDataFromMessage(msg))
 		return true
 	}
-	s.mu.Lock()
-	s.history = append(s.history, t)
-	s.mu.Unlock()
-	if err := s.writeTranscript(t); err != nil {
-		s.emit(events.EventWarning, events.WarningData{Message: fmt.Sprintf("transcript write failed: %v", err)})
-	}
+	s.recordTurn(t, t)
 	s.emit(events.EventSteeringInjected, steeringInjectedDataFromMessage(msg))
 	return true
 }
@@ -956,14 +1046,15 @@ func (s *Session) appendSteeringTurn(text, kind string) {
 func (s *Session) appendSteeringTurnDurably(text, kind string) error {
 	t := schema.NewTurn(schema.TurnSteering, llm.User(text))
 	t.SteeringKind = kind
-	if err := s.writeTranscriptDurable(t); err != nil {
+	err := s.appendTurnAfterTranscriptWrite(
+		t,
+		func() error { return s.writeTranscriptDurableLocked(t) },
+		func() { s.history = append(s.history, t) },
+	)
+	if err != nil {
 		s.emit(events.EventWarning, events.WarningData{Message: fmt.Sprintf("transcript write failed: %v", err)})
-		return err
 	}
-	s.mu.Lock()
-	s.history = append(s.history, t)
-	s.mu.Unlock()
-	return nil
+	return err
 }
 
 func (s *Session) hasPendingSteering() bool {

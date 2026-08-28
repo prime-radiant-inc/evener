@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"regexp"
 	"strings"
+
+	"primeradiant.com/evener/envvars"
 )
 
 var (
@@ -95,7 +97,7 @@ func parseJobNotificationBlock(attrsRaw, body string) JobNotificationTie {
 		attrs[a[1]] = decodeNotificationEntities(a[2])
 	}
 	jobID := strings.TrimSpace(attrs["job_id"])
-	status := strings.ToLower(strings.TrimSpace(firstNonEmptyStr(attrs["status"], attrs["event"])))
+	status := strings.ToLower(strings.TrimSpace(envvars.FirstNonEmpty(attrs["status"], attrs["event"])))
 	exit := strings.TrimSpace(attrs["exit_code"])
 	isError := strings.Contains(status, "fail") || status == "error" || (exit != "" && exit != "0")
 
@@ -152,15 +154,6 @@ func communicateHeadline(body string) string {
 		bits = append(bits, fmt.Sprintf("%d %s", n, unit))
 	}
 	return strings.Join(bits, " · ")
-}
-
-func firstNonEmptyStr(values ...string) string {
-	for _, v := range values {
-		if strings.TrimSpace(v) != "" {
-			return v
-		}
-	}
-	return ""
 }
 
 func clipStr(s string, n int) string {

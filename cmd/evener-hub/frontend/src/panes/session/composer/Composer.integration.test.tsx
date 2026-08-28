@@ -13,15 +13,26 @@ import { IDBFactory } from "fake-indexeddb";
 import { afterEach, beforeAll, beforeEach, expect, test, vi } from "vitest";
 import { FakeClient } from "../../../protocol/testing/fakeClient";
 import type { MethodTypes, Thread, ThreadCapabilities, ThreadReadResponse } from "../../../protocol/types.gen";
+import { ClientProvider } from "../../../shell/clientContext";
 import { connectionStore } from "../../../stores/connection";
 import { MutationOutboxIndexedDB } from "../../../stores/mutationOutboxIndexedDB";
 import { resetThreadsStoreForTests, setMutationStorageForTests, threadsStore } from "../../../stores/threads";
 import { Toast } from "../../../widgets";
 import { resetToastStoreForTests } from "../../../widgets/toast/store";
-import { resetAskDockStoreForTests } from "./askDock/askDockStore";
-import { Composer } from "./Composer";
+import { askDockStore, resetAskDockStoreForTests } from "./askDock/askDockStore";
+import { Composer as ComposerView } from "./Composer";
 import { usePendingTurnEntries } from "./queue";
 import { flushPendingTurnsProjectionForTests, resetPendingTurnsStoreForTests } from "./queue/pendingTurnsStore";
+
+function Composer(props: React.ComponentProps<typeof ComposerView>) {
+  const client = connectionStore.getState().client;
+  if (!client) throw new Error("Composer integration test rendered without a connected client");
+  return (
+    <ClientProvider client={client}>
+      <ComposerView {...props} />
+    </ClientProvider>
+  );
+}
 
 // See draft.test.ts's identical comment: Node 26 shadows jsdom's real
 // window.localStorage with its own (non-functional under vitest) global.
@@ -104,6 +115,7 @@ const FULL_CAPABILITIES: ThreadCapabilities = {
   forkFromTurn: true,
   shutdown: true,
   changeModel: true,
+  changeVisionModel: true,
   queue: true,
   goal: true,
   rename: true,
@@ -143,10 +155,10 @@ async function mountComposer(ref: string, overrides: Partial<Thread> = {}): Prom
   fake.on("thread/read", () => readResponse(ref, overrides));
   await threadsStore.getState().ensureThread(ref);
   render(
-    <>
+    <ClientProvider client={fake}>
       <Toast />
       <Composer ref={ref} />
-    </>,
+    </ClientProvider>,
   );
   return fake;
 }
@@ -596,10 +608,10 @@ test("relay recovery refreshes stale queue capability without reconnecting or re
   }));
   await threadsStore.getState().ensureThread("ref_a");
   render(
-    <>
+    <ClientProvider client={fake}>
       <Toast />
       <Composer ref="ref_a" />
-    </>,
+    </ClientProvider>,
   );
 
   await user.type(textarea() as HTMLTextAreaElement, "follow up");
@@ -640,24 +652,26 @@ function idleNoTurnOverrides(): Partial<Thread> {
   };
 }
 
-test("the ask dock renders once a question is pending, and the composer's input row becomes hidden and inert", async () => {
+test("a pending ask hides and inerts the composer's input row, and the dock is no longer the composer's child", async () => {
   const fake = await mountComposer("ref_a", idleNoTurnOverrides());
   expect(textarea()).toBeTruthy(); // sanity: visible before any ask arrives
 
   startTurn(fake, "ref_a", "turn_1");
   ackAskUserCall(fake, "ref_a", "turn_1", "item_1", "call_1");
 
-  expect(await screen.findByText("Deploy?")).toBeTruthy();
-  expect(screen.getByText("Ship now?")).toBeTruthy();
   // Excluded from the accessibility tree by the `hidden` attribute (RTL's
   // byRole queries respect it, matching real assistive-tech behavior) -
   // a stronger, more meaningful signal than probing the `inert` IDL
   // property directly, and it also proves the textarea can't be tabbed to.
-  expect(textarea()).toBeNull();
+  await waitFor(() => expect(textarea()).toBeNull());
+  // The answering surface is the transcript's trailing row now (Session.tsx
+  // passes AskDock as TranscriptBody's trailingRow; AskDock.test.tsx and
+  // Session.test.tsx prove that half) - nothing ask-shaped renders here.
+  expect(document.querySelector("[data-ask-response-dock]")).toBeNull();
+  expect(screen.queryByText("Deploy?")).toBeNull();
 });
 
-test("sending an answer submits through the normal send path and restores the composer once resolved", async () => {
-  const user = userEvent.setup();
+test("the composer un-hides once the pending ask resolves through the normal send path", async () => {
   const fake = await mountComposer("ref_a", idleNoTurnOverrides());
   let observeTurnStart!: (params: MethodTypes["turn/start"]["params"]) => void;
   const turnStarted = new Promise<MethodTypes["turn/start"]["params"]>((resolve) => {
@@ -677,9 +691,17 @@ test("sending an answer submits through the normal send path and restores the co
   });
   startTurn(fake, "ref_a", "turn_1");
   ackAskUserCall(fake, "ref_a", "turn_1", "item_1", "call_1");
-  await screen.findByText("Deploy?");
+  // The dock itself is the transcript's trailing row now, so this test
+  // resolves the batch through the same store seam its Send button calls
+  // (askDockStore.sendBatch, the real durable send path) rather than a UI
+  // click - what THIS component owns is the un-hide that follows.
+  await waitFor(() => expect(textarea()).toBeNull());
+  const batchId = askDockStore.getState().byRef.get("ref_a")?.batches[0]?.id;
+  if (batchId === undefined) throw new Error("pending ask batch did not reconcile");
 
-  await user.click(screen.getByRole("button", { name: /send answers/i }));
+  await act(async () => {
+    await askDockStore.getState().sendBatch("ref_a", batchId);
+  });
 
   await expect(turnStarted).resolves.toMatchObject({
     input: [{ type: "text", text: "[answers]\n1. [Deploy?] → skipped (no answer)" }],
@@ -695,7 +717,6 @@ test("sending an answer submits through the normal send path and restores the co
 // component's OWN aria-live region (w5-integration-wiring-report.md
 // Concern #4).
 test("resolving the pending ask announces the composer's restoration via this component's own aria-live region", async () => {
-  const user = userEvent.setup();
   const fake = await mountComposer("ref_a", idleNoTurnOverrides());
   fake.on("turn/start", (params) => ({
     receipt: {
@@ -713,17 +734,23 @@ test("resolving the pending ask announces the composer's restoration via this co
 
   startTurn(fake, "ref_a", "turn_1");
   ackAskUserCall(fake, "ref_a", "turn_1", "item_1", "call_1");
-  await screen.findByText("Deploy?");
+  await waitFor(() => expect(askDockStore.getState().byRef.get("ref_a")?.batches.length ?? 0).toBe(1));
   expect(screen.queryByText("Message composer ready.")).toBeNull(); // not yet - still pending
 
-  await user.click(screen.getByRole("button", { name: /send answers/i }));
+  // Resolve through the same store seam the dock's Send button calls (the
+  // dock itself renders in the transcript now, not in this component).
+  const batchId = askDockStore.getState().byRef.get("ref_a")?.batches[0]?.id;
+  if (batchId === undefined) throw new Error("pending ask batch did not reconcile");
+  await act(async () => {
+    await askDockStore.getState().sendBatch("ref_a", batchId);
+  });
 
   expect(await screen.findByText("Message composer ready.")).toBeTruthy();
 });
 
 // --- full-tree sweep: cross-seam scenarios (task 5) -------------------------
 
-test("the ask dock renders above the queue strip when both are visible at once", async () => {
+test("the queue strip stays rendered while an ask is pending, with the dock no longer in the composer", async () => {
   const fake = await mountComposer("ref_a", {
     status: { type: "idle" },
     evener: {
@@ -736,14 +763,13 @@ test("the ask dock renders above the queue strip when both are visible at once",
 
   startTurn(fake, "ref_a", "turn_1");
   ackAskUserCall(fake, "ref_a", "turn_1", "item_1", "call_1");
-  await screen.findByText("Deploy?");
+  // The queue strip is not part of the ask-pending hide: queued messages
+  // stay visible (and manageable) while the input row is replaced.
   const queueHeading = await screen.findByText(/queued messages/i);
-
-  const dock = document.querySelector("[data-ask-response-dock]");
-  expect(dock).toBeTruthy();
-  // DOCUMENT_POSITION_FOLLOWING (4): the queue heading comes AFTER the dock
-  // in document order - see MDN's Node.compareDocumentPosition bitmask.
-  expect(dock!.compareDocumentPosition(queueHeading) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+  expect(queueHeading).toBeTruthy();
+  // The dock moved to the transcript's trailing row (Session.tsx) - it
+  // renders nowhere under this component.
+  expect(document.querySelector("[data-ask-response-dock]")).toBeNull();
 });
 
 test("queuing a message end to end: queue -> strip renders -> edit restores text -> cancel fires with expectedEntryId", async () => {

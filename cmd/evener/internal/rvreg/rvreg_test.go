@@ -10,12 +10,14 @@ func TestRegistrationUpdatesSessionIdentity(t *testing.T) {
 	runDir := t.TempDir()
 	reg := &Registration{}
 	if err := reg.Register(runDir, rendezvous.Entry{
-		PID:       4242,
-		Protocol:  "evener-appwire-v1",
-		Endpoint:  "ws://127.0.0.1:1/rpc",
-		SourceID:  "local",
-		ThreadID:  "01OLD",
-		SessionID: "01OLD",
+		PID:          4242,
+		Protocol:     "evener-appwire-v1",
+		Endpoint:     "ws://127.0.0.1:1/rpc",
+		SourceID:     "local",
+		ThreadID:     "01OLD",
+		SessionID:    "01OLD",
+		WorkspaceRef: "local:01WORKSPACE",
+		InstanceID:   "01OLD",
 	}); err != nil {
 		t.Fatalf("Register: %v", err)
 	}
@@ -33,6 +35,9 @@ func TestRegistrationUpdatesSessionIdentity(t *testing.T) {
 	}
 	if entries[0].ThreadID != "01NEW" || entries[0].SessionID != "01NEW" {
 		t.Fatalf("entry identity=%+v", entries[0])
+	}
+	if entries[0].WorkspaceRef != "local:01WORKSPACE" || entries[0].InstanceID != "01NEW" {
+		t.Fatalf("entry stable/live identity=%+v", entries[0])
 	}
 	// RV-02: non-identity fields must survive an UpdateSessionID call.
 	if entries[0].Protocol != "evener-appwire-v1" {

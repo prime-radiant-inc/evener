@@ -175,8 +175,8 @@ func TestClientRequestWrappersRoundTrip(t *testing.T) {
 			}
 			return nil
 		}},
-		{"ThreadClear", MethodThreadClear, `{"ref":"local:th"}`, ThreadClearResponse{Ref: "local:th"}, func(ctx context.Context, c *Client) error {
-			out, err := c.ThreadClear(ctx, ThreadClearParams{Ref: "local:th"})
+		{"ThreadClear", MethodThreadClear, `{"ref":"local:th","clientMutationId":"cm_clear","expectedInstanceId":"instance_1"}`, ThreadClearResponse{Ref: "local:th"}, func(ctx context.Context, c *Client) error {
+			out, err := c.ThreadClear(ctx, ThreadClearParams{Ref: "local:th", ClientMutationID: "cm_clear", ExpectedInstanceID: "instance_1"})
 			if err != nil {
 				return err
 			}
@@ -197,8 +197,46 @@ func TestClientRequestWrappersRoundTrip(t *testing.T) {
 		{"ThreadShutdown", MethodThreadShutdown, `{"ref":"local:th"}`, EmptyResponse{}, func(ctx context.Context, c *Client) error {
 			return c.ThreadShutdown(ctx, ThreadShutdownParams{Ref: "local:th"})
 		}},
-		{"TurnInterrupt", MethodTurnInterrupt, `{"ref":"local:th","clientMutationId":"cm_interrupt"}`, EmptyResponse{}, func(ctx context.Context, c *Client) error {
-			return c.TurnInterrupt(ctx, TurnInterruptParams{Ref: "local:th", ClientMutationID: "cm_interrupt"})
+		{"ArchiveSet", MethodEvenerArchiveSet, `{"kind":"project","id":"project-key","workingDir":"/tmp/project","archived":true}`, ArchiveResponse{
+			OK: true,
+			Navigation: NavigationMutation{
+				GenerationID: "generation-a",
+				Targets:      []NavigationInvalidationTarget{{Kind: NavigationTargetProject, ProjectKey: "project-key", Revision: 3}},
+			},
+		}, func(ctx context.Context, c *Client) error {
+			out, err := c.ArchiveSet(ctx, ArchiveParams{
+				Kind:       ArchiveTargetProject,
+				ID:         "project-key",
+				WorkingDir: "/tmp/project",
+				Archived:   true,
+			})
+			if err != nil {
+				return err
+			}
+			if !out.OK || out.Navigation.GenerationID != "generation-a" || len(out.Navigation.Targets) != 1 {
+				return errors.New("ArchiveSet decode mismatch")
+			}
+			return nil
+		}},
+		{"SessionDelete", MethodEvenerSessionDelete, `{"ref":"local:th"}`, SessionDeleteResponse{
+			Deleted: []string{"th"},
+			Skipped: []DeletionSkip{},
+			Navigation: NavigationMutation{
+				GenerationID: "generation-a",
+				Targets:      []NavigationInvalidationTarget{{Kind: NavigationTargetProject, ProjectKey: "project-key", Revision: 4}},
+			},
+		}, func(ctx context.Context, c *Client) error {
+			out, err := c.SessionDelete(ctx, SessionDeleteParams{Ref: "local:th"})
+			if err != nil {
+				return err
+			}
+			if len(out.Deleted) != 1 || out.Deleted[0] != "th" || len(out.Skipped) != 0 || out.Navigation.GenerationID != "generation-a" {
+				return errors.New("SessionDelete decode mismatch")
+			}
+			return nil
+		}},
+		{"TurnInterrupt", MethodTurnInterrupt, `{"ref":"local:th","clientMutationId":"cm_interrupt","expectedInstanceId":"instance_1"}`, EmptyResponse{}, func(ctx context.Context, c *Client) error {
+			return c.TurnInterrupt(ctx, TurnInterruptParams{Ref: "local:th", ClientMutationID: "cm_interrupt", ExpectedInstanceID: "instance_1"})
 		}},
 		{"TasksList", MethodEvenerTasksList, `{"ref":"local:th"}`, TaskListResponse{Data: []map[string]any{{
 			"id": 5, "type": "implement", "description": "Wire up the status row",
@@ -232,6 +270,16 @@ func TestClientRequestWrappersRoundTrip(t *testing.T) {
 			}
 			if len(out.Data) != 2 {
 				return errors.New("PathsComplete decode mismatch")
+			}
+			return nil
+		}},
+		{"DirsCreate", MethodEvenerDirsCreate, `{"path":"/tmp/new"}`, DirsCreateResponse{Path: "/tmp/new", Created: true}, func(ctx context.Context, c *Client) error {
+			out, err := c.DirsCreate(ctx, DirsCreateParams{Path: "/tmp/new"})
+			if err != nil {
+				return err
+			}
+			if out.Path != "/tmp/new" || !out.Created {
+				return errors.New("DirsCreate decode mismatch")
 			}
 			return nil
 		}},
@@ -376,34 +424,34 @@ func TestClientRequestWrappersRoundTrip(t *testing.T) {
 		{"ThreadNameSet", MethodEvenerThreadNameSet, `{"ref":"local:th","name":"renamed"}`, EmptyResponse{}, func(ctx context.Context, c *Client) error {
 			return c.ThreadNameSet(ctx, ThreadNameSetParams{Ref: "local:th", Name: "renamed"})
 		}},
-		{"TurnStart", MethodTurnStart, `{"ref":"local:th","clientMutationId":"cm_start","input":[{"type":"text","text":"hello"}]}`, TurnStartResponse{}, func(ctx context.Context, c *Client) error {
-			_, err := c.TurnStart(ctx, TurnStartParams{Ref: "local:th", ClientMutationID: "cm_start", Input: []InputItem{{Type: "text", Text: "hello"}}})
+		{"TurnStart", MethodTurnStart, `{"ref":"local:th","clientMutationId":"cm_start","expectedInstanceId":"instance_1","input":[{"type":"text","text":"hello"}]}`, TurnStartResponse{}, func(ctx context.Context, c *Client) error {
+			_, err := c.TurnStart(ctx, TurnStartParams{Ref: "local:th", ClientMutationID: "cm_start", ExpectedInstanceID: "instance_1", Input: []InputItem{{Type: "text", Text: "hello"}}})
 			return err
 		}},
-		{"TurnSteer", MethodTurnSteer, `{"ref":"local:th","clientMutationId":"cm_steer","input":[{"type":"text","text":"steer"}]}`, EmptyResponse{}, func(ctx context.Context, c *Client) error {
-			return c.TurnSteer(ctx, TurnSteerParams{Ref: "local:th", ClientMutationID: "cm_steer", Input: []InputItem{{Type: "text", Text: "steer"}}})
+		{"TurnSteer", MethodTurnSteer, `{"ref":"local:th","clientMutationId":"cm_steer","expectedInstanceId":"instance_1","input":[{"type":"text","text":"steer"}]}`, EmptyResponse{}, func(ctx context.Context, c *Client) error {
+			return c.TurnSteer(ctx, TurnSteerParams{Ref: "local:th", ClientMutationID: "cm_steer", ExpectedInstanceID: "instance_1", Input: []InputItem{{Type: "text", Text: "steer"}}})
 		}},
-		{"TurnQueue", MethodTurnQueue, `{"ref":"local:th","clientMutationId":"cm_queue","input":[{"type":"text","text":"queued"}]}`, EmptyResponse{}, func(ctx context.Context, c *Client) error {
-			return c.TurnQueue(ctx, TurnQueueParams{Ref: "local:th", ClientMutationID: "cm_queue", Input: []InputItem{{Type: "text", Text: "queued"}}})
+		{"TurnQueue", MethodTurnQueue, `{"ref":"local:th","clientMutationId":"cm_queue","expectedInstanceId":"instance_1","input":[{"type":"text","text":"queued"}]}`, EmptyResponse{}, func(ctx context.Context, c *Client) error {
+			return c.TurnQueue(ctx, TurnQueueParams{Ref: "local:th", ClientMutationID: "cm_queue", ExpectedInstanceID: "instance_1", Input: []InputItem{{Type: "text", Text: "queued"}}})
 		}},
-		{"TurnDrain", MethodTurnDrainAsSteer, `{"ref":"local:th","clientMutationId":"cm_drain","expectedQueueRevision":7}`, EmptyResponse{}, func(ctx context.Context, c *Client) error {
-			return c.TurnDrainAsSteer(ctx, TurnDrainAsSteerParams{Ref: "local:th", ClientMutationID: "cm_drain", ExpectedQueueRevision: 7})
+		{"TurnDrain", MethodTurnDrainAsSteer, `{"ref":"local:th","clientMutationId":"cm_drain","expectedInstanceId":"instance_1","expectedQueueRevision":7}`, EmptyResponse{}, func(ctx context.Context, c *Client) error {
+			return c.TurnDrainAsSteer(ctx, TurnDrainAsSteerParams{Ref: "local:th", ClientMutationID: "cm_drain", ExpectedInstanceID: "instance_1", ExpectedQueueRevision: 7})
 		}},
-		{"TurnPromoteQueuedAsSteer", MethodTurnPromoteQueuedAsSteer, `{"ref":"local:th","index":2,"clientMutationId":"cm_promote","expectedEntryId":"qe_1"}`, EmptyResponse{}, func(ctx context.Context, c *Client) error {
+		{"TurnPromoteQueuedAsSteer", MethodTurnPromoteQueuedAsSteer, `{"ref":"local:th","index":2,"clientMutationId":"cm_promote","expectedInstanceId":"instance_1","expectedEntryId":"qe_1"}`, EmptyResponse{}, func(ctx context.Context, c *Client) error {
 			return c.TurnPromoteQueuedAsSteer(ctx, TurnPromoteQueuedAsSteerParams{
-				Ref: "local:th", Index: 2, ClientMutationID: "cm_promote", ExpectedEntryID: "qe_1",
+				Ref: "local:th", Index: 2, ClientMutationID: "cm_promote", ExpectedInstanceID: "instance_1", ExpectedEntryID: "qe_1",
 			})
 		}},
-		{"TurnCancelQueued", MethodTurnCancelQueued, `{"ref":"local:th","index":1,"clientMutationId":"cm_cancel","expectedEntryId":"qe_2"}`, TurnCancelQueuedResponse{}, func(ctx context.Context, c *Client) error {
+		{"TurnCancelQueued", MethodTurnCancelQueued, `{"ref":"local:th","index":1,"clientMutationId":"cm_cancel","expectedInstanceId":"instance_1","expectedEntryId":"qe_2"}`, TurnCancelQueuedResponse{}, func(ctx context.Context, c *Client) error {
 			_, err := c.TurnCancelQueued(ctx, TurnCancelQueuedParams{
-				Ref: "local:th", Index: 1, ClientMutationID: "cm_cancel", ExpectedEntryID: "qe_2",
+				Ref: "local:th", Index: 1, ClientMutationID: "cm_cancel", ExpectedInstanceID: "instance_1", ExpectedEntryID: "qe_2",
 			})
 			return err
 		}},
 		{"CommandList", MethodEvenerCommandList, `{}`, map[string]any{}, func(ctx context.Context, c *Client) error { _, err := c.CommandList(ctx); return err }},
 		{"MarketplaceList", MethodEvenerMarketplaceList, `{}`, map[string]any{}, func(ctx context.Context, c *Client) error { _, err := c.MarketplaceList(ctx); return err }},
-		{"MarketplaceAdd", MethodEvenerMarketplaceAdd, `{"name":"acme","source":{"kind":"git","repo":"acme/plugins"}}`, map[string]any{}, func(ctx context.Context, c *Client) error {
-			_, err := c.MarketplaceAdd(ctx, MarketplaceAddParams{Name: "acme", Source: MarketplaceSourceInput{Kind: "git", Repo: "acme/plugins"}})
+		{"MarketplaceAdd", MethodEvenerMarketplaceAdd, `{"name":"acme","source":{"kind":"url","repo":"acme/plugins"}}`, map[string]any{}, func(ctx context.Context, c *Client) error {
+			_, err := c.MarketplaceAdd(ctx, MarketplaceAddParams{Name: "acme", Source: MarketplaceSourceInput{Kind: "url", Repo: "acme/plugins"}})
 			return err
 		}},
 		{"MarketplaceRemove", MethodEvenerMarketplaceRemove, `{"name":"acme"}`, map[string]any{}, func(ctx context.Context, c *Client) error {
@@ -419,6 +467,11 @@ func TestClientRequestWrappersRoundTrip(t *testing.T) {
 			return err
 		}},
 		{"PluginList", MethodEvenerPluginList, `{}`, map[string]any{}, func(ctx context.Context, c *Client) error { _, err := c.PluginList(ctx); return err }},
+		{"PluginPreview", MethodEvenerPluginPreview, `{"cwd":"/tmp","launchOverrides":{"enabledPlugins":[]}}`, map[string]any{}, func(ctx context.Context, c *Client) error {
+			empty := []string{}
+			_, err := c.PluginPreview(ctx, PluginPreviewParams{CWD: "/tmp", LaunchOverrides: &LaunchConfigLayer{EnabledPlugins: &empty}})
+			return err
+		}},
 		{"PluginInstall", MethodEvenerPluginInstall, `{"plugin":"fmt","marketplace":"acme"}`, map[string]any{}, func(ctx context.Context, c *Client) error {
 			_, err := c.PluginInstall(ctx, PluginRefParams{Plugin: "fmt", Marketplace: "acme"})
 			return err

@@ -2,11 +2,17 @@ package delegatestore
 
 import (
 	"bytes"
+	"context"
+	"encoding/json"
+	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 	"time"
+
+	"primeradiant.com/evener/agent/internal/agenttest"
 )
 
 func TestReadEventsMissingFileDoesNotCreate(t *testing.T) {
@@ -131,5 +137,669 @@ func TestReadEventsRejectsUnknownVersionWithoutMutation(t *testing.T) {
 	}
 	if got := mustReadFile(t, path); !bytes.Equal(got, raw) {
 		t.Fatalf("ReadEvents changed bytes:\n got %q\nwant %q", got, raw)
+	}
+}
+
+// writeDelegateJournal writes a valid version header followed by n batch
+// lines, each holding one distinct top-level delegate-created event, so
+// scan-limit and cancellation tests can control the exact line count.
+func writeDelegateJournal(t *testing.T, path string, n int) {
+	t.Helper()
+	var buf bytes.Buffer
+	header, err := json.Marshal(versionRecord{Version: CurrentVersion})
+	if err != nil {
+		t.Fatal(err)
+	}
+	buf.Write(header)
+	buf.WriteByte('\n')
+	for i := range n {
+		event := createdEvent(fmt.Sprintf("dlg_%d", i), "")
+		event.Seq = uint64(i + 1)
+		batch, err := json.Marshal(batchRecord{Events: []Event{event}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		buf.Write(batch)
+		buf.WriteByte('\n')
+	}
+	if err := os.WriteFile(path, buf.Bytes(), 0o644); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// appendDelegateJournalEvents appends count more batch lines to an existing
+// file written by writeDelegateJournal(t, path, startIndex), indexed
+// startIndex..startIndex+count-1 via the same dlg_%d/Seq convention, so
+// incrementality tests can grow a journal after an earlier scan already ran
+// against it.
+func appendDelegateJournalEvents(t *testing.T, path string, startIndex, count int) {
+	t.Helper()
+	var buf bytes.Buffer
+	for i := startIndex; i < startIndex+count; i++ {
+		event := createdEvent(fmt.Sprintf("dlg_%d", i), "")
+		event.Seq = uint64(i + 1)
+		batch, err := json.Marshal(batchRecord{Events: []Event{event}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		buf.Write(batch)
+		buf.WriteByte('\n')
+	}
+	f, err := os.OpenFile(path, os.O_WRONLY|os.O_APPEND, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer f.Close()
+	if _, err := f.Write(buf.Bytes()); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestScanEvents_WithinLimitsDecodesNormally(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "delegates.jsonl")
+	writeDelegateJournal(t, path, 5)
+
+	events, diagnostics, err := ScanEvents(context.Background(), path, ScanLimits{MaxBytes: 1 << 20, MaxEvents: 100})
+	if err != nil {
+		t.Fatalf("ScanEvents: %v", err)
+	}
+	if diagnostics.TornTail {
+		t.Errorf("diagnostics.TornTail = true, want false for a terminated journal")
+	}
+	if len(events) != 5 {
+		t.Fatalf("got %d events, want 5", len(events))
+	}
+}
+
+func TestScanEvents_Missing(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "missing", "delegates.jsonl")
+	events, _, err := ScanEvents(context.Background(), path, ScanLimits{})
+	if err != nil {
+		t.Fatalf("ScanEvents: %v", err)
+	}
+	if events != nil {
+		t.Fatalf("events = %#v, want nil", events)
+	}
+}
+
+// TestScanEvents_ChecksCancellationBetweenRecords verifies a large-journal
+// scan checks ctx between records (here, one event per batch line), not
+// just once per file.
+func TestScanEvents_ChecksCancellationBetweenRecords(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "delegates.jsonl")
+	const total = 200
+	writeDelegateJournal(t, path, total)
+
+	ctx := &agenttest.CountdownContext{Context: context.Background(), Allow: 10}
+	events, _, err := ScanEvents(ctx, path, ScanLimits{})
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("ScanEvents error = %v, want context.Canceled", err)
+	}
+	if events != nil {
+		t.Fatalf("ScanEvents returned %d events despite cancellation, want none retained", len(events))
+	}
+}
+
+// TestScanEvents_RefusesRawEventLimit covers the raw-limit-refusal
+// acceptance test on the event-count dimension: a journal over the event
+// ceiling is refused before Fold ever sees it.
+func TestScanEvents_RefusesRawEventLimit(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "delegates.jsonl")
+	writeDelegateJournal(t, path, 50)
+
+	_, _, err := ScanEvents(context.Background(), path, ScanLimits{MaxEvents: 10})
+	if !errors.Is(err, ErrScanLimitExceeded) {
+		t.Fatalf("ScanEvents error = %v, want ErrScanLimitExceeded", err)
+	}
+}
+
+// TestScanEvents_MaxEventsReturnsPartialEventsAlongsideError covers the
+// degrade-to-partial contract: hitting MaxEvents must not discard everything
+// already decoded — a legitimately large delegates.jsonl (its Descriptor
+// embeds full skill bodies and role prompts, see historicalDelegateScanLimits
+// in jobs_activity_past.go) should still show its first N delegates rather
+// than losing the whole activity tree.
+func TestScanEvents_MaxEventsReturnsPartialEventsAlongsideError(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "delegates.jsonl")
+	writeDelegateJournal(t, path, 50)
+
+	events, _, err := ScanEvents(context.Background(), path, ScanLimits{MaxEvents: 10})
+	if !errors.Is(err, ErrScanLimitExceeded) {
+		t.Fatalf("ScanEvents error = %v, want ErrScanLimitExceeded", err)
+	}
+	if len(events) != 10 {
+		t.Fatalf("got %d partial events, want exactly the 10 decoded before the limit fired", len(events))
+	}
+}
+
+// TestScanEvents_MaxBytesReturnsPartialEventsAlongsideError is the byte-
+// ceiling counterpart: the byte-limited read almost always lands mid-batch-
+// line, so this also exercises the torn-tail-style trim back to the last
+// complete line before Fold sees it.
+func TestScanEvents_MaxBytesReturnsPartialEventsAlongsideError(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "delegates.jsonl")
+	writeDelegateJournal(t, path, 200)
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	events, _, err := ScanEvents(context.Background(), path, ScanLimits{MaxBytes: info.Size() / 2})
+	if !errors.Is(err, ErrScanLimitExceeded) {
+		t.Fatalf("ScanEvents error = %v, want ErrScanLimitExceeded", err)
+	}
+	if len(events) == 0 || len(events) >= 200 {
+		t.Fatalf("got %d partial events, want a nonzero prefix short of the full 200", len(events))
+	}
+}
+
+// TestScanEvents_RefusesRawByteLimit covers the raw-limit-refusal acceptance
+// test on the byte dimension: a journal over the byte ceiling is refused
+// before being retained.
+func TestScanEvents_RefusesRawByteLimit(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "delegates.jsonl")
+	writeDelegateJournal(t, path, 200)
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	_, _, err = ScanEvents(context.Background(), path, ScanLimits{MaxBytes: info.Size() / 2})
+	if !errors.Is(err, ErrScanLimitExceeded) {
+		t.Fatalf("ScanEvents error = %v, want ErrScanLimitExceeded", err)
+	}
+}
+
+// TestScanEvents_MissingVersionHeaderOnEmptyFile pins existing behavior for
+// an actually-empty (0-byte) file, distinct from a missing file: ScanEvents
+// streams the header line itself now, so this regression-pins that an empty
+// read is still reported as "missing version header", not misread as EOF-
+// with-nothing-wrong.
+func TestScanEvents_MissingVersionHeaderOnEmptyFile(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "delegates.jsonl")
+	if err := os.WriteFile(path, nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	_, _, err := ScanEvents(context.Background(), path, ScanLimits{})
+	if err == nil || !strings.Contains(err.Error(), "missing version header") {
+		t.Fatalf("ScanEvents error = %v, want missing version header", err)
+	}
+}
+
+// TestScanEvents_UnterminatedVersionHeaderOnEntireFileWithoutNewline pins
+// existing behavior: a file with no newline anywhere (not even the header
+// line completes) is always a hard error, regardless of scan limits — there
+// is no complete line to trim back to.
+func TestScanEvents_UnterminatedVersionHeaderOnEntireFileWithoutNewline(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "delegates.jsonl")
+	if err := os.WriteFile(path, []byte(`{"version":1}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	_, _, err := ScanEvents(context.Background(), path, ScanLimits{})
+	if err == nil || !strings.Contains(err.Error(), "unterminated version header") {
+		t.Fatalf("ScanEvents error = %v, want unterminated version header", err)
+	}
+}
+
+// TestScanEvents_CancellationTakesPriorityOverCoincidentByteLimit verifies
+// that when ctx is canceled during a read whose chunk ALSO happens to push
+// totalBytes past MaxBytes, that must still be reported as
+// context.Canceled, not silently swallowed by ErrScanLimitExceeded
+// (jobstore has the same test, of the same name, in
+// agent/internal/jobstore). MaxBytes is set to exactly the header+line-1
+// size: both fit (totalBytes == MaxBytes, not over), so the limit fires on
+// line 2's byte check — deterministically, not by guessing a fraction of
+// the whole file's size.
+func TestScanEvents_CancellationTakesPriorityOverCoincidentByteLimit(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "delegates.jsonl")
+	writeDelegateJournal(t, path, 1)
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	headerPlusLine1Size := info.Size()
+	writeDelegateJournal(t, path, 5)
+	// allow:3 lets exactly three ctx.Err() calls through as nil — the
+	// top-of-read checks for the header, line 1, and line 2 — then reports
+	// canceled on every call after, including the check placed right before
+	// the byte-limit return on line 2's iteration.
+	ctx := &agenttest.CountdownContext{Context: context.Background(), Allow: 3}
+
+	_, _, err = ScanEvents(ctx, path, ScanLimits{MaxBytes: headerPlusLine1Size})
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("ScanEvents error = %v, want context.Canceled (not ErrScanLimitExceeded) when cancellation coincides with the byte limit", err)
+	}
+}
+
+// TestScanEvents_CancellationTakesPriorityOverCoincidentEventLimit is the
+// MaxEvents counterpart: with MaxEvents=1, the limit fires on line 2's
+// iteration (line 1's single event fits; line 2's would exceed it) — three
+// top-of-read ctx checks (header, line 1, line 2) must see nil before the
+// fourth, the one guarding the limit-triggered return itself, reports
+// canceled.
+func TestScanEvents_CancellationTakesPriorityOverCoincidentEventLimit(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "delegates.jsonl")
+	writeDelegateJournal(t, path, 5)
+	ctx := &agenttest.CountdownContext{Context: context.Background(), Allow: 3}
+
+	_, _, err := ScanEvents(ctx, path, ScanLimits{MaxEvents: 1})
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("ScanEvents error = %v, want context.Canceled (not ErrScanLimitExceeded) when cancellation coincides with the event limit", err)
+	}
+}
+
+// TestScanEvents_RefusesSingleOversizedUnterminatedLine mirrors jobstore's
+// test of the same name: a single batch line with no trailing newline at
+// all, longer than MaxLineBytes, must be refused rather than tolerated as
+// an in-flight partial write. This is MaxLineBytes' responsibility, not
+// MaxBytes': MaxBytes is not a truncating per-file ceiling (a legitimate
+// large journal must fold in full, not get cut off), but a single
+// pathological line is still corruption, not Tuesday, so it keeps its own
+// independent, always-on cap.
+func TestScanEvents_RefusesSingleOversizedUnterminatedLine(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "delegates.jsonl")
+	writeDelegateJournal(t, path, 0)
+	file, err := os.OpenFile(path, os.O_WRONLY|os.O_APPEND, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := file.WriteString(`{"events":[` + strings.Repeat("x", 5_000_000)); err != nil {
+		_ = file.Close()
+		t.Fatal(err)
+	}
+	if err := file.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	_, _, err = ScanEvents(context.Background(), path, ScanLimits{MaxLineBytes: 100})
+	if !errors.Is(err, ErrLineTooLong) {
+		t.Fatalf("ScanEvents error = %v, want ErrLineTooLong", err)
+	}
+}
+
+// TestScanEvents_RefusesOversizedTerminatedLineViaMaxLineBytes covers the
+// terminated-line path for the same cap: MaxLineBytes refuses a single
+// pathological batch line even when it IS newline-terminated, independently
+// of any MaxBytes setting.
+func TestScanEvents_RefusesOversizedTerminatedLineViaMaxLineBytes(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "delegates.jsonl")
+	writeDelegateJournal(t, path, 0)
+	file, err := os.OpenFile(path, os.O_WRONLY|os.O_APPEND, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := file.WriteString(`{"events":[` + strings.Repeat("x", 5_000_000) + "]}\n"); err != nil {
+		_ = file.Close()
+		t.Fatal(err)
+	}
+	if err := file.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	_, _, err = ScanEvents(context.Background(), path, ScanLimits{MaxLineBytes: 100})
+	if !errors.Is(err, ErrLineTooLong) {
+		t.Fatalf("ScanEvents error = %v, want ErrLineTooLong", err)
+	}
+}
+
+// TestScanEventsFrom_ReadsOnlyTheDeltaSinceOffsetSkippingTheHeader is the
+// incrementality contract ScanEventsFrom exists for: a resumed scan starting
+// past the header must decode ONLY the batch lines appended since the
+// earlier call's reported offset -- not re-read the header (which does not
+// recur past byte zero) and not re-decode anything already seen.
+func TestScanEventsFrom_ReadsOnlyTheDeltaSinceOffsetSkippingTheHeader(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "delegates.jsonl")
+	writeDelegateJournal(t, path, 3)
+
+	first, firstOffset, _, err := ScanEventsFrom(context.Background(), path, 0, ScanLimits{})
+	if err != nil {
+		t.Fatalf("first ScanEventsFrom: %v", err)
+	}
+	if len(first) != 3 {
+		t.Fatalf("first scan got %d events, want 3", len(first))
+	}
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if firstOffset != info.Size() {
+		t.Fatalf("firstOffset = %d, want the file's full size %d", firstOffset, info.Size())
+	}
+
+	appendDelegateJournalEvents(t, path, 3, 2)
+
+	second, secondOffset, _, err := ScanEventsFrom(context.Background(), path, firstOffset, ScanLimits{})
+	if err != nil {
+		t.Fatalf("second ScanEventsFrom: %v", err)
+	}
+	if len(second) != 2 {
+		t.Fatalf("second scan got %d events, want exactly the 2 appended since firstOffset, not all 5", len(second))
+	}
+	if second[0].DelegateID != "dlg_3" || second[1].DelegateID != "dlg_4" {
+		t.Fatalf("second scan events = %+v, want dlg_3 then dlg_4", second)
+	}
+	info2, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if secondOffset != info2.Size() {
+		t.Fatalf("secondOffset = %d, want the file's new full size %d", secondOffset, info2.Size())
+	}
+}
+
+// TestScanEvents_IsScanEventsFromAtOffsetZero pins ScanEvents as a thin
+// wrapper: identical behavior to calling ScanEventsFrom with fromOffset 0
+// and discarding the returned offset.
+func TestScanEvents_IsScanEventsFromAtOffsetZero(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "delegates.jsonl")
+	writeDelegateJournal(t, path, 4)
+
+	viaWrapper, viaWrapperDiag, err := ScanEvents(context.Background(), path, ScanLimits{})
+	if err != nil {
+		t.Fatalf("ScanEvents: %v", err)
+	}
+	viaFrom, _, viaFromDiag, err := ScanEventsFrom(context.Background(), path, 0, ScanLimits{})
+	if err != nil {
+		t.Fatalf("ScanEventsFrom: %v", err)
+	}
+	if len(viaWrapper) != len(viaFrom) {
+		t.Fatalf("ScanEvents returned %d events, ScanEventsFrom(0) returned %d, want equal", len(viaWrapper), len(viaFrom))
+	}
+	for i := range viaWrapper {
+		if viaWrapper[i].DelegateID != viaFrom[i].DelegateID {
+			t.Fatalf("event %d differs: ScanEvents=%+v ScanEventsFrom=%+v", i, viaWrapper[i], viaFrom[i])
+		}
+	}
+	if viaWrapperDiag != viaFromDiag {
+		t.Fatalf("diagnostics differ: ScanEvents=%+v ScanEventsFrom=%+v", viaWrapperDiag, viaFromDiag)
+	}
+}
+
+// TestScanEvents_TornTailTrueOnGenuineUnterminatedFile pins existing,
+// correct behavior: an actually-incomplete trailing batch line (an in-flight
+// append racing the read, with no scan limit involved) is a genuine torn
+// tail.
+func TestScanEvents_TornTailTrueOnGenuineUnterminatedFile(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "delegates.jsonl")
+	writeDelegateJournal(t, path, 3)
+	file, err := os.OpenFile(path, os.O_WRONLY|os.O_APPEND, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := file.WriteString(`{"events":[`); err != nil {
+		_ = file.Close()
+		t.Fatal(err)
+	}
+	if err := file.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	events, diagnostics, err := ScanEvents(context.Background(), path, ScanLimits{})
+	if err != nil {
+		t.Fatalf("ScanEvents: %v", err)
+	}
+	if !diagnostics.TornTail {
+		t.Errorf("diagnostics.TornTail = false, want true for a genuinely incomplete trailing batch line")
+	}
+	if len(events) != 3 {
+		t.Fatalf("got %d events, want the 3 complete ones (the torn trailing line contributes none)", len(events))
+	}
+}
+
+// TestScanEvents_TornTailFalseOnArtificialByteCutoff verifies TornTail
+// reflects whether the journal genuinely ends without a terminating
+// newline, not whether an artificial MaxBytes cutoff happened to land
+// mid-line. The journal here is cleanly terminated — an unbounded read
+// would show TornTail=false — so a MaxBytes cutoff reporting TornTail=true
+// would be reporting corruption that isn't there.
+func TestScanEvents_TornTailFalseOnArtificialByteCutoff(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "delegates.jsonl")
+	writeDelegateJournal(t, path, 200)
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	_, diagnostics, err := ScanEvents(context.Background(), path, ScanLimits{MaxBytes: info.Size() / 2})
+	if !errors.Is(err, ErrScanLimitExceeded) {
+		t.Fatalf("ScanEvents error = %v, want ErrScanLimitExceeded", err)
+	}
+	if diagnostics.TornTail {
+		t.Errorf("diagnostics.TornTail = true, want false: the cutoff is an artificial MaxBytes ceiling, not a genuine torn tail")
+	}
+}
+
+// TestScanEvents_StopsBeforeDecodingOnceEventBudgetExhausted verifies
+// MaxEvents is checked BEFORE attempting to decode the next batch line, not
+// after — otherwise a MaxEvents: 1 scan could still fully decode an
+// oversized (or, as here, malformed) later batch just to discover
+// afterward that the budget was already spent. Line 1 holds exactly one
+// valid event (bringing the running count to MaxEvents); line 2 is
+// malformed JSON: since the budget check runs first, ScanEvents never
+// attempts to decode line 2 at all and reports ErrScanLimitExceeded rather
+// than a decode error.
+func TestScanEvents_StopsBeforeDecodingOnceEventBudgetExhausted(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "delegates.jsonl")
+	var buf bytes.Buffer
+	header, err := json.Marshal(versionRecord{Version: CurrentVersion})
+	if err != nil {
+		t.Fatal(err)
+	}
+	buf.Write(header)
+	buf.WriteByte('\n')
+	event := createdEvent("dlg_0", "")
+	event.Seq = 1
+	firstBatch, err := json.Marshal(batchRecord{Events: []Event{event}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	buf.Write(firstBatch)
+	buf.WriteByte('\n')
+	buf.WriteString(`{"events":[}` + "\n") // malformed -- must never be reached
+	if err := os.WriteFile(path, buf.Bytes(), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	_, _, err = ScanEvents(context.Background(), path, ScanLimits{MaxEvents: 1})
+	if !errors.Is(err, ErrScanLimitExceeded) {
+		t.Fatalf("ScanEvents error = %v, want ErrScanLimitExceeded (a decode error means the malformed line 2 was reached despite the budget already being spent)", err)
+	}
+}
+
+// TestScanEvents_StopsBeforeReadingOnceEventBudgetExhausted verifies
+// MaxEvents is checked before linecap.ReadLine buffers the next line at
+// all, not just before decoding it: otherwise a MaxEvents-only scan
+// (MaxLineBytes left at its large default, or set explicitly but still
+// generous) could pay the cost of buffering an oversized next line only to
+// discover, afterward, that the event budget was already spent. This is
+// the read-level sibling of
+// TestScanEvents_StopsBeforeDecodingOnceEventBudgetExhausted, which proves
+// decoding is skipped but -- since linecap.ReadLine reads bytes long
+// before batchRecord decoding ever sees them -- does not by itself prove
+// the READ is skipped too.
+//
+// A line that exceeds MaxLineBytes gives an unambiguous, black-box-
+// observable signal either way: if ScanEvents ever attempts to read it,
+// linecap.ReadLine reports ErrTooLong; if the budget check correctly runs
+// first, that read is never attempted and ScanEvents reports
+// ErrScanLimitExceeded instead.
+func TestScanEvents_StopsBeforeReadingOnceEventBudgetExhausted(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "delegates.jsonl")
+	var buf bytes.Buffer
+	header, err := json.Marshal(versionRecord{Version: CurrentVersion})
+	if err != nil {
+		t.Fatal(err)
+	}
+	buf.Write(header)
+	buf.WriteByte('\n')
+	event := createdEvent("dlg_0", "")
+	event.Seq = 1
+	firstBatch, err := json.Marshal(batchRecord{Events: []Event{event}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	buf.Write(firstBatch)
+	buf.WriteByte('\n')
+	// Line 2 is well-formed JSON but far longer than the MaxLineBytes set
+	// below -- must never even be attempted, let alone actually exceed it.
+	// maxLineBytes is sized relative to firstBatch itself (not a fixed
+	// guess): a real createdEvent's Descriptor already carries enough
+	// fields to exceed a small fixed constant on its own, which would
+	// reject the FIRST (legitimate) line instead of exercising line 2 at
+	// all.
+	maxLineBytes := len(firstBatch) + 20
+	buf.WriteString(`{"events":[` + strings.Repeat(" ", maxLineBytes*4) + `]}` + "\n")
+	if err := os.WriteFile(path, buf.Bytes(), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	_, _, err = ScanEvents(context.Background(), path, ScanLimits{MaxEvents: 1, MaxLineBytes: int64(maxLineBytes)})
+	if errors.Is(err, ErrLineTooLong) {
+		t.Fatalf("ScanEvents error = %v (ErrLineTooLong) -- line 2 was read at all despite the event budget already being spent before it", err)
+	}
+	if !errors.Is(err, ErrScanLimitExceeded) {
+		t.Fatalf("ScanEvents error = %v, want ErrScanLimitExceeded", err)
+	}
+}
+
+// TestScanEvents_ChecksMaxEventsAfterTheFinalBatchAppend verifies MaxEvents
+// is also checked immediately after appending a batch's events, not only
+// at the TOP of the loop once per line before that line is even read: a
+// single batch line can hold multiple events, so if the batch that pushes
+// len(events) past MaxEvents happens to be the file's LAST line, the loop
+// would otherwise simply end via a clean EOF on the next iteration without
+// ever re-checking the budget, silently returning more than MaxEvents
+// events with no error at all.
+func TestScanEvents_ChecksMaxEventsAfterTheFinalBatchAppend(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "delegates.jsonl")
+	var buf bytes.Buffer
+	header, err := json.Marshal(versionRecord{Version: CurrentVersion})
+	if err != nil {
+		t.Fatal(err)
+	}
+	buf.Write(header)
+	buf.WriteByte('\n')
+	// ONE batch line holding 3 events -- with MaxEvents:1, this single
+	// line alone overshoots the budget, and it is also the file's last
+	// line: nothing follows to trigger the top-of-loop check on a later
+	// call.
+	e0 := createdEvent("dlg_0", "")
+	e0.Seq = 1
+	e1 := createdEvent("dlg_1", "")
+	e1.Seq = 2
+	e2 := createdEvent("dlg_2", "")
+	e2.Seq = 3
+	batch, err := json.Marshal(batchRecord{Events: []Event{e0, e1, e2}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	buf.Write(batch)
+	buf.WriteByte('\n')
+	if err := os.WriteFile(path, buf.Bytes(), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	events, _, err := ScanEvents(context.Background(), path, ScanLimits{MaxEvents: 1})
+	if !errors.Is(err, ErrScanLimitExceeded) {
+		t.Fatalf("ScanEvents error = %v, want ErrScanLimitExceeded (a 3-event batch exceeding MaxEvents:1, as the file's last line, must not silently succeed)", err)
+	}
+	if len(events) != 3 {
+		t.Fatalf("got %d partial events, want exactly the 3 decoded from the one over-budget batch (retained in full, not truncated mid-batch — see ScanLimits.MaxEvents)", len(events))
+	}
+}
+
+// TestScanEvents_DoesNotSwallowScanLimitExceededBehindAFoldError verifies
+// that when the partial prefix ScanEvents degrades to on hitting a limit
+// would NOT fold cleanly on its own (e.g. it ends
+// mid-relationship — a RunStarted for a delegate whose own Created event is
+// in a later, never-read batch), ScanEvents must still report
+// ErrScanLimitExceeded, not a Fold error. Folding is the caller's job
+// (scanRootDelegateState already does it); ScanEvents degrading to partial
+// only to have its own internal validation immediately reject that same
+// partial prefix would silently defeat the documented contract in exactly
+// the cases it exists for.
+func TestScanEvents_DoesNotSwallowScanLimitExceededBehindAFoldError(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "delegates.jsonl")
+	var buf bytes.Buffer
+	header, err := json.Marshal(versionRecord{Version: CurrentVersion})
+	if err != nil {
+		t.Fatal(err)
+	}
+	buf.Write(header)
+	buf.WriteByte('\n')
+	orphan := startedEvent("dlg_orphan", 1, TriggerInitial)
+	orphan.Seq = 1
+	firstBatch, err := json.Marshal(batchRecord{Events: []Event{orphan}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	buf.Write(firstBatch)
+	buf.WriteByte('\n')
+	second := createdEvent("dlg_second", "")
+	second.Seq = 2
+	secondBatch, err := json.Marshal(batchRecord{Events: []Event{second}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	buf.Write(secondBatch)
+	buf.WriteByte('\n')
+	if err := os.WriteFile(path, buf.Bytes(), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	// MaxEvents: 1 stops the scan after the orphan RunStarted alone -- a
+	// partial prefix that, folded by itself, is invalid (no Created event
+	// for dlg_orphan ever appears in it).
+	events, _, err := ScanEvents(context.Background(), path, ScanLimits{MaxEvents: 1})
+	if !errors.Is(err, ErrScanLimitExceeded) {
+		t.Fatalf("ScanEvents error = %v, want ErrScanLimitExceeded (a fold error here means it was silently swallowed)", err)
+	}
+	if len(events) != 1 {
+		t.Fatalf("got %d events, want the 1 decoded before the limit fired", len(events))
+	}
+}
+
+// TestReadEventsWithDiagnostics_RejectsSemanticallyInvalidHistoryEvenThoughSyntaxIsValid
+// verifies ReadEventsWithDiagnostics (the full-read wrapper, unbounded)
+// folds the complete journal and reports a syntactically valid but
+// semantically invalid delegate history -- e.g. an orphan event with no
+// preceding Created -- as an error, even though this package's
+// ScanEvents/ScanEventsFrom (the context-aware streaming path shared with
+// the incremental-fold path) never fold internally -- see
+// TestScanEvents_DoesNotSwallowScanLimitExceededBehindAFoldError above.
+// Fold-validation belongs specifically in the full-read wrapper, leaving
+// the streaming scans un-folded.
+func TestReadEventsWithDiagnostics_RejectsSemanticallyInvalidHistoryEvenThoughSyntaxIsValid(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "delegates.jsonl")
+	var buf bytes.Buffer
+	header, err := json.Marshal(versionRecord{Version: CurrentVersion})
+	if err != nil {
+		t.Fatal(err)
+	}
+	buf.Write(header)
+	buf.WriteByte('\n')
+	orphan := startedEvent("dlg_orphan", 1, TriggerInitial)
+	orphan.Seq = 1
+	batch, err := json.Marshal(batchRecord{Events: []Event{orphan}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	buf.Write(batch)
+	buf.WriteByte('\n')
+	if err := os.WriteFile(path, buf.Bytes(), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	events, _, err := ReadEventsWithDiagnostics(path)
+	if err == nil {
+		t.Fatalf("ReadEventsWithDiagnostics accepted a semantically invalid history (orphan event, no preceding Created): events=%+v", events)
+	}
+	if !strings.Contains(err.Error(), "dlg_orphan") {
+		t.Fatalf("error = %v, want it to name the orphan delegate", err)
+	}
+	if events != nil {
+		t.Fatalf("events = %+v, want nil on a fold-validation failure", events)
 	}
 }

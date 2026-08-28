@@ -5,9 +5,11 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"runtime"
 	"slices"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -16,7 +18,29 @@ import (
 	"primeradiant.com/evener/agent/provider"
 	"primeradiant.com/evener/llm"
 	apilog "primeradiant.com/evener/llm/apilog"
+	"primeradiant.com/evener/llm/registry"
 )
+
+// namedOpenAIInstanceProfile is a profile on an openai-backed instance under a
+// user-assigned name: side calls route on the instance name, and the cheap
+// model still comes from the provider behind it.
+func namedOpenAIInstanceProfile(t *testing.T, name, model string) *provider.Profile {
+	t.Helper()
+	r, err := registry.Load(
+		registry.WithOffline(true), registry.WithoutCache(), registry.WithNoUserLayer(),
+		registry.WithStateRoot(t.TempDir()),
+		registry.WithEnv(func(string) (string, bool) { return "", false }),
+		registry.WithInstances(map[string]registry.Provider{name: {Base: "openai", APIKey: "test"}}),
+	)
+	if err != nil {
+		t.Fatalf("registry: %v", err)
+	}
+	p, err := provider.Resolve(r, name+"/"+model)
+	if err != nil {
+		t.Fatalf("resolve %s/%s: %v", name, model, err)
+	}
+	return p
+}
 
 func refusal(status int, message string) func(string, string) error {
 	return func(prov, _ string) error {
@@ -76,6 +100,116 @@ func TestCallerFallsBackAndRemembersObservedRefusals(t *testing.T) {
 				t.Fatalf("models = %v, want %v", got, want)
 			}
 		})
+	}
+}
+
+func TestCallerDeduplicatesConcurrentCheapRefusalProbes(t *testing.T) {
+	const callers = 16
+	adapter := servesOnly("openai", "main", refusal(400, "The provided model identifier is invalid."))
+	var cheapCalls atomic.Int32
+	adapter.Respond = func(req llm.Request) (llm.Response, error) {
+		if req.Model == "gpt-4.1-nano" {
+			cheapCalls.Add(1)
+			runtime.Gosched()
+			return llm.Response{}, refusal(400, "The provided model identifier is invalid.")("openai", req.Model)
+		}
+		return llm.Response{Message: llm.Assistant("answered")}, nil
+	}
+	caller := cheapmodel.New(clientWith(adapter))
+	profile := provider.NewOpenAIProfile("main")
+	start := make(chan struct{})
+	var wg sync.WaitGroup
+	errs := make(chan error, callers)
+	for range callers {
+		wg.Go(func() {
+			<-start
+			resp, err := complete(t, caller, profile)
+			if err != nil || strings.TrimSpace(resp.Text()) != "answered" {
+				errs <- fmt.Errorf("Complete = (%q, %w), want answered", resp.Text(), err)
+			}
+		})
+	}
+	close(start)
+	wg.Wait()
+	close(errs)
+	for err := range errs {
+		t.Error(err)
+	}
+	if got := cheapCalls.Load(); got != 1 {
+		t.Fatalf("cheap probe calls = %d, want 1 for %d concurrent callers; models = %v", got, callers, adapter.Models())
+	}
+	if got, want := len(adapter.Models()), callers+1; got != want {
+		t.Fatalf("provider calls = %d, want %d (one cheap probe plus one fallback per caller)", got, want)
+	}
+}
+
+// TestCallerRunsConcurrentSuccessfulCheapRequestsIndependently pins that a
+// healthy cheap route is never serialized behind one shared probe: every
+// caller issues its own cheap request, gets its own answer back, and none is
+// pushed onto the session model. Only a refusal is a route property worth
+// sharing (see TestCallerRunsConcurrentCheapRefusalsAsOneProbe).
+func TestCallerRunsConcurrentSuccessfulCheapRequestsIndependently(t *testing.T) {
+	const callers = 8
+	// TRIPWIRE: in-process scripted adapter with no I/O; only fires on a
+	// genuine deadlock in the probe machinery.
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	adapter := &contextTrackingAdapter{Provider: "openai"}
+	adapter.Respond = func(_ context.Context, req llm.Request) (llm.Response, error) {
+		return llm.Response{Message: llm.Assistant(req.Messages[0].Text())}, nil
+	}
+
+	caller := cheapmodel.New(clientWith(adapter))
+	profile := provider.NewOpenAIProfile("main")
+	start := make(chan struct{})
+	ready := make(chan struct{}, callers)
+	responses := make(chan string, callers)
+	errs := make(chan error, callers)
+	var wg sync.WaitGroup
+	expected := make(map[string]struct{}, callers)
+	for i := range callers {
+		prompt := fmt.Sprintf("request-%d", i)
+		expected[prompt] = struct{}{}
+		wg.Go(func() {
+			ready <- struct{}{}
+			<-start
+			resp, err := caller.Complete(ctx, profile, llm.Request{Messages: []llm.Message{llm.User(prompt)}})
+			if err != nil {
+				errs <- err
+				return
+			}
+			responses <- resp.Text()
+		})
+	}
+	for range callers {
+		<-ready
+	}
+	close(start)
+	wg.Wait()
+	close(errs)
+	close(responses)
+
+	for err := range errs {
+		t.Errorf("concurrent Complete: %v", err)
+	}
+	models := adapter.Models()
+	if len(models) != callers {
+		t.Fatalf("provider calls = %d, want one cheap call per caller (%d): %v", len(models), callers, models)
+	}
+	for _, model := range models {
+		if model != "gpt-4.1-nano" {
+			t.Fatalf("provider calls = %v, want every one on the cheap model", models)
+		}
+	}
+	for response := range responses {
+		if _, ok := expected[response]; !ok {
+			t.Errorf("unexpected response text = %q", response)
+		}
+		delete(expected, response)
+	}
+	if len(expected) != 0 {
+		t.Errorf("missing responses for prompts: %v", expected)
 	}
 }
 
@@ -151,16 +285,20 @@ func TestCallerDoesNotRetryWhenTheCheapModelIsTheSessionModel(t *testing.T) {
 	}
 }
 
-func TestCallerUsesStaticCompatibilityWithoutAProbe(t *testing.T) {
+// TestCallerSkipsARouteTheClientCannotServe pins the proactive half of the
+// pair: a cheap route the client refuses outright (spec §7.3 — an id off the
+// Codex allowlist is the only reference that fails to resolve) is never
+// probed, and the request runs on the session model instead.
+func TestCallerSkipsARouteTheClientCannotServe(t *testing.T) {
 	tracker := servesOnly("openai", "main", refusal(400, "unexpected model"))
-	adapter := &declaredModelAdapter{ModelTrackingAdapter: tracker, served: "main"}
-	caller := cheapmodel.New(clientWith(adapter))
+	caller := cheapmodel.New(clientWith(tracker))
+	profile := provider.WithCheapModel(provider.NewOpenAIProfile("main"), "openai-codex/not-on-the-allowlist")
 
-	if _, err := complete(t, caller, provider.NewOpenAIProfile("main")); err != nil {
+	if _, err := complete(t, caller, profile); err != nil {
 		t.Fatalf("Complete: %v", err)
 	}
 	if got, want := tracker.Models(), []string{"main"}; !slices.Equal(got, want) {
-		t.Fatalf("models = %v, want %v", got, want)
+		t.Fatalf("models = %v, want %v (the unservable cheap route is never probed)", got, want)
 	}
 }
 
@@ -262,7 +400,7 @@ func TestCallerKeepsRefusalsAcrossModelSwitchButNotProviderSwitch(t *testing.T) 
 	if got, want := openAI.Models(), []string{"gpt-4.1-nano", "main", "main-2"}; !slices.Equal(got, want) {
 		t.Fatalf("openai models = %v, want %v", got, want)
 	}
-	bedrockProfile := provider.WithProviderID(provider.NewOpenAIProfile("bedrock-main"), "bedrock")
+	bedrockProfile := namedOpenAIInstanceProfile(t, "bedrock", "bedrock-main")
 	if _, err := complete(t, caller, bedrockProfile); err != nil {
 		t.Fatalf("bedrock Complete: %v", err)
 	}
@@ -271,16 +409,261 @@ func TestCallerKeepsRefusalsAcrossModelSwitchButNotProviderSwitch(t *testing.T) 
 	}
 }
 
-type declaredModelAdapter struct {
-	*agenttest.ModelTrackingAdapter
-	served string
+type contextTrackingAdapter struct {
+	Provider string
+	Respond  func(context.Context, llm.Request) (llm.Response, error)
+
+	mu     sync.Mutex
+	models []string
 }
 
-func (a *declaredModelAdapter) ValidateModel(model string) error {
-	if model == a.served {
-		return nil
+func (a *contextTrackingAdapter) Name() string { return a.Provider }
+
+func (a *contextTrackingAdapter) Complete(ctx context.Context, req llm.Request) (llm.Response, error) {
+	a.mu.Lock()
+	a.models = append(a.models, req.Model)
+	a.mu.Unlock()
+	resp, err := a.Respond(ctx, req)
+	if err != nil {
+		return resp, err
 	}
-	return fmt.Errorf("model %s is not supported (served: %s)", model, a.served)
+	resp.Provider = a.Provider
+	if resp.Model == "" {
+		resp.Model = req.Model
+	}
+	return resp, nil
+}
+
+func (a *contextTrackingAdapter) Stream(context.Context, llm.Request) (llm.Stream, error) {
+	return nil, llm.ErrStreamUnsupported
+}
+
+func (a *contextTrackingAdapter) Models() []string {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return slices.Clone(a.models)
+}
+
+func TestCallerWaiterHonorsItsOwnContext(t *testing.T) {
+	cheapStarted := make(chan struct{})
+	releaseCheap := make(chan struct{})
+	var started sync.Once
+	adapter := &contextTrackingAdapter{Provider: "openai"}
+	adapter.Respond = func(ctx context.Context, req llm.Request) (llm.Response, error) {
+		if req.Model == "gpt-4.1-nano" {
+			started.Do(func() { close(cheapStarted) })
+			select {
+			case <-releaseCheap:
+				return llm.Response{}, refusal(400, "The provided model identifier is invalid.")("openai", req.Model)
+			case <-ctx.Done():
+				return llm.Response{}, ctx.Err()
+			}
+		}
+		return llm.Response{Message: llm.Assistant("answered")}, nil
+	}
+	caller := cheapmodel.New(clientWith(adapter))
+	profile := provider.NewOpenAIProfile("main")
+	leaderDone := make(chan error, 1)
+	go func() {
+		_, err := caller.Complete(context.Background(), profile, llm.Request{Messages: []llm.Message{llm.User("leader")}})
+		leaderDone <- err
+	}()
+	<-cheapStarted
+
+	waiterCtx, cancelWaiter := context.WithCancel(context.Background())
+	waiterDone := make(chan error, 1)
+	go func() {
+		_, err := caller.Complete(waiterCtx, profile, llm.Request{Messages: []llm.Message{llm.User("waiter")}})
+		waiterDone <- err
+	}()
+	cancelWaiter()
+	if err := <-waiterDone; !errors.Is(err, context.Canceled) {
+		t.Fatalf("waiter error = %v, want context.Canceled", err)
+	}
+
+	close(releaseCheap)
+	if err := <-leaderDone; err != nil {
+		t.Fatalf("leader error = %v", err)
+	}
+	if got, want := adapter.Models(), []string{"gpt-4.1-nano", "main"}; !slices.Equal(got, want) {
+		t.Fatalf("models = %v, want one shared cheap probe and leader fallback", got)
+	}
+}
+
+func TestCallerRetriesAfterCanceledProbe(t *testing.T) {
+	cheapStarted := make(chan struct{})
+	var started sync.Once
+	var cheapCalls atomic.Int32
+	adapter := &contextTrackingAdapter{Provider: "openai"}
+	adapter.Respond = func(ctx context.Context, req llm.Request) (llm.Response, error) {
+		if req.Model == "gpt-4.1-nano" {
+			if cheapCalls.Add(1) == 1 {
+				started.Do(func() { close(cheapStarted) })
+				<-ctx.Done()
+				return llm.Response{}, ctx.Err()
+			}
+			return llm.Response{}, refusal(400, "The provided model identifier is invalid.")("openai", req.Model)
+		}
+		return llm.Response{Message: llm.Assistant("answered")}, nil
+	}
+	caller := cheapmodel.New(clientWith(adapter))
+	profile := provider.NewOpenAIProfile("main")
+	leaderCtx, cancelLeader := context.WithCancel(context.Background())
+	leaderDone := make(chan error, 1)
+	go func() {
+		_, err := caller.Complete(leaderCtx, profile, llm.Request{Messages: []llm.Message{llm.User("leader")}})
+		leaderDone <- err
+	}()
+	<-cheapStarted
+	cancelLeader()
+	if err := <-leaderDone; !errors.Is(err, context.Canceled) {
+		t.Fatalf("canceled leader error = %v, want context.Canceled", err)
+	}
+
+	resp, err := complete(t, caller, profile)
+	if err != nil || strings.TrimSpace(resp.Text()) != "answered" {
+		t.Fatalf("retry Complete = (%q, %v), want answered", resp.Text(), err)
+	}
+	if got, want := adapter.Models(), []string{"gpt-4.1-nano", "gpt-4.1-nano", "main"}; !slices.Equal(got, want) {
+		t.Fatalf("models = %v, want canceled probe removed before retry", got)
+	}
+}
+
+func TestCallerKeepsRefusalFlightUntilAllFallbacksSettle(t *testing.T) {
+	cheapStarted := make(chan struct{})
+	releaseCheap := make(chan struct{})
+	leaderFallbackStarted := make(chan struct{})
+	siblingFallbackStarted := make(chan struct{})
+	thirdFallbackStarted := make(chan struct{})
+	releaseFallbacks := make(chan struct{})
+	var cheapOnce sync.Once
+	var leaderOnce sync.Once
+	var siblingOnce sync.Once
+	var thirdOnce sync.Once
+	var cheapCalls atomic.Int32
+	adapter := &contextTrackingAdapter{Provider: "openai"}
+	adapter.Respond = func(ctx context.Context, req llm.Request) (llm.Response, error) {
+		if req.Model == "gpt-4.1-nano" {
+			cheapCalls.Add(1)
+			cheapOnce.Do(func() { close(cheapStarted) })
+			select {
+			case <-releaseCheap:
+				return llm.Response{}, refusal(400, "The provided model identifier is invalid.")("openai", req.Model)
+			case <-ctx.Done():
+				return llm.Response{}, ctx.Err()
+			}
+		}
+		switch req.Messages[0].Text() {
+		case "leader":
+			leaderOnce.Do(func() { close(leaderFallbackStarted) })
+			<-ctx.Done()
+			return llm.Response{}, ctx.Err()
+		case "sibling":
+			siblingOnce.Do(func() { close(siblingFallbackStarted) })
+			<-releaseFallbacks
+			return llm.Response{Message: llm.Assistant("sibling answered")}, nil
+		case "third":
+			thirdOnce.Do(func() { close(thirdFallbackStarted) })
+			<-releaseFallbacks
+			return llm.Response{Message: llm.Assistant("third answered")}, nil
+		default:
+			return llm.Response{}, fmt.Errorf("unexpected prompt %q", req.Messages[0].Text())
+		}
+	}
+	caller := cheapmodel.New(clientWith(adapter))
+	profile := provider.NewOpenAIProfile("main")
+
+	leaderCtx, cancelLeader := context.WithCancel(context.Background())
+	leaderDone := make(chan error, 1)
+	go func() {
+		_, err := caller.Complete(leaderCtx, profile, llm.Request{Messages: []llm.Message{llm.User("leader")}})
+		leaderDone <- err
+	}()
+	<-cheapStarted
+	close(releaseCheap)
+	<-leaderFallbackStarted
+
+	siblingDone := make(chan error, 1)
+	go func() {
+		_, err := caller.Complete(context.Background(), profile, llm.Request{Messages: []llm.Message{llm.User("sibling")}})
+		siblingDone <- err
+	}()
+	<-siblingFallbackStarted
+
+	cancelLeader()
+	if err := <-leaderDone; !errors.Is(err, context.Canceled) {
+		t.Fatalf("leader error = %v, want context.Canceled", err)
+	}
+
+	thirdDone := make(chan error, 1)
+	go func() {
+		_, err := caller.Complete(context.Background(), profile, llm.Request{Messages: []llm.Message{llm.User("third")}})
+		thirdDone <- err
+	}()
+	<-thirdFallbackStarted
+	if got := cheapCalls.Load(); got != 1 {
+		t.Fatalf("cheap probe calls = %d, want one while sibling fallback remains active; models = %v", got, adapter.Models())
+	}
+
+	close(releaseFallbacks)
+	if err := <-siblingDone; err != nil {
+		t.Fatalf("sibling error = %v, want success", err)
+	}
+	if err := <-thirdDone; err != nil {
+		t.Fatalf("third error = %v, want success", err)
+	}
+	if got, want := adapter.Models(), []string{"gpt-4.1-nano", "main", "main", "main"}; !slices.Equal(got, want) {
+		t.Fatalf("models = %v, want one cheap probe and three fallbacks", got)
+	}
+}
+
+func TestCallerRetriesAfterFallbackFailure(t *testing.T) {
+	var fallbackCalls atomic.Int32
+	adapter := &contextTrackingAdapter{Provider: "openai"}
+	adapter.Respond = func(_ context.Context, req llm.Request) (llm.Response, error) {
+		if req.Model == "gpt-4.1-nano" {
+			return llm.Response{}, refusal(400, "The provided model identifier is invalid.")("openai", req.Model)
+		}
+		if fallbackCalls.Add(1) == 1 {
+			return llm.Response{}, errors.New("fallback unavailable")
+		}
+		return llm.Response{Message: llm.Assistant("answered")}, nil
+	}
+	caller := cheapmodel.New(clientWith(adapter))
+	profile := provider.NewOpenAIProfile("main")
+	if _, err := complete(t, caller, profile); err == nil || !strings.Contains(err.Error(), "fallback unavailable") {
+		t.Fatalf("first Complete error = %v, want fallback failure", err)
+	}
+	resp, err := complete(t, caller, profile)
+	if err != nil || strings.TrimSpace(resp.Text()) != "answered" {
+		t.Fatalf("retry Complete = (%q, %v), want answered", resp.Text(), err)
+	}
+	if got, want := adapter.Models(), []string{"gpt-4.1-nano", "main", "gpt-4.1-nano", "main"}; !slices.Equal(got, want) {
+		t.Fatalf("models = %v, want failed fallback not to latch", got)
+	}
+}
+
+func TestCallerDoesNotShareSuccessfulResponsesAcrossRequests(t *testing.T) {
+	adapter := &contextTrackingAdapter{Provider: "openai"}
+	adapter.Respond = func(_ context.Context, req llm.Request) (llm.Response, error) {
+		return llm.Response{Message: llm.Assistant(req.Messages[0].Text())}, nil
+	}
+	caller := cheapmodel.New(clientWith(adapter))
+	profile := provider.WithCheapModel(provider.NewOpenAIProfile("main"), "cheap")
+	first, err := caller.Complete(context.Background(), profile, llm.Request{Messages: []llm.Message{llm.User("first")}})
+	if err != nil {
+		t.Fatalf("first Complete: %v", err)
+	}
+	second, err := caller.Complete(context.Background(), profile, llm.Request{Messages: []llm.Message{llm.User("second")}})
+	if err != nil {
+		t.Fatalf("second Complete: %v", err)
+	}
+	if got, want := []string{first.Text(), second.Text()}, []string{"first", "second"}; !slices.Equal(got, want) {
+		t.Fatalf("response texts = %v, want %v", got, want)
+	}
+	if got, want := adapter.Models(), []string{"cheap", "cheap"}; !slices.Equal(got, want) {
+		t.Fatalf("models = %v, want two independent successful requests", got)
+	}
 }
 
 // recordingSink is an APIAttemptSink that also satisfies Middleware so it can be
@@ -396,5 +779,28 @@ func TestCallerEmitsOneAttemptGroupForCheapAndFallback(t *testing.T) {
 	}
 	if settlements[0].FinalAttemptCount != 2 {
 		t.Fatalf("settlement final attempt count = %d, want 2", settlements[0].FinalAttemptCount)
+	}
+}
+
+func TestCompleteRoutedUsesTheExplicitRoute(t *testing.T) {
+	adapter := servesOnly("openai", "main", refusal(400, "The provided model identifier is invalid."))
+	caller := cheapmodel.New(clientWith(adapter))
+	profile := provider.NewOpenAIProfile("main")
+
+	resp, err := caller.CompleteRouted(context.Background(), profile, "openai", "gpt-4.1-nano", llm.Request{
+		Messages: []llm.Message{llm.User("hi")},
+	})
+	if err != nil || strings.TrimSpace(resp.Text()) != "answered" {
+		t.Fatalf("CompleteRouted = (%q, %v), want answered via fallback", resp.Text(), err)
+	}
+	// Refusal of the routed model is learned: the second call goes straight to
+	// the session model instead of re-probing.
+	if _, err := caller.CompleteRouted(context.Background(), profile, "openai", "gpt-4.1-nano", llm.Request{
+		Messages: []llm.Message{llm.User("hi")},
+	}); err != nil {
+		t.Fatalf("second CompleteRouted: %v", err)
+	}
+	if got, want := adapter.Models(), []string{"gpt-4.1-nano", "main", "main"}; !slices.Equal(got, want) {
+		t.Fatalf("models = %v, want %v", got, want)
 	}
 }

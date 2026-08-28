@@ -48,14 +48,24 @@ type SessionPin struct {
 // PinSectionStore persists named pin sections and their session assignments in
 // the same SQLite index DB as archive/favorite decisions.
 type PinSectionStore struct {
-	dbPath string
-	fs     afero.Fs
-	openDB func(driverName, dataSourceName string) (*sql.DB, error)
+	dbPath   string
+	fs       afero.Fs
+	openDB   func(driverName, dataSourceName string) (*sql.DB, error)
+	onChange func()
 }
 
 // NewPinSectionStore returns a store backed by the SQLite file at dbPath.
 func NewPinSectionStore(dbPath string) *PinSectionStore {
 	return &PinSectionStore{dbPath: dbPath, fs: afero.NewOsFs(), openDB: sql.Open}
+}
+
+// SetOnChange registers a callback invoked after a committed content change.
+func (s *PinSectionStore) SetOnChange(fn func()) { s.onChange = fn }
+
+func (s *PinSectionStore) fireChange() {
+	if s.onChange != nil {
+		s.onChange()
+	}
 }
 
 // SetFs overrides the store filesystem seam for directory checks.
@@ -248,6 +258,9 @@ func (s *PinSectionStore) Assign(sectionID, sessionID string, now time.Time) (Pi
 			return PinSection{}, false, err
 		}
 		_ = db.Close()
+		if changed {
+			s.fireChange()
+		}
 		return section, changed, nil
 	}
 	return PinSection{}, false, fmt.Errorf("assign %s: retry limit reached", sessionID)
@@ -315,6 +328,9 @@ func (s *PinSectionStore) CreateOrReuseAndAssign(name, sessionID string, now tim
 			return PinSection{}, false, err
 		}
 		_ = db.Close()
+		if created || changed {
+			s.fireChange()
+		}
 		return section, created || changed, nil
 	}
 	return PinSection{}, false, fmt.Errorf("create or reuse pin section %q: retry limit reached", display)
@@ -424,6 +440,7 @@ func (s *PinSectionStore) Rename(sectionID, name string, now time.Time) (PinSect
 			return PinSection{}, false, err
 		}
 		_ = db.Close()
+		s.fireChange()
 		return updated, true, nil
 	}
 	return PinSection{}, false, fmt.Errorf("rename pin section %s: retry limit reached", sectionID)
@@ -487,6 +504,7 @@ func (s *PinSectionStore) DeleteSection(sectionID string) (memberCount int, chan
 			return 0, false, err
 		}
 		_ = db.Close()
+		s.fireChange()
 		return memberCount, true, nil
 	}
 	return 0, false, fmt.Errorf("delete pin section %s: retry limit reached", sectionID)
@@ -537,6 +555,9 @@ func (s *PinSectionStore) DeleteSession(sessionID string) (bool, error) {
 			return false, err
 		}
 		_ = db.Close()
+		if rows > 0 {
+			s.fireChange()
+		}
 		return rows > 0, nil
 	}
 	return false, fmt.Errorf("delete session pin %s: retry limit reached", sessionID)

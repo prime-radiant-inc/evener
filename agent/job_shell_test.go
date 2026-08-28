@@ -36,16 +36,25 @@ func newFakeClockShellTestRig(t *testing.T) (*jobManager, execenv.StreamingExecu
 	return jm, env, clk
 }
 
-func waitForShellDone(t *testing.T, jm *jobManager, jobID string) {
-	t.Helper()
+// shellDoneChannel returns the running job's done channel, which
+// armFinalizedJob closes only after the owner notification is enqueued, and
+// false when the job is no longer in the running map.
+func shellDoneChannel(jm *jobManager, jobID string) (<-chan struct{}, bool) {
 	jm.mu.Lock()
+	defer jm.mu.Unlock()
 	run := jm.running[jobID]
 	if run == nil {
-		jm.mu.Unlock()
+		return nil, false
+	}
+	return run.done, true
+}
+
+func waitForShellDone(t *testing.T, jm *jobManager, jobID string) {
+	t.Helper()
+	done, live := shellDoneChannel(jm, jobID)
+	if !live {
 		return
 	}
-	done := run.done
-	jm.mu.Unlock()
 
 	select {
 	case <-done:
@@ -157,6 +166,44 @@ func TestRunShellPipelineExitStatus(t *testing.T) {
 				t.Fatalf("exit code = %d, want %d (result: %+v)", *res.ExitCode, tt.wantExit, res)
 			}
 		})
+	}
+}
+
+func TestRunShellSignalKilledReportsSignalOutcome(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("signal outcome contract is for the POSIX shell path")
+	}
+	jm, se := newShellTestRig(t)
+	res := runShell(context.Background(), jm, se, shellArgs{Command: "kill -KILL $$", BlockTimeoutMS: 5000})
+	if res.settle != nil {
+		if jobID := res.settle(false); jobID != "" {
+			t.Fatalf("discarded foreground shell returned job_id %q", jobID)
+		}
+	}
+	if res.Status != string(jobstore.StatusFailed) || res.Reason != "killed_by_signal: SIGKILL" {
+		t.Fatalf("res = %+v, want failed/killed_by_signal: SIGKILL", res)
+	}
+	if res.ExitCode == nil || *res.ExitCode != -1 {
+		t.Fatalf("exit code = %v, want -1 for a signal-killed process", res.ExitCode)
+	}
+}
+
+func TestRunShellBackgroundSignalKilledPersistsSignalOutcome(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("signal outcome contract is for the POSIX shell path")
+	}
+	jm, se := newShellTestRig(t)
+	res := runShell(context.Background(), jm, se, shellArgs{Command: "kill -KILL $$", Background: true})
+	if res.JobID == "" || !res.RunningInBackground {
+		t.Fatalf("res = %+v, want a background job", res)
+	}
+	waitForShellDone(t, jm, res.JobID)
+	rec := loadShellRecord(t, jm, res.JobID)
+	if rec.Status != jobstore.StatusFailed || rec.Reason != "killed_by_signal: SIGKILL" {
+		t.Fatalf("record = %+v, want failed/killed_by_signal: SIGKILL", rec)
+	}
+	if rec.ExitCode == nil || *rec.ExitCode != -1 {
+		t.Fatalf("record exit code = %v, want -1 for a signal-killed process", rec.ExitCode)
 	}
 }
 

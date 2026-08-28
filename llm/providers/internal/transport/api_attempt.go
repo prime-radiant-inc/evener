@@ -30,6 +30,16 @@ func (c *APIAttemptCapture) Active() bool {
 	return c != nil && c.attempt.Active()
 }
 
+// TimeoutSource reports whether the attempt context expired under an adapter
+// deadline after the HTTP response was opened. Caller cancellation and caller
+// deadlines remain unowned and therefore return APITimeoutNone.
+func (c *APIAttemptCapture) TimeoutSource() llm.APITimeoutSource {
+	if c == nil {
+		return llm.APITimeoutNone
+	}
+	return llm.APITimeoutSourceForContext(c.owner.Parent, c.owner.Attempt)
+}
+
 // BeginAPIAttempt snapshots the credential-free request immediately before its
 // RoundTrip. The caller supplies semantic provenance; this function owns final
 // method, endpoint, headers, and time.

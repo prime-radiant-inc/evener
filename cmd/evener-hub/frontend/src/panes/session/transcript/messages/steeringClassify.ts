@@ -25,6 +25,7 @@ export interface ParsedNotification {
   jobId?: string;
   jobType?: string;
   delegateId?: string;
+  watchId?: string;
   description?: string;
   status?: string;
   reason?: string;
@@ -32,6 +33,7 @@ export interface ParsedNotification {
   exitCode?: number;
   transcriptRef?: string;
   excerpt: string;
+  prose?: string; // body text before any excerpt marker (timers: sentence + note), raw entities
   message?: string; // a communicate envelope's message (rendered as markdown)
   concerns: string[];
   rawText: string; // the verbatim block, always kept inspectable
@@ -73,6 +75,46 @@ function optionalNonNegativeInteger(attrs: Record<string, string>, key: string):
   if (raw === undefined || raw === "") return undefined;
   const value = Number(raw);
   return Number.isSafeInteger(value) && value >= 0 ? value : undefined;
+}
+
+type JobDisposition = "success" | "failure" | "cancelled" | "stopped" | "unknown";
+
+interface JobNotificationAnalysis {
+  disposition: JobDisposition;
+  exitCode?: number;
+}
+
+function optionalSignedInteger(raw: string | undefined): number | undefined {
+  const text = (raw ?? "").trim();
+  if (!/^-?\d+$/.test(text)) return undefined;
+  const value = Number(text);
+  return Number.isSafeInteger(value) ? value : undefined;
+}
+
+function analyzeJobNotification(
+  attrs: Record<string, string>,
+  communicate: CommunicateEnvelope | null,
+): JobNotificationAnalysis {
+  const outerStatus = (attrs.status ?? "").trim().toLowerCase();
+  const outerEvent = (attrs.event ?? "").trim().toLowerCase();
+  const communicateStatus = (communicate?.status ?? "").trim().toLowerCase();
+  const status = outerStatus || outerEvent || communicateStatus;
+  const exitCode = optionalSignedInteger(attrs.exit_code);
+
+  let disposition: JobDisposition = "unknown";
+  if (status === "failed" || status === "error" || status === "exhausted" || status.includes("fail")) {
+    disposition = "failure";
+  } else if (status === "cancelled") {
+    disposition = "cancelled";
+  } else if (status === "stopped") {
+    disposition = "stopped";
+  } else if (status === "completed" || status === "done") {
+    disposition = exitCode !== undefined && exitCode !== 0 ? "failure" : "success";
+  } else if (exitCode !== undefined && exitCode !== 0) {
+    disposition = "failure";
+  }
+
+  return exitCode === undefined ? { disposition } : { disposition, exitCode };
 }
 
 // A notification-text fragment in source order: either a raw
@@ -228,6 +270,25 @@ function notificationTone(attrs: Record<string, string>, communicate: Communicat
   return "neutral";
 }
 
+function jobNotificationTone(
+  attrs: Record<string, string>,
+  communicate: CommunicateEnvelope | null,
+  analysis: JobNotificationAnalysis,
+): NotificationTone {
+  if (analysis.disposition === "failure") return "error";
+  const event = (attrs.event ?? "").trim().toLowerCase();
+  if (
+    (communicate?.concerns.length ?? 0) > 0 ||
+    analysis.disposition === "stopped" ||
+    event === "watch_send" ||
+    event === "watch"
+  ) {
+    return "warning";
+  }
+  if (analysis.disposition === "success") return "success";
+  return "neutral";
+}
+
 function titleForJobNotification(attrs: Record<string, string>, type: string): string {
   if (type === "watch-send") return "Watch delivered";
   if (type === "watch") return "Watch triggered";
@@ -236,13 +297,19 @@ function titleForJobNotification(attrs: Record<string, string>, type: string): s
   return `Job ${status}`;
 }
 
-function notificationSecondary(attrs: Record<string, string>, tone: NotificationTone, description: string): string {
+function notificationSecondary(
+  attrs: Record<string, string>,
+  tone: NotificationTone,
+  description: string,
+  analysis: JobNotificationAnalysis,
+): string {
   const bits: string[] = [];
   const type = (attrs.job_type ?? "").trim();
   if (description) bits.push(description);
   else if (type && type !== "job") bits.push(type);
-  const exit = (attrs.exit_code ?? "").trim();
-  if (exit && exit !== "0") bits.push(`exit ${exit}`);
+  if (analysis.disposition === "failure" && analysis.exitCode !== undefined && analysis.exitCode !== 0) {
+    bits.push(`exit ${analysis.exitCode}`);
+  }
   const reason = (attrs.reason ?? "").trim();
   if (reason && (tone === "error" || tone === "warning")) bits.push(reason);
   return bits.join(" · ");
@@ -253,7 +320,15 @@ function parseJobNotification(block: string): ParsedNotification | null {
   if (!m) return null;
   const attrs = parseQuotedAttrs(m[1] ?? "");
   const bodyText = (m[2] ?? "").trim();
-  const { excerpt } = splitNotificationExcerpt(bodyText);
+  let type = "job";
+  if ((attrs.event === "watch" || attrs.status === "watch") && !attrs.job_id) type = "watch";
+  if (attrs.event === "watch_send") type = "watch-send";
+  // A watch notification's body is all prose (the fired sentence plus the
+  // watch's own note); only a job report carries an excerpt of job output. The
+  // tag attributes already say which this is, so decide before splitting -
+  // otherwise a note line reading "excerpt:" would hand the rest of the note
+  // to the excerpt preview.
+  const { prose, excerpt } = type === "watch" ? { prose: bodyText, excerpt: "" } : splitNotificationExcerpt(bodyText);
   // A communicate envelope can only ride a delegate's report (the delegate
   // calls communicate to produce it - agent/session_tools_communicate.go).
   // Gate on the actual job type, not on whether the excerpt happens to parse
@@ -265,26 +340,29 @@ function parseJobNotification(block: string): ParsedNotification | null {
   // separately, only when there is no communicate message to show instead.
   const communicate =
     attrs.job_type === "delegate" ? parseCommunicateEnvelope(decodeNotificationEntities(excerpt)) : null;
-  let type = "job";
-  if ((attrs.event === "watch" || attrs.status === "watch") && !attrs.job_id) type = "watch";
-  if (attrs.event === "watch_send") type = "watch-send";
-  const tone = notificationTone(attrs, communicate);
   const transcriptRef = isValidTranscriptRef(attrs.transcript_ref) ? attrs.transcript_ref : undefined;
   const description = decodeNotificationEntities(attrs.description ?? "").trim();
+  const analysis = analyzeJobNotification(attrs, communicate);
+  const tone = jobNotificationTone(attrs, communicate, analysis);
   return {
     type,
     title: titleForJobNotification(attrs, type),
     tone,
-    secondary: notificationSecondary(attrs, tone, description),
+    secondary: notificationSecondary(attrs, tone, description, analysis),
     jobId: attrs.job_id?.trim() || undefined,
     jobType: attrs.job_type?.trim() || undefined,
+    watchId: attrs.watch_id?.trim() || undefined,
     description: description || undefined,
     status: attrs.status?.trim() || undefined,
     reason: attrs.reason?.trim() || undefined,
     outputBytes: optionalNonNegativeInteger(attrs, "output_bytes"),
-    exitCode: optionalNonNegativeInteger(attrs, "exit_code"),
+    exitCode: analysis.exitCode,
     transcriptRef,
     excerpt,
+    // A timer's body IS its content (the fired sentence plus the watch's
+    // note); every other job's body is a redundant "Job j completed." line
+    // the card's title already says, so only watch cards carry prose.
+    prose: type === "watch" && prose ? prose : undefined,
     message: communicate?.message || undefined,
     concerns: communicate?.concerns ?? [],
     rawText: block,

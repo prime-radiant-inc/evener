@@ -26,6 +26,7 @@ type Source interface {
 	ShutdownThread(context.Context, appwire.ThreadShutdownParams) error
 	SetThreadModel(context.Context, appwire.ThreadModelSetParams) error
 	SetThreadReasoningEffort(context.Context, appwire.ThreadReasoningEffortSetParams) error
+	SetThreadVisionModel(context.Context, appwire.ThreadVisionModelSetParams) error
 	SetThreadName(context.Context, appwire.ThreadNameSetParams) error
 	GoalSet(context.Context, appwire.GoalSetParams) (appwire.GoalSetResponse, error)
 	ClearThread(context.Context, appwire.ThreadClearParams) (appwire.ThreadClearResponse, error)
@@ -40,13 +41,23 @@ type Source interface {
 // upstream snapshot-to-live stream. Codex deliberately does not implement this
 // interface because it converges through authoritative full-state replacement.
 type RelaySessionSource interface {
-	AcquireRelaySession(appwire.ThreadReadParams) (RelaySessionLease, error)
+	ResolveRelaySession(appwire.ThreadReadParams) (appwire.Ref, error)
+	AcquireRelaySession(appwire.Ref) (RelaySessionRoutePublicationLease, error)
 }
 
 type RelaySessionLease interface {
 	Read(context.Context, appwire.ThreadReadParams) (RelayReadResult, error)
 	Listen(context.Context) (<-chan RelayDelivery, error)
 	Close()
+}
+
+// RelaySessionRoutePublicationLease lets the hub publish the response's
+// authoritative routing identity before the session waits for pre-cut delivery
+// acknowledgements. The ordinary Read method remains available to callers that
+// do not own a routing index.
+type RelaySessionRoutePublicationLease interface {
+	RelaySessionLease
+	ReadWithRoutePublication(context.Context, appwire.ThreadReadParams, func(context.Context, appwire.Thread) error) (RelayReadResult, error)
 }
 
 type RelayReadResult struct {
@@ -63,4 +74,8 @@ type RelayHandoff interface {
 type RelayDelivery struct {
 	Notification appwire.Notification
 	Acknowledge  func()
+	// Proceed transfers bounded pending ownership to the listener without
+	// acknowledging the delivery. It permits later ordered publications to
+	// reach that listener; capture barriers still wait for Acknowledge.
+	Proceed func()
 }

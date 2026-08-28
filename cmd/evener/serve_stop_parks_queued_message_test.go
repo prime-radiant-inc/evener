@@ -15,7 +15,6 @@ import (
 	"primeradiant.com/evener/agent/provider"
 	"primeradiant.com/evener/appwire"
 	"primeradiant.com/evener/llm"
-	"primeradiant.com/evener/llm/providercfg"
 	"primeradiant.com/evener/server"
 )
 
@@ -39,6 +38,9 @@ func newStopParkAdapter() *stopParkAdapter {
 func (a *stopParkAdapter) Name() string { return "openai" }
 
 func (a *stopParkAdapter) Complete(ctx context.Context, req llm.Request) (llm.Response, error) {
+	if response, ok := scriptedSessionNamerResponse(a.Name(), req); ok {
+		return response, nil
+	}
 	a.mu.Lock()
 	a.calls++
 	n := a.calls
@@ -74,15 +76,11 @@ func startStopParkDaemon(t *testing.T) *stopParkDaemon {
 	adapter := newStopParkAdapter()
 	deps := defaultServeDeps()
 	deps.ensureConfigDirs = func() error { return nil }
-	deps.seedMarketplaces = func() error { return nil }
-	deps.newClient = func(string, io.Writer) (*llm.Client, providercfg.Config, bool, func() error, error) {
+	deps.seedMarketplaces = func(context.Context) error { return nil }
+	deps.newClient = func(string, io.Writer) (*llm.Client, func() error, error) {
 		client := llm.NewClient()
 		client.Register(adapter)
-		cfg := providercfg.Config{
-			Default:   "openai",
-			Instances: []providercfg.InstanceConfig{{Name: "openai", Type: "openai"}},
-		}
-		return client, cfg, true, func() error { return nil }, nil
+		return client, func() error { return nil }, nil
 	}
 	deps.newSession = func(client *llm.Client, profile *provider.Profile, env execenv.ExecutionEnvironment, cfg agent.SessionConfig) (*agent.Session, error) {
 		cfg.LLMRetryPolicy = &llm.RetryPolicy{MaxRetries: 0}
@@ -132,9 +130,8 @@ func startStopParkDaemon(t *testing.T) *stopParkDaemon {
 	}
 	t.Cleanup(func() {
 		client.Close()
-		shutdownResp, shutdownErr := http.Post("http://"+entry.Address+"/shutdown", "", nil)
-		if shutdownErr == nil {
-			shutdownResp.Body.Close()
+		if err := shutdownServeTestDaemon(ctx, entry.Address, entry.SessionID); err != nil {
+			return
 		}
 		select {
 		case runErr := <-done:
@@ -192,9 +189,10 @@ func TestRunServeStopParksTheQueuedMessageUntilTheUserActs(t *testing.T) {
 	daemon := startStopParkDaemon(t)
 
 	if _, err := daemon.client.TurnStart(daemon.ctx, appwire.TurnStartParams{
-		ClientMutationID: "turn-one",
-		Ref:              daemon.ref,
-		Input:            []appwire.InputItem{{Type: "text", Text: "first message"}},
+		ClientMutationID:   "turn-one",
+		ExpectedInstanceID: strings.TrimPrefix(daemon.ref, "local:"),
+		Ref:                daemon.ref,
+		Input:              []appwire.InputItem{{Type: "text", Text: "first message"}},
 	}); err != nil {
 		t.Fatalf("TurnStart: %v", err)
 	}
@@ -205,16 +203,18 @@ func TestRunServeStopParksTheQueuedMessageUntilTheUserActs(t *testing.T) {
 	// The collision: a second message queued while turn one is mid-model-call.
 	// Accepting it is what arms the daemon's queued-input wake.
 	if err := daemon.client.TurnQueue(daemon.ctx, appwire.TurnQueueParams{
-		ClientMutationID: "queued-behind-stop",
-		Ref:              daemon.ref,
-		Input:            []appwire.InputItem{{Type: "text", Text: "run me later"}},
+		ClientMutationID:   "queued-behind-stop",
+		ExpectedInstanceID: strings.TrimPrefix(daemon.ref, "local:"),
+		Ref:                daemon.ref,
+		Input:              []appwire.InputItem{{Type: "text", Text: "run me later"}},
 	}); err != nil {
 		t.Fatalf("TurnQueue: %v", err)
 	}
 
 	if err := daemon.client.TurnInterrupt(daemon.ctx, appwire.TurnInterruptParams{
-		ClientMutationID: "stop-mid-turn",
-		Ref:              daemon.ref,
+		ClientMutationID:   "stop-mid-turn",
+		ExpectedInstanceID: strings.TrimPrefix(daemon.ref, "local:"),
+		Ref:                daemon.ref,
 	}); err != nil {
 		t.Fatalf("TurnInterrupt: %v", err)
 	}
@@ -235,9 +235,10 @@ func TestRunServeStopParksTheQueuedMessageUntilTheUserActs(t *testing.T) {
 	// The park ends when the user acts. Queueing another message is one of the
 	// ordinary ways to say "carry on": the parked head runs first, FIFO.
 	if err := daemon.client.TurnQueue(daemon.ctx, appwire.TurnQueueParams{
-		ClientMutationID: "queued-after-stop",
-		Ref:              daemon.ref,
-		Input:            []appwire.InputItem{{Type: "text", Text: "and me too"}},
+		ClientMutationID:   "queued-after-stop",
+		ExpectedInstanceID: strings.TrimPrefix(daemon.ref, "local:"),
+		Ref:                daemon.ref,
+		Input:              []appwire.InputItem{{Type: "text", Text: "and me too"}},
 	}); err != nil {
 		t.Fatalf("TurnQueue after the stop: %v", err)
 	}

@@ -227,11 +227,9 @@ func TestServeGoal_TUIPathEndToEnd(t *testing.T) {
 		resp.Started, goalState.Status, goalState.Iterations, string(aData), string(bData))
 
 	// Shut the daemon down and assert a clean exit.
-	httpResp, err := http.Post("http://"+entry.Address+"/shutdown", "", nil)
-	if err != nil {
-		t.Fatalf("post /shutdown: %v", err)
+	if err := shutdownServeTestDaemon(context.Background(), entry.Address, entry.SessionID); err != nil {
+		t.Fatalf("thread/shutdown: %v", err)
 	}
-	httpResp.Body.Close()
 
 	select {
 	case err := <-done:
@@ -239,7 +237,7 @@ func TestServeGoal_TUIPathEndToEnd(t *testing.T) {
 			t.Fatalf("runServe returned error: %v", err)
 		}
 	case <-time.After(10 * time.Second):
-		t.Fatal("runServe did not exit after /shutdown")
+		t.Fatal("runServe did not exit after thread/shutdown")
 	}
 
 	// The rendezvous entry is removed on clean shutdown.

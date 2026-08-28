@@ -8,14 +8,11 @@ import (
 	"io"
 	"net"
 	"net/http"
-	"net/http/httptest"
 	"os"
-	"strings"
 	"testing"
 
 	"primeradiant.com/evener/cmd/evener/internal/rvreg"
 	"primeradiant.com/evener/llm"
-	"primeradiant.com/evener/llm/providercfg"
 	"primeradiant.com/evener/rendezvous"
 	"primeradiant.com/evener/server"
 )
@@ -42,12 +39,11 @@ func exactServeDeps(t *testing.T) serveDeps {
 	t.Helper()
 	d := defaultServeDeps()
 	d.ensureConfigDirs = func() error { return nil }
-	d.seedMarketplaces = func() error { return nil }
-	d.newClient = func(string, io.Writer) (*llm.Client, providercfg.Config, bool, func() error, error) {
+	d.seedMarketplaces = func(context.Context) error { return nil }
+	d.newClient = func(string, io.Writer) (*llm.Client, func() error, error) {
 		c := llm.NewClient()
 		c.Register(serveLoggingAdapter{})
-		cfg := providercfg.Config{Default: "openai", Instances: []providercfg.InstanceConfig{{Name: "openai", Type: "openai"}}}
-		return c, cfg, true, func() error { return nil }, nil
+		return c, func() error { return nil }, nil
 	}
 	d.listen = func(context.Context, string, string) (net.Listener, error) {
 		return &exactServeListener{closed: make(chan struct{})}, nil
@@ -75,9 +71,7 @@ func fuzzRunServeStartupBranches(t *testing.T) {
 		{"getwd error", func(*testing.T) []string { return []string{"--model", "openai/test"} }, func(_ *testing.T, d *serveDeps) { d.getwd = func() (string, error) { return "", boom } }},
 		{"config error", exactServeArgs, func(_ *testing.T, d *serveDeps) { d.ensureConfigDirs = func() error { return boom } }},
 		{"client error", exactServeArgs, func(_ *testing.T, d *serveDeps) {
-			d.newClient = func(string, io.Writer) (*llm.Client, providercfg.Config, bool, func() error, error) {
-				return nil, providercfg.Config{}, false, nil, boom
-			}
+			d.newClient = func(string, io.Writer) (*llm.Client, func() error, error) { return nil, nil, boom }
 		}},
 		{"listen error", exactServeArgs, func(_ *testing.T, d *serveDeps) {
 			d.listen = func(context.Context, string, string) (net.Listener, error) { return nil, boom }
@@ -104,15 +98,6 @@ func fuzzRunServeCallbacks(t *testing.T) {
 	}
 	d.newServer = func(cfg server.ServerConfig) serveServer { srv = server.NewServer(cfg); return srv }
 	d.serveHTTP = func(_ *http.Server, _ net.Listener) error {
-		requests := []struct{ method, path, body string }{
-			{"GET", "/status", ""}, {"GET", "/tasks", ""},
-			{"POST", "/model", `{"model":"test2"}`},
-		}
-		for _, q := range requests {
-			req := httptest.NewRequest(q.method, q.path, strings.NewReader(q.body))
-			rec := httptest.NewRecorder()
-			srv.ServeHTTP(rec, req)
-		}
 		stop()
 		return http.ErrServerClosed
 	}

@@ -20,7 +20,7 @@ import (
 // The lf_ prefix marks helpers owned by this refactor/fuzz lane.
 
 var lf_entryKinds = []EntryKind{
-	EntryUserInput, EntryContinuation, EntryNotification, EntryDelegateAttention,
+	EntryUserInput, EntryContinuation, EntryNotification, EntryDelegateAttention, EntrySteeringCarrier,
 }
 
 // lf_buildContent turns a byte mask into content parts, setting a non-empty Phase
@@ -77,19 +77,24 @@ func FuzzLfClassifyRoundContent(f *testing.F) {
 }
 
 func FuzzLfRouteNoToolCalls(f *testing.F) {
-	f.Add(uint8(0), false) // EntryUserInput, empty => runNoToolCalls
-	f.Add(uint8(3), true)  // EntryDelegateAttention, non-empty => runNoToolCalls
-	f.Add(uint8(2), true)  // EntryNotification, non-empty => finishIdle
-	f.Add(uint8(2), false) // EntryNotification, empty => runNoToolCalls
-	f.Add(uint8(1), true)  // EntryContinuation, non-empty => runNoToolCalls
+	f.Add(uint8(0), true, false, false)  // EntryUserInput, empty => runNoToolCalls
+	f.Add(uint8(3), false, false, true)  // EntryDelegateAttention, non-empty => runNoToolCalls
+	f.Add(uint8(3), false, false, false) // EntryDelegateAttention, non-empty, report-required => runNoToolCalls
+	f.Add(uint8(3), true, false, true)   // EntryDelegateAttention, empty, eligible => runNoToolCalls
+	f.Add(uint8(2), false, false, false) // EntryNotification, non-empty => finishIdle
+	f.Add(uint8(2), true, false, false)  // EntryNotification, empty => runNoToolCalls
+	f.Add(uint8(2), true, true, false)   // EntryNotification, empty, post-terminal => finishIdle (issue #329)
+	f.Add(uint8(0), true, true, false)   // EntryUserInput, empty, post-terminal => runNoToolCalls
+	f.Add(uint8(1), false, false, false) // EntryContinuation, non-empty => runNoToolCalls
 
-	f.Fuzz(func(t *testing.T, kindSel uint8, noContent bool) {
+	f.Fuzz(func(t *testing.T, kindSel uint8, noContent bool, afterTerminal bool, allowDelegateNoAction bool) {
 		kind := lf_entryKinds[int(kindSel)%len(lf_entryKinds)]
+		_ = allowDelegateNoAction // retained in the fuzz wire shape for existing corpus entries
 
-		route := routeNoToolCalls(kind, noContent)
+		route := routeNoToolCalls(kind, noContent, afterTerminal)
 
 		// Determinism.
-		if route2 := routeNoToolCalls(kind, noContent); route != route2 {
+		if route2 := routeNoToolCalls(kind, noContent, afterTerminal); route != route2 {
 			t.Fatalf("nondeterministic route: %v vs %v", route, route2)
 		}
 		// Total function: exactly one of the two valid routes.
@@ -98,14 +103,20 @@ func FuzzLfRouteNoToolCalls(f *testing.F) {
 		default:
 			t.Fatalf("invalid route %v", route)
 		}
-		// finishIdle is chosen ONLY for a non-empty notification turn; every other
-		// combination routes through the retry budget.
-		wantFinish := kind == EntryNotification && !noContent
-		if (route == finishIdle) != wantFinish {
-			t.Fatalf("route=%v wantFinish=%v (kind=%v noContent=%v)", route, wantFinish, kind, noContent)
+		// finishIdle is chosen ONLY for a notification turn that is non-empty —
+		// or, after a terminal communicate, empty too (issue #329: silence
+		// means "nothing to add to a finished run"). Every other combination
+		// routes through the retry budget.
+		want := runNoToolCalls
+		if kind == EntryNotification && (!noContent || afterTerminal) {
+			want = finishIdle
 		}
-		// An empty round never finishes idle (it must reach the empty-retry path).
-		if noContent && route != runNoToolCalls {
+		if route != want {
+			t.Fatalf("route=%v want=%v (kind=%v noContent=%v afterTerminal=%v allowDelegateNoAction=%v)", route, want, kind, noContent, afterTerminal, allowDelegateNoAction)
+		}
+		// Outside a finished run, an empty round never finishes idle (it must
+		// reach the empty-retry path).
+		if noContent && !afterTerminal && route != runNoToolCalls {
 			t.Fatalf("empty round routed to %v, want runNoToolCalls", route)
 		}
 	})

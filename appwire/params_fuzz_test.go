@@ -12,7 +12,7 @@ import (
 // value of the method's concrete Params type (via reflection, so the shared
 // catalog is never mutated) and unmarshals the bytes into it. The oracle is
 // floor "no panic" plus a decode→encode→decode fixed point for any input that
-// decodes cleanly — this exercises all 46 methods' Params structs (field types,
+// decodes cleanly — this exercises every catalogued method's Params struct (field types,
 // tags, any custom UnmarshalJSON) through one harness, not the generic decoder.
 //
 // Focus note: the Params decode is stdlib struct-tag reflection, so the focus

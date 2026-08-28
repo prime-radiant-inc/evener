@@ -33,13 +33,25 @@ import { IDBFactory } from "fake-indexeddb";
 import { afterEach, beforeAll, beforeEach, expect, test, vi } from "vitest";
 import { FakeClient } from "../../../protocol/testing/fakeClient";
 import type { Thread, ThreadCapabilities, ThreadReadResponse } from "../../../protocol/types.gen";
+import { ClientProvider } from "../../../shell/clientContext";
 import { connectionStore } from "../../../stores/connection";
 import { resetPrefsStoreForTests } from "../../../stores/prefs";
 import { resetThreadsStoreForTests, threadsStore } from "../../../stores/threads";
 import { Toast } from "../../../widgets";
 import { resetToastStoreForTests } from "../../../widgets/toast/store";
 import { resetAskDockStoreForTests } from "./askDock/askDockStore";
-import { Composer } from "./Composer";
+import { Composer as ComposerView } from "./Composer";
+
+function Composer(props: React.ComponentProps<typeof ComposerView>) {
+  const client = connectionStore.getState().client;
+  if (!client) throw new Error("Composer capability test rendered without a connected client");
+  return (
+    <ClientProvider client={client}>
+      <ComposerView {...props} />
+    </ClientProvider>
+  );
+}
+
 import { resetPendingTurnsStoreForTests } from "./queue/pendingTurnsStore";
 import { resetStoplessComposerSightingsForTests, stoplessComposerSightings } from "./stoplessComposer";
 
@@ -81,6 +93,7 @@ const COLD_CAPABILITIES: ThreadCapabilities = {
   forkFromTurn: true,
   shutdown: true,
   changeModel: true,
+  changeVisionModel: true,
   queue: false,
   goal: true,
   rename: true,
@@ -100,6 +113,7 @@ function daemonCapabilities(active: boolean): ThreadCapabilities {
     forkFromTurn: false,
     shutdown: true,
     changeModel: true,
+    changeVisionModel: true,
     queue: active,
     goal: true,
     rename: true,
@@ -129,10 +143,10 @@ async function mountComposer(status: string, capabilities: ThreadCapabilities): 
   fake.on("thread/read", () => ({ thread: thread(status, capabilities) }) as ThreadReadResponse);
   await threadsStore.getState().ensureThread(REF);
   render(
-    <>
+    <ClientProvider client={fake}>
       <Toast />
       <Composer ref={REF} />
-    </>,
+    </ClientProvider>,
   );
   return fake;
 }
@@ -293,7 +307,11 @@ test("a working session drawn with no Stop leaves a sighting naming the frame th
       .getState()
       .ensureThread(REF)
       .then(() => {
-        render(<Composer ref={REF} />);
+        render(
+          <ClientProvider client={fake}>
+            <Composer ref={REF} />
+          </ClientProvider>,
+        );
         act(() => {
           fake.emitNotification({
             method: "thread/status/changed",

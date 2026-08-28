@@ -54,7 +54,7 @@ func testInvalidRasterToolResultRemainsRecoverable(t *testing.T, name string, da
 					ID:        "read_invalid_image",
 					Name:      "read_file",
 					Type:      "function",
-					Arguments: json.RawMessage(fmt.Sprintf(`{"file_path":%q,"purpose":"inspect it"}`, name)),
+					Arguments: json.RawMessage(fmt.Sprintf(`{"file_path":%q,"intent":"inspect it"}`, name)),
 				})
 			},
 			func(req llm.Request) llm.Response {

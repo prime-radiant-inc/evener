@@ -39,7 +39,7 @@ func TestDelegateResourceCreate_IsolationFailurePublishesNothing(t *testing.T) {
 	result := root.createDelegate(context.Background(), delegateArgs{
 		Task:                "remain unpublished",
 		Sandbox:             "workspace-write",
-		DelegationAllowance: 0,
+		DelegationAllowance: new(0),
 	})
 	if !errors.Is(result.Err, wantErr) {
 		t.Fatalf("createDelegate error = %v, want isolation failure", result.Err)
@@ -64,7 +64,7 @@ func TestDelegateResourceCreate_StableRouteSkipsLegacyRetentionReservation(t *te
 
 	result := root.createDelegate(context.Background(), delegateArgs{
 		Task:                "do not reclaim legacy sessions",
-		DelegationAllowance: 0,
+		DelegationAllowance: new(0),
 	})
 	if legacyReservationCalled {
 		t.Fatal("stable create invoked the legacy retained-session reservation seam")
@@ -94,7 +94,7 @@ func TestDelegateResourceCreate_StableIdentityCommitsBeforeRuntimeLaunch(t *test
 
 	result := root.createDelegate(context.Background(), delegateArgs{
 		Task:                "commit before construction",
-		DelegationAllowance: 0,
+		DelegationAllowance: new(0),
 	})
 	if !errors.Is(result.Err, wantErr) {
 		t.Fatalf("createDelegate error = %v, want construction failure", result.Err)
@@ -134,7 +134,7 @@ func TestDelegateResourceCreate_CommittedUpdatePrecedesConstruction(t *testing.T
 	go func() {
 		createDone <- root.createDelegate(context.Background(), delegateArgs{
 			Task:                "publish before construction",
-			DelegationAllowance: 0,
+			DelegationAllowance: new(0),
 		})
 	}()
 	<-constructorEntered
@@ -177,7 +177,7 @@ func TestDelegateResourceCreate_PostCommitConstructionFailureClosesResumability(
 
 	result := root.createDelegate(context.Background(), delegateArgs{
 		Task:                "fail after commit",
-		DelegationAllowance: 0,
+		DelegationAllowance: new(0),
 	})
 	if !errors.Is(result.Err, wantErr) {
 		t.Fatalf("createDelegate error = %v, want construction failure", result.Err)
@@ -212,7 +212,7 @@ func TestDelegateResourceCreate_RegisteredPostCommitFailureRetainsStableIdentity
 		}
 		return nil
 	}
-	raw, err := json.Marshal(map[string]any{"task": "retain stable identity after oversized construction failure"})
+	raw, err := json.Marshal(map[string]any{"prompt": "retain stable identity after oversized construction failure"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -291,7 +291,7 @@ func TestDelegateResourceCreate_RegisteredResultPreservesWorktreeAndModelFallbac
 		ID:   "registered-create-metadata",
 		Name: "delegate",
 		Arguments: json.RawMessage(`{
-			"task":"preserve creation metadata",
+			"prompt":"preserve creation metadata",
 			"agent_type":"reviewer",
 			"isolation":"worktree"
 		}`),
@@ -472,8 +472,8 @@ func TestDelegateResourceCreate_UsesFrozenDescriptorAfterCommit(t *testing.T) {
 	wantConfig.ReasoningEffort = "low"
 	wantConfig.MCPConfigFiles = nil
 	wantConfig.MCPInline = nil
-	wantConfig.Sandbox = ""
-	wantConfig.SandboxNet = nil
+	wantConfig.Sandbox = "read-only"
+	wantConfig.SandboxNet = new(true)
 
 	resultSchema := map[string]any{
 		"type": "object",
@@ -595,7 +595,8 @@ func TestDelegateResourceCreate_UsesFrozenDescriptorAfterCommit(t *testing.T) {
 	if !reflect.DeepEqual(child.cfg.spawn.communicateOutputSchema, frozenResultSchema) || child.delegationAllowance != descriptor.DelegationAllowance {
 		t.Fatalf("child result/allowance = %#v/%d, want %#v/%d", child.cfg.spawn.communicateOutputSchema, child.delegationAllowance, frozenResultSchema, descriptor.DelegationAllowance)
 	}
-	if child.currentEnv().WorkingDirectory() != descriptor.WorkingDir || descriptor.WorkingDir != originalWorkDir || localEnvPolicyName(child.currentEnv()) != descriptor.LocalEnvPolicy || child.cfg.spawn.isolation != descriptor.Isolation || sandboxSnapshotFromEnv(child.currentEnv()) != nil || descriptor.Sandbox != nil {
+	childSandbox := sandboxSnapshotFromEnv(child.currentEnv())
+	if child.currentEnv().WorkingDirectory() != descriptor.WorkingDir || descriptor.WorkingDir != originalWorkDir || localEnvPolicyName(child.currentEnv()) != descriptor.LocalEnvPolicy || child.cfg.spawn.isolation != descriptor.Isolation || childSandbox == nil || childSandbox.Mode != "read-only" || descriptor.Sandbox == nil || descriptor.Sandbox.Mode != "read-only" {
 		t.Fatalf("child environment diverged from descriptor: cwd=%q policy=%q isolation=%q sandbox=%#v descriptor=%#v", child.currentEnv().WorkingDirectory(), localEnvPolicyName(child.currentEnv()), child.cfg.spawn.isolation, sandboxSnapshotFromEnv(child.currentEnv()), descriptor)
 	}
 	if !reflect.DeepEqual(descriptor.Provenance, originalProvenance) || !reflect.DeepEqual(child.activeCausalProvenance(), originalProvenance) {
@@ -891,7 +892,7 @@ func TestDelegateResourceCreate_RestoredRootStartsNewChildWithStartupHooks(t *te
 	adapter := newTask6FrozenDescriptorAdapter()
 	client.Register(adapter)
 	t.Cleanup(adapter.releaseRun)
-	profile := NewOpenAIProfile("gpt-5.2")
+	profile := withTestSessionNamer(client, NewOpenAIProfile("gpt-5.2"))
 	seed, err := NewSession(client, profile, execenv.NewLocalExecutionEnvironment(workspace), SessionConfig{
 		StateDir:         stateDir,
 		MaxSubagentDepth: 2,
@@ -931,7 +932,7 @@ func TestDelegateResourceCreate_RestoredRootStartsNewChildWithStartupHooks(t *te
 
 	result := root.createDelegate(context.Background(), delegateArgs{
 		Task:                "start a new child from the restored root",
-		DelegationAllowance: 0,
+		DelegationAllowance: new(0),
 	})
 	if result.Err != nil {
 		t.Fatalf("createDelegate: %v", result.Err)
@@ -971,7 +972,7 @@ func TestDelegateResourceCreate_PostCommitFailureRemainsInspectableAfterRestart(
 
 	result := root.createDelegate(context.Background(), delegateArgs{
 		Task:                "remain inspectable",
-		DelegationAllowance: 0,
+		DelegationAllowance: new(0),
 	})
 	if !errors.Is(result.Err, wantErr) {
 		t.Fatalf("createDelegate error = %v, want construction failure", result.Err)
@@ -1023,7 +1024,7 @@ func TestDelegateResourceCreate_MissingRestoreInputsCloseResumabilityBeforeClean
 	// This boundary models process loss, not a graceful shutdown. A graceful
 	// Close now durably stops committed generations and therefore waits for the
 	// construction owner that a crash fixture intentionally does not retain.
-	root.discardRestoredCandidate()
+	root.discardRestoredCandidate(true)
 
 	restored, err := restoreDelegateResourceBootstrapSession(client, profile, workspace, meta, stateDir)
 	if err != nil {
@@ -1071,7 +1072,7 @@ func TestDelegateResourceCreate_ResumabilityAppendFailureDestroysNothing(t *test
 
 	result := root.createDelegate(context.Background(), delegateArgs{
 		Task:                "retain after append failure",
-		DelegationAllowance: 0,
+		DelegationAllowance: new(0),
 	})
 	if !errors.Is(result.Err, wantErr) || !strings.Contains(result.Err.Error(), "store is closed") {
 		t.Fatalf("createDelegate error = %v, want construction and closure-append failures", result.Err)
@@ -1279,12 +1280,13 @@ func prepareCommittedUnadoptedDelegate(t *testing.T, root *Session, task string)
 	t.Helper()
 	runtime := delegateRuntime{owner: root}
 	ctx := context.Background()
-	args := delegateArgs{Task: task, DelegationAllowance: 0}
+	args := delegateArgs{Task: task, DelegationAllowance: new(0)}
 	selection, err := root.selectSubagentModel(ctx, args.Model, args.AgentType)
 	if err != nil {
 		t.Fatalf("selectSubagentModel: %v", err)
 	}
-	descriptor, project, err := runtime.describe(ctx, args, task, "", nil, selection)
+	toolNameCeiling := root.stableDelegateEffectiveToolNameCeiling(selection, args, "")
+	descriptor, project, err := runtime.describe(ctx, args, task, "", nil, selection, toolNameCeiling)
 	if err != nil {
 		t.Fatalf("describe delegate: %v", err)
 	}
@@ -1327,7 +1329,7 @@ func TestDelegateResourceCreate_DescendantEventCallbackSurvivesSpawnConfig(t *te
 	})
 	result := root.createDelegate(context.Background(), delegateArgs{
 		Task:                "preserve descendant callback",
-		DelegationAllowance: 0,
+		DelegationAllowance: new(0),
 	})
 	if result.Err != nil {
 		t.Fatalf("createDelegate: %v", result.Err)
@@ -1365,7 +1367,8 @@ func TestDelegateResourceCreate_ChildTranscriptIsPreseededBeforeRun(t *testing.T
 	t.Cleanup(adapter.releaseRun)
 	client := llm.NewClient()
 	client.Register(adapter)
-	root, err := NewSession(client, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(workspace), SessionConfig{
+	profile := withTestSessionNamer(client, NewOpenAIProfile("gpt-5.2"))
+	root, err := NewSession(client, profile, execenv.NewLocalExecutionEnvironment(workspace), SessionConfig{
 		StateDir:         stateDir,
 		MaxSubagentDepth: 2,
 		NoProjectPrompts: true,
@@ -1383,7 +1386,7 @@ func TestDelegateResourceCreate_ChildTranscriptIsPreseededBeforeRun(t *testing.T
 	const task = "preseed this exact task"
 	result := root.createDelegate(context.Background(), delegateArgs{
 		Task:                task,
-		DelegationAllowance: 0,
+		DelegationAllowance: new(0),
 	})
 	if result.Err != nil {
 		t.Fatalf("createDelegate: %v", result.Err)
@@ -1540,7 +1543,7 @@ func TestDelegateResourceCreate_RegisteredRejectsCreationMaxWait(t *testing.T) {
 		t.Fatal(err)
 	}
 	raw, err := json.Marshal(map[string]any{
-		"task":        "reject creation wait",
+		"prompt":      "reject creation wait",
 		"max_wait_ms": 1,
 	})
 	if err != nil {
@@ -1654,7 +1657,7 @@ func TestDelegateResourceCreate_RegisteredNestedCreateUsesCurrentLease(t *testin
 
 func executeTask6RegisteredDelegate(ctx context.Context, t *testing.T, session *Session, task string, allowance int) map[string]any {
 	t.Helper()
-	arguments := map[string]any{"task": task}
+	arguments := map[string]any{"prompt": task}
 	if allowance != 0 {
 		arguments["delegation_allowance"] = allowance
 	}

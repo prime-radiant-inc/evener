@@ -3,10 +3,12 @@ package agent
 import (
 	"context"
 	"errors"
+	"fmt"
 	"strings"
 
 	"primeradiant.com/evener/agent/events"
 	"primeradiant.com/evener/agent/internal/goal"
+	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/llm"
 )
 
@@ -46,6 +48,7 @@ func (s *Session) SetGoal(ctx context.Context, objective string) (started bool, 
 		return false, errors.New("goal objective must not be empty")
 	}
 	store := s.getOrCreateGoalStore()
+	s.goalUpdateMu.Lock()
 
 	// Set the goal and read the in-turn flag and pending-ask set under s.mu so
 	// the write is mutually exclusive with the gate's "clear flag + settle" step
@@ -59,7 +62,12 @@ func (s *Session) SetGoal(ctx context.Context, objective string) (started bool, 
 	inTurn := s.goalInTurn
 	kick := s.kickFunc
 	pendingAsk := len(s.askPending) > 0
+	// A fresh objective never waited on the old goal's dependents: void any
+	// pending hold so the settle cannot suppress this goal's kick with it.
+	s.goalDependentsHeld = false
 	s.mu.Unlock()
+	s.emitCurrentGoalState()
+	s.goalUpdateMu.Unlock()
 
 	if inTurn || kick == nil || pendingAsk {
 		// A turn is running (its gate backs the goal), there is no way to kick an
@@ -76,16 +84,19 @@ func (s *Session) SetGoal(ctx context.Context, objective string) (started bool, 
 // extra unwanted continuation: the gate's terminal "clear flag + go idle" step
 // and this clear are mutually exclusive on s.mu (spec §7).
 func (s *Session) ClearGoal() {
+	s.goalUpdateMu.Lock()
 	s.mu.Lock()
-	defer s.mu.Unlock()
 	s.getOrCreateGoalStore().Clear()
+	s.goalDependentsHeld = false
+	s.mu.Unlock()
+	s.emitCurrentGoalState()
+	s.goalUpdateMu.Unlock()
 }
 
-// GoalStatus reports the session's current /goal state for status surfaces (the
-// appwire EvenerThread.Goal field, `/goal status`). ok is false when no goal is
-// set. It returns primitives rather than the internal goal.Snapshot so callers
-// outside the agent module (which cannot import agent/internal/goal) can consume
-// it.
+// GoalStatus reports the session's current /goal lifecycle state. The objective
+// is persisted and projected through Meta().Goal; this positional API remains
+// only for callers that need status and iteration count. ok is false when no
+// goal is set.
 func (s *Session) GoalStatus() (status string, iterations int, ok bool) {
 	snap, ok := s.getOrCreateGoalStore().Snapshot()
 	if !ok {
@@ -163,24 +174,88 @@ func (s *Session) callsMadeProgress(calls []llm.ToolCallData) bool {
 	return false
 }
 
+// hasWakePendingDependents reports whether the session owns work that is
+// guaranteed to deliver a future wake: a delegate in a non-terminal phase
+// (running/settling/stopping — a report or terminal notification is coming,
+// turn/drive budgets bound the run, and the quiet watchdog covers a silent
+// runner) or a supervised running job (progress-interval watch: periodic
+// ticks even if the job never exits). Dependents that can never wake the
+// session on their own do NOT count: idle delegates awaiting delegate_send,
+// closed delegates, detached processes (kept out of the job manager), and
+// unwatched running jobs (no job watchdog — holding on one would park the
+// goal forever with the breaker unreachable). The goal gate's no-progress
+// hold keys on this: waiting on a guaranteed wake is not stalling, but
+// holding on a dependent that will never deliver would strand the goal the
+// other way.
+//
+// Known residual windows, accepted and documented rather than closed: a
+// dependent that terminates between this read and the gate's fold (or the
+// settle's re-check) can cost one no-progress fold — with a pre-loaded streak
+// that can fire the breaker one turn before the already-armed report lands
+// (the report still arrives and the block is now transcript-visible); and a
+// wedged delegate yields at most one quiet-watchdog wake per quiet stretch,
+// after which the hold parks the goal on a supervised-but-silent dependent
+// until the delegate's own turn budget (or a hung-tool timeout) forces its
+// terminal notification — the wedge is surfaced to the user and model on
+// that one wake, and repeat watchdog cadence is a delegate-supervision
+// follow-up, not this gate's. The hold also requires both serve-loop
+// callbacks to be wired, which only root daemon sessions are: delegate-child
+// sessions are out of scope (see the wiring note in armGoalContinuation).
+//
+// It takes delegate-controller and job-manager locks and must never be called
+// with goalUpdateMu or s.mu held (see the askPending lock-discipline comment
+// in SetGoal): callers compute it before taking either. Callers should also
+// keep it lazy — the delegate side is an O(len(c.durable)) early-exit scan
+// under the controller lock — computing it only on paths that can use the
+// answer.
+func (s *Session) hasWakePendingDependents() bool {
+	if s == nil {
+		return false
+	}
+	if s.jobManager.hasSupervisedRunningJobs() {
+		return true
+	}
+	return s.delegateController.hasWakePendingDelegateFor(s)
+}
+
 // armGoalContinuation runs in the drain-loop gate (on the turn goroutine) after a
 // goal continuation turn completes. progressed reports whether the just-finished
 // turn made a mutating tool call. It folds that signal into the goal under the
 // goal lock and decides whether to issue another continuation.
 //
-// It returns (renderedPrompt, true) to continue, or ("", false) to stop. The gate
+// It returns (renderedPrompt, true) to continue, or ("", false) when there is
+// nothing to drive right now: no goal is set, the goal is terminal (the gate
 // owns two stop paths — a model-declared terminal status and the no-progress
-// breaker — and emits exactly one EventGoalEnded on each so the user is told why
-// the loop stopped. There is no iteration cap: a goal that keeps making progress
-// runs until it is completed or the no-progress breaker fires. With no goal set
-// it is a no-op returning ("", false).
+// breaker — and emits exactly one EventGoalEnded on each so the user is told
+// why the loop stopped), or the wake-pending hold parked the goal until a
+// dependent's notification lands. There is no iteration cap: a goal that keeps
+// making progress runs until it is completed or the no-progress breaker fires.
 func (s *Session) armGoalContinuation(progressed, wasContinuation bool) (string, bool) {
+	// Lazy, and computed before goalUpdateMu: the query takes delegate-controller
+	// and job-manager locks, which must never be held under the goal serializer.
+	// Two short-circuits keep hot paths free of it: only a non-progressed
+	// continuation can hold at all, and the hold can only fire when both
+	// serve-loop callbacks are wired (bridgeSession installs them together).
+	// Unwired sessions never pay for the dependent scan they cannot use: a
+	// one-shot `evener run` (the drain's defer chain is the only driver) and —
+	// see the wiring note on the hold branch below — delegate-child sessions,
+	// whose goals stay covered by the documented child-session gap follow-up.
+	var wakePending bool
+	if wasContinuation && !progressed {
+		s.mu.Lock()
+		wired := s.kickFunc != nil && s.notifyFunc != nil
+		s.mu.Unlock()
+		wakePending = wired && s.hasWakePendingDependents()
+	}
+	s.goalUpdateMu.Lock()
 	store := s.getOrCreateGoalStore()
 	snap, ok := store.Snapshot()
 	if !ok {
+		s.goalUpdateMu.Unlock()
 		return "", false // no goal
 	}
 	if snap.Status != goal.StatusActive {
+		s.goalUpdateMu.Unlock()
 		// Already terminal: update_goal complete/blocked set it this turn, or it
 		// finished on an earlier turn (a terminated goal lingers in the store until
 		// /goal clear, and the gate runs at every turn tail). reportGoalEnded emits
@@ -190,17 +265,52 @@ func (s *Session) armGoalContinuation(progressed, wasContinuation bool) (string,
 		return "", false
 	}
 	if !wasContinuation {
+		s.goalUpdateMu.Unlock()
 		// A user (or other non-continuation) turn completed while a goal is active:
 		// resume the goal, but do NOT fold the user's own turn into the no-progress
 		// streak or the iteration count — only the goal's own continuation turns
 		// count toward those (/par #4).
 		return goal.Render(snap.Objective), true
 	}
+	if wakePending {
+		// Wake-pending hold: the turn made no mutating call (wakePending is
+		// computed only for non-progressed continuations), but owned work is
+		// guaranteed to wake the session (a running delegate's report/terminal
+		// notification, a supervised background job's progress tick or terminal
+		// notification). Waiting on a guaranteed wake is not stalling, so the
+		// no-progress fold is skipped — three polling turns must not block a
+		// goal whose next phase starts when the last dependent reports — and no
+		// further continuation is armed: the notification machinery drives the
+		// session, and that turn's settle re-arms the goal. The settle flag
+		// makes the held decision visible to settleGoalOnIdle so it does not
+		// immediately re-kick past the same wait. wakePending implies the
+		// kick+notify pair is wired (the gate's short-circuit), so the held
+		// decision always has a live resume path. Wiring note: only root daemon
+		// sessions have both callbacks (serve.go's bridgeSession). Delegate
+		// children get SetNotifyFunc but never SetKickFunc — their restored
+		// active goals self-drive through the drain's inline continuation path,
+		// where the hold cannot apply; that gap is the documented child-session
+		// follow-up, not this gate's.
+		s.mu.Lock()
+		s.goalDependentsHeld = true
+		s.mu.Unlock()
+		s.goalUpdateMu.Unlock()
+		return "", false
+	}
 	snap, stillActive := store.RecordContinuation(progressed, s.sclock().Now())
+	s.emitGoalUpdated(snap)
+	s.goalUpdateMu.Unlock()
 	if !stillActive {
-		// The no-progress breaker fired this turn. Persist the terminal transition:
-		// it happens after processOneInput's defer-save, so without this a blocked
-		// goal would be saved as still-active and resume on restart (/par A4).
+		// The no-progress breaker fired this turn. Record it as a steering turn
+		// (user-role, the channel the goal engine already speaks on): durable in
+		// the transcript and projected on reload, without becoming a mid-history
+		// system-role message provider adapters would fold into persistent
+		// instructions. Then persist the terminal transition: it happens after
+		// processOneInput's defer-save, so without the save a blocked goal would
+		// be saved as still-active and resume on restart (/par A4).
+		s.appendTurn(schema.TurnSteering, llm.User(fmt.Sprintf(
+			"[goal-no-progress-breaker] Goal blocked: no mutating progress in %d consecutive goal-continuation turns. The goal engine has stopped driving the objective; it resumes only via /goal clear or a new /goal.",
+			snap.NoProgressStreak)))
 		s.reportGoalEnded()
 		s.maybeAutoSave()
 		return "", false
@@ -244,12 +354,29 @@ func (s *Session) reportGoalEnded() {
 // in flight (attention-status-model v5: a kicked goal suppresses awaiting —
 // suppressor condition 3 of the idle→awaiting upgrade).
 func (s *Session) settleGoalOnIdle() bool {
+	// Probe the hold flag first so the delegate-tree snapshot is paid only when
+	// a hold actually stands. The flag can only transition true→false between
+	// the probe and the main section (the gate that sets it runs on this same
+	// goroutine; SetGoal/ClearGoal only clear), so a false probe never misses a
+	// hold — and a true probe is re-read authoritatively below.
+	s.mu.Lock()
+	probe := s.goalDependentsHeld
+	s.mu.Unlock()
+	// Computed outside s.mu: the query takes delegate-controller and
+	// job-manager locks, which must never be acquired under s.mu.
+	wakePending := probe && s.hasWakePendingDependents()
 	s.mu.Lock()
 	s.goalInTurn = false
 	kick := s.kickFunc
 	pendingAsk := len(s.askPending) > 0
+	// Consume a pending dependents hold: suppress the kick only while the
+	// dependents the gate waited on still pend. Recomputed now (not trusted
+	// from the gate's read) so a stale hold — the last delegate terminated and
+	// its notification is already queued — cannot strand the goal.
+	held := s.goalDependentsHeld
+	s.goalDependentsHeld = false
 	var prompt string
-	if kick != nil && !pendingAsk {
+	if kick != nil && !pendingAsk && (!held || !wakePending) {
 		if snap, ok := s.getOrCreateGoalStore().Snapshot(); ok && snap.Status == goal.StatusActive {
 			prompt = goal.Render(snap.Objective)
 		}
@@ -289,7 +416,7 @@ func (s *Session) terminateGoalOnError(ctx context.Context, err error) {
 		// persists terminal transitions (/par B3, surfaced once blocks are saved).
 		return
 	}
-	if store.SetTerminal(goal.StatusBlocked, err.Error(), s.sclock().Now()) {
+	if _, changed := s.setGoalTerminal(goal.StatusBlocked, err.Error()); changed {
 		s.reportGoalEnded()
 		// Persist the block: terminateGoalOnError runs after processOneInput's
 		// defer-save, so without this the goal is saved as still-active and would
@@ -322,4 +449,48 @@ func (s *Session) emitGoalEnded(snap goal.Snapshot) {
 		Reason:     snap.StopReason,
 		Iterations: snap.Iterations,
 	})
+}
+
+// goalStateData converts the internal goal snapshot into the public event
+// payload shared by every goal mutation boundary.
+func goalStateData(snap goal.Snapshot) events.GoalStateData {
+	return events.GoalStateData{
+		Objective:  snap.Objective,
+		Status:     string(snap.Status),
+		Iterations: snap.Iterations,
+	}
+}
+
+// emitGoalUpdated publishes one committed non-clear goal transition. Callers
+// invoke it only after the store mutation has released its own mutex.
+func (s *Session) emitGoalUpdated(snap goal.Snapshot) {
+	state := goalStateData(snap)
+	s.emit(events.EventGoalUpdated, events.GoalUpdatedData{Goal: &state})
+}
+
+// emitCurrentGoalState snapshots and publishes the current store state. A
+// missing snapshot deliberately carries a nil Goal so JSON encodes goal:null.
+// This helper must never be called while Session.mu is held because emit reads
+// session provenance through the same mutex.
+func (s *Session) emitCurrentGoalState() {
+	if snap, ok := s.getOrCreateGoalStore().Snapshot(); ok {
+		s.emitGoalUpdated(snap)
+		return
+	}
+	s.emit(events.EventGoalUpdated, events.GoalUpdatedData{Goal: nil})
+}
+
+// setGoalTerminal commits and announces a terminal transition as one ordered
+// unit. The goal store releases its own mutex before emission, and this helper
+// never takes Session.mu.
+func (s *Session) setGoalTerminal(status goal.Status, reason string) (goal.Snapshot, bool) {
+	s.goalUpdateMu.Lock()
+	defer s.goalUpdateMu.Unlock()
+	store := s.getOrCreateGoalStore()
+	if !store.SetTerminal(status, reason, s.sclock().Now()) {
+		return goal.Snapshot{}, false
+	}
+	snap, _ := store.Snapshot()
+	s.emitGoalUpdated(snap)
+	return snap, true
 }

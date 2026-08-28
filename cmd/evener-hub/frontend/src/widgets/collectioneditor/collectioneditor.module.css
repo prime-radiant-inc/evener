@@ -40,6 +40,24 @@
   font-size: var(--font-size-ui);
 }
 
+/* An inherited ("(default)") row: informational only, so it loses the filled
+ * surface and drops to mid-ink - the tag stands where a local row's remove
+ * button would be, keeping the two row shapes aligned. */
+.inherited {
+  border-style: dashed;
+  background: transparent;
+}
+
+.inherited .content {
+  color: var(--ink-mid);
+}
+
+.inheritedTag {
+  flex-shrink: 0;
+  color: var(--ink-mid);
+  font-size: var(--font-size-caption);
+}
+
 .addForm {
   display: flex;
   align-items: center;

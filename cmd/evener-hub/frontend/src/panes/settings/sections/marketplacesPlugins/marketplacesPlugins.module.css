@@ -10,42 +10,10 @@
   gap: var(--space-5);
 }
 
-.pageTitle {
-  margin: 0;
-  color: var(--ink-hi);
-  font-size: var(--font-size-pane-title);
-  font-weight: var(--font-weight-semibold);
-}
-
-.pageHelp {
-  margin: 0;
-  color: var(--ink-mid);
-  font-size: var(--font-size-ui);
-}
-
 .section {
   display: flex;
   flex-direction: column;
   gap: var(--space-2);
-}
-
-.header {
-  display: flex;
-  align-items: baseline;
-  justify-content: space-between;
-  gap: var(--space-2);
-}
-
-.title {
-  margin: 0;
-  color: var(--ink-hi);
-  font-size: var(--font-size-body);
-  font-weight: var(--font-weight-semibold);
-}
-
-.count {
-  color: var(--ink-mid);
-  font-size: var(--font-size-caption);
 }
 
 .list {
@@ -205,4 +173,95 @@
 .installedBadge {
   color: var(--ink-mid);
   font-size: var(--font-size-caption);
+}
+
+/* Tappable installed-plugin row (Segmented Workspace redesign): one full-
+ * width button per row so the whole row is the select target on both desktop
+ * and mobile; actions live in the detail sheet, not the row. Shares .row's
+ * visual language (surface, edge, radius-control) but resets button chrome. */
+.rowButton {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-2);
+  width: 100%;
+  padding: var(--space-2) var(--space-3);
+  border: 1px solid var(--edge);
+  border-radius: var(--radius-control);
+  background: var(--surface-1);
+  color: var(--ink-hi);
+  font-family: var(--font-sans);
+  font-size: var(--font-size-ui);
+  text-align: left;
+  cursor: pointer;
+  transition: background-color var(--motion-duration-hover) var(--motion-easing-standard);
+}
+
+.rowButton:hover {
+  background: var(--hover-1);
+}
+
+.rowButton:focus-visible {
+  outline: var(--focus-ring);
+  outline-offset: -2px;
+}
+
+@media (max-width: 900px) {
+  .rowButton {
+    min-height: var(--tap-min);
+  }
+}
+
+.rowChevron {
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+  color: var(--ink-low);
+}
+
+/* PluginDetailSheet body layout (Segmented Workspace redesign). */
+.sheetDesc {
+  margin: 0;
+  color: var(--ink-hi);
+  font-size: var(--font-size-ui);
+}
+
+.chipRow {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: var(--space-1);
+  margin-bottom: var(--space-3);
+}
+
+.metaList {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  margin: var(--space-4) 0;
+}
+
+.metaRow {
+  display: flex;
+  align-items: baseline;
+  gap: var(--space-3);
+}
+
+.metaLabel {
+  flex: none;
+  width: 96px;
+  color: var(--ink-mid);
+  font-size: var(--font-size-caption);
+}
+
+.metaValue {
+  min-width: 0;
+  color: var(--ink-hi);
+  font-size: var(--font-size-ui);
+}
+
+.switchRows {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
 }

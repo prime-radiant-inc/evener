@@ -113,11 +113,15 @@ func (rp *ResolvedPolicy) ControlPolicy(mainRepoRoot string) (*ResolvedPolicy, e
 // (buildBwrapArgv / SeatbeltPolicy both take sessionTmp separately from
 // rp.Spawned), so Spawned's roots are left untouched here.
 //
-// A blank dir or an unenforced (off) policy returns rp unchanged. The result
-// still upholds the "never grant a masked path" invariant (filterMasked), though
-// a freshly created session-private directory is never itself denylisted.
+// A blank dir, or a policy whose file tools are not confined at all (plain off),
+// returns rp unchanged. The gate is FileToolConfined rather than Enforced because
+// this grant belongs to the FILE-TOOL layer: a write-blocked off policy (the
+// degraded read-only delegate) builds that layer with no write root, so without
+// the scratch grant it would have nowhere writable at all. The result still
+// upholds the "never grant a masked path" invariant (filterMasked), though a
+// freshly created session-private directory is never itself denylisted.
 func (rp ResolvedPolicy) WithSessionScratch(dir string) ResolvedPolicy {
-	if dir == "" || !rp.Enforced() {
+	if dir == "" || !rp.FileToolConfined() {
 		return rp
 	}
 	rp.FileTool.WriteRoots = filterMasked(

@@ -5,12 +5,14 @@
 
 import type {
   EvenerDelegateInfo,
+  EvenerSkillInfo,
   EvenerTurnSlots,
   EvenerUsage,
   GoalState,
   PendingMutation,
   QueueState,
   SandboxEscalationRequested,
+  TaskAggregate,
   ThreadCapabilities,
   ThreadStatus,
 } from "./types.gen";
@@ -54,7 +56,7 @@ export interface ItemModel {
   toolName?: string;
   callId?: string;
   argumentsJSON?: string;
-  // Tool-call purpose — the wire ThreadItem.description, surfaced for the
+  // Tool-call intent — the wire ThreadItem.description, surfaced for the
   // subagent Activity feed. Dropped historically by wireItemToModel; now carried.
   description?: string;
   // The wire ThreadItem.eventKind: a stable typed discriminator naming what a
@@ -194,14 +196,26 @@ export interface ModelRetryState {
 // beside it, one of exactly two frames put it there.
 export type CapabilitySource = "read" | "statusFrame" | "none";
 
+export interface ThreadDiagnostics {
+  // Snapshot-only plugin inventory. An absent diagnostics object, or an
+  // object without plugins, means the daemon could not provide the inventory;
+  // an empty array is an authoritative empty inventory.
+  plugins?: Array<{ name: string }>;
+}
+
 export interface ThreadModel {
   ref: string;
   threadId: string;
+  // The current daemon/session instance behind this stable ref. Clear uses
+  // it as the fencing precondition so an intent cannot replace a newer
+  // instance that took the ref after a reconnect or restart.
+  instanceId?: string;
   name: string;
   status: ThreadStatus;
   modelProvider: string;
   model: string;
   reasoningEffort?: string;
+  visionModel: string;
   askPending: boolean;
   // Surface-on-entry snapshot of blocked sandbox-exemption approval cards
   // (M7) — appwire/types.go's ThreadEvener.PendingEscalations doc comment: "a
@@ -213,12 +227,16 @@ export interface ThreadModel {
   activeTurnId?: string;
   queue: QueueState | null;
   pendingMutations?: PendingMutation[];
-  tasks: { total: number; done: number } | null;
+  tasks: TaskAggregate | null;
+  // Snapshot-only plugin diagnostics from thread/read. The palette uses this
+  // inventory to scope the global command catalog to the active session.
+  diagnostics?: ThreadDiagnostics;
   // Stable delegates are controller-fold snapshots, never activation jobs.
   // Live updates are fenced by projectionRevision; latestActivityAt is
   // independently max-merged because transcript activity is durable outside
   // the lifecycle event sequence.
   delegates?: EvenerDelegateInfo[];
+  skills?: EvenerSkillInfo[];
   turnSlots?: EvenerTurnSlots | null;
   // Bumped (to the reducer's frame time) by every evener/job/started and
   // evener/job/finished for this thread; the jobs panel re-fetches its list when
@@ -267,9 +285,9 @@ export interface ThreadModel {
   // question about provenance it does not have.
   capabilitySource?: CapabilitySource;
   // Goal is null when no /goal objective is set (wire: EvenerThread.Goal
-  // *GoalState, omitempty). No live push exists (goal/set's response
-  // carries only {started}, and appwire/protocol.go's Notifications catalog
-  // has no goal-changed entry) - a future wave's wire-candidate.
+  // *GoalState, omitempty). Hydration and accepted evener/goal/updated pushes
+  // are authoritative. goal/set's response-derived value is only an immediate
+  // fallback until either authoritative path is accepted.
   goal: GoalState | null;
   contextUsed: number;
   contextWindow: number;

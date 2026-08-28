@@ -14,7 +14,6 @@ func FuzzRootCommandSeedCoverage(f *testing.F) {
 			name string
 			fn   func(*testing.T)
 		}{
-			{"client provider", TestClientHasProvider},
 			{"openai status formatting", TestFormatOpenAIStatus},
 			{"run args", TestRunWithArgs},
 			{"run tool events", TestRunEmitsToolEvents},
@@ -45,7 +44,7 @@ func FuzzRootCommandSeedCoverage(f *testing.F) {
 			{"profile config", TestBuildInitialProfile_ConfigPath},
 			{"profile schema", TestBuildInitialProfile_ConfigPathInvalidOutputSchema},
 			{"profile unknown", TestBuildInitialProfile_UnknownInstanceError},
-			{"profile materialized", TestBuildInitialProfile_MaterializedInstance},
+			{"profile curated instance", TestBuildInitialProfile_CuratedInstance},
 			{"serve bare model", TestRunServe_BareModelRejected},
 			{"serve missing model", TestRunServe_MissingModel},
 			{"serve env", TestPrintServeEnvVars_IncludesOpenAIResponsesContinuation},
@@ -63,7 +62,7 @@ func FuzzRootCommandSeedCoverage(f *testing.F) {
 			{"cheap cross provider", TestApplyFastCheapModel_CrossProviderWhenRegistered},
 			{"cheap missing provider", TestApplyFastCheapModel_CrossProviderRejectedWhenNotRegistered},
 			{"cheap bare", TestApplyFastCheapModel_BareModelKeepsActiveProvider},
-			{"cheap blank", TestApplyFastCheapModel_BlankKeepsDefault},
+			{"cheap blank", TestApplyFastCheapModel_BlankUsesPrimaryModel},
 			{"session env", TestNewSessionFromEnv},
 			{"simple prompt", TestProcessInputSimplePrompt},
 			{"tool prompt", TestProcessInputWithToolUse},

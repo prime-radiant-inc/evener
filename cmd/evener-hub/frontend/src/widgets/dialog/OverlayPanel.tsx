@@ -1,4 +1,4 @@
-import { type KeyboardEvent, type MouseEvent, type ReactNode, useId, useRef } from "react";
+import { type CSSProperties, type KeyboardEvent, type MouseEvent, type ReactNode, useId, useRef } from "react";
 import { FocusScope } from "../focusscope";
 import { requireClass } from "../internal/requireClass";
 import { CloseIcon } from "./CloseIcon";
@@ -15,6 +15,20 @@ export interface OverlayPanelProps {
    * for Dialog, slide-in-from-an-edge for Sheet). OverlayPanel itself picks
    * the scrim, header, body, and footer classes - those never vary. */
   panelClassName: string;
+  /** Optional element rendered before the <header>, e.g. a drag handle for a
+   * Sheet on a touch viewport. Defaults to undefined; existing consumers
+   * that don't pass it are unchanged. */
+  handle?: ReactNode;
+  /** Optional extra class appended to the body div's base `.body` class. */
+  bodyClassName?: string;
+  /** Optional extra class appended to the header element's base `.header` class. */
+  headerClassName?: string;
+  /** Optional inline style applied to the panel element. Defaults to
+   * undefined; existing consumers that don't pass it are unchanged. Used by
+   * the expandable Sheet to drive a dynamic peek/full height on the panel
+   * itself (not a child wrapper) so a `.bottom` max-height cap can't clamp
+   * the full-screen geometry. */
+  style?: CSSProperties;
 }
 
 const CLASS = {
@@ -36,7 +50,18 @@ const CLASS = {
  * this task's report - while CSS pins it to the header's top-right corner
  * regardless of DOM position.
  */
-export function OverlayPanel({ open, onClose, title, children, footer, panelClassName }: OverlayPanelProps) {
+export function OverlayPanel({
+  open,
+  onClose,
+  title,
+  children,
+  footer,
+  panelClassName,
+  handle,
+  bodyClassName,
+  headerClassName,
+  style,
+}: OverlayPanelProps) {
   const titleId = useId();
   // Radix-style pointer-down-outside semantics: the gesture that decides
   // whether this counts as "outside the panel" is where the PRESS
@@ -103,13 +128,15 @@ export function OverlayPanel({ open, onClose, title, children, footer, panelClas
           aria-labelledby={titleId}
           className={panelClassName}
           onKeyDown={handleKeyDown}
+          style={style}
         >
-          <header className={CLASS.header}>
+          {handle}
+          <header className={headerClassName ? `${CLASS.header} ${headerClassName}` : CLASS.header}>
             <h2 id={titleId} className={CLASS.title}>
               {title}
             </h2>
           </header>
-          <div className={CLASS.body}>{children}</div>
+          <div className={bodyClassName ? `${CLASS.body} ${bodyClassName}` : CLASS.body}>{children}</div>
           {footer !== undefined && <div className={CLASS.footer}>{footer}</div>}
           <button type="button" className={CLASS.closeButton} onClick={onClose} aria-label="Close">
             <CloseIcon />

@@ -131,7 +131,7 @@ func TestFallbackChain_MidChainProviderUnhealthyAbortsWalk(t *testing.T) {
 	}
 	sess := unhealthyChainSession(t, a)
 
-	_, _, _, err := sess.callModelWithFallback(context.Background(), NewOpenAIProfile("primary"), unhealthyChainRequest(), "", 1)
+	_, _, _, err := sess.callModelWithFallback(context.Background(), NewOpenAIProfile("primary"), unhealthyChainRequest(), nil, "", 1)
 
 	if _, ok := errors.AsType[*llm.ProviderUnhealthyError](err); !ok {
 		t.Fatalf("terminal error = %v (%T), want *llm.ProviderUnhealthyError from the fallback-b group", err, err)
@@ -184,7 +184,7 @@ func TestFallbackChain_ResetsAssistantTextBetweenGroups(t *testing.T) {
 	)
 	evs, mu, done := collectEvents(sess)
 
-	_, _, _, err := sess.callModelWithFallback(context.Background(), NewOpenAIProfile("primary"), unhealthyChainRequest(), "", 1)
+	_, _, _, err := sess.callModelWithFallback(context.Background(), NewOpenAIProfile("primary"), unhealthyChainRequest(), nil, "", 1)
 	if err != nil {
 		t.Fatalf("callModelWithFallback: %v, want nil (fallback should succeed)", err)
 	}
@@ -242,7 +242,7 @@ func TestFallbackChain_NoResetWhenNoGroupProducedOutput(t *testing.T) {
 	)
 	evs, mu, done := collectEvents(sess)
 
-	_, _, _, err := sess.callModelWithFallback(context.Background(), NewOpenAIProfile("primary"), unhealthyChainRequest(), "", 1)
+	_, _, _, err := sess.callModelWithFallback(context.Background(), NewOpenAIProfile("primary"), unhealthyChainRequest(), nil, "", 1)
 	if err != nil {
 		t.Fatalf("callModelWithFallback: %v, want nil (fallback should succeed)", err)
 	}
@@ -265,17 +265,15 @@ func TestFallbackChain_NoResetWhenNoGroupProducedOutput(t *testing.T) {
 
 // continuationRecoveryRequest is a Responses-continuation delta request shaped
 // so that shouldRetryResponsesContinuationAsFullHistory's own preconditions
-// (delta mode, an anchor, a stored full-history fallback) all hold — leaving
-// the terminal error as the only thing that decides whether the recovery
-// re-call fires.
+// (delta mode, an anchor) all hold — leaving the terminal error as the only
+// thing that decides whether the recovery re-call fires.
 func continuationRecoveryRequest() llm.Request {
 	return llm.Request{
-		Provider:                    "openai",
-		Model:                       "primary",
-		Messages:                    []llm.Message{llm.User("delta")},
-		HistoryMode:                 llm.HistoryModeResponsesDelta,
-		PreviousResponseID:          "resp_anchor",
-		FullHistoryFallbackMessages: []llm.Message{llm.User("full history")},
+		Provider:           "openai",
+		Model:              "primary",
+		Messages:           []llm.Message{llm.User("delta")},
+		HistoryMode:        llm.HistoryModeResponsesDelta,
+		PreviousResponseID: "resp_anchor",
 	}
 }
 
@@ -307,7 +305,7 @@ func TestContinuationRecovery_SkippedOnProviderUnhealthyVerdict(t *testing.T) {
 	)
 	drainSessionEvents(sess)
 
-	_, _, _, err := sess.callModelWithFallback(context.Background(), NewOpenAIProfile("primary"), continuationRecoveryRequest(), "", 1)
+	_, _, _, err := sess.callModelWithFallback(context.Background(), NewOpenAIProfile("primary"), continuationRecoveryRequest(), []llm.Message{llm.User("full history")}, "", 1)
 
 	if _, ok := errors.AsType[*llm.ProviderUnhealthyError](err); !ok {
 		t.Fatalf("terminal error = %v (%T), want *llm.ProviderUnhealthyError", err, err)
@@ -338,6 +336,47 @@ func TestShouldRetryResponsesContinuationAsFullHistory_UnhealthyVerdict(t *testi
 	verdict := &llm.ProviderUnhealthyError{Shape: "stall", Attempts: 4, Elapsed: 2 * time.Minute, LastErr: anchorMissing}
 	if shouldRetryResponsesContinuationAsFullHistory(req, verdict) {
 		t.Fatalf("unhealthy verdict wrapping %v must not trigger continuation recovery", anchorMissing)
+	}
+}
+
+// TestContinuationRecovery_SkippedWithoutRetainedHistory pins the retry's own
+// precondition: the rebuilt request sends the history the round retained, so a
+// delta paired with none must decline rather than dispatch a message-less
+// round.
+func TestContinuationRecovery_SkippedWithoutRetainedHistory(t *testing.T) {
+	anchorMissing := llm.ErrorFromHTTPStatus("openai", 404, "previous_response resp_anchor not found", nil, nil)
+	a := &scriptedStreamAdapter{
+		provider: "openai",
+		openErr:  map[string]error{"primary": anchorMissing},
+	}
+	policy := llm.RetryPolicy{MaxRetries: 0}
+	sess := newSession(t,
+		withAdapter(a),
+		withProfile(NewOpenAIProfile("primary")),
+		withConfig(SessionConfig{LLMRetryPolicy: &policy}),
+	)
+	drainSessionEvents(sess)
+
+	_, _, _, err := sess.callModelWithFallback(context.Background(), NewOpenAIProfile("primary"), continuationRecoveryRequest(), nil, "", 1)
+
+	if !errors.Is(err, anchorMissing) {
+		t.Fatalf("terminal error = %v, want the anchor rejection itself — a message-less recovery round would replace it", err)
+	}
+	for _, req := range a.Requests() {
+		if req.HistoryMode == llm.HistoryModeFullHistoryFallback {
+			t.Fatalf("recovery re-call issued with no retained history: %+v", req)
+		}
+	}
+}
+
+// TestModelFallbackEligible_ResponsesEmptyStream pins that a Responses
+// endpoint answering 200 OK with no events routes the round to the configured
+// model fallbacks. The model does not speak the protocol, so no amount of
+// retrying the same request helps; the next model is the only way forward.
+func TestModelFallbackEligible_ResponsesEmptyStream(t *testing.T) {
+	err := llm.NewUnsupportedEndpointError("openai", "responses stream closed with no events", nil)
+	if !modelFallbackEligible(err, llm.DefaultRetryPolicy()) {
+		t.Fatalf("modelFallbackEligible(%v) = false, want true", err)
 	}
 }
 

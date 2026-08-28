@@ -82,7 +82,13 @@ export function AskQuestionCard({ question, number, answer, onResolutionChange, 
   const noteLabelId = `${id}-note-label`;
 
   const noteInputRef = useRef<HTMLInputElement>(null);
-  const prevKindRef = useRef<AskResolution["kind"] | null>(null);
+  // Initialized with the MOUNT-time kind, not null: the dock is a
+  // virtualized transcript row, so scrolling away unmounts this card and
+  // scrolling back remounts it. A remount with an already-active free
+  // answer is not the transition this effect exists for - starting at null
+  // would read it as one and steal focus to the answer input (roborev PR
+  // #854). Mount-time focus belongs to AskDock's activation effect.
+  const prevKindRef = useRef<AskResolution["kind"] | null>(answer.resolution?.kind ?? null);
 
   // Focuses the shared text field the moment Something else becomes active
   // - edge-triggered on the kind actually changing TO free (never on every

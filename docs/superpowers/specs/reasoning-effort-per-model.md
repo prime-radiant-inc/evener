@@ -4,6 +4,11 @@
 
 **Ready for implementation.** Revised 2026-04-10 after verification pass.
 
+Revision note (2026-08-30): "What APIs actually expose" below is out of date.
+The codex backend, OpenRouter, and lunaroute `/models` endpoints do carry
+per-model reasoning metadata, and profile factories no longer hardcode
+`reasoning: true`. See `2026-08-30-model-level-reasoning-defaults-design.md`.
+
 ### Revision notes (2026-04-10)
 
 Corrections from verification against live Anthropic docs and current codebase:

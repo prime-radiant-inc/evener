@@ -29,10 +29,18 @@ const (
 	EventAssistantTextDelta EventKind = "ASSISTANT_TEXT_DELTA"
 	// EventAssistantTextEnd marks the end of an assistant text response.
 	EventAssistantTextEnd EventKind = "ASSISTANT_TEXT_END"
-	// EventAssistantTextReset discards the in-progress assistant message: a model
-	// call retried after streaming partial output emits this so the retry's
+	// EventAssistantTextReset discards the in-progress output a retried model
+	// call streamed: a retry after partial output emits this so the retry's
 	// output replaces, rather than appends to, the partial that was shown.
+	// It covers both streamed item kinds — assistant text and reasoning —
+	// because a failed attempt typically streamed both.
 	EventAssistantTextReset EventKind = "ASSISTANT_TEXT_RESET"
+	// EventCommunicatePreviewStart opens a call-scoped provisional communicate item.
+	EventCommunicatePreviewStart EventKind = "COMMUNICATE_PREVIEW_START"
+	// EventCommunicatePreviewDelta carries provisional communicate text.
+	EventCommunicatePreviewDelta EventKind = "COMMUNICATE_PREVIEW_DELTA"
+	// EventCommunicatePreviewReset discards a failed provisional communicate call.
+	EventCommunicatePreviewReset EventKind = "COMMUNICATE_PREVIEW_RESET"
 	// EventModelRetry reports that a model call failed with a retryable error
 	// and will be attempted again after a wait. It is the only signal a reader
 	// gets while a provider is rate-limiting: a rejection at stream open streams
@@ -72,6 +80,9 @@ const (
 	// EventReasoningEffortChanged reports that SetReasoningEffort committed a
 	// reasoning-effort change.
 	EventReasoningEffortChanged EventKind = "REASONING_EFFORT_CHANGED"
+	// EventVisionModelChanged reports that SetVisionModel committed a change to
+	// the vision side-channel routing.
+	EventVisionModelChanged EventKind = "VISION_MODEL_CHANGED"
 	// EventTurnLimit reports turn or tool-round limits.
 	EventTurnLimit EventKind = "TURN_LIMIT"
 	// EventLoopDetection reports detection of a loop.
@@ -123,6 +134,9 @@ const (
 	// EventGoalEnded reports that the goal engine stopped, carrying the terminal
 	// status and reason.
 	EventGoalEnded EventKind = "GOAL_ENDED"
+	// EventGoalUpdated reports the session's complete structured goal state after
+	// a committed goal mutation. A nil goal in its payload explicitly clears it.
+	EventGoalUpdated EventKind = "GOAL_UPDATED"
 	// EventSandboxEscalationRequested marks a harness-raised, human-gated
 	// sandbox-exemption approval request (M7). It rides the event stream ONLY — it
 	// is never appended to the model's transcript, so the model can neither observe

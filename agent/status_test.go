@@ -8,6 +8,7 @@ import (
 	"reflect"
 	"slices"
 	"sort"
+	"strings"
 	"testing"
 	"time"
 
@@ -15,9 +16,24 @@ import (
 	"primeradiant.com/evener/agent/internal/delegatestore"
 	"primeradiant.com/evener/agent/internal/jobstore"
 	"primeradiant.com/evener/agent/plugin"
+	"primeradiant.com/evener/agent/skill"
 	"primeradiant.com/evener/agent/transcript"
 	"primeradiant.com/evener/llm"
 )
+
+func TestDetailedStatusUsesNamespacedSkillCatalogKey(t *testing.T) {
+	s := newTestSession(t)
+	s.skills = map[string]skill.SkillMeta{
+		"plugin:simplify": {Name: "simplify", Description: "rewrite", SkillFile: writeSkillBodyFile(t, "body")},
+	}
+	got := s.DetailedStatus()
+	if len(got.Skills) != 1 || got.Skills[0].Name != "plugin:simplify" {
+		t.Fatalf("skills = %+v", got.Skills)
+	}
+	if got.Skills[0].Dir != "" || got.Skills[0].SkillFile != "" {
+		t.Fatalf("skills exposed filesystem metadata: %+v", got.Skills[0])
+	}
+}
 
 func TestSession_DetailedStatus_DelegatesMatchControllerFoldAfterReopen(t *testing.T) {
 	fixture := newColdStableDelegateFixtureConfigured(t, "", func(descriptor *delegatestore.Descriptor) {
@@ -25,7 +41,7 @@ func TestSession_DetailedStatus_DelegatesMatchControllerFoldAfterReopen(t *testi
 		descriptor.ParentWatchGranted = true
 		descriptor.DelegationAllowance = 2
 	})
-	want, _, err := LoadSessionDelegateStatus(fixture.stateDir, fixture.meta.ID)
+	want, _, err := LoadSessionDelegateStatus(context.Background(), fixture.stateDir, fixture.meta.ID)
 	if err != nil {
 		t.Fatalf("cold stable status: %v", err)
 	}
@@ -181,7 +197,7 @@ func TestStableDelegateAttention_RestoreAndColdRead(t *testing.T) {
 				}
 			}
 
-			cold, _, coldErr := LoadSessionDelegateStatus(fixture.stateDir, fixture.meta.ID)
+			cold, _, coldErr := LoadSessionDelegateStatus(context.Background(), fixture.stateDir, fixture.meta.ID)
 			if tt.wantColdError {
 				if coldErr == nil {
 					t.Fatal("cold delegate status accepted an eligible missing/unreadable transcript")
@@ -427,6 +443,9 @@ func TestSession_DetailedStatus_EmptySections(t *testing.T) {
 		t.Errorf("expected no MCP servers, got %d", len(ds.MCP))
 	}
 	// No plugins in a vanilla session.
+	if ds.Plugins == nil {
+		t.Fatal("expected an explicit empty plugin slice")
+	}
 	if len(ds.Plugins) != 0 {
 		t.Errorf("expected no plugins, got %d", len(ds.Plugins))
 	}
@@ -510,11 +529,14 @@ func TestSession_DetailedStatus_Jobs(t *testing.T) {
 	startedAt := time.Now().UTC()
 	endedAt := startedAt.Add(time.Second)
 	const jobID = "job_status_projection"
+	const intent = "Running the test suite to find the failure"
 	if err := sess.jobManager.store.Append(jobstore.Event{
 		Kind:             jobstore.EventJobStarted,
 		TS:               startedAt,
 		JobID:            jobID,
 		Type:             jobstore.JobShell,
+		Command:          "go test ./...",
+		Intent:           intent,
 		OwnerSessionID:   sess.ID(),
 		VisibleToSession: sess.ID(),
 		StartedAt:        &startedAt,
@@ -544,6 +566,9 @@ func TestSession_DetailedStatus_Jobs(t *testing.T) {
 		job.Reason != "exit_nonzero" || job.TranscriptRef != shellTranscriptRef(jobID) ||
 		job.OutputBytes != 128 || job.ExitCode == nil || *job.ExitCode != exitCode {
 		t.Fatalf("job status = %+v", job)
+	}
+	if job.Intent != intent {
+		t.Fatalf("job intent = %q, want %q", job.Intent, intent)
 	}
 }
 
@@ -760,16 +785,14 @@ func TestDetailedStatus_HookEvents(t *testing.T) {
 
 	ds := sess.DetailedStatus()
 
-	// Legacy Hooks map should have PreToolUse with count ≥ 1.
-	if ds.Hooks[plugin.HookPreToolUse] < 1 {
-		t.Errorf("Hooks[PreToolUse] = %d, want ≥ 1", ds.Hooks[plugin.HookPreToolUse])
-	}
-
 	// HookEvents should include PreToolUse as supported/claude-compatible-subset.
 	var foundSupported, foundUnsupported bool
 	for _, he := range ds.HookEvents {
 		switch he.Event {
 		case plugin.HookPreToolUse:
+			if he.Count < 1 {
+				t.Errorf("HookEvents PreToolUse count = %d, want ≥ 1", he.Count)
+			}
 			if !he.Supported {
 				t.Errorf("PreToolUse: Supported = false, want true")
 			}
@@ -798,5 +821,49 @@ func TestDetailedStatus_HookEvents(t *testing.T) {
 	}
 	if !foundUnsupported {
 		t.Error("HookEvents missing Setup (unsupported/reserved-placeholder)")
+	}
+}
+
+// TestLoadSessionDelegateStatus_OversizedDelegateJournalLineDegradesWithDiagnosticInsteadOfFailing
+// asserts an oversized delegates.jsonl line does not hard-fail the
+// chat/transcript view for every session sharing that root -- live or
+// historical -- on a single corrupt line: the posture is "loud but
+// CONTAINED". LoadSessionDelegateStatus must not fail, and must carry a
+// diagnosed error (with file + line info) rather than propagating
+// ErrLineTooLong unclassified or swallowing it silently.
+func TestLoadSessionDelegateStatus_OversizedDelegateJournalLineDegradesWithDiagnosticInsteadOfFailing(t *testing.T) {
+	stateDir := t.TempDir()
+	rootID := "oversizedelegateroot"
+	writePastStableDelegates(t, stateDir, rootID, pastStableDescriptor(rootID, "child1", "a task long enough to exceed a tiny test line cap"))
+	savePastActivityMeta(t, stateDir, rootID, "Root")
+
+	// Inject a small MaxLineBytes so this test's fixture doesn't need an
+	// actual 128 MiB line to trip delegatestore's package default -- same
+	// established pattern as
+	// TestLoadSessionJobActivityTree_PathologicalLineErrorsLoudlyNotSilently,
+	// this test is about the CONTAINMENT property, not re-proving the cap
+	// fires (delegatestore's own tests already do that).
+	original := scanDelegateJournal
+	scanDelegateJournal = func(ctx context.Context, path string, fromOffset int64, limits delegatestore.ScanLimits) ([]delegatestore.Event, int64, delegatestore.ReadDiagnostics, error) {
+		limits.MaxLineBytes = 20
+		return original(ctx, path, fromOffset, limits)
+	}
+	defer func() { scanDelegateJournal = original }()
+
+	status, diagnostics, err := LoadSessionDelegateStatus(context.Background(), stateDir, rootID)
+	if err != nil {
+		t.Fatalf("LoadSessionDelegateStatus: %v, want nil error -- an oversized delegate journal line must degrade, not fail the whole ThreadRead RPC this feeds", err)
+	}
+	if len(status) != 0 {
+		t.Fatalf("status = %+v, want empty (nothing is safely decodable once a line in the shared journal exceeds the cap)", status)
+	}
+	found := false
+	for _, d := range diagnostics {
+		if strings.Contains(d, "delegates.jsonl") && strings.Contains(d, "line") {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("diagnostics = %v, want one identifying the oversized delegates.jsonl line (file + line info), visible rather than silently dropped", diagnostics)
 	}
 }

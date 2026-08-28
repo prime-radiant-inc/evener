@@ -3,9 +3,11 @@
 // It generates one canonical *logical* model response (text, tool calls,
 // reasoning, a usage triple, a finish class), encodes that logical response
 // into each provider's SSE wire format, decodes it back through the REAL
-// provider adapter's public streaming path, and asserts the decoded
+// provider protocol's public streaming path, and asserts the decoded
 // llm.Response values are equivalent across providers — modulo an explicit,
-// documented allow-list of legitimately provider-specific fields.
+// documented allow-list of legitimately provider-specific fields. The four
+// legs are llm/providers/anthropic, llm/providers/google,
+// llm/providers/responses, and llm/providers/chatcompletions.
 //
 // This is a differential oracle (research §4): it catches adapter-specific
 // decode drift that a single provider's metamorphic oracle cannot see, because

@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"sort"
 	"strings"
 	"time"
 
@@ -14,12 +15,16 @@ import (
 	"primeradiant.com/evener/internal/apptranscript"
 	"primeradiant.com/evener/invariant"
 	"primeradiant.com/evener/llm"
+	"primeradiant.com/evener/llm/registry"
 )
 
 type AppNotification struct {
-	ThreadID string
-	Method   string
-	Params   any
+	ThreadID                string
+	Method                  string
+	Params                  any
+	TaskStoreOwnerSessionID string
+	TaskPublicationEpoch    uint64
+	TaskPublicationRevision uint64
 }
 
 type skillActivationCandidate struct {
@@ -36,6 +41,13 @@ var marshalContextCompaction = json.Marshal
 type AppEventProjector struct {
 	threadID string
 	ref      string
+	// taskStoreOwnerSessionID is routing metadata for the server's cached
+	// descendant projection. It never enters an AppWire params shape.
+	taskStoreOwnerSessionID string
+	// taskPublicationRevision is the newest internal task publication observed
+	// by this source projector. It never enters an AppWire params shape.
+	taskPublicationEpoch    uint64
+	taskPublicationRevision uint64
 
 	nextTurn       int
 	nextItem       int
@@ -66,6 +78,10 @@ type AppEventProjector struct {
 	midSessionAnnouncementTurnID string
 	assistantItem                string
 	assistantText                string
+	messageStartByID             map[string]time.Time
+	provisionalCommunicateItems  map[string]string
+	communicateCommittedCalls    map[string]struct{}
+	communicatePhases            map[string]communicatePhase
 	reasoningItem                string
 	toolItemsByKey               map[string]string
 	toolArgsByKey                map[string]string
@@ -98,27 +114,54 @@ type AppEventProjector struct {
 	pendingCompletedAtMillis int64
 	pendingDurationMS        int64
 
-	// activeTurnUsage/activeTurnModel accumulate the current turn's own
-	// (not cumulative-session) usage across every EventAssistantTextEnd
-	// since startTurn(), stamped onto the completing Turn at each of the
-	// five completion sites. Unlike pendingTurnID/pendingDurationMS, no
+	// activeTurnUsage/activeTurnModel/activeTurnProvider accumulate the
+	// current turn's own (not cumulative-session) usage and the
+	// instance/model it ran on across every EventAssistantTextEnd since
+	// startTurn(), stamped onto the completing Turn at each of the five
+	// completion sites. Unlike pendingTurnID/pendingDurationMS, no
 	// stash-vs-completion-ordering race exists here: EventAssistantTextEnd
 	// always fires chronologically before the turn's own completion event.
-	activeTurnUsage llm.Usage
-	activeTurnModel string
+	activeTurnUsage    llm.Usage
+	activeTurnModel    string
+	activeTurnProvider string
+	// costLookup prices the completing turn. Nil until SetCostLookup
+	// installs one, which is the honest answer for a projection with no
+	// registry behind it: the turn reports usage and no cost.
+	costLookup func(provider, model string) *registry.Cost
 }
+
+type communicatePhase uint8
+
+const (
+	communicatePhaseNone communicatePhase = iota
+	communicatePhasePreview
+	communicatePhaseExecuting
+	communicatePhaseCommitted
+	communicatePhaseClosed
+)
 
 func NewAppEventProjector(threadID, ref string) *AppEventProjector {
 	return &AppEventProjector{
-		threadID:             threadID,
-		ref:                  ref,
-		toolItemsByKey:       map[string]string{},
-		toolArgsByKey:        map[string]string{},
-		toolStartByKey:       map[string]time.Time{},
-		suppressedTools:      map[string]struct{}{},
-		heldToolResultImages: map[string]appwire.ThreadItem{},
-		delegates:            map[string]appwire.EvenerDelegateInfo{},
+		threadID:                    threadID,
+		ref:                         ref,
+		toolItemsByKey:              map[string]string{},
+		toolArgsByKey:               map[string]string{},
+		toolStartByKey:              map[string]time.Time{},
+		suppressedTools:             map[string]struct{}{},
+		heldToolResultImages:        map[string]appwire.ThreadItem{},
+		delegates:                   map[string]appwire.EvenerDelegateInfo{},
+		provisionalCommunicateItems: map[string]string{},
+		communicateCommittedCalls:   map[string]struct{}{},
+		communicatePhases:           map[string]communicatePhase{},
 	}
+}
+
+// SetCostLookup installs the $/Mtok cost source the completing turn is priced
+// at: the daemon passes the live session's registry lookup, keyed on the
+// instance and model each round reported (spec §7.5). A projector without one
+// reports usage and no cost.
+func (p *AppEventProjector) SetCostLookup(lookup func(provider, model string) *registry.Cost) {
+	p.costLookup = lookup
 }
 
 // SeedPersistedTurns raises the projector's turn counter so no live turn it
@@ -144,11 +187,67 @@ func (p *AppEventProjector) SeedPersistedTurns(persistedEntries int) {
 	}
 }
 
+// TaskStoreOwnerSessionID returns internal routing metadata learned from typed
+// task carriers. It is not part of any public AppWire params shape.
+func (p *AppEventProjector) TaskStoreOwnerSessionID() string {
+	return p.taskStoreOwnerSessionID
+}
+
+// TaskPublicationEpoch returns the newest process-local TaskStore incarnation
+// observed by this projector. It is not part of any public AppWire params shape.
+func (p *AppEventProjector) TaskPublicationEpoch() uint64 {
+	return p.taskPublicationEpoch
+}
+
+// TaskPublicationRevision returns the newest internal task publication learned
+// from typed task carriers. It is not part of any public AppWire params shape.
+func (p *AppEventProjector) TaskPublicationRevision() uint64 {
+	return p.taskPublicationRevision
+}
+
+func (p *AppEventProjector) observeTaskPublication(epoch, revision uint64) {
+	if epoch > p.taskPublicationEpoch || (epoch == p.taskPublicationEpoch && revision > p.taskPublicationRevision) {
+		p.taskPublicationEpoch = epoch
+		p.taskPublicationRevision = revision
+	}
+}
+
 func (p *AppEventProjector) clearSkillCandidate() {
 	p.skillCandidate = skillActivationCandidate{}
 }
 
-func (p *AppEventProjector) Project(event events.SessionEvent) []AppNotification {
+func (p *AppEventProjector) Project(event events.SessionEvent) (out []AppNotification) {
+	// Message lifecycles share one timing rule: keep the first visible event's
+	// timestamp through completion. One-shot messages use their own event time.
+	defer func() {
+		for i := range out {
+			if reset, ok := out[i].Params.(appwire.AgentMessageResetParams); ok {
+				delete(p.messageStartByID, reset.ItemID)
+			}
+			params, ok := out[i].Params.(appwire.ItemLifecycleParams)
+			if !ok || (params.Item.Type != "userMessage" && params.Item.Type != "agentMessage") {
+				continue
+			}
+			startedAt, exists := p.messageStartByID[params.Item.ID]
+			if !exists {
+				startedAt = event.Timestamp
+			}
+			if !startedAt.IsZero() {
+				ms := startedAt.UnixMilli()
+				params.Item.StartedAt = &ms
+			}
+			if out[i].Method == appwire.NotifyItemStarted {
+				if p.messageStartByID == nil {
+					p.messageStartByID = map[string]time.Time{}
+				}
+				p.messageStartByID[params.Item.ID] = startedAt
+			} else {
+				delete(p.messageStartByID, params.Item.ID)
+			}
+			out[i].Params = params
+		}
+	}()
+
 	if p.threadID == "" {
 		p.threadID = event.SessionID
 	}
@@ -156,6 +255,10 @@ func (p *AppEventProjector) Project(event events.SessionEvent) []AppNotification
 	switch event.Kind {
 	case events.EventSessionStart:
 		data := eventData[events.SessionStartData](event.Data)
+		if data.TaskStoreOwnerSessionID != "" {
+			p.taskStoreOwnerSessionID = data.TaskStoreOwnerSessionID
+		}
+		p.observeTaskPublication(data.TaskPublicationEpoch, data.TaskPublicationRevision)
 		// A resumed session's turn ids must not reuse the "turn_%d" namespace
 		// the transcript projection (internal/apptranscript) already assigned by
 		// entry index to the session's persisted entries (kata eptj). The
@@ -175,7 +278,13 @@ func (p *AppEventProjector) Project(event events.SessionEvent) []AppNotification
 		case appwire.ThreadStatusIdle:
 			status = appwire.ThreadStatusIdle
 		}
-		return []AppNotification{
+		var tasks *appwire.TaskAggregate
+		var goal *appwire.GoalState
+		if data.CurrentWork != nil {
+			tasks = taskAggregate(data.CurrentWork.Tasks)
+			goal = goalState(data.CurrentWork.Goal)
+		}
+		out := []AppNotification{
 			p.notification(appwire.NotifyThreadStarted, appwire.ThreadStartedParams{
 				ThreadID: p.threadID,
 				Ref:      p.ref,
@@ -188,11 +297,19 @@ func (p *AppEventProjector) Project(event events.SessionEvent) []AppNotification
 					Evener: appwire.EvenerThread{
 						Ref:     p.ref,
 						Profile: data.Profile,
+						Tasks:   tasks,
+						Goal:    goal,
 					},
 				},
 			}),
 			p.threadStatus(status),
 		}
+		for i := range out {
+			out[i].TaskStoreOwnerSessionID = data.TaskStoreOwnerSessionID
+			out[i].TaskPublicationEpoch = data.TaskPublicationEpoch
+			out[i].TaskPublicationRevision = data.TaskPublicationRevision
+		}
+		return out
 	case events.EventTurnStarted:
 		// The one boundary for turns that carry no content event of their own.
 		// It owes its subscribers three things, and a notification turn needs
@@ -268,6 +385,21 @@ func (p *AppEventProjector) Project(event events.SessionEvent) []AppNotification
 			p.threadStatus(appwire.ThreadStatusActive),
 		)
 		return out
+	case events.EventGoalUpdated:
+		data := eventData[events.GoalUpdatedData](event.Data)
+		var state *appwire.GoalState
+		if data.Goal != nil {
+			state = &appwire.GoalState{
+				Objective:  data.Goal.Objective,
+				Status:     data.Goal.Status,
+				Iterations: data.Goal.Iterations,
+			}
+		}
+		return []AppNotification{p.notification(appwire.NotifyEvenerGoalUpdated, appwire.GoalUpdatedParams{
+			ThreadID: p.threadID,
+			Ref:      p.ref,
+			Goal:     state,
+		})}
 	case events.EventAssistantTextStart:
 		p.skillCandidate = skillActivationCandidate{}
 		out := p.ensureTurn(event.Timestamp)
@@ -337,6 +469,9 @@ func (p *AppEventProjector) Project(event events.SessionEvent) []AppNotification
 		if data.Model != "" {
 			p.activeTurnModel = data.Model
 		}
+		if data.Provider != "" {
+			p.activeTurnProvider = data.Provider
+		}
 		text := data.Text
 		if text == "" {
 			text = p.assistantText
@@ -369,22 +504,35 @@ func (p *AppEventProjector) Project(event events.SessionEvent) []AppNotification
 			Item:     item,
 		}))
 	case events.EventAssistantTextReset:
-		// A retry after partial output: discard the in-progress assistant item
-		// so the retry's stream replaces it rather than appending. No-op when
-		// nothing was streamed yet (no item to reset).
-		if p.assistantItem == "" {
-			return nil
+		// A retry after partial output: discard the in-progress items so the
+		// retry's stream replaces them rather than appending. The retry loop
+		// emits this one reset for BOTH item kinds — a failed attempt's
+		// reasoning and assistant text both streamed, and both must be
+		// discarded; resetting only the assistant item left the reasoning
+		// item open, so the retry's reasoning deltas appended onto the failed
+		// attempt's (the #641 repeated-word live view). No-op when nothing
+		// was streamed yet (no items to reset).
+		out := []AppNotification{}
+		if p.assistantItem != "" {
+			out = append(out, p.notification(appwire.NotifyAgentMessageReset, appwire.AgentMessageResetParams{
+				ThreadID: p.threadID,
+				Ref:      p.ref,
+				TurnID:   p.activeTurnID,
+				ItemID:   p.assistantItem,
+			}))
+			p.assistantItem = ""
+			p.assistantText = ""
 		}
-		itemID := p.assistantItem
-		turnID := p.activeTurnID
-		p.assistantItem = ""
-		p.assistantText = ""
-		return []AppNotification{p.notification(appwire.NotifyAgentMessageReset, appwire.AgentMessageResetParams{
-			ThreadID: p.threadID,
-			Ref:      p.ref,
-			TurnID:   turnID,
-			ItemID:   itemID,
-		})}
+		if p.reasoningItem != "" {
+			out = append(out, p.notification(appwire.NotifyAgentMessageReset, appwire.AgentMessageResetParams{
+				ThreadID: p.threadID,
+				Ref:      p.ref,
+				TurnID:   p.activeTurnID,
+				ItemID:   p.reasoningItem,
+			}))
+			p.reasoningItem = ""
+		}
+		return out
 	case events.EventModelRetry:
 		// Thread-scoped, item-less: the retry is state about the wait in
 		// progress, not a fact worth a transcript row (see
@@ -404,6 +552,44 @@ func (p *AppEventProjector) Project(event events.SessionEvent) []AppNotification
 			GroupElapsedMS: data.GroupElapsedMS,
 			AttemptCap:     data.AttemptCap,
 		})}
+	case events.EventCommunicatePreviewStart:
+		data := eventData[events.CommunicatePreviewStartData](event.Data)
+		if data.CallID == "" || p.provisionalCommunicateItems[data.CallID] != "" {
+			return nil
+		}
+		phase := p.communicatePhases[data.CallID]
+		if phase != communicatePhaseNone && phase != communicatePhaseClosed {
+			return nil
+		}
+		out := p.ensureTurn(event.Timestamp)
+		delete(p.communicateCommittedCalls, data.CallID)
+		p.communicatePhases[data.CallID] = communicatePhasePreview
+		itemID := p.nextItemID("communicate_preview")
+		p.provisionalCommunicateItems[data.CallID] = itemID
+		return append(out, p.notification(appwire.NotifyItemStarted, appwire.ItemLifecycleParams{
+			ThreadID: p.threadID, Ref: p.ref, TurnID: p.activeTurnID,
+			Item: appwire.ThreadItem{Type: "agentMessage", ID: itemID, TurnID: p.activeTurnID, Status: appwire.TurnStatusInProgress},
+		}))
+	case events.EventCommunicatePreviewDelta:
+		data := eventData[events.CommunicatePreviewDeltaData](event.Data)
+		itemID := p.provisionalCommunicateItems[data.CallID]
+		if itemID == "" || data.Delta == "" {
+			return nil
+		}
+		return []AppNotification{p.notification(appwire.NotifyAgentMessageDelta, appwire.AgentMessageDeltaParams{
+			ThreadID: p.threadID, Ref: p.ref, TurnID: p.activeTurnID, ItemID: itemID, Delta: data.Delta,
+		})}
+	case events.EventCommunicatePreviewReset:
+		data := eventData[events.CommunicatePreviewResetData](event.Data)
+		itemID := p.provisionalCommunicateItems[data.CallID]
+		if itemID == "" {
+			return nil
+		}
+		delete(p.provisionalCommunicateItems, data.CallID)
+		p.communicatePhases[data.CallID] = communicatePhaseClosed
+		return []AppNotification{p.notification(appwire.NotifyAgentMessageReset, appwire.AgentMessageResetParams{
+			ThreadID: p.threadID, Ref: p.ref, TurnID: p.activeTurnID, ItemID: itemID,
+		})}
 	case events.EventCommunicate:
 		p.skillCandidate = skillActivationCandidate{}
 		data := eventData[events.CommunicateData](event.Data)
@@ -412,6 +598,23 @@ func (p *AppEventProjector) Project(event events.SessionEvent) []AppNotification
 			return nil
 		}
 		out := p.ensureTurn(event.Timestamp)
+		if data.CallID != "" {
+			if _, committed := p.communicateCommittedCalls[data.CallID]; committed {
+				return out
+			}
+			itemID := p.provisionalCommunicateItems[data.CallID]
+			if itemID == "" {
+				itemID = p.nextItemID("assistant")
+			}
+			p.communicateCommittedCalls[data.CallID] = struct{}{}
+			p.communicatePhases[data.CallID] = communicatePhaseCommitted
+			delete(p.provisionalCommunicateItems, data.CallID)
+			p.recordAssistantMessage(p.activeTurnID, text)
+			return append(out, p.notification(appwire.NotifyItemCompleted, appwire.ItemLifecycleParams{
+				ThreadID: p.threadID, Ref: p.ref, TurnID: p.activeTurnID,
+				Item: appwire.ThreadItem{Type: "agentMessage", ID: itemID, TurnID: p.activeTurnID, Text: text, Status: appwire.TurnStatusCompleted},
+			}))
+		}
 		if p.matchesLastAssistantMessage(p.activeTurnID, text) {
 			return out
 		}
@@ -436,6 +639,18 @@ func (p *AppEventProjector) Project(event events.SessionEvent) []AppNotification
 			p.skillCandidate = skillActivationCandidate{}
 		}
 		if data.ToolName == "communicate" {
+			phase := p.communicatePhases[data.CallID]
+			if phase == communicatePhasePreview {
+				p.communicatePhases[data.CallID] = communicatePhaseExecuting
+				p.suppressedTools[data.CallID] = struct{}{}
+				return out
+			}
+			if phase == communicatePhaseExecuting || phase == communicatePhaseCommitted {
+				return out
+			}
+			// A provider may reuse a raw call ID after the prior generation closed.
+			delete(p.communicateCommittedCalls, data.CallID)
+			p.communicatePhases[data.CallID] = communicatePhaseExecuting
 			p.suppressedTools[data.CallID] = struct{}{}
 			return out
 		}
@@ -491,9 +706,25 @@ func (p *AppEventProjector) Project(event events.SessionEvent) []AppNotification
 		})}
 	case events.EventToolCallEnd:
 		data := eventData[events.ToolCallEndData](event.Data)
+		var out []AppNotification
+		if data.Error != "" {
+			if itemID := p.provisionalCommunicateItems[data.CallID]; itemID != "" {
+				delete(p.provisionalCommunicateItems, data.CallID)
+				out = append(out, p.notification(appwire.NotifyAgentMessageReset, appwire.AgentMessageResetParams{
+					ThreadID: p.threadID, Ref: p.ref, TurnID: p.activeTurnID, ItemID: itemID,
+				}))
+			}
+			if p.communicatePhases[data.CallID] == communicatePhaseExecuting || p.communicatePhases[data.CallID] == communicatePhasePreview {
+				p.communicatePhases[data.CallID] = communicatePhaseClosed
+			}
+		}
 		if _, ok := p.suppressedTools[data.CallID]; ok {
 			delete(p.suppressedTools, data.CallID)
-			return nil
+			p.communicatePhases[data.CallID] = communicatePhaseClosed
+			return out
+		}
+		if data.ToolName == "communicate" && p.toolItemsByKey[data.CallID] == "" {
+			return out
 		}
 		raw := data.ToolState
 		if p.skillCandidate.valid && p.skillCandidate.callID == data.CallID && p.skillCandidate.activationName != "" {
@@ -516,9 +747,9 @@ func (p *AppEventProjector) Project(event events.SessionEvent) []AppNotification
 			OutputImages:  projectOutputImages(data.OutputImages),
 			Status:        apptranscript.SettledToolStatus(data.Error != ""),
 			Raw:           raw,
-			// Carry the call's purpose onto the completed item too (#26):
+			// Carry the call's intent onto the completed item too (#26):
 			// the started item already has it, and live consumers (the web
-			// subagent activity line) render the purpose from Description.
+			// subagent activity line) render the intent from Description.
 			Description: apptranscript.ToolIntentFromArguments(json.RawMessage(argsJSON)),
 			// ExitCode promotes the shell tool's exit code, already riding
 			// data.ToolState end to end (agent/session_tools_shell.go:483
@@ -563,12 +794,12 @@ func (p *AppEventProjector) Project(event events.SessionEvent) []AppNotification
 		delete(p.toolItemsByKey, data.CallID)
 		delete(p.toolArgsByKey, data.CallID)
 		p.holdUnfetchableToolResultImages(&item)
-		return []AppNotification{p.notification(appwire.NotifyItemCompleted, appwire.ItemLifecycleParams{
+		return append(out, p.notification(appwire.NotifyItemCompleted, appwire.ItemLifecycleParams{
 			ThreadID: p.threadID,
 			Ref:      p.ref,
 			TurnID:   p.activeTurnID,
 			Item:     item,
-		})}
+		}))
 	case events.EventToolResultImagesPersisted:
 		// The bytes behind the descriptors held above have reached the
 		// transcript, so the promise they make is now one a server can keep.
@@ -658,6 +889,7 @@ func (p *AppEventProjector) Project(event events.SessionEvent) []AppNotification
 		// twice in clients that show both the warning channel and turn errors.
 		out := p.ensureTurn(event.Timestamp)
 		turnID := p.activeTurnID
+		previewResets := p.resetProvisionalCommunicates()
 		p.activeTurnID = ""
 		// A failed turn ends as thoroughly as a completed one. Clearing a
 		// smaller set here let reasoningItem, toolArgsByKey and toolStartByKey
@@ -681,7 +913,7 @@ func (p *AppEventProjector) Project(event events.SessionEvent) []AppNotification
 		// all five completion sites.
 		p.applyPendingTiming(turnID, &turn)
 		p.stampTurnUsage(&turn)
-		return append(out,
+		return append(append(out, previewResets...),
 			// Still map[string]any, not TurnCompletedParams - see EventUserInput's own comment above (kcb5).
 			p.notification(appwire.NotifyTurnCompleted, map[string]any{
 				"threadId": p.threadID,
@@ -729,6 +961,9 @@ func (p *AppEventProjector) Project(event events.SessionEvent) []AppNotification
 		}
 		if data.ClientMutationID != "" {
 			params["clientMutationId"] = data.ClientMutationID
+		}
+		if !event.Timestamp.IsZero() {
+			params["startedAt"] = event.Timestamp.UnixMilli()
 		}
 		return []AppNotification{p.notification(appwire.NotifyEvenerSteeringInjected, params)}
 	case events.EventCompactionTurn:
@@ -820,12 +1055,23 @@ func (p *AppEventProjector) Project(event events.SessionEvent) []AppNotification
 	case events.EventTaskUpdated:
 		p.clearSkillCandidate()
 		data := eventData[events.TaskUpdatedData](event.Data)
-		return []AppNotification{p.notification(appwire.NotifyEvenerTaskUpdated, appwire.TaskUpdatedParams{
-			ThreadID: p.threadID,
-			Ref:      p.ref,
-			Total:    data.Total,
-			Done:     data.Done,
-		})}
+		if data.TaskStoreOwnerSessionID != "" {
+			p.taskStoreOwnerSessionID = data.TaskStoreOwnerSessionID
+		}
+		p.observeTaskPublication(data.TaskPublicationEpoch, data.TaskPublicationRevision)
+		notification := p.notification(appwire.NotifyEvenerTaskUpdated, appwire.TaskUpdatedParams{
+			ThreadID:  p.threadID,
+			Ref:       p.ref,
+			Total:     data.Total,
+			Done:      data.Done,
+			Cancelled: data.Cancelled,
+			Remaining: data.Remaining,
+			Current:   taskSummary(data.Current),
+		})
+		notification.TaskStoreOwnerSessionID = data.TaskStoreOwnerSessionID
+		notification.TaskPublicationEpoch = data.TaskPublicationEpoch
+		notification.TaskPublicationRevision = data.TaskPublicationRevision
+		return []AppNotification{notification}
 	case events.EventSandboxEscalationRequested:
 		// A harness-raised sandbox-exemption approval card (M7). It rides the event
 		// stream ONLY — it is never appended to the transcript, so the model can
@@ -898,6 +1144,14 @@ func (p *AppEventProjector) Project(event events.SessionEvent) []AppNotification
 			ThreadID:        p.threadID,
 			Ref:             p.ref,
 			ReasoningEffort: data.ReasoningEffort,
+		})}
+	case events.EventVisionModelChanged:
+		p.clearSkillCandidate()
+		data := eventData[events.VisionModelChangedData](event.Data)
+		return []AppNotification{p.notification(appwire.NotifyThreadVisionModelChanged, appwire.ThreadVisionModelChangedParams{
+			ThreadID:    p.threadID,
+			Ref:         p.ref,
+			VisionModel: data.NewVisionModel,
 		})}
 	// The job lifecycle pair below is the ONLY job push on the wire, and it
 	// serves every consumer: the webui folds it into subagent rows and uses it
@@ -1040,6 +1294,33 @@ func (p *AppEventProjector) Project(event events.SessionEvent) []AppNotification
 	}
 }
 
+func taskSummary(data *events.TaskSummaryData) *appwire.TaskSummary {
+	if data == nil {
+		return nil
+	}
+	return &appwire.TaskSummary{ID: data.ID, Description: data.Description}
+}
+
+func taskAggregate(data *events.TaskStateData) *appwire.TaskAggregate {
+	if data == nil {
+		return nil
+	}
+	return &appwire.TaskAggregate{
+		Total:     data.Total,
+		Done:      data.Done,
+		Cancelled: data.Cancelled,
+		Remaining: data.Remaining,
+		Current:   taskSummary(data.Current),
+	}
+}
+
+func goalState(data *events.GoalStateData) *appwire.GoalState {
+	if data == nil {
+		return nil
+	}
+	return &appwire.GoalState{Objective: data.Objective, Status: data.Status, Iterations: data.Iterations}
+}
+
 func appwireDelegateInfo(data events.DelegateUpdatedData) appwire.EvenerDelegateInfo {
 	out := appwire.EvenerDelegateInfo{
 		DelegateID: data.DelegateID, OwnerSessionID: data.OwnerSessionID, RootSessionID: data.RootSessionID,
@@ -1170,6 +1451,17 @@ func (p *AppEventProjector) notification(method string, params any) AppNotificat
 	// callers all pass a non-empty appwire.Notify* constant; an empty method
 	// would produce an unroutable wire frame.
 	invariant.Hold(method != "", "appprojector: notification with empty method (threadID=%q)", p.threadID)
+	if invariant.Enabled {
+		// The daemon restamps every notification's threadId/ref with its
+		// authoritative fanout target (server.stampAppNotificationTarget), so
+		// params must be either a struct implementing NotificationTargeted or
+		// a map carrying the keys — anything else would ship untargeted.
+		switch params.(type) {
+		case appwire.NotificationTargeted, map[string]any:
+		default:
+			invariant.Hold(false, "appprojector: %s params %T cannot carry a notification target", method, params)
+		}
+	}
 	return AppNotification{ThreadID: p.threadID, Method: method, Params: params}
 }
 
@@ -1215,7 +1507,10 @@ func (p *AppEventProjector) stampTurnUsage(turn *appwire.Turn) {
 		return
 	}
 	turn.Usage = usage
-	turn.Cost = appwire.EstimateCost(p.activeTurnModel, usage)
+	if p.costLookup == nil {
+		return
+	}
+	turn.Cost = appwire.EstimateCost(p.costLookup(p.activeTurnProvider, p.activeTurnModel), usage)
 }
 
 func (p *AppEventProjector) systemAnnouncement(eventKind appwire.ThreadItemEventKind, description, text string) []AppNotification {
@@ -1492,12 +1787,31 @@ func repairChangePhrase(raw string) string {
 		return fmt.Sprintf("removed the unrecognized %q field", field)
 	case "unicode_repair":
 		return "fixed an invalid character in the arguments"
-	default:
-		if field == "" {
-			return "adjusted the arguments"
+	case "fill_required":
+		if fieldKey, ok := strings.CutPrefix(field, "output."); ok && fieldDetail(parts) == "filled default" && fieldKey != "" {
+			return fmt.Sprintf("filled the required %q key", fieldKey)
 		}
-		return fmt.Sprintf("adjusted the %q field", field)
+		if key, ok := strings.CutPrefix(fieldDetail(parts), "filled "); ok && key != "" {
+			return fmt.Sprintf("filled the required %q key", key)
+		}
+		return fmt.Sprintf("filled a required key in the %q field", field)
+	case "synthesize":
+		if field == "output" && fieldDetail(parts) == "synthesized default envelope" {
+			return "created the required output object"
+		}
+	case "copy":
+		if field == "message" && fieldDetail(parts) == "copied output.message" {
+			return "copied nested output.message to the required message"
+		}
+	case "promote_json_object":
+		if field == "output" && fieldDetail(parts) == "promoted JSON object string" {
+			return "converted the output JSON string to an object"
+		}
 	}
+	if field == "" {
+		return "adjusted the arguments"
+	}
+	return fmt.Sprintf("adjusted the %q field", field)
 }
 
 // fieldDetail returns the third ("detail") segment of a split "kind:field:detail"
@@ -1621,16 +1935,17 @@ func (p *AppEventProjector) closeActiveTurn(status string) []AppNotification {
 		return nil
 	}
 	turnID := p.activeTurnID
+	out := p.resetProvisionalCommunicates()
 	p.activeTurnID = ""
 	p.resetTurnScopedState()
 	turn := appwire.Turn{ID: turnID, Status: status}
 	p.applyPendingTiming(turnID, &turn)
 	p.stampTurnUsage(&turn)
-	return []AppNotification{p.notification(appwire.NotifyTurnCompleted, map[string]any{
+	return append(out, p.notification(appwire.NotifyTurnCompleted, map[string]any{
 		"threadId": p.threadID,
 		"ref":      p.ref,
 		"turn":     turn,
-	})}
+	}))
 }
 
 // openTurn closes the turn that was running and opens the one this event
@@ -1673,11 +1988,35 @@ func (p *AppEventProjector) openTurn(stableID string, at time.Time) (string, []A
 func (p *AppEventProjector) resetTurnScopedState() {
 	p.assistantItem = ""
 	p.assistantText = ""
+	p.messageStartByID = nil
 	p.reasoningItem = ""
 	p.toolItemsByKey = map[string]string{}
 	p.toolArgsByKey = map[string]string{}
 	p.toolStartByKey = map[string]time.Time{}
 	p.suppressedTools = map[string]struct{}{}
+	p.provisionalCommunicateItems = map[string]string{}
+	p.communicateCommittedCalls = map[string]struct{}{}
+	p.communicatePhases = map[string]communicatePhase{}
+}
+
+func (p *AppEventProjector) resetProvisionalCommunicates() []AppNotification {
+	out := make([]AppNotification, 0, len(p.provisionalCommunicateItems))
+	callIDs := make([]string, 0, len(p.provisionalCommunicateItems))
+	for callID := range p.provisionalCommunicateItems {
+		callIDs = append(callIDs, callID)
+	}
+	sort.Strings(callIDs)
+	for _, callID := range callIDs {
+		itemID := p.provisionalCommunicateItems[callID]
+		if itemID == "" {
+			continue
+		}
+		out = append(out, p.notification(appwire.NotifyAgentMessageReset, appwire.AgentMessageResetParams{
+			ThreadID: p.threadID, Ref: p.ref, TurnID: p.activeTurnID, ItemID: itemID,
+		}))
+		p.communicatePhases[callID] = communicatePhaseClosed
+	}
+	return out
 }
 
 func (p *AppEventProjector) startTurn() string {
@@ -1700,6 +2039,7 @@ func (p *AppEventProjector) startTurn() string {
 	clear(p.heldToolResultImages)
 	p.activeTurnUsage = llm.Usage{}
 	p.activeTurnModel = ""
+	p.activeTurnProvider = ""
 	// startTurn always yields a usable turn id (a promoted reservation or a
 	// freshly minted turn_N); the item-emitting paths rely on activeTurnID being
 	// non-empty after this returns.

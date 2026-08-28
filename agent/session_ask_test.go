@@ -110,7 +110,7 @@ func newAskTestSession(t *testing.T, cfg SessionConfig) *Session {
 	dir := t.TempDir()
 	c := llm.NewClient()
 	c.Register(&fakeAdapter{name: "openai"})
-	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(dir), cfg)
+	sess, err := NewSession(c, withTestSessionNamer(c, NewOpenAIProfile("gpt-5.2")), execenv.NewLocalExecutionEnvironment(dir), cfg)
 	if err != nil {
 		t.Fatalf("NewSession: %v", err)
 	}
@@ -303,6 +303,24 @@ func TestAskUser_ValidCallPostsAckAndPending(t *testing.T) {
 	}
 	if got := sess.askPendingCount(); got != 3 {
 		t.Fatalf("askPendingCount after a 2-question call = %d, want 3 (1 + 2)", got)
+	}
+}
+
+func TestAskUser_LongHeaderIsAcceptedAndPreserved(t *testing.T) {
+	t.Parallel()
+	sess := newAskTestSession(t, SessionConfig{})
+	args := askUserArgsValid()
+	const wantHeader = "Progress flavor"
+	args["questions"].([]any)[0].(map[string]any)["header"] = wantHeader
+
+	res := sess.reg.ExecuteCall(context.Background(), sess.env, askUserCall("c1", args))
+	if res.IsError {
+		t.Fatalf("ask_user with long header errored: %s", res.Output)
+	}
+	sess.mu.Lock()
+	defer sess.mu.Unlock()
+	if got := sess.askPending[0].Header; got != wantHeader {
+		t.Fatalf("pending header = %q, want %q", got, wantHeader)
 	}
 }
 
@@ -810,6 +828,97 @@ func TestAskUser_EntryGateRefusesNotificationWake(t *testing.T) {
 	}
 }
 
+func TestAskUser_ReplyDrainsRootDelegateAttentionRefusedAtEntryGate(t *testing.T) {
+	t.Parallel()
+	stateDir := t.TempDir()
+	ask := askUserCall("ask1", askUserArgsValid())
+	f := &fakeAdapter{
+		name: "openai",
+		steps: []func(req llm.Request) llm.Response{
+			func(req llm.Request) llm.Response { return toolCallResponse(ask) },
+			func(req llm.Request) llm.Response { return finalResponse("thanks, going with Postgres") },
+			func(req llm.Request) llm.Response { return finalResponse("delegate completion ack") },
+		},
+	}
+	sess := newSession(t,
+		withDir(stateDir),
+		withConfig(SessionConfig{StateDir: stateDir, MaxSubagentDepth: 1, NoProjectPrompts: true}),
+		withAdapter(f),
+	)
+	wakes := make(chan struct{}, 2)
+	sess.SetNotifyFunc(func() { wakes <- struct{}{} })
+
+	// TRIPWIRE: scripted in-process adapter, no real I/O; only fires on a genuine hang.
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	if _, err := sess.ProcessInput(ctx, "which db should we use?", nil); err != nil {
+		t.Fatalf("ProcessInput: %v", err)
+	}
+
+	const (
+		firstAttentionID = "delegate:dlg_during_ask/delivery/1"
+		firstContent     = `<delegate-notification delegate_id="dlg_during_ask">review complete</delegate-notification>`
+	)
+	if appended, err := sess.appendDelegateNotificationDurably(firstAttentionID, firstContent); err != nil || !appended {
+		t.Fatalf("append root attention = appended:%t err:%v", appended, err)
+	}
+	if err := sess.armDelegateAttention(firstAttentionID); err != nil {
+		t.Fatalf("arm root attention: %v", err)
+	}
+	select {
+	case <-wakes:
+	default:
+		t.Fatal("root attention emitted no initial wake")
+	}
+
+	if _, err := sess.ProcessInputKind(ctx, "", nil, EntryNotification); err != nil {
+		t.Fatalf("ProcessInputKind(EntryNotification) while awaiting: %v", err)
+	}
+	if got := len(f.Requests()); got != 1 {
+		t.Fatalf("requests after refused wake = %d, want 1", got)
+	}
+	if !sess.hasPendingRootDelegateAttention() {
+		t.Fatal("refused wake discarded pending root delegate attention")
+	}
+
+	if _, err := sess.ProcessInput(ctx, "let's go with Postgres", nil); err != nil {
+		t.Fatalf("reply ProcessInput: %v", err)
+	}
+	requests := f.Requests()
+	if got := len(requests); got != 3 {
+		t.Fatalf("requests after reply = %d, want 3 (reply turn + root attention turn)", got)
+	}
+	if !requestContainsText(requests[2], firstContent) {
+		t.Error("root attention turn did not deliver the delegate notification to the model")
+	}
+	fold, err := readDelegateAttentionFold(transcriptPath(stateDir, sess.ID()), sess.ID())
+	if err != nil {
+		t.Fatalf("read root attention fold: %v", err)
+	}
+	if got := fold.resolutions[firstAttentionID]; got != delegateAttentionConsumed {
+		t.Errorf("root attention disposition = %q, want %q", got, delegateAttentionConsumed)
+	}
+	if sess.hasPendingRootDelegateAttention() {
+		t.Error("root delegate attention remains pending after the reply drain")
+	}
+
+	const (
+		secondAttentionID = "delegate:dlg_after_reply/delivery/1"
+		secondContent     = `<delegate-notification delegate_id="dlg_after_reply">second review complete</delegate-notification>`
+	)
+	if appended, err := sess.appendDelegateNotificationDurably(secondAttentionID, secondContent); err != nil || !appended {
+		t.Fatalf("append later root attention = appended:%t err:%v", appended, err)
+	}
+	if err := sess.armDelegateAttention(secondAttentionID); err != nil {
+		t.Fatalf("arm later root attention: %v", err)
+	}
+	select {
+	case <-wakes:
+	default:
+		t.Error("later root attention emitted no fresh wake")
+	}
+}
+
 // TestAskUser_EntryGateRefusesContinuationWake covers spec §5.3's entry gate for
 // EntryContinuation: refused before any state transition, state unchanged
 // throughout, no model request made. (The goal engine's own arm-vs-kick
@@ -1045,7 +1154,7 @@ func TestAskUser_BoundaryDrainPreservesFollowUp(t *testing.T) {
 // always-empty-pending session by construction, not a state transition on the
 // awaiting session itself. The tests below cover Compact's new guard directly
 // and reproduce Clear's actual replace-not-reset mechanism at the session
-// level; real end-to-end proof that the daemon's /clear surface reaches this
+// level; real end-to-end proof that the daemon's thread/clear surface reaches this
 // path belongs to a later, serve-level task.
 
 // compactErrPending is the exact instructive error text spec §5.3 requires
@@ -1167,7 +1276,7 @@ func TestAskUser_CompactProceedsOnPlainAwaitingRestNoPendingAsk(t *testing.T) {
 // SessionStartKind flipped to Clear, constructed WHILE the old session is
 // still open (serve.go closes the old session only after the swap, so this
 // test preserves that ordering). The replacement is what the user talks to
-// after /clear; it is idle with an empty pending set regardless of what the
+// after thread/clear; it is idle with an empty pending set regardless of what the
 // old session was doing, and the old session itself is untouched (a swap, not
 // a mutation) until its own Close.
 func TestAskUser_ClearReplacesAwaitingSessionWithFreshIdleOne(t *testing.T) {
@@ -1269,7 +1378,7 @@ func TestAskUser_RestoreRederivesAwaiting(t *testing.T) {
 			func(req llm.Request) llm.Response { return toolCallResponse(ask) },
 		},
 	})
-	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{StateDir: dir})
+	sess, err := NewSession(c, withTestSessionNamer(c, NewOpenAIProfile("gpt-5.2")), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{StateDir: dir})
 	if err != nil {
 		t.Fatalf("NewSession: %v", err)
 	}
@@ -1318,7 +1427,7 @@ func TestAskUser_RestoreRederivesAwaitingAcrossTrailingSteering(t *testing.T) {
 			func(req llm.Request) llm.Response { return toolCallResponse(ask) },
 		},
 	})
-	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{StateDir: dir})
+	sess, err := NewSession(c, withTestSessionNamer(c, NewOpenAIProfile("gpt-5.2")), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{StateDir: dir})
 	if err != nil {
 		t.Fatalf("NewSession: %v", err)
 	}
@@ -1377,7 +1486,7 @@ func TestAskUser_RestoreRederivesIdleAfterAnsweredAsk(t *testing.T) {
 			func(req llm.Request) llm.Response { return finalResponse("thanks, using Postgres") },
 		},
 	})
-	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{StateDir: dir})
+	sess, err := NewSession(c, withTestSessionNamer(c, NewOpenAIProfile("gpt-5.2")), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{StateDir: dir})
 	if err != nil {
 		t.Fatalf("NewSession: %v", err)
 	}
@@ -1544,7 +1653,7 @@ func TestAskUser_RestoreRebuildsPendingHoldsEntryGate(t *testing.T) {
 			func(req llm.Request) llm.Response { return toolCallResponse(ask) },
 		},
 	})
-	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{StateDir: dir})
+	sess, err := NewSession(c, withTestSessionNamer(c, NewOpenAIProfile("gpt-5.2")), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{StateDir: dir})
 	if err != nil {
 		t.Fatalf("NewSession: %v", err)
 	}
@@ -1562,7 +1671,7 @@ func TestAskUser_RestoreRebuildsPendingHoldsEntryGate(t *testing.T) {
 	restoreAdapter := &fakeAdapter{name: "openai"}
 	restoreClient := llm.NewClient()
 	restoreClient.Register(restoreAdapter)
-	restored, err := RestoreSessionFromMeta(restoreClient, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(dir), meta, dir)
+	restored, err := RestoreSessionFromMeta(restoreClient, withTestSessionNamer(restoreClient, NewOpenAIProfile("gpt-5.2")), execenv.NewLocalExecutionEnvironment(dir), meta, dir)
 	if err != nil {
 		t.Fatalf("RestoreSessionFromMeta: %v", err)
 	}
@@ -1610,7 +1719,7 @@ func TestAskUser_RestoreRebuildsPendingArmsSetGoalWithoutKick(t *testing.T) {
 			func(req llm.Request) llm.Response { return toolCallResponse(ask) },
 		},
 	})
-	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{StateDir: dir})
+	sess, err := NewSession(c, withTestSessionNamer(c, NewOpenAIProfile("gpt-5.2")), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{StateDir: dir})
 	if err != nil {
 		t.Fatalf("NewSession: %v", err)
 	}
@@ -1672,7 +1781,7 @@ func TestAskUser_RestoreRebuildsPendingRefusesCompact(t *testing.T) {
 			func(req llm.Request) llm.Response { return toolCallResponse(ask) },
 		},
 	})
-	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{StateDir: dir})
+	sess, err := NewSession(c, withTestSessionNamer(c, NewOpenAIProfile("gpt-5.2")), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{StateDir: dir})
 	if err != nil {
 		t.Fatalf("NewSession: %v", err)
 	}
@@ -1733,7 +1842,7 @@ func TestAskUser_RestoreRebuildsPendingCountAndOrder(t *testing.T) {
 			func(req llm.Request) llm.Response { return toolCallResponse(ask1, ask2) },
 		},
 	})
-	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{StateDir: dir})
+	sess, err := NewSession(c, withTestSessionNamer(c, NewOpenAIProfile("gpt-5.2")), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{StateDir: dir})
 	if err != nil {
 		t.Fatalf("NewSession: %v", err)
 	}
@@ -1789,7 +1898,7 @@ func TestAskUser_RestoreGenericAwaitingKeepsPendingEmptyAndGoalKicks(t *testing.
 			func(req llm.Request) llm.Response { return finalResponse("here is my answer") },
 		},
 	})
-	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{StateDir: dir})
+	sess, err := NewSession(c, withTestSessionNamer(c, NewOpenAIProfile("gpt-5.2")), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{StateDir: dir})
 	if err != nil {
 		t.Fatalf("NewSession: %v", err)
 	}
@@ -1854,7 +1963,7 @@ func TestAskUser_RestoreRebuildsPendingThenReplyClears(t *testing.T) {
 			func(req llm.Request) llm.Response { return toolCallResponse(ask) },
 		},
 	})
-	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{StateDir: dir})
+	sess, err := NewSession(c, withTestSessionNamer(c, NewOpenAIProfile("gpt-5.2")), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{StateDir: dir})
 	if err != nil {
 		t.Fatalf("NewSession: %v", err)
 	}
@@ -1876,7 +1985,7 @@ func TestAskUser_RestoreRebuildsPendingThenReplyClears(t *testing.T) {
 			func(req llm.Request) llm.Response { return finalResponse("thanks, using Postgres") },
 		},
 	})
-	restored, err := RestoreSessionFromMeta(restoreClient, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(dir), meta, dir)
+	restored, err := RestoreSessionFromMeta(restoreClient, withTestSessionNamer(restoreClient, NewOpenAIProfile("gpt-5.2")), execenv.NewLocalExecutionEnvironment(dir), meta, dir)
 	if err != nil {
 		t.Fatalf("RestoreSessionFromMeta: %v", err)
 	}
@@ -1896,7 +2005,7 @@ func TestAskUser_RestoreRebuildsPendingThenReplyClears(t *testing.T) {
 
 // --- Task 10: the ask-user prompt-section gate (spec §4.5, §7) ---
 //
-// These tests render the system prompt directly (session_behavior_tag_test.go's
+// These tests render the system prompt directly (session_surface_behavior_test.go's
 // sess.renderSystemPrompt(sess.env) pattern) rather than driving a full
 // ProcessInput round trip: the gate under test is template composition, not
 // turn machinery. The three cases mirror the invisibility semantics already
@@ -2031,6 +2140,19 @@ func TestAskUser_ShorthandDecodesToBatchEquivalent(t *testing.T) {
 	lastPending := sess.askPending[len(sess.askPending)-1]
 	if lastPending.Question != "Which datastore for the ingest path?" {
 		t.Fatalf("pending question = %q", lastPending.Question)
+	}
+}
+
+func TestAskUser_ShorthandSurvivesSessionPrevalidation(t *testing.T) {
+	t.Parallel()
+	sess := newAskTestSession(t, SessionConfig{})
+
+	res := sess.execTool(context.Background(), askUserCall("c1", askUserArgsShorthand()), "")
+	if res.IsError {
+		t.Fatalf("session ask_user shorthand errored: %s", res.FullOutput)
+	}
+	if got := sess.askPendingCount(); got != 1 {
+		t.Fatalf("askPendingCount = %d, want 1", got)
 	}
 }
 

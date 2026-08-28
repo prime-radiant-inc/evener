@@ -7,6 +7,7 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+	"time"
 
 	"primeradiant.com/evener/agent/internal/agenttest"
 	"primeradiant.com/evener/agent/internal/delegatestore"
@@ -631,6 +632,19 @@ func TestDelegateResourceStop_TimeoutRaceCannotLeakStopMembership(t *testing.T) 
 		result <- runShell(context.Background(), jm, executor, shellArgs{Command: "timeout races stop", BlockTimeoutMS: 1})
 	}()
 	clock.BlockUntil(1)
+	// Capture the exact completion before cancellation. Finalization removes the
+	// job from jm.running before it resolves the stable-delegate receipt and
+	// closes done, so a lookup after the race can mistake "removed" for "done".
+	jm.mu.Lock()
+	runningJobs := len(jm.running)
+	var shellDone <-chan struct{}
+	for _, run := range jm.running {
+		shellDone = run.done
+	}
+	jm.mu.Unlock()
+	if runningJobs != 1 || shellDone == nil {
+		t.Fatalf("running shells before stop = %d, want one completion signal", runningJobs)
+	}
 	stopResult, cancelPlan, _, err := c.StopSubtree(rootDelegateActor("root-session"), lease.delegateID)
 	if err != nil {
 		t.Fatalf("StopSubtree: %v", err)
@@ -647,8 +661,12 @@ func TestDelegateResourceStop_TimeoutRaceCannotLeakStopMembership(t *testing.T) 
 	if got.settle != nil {
 		got.JobID = got.settle(true)
 	}
-	if got.JobID != "" {
-		waitForShellDone(t, jm, got.JobID)
+	select {
+	case <-shellDone:
+	// TRIPWIRE: the signalled in-process shell completes immediately; this only
+	// bounds a genuine finalization hang under load.
+	case <-time.After(30 * time.Second):
+		t.Fatal("timeout-race shell did not finish")
 	}
 	if _, err := c.FinishGeneration(lease, delegateFinish{}); err != nil {
 		t.Fatalf("FinishGeneration after shell race: %v", err)

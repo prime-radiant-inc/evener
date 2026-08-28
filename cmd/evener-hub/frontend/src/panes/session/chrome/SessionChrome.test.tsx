@@ -1,20 +1,30 @@
 import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { act, cleanup, render, screen, waitFor, within } from "@testing-library/react";
+import { act, cleanup, render as renderUI, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { afterEach, beforeEach, expect, test } from "vitest";
+import type { ComponentProps, ReactElement } from "react";
+import { afterEach, beforeEach, expect, test, vi } from "vitest";
 import { FakeClient } from "../../../protocol/testing/fakeClient";
-import type { Thread, ThreadCapabilities, ThreadReadResponse } from "../../../protocol/types.gen";
+import type {
+  NavigationSessionLocation,
+  Thread,
+  ThreadCapabilities,
+  ThreadReadResponse,
+} from "../../../protocol/types.gen";
+import { ClientProvider } from "../../../shell/clientContext";
 import { isPaneOpen, resetWorkspaceStoreForTests, workspaceStore } from "../../../shell/workspace";
 import { activitySummaryStore, resetActivitySummaryStoreForTests } from "../../../stores/activitySummary";
 import { connectionStore } from "../../../stores/connection";
+import { navigationStore, resetNavigationStoreForTests } from "../../../stores/navigation/store";
+import { keyID } from "../../../stores/navigation/types";
 import { resetThreadsStoreForTests, threadsStore } from "../../../stores/threads";
-import { resetTreeStoreForTests, type TreeResponse, treeStore } from "../../../stores/tree";
+import { resetTranscriptDisplayStoreForTests, transcriptDisplayStore } from "../../../stores/transcriptDisplay";
+import { makeTranscriptDisplayConfig } from "../../../transcriptDisplay/config";
+import { installMobileViewport } from "../testing/mobileViewport";
 import "../../sessionPanels";
 import { ActivityPanelBody } from "./ActivityPanel";
-import { resetGoalOverridesForTests } from "./GoalControl";
-import { SessionChrome } from "./SessionChrome";
+import { SessionChrome as SessionChromeView } from "./SessionChrome";
 
 const here = dirname(fileURLToPath(import.meta.url));
 
@@ -27,6 +37,7 @@ const CAPABILITIES: ThreadCapabilities = {
   forkFromTurn: true,
   shutdown: true,
   changeModel: true,
+  changeVisionModel: true,
   queue: true,
   goal: true,
   rename: true,
@@ -69,51 +80,83 @@ function emptyActivityTree() {
   };
 }
 
-// A minimal normalized TreeResponse carrying exactly one top-level local
-// session node for `ref` (the shape normalizeTree produces - see
-// stores/tree.ts's TreeResponse): enough for findSessionNode to resolve the
-// node and for SessionMenu's Pin/Archive/Delete gating to see a top-level,
-// local-host session.
-function treeWithSession(ref: string): TreeResponse {
+function locationWithSession(ref: string): NavigationSessionLocation {
   return {
-    generated_at: "2026-08-06T00:00:00Z",
-    sources: [],
-    live: [
-      {
-        row_id: `row_${ref}`,
-        ref,
-        host_id: "local",
-        session_id: `sess_${ref}`,
-        title: `Session ${ref}`,
-        project: "",
-        state: "idle",
-        kind: "session",
-        live: true,
-        children: [],
-      },
-    ],
-    needs_you: [],
-    pin_sections: [],
-    projects: [],
-    archived_projects: [],
-    test_runs: [],
-    attentionSummary: { needsYou: 0, error: 0, working: 0 },
+    generation_id: "generation_test",
+    revision: 1,
+    ref,
+    top_level_ref: ref,
+    top_level: true,
+    tier: "current",
+    session: {
+      ref,
+      host_id: "local",
+      session_id: `sess_${ref}`,
+      title: `Session ${ref}`,
+      project: "",
+      state: "idle",
+      kind: "session",
+      live: true,
+      children: [],
+    },
   };
+}
+function setLocation(ref: string): void {
+  const key = { kind: "location", ref } as const;
+  const data = locationWithSession(ref);
+  navigationStore.setState({
+    mode: "v1",
+    clientGenerationID: "generation_test",
+    resources: new Map([
+      [
+        keyID(key),
+        {
+          key,
+          data,
+          loadedRevision: 1,
+          targetRevision: null,
+          forceToken: 0,
+          etag: "etag",
+          loading: false,
+          stale: false,
+          error: null,
+          generationID: "generation_test",
+        },
+      ],
+    ]),
+  });
+}
+
+let chromeClient = new FakeClient("ready");
+
+function SessionChrome(props: ComponentProps<typeof SessionChromeView>) {
+  return (
+    <ClientProvider client={chromeClient}>
+      <SessionChromeView {...props} />
+    </ClientProvider>
+  );
 }
 
 function connectFakeClient(): FakeClient {
   const fake = new FakeClient("ready");
+  chromeClient = fake;
   connectionStore.getState().connect(fake);
   return fake;
 }
 
+function render(ui: ReactElement) {
+  const client = connectionStore.getState().client ?? new FakeClient("ready");
+  return renderUI(ui, { wrapper: ({ children }) => <ClientProvider client={client}>{children}</ClientProvider> });
+}
+
 beforeEach(() => {
+  chromeClient = new FakeClient("ready");
   connectionStore.setState({ state: "idle", serverInfo: undefined, client: null });
   resetThreadsStoreForTests();
   resetWorkspaceStoreForTests();
   resetActivitySummaryStoreForTests();
-  resetGoalOverridesForTests();
-  resetTreeStoreForTests();
+  resetNavigationStoreForTests();
+  resetTranscriptDisplayStoreForTests();
 });
 
 afterEach(() => {
@@ -128,20 +171,8 @@ afterEach(() => {
   // test. Under isolate:false that is what a later file's own
   // connectionStore.connect() re-triggers via rewireClient.
   resetThreadsStoreForTests();
+  resetTranscriptDisplayStoreForTests();
 });
-
-function installMobileViewport(): () => void {
-  const original = window.matchMedia;
-  window.matchMedia = (() => ({
-    matches: true,
-    media: "(max-width: 899px)",
-    addEventListener() {},
-    removeEventListener() {},
-  })) as unknown as typeof window.matchMedia;
-  return () => {
-    window.matchMedia = original;
-  };
-}
 
 // Wave 5 T1 carved this slot as an empty placeholder ("renders nothing (T1
 // placeholder - T5 fills this in)"); this file supersedes that pin now that
@@ -177,7 +208,7 @@ test("composes the status row, the session menu, and the goal control once the r
   render(<SessionChrome ref="ref_a" />);
 
   // Status row: model chip.
-  expect(screen.getByText("anthropic/claude-sonnet-4-5")).toBeTruthy();
+  expect(screen.getByTestId("model-switch-value").textContent).toBe("anthropic/claude-sonnet-4-5");
   // Session menu trigger.
   expect(screen.getByRole("button", { name: /session actions/i })).toBeTruthy();
   // Goal control: the goal chip, once a goal is set. Two triggers share this
@@ -215,7 +246,7 @@ test("composer placement renders one ordered inline status and actions cluster w
   const identity = within(cluster).getByTestId("status-row-identity");
   const context = within(cluster).getByTestId("status-row-context");
   const actions = within(cluster).getByRole("button", { name: "Session actions" });
-  expect(within(identity).getByRole("button", { name: /change model/i })).toBeTruthy();
+  expect(within(identity).getByTestId("model-switch-trigger")).toBeTruthy();
   expect(within(identity).getByRole("combobox", { name: "Reasoning effort" })).toBeTruthy();
   expect(statusRow.contains(identity)).toBe(true);
   expect(statusRow.contains(context)).toBe(true);
@@ -267,7 +298,125 @@ test("status row has no inline Details/Tasks/Activity buttons; they live in the 
   expect(screen.getByRole("menuitem", { name: /Activity/ })).toBeTruthy();
 });
 
-test("menu Tasks item toggles the sessionTasks workspace pane on desktop", async () => {
+test("SessionChrome shows task outcome aggregates in its actions menu", async () => {
+  const user = userEvent.setup();
+  const fake = connectFakeClient();
+  fake.on("thread/read", () =>
+    readResponse("ref_outcomes", {
+      evener: {
+        ref: "ref_outcomes",
+        capabilities: CAPABILITIES,
+        queue: { revision: 0 },
+        tasks: { total: 7, done: 1, cancelled: 5, remaining: 1 },
+      },
+    }),
+  );
+  await threadsStore.getState().ensureThread("ref_outcomes");
+
+  render(<SessionChrome ref="ref_outcomes" />);
+  await user.click(screen.getByRole("button", { name: /session actions/i }));
+  expect(screen.getByRole("menuitem", { name: "Tasks 1 done, 5 cancelled, 1 remaining (7 total)" })).toBeTruthy();
+});
+
+test("SessionChrome infers a missing zero outcome in its task label", async () => {
+  const user = userEvent.setup();
+  const fake = connectFakeClient();
+  fake.on("thread/read", () =>
+    readResponse("ref_remaining", {
+      evener: {
+        ref: "ref_remaining",
+        capabilities: CAPABILITIES,
+        queue: { revision: 0 },
+        tasks: { total: 7, done: 1, remaining: 5 },
+      },
+    }),
+  );
+  await threadsStore.getState().ensureThread("ref_remaining");
+
+  render(<SessionChrome ref="ref_remaining" />);
+  await user.click(screen.getByRole("button", { name: /session actions/i }));
+  expect(screen.getByRole("menuitem", { name: "Tasks 1 done, 0 cancelled, 5 remaining (7 total)" })).toBeTruthy();
+});
+
+test("desktop Session actions opens the full Verbosity Dialog, persists selection, and restores trigger focus", async () => {
+  const user = userEvent.setup();
+  const fake = connectFakeClient();
+  fake.on("thread/read", () => readResponse("ref_verbosity"));
+  await threadsStore.getState().ensureThread("ref_verbosity");
+
+  render(<SessionChrome ref="ref_verbosity" />);
+
+  const actions = screen.getByRole("button", { name: "Session actions" });
+  await user.click(actions);
+  await user.click(screen.getByRole("menuitem", { name: "Verbosity…" }));
+
+  const dialog = screen.getByRole("dialog", { name: "Verbosity" });
+  expect(dialog.getAttribute("aria-modal")).toBe("true");
+  expect(
+    within(dialog)
+      .getAllByRole("radio")
+      .map((radio) => radio.textContent),
+  ).toEqual(["Chat", "Intent", "Tools", "Activity", "Full", "Custom"]);
+  const activity = within(dialog).getByRole("radio", { name: "Activity" });
+  await user.click(activity);
+  expect(transcriptDisplayStore.getState().local.desktop).toEqual(
+    makeTranscriptDisplayConfig({ kind: "preset", level: "activity" }),
+  );
+  expect(document.activeElement).toBe(activity);
+
+  await user.keyboard("{Escape}");
+  expect(screen.queryByRole("dialog", { name: "Verbosity" })).toBeNull();
+  expect(document.activeElement).toBe(actions);
+
+  await user.click(actions);
+  await user.click(screen.getByRole("menuitem", { name: "Verbosity…" }));
+  await user.click(screen.getByRole("button", { name: "Close" }));
+  expect(screen.queryByRole("dialog", { name: "Verbosity" })).toBeNull();
+  expect(document.activeElement).toBe(actions);
+});
+
+test("desktop Verbosity keeps Edit hub defaults wired to Settings Transcript", async () => {
+  const user = userEvent.setup();
+  const fake = connectFakeClient();
+  fake.on("thread/read", () => readResponse("ref_verbosity_settings"));
+  await threadsStore.getState().ensureThread("ref_verbosity_settings");
+  window.history.replaceState({}, "", "/");
+
+  render(<SessionChrome ref="ref_verbosity_settings" />);
+  await user.click(screen.getByRole("button", { name: "Session actions" }));
+  await user.click(screen.getByRole("menuitem", { name: "Verbosity…" }));
+  await user.click(screen.getByRole("button", { name: "Edit hub defaults" }));
+
+  expect(window.location.pathname).toBe("/settings/transcript");
+});
+
+test("mobile Session actions opens the full Verbosity bottom Sheet", async () => {
+  const restoreViewport = installMobileViewport();
+  const user = userEvent.setup();
+  const fake = connectFakeClient();
+  fake.on("thread/read", () => readResponse("ref_verbosity_mobile"));
+  await threadsStore.getState().ensureThread("ref_verbosity_mobile");
+
+  try {
+    render(<SessionChrome ref="ref_verbosity_mobile" />);
+    const actions = screen.getByRole("button", { name: "Session actions" });
+    await user.click(actions);
+    await user.click(screen.getByRole("menuitem", { name: "Verbosity…" }));
+
+    const sheet = screen.getByRole("dialog", { name: "Verbosity" });
+    expect(sheet.className).toContain("bottom");
+    expect(within(sheet).getAllByRole("radio")).toHaveLength(6);
+    expect(within(sheet).getByText(/^Customize & advanced/)).toBeTruthy();
+
+    await user.keyboard("{Escape}");
+    expect(screen.queryByRole("dialog", { name: "Verbosity" })).toBeNull();
+    expect(document.activeElement).toBe(actions);
+  } finally {
+    restoreViewport();
+  }
+});
+
+test("menu Tasks item toggles the sessionTasks workspace pane open and closed on desktop", async () => {
   const user = userEvent.setup();
   const fake = connectFakeClient();
   fake.on("thread/read", () => readResponse("ref_a"));
@@ -278,6 +427,10 @@ test("menu Tasks item toggles the sessionTasks workspace pane on desktop", async
   await user.click(screen.getByRole("menuitem", { name: /Tasks/ }));
 
   expect(isPaneOpen(workspaceStore.getState(), "sessionTasks", { ref: "ref_a" })).toBe(true);
+
+  await user.click(screen.getByRole("button", { name: /session actions/i }));
+  await user.click(screen.getByRole("menuitem", { name: /Tasks/ }));
+  expect(isPaneOpen(workspaceStore.getState(), "sessionTasks", { ref: "ref_a" })).toBe(false);
 });
 
 test("menu offers Pin/Archive/Delete when the session is in the tree; omits them otherwise", async () => {
@@ -285,7 +438,7 @@ test("menu offers Pin/Archive/Delete when the session is in the tree; omits them
   const fake = connectFakeClient();
   fake.on("thread/read", () => readResponse("ref_a"));
   await threadsStore.getState().ensureThread("ref_a");
-  treeStore.setState({ tree: treeWithSession("ref_a") });
+  setLocation("ref_a");
 
   render(<SessionChrome ref="ref_a" />);
   await user.click(screen.getByRole("button", { name: /session actions/i }));
@@ -294,13 +447,86 @@ test("menu offers Pin/Archive/Delete when the session is in the tree; omits them
   expect(screen.getByRole("menuitem", { name: "Delete…" })).toBeTruthy();
   await user.keyboard("{Escape}");
 
-  // No tree node for the ref (tree empty/unloaded): the organization and
-  // delete items are absent - they are decisions about a rail row.
-  act(() => treeStore.setState({ tree: null }));
+  // A missing location keeps organization actions absent.
+  act(() => resetNavigationStoreForTests());
   await user.click(screen.getByRole("button", { name: /session actions/i }));
   expect(screen.queryByRole("menuitem", { name: "Pin this session…" })).toBeNull();
   expect(screen.queryByRole("menuitem", { name: "Archive" })).toBeNull();
   expect(screen.queryByRole("menuitem", { name: "Delete…" })).toBeNull();
+});
+
+test("session-menu pin assignment uses typed AppWire and converges its navigation receipt", async () => {
+  const user = userEvent.setup();
+  const fake = connectFakeClient();
+  fake.on("thread/read", () => readResponse("ref_pin"));
+  fake.on("evener/session-pin/assign", (params) => {
+    expect(params).toEqual({ sessionRef: "ref_pin", sectionId: "research" });
+    return {
+      ok: true,
+      changed: true,
+      assignment: {
+        sessionRef: "local:sess_ref_pin",
+        section: { id: "research", name: "Research", memberCount: 1 },
+      },
+      navigation: {
+        generation_id: "generation_test",
+        targets: [{ kind: "pin_section", section_id: "research", revision: 2 }],
+      },
+    };
+  });
+  await threadsStore.getState().ensureThread("ref_pin");
+  setLocation("ref_pin");
+  connectionStore.setState({ client: new FakeClient("ready") });
+  const pinKey = { kind: "pin_catalog", offset: 0, limit: 100 } as const;
+  const pinCatalog = {
+    key: pinKey,
+    data: {
+      generation_id: "generation_test",
+      revision: 1,
+      pin_sections: [{ id: "research", name: "Research", count: 0 }],
+      remaining: 0,
+    },
+    loadedRevision: 1,
+    targetRevision: null,
+    forceToken: 0,
+    etag: "etag-pins",
+    loading: false,
+    stale: false,
+    error: null,
+    generationID: "generation_test",
+  };
+  const convergenceOrder: string[] = [];
+  const trackPinSection = vi.fn((sectionID: string) => convergenceOrder.push(`track:${sectionID}`));
+  const applyNavigationMutation = vi.fn(async () => {
+    convergenceOrder.push("apply");
+  });
+  navigationStore.setState((state) => {
+    const resources = new Map(state.resources);
+    resources.set(keyID(pinKey), pinCatalog);
+    return {
+      resources,
+      loadPinCatalogPages: vi.fn().mockResolvedValue(undefined),
+      trackPinSection,
+      applyNavigationMutation,
+    };
+  });
+
+  render(<SessionChrome ref="ref_pin" />);
+  await user.click(screen.getByRole("button", { name: /session actions/i }));
+  await user.click(screen.getByRole("menuitem", { name: "Pin this session…" }));
+  await user.click(await screen.findByRole("button", { name: "Research" }));
+
+  await waitFor(() =>
+    expect(fake.calls).toContainEqual({
+      method: "evener/session-pin/assign",
+      params: { sessionRef: "ref_pin", sectionId: "research" },
+    }),
+  );
+  expect(applyNavigationMutation).toHaveBeenCalledWith({
+    generation_id: "generation_test",
+    targets: [{ kind: "pin_section", section_id: "research", revision: 2 }],
+  });
+  expect(convergenceOrder).toEqual(["track:research", "apply"]);
 });
 
 test("menu Shut down is gated on capabilities.shutdown", async () => {

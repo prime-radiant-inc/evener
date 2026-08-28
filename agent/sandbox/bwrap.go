@@ -83,7 +83,7 @@ func buildBwrapArgv(rp ResolvedPolicy, sessionTmp, cwd string) []string {
 	// tmpfs that vanishes at session end. --remount-ro is non-recursive: it
 	// only affects /tmp's own mount, leaving the sessionTmp bind (a separate
 	// mount on top) writable.
-	if rp.Mode == ModeReadOnly {
+	if rp.Mode == ModeReadOnly || rp.WriteBlocked {
 		add("--remount-ro", "/tmp")
 	}
 

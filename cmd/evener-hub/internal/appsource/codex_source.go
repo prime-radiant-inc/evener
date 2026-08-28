@@ -16,6 +16,7 @@ import (
 
 	"github.com/coder/websocket"
 	"primeradiant.com/evener/appwire"
+	"primeradiant.com/evener/envvars"
 )
 
 type CodexSourceConfig struct {
@@ -42,6 +43,21 @@ type appwireDialFunc func(context.Context, string, *http.Client, http.Header) (a
 
 func defaultAppwireDial(ctx context.Context, endpoint string, client *http.Client, header http.Header) (appwire.Transport, error) {
 	return appwire.DialWebSocketWithHeaders(ctx, endpoint, client, header)
+}
+
+// hubStderr is captured once because runClientKeepalive outlives the test
+// that started it (connect uses context.WithoutCancel), so reading the
+// mutable os.Stderr global from that goroutine races any test that swaps
+// and restores os.Stderr (issue #837).
+var hubStderr = os.Stderr
+
+// hubConnectionLogf is the appwire.Client connection-lifecycle sink (see
+// appwire.Client.SetLogf) for every source's dialed connections (codex,
+// local daemon). The hub is a plain daemon, never a TUI rendering over an
+// interactive terminal, so its own stderr — labelled like every other hub
+// diagnostic — is a safe destination, unlike the TUI's stderr (issue #783).
+func hubConnectionLogf(format string, args ...any) {
+	_, _ = fmt.Fprintf(hubStderr, "[hub] "+format+"\n", args...)
 }
 
 func NewCodexSource(cfg CodexSourceConfig, client *http.Client) *CodexSource {
@@ -330,6 +346,10 @@ func (s *CodexSource) SetThreadModel(context.Context, appwire.ThreadModelSetPara
 	return appwire.Unavailable("codex source does not support thread/model/set")
 }
 
+func (s *CodexSource) SetThreadVisionModel(context.Context, appwire.ThreadVisionModelSetParams) error {
+	return appwire.Unavailable("codex source does not support thread/vision-model/set")
+}
+
 func (s *CodexSource) SetThreadName(context.Context, appwire.ThreadNameSetParams) error {
 	return appwire.Unavailable("rename is not supported for codex threads")
 }
@@ -356,7 +376,7 @@ func (s *CodexSource) ListModels(ctx context.Context, params appwire.ModelListPa
 	}
 	resp := appwire.ModelListResponse{}
 	for _, model := range out.Data {
-		resp.Data = append(resp.Data, appwire.ModelDescriptor{Provider: s.sourceID, Model: firstNonEmpty(model.Model, model.ID)})
+		resp.Data = append(resp.Data, appwire.ModelDescriptor{Provider: s.sourceID, Model: envvars.FirstNonEmpty(model.Model, model.ID)})
 	}
 	return resp, nil
 }
@@ -694,6 +714,7 @@ func (s *CodexSource) connect(ctx context.Context) (*appwire.Client, func() erro
 		return nil, nil, codexSourceDialError(err)
 	}
 	client := appwire.NewClient(transport)
+	client.SetLogf(hubConnectionLogf)
 	client.Start(context.WithoutCancel(ctx))
 	var initialized appwire.InitializeResponse
 	if err := client.Request(ctx, appwire.MethodInitialize, struct {
@@ -757,7 +778,7 @@ func (s *CodexSource) mapThread(thread codexThread) appwire.Thread {
 	ref := appwire.Ref{SourceID: s.sourceID, ThreadID: thread.ID}.String()
 	out := appwire.Thread{
 		ID:            thread.ID,
-		SessionID:     firstNonEmpty(thread.SessionID, thread.ID),
+		SessionID:     envvars.FirstNonEmpty(thread.SessionID, thread.ID),
 		ForkedFromID:  thread.ForkedFromID,
 		Preview:       thread.Preview,
 		Ephemeral:     thread.Ephemeral,
@@ -842,7 +863,7 @@ func (s *CodexSource) mapNotification(threadID string, notification appwire.Noti
 			Delta    string `json:"delta"`
 		}
 		if json.Unmarshal(notification.Params, &params) == nil {
-			params.ThreadID = firstNonEmpty(params.ThreadID, threadID)
+			params.ThreadID = envvars.FirstNonEmpty(params.ThreadID, threadID)
 			// Still map[string]any, not appwire.ToolOutputDeltaParams (kcb5):
 			// params.TurnID comes straight off this relayed Codex app-server
 			// notification, not this codebase's own turn tracking, so unlike
@@ -861,14 +882,14 @@ func (s *CodexSource) mapNotification(threadID string, notification appwire.Noti
 	case appwire.NotifyAgentMessageDelta:
 		var params appwire.AgentMessageDeltaParams
 		if json.Unmarshal(notification.Params, &params) == nil {
-			params.ThreadID = firstNonEmpty(params.ThreadID, threadID)
+			params.ThreadID = envvars.FirstNonEmpty(params.ThreadID, threadID)
 			params.Ref = appwire.Ref{SourceID: s.sourceID, ThreadID: params.ThreadID}.String()
 			return notificationMessage(appwire.NotifyAgentMessageDelta, params)
 		}
 	case appwire.NotifyReasoningSummaryDelta:
 		var params appwire.ReasoningSummaryDeltaParams
 		if json.Unmarshal(notification.Params, &params) == nil {
-			params.ThreadID = firstNonEmpty(params.ThreadID, threadID)
+			params.ThreadID = envvars.FirstNonEmpty(params.ThreadID, threadID)
 			params.Ref = appwire.Ref{SourceID: s.sourceID, ThreadID: params.ThreadID}.String()
 			return notificationMessage(appwire.NotifyReasoningSummaryDelta, params)
 		}
@@ -878,7 +899,7 @@ func (s *CodexSource) mapNotification(threadID string, notification appwire.Noti
 			Status   codexThreadStatus `json:"status"`
 		}
 		if json.Unmarshal(notification.Params, &params) == nil {
-			params.ThreadID = firstNonEmpty(params.ThreadID, threadID)
+			params.ThreadID = envvars.FirstNonEmpty(params.ThreadID, threadID)
 			return notificationMessage(appwire.NotifyThreadStatusChanged, appwire.ThreadStatusChangedParams{
 				ThreadID: params.ThreadID,
 				Ref:      appwire.Ref{SourceID: s.sourceID, ThreadID: params.ThreadID}.String(),
@@ -892,7 +913,7 @@ func (s *CodexSource) mapNotification(threadID string, notification appwire.Noti
 			Item     json.RawMessage `json:"item"`
 		}
 		if json.Unmarshal(notification.Params, &params) == nil {
-			mappedThreadID := firstNonEmpty(params.ThreadID, threadID)
+			mappedThreadID := envvars.FirstNonEmpty(params.ThreadID, threadID)
 			return notificationMessage(notification.Method, appwire.ItemLifecycleParams{
 				ThreadID: mappedThreadID,
 				Ref:      appwire.Ref{SourceID: s.sourceID, ThreadID: mappedThreadID}.String(),
@@ -906,7 +927,7 @@ func (s *CodexSource) mapNotification(threadID string, notification appwire.Noti
 			Turn     codexTurn `json:"turn"`
 		}
 		if json.Unmarshal(notification.Params, &params) == nil {
-			mappedThreadID := firstNonEmpty(params.ThreadID, threadID)
+			mappedThreadID := envvars.FirstNonEmpty(params.ThreadID, threadID)
 			// Still map[string]any, not TurnCompletedParams - same declared-type-
 			// doesn't-match-the-wire reason as appwire_projection.go's own
 			// turn/completed sites (kcb5).
@@ -947,13 +968,4 @@ func emptyNil(value string) any {
 		return nil
 	}
 	return value
-}
-
-func firstNonEmpty(values ...string) string {
-	for _, value := range values {
-		if value != "" {
-			return value
-		}
-	}
-	return ""
 }

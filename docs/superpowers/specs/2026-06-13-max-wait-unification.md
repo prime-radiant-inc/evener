@@ -1,5 +1,7 @@
 # `max_wait_ms` — one wait knob, no booleans (design)
 
+
+> **Current contract / partial supersession (2026-08-26, Task31/PR480).** Any delegate `JobRecord`, public delegate `job_id`, delegate `job.notification`, or `job:` transcript claim in this historical design is not shipped and is superseded. Delegates use stable `dlg_...` resources with private run generations; lifecycle attention is `<delegate-notification>`; delegate conversation/result history uses session transcript refs. `job_...`, `job.notification`, and `job:` output remain shell-only. Non-delegate design material below remains applicable unless a newer evergreen contract says otherwise.
 **Status:** v3 — /par round folded (reviewer A: 10 findings incl. 1 blocker;
 reviewer B: 10 findings); v3 replaces v2's accepted-durability-loss with the
 complete-or-handle invariant (Jesse, 2026-06-13: a fast command that spews a

@@ -17,14 +17,20 @@ import { createRoot } from "react-dom/client";
 import { isElementVisible } from "./guardVisibility";
 import "../panes/session";
 import Session from "../panes/session/Session";
+import Settings from "../panes/settings/Settings";
 import "../panes/sessionPanels";
 import { hydrateThread } from "../protocol/reducer";
 import { FakeClient } from "../protocol/testing/fakeClient";
-import type { ThreadCapabilities, ThreadReadResponse } from "../protocol/types.gen";
+import type { NavigationSessionLocation, ThreadCapabilities, ThreadReadResponse } from "../protocol/types.gen";
+import { ClientProvider } from "../shell/clientContext";
 import { DockHost } from "../shell/DockHost";
 import { workspaceStore } from "../shell/workspace";
 import { connectionStore } from "../stores/connection";
-import { threadsStore } from "../stores/threads";
+import { navigationStore } from "../stores/navigation/store";
+import { keyID } from "../stores/navigation/types";
+import { putThreadModel } from "../stores/threads";
+import { initTranscriptDisplay, transcriptDisplayStore } from "../stores/transcriptDisplay";
+import { makeTranscriptDisplayConfig } from "../transcriptDisplay/config";
 import "../styles/tokens.css";
 import "../styles/global.css";
 
@@ -39,6 +45,7 @@ window.addEventListener("unhandledrejection", (event) => {
 });
 const width = Number(params.get("w") ?? "1400");
 const theme = params.get("theme");
+const settingsMode = params.get("settings") === "1";
 if (theme === "light" || theme === "dark") document.documentElement.dataset.theme = theme;
 
 const REF = "overflowharness";
@@ -52,6 +59,7 @@ const CAPABILITIES: ThreadCapabilities = {
   forkFromTurn: true,
   shutdown: true,
   changeModel: true,
+  changeVisionModel: true,
   queue: true,
   goal: true,
   rename: true,
@@ -101,7 +109,21 @@ const snapshot: ThreadReadResponse = {
       contextPressure: 0.673,
       workMillis: 754_000,
       activeTurnStartedAt: 1,
-      goal: { status: "awaiting stakeholder approval for compact session footer geometry", iterations: 12 },
+      tasks: {
+        total: 4,
+        done: 1,
+        current: {
+          id: 2,
+          description:
+            "Verify that the responsive focus sentence keeps a long live task readable without pushing the composer controls outside the session pane",
+        },
+      },
+      goal: {
+        objective:
+          "Keep the session focused on proving the current task and goal remain independently ellipsized across every supported composer width",
+        status: "awaiting stakeholder approval for compact session footer geometry",
+        iterations: 12,
+      },
       reasoningEffort: "high",
       reasoningEffortLevels: ["low", "medium", "high"],
       supportsReasoning: true,
@@ -131,11 +153,11 @@ const snapshot: ThreadReadResponse = {
             callId: "call_1",
             status: "completed",
             durationMs: 1500,
-            argumentsJson: JSON.stringify({ task: TASK, mode: "foreground_timeout", delegateId: "dlg_1" }),
+            argumentsJson: JSON.stringify({ prompt: TASK, mode: "foreground_timeout", delegateId: "dlg_1" }),
             output: JSON.stringify({ delegate_id: "dlg_1", status: "running", reason: CARD_LONG_TOKEN }),
           },
           {
-            // A purpose-bearing shell row: the two-line composition (italic
+            // An intent-bearing shell row: the two-line composition (italic
             // rationale over the demoted verb/target line) is the transcript's
             // most common tool-row shape, and this guard is the only thing
             // that measures IT for horizontal escape at every width.
@@ -205,9 +227,67 @@ const fake = new FakeClient("ready");
 fake.on("thread/read", () => snapshot);
 fake.on("evener/tasks/list", () => ({ data: [] }));
 connectionStore.getState().connect(fake);
-threadsStore.setState((s) => ({
-  threads: new Map(s.threads).set(REF, hydrateThread(snapshot, REF, 1000)),
-}));
+// putThreadModel keeps the routing index in step with the seeded map
+// entry (the store's membership path for threads).
+putThreadModel(REF, hydrateThread(snapshot, REF, 1000));
+const locationKey = { kind: "location", ref: REF } as const;
+const location: NavigationSessionLocation = {
+  generation_id: "overflow_generation",
+  revision: 1,
+  ref: REF,
+  top_level_ref: REF,
+  top_level: true,
+  tier: "current",
+  session: {
+    ref: REF,
+    host_id: "local",
+    session_id: snapshot.thread.sessionId,
+    title: snapshot.thread.name ?? REF,
+    project: "",
+    state: "active",
+    kind: "session",
+    live: true,
+    children: [],
+  },
+};
+navigationStore.setState({
+  mode: "v1",
+  clientGenerationID: location.generation_id,
+  resources: new Map([
+    [
+      keyID(locationKey),
+      {
+        key: locationKey,
+        data: location,
+        loadedRevision: location.revision,
+        targetRevision: null,
+        forceToken: 0,
+        etag: "overflow-location",
+        loading: false,
+        stale: false,
+        error: null,
+        generationID: location.generation_id,
+      },
+    ],
+  ]),
+});
+initTranscriptDisplay();
+// The browser guard must not inherit a developer's local transcript settings.
+// Tools plus both diagnostic families keeps the real system-prompt and raw
+// notification disclosure fixtures mounted in both layout classes. Tools
+// (not activity) because activity now has expandByDefault=true, which would
+// auto-open the notification card and the harness's click-to-expand step
+// would then close it.
+const guardTranscriptConfig = makeTranscriptDisplayConfig(
+  { kind: "preset", level: "tools" },
+  {
+    systemEvents: true,
+    promptEvents: true,
+  },
+);
+transcriptDisplayStore.setState({
+  local: { desktop: guardTranscriptConfig, mobile: guardTranscriptConfig },
+});
 
 const rootEl = document.getElementById("root");
 if (!rootEl) throw new Error("overflowharness.html is missing #root");
@@ -215,18 +295,30 @@ if (!rootEl) throw new Error("overflowharness.html is missing #root");
 document.body.style.margin = "0";
 document.body.style.background = "var(--surface-0)";
 
-if (params.get("panels") === "1") {
+if (settingsMode) {
+  createRoot(rootEl).render(
+    <ClientProvider client={fake}>
+      <div id="oh-pane" style={{ width, height: 900 }}>
+        <Settings params={{ section: "transcript" }} paneId="oh-settings" focused />
+      </div>
+    </ClientProvider>,
+  );
+} else if (params.get("panels") === "1") {
   workspaceStore.getState().openPane("session", { ref: REF });
   createRoot(rootEl).render(
-    <div id="oh-pane" style={{ width, height: 900, padding: 8 }}>
-      <DockHost />
-    </div>,
+    <ClientProvider client={fake}>
+      <div id="oh-pane" style={{ width, height: 900 }}>
+        <DockHost />
+      </div>
+    </ClientProvider>,
   );
 } else {
   createRoot(rootEl).render(
-    <div id="oh-pane" style={{ width, height: 900, padding: 8 }}>
-      <Session params={{ ref: REF }} paneId="oh" focused />
-    </div>,
+    <ClientProvider client={fake}>
+      <div id="oh-pane" style={{ width, height: 900 }}>
+        <Session params={{ ref: REF }} paneId="oh" focused />
+      </div>
+    </ClientProvider>,
   );
 }
 
@@ -266,6 +358,620 @@ interface DisclosureTarget {
   kind: string;
   details: HTMLDetailsElement;
   originalOpen: boolean;
+}
+
+interface DetailGeometry {
+  found: boolean;
+  mobile: boolean;
+  triggerReachable: boolean;
+  triggerHitTestable: boolean;
+  trigger: { left: number; right: number; top: number; bottom: number; width: number; height: number } | null;
+  open: boolean;
+  overlayContained: boolean;
+  panel: { left: number; right: number; top: number; bottom: number; width: number; height: number } | null;
+  horizontalOverflowCount: number;
+  targets: Array<{ kind: string; label: string; height: number }>;
+  fieldsetsFound: number;
+  overflowElements: string[];
+  fieldsetStacked: boolean;
+  fieldsetsNonOverlapping: boolean;
+  rootRemPx: number;
+  editorContainerWidth: number;
+  fieldsetColumns: number;
+  sheetBottomAnchored: boolean;
+  dialogCentered: boolean;
+  overlayScroll: {
+    connected: boolean;
+    contained: boolean;
+    scrollable: boolean;
+    beforeTop: number;
+    afterTop: number;
+    scrollHeight: number;
+    clientHeight: number;
+  };
+  effectiveTargets: Array<{ kind: string; label: string; height: number }>;
+}
+
+interface SettingsGeometry {
+  mode: "settings";
+  cardsFound: number;
+  cardsStacked: boolean;
+  cardOverflowCount: number;
+  previewOverflowCount: number;
+  previewInnerScrollCount: number;
+  previewsFound: number;
+  editors: EditorMeasurement[];
+  canvases: PreviewCanvasMeasurement[];
+  fieldsets: Array<{ left: number; right: number; top: number; bottom: number }>;
+  trigger: null;
+  scrollContainers: Array<{
+    testId: string;
+    scrollWidth: number;
+    clientWidth: number;
+    scrollHeight: number;
+    clientHeight: number;
+  }>;
+}
+
+interface EditorMeasurement {
+  surface: "live" | "settings";
+  layout: "desktop" | "mobile";
+  ownerTestId: string;
+  track: {
+    left: number;
+    right: number;
+    width: number;
+    scrollWidth: number;
+    clientWidth: number;
+  };
+  segments: Array<{
+    label: string;
+    left: number;
+    right: number;
+    width: number;
+    height: number;
+    top: number;
+    bottom: number;
+    localLeft: number;
+    localRight: number;
+    checked: boolean;
+  }>;
+}
+
+interface PreviewCanvasMeasurement {
+  layout: "desktop" | "mobile";
+  testId: string;
+  width: number;
+  availableWidth: number;
+  scrollWidth: number;
+  clientWidth: number;
+  scrollHeight: number;
+  clientHeight: number;
+}
+
+function geometryOf(element: Element) {
+  const box = element.getBoundingClientRect();
+  return {
+    left: box.left,
+    right: box.right,
+    top: box.top,
+    bottom: box.bottom,
+    width: box.width,
+    height: box.height,
+  };
+}
+
+async function waitForStablePanel(panel: HTMLElement): Promise<void> {
+  let previous = "";
+  let stableFrames = 0;
+  for (let frame = 0; frame < 120; frame += 1) {
+    await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
+    const box = geometryOf(panel);
+    const current = [box.left, box.right, box.top, box.bottom, box.width, box.height]
+      .map((value) => value.toFixed(3))
+      .join(",");
+    const finiteAnimations = document
+      .getAnimations()
+      .filter((animation) => animation.effect?.getTiming().iterations !== Number.POSITIVE_INFINITY);
+    if (current === previous && finiteAnimations.length === 0) {
+      stableFrames += 1;
+      if (stableFrames >= 2) return;
+    } else {
+      stableFrames = 0;
+    }
+    previous = current;
+  }
+  throw new Error("Detail panel geometry did not stabilize after Advanced opened");
+}
+
+function isScrollableElement(element: HTMLElement): boolean {
+  if (element.clientWidth <= 1) return false;
+  const style = getComputedStyle(element);
+  return (
+    ((style.overflowX === "auto" || style.overflowX === "scroll") && element.scrollWidth > element.clientWidth + 1) ||
+    ((style.overflowY === "auto" || style.overflowY === "scroll") && element.scrollHeight > element.clientHeight + 1)
+  );
+}
+
+function scrollOverflowElements(root: Element): HTMLElement[] {
+  return [root, ...Array.from(root.querySelectorAll<HTMLElement>("*"))].filter(
+    (element): element is HTMLElement => element instanceof HTMLElement && isScrollableElement(element),
+  );
+}
+
+function scrollOverflowCount(root: Element): number {
+  return scrollOverflowElements(root).length;
+}
+
+function effectiveTargetElement(element: HTMLElement): HTMLElement {
+  if (element.getAttribute("role") === "switch") {
+    return element.parentElement ?? element;
+  }
+  if (element.tagName === "SELECT") {
+    return element.parentElement?.parentElement ?? element;
+  }
+  return element;
+}
+
+function horizontalOverflowElements(root: Element): HTMLElement[] {
+  return [root, ...Array.from(root.querySelectorAll<HTMLElement>("*"))].filter(
+    (element): element is HTMLElement =>
+      element instanceof HTMLElement &&
+      element.clientWidth > 1 &&
+      (getComputedStyle(element).overflowX === "auto" || getComputedStyle(element).overflowX === "scroll") &&
+      element.scrollWidth > element.clientWidth + 1,
+  );
+}
+
+function actualScrollContainers(root: Element): HTMLElement[] {
+  return [root, ...Array.from(root.querySelectorAll<HTMLElement>("*"))].filter((element): element is HTMLElement => {
+    if (!(element instanceof HTMLElement) || element.clientWidth <= 1) return false;
+    const style = getComputedStyle(element);
+    return [style.overflowX, style.overflowY].some((overflow) => overflow === "auto" || overflow === "scroll");
+  });
+}
+
+function editorOwner(editor: HTMLElement): {
+  surface: "live" | "settings";
+  layout: "desktop" | "mobile";
+  ownerTestId: string;
+} {
+  const card = editor.closest<HTMLElement>('[data-testid^="transcript-display-card-"]');
+  if (card) {
+    const ownerTestId = card.dataset.testid ?? "";
+    return {
+      surface: "settings",
+      layout: ownerTestId.endsWith("-mobile") ? "mobile" : "desktop",
+      ownerTestId,
+    };
+  }
+  const owner = editor.closest<HTMLElement>('[data-testid="transcript-detail-control"]');
+  return {
+    surface: "live",
+    layout: window.matchMedia("(max-width: 899px)").matches ? "mobile" : "desktop",
+    ownerTestId: owner?.dataset.testid ?? "",
+  };
+}
+
+function measureEditor(editor: HTMLElement): EditorMeasurement {
+  const owner = editorOwner(editor);
+  const track = editor.querySelector<HTMLElement>('[role="radiogroup"]');
+  if (!track) {
+    return {
+      ...owner,
+      track: { left: 0, right: 0, width: 0, scrollWidth: 0, clientWidth: 0 },
+      segments: [],
+    };
+  }
+  const trackBox = geometryOf(track);
+  const segments = Array.from(track.querySelectorAll<HTMLButtonElement>('[role="radio"]')).map((segment) => {
+    const box = geometryOf(segment);
+    return {
+      label:
+        segment.querySelector<HTMLElement>("span")?.textContent?.trim() ?? segment.getAttribute("aria-label") ?? "",
+      left: box.left,
+      right: box.right,
+      width: box.width,
+      height: box.height,
+      top: box.top,
+      bottom: box.bottom,
+      localLeft: box.left - trackBox.left,
+      localRight: box.right - trackBox.left,
+      checked: segment.getAttribute("aria-checked") === "true",
+    };
+  });
+  return {
+    ...owner,
+    track: {
+      left: trackBox.left,
+      right: trackBox.right,
+      width: trackBox.width,
+      scrollWidth: track.scrollWidth,
+      clientWidth: track.clientWidth,
+    },
+    segments,
+  };
+}
+
+function measureEditors(root: ParentNode): EditorMeasurement[] {
+  return Array.from(root.querySelectorAll<HTMLElement>('section[aria-label="Transcript detail editor"]')).map(
+    measureEditor,
+  );
+}
+
+function measureCanvas(canvas: HTMLElement): PreviewCanvasMeasurement {
+  const box = geometryOf(canvas);
+  const testId = canvas.dataset.testid ?? "";
+  const layout = testId.endsWith("-mobile") ? "mobile" : "desktop";
+  const card = canvas.closest<HTMLElement>('[data-testid^="transcript-display-card-"]');
+  const cardId = card?.dataset.testid ?? "";
+  const section = card?.querySelector<HTMLElement>(`section[aria-labelledby="${cardId}-example-heading"]`);
+  const sectionStyle = section ? getComputedStyle(section) : null;
+  const availableWidth = section
+    ? section.clientWidth -
+      (Number.parseFloat(sectionStyle?.paddingLeft ?? "0") || 0) -
+      (Number.parseFloat(sectionStyle?.paddingRight ?? "0") || 0)
+    : 0;
+  return {
+    layout,
+    testId,
+    width: box.width,
+    availableWidth,
+    scrollWidth: canvas.scrollWidth,
+    clientWidth: canvas.clientWidth,
+    scrollHeight: canvas.scrollHeight,
+    clientHeight: canvas.clientHeight,
+  };
+}
+
+function measureSettings(): SettingsGeometry {
+  const content = document.querySelector<HTMLElement>('[data-testid="settings-content"]');
+  if (!content) {
+    return {
+      mode: "settings",
+      cardsFound: 0,
+      cardsStacked: false,
+      cardOverflowCount: 0,
+      previewOverflowCount: 0,
+      previewInnerScrollCount: 0,
+      previewsFound: 0,
+      editors: [],
+      canvases: [],
+      fieldsets: [],
+      trigger: null,
+      scrollContainers: [],
+    };
+  }
+  const cards = Array.from(content.querySelectorAll<HTMLElement>('[data-testid^="transcript-display-card-"]'));
+  const previews = cards.flatMap((card) =>
+    Array.from(
+      card.querySelectorAll<HTMLElement>(
+        '[data-testid="transcript-display-preview-desktop"], [data-testid="transcript-display-preview-mobile"]',
+      ),
+    ),
+  );
+  const canvases = cards.flatMap((card) =>
+    Array.from(
+      card.querySelectorAll<HTMLElement>(
+        '[data-testid="transcript-display-preview-canvas-desktop"], [data-testid="transcript-display-preview-canvas-mobile"]',
+      ),
+    ),
+  );
+  const editors = cards.flatMap((card) => measureEditors(card));
+  const scrollRoots = [content, ...cards];
+  const scrollContainers = Array.from(new Set(scrollRoots.flatMap((root) => actualScrollContainers(root))));
+  const cardBoxes = cards.map(geometryOf);
+  const firstCard = cardBoxes[0];
+  const secondCard = cardBoxes[1];
+  const cardsStacked =
+    cards.length === 2 &&
+    firstCard !== undefined &&
+    secondCard !== undefined &&
+    secondCard.top >= firstCard.bottom - 1 &&
+    cards.every((card) => card.getBoundingClientRect().width > 0);
+  return {
+    mode: "settings",
+    cardsFound: cards.length,
+    cardsStacked,
+    cardOverflowCount: cards.reduce((count, card) => count + scrollOverflowCount(card), 0),
+    previewOverflowCount: previews.reduce((count, preview) => count + scrollOverflowCount(preview), 0),
+    previewsFound: previews.length,
+    editors,
+    canvases: canvases.map(measureCanvas),
+    fieldsets: [],
+    trigger: null,
+    scrollContainers: scrollContainers.map((element) => ({
+      testId: element.dataset.testid ?? (element.className || element.tagName.toLowerCase()),
+      scrollWidth: element.scrollWidth,
+      clientWidth: element.clientWidth,
+      scrollHeight: element.scrollHeight,
+      clientHeight: element.clientHeight,
+    })),
+    // A preview's production TranscriptBody is normal flow. Count only
+    // descendants other than the preview root here so the assertion names an
+    // accidental nested scroll container instead of the card's own box.
+    previewInnerScrollCount: previews.reduce(
+      (count, preview) =>
+        count +
+        Array.from(preview.querySelectorAll<HTMLElement>("*")).filter((element) => {
+          if (element.clientWidth <= 1) return false;
+          const style = getComputedStyle(element);
+          return (
+            ((style.overflowX === "auto" || style.overflowX === "scroll") &&
+              element.scrollWidth > element.clientWidth + 1) ||
+            ((style.overflowY === "auto" || style.overflowY === "scroll") &&
+              element.scrollHeight > element.clientHeight + 1)
+          );
+        }).length,
+      0,
+    ),
+  };
+}
+
+async function inspectDetail(includeAdvanced = true): Promise<DetailGeometry> {
+  const pane = document.getElementById("oh-pane");
+  const trigger = Array.from(document.querySelectorAll<HTMLButtonElement>("button")).find((button) =>
+    button.textContent?.includes("Session actions"),
+  );
+  if (!pane || !trigger) {
+    return {
+      found: trigger !== undefined,
+      mobile: window.matchMedia("(max-width: 899px)").matches,
+      triggerReachable: false,
+      triggerHitTestable: false,
+      trigger: null,
+      open: false,
+      overlayContained: false,
+      panel: null,
+      horizontalOverflowCount: 0,
+      targets: [],
+      fieldsetsFound: 0,
+      overflowElements: [],
+      fieldsetStacked: false,
+      fieldsetsNonOverlapping: false,
+      rootRemPx: 0,
+      editorContainerWidth: 0,
+      fieldsetColumns: 0,
+      sheetBottomAnchored: false,
+      dialogCentered: false,
+      overlayScroll: {
+        connected: false,
+        contained: false,
+        scrollable: false,
+        beforeTop: 0,
+        afterTop: 0,
+        scrollHeight: 0,
+        clientHeight: 0,
+      },
+      effectiveTargets: [],
+    };
+  }
+  const mobile = window.matchMedia("(max-width: 899px)").matches;
+  trigger.scrollIntoView({ block: "nearest", inline: "nearest" });
+  await new Promise<void>((resolve) => requestAnimationFrame(() => requestAnimationFrame(() => resolve())));
+  const paneBox = pane.getBoundingClientRect();
+  const triggerBox = geometryOf(trigger);
+  const triggerCenter = { x: (triggerBox.left + triggerBox.right) / 2, y: (triggerBox.top + triggerBox.bottom) / 2 };
+  const hit = document.elementFromPoint(triggerCenter.x, triggerCenter.y);
+  const triggerHitTestable = hit === trigger || (hit instanceof Node && trigger.contains(hit));
+  const triggerReachable =
+    !trigger.disabled &&
+    visible(trigger) &&
+    triggerBox.width > 0 &&
+    triggerBox.height > 0 &&
+    triggerBox.left >= paneBox.left - 1 &&
+    triggerBox.right <= paneBox.right + 1 &&
+    triggerBox.top >= paneBox.top - 1 &&
+    triggerBox.bottom <= paneBox.bottom + 1;
+  trigger.click();
+  await new Promise<void>((resolve) => requestAnimationFrame(() => requestAnimationFrame(() => resolve())));
+  const menu = Array.from(document.querySelectorAll<HTMLElement>('[role="menu"]')).find(
+    (candidate) => candidate.getAttribute("aria-labelledby") === trigger.id,
+  );
+  const verbosityItem = Array.from(menu?.querySelectorAll<HTMLElement>('[role="menuitem"]') ?? []).find(
+    (item) => item.textContent?.trim() === "Verbosity…",
+  );
+  if (!verbosityItem) throw new Error("Session actions did not expose pane-only Verbosity…");
+  const verbosityTarget = {
+    kind: "menuitem",
+    label: "Verbosity…",
+    height: verbosityItem.getBoundingClientRect().height,
+  };
+  verbosityItem.click();
+  await new Promise<void>((resolve) => requestAnimationFrame(() => requestAnimationFrame(() => resolve())));
+  const finite = document
+    .getAnimations()
+    .filter((animation) => animation.effect?.getTiming().iterations !== Number.POSITIVE_INFINITY);
+  await Promise.all(finite.map((animation) => animation.finished.catch(() => undefined)));
+
+  const panel = Array.from(document.querySelectorAll<HTMLElement>('[role="dialog"][aria-modal="true"]')).find(
+    (dialog) => dialog.querySelector("h2")?.textContent?.trim() === "Verbosity",
+  );
+  if (!panel) {
+    return {
+      found: true,
+      mobile,
+      triggerReachable,
+      trigger: triggerBox,
+      triggerHitTestable,
+      open: false,
+      overlayContained: false,
+      panel: null,
+      horizontalOverflowCount: 0,
+      targets: [],
+      fieldsetsFound: 0,
+      overflowElements: [],
+      fieldsetStacked: false,
+      fieldsetsNonOverlapping: false,
+      rootRemPx: 0,
+      editorContainerWidth: 0,
+      fieldsetColumns: 0,
+      sheetBottomAnchored: false,
+      dialogCentered: false,
+      overlayScroll: {
+        connected: false,
+        contained: false,
+        scrollable: false,
+        beforeTop: 0,
+        afterTop: 0,
+        scrollHeight: 0,
+        clientHeight: 0,
+      },
+      effectiveTargets: [],
+    };
+  }
+  const owner = panel.querySelector<HTMLElement>('[data-testid="transcript-detail-control"]');
+  const editor = owner?.querySelector<HTMLElement>('section[aria-label="Transcript detail editor"]');
+  if (!owner || !editor) throw new Error("Verbosity Dialog/Sheet does not own its transcript editor");
+  await waitForStablePanel(panel);
+  if (includeAdvanced) {
+    const advanced = Array.from(panel.querySelectorAll<HTMLElement>("summary")).find((summary) =>
+      summary.textContent?.trim().startsWith("Customize & advanced"),
+    );
+    if (!advanced) throw new Error("Detail editor Advanced disclosure is missing");
+    advanced.click();
+    await new Promise<void>((resolve) => requestAnimationFrame(() => requestAnimationFrame(() => resolve())));
+    const panelAnimations = document
+      .getAnimations()
+      .filter((animation) => animation.effect?.getTiming().iterations !== Number.POSITIVE_INFINITY);
+    await Promise.all(panelAnimations.map((animation) => animation.finished.catch(() => undefined)));
+    await waitForStablePanel(panel);
+  }
+  const panelBox = geometryOf(panel);
+  const accessibleName = (element: Element): string => {
+    const ariaLabel = element.getAttribute("aria-label");
+    if (ariaLabel) return ariaLabel;
+    const labelledBy = element.getAttribute("aria-labelledby");
+    if (labelledBy) {
+      const name = labelledBy
+        .split(/\s+/)
+        .map((id) => document.getElementById(id)?.textContent ?? "")
+        .join(" ")
+        .trim();
+      if (name) return name.replace(/\s+/g, " ");
+    }
+    return element.textContent?.trim().replace(/\s+/g, " ").slice(0, 80) ?? "";
+  };
+  const controls = [
+    trigger,
+    ...Array.from(panel.querySelectorAll<HTMLElement>("button, select, summary, [role=radio], [role=switch]")),
+  ];
+  const switchLabels = Array.from(panel.querySelectorAll<HTMLElement>('[role="switch"]')).flatMap((switchElement) => {
+    const ids = switchElement.getAttribute("aria-labelledby")?.split(/\s+/) ?? [];
+    return ids
+      .map((id) => document.getElementById(id))
+      .filter((label): label is HTMLElement => label instanceof HTMLElement && panel.contains(label));
+  });
+  const targets = [
+    verbosityTarget,
+    ...controls.map((element) => ({
+      kind: element === trigger ? "trigger" : (element.getAttribute("role") ?? element.tagName.toLowerCase()),
+      label: accessibleName(element),
+      height: element.getBoundingClientRect().height,
+    })),
+    ...switchLabels.map((element) => ({
+      kind: "switch-label",
+      label: accessibleName(element),
+      height: element.getBoundingClientRect().height,
+    })),
+  ];
+  const fieldsets = Array.from(panel.querySelectorAll<HTMLElement>("fieldset"));
+  const fieldsetBoxes = fieldsets.map(geometryOf);
+  const editorStyle = getComputedStyle(editor);
+  const editorContainerWidth =
+    editor.clientWidth -
+    (Number.parseFloat(editorStyle.paddingLeft) || 0) -
+    (Number.parseFloat(editorStyle.paddingRight) || 0);
+  const columnLefts: number[] = [];
+  for (const box of fieldsetBoxes) {
+    if (!columnLefts.some((left) => Math.abs(left - box.left) <= 0.5)) columnLefts.push(box.left);
+  }
+  const fieldsetColumns = columnLefts.length;
+  const rootRemPx = Number.parseFloat(getComputedStyle(document.documentElement).fontSize);
+  const effectiveTargets = [
+    verbosityTarget,
+    ...controls.map((element) => {
+      const effectiveElement = effectiveTargetElement(element);
+      return {
+        kind: element === trigger ? "trigger" : (element.getAttribute("role") ?? element.tagName.toLowerCase()),
+        label: accessibleName(element),
+        height: effectiveElement.getBoundingClientRect().height,
+      };
+    }),
+  ];
+  const fieldsetStacked =
+    fieldsets.length === 3 &&
+    fieldsetBoxes.every((box, index) => {
+      const previous = fieldsetBoxes[index - 1];
+      return index === 0 || (previous !== undefined && box.top >= previous.bottom - 1);
+    });
+  const fieldsetsNonOverlapping = fieldsetBoxes.every((box, index) =>
+    fieldsetBoxes
+      .slice(index + 1)
+      .every(
+        (other) =>
+          box.right <= other.left + 1 ||
+          other.right <= box.left + 1 ||
+          box.bottom <= other.top + 1 ||
+          other.bottom <= box.top + 1,
+      ),
+  );
+  const scrollPanel = owner.parentElement;
+  if (!scrollPanel) throw new Error("Verbosity Dialog/Sheet scroll owner is missing");
+  const beforeTop = scrollPanel.scrollTop;
+  const scrollable = scrollPanel.scrollHeight > scrollPanel.clientHeight;
+  scrollPanel.scrollTop = scrollPanel.scrollHeight;
+  scrollPanel.dispatchEvent(new Event("scroll"));
+  await waitForStablePanel(panel);
+  const scrolledPanelBox = geometryOf(panel);
+  const overlayScroll = {
+    connected: panel.isConnected,
+    contained:
+      scrolledPanelBox.left >= -1 &&
+      scrolledPanelBox.right <= window.innerWidth + 1 &&
+      scrolledPanelBox.top >= -1 &&
+      scrolledPanelBox.bottom <= window.innerHeight + 1,
+    scrollable,
+    beforeTop,
+    afterTop: scrollPanel.scrollTop,
+    scrollHeight: scrollPanel.scrollHeight,
+    clientHeight: scrollPanel.clientHeight,
+  };
+  const overflowingElements = horizontalOverflowElements(panel);
+  return {
+    found: true,
+    mobile,
+    triggerReachable,
+    trigger: triggerBox,
+    triggerHitTestable,
+    open: true,
+    overlayContained:
+      panelBox.left >= -1 &&
+      panelBox.right <= window.innerWidth + 1 &&
+      panelBox.top >= -1 &&
+      panelBox.bottom <= window.innerHeight + 1,
+    panel: panelBox,
+    horizontalOverflowCount: overflowingElements.length,
+    targets,
+    fieldsetsFound: fieldsets.length,
+    effectiveTargets,
+    overflowElements: overflowingElements.map(
+      (element) =>
+        `${element.tagName.toLowerCase()}.${element.className || "(no-class)"} ` +
+        `${element.scrollWidth}/${element.clientWidth}x${element.scrollHeight}/${element.clientHeight}`,
+    ),
+    fieldsetStacked,
+    fieldsetsNonOverlapping,
+    rootRemPx,
+    editorContainerWidth,
+    fieldsetColumns,
+    sheetBottomAnchored: mobile && panelBox.bottom >= window.innerHeight - 1,
+    dialogCentered:
+      !mobile &&
+      Math.abs((panelBox.left + panelBox.right) / 2 - document.documentElement.clientWidth / 2) <= 1 &&
+      Math.abs((panelBox.top + panelBox.bottom) / 2 - document.documentElement.clientHeight / 2) <= 1,
+    overlayScroll,
+  };
 }
 
 // A scroll container is horizontally overflowing when its content is wider
@@ -316,16 +1022,6 @@ function disclosureContract(target: DisclosureTarget): DisclosureContract | null
     expectedWidth,
   };
   return result;
-}
-
-interface FooterContract {
-  effortVisible: boolean;
-  contextVisible: boolean;
-  queueVisible: boolean;
-  queueLabel: string | null;
-  statusClientWidth: number;
-  statusScrollWidth: number;
-  modelClientWidth: number;
 }
 
 // Whether a required footer fact (effort, context, queue) is on the screen.
@@ -412,15 +1108,66 @@ function visibilityProbe(): VisibilityProbe {
   }
 }
 
-function measure(): {
-  width: number;
-  scrollers: Scroller[];
-  ignored: string[];
-  disclosures: DisclosureContract[];
-  footer: FooterContract;
-  visibility: VisibilityProbe;
-  subagentCard: { found: boolean; contained: boolean; quoteWrapped: boolean; statsContained: boolean };
-} {
+interface ChatFocusMeasurement {
+  toolsRowFocused: boolean;
+  groupFound: boolean;
+  groupOpen: boolean;
+  summaryIsActive: boolean;
+  rationaleIsActive: boolean;
+  summaryVisible: boolean;
+  activeTag: string | null;
+  activeTestId: string | null;
+}
+
+async function inspectChatFocus(): Promise<ChatFocusMeasurement> {
+  const pane = document.getElementById("oh-pane");
+  if (!pane) throw new Error("Chat focus harness pane never mounted");
+  const layout = transcriptDisplayStore.getState().viewport;
+  const original = transcriptDisplayStore.getState().local[layout];
+  const waitFor = async <T,>(read: () => T | null | undefined, label: string): Promise<T> => {
+    for (let frame = 0; frame < 180; frame += 1) {
+      const value = read();
+      if (value !== null && value !== undefined) return value;
+      await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
+    }
+    throw new Error(`Chat focus harness did not settle: ${label}`);
+  };
+  try {
+    transcriptDisplayStore.getState().setLocal(layout, makeTranscriptDisplayConfig({ kind: "preset", level: "tools" }));
+    const toolTrigger = await waitFor(
+      () => pane.querySelector<HTMLElement>('[data-view-anchor-id="i3b"] [data-testid="tool-row-trigger"]'),
+      "Tools row trigger",
+    );
+    toolTrigger.focus();
+    const toolsRowFocused = document.activeElement === toolTrigger;
+
+    transcriptDisplayStore.getState().setLocal(layout, makeTranscriptDisplayConfig({ kind: "preset", level: "chat" }));
+    const rationale = await waitFor(
+      () => pane.querySelector<HTMLElement>('[data-view-anchor-id="intent:i3b"]'),
+      "Chat intent rationale",
+    );
+    await new Promise<void>((resolve) => requestAnimationFrame(() => requestAnimationFrame(() => resolve())));
+    const group = rationale.closest<HTMLDetailsElement>('details[data-testid="intent-group"]');
+    const summary = group?.querySelector<HTMLElement>(":scope > summary");
+    const active = document.activeElement;
+    return {
+      toolsRowFocused,
+      groupFound: group !== null,
+      groupOpen: group?.open ?? false,
+      summaryIsActive: active === summary,
+      rationaleIsActive: active === rationale,
+      summaryVisible: summary ? isElementVisible(summary) : false,
+      activeTag: active?.tagName.toLowerCase() ?? null,
+      activeTestId: active instanceof HTMLElement ? (active.dataset.testid ?? null) : null,
+    };
+  } finally {
+    if (original) transcriptDisplayStore.getState().setLocal(layout, original);
+    else transcriptDisplayStore.getState().clearLocal(layout);
+  }
+}
+
+function measure() {
+  if (settingsMode) return measureSettings();
   const pane = document.getElementById("oh-pane");
   if (!pane) throw new Error("harness pane never mounted");
   const scrollers: Scroller[] = [];
@@ -462,7 +1209,7 @@ function measure(): {
         continue;
       }
       const overflowX = getComputedStyle(el).overflowX;
-      if (overflowX === "hidden" || overflowX === "clip") {
+      if (overflowX !== "auto" && overflowX !== "scroll") {
         ignored.push(
           `${el.tagName.toLowerCase()}.${el.className || ""} (overflow-x: ${overflowX}, clipped not scrollable)`,
         );
@@ -508,15 +1255,98 @@ function measure(): {
   const context = pane.querySelector<HTMLElement>('[data-testid="status-row-context"]');
   const queue = pane.querySelector<HTMLElement>('[data-testid="status-row-queue"]');
   const model = pane.querySelector<HTMLElement>('[data-testid="model-switch-value"]');
+  const currentWork = pane.querySelector<HTMLElement>('[data-testid="current-work"]');
+  const composerCard = pane.querySelector<HTMLElement>('[data-testid="composer-input-card"]');
+  // The fixture has active status and interrupt capability, but no active turn
+  // ID, so Composer correctly renders Stop but not the busy-only Steer. These
+  // are the actual controls it must render at every width. The card alone is
+  // not a controls check: each control is measured below.
+  const controlTestIds = ["composer-attach", "composer-stop", "composer-submit"];
+  const composeControls = controlTestIds.map((testId) => ({
+    testId,
+    element: pane.querySelector<HTMLElement>(`[data-testid="${testId}"]`),
+  }));
   const subagentCard = pane.querySelector<HTMLElement>('[data-testid="subagent-row"]');
   const subagentQuote = subagentCard?.querySelector<HTMLElement>('[data-testid="subagent-quote"]');
   const subagentStats = subagentCard?.querySelector<HTMLElement>('[data-testid="subagent-stats"]');
+  const editors = measureEditors(document);
+  const liveEditorElement = Array.from(
+    document.querySelectorAll<HTMLElement>('section[aria-label="Transcript detail editor"]'),
+  ).find((editor) => !editor.closest('[data-testid^="transcript-display-card-"]'));
+  const fieldsets = liveEditorElement
+    ? Array.from(liveEditorElement.querySelectorAll<HTMLElement>("fieldset")).map(geometryOf)
+    : [];
+  const triggerElement = Array.from(document.querySelectorAll<HTMLButtonElement>("button")).find((button) =>
+    button.textContent?.includes("Session actions"),
+  );
+  const triggerBox = triggerElement ? geometryOf(triggerElement) : null;
+  const scrollRoots = [pane, ...Array.from(document.querySelectorAll<HTMLElement>('[role="dialog"]'))];
+  const scrollContainers = Array.from(new Set(scrollRoots.flatMap((root) => actualScrollContainers(root))));
   const quoteFontSize = subagentQuote ? Number.parseFloat(getComputedStyle(subagentQuote).fontSize) : 0;
+  const paneBox = pane.getBoundingClientRect();
+  const currentWorkBox = currentWork?.getBoundingClientRect();
+  const composerCardBox = composerCard?.getBoundingClientRect();
+  const containedInPane = (box: DOMRect | undefined) =>
+    !!box && box.left >= paneBox.left - 1 && box.right <= paneBox.right + 1;
+  const containedInCard = (box: DOMRect | undefined) =>
+    !!box &&
+    !!composerCardBox &&
+    box.left >= composerCardBox.left - 1 &&
+    box.right <= composerCardBox.right + 1 &&
+    box.top >= composerCardBox.top - 1 &&
+    box.bottom <= composerCardBox.bottom + 1;
+  const controls = composeControls.map(({ testId, element }) => {
+    const box = element?.getBoundingClientRect();
+    return {
+      testId,
+      present: visible(element),
+      containedInCard: containedInCard(box),
+      containedInPane: containedInPane(box),
+      box,
+    };
+  });
+  const controlsDoNotOverlap = controls.every((control, index) =>
+    controls.slice(index + 1).every((other) => {
+      if (!control.box || !other.box) return false;
+      return (
+        control.box.right <= other.box.left + 1 ||
+        other.box.right <= control.box.left + 1 ||
+        control.box.bottom <= other.box.top + 1 ||
+        other.box.bottom <= control.box.top + 1
+      );
+    }),
+  );
+  function statusGeometry(element: HTMLElement | null) {
+    if (element === null) return null;
+    const style = getComputedStyle(element);
+    return {
+      ...geometryOf(element),
+      clientWidth: element.clientWidth,
+      scrollWidth: element.scrollWidth,
+      display: style.display,
+      flex: style.flex,
+      minWidth: style.minWidth,
+      overflow: style.overflow,
+    };
+  }
   return {
     width,
     scrollers,
     ignored,
     disclosures,
+    editors,
+    canvases: [],
+    fieldsets,
+    trigger: triggerBox
+      ? { left: triggerBox.left, right: triggerBox.right, top: triggerBox.top, bottom: triggerBox.bottom }
+      : null,
+    scrollContainers: scrollContainers.map((element) => ({
+      testId: element.dataset.testid ?? (element.className || element.tagName.toLowerCase()),
+      scrollWidth: element.scrollWidth,
+      clientWidth: element.clientWidth,
+      scrollHeight: element.scrollHeight,
+      clientHeight: element.clientHeight,
+    })),
     visibility: visibilityProbe(),
     subagentCard: {
       found: subagentCard !== null,
@@ -532,6 +1362,30 @@ function measure(): {
       statusClientWidth: status?.clientWidth ?? 0,
       statusScrollWidth: status?.scrollWidth ?? 0,
       modelClientWidth: model?.clientWidth ?? 0,
+      geometry: {
+        status: statusGeometry(status),
+        identity: statusGeometry(pane.querySelector<HTMLElement>('[data-testid="status-row-identity"]')),
+        model: statusGeometry(model),
+        effort: statusGeometry(effort),
+        context: statusGeometry(context),
+        queue: statusGeometry(queue),
+      },
+    },
+    currentWork: {
+      found: visible(currentWork),
+      composerCardFound: visible(composerCard),
+      controlsFound: controls.every((control) => control.present),
+      controlsContained: controls.every((control) => control.containedInCard && control.containedInPane),
+      controlsDoNotOverlap,
+      controls: controls.map(({ box: _box, ...control }) => control),
+      sharedPaneWithoutOverflow:
+        !!currentWork &&
+        !!composerCard &&
+        currentWork.scrollWidth <= currentWork.clientWidth + 1 &&
+        composerCard.scrollWidth <= composerCard.clientWidth + 1 &&
+        containedInPane(currentWorkBox) &&
+        containedInPane(composerCardBox),
+      orderedAboveComposer: !!currentWorkBox && !!composerCardBox && currentWorkBox.bottom <= composerCardBox.top + 1,
     },
   };
 }
@@ -610,9 +1464,13 @@ declare global {
   interface Window {
     measure: typeof measure;
     dump: typeof dump;
+    inspectDetail: typeof inspectDetail;
+    inspectChatFocus: typeof inspectChatFocus;
     settled: Promise<true>;
   }
 }
 window.measure = measure;
 window.dump = dump;
+window.inspectDetail = inspectDetail;
+window.inspectChatFocus = inspectChatFocus;
 window.settled = settled;

@@ -28,6 +28,13 @@ export interface CollectionEditorProps<T> {
    * instance vs. plain dir row). */
   onRemove: (item: T) => void;
   emptyMessage: string;
+  /** Entries a session would inherit from lower config layers, rendered as
+   * grayed rows tagged "(default)" below the caller's own rows - no remove
+   * button, since they are not the caller's to remove. The caller computes
+   * the list (the effective value minus its own items, per the field's merge
+   * semantics); this widget only renders it. Inherited rows suppress
+   * `emptyMessage`: a field with inherited entries is not empty. */
+  inheritedItems?: readonly T[];
   /** Placeholder for the built-in plain-text add field. Unused (optional)
    * when `renderAddField` is given - the caller's own fields carry their
    * own placeholders then. */
@@ -63,6 +70,8 @@ const CLASS = {
   row: requireClass(styles.row, "collectioneditor.module.css", "row"),
   content: requireClass(styles.content, "collectioneditor.module.css", "content"),
   empty: requireClass(styles.empty, "collectioneditor.module.css", "empty"),
+  inherited: requireClass(styles.inherited, "collectioneditor.module.css", "inherited"),
+  inheritedTag: requireClass(styles.inheritedTag, "collectioneditor.module.css", "inheritedTag"),
   addForm: requireClass(styles.addForm, "collectioneditor.module.css", "addForm"),
   addField: requireClass(styles.addField, "collectioneditor.module.css", "addField"),
   visuallyHidden: requireClass(styles.visuallyHidden, "collectioneditor.module.css", "visuallyHidden"),
@@ -97,6 +106,7 @@ export function CollectionEditor<T>({
   removeLabel,
   onRemove,
   emptyMessage,
+  inheritedItems = [],
   addPlaceholder,
   addButtonLabel = "Add",
   onAdd,
@@ -125,21 +135,29 @@ export function CollectionEditor<T>({
   return (
     <div className={CLASS.root}>
       <ul aria-label={label} className={CLASS.list}>
-        {items.length === 0 ? (
+        {items.length === 0 && inheritedItems.length === 0 ? (
           <li className={CLASS.empty}>{emptyMessage}</li>
         ) : (
-          items.map((item) => (
-            <li key={getKey(item)} className={CLASS.row}>
-              <div className={CLASS.content}>{renderItem(item)}</div>
-              <IconButton
-                label={removeLabel(item)}
-                icon={<RemoveIcon />}
-                variant="quiet"
-                size="sm"
-                onClick={() => onRemove(item)}
-              />
-            </li>
-          ))
+          <>
+            {items.map((item) => (
+              <li key={getKey(item)} className={CLASS.row}>
+                <div className={CLASS.content}>{renderItem(item)}</div>
+                <IconButton
+                  label={removeLabel(item)}
+                  icon={<RemoveIcon />}
+                  variant="quiet"
+                  size="sm"
+                  onClick={() => onRemove(item)}
+                />
+              </li>
+            ))}
+            {inheritedItems.map((item) => (
+              <li key={`inherited:${getKey(item)}`} className={`${CLASS.row} ${CLASS.inherited}`}>
+                <div className={CLASS.content}>{renderItem(item)}</div>
+                <span className={CLASS.inheritedTag}>(default)</span>
+              </li>
+            ))}
+          </>
         )}
       </ul>
       <form className={CLASS.addForm} onSubmit={(event) => void handleSubmit(event)}>

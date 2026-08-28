@@ -72,7 +72,7 @@ func seedPastSessionWithUsage(t testing.TB, divergenceTurn int, usages []llm.Usa
 	if !ok {
 		t.Fatalf("past index did not find seeded session %s", sessionID)
 	}
-	return hubcore.WebConfig{Past: idx}, entry
+	return hubcore.WebConfig{Past: idx, Registry: pricingRegistry(t)}, entry
 }
 
 func readSeededThread(t testing.TB, cfg hubcore.WebConfig, entry hubcore.PastEntry) appwire.Thread {

@@ -146,7 +146,7 @@ func newOwnedJobDrainFixture(t *testing.T) *ownedJobDrainFixture {
 	client := llm.NewClient()
 	client.Register(adapter)
 	env := newOwnedJobDrainEnvironment(t.TempDir())
-	parent, err := NewSession(client, NewOpenAIProfile("gpt-5.2"), env, SessionConfig{
+	parent, err := NewSession(client, withTestSessionNamer(client, NewOpenAIProfile("gpt-5.2")), env, SessionConfig{
 		StateDir:         t.TempDir(),
 		MaxSubagentDepth: 1,
 		NoProjectPrompts: true,
@@ -374,6 +374,7 @@ func TestSubagentDrainReturnHandoffNoPhantomTurnInFinalizationWindow(t *testing.
 			<-releaseWindow
 		})
 	}
+	fixture.child.sess.jobManager.mu.Lock()
 	fixture.child.sess.jobManager.testOnlyAfterRematerializeDurableLoad = func() {
 		select {
 		case <-windowHeld:
@@ -381,6 +382,7 @@ func TestSubagentDrainReturnHandoffNoPhantomTurnInFinalizationWindow(t *testing.
 		default:
 		}
 	}
+	fixture.child.sess.jobManager.mu.Unlock()
 	go func() {
 		select {
 		case <-recheckSawWindow:
@@ -493,7 +495,7 @@ func TestSubagentRunPreservesStructuredResultAcrossLateNotification(t *testing.T
 	client := llm.NewClient()
 	client.Register(adapter)
 	var child *subagent
-	parent, err := NewSession(client, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(t.TempDir()), SessionConfig{
+	parent, err := NewSession(client, withTestSessionNamer(client, NewOpenAIProfile("gpt-5.2")), execenv.NewLocalExecutionEnvironment(t.TempDir()), SessionConfig{
 		StateDir:         t.TempDir(),
 		MaxSubagentDepth: 1,
 		NoProjectPrompts: true,
@@ -689,7 +691,7 @@ func TestSubagentFatalRunStopsOwnedShellAndGatesNotificationDrive(t *testing.T) 
 	client := llm.NewClient()
 	client.Register(adapter)
 	env := newOwnedJobDrainEnvironment(t.TempDir())
-	parent, err := NewSession(client, NewOpenAIProfile("gpt-5.2"), env, SessionConfig{
+	parent, err := NewSession(client, withTestSessionNamer(client, NewOpenAIProfile("gpt-5.2")), env, SessionConfig{
 		StateDir:         t.TempDir(),
 		MaxSubagentDepth: 1,
 		NoProjectPrompts: true,
@@ -824,7 +826,7 @@ func TestIdleFatalGatedWatchSendDropsAndDoesNotPinDrain(t *testing.T) {
 	}
 	client := llm.NewClient()
 	client.Register(adapter)
-	parent, err := NewSession(client, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(t.TempDir()), SessionConfig{
+	parent, err := NewSession(client, withTestSessionNamer(client, NewOpenAIProfile("gpt-5.2")), execenv.NewLocalExecutionEnvironment(t.TempDir()), SessionConfig{
 		StateDir:         t.TempDir(),
 		MaxSubagentDepth: 1,
 		NoProjectPrompts: true,
@@ -985,7 +987,7 @@ func TestSubagentFatalDriveTurnStopsOwnedShellAndSuppressesRedrive(t *testing.T)
 	client := llm.NewClient()
 	client.Register(adapter)
 	env := newOwnedJobDrainEnvironment(t.TempDir())
-	parent, err := NewSession(client, NewOpenAIProfile("gpt-5.2"), env, SessionConfig{
+	parent, err := NewSession(client, withTestSessionNamer(client, NewOpenAIProfile("gpt-5.2")), env, SessionConfig{
 		StateDir:         t.TempDir(),
 		MaxSubagentDepth: 1,
 		NoProjectPrompts: true,

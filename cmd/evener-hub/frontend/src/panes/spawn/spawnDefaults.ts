@@ -2,7 +2,7 @@
 // and cleanup (floor §1.10) for the spawn pane. All state lives in localStorage
 // under the `evener-hub.spawn-defaults.` namespace, distinct from prefs.ts's
 // `evener.prefs.` flat keys - these are per-project JSON blobs plus a few global
-// scalars, matching the legacy spawn.js key layout.
+// scalars.
 //
 // This is a per-device convenience layer (like the legacy), NOT the source of
 // truth for launch config - the daemon's own launch.toml layering is. A blob
@@ -27,7 +27,6 @@ const SCALAR_KEYS = new Set([GLOBAL_WORKING_DIR_KEY, GLOBAL_LAST_WORKING_DIR_KEY
 export interface SpawnDefaultsBlob {
   harness?: string;
   model?: string;
-  branch?: string;
   access_mode?: string;
   reasoning_effort?: string;
 }
@@ -36,7 +35,6 @@ export interface ResolvedDefaults {
   harness?: string;
   model?: string;
   workingDir?: string;
-  branch?: string;
   accessMode?: string;
   reasoningEffort?: string;
 }
@@ -95,11 +93,7 @@ export function setGlobalLastWorkingDir(dir: string): void {
 // Computes the spawn form's initial field values with the floor §1.9 layering:
 // the working dir comes from the server's ?dir= prefill first, else the global
 // last-resort; the remaining fields come from the resolved project blob, with
-// the global model layering UNDER any per-project model default. The legacy's
-// harness/branch/access-BEFORE-working_dir application order (spawn.js:1132-1138)
-// exists only so branch HEAD-resolution sees an explicit branch default - a
-// React consumer gets that for free by having the branch-resolution effect
-// respect an already-set branch value, so it is not modeled as ordering here.
+// the global model layering UNDER any per-project model default.
 export function resolveInitialDefaults(opts: { serverPrefillDir?: string }): ResolvedDefaults {
   const serverDir = opts.serverPrefillDir?.trim();
   const workingDir = serverDir && serverDir !== "" ? serverDir : (readRaw(GLOBAL_WORKING_DIR_KEY) ?? "").trim();
@@ -109,7 +103,6 @@ export function resolveInitialDefaults(opts: { serverPrefillDir?: string }): Res
     harness: blob.harness,
     model: model ?? undefined,
     workingDir: workingDir === "" ? undefined : workingDir,
-    branch: blob.branch,
     accessMode: blob.access_mode,
     reasoningEffort: blob.reasoning_effort,
   };
@@ -119,7 +112,6 @@ export interface SaveDefaultsInput {
   cwd: string;
   harness?: string;
   model?: string;
-  branch?: string;
   accessMode?: string;
   reasoningEffort?: string;
   // Whether the chosen harness uses evener models (kind === "evener"). Gates
@@ -138,12 +130,10 @@ function nonEmpty(value: string | undefined): string | undefined {
 export function saveDefaults(input: SaveDefaultsInput): void {
   const blob: SpawnDefaultsBlob = {};
   const harness = nonEmpty(input.harness);
-  const branch = nonEmpty(input.branch);
   const accessMode = nonEmpty(input.accessMode);
   const reasoningEffort = nonEmpty(input.reasoningEffort);
   const model = nonEmpty(input.model);
   if (harness) blob.harness = harness;
-  if (branch) blob.branch = branch;
   if (accessMode) blob.access_mode = accessMode;
   if (reasoningEffort) blob.reasoning_effort = reasoningEffort;
   if (model && input.harnessUsesEvenerModels) blob.model = model;

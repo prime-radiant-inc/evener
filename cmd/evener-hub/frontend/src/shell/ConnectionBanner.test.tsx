@@ -1,4 +1,4 @@
-import { cleanup, render, screen, waitFor } from "@testing-library/react";
+import { act, cleanup, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { SIGN_IN_PROMPT_MESSAGE } from "../auth";
@@ -72,7 +72,7 @@ afterEach(() => {
   // each connect a FRESH client straight to "ready", the exact transition
   // that detector watches for. Left unreset, the first such test here arms
   // sawReady and every later one in this file reads as a spurious reconnect,
-  // firing an extra, unscripted treeStore.refresh() -> fetch("/api/tree")
+  // firing an extra, unscripted navigationStore.loadManifest() request
   // that can consume one of a later test's own scripted fetchMock slots (the
   // "clicking Retry > a retry re-probes..." flake this reset fixes - see
   // AppShell.test.tsx's identical reset for the fuller writeup). Reset+reinit
@@ -86,6 +86,7 @@ afterEach(() => {
   initNotifications();
   vi.restoreAllMocks();
   vi.unstubAllGlobals();
+  vi.useRealTimers();
 });
 
 const QUIET_STATES: ConnectionState[] = ["idle", "connecting", "ready"];
@@ -99,7 +100,7 @@ for (const state of QUIET_STATES) {
 
 describe('state "reconnecting"', () => {
   test("shows a quiet, informative message", () => {
-    render(<ConnectionBanner state="reconnecting" />);
+    render(<ConnectionBanner state="reconnecting" delayMs={0} />);
     expect(screen.getByText(/reconnecting to the server/i)).toBeTruthy();
   });
 
@@ -115,7 +116,7 @@ describe('state "reconnecting"', () => {
     connectionStore.getState().connect(fake);
     const user = userEvent.setup();
 
-    render(<ConnectionBanner state="reconnecting" />);
+    render(<ConnectionBanner state="reconnecting" delayMs={0} />);
     await user.click(screen.getByRole("button", { name: "Retry now" }));
 
     expect(fake.retryNowCalls).toBe(1);
@@ -128,11 +129,11 @@ describe('state "reconnecting"', () => {
   test('"Retry now" targets whichever client is currently wired, not a stale one from an earlier render', async () => {
     const stale = new FakeClient("closed");
     connectionStore.getState().connect(stale);
-    const { rerender } = render(<ConnectionBanner state="closed" />);
+    const { rerender } = render(<ConnectionBanner state="closed" delayMs={0} />);
 
     const fresh = new FakeClient("reconnecting");
     connectionStore.getState().connect(fresh);
-    rerender(<ConnectionBanner state="reconnecting" />);
+    rerender(<ConnectionBanner state="reconnecting" delayMs={0} />);
 
     const user = userEvent.setup();
     await user.click(screen.getByRole("button", { name: "Retry now" }));
@@ -144,14 +145,14 @@ describe('state "reconnecting"', () => {
 
 describe('state "closed" - generic (neither probe matches)', () => {
   test("shows the generic message immediately (not gated behind the probe), and it stays that way once both probes resolve without a match", async () => {
-    render(<ConnectionBanner state="closed" />);
+    render(<ConnectionBanner state="closed" delayMs={0} />);
     expect(screen.getByText("Connection closed.")).toBeTruthy(); // synchronous: no dead spinner while probing
     await waitFor(() => expect(globalThis.fetch).toHaveBeenCalledTimes(2)); // let checkAuthStatus + checkWebNotBuilt settle before the test ends
     expect(screen.getByText("Connection closed.")).toBeTruthy();
   });
 
   test('offers a "Retry" action', () => {
-    render(<ConnectionBanner state="closed" />);
+    render(<ConnectionBanner state="closed" delayMs={0} />);
     expect(screen.getByRole("button", { name: "Retry" })).toBeTruthy();
   });
 });
@@ -166,7 +167,7 @@ describe('state "closed" - protocol skew', () => {
     client.terminalReason = "protocol";
     connectionStore.getState().connect(client);
 
-    render(<ConnectionBanner state="closed" />);
+    render(<ConnectionBanner state="closed" delayMs={0} />);
 
     await waitFor(() => expect(screen.getByText(/Reload to continue/)).toBeTruthy());
     expect(screen.getByRole("button", { name: "Reload" })).toBeTruthy();
@@ -183,13 +184,13 @@ describe('state "closed" - unauthenticated (401)', () => {
   });
 
   test("shows the sign-in prompt instead of the generic closed message", async () => {
-    render(<ConnectionBanner state="closed" />);
+    render(<ConnectionBanner state="closed" delayMs={0} />);
     await screen.findByText(SIGN_IN_PROMPT_MESSAGE);
     expect(screen.queryByText("Connection closed.")).toBeNull();
   });
 
   test("still offers Retry - the user may authorize in another tab and come back", async () => {
-    render(<ConnectionBanner state="closed" />);
+    render(<ConnectionBanner state="closed" delayMs={0} />);
     await screen.findByText(SIGN_IN_PROMPT_MESSAGE);
     expect(screen.getByRole("button", { name: "Retry" })).toBeTruthy();
   });
@@ -201,7 +202,7 @@ describe('state "closed" - web app not built (503)', () => {
   });
 
   test("shows the not-built message instead of the generic closed message", async () => {
-    render(<ConnectionBanner state="closed" />);
+    render(<ConnectionBanner state="closed" delayMs={0} />);
     await screen.findByText(NOT_BUILT_MESSAGE);
     expect(screen.queryByText("Connection closed.")).toBeNull();
   });
@@ -221,7 +222,7 @@ describe("clicking Retry", () => {
     const fresh = new FakeClient("ready");
 
     const user = userEvent.setup();
-    render(<ConnectionBanner state="closed" createClient={() => fresh} />);
+    render(<ConnectionBanner state="closed" delayMs={0} createClient={() => fresh} />);
     await user.click(screen.getByRole("button", { name: "Retry" }));
 
     await waitFor(() => expect(connectionStore.getState().client).toBe(fresh));
@@ -235,7 +236,7 @@ describe("clicking Retry", () => {
     const fresh = new FakeClient("ready");
 
     const user = userEvent.setup();
-    render(<ConnectionBanner state="closed" createClient={() => fresh} />);
+    render(<ConnectionBanner state="closed" delayMs={0} createClient={() => fresh} />);
     await user.click(screen.getByRole("button", { name: "Retry" }));
 
     await waitFor(() => expect(connectionStore.getState().client).toBe(fresh));
@@ -249,14 +250,14 @@ describe("clicking Retry", () => {
     });
 
     const user = userEvent.setup();
-    render(<ConnectionBanner state="closed" createClient={() => fresh} />);
+    render(<ConnectionBanner state="closed" delayMs={0} createClient={() => fresh} />);
     await user.click(screen.getByRole("button", { name: "Retry" }));
 
     await waitFor(() => expect(connectionStore.getState().client).toBe(fresh));
     expect(connectionStore.getState().state).toBe("closed");
   });
 
-  test("populates serverInfo from the fresh client's connect() response, same as AppShell's own initial boot", async () => {
+  test("populates connection metadata from the fresh client's initialize response", async () => {
     const fresh = new FakeClient("ready");
     const scripted: InitializeResponse = {
       serverInfo: { name: "evener-hub-retry-test", version: "9.9.9" },
@@ -267,11 +268,12 @@ describe("clicking Retry", () => {
     fresh.scriptConnect(() => scripted);
 
     const user = userEvent.setup();
-    render(<ConnectionBanner state="closed" createClient={() => fresh} />);
+    render(<ConnectionBanner state="closed" delayMs={0} createClient={() => fresh} />);
     await user.click(screen.getByRole("button", { name: "Retry" }));
 
     await waitFor(() => {
       expect(connectionStore.getState().serverInfo).toEqual({ name: "evener-hub-retry-test", version: "9.9.9" });
+      expect(connectionStore.getState().features).toEqual(scripted.features);
     });
   });
 
@@ -280,7 +282,7 @@ describe("clicking Retry", () => {
     fresh.scriptConnect(() => new Promise<InitializeResponse>(() => {})); // never resolves - holds "in flight" for this test's assertion window
 
     const user = userEvent.setup();
-    render(<ConnectionBanner state="closed" createClient={() => fresh} />);
+    render(<ConnectionBanner state="closed" delayMs={0} createClient={() => fresh} />);
     await user.click(screen.getByRole("button", { name: "Retry" }));
 
     expect(screen.getByRole("button").hasAttribute("disabled")).toBe(true);
@@ -294,7 +296,7 @@ describe("clicking Retry", () => {
   // real AppwireClient - not silently a fake forever.
   test("defaults to constructing a real AppwireClient when createClient is not overridden", async () => {
     const user = userEvent.setup();
-    render(<ConnectionBanner state="closed" />);
+    render(<ConnectionBanner state="closed" delayMs={0} />);
     await user.click(screen.getByRole("button", { name: "Retry" }));
 
     await waitFor(() => expect(connectionStore.getState().client).toBeInstanceOf(AppwireClient));
@@ -316,9 +318,13 @@ describe("clicking Retry", () => {
       .mockResolvedValueOnce(new Response(null, { status: 200 })) // post-retry: auth check
       .mockResolvedValueOnce(new Response(null, { status: 200 })); // post-retry: not-built check
     vi.stubGlobal("fetch", fetchMock);
+    // This component test isolates its closed-reason probes from the global
+    // notification engine, whose capability-absence path legitimately starts
+    // a navigation refresh after a ready client is published.
+    resetNotificationsForTests();
     const fresh = new FakeClient("ready");
 
-    render(<ConnectionBanner state="closed" createClient={() => fresh} />);
+    render(<ConnectionBanner state="closed" delayMs={0} createClient={() => fresh} />);
     await screen.findByText(SIGN_IN_PROMPT_MESSAGE);
 
     const user = userEvent.setup();
@@ -326,6 +332,50 @@ describe("clicking Retry", () => {
 
     await screen.findByText("Connection closed.");
     expect(screen.queryByText(SIGN_IN_PROMPT_MESSAGE)).toBeNull();
-    expect(fetchMock).toHaveBeenCalledTimes(4);
+    expect(fetchMock.mock.calls.map(([url]) => url)).toEqual(["/", "/", "/", "/"]);
+  });
+});
+
+// The reveal delay: the banner stays hidden for delayMs after the state first
+// needs attention, so a routine sub-second reconnect doesn't flash a warning
+// over the chrome. A recovery before the delay elapses means the banner never
+// appears at all. delayMs <= 0 is the synchronous test seam used by every other
+// test in this file; these tests exercise the actual timer path.
+describe("reveal delay", () => {
+  test("stays hidden until the delay elapses, then shows", () => {
+    vi.useFakeTimers();
+    render(<ConnectionBanner state="reconnecting" delayMs={10_000} />);
+    // Immediately: hidden.
+    expect(screen.queryByText(/reconnecting to the server/i)).toBeNull();
+    // Just before the delay: still hidden.
+    act(() => vi.advanceTimersByTime(9_999));
+    expect(screen.queryByText(/reconnecting to the server/i)).toBeNull();
+    // At the delay: revealed.
+    act(() => vi.advanceTimersByTime(1));
+    expect(screen.getByText(/reconnecting to the server/i)).toBeTruthy();
+  });
+
+  test("never shows if the connection recovers before the delay elapses", () => {
+    vi.useFakeTimers();
+    const { rerender } = render(<ConnectionBanner state="reconnecting" delayMs={10_000} />);
+    expect(screen.queryByText(/reconnecting to the server/i)).toBeNull();
+    // Recover before the timer fires.
+    rerender(<ConnectionBanner state="ready" delayMs={10_000} />);
+    act(() => vi.advanceTimersByTime(20_000));
+    expect(screen.queryByText(/reconnecting to the server/i)).toBeNull();
+  });
+
+  test("re-arms the delay on a fresh attention state after recovery", () => {
+    vi.useFakeTimers();
+    const { rerender } = render(<ConnectionBanner state="reconnecting" delayMs={10_000} />);
+    // Recover before the first delay fires - no banner.
+    rerender(<ConnectionBanner state="ready" delayMs={10_000} />);
+    act(() => vi.advanceTimersByTime(20_000));
+    expect(screen.queryByText(/reconnecting to the server/i)).toBeNull();
+    // Drop again: the delay clock starts fresh.
+    rerender(<ConnectionBanner state="closed" delayMs={10_000} />);
+    expect(screen.queryByText("Connection closed.")).toBeNull();
+    act(() => vi.advanceTimersByTime(10_000));
+    expect(screen.getByText("Connection closed.")).toBeTruthy();
   });
 });

@@ -13,6 +13,8 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+
+	"primeradiant.com/evener/envvars"
 )
 
 const defaultRepoURL = "https://github.com/prime-radiant-inc/evener"
@@ -81,8 +83,8 @@ func Upgrade(ctx context.Context, opts Options) (Result, error) {
 	if err != nil {
 		return Result{}, err
 	}
-	goos := firstNonEmpty(opts.GOOS, runtime.GOOS)
-	goarch := firstNonEmpty(opts.GOARCH, runtime.GOARCH)
+	goos := envvars.FirstNonEmpty(opts.GOOS, runtime.GOOS)
+	goarch := envvars.FirstNonEmpty(opts.GOARCH, runtime.GOARCH)
 	asset, root, err := releaseAsset(goos, goarch)
 	if err != nil {
 		return Result{}, err
@@ -91,9 +93,9 @@ func Upgrade(ctx context.Context, opts Options) (Result, error) {
 	if err != nil {
 		return Result{}, err
 	}
-	binDir := firstNonEmpty(opts.BinDir, filepath.Join(prefix, "bin"))
-	shareBinDir := firstNonEmpty(opts.ShareBinDir, filepath.Join(prefix, "share", "evener", "bin"))
-	repoURL := strings.TrimRight(firstNonEmpty(opts.RepoURL, defaultRepoURL), "/")
+	binDir := envvars.FirstNonEmpty(opts.BinDir, filepath.Join(prefix, "bin"))
+	shareBinDir := envvars.FirstNonEmpty(opts.ShareBinDir, filepath.Join(prefix, "share", "evener", "bin"))
+	repoURL := strings.TrimRight(envvars.FirstNonEmpty(opts.RepoURL, defaultRepoURL), "/")
 	url := releaseURL(repoURL, target.Release, asset)
 	client := opts.HTTPClient
 	if client == nil {
@@ -303,13 +305,4 @@ func copyExecutable(src, dst string) error {
 		return closeErr
 	}
 	return renameFile(tmp, dst)
-}
-
-func firstNonEmpty(values ...string) string {
-	for _, value := range values {
-		if value != "" {
-			return value
-		}
-	}
-	return ""
 }

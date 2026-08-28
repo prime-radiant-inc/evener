@@ -13,7 +13,6 @@ import (
 	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/appwire"
 	"primeradiant.com/evener/cmd/evener-hub/internal/hubcore"
-	"primeradiant.com/evener/hubapi"
 	"primeradiant.com/evener/rendezvous"
 )
 
@@ -78,14 +77,6 @@ func FuzzSessionTreePass3(f *testing.F) {
 			for _, m := range []schema.SessionMeta{{Name: " named "}, {OriginalPrompt: "prompt"}, {ID: "0123456789abcdef"}} {
 				_ = sessionTitleFromMeta(m)
 			}
-		case 5:
-			_ = hubDetailFromAppThread(thread)
-			thread.Name, thread.Preview, thread.SessionID, thread.CWD = "", "", "", ""
-			thread.Status.Type = appwire.ThreadStatusClosed
-			thread.Evener.Ref = "malformed"
-			thread.Evener.Usage = nil
-			_ = hubDetailFromAppThread(thread)
-			_ = hubUsageFromAppwire(nil)
 		case 6:
 			_, _, _ = appThreadTreeEntries(thread)
 			thread.Evener.Ref = "bad"
@@ -100,9 +91,6 @@ func FuzzSessionTreePass3(f *testing.F) {
 			}
 		case 7:
 			_ = hubCapabilitiesFromAppwire(thread.Evener.Capabilities)
-			_ = hubRefFromAppThread(thread)
-			thread.Evener.Ref = "bad"
-			_ = hubRefFromAppThread(thread)
 			_ = hubRefFromTreeNodeID("bad")
 		case 8:
 			web := NewWebServer(hubcore.WebConfig{})
@@ -112,62 +100,19 @@ func FuzzSessionTreePass3(f *testing.F) {
 			_ = web.listThreadsWithFallback(context.Background(), l)
 		case 9:
 			web := NewWebServer(hubcore.WebConfig{})
-			for _, method := range []string{http.MethodGet, http.MethodPost} {
-				rec := httptest.NewRecorder()
-				web.handleAPITree(rec, httptest.NewRequest(method, "/api/tree?summary=1", nil))
-			}
-			for _, target := range []string{"/api/tree/project", "/api/tree/project?key=missing"} {
-				rec := httptest.NewRecorder()
-				web.handleAPITreeProject(rec, httptest.NewRequest(http.MethodGet, target, nil))
-			}
-			rec := httptest.NewRecorder()
-			web.handleAPITreeProject(rec, httptest.NewRequest(http.MethodPost, "/api/tree/project", nil))
+			_ = web
+
 		case 10:
 			roster := hubcore.NewRosterWithEntries(hubcore.LiveEntry{Entry: rendezvous.Entry{SessionID: "live", Model: "m"}, SessionID: "live", Status: "active"})
 			web := NewWebServer(hubcore.WebConfig{Roster: roster})
 			_ = web.isLive("live")
 			_ = web.isLive("missing")
 			_, _ = web.liveEntry("live")
-			_ = web.apiTreeNode("project", "key", hubcore.TreeNode{ID: "live", Children: []hubcore.TreeNode{{ID: "child", State: "ended"}}}, true)
 			p := hubcore.TreeProject{Key: "key", Current: []hubcore.TreeNode{{ID: "live", State: "active"}}, Recent: []hubcore.TreeNode{{ID: "recent", State: "ended"}}, Archived: []hubcore.TreeNode{{ID: "old", State: "closed"}}}
-			_ = projectSessions(p)
-			_ = web.apiTreeProject("project", map[hubcore.ArchiveKey]bool{{Kind: "session", ID: "live"}: true}, p)
+			_ = p
 			_ = web.rowRenameable("live")
 			_ = hubAttentionSummaryFromCore(appwire.AttentionSummary{NeedsYou: 1})
 			_ = web.apiTreeSources()
-		case 11:
-			web := NewWebServer(hubcore.WebConfig{})
-			for _, target := range []string{"/api/sessions/bad", "/api/sessions/local%3Amissing", "/api/sessions/local%3Amissing/details", "/api/sessions/local%3Amissing/nope"} {
-				rec := httptest.NewRecorder()
-				web.handleAPISession(rec, httptest.NewRequest(http.MethodGet, target, nil))
-			}
-		case 12:
-			for _, action := range []string{"send", "steer", "interrupt", "compact", "clear", "fork", "shutdown", "model", "queue", "other"} {
-				_ = sessionCapabilityAvailable(hubapi.SessionCapabilities{Send: true, Steer: true, Interrupt: true, Compact: true, Clear: true, Fork: true, Shutdown: true, ChangeModel: true, Queue: true}, action)
-			}
-			for _, err := range []error{appwire.Unavailable("unavailable"), appwire.Conflict("conflict"), appwire.SessionUnavailable("missing"), errors.New("x")} {
-				_ = isActionUnavailable(err)
-				rec := httptest.NewRecorder()
-				writeSessionActionError(rec, httptest.NewRequest(http.MethodPost, "/", nil), err)
-			}
-		case 14:
-			web := NewWebServer(hubcore.WebConfig{})
-			for _, body := range []string{"{", `{}`, `{"text":"x"}`} {
-				rec := httptest.NewRecorder()
-				web.handleSend(rec, httptest.NewRequest(http.MethodPost, "/", strings.NewReader(body)), "local")
-			}
-			_, _ = web.resumeRequestFor("missing")
-			for _, action := range []string{"interrupt", "compact", "shutdown", "unknown"} {
-				rec := httptest.NewRecorder()
-				web.handleSessionAction(rec, httptest.NewRequest(http.MethodGet, "/", nil), "missing", action)
-			}
-			{
-				rec := httptest.NewRecorder()
-				req := httptest.NewRequest(http.MethodGet, "/", nil)
-				web.handleAPIFork(rec, req, "missing")
-			}
-			_, _, _ = web.forkSession("missing", forkRequest{})
-			_ = waitForRosterMatch(hubcore.NewRosterWithEntries(), "missing", 1, 0)
 		case 15:
 			dir := t.TempDir()
 			meta := schema.SessionMeta{ID: "0123456789abcdef", Name: text, OriginalPrompt: "prompt"}

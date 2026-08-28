@@ -43,6 +43,7 @@ exports[`fixture basic-turn reduces to the expected model 1`] = `
   "reasoningEffort": undefined,
   "reasoningEffortLevels": [],
   "ref": "ref_1001",
+  "skills": [],
   "status": {
     "type": "idle",
   },
@@ -147,6 +148,7 @@ exports[`fixture basic-turn reduces to the expected model 1`] = `
   ],
   "updatedAt": "1970-01-01T03:20:00.000Z",
   "usage": null,
+  "visionModel": "",
   "workMillis": 0,
 }
 `;
@@ -212,6 +214,7 @@ exports[`fixture queue-and-status reduces to the expected model 1`] = `
     "high",
   ],
   "ref": "ref_4001",
+  "skills": [],
   "status": {
     "type": "active",
   },
@@ -284,6 +287,7 @@ exports[`fixture queue-and-status reduces to the expected model 1`] = `
   ],
   "updatedAt": "1970-01-01T02:30:00.000Z",
   "usage": null,
+  "visionModel": "",
   "workMillis": 0,
 }
 `;
@@ -331,6 +335,7 @@ exports[`fixture streaming-with-reset reduces to the expected model 1`] = `
   "reasoningEffort": undefined,
   "reasoningEffortLevels": [],
   "ref": "ref_2001",
+  "skills": [],
   "status": {
     "type": "idle",
   },
@@ -411,6 +416,7 @@ exports[`fixture streaming-with-reset reduces to the expected model 1`] = `
   ],
   "updatedAt": "1970-01-01T00:16:40.000Z",
   "usage": null,
+  "visionModel": "",
   "workMillis": 0,
 }
 `;
@@ -458,6 +464,7 @@ exports[`fixture tool-and-jobs reduces to the expected model 1`] = `
   "reasoningEffort": undefined,
   "reasoningEffortLevels": [],
   "ref": "ref_3001",
+  "skills": [],
   "status": {
     "type": "idle",
   },
@@ -517,6 +524,7 @@ PASS
   ],
   "updatedAt": "1970-01-01T00:16:40.000Z",
   "usage": null,
+  "visionModel": "",
   "workMillis": 0,
 }
 `;

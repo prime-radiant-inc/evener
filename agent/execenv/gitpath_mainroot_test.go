@@ -42,7 +42,7 @@ func (f *fakeExecEnv) FileExists(path string) bool {
 func (f *fakeExecEnv) Glob(context.Context, string, string, ...bool) ([]string, error) {
 	return nil, nil
 }
-func (f *fakeExecEnv) Grep(string, string, string, bool, int, string, ...int) (string, error) {
+func (f *fakeExecEnv) Grep(_ context.Context, _ string, _ string, _ string, _ bool, _ int, _ string, _ ...int) (string, error) {
 	return "", nil
 }
 func (f *fakeExecEnv) ListDirectory(string, int) ([]DirEntry, error) { return nil, nil }

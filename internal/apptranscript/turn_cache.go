@@ -45,11 +45,43 @@ type turnCacheEntry struct {
 	// failedToolCalls memoizes FailedToolCallsFromFile's full-transcript
 	// failure count, on the same terms as usageTotal above.
 	failedToolCalls *failedToolCallsMemo
+	// derivedTotals memoizes DerivedTotalsFromFile's combined single-pass scan
+	// (usage sum and failure count together), on the same terms as usageTotal
+	// and failedToolCalls above.
+	derivedTotals *derivedTotalsMemo
 }
 
 // NewTurnCache returns a TurnCache bounded to a default number of transcripts.
 func NewTurnCache() *TurnCache {
 	return &TurnCache{entries: map[string]turnCacheEntry{}, max: defaultTurnCacheSize}
+}
+
+// scanMemoKey is the file identity a memoized full-transcript scan (the usage
+// total, the failed-tool-call count, or the combined derived totals) is valid
+// for. It mirrors the turn cache's own parse-validity gate (object identity,
+// size, mtime, platform change time) and adds the divergence ordinal, since
+// two ordinals over one file are two different answers. mtime is held as nanos
+// so the key stays comparable with == (a time.Time compares its
+// monotonic/location fields too, which would spuriously miss).
+type scanMemoKey struct {
+	size           int64
+	modUnixNano    int64
+	fileIdentity   string
+	changeIdentity string
+	fromOrdinal    int
+}
+
+// scanMemoIdentity builds the scanMemoKey for one stat result and divergence
+// ordinal. All three full-transcript scan memos key on exactly this, so the
+// combined memo can never outlive the two it consolidates.
+func scanMemoIdentity(info os.FileInfo, fromEntryOrdinal int) scanMemoKey {
+	return scanMemoKey{
+		size:           info.Size(),
+		modUnixNano:    info.ModTime().UnixNano(),
+		fileIdentity:   fileIdentity(info),
+		changeIdentity: fileChangeIdentity(info),
+		fromOrdinal:    fromEntryOrdinal,
+	}
 }
 
 // TurnsFromFile returns the cached turns for path when its size and modtime

@@ -102,11 +102,10 @@ function kindStateClass(state: string): string | undefined {
   }
 }
 
-// transcriptTarget mirrors ActivityTranscriptAction exactly: the ref is
-// trimmed and a row with no ref gets no transcript action at all (that
-// component renders null in the same situation). There is deliberately no
-// `job:<id>` fallback - the backend populates transcriptRef, and
-// ActivityTranscriptAction has no fallback either.
+// transcriptTarget mirrors OpenTranscriptButton's own gate: the ref is
+// trimmed and a row with no ref gets no transcript action at all. There is
+// deliberately no `job:<id>` fallback - the backend populates
+// transcriptRef.
 function transcriptTarget(row: ActivityJobRow | ActivityDelegateRow): string | undefined {
   const ref = row.transcriptRef?.trim();
   return ref ? ref : undefined;
@@ -531,7 +530,7 @@ export const ActivityTree = forwardRef<ActivityTreeHandle, ActivityTreeProps>(fu
             {row.kind === "delegate" ? "⌘" : "$"}
           </span>
           <span className={row.live ? `${CLASS.denseName} ${CLASS.denseNameLive}` : CLASS.denseName}>{name}</span>
-          {target && <OpenTranscriptButton transcriptRef={target} parentRef={row.parentRef} iconOnly tabIndex={-1} />}
+          {target && <OpenTranscriptButton transcriptRef={target} parentRef={row.parentRef} tabIndex={-1} />}
           {renderSegments(segments)}
         </div>
         {detailOpen && <ActivityRowDetail row={row} now={now} />}

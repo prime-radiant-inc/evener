@@ -65,8 +65,8 @@ func TestBuildDelegateSandboxPolicy_NotConfining(t *testing.T) {
 func TestBuildDelegateSandboxPolicy_OffWithNet(t *testing.T) {
 	netTrue := true
 	_, err := buildDelegateSandboxPolicy("off", &netTrue, sandbox.ModeOff, true)
-	if err == nil || !strings.Contains(err.Error(), "no effect") {
-		t.Fatalf("error = %v, want no effect", err)
+	if err == nil || !strings.Contains(err.Error(), "applies no network confinement") {
+		t.Fatalf("error = %v, want the no-network-confinement refusal", err)
 	}
 }
 

@@ -37,7 +37,7 @@ func (e *w3sub_readFileEnv) FileExists(string) bool { return false }
 func (e *w3sub_readFileEnv) Glob(context.Context, string, string, ...bool) ([]string, error) {
 	return nil, errors.New("not implemented")
 }
-func (e *w3sub_readFileEnv) Grep(string, string, string, bool, int, string, ...int) (string, error) {
+func (e *w3sub_readFileEnv) Grep(_ context.Context, _ string, _ string, _ string, _ bool, _ int, _ string, _ ...int) (string, error) {
 	return "", errors.New("not implemented")
 }
 func (e *w3sub_readFileEnv) ListDirectory(string, int) ([]execenv.DirEntry, error) {
@@ -54,7 +54,7 @@ func w3sub_readFileResult(t *testing.T, env execenv.ExecutionEnvironment, path s
 	if err := registerFileTools(reg, deps); err != nil {
 		t.Fatalf("registerFileTools: %v", err)
 	}
-	args, _ := json.Marshal(map[string]any{"file_path": path, "purpose": "inspect"})
+	args, _ := json.Marshal(map[string]any{"file_path": path, "intent": "inspect"})
 	return reg.ExecuteCall(context.Background(), env, llm.ToolCallData{ID: "c1", Name: "read_file", Arguments: args})
 }
 
@@ -69,8 +69,8 @@ func TestW3Sub_RegisterFileTools_ImageResult(t *testing.T) {
 	if len(res.ImageData) == 0 || res.ImageMediaType != "image/png" {
 		t.Fatalf("expected an image side-channel result, got: %+v", res)
 	}
-	if res.ImagePurpose != "inspect" {
-		t.Fatalf("purpose not carried through: %q", res.ImagePurpose)
+	if res.ImageIntent != "inspect" {
+		t.Fatalf("intent not carried through: %q", res.ImageIntent)
 	}
 }
 

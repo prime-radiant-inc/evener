@@ -17,38 +17,21 @@ import (
 	"primeradiant.com/evener/appwire"
 	"primeradiant.com/evener/cmd/evener-hub/internal/appsource"
 	"primeradiant.com/evener/cmd/evener-hub/internal/hubcore"
-	"primeradiant.com/evener/hubapi"
 	"primeradiant.com/evener/llm"
 	"primeradiant.com/evener/rendezvous"
 )
 
 type pass6TailSource struct {
 	*scriptedAppSource
-	readErr, listErr, actionErr error
-	clearResp                   appwire.ThreadClearResponse
-	compactCalls                int
+	listErr, actionErr error
+	compactCalls       int
 }
 
-func (s *pass6TailSource) ReadThread(ctx context.Context, p appwire.ThreadReadParams) (appwire.ThreadReadResponse, error) {
-	if s.readErr != nil {
-		return appwire.ThreadReadResponse{}, s.readErr
-	}
-	return s.scriptedAppSource.ReadThread(ctx, p)
-}
 func (s *pass6TailSource) ListThreads(context.Context, appwire.ThreadListParams) (appwire.ThreadListResponse, error) {
 	if s.listErr != nil {
 		return appwire.ThreadListResponse{}, s.listErr
 	}
 	return appwire.ThreadListResponse{Data: []appwire.Thread{s.thread}}, nil
-}
-func (s *pass6TailSource) ClearThread(context.Context, appwire.ThreadClearParams) (appwire.ThreadClearResponse, error) {
-	return s.clearResp, s.actionErr
-}
-func (s *pass6TailSource) SetThreadModel(context.Context, appwire.ThreadModelSetParams) error {
-	return s.actionErr
-}
-func (s *pass6TailSource) SetThreadReasoningEffort(context.Context, appwire.ThreadReasoningEffortSetParams) error {
-	return s.actionErr
 }
 func (s *pass6TailSource) CompactThread(context.Context, appwire.ThreadCompactStartParams) error {
 	s.compactCalls++
@@ -90,32 +73,6 @@ func FuzzSmallTailsPass6(f *testing.F) {
 			fn(httptest.NewRecorder(), httptest.NewRequest(method, target, strings.NewReader(body)))
 		}
 
-		// Search sorting, empty-session filtering, query rejection and inclusion.
-		call(web.handleApiSearch, http.MethodGet, "/api/search?q=no-match", "")
-		call(web.handleApiSearch, http.MethodGet, "/api/search?q=tail", "")
-
-		// Upgrade's command failure is external and injected deterministically.
-		oldUpgrade := webHubUpgrade
-		webHubUpgrade = func(context.Context, appwire.UpgradeParams) (appwire.UpgradeResponse, error) {
-			return appwire.UpgradeResponse{}, errors.New("upgrade")
-		}
-		call(web.handleAPIUpgrade, http.MethodPost, "/api/upgrade", "{}")
-		webHubUpgrade = oldUpgrade
-
-		// Source read/action failures cover the endpoint-specific wire paths.
-		source.readErr = appwire.Unavailable("read")
-		call(func(w http.ResponseWriter, r *http.Request) { web.handleAPIClear(w, r, "01TAIL") }, http.MethodPost, "/", "")
-		source.readErr = nil
-		source.actionErr = errors.New("action")
-		call(func(w http.ResponseWriter, r *http.Request) { web.handleAPIClear(w, r, "01TAIL") }, http.MethodPost, "/", "")
-		call(func(w http.ResponseWriter, r *http.Request) { web.handleAPIModel(w, r, "01TAIL") }, http.MethodPost, "/", `{"model":"p/m"}`)
-		call(func(w http.ResponseWriter, r *http.Request) { web.handleAPIReasoningEffort(w, r, "01TAIL") }, http.MethodPost, "/", `{"reasoning_effort":"high"}`)
-		source.actionErr = nil
-
-		// Successful clear with an invalid returned ref takes the local fallback.
-		source.clearResp = appwire.ThreadClearResponse{Thread: appwire.Thread{ID: "fallback"}}
-		call(func(w http.ResponseWriter, r *http.Request) { web.handleAPIClear(w, r, "01TAIL") }, http.MethodPost, "/", "")
-
 		// Both unavailable compact retries and the known-ref early exits.
 		source.actionErr = appwire.WireError{Code: appwire.CodeUnavailable, Data: appwire.ErrorData{EvenerErrorInfo: appwire.ErrorSessionUnavailable}}
 		_ = compactThreadWithResume(context.Background(), web.cfg, registry, appwire.ThreadCompactStartParams{Ref: "local:01TAIL"})
@@ -136,7 +93,7 @@ func FuzzSmallTailsPass6(f *testing.F) {
 		entry := hubcore.PastEntry{StateDir: root, Meta: schema.SessionMeta{ID: "01PAST", Model: "gpt-5"}}
 		_ = os.MkdirAll(filepath.Join(root, "sessions"), 0o755)
 		_ = os.WriteFile(filepath.Join(root, "sessions", "01PAST.transcript.jsonl"), []byte("bad\n"), 0o600)
-		_, _ = pastEntryTurns(entry)
+		_, _ = pastEntryTurns(hubcore.WebConfig{}, entry)
 		_ = appItemsFromReplayTurn("t", 0, schema.Turn{Message: llm.Message{Content: []llm.ContentPart{{Kind: llm.ContentImage, Image: &llm.ImageData{}}}}}, map[string]string{})
 		_ = appItemsFromReplayTurn("t", 0, schema.Turn{Message: llm.Message{Content: []llm.ContentPart{{Kind: llm.ContentToolResult}}}}, map[string]string{})
 
@@ -169,11 +126,10 @@ func FuzzSmallTailsPass6(f *testing.F) {
 			}
 			return exec.Command("false")
 		}
-		_, _ = gitHeadBranch(context.Background(), root)
+		_, _ = resolveGitHead(context.Background(), root)
 		gitCommand = oldGit
 
 		_ = workspaceDataFromAppThread(appwire.Thread{ID: "x", Source: "local", Preview: "preview", Status: appwire.ThreadStatus{Type: ""}})
-		_ = hubapi.RefResponse{}
 		_ = json.RawMessage(nil)
 		_ = variant
 	})

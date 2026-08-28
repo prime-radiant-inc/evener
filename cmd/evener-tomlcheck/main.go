@@ -218,10 +218,108 @@ func splitWords(s string) []string {
 
 const ignoreMarker = "evener:naming-ignore"
 
-var (
-	tomlKeyLineRe   = regexp.MustCompile(`^\s*([A-Za-z_][A-Za-z0-9_\-]*(?:\s*\.\s*[A-Za-z_][A-Za-z0-9_\-]*)*)\s*=`)
-	tomlTableLineRe = regexp.MustCompile(`^\s*\[\[?\s*([^\]]+?)\s*\]\]?\s*(?:#.*)?$`)
-)
+var tomlKeyLineRe = regexp.MustCompile(`^\s*([A-Za-z_][A-Za-z0-9_\-]*(?:\s*\.\s*[A-Za-z_][A-Za-z0-9_\-]*)*)\s*=`)
+
+// skipTOMLQuoted returns the index just past the quoted span in runes that
+// begins at i (runes[i] is the opening `"` or `'`). A `"`-quoted basic
+// string may contain an escaped `\"`; a `'`-quoted literal string cannot
+// contain `'` at all, so its first `'` after the opening one always closes
+// it. An unterminated quote runs to the end of runes rather than panicking.
+func skipTOMLQuoted(runes []rune, i int) int {
+	quote := runes[i]
+	i++
+	for i < len(runes) && runes[i] != quote {
+		if quote == '"' && runes[i] == '\\' && i+1 < len(runes) {
+			i++
+		}
+		i++
+	}
+	if i < len(runes) {
+		i++ // consume the closing quote
+	}
+	return i
+}
+
+// splitTOMLKeyPath splits a dotted TOML key path — the inside of a
+// [table.header] or the left side of a `key = value` line — into its
+// dot-separated segments, treating a dot inside a quoted segment as a
+// literal character rather than a separator. Segments are trimmed of
+// surrounding whitespace and empty segments are dropped; quoted segments
+// are returned verbatim, including their quotes.
+func splitTOMLKeyPath(path string) []string {
+	var segments []string
+	var cur strings.Builder
+	flush := func() {
+		if seg := strings.TrimSpace(cur.String()); seg != "" {
+			segments = append(segments, seg)
+		}
+		cur.Reset()
+	}
+	runes := []rune(path)
+	i := 0
+	for i < len(runes) {
+		switch r := runes[i]; r {
+		case '.':
+			flush()
+			i++
+		case '"', '\'':
+			start := i
+			i = skipTOMLQuoted(runes, i)
+			cur.WriteString(string(runes[start:i]))
+		default:
+			cur.WriteRune(r)
+			i++
+		}
+	}
+	flush()
+	return segments
+}
+
+// tomlTableHeaderPath recognizes a TOML table-header line — [path] or
+// [[path]], with an optional trailing `# comment` — and returns the
+// enclosed dotted key path. Like splitTOMLKeyPath, it is quote-aware: it
+// scans for the closing `]`/`]]` outside any quoted span, so a `]` inside a
+// quoted segment of path (e.g. the "[1m]" in a model id like
+// "claude-sonnet-4-5[1m]") does not end the header early. ok is false when
+// line is not a table-header line at all (including a malformed one, e.g.
+// mismatched bracket counts or trailing content that isn't a comment).
+func tomlTableHeaderPath(line string) (path string, ok bool) {
+	rest := strings.TrimSpace(line)
+	double := false
+	switch {
+	case strings.HasPrefix(rest, "[["):
+		double = true
+		rest = rest[2:]
+	case strings.HasPrefix(rest, "["):
+		rest = rest[1:]
+	default:
+		return "", false
+	}
+	runes := []rune(rest)
+	for i := 0; i < len(runes); {
+		switch runes[i] {
+		case '"', '\'':
+			i = skipTOMLQuoted(runes, i)
+		case ']':
+			pathRunes := runes[:i]
+			i++
+			if double {
+				if i >= len(runes) || runes[i] != ']' {
+					return "", false
+				}
+				i++
+			}
+			tail := strings.TrimSpace(string(runes[i:]))
+			if tail != "" && !strings.HasPrefix(tail, "#") {
+				return "", false
+			}
+			return string(pathRunes), true
+		default:
+			i++
+		}
+	}
+	return "", false
+}
 
 func checkTOMLFile(path, rel string) ([]Violation, error) {
 	data, err := os.ReadFile(path)
@@ -260,9 +358,8 @@ func checkTOMLFile(path, rel string) ([]Violation, error) {
 		}
 
 		// Table header: [section] or [[array.of.tables]]
-		if m := tomlTableLineRe.FindStringSubmatch(line); m != nil {
-			for part := range strings.SplitSeq(m[1], ".") {
-				key := strings.TrimSpace(part)
+		if headerPath, headerOK := tomlTableHeaderPath(line); headerOK {
+			for _, key := range splitTOMLKeyPath(headerPath) {
 				// Quoted keys are allowed verbatim — used for dotted keys
 				// that intentionally embed dots/spaces.
 				if strings.HasPrefix(key, `"`) || strings.HasPrefix(key, `'`) {
@@ -282,8 +379,12 @@ func checkTOMLFile(path, rel string) ([]Violation, error) {
 
 		// Plain key = value lines.
 		if m := tomlKeyLineRe.FindStringSubmatch(line); m != nil {
-			for part := range strings.SplitSeq(m[1], ".") {
-				key := strings.TrimSpace(part)
+			for _, key := range splitTOMLKeyPath(m[1]) {
+				// Quoted keys are allowed verbatim, same rule as table
+				// headers above.
+				if strings.HasPrefix(key, `"`) || strings.HasPrefix(key, `'`) {
+					continue
+				}
 				if !prevIgnore && !isSnakeCase(key) {
 					out = append(out, Violation{
 						File:    rel,

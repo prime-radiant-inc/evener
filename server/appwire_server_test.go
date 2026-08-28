@@ -18,9 +18,11 @@ import (
 	"primeradiant.com/evener/agent/diagnostic"
 	"primeradiant.com/evener/agent/events"
 	"primeradiant.com/evener/agent/schema"
+	taskpkg "primeradiant.com/evener/agent/task"
 	"primeradiant.com/evener/agent/transcript"
 	"primeradiant.com/evener/appwire"
 	"primeradiant.com/evener/llm"
+	"primeradiant.com/evener/llm/registry"
 )
 
 func requireTranscriptFileTurns(t testing.TB, path string) []appwire.Turn {
@@ -42,7 +44,7 @@ func TestServerAppWireTurnStartQueuesInput(t *testing.T) {
 	if init.Kind() != appwire.MessageResponse {
 		t.Fatalf("init=%v", init.Kind())
 	}
-	resp := conn.HandleMessage(context.Background(), appwire.RequestMessage(appwire.NewIntID(2), appwire.MethodTurnStart, appwire.TurnStartParams{ClientMutationID: "test-mutation",
+	resp := conn.HandleMessage(context.Background(), appwire.RequestMessage(appwire.NewIntID(2), appwire.MethodTurnStart, appwire.TurnStartParams{ClientMutationID: "test-mutation", ExpectedInstanceID: "th_1",
 		Ref:   "local:th_1",
 		Input: []appwire.InputItem{{Type: "text", Text: "hello"}},
 	}))
@@ -151,7 +153,7 @@ func TestServerAppWireThreadReadExposesReservedActiveTurnIDAlongsideSeededTurns(
 
 	conn := srv.AppServer().NewConnection("test")
 	conn.HandleMessage(context.Background(), appwire.RequestMessage(appwire.NewIntID(1), appwire.MethodInitialize, appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}))
-	start := conn.HandleMessage(context.Background(), appwire.RequestMessage(appwire.NewIntID(2), appwire.MethodTurnStart, appwire.TurnStartParams{ClientMutationID: "test-mutation",
+	start := conn.HandleMessage(context.Background(), appwire.RequestMessage(appwire.NewIntID(2), appwire.MethodTurnStart, appwire.TurnStartParams{ClientMutationID: "test-mutation", ExpectedInstanceID: "th_1",
 		Ref:   "local:th_1",
 		Input: []appwire.InputItem{{Type: "text", Text: "new input"}},
 	}))
@@ -269,7 +271,7 @@ func TestServerAppWireTurnStartAcceptsCodexInput(t *testing.T) {
 	if init.Kind() != appwire.MessageResponse {
 		t.Fatalf("init=%v", init.Kind())
 	}
-	resp := conn.HandleMessage(context.Background(), appwire.RequestMessage(appwire.NewIntID(2), appwire.MethodTurnStart, appwire.TurnStartParams{ClientMutationID: "test-mutation",
+	resp := conn.HandleMessage(context.Background(), appwire.RequestMessage(appwire.NewIntID(2), appwire.MethodTurnStart, appwire.TurnStartParams{ClientMutationID: "test-mutation", ExpectedInstanceID: "th_1",
 		ThreadID: "th_1",
 		Input: []appwire.InputItem{
 			{Type: "text", Text: "hello"},
@@ -311,7 +313,7 @@ func TestServerAppWireTurnStartIDMatchesProjectedNotifications(t *testing.T) {
 
 	conn := srv.AppServer().NewConnection("test")
 	conn.HandleMessage(context.Background(), appwire.RequestMessage(appwire.NewIntID(1), appwire.MethodInitialize, appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}))
-	resp := conn.HandleMessage(context.Background(), appwire.RequestMessage(appwire.NewIntID(2), appwire.MethodTurnStart, appwire.TurnStartParams{ClientMutationID: "test-mutation",
+	resp := conn.HandleMessage(context.Background(), appwire.RequestMessage(appwire.NewIntID(2), appwire.MethodTurnStart, appwire.TurnStartParams{ClientMutationID: "test-mutation", ExpectedInstanceID: "th_1",
 		Ref:   "local:th_1",
 		Input: []appwire.InputItem{{Type: "text", Text: "hello"}},
 	}))
@@ -642,13 +644,13 @@ func TestServerAppWireTurnSteerPreservesImages(t *testing.T) {
 
 	conn := srv.AppServer().NewConnection("test")
 	conn.HandleMessage(context.Background(), appwire.RequestMessage(appwire.NewIntID(1), appwire.MethodInitialize, appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}))
-	start := conn.HandleMessage(context.Background(), appwire.RequestMessage(appwire.NewIntID(2), appwire.MethodTurnStart, appwire.TurnStartParams{ClientMutationID: "test-mutation",
+	start := conn.HandleMessage(context.Background(), appwire.RequestMessage(appwire.NewIntID(2), appwire.MethodTurnStart, appwire.TurnStartParams{ClientMutationID: "test-mutation", ExpectedInstanceID: "th_1",
 		Ref:   "local:th_1",
 		Input: []appwire.InputItem{{Type: "text", Text: "hello"}},
 	}))
 	_ = start.Response.Result.(appwire.TurnStartResponse)
 
-	resp := conn.HandleMessage(context.Background(), appwire.RequestMessage(appwire.NewIntID(3), appwire.MethodTurnSteer, appwire.TurnSteerParams{ClientMutationID: "test-mutation",
+	resp := conn.HandleMessage(context.Background(), appwire.RequestMessage(appwire.NewIntID(3), appwire.MethodTurnSteer, appwire.TurnSteerParams{ClientMutationID: "test-mutation", ExpectedInstanceID: "th_1",
 		Ref: "local:th_1",
 		Input: []appwire.InputItem{
 			{Type: "text", Text: "look at this"},
@@ -677,13 +679,13 @@ func TestServerAppWireTurnSteerRejectsImagesWithoutImageHook(t *testing.T) {
 
 	conn := srv.AppServer().NewConnection("test")
 	conn.HandleMessage(context.Background(), appwire.RequestMessage(appwire.NewIntID(1), appwire.MethodInitialize, appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}))
-	start := conn.HandleMessage(context.Background(), appwire.RequestMessage(appwire.NewIntID(2), appwire.MethodTurnStart, appwire.TurnStartParams{ClientMutationID: "test-mutation",
+	start := conn.HandleMessage(context.Background(), appwire.RequestMessage(appwire.NewIntID(2), appwire.MethodTurnStart, appwire.TurnStartParams{ClientMutationID: "test-mutation", ExpectedInstanceID: "th_1",
 		Ref:   "local:th_1",
 		Input: []appwire.InputItem{{Type: "text", Text: "hello"}},
 	}))
 	_ = start.Response.Result.(appwire.TurnStartResponse)
 
-	resp := conn.HandleMessage(context.Background(), appwire.RequestMessage(appwire.NewIntID(3), appwire.MethodTurnSteer, appwire.TurnSteerParams{ClientMutationID: "test-mutation",
+	resp := conn.HandleMessage(context.Background(), appwire.RequestMessage(appwire.NewIntID(3), appwire.MethodTurnSteer, appwire.TurnSteerParams{ClientMutationID: "test-mutation", ExpectedInstanceID: "th_1",
 		Ref:   "local:th_1",
 		Input: []appwire.InputItem{{Type: "image", MediaType: "image/png", Name: "shot.png", Data: []byte("png")}},
 	}))
@@ -710,15 +712,16 @@ func TestServerAppWireTurnInterruptCancelsTheRunningTurn(t *testing.T) {
 
 	conn := srv.AppServer().NewConnection("test")
 	conn.HandleMessage(context.Background(), appwire.RequestMessage(appwire.NewIntID(1), appwire.MethodInitialize, appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}))
-	start := conn.HandleMessage(context.Background(), appwire.RequestMessage(appwire.NewIntID(2), appwire.MethodTurnStart, appwire.TurnStartParams{ClientMutationID: "test-mutation",
+	start := conn.HandleMessage(context.Background(), appwire.RequestMessage(appwire.NewIntID(2), appwire.MethodTurnStart, appwire.TurnStartParams{ClientMutationID: "test-mutation", ExpectedInstanceID: "th_1",
 		Ref:   "local:th_1",
 		Input: []appwire.InputItem{{Type: "text", Text: "hello"}},
 	}))
 	_ = start.Response.Result.(appwire.TurnStartResponse)
 
 	stopped := conn.HandleMessage(context.Background(), appwire.RequestMessage(appwire.NewIntID(3), appwire.MethodTurnInterrupt, appwire.TurnInterruptParams{
-		ClientMutationID: "test-mutation",
-		Ref:              "local:th_1",
+		ClientMutationID:   "test-mutation",
+		ExpectedInstanceID: "th_1",
+		Ref:                "local:th_1",
 	}))
 	if stopped.Kind() != appwire.MessageResponse {
 		t.Fatalf("interrupt=%+v", stopped)
@@ -773,7 +776,7 @@ func TestServerAppWireTurnStartRejectsClosedSession(t *testing.T) {
 
 	conn := srv.AppServer().NewConnection("test")
 	conn.HandleMessage(context.Background(), appwire.RequestMessage(appwire.NewIntID(1), appwire.MethodInitialize, appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}))
-	resp := conn.HandleMessage(context.Background(), appwire.RequestMessage(appwire.NewIntID(2), appwire.MethodTurnStart, appwire.TurnStartParams{ClientMutationID: "test-mutation",
+	resp := conn.HandleMessage(context.Background(), appwire.RequestMessage(appwire.NewIntID(2), appwire.MethodTurnStart, appwire.TurnStartParams{ClientMutationID: "test-mutation", ExpectedInstanceID: "th_1",
 		Ref:   "local:th_1",
 		Input: []appwire.InputItem{{Type: "text", Text: "hello"}},
 	}))
@@ -866,6 +869,698 @@ func TestServerAppWireErrorEventNotifiesSubscribers(t *testing.T) {
 	}
 }
 
+func TestServerAppWireGoalUpdatedFanoutToEverySubscribedClient(t *testing.T) {
+	srv := NewServer(ServerConfig{})
+	srv.SetAppIdentity("local", "th_1")
+
+	httpServer := httptest.NewServer(http.HandlerFunc(srv.AppServer().ServeWebSocket))
+	defer httpServer.Close()
+	ctx := context.Background()
+	newClient := func(name string) *appwire.Client {
+		t.Helper()
+		transport, err := appwire.DialWebSocket(ctx, "ws"+httpServer.URL[len("http"):], httpServer.Client())
+		if err != nil {
+			t.Fatalf("%s dial: %v", name, err)
+		}
+		t.Cleanup(func() { _ = transport.Close() })
+		client := appwire.NewClient(transport)
+		client.Start(ctx)
+		if _, err := client.Initialize(ctx, appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
+			t.Fatalf("%s initialize: %v", name, err)
+		}
+		return client
+	}
+	awaitGoalUpdated := func(name string, client *appwire.Client, want *appwire.GoalState) {
+		t.Helper()
+		deadline := time.NewTimer(time.Second)
+		defer deadline.Stop()
+		for {
+			select {
+			case notification := <-client.Notifications():
+				if notification.Method != appwire.NotifyEvenerGoalUpdated {
+					continue
+				}
+				var params appwire.GoalUpdatedParams
+				if err := json.Unmarshal(notification.Params, &params); err != nil {
+					t.Fatalf("%s decode goal update: %v", name, err)
+				}
+				if params.ThreadID != "th_1" || params.Ref != "local:th_1" {
+					t.Fatalf("%s goal update target = %+v, want th_1/local:th_1", name, params)
+				}
+				if want == nil {
+					if params.Goal != nil {
+						t.Fatalf("%s clear goal = %+v, want nil", name, params.Goal)
+					}
+					return
+				}
+				if params.Goal == nil || *params.Goal != *want {
+					t.Fatalf("%s goal = %+v, want %+v", name, params.Goal, want)
+				}
+				return
+			case <-deadline.C:
+				t.Fatalf("%s timed out waiting for evener/goal/updated", name)
+			}
+		}
+	}
+
+	first := newClient("first")
+	second := newClient("second")
+	for _, subscriber := range []struct {
+		name   string
+		client *appwire.Client
+	}{
+		{name: "first", client: first},
+		{name: "second", client: second},
+	} {
+		if _, err := subscriber.client.ThreadRead(ctx, appwire.ThreadReadParams{Ref: "local:th_1", Subscribe: true}); err != nil {
+			t.Fatalf("%s thread/read: %v", subscriber.name, err)
+		}
+	}
+	if got := srv.AppSubscriberCount("th_1"); got != 2 {
+		t.Fatalf("subscriber count=%d, want 2", got)
+	}
+
+	wantSet := &appwire.GoalState{Objective: "ship every client", Status: "active", Iterations: 3}
+	srv.RecordAppEvent(events.SessionEvent{
+		Kind:      events.EventGoalUpdated,
+		SessionID: "th_1",
+		Data:      events.GoalUpdatedData{Goal: &events.GoalStateData{Objective: wantSet.Objective, Status: wantSet.Status, Iterations: wantSet.Iterations}},
+	})
+	awaitGoalUpdated("first", first, wantSet)
+	awaitGoalUpdated("second", second, wantSet)
+	for _, reader := range []struct {
+		name   string
+		client *appwire.Client
+	}{{"first", first}, {"second", second}} {
+		read, err := reader.client.ThreadRead(ctx, appwire.ThreadReadParams{Ref: "local:th_1"})
+		if err != nil {
+			t.Fatalf("%s thread/read after goal update: %v", reader.name, err)
+		}
+		if read.Thread.Evener.Goal == nil || *read.Thread.Evener.Goal != *wantSet {
+			t.Fatalf("%s read goal = %+v, want %+v", reader.name, read.Thread.Evener.Goal, wantSet)
+		}
+	}
+
+	srv.RecordAppEvent(events.SessionEvent{Kind: events.EventGoalUpdated, SessionID: "th_1", Data: events.GoalUpdatedData{Goal: nil}})
+	awaitGoalUpdated("first", first, nil)
+	awaitGoalUpdated("second", second, nil)
+}
+
+func newTask2SubscribedClient(t *testing.T, srv *Server, name string, refs ...string) *appwire.Client {
+	t.Helper()
+	httpServer := httptest.NewServer(http.HandlerFunc(srv.AppServer().ServeWebSocket))
+	t.Cleanup(httpServer.Close)
+	ctx := context.Background()
+	transport, err := appwire.DialWebSocket(ctx, "ws"+httpServer.URL[len("http"):], httpServer.Client())
+	if err != nil {
+		t.Fatalf("%s dial: %v", name, err)
+	}
+	t.Cleanup(func() { _ = transport.Close() })
+	client := appwire.NewClient(transport)
+	client.Start(ctx)
+	if _, err := client.Initialize(ctx, appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
+		t.Fatalf("%s initialize: %v", name, err)
+	}
+	for _, ref := range refs {
+		if _, err := client.ThreadRead(ctx, appwire.ThreadReadParams{Ref: ref, Subscribe: true, ReplaceSubscription: false}); err != nil {
+			t.Fatalf("%s subscribe %s: %v", name, ref, err)
+		}
+	}
+	return client
+}
+
+func awaitTask2Notification(t *testing.T, client *appwire.Client, method string) appwire.Notification {
+	t.Helper()
+	deadline := time.NewTimer(time.Second)
+	defer deadline.Stop()
+	for {
+		select {
+		case notification := <-client.Notifications():
+			if notification.Method == method {
+				return notification
+			}
+		case <-deadline.C:
+			t.Fatalf("timed out waiting for %s", method)
+		}
+	}
+}
+
+func TestServerAppWireTaskAndGoalPatchesAreInSnapshotBeforeNotificationDelivery(t *testing.T) {
+	srv := NewServer(ServerConfig{})
+	srv.SetAppIdentity("local", "root")
+	source := publishEnvelope(srv, &stubThreadEnvelopeSource{
+		tasks: &appwire.TaskAggregate{Total: 1, Current: &appwire.TaskSummary{ID: 1, Description: "stale source task"}},
+		meta:  schema.SessionMeta{Goal: &schema.GoalSnapshot{Objective: "stale source goal", Status: "active"}},
+	})
+	client := newTask2SubscribedClient(t, srv, "atomic", "local:root")
+
+	feedBridge(srv, events.SessionEvent{Kind: events.EventTaskUpdated, SessionID: "root", Data: events.TaskUpdatedData{
+		Total: 2, Done: 1, Current: &events.TaskSummaryData{ID: 2, Description: "carrier task"},
+		TaskStoreOwnerSessionID: "root",
+	}})
+	awaitTask2Notification(t, client, appwire.NotifyEvenerTaskUpdated)
+	read, err := client.ThreadRead(context.Background(), appwire.ThreadReadParams{Ref: "local:root"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if read.Thread.Evener.Tasks == nil || read.Thread.Evener.Tasks.Current == nil || read.Thread.Evener.Tasks.Current.Description != "carrier task" {
+		t.Fatalf("snapshot after delivered task notification = %+v", read.Thread.Evener.Tasks)
+	}
+
+	goal := &events.GoalStateData{Objective: "carrier goal", Status: "active", Iterations: 2}
+	feedBridge(srv, events.SessionEvent{Kind: events.EventGoalUpdated, SessionID: "root", Data: events.GoalUpdatedData{Goal: goal}})
+	awaitTask2Notification(t, client, appwire.NotifyEvenerGoalUpdated)
+	read, err = client.ThreadRead(context.Background(), appwire.ThreadReadParams{Ref: "local:root"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if read.Thread.Evener.Goal == nil || read.Thread.Evener.Goal.Objective != goal.Objective || read.Thread.Evener.Goal.Status != goal.Status || read.Thread.Evener.Goal.Iterations != goal.Iterations {
+		t.Fatalf("snapshot after delivered goal notification = %+v", read.Thread.Evener.Goal)
+	}
+	if source.tasks.Current.Description != "stale source task" || source.meta.Goal.Objective != "stale source goal" {
+		t.Fatal("fixture source changed; test no longer proves carrier-first projection")
+	}
+}
+
+func TestServerAppWireCheckpointCannotOverwriteDescendantSharedTaskCarrier(t *testing.T) {
+	srv := NewServer(ServerConfig{})
+	srv.SetAppIdentity("local", "root")
+	src := publishEnvelope(srv, &stubThreadEnvelopeSource{
+		tasks: &appwire.TaskAggregate{Total: 1, Current: &appwire.TaskSummary{ID: 1, Description: "old sampled task"}},
+	})
+	srv.RecordDescendantAppEvent("root", events.SessionEvent{Kind: events.EventSessionStart, SessionID: "child", Data: events.SessionStartData{
+		TaskStoreOwnerSessionID: "root",
+		TaskPublicationEpoch:    10,
+		TaskPublicationRevision: 1,
+		CurrentWork: &events.CurrentWorkSeedData{Tasks: &events.TaskStateData{
+			Total: 1, Current: &events.TaskSummaryData{ID: 1, Description: "old sampled task"},
+		}},
+	}})
+	src.queue = appwire.QueueState{Depth: 4, Revision: 2}
+
+	parked := make(chan struct{})
+	release := make(chan struct{})
+	var once sync.Once
+	src.parkOnMeta = func() {
+		once.Do(func() {
+			close(parked)
+			<-release
+		})
+	}
+	checkpointDone := make(chan struct{})
+	go func() {
+		defer close(checkpointDone)
+		BridgeEvent(srv, events.SessionEvent{Kind: events.EventTurnEnded, SessionID: "root"}, nil)
+	}()
+	<-parked
+
+	srv.RecordDescendantAppEvent("root", events.SessionEvent{Kind: events.EventTaskUpdated, SessionID: "child", Data: events.TaskUpdatedData{
+		Total: 2, Done: 1, Current: &events.TaskSummaryData{ID: 2, Description: "new shared-owner task"},
+		TaskStoreOwnerSessionID: "root",
+		TaskPublicationEpoch:    10,
+		TaskPublicationRevision: 2,
+	}})
+	notifications := srv.AppNotificationsAfter(0, "root")
+	if len(notifications) == 0 || notifications[len(notifications)-1].Notification.Method != appwire.NotifyEvenerTaskUpdated {
+		t.Fatalf("root notifications = %+v, want task update", notifications)
+	}
+	assertCurrentTask := func(stage string) {
+		t.Helper()
+		thread := readThreadOverWire(t, srv, "local:root")
+		if thread.Evener.Tasks == nil || thread.Evener.Tasks.Current == nil || thread.Evener.Tasks.Current.Description != "new shared-owner task" {
+			t.Fatalf("%s tasks = %+v, want descendant carrier", stage, thread.Evener.Tasks)
+		}
+	}
+	assertCurrentTask("notification cut")
+	close(release)
+	<-checkpointDone
+	assertCurrentTask("after checkpoint")
+	if queue := readThreadOverWire(t, srv, "local:root").Evener.Queue; queue.Depth != 4 || queue.Revision != 2 {
+		t.Fatalf("unaffected checkpoint queue = %+v, want updated sample", queue)
+	}
+}
+
+func TestServerAppWireCheckpointCannotOverwriteConcurrentGoalCarrier(t *testing.T) {
+	srv := NewServer(ServerConfig{})
+	srv.SetAppIdentity("local", "root")
+	src := publishEnvelope(srv, &stubThreadEnvelopeSource{meta: schema.SessionMeta{Goal: &schema.GoalSnapshot{
+		Objective: "old sampled goal", Status: "active", Iterations: 1,
+	}}})
+
+	parked := make(chan struct{})
+	release := make(chan struct{})
+	var once sync.Once
+	src.parkAfterMeta = func() {
+		once.Do(func() {
+			close(parked)
+			<-release
+		})
+	}
+	checkpointDone := make(chan struct{})
+	go func() {
+		defer close(checkpointDone)
+		BridgeEvent(srv, events.SessionEvent{Kind: events.EventTurnEnded, SessionID: "root"}, nil)
+	}()
+	<-parked
+
+	BridgeEvent(srv, events.SessionEvent{Kind: events.EventGoalUpdated, SessionID: "root", Data: events.GoalUpdatedData{Goal: &events.GoalStateData{
+		Objective: "new carrier goal", Status: "active", Iterations: 2,
+	}}}, nil)
+	notifications := srv.AppNotificationsAfter(0, "root")
+	if len(notifications) == 0 || notifications[len(notifications)-1].Notification.Method != appwire.NotifyEvenerGoalUpdated {
+		t.Fatalf("root notifications = %+v, want goal update", notifications)
+	}
+	assertGoal := func(stage string) {
+		t.Helper()
+		thread := readThreadOverWire(t, srv, "local:root")
+		if thread.Evener.Goal == nil || thread.Evener.Goal.Objective != "new carrier goal" || thread.Evener.Goal.Iterations != 2 {
+			t.Fatalf("%s goal = %+v, want direct carrier", stage, thread.Evener.Goal)
+		}
+	}
+	assertGoal("notification cut")
+	close(release)
+	<-checkpointDone
+	assertGoal("after checkpoint")
+}
+
+func TestServerAppWireCheckpointStillRepairsTaskAndGoalWithoutConcurrentCarrier(t *testing.T) {
+	srv := NewServer(ServerConfig{})
+	srv.SetAppIdentity("local", "root")
+	src := publishEnvelope(srv, &stubThreadEnvelopeSource{
+		tasks: &appwire.TaskAggregate{Total: 1, Current: &appwire.TaskSummary{ID: 1, Description: "initial sampled task"}},
+		meta:  schema.SessionMeta{Goal: &schema.GoalSnapshot{Objective: "initial sampled goal", Status: "active", Iterations: 1}},
+	})
+	srv.RecordAppEvent(events.SessionEvent{Kind: events.EventTaskUpdated, SessionID: "root", Data: events.TaskUpdatedData{
+		Total: 2, Current: &events.TaskSummaryData{ID: 2, Description: "stale carrier task"},
+	}})
+	srv.RecordAppEvent(events.SessionEvent{Kind: events.EventGoalUpdated, SessionID: "root", Data: events.GoalUpdatedData{Goal: &events.GoalStateData{
+		Objective: "stale carrier goal", Status: "active", Iterations: 2,
+	}}})
+
+	src.tasks = &appwire.TaskAggregate{Total: 3, Done: 1, Current: &appwire.TaskSummary{ID: 3, Description: "checkpoint repaired task"}}
+	src.meta.Goal = &schema.GoalSnapshot{Objective: "checkpoint repaired goal", Status: "active", Iterations: 4}
+	BridgeEvent(srv, events.SessionEvent{Kind: events.EventTurnEnded, SessionID: "root"}, nil)
+
+	thread := readThreadOverWire(t, srv, "local:root")
+	if thread.Evener.Tasks == nil || thread.Evener.Tasks.Current == nil || thread.Evener.Tasks.Current.Description != "checkpoint repaired task" {
+		t.Fatalf("repaired tasks = %+v", thread.Evener.Tasks)
+	}
+	if thread.Evener.Goal == nil || thread.Evener.Goal.Objective != "checkpoint repaired goal" || thread.Evener.Goal.Iterations != 4 {
+		t.Fatalf("repaired goal = %+v", thread.Evener.Goal)
+	}
+}
+
+func TestServerAppWireTaskAndGoalUpdatesHaveOneOrderForEveryClient(t *testing.T) {
+	srv := NewServer(ServerConfig{})
+	srv.SetAppIdentity("local", "root")
+	publishEnvelope(srv, &stubThreadEnvelopeSource{})
+	first := newTask2SubscribedClient(t, srv, "ordered-first", "local:root")
+	second := newTask2SubscribedClient(t, srv, "ordered-second", "local:root")
+
+	insideCommit := make(chan struct{})
+	release := make(chan struct{})
+	var parked sync.Once
+	setInsideAppProjectionCommitHook(t, func() {
+		parked.Do(func() {
+			close(insideCommit)
+			<-release
+		})
+	})
+
+	taskDone := make(chan struct{})
+	go func() {
+		defer close(taskDone)
+		srv.RecordAppEvent(events.SessionEvent{Kind: events.EventTaskUpdated, SessionID: "root", Data: events.TaskUpdatedData{
+			Total: 1, Current: &events.TaskSummaryData{ID: 1, Description: "first carrier"},
+			TaskStoreOwnerSessionID: "root",
+		}})
+	}()
+	<-insideCommit
+
+	goalReached := make(chan struct{})
+	var reached sync.Once
+	srv.mu.Lock()
+	srv.beforeAppProjectionCommit = func() { reached.Do(func() { close(goalReached) }) }
+	srv.mu.Unlock()
+	goalDone := make(chan struct{})
+	go func() {
+		defer close(goalDone)
+		srv.RecordAppEvent(events.SessionEvent{Kind: events.EventGoalUpdated, SessionID: "root", Data: events.GoalUpdatedData{
+			Goal: &events.GoalStateData{Objective: "second carrier", Status: "active", Iterations: 1},
+		}})
+	}()
+	<-goalReached
+	close(release)
+	<-taskDone
+	<-goalDone
+
+	for _, receiver := range []struct {
+		name   string
+		client *appwire.Client
+	}{{"first", first}, {"second", second}} {
+		methods := []string{
+			awaitTask2Notification(t, receiver.client, appwire.NotifyEvenerTaskUpdated).Method,
+			awaitTask2Notification(t, receiver.client, appwire.NotifyEvenerGoalUpdated).Method,
+		}
+		if methods[0] != appwire.NotifyEvenerTaskUpdated || methods[1] != appwire.NotifyEvenerGoalUpdated {
+			t.Fatalf("%s methods = %v, want task then goal", receiver.name, methods)
+		}
+		read, err := receiver.client.ThreadRead(context.Background(), appwire.ThreadReadParams{Ref: "local:root"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if read.Thread.Evener.Tasks == nil || read.Thread.Evener.Tasks.Current == nil || read.Thread.Evener.Tasks.Current.Description != "first carrier" ||
+			read.Thread.Evener.Goal == nil || read.Thread.Evener.Goal.Objective != "second carrier" {
+			t.Fatalf("%s final state = tasks:%+v goal:%+v", receiver.name, read.Thread.Evener.Tasks, read.Thread.Evener.Goal)
+		}
+	}
+}
+
+func TestServerAppWireDescendantSessionStartSeedsCurrentTaskAndGoal(t *testing.T) {
+	srv := NewServer(ServerConfig{})
+	srv.SetAppIdentity("local", "root")
+	srv.RecordDescendantAppEvent("root", events.SessionEvent{Kind: events.EventSessionStart, SessionID: "child", Data: events.SessionStartData{
+		TaskStoreOwnerSessionID: "child",
+		CurrentWork: &events.CurrentWorkSeedData{
+			Tasks: &events.TaskStateData{Total: 2, Done: 1, Current: &events.TaskSummaryData{ID: 2, Description: "descendant seed"}},
+			Goal:  &events.GoalStateData{Objective: "descendant objective", Status: "active", Iterations: 3},
+		},
+	}})
+	thread := readThreadOverWire(t, srv, "local:child")
+	if thread.Evener.Tasks == nil || thread.Evener.Tasks.Current == nil || thread.Evener.Tasks.Current.Description != "descendant seed" {
+		t.Fatalf("descendant start tasks = %+v", thread.Evener.Tasks)
+	}
+	if thread.Evener.Goal == nil || thread.Evener.Goal.Objective != "descendant objective" || thread.Evener.Goal.Iterations != 3 {
+		t.Fatalf("descendant start goal = %+v", thread.Evener.Goal)
+	}
+}
+
+func TestServerAppWireDescendantSessionStartExplicitlyClearsGoal(t *testing.T) {
+	srv := NewServer(ServerConfig{})
+	srv.SetAppIdentity("local", "root")
+	seed := events.SessionStartData{TaskStoreOwnerSessionID: "child", CurrentWork: &events.CurrentWorkSeedData{
+		Goal: &events.GoalStateData{Objective: "cached descendant goal", Status: "active", Iterations: 2},
+	}}
+	srv.RecordDescendantAppEvent("root", events.SessionEvent{Kind: events.EventSessionStart, SessionID: "child", Data: seed})
+	srv.RecordDescendantAppEvent("root", events.SessionEvent{Kind: events.EventSessionStart, SessionID: "child", Data: events.SessionStartData{}})
+	if got := readThreadOverWire(t, srv, "local:child").Evener.Goal; got == nil || got.Objective != "cached descendant goal" {
+		t.Fatalf("legacy descendant start cleared cached goal: %+v", got)
+	}
+	srv.RecordDescendantAppEvent("root", events.SessionEvent{Kind: events.EventSessionStart, SessionID: "child", Data: events.SessionStartData{
+		TaskStoreOwnerSessionID: "child", CurrentWork: &events.CurrentWorkSeedData{Goal: nil},
+	}})
+	if got := readThreadOverWire(t, srv, "local:child").Evener.Goal; got != nil {
+		t.Fatalf("present descendant start did not clear goal: %+v", got)
+	}
+}
+
+func TestServerAppWireDescendantCarriersReplaceSeedAndClearGoal(t *testing.T) {
+	srv := NewServer(ServerConfig{})
+	srv.SetAppIdentity("local", "root")
+	publishEnvelope(srv, &stubThreadEnvelopeSource{
+		tasks: &appwire.TaskAggregate{Total: 1, Current: &appwire.TaskSummary{ID: 1, Description: "root task"}},
+		meta:  schema.SessionMeta{Goal: &schema.GoalSnapshot{Objective: "root goal", Status: "active"}},
+	})
+	srv.RecordDescendantAppEvent("root", events.SessionEvent{Kind: events.EventSessionStart, SessionID: "child", Data: events.SessionStartData{
+		TaskStoreOwnerSessionID: "child", CurrentWork: &events.CurrentWorkSeedData{
+			Tasks: &events.TaskStateData{Total: 1, Current: &events.TaskSummaryData{ID: 1, Description: "child old task"}},
+			Goal:  &events.GoalStateData{Objective: "child old goal", Status: "active"},
+		},
+	}})
+	srv.RecordDescendantAppEvent("root", events.SessionEvent{Kind: events.EventTaskUpdated, SessionID: "child", Data: events.TaskUpdatedData{
+		Total: 2, Done: 1, Current: &events.TaskSummaryData{ID: 2, Description: "child replacement"},
+		TaskStoreOwnerSessionID: "child",
+	}})
+	srv.RecordDescendantAppEvent("root", events.SessionEvent{Kind: events.EventGoalUpdated, SessionID: "child", Data: events.GoalUpdatedData{Goal: nil}})
+	child := readThreadOverWire(t, srv, "local:child")
+	if child.Evener.Tasks == nil || child.Evener.Tasks.Current == nil || child.Evener.Tasks.Current.Description != "child replacement" || child.Evener.Goal != nil {
+		t.Fatalf("child carriers = tasks:%+v goal:%+v", child.Evener.Tasks, child.Evener.Goal)
+	}
+	root := readThreadOverWire(t, srv, "local:root")
+	if root.Evener.Tasks == nil || root.Evener.Tasks.Current == nil || root.Evener.Tasks.Current.Description != "root task" || root.Evener.Goal == nil || root.Evener.Goal.Objective != "root goal" {
+		t.Fatalf("child carriers changed root = tasks:%+v goal:%+v", root.Evener.Tasks, root.Evener.Goal)
+	}
+}
+
+func TestServerAppWireSharedTaskOwnerFansOutInOneCommit(t *testing.T) {
+	srv := NewServer(ServerConfig{})
+	srv.SetAppIdentity("local", "root")
+	publishEnvelope(srv, &stubThreadEnvelopeSource{tasks: &appwire.TaskAggregate{Total: 1, Current: &appwire.TaskSummary{ID: 1, Description: "root old"}}})
+	for _, start := range []struct {
+		id, owner, task string
+		epoch           uint64
+	}{
+		{"matching-child", "root", "matching old", 20},
+		{"unrelated-child", "unrelated-child", "unrelated old", 21},
+	} {
+		srv.RecordDescendantAppEvent("root", events.SessionEvent{Kind: events.EventSessionStart, SessionID: start.id, Data: events.SessionStartData{
+			TaskStoreOwnerSessionID: start.owner,
+			TaskPublicationEpoch:    start.epoch,
+			TaskPublicationRevision: 1,
+			CurrentWork:             &events.CurrentWorkSeedData{Tasks: &events.TaskStateData{Total: 1, Current: &events.TaskSummaryData{ID: 1, Description: start.task}}},
+		}})
+	}
+	cursor := srv.appNotifier.CurrentSequence()
+	srv.RecordDescendantAppEvent("root", events.SessionEvent{Kind: events.EventTaskUpdated, SessionID: "matching-child", Data: events.TaskUpdatedData{
+		Total: 2, Done: 1, Current: &events.TaskSummaryData{ID: 2, Description: "shared replacement"},
+		TaskStoreOwnerSessionID: "root",
+		TaskPublicationEpoch:    20,
+		TaskPublicationRevision: 2,
+	}})
+	for _, id := range []string{"root", "matching-child"} {
+		thread := readThreadOverWire(t, srv, "local:"+id)
+		if thread.Evener.Tasks == nil || thread.Evener.Tasks.Current == nil || thread.Evener.Tasks.Current.Description != "shared replacement" {
+			t.Fatalf("%s tasks = %+v, want shared replacement", id, thread.Evener.Tasks)
+		}
+		notifications := srv.AppNotificationsAfter(cursor, id)
+		if len(notifications) != 1 || notifications[0].Notification.Method != appwire.NotifyEvenerTaskUpdated {
+			t.Fatalf("%s notifications = %+v, want one task update", id, notifications)
+		}
+		var params appwire.TaskUpdatedParams
+		if err := json.Unmarshal(notifications[0].Notification.Params, &params); err != nil {
+			t.Fatal(err)
+		}
+		if params.ThreadID != id || params.Ref != "local:"+id {
+			t.Fatalf("%s notification target = %+v", id, params)
+		}
+	}
+	unrelated := readThreadOverWire(t, srv, "local:unrelated-child")
+	if unrelated.Evener.Tasks == nil || unrelated.Evener.Tasks.Current == nil || unrelated.Evener.Tasks.Current.Description != "unrelated old" {
+		t.Fatalf("unrelated tasks changed: %+v", unrelated.Evener.Tasks)
+	}
+	if got := srv.AppNotificationsAfter(cursor, "unrelated-child"); len(got) != 0 {
+		t.Fatalf("unrelated child received shared update: %+v", got)
+	}
+}
+
+func TestServerAppWireTaskPublicationRevisionRejectsDelayedRootCarrier(t *testing.T) {
+	srv := NewServer(ServerConfig{})
+	srv.SetAppIdentity("local", "root")
+	publishEnvelope(srv, &stubThreadEnvelopeSource{tasks: &appwire.TaskAggregate{Total: 1, Current: &appwire.TaskSummary{ID: 1, Description: "base task"}}})
+	srv.RecordAppEvent(events.SessionEvent{Kind: events.EventSessionStart, SessionID: "root", Data: events.SessionStartData{
+		TaskStoreOwnerSessionID: "root",
+		TaskPublicationEpoch:    30,
+		TaskPublicationRevision: 1,
+		CurrentWork: &events.CurrentWorkSeedData{Tasks: &events.TaskStateData{
+			Total: 1, Current: &events.TaskSummaryData{ID: 1, Description: "base task"},
+		}},
+	}})
+	srv.RecordDescendantAppEvent("root", events.SessionEvent{Kind: events.EventSessionStart, SessionID: "child", Data: events.SessionStartData{
+		TaskStoreOwnerSessionID: "root",
+		TaskPublicationEpoch:    30,
+		TaskPublicationRevision: 1,
+		CurrentWork: &events.CurrentWorkSeedData{Tasks: &events.TaskStateData{
+			Total: 1, Current: &events.TaskSummaryData{ID: 1, Description: "base task"},
+		}},
+	}})
+
+	srv.RecordDescendantAppEvent("root", events.SessionEvent{Kind: events.EventTaskUpdated, SessionID: "child", Data: events.TaskUpdatedData{
+		Total: 2, Done: 1, Current: &events.TaskSummaryData{ID: 2, Description: "newer child carrier"},
+		TaskStoreOwnerSessionID: "root",
+		TaskPublicationEpoch:    30,
+		TaskPublicationRevision: 3,
+	}})
+	afterChild := srv.appNotifier.CurrentSequence()
+
+	// This models the actual transport inversion: the root committed revision 2
+	// first but its asynchronous event drain delivers it only after the child has
+	// synchronously applied revision 3.
+	srv.RecordAppEvent(events.SessionEvent{Kind: events.EventTaskUpdated, SessionID: "root", Data: events.TaskUpdatedData{
+		Total: 2, Current: &events.TaskSummaryData{ID: 1, Description: "delayed older root carrier"},
+		TaskStoreOwnerSessionID: "root",
+		TaskPublicationEpoch:    30,
+		TaskPublicationRevision: 2,
+	}})
+	for _, id := range []string{"root", "child"} {
+		thread := readThreadOverWire(t, srv, "local:"+id)
+		if thread.Evener.Tasks == nil || thread.Evener.Tasks.Current == nil || thread.Evener.Tasks.Current.Description != "newer child carrier" {
+			t.Fatalf("%s tasks after delayed root = %+v, want newer child carrier", id, thread.Evener.Tasks)
+		}
+		if notifications := srv.AppNotificationsAfter(afterChild, id); len(notifications) != 0 {
+			t.Fatalf("%s received delayed older notification: %+v", id, notifications)
+		}
+	}
+
+	srv.RecordAppEvent(events.SessionEvent{Kind: events.EventTaskUpdated, SessionID: "root", Data: events.TaskUpdatedData{
+		Total: 3, Done: 2, Current: &events.TaskSummaryData{ID: 3, Description: "newest root carrier"},
+		TaskStoreOwnerSessionID: "root",
+		TaskPublicationEpoch:    30,
+		TaskPublicationRevision: 4,
+	}})
+	for _, id := range []string{"root", "child"} {
+		thread := readThreadOverWire(t, srv, "local:"+id)
+		if thread.Evener.Tasks == nil || thread.Evener.Tasks.Current == nil || thread.Evener.Tasks.Current.Description != "newest root carrier" {
+			t.Fatalf("%s tasks after newer root = %+v", id, thread.Evener.Tasks)
+		}
+		notifications := srv.AppNotificationsAfter(afterChild, id)
+		if len(notifications) != 1 || notifications[0].Notification.Method != appwire.NotifyEvenerTaskUpdated {
+			t.Fatalf("%s newer-root notifications = %+v, want one task update", id, notifications)
+		}
+	}
+}
+
+func TestServerAppWireOldTaskProducerUpdatesOnlySource(t *testing.T) {
+	srv := NewServer(ServerConfig{})
+	srv.SetAppIdentity("local", "root")
+	publishEnvelope(srv, &stubThreadEnvelopeSource{tasks: &appwire.TaskAggregate{Total: 1, Current: &appwire.TaskSummary{ID: 1, Description: "root old"}}})
+	srv.RecordDescendantAppEvent("root", events.SessionEvent{Kind: events.EventSessionStart, SessionID: "child", Data: events.SessionStartData{
+		TaskStoreOwnerSessionID: "root",
+		TaskPublicationEpoch:    40,
+		TaskPublicationRevision: 5,
+		CurrentWork:             &events.CurrentWorkSeedData{Tasks: &events.TaskStateData{Total: 1, Current: &events.TaskSummaryData{ID: 1, Description: "child old"}}},
+	}})
+	cursor := srv.appNotifier.CurrentSequence()
+	srv.RecordDescendantAppEvent("root", events.SessionEvent{Kind: events.EventTaskUpdated, SessionID: "child", Data: events.TaskUpdatedData{
+		Total: 1, Current: &events.TaskSummaryData{ID: 2, Description: "legacy source only"},
+		TaskStoreOwnerSessionID: "root",
+		// Revision zero identifies a producer predating the ordering fence. Even
+		// with owner metadata, compatibility routing must remain source-only.
+	}})
+	child := readThreadOverWire(t, srv, "local:child")
+	if child.Evener.Tasks == nil || child.Evener.Tasks.Current == nil || child.Evener.Tasks.Current.Description != "legacy source only" {
+		t.Fatalf("legacy source tasks = %+v", child.Evener.Tasks)
+	}
+	root := readThreadOverWire(t, srv, "local:root")
+	if root.Evener.Tasks == nil || root.Evener.Tasks.Current == nil || root.Evener.Tasks.Current.Description != "root old" {
+		t.Fatalf("legacy producer changed root: %+v", root.Evener.Tasks)
+	}
+	if got := srv.AppNotificationsAfter(cursor, "root"); len(got) != 0 {
+		t.Fatalf("legacy producer notified root: %+v", got)
+	}
+}
+
+func TestServerAppWireTaskPublicationRevisionResetsWithIdentity(t *testing.T) {
+	srv := NewServer(ServerConfig{})
+	srv.SetAppIdentity("local", "root")
+	srv.RecordAppEvent(events.SessionEvent{Kind: events.EventSessionStart, SessionID: "root", Data: events.SessionStartData{
+		TaskStoreOwnerSessionID: "root",
+		TaskPublicationEpoch:    50,
+		TaskPublicationRevision: 10,
+		CurrentWork: &events.CurrentWorkSeedData{Tasks: &events.TaskStateData{
+			Total: 1, Current: &events.TaskSummaryData{ID: 1, Description: "old identity high revision"},
+		}},
+	}})
+
+	// A restored/replaced identity can reuse the same durable session ID while
+	// owning a newly constructed TaskStore whose in-memory revision restarts.
+	srv.SetAppIdentity("local", "root")
+	srv.RecordAppEvent(events.SessionEvent{Kind: events.EventSessionStart, SessionID: "root", Data: events.SessionStartData{
+		TaskStoreOwnerSessionID: "root",
+		TaskPublicationEpoch:    51,
+		TaskPublicationRevision: 1,
+		CurrentWork: &events.CurrentWorkSeedData{Tasks: &events.TaskStateData{
+			Total: 1, Current: &events.TaskSummaryData{ID: 1, Description: "replacement low revision"},
+		}},
+	}})
+	thread := readThreadOverWire(t, srv, "local:root")
+	if thread.Evener.Tasks == nil || thread.Evener.Tasks.Current == nil || thread.Evener.Tasks.Current.Description != "replacement low revision" {
+		t.Fatalf("replacement tasks = %+v, want reset revision fence", thread.Evener.Tasks)
+	}
+}
+
+func TestServerAppWireTaskPublicationEpochAllowsSameIDColdRestore(t *testing.T) {
+	srv := NewServer(ServerConfig{})
+	srv.SetAppIdentity("local", "root")
+	publishEnvelope(srv, &stubThreadEnvelopeSource{})
+	ownerID := "stable-child"
+	nextPublication := func(store *taskpkg.TaskStore) (epoch, revision uint64) {
+		t.Helper()
+		if err := store.MutateAndPublish(func(gotEpoch, gotRevision uint64) error {
+			epoch, revision = gotEpoch, gotRevision
+			return nil
+		}); err != nil {
+			t.Fatalf("reserve task publication: %v", err)
+		}
+		return epoch, revision
+	}
+	oldStore := taskpkg.NewTaskStore(t.TempDir(), ownerID)
+	oldEpoch, oldStartRevision := nextPublication(oldStore)
+	srv.RecordDescendantAppEvent("root", events.SessionEvent{Kind: events.EventSessionStart, SessionID: ownerID, Data: events.SessionStartData{
+		TaskStoreOwnerSessionID: ownerID,
+		TaskPublicationEpoch:    oldEpoch,
+		TaskPublicationRevision: oldStartRevision,
+		CurrentWork: &events.CurrentWorkSeedData{Tasks: &events.TaskStateData{
+			Total: 1, Current: &events.TaskSummaryData{ID: 1, Description: "old incarnation start"},
+		}},
+	}})
+	var oldHighRevision uint64
+	for range 5 {
+		_, oldHighRevision = nextPublication(oldStore)
+	}
+	srv.RecordDescendantAppEvent("root", events.SessionEvent{Kind: events.EventTaskUpdated, SessionID: ownerID, Data: events.TaskUpdatedData{
+		Total: 6, Done: 5, Current: &events.TaskSummaryData{ID: 6, Description: "old incarnation high revision"},
+		TaskStoreOwnerSessionID: ownerID,
+		TaskPublicationEpoch:    oldEpoch,
+		TaskPublicationRevision: oldHighRevision,
+	}})
+
+	// Cold restore constructs a new non-shared TaskStore but reuses both root and
+	// child/owner IDs. Its first revision must establish the newer incarnation.
+	newStore := taskpkg.NewTaskStore(t.TempDir(), ownerID)
+	newEpoch, newStartRevision := nextPublication(newStore)
+	if newEpoch <= oldEpoch || newStartRevision != 1 {
+		t.Fatalf("cold restore publication = %d:%d after %d, want newer epoch revision 1", newEpoch, newStartRevision, oldEpoch)
+	}
+	srv.RecordDescendantAppEvent("root", events.SessionEvent{Kind: events.EventSessionStart, SessionID: ownerID, Data: events.SessionStartData{
+		TaskStoreOwnerSessionID: ownerID,
+		TaskPublicationEpoch:    newEpoch,
+		TaskPublicationRevision: newStartRevision,
+		CurrentWork: &events.CurrentWorkSeedData{Tasks: &events.TaskStateData{
+			Total: 1, Current: &events.TaskSummaryData{ID: 1, Description: "restored incarnation start"},
+		}},
+	}})
+	thread := readThreadOverWire(t, srv, "local:"+ownerID)
+	if thread.Evener.Tasks == nil || thread.Evener.Tasks.Current == nil || thread.Evener.Tasks.Current.Description != "restored incarnation start" {
+		t.Fatalf("cold-restored start tasks = %+v", thread.Evener.Tasks)
+	}
+
+	_, newUpdateRevision := nextPublication(newStore)
+	srv.RecordDescendantAppEvent("root", events.SessionEvent{Kind: events.EventTaskUpdated, SessionID: ownerID, Data: events.TaskUpdatedData{
+		Total: 2, Done: 1, Current: &events.TaskSummaryData{ID: 2, Description: "restored incarnation update"},
+		TaskStoreOwnerSessionID: ownerID,
+		TaskPublicationEpoch:    newEpoch,
+		TaskPublicationRevision: newUpdateRevision,
+	}})
+	cursor := srv.appNotifier.CurrentSequence()
+
+	// A delayed carrier from the retired store has a numerically higher revision,
+	// but its older epoch must no longer be accepted.
+	_, delayedOldRevision := nextPublication(oldStore)
+	srv.RecordDescendantAppEvent("root", events.SessionEvent{Kind: events.EventTaskUpdated, SessionID: ownerID, Data: events.TaskUpdatedData{
+		Total: 7, Done: 6, Current: &events.TaskSummaryData{ID: 7, Description: "delayed retired incarnation"},
+		TaskStoreOwnerSessionID: ownerID,
+		TaskPublicationEpoch:    oldEpoch,
+		TaskPublicationRevision: delayedOldRevision,
+	}})
+	thread = readThreadOverWire(t, srv, "local:"+ownerID)
+	if thread.Evener.Tasks == nil || thread.Evener.Tasks.Current == nil || thread.Evener.Tasks.Current.Description != "restored incarnation update" {
+		t.Fatalf("tasks after retired carrier = %+v", thread.Evener.Tasks)
+	}
+	if notifications := srv.AppNotificationsAfter(cursor, ownerID); len(notifications) != 0 {
+		t.Fatalf("retired incarnation produced notifications: %+v", notifications)
+	}
+}
+
 func TestServerAppWireThreadReadReturnsStatus(t *testing.T) {
 	exitCode := 7
 	srv := NewServer(ServerConfig{})
@@ -888,8 +1583,8 @@ func TestServerAppWireThreadReadReturnsStatus(t *testing.T) {
 			Skills: []SkillInfo{
 				{Name: "superpowers:systematic-debugging", Description: "debug"},
 			},
-			Plugins: []PluginStatusInfo{{Name: "superpowers", Version: "4.3.0", SkillCount: 12, AgentCount: 2, HookCount: 4}},
-			Hooks:   map[string]int{"PreToolUse": 3},
+			Plugins:    []PluginStatusInfo{{Name: "superpowers", Version: "4.3.0", SkillCount: 12, AgentCount: 2, HookCount: 4}},
+			HookEvents: []HookEventStatus{{Event: "PreToolUse", Count: 3}},
 			Jobs: []JobStatusInfo{{
 				JobID:         "job-1",
 				JobType:       "delegate",
@@ -934,8 +1629,31 @@ func TestServerAppWireThreadReadReturnsStatus(t *testing.T) {
 		diag.Jobs[0].OutputBytes != 128 || diag.Jobs[0].TranscriptRef != "local:child-1" {
 		t.Fatalf("job diagnostics=%+v", diag.Jobs)
 	}
-	if diag.Hooks["PreToolUse"] != 3 {
-		t.Fatalf("hooks=%+v", diag.Hooks)
+	if len(diag.HookEvents) != 1 || diag.HookEvents[0].Event != "PreToolUse" || diag.HookEvents[0].Count != 3 {
+		t.Fatalf("hook events=%+v", diag.HookEvents)
+	}
+}
+
+func TestServerAppWireThreadReadCarriesTurnCountWithoutTurns(t *testing.T) {
+	srv := NewServer(ServerConfig{})
+	srv.SetAppIdentity("local", "th_1")
+	srv.SetStatus(StatusInfo{SessionID: "th_1", State: "idle", Turns: 37})
+
+	conn := srv.AppServer().NewConnection("test")
+	conn.HandleMessage(context.Background(), appwire.RequestMessage(appwire.NewIntID(1), appwire.MethodInitialize, appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}))
+	resp := conn.HandleMessage(context.Background(), appwire.RequestMessage(appwire.NewIntID(2), appwire.MethodThreadRead, appwire.ThreadReadParams{Ref: "local:th_1"}))
+	if resp.Kind() != appwire.MessageResponse {
+		t.Fatalf("resp=%v", resp.Kind())
+	}
+	data, ok := resp.Response.Result.(appwire.ThreadReadResponse)
+	if !ok {
+		t.Fatalf("result=%T", resp.Response.Result)
+	}
+	if data.Thread.Evener.TurnCount != 37 {
+		t.Fatalf("turnCount=%d, want 37", data.Thread.Evener.TurnCount)
+	}
+	if len(data.Thread.Turns) != 0 {
+		t.Fatalf("turns=%d, want none on a bounded status read", len(data.Thread.Turns))
 	}
 }
 
@@ -1008,16 +1726,25 @@ func TestServerAppWireThreadReadTaskAggregatePresence(t *testing.T) {
 }
 
 // TestServerAppWireThreadReadIncludesCostTotal verifies the live producer
-// stamps EvenerThread.Cost from the pulled cumulative usage at the session
-// model's price — the session-level dollar total kept current across
-// snapshots exactly as WorkMillis/Usage are — and omits it when the model is
-// uncataloged (absent-vs-zero honesty).
+// stamps EvenerThread.Cost from the pulled cumulative usage at the cost the
+// session's registry resolves for its instance/model (spec §7.5) — the
+// session-level dollar total kept current across snapshots exactly as
+// WorkMillis/Usage are — and omits it when the row carries no cost
+// (absent-vs-zero honesty).
 func TestServerAppWireThreadReadIncludesCostTotal(t *testing.T) {
-	readEvener := func(model string) appwire.EvenerThread {
+	var lookedUp []string
+	readEvener := func(profile, model string) appwire.EvenerThread {
 		t.Helper()
 		srv := NewServer(ServerConfig{})
+		srv.SetCostLookupFunc(func(ref string) *registry.Cost {
+			lookedUp = append(lookedUp, ref)
+			if ref != "anthropic/claude-opus-4-5" {
+				return nil
+			}
+			return &registry.Cost{Input: 5, Output: 25}
+		})
 		srv.SetAppIdentity("local", "th_1")
-		srv.SetStatus(StatusInfo{SessionID: "th_1", Model: model})
+		srv.SetStatus(StatusInfo{SessionID: "th_1", Model: model, Profile: profile})
 		setEnvelope(srv, func(e *stubThreadEnvelopeSource) {
 			e.workMillis = 4200
 			e.usage = &appwire.EvenerUsage{InputTokens: 100_000, OutputTokens: 20_000, TotalTokens: 120_000}
@@ -1033,16 +1760,39 @@ func TestServerAppWireThreadReadIncludesCostTotal(t *testing.T) {
 		return data.Thread.Evener
 	}
 
-	priced := readEvener("claude-opus-4-5")
-	if want := appwire.EstimateCost("claude-opus-4-5", priced.Usage); priced.Cost != want || want == "" {
-		t.Fatalf("cost=%q, want non-empty %q", priced.Cost, want)
+	// 100_000/1e6*5 + 20_000/1e6*25 = 0.50 + 0.50 = 1.00
+	priced := readEvener("anthropic", "claude-opus-4-5")
+	if priced.Cost != "~$1.00" {
+		t.Fatalf("cost=%q, want ~$1.00", priced.Cost)
 	}
-	if !strings.HasPrefix(priced.Cost, "~$") {
-		t.Fatalf("cost=%q, want ~$ prefix", priced.Cost)
+	if len(lookedUp) == 0 || lookedUp[0] != "anthropic/claude-opus-4-5" {
+		t.Fatalf("cost lookup refs=%v, want the instance/model reference first", lookedUp)
 	}
 
-	if uncataloged := readEvener("totally-unknown-model-xyz"); uncataloged.Cost != "" {
-		t.Fatalf("uncataloged cost=%q, want \"\" (absent, not ~$0.00)", uncataloged.Cost)
+	if priceless := readEvener("mycompany", "totally-unknown-model-xyz"); priceless.Cost != "" {
+		t.Fatalf("priceless cost=%q, want \"\" (absent, not ~$0.00)", priceless.Cost)
+	}
+}
+
+// TestServerAppWireThreadReadOmitsCostWithoutLookup pins the flag-day rule
+// (spec §14.1): a daemon with no cost source reports usage and no cost at all
+// rather than falling back to a bundled pricing table.
+func TestServerAppWireThreadReadOmitsCostWithoutLookup(t *testing.T) {
+	srv := NewServer(ServerConfig{})
+	srv.SetAppIdentity("local", "th_1")
+	srv.SetStatus(StatusInfo{SessionID: "th_1", Model: "claude-opus-4-5", Profile: "anthropic"})
+	setEnvelope(srv, func(e *stubThreadEnvelopeSource) {
+		e.usage = &appwire.EvenerUsage{InputTokens: 100_000, OutputTokens: 20_000, TotalTokens: 120_000}
+	})
+	conn := srv.AppServer().NewConnection("test")
+	conn.HandleMessage(context.Background(), appwire.RequestMessage(appwire.NewIntID(1), appwire.MethodInitialize, appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}))
+	resp := conn.HandleMessage(context.Background(), appwire.RequestMessage(appwire.NewIntID(2), appwire.MethodThreadRead, appwire.ThreadReadParams{Ref: "local:th_1"}))
+	data, ok := resp.Response.Result.(appwire.ThreadReadResponse)
+	if !ok {
+		t.Fatalf("result=%T", resp.Response.Result)
+	}
+	if evener := data.Thread.Evener; evener.Usage == nil || evener.Cost != "" {
+		t.Fatalf("evener usage=%+v cost=%q, want usage present and cost absent", evener.Usage, evener.Cost)
 	}
 }
 
@@ -1255,7 +2005,7 @@ func TestServerAppWireThreadReadSubscribesForNotifications(t *testing.T) {
 	if _, err := client.ThreadRead(ctx, appwire.ThreadReadParams{Ref: "local:th_1", Subscribe: true}); err != nil {
 		t.Fatalf("thread read: %v", err)
 	}
-	if got := srv.AppServer().SubscriberCount("th_1"); got != 1 {
+	if got := srv.AppSubscriberCount("th_1"); got != 1 {
 		t.Fatalf("subscriber count=%d, want 1", got)
 	}
 }
@@ -1299,10 +2049,10 @@ func TestServerAppWireRootAndDescendantSubscribeOnOneConnection(t *testing.T) {
 			t.Fatalf("thread/read %s returned thread %q", ref, read.Thread.ID)
 		}
 	}
-	if got := srv.AppServer().SubscriberCount("root"); got != 1 {
+	if got := srv.AppSubscriberCount("root"); got != 1 {
 		t.Fatalf("root subscriber count = %d, want 1", got)
 	}
-	if got := srv.AppServer().SubscriberCount("child"); got != 1 {
+	if got := srv.AppSubscriberCount("child"); got != 1 {
 		t.Fatalf("child subscriber count = %d, want 1", got)
 	}
 
@@ -1331,6 +2081,145 @@ func TestServerAppWireRootAndDescendantSubscribeOnOneConnection(t *testing.T) {
 		case <-time.After(time.Second):
 			t.Fatalf("timed out waiting for root and child deltas; received %v", wantRefs)
 		}
+	}
+}
+
+// thread/unsubscribe drops one connection's subscription to a thread — the
+// same registry entry a subscribed thread/read created — and is idempotent.
+// The hub-facing counterpart (relay teardown) rides on this count reaching 0.
+func TestServerAppWireThreadUnsubscribeDropsSubscription(t *testing.T) {
+	srv := NewServer(ServerConfig{})
+	srv.SetAppIdentity("local", "th_1")
+
+	httpServer := httptest.NewServer(http.HandlerFunc(srv.AppServer().ServeWebSocket))
+	defer httpServer.Close()
+	ctx := context.Background()
+	transport, err := appwire.DialWebSocket(ctx, "ws"+httpServer.URL[len("http"):], httpServer.Client())
+	if err != nil {
+		t.Fatalf("websocket dial: %v", err)
+	}
+	defer transport.Close() //nolint:errcheck // test cleanup
+	client := appwire.NewClient(transport)
+	client.Start(ctx)
+	if _, err := client.Initialize(ctx, appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
+		t.Fatalf("initialize: %v", err)
+	}
+	if _, err := client.ThreadRead(ctx, appwire.ThreadReadParams{Ref: "local:th_1", Subscribe: true}); err != nil {
+		t.Fatalf("thread read: %v", err)
+	}
+	if got := srv.AppSubscriberCount("th_1"); got != 1 {
+		t.Fatalf("subscriber count after subscribe = %d, want 1", got)
+	}
+
+	if _, err := client.ThreadUnsubscribe(ctx, appwire.ThreadUnsubscribeParams{Ref: "local:th_1"}); err != nil {
+		t.Fatalf("thread unsubscribe: %v", err)
+	}
+	if got := srv.AppSubscriberCount("th_1"); got != 0 {
+		t.Fatalf("subscriber count after unsubscribe = %d, want 0", got)
+	}
+
+	// Unsubscribed, the connection no longer receives this thread's events.
+	srv.RecordAppEvent(events.SessionEvent{Kind: events.EventAssistantTextDelta, SessionID: "th_1", Data: events.AssistantTextDeltaData{Delta: "post-unsubscribe"}})
+	select {
+	case notification := <-client.Notifications():
+		t.Fatalf("notification delivered after unsubscribe: %+v", notification)
+	case <-time.After(200 * time.Millisecond):
+	}
+
+	// Idempotent: unsubscribing again succeeds quietly.
+	if _, err := client.ThreadUnsubscribe(ctx, appwire.ThreadUnsubscribeParams{Ref: "local:th_1"}); err != nil {
+		t.Fatalf("second thread unsubscribe: %v", err)
+	}
+	if got := srv.AppSubscriberCount("th_1"); got != 0 {
+		t.Fatalf("subscriber count after second unsubscribe = %d, want 0", got)
+	}
+}
+
+// Across a replace/clear identity swap, a subscriber registered under the
+// STABLE REF must be removable by an unsubscribe naming that ref after the
+// swap advanced the session: the resolution path maps the ref to the current
+// session and back to the stable ref — the same key the subscribe used.
+func TestServerAppWireThreadUnsubscribeResolvesStableRefAcrossSwap(t *testing.T) {
+	srv := NewServer(ServerConfig{})
+	srv.SetAppIdentity("local", "th_old")
+	prepared, err := PrepareAppIdentityForRef("local", "th_new", "local:th_stable", "")
+	if err != nil {
+		t.Fatalf("prepare replacement identity: %v", err)
+	}
+	srv.ReplaceAppIdentity(prepared, nil)
+
+	httpServer := httptest.NewServer(http.HandlerFunc(srv.AppServer().ServeWebSocket))
+	defer httpServer.Close()
+	ctx := context.Background()
+	transport, err := appwire.DialWebSocket(ctx, "ws"+httpServer.URL[len("http"):], httpServer.Client())
+	if err != nil {
+		t.Fatalf("websocket dial: %v", err)
+	}
+	defer transport.Close() //nolint:errcheck // test cleanup
+	client := appwire.NewClient(transport)
+	client.Start(ctx)
+	if _, err := client.Initialize(ctx, appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
+		t.Fatalf("initialize: %v", err)
+	}
+	if _, err := client.ThreadRead(ctx, appwire.ThreadReadParams{Ref: "local:th_stable", Subscribe: true}); err != nil {
+		t.Fatalf("subscribed read via stable ref: %v", err)
+	}
+	if got := srv.AppSubscriberCount("th_new"); got != 1 {
+		t.Fatalf("subscriber count after subscribe via stable ref = %d, want 1", got)
+	}
+
+	// The unsubscribe names the SAME stable ref, after the swap.
+	if _, err := client.ThreadUnsubscribe(ctx, appwire.ThreadUnsubscribeParams{Ref: "local:th_stable"}); err != nil {
+		t.Fatalf("unsubscribe via stable ref: %v", err)
+	}
+	if got := srv.AppSubscriberCount("th_new"); got != 0 {
+		t.Fatalf("subscriber count after unsubscribe via stable ref = %d, want 0", got)
+	}
+}
+
+// An unsubscribe for a ref the daemon no longer resolves (the pre-swap ref)
+// quietly succeeds and still clears the raw key the subscribe could have
+// used — teardown finding nothing is a success, and a lingering key must
+// not outlive the client's interest.
+func TestServerAppWireThreadUnsubscribeUnresolvedRefCleansRawKeys(t *testing.T) {
+	srv := NewServer(ServerConfig{})
+	srv.SetAppIdentity("local", "th_live")
+
+	httpServer := httptest.NewServer(http.HandlerFunc(srv.AppServer().ServeWebSocket))
+	defer httpServer.Close()
+	ctx := context.Background()
+	transport, err := appwire.DialWebSocket(ctx, "ws"+httpServer.URL[len("http"):], httpServer.Client())
+	if err != nil {
+		t.Fatalf("websocket dial: %v", err)
+	}
+	defer transport.Close() //nolint:errcheck // test cleanup
+	client := appwire.NewClient(transport)
+	client.Start(ctx)
+	if _, err := client.Initialize(ctx, appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
+		t.Fatalf("initialize: %v", err)
+	}
+	// Subscribe to the live thread by its bare id (one raw key form).
+	if _, err := client.ThreadRead(ctx, appwire.ThreadReadParams{ThreadID: "th_live", Subscribe: true}); err != nil {
+		t.Fatalf("subscribed read by bare id: %v", err)
+	}
+	if got := srv.AppSubscriberCount("th_live"); got != 1 {
+		t.Fatalf("subscriber count after subscribe = %d, want 1", got)
+	}
+
+	// A ref this daemon never served: quiet success, nothing removed.
+	if _, err := client.ThreadUnsubscribe(ctx, appwire.ThreadUnsubscribeParams{Ref: "local:th_never_served"}); err != nil {
+		t.Fatalf("unsubscribe for unresolvable ref: %v", err)
+	}
+	if got := srv.AppSubscriberCount("th_live"); got != 1 {
+		t.Fatalf("unrelated unsubscribe changed the live count = %d, want 1", got)
+	}
+
+	// The same connection unsubscribes its own bare-id key.
+	if _, err := client.ThreadUnsubscribe(ctx, appwire.ThreadUnsubscribeParams{ThreadID: "th_live"}); err != nil {
+		t.Fatalf("unsubscribe by thread id: %v", err)
+	}
+	if got := srv.AppSubscriberCount("th_live"); got != 0 {
+		t.Fatalf("subscriber count after bare-id unsubscribe = %d, want 0", got)
 	}
 }
 
@@ -1374,9 +2263,10 @@ func TestServerRejectsDescendantMutationInsteadOfMutatingRoot(t *testing.T) {
 	}})
 
 	_, err := srv.handleAppTurnStart(context.Background(), appwire.TurnStartParams{
-		Ref:              "local:child",
-		ClientMutationID: "child-mutation",
-		Input:            []appwire.InputItem{{Type: "text", Text: "hello"}},
+		Ref:                "local:child",
+		ClientMutationID:   "child-mutation",
+		ExpectedInstanceID: "root",
+		Input:              []appwire.InputItem{{Type: "text", Text: "hello"}},
 	})
 	var wire appwire.WireError
 	if !errors.As(err, &wire) || wire.Code != appwire.CodeUnavailable {
@@ -1397,7 +2287,7 @@ func TestServerAppWireThreadReadDoesNotSubscribeByDefault(t *testing.T) {
 	if resp.Kind() != appwire.MessageResponse {
 		t.Fatalf("resp=%v", resp.Kind())
 	}
-	if got := srv.AppServer().SubscriberCount("th_1"); got != 0 {
+	if got := srv.AppSubscriberCount("th_1"); got != 0 {
 		t.Fatalf("subscriber count=%d, want 0", got)
 	}
 }
@@ -1466,7 +2356,7 @@ func TestServerAppWireTurnQueueAcceptsMidTurnMessage(t *testing.T) {
 
 	conn := srv.AppServer().NewConnection("test")
 	conn.HandleMessage(context.Background(), appwire.RequestMessage(appwire.NewIntID(1), appwire.MethodInitialize, appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}))
-	resp := conn.HandleMessage(context.Background(), appwire.RequestMessage(appwire.NewIntID(2), appwire.MethodTurnQueue, appwire.TurnQueueParams{ClientMutationID: "test-mutation", Ref: "local:th_1",
+	resp := conn.HandleMessage(context.Background(), appwire.RequestMessage(appwire.NewIntID(2), appwire.MethodTurnQueue, appwire.TurnQueueParams{ClientMutationID: "test-mutation", ExpectedInstanceID: "th_1", Ref: "local:th_1",
 		Input: []appwire.InputItem{{Type: "text", Text: "queued"}},
 	}))
 	if resp.Kind() != appwire.MessageResponse {
@@ -1493,7 +2383,7 @@ func TestServerAppWireTurnQueueAcceptsReservedActiveTurn(t *testing.T) {
 
 	conn := srv.AppServer().NewConnection("test")
 	conn.HandleMessage(context.Background(), appwire.RequestMessage(appwire.NewIntID(1), appwire.MethodInitialize, appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}))
-	resp := conn.HandleMessage(context.Background(), appwire.RequestMessage(appwire.NewIntID(2), appwire.MethodTurnQueue, appwire.TurnQueueParams{ClientMutationID: "test-mutation", Ref: "local:th_1",
+	resp := conn.HandleMessage(context.Background(), appwire.RequestMessage(appwire.NewIntID(2), appwire.MethodTurnQueue, appwire.TurnQueueParams{ClientMutationID: "test-mutation", ExpectedInstanceID: "th_1", Ref: "local:th_1",
 		Input: []appwire.InputItem{{Type: "text", Text: "queued"}},
 	}))
 	if resp.Kind() != appwire.MessageResponse {
@@ -1515,7 +2405,7 @@ func TestServerAppWireTurnStartRejectsReservedActiveTurn(t *testing.T) {
 
 	conn := srv.AppServer().NewConnection("test")
 	conn.HandleMessage(context.Background(), appwire.RequestMessage(appwire.NewIntID(1), appwire.MethodInitialize, appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}))
-	resp := conn.HandleMessage(context.Background(), appwire.RequestMessage(appwire.NewIntID(2), appwire.MethodTurnStart, appwire.TurnStartParams{ClientMutationID: "test-mutation",
+	resp := conn.HandleMessage(context.Background(), appwire.RequestMessage(appwire.NewIntID(2), appwire.MethodTurnStart, appwire.TurnStartParams{ClientMutationID: "test-mutation", ExpectedInstanceID: "th_1",
 		Ref:   "local:th_1",
 		Input: []appwire.InputItem{{Type: "text", Text: "second"}},
 	}))
@@ -1571,7 +2461,7 @@ func TestServerAppWireTurnQueueRejectsStaleProjectedActiveTurn(t *testing.T) {
 
 	conn := srv.AppServer().NewConnection("test")
 	conn.HandleMessage(context.Background(), appwire.RequestMessage(appwire.NewIntID(1), appwire.MethodInitialize, appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}))
-	resp := conn.HandleMessage(context.Background(), appwire.RequestMessage(appwire.NewIntID(2), appwire.MethodTurnQueue, appwire.TurnQueueParams{ClientMutationID: "test-mutation", Ref: "local:th_1",
+	resp := conn.HandleMessage(context.Background(), appwire.RequestMessage(appwire.NewIntID(2), appwire.MethodTurnQueue, appwire.TurnQueueParams{ClientMutationID: "test-mutation", ExpectedInstanceID: "th_1", Ref: "local:th_1",
 		Input: []appwire.InputItem{{Type: "text", Text: "queued"}},
 	}))
 	if resp.Kind() != appwire.MessageError {
@@ -1591,7 +2481,7 @@ func TestServerAppWireTurnQueueRejectsWhenIdle(t *testing.T) {
 
 	conn := srv.AppServer().NewConnection("test")
 	conn.HandleMessage(context.Background(), appwire.RequestMessage(appwire.NewIntID(1), appwire.MethodInitialize, appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}))
-	resp := conn.HandleMessage(context.Background(), appwire.RequestMessage(appwire.NewIntID(2), appwire.MethodTurnQueue, appwire.TurnQueueParams{ClientMutationID: "test-mutation", Ref: "local:th_1",
+	resp := conn.HandleMessage(context.Background(), appwire.RequestMessage(appwire.NewIntID(2), appwire.MethodTurnQueue, appwire.TurnQueueParams{ClientMutationID: "test-mutation", ExpectedInstanceID: "th_1", Ref: "local:th_1",
 		Input: []appwire.InputItem{{Type: "text", Text: "queued"}},
 	}))
 	if resp.Kind() != appwire.MessageError {
@@ -1615,7 +2505,7 @@ func TestServerAppWireTurnDrainAsSteerRequiresQueuedMessages(t *testing.T) {
 
 	conn := srv.AppServer().NewConnection("test")
 	conn.HandleMessage(context.Background(), appwire.RequestMessage(appwire.NewIntID(1), appwire.MethodInitialize, appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}))
-	resp := conn.HandleMessage(context.Background(), appwire.RequestMessage(appwire.NewIntID(2), appwire.MethodTurnDrainAsSteer, appwire.TurnDrainAsSteerParams{ClientMutationID: "test-mutation", ExpectedQueueRevision: 0,
+	resp := conn.HandleMessage(context.Background(), appwire.RequestMessage(appwire.NewIntID(2), appwire.MethodTurnDrainAsSteer, appwire.TurnDrainAsSteerParams{ClientMutationID: "test-mutation", ExpectedInstanceID: "th_1", ExpectedQueueRevision: 0,
 		Ref: "local:th_1",
 	}))
 	if resp.Kind() != appwire.MessageError {
@@ -1639,7 +2529,7 @@ func TestServerAppWireTurnDrainAsSteerRejectsReservedTurn(t *testing.T) {
 
 	conn := srv.AppServer().NewConnection("test")
 	conn.HandleMessage(context.Background(), appwire.RequestMessage(appwire.NewIntID(1), appwire.MethodInitialize, appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}))
-	resp := conn.HandleMessage(context.Background(), appwire.RequestMessage(appwire.NewIntID(2), appwire.MethodTurnDrainAsSteer, appwire.TurnDrainAsSteerParams{ClientMutationID: "test-mutation", ExpectedQueueRevision: 0,
+	resp := conn.HandleMessage(context.Background(), appwire.RequestMessage(appwire.NewIntID(2), appwire.MethodTurnDrainAsSteer, appwire.TurnDrainAsSteerParams{ClientMutationID: "test-mutation", ExpectedInstanceID: "th_1", ExpectedQueueRevision: 0,
 		Ref: "local:th_1",
 	}))
 	if resp.Kind() != appwire.MessageError {
@@ -1667,7 +2557,7 @@ func TestServerAppWireTurnDrainAsSteerDispatchesWhenQueued(t *testing.T) {
 
 	conn := srv.AppServer().NewConnection("test")
 	conn.HandleMessage(context.Background(), appwire.RequestMessage(appwire.NewIntID(1), appwire.MethodInitialize, appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}))
-	resp := conn.HandleMessage(context.Background(), appwire.RequestMessage(appwire.NewIntID(2), appwire.MethodTurnDrainAsSteer, appwire.TurnDrainAsSteerParams{ClientMutationID: "test-mutation", ExpectedQueueRevision: 0,
+	resp := conn.HandleMessage(context.Background(), appwire.RequestMessage(appwire.NewIntID(2), appwire.MethodTurnDrainAsSteer, appwire.TurnDrainAsSteerParams{ClientMutationID: "test-mutation", ExpectedInstanceID: "th_1", ExpectedQueueRevision: 0,
 		Ref: "local:th_1",
 	}))
 	if resp.Kind() != appwire.MessageResponse {
@@ -1699,7 +2589,7 @@ func TestServerAppWireTurnDrainAsSteerDispatchesInputAtomically(t *testing.T) {
 
 	conn := srv.AppServer().NewConnection("test")
 	conn.HandleMessage(context.Background(), appwire.RequestMessage(appwire.NewIntID(1), appwire.MethodInitialize, appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}))
-	resp := conn.HandleMessage(context.Background(), appwire.RequestMessage(appwire.NewIntID(2), appwire.MethodTurnDrainAsSteer, appwire.TurnDrainAsSteerParams{ClientMutationID: "test-mutation", ExpectedQueueRevision: 0,
+	resp := conn.HandleMessage(context.Background(), appwire.RequestMessage(appwire.NewIntID(2), appwire.MethodTurnDrainAsSteer, appwire.TurnDrainAsSteerParams{ClientMutationID: "test-mutation", ExpectedInstanceID: "th_1", ExpectedQueueRevision: 0,
 		Ref: "local:th_1",
 		Input: []appwire.InputItem{{Type: "text", Text: "composer payload"}, {
 			Type:      "image",

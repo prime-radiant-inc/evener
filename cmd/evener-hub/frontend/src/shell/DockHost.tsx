@@ -11,9 +11,9 @@ import { DockviewReact, type DockviewReadyEvent, type IDockviewPanelProps } from
 import { Suspense, useEffect, useRef, useState } from "react";
 import "dockview-react/dist/styles/dockview.css";
 import "./dockview-theme.css";
-import { resolveThreadName } from "../panes/session/threadTitle";
+import { navigationSummaryFor, resolveThreadName } from "../panes/session/threadTitle";
+import { useNavigationStore } from "../stores/navigation/store";
 import { threadsStore, useThreadsStore } from "../stores/threads";
-import { treeStore, useTreeStore } from "../stores/tree";
 import { EmptyState } from "../widgets/emptystate";
 import styles from "./DockHost.module.css";
 import { PaneTab } from "./PaneTab";
@@ -223,7 +223,7 @@ export function DockHost() {
   const panes = useWorkspaceStore((s) => s.panes);
   const focusedPaneId = useWorkspaceStore((s) => s.focusedPaneId);
   const threads = useThreadsStore((s) => s.threads);
-  const tree = useTreeStore((s) => s.tree);
+  const navigation = useNavigationStore();
   // Tracks, per paneId, the last params reference actually pushed into
   // dockview (via addPanel at creation or updateParameters on a change) -
   // params identity only changes in workspace.ts when the value actually
@@ -310,7 +310,7 @@ export function DockHost() {
     if (!api) return;
     const currentIds = new Set(api.panels.map((p) => p.id));
     const bootTitleCtx: PaneTitleCtx = {
-      threadName: (ref) => resolveThreadName(threadsStore.getState().threads, treeStore.getState().tree, ref),
+      threadName: (ref) => resolveThreadName(threadsStore.getState().threads, navigationSummaryFor(ref), ref),
     };
 
     for (const pane of panes) {
@@ -373,14 +373,16 @@ export function DockHost() {
   // tracks a rename without needing a page reload.
   useEffect(() => {
     if (!api) return;
-    const ctx: PaneTitleCtx = { threadName: (ref) => resolveThreadName(threads, tree, ref) };
+    const ctx: PaneTitleCtx = {
+      threadName: (ref) => resolveThreadName(threads, navigationSummaryFor(ref, navigation), ref),
+    };
     for (const pane of panes) {
       const panel = api.getPanel(pane.id);
       if (!panel) continue; // not created yet on this pass - the structural effect (same commit) already gave it the right initial title
       const title = paneFor(pane.type).title(pane.params, ctx);
       if (panel.title !== title) panel.setTitle(title);
     }
-  }, [api, panes, threads, tree]);
+  }, [api, panes, threads, navigation]);
 
   // Registers the api and runs the restore-or-fallback boot sequence
   // BEFORE exposing `api` to this component's own state (setApi, last) -

@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -881,7 +882,7 @@ func TestSession_ObservationMaskOnlyQueuesNoTranscriptReminder(t *testing.T) {
 	sess.contextMgr.ObservationMaskThreshold = 0
 	sess.contextMgr.CheckpointThreshold = 2
 	history := []schema.Turn{schema.NewTurn(schema.TurnUserInput, llm.User("observation-only operation"))}
-	compactionCtx, emitFn, flush := sess.compactionEmitFunc(context.Background(), &history)
+	compactionCtx, emitFn, flush, _ := sess.compactionEmitFunc(context.Background(), &history)
 	if err := sess.strategy.ManageContext(compactionCtx, &history, 0, emitFn); err != nil {
 		t.Fatalf("ManageContext: %v", err)
 	}
@@ -1004,7 +1005,10 @@ func TestSession_SubagentStopHookRunsWhenSubagentFinishes(t *testing.T) {
 	}
 	defer sess.Close()
 
-	result, err := sess.spawnAgent(context.Background(), "inspect", "", "", 1, "explorer", "", nil, nil)
+	// This fixture intentionally requires its SubagentStop hook to mutate the
+	// shared workspace, so declare a mutating child scope instead of asking the
+	// read-only explorer floor to permit the write.
+	result, err := sess.spawnAgent(context.Background(), "inspect", "", "", 1, "explorer", "", nil, []string{"write_file"})
 	if err != nil {
 		t.Fatalf("spawnAgent: %v", err)
 	}
@@ -1882,7 +1886,10 @@ func TestSession_SetModel_UpdatesContextManager(t *testing.T) {
 		},
 	})
 
-	sess, err := NewSession(c, newAnthropicProfile("claude-opus-4-6"), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{})
+	// Opus 4.5 is the 200K/1M pair: its [1m] alias still moves the window, so a
+	// stale profile after SetModel shows up as an unchanged pressure. Sonnet 4.5
+	// is 1M on its base row now and would make both readings identical.
+	sess, err := NewSession(c, newAnthropicProfile("claude-opus-4-5"), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{})
 	if err != nil {
 		t.Fatalf("NewSession: %v", err)
 	}
@@ -1901,7 +1908,7 @@ func TestSession_SetModel_UpdatesContextManager(t *testing.T) {
 	}
 
 	// Switch to 1M context model. Context manager should see the new window.
-	sess.SetModel("claude-opus-4-6[1m]")
+	sess.SetModel("claude-opus-4-5[1m]")
 
 	// Pressure with 1M window: 100K/1M = 0.10
 	p2 := sess.ContextPressure()
@@ -2150,5 +2157,15 @@ func TestSessionConfigDelegateTurnKnobsSnapshotRoundTrip(t *testing.T) {
 	out := configFromSnapshot(in.toSnapshot())
 	if out.MaxConcurrentDelegateTurns != 7 || out.MaxRetainedTerminal != 99 {
 		t.Fatalf("round trip = %+v, want 7/99", out)
+	}
+}
+
+func TestPluginSelectionSnapshotRoundTrip(t *testing.T) {
+	t.Parallel()
+	for _, want := range [][]string{nil, {}, {"/plugins/alpha", "/plugins/beta"}} {
+		got := configFromSnapshot((SessionConfig{PluginDirs: want}).toSnapshot()).PluginDirs
+		if !slices.Equal(want, got) {
+			t.Fatalf("PluginDirs round trip = %v, want %v", got, want)
+		}
 	}
 }

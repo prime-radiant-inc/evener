@@ -21,13 +21,12 @@ func FuzzAgenttestAdaptersProgram(f *testing.F) {
 	f.Add("model", "reply", true)
 	f.Add("", "", false)
 
-	f.Fuzz(func(t *testing.T, model, text string, fallback bool) {
+	f.Fuzz(func(t *testing.T, model, text string, flag bool) {
 		req := llm.Request{Model: model, Messages: []llm.Message{llm.User(text)}}
 		ctx := context.Background()
 
 		fake := &FakeAdapter{
-			Provider:          "fake",
-			CanFallbackToChat: fallback,
+			Provider: "fake",
 			Steps: []func(llm.Request) llm.Response{
 				func(got llm.Request) llm.Response {
 					return llm.Response{Message: llm.Assistant(text + "|" + got.Model)}
@@ -52,10 +51,10 @@ func FuzzAgenttestAdaptersProgram(f *testing.F) {
 			t.Fatal("FakeAdapter missing planner did not fail")
 		}
 		fake.PlanResponsesContinuationFunc = func(llm.Request) (llm.ResponsesContinuationPlan, error) {
-			return llm.ResponsesContinuationPlan{}, nil
+			return llm.ResponsesContinuationPlan{ContinuationStorageAllowed: flag}, nil
 		}
 		plan, err := fake.PlanResponsesContinuation(req)
-		if err != nil || plan.CanFallbackToChat != fallback {
+		if err != nil || plan.ContinuationStorageAllowed != flag {
 			t.Fatalf("FakeAdapter plan = %#v, %v", plan, err)
 		}
 		fake.PlanResponsesContinuationFunc = func(llm.Request) (llm.ResponsesContinuationPlan, error) {
@@ -122,10 +121,10 @@ func FuzzAgenttestAdaptersProgram(f *testing.F) {
 		}
 		call := CommunicateCallArgs("call-"+model, map[string]any{
 			"message":  "  " + text + "  ",
-			"end_turn": fallback,
+			"end_turn": flag,
 			"output":   map[string]any{"artifacts": []string{text}},
 		})
-		assertAgenttestCommunicateCall(t, call, strings.TrimSpace(text), fallback)
+		assertAgenttestCommunicateCall(t, call, strings.TrimSpace(text), flag)
 		fallbackCall := CommunicateCallArgs("fallback", map[string]any{"message": nil, "output": map[string]any{"message": text}})
 		assertAgenttestCommunicateCall(t, fallbackCall, text, true)
 		if got := CommunicateCall("simple", text); got.Name != "communicate" || got.ID != "simple" {
@@ -135,7 +134,7 @@ func FuzzAgenttestAdaptersProgram(f *testing.F) {
 		if toolResp.Message.Role != llm.RoleAssistant || len(toolResp.Message.Content) != 2 || toolResp.Message.Content[0].ToolCall == nil || toolResp.Message.Content[1].ToolCall == nil {
 			t.Fatalf("ToolCallResponse = %#v", toolResp)
 		}
-		communicateResp := CommunicateResponse(fallback, text)
+		communicateResp := CommunicateResponse(flag, text)
 		if len(communicateResp.Message.Content) != 1 || communicateResp.Message.Content[0].ToolCall == nil {
 			t.Fatalf("CommunicateResponse = %#v", communicateResp)
 		}
@@ -227,7 +226,7 @@ func assertAgenttestFakeEnv(t *testing.T, root string) {
 	if got, err := env.Glob(t.Context(), "*", root); err != nil || got != nil {
 		t.Fatalf("FakeEnv.Glob = %#v, %v", got, err)
 	}
-	if got, err := env.Grep("x", root, "", false, 1, ""); err != nil || got != "" {
+	if got, err := env.Grep(context.Background(), "x", root, "", false, 1, ""); err != nil || got != "" {
 		t.Fatalf("FakeEnv.Grep = %q, %v", got, err)
 	}
 	if got, err := env.ListDirectory(root, 0); err != nil || got != nil {
@@ -292,17 +291,17 @@ func FuzzDenyEnvProgram(f *testing.F) {
 			t.Fatal("DenyEnv.FileExists is not deterministic")
 		}
 		for _, mode := range []string{"", "count", "files_with_matches"} {
-			got, err := env.Grep(content, path, "", false, 1, mode)
+			got, err := env.Grep(context.Background(), content, path, "", false, 1, mode)
 			if err != nil || len(got) > denyMaxBytes {
-				t.Fatalf("DenyEnv.Grep(%q) = %q, %v", mode, got, err)
+				t.Fatalf("DenyEnv.Grep(context.Background(), %q) = %q, %v", mode, got, err)
 			}
 		}
 		grepMatch := agenttestDenyForRemainder(t, seed, 2, 0, "grep", content, path, "files_with_matches")
 		grepMiss := agenttestDenyForRemainder(t, seed, 2, 1, "grep", content, path, "files_with_matches")
-		if got, err := grepMatch.Grep(content, path, "", false, 1, "files_with_matches"); err != nil || got != boundedDenyResult(path) {
+		if got, err := grepMatch.Grep(context.Background(), content, path, "", false, 1, "files_with_matches"); err != nil || got != boundedDenyResult(path) {
 			t.Fatalf("DenyEnv.Grep files match = %q, %v", got, err)
 		}
-		if got, err := grepMiss.Grep(content, path, "", false, 1, "files_with_matches"); err != nil || got != "" {
+		if got, err := grepMiss.Grep(context.Background(), content, path, "", false, 1, "files_with_matches"); err != nil || got != "" {
 			t.Fatalf("DenyEnv.Grep files miss = %q, %v", got, err)
 		}
 		if got := env.boundedText(0); got != "" {

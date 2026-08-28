@@ -128,12 +128,12 @@ func providerTargetDirs(r *runner, provider string, body []byte) []string {
 	return providerTargetDirsForAttempt(r, "", provider, body)
 }
 
-// providerTargetDirsForAttempt maps a response to its metamorphic decoder corpora. The
-// canonical endpoint family wins over the configured provider-instance name,
-// which may be an arbitrary alias. Older records without a family use the wire
-// shape; Chat Completions fans out because OpenAI and OpenAI-compatible streams
-// share that shape. Canonical provider names are a final fallback for bodies
-// such as provider errors that do not identify their protocol.
+// providerTargetDirsForAttempt maps a response to its metamorphic decoder
+// corpora. The canonical endpoint family wins over the configured
+// provider-instance name, which may be an arbitrary alias. Older records
+// without a family use the wire shape. Canonical provider names are a final
+// fallback for bodies such as provider errors that do not identify their
+// protocol.
 func providerTargetDirsForAttempt(r *runner, endpointFamily, provider string, body []byte) []string {
 	if dirs := endpointFamilyTargetDirs(r, endpointFamily); len(dirs) > 0 {
 		return dirs
@@ -148,9 +148,9 @@ func providerTargetDirsForAttempt(r *runner, endpointFamily, provider string, bo
 	case "google":
 		return []string{r.dir(dirGeminiStream)}
 	case "openai-compatible":
-		return []string{r.dir(dirOpenAICompatStream)}
+		return []string{r.dir(dirChatCompletionsSSE)}
 	case "openai":
-		return []string{r.dir(dirOpenAIResponses), r.dir(dirOpenAIChatComplete)}
+		return []string{r.dir(dirResponsesStream), r.dir(dirChatCompletionsSSE)}
 	}
 	return nil
 }
@@ -162,11 +162,11 @@ func endpointFamilyTargetDirs(r *runner, endpointFamily string) []string {
 	case "google_stream_generate_content":
 		return []string{r.dir(dirGeminiStream)}
 	case "openai_public", "openai_codex":
-		return []string{r.dir(dirOpenAIResponses)}
-	case "openai_chat_completions":
-		return []string{r.dir(dirOpenAIChatComplete)}
-	case "openai_compatible_chat_completions":
-		return []string{r.dir(dirOpenAICompatStream)}
+		return []string{r.dir(dirResponsesStream)}
+	// openai_compatible_chat_completions is a retired family; records that
+	// still carry it hold the same Chat Completions wire shape.
+	case "openai_chat_completions", "openai_compatible_chat_completions":
+		return []string{r.dir(dirChatCompletionsSSE)}
 	default:
 		return nil
 	}
@@ -175,13 +175,13 @@ func endpointFamilyTargetDirs(r *runner, endpointFamily string) []string {
 func bodyShapeTargetDirs(r *runner, body []byte) []string {
 	switch {
 	case isResponsesStream(body):
-		return []string{r.dir(dirOpenAIResponses)}
+		return []string{r.dir(dirResponsesStream)}
 	case isAnthropicMessagesStream(body):
 		return []string{r.dir(dirAnthropicStream)}
 	case isGeminiStream(body):
 		return []string{r.dir(dirGeminiStream)}
 	case isChatCompletionsStream(body):
-		return []string{r.dir(dirOpenAIChatComplete), r.dir(dirOpenAICompatStream)}
+		return []string{r.dir(dirChatCompletionsSSE)}
 	default:
 		return nil
 	}

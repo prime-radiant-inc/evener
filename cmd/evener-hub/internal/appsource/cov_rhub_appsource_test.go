@@ -10,6 +10,7 @@ import (
 	"testing"
 
 	"primeradiant.com/evener/appwire"
+	"primeradiant.com/evener/envvars"
 )
 
 func newTestCodexSource() *CodexSource {
@@ -347,10 +348,10 @@ func fuzzScenarioJSONStringAndHelpers(t *testing.T) {
 	if got := jsonString(make(chan int)); got != "" {
 		t.Fatalf("jsonString(unmarshalable)=%q, want empty", got)
 	}
-	if got := firstNonEmpty("", "", "third"); got != "third" {
+	if got := envvars.FirstNonEmpty("", "", "third"); got != "third" {
 		t.Fatalf("firstNonEmpty=%q", got)
 	}
-	if got := firstNonEmpty("", ""); got != "" {
+	if got := envvars.FirstNonEmpty("", ""); got != "" {
 		t.Fatalf("firstNonEmpty all empty=%q", got)
 	}
 	if emptyNil("") != nil {

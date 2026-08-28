@@ -114,6 +114,15 @@ type capabilityFacts struct {
 	unknownEnv bool
 }
 
+// sandboxed reports whether an OS sandbox is in force — deliberately Enforced()
+// and not FileToolConfined(). Every line it gates describes OS-enforced state: the
+// writable-roots summary is built from the SPAWNED layer, the cache strategy is an
+// env-floor behavior of the kernel wrapper, and the `go` telemetry note reports a
+// denial the wrapper makes. For a write-blocked box with no wrapper each of those
+// would be false rather than merely absent — "Writable roots: none" would describe
+// a shell that can in fact write anywhere. That box's real boundary is stated in
+// the environment section instead (sandboxPromptLine), which says which half is
+// enforced and which half is advisory.
 func (f capabilityFacts) sandboxed() bool {
 	return f.policy != nil && f.policy.Enforced()
 }

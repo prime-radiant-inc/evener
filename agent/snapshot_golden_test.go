@@ -3,6 +3,7 @@ package agent
 import (
 	"bytes"
 	"encoding/json"
+	"strings"
 	"testing"
 	"time"
 
@@ -168,5 +169,25 @@ func TestConfigSnapshot_ConverterFidelity(t *testing.T) {
 	}
 	if !bytes.Equal(backJSON, cfgJSON) {
 		t.Fatalf("configFromSnapshot dropped or misrouted a field:\n want: %s\n got:  %s", cfgJSON, backJSON)
+	}
+}
+
+// TestConfigSnapshot_VisionModelRoundTrip covers the new VisionModel field
+// explicitly with a non-zero value, because the existing converter-fidelity test
+// uses fullSessionConfig which does not set it and omitempty hides zero values.
+func TestConfigSnapshot_VisionModelRoundTrip(t *testing.T) {
+	t.Parallel()
+	cfg := SessionConfig{VisionModel: "anthropic/claude-haiku-4-5"}
+	out := configFromSnapshot(cfg.toSnapshot())
+	if out.VisionModel != cfg.VisionModel {
+		t.Fatalf("VisionModel did not round-trip: got %q, want %q", out.VisionModel, cfg.VisionModel)
+	}
+
+	snapJSON, err := json.Marshal(cfg.toSnapshot())
+	if err != nil {
+		t.Fatalf("marshal snapshot: %v", err)
+	}
+	if !strings.Contains(string(snapJSON), `"vision_model"`) {
+		t.Fatalf("snapshot JSON missing vision_model field: %s", snapJSON)
 	}
 }

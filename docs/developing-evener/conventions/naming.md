@@ -106,34 +106,12 @@ Plus the usual trivial cases: `inspo/codex/**` is skipped entirely
 (vendored reference code), and single-word keys (`model`, `name`,
 `addr`, `version`) are case-invariant.
 
-**One known mixed-casing surface**: `POST /api/spawn` accepts a
-snake_case body at the top level (`prompt`, `working_dir`,
-`access_mode`, `launch_overrides`) BUT the `launch_overrides`
-sub-object is the appwire `LaunchConfigLayer` type, which is
-camelCase (`pluginDirs`, `skillsDirs`, `reasoningEffort`,
-`mcpConfigs`) because it lives under the codex-forced carve-out
-above. So a single request body legitimately contains both casings:
+**Session launch uses the AppWire exception**: the hub's typed
+`thread/start` method carries protocol fields such as `launchOverrides`,
+`reasoningEffort`, and `nonInteractive`, which follow the AppWire
+camelCase wire format described above. There is no REST launch payload to
+maintain alongside it; the SPA and TUI both use this AppWire method.
 
-```json
-{
-  "prompt": "...",
-  "working_dir": "/tmp",
-  "launch_overrides": {
-    "pluginDirs": ["..."],
-    "reasoningEffort": "medium"
-  }
-}
-```
-
-This is intentional. Two fixes were considered: duplicating the
-struct as a snake-tagged mirror with translation at the boundary
-(rejected — keeps two source-of-truth structs in sync forever), or
-accepting both casings via custom UnmarshalJSON on the appwire type
-(rejected — adds reader complexity for one endpoint). The cost of
-either fix outweighs the convenience of internal consistency in one
-POST body. If you write `/api/spawn` payloads by hand, expect this
-boundary; the JS spawn form, the TUI, and Toil all handle it
-correctly.
 
 ## Enforcement
 
@@ -166,14 +144,11 @@ make lint-golangci   # struct tags (and everything else golangci covers)
 make lint-naming     # TOML data files
 ```
 
-If `make lint` reports tagliatelle findings under `llm/providers/` or
-`server/appwire_` — paths those `path:` exclusions cover — check for a
-stale cache before believing them. golangci-lint's cache is shared across
-worktrees; when it replays entries recorded under a different checkout's
-absolute path, the reported paths come back as `../../…` and stop matching
-the anchored regexes. `golangci-lint cache clean` fixes it. Only the two
-`path:` exclusions are exposed this way; the per-package `overrides` match
-on package path and are immune.
+The Make lint targets use a worktree-scoped golangci-lint cache, so findings
+under `llm/providers/` or `server/appwire_` are evaluated against this tree's
+paths rather than a sibling checkout's. If an external invocation still uses
+the global cache, `make lint-cache-clean` clears only the Make-managed cache;
+use that invocation's own cache-clean command for its global cache.
 
 ## Adding a new surface
 

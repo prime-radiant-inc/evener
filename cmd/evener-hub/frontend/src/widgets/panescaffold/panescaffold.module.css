@@ -80,26 +80,32 @@
    * a horizontal scrollbar. */
   overflow-x: clip;
   padding: var(--space-4);
+  /* End-of-scroll content stays clear of a phone's home-indicator band now
+   * that StackHost's blanket host padding is gone (see that rule's comment):
+   * footer-less panes (welcome, settings, spawn, doc) dock nothing of their
+   * own, so their scroll padding carries the inset. env() is 0 on desktop,
+   * where this resolves to plain --space-4. The inset yields when the on-screen
+   * keyboard covers the home-indicator band (useKeyboardInset's
+   * --keyboard-inset, 0px everywhere else): max(0, inset - keyboard) keeps
+   * full inset when the keyboard is closed and plain --space-4 when open. */
+  padding-bottom: calc(var(--space-4) + max(0px, env(safe-area-inset-bottom) - var(--keyboard-inset, 0px)));
 }
 
 .footer {
   flex: none;
   padding: var(--space-3) var(--space-4);
+  /* The composer docks here (Session.tsx): its safe-area accommodation
+   * belongs on this bar, not on a container (the old StackHost host padding
+   * lifted the whole pane off the screen's bottom edge, leaving a dead band
+   * under the input). The footer's own chrome fills the home-indicator band
+   * while this padding keeps the composer controls above it - the same
+   * recipe StackHost's top bar uses at the top edge. env() is 0 on desktop,
+   * where this resolves to plain --space-3. The inset yields when the on-screen
+   * keyboard covers the home-indicator band (useKeyboardInset's
+   * --keyboard-inset, 0px everywhere else): max(0, inset - keyboard) keeps
+   * full inset when the keyboard is closed and plain --space-3 when open. */
+  padding-bottom: calc(var(--space-3) + max(0px, env(safe-area-inset-bottom) - var(--keyboard-inset, 0px)));
   border-top: 1px solid var(--edge);
-}
-
-/* AskDock is the one footer surface whose content owns an internal scroll.
- * Let only that footer shrink against the pane, leaving other panes' fixed
- * footer contract unchanged. */
-.footer:has([data-ask-response-dock]) {
-  /* Short questions should make the footer only as tall as their content;
-   * the cap still gives a tall question a bounded slot whose own dock can
-   * scroll without stealing the whole pane from the transcript. */
-  flex: 0 1 auto;
-  min-height: 0;
-  max-height: 70%;
-  display: flex;
-  flex-direction: column;
 }
 
 @media (max-width: 899px) {

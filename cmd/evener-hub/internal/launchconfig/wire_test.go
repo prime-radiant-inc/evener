@@ -108,6 +108,36 @@ func checkToWirePreservesExplicitEmptyModelFallbacks(t *testing.T) {
 	}
 }
 
+func TestEnabledPluginsWireConversionPreservesPresenceAndCopies(t *testing.T) {
+	names := []string{"alpha", "beta"}
+	in := appwire.LaunchConfigLayer{EnabledPlugins: &names}
+	got := FromWire(in)
+	if got.EnabledPlugins == nil || !reflect.DeepEqual(*got.EnabledPlugins, names) {
+		t.Fatalf("FromWire EnabledPlugins = %#v, want %v", got.EnabledPlugins, names)
+	}
+	names[0] = "changed"
+	if (*got.EnabledPlugins)[0] != "alpha" {
+		t.Fatalf("FromWire did not deep-copy input: %#v", *got.EnabledPlugins)
+	}
+
+	back := ToWire(got)
+	if back.EnabledPlugins == nil || !reflect.DeepEqual(*back.EnabledPlugins, []string{"alpha", "beta"}) {
+		t.Fatalf("ToWire EnabledPlugins = %#v", back.EnabledPlugins)
+	}
+	(*got.EnabledPlugins)[0] = "mutated"
+	if (*back.EnabledPlugins)[0] != "alpha" {
+		t.Fatalf("ToWire did not deep-copy input: %#v", *back.EnabledPlugins)
+	}
+
+	empty := []string{}
+	if got := FromWire(appwire.LaunchConfigLayer{EnabledPlugins: &empty}); got.EnabledPlugins == nil || len(*got.EnabledPlugins) != 0 {
+		t.Fatalf("explicit empty FromWire = %#v", got.EnabledPlugins)
+	}
+	if got := ToWire(Layer{EnabledPlugins: &empty}); got.EnabledPlugins == nil || len(*got.EnabledPlugins) != 0 {
+		t.Fatalf("explicit empty ToWire = %#v", got.EnabledPlugins)
+	}
+}
+
 func checkWire_SystemPromptAndDebugFieldsRoundTrip(t *testing.T) {
 	verbose := true
 	nonInteractive := true

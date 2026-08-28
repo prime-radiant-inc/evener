@@ -61,6 +61,62 @@ func TestConnectionInitializeAllowsLaterRequests(t *testing.T) {
 	}
 }
 
+func TestInitializeIncludesNavigationCapabilityWhenConfigured(t *testing.T) {
+	server := NewServer(ServerConfig{
+		ServerName: "evener-hub",
+		Version:    "test",
+		SourceID:   "local",
+		Navigation: &appwire.NavigationCapability{
+			Version:      1,
+			GenerationID: "generation-a",
+			Sequence:     7,
+		},
+	})
+
+	response, err := server.initialize(context.Background(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if response.Navigation == nil {
+		t.Fatal("navigation capability is absent")
+	}
+	if got, want := *response.Navigation, (appwire.NavigationCapability{Version: 1, GenerationID: "generation-a", Sequence: 7}); got != want {
+		t.Fatalf("navigation capability = %+v, want %+v", got, want)
+	}
+}
+
+func TestInitializeReadsNavigationCapabilityForEachConnection(t *testing.T) {
+	var sequence atomic.Uint64
+	server := NewServer(ServerConfig{
+		ServerName: "evener-hub",
+		Version:    "test",
+		SourceID:   "local",
+		NavigationCapability: func() *appwire.NavigationCapability {
+			return &appwire.NavigationCapability{Version: 1, GenerationID: "generation-a", Sequence: sequence.Add(1)}
+		},
+	})
+	for index, want := range []uint64{1, 2} {
+		response, err := server.initialize(context.Background(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if response.Navigation == nil || response.Navigation.Sequence != want {
+			t.Fatalf("initialize %d navigation = %+v, want sequence %d", index, response.Navigation, want)
+		}
+	}
+}
+
+func TestInitializeOmitsNavigationCapabilityWhenUnconfigured(t *testing.T) {
+	server := NewServer(ServerConfig{ServerName: "evener-hub", Version: "test", SourceID: "local"})
+	response, err := server.initialize(context.Background(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if response.Navigation != nil {
+		t.Fatalf("navigation capability = %+v, want absent", *response.Navigation)
+	}
+}
+
 func TestConnectionInitializeRejectsMissingOrMismatchedProtocolVersion(t *testing.T) {
 	for _, tc := range []struct {
 		name   string
@@ -120,7 +176,7 @@ func TestConnectionValidatesExpectedQueueRevisionBeforeDispatch(t *testing.T) {
 				t.Fatalf("init kind=%v, want response", initResp.Kind())
 			}
 
-			params := json.RawMessage(`{"clientMutationId":"m1","expectedTurnId":"t1","expectedQueueRevision":` + tc.value + `}`)
+			params := json.RawMessage(`{"clientMutationId":"m1","expectedInstanceId":"instance-1","expectedTurnId":"t1","expectedQueueRevision":` + tc.value + `}`)
 			resp := conn.HandleMessage(context.Background(), appwire.RequestMessage(
 				appwire.NewIntID(2),
 				appwire.MethodTurnDrainAsSteer,
@@ -1411,6 +1467,68 @@ func TestAtomicReplaceSubscriptionOwnsSnapshotAndPostCutStream(t *testing.T) {
 	}
 	if server.subs.IsSubscribed(conn.ID(), "th_old") || !server.subs.IsSubscribed(conn.ID(), "th_new") {
 		t.Fatalf("replacement ownership: old=%v new=%v", server.subs.IsSubscribed(conn.ID(), "th_old"), server.subs.IsSubscribed(conn.ID(), "th_new"))
+	}
+}
+
+// A serial unsubscribe that lands between a subscribed read's capture and
+// that capture's release-commit must win. The read's response enters the send
+// queue BEFORE the commit runs (enqueueResponse commits the finalizer after
+// `c.send <- msg`), so a client can observe the response, send
+// thread/unsubscribe, and have it processed while the entry is still
+// buffering. The commit must then honor the drop rather than resurrect the
+// subscription. Deterministic regression test for the CI flake in
+// TestServerAppWireThreadUnsubscribeResolvesStableRefAcrossSwap.
+func TestUnsubscribeBetweenCaptureAndCommitEndsUnsubscribed(t *testing.T) {
+	server := NewServer(ServerConfig{ServerName: "test", SourceID: "local"})
+	conn := server.NewConnection("conn-unsub-commit")
+	server.registerConnection(conn)
+	conn.setInitialized()
+
+	notifier := NewNotifier(10)
+	HandleTyped(server.Router(), "test/subscribe-snapshot", func(ctx context.Context, _ struct{}) (struct{}, error) {
+		if !CaptureSubscription(
+			ctx,
+			false,
+			func() string { return "th_live" },
+			notifier.CurrentSequence,
+			func() bool { return true },
+		) {
+			t.Error("subscription capture was rejected")
+		}
+		return struct{}{}, nil
+	})
+
+	// HandleMessage returns the response without enqueueing it: the capture
+	// is registered but its finalizer has not committed yet.
+	response := conn.HandleMessage(
+		context.Background(),
+		appwire.RequestMessage(appwire.NewIntID(1), "test/subscribe-snapshot", struct{}{}),
+	)
+
+	// The unsubscribe lands in exactly the wire race's window: after the
+	// capture registered, before the response enqueue commits it.
+	ctx := context.WithValue(context.Background(), connectionContextKey{}, conn)
+	Unsubscribe(ctx, "th_live")
+
+	// The unsubscribe succeeded, so the count reflects it immediately — even
+	// though the capture's commit has not resolved the entry yet.
+	if got := server.SubscriberCount("th_live"); got != 0 {
+		t.Fatalf("subscriber count before commit = %d, want 0", got)
+	}
+
+	if err := conn.enqueueResponse(context.Background(), response); err != nil {
+		t.Fatalf("enqueue response: %v", err)
+	}
+	// The commit resolved the withdrawn entry by removing it — not by
+	// leaving it behind, filtered out of the count.
+	server.subs.mu.RLock()
+	_, present := server.subs.byConn[conn.id]["th_live"]
+	server.subs.mu.RUnlock()
+	if present {
+		t.Fatal("committed capture left the withdrawn entry in the registry")
+	}
+	if got := server.SubscriberCount("th_live"); got != 0 {
+		t.Fatalf("subscriber count after unsubscribe-then-commit = %d, want 0", got)
 	}
 }
 

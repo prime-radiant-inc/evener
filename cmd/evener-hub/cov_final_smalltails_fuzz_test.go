@@ -91,7 +91,6 @@ func FuzzFinalSmalltails(f *testing.F) {
 		_, _ = ResumeDaemon(context.Background(), "", root, hubcore.ResumeRequest{}, time.Millisecond)
 		_ = validateEvenerLaunchContract(context.Background(), "", "", nil)
 		_, _ = listEvenerLaunchModelContract(context.Background(), "", nil)
-		_ = openAIStoredOAuthUsable(nil)
 
 		for _, mode := range []int{0, 1} {
 			cfg := hubcore.WebConfig{Spawner: &finalSmalltailLister{mode: mode}}
@@ -105,7 +104,7 @@ func FuzzFinalSmalltails(f *testing.F) {
 		_, _ = hubThreadTranscriptList(context.Background(), hubcore.WebConfig{}, web.sources, appwire.ThreadTranscriptListParams{})
 		_ = threadRef(appwire.Thread{})
 		_ = transcriptTargetSource("bad", "fallback")
-		_, _ = pastEntryTurns(hubcore.PastEntry{Meta: meta, StateDir: state})
+		_, _ = pastEntryTurns(hubcore.WebConfig{}, hubcore.PastEntry{Meta: meta, StateDir: state})
 		_ = appItemsFromReplayTurn("t", 0, schema.Turn{}, map[string]string{})
 		_ = variant
 	})

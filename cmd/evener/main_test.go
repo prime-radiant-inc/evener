@@ -7,6 +7,7 @@ import (
 	"flag"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -19,18 +20,62 @@ import (
 	"primeradiant.com/evener/auth/openai/oaitest"
 	"primeradiant.com/evener/envvars"
 	"primeradiant.com/evener/llm"
-	_ "primeradiant.com/evener/llm/providers/openai"
+	_ "primeradiant.com/evener/llm/providers/all"
+	"primeradiant.com/evener/llm/registry"
 )
+
+func TestRunCLIEnabledPluginsFlagWiresPresenceAndNames(t *testing.T) {
+	var stderr bytes.Buffer
+	fs, flags := newRunFlagSet(&stderr)
+	if err := fs.Parse([]string{"--enabled-plugins= alpha, beta", "prompt"}); err != nil {
+		t.Fatal(err)
+	}
+	got := flags.enabledPlugins.Value()
+	if got == nil || !reflect.DeepEqual(*got, []string{"alpha", "beta"}) {
+		t.Fatalf("enabled plugins = %#v", got)
+	}
+}
+
+func TestMainRejectsEnabledPluginsWithResumeBeforeRun(t *testing.T) {
+	var stdout, stderr bytes.Buffer
+	exitCode := 0
+	runCalled := false
+	deps := defaultMainDeps()
+	deps.args = []string{"--enabled-plugins=alpha", "--resume", "session", "prompt"}
+	deps.stdout = &stdout
+	deps.stderr = &stderr
+	deps.exit = func(code int) { exitCode = code }
+	deps.run = func(context.Context, runConfig) error { runCalled = true; return nil }
+	mainWithDeps(deps)
+	if exitCode != 2 {
+		t.Fatalf("exit code = %d, want 2", exitCode)
+	}
+	if runCalled {
+		t.Fatal("run called after an enabled-plugin/resume conflict")
+	}
+	if !strings.Contains(stderr.String(), "--enabled-plugins cannot be used with --resume") {
+		t.Fatalf("stderr = %q", stderr.String())
+	}
+}
+
+// liveRegistryClient builds the client the live CLI tests dispatch through:
+// the real registry, so the developer's environment and user layer name the
+// instances exactly as a real run would.
+func liveRegistryClient(t *testing.T) *llm.Client {
+	t.Helper()
+	r, err := registry.Load()
+	if err != nil {
+		t.Fatalf("registry.Load: %v", err)
+	}
+	return llm.NewClient(llm.WithRegistry(r))
+}
 
 // TestNewSessionFromEnv verifies that we can create a working session
 // from environment variables. This is the core wiring test.
 func TestNewSessionFromEnv(t *testing.T) {
 	requireLiveOpenAI(t)
 
-	client, err := llm.NewFromEnv()
-	if err != nil {
-		t.Fatalf("NewFromEnv: %v", err)
-	}
+	client := liveRegistryClient(t)
 
 	profile := provider.NewOpenAIProfile("gpt-5.4-mini")
 	env := execenv.NewLocalExecutionEnvironment(t.TempDir())
@@ -57,10 +102,7 @@ func TestNewSessionFromEnv(t *testing.T) {
 func TestProcessInputSimplePrompt(t *testing.T) {
 	requireLiveOpenAI(t)
 
-	client, err := llm.NewFromEnv()
-	if err != nil {
-		t.Fatalf("NewFromEnv: %v", err)
-	}
+	client := liveRegistryClient(t)
 
 	profile := provider.NewOpenAIProfile("gpt-5.4-mini")
 	env := execenv.NewLocalExecutionEnvironment(t.TempDir())
@@ -90,10 +132,7 @@ func TestProcessInputSimplePrompt(t *testing.T) {
 func TestProcessInputWithToolUse(t *testing.T) {
 	requireLiveOpenAI(t)
 
-	client, err := llm.NewFromEnv()
-	if err != nil {
-		t.Fatalf("NewFromEnv: %v", err)
-	}
+	client := liveRegistryClient(t)
 
 	tmpDir := t.TempDir()
 	profile := provider.NewOpenAIProfile("gpt-5.4-mini")
@@ -192,6 +231,11 @@ func TestPrintRunEnvVars_IncludesOpenAIResponsesContinuation(t *testing.T) {
 	printRunEnvVars(&b)
 	if !strings.Contains(b.String(), envvars.EVENEROpenAIResponsesContinuation.Name) {
 		t.Fatalf("run env help missing %s: %s", envvars.EVENEROpenAIResponsesContinuation.Name, b.String())
+	}
+	// Every other provider reads its own key and base URL; the help says so
+	// rather than listing a roster that would drift from the registry.
+	if !strings.Contains(b.String(), "<ID>_API_KEY / <ID>_BASE_URL") {
+		t.Fatalf("run env help does not point at per-instance provider vars: %s", b.String())
 	}
 }
 
@@ -634,7 +678,7 @@ func TestOpenAILogoutDeletesOnlyEvenerOwnedAuthState(t *testing.T) {
 	oaitest.IsolateOpenAIAuth(t)
 	stateDir := t.TempDir()
 
-	if err := authopenai.SaveAuth(stateDir, "openai", authopenai.AuthRecord{
+	if err := authopenai.SaveAuth(stateDir, "openai-codex", authopenai.AuthRecord{
 		Version:      1,
 		Provider:     "openai",
 		Source:       authopenai.AuthSourceOAuth,
@@ -658,7 +702,7 @@ func TestOpenAILogoutDeletesOnlyEvenerOwnedAuthState(t *testing.T) {
 		t.Fatalf("runOpenAI() error = %v", err)
 	}
 
-	if _, err := os.Stat(authopenai.AuthFilePath(stateDir, "openai")); !os.IsNotExist(err) {
+	if _, err := os.Stat(authopenai.AuthFilePath(stateDir, "openai-codex")); !os.IsNotExist(err) {
 		t.Fatalf("auth file stat error = %v, want not exist", err)
 	}
 	if _, err := os.Stat(keepPath); err != nil {

@@ -31,23 +31,24 @@ afterEach(() => {
   vi.restoreAllMocks();
 });
 
-test("renders the heading, count, and each marketplace's name/kind/sourceLabel", () => {
+test("renders each marketplace's name/kind/sourceLabel; the segment label owns the heading and count", () => {
   connectFakeClient();
   extensionsStore.setState({ marketplaces: [MARKETPLACE_A] });
   render(<MarketplacesSection expandedMarketplaces={new Set()} />);
-  expect(screen.getByText("Marketplaces")).toBeTruthy();
-  expect(screen.getByText("1 entry")).toBeTruthy();
   expect(screen.getByText("acme-plugins")).toBeTruthy();
   expect(screen.getByText("github")).toBeTruthy();
   expect(screen.getByText("github: acme/plugins")).toBeTruthy();
+  // No in-section heading or count: the page-level SegmentedControl carries
+  // "Marketplaces (n)" - asserted in index.test.tsx.
+  expect(screen.queryByRole("heading")).toBeNull();
+  expect(screen.queryByText("1 entry")).toBeNull();
 });
 
-test("shows the empty state and pluralizes the count when there are no marketplaces", () => {
+test("shows the empty state when there are no marketplaces", () => {
   connectFakeClient();
   extensionsStore.setState({ marketplaces: [] });
   render(<MarketplacesSection expandedMarketplaces={new Set()} />);
   expect(screen.getByText("No marketplaces registered. Add one below.")).toBeTruthy();
-  expect(screen.getByText("0 entries")).toBeTruthy();
 });
 
 test("the Add form and the + Add marketplace button are mutually exclusive", async () => {

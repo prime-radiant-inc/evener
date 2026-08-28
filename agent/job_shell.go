@@ -46,8 +46,13 @@ const (
 )
 
 type shellArgs struct {
-	Command        string
-	Description    string
+	Command     string
+	Description string
+	// Intent is the tool call's `intent` argument (see ctxToolCallIntent):
+	// Intent is the tool call's `intent` argument (see tool.IntentFromContext):
+	// why the model says it is running the command. Stamped onto the job
+	// record so job surfaces can show it with the command.
+	Intent         string
 	Mode           shellMode
 	Background     bool
 	BlockTimeoutMS int
@@ -82,8 +87,9 @@ type shellResult struct {
 }
 
 type shellWaitResult struct {
-	exitCode int
-	err      error
+	exitCode   int
+	signalName string
+	err        error
 }
 
 type stableDelegateShellReceipt struct {
@@ -191,8 +197,12 @@ func runShell(ctx context.Context, jm *jobManager, se execenv.StreamingExecutor,
 
 	go func() {
 		code, err := handle.Wait()
+		signalName := ""
+		if handle.SignalName != nil {
+			signalName = handle.SignalName()
+		}
 		close(processDone)
-		waitCh <- shellWaitResult{exitCode: code, err: err}
+		waitCh <- shellWaitResult{exitCode: code, signalName: signalName, err: err}
 	}()
 
 	if args.MaxRuntimeMS > 0 {
@@ -244,7 +254,7 @@ func runShell(ctx context.Context, jm *jobManager, se execenv.StreamingExecutor,
 		if runtimeTimedOut.Load() {
 			return jm.finishForegroundRuntimeTimeout(run, wait)
 		}
-		status, reason, exitCode := jm.shellTerminal(run, wait.exitCode, runtimeTimedOut.Load(), wait.err)
+		status, reason, exitCode := jm.shellTerminalWithSignal(run, wait.exitCode, wait.signalName, runtimeTimedOut.Load(), wait.err)
 		output, total, truncated, _ := fullOutput(run.output)
 		// complete-or-handle (spec §0.6): defer keep/discard so marshalShellToolResult
 		// can apply both layers (embed budget + tool-result char bound) before deciding.
@@ -437,7 +447,7 @@ func (c *startOnlyContext) detachStart() {
 }
 
 func (jm *jobManager) finishForegroundRuntimeTimeout(run *runningJob, wait shellWaitResult) shellResult {
-	status, reason, exitCode := jm.shellTerminal(run, wait.exitCode, true, wait.err)
+	status, reason, exitCode := jm.shellTerminalWithSignal(run, wait.exitCode, wait.signalName, true, wait.err)
 	if err := jm.commitDelayedShell(run); err != nil {
 		if errors.Is(err, errDelayedShellStartForwardTerminalFailed) {
 			go jm.finalizeShellUntilDurable(run.rec.JobID, jobstore.StatusFailed, "forward_failed", nil)
@@ -511,6 +521,7 @@ func (jm *jobManager) newDelayedShell(args shellArgs) (*runningJob, error) {
 			Type:             jobstore.JobShell,
 			Status:           jobstore.StatusRunning,
 			Command:          args.Command,
+			Intent:           args.Intent,
 			WorkingDir:       args.WorkingDir,
 			Background:       args.Background,
 			Description:      args.Description,
@@ -600,6 +611,7 @@ func (jm *jobManager) commitDelayedShell(run *runningJob) error {
 		JobID:            rec.JobID,
 		Type:             rec.Type,
 		Command:          rec.Command,
+		Intent:           rec.Intent,
 		Description:      rec.Description,
 		OwnerSessionID:   rec.OwnerSessionID,
 		VisibleToSession: rec.VisibleToSession,
@@ -657,7 +669,7 @@ func (jm *jobManager) discardDelayedShell(run *runningJob) {
 
 func (jm *jobManager) finalizeShellWhenDone(run *runningJob, waitCh <-chan shellWaitResult, runtimeTimedOut *atomic.Bool) {
 	wait := <-waitCh
-	status, reason, exitCode := jm.shellTerminal(run, wait.exitCode, runtimeTimedOut.Load(), wait.err)
+	status, reason, exitCode := jm.shellTerminalWithSignal(run, wait.exitCode, wait.signalName, runtimeTimedOut.Load(), wait.err)
 	jm.finalizeShellUntilDurable(run.rec.JobID, status, reason, exitCode)
 }
 
@@ -709,22 +721,19 @@ func shellFinalizeBackoff(attempt int) time.Duration {
 }
 
 func (jm *jobManager) shellTerminal(run *runningJob, exitCode int, timedOut bool, waitErr error) (jobstore.Status, string, *int) {
+	return jm.shellTerminalWithSignal(run, exitCode, "", timedOut, waitErr)
+}
+
+func (jm *jobManager) shellTerminalWithSignal(run *runningJob, exitCode int, signalName string, timedOut bool, waitErr error) (jobstore.Status, string, *int) {
 	code := exitCode
 	jm.mu.Lock()
 	stopStatus, stopReason := run.stopStatus, run.stopReason
 	jm.mu.Unlock()
-	status, reason := shellTerminalDecision(stopStatus, stopReason, exitCode, timedOut, waitErr)
+	status, reason := shellTerminalDecisionWithSignal(stopStatus, stopReason, exitCode, signalName, timedOut, waitErr)
 	return status, reason, &code
 }
 
-// shellTerminalDecision is the pure terminal-classification core of shellTerminal:
-// given a shell run's stop request (if any) and its process outcome, it maps to the
-// terminal status and reason. Precedence: an explicit stop wins over everything,
-// then a runtime timeout, then a wait error, then the exit code (zero = completed,
-// non-zero = failed). It takes only value snapshots (the caller reads run.stopStatus
-// under jm.mu; the exit-code passthrough stays in the wrapper), so the classification
-// is fuzzable in isolation.
-func shellTerminalDecision(stopStatus jobstore.Status, stopReason string, exitCode int, timedOut bool, waitErr error) (jobstore.Status, string) {
+func shellTerminalDecisionWithSignal(stopStatus jobstore.Status, stopReason string, exitCode int, signalName string, timedOut bool, waitErr error) (jobstore.Status, string) {
 	if stopStatus != "" {
 		return stopStatus, stopReason
 	}
@@ -736,6 +745,12 @@ func shellTerminalDecision(stopStatus jobstore.Status, stopReason string, exitCo
 	}
 	if exitCode == 0 {
 		return jobstore.StatusCompleted, "exit_zero"
+	}
+	if exitCode < 0 {
+		if signalName == "" {
+			return jobstore.StatusFailed, "killed_by_signal"
+		}
+		return jobstore.StatusFailed, "killed_by_signal: " + signalName
 	}
 	return jobstore.StatusFailed, "exit_nonzero"
 }

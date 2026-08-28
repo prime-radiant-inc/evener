@@ -98,7 +98,7 @@ func (e *argvOnlyEnv) FileExists(string) bool   { return false }
 func (e *argvOnlyEnv) Glob(context.Context, string, string, ...bool) ([]string, error) {
 	return nil, nil
 }
-func (e *argvOnlyEnv) Grep(string, string, string, bool, int, string, ...int) (string, error) {
+func (e *argvOnlyEnv) Grep(_ context.Context, _ string, _ string, _ string, _ bool, _ int, _ string, _ ...int) (string, error) {
 	return "", nil
 }
 func (e *argvOnlyEnv) ListDirectory(string, int) ([]DirEntry, error) { return nil, nil }
@@ -137,7 +137,7 @@ func (e *shellOnlyEnv) FileExists(string) bool   { return false }
 func (e *shellOnlyEnv) Glob(context.Context, string, string, ...bool) ([]string, error) {
 	return nil, nil
 }
-func (e *shellOnlyEnv) Grep(string, string, string, bool, int, string, ...int) (string, error) {
+func (e *shellOnlyEnv) Grep(_ context.Context, _ string, _ string, _ string, _ bool, _ int, _ string, _ ...int) (string, error) {
 	return "", nil
 }
 func (e *shellOnlyEnv) ListDirectory(string, int) ([]DirEntry, error) { return nil, nil }

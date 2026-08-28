@@ -824,7 +824,7 @@ func writeEntry(b *strings.Builder, seq int, e transcript.Entry, resultTool stri
 			b.WriteString("\n> [SYSTEM turn omitted]\n")
 		}
 
-	case schema.TurnTool: // deprecated
+	case schema.TurnTool: // old transcript format
 		b.WriteString("\n> [TOOL turn omitted]\n")
 
 	default:
@@ -950,12 +950,12 @@ func writeToolCard(b *strings.Builder, callOwnerSeq int, tc *llm.ToolCallData, i
 	}
 }
 
-// writeToolCardLine emits the "- [status] `name` — purpose: <X> — input: <summary>"
-// header line for a tool card. The purpose segment is omitted when absent.
+// writeToolCardLine emits the "- [status] `name` — intent: <X> — input: <summary>"
+// header line for a tool card. The intent segment is omitted when absent.
 func writeToolCardLine(b *strings.Builder, status, name string, args json.RawMessage) {
 	fmt.Fprintf(b, "- [%s] `%s`", status, name)
-	if purpose := toolPurpose(args); purpose != "" {
-		fmt.Fprintf(b, " — purpose: %s", purpose)
+	if intent := toolIntent(args); intent != "" {
+		fmt.Fprintf(b, " — intent: %s", intent)
 	}
 	fmt.Fprintf(b, " — input: %s\n", toolInputSummary(name, args))
 }
@@ -1116,6 +1116,12 @@ func jobResultBody(raw string) (string, bool) {
 		statusParts = append(statusParts, "reason="+r.Reason)
 	}
 	statusParts = append(statusParts, "transcript_ref="+ref)
+	if len(r.Tools) > 0 {
+		// The capability ceiling is frozen at delegate creation/send time. Keep
+		// the ordered enum list visible in the condensed projection rather than
+		// merely accepting it as a decoded-but-invisible field.
+		statusParts = append(statusParts, "tools=["+strings.Join(r.Tools, ",")+"]")
+	}
 
 	var b strings.Builder
 	b.WriteString(strings.Join(statusParts, " "))
@@ -1199,6 +1205,7 @@ var jobResultKnownKeys = map[string]bool{
 	"run_ended_at":        true, // delegateSendResult
 	"latest_activity_at":  true, // delegateSendResult
 	"cumulative_usage":    true, // delegateSendResult
+	"tools":               true, // stableDelegateCreateResult, delegateSendResult
 }
 
 var jobResultMetadataKeys = []string{
@@ -1421,19 +1428,24 @@ func indentLines(lines []string) string {
 	return b.String()
 }
 
-// toolPurpose returns the value of an explicit purpose/intent/description
-// argument, or "" if none is present. Purpose is never inferred from commands
-// or paths. Spec §Tool Call Condensation.
-func toolPurpose(args json.RawMessage) string {
+// toolIntent returns the value of an explicit "intent" argument, or "" if
+// none is present. Intent is never inferred from commands or paths. Falls
+// back to "purpose" — the field's name before the 2026-08-29 rename
+// (7512a736e) — so a transcript recorded before that rename still shows its
+// intent line when read back (issue #709). Spec §Tool Call Condensation.
+func toolIntent(args json.RawMessage) string {
 	m := parseArgs(args)
 	if m == nil {
 		return ""
 	}
-	for _, key := range []string{"purpose", "intent", "description"} {
-		if v, ok := m[key]; ok {
-			if s := scalarString(v); s != "" {
-				return s
-			}
+	if v, ok := m["intent"]; ok {
+		if s := scalarString(v); s != "" {
+			return s
+		}
+	}
+	if v, ok := m["purpose"]; ok {
+		if s := scalarString(v); s != "" {
+			return s
 		}
 	}
 	return ""
@@ -1536,7 +1548,13 @@ func toolInputSummary(name string, args json.RawMessage) string {
 		return quoteIfSet(get("query"))
 
 	case "delegate":
-		parts := []string{truncRunes(get("task"), 80)}
+		// Older transcripts carry the brief under the retired task key;
+		// display only, invocation validation stays prompt-only.
+		brief := get("prompt")
+		if brief == "" {
+			brief = get("task")
+		}
+		parts := []string{truncRunes(brief, 80)}
 		if at := get("agent_type"); at != "" {
 			parts = append(parts, "type="+at)
 		}

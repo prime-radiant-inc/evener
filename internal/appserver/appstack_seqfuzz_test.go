@@ -143,6 +143,27 @@ func (s *stackTransport) Recv(context.Context) (appwire.Message, error) {
 	return msg, nil
 }
 
+// ctxTransport adapts stackTransport to the receive loop's termination
+// contract: Recv must fail once the dispatch policy cancels the connection
+// context, the way the real websocket transport's read does. A transport whose
+// Recv keeps returning (Message{}, nil) after cancellation would spin the
+// receive loop forever — the loop only exits via a Recv error.
+type ctxTransport struct {
+	stackTransport
+	ctx context.Context
+}
+
+func (s *ctxTransport) Recv(ctx context.Context) (appwire.Message, error) {
+	if len(s.messages) == 0 {
+		<-s.ctx.Done()
+		if s.err != nil {
+			return appwire.Message{}, s.err
+		}
+		return appwire.Message{}, context.Canceled
+	}
+	return s.stackTransport.Recv(ctx)
+}
+
 type stackCloser struct{ closes int }
 
 func (s *stackCloser) Close(websocket.StatusCode, string) error { s.closes++; return nil }
@@ -155,18 +176,20 @@ func exerciseReceiveLoops(t rapidTB) {
 	runWebSocketReceiveLoop(context.Background(), closer, &stackTransport{
 		messages: []appwire.Message{appwire.NotificationMessage("ignored", nil)},
 		err:      normal,
-	}, c)
+	}, c, newWebSocketReadGate())
 	if closer.closes != 0 {
 		t.Fatalf("normal receive close count = %d", closer.closes)
 	}
-	runWebSocketReceiveLoop(context.Background(), closer, &stackTransport{err: errors.New("recv")}, c)
+	runWebSocketReceiveLoop(context.Background(), closer, &stackTransport{err: errors.New("recv")}, c, newWebSocketReadGate())
 	if closer.closes != 1 {
 		t.Fatalf("abnormal receive close count = %d", closer.closes)
 	}
 	c.closeSend()
-	runWebSocketReceiveLoop(context.Background(), closer, &stackTransport{
-		messages: []appwire.Message{appwire.RequestMessage(appwire.NewIntID(1), appwire.MethodPing, nil)},
-	}, c)
+	ctx, cancel := context.WithCancel(context.Background())
+	c.setCancel(cancel)
+	transport := &ctxTransport{ctx: ctx}
+	transport.messages = []appwire.Message{appwire.RequestMessage(appwire.NewIntID(1), appwire.MethodPing, nil)}
+	runWebSocketReceiveLoop(ctx, closer, transport, c, newWebSocketReadGate())
 }
 
 type stackPinger struct {
@@ -185,17 +208,17 @@ func (p stackPinger) Ping(context.Context) error {
 func exerciseKeepalive(_ rapidTB) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
-	runWebSocketKeepalive(ctx, stackPinger{called: make(chan struct{}, 1)}, func() {}, time.Hour, time.Hour)
+	runWebSocketKeepalive(ctx, stackPinger{called: make(chan struct{}, 1)}, func() {}, newWebSocketReadGate(), time.Hour, time.Hour)
 
 	failed := make(chan struct{})
-	runWebSocketKeepalive(context.Background(), stackPinger{called: make(chan struct{}, 1), err: errors.New("ping")}, func() { close(failed) }, time.Nanosecond, time.Second)
+	runWebSocketKeepalive(context.Background(), stackPinger{called: make(chan struct{}, 1), err: errors.New("ping")}, func() { close(failed) }, newWebSocketReadGate(), time.Nanosecond, time.Second)
 	<-failed
 
 	ctx, cancel = context.WithCancel(context.Background())
 	called := make(chan struct{}, 1)
 	done := make(chan struct{})
 	go func() {
-		runWebSocketKeepalive(ctx, stackPinger{called: called}, cancel, time.Nanosecond, time.Second)
+		runWebSocketKeepalive(ctx, stackPinger{called: called}, cancel, newWebSocketReadGate(), time.Nanosecond, time.Second)
 		close(done)
 	}()
 	<-called

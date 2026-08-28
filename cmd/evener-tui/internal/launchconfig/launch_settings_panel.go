@@ -226,12 +226,12 @@ type layerRow struct {
 
 func (p LaunchSettingsPanel) rowsForLayer(layerName string, l appwire.LaunchConfigLayer) []layerRow {
 	if len(p.schema) > 0 {
-		return launchSchemaRows(p.schema, l, layerName, launchSchemaRowsSettings)
+		return launchSchemaRows(p.schema, l, layerName, launchSchemaRowsSettings, p.resolved.Effective)
 	}
-	return layerRows(l)
+	return layerRows(l, p.resolved.Effective)
 }
 
-func layerRows(l appwire.LaunchConfigLayer) []layerRow {
+func layerRows(l, effective appwire.LaunchConfigLayer) []layerRow {
 	ptrIntStr := func(p *int) string {
 		if p == nil {
 			return "(default)"
@@ -247,6 +247,30 @@ func layerRows(l appwire.LaunchConfigLayer) []layerRow {
 		}
 		return "false"
 	}
+	// resolvedPtrIntStr/resolvedPtrBoolStr render a nil pointer as the
+	// resolved effective value with a " (default)" suffix, keeping the bare
+	// "(default)" label when the effective layer leaves the field unset too.
+	resolvedPtrIntStr := func(p, eff *int) string {
+		if p != nil {
+			return strconv.Itoa(*p)
+		}
+		if r := ptrIntStr(eff); r != "(default)" {
+			return r + " (default)"
+		}
+		return "(default)"
+	}
+	resolvedPtrBoolStr := func(p, eff *bool) string {
+		if p != nil {
+			if *p {
+				return "true"
+			}
+			return "false"
+		}
+		if r := ptrBoolStr(eff); r != "(default)" {
+			return r + " (default)"
+		}
+		return "(default)"
+	}
 	return []layerRow{
 		{"model", "model", l.Model, l.Model, false},
 		{"fast_cheap_model", "fast_cheap_model", l.FastCheapModel, l.FastCheapModel, false},
@@ -254,11 +278,11 @@ func layerRows(l appwire.LaunchConfigLayer) []layerRow {
 		{"reasoning_effort", "reasoning_effort", l.ReasoningEffort, l.ReasoningEffort, false},
 		{"context_strategy", "context_strategy", l.ContextStrategy, l.ContextStrategy, false},
 		{"openai_responses_continuation", "openai_responses_continuation", l.OpenAIResponsesContinuation, l.OpenAIResponsesContinuation, false},
-		{"max_rounds", "max_rounds", ptrIntStr(l.MaxRounds), ptrIntStr(l.MaxRounds), false},
-		{"max_subagent_depth", "max_subagent_depth", ptrIntStr(l.MaxSubagentDepth), ptrIntStr(l.MaxSubagentDepth), false},
-		{"max_concurrent_delegate_turns", "max_concurrent_delegate_turns", ptrIntStr(l.MaxConcurrentDelegateTurns), ptrIntStr(l.MaxConcurrentDelegateTurns), false},
-		{"max_retained_terminal", "max_retained_terminal", ptrIntStr(l.MaxRetainedTerminal), ptrIntStr(l.MaxRetainedTerminal), false},
-		{"no_project_prompts", "no_project_prompts", ptrBoolStr(l.NoProjectPrompts), ptrBoolStr(l.NoProjectPrompts), false},
+		{"max_rounds", "max_rounds", resolvedPtrIntStr(l.MaxRounds, effective.MaxRounds), ptrIntStr(l.MaxRounds), false},
+		{"max_subagent_depth", "max_subagent_depth", resolvedPtrIntStr(l.MaxSubagentDepth, effective.MaxSubagentDepth), ptrIntStr(l.MaxSubagentDepth), false},
+		{"max_concurrent_delegate_turns", "max_concurrent_delegate_turns", resolvedPtrIntStr(l.MaxConcurrentDelegateTurns, effective.MaxConcurrentDelegateTurns), ptrIntStr(l.MaxConcurrentDelegateTurns), false},
+		{"max_retained_terminal", "max_retained_terminal", resolvedPtrIntStr(l.MaxRetainedTerminal, effective.MaxRetainedTerminal), ptrIntStr(l.MaxRetainedTerminal), false},
+		{"no_project_prompts", "no_project_prompts", resolvedPtrBoolStr(l.NoProjectPrompts, effective.NoProjectPrompts), ptrBoolStr(l.NoProjectPrompts), false},
 		{"skills_dirs", "skills_dirs", fmt.Sprintf("%d entries", len(l.SkillsDirs)), strings.Join(l.SkillsDirs, ", "), true},
 		{"plugin_dirs", "plugin_dirs", fmt.Sprintf("%d entries", len(l.PluginDirs)), strings.Join(l.PluginDirs, ", "), true},
 		{"mcp_configs", "mcp_configs", fmt.Sprintf("%d entries", len(l.MCPConfigs)), strings.Join(l.MCPConfigs, ", "), true},

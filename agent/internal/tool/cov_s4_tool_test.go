@@ -183,23 +183,23 @@ func TestParseV4APatchErrorBranches(t *testing.T) {
 	}
 }
 
-func TestWithoutPurposeParameter_RemovesFromRequired(t *testing.T) {
+func TestWithoutIntentParameter_RemovesFromRequired(t *testing.T) {
 	// []any required branch.
 	tdAny := llm.ToolDefinition{
 		Name: "t",
 		Parameters: map[string]any{
 			"type": "object",
 			"properties": map[string]any{
-				"purpose": map[string]any{"type": "string"},
-				"foo":     map[string]any{"type": "string"},
+				"intent": map[string]any{"type": "string"},
+				"foo":    map[string]any{"type": "string"},
 			},
-			"required": []any{"purpose", "foo"},
+			"required": []any{"intent", "foo"},
 		},
 	}
-	got := WithoutPurposeParameter(tdAny)
+	got := WithoutIntentParameter(tdAny)
 	props, _ := got.Parameters["properties"].(map[string]any)
-	if _, ok := props["purpose"]; ok {
-		t.Fatal("purpose should be removed from properties")
+	if _, ok := props["intent"]; ok {
+		t.Fatal("intent should be removed from properties")
 	}
 	reqAny, ok := got.Parameters["required"].([]any)
 	if !ok {
@@ -214,11 +214,11 @@ func TestWithoutPurposeParameter_RemovesFromRequired(t *testing.T) {
 		Name: "t",
 		Parameters: map[string]any{
 			"type":       "object",
-			"properties": map[string]any{"purpose": map[string]any{"type": "string"}},
-			"required":   []string{"purpose", "bar"},
+			"properties": map[string]any{"intent": map[string]any{"type": "string"}},
+			"required":   []string{"intent", "bar"},
 		},
 	}
-	got = WithoutPurposeParameter(tdStr)
+	got = WithoutIntentParameter(tdStr)
 	reqStr, ok := got.Parameters["required"].([]string)
 	if !ok {
 		t.Fatalf("required should stay []string, got %T", got.Parameters["required"])

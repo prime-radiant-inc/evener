@@ -70,10 +70,13 @@ func TestReasoningEffortRank(t *testing.T) {
 	}
 }
 
+// The disable aliases normalize to the canonical "none", not to "" — an
+// explicit off must stay distinguishable from "nothing configured" so the
+// session's default effort never overrides a user who turned thinking off.
 func TestNormalizeReasoningEffort(t *testing.T) {
 	cases := map[string]string{
-		"none": "", "null": "", "off": "", "false": "", "0": "",
-		"NONE": "", "  none  ": "",
+		"none": "none", "null": "none", "off": "none", "false": "none", "0": "none",
+		"NONE": "none", "  none  ": "none",
 		"minimal": "minimal", "HIGH": "high", "xhigh": "xhigh", "": "",
 		"turbo": "turbo",
 	}
@@ -81,6 +84,15 @@ func TestNormalizeReasoningEffort(t *testing.T) {
 		if got := NormalizeReasoningEffort(in); got != want {
 			t.Errorf("NormalizeReasoningEffort(%q) = %q, want %q", in, got, want)
 		}
+	}
+}
+
+func TestValidateReasoningEffort_AcceptsNone(t *testing.T) {
+	if err := ValidateReasoningEffort("none"); err != nil {
+		t.Fatalf("ValidateReasoningEffort(none) = %v, want nil (explicit off is a valid configured value)", err)
+	}
+	if err := ValidateReasoningEffort("off"); err == nil {
+		t.Fatal("ValidateReasoningEffort(off) = nil, want error (aliases are normalized before validation)")
 	}
 }
 

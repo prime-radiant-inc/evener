@@ -13,7 +13,7 @@ import { AnsiLineContent } from "../../../widgets/codeblock/ansiLine";
 import { Disclosure } from "../../../widgets/disclosure";
 import { requireClass } from "../../../widgets/internal/requireClass";
 import { Markdown } from "../../../widgets/markdown";
-import { formatClockTime } from "../transcript/messages/format";
+import { formatClockTime, splitMandate } from "../transcript/messages/format";
 import { formatQuietAge, quietAnchorMillis } from "./activityFormat";
 import styles from "./activitypanel.module.css";
 import type { ActivityDelegateRow, ActivityJobRow } from "./activityRows";
@@ -191,9 +191,9 @@ export function ActivityRowDetail({
       : mandate
         ? undefined
         : (row.delegate.child?.label ?? row.delegate.childSessionId);
-  const paragraphs = mandate?.split(/\n\s*\n/) ?? [];
-  const firstParagraph = paragraphs[0] ?? "";
-  const remainingMandate = paragraphs.slice(1).join("\n\n");
+  const mandateParts = splitMandate(mandate);
+  const firstParagraph = mandateParts?.first ?? "";
+  const remainingMandate = mandateParts?.rest ?? "";
   return (
     <div className={CLASS.detailStrip}>
       {delegate && mandate ? (

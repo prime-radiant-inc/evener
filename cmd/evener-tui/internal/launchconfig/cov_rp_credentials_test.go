@@ -4,7 +4,7 @@ import "testing"
 
 func TestFormActiveField(t *testing.T) {
 	// Create mode indices.
-	create := map[int]string{0: "type", 1: "name", 2: "apiStyle", 3: "baseURL", 99: "baseURL"}
+	create := map[int]string{0: "base", 1: "name", 2: "protocol", 3: "baseURL", 99: "baseURL"}
 	for idx, want := range create {
 		p := CredentialsPanel{formEditing: false, formField: idx}
 		if got := p.formActiveField(); got != want {
@@ -12,7 +12,7 @@ func TestFormActiveField(t *testing.T) {
 		}
 	}
 	// Edit mode indices.
-	edit := map[int]string{0: "apiStyle", 1: "baseURL", 5: "baseURL"}
+	edit := map[int]string{0: "protocol", 1: "baseURL", 5: "baseURL"}
 	for idx, want := range edit {
 		p := CredentialsPanel{formEditing: true, formField: idx}
 		if got := p.formActiveField(); got != want {
@@ -21,35 +21,17 @@ func TestFormActiveField(t *testing.T) {
 	}
 }
 
-func TestToggleAPIStyle(t *testing.T) {
-	p := &CredentialsPanel{formAPIStyle: "chat-completions"}
-	p.toggleAPIStyle()
-	if p.formAPIStyle != "responses" {
-		t.Fatalf("after toggle = %q, want responses", p.formAPIStyle)
-	}
-	p.toggleAPIStyle()
-	if p.formAPIStyle != "chat-completions" {
-		t.Fatalf("after second toggle = %q, want chat-completions", p.formAPIStyle)
-	}
-	// Any non-"responses" value (including empty) toggles to chat-completions.
-	empty := &CredentialsPanel{}
-	empty.toggleAPIStyle()
-	if empty.formAPIStyle != "chat-completions" {
-		t.Fatalf("empty toggle = %q, want chat-completions", empty.formAPIStyle)
-	}
-}
-
 func TestFormAppendAndDeleteChar(t *testing.T) {
 	// Append to the active field, then delete a char.
-	p := &CredentialsPanel{formField: 0} // create mode, field 0 = type
+	p := &CredentialsPanel{formField: 0} // create mode, field 0 = base
 	p.formAppendChar("op")
 	p.formAppendChar("enai")
-	if p.formType != "openai" {
-		t.Fatalf("formType = %q, want openai", p.formType)
+	if p.formBase != "openai" {
+		t.Fatalf("formBase = %q, want openai", p.formBase)
 	}
 	p.formDeleteChar()
-	if p.formType != "opena" {
-		t.Fatalf("after delete formType = %q, want opena", p.formType)
+	if p.formBase != "opena" {
+		t.Fatalf("after delete formBase = %q, want opena", p.formBase)
 	}
 
 	// baseURL field in edit mode.
@@ -75,27 +57,29 @@ func TestFormAppendAndDeleteChar(t *testing.T) {
 	}
 }
 
-func TestApiStyleDisplay(t *testing.T) {
-	if got := (CredentialsPanel{}).apiStyleDisplay(); got != "(default)" {
-		t.Fatalf("empty apiStyleDisplay = %q, want (default)", got)
+func TestProtocolDisplay(t *testing.T) {
+	if got := (CredentialsPanel{}).protocolDisplay(); got != "(default)" {
+		t.Fatalf("empty protocolDisplay = %q, want (default)", got)
 	}
-	if got := (CredentialsPanel{formAPIStyle: "responses"}).apiStyleDisplay(); got != "responses" {
-		t.Fatalf("apiStyleDisplay = %q, want responses", got)
+	if got := (CredentialsPanel{formProtocol: "openai-responses"}).protocolDisplay(); got != "openai-responses" {
+		t.Fatalf("protocolDisplay = %q, want openai-responses", got)
 	}
 }
 
 func TestSourceBadgeColor(t *testing.T) {
 	withTestColorProfile(t)
 	p := CredentialsPanel{}
-	// Distinct sources map to distinct theme colors; exercise every branch.
+	// Every registry source that names a resolved credential shares one tone;
+	// "none" (and an unset source) is the one that does not.
 	oauth := p.sourceBadgeColor("oauth")
-	env := p.sourceBadgeColor("env")
-	absent := p.sourceBadgeColor("absent")
-	other := p.sourceBadgeColor("something-else")
-	if oauth != env {
-		t.Errorf("oauth and env should share a color, got %v vs %v", oauth, env)
+	env := p.sourceBadgeColor("env:GROQ_API_KEY")
+	store := p.sourceBadgeColor("store")
+	none := p.sourceBadgeColor("none")
+	unset := p.sourceBadgeColor("")
+	if oauth != env || oauth != store {
+		t.Errorf("resolved sources should share a color, got %v, %v, %v", oauth, env, store)
 	}
-	if absent == oauth || other == oauth {
-		t.Errorf("absent/other should differ from oauth color")
+	if none == oauth || unset != none {
+		t.Errorf("none/unset should differ from a resolved source: %v vs %v (unset %v)", none, oauth, unset)
 	}
 }

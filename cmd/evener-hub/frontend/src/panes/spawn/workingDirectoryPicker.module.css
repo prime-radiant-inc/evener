@@ -1,0 +1,223 @@
+.panel {
+  composes: panel from "../../widgets/dialog/dialog.module.css";
+  width: min(760px, calc(100vw - var(--space-8)));
+  max-height: calc(100dvh - var(--space-8));
+  border-radius: var(--radius-pane);
+  overflow: hidden;
+}
+
+.body {
+  padding: 0;
+  min-height: 0;
+}
+
+.browser {
+  display: flex;
+  min-height: 340px;
+}
+.recents {
+  width: 180px;
+  flex: none;
+  padding: var(--space-3);
+  background: var(--surface-inset);
+  border-right: 1px solid var(--edge);
+}
+.recents h3 {
+  margin: var(--space-3) 0 var(--space-2);
+  color: var(--ink-mid);
+  font-size: var(--font-size-caption);
+  font-weight: var(--font-weight-medium);
+}
+
+.browse {
+  flex: 1;
+  min-width: 0;
+  padding: var(--space-4);
+}
+.navigation {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--space-2);
+  margin-bottom: var(--space-3);
+}
+.crumbs {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-1);
+  min-width: 0;
+}
+.crumbs button {
+  min-width: 0;
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+.crumbs details {
+  position: relative;
+}
+.crumbs summary {
+  cursor: pointer;
+  padding: var(--space-2);
+}
+.crumbs details[open] {
+  background: var(--surface-2);
+  border: 1px solid var(--edge);
+  border-radius: var(--radius-control);
+}
+.pathForm {
+  display: flex;
+  gap: var(--space-2);
+}
+.input {
+  composes: input from "../../widgets/input/input.module.css";
+  min-width: 0;
+  flex: 1;
+  font-family: var(--font-mono);
+}
+.listHeading {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin: var(--space-3) 0 var(--space-1);
+  color: var(--ink-mid);
+  font-size: var(--font-size-caption);
+}
+.folders {
+  min-width: 0;
+}
+.row {
+  display: flex;
+  width: 100%;
+  align-items: center;
+  gap: var(--space-2);
+  min-height: 40px;
+  padding: var(--space-2);
+  border: 0;
+  border-radius: var(--radius-control);
+  background: transparent;
+  color: var(--ink-hi);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+.row:hover {
+  background: var(--hover-1);
+}
+.row:focus-visible {
+  outline: var(--focus-ring);
+  outline-offset: -2px;
+}
+.row:disabled {
+  opacity: 0.55;
+  cursor: default;
+}
+.row svg {
+  flex: none;
+  color: var(--ink-mid);
+}
+.folders .row span:first-of-type {
+  flex: 1;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+:where(.recents) .row {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: var(--space-1);
+}
+.path {
+  font-size: var(--font-size-caption);
+  color: var(--ink-mid);
+  overflow-wrap: anywhere;
+}
+.footer {
+  display: flex;
+  flex: 1;
+  align-items: center;
+  gap: var(--space-4);
+  min-width: 0;
+}
+.destination {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  overflow-wrap: anywhere;
+}
+.destination > span:first-child {
+  color: var(--ink-mid);
+  font-size: var(--font-size-caption);
+}
+.destination strong {
+  font-weight: var(--font-weight-medium);
+}
+.actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+  justify-content: flex-end;
+}
+.create {
+  padding: var(--space-3);
+  border-radius: var(--radius-control);
+  background: var(--surface-inset);
+}
+.create label {
+  display: block;
+  margin-bottom: var(--space-1);
+}
+.create .actions {
+  margin-top: var(--space-3);
+}
+.status {
+  color: var(--ink-mid);
+  overflow-wrap: anywhere;
+}
+
+@media (max-width: 899px) {
+  .panel {
+    position: fixed;
+    inset: 0 0 var(--keyboard-inset, 0px);
+    width: 100%;
+    max-height: none;
+    border-radius: 0;
+  }
+  .body {
+    flex: 1;
+  }
+  .browser {
+    flex-direction: column-reverse;
+    min-height: 0;
+  }
+  .recents {
+    width: auto;
+    border-right: 0;
+    border-top: 1px solid var(--edge);
+  }
+  .browse {
+    padding: var(--space-3);
+  }
+  .input {
+    font-size: 16px;
+  }
+  .row {
+    min-height: var(--tap-min);
+  }
+  .footer {
+    flex-direction: column;
+    align-items: stretch;
+    padding-bottom: env(safe-area-inset-bottom);
+    gap: var(--space-2);
+  }
+  .footer .actions {
+    flex-wrap: nowrap;
+  }
+  .footer .actions > button {
+    flex: 1;
+  }
+}
+
+.create .input {
+  width: 100%;
+}

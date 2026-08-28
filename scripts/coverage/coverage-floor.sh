@@ -9,10 +9,11 @@
 # behavioural checks live in `check*` functions only a tagged "program" target
 # calls. The web row is the frontend's vitest line coverage.
 #
-# The union of the two Go profiles is counted by position via covstmt-lib.sh,
-# so a block covered by either track counts once. Both tracks are measured
-# against the module's OWN packages (go list ./...), not `./...` — under
-# go.work that is a filesystem pattern matching every nested module too.
+# The union of the two Go profiles is counted by position via the Go covstmt
+# primitive (`evener dev covstmt`), so a block covered by either track counts
+# once. Both tracks are measured against the module's OWN packages
+# (go list ./...), not `./...` — under go.work that is a filesystem pattern
+# matching every nested module too.
 #
 # Usage:
 #   scripts/coverage/coverage-floor.sh                     # measure + print
@@ -54,9 +55,17 @@ if $go_only && $web_only; then
 fi
 
 . "$(dirname "${BASH_SOURCE[0]}")/../lib/gate-surface-lib.sh"
-. "$(dirname "${BASH_SOURCE[0]}")/../lib/covstmt-lib.sh"
 # How this run reclaims the leftovers of its own earlier runs; no janitor does.
 . "$(dirname "${BASH_SOURCE[0]}")/../lib/covscratch-lib.sh"
+
+# stmt_counts PROFILES... — print "covered total" per profile, one line each.
+# A thin wrapper over the Go covstmt primitive (internal/devtool/covstmt), so
+# this script's counting is the counting the repo's Go tests pin — not a
+# Python duplicate free to drift from it. One invocation counts every track
+# at once; the alternative is one `go run` per profile, three per module.
+stmt_counts() {
+	( cd "$repo_root" && go run ./cmd/evener-dev/bin dev covstmt "$@" )
+}
 
 floor_for() { awk -v m="$1" '$1==m {print $2}' "$floors_file" 2>/dev/null; }
 measured_for() { awk -v m="$1" '$1==m {print $2}' "$measured_file" 2>/dev/null; }
@@ -135,9 +144,11 @@ for m in $modules; do
 	[ -f "$base.test.cov" ] || { printf '%-10s %s\n' "$m" "no test profile"; check_measurable "$m" "the test track wrote no coverage profile"; continue; }
 	cat "$base.test.cov" "$base.fuzz.cov" 2>/dev/null >"$base.union.cov"
 
-	read -r tc tt < <(stmt_counts "$base.test.cov")
-	read -r fc ft < <(stmt_counts "$base.fuzz.cov")
-	read -r uc ut < <(stmt_counts "$base.union.cov")
+	# One Go invocation counts all three profiles (test, fuzz, union), in the
+	# argument order the six read fields below consume. `read` stops at the
+	# first newline, so the one-line-per-profile output is flattened to a
+	# single line first.
+	read -r tc tt fc ft uc ut < <(stmt_counts "$base.test.cov" "$base.fuzz.cov" "$base.union.cov" | tr '\n' ' ')
 	[ "${ut:-0}" -gt 0 ] || { printf '%-10s %s\n' "$m" "no statements"; check_measurable "$m" "its profiles counted no statements"; continue; }
 
 	# A union denominator above both tracks means some block was counted twice

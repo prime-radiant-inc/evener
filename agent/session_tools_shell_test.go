@@ -146,6 +146,63 @@ type bufferedShellEnv struct {
 	timeoutMS int
 }
 
+type cancellationGrepEnv struct {
+	agenttest.FakeEnv
+	started chan struct{}
+	release chan struct{}
+}
+
+func (e *cancellationGrepEnv) Grep(ctx context.Context, _ string, _ string, _ string, _ bool, _ int, _ string, _ ...int) (string, error) {
+	e.started <- struct{}{}
+	select {
+	case <-ctx.Done():
+	case <-e.release:
+	}
+	return "", ctx.Err()
+}
+
+func TestGrepFilesExecToolPassesCancellationContext(t *testing.T) {
+	s := newTestSession(t)
+	env := &cancellationGrepEnv{
+		started: make(chan struct{}, 1),
+		release: make(chan struct{}),
+	}
+	env.FakeEnv = agenttest.FakeEnv{WorkDir: t.TempDir()}
+	// Register after newTestSession so this release runs before Session.Close's
+	// cleanup when a context.Background mutation leaves Grep blocked.
+	t.Cleanup(func() { close(env.release) })
+	s.env = env
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	done := make(chan tool.ExecResult, 1)
+	go func() {
+		done <- s.execTool(ctx, llm.ToolCallData{
+			ID:        "grep-cancel",
+			Name:      "grep",
+			Arguments: json.RawMessage(`{"pattern":"needle","path":"."}`),
+		}, "")
+	}()
+
+	select {
+	case <-env.started:
+		cancel()
+	// TRIPWIRE: this generous bound must fail a Background-context mutation without leaking the blocked tool goroutine.
+	case <-time.After(2 * time.Second):
+		t.Fatal("grep_files did not reach ExecutionEnvironment.Grep")
+	}
+
+	select {
+	case result := <-done:
+		if !result.IsError || !strings.Contains(result.FullOutput, context.Canceled.Error()) {
+			t.Fatalf("grep_files cancellation result = %+v, want context.Canceled error", result)
+		}
+	// TRIPWIRE: this generous bound must fail a Background-context mutation without hanging the test indefinitely.
+	case <-time.After(2 * time.Second):
+		t.Fatal("registered grep_files did not stop after context cancellation")
+	}
+}
+
 func (e *bufferedShellEnv) ExecCommand(_ context.Context, _ string, timeoutMS int, _ string, _ map[string]string) (execenv.ExecResult, error) {
 	e.timeoutMS = timeoutMS
 	return execenv.ExecResult{
@@ -274,6 +331,51 @@ func TestShellDetachedRejectsInvalidCwdBeforeDetach(t *testing.T) {
 	}
 }
 
+// TestShellToolIntentLandsOnJobRecord: the tool call's `intent` argument is
+// captured on the shell job record, so job surfaces (the sidebar rail, the
+// activity panel) can show why the model said it is running the command. The
+// registry strips intent from args before handlers run and threads it onto
+// ctx (tool.IntentFromContext) at the strip point, so parseShellToolArgs can
+// read it back.
+func TestShellToolIntentLandsOnJobRecord(t *testing.T) {
+	t.Parallel()
+	s := newTestSession(t)
+
+	// TRIPWIRE: starting a background shell job returns as soon as the job
+	// is recorded (see TestShellToolBackgroundReturnsJobID); this normally
+	// returns in well under a second, so 30s only fires on a genuine hang.
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	res := s.reg.ExecuteCall(ctx, s.env, llm.ToolCallData{
+		ID:   "c-intent",
+		Name: "shell",
+		Arguments: json.RawMessage(
+			`{"command":"sleep 30","mode":"background","intent":"Running the suite to find the failure"}`),
+	})
+	if res.IsError {
+		t.Fatalf("shell returned error: %s", res.Output)
+	}
+	var out struct {
+		JobID string `json:"job_id"`
+	}
+	if err := json.Unmarshal(toolResultJSON(res), &out); err != nil {
+		t.Fatalf("unmarshal shell output: %v (output: %s)", err, res.Output)
+	}
+	t.Cleanup(func() {
+		_, _ = s.jobManager.stop(out.JobID)
+		waitForShellDone(t, s.jobManager, out.JobID)
+	})
+
+	jobs := s.jobManager.list(listFilter{})
+	if len(jobs) != 1 {
+		t.Fatalf("jobs = %d, want 1", len(jobs))
+	}
+	if got := jobs[0].Intent; got != "Running the suite to find the failure" {
+		t.Fatalf("job record Intent = %q, want the tool call's intent", got)
+	}
+}
+
 func TestShellToolBackgroundReturnsJobID(t *testing.T) {
 	t.Parallel()
 	s := newTestSession(t)
@@ -323,6 +425,44 @@ func TestShellToolBackgroundReturnsJobID(t *testing.T) {
 	jobs := s.jobManager.list(listFilter{})
 	if len(jobs) != 1 || jobs[0].JobID != out.JobID || jobs[0].Status != jobstore.StatusRunning {
 		t.Fatalf("jobs = %+v, want one running shell job %q", jobs, out.JobID)
+	}
+}
+
+func TestShellToolBackgroundModelOutputRetainsJobIDUnderRegistryLimits(t *testing.T) {
+	t.Parallel()
+	s := newShellToolTestSession(t, SessionConfig{
+		ToolOutputLimits: map[string]schema.ToolOutputLimit{
+			"shell": {MaxChars: 800, MaxLines: 1, Strategy: schema.TruncHeadTail},
+		},
+	})
+
+	// TRIPWIRE: background launch normally returns in well under a second;
+	// 30s only fires if the registered shell path genuinely hangs.
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	res := s.reg.ExecuteCall(ctx, s.env, llm.ToolCallData{
+		ID:        "c1",
+		Name:      "shell",
+		Arguments: json.RawMessage(`{"command":"sleep 30","mode":"background"}`),
+	})
+	if res.IsError {
+		t.Fatalf("shell returned error: %s", res.Output)
+	}
+	var out struct {
+		JobID string `json:"job_id"`
+	}
+	if err := json.Unmarshal(toolResultJSON(res), &out); err != nil {
+		t.Fatalf("unmarshal shell output: %v (output: %s)", err, res.Output)
+	}
+	if out.JobID == "" {
+		t.Fatal("background shell returned no job_id")
+	}
+	t.Cleanup(func() {
+		_, _ = s.jobManager.stop(out.JobID)
+		waitForShellDone(t, s.jobManager, out.JobID)
+	})
+	if !strings.Contains(res.Output, out.JobID) {
+		t.Fatalf("shell model output lost job_id %q under constrained registry limits: %q", out.JobID, res.Output)
 	}
 }
 
@@ -405,7 +545,7 @@ func TestShellBackgroundCompletionRetainsUnterminatedOutput(t *testing.T) {
 
 func TestParseShellToolArgsClampsSmallMaxRuntime(t *testing.T) {
 	t.Parallel()
-	args, err := parseShellToolArgs(map[string]any{
+	args, err := parseShellToolArgs(context.Background(), map[string]any{
 		"command":        "sleep 30",
 		"max_runtime_ms": float64(1),
 	})
@@ -441,6 +581,9 @@ func TestShellToolStreamingPathHonorsSessionTimeouts(t *testing.T) {
 	s := newShellToolTestSession(t, SessionConfig{
 		DefaultCommandTimeoutMS: 100,
 		MaxCommandTimeoutMS:     100,
+		ToolOutputLimits: map[string]schema.ToolOutputLimit{
+			"shell": {MaxChars: 800, MaxLines: 1, Strategy: schema.TruncHeadTail},
+		},
 	})
 	clk := agenttest.NewFakeClock()
 	s.jobManager.clock = clk
@@ -494,6 +637,9 @@ func TestShellToolStreamingPathHonorsSessionTimeouts(t *testing.T) {
 				out.Reason != "foreground_timeout" ||
 				out.Mode != "background" {
 				t.Fatalf("shell output = %+v, want foreground timeout promoted to background", out)
+			}
+			if !strings.Contains(res.Output, out.JobID) {
+				t.Fatalf("promoted shell model output lost job_id %q under constrained registry limits: %q", out.JobID, res.Output)
 			}
 			_, _ = s.jobManager.stop(out.JobID)
 			waitForShellDone(t, s.jobManager, out.JobID)
@@ -553,7 +699,7 @@ func TestParentCloseMarksSubagentBackgroundShellCancelledBeforeSharedEnvCleanup(
 	c := llm.NewClient()
 	c.Register(&fakeAdapter{name: "openai"})
 
-	parent, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), env, SessionConfig{
+	parent, err := NewSession(c, withTestSessionNamer(c, NewOpenAIProfile("gpt-5.2")), env, SessionConfig{
 		StateDir:         stateDir,
 		MaxSubagentDepth: 1,
 	})
@@ -562,7 +708,7 @@ func TestParentCloseMarksSubagentBackgroundShellCancelledBeforeSharedEnvCleanup(
 	}
 	t.Cleanup(func() { parent.Close() })
 
-	child, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), env, SessionConfig{
+	child, err := NewSession(c, withTestSessionNamer(c, NewOpenAIProfile("gpt-5.2")), env, SessionConfig{
 		StateDir:         stateDir,
 		MaxSubagentDepth: 1,
 	})
@@ -648,7 +794,7 @@ func TestParentCloseRejectsSubagentShellStartedDuringClose(t *testing.T) {
 	c := llm.NewClient()
 	c.Register(adapter)
 
-	parent, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), env, SessionConfig{
+	parent, err := NewSession(c, withTestSessionNamer(c, NewOpenAIProfile("gpt-5.2")), env, SessionConfig{
 		StateDir:         stateDir,
 		MaxSubagentDepth: 1,
 	})
@@ -657,7 +803,7 @@ func TestParentCloseRejectsSubagentShellStartedDuringClose(t *testing.T) {
 	}
 	t.Cleanup(func() { parent.Close() })
 
-	child, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), env, SessionConfig{
+	child, err := NewSession(c, withTestSessionNamer(c, NewOpenAIProfile("gpt-5.2")), env, SessionConfig{
 		StateDir:         stateDir,
 		MaxSubagentDepth: 1,
 	})
@@ -915,7 +1061,7 @@ func TestParseShellToolArgsMode(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got, err := parseShellToolArgs(tt.args)
+			got, err := parseShellToolArgs(context.Background(), tt.args)
 			if tt.wantErr != "" {
 				if err == nil || err.Error() != tt.wantErr {
 					t.Fatalf("error = %v, want %q", err, tt.wantErr)
@@ -931,7 +1077,7 @@ func TestParseShellToolArgsMode(t *testing.T) {
 
 func TestParseShellToolArgsRejectsNegativeMaxRuntime(t *testing.T) {
 	t.Parallel()
-	if _, err := parseShellToolArgs(map[string]any{
+	if _, err := parseShellToolArgs(context.Background(), map[string]any{
 		"command":        "echo hi",
 		"max_runtime_ms": -1,
 	}); err == nil {
@@ -1326,7 +1472,7 @@ func newShellToolTestSession(t *testing.T, cfg SessionConfig) *Session {
 	t.Helper()
 	c := llm.NewClient()
 	c.Register(&fakeAdapter{name: "openai"})
-	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(t.TempDir()), cfg)
+	sess, err := NewSession(c, withTestSessionNamer(c, NewOpenAIProfile("gpt-5.2")), execenv.NewLocalExecutionEnvironment(t.TempDir()), cfg)
 	if err != nil {
 		t.Fatalf("NewSession: %v", err)
 	}

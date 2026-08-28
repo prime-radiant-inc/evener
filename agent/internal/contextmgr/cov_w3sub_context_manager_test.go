@@ -10,6 +10,7 @@ import (
 	"primeradiant.com/evener/agent/provider"
 	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/llm"
+	"primeradiant.com/evener/llm/registry"
 )
 
 // w3subCommunicateTurn builds an assistant turn carrying a single communicate
@@ -92,7 +93,8 @@ func TestW3Sub_SummarizeSteered_NoRoutes(t *testing.T) {
 		schema.NewTurn(schema.TurnUserInput, llm.User("older")),
 		schema.NewTurn(schema.TurnUserInput, llm.User("recent")),
 	}
-	profile := provider.NewOpenAIProfile("") // empty model -> no routes
+	// A record with no model id: the degenerate profile that routes nowhere.
+	profile := provider.FromResolved(registry.Resolved{Instance: "openai"}, nil)
 	client := ctxmgr_scriptedClient("openai", "unused", nil)
 	cm := NewManager(profile, client, cheapmodel.New(client))
 

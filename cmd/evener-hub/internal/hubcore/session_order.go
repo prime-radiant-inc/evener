@@ -6,7 +6,7 @@ import (
 
 	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/appwire"
-	"primeradiant.com/evener/cmd/evener-hub/internal/strutil"
+	"primeradiant.com/evener/envvars"
 )
 
 type sessionOrderKey struct {
@@ -100,7 +100,7 @@ func appwireThreadOrderKey(thread appwire.Thread) sessionOrderKey {
 		updated: UnixTime(thread.UpdatedAt),
 		created: UnixTime(thread.CreatedAt),
 		title:   title,
-		id:      strutil.FirstNonEmpty(thread.ID, thread.SessionID),
+		id:      envvars.FirstNonEmpty(thread.ID, thread.SessionID),
 	}
 }
 
@@ -128,7 +128,7 @@ func liveEntryOrderKey(le LiveEntry, past *PastIndex) sessionOrderKey {
 }
 
 func liveEntryFallbackOrderKey(le LiveEntry) sessionOrderKey {
-	id := strutil.FirstNonEmpty(le.SessionID, le.ThreadID, le.Address)
+	id := envvars.FirstNonEmpty(le.SessionID, le.ThreadID, le.Address)
 	return sessionOrderKey{
 		updated: le.StartedAt,
 		created: le.StartedAt,

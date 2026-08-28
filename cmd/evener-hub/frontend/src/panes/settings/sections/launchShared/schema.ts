@@ -172,6 +172,67 @@ export function resolvedEmptyChoice(opt: LaunchOption, layer: LaunchConfigLayerN
   return { value: "", label: emptyChoiceLabel(layer) };
 }
 
+// The two generic marker wordings. A resolved value only ever prepends onto
+// one of THESE: a schema-supplied custom empty label ("(inherit)", "Evener
+// default", the Go "(default: off)" family) already says what unset means in
+// that field's own terms and stays verbatim.
+const GENERIC_EMPTY_LABELS: ReadonlySet<string> = new Set(["(default)", "(use global default)"]);
+
+// resolvedDefaultLabel: the "<value> (default)" (global) / "<value> (use
+// global default)" (project) label for a field whose unset marker is the
+// generic one, once a launch/resolve effective layer is known - the value a
+// session started now would inherit for it, so "(default)" never stands in
+// for an answer the hub actually has. undefined when the effective layer
+// hasn't landed (or failed), or the field's empty marker is a schema-supplied
+// custom wording — in all of which the caller keeps rendering
+// resolvedEmptyChoice's label as-is. Booleans word the value the way the
+// field's own set options do ("true"/"false").
+//
+// The resolve RPC already fills the effective layer with builtins from the
+// schema (agent "default", context_strategy "compact", etc.), so the value
+// is simply read from the effective layer. The one exception is a field
+// whose default is dynamic (fast_cheap_model → "primary model"): the
+// resolve can't compute the actual model ref, so the effective layer leaves
+// it unset, and this function falls back to the option's builtinDefaultLabel
+// so "(default)" still names a real answer.
+export function resolvedDefaultLabel(
+  opt: LaunchOption,
+  layer: LaunchConfigLayerName,
+  effective: LaunchConfigLayer | undefined,
+): string | undefined {
+  if (!effective) return undefined;
+  const raw = (effective as Record<string, unknown>)[opt.wireField];
+  let value: string | undefined;
+  if (opt.kind === "boolean") {
+    if (raw === true) value = "true";
+    else if (raw === false) value = "false";
+    else value = undefined;
+  } else if (opt.kind === "integer") {
+    // Integers arrive as numbers from the resolved effective layer. The
+    // The max_rounds -1 and 0 sentinels both mean unlimited: the flag's
+    // own "unlimited" wording (fs.Int("max-rounds", -1, "... 0=unlimited")),
+    // and the agent's applyDefaults converts 0 to -1. So the label uses
+    // "unlimited" rather than the opaque number. Keyed on the wire field,
+    // which both surfaces carry verbatim.
+    if (typeof raw === "number" && Number.isFinite(raw)) {
+      value = opt.wireField === "maxRounds" && (raw === -1 || raw === 0) ? "unlimited" : String(raw);
+    } else {
+      value = undefined;
+    }
+  } else {
+    value = typeof raw === "string" && raw !== "" ? raw : undefined;
+  }
+  // Dynamic default: the effective layer can't hold the value (it depends on
+  // runtime state the resolve doesn't have), so fall back to the schema's
+  // label for it.
+  if (value === undefined && opt.builtinDefaultLabel) {
+    value = opt.builtinDefaultLabel;
+  }
+  if (value === undefined) return undefined;
+  if (!GENERIC_EMPTY_LABELS.has(resolvedEmptyChoice(opt, layer).label)) return undefined;
+  return `${value} ${emptyChoiceLabel(layer)}`;
+}
+
 // --- form state: the React-side stand-in for the legacy's direct DOM state ---
 
 export interface LaunchFormState {

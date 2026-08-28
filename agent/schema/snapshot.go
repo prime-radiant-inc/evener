@@ -145,6 +145,7 @@ type SessionMeta struct {
 	// Empty when none is configured. Persisted so the cheap routing survives
 	// resume — launch args alone do not carry it across restart.
 	CheapModel               string          `json:"cheap_model,omitempty"`
+	VisionModel              string          `json:"vision_model,omitempty"`
 	Config                   ConfigSnapshot  `json:"config"`     // the session's configuration
 	EnvInfo                  EnvironmentInfo `json:"env_info"`   // captured environment description
 	CreatedAt                time.Time       `json:"created_at"` // when the session was first created
@@ -191,6 +192,9 @@ type SessionMeta struct {
 	// EnvContext is the environment-context tracker state (last emitted
 	// snapshot), persisted so resume stays silent when nothing changed.
 	EnvContext *envctx.State `json:"env_context,omitempty"`
+	// ReasoningEffortEscalated records the sticky loop-detection escalation
+	// separately from Config so a resumed lower-effort task cannot undo it.
+	ReasoningEffortEscalated bool `json:"reasoning_effort_escalated,omitempty"`
 	// ObservedBy records append-only observer UI relationships. It grants no
 	// access and lets the hub auto-open an observer beside this worker.
 	ObservedBy []string `json:"observed_by,omitempty"`
@@ -213,12 +217,11 @@ type SessionMeta struct {
 	// longer exists lands the session here instead, with a notice.
 	WorktreeRestoreRoot string `json:"worktree_restore_root,omitempty"`
 	// CumulativeUsage carries the session's running self-only token totals so
-	// they survive restart/resume. omitzero: legacy metas without it round-trip
-	// unchanged (WS2 working-state-metrics).
+	// they survive restart/resume.
 	CumulativeUsage CumulativeUsage `json:"cumulative_usage,omitzero"`
 	// WorkMillis is the accumulated wall-clock work time (sum of every turn's
 	// duration, interrupted and failed included), persisted so the total
-	// survives restart/resume. omitzero for legacy round-trip.
+	// survives restart/resume.
 	WorkMillis int64 `json:"work_millis,omitzero"`
 	// JobTreeRootSessionID identifies the root session whose shared job/activity
 	// lifecycle revision this session participates in. For standalone/root
@@ -236,7 +239,7 @@ type SessionMeta struct {
 // CumulativeUsage is a deliberately lossy snapshot of an llm.Usage kept in
 // SessionMeta so per-session token totals survive daemon restart and resume.
 // Conversion from llm.Usage drops Raw and the reasoning/cache-write pointers;
-// nil pointers map to 0. Tagged omitzero so legacy metas round-trip untouched.
+// nil pointers map to 0.
 type CumulativeUsage struct {
 	InputTokens     int64 `json:"input_tokens,omitzero"`
 	OutputTokens    int64 `json:"output_tokens,omitzero"`
@@ -259,28 +262,9 @@ type GoalSnapshot struct {
 	UpdatedAt        time.Time `json:"updated_at,omitzero"`
 }
 
-// UnmarshalJSON decodes a SessionMeta from JSON, falling back to the legacy
-// "original_task" field for OriginalPrompt when the current "original_prompt"
-// field is empty or absent.
-func (m *SessionMeta) UnmarshalJSON(data []byte) error {
-	type sessionMetaAlias SessionMeta
-	var aux struct {
-		sessionMetaAlias
-		LegacyOriginalPrompt string `json:"original_task,omitempty"`
-	}
-	if err := json.Unmarshal(data, &aux); err != nil {
-		return err
-	}
-	*m = SessionMeta(aux.sessionMetaAlias)
-	if m.OriginalPrompt == "" {
-		m.OriginalPrompt = aux.LegacyOriginalPrompt
-	}
-	return nil
-}
-
 // SessionDisplayName returns the best available human-readable title for a
-// session. Generated names are preferred, with OriginalPrompt retained as the
-// backward-compatible fallback for sessions written before naming existed.
+// session: the generated name if set, otherwise the original prompt, falling
+// back to the session ID.
 func SessionDisplayName(meta SessionMeta) string {
 	if name := strings.TrimSpace(meta.Name); name != "" {
 		return name
@@ -292,6 +276,28 @@ func SessionDisplayName(meta SessionMeta) string {
 }
 
 const sessionsSubdir = "sessions"
+
+// SessionsDirListable reports whether dir's sessions subdirectory can be
+// listed — the same gate ListSessionMetas applies before reading any metas
+// (a missing directory counts as listable: the list is simply empty). A
+// caller deciding whether a session EXISTS under dir via a targeted read
+// (rather than the full list) uses this to skip the same projects the list
+// path skips, so the two paths cannot disagree about which projects hold
+// sessions.
+//
+// The check opens the directory rather than listing it: opening fails with
+// the same permission error a full listing would fail on, at O(1) instead
+// of O(entries). A caller only needs the boolean; the one observable
+// divergence — a readable regular file named "sessions", which opens fine
+// but lists as ENOTDIR — yields "no session here" on both paths anyway.
+func SessionsDirListable(fs afero.Fs, dir string) bool {
+	f, err := fs.Open(filepath.Join(dir, sessionsSubdir))
+	if err == nil {
+		_ = f.Close()
+		return true
+	}
+	return os.IsNotExist(err)
+}
 
 // SaveSessionMeta writes a SessionMeta to <dir>/sessions/<id>.meta.json using
 // atomic rename and compact JSON (no indentation).

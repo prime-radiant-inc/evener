@@ -1,39 +1,74 @@
 package hub
 
 import (
+	"context"
 	"encoding/json"
+	"maps"
 	"os"
 	"path/filepath"
 	"strconv"
 	"strings"
 
 	"primeradiant.com/evener/agent"
+	"primeradiant.com/evener/agent/execenv"
+	"primeradiant.com/evener/agent/plugin"
 	"primeradiant.com/evener/agent/schema"
+	"primeradiant.com/evener/agent/skill"
 	taskpkg "primeradiant.com/evener/agent/task"
 	"primeradiant.com/evener/agent/transcript"
 	"primeradiant.com/evener/appwire"
 	"primeradiant.com/evener/cmd/evener-hub/internal/hubcore"
+	"primeradiant.com/evener/envvars/userdirs"
 	"primeradiant.com/evener/internal/apptranscript"
 	"primeradiant.com/evener/llm"
+	"primeradiant.com/evener/llm/registry"
 )
 
-func pastThreadForRead(cfg hubcore.WebConfig, params appwire.ThreadReadParams) (appwire.Thread, bool, error) {
+// costFor is the $/Mtok cost the hub's registry resolves for instance/model
+// (spec §7.5) — what every dollar figure a past thread reports is derived
+// from. Nil when the hub holds no registry, the reference does not resolve, or
+// the row carries no cost: the caller then renders nothing.
+func costFor(reg *hubcore.ProviderRegistry, instance, model string) *registry.Cost {
+	if reg == nil {
+		return nil
+	}
+	r := reg.Get()
+	if r == nil {
+		return nil
+	}
+	res, err := r.Resolve(instance + "/" + model)
+	if err != nil {
+		return nil
+	}
+	return res.Caps.Cost
+}
+
+// pastEntryCost is costFor over the instance and model a past session
+// recorded, the pair every one of its persisted figures is priced at.
+func pastEntryCost(cfg hubcore.WebConfig, entry hubcore.PastEntry) *registry.Cost {
+	return costFor(cfg.Registry, entry.Meta.ProfileID, entry.Meta.Model)
+}
+
+func pastThreadForRead(ctx context.Context, cfg hubcore.WebConfig, params appwire.ThreadReadParams) (appwire.Thread, bool, error) {
 	entry, ok := pastEntryForRead(cfg, params)
 	if !ok {
 		return appwire.Thread{}, false, nil
 	}
-	thread, err := pastEntryThread(cfg, entry, params.IncludeTurns)
+	thread, err := pastEntryThread(ctx, cfg, entry, params.IncludeTurns)
 	if err != nil {
 		return thread, true, err
 	}
+	thread = attachPastThreadSkillCatalog(entry, thread)
 	// One thread, one transcript: this path can afford the full-transcript
-	// scans the per-entry list sweeps cannot (see stampDerivedSessionUsage).
-	return stampDerivedFailureCount(entry, stampDerivedSessionUsage(entry, thread)), true, nil
+	// scans the per-entry list sweeps cannot (see stampDerivedTotals).
+	// One combined scan answers both figures; two separate ones would read and
+	// decode the same immutable bytes twice.
+	return stampDerivedTotals(cfg, entry, thread), true, nil
 }
 
-func pastThreadReadResponse(cfg hubcore.WebConfig, params appwire.ThreadReadParams) (appwire.ThreadReadResponse, bool, error) {
+func pastThreadReadResponse(ctx context.Context, cfg hubcore.WebConfig, params appwire.ThreadReadParams) (appwire.ThreadReadResponse, bool, error) {
 	if !params.IncludeTurns || params.TurnLimit <= 0 {
-		thread, ok, err := pastThreadForRead(cfg, params)
+		thread, ok, err := pastThreadForRead(ctx, cfg, params)
 		if !ok {
 			return appwire.ThreadReadResponse{}, false, err
 		}
@@ -46,26 +81,28 @@ func pastThreadReadResponse(cfg hubcore.WebConfig, params appwire.ThreadReadPara
 	if !ok {
 		return appwire.ThreadReadResponse{}, false, nil
 	}
-	thread, err := pastEntryThread(cfg, entry, false)
+	thread, err := pastEntryThread(ctx, cfg, entry, false)
 	if err != nil {
 		return appwire.ThreadReadResponse{}, true, err
 	}
+	thread = attachPastThreadSkillCatalog(entry, thread)
 	var olderCursor string
-	thread.Turns, olderCursor, err = pastEntryLatestTurns(entry, params.TurnLimit)
+	thread.Turns, olderCursor, err = pastEntryLatestTurns(cfg, entry, params.TurnLimit)
 	if err != nil {
 		return appwire.ThreadReadResponse{}, true, err
 	}
-	thread = stampDerivedFailureCount(entry, stampDerivedSessionUsage(entry, reconcileAndEnrichPastThread(entry, thread)))
+	thread = stampDerivedTotals(cfg, entry, reconcileAndEnrichPastThread(entry, thread))
 	return appwire.ThreadReadResponse{Thread: thread, OlderCursor: olderCursor}, true, nil
 }
 
-func pastThreadTurnsList(cfg hubcore.WebConfig, params appwire.ThreadTurnsListParams) (appwire.ThreadTurnsListResponse, bool, error) {
+func pastThreadTurnsList(ctx context.Context, cfg hubcore.WebConfig, params appwire.ThreadTurnsListParams) (appwire.ThreadTurnsListResponse, bool, error) {
 	readParams := appwire.ThreadReadParams{Ref: params.Ref, ThreadID: params.ThreadID, IncludeTurns: true}
 	if params.Limit <= 0 {
-		thread, ok, err := pastThreadForRead(cfg, readParams)
+		entry, ok := pastEntryForRead(cfg, readParams)
 		if !ok {
-			return appwire.ThreadTurnsListResponse{}, false, err
+			return appwire.ThreadTurnsListResponse{}, false, nil
 		}
+		thread, err := pastEntryThread(ctx, cfg, entry, true)
 		if err != nil {
 			return appwire.ThreadTurnsListResponse{}, true, err
 		}
@@ -75,7 +112,7 @@ func pastThreadTurnsList(cfg hubcore.WebConfig, params appwire.ThreadTurnsListPa
 	if !ok {
 		return appwire.ThreadTurnsListResponse{}, false, nil
 	}
-	page, err := pastEntryPageTurns(entry, params.Cursor, params.Limit)
+	page, err := pastEntryPageTurns(cfg, entry, params.Cursor, params.Limit)
 	if err != nil {
 		return appwire.ThreadTurnsListResponse{}, true, err
 	}
@@ -124,7 +161,7 @@ func liveThreadCanMergeLocalPast(live appwire.Thread) bool {
 	return true
 }
 
-func mergePastThreadForRead(cfg hubcore.WebConfig, params appwire.ThreadReadParams, live appwire.Thread) (appwire.Thread, error) {
+func mergePastThreadForRead(ctx context.Context, cfg hubcore.WebConfig, params appwire.ThreadReadParams, live appwire.Thread) (appwire.Thread, error) {
 	if !liveThreadCanMergeLocalPast(live) {
 		return live, nil
 	}
@@ -138,12 +175,20 @@ func mergePastThreadForRead(cfg hubcore.WebConfig, params appwire.ThreadReadPara
 			params.Ref = appwire.Ref{SourceID: "local", ThreadID: live.SessionID}.String()
 		}
 	}
-	past, ok, err := pastThreadForRead(cfg, params)
+	entry, ok := pastEntryForRead(cfg, params)
+	if !ok {
+		return live, nil
+	}
+	// A live window is authoritative. Read saved turns only as the compatibility
+	// fallback for a live source that returned none; the metadata merged below
+	// does not use pastThreadForRead's full-transcript usage or failure scans.
+	includePastTurns := params.IncludeTurns && len(live.Turns) == 0
+	past, err := pastEntryThread(ctx, cfg, entry, includePastTurns)
 	if err != nil {
 		return appwire.Thread{}, err
 	}
-	if !ok {
-		return live, nil
+	if live.Evener.Diagnostics == nil {
+		past = attachPastThreadSkillCatalog(entry, past)
 	}
 	if live.ID == "" {
 		live.ID = past.ID
@@ -184,10 +229,88 @@ func mergePastThreadForRead(cfg hubcore.WebConfig, params appwire.ThreadReadPara
 	if live.Evener.Tasks == nil {
 		live.Evener.Tasks = past.Evener.Tasks
 	}
+	if live.Evener.Diagnostics == nil {
+		live.Evener.Diagnostics = past.Evener.Diagnostics
+	}
 	if params.IncludeTurns && len(live.Turns) == 0 {
 		live.Turns = past.Turns
 	}
 	return live, nil
+}
+
+// discoverPastThreadSkillCatalog reconstructs the metadata a session had at
+// start without loading any skill bodies. The order mirrors session startup:
+// embedded skills first, automatic user skills next, project and configured
+// extra directories after that, and finally the skills exposed by configured
+// plugins. Later layers overwrite an earlier canonical key, just as they do
+// during session initialization. Plugin directories use the shared
+// first-manifest-wins selection policy; a later duplicate is skipped even if
+// the selected plugin fails component loading.
+//
+// This function is intentionally behind a package variable. Thread-list,
+// transcript-list, and turn-page sweeps must remain metadata-only and cheap;
+// their tests replace the seam to prove they never invoke cold discovery.
+var discoverPastThreadSkillCatalog = discoverPastThreadSkills
+
+func discoverPastThreadSkills(entry hubcore.PastEntry) []appwire.EvenerSkillInfo {
+	all := make(map[string]skill.SkillMeta)
+	if embedded, err := skill.EmbeddedSkills(); err == nil {
+		maps.Copy(all, embedded)
+	}
+	if userSkillsDir := userdirs.Subdir(userdirs.DefaultConfigRoot(), "skills"); userSkillsDir != "" {
+		skill.ScanSkillsDir(userSkillsDir, all)
+	}
+
+	workingDir := strings.TrimSpace(entry.Meta.EnvInfo.WorkingDir)
+	if workingDir != "" {
+		env := execenv.NewLocalExecutionEnvironment(workingDir)
+		maps.Copy(all, skill.DiscoverSkills(env, entry.Meta.Config.SkillsDirs...))
+	}
+
+	seenPluginNames := make(map[string]struct{}, len(entry.Meta.Config.PluginDirs))
+	for _, dir := range entry.Meta.Config.PluginDirs {
+		pluginName, ok := pastThreadPluginName(dir)
+		if !ok {
+			continue
+		}
+		if _, seen := seenPluginNames[pluginName]; seen {
+			continue
+		}
+		seenPluginNames[pluginName] = struct{}{}
+		pluginSkills := make(map[string]skill.SkillMeta)
+		skill.ScanSkillsDir(filepath.Join(dir, "skills"), pluginSkills)
+		for name, meta := range pluginSkills {
+			all[pluginName+":"+name] = meta
+		}
+	}
+
+	entries := skill.CatalogEntries(all)
+	result := make([]appwire.EvenerSkillInfo, 0, len(entries))
+	for _, entry := range entries {
+		result = append(result, appwire.EvenerSkillInfo{Name: entry.Name, Description: entry.Description})
+	}
+	return result
+}
+
+// pastThreadPluginName reads only the plugin manifest fields needed to locate
+// its skill directory. In particular, this does not load agents, commands,
+// hooks, or MCP configuration: a malformed unrelated component must not hide
+// otherwise valid plugin skills from a cold thread read.
+func pastThreadPluginName(dir string) (string, bool) {
+	name, err := plugin.ManifestName(dir)
+	return name, err == nil
+}
+
+func attachPastThreadSkillCatalog(entry hubcore.PastEntry, thread appwire.Thread) appwire.Thread {
+	skills := discoverPastThreadSkillCatalog(entry)
+	if len(skills) == 0 {
+		return thread
+	}
+	if thread.Evener.Diagnostics == nil {
+		thread.Evener.Diagnostics = &appwire.EvenerDiagnostics{}
+	}
+	thread.Evener.Diagnostics.Skills = skills
+	return thread
 }
 
 // pastThreadCapabilities is what the hub can carry out for a thread with no
@@ -204,19 +327,21 @@ func mergePastThreadForRead(cfg hubcore.WebConfig, params appwire.ThreadReadPara
 // departing daemon cut for a turn that is over. One definition, so the pushed
 // set and the read that follows it cannot drift.
 func pastThreadCapabilities() appwire.ThreadCapabilities {
-	return appwire.ThreadCapabilities{
+	caps := appwire.ThreadCapabilities{
 		Send:         true,
 		ForkFromTurn: true,
 		Compact:      true,
-		Clear:        false,
+		Clear:        true,
 		ChangeModel:  true,
 		Shutdown:     true,
 		Goal:         true,
 		Rename:       true,
 	}
+	caps.ChangeVisionModel = caps.ChangeModel
+	return caps
 }
 
-func pastEntryThread(cfg hubcore.WebConfig, entry hubcore.PastEntry, includeTurns bool) (appwire.Thread, error) {
+func pastEntryThread(ctx context.Context, cfg hubcore.WebConfig, entry hubcore.PastEntry, includeTurns bool) (appwire.Thread, error) {
 	title := schema.SessionDisplayName(entry.Meta)
 	if title == "" {
 		title = entry.Meta.ID
@@ -266,7 +391,7 @@ func pastEntryThread(cfg hubcore.WebConfig, entry hubcore.PastEntry, includeTurn
 	// A meta without it leaves both absent HERE, because this function also
 	// runs once per entry on the list and transcript-target sweeps. The
 	// single-thread read paths recover the figure from the transcript instead —
-	// see stampDerivedSessionUsage.
+	// see stampDerivedTotals.
 	cumulativeUsage := evenerUsageFromCumulative(entry.Meta.CumulativeUsage)
 	thread := appwire.Thread{
 		ID:            entry.Meta.ID,
@@ -286,19 +411,21 @@ func pastEntryThread(cfg hubcore.WebConfig, entry hubcore.PastEntry, includeTurn
 			Kind:         kind,
 			Profile:      entry.Meta.ProfileID,
 			Tasks:        persistedTaskAggregate(entry.StateDir, entry.Meta.ID),
+			Goal:         persistedGoalState(entry.Meta.Goal),
 			Capabilities: pastThreadCapabilities(),
 			WorkMillis:   entry.Meta.WorkMillis,
 			Usage:        cumulativeUsage,
-			Cost:         appwire.EstimateCost(entry.Meta.Model, cumulativeUsage),
+			Cost:         appwire.EstimateCost(pastEntryCost(cfg, entry), cumulativeUsage),
 			// ActiveTurnStartedAt stays 0 because the parent status payload does not
 			// expose the in-process child's turn start time.
 		},
 	}
-	delegates, delegateDiagnostics, err := pastEntryDelegateStatus(entry)
+	thread.Evener.VisionModel = entry.Meta.VisionModel
+	delegates, delegateDiagnostics, err := pastEntryDelegateStatus(ctx, entry)
 	if err != nil {
 		return appwire.Thread{}, err
 	}
-	if len(delegates) != 0 {
+	if len(delegates) != 0 || len(delegateDiagnostics) != 0 {
 		if thread.Evener.Diagnostics == nil {
 			thread.Evener.Diagnostics = &appwire.EvenerDiagnostics{}
 		}
@@ -307,10 +434,18 @@ func pastEntryThread(cfg hubcore.WebConfig, entry hubcore.PastEntry, includeTurn
 			projected.Diagnostics = append(projected.Diagnostics, delegateDiagnostics...)
 			thread.Evener.Diagnostics.Delegates = append(thread.Evener.Diagnostics.Delegates, projected)
 		}
+		// delegateDiagnostics must reach the wire independently of whether
+		// any delegate exists to also carry a copy on its own Diagnostics
+		// above: a diagnostic about the shared delegates.jsonl itself (e.g.
+		// delegatestore.ErrLineTooLong, which degrades to zero delegates)
+		// has no delegate to attach to, so
+		// appwire.EvenerDiagnostics.DelegateDiagnostics is the only vessel
+		// that can still carry it to the wire.
+		thread.Evener.Diagnostics.DelegateDiagnostics = append(thread.Evener.Diagnostics.DelegateDiagnostics, delegateDiagnostics...)
 	}
 	if includeTurns {
 		var err error
-		thread.Turns, err = pastEntryTurns(entry)
+		thread.Turns, err = pastEntryTurns(cfg, entry)
 		if err != nil {
 			return appwire.Thread{}, err
 		}
@@ -320,7 +455,7 @@ func pastEntryThread(cfg hubcore.WebConfig, entry hubcore.PastEntry, includeTurn
 	return thread, nil
 }
 
-func pastEntryDelegateStatus(entry hubcore.PastEntry) ([]agent.DelegateStatusInfo, []string, error) {
+func pastEntryDelegateStatus(ctx context.Context, entry hubcore.PastEntry) ([]agent.DelegateStatusInfo, []string, error) {
 	sessionID := strings.TrimSpace(entry.Meta.ID)
 	if schema.ValidateSessionID(sessionID) != nil {
 		return nil, nil, nil //nolint:nilerr // malformed stored metadata has no safe delegate projection; the thread itself remains readable
@@ -339,7 +474,7 @@ func pastEntryDelegateStatus(entry hubcore.PastEntry) ([]agent.DelegateStatusInf
 		}
 		return nil, nil, err
 	}
-	return agent.LoadSessionDelegateStatus(entry.StateDir, sessionID)
+	return agent.LoadSessionDelegateStatus(ctx, entry.StateDir, sessionID)
 }
 
 func appwireDelegateFromAgentStatus(delegate agent.DelegateStatusInfo) appwire.EvenerDelegateInfo {
@@ -403,14 +538,24 @@ func persistedTaskAggregate(stateDir, sessionID string) *appwire.TaskAggregate {
 	if err := tasks.Load(); err != nil {
 		return nil
 	}
-	items := tasks.View()
-	done := 0
-	for _, task := range items {
-		if task.Status == taskpkg.TaskDone {
-			done++
-		}
+	summary := taskpkg.Summarize(tasks.View())
+	aggregate := &appwire.TaskAggregate{
+		Total:     summary.Total,
+		Done:      summary.Done,
+		Cancelled: summary.Cancelled,
+		Remaining: summary.Remaining,
 	}
-	return &appwire.TaskAggregate{Total: len(items), Done: done}
+	if summary.Current != nil {
+		aggregate.Current = &appwire.TaskSummary{ID: summary.Current.ID, Description: summary.Current.Description}
+	}
+	return aggregate
+}
+
+func persistedGoalState(goal *schema.GoalSnapshot) *appwire.GoalState {
+	if goal == nil {
+		return nil
+	}
+	return &appwire.GoalState{Objective: goal.Objective, Status: goal.Status, Iterations: goal.Iterations}
 }
 
 // windowedReadResponse bounds a thread's turns to the latest TurnLimit for a
@@ -428,83 +573,79 @@ func windowedReadResponse(thread appwire.Thread, turnLimit int) appwire.ThreadRe
 // the whole transcript each page.
 var pastTranscriptCache = apptranscript.NewTurnCache()
 
-// stampDerivedSessionUsage fills in a session token total the meta does not
-// carry, by summing the session's own span of its FULL transcript.
+// stampDerivedTotals fills in a session token total the meta does not carry,
+// and the session's failed-tool-call count, by scanning the session's own span
+// of its FULL transcript ONCE.
 //
-// The gap is the common case, not an edge: agent/fork.go's writeForkChild builds
-// the child SessionMeta field by field and stamps no CumulativeUsage at all, so
-// every fork child arrives with the field unset, and evener.usage and evener.cost
-// both empty. The client can then only sum the turns it happens to hold, which
-// it must honestly label "tokens (loaded turns)". The transcript records
-// per-turn usage regardless, so summing it recovers the full-session figure —
-// and because it reads the whole file rather than the loaded window, the total
-// does not shrink with thread/read's turnLimit.
+// The usage gap is the common case, not an edge: agent/fork.go's writeForkChild
+// builds the child SessionMeta field by field and stamps no CumulativeUsage at
+// all, so every fork child arrives with the field unset, and evener.usage and
+// evener.cost both empty. The client can then only sum the turns it happens to
+// hold, which it must honestly label "tokens (loaded turns)". The transcript
+// records per-turn usage regardless, so summing it recovers the full-session
+// figure — and because it reads the whole file rather than the loaded window,
+// the total does not shrink with thread/read's turnLimit.
+//
+// The failure count is derived server-side because the client cannot derive it
+// honestly. A windowed thread/read hands the client a suffix of the session —
+// measured at about 47% of a long real session's document at load (kata hw2n) —
+// and a count over that suffix is a partial figure wearing a full-session
+// label. For failures that is worse than saying nothing: the harm the count
+// exists to fix is a reader concluding a run was clean because they had not yet
+// scrolled to the failure, and a "0 failed" computed from the loaded window
+// states exactly that conclusion in the session's own chrome.
 //
 // A fork child's transcript OPENS with a verbatim copy of the parent's prefix,
-// whose tokens the PARENT spent. DivergenceTurn marks where the child's own
-// history begins, and only that span is counted: charging the parent's spend to
-// the child would be fabrication.
+// whose tokens the PARENT spent and whose failures the PARENT made.
+// DivergenceTurn marks where the child's own history begins, and only that span
+// counts toward either figure: charging the parent's spend or failures to the
+// child would be fabrication.
 //
-// A present total is left alone: it is the daemon's own running count, and
-// re-deriving would invite a second, disagreeing figure.
+// A present usage total is left alone: it is the daemon's own running count, and
+// re-deriving would invite a second, disagreeing figure (the failure count is
+// still owed, so that case scans for failures alone).
 //
 // Applied only on the single-thread read paths. pastEntryThread also runs once
 // per entry on the thread-list and transcript-target sweeps, where a scan per
 // session would cost a read of every transcript in the state dir.
 //
-// A read error (a legacy format_version 1 transcript, a missing file) leaves the
-// total absent. "Unknown" is the honest report, the client already renders an
-// absent total as nothing rather than "↑0 ↓0", and a missing token figure is no
-// reason to fail the whole thread projection.
-func stampDerivedSessionUsage(entry hubcore.PastEntry, thread appwire.Thread) appwire.Thread {
+// A read error (a legacy format_version 1 transcript, a missing file) leaves
+// both figures absent. "Unknown" is the honest report, the client already
+// renders an absent total as nothing rather than "↑0 ↓0" and an absent count as
+// nothing rather than "clean", and a missing figure is no reason to fail the
+// whole thread projection.
+func stampDerivedTotals(cfg hubcore.WebConfig, entry hubcore.PastEntry, thread appwire.Thread) appwire.Thread {
 	if thread.Evener.Usage != nil {
+		return stampDerivedFailureCount(entry, thread)
+	}
+	total, failures, err := pastTranscriptCache.DerivedTotalsFromFile(pastTranscriptPath(entry), transcriptJSONLMaxLineBytes, entry.Meta.DivergenceTurn)
+	if err != nil {
 		return thread
 	}
-	total := derivedSessionUsage(entry)
-	if total == nil {
-		return thread
+	if total != nil {
+		thread.Evener.Usage = total
+		thread.Evener.Cost = appwire.EstimateCost(pastEntryCost(cfg, entry), total)
 	}
-	thread.Evener.Usage = total
-	thread.Evener.Cost = appwire.EstimateCost(entry.Meta.Model, total)
+	thread.Evener.FailedToolCalls = &failures
 	return thread
 }
 
-// derivedSessionUsage is stampDerivedSessionUsage's sum, for the legacy web
-// surface that assembles its own WorkspaceData rather than an appwire.Thread.
-// Returns nil for an absent total, on the same terms.
-func derivedSessionUsage(entry hubcore.PastEntry) *appwire.EvenerUsage {
-	total, err := pastTranscriptCache.UsageTotalFromFile(pastTranscriptPath(entry), transcriptJSONLMaxLineBytes, entry.Meta.DivergenceTurn)
+// derivedWorkspaceUsage is stampDerivedTotals's usage-only view, for the legacy
+// web surface that assembles its own WorkspaceData rather than an appwire.Thread
+// and owes no failure count. Returns nil for an absent total, on the same terms.
+func derivedWorkspaceUsage(entry hubcore.PastEntry) *appwire.EvenerUsage {
+	total, _, err := pastTranscriptCache.DerivedTotalsFromFile(pastTranscriptPath(entry), transcriptJSONLMaxLineBytes, entry.Meta.DivergenceTurn)
 	if err != nil {
 		return nil
 	}
 	return total
 }
 
-// stampDerivedFailureCount reports how many of the session's tool calls failed,
-// by scanning its own span of the FULL transcript.
-//
-// It is derived server-side because the client cannot derive it honestly. A
-// windowed thread/read hands the client a suffix of the session — measured at
-// about 47% of a long real session's document at load (kata hw2n) — and a count
-// over that suffix is a partial figure wearing a full-session label. For
-// failures that is worse than saying nothing: the harm the count exists to fix
-// is a reader concluding a run was clean because they had not yet scrolled to
-// the failure, and a "0 failed" computed from the loaded window states exactly
-// that conclusion in the session's own chrome.
-//
-// A fork child's transcript OPENS with a verbatim copy of the parent's prefix,
-// whose failures the PARENT made. DivergenceTurn marks where the child's own
-// history begins, and only that span is counted — the same attribution rule
-// stampDerivedSessionUsage applies to tokens.
-//
-// Applied only on the single-thread read paths, for the reason
-// stampDerivedSessionUsage states: pastEntryThread also runs once per entry on
-// the thread-list and transcript-target sweeps, where a scan per session costs a
-// read of every transcript in the state dir.
-//
-// A read error (a legacy format_version 1 transcript, a missing file) leaves the
-// count ABSENT. Unknown is the honest report, the client renders an absent count
-// as nothing, and a session nobody can read must not be reported as clean.
+// stampDerivedFailureCount is stampDerivedTotals's failure-only half, for a
+// thread whose usage total the meta already carried: it scans the session's own
+// span for the failure count alone. The full rationale — why the count is
+// derived server-side, the divergence cut, error-means-absent — is stamped above
+// stampDerivedTotals.
 func stampDerivedFailureCount(entry hubcore.PastEntry, thread appwire.Thread) appwire.Thread {
 	count, err := pastTranscriptCache.FailedToolCallsFromFile(pastTranscriptPath(entry), transcriptJSONLMaxLineBytes, entry.Meta.DivergenceTurn)
 	if err != nil {
@@ -519,7 +660,7 @@ func pastTranscriptPath(entry hubcore.PastEntry) string {
 	return filepath.Join(entry.StateDir, "sessions", entry.Meta.ID+".transcript.jsonl")
 }
 
-func pastEntryTurns(entry hubcore.PastEntry) ([]appwire.Turn, error) {
+func pastEntryTurns(cfg hubcore.WebConfig, entry hubcore.PastEntry) ([]appwire.Turn, error) {
 	transcriptPath := pastTranscriptPath(entry)
 	toolNames := map[string]string{}
 	turns, err := pastTranscriptCache.TurnsFromFile(transcriptPath, transcriptJSONLMaxLineBytes, func(turn schema.Turn, turnID string, entryIndex int) []appwire.ThreadItem {
@@ -530,13 +671,9 @@ func pastEntryTurns(entry hubcore.PastEntry) ([]appwire.Turn, error) {
 	}
 	stampSessionImageURLs(entry.Meta.ID, turns)
 	// TurnsFromFile only has the per-round usage persisted in the transcript;
-	// it doesn't know the session's model, so the cost estimate is stamped
-	// here as a post-pass against entry.Meta.Model.
-	for i := range turns {
-		if turns[i].Usage != nil {
-			turns[i].Cost = appwire.EstimateCost(entry.Meta.Model, turns[i].Usage)
-		}
-	}
+	// it doesn't know the session's instance and model, so the cost estimate
+	// is stamped here as a post-pass against the row those resolve to.
+	stampPastTurnCosts(pastEntryCost(cfg, entry), turns)
 	return turns, nil
 }
 
@@ -559,32 +696,32 @@ func decodeTranscriptTurn(raw json.RawMessage) (schema.Turn, bool) {
 	return entryRec.Turn, true
 }
 
-func pastEntryLatestTurns(entry hubcore.PastEntry, limit int) ([]appwire.Turn, string, error) {
+func pastEntryLatestTurns(cfg hubcore.WebConfig, entry hubcore.PastEntry, limit int) ([]appwire.Turn, string, error) {
 	path := filepath.Join(entry.StateDir, "sessions", entry.Meta.ID+".transcript.jsonl")
 	turns, cursor, err := pastTranscriptCache.LatestFromFile(path, transcriptJSONLMaxLineBytes, limit, projectBoundedPastTranscriptTurn)
 	if err != nil {
 		return nil, "", err
 	}
 	stampSessionImageURLs(entry.Meta.ID, turns)
-	stampPastTurnCosts(entry.Meta.Model, turns)
+	stampPastTurnCosts(pastEntryCost(cfg, entry), turns)
 	return turns, cursor, nil
 }
 
-func pastEntryPageTurns(entry hubcore.PastEntry, cursor string, limit int) (appwire.ThreadTurnsListResponse, error) {
+func pastEntryPageTurns(cfg hubcore.WebConfig, entry hubcore.PastEntry, cursor string, limit int) (appwire.ThreadTurnsListResponse, error) {
 	path := filepath.Join(entry.StateDir, "sessions", entry.Meta.ID+".transcript.jsonl")
 	page, err := pastTranscriptCache.PageFromFile(path, transcriptJSONLMaxLineBytes, cursor, limit, projectBoundedPastTranscriptTurn)
 	if err != nil {
 		return appwire.ThreadTurnsListResponse{}, err
 	}
 	stampSessionImageURLs(entry.Meta.ID, page.Turns)
-	stampPastTurnCosts(entry.Meta.Model, page.Turns)
+	stampPastTurnCosts(pastEntryCost(cfg, entry), page.Turns)
 	return appwire.ThreadTurnsListResponse{Data: page.Turns, NextCursor: page.NextCursor}, nil
 }
 
-func stampPastTurnCosts(model string, turns []appwire.Turn) {
+func stampPastTurnCosts(cost *registry.Cost, turns []appwire.Turn) {
 	for i := range turns {
 		if turns[i].Usage != nil {
-			turns[i].Cost = appwire.EstimateCost(model, turns[i].Usage)
+			turns[i].Cost = appwire.EstimateCost(cost, turns[i].Usage)
 		}
 	}
 }

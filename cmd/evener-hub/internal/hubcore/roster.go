@@ -14,13 +14,13 @@ import (
 	"github.com/fsnotify/fsnotify"
 	"github.com/spf13/afero"
 	"primeradiant.com/evener/appwire"
-	"primeradiant.com/evener/cmd/evener-hub/internal/strutil"
+	"primeradiant.com/evener/envvars"
 	"primeradiant.com/evener/identifier"
 	"primeradiant.com/evener/rendezvous"
 )
 
 // LiveEntry is the hub's view of a single live daemon, combining
-// rendezvous-file metadata with the dynamic SessionID resolved via /status.
+// rendezvous-file metadata with dynamic state resolved via AppWire.
 type LiveEntry struct {
 	rendezvous.Entry
 	SessionID          string
@@ -29,13 +29,22 @@ type LiveEntry struct {
 	PendingAsk         bool     // true while the daemon reports an unanswered ask_user question
 	PendingEscalation  bool     // true while the daemon reports a blocked sandbox-exemption escalation (M7)
 	RunningSubagentIDs []string // in-process children reported by this daemon; not independently routable
-	// RunningSubagentStates carries each running child's own projected status
-	// ("active", "idle", ...) when the daemon reports it. A listed child with
-	// no entry has an unknown state (old daemon), NOT a settled one — callers
-	// must keep their previous fallback for that case. Keyed by child session
-	// ID; a defensive copy rides every List/Find like the IDs slice.
+	// RunningSubagentStates carries each listed child's projected status
+	// ("active", "idle", ...) when the daemon reports it. Retained stable
+	// delegates with no current run are projected as idle even if their child
+	// thread has a stale active status. A listed child with no entry has an
+	// unknown state (old daemon) — callers must NOT treat liveness as activity,
+	// and fold a no-state child to idle rather than active. Keyed by child
+	// session ID; a defensive copy rides every List/Find like the IDs slice.
 	RunningSubagentStates map[string]string
-	Project               identifier.Project // canonical identity resolved at hub ingestion, when available
+	// RunningJobs contains non-terminal, non-agent work reported by the daemon,
+	// such as shell and watch jobs. Delegate jobs stay represented by the
+	// descendant fields above so consumers do not render duplicate agent rows.
+	RunningJobs []appwire.EvenerJobInfo
+	// CompletedJobs contains recent terminal non-agent jobs. Delegate jobs stay
+	// represented by descendant sessions for the same reason as RunningJobs.
+	CompletedJobs []appwire.EvenerJobInfo
+	Project       identifier.Project // canonical identity resolved at hub ingestion, when available
 }
 
 // ProbeResult is the dynamic session state returned by a daemon liveness probe.
@@ -46,13 +55,15 @@ type ProbeResult struct {
 	PendingEscalation     bool
 	RunningSubagentIDs    []string
 	RunningSubagentStates map[string]string
+	RunningJobs           []appwire.EvenerJobInfo
+	CompletedJobs         []appwire.EvenerJobInfo
 	OK                    bool
 }
 
 // Prober is implemented by liveness-checking strategies.
 //
 // A Prober verifies a daemon is reachable AND returns its current
-// session_id (which may have changed under POST /clear since the
+// session_id (which may have changed under thread/clear since the
 // rendezvous file was written) and the daemon's current state.
 type Prober interface {
 	Probe(entry rendezvous.Entry) ProbeResult
@@ -66,6 +77,19 @@ func cloneSubagentStates(in map[string]string) map[string]string {
 	}
 	out := make(map[string]string, len(in))
 	maps.Copy(out, in)
+	return out
+}
+
+func cloneRunningJobs(in []appwire.EvenerJobInfo) []appwire.EvenerJobInfo {
+	return appwire.CloneEvenerJobs(in)
+}
+
+func cloneLiveEntry(in LiveEntry) LiveEntry {
+	out := in
+	out.RunningSubagentIDs = append([]string(nil), in.RunningSubagentIDs...)
+	out.RunningSubagentStates = cloneSubagentStates(in.RunningSubagentStates)
+	out.RunningJobs = cloneRunningJobs(in.RunningJobs)
+	out.CompletedJobs = cloneRunningJobs(in.CompletedJobs)
 	return out
 }
 
@@ -116,7 +140,7 @@ type Roster struct {
 	// refresh attempt, while allowing probes to run without holding mu.
 	refreshGen uint64
 
-	// procAlive reports whether a daemon PID is still running. A failed /status
+	// procAlive reports whether a daemon PID is still running. A failed AppWire
 	// probe to a live process means the daemon is busy, not gone, so its session
 	// is kept; injectable for tests.
 	procAlive func(pid int) bool
@@ -179,8 +203,7 @@ func (r *Roster) SetFs(fs afero.Fs) *Roster {
 func NewRosterWithEntries(entries ...LiveEntry) *Roster {
 	r := NewRoster("", nil)
 	for _, e := range entries {
-		e.RunningSubagentIDs = append([]string(nil), e.RunningSubagentIDs...)
-		e.RunningSubagentStates = cloneSubagentStates(e.RunningSubagentStates)
+		e = cloneLiveEntry(e)
 		r.byPID[e.PID] = e
 		if e.SessionID != "" {
 			r.bySess[e.SessionID] = e
@@ -230,6 +253,36 @@ func rosterFingerprint(bySess map[string]LiveEntry) uint64 {
 			_, _ = h.Write([]byte(bySess[id].RunningSubagentStates[childID]))
 			_, _ = h.Write([]byte{0})
 		}
+		writeJobs := func(jobs []appwire.EvenerJobInfo) {
+			sort.SliceStable(jobs, func(i, j int) bool {
+				if jobs[i].JobID != jobs[j].JobID {
+					return jobs[i].JobID < jobs[j].JobID
+				}
+				if jobs[i].JobType != jobs[j].JobType {
+					return jobs[i].JobType < jobs[j].JobType
+				}
+				return jobs[i].Status < jobs[j].Status
+			})
+			for _, job := range jobs {
+				_, _ = h.Write([]byte(job.JobID))
+				_, _ = h.Write([]byte{0})
+				_, _ = h.Write([]byte(job.JobType))
+				_, _ = h.Write([]byte{0})
+				_, _ = h.Write([]byte(job.Status))
+				_, _ = h.Write([]byte{0})
+				_, _ = h.Write([]byte(job.Command))
+				_, _ = h.Write([]byte{0})
+				_, _ = h.Write([]byte(job.Task))
+				_, _ = h.Write([]byte{0})
+				_, _ = h.Write([]byte(job.Reason))
+				_, _ = h.Write([]byte{0})
+			}
+		}
+		runningJobs := append([]appwire.EvenerJobInfo(nil), bySess[id].RunningJobs...)
+		writeJobs(runningJobs)
+		_, _ = h.Write([]byte{0})
+		completedJobs := append([]appwire.EvenerJobInfo(nil), bySess[id].CompletedJobs...)
+		writeJobs(completedJobs)
 		_, _ = h.Write([]byte{0})
 	}
 	return h.Sum64()
@@ -311,7 +364,7 @@ func (r *Roster) Refresh() {
 			// written before the daemon could die, so this needs no in-memory
 			// history and survives a hub restart discovering an
 			// already-stale file just as well as watching the crash live.
-			sessionID := strutil.FirstNonEmpty(e.SessionID, e.ThreadID)
+			sessionID := envvars.FirstNonEmpty(e.SessionID, e.ThreadID)
 			if sessionID == "" {
 				// Never resolved an id; nothing to attribute the crash to. The
 				// file on disk is pure garbage, so reclaim it instead of
@@ -350,6 +403,8 @@ func (r *Roster) Refresh() {
 			PendingEscalation:     res.PendingEscalation,
 			RunningSubagentIDs:    append([]string(nil), res.RunningSubagentIDs...),
 			RunningSubagentStates: cloneSubagentStates(res.RunningSubagentStates),
+			RunningJobs:           cloneRunningJobs(res.RunningJobs),
+			CompletedJobs:         cloneRunningJobs(res.CompletedJobs),
 		}
 		if res.SessionID != "" {
 			if prev, ok := bySess[res.SessionID]; !ok || preferLiveEntry(live, prev) {
@@ -397,9 +452,8 @@ func (r *Roster) List() []LiveEntry {
 	bySession := make(map[string]LiveEntry, len(r.byPID))
 	out := make([]LiveEntry, 0, len(r.byPID))
 	for _, e := range r.byPID {
-		e.RunningSubagentIDs = append([]string(nil), e.RunningSubagentIDs...)
-		e.RunningSubagentStates = cloneSubagentStates(e.RunningSubagentStates)
-		sessionID := strutil.FirstNonEmpty(e.SessionID, e.Entry.SessionID, e.ThreadID)
+		e = cloneLiveEntry(e)
+		sessionID := envvars.FirstNonEmpty(e.SessionID, e.Entry.SessionID, e.ThreadID)
 		if sessionID == "" {
 			out = append(out, e)
 			continue
@@ -462,8 +516,7 @@ func (r *Roster) Find(sessionID string) (LiveEntry, bool) {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
 	e, ok := r.bySess[sessionID]
-	e.RunningSubagentIDs = append([]string(nil), e.RunningSubagentIDs...)
-	e.RunningSubagentStates = cloneSubagentStates(e.RunningSubagentStates)
+	e = cloneLiveEntry(e)
 	return e, ok
 }
 

@@ -2,11 +2,11 @@ package main
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"io"
 	"net"
 	"net/http"
+	"os"
 	"slices"
 	"strings"
 	"sync"
@@ -20,7 +20,6 @@ import (
 	"primeradiant.com/evener/appwire"
 	"primeradiant.com/evener/cmd/evener/internal/rvreg"
 	"primeradiant.com/evener/llm"
-	"primeradiant.com/evener/llm/providercfg"
 	"primeradiant.com/evener/server"
 )
 
@@ -32,7 +31,10 @@ type closedStreamAdapter struct {
 
 func (a *closedStreamAdapter) Name() string { return "openai" }
 
-func (a *closedStreamAdapter) Complete(context.Context, llm.Request) (llm.Response, error) {
+func (a *closedStreamAdapter) Complete(_ context.Context, req llm.Request) (llm.Response, error) {
+	if response, ok := scriptedSessionNamerResponse(a.Name(), req); ok {
+		return response, nil
+	}
 	a.mu.Lock()
 	a.completeCalls++
 	a.mu.Unlock()
@@ -189,17 +191,11 @@ func startSessionControlLifecycle(t *testing.T) *sessionControlLifecycle {
 	t.Helper()
 	deps := defaultServeDeps()
 	deps.ensureConfigDirs = func() error { return nil }
-	deps.seedMarketplaces = func() error { return nil }
-	deps.newClient = func(string, io.Writer) (*llm.Client, providercfg.Config, bool, func() error, error) {
+	deps.seedMarketplaces = func(context.Context) error { return nil }
+	deps.newClient = func(string, io.Writer) (*llm.Client, func() error, error) {
 		client := llm.NewClient()
 		client.Register(&closedStreamAdapter{})
-		cfg := providercfg.Config{
-			Default: "openai",
-			Instances: []providercfg.InstanceConfig{
-				{Name: "openai", Type: "openai"},
-			},
-		}
-		return client, cfg, true, func() error { return nil }, nil
+		return client, func() error { return nil }, nil
 	}
 	deps.newSession = func(client *llm.Client, profile *provider.Profile, env execenv.ExecutionEnvironment, cfg agent.SessionConfig) (*agent.Session, error) {
 		cfg.LLMRetryPolicy = &llm.RetryPolicy{MaxRetries: 0}
@@ -260,9 +256,8 @@ func startSessionControlLifecycle(t *testing.T) *sessionControlLifecycle {
 	t.Cleanup(func() {
 		observedServer.release()
 		client.Close()
-		shutdownResp, shutdownErr := http.Post("http://"+entry.Address+"/shutdown", "", nil)
-		if shutdownErr == nil {
-			shutdownResp.Body.Close()
+		if err := shutdownServeTestDaemon(ctx, entry.Address, entry.SessionID); err != nil {
+			return
 		}
 		select {
 		case runErr := <-done:
@@ -289,9 +284,10 @@ func awaitSessionControlLifecycle(t *testing.T, lifecycle *sessionControlLifecyc
 func startHeldClientMutationTurn(t *testing.T, lifecycle *sessionControlLifecycle, mutationID, text string) appwire.TurnStartResponse {
 	t.Helper()
 	response, err := lifecycle.client.TurnStart(lifecycle.ctx, appwire.TurnStartParams{
-		ClientMutationID: mutationID,
-		Ref:              lifecycle.ref,
-		Input:            []appwire.InputItem{{Type: "text", Text: text}},
+		ClientMutationID:   mutationID,
+		ExpectedInstanceID: strings.TrimPrefix(lifecycle.ref, "local:"),
+		Ref:                lifecycle.ref,
+		Input:              []appwire.InputItem{{Type: "text", Text: text}},
 	})
 	if err != nil {
 		t.Fatalf("TurnStart: %v", err)
@@ -331,9 +327,10 @@ func TestRunServeRetrySafeTurnPublishesControllableStableIdentity(t *testing.T) 
 			t.Fatal("thread/read published no active turn while processing")
 		}
 		if err := lifecycle.client.TurnSteer(lifecycle.ctx, appwire.TurnSteerParams{
-			ClientMutationID: "stable-steer",
-			Ref:              lifecycle.ref,
-			Input:            []appwire.InputItem{{Type: "text", Text: "steer accepted"}},
+			ClientMutationID:   "stable-steer",
+			ExpectedInstanceID: strings.TrimPrefix(lifecycle.ref, "local:"),
+			Ref:                lifecycle.ref,
+			Input:              []appwire.InputItem{{Type: "text", Text: "steer accepted"}},
 		}); err != nil {
 			t.Fatalf("TurnSteer with published active ID %q: %v", activeTurnID, err)
 		}
@@ -374,8 +371,9 @@ func TestRunServeRetrySafeTurnPublishesControllableStableIdentity(t *testing.T) 
 		stopDone := make(chan error, 1)
 		go func() {
 			stopDone <- lifecycle.client.TurnInterrupt(lifecycle.ctx, appwire.TurnInterruptParams{
-				ClientMutationID: "stable-stop",
-				Ref:              lifecycle.ref,
+				ClientMutationID:   "stable-stop",
+				ExpectedInstanceID: strings.TrimPrefix(lifecycle.ref, "local:"),
+				Ref:                lifecycle.ref,
 			})
 		}()
 		awaitSessionControlLifecycle(t, lifecycle, lifecycle.server.interruptEntered, "interrupt handler entry")
@@ -404,23 +402,16 @@ func TestRunServeRetrySafeTurnPublishesControllableStableIdentity(t *testing.T) 
 // TestRunServe_StreamErrorPublishesIdleStatus proves the real serve input loop
 // publishes owning Session state after an exhausted streaming failure. The
 // wrapper observes the production true -> false -> SetState boundary while
-// forwarding every state mutation to the real server used by both HTTP and
-// AppWire projections.
+// forwarding every state mutation to the real AppWire server projection.
 func TestRunServe_StreamErrorPublishesIdleStatus(t *testing.T) {
 	adapter := &closedStreamAdapter{}
 	deps := defaultServeDeps()
 	deps.ensureConfigDirs = func() error { return nil }
-	deps.seedMarketplaces = func() error { return nil }
-	deps.newClient = func(string, io.Writer) (*llm.Client, providercfg.Config, bool, func() error, error) {
+	deps.seedMarketplaces = func(context.Context) error { return nil }
+	deps.newClient = func(string, io.Writer) (*llm.Client, func() error, error) {
 		client := llm.NewClient()
 		client.Register(adapter)
-		cfg := providercfg.Config{
-			Default: "openai",
-			Instances: []providercfg.InstanceConfig{
-				{Name: "openai", Type: "openai"},
-			},
-		}
-		return client, cfg, true, func() error { return nil }, nil
+		return client, func() error { return nil }, nil
 	}
 	deps.newSession = func(client *llm.Client, profile *provider.Profile, env execenv.ExecutionEnvironment, cfg agent.SessionConfig) (*agent.Session, error) {
 		cfg.LLMRetryPolicy = &llm.RetryPolicy{MaxRetries: 0}
@@ -473,9 +464,10 @@ func TestRunServe_StreamErrorPublishesIdleStatus(t *testing.T) {
 
 	ref := appwire.Ref{SourceID: "local", ThreadID: entry.SessionID}.String()
 	if _, err := client.TurnStart(ctx, appwire.TurnStartParams{
-		ClientMutationID: "stream-error-turn",
-		Ref:              ref,
-		Input:            []appwire.InputItem{{Type: "text", Text: "trigger a closed stream"}},
+		ClientMutationID:   "stream-error-turn",
+		ExpectedInstanceID: entry.SessionID,
+		Ref:                ref,
+		Input:              []appwire.InputItem{{Type: "text", Text: "trigger a closed stream"}},
 	}); err != nil {
 		t.Fatalf("TurnStart: %v", err)
 	}
@@ -496,32 +488,17 @@ func TestRunServe_StreamErrorPublishesIdleStatus(t *testing.T) {
 		t.Fatalf("adapter calls = Stream %d, Complete %d; want Stream 1, Complete 0", streamCalls, completeCalls)
 	}
 
-	statusResp, err := http.Get("http://" + entry.Address + "/status")
-	if err != nil {
-		t.Fatalf("GET /status: %v", err)
-	}
-	defer statusResp.Body.Close()
-	var status server.StatusInfo
-	if err := json.NewDecoder(statusResp.Body).Decode(&status); err != nil {
-		t.Fatalf("decode /status: %v", err)
-	}
-	if status.State != string(agent.SessionIdle) || !status.Capabilities.Send || status.Capabilities.Queue || status.Capabilities.Interrupt {
-		t.Fatalf("/status = state %q, capabilities %+v; want idle, send enabled, queue and interrupt disabled", status.State, status.Capabilities)
-	}
-
 	thread, err := client.ThreadRead(ctx, appwire.ThreadReadParams{Ref: ref})
 	if err != nil {
 		t.Fatalf("ThreadRead: %v", err)
 	}
-	if thread.Thread.Status.Type != appwire.ThreadStatusIdle || !thread.Thread.Evener.Capabilities.Send || thread.Thread.Evener.Capabilities.Queue {
-		t.Fatalf("thread/read = status %q, capabilities %+v; want idle, send enabled, queue disabled", thread.Thread.Status.Type, thread.Thread.Evener.Capabilities)
+	if thread.Thread.Status.Type != appwire.ThreadStatusIdle || !thread.Thread.Evener.Capabilities.Send || thread.Thread.Evener.Capabilities.Queue || thread.Thread.Evener.Capabilities.Interrupt {
+		t.Fatalf("thread/read = status %q, capabilities %+v; want idle, send enabled, queue and interrupt disabled", thread.Thread.Status.Type, thread.Thread.Evener.Capabilities)
 	}
 
-	shutdownResp, err := http.Post("http://"+entry.Address+"/shutdown", "", nil)
-	if err != nil {
-		t.Fatalf("POST /shutdown: %v", err)
+	if err := shutdownServeTestDaemon(context.Background(), entry.Address, entry.SessionID); err != nil {
+		t.Fatalf("thread/shutdown: %v", err)
 	}
-	shutdownResp.Body.Close()
 	select {
 	case err := <-done:
 		if err != nil {
@@ -535,7 +512,7 @@ func TestRunServe_StreamErrorPublishesIdleStatus(t *testing.T) {
 // TestHoldServeStateForAwaitingWake proves holdServeStateForAwaitingWake mirrors
 // the session-level entry gate's refusal predicate (agent/session_lifecycle.go's
 // `len(s.askPending) > 0 && kind != EntryUserInput`, spec §5.3): the input loop
-// must hold its /status shadow write for exactly the (kind, hasPendingAsk) pairs
+// must hold its status shadow write for exactly the (kind, hasPendingAsk) pairs
 // where ProcessInputKind will refuse before any state transition, and flip as
 // before everywhere else. Keyed on hasPendingAsk rather than raw SessionState
 // (attention-status-model v5 reconciliation): a session generally awaiting with
@@ -564,18 +541,18 @@ func TestHoldServeStateForAwaitingWake(t *testing.T) {
 	}
 }
 
-// errClearProbe is the injected failure the /clear tests drive their fallible
+// errClearProbe is the injected failure the thread/clear tests drive their fallible
 // steps with. It is deliberately not a sentinel any production path inspects:
 // the contract under test is "any failure leaves the old identity intact",
 // not "this particular error does".
 var errClearProbe = errors.New("clear probe failure")
 
-// oldClearInputMarker is written into the OLD thread's snapshot before /clear
+// oldClearInputMarker is written into the OLD thread's snapshot before thread/clear
 // runs, so a replacement that leaks the previous authority into the new thread
 // is visible in thread/read rather than merely inferable.
 const oldClearInputMarker = "OLD-THREAD-INPUT"
 
-// clearTestState records what /clear did, in order, across the real daemon
+// clearTestState records what thread/clear did, in order, across the real daemon
 // server and the injected serveDeps. Every step it records is a production
 // call site; nothing here stands in for Evener internals.
 type clearTestState struct {
@@ -627,11 +604,12 @@ type clearIdentityServer struct {
 	*server.Server
 
 	state    *clearTestState
-	clear    func(context.Context) error
+	clear    func(context.Context, appwire.ThreadClearParams) error
+	jobs     func(appwire.JobsListParams) (any, error)
 	shutdown func()
 	// envelopeSource is the one seam the daemon reads live session state
 	// through. Capturing it lets this test observe WHICH session the daemon
-	// resolves after /clear, which is what the meta callback used to prove.
+	// resolves after thread/clear, which is what the meta callback used to prove.
 	envelopeSource server.ThreadEnvelopeSource
 }
 
@@ -647,9 +625,14 @@ func (s *clearIdentityServer) ReplaceAppIdentity(prepared server.PreparedAppIden
 	s.Server.ReplaceAppIdentity(prepared, activate)
 }
 
-func (s *clearIdentityServer) SetClearFunc(fn func(context.Context) error) {
+func (s *clearIdentityServer) SetClearFunc(fn func(context.Context, appwire.ThreadClearParams) error) {
 	s.clear = fn
 	s.Server.SetClearFunc(fn)
+}
+
+func (s *clearIdentityServer) SetJobsFunc(fn func(appwire.JobsListParams) (any, error)) {
+	s.jobs = fn
+	s.Server.SetJobsFunc(fn)
 }
 
 func (s *clearIdentityServer) SetShutdownFunc(fn func()) {
@@ -670,15 +653,11 @@ func newClearServeDeps(t *testing.T) (serveDeps, *clearTestState, []string) {
 	state := &clearTestState{}
 	deps := defaultServeDeps()
 	deps.ensureConfigDirs = func() error { return nil }
-	deps.seedMarketplaces = func() error { return nil }
-	deps.newClient = func(string, io.Writer) (*llm.Client, providercfg.Config, bool, func() error, error) {
+	deps.seedMarketplaces = func(context.Context) error { return nil }
+	deps.newClient = func(string, io.Writer) (*llm.Client, func() error, error) {
 		client := llm.NewClient()
 		client.Register(&closedStreamAdapter{})
-		cfg := providercfg.Config{
-			Default:   "openai",
-			Instances: []providercfg.InstanceConfig{{Name: "openai", Type: "openai"}},
-		}
-		return client, cfg, true, func() error { return nil }, nil
+		return client, func() error { return nil }, nil
 	}
 	newSession := func(client *llm.Client, profile *provider.Profile, env execenv.ExecutionEnvironment, cfg agent.SessionConfig) (*agent.Session, error) {
 		sess, err := agent.NewSession(client, profile, env, cfg)
@@ -703,7 +682,7 @@ func newClearServeDeps(t *testing.T) (serveDeps, *clearTestState, []string) {
 		return state.srv.AppServer().SubscriberCount(id)
 	}
 	prepare := deps.prepareAppIdentity
-	deps.prepareAppIdentity = func(sourceID, threadID, transcriptPath string) (server.PreparedAppIdentity, error) {
+	deps.prepareAppIdentity = func(sourceID, threadID, ref, transcriptPath string) (server.PreparedAppIdentity, error) {
 		state.mu.Lock()
 		state.prepareCalls++
 		fail := state.failPrepareFrom > 0 && state.prepareCalls >= state.failPrepareFrom
@@ -712,7 +691,7 @@ func newClearServeDeps(t *testing.T) (serveDeps, *clearTestState, []string) {
 		if fail {
 			return server.PreparedAppIdentity{}, errClearProbe
 		}
-		return prepare(sourceID, threadID, transcriptPath)
+		return prepare(sourceID, threadID, ref, transcriptPath)
 	}
 	updateSessionID := deps.updateSessionID
 	deps.updateSessionID = func(reg *rvreg.Registration, id string) error {
@@ -749,11 +728,12 @@ type clearObservation struct {
 	oldSessionState  agent.SessionState
 	newSessionState  agent.SessionState
 	oldThreadClosed  int
+	threadResync     int
 	threadID         string
 	leakedOldTurn    bool
 }
 
-// runClearAttempt runs one real serve, drives /clear through the daemon's own
+// runClearAttempt runs one real serve, drives thread/clear through the daemon's own
 // clear callback, and samples the result. sample runs after the attempt with the
 // serve loop still live, for assertions the teardown would erase.
 func runClearAttempt(t *testing.T, deps serveDeps, state *clearTestState, args []string, sample func(*clearObservation)) clearObservation {
@@ -771,7 +751,11 @@ func runClearAttempt(t *testing.T, deps serveDeps, state *clearTestState, args [
 		})
 
 		before := len(state.recorded())
-		obs.clearErr = state.srv.clear(context.Background())
+		obs.clearErr = state.srv.clear(context.Background(), appwire.ThreadClearParams{
+			Ref:                "local:" + obs.oldSessionID,
+			ClientMutationID:   "clear-test",
+			ExpectedInstanceID: obs.oldSessionID,
+		})
 		obs.steps = state.recorded()[before:]
 
 		if state.srv.envelopeSource != nil {
@@ -783,9 +767,16 @@ func runClearAttempt(t *testing.T, deps serveDeps, state *clearTestState, args [
 			obs.newSessionID = newSess.ID()
 			obs.newSessionState = newSess.State()
 		}
-		for _, record := range state.srv.AppNotificationsAfter(0, obs.oldSessionID) {
+		notificationThreadID := obs.oldSessionID
+		if obs.newSessionID != "" {
+			notificationThreadID = obs.newSessionID
+		}
+		for _, record := range state.srv.AppNotificationsAfter(0, notificationThreadID) {
 			if record.Notification.Method == appwire.NotifyThreadClosed {
 				obs.oldThreadClosed++
+			}
+			if record.Notification.Method == appwire.NotifyEvenerThreadResync {
+				obs.threadResync++
 			}
 		}
 		read := clearThreadRead(t, state.srv)
@@ -908,6 +899,54 @@ func TestRunServeClearRendezvousFailureKeepsOldIdentity(t *testing.T) {
 	}
 }
 
+// TestRunServeClearSessionFailureDisposesUnadoptedScratch drives the clear that
+// provisions a fresh environment and then fails to build the session that would
+// have owned it. Cleanup() RETAINS a session scratch -- the handoff convention
+// for a session someone might still want to inspect -- so a clear that never
+// produced a session has to dispose it instead, or every failed clear leaves a
+// directory and a live flock lease behind for the daemon's whole uptime.
+func TestRunServeClearSessionFailureDisposesUnadoptedScratch(t *testing.T) {
+	deps, state, args := newClearServeDeps(t)
+	var clearScratch string
+	deps.newClearSession = func(_ *llm.Client, _ *provider.Profile, env execenv.ExecutionEnvironment, _ agent.SessionConfig) (*agent.Session, error) {
+		local, ok := env.(*execenv.LocalExecutionEnvironment)
+		if !ok {
+			t.Errorf("clear environment = %T, want a local environment", env)
+			return nil, errClearProbe
+		}
+		// The real NewSession runs commands through the environment (the git
+		// snapshot among them) before it can fail, and an unsandboxed env mints
+		// its session scratch, with the lease under it, on that first command.
+		if _, err := local.ExecCommand(context.Background(), "true", 5000, "", nil); err != nil {
+			t.Errorf("mint the cleared session scratch: %v", err)
+		}
+		clearScratch = local.SessionScratchDir()
+		return nil, errClearProbe
+	}
+
+	obs := runClearAttempt(t, deps, state, args, nil)
+
+	// This failure lands before any replacement session exists, so the shared
+	// assertion (which inspects one) does not apply; the old session stays live.
+	if !errors.Is(obs.clearErr, errClearProbe) {
+		t.Fatalf("clear error = %v, want %v", obs.clearErr, errClearProbe)
+	}
+	if obs.currentSessionID != obs.oldSessionID {
+		t.Errorf("current session = %q, want the old session %q", obs.currentSessionID, obs.oldSessionID)
+	}
+	if obs.oldSessionState == agent.SessionClosed {
+		t.Error("old session was closed by an aborted clear")
+	}
+	if clearScratch == "" {
+		t.Fatal("the cleared session environment minted no scratch, so there is nothing to dispose")
+	}
+	// The lease file lives inside the scratch dir, so the directory's removal is
+	// the lease's removal too.
+	if _, err := os.Stat(clearScratch); !os.IsNotExist(err) {
+		t.Errorf("failed clear retained the unadopted scratch %s: stat err = %v", clearScratch, err)
+	}
+}
+
 // TestRunServeClearSuccessClosesOldStreamAndInstallsPreparedIdentity pins the
 // successful order: every fallible step first, then one infallible replacement
 // that swaps the live session and closes the old thread's stream in the same
@@ -917,8 +956,10 @@ func TestRunServeClearSuccessClosesOldStreamAndInstallsPreparedIdentity(t *testi
 	var lateStatus string
 	var lateThreadID string
 	var lateLeak bool
+	var jobsErr error
+	var jobsTree appwire.JobActivityTree
 	obs := runClearAttempt(t, deps, state, args, func(obs *clearObservation) {
-		// A straggling event from the session /clear just replaced must not
+		// A straggling event from the session thread/clear just replaced must not
 		// reach the new authority. This is the real bridge over a channel the
 		// test owns, so the ordering is fixed rather than raced.
 		stale := make(chan events.SessionEvent, 1)
@@ -934,6 +975,11 @@ func TestRunServeClearSuccessClosesOldStreamAndInstallsPreparedIdentity(t *testi
 		read := clearThreadRead(t, state.srv)
 		lateThreadID = read.Thread.ID
 		lateLeak = threadCarriesText(read, oldClearInputMarker)
+		data, err := state.srv.jobs(appwire.JobsListParams{Ref: "local:" + obs.oldSessionID})
+		jobsErr = err
+		if tree, ok := data.(appwire.JobActivityTree); ok {
+			jobsTree = tree
+		}
 	})
 
 	if obs.clearErr != nil {
@@ -958,8 +1004,11 @@ func TestRunServeClearSuccessClosesOldStreamAndInstallsPreparedIdentity(t *testi
 	if obs.leakedOldTurn {
 		t.Error("thread/read served the old thread's turn out of the replacement snapshot")
 	}
-	if obs.oldThreadClosed != 1 {
-		t.Errorf("old thread received %d thread/closed record(s), want exactly 1", obs.oldThreadClosed)
+	if obs.oldThreadClosed != 0 {
+		t.Errorf("replacement received %d thread/closed record(s), want 0", obs.oldThreadClosed)
+	}
+	if obs.threadResync != 1 {
+		t.Errorf("replacement received %d evener/thread/resync record(s), want exactly 1", obs.threadResync)
 	}
 	if obs.oldSessionState != agent.SessionClosed {
 		t.Errorf("old session state = %q, want %q after replacement", obs.oldSessionState, agent.SessionClosed)
@@ -969,6 +1018,12 @@ func TestRunServeClearSuccessClosesOldStreamAndInstallsPreparedIdentity(t *testi
 	}
 	if lateStatus == string(agent.SessionClosed) {
 		t.Error("a late old-session event closed the replacement's status")
+	}
+	if jobsErr != nil {
+		t.Fatalf("jobs for the stable workspace ref after clear: %v", jobsErr)
+	}
+	if jobsTree.Root.SessionID != obs.newSessionID {
+		t.Fatalf("jobs root session = %q, want replacement %q", jobsTree.Root.SessionID, obs.newSessionID)
 	}
 }
 

@@ -127,7 +127,7 @@ func (s *Session) disposeStableDelegateLane(ctx context.Context, id string, forc
 	if state.active || state.currentRunOpen || state.pendingStopSeq != 0 {
 		return WorktreeDisposeResult{}, fmt.Errorf("manage_worktree dispose: %s still has running or unfinished work; wait for it to finish", id)
 	}
-	if s.subtreeWatchesTargeting(id) {
+	if s.subtreeWatchesTargeting(id, state.descriptor.ChildSessionID) {
 		return WorktreeDisposeResult{}, fmt.Errorf("manage_worktree dispose: %s is the target of an armed or pending watch send; clear the watch before disposing", id)
 	}
 
@@ -400,22 +400,50 @@ func laneAheadCount(run worktree.GitRunner, lanePath, baseSHA string) (n int, ok
 	return n, true
 }
 
-func (s *Session) subtreeWatchesTargeting(id string) bool {
-	if s.jobManager != nil && s.jobManager.watchesTargeting(id) {
+// subtreeWatchesTargeting reports whether any watch anywhere in s's subtree
+// targets id, the delegate being disposed. receiverSessionID is id's own
+// child session ID (the receiver identity a stable-receiver watch on id
+// carries; #695), threaded unchanged through the recursion.
+func (s *Session) subtreeWatchesTargeting(id, receiverSessionID string) bool {
+	if s.jobManager != nil && s.jobManager.watchesTargeting(id, receiverSessionID) {
 		return true
 	}
 	for _, sub := range s.subagents.directSubagents() {
-		if sub.sess != nil && sub.sess.subtreeWatchesTargeting(id) {
+		if sub.sess != nil && sub.sess.subtreeWatchesTargeting(id, receiverSessionID) {
 			return true
 		}
 	}
 	return false
 }
 
-// watchesTargeting reports whether any armed watch config sends to id, or any
-// pending/terminal-flush watch-send frame resolves send_to id, in this job
-// manager. Read under jm.mu.
-func (jm *jobManager) watchesTargeting(id string) bool {
+// watchesTargeting reports whether any armed watch config sends to id, any
+// pending/terminal-flush watch-send frame resolves send_to id, or a
+// stable-receiver watch's receiver identity names id, in this job manager.
+// Read under jm.mu.
+//
+// A stable-receiver watch (the observer-sidecar class, #655,
+// configureStableWatchOnSource) synthesizes send.To as the
+// stableWatchReceiverTarget sentinel, never the delegate ID
+// (applyStableReceiverWatchSend), so the plain send.To/ResolvedSendTo checks
+// above never match id for that class of watch. watchConfigMatchesReceiver —
+// the same receiver-keyed matching liveWatchSummariesForReceiver and the
+// #655 job_stop live-watch inventory use — catches it by receiver identity
+// instead: id plus receiverSessionID (id's own child session ID, resolved by
+// the caller).
+//
+// This does NOT catch the structurally distinct descendant-receiver watch
+// class configureDescendantReceiverWatch installs (job_watch source="job_…"
+// against a descendant's concrete job): that class always stamps an empty
+// ReceiverDelegateID (session.ID() only, never owningDelegateID), so
+// watchConfigMatchesReceiver — which requires both fields — can never match
+// it here. That gap is real but verified benign (#695 adversarial review,
+// round 2): the watch lives in the OWNER descendant's own job manager, which
+// Session.close's subagent cascade also tears down (jobManager.
+// closeRuntimeState deletes it from jm.watches, and routeWatchNotifications
+// separately refuses on jm.closing) synchronously, within the same dispose
+// call, before a disposed receiver could ever see a delivery — see
+// TestDescendantReceiverWatchSurvivesJobManagerClose.
+func (jm *jobManager) watchesTargeting(id, receiverSessionID string) bool {
 	jm.mu.Lock()
 	defer jm.mu.Unlock()
 	for _, cfg := range jm.watches {
@@ -427,12 +455,18 @@ func (jm *jobManager) watchesTargeting(id string) bool {
 				return true
 			}
 		}
+		if watchConfigMatchesReceiver(cfg, receiverSessionID, id) {
+			return true
+		}
 	}
 	for cfg := range jm.terminalFlush {
 		for key := range cfg.pending {
 			if key.ResolvedSendTo == id {
 				return true
 			}
+		}
+		if watchConfigMatchesReceiver(cfg, receiverSessionID, id) {
+			return true
 		}
 	}
 	return false

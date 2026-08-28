@@ -208,6 +208,73 @@ func TestTranscript_RendersToolResultPreviews(t *testing.T) {
 	}
 }
 
+// TestTranscript_ToolCallShowsExplicitIntent pins the current-key path: a
+// tool call's stated "intent" surfaces both structurally (ToolCallSummary.
+// Intent) and in the rendered markdown card.
+func TestTranscript_ToolCallShowsExplicitIntent(t *testing.T) {
+	base := t.TempDir()
+	bucket := stateHomeBucket(base, hash1)
+	sid := sidC
+	turns := []schema.Turn{
+		schema.NewTurn(schema.TurnAssistant, llm.Message{Role: llm.RoleAssistant, Content: []llm.ContentPart{
+			toolCall("shell", `{"command":"ls","intent":"list the directory"}`),
+		}}),
+	}
+	writeRichSession(t, bucket, sid, turns, nil, schema.SessionMeta{})
+
+	r, err := Transcript(base, sid, TranscriptOpts{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := len(r.Turns[0].ToolCalls); got != 1 {
+		t.Fatalf("tool calls = %d, want 1", got)
+	}
+	if got := r.Turns[0].ToolCalls[0].Intent; got != "list the directory" {
+		t.Fatalf("Intent = %q, want %q", got, "list the directory")
+	}
+
+	out := RenderTranscript(r, "markdown")
+	if !strings.Contains(out, "intent: list the directory") {
+		t.Fatalf("rendered transcript missing intent line:\n%s", out)
+	}
+}
+
+// TestTranscript_ToolCallIntentFallsBackToPurpose (issue #709 round 2,
+// roborev Medium): evener-doctor's transcript renderer previously showed
+// only a truncated raw ArgPreview, with no dedicated intent line at all, so
+// it could not have honored a legacy "purpose" key either. Tool calls
+// recorded before the purpose->intent rename (7512a736e, 2026-08-29) carry
+// the model's stated reason under "purpose", not "intent" -- doctor must
+// surface that reason the same way the hub, the read_transcript agent tool,
+// and the TUI already do.
+func TestTranscript_ToolCallIntentFallsBackToPurpose(t *testing.T) {
+	base := t.TempDir()
+	bucket := stateHomeBucket(base, hash1)
+	sid := sidC
+	turns := []schema.Turn{
+		schema.NewTurn(schema.TurnAssistant, llm.Message{Role: llm.RoleAssistant, Content: []llm.ContentPart{
+			toolCall("shell", `{"command":"ls","purpose":"list the directory"}`),
+		}}),
+	}
+	writeRichSession(t, bucket, sid, turns, nil, schema.SessionMeta{})
+
+	r, err := Transcript(base, sid, TranscriptOpts{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := len(r.Turns[0].ToolCalls); got != 1 {
+		t.Fatalf("tool calls = %d, want 1", got)
+	}
+	if got := r.Turns[0].ToolCalls[0].Intent; got != "list the directory" {
+		t.Fatalf("Intent = %q, want legacy purpose value %q", got, "list the directory")
+	}
+
+	out := RenderTranscript(r, "markdown")
+	if !strings.Contains(out, "intent: list the directory") {
+		t.Fatalf("rendered transcript missing intent line for legacy purpose arg:\n%s", out)
+	}
+}
+
 // salvagedLoopFixture writes a session whose one assistant turn carries text
 // far past DefaultTextMax, plus an equally long tool result. This is the shape
 // of a salvaged partial response (agent/salvage.go): the model's repeated tool

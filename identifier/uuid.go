@@ -15,11 +15,6 @@ const (
 var (
 	errInvalidUUIDPayload = errors.New("invalid UUID payload")
 	errInvalidUUIDv7      = errors.New("UUID payload is not UUIDv7")
-
-	// uuidNewV7 is the UUIDv7 generator, a package-level seam so tests can
-	// exercise the error branch of newUUIDv7Payload without depending on a
-	// system random source that never fails.
-	uuidNewV7 = uuid.NewV7
 )
 
 func EncodeUUID(value uuid.UUID) string {
@@ -78,7 +73,7 @@ func ValidateUUIDv7Payload(payload string) error {
 }
 
 func newUUIDv7Payload() (string, error) {
-	value, err := uuidNewV7()
+	value, err := uuid.NewV7()
 	if err != nil {
 		return "", err
 	}

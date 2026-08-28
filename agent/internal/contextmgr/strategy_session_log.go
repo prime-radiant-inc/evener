@@ -111,7 +111,7 @@ func (s *SessionLogStrategy) ManageContext(ctx context.Context, history *[]schem
 	if p >= s.cm.CheckpointThreshold {
 		turnsBefore := len(*history)
 		before := estimateTokens(*history)
-		*history = s.sessionLogCheckpoint(*history, s.cm.PreserveRecentTurns)
+		*history = s.sessionLogCheckpointWithMeta(*history, s.cm.PreserveRecentTurns, s.cm.metaFor(ctx))
 		after := estimateTokens(*history)
 		emitFn(events.EventContextCompaction, events.ContextCompactionData{
 			Layer:           "session_log_checkpoint",
@@ -166,7 +166,17 @@ func (s *SessionLogStrategy) ManageContext(ctx context.Context, history *[]schem
 
 // sessionLogCheckpoint replaces old history with a checkpoint built from the
 // session log. Returns a new history slice: [checkpoint_turn, ...preserved_recent].
+// It uses the Manager's fallback metadata; fold publishers go through
+// sessionLogCheckpointWithMeta with their per-call metadata instead.
 func (s *SessionLogStrategy) sessionLogCheckpoint(history []schema.Turn, preserveRecent int) []schema.Turn {
+	var meta *CompactionMeta
+	if s != nil && s.cm != nil {
+		meta = &s.cm.Meta
+	}
+	return s.sessionLogCheckpointWithMeta(history, preserveRecent, meta)
+}
+
+func (s *SessionLogStrategy) sessionLogCheckpointWithMeta(history []schema.Turn, preserveRecent int, meta *CompactionMeta) []schema.Turn {
 	if attentionTransparentTurnCount(history) <= preserveRecent {
 		return history
 	}
@@ -186,7 +196,7 @@ func (s *SessionLogStrategy) sessionLogCheckpoint(history []schema.Turn, preserv
 	b.WriteString("[CONTEXT CHECKPOINT - SESSION LOG]\n")
 	fmt.Fprintf(&b, "Original prompt: %s\n", originalPrompt)
 	if s.session != nil {
-		fmt.Fprintf(&b, "This session's id is %s.%s\n", s.session.ID(), s.transcriptRecoverySentence())
+		fmt.Fprintf(&b, "This session's id is %s.%s\n", s.session.ID(), s.transcriptRecoverySentence(meta))
 	}
 	b.WriteString("\n")
 
@@ -271,9 +281,9 @@ func (s *SessionLogStrategy) AfterAction(ctx context.Context, history []schema.T
 // transcriptRecoverySentence is the strategy's view of how the agent may
 // recover folded-away detail: worded from the transcript tools the session
 // actually serves, and silent when the manager never reported any.
-func (s *SessionLogStrategy) transcriptRecoverySentence() string {
-	if s == nil || s.cm == nil {
+func (s *SessionLogStrategy) transcriptRecoverySentence(meta *CompactionMeta) string {
+	if s == nil || s.cm == nil || meta == nil {
 		return ""
 	}
-	return s.cm.Meta.TranscriptRecoverySentence()
+	return meta.TranscriptRecoverySentence()
 }

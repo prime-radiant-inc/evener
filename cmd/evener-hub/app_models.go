@@ -2,14 +2,19 @@ package hub
 
 import (
 	"context"
+	"sort"
 	"strings"
+	"time"
+	"unicode"
 
 	"primeradiant.com/evener/appwire"
 	"primeradiant.com/evener/cmd/evener-hub/internal/appsource"
 	"primeradiant.com/evener/cmd/evener-hub/internal/hubcore"
 	"primeradiant.com/evener/cmdutil"
-	"primeradiant.com/evener/llm/providercfg"
+	"primeradiant.com/evener/llm/registry"
 )
+
+var liveModelLoadClient = cmdutil.LoadClient
 
 // hubModelList is the single server-side entry point for every ModelList
 // RPC — the appwire dispatch (app_rpc.go) routes every harness's call here,
@@ -22,6 +27,7 @@ func hubModelList(ctx context.Context, cfg hubcore.WebConfig, sources *appsource
 	if err != nil {
 		return resp, err
 	}
+	resp = enrichModelListResponse(resp)
 	return attachRecentModels(cfg, resp), nil
 }
 
@@ -41,14 +47,14 @@ func attachRecentModels(cfg hubcore.WebConfig, resp appwire.ModelListResponse) a
 	if len(refs) == 0 {
 		return resp
 	}
-	available := make(map[string]bool, len(resp.Data))
+	available := make(map[string]appwire.ModelDescriptor, len(resp.Data))
 	for _, d := range resp.Data {
-		available[d.Provider+"/"+d.Model] = true
+		available[d.Provider+"/"+d.Model] = d
 	}
 	var recent []appwire.ModelDescriptor
 	for _, ref := range refs {
-		if available[ref.Provider+"/"+ref.Model] {
-			recent = append(recent, ref)
+		if descriptor, ok := available[ref.Provider+"/"+ref.Model]; ok {
+			recent = append(recent, descriptor)
 		}
 	}
 	resp.Recent = recent
@@ -68,9 +74,7 @@ func hubModelListInner(ctx context.Context, cfg hubcore.WebConfig, sources *apps
 		if err != nil {
 			return appwire.ModelListResponse{}, err
 		}
-		resp.Data = sanitizeModelDescriptors(resp.Data)
-		resp.Diagnostics = sanitizeModelDiagnostics(resp.Diagnostics)
-		return resp, nil
+		return sanitizeModelListResponse(resp), nil
 	}
 
 	launchResp, err := evenerLaunchModelList(ctx, cfg, params.CWD)
@@ -84,7 +88,13 @@ func hubModelListInner(ctx context.Context, cfg hubcore.WebConfig, sources *apps
 	if ok {
 		resp, err := source.ListModels(ctx, params)
 		if err == nil && len(resp.Data) > 0 {
-			return resp, nil
+			return sanitizeModelListResponse(resp), nil
+		}
+	}
+	if cfg.LiveModels != nil {
+		models := sanitizeModelDescriptors(cfg.LiveModels(ctx))
+		if len(models) > 0 {
+			return appwire.ModelListResponse{Data: models}, nil
 		}
 	}
 	return appwire.ModelListResponse{}, nil
@@ -116,7 +126,7 @@ func validateEvenerLaunchModel(ctx context.Context, cfg hubcore.WebConfig, ref c
 		}
 	}
 	if !providerEnumerated {
-		if providerHasLaunchDiagnostic(contract.Diagnostics, ref.Provider) || launchProviderAllowsUnreportedModels(ref.Provider, cfg.ProviderConfig) {
+		if providerHasLaunchDiagnostic(contract.Diagnostics, ref.Provider) || launchInstanceExists(cfg, ref.Provider) {
 			return nil
 		}
 		return appwire.HubLaunchError("model provider is not reported by the Evener launch harness: " + ref.Provider)
@@ -124,25 +134,17 @@ func validateEvenerLaunchModel(ctx context.Context, cfg hubcore.WebConfig, ref c
 	return appwire.HubLaunchError("model is not configured for Evener launch: " + ref.Qualified())
 }
 
-// behaviorTagFromConfig resolves a provider instance name to its behavior tag
-// using cfg. When cfg is nil or the name is not present in the config, the
-// name itself is returned (identity fallback for the env path).
-func behaviorTagFromConfig(name string, cfg *providercfg.Config) string {
-	if cfg != nil {
-		if tag, ok := providercfg.NameToTag(*cfg)[name]; ok {
-			return tag
-		}
+// launchInstanceExists reports whether the registry has the named instance.
+// A provider the launch contract never enumerated is still launchable when
+// the registry knows it: an instance whose endpoint lists no models (or lists
+// them only on the first request) is configured, and refusing it here would
+// make the registry's own instance set unusable (spec §11.3).
+func launchInstanceExists(cfg hubcore.WebConfig, provider string) bool {
+	if cfg.Registry == nil || cfg.Registry.Get() == nil {
+		return false
 	}
-	return name
-}
-
-// launchProviderAllowsUnreportedModels returns true when the provider's
-// behavior tag is "openrouter-anthropic". The tag is resolved from cfg when
-// available; when cfg is nil the provider name is used as-is (identity
-// fallback for the env path where instance name == type == tag).
-func launchProviderAllowsUnreportedModels(provider string, cfg *providercfg.Config) bool {
-	tag := behaviorTagFromConfig(provider, cfg)
-	return strings.EqualFold(strings.TrimSpace(tag), "openrouter-anthropic")
+	_, ok := cfg.Registry.Get().Instance(strings.ToLower(strings.TrimSpace(provider)))
+	return ok
 }
 
 func providerHasLaunchDiagnostic(diagnostics []appwire.ModelListDiagnostic, provider string) bool {
@@ -155,60 +157,188 @@ func providerHasLaunchDiagnostic(diagnostics []appwire.ModelListDiagnostic, prov
 }
 
 func evenerLaunchModelList(ctx context.Context, cfg hubcore.WebConfig, workingDir string) (appwire.ModelListResponse, error) {
-	if strings.TrimSpace(workingDir) != "" {
-		if lister, ok := cfg.Spawner.(EvenerLaunchModelContractWorkingDirLister); ok && lister != nil {
-			resp, err := lister.ListLaunchModelContractForWorkingDir(ctx, workingDir)
-			if err != nil {
-				return appwire.ModelListResponse{}, err
-			}
-			resp.Data = sanitizeModelDescriptors(resp.Data)
-			resp.Diagnostics = sanitizeModelDiagnostics(resp.Diagnostics)
-			return resp, nil
-		}
-	}
-	if lister, ok := cfg.Spawner.(EvenerLaunchModelContractLister); ok && lister != nil {
-		resp, err := lister.ListLaunchModelContract(ctx)
+	listers, configured := selectEvenerLaunchModelListers(cfg.Spawner)
+	if strings.TrimSpace(workingDir) != "" && listers.workingDir != nil {
+		resp, err := listers.workingDir.ListLaunchModelContractForWorkingDir(ctx, workingDir)
 		if err != nil {
 			return appwire.ModelListResponse{}, err
 		}
-		resp.Data = sanitizeModelDescriptors(resp.Data)
-		resp.Diagnostics = sanitizeModelDiagnostics(resp.Diagnostics)
-		return resp, nil
+		return sanitizeModelListResponse(resp), nil
 	}
-	lister, ok := cfg.Spawner.(EvenerLaunchModelLister)
-	if !ok || lister == nil {
+	if listers.contract != nil {
+		resp, err := listers.contract.ListLaunchModelContract(ctx)
+		if err != nil {
+			return appwire.ModelListResponse{}, err
+		}
+		return sanitizeModelListResponse(resp), nil
+	}
+	if !configured || listers.legacy == nil {
 		return appwire.ModelListResponse{}, nil
 	}
-	models, err := lister.ListLaunchModels(ctx)
+	models, err := listers.legacy.ListLaunchModels(ctx)
 	if err != nil {
 		return appwire.ModelListResponse{}, err
 	}
-	return appwire.ModelListResponse{Data: sanitizeModelDescriptors(models)}, nil
+	return sanitizeModelListResponse(appwire.ModelListResponse{Data: models}), nil
 }
 
 func hasEvenerLaunchModelLister(cfg hubcore.WebConfig) bool {
-	if lister, ok := cfg.Spawner.(EvenerLaunchModelContractWorkingDirLister); ok && lister != nil {
-		return true
+	_, configured := selectEvenerLaunchModelListers(cfg.Spawner)
+	return configured
+}
+
+type evenerLaunchModelListers struct {
+	workingDir EvenerLaunchModelContractWorkingDirLister
+	contract   EvenerLaunchModelContractLister
+	legacy     EvenerLaunchModelLister
+}
+
+func selectEvenerLaunchModelListers(spawner any) (evenerLaunchModelListers, bool) {
+	var listers evenerLaunchModelListers
+	configured := false
+	if lister, ok := spawner.(EvenerLaunchModelContractWorkingDirLister); ok && lister != nil {
+		listers.workingDir = lister
+		configured = true
 	}
-	if lister, ok := cfg.Spawner.(EvenerLaunchModelContractLister); ok && lister != nil {
-		return true
+	if lister, ok := spawner.(EvenerLaunchModelContractLister); ok && lister != nil {
+		listers.contract = lister
+		configured = true
 	}
-	if lister, ok := cfg.Spawner.(EvenerLaunchModelLister); ok && lister != nil {
-		return true
+	if lister, ok := spawner.(EvenerLaunchModelLister); ok && lister != nil {
+		listers.legacy = lister
+		configured = true
 	}
-	return false
+	return listers, configured
 }
 
 func sanitizeModelDescriptors(models []appwire.ModelDescriptor) []appwire.ModelDescriptor {
 	out := make([]appwire.ModelDescriptor, 0, len(models))
 	for _, model := range models {
-		provider := strings.TrimSpace(model.Provider)
-		name := strings.TrimSpace(model.Model)
-		if provider == "" || name == "" {
+		if !normalizeModelDescriptor(&model) {
 			continue
 		}
-		out = append(out, appwire.ModelDescriptor{Provider: provider, Model: name})
+		out = append(out, model)
 	}
+	return out
+}
+
+func sanitizeModelListResponse(resp appwire.ModelListResponse) appwire.ModelListResponse {
+	resp.Data = sanitizeModelDescriptors(resp.Data)
+	resp.Diagnostics = sanitizeModelDiagnostics(resp.Diagnostics)
+	return resp
+}
+
+func normalizeModelDescriptor(model *appwire.ModelDescriptor) bool {
+	model.Provider = strings.TrimSpace(model.Provider)
+	model.Model = strings.TrimSpace(model.Model)
+	return model.Provider != "" && model.Model != ""
+}
+
+// isDatedSnapshotModelID reports whether a model id names a dated snapshot
+// rather than a family. The rule is the registry's own — one implementation
+// covering "-YYYYMMDD", Bedrock's "-vN:N" revision and Vertex's "@YYYYMMDD"
+// — so the picker cannot disagree with resolution about what is dated.
+func isDatedSnapshotModelID(ref string) bool {
+	if i := strings.LastIndex(ref, "/"); i >= 0 {
+		ref = ref[i+1:]
+	}
+	return registry.StripDatedSuffix(ref) != ref
+}
+
+func prettifyModelDisplayName(id string) string {
+	base := registry.StripDatedSuffix(id)
+	segments := strings.Split(base, "-")
+	for idx, segment := range segments {
+		if segment == "" {
+			continue
+		}
+		runes := []rune(segment)
+		runes[0] = unicode.ToUpper(runes[0])
+		segments[idx] = string(runes)
+	}
+	return strings.Join(segments, " ")
+}
+
+func sortModelDescriptors(models []appwire.ModelDescriptor) {
+	sort.SliceStable(models, func(i, j int) bool {
+		if models[i].Provider != models[j].Provider {
+			return models[i].Provider < models[j].Provider
+		}
+		datedI := isDatedSnapshotModelID(models[i].Model)
+		datedJ := isDatedSnapshotModelID(models[j].Model)
+		return datedI != datedJ && !datedI
+	})
+}
+
+// enrichModelListResponse fills in the one display-only field the registry
+// does not carry — a human-readable name for a bare model id — and puts the
+// rows in the picker's order. Every capability on a descriptor comes from
+// the registry's Resolved record (spec §11.3), so there is nothing else to
+// merge in here.
+func enrichModelListResponse(resp appwire.ModelListResponse) appwire.ModelListResponse {
+	resp.Data = withDisplayNames(resp.Data)
+	if resp.Data == nil {
+		resp.Data = []appwire.ModelDescriptor{}
+	}
+	sortModelDescriptors(resp.Data)
+	resp.Recent = withDisplayNames(resp.Recent)
+	return resp
+}
+
+// withDisplayNames drops descriptors with no provider or model and gives each
+// survivor a display name, prettified from the model id when the source left
+// it blank.
+func withDisplayNames(models []appwire.ModelDescriptor) []appwire.ModelDescriptor {
+	if len(models) == 0 {
+		return nil
+	}
+	out := make([]appwire.ModelDescriptor, 0, len(models))
+	for _, model := range models {
+		if !normalizeModelDescriptor(&model) {
+			continue
+		}
+		model.DisplayName = strings.TrimSpace(model.DisplayName)
+		if model.DisplayName == "" {
+			model.DisplayName = prettifyModelDisplayName(model.Model)
+		}
+		out = append(out, model)
+	}
+	return out
+}
+
+func (s *WebServer) fetchLiveModels(ctx context.Context) []appwire.ModelDescriptor {
+	s.liveModels.mu.Lock()
+	if time.Now().Before(s.liveModels.expires) && s.liveModels.models != nil {
+		out := append([]appwire.ModelDescriptor(nil), s.liveModels.models...)
+		s.liveModels.mu.Unlock()
+		return out
+	}
+	s.liveModels.mu.Unlock()
+
+	client, err := liveModelLoadClient("")
+	if err != nil || client == nil {
+		return nil
+	}
+	var out []appwire.ModelDescriptor
+	for _, inst := range client.Registry().Instances() {
+		if inst.Hidden {
+			continue
+		}
+		listCtx, cancel := context.WithTimeout(ctx, 8*time.Second)
+		listing, listErr := client.Models(listCtx, inst.Name)
+		cancel()
+		if listErr != nil {
+			continue
+		}
+		for _, m := range listing.Models {
+			out = append(out, cmdutil.ModelDescriptorFromResolved(m))
+		}
+	}
+	sortModelDescriptors(out)
+	s.liveModels.mu.Lock()
+	s.liveModels.models = append([]appwire.ModelDescriptor(nil), out...)
+	s.liveModels.expires = time.Now().Add(liveModelsTTL)
+	s.liveModels.mu.Unlock()
 	return out
 }
 

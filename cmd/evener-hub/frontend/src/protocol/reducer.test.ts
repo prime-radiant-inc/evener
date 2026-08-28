@@ -9,12 +9,15 @@ import toolAndJobsFixture from "./fixtures/tool-and-jobs.jsonl?raw";
 import { type ItemModel, SYSTEM_PRELUDE_TURN_ID, type ThreadModel, type TurnModel } from "./model";
 import {
   applyNotification,
+  chunkViewBackingForTests,
   collectAuthoritativeMutationIds,
   hydrateThread,
   notificationTargetsThread,
+  pendingTextJoined,
   prependOlderTurns,
   resolvePendingEscalation,
 } from "./reducer";
+import { hydrateStreamingAgentMessage } from "./testing/tokenFlood";
 import type {
   AnyNotification,
   QueueState,
@@ -123,13 +126,14 @@ const CAPABILITIES: ThreadCapabilities = {
   forkFromTurn: true,
   shutdown: true,
   changeModel: true,
+  changeVisionModel: true,
   queue: true,
   goal: true,
   rename: true,
 };
 
 type TestThreadOverrides = Omit<Partial<Thread>, "evener"> & {
-  evener?: Omit<Thread["evener"], "queue"> & { queue: Partial<QueueState> };
+  evener?: Partial<Omit<Thread["evener"], "queue">> & { queue?: Partial<QueueState> };
 };
 
 function testThread(overrides: TestThreadOverrides = {}): Thread {
@@ -160,6 +164,105 @@ function testHydrate(overrides: TestThreadOverrides = {}): ThreadModel {
   const thread = testThread(overrides);
   return hydrateThread({ thread }, thread.evener.ref, 1000);
 }
+
+test("evener/goal/updated replaces and explicitly clears model.goal", () => {
+  const initial = testHydrate({
+    evener: { goal: { objective: "old objective", status: "active", iterations: 3 } },
+  });
+  const updated = applyNotification(
+    initial,
+    {
+      method: "evener/goal/updated",
+      params: {
+        threadId: "thr_t",
+        ref: "ref_t",
+        goal: { objective: "ship focus sentence", status: "active", iterations: 1 },
+      },
+    },
+    2000,
+  );
+  expect(updated.goal).toEqual({ objective: "ship focus sentence", status: "active", iterations: 1 });
+  expect(updated.lastFrameAt).toBe(2000);
+
+  const cleared = applyNotification(
+    updated,
+    { method: "evener/goal/updated", params: { threadId: "thr_t", ref: "ref_t", goal: null } },
+    3000,
+  );
+  expect(cleared.goal).toBeNull();
+  expect(cleared.lastFrameAt).toBe(3000);
+});
+
+test("hydrateThread carries the snapshot plugin diagnostics into ThreadModel", () => {
+  const model = testHydrate({
+    evener: {
+      ref: "ref_t",
+      capabilities: CAPABILITIES,
+      queue: {},
+      diagnostics: {
+        plugins: [
+          { name: "enabled", skillCount: 1, agentCount: 0, hookCount: 0, mcpCount: 0 },
+          { name: "another", skillCount: 0, agentCount: 1, hookCount: 0, mcpCount: 0 },
+        ],
+      },
+    },
+  });
+
+  expect(model.diagnostics?.plugins?.map((plugin) => plugin.name)).toEqual(["enabled", "another"]);
+});
+
+test("hydrateThread preserves an explicit empty plugin inventory", () => {
+  const model = testHydrate({
+    evener: {
+      ref: "ref_t",
+      capabilities: CAPABILITIES,
+      queue: {},
+      diagnostics: { plugins: [] },
+    },
+  });
+
+  expect(model.diagnostics?.plugins).toEqual([]);
+});
+
+test("hydrateThread leaves diagnostics unavailable when the wire omits them", () => {
+  expect(testHydrate().diagnostics).toBeUndefined();
+});
+
+test("hydrateThread retains canonical skill descriptors", () => {
+  const model = testHydrate({
+    evener: { diagnostics: { skills: [{ name: "plugin:simplify", description: "rewrite" }] } },
+  });
+  expect(model.skills).toEqual([{ name: "plugin:simplify", description: "rewrite" }]);
+});
+
+test("hydrateThread defaults missing skills and copies wire descriptors", () => {
+  expect(testHydrate().skills).toEqual([]);
+
+  const skills = [{ name: "plugin:simplify", description: "rewrite" }];
+  const model = testHydrate({ evener: { diagnostics: { skills } } });
+  expect(model.skills).not.toBe(skills);
+  expect(model.skills?.[0]).not.toBe(skills[0]);
+});
+
+test("applyNotification preserves skills while applying a status update", () => {
+  const model = testHydrate({
+    evener: { diagnostics: { skills: [{ name: "plugin:simplify", description: "rewrite" }] } },
+  });
+  const notification: AnyNotification = {
+    method: "thread/status/changed",
+    params: {
+      threadId: model.threadId,
+      ref: model.ref,
+      status: { type: "active" },
+      capabilities: CAPABILITIES,
+    },
+  };
+
+  const next = applyNotification(model, notification, 2000);
+
+  expect(next).not.toBe(model);
+  expect(next.skills).toEqual([{ name: "plugin:simplify", description: "rewrite" }]);
+});
 
 function testEscalation(overrides: Partial<SandboxEscalationRequested> = {}): SandboxEscalationRequested {
   return {
@@ -403,6 +506,137 @@ test("delta accumulates into pendingText chunks and joins on completion", () => 
   const settled = itemAt(turnAt(model, 0), 0);
   expect(settled.text).toBe("Hello!"); // payload text ("Hello!") wins over the joined chunks ("Hello")
   expect(settled.pendingText).toBeUndefined();
+});
+
+// --- O(1) per-delta accumulation (perf fix, PR3) ----------------------------
+// Rationale and machinery: reducer.ts's chunk-view section header.
+
+// The shared streaming-agentMessage scaffold (src/protocol/testing/
+// tokenFlood.ts) on this suite's thr_t/ref_t/turn_1/item_1 identity.
+function streamingItem(): ThreadModel {
+  return hydrateStreamingAgentMessage("ref_t", { threadId: "thr_t" });
+}
+
+function agentMessageDelta(delta: string): AnyNotification {
+  return {
+    method: "item/agentMessage/delta",
+    params: { threadId: "thr_t", ref: "ref_t", turnId: "turn_1", itemId: "item_1", delta },
+  };
+}
+
+// The O(1)-append test's ceiling is a tripwire for a hang, not a
+// responsiveness bar: its 20,000-delta fold measures ~0.4s in isolation and
+// in-suite, so the 5s default holds ~12x headroom — until the whole gate's
+// concurrent Go and vitest streams saturate the runner and a single worker
+// loses more than that (the #672 CI failure: 5,000ms exceeded, same tree
+// green on rerun). Sized like hookTimeout/WARM_ROUTE_TRIPWIRE_MS: well above
+// the work, still bounded, and a regression to O(n^2) blows through it
+// regardless (a copy per delta is ~200M string copies at N=20,000).
+const O1_APPEND_TRIPWIRE_MS = 30_000;
+
+test("every delta's fold appends onto the SAME backing array, which grows by exactly one (O(1) append)", {
+  timeout: O1_APPEND_TRIPWIRE_MS,
+}, () => {
+  // White-box on purpose (chunkViewBackingForTests): chunk strings are
+  // PRIMITIVES, so element-level identity checks survive a per-delta copy
+  // ([...chunks, delta] preserves every string reference) — only the
+  // BACKING ARRAY reference distinguishes a true append from a copy: a
+  // copy mints a fresh backing per delta, an append returns the same
+  // array one longer. Each iteration therefore asserts (a) the backing
+  // reference is IDENTICAL to the previous fold's and (b) its length grew
+  // by exactly one, keeping the test O(n) — it must not recreate the very
+  // blowup it guards against. Rationale: reducer.ts's chunk-view header.
+  const N = 20_000;
+  let model = streamingItem();
+  let prevBacking: string[] | undefined;
+  for (let i = 0; i < N; i++) {
+    model = applyNotification(model, agentMessageDelta(`c${i} `), 1003 + i);
+    const chunks = itemAt(turnAt(model, 0), 0).pendingText;
+    expect(chunks).toHaveLength(i + 1);
+    const backing = chunkViewBackingForTests(chunks ?? []);
+    expect(backing).toBeDefined();
+    if (i === 0) {
+      prevBacking = backing;
+    } else {
+      expect(backing).toBe(prevBacking);
+      expect(backing?.length).toBe(i + 1);
+    }
+  }
+  const chunks = itemAt(turnAt(model, 0), 0).pendingText;
+  expect(chunks?.length).toBe(N);
+  expect(chunks).toEqual(Array.from({ length: N }, (_, i) => `c${i} `));
+  // And the O(1) joined-text cache agrees with a full structural join.
+  expect(chunks?.join("")).toBe(pendingTextJoined(chunks ?? []));
+});
+
+test("a mid-stream model state stays observationally frozen while later deltas continue folding (view purity)", () => {
+  let model = streamingItem();
+  model = applyNotification(model, agentMessageDelta("Hel"), 1003);
+  model = applyNotification(model, agentMessageDelta("lo"), 1004);
+  const frozen = itemAt(turnAt(model, 0), 0);
+  const snapshot = [...(frozen.pendingText ?? [])];
+  // Snapshot the JOIN too — the most common read (settleItem, renderers).
+  const joined = frozen.pendingText?.join("");
+  // Keep folding well past the snapshotted state.
+  for (let i = 0; i < 500; i++) {
+    model = applyNotification(model, agentMessageDelta("x"), 1005 + i);
+  }
+  expect(frozen.pendingText?.length).toBe(2);
+  expect([...(frozen.pendingText ?? [])]).toEqual(snapshot);
+  expect(frozen.pendingText?.join("")).toBe(joined);
+  // And the live item carries all 502 chunks, first two unchanged.
+  const live = itemAt(turnAt(model, 0), 0);
+  expect(live.pendingText?.length).toBe(502);
+  expect(live.pendingText?.slice(0, 2)).toEqual(["Hel", "lo"]);
+  // Mutating traps throw rather than corrupting the shared backing.
+  expect(() => (live.pendingText as string[]).push("y")).toThrow();
+  expect(() => {
+    (live.pendingText as string[])[0] = "z";
+  }).toThrow();
+  // Settling after the fold still joins exactly the streamed text.
+  model = applyNotification(
+    model,
+    {
+      method: "turn/completed",
+      params: {
+        threadId: "thr_t",
+        ref: "ref_t",
+        turnId: "turn_1",
+        turn: { id: "turn_1", status: "completed", itemsView: "" },
+      },
+    },
+    2000,
+  );
+  const settled = itemAt(turnAt(model, 0), 0);
+  expect(settled.text).toBe(`Hello${"x".repeat(500)}`);
+  expect(settled.pendingText).toBeUndefined();
+});
+
+test("a delta folded onto a STALE mid-stream state branches cleanly — no aliasing into the newer fold (copy-on-branch)", () => {
+  let base = streamingItem();
+  base = applyNotification(base, agentMessageDelta("a"), 1003);
+  base = applyNotification(base, agentMessageDelta("b"), 1004);
+  const branchedAt = base;
+
+  // One line of history continues from branchedAt...
+  let live = branchedAt;
+  for (let i = 0; i < 100; i++) {
+    live = applyNotification(live, agentMessageDelta("L"), 1100 + i);
+  }
+  const liveChunks = itemAt(turnAt(live, 0), 0).pendingText;
+  expect(liveChunks?.length).toBe(102);
+  expect(liveChunks?.join("")).toBe(`ab${"L".repeat(100)}`);
+
+  // ...and a second fold from the SAME stale state takes its own branch.
+  // The stale state's view is not the backing's newest, so this append
+  // must NOT push into the backing the live branch reads — it copies.
+  let fork = branchedAt;
+  for (let i = 0; i < 100; i++) {
+    fork = applyNotification(fork, agentMessageDelta("F"), 1200 + i);
+  }
+  const forkChunks = itemAt(turnAt(fork, 0), 0).pendingText;
+  expect(forkChunks?.length).toBe(102);
+  expect(forkChunks?.join("")).toBe(`ab${"F".repeat(100)}`);
 });
 
 test("item/completed inserts an item that had no preceding item/started", () => {
@@ -1266,7 +1500,7 @@ test('evener/steering/injected with source "user" appends a steering item to the
     model,
     {
       method: "evener/steering/injected",
-      params: { threadId: "thr_t", ref: "ref_t", text: "please also check X", source: "user" },
+      params: { threadId: "thr_t", ref: "ref_t", text: "please also check X", source: "user", startedAt: 1000 },
     },
     1002,
   );
@@ -1278,6 +1512,7 @@ test('evener/steering/injected with source "user" appends a steering item to the
     turnId: "turn_1",
     type: "steering",
     text: "please also check X",
+    startedAt: "1970-01-01T00:00:01.000Z",
     status: "completed",
     source: "user",
   });
@@ -1898,12 +2133,12 @@ test("hydrateThread maps a settled item's exitCode onto the model (snapshot path
   expect(itemAt(turnAt(model, 0), 0).exitCode).toBe(0);
 });
 
-// A tool-call's purpose crosses the wire as ThreadItem.description (set
+// A tool-call's intent crosses the wire as ThreadItem.description (set
 // server-side, e.g. delegate's mandate); wireItemToModel historically dropped
 // it. The model must carry it so the subagent Activity feed can render each
-// child tool-call's purpose (§4.2). Both hydrate and live paths fold through
+// child tool-call's intent (§4.2). Both hydrate and live paths fold through
 // wireItemToModel, so the snapshot path proves the carry.
-test("wireItemToModel carries the wire description (tool-call purpose) onto the item", () => {
+test("wireItemToModel carries the wire description (tool-call intent) onto the item", () => {
   const thread = testThread({
     turns: [
       {
@@ -2077,6 +2312,51 @@ test("reload merges a tool CALL and its RESULT (separate turns, same callId) int
   expect(model.turns).toHaveLength(1);
 });
 
+test("reload merges a tool RESULT's raw state into the CALL item (hydration preserves structured raw)", () => {
+  const delegateRaw = { id: "dlg_42", type: "delegate", status: "running", task: "do work" };
+  const thread = testThread({
+    turns: [
+      {
+        id: "turn_1",
+        status: "completed",
+        itemsView: "full",
+        items: [
+          {
+            id: "item_tool_1_0",
+            type: "commandExecution",
+            toolName: "job_status",
+            callId: "call_B",
+            argumentsJson: JSON.stringify({ target: "dlg_42" }),
+            startedAt: 1,
+            status: "inProgress",
+          },
+        ],
+      },
+      {
+        id: "turn_2",
+        status: "completed",
+        itemsView: "full",
+        items: [
+          {
+            id: "item_tool_result_2_0",
+            type: "commandExecution",
+            toolName: "job_status",
+            callId: "call_B",
+            output: JSON.stringify(delegateRaw),
+            raw: delegateRaw,
+            completedAt: 2,
+            status: "completed",
+          },
+        ],
+      },
+    ],
+  });
+  const model = hydrateThread({ thread }, thread.evener.ref, 0);
+  const items = model.turns.flatMap((t) => t.items).filter((i) => i.callId === "call_B");
+  expect(items).toHaveLength(1);
+  expect(items[0]?.raw).toEqual(delegateRaw); // raw from the RESULT survives the merge
+});
+
 test("thread/reasoning-effort/changed updates reasoningEffort", () => {
   let model = testHydrate();
   expect(model.reasoningEffort).toBeUndefined();
@@ -2089,6 +2369,34 @@ test("thread/reasoning-effort/changed updates reasoningEffort", () => {
     2000,
   );
   expect(model.reasoningEffort).toBe("high");
+});
+
+test("hydrateThread carries visionModel and defaults an absent wire value", () => {
+  expect(testHydrate().visionModel).toBe("");
+  expect(
+    testHydrate({
+      evener: {
+        ref: "ref_t",
+        capabilities: CAPABILITIES,
+        queue: { revision: 0 },
+        visionModel: "anthropic/claude-haiku-4-5",
+      },
+    }).visionModel,
+  ).toBe("anthropic/claude-haiku-4-5");
+});
+
+test("thread/vision-model/changed updates visionModel", () => {
+  let model = testHydrate();
+  expect(model.visionModel).toBe("");
+  model = applyNotification(
+    model,
+    {
+      method: "thread/vision-model/changed",
+      params: { threadId: "thr_t", ref: "ref_t", visionModel: "anthropic/claude-haiku-4-5" },
+    },
+    2000,
+  );
+  expect(model.visionModel).toBe("anthropic/claude-haiku-4-5");
 });
 
 // Wave 5 T1: thread/model/changed's real payload (appwire/types.go's
@@ -2771,27 +3079,64 @@ test("hydrateThread preserves task aggregate through notification mutation and r
     ref: "ref_t",
     capabilities: CAPABILITIES,
     queue: { revision: 0 },
-    tasks: { total: 7, done: 6 },
+    tasks: { total: 7, done: 6, current: { id: 6, description: "hydrated current task" } },
   };
   let model = testHydrate({ evener: snapshot });
-  expect(model.tasks).toEqual({ total: 7, done: 6 });
+  expect(model.tasks).toEqual({ total: 7, done: 6, current: { id: 6, description: "hydrated current task" } });
+
+  model = applyNotification(
+    model,
+    {
+      method: "evener/task/updated",
+      params: {
+        threadId: "thr_t",
+        ref: "ref_t",
+        total: 7,
+        done: 7,
+        current: { id: 7, description: "replacement task" },
+      },
+    },
+    2000,
+  );
+  expect(model.tasks).toEqual({
+    total: 7,
+    done: 7,
+    current: { id: 7, description: "replacement task" },
+  });
 
   model = applyNotification(
     model,
     { method: "evener/task/updated", params: { threadId: "thr_t", ref: "ref_t", total: 7, done: 7 } },
-    2000,
+    3000,
   );
   expect(model.tasks).toEqual({ total: 7, done: 7 });
+
+  model = applyNotification(
+    model,
+    {
+      method: "evener/task/updated",
+      params: { threadId: "thr_t", ref: "ref_t", total: 7, done: 1, cancelled: 5, remaining: 1 },
+    },
+    4000,
+  );
+  expect(model.tasks).toEqual({ total: 7, done: 1, cancelled: 5, remaining: 1 });
+
+  model = applyNotification(
+    model,
+    { method: "evener/task/updated", params: { threadId: "thr_t", ref: "ref_t", total: 3, done: 0, cancelled: 3 } },
+    5000,
+  );
+  expect(model.tasks).toEqual({ total: 3, done: 0, cancelled: 3, remaining: 0 });
 
   const rehydrated = testHydrate({
     evener: {
       ref: "ref_t",
       capabilities: CAPABILITIES,
       queue: { revision: 0 },
-      tasks: { total: 7, done: 7 },
+      tasks: { total: 7, done: 7, current: { id: 7, description: "replacement task" } },
     },
   });
-  expect(rehydrated.tasks).toEqual({ total: 7, done: 7 });
+  expect(rehydrated.tasks).toEqual({ total: 7, done: 7, current: { id: 7, description: "replacement task" } });
 });
 
 test("hydrateThread keeps absent task aggregate null and distinguishes an authoritative zero", () => {

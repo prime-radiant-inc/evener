@@ -48,7 +48,9 @@ export function requestComposerFocus(ref: string): void {
   store.getState().requestComposerFocus(ref);
 }
 
-/** Composer's write side: clears a request once it has been acted on. */
+/** Composer's write side: clears a request only after a mounted textarea has
+ * successfully received the corresponding `.focus()` call. Until then the
+ * request deliberately survives renders and subscriber remounts. */
 export function consumeComposerFocus(ref: string): void {
   store.getState().consumeComposerFocus(ref);
 }

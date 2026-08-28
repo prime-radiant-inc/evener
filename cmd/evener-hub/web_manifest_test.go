@@ -53,10 +53,10 @@ func TestWeb_Manifest_CarriesAuthTokenInStartURL(t *testing.T) {
 	if m.Name == "" || m.Scope != "/" || m.Display != "standalone" {
 		t.Errorf("manifest lost its base fields: %+v", m)
 	}
-	if !strings.HasPrefix(m.StartURL, "/auth?") {
-		t.Fatalf("start_url should self-authenticate via /auth, got %q", m.StartURL)
+	if !strings.HasPrefix(m.StartURL, "/auth/") {
+		t.Fatalf("start_url should self-authenticate via /auth/<token>, got %q", m.StartURL)
 	}
-	if !strings.Contains(m.StartURL, "token="+token) {
+	if !strings.Contains(m.StartURL, token) {
 		t.Errorf("start_url missing the auth token: %q", m.StartURL)
 	}
 	if !strings.Contains(m.StartURL, "next=") {

@@ -26,6 +26,53 @@ func useSkillCall(id, skillName string) llm.ToolCallData {
 	}
 }
 
+func TestBuildPromptDataHasUseSkillTracksCallableDefinitions(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name   string
+		keep   []string
+		legacy bool
+		want   bool
+	}{
+		{name: "legacy uninitialized cache", legacy: true},
+		{name: "empty final cache"},
+		{name: "restricted final cache", keep: []string{"read_file"}},
+		{name: "callable final cache", keep: []string{"use_skill"}, want: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			s := newTestSession(t)
+			if tc.legacy {
+				// A pre-cache/legacy session has no final definitions. This is the
+				// only direct assignment here; the other cases exercise the real
+				// registry restriction and rebuildToolDefsCache lifecycle below.
+				s.cachedToolDefs = nil
+			} else {
+				rebuildPromptToolCacheForTest(s, tc.keep...)
+			}
+			if got := s.buildPromptData(s.currentEnv()).HasUseSkill; got != tc.want {
+				t.Fatalf("HasUseSkill = %v, want %v", got, tc.want)
+			}
+		})
+	}
+}
+
+// rebuildPromptToolCacheForTest models the production final-tool restriction
+// boundary: restrict the initialized registry, then rebuild the cached provider
+// definitions that are sent to the model. HasUseSkill must follow this cache,
+// not the profile's larger initial definition set.
+func rebuildPromptToolCacheForTest(s *Session, keep ...string) {
+	allowed := make(map[string]bool, len(keep))
+	for _, name := range keep {
+		allowed[name] = true
+	}
+	for name := range s.reg.RegisteredNames() {
+		if !allowed[name] {
+			s.reg.Remove(name)
+		}
+	}
+	s.rebuildToolDefsCache()
+}
+
 // use_skill tests exercise provider profiles that expose the use_skill tool.
 
 func TestUseSkill_ReturnsBody(t *testing.T) {
@@ -82,6 +129,124 @@ func TestUseSkill_ReturnsBody(t *testing.T) {
 	}
 	if !found {
 		t.Fatalf("expected skill body 'Greet people warmly' in tool result of second request")
+	}
+}
+
+func TestUseSkill_InlineMentionPreservesUserInput(t *testing.T) {
+	t.Parallel()
+	root := t.TempDir()
+	markGitRoot(t, root)
+	writeSkillMD(t, root, "greet", "---\nname: greet\ndescription: \"Greeting skill\"\n---\nGreet people warmly.\n")
+
+	input := "Please use /greet for Jesse"
+	skillBody := "Greet people warmly."
+	c := llm.NewClient()
+	skillCall := useSkillCall("s1", "greet")
+	comm := communicateCall("c1", "done")
+	adapter := &fakeAdapter{
+		name: "anthropic",
+		steps: []func(req llm.Request) llm.Response{
+			func(req llm.Request) llm.Response { return toolCallResponse(skillCall) },
+			func(req llm.Request) llm.Response { return toolCallResponse(comm) },
+		},
+	}
+	c.Register(adapter)
+
+	sess, err := NewSession(c, newAnthropicProfile("claude-test"), execenv.NewLocalExecutionEnvironment(root), SessionConfig{})
+	if err != nil {
+		t.Fatalf("NewSession: %v", err)
+	}
+
+	var eventsSeen []events.SessionEvent
+	eventsDone := make(chan struct{})
+	go func() {
+		defer close(eventsDone)
+		for ev := range sess.Events() {
+			eventsSeen = append(eventsSeen, ev)
+		}
+	}()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second) // TRIPWIRE: scripted in-process adapter, no real I/O; only fires on a genuine hang.
+	defer cancel()
+	if _, err := sess.ProcessInput(ctx, input, nil); err != nil {
+		t.Fatalf("ProcessInput: %v", err)
+	}
+	sess.Close()
+	<-eventsDone
+
+	var userInputs []string
+	for _, ev := range eventsSeen {
+		if ev.Kind != events.EventUserInput {
+			continue
+		}
+		data, ok := ev.Data.(events.UserInputData)
+		if ok {
+			userInputs = append(userInputs, data.Text)
+		}
+	}
+	if len(userInputs) != 1 || userInputs[0] != input {
+		t.Fatalf("user input events = %q, want complete sentence %q", userInputs, input)
+	}
+	if strings.Contains(userInputs[0], "Greet people warmly.") {
+		t.Fatal("inline mention expanded the skill body before the model turn")
+	}
+
+	requests := adapter.Requests()
+	if len(requests) < 2 {
+		t.Fatalf("expected tool follow-up request, got %d requests", len(requests))
+	}
+	var requestUserTexts []string
+	for _, msg := range requests[0].Messages {
+		if msg.Role == llm.RoleUser {
+			requestUserTexts = append(requestUserTexts, msg.Text())
+		}
+	}
+	if len(requestUserTexts) == 0 || requestUserTexts[len(requestUserTexts)-1] != input {
+		t.Fatalf("provider user messages = %q, want final message exactly %q", requestUserTexts, input)
+	}
+	if strings.Contains(requestUserTexts[len(requestUserTexts)-1], skillBody) {
+		t.Fatal("provider request expanded the inline skill body before the model turn")
+	}
+
+	foundSkillBody := false
+	for _, msg := range requests[1].Messages {
+		for _, part := range msg.Content {
+			if part.Kind != llm.ContentToolResult {
+				continue
+			}
+			content, _ := part.ToolResult.Content.(string)
+			if strings.Contains(content, "Greet people warmly.") {
+				foundSkillBody = true
+			}
+		}
+	}
+	if !foundSkillBody {
+		t.Fatal("scripted inline use_skill call did not return the skill body")
+	}
+}
+
+func TestStandaloneSkillActivationUsesCanonicalPluginName(t *testing.T) {
+	s := newTestSession(t)
+	s.skills = map[string]skill.SkillMeta{
+		"plugin:simplify": {Name: "simplify", SkillFile: writeSkillBodyFile(t, "plugin steps")},
+	}
+	_ = drainSlashEvents(s)
+
+	got, ok := s.expandSlashCommand(context.Background(), "/plugin:simplify")
+	if !ok || got != "plugin steps" {
+		t.Fatalf("expanded = %q, %v; want plugin skill body", got, ok)
+	}
+	var activated []string
+	for _, ev := range drainSlashEvents(s) {
+		if ev.Kind != events.EventSkillActivated {
+			continue
+		}
+		if data, ok := ev.Data.(events.SkillActivatedData); ok {
+			activated = append(activated, data.Name)
+		}
+	}
+	if len(activated) != 1 || activated[0] != "plugin:simplify" {
+		t.Fatalf("activation names = %v, want [plugin:simplify]", activated)
 	}
 }
 
@@ -334,7 +499,7 @@ func TestOpenAIUseSkillToolExecutes(t *testing.T) {
 	result := sess.reg.ExecuteCall(context.Background(), execenv.NewLocalExecutionEnvironment(root), llm.ToolCallData{
 		ID:        "call_use_skill",
 		Name:      "use_skill",
-		Arguments: json.RawMessage(`{"skill_name":"greet","purpose":"test skill loading"}`),
+		Arguments: json.RawMessage(`{"skill_name":"greet","intent":"test skill loading"}`),
 		Type:      "function",
 	})
 	if result.IsError {
@@ -365,5 +530,92 @@ func TestDiscoverSkills_PopulatedOnSession(t *testing.T) {
 	skills := skill.DiscoverSkills(env)
 	if _, ok := skills["manual"]; !ok {
 		t.Errorf("expected skill 'manual' discovered in non-git directory")
+	}
+}
+
+func TestNewSessionAutomaticallyDiscoversUserSkill(t *testing.T) {
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	project := t.TempDir()
+	markGitRoot(t, project)
+
+	userSkillDir := filepath.Join(os.Getenv("XDG_CONFIG_HOME"), "evener", "skills", "automatic-user")
+	if err := os.MkdirAll(userSkillDir, 0o755); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+	const body = "automatic user skill sentinel"
+	if err := os.WriteFile(filepath.Join(userSkillDir, "SKILL.md"), []byte("---\nname: automatic-user\ndescription: automatic user skill\n---\n"+body+"\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	sess, err := NewSession(llm.NewClient(), newAnthropicProfile("claude-test"), execenv.NewLocalExecutionEnvironment(project), SessionConfig{})
+	if err != nil {
+		t.Fatalf("NewSession: %v", err)
+	}
+	defer sess.Close()
+
+	if _, ok := sess.skills["automatic-user"]; !ok {
+		t.Fatal("automatic user skill was not discovered")
+	}
+	got, ok := sess.expandSlashCommand(context.Background(), "/automatic-user")
+	if !ok || !strings.Contains(got, body) {
+		t.Fatalf("slash skill expansion = %q, %v; want body %q", got, ok, body)
+	}
+}
+
+func TestConfiguredSkillDirShadowsAutomaticUserSkill(t *testing.T) {
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	project := t.TempDir()
+	markGitRoot(t, project)
+
+	userSkillDir := filepath.Join(os.Getenv("XDG_CONFIG_HOME"), "evener", "skills", "same-name")
+	if err := os.MkdirAll(userSkillDir, 0o755); err != nil {
+		t.Fatalf("MkdirAll user skill: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(userSkillDir, "SKILL.md"), []byte("---\nname: same-name\ndescription: user\n---\nuser body\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile user skill: %v", err)
+	}
+
+	extraDir := t.TempDir()
+	extraSkillDir := filepath.Join(extraDir, "same-name")
+	if err := os.MkdirAll(extraSkillDir, 0o755); err != nil {
+		t.Fatalf("MkdirAll configured skill: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(extraSkillDir, "SKILL.md"), []byte("---\nname: same-name\ndescription: configured\n---\nconfigured body\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile configured skill: %v", err)
+	}
+
+	sess, err := NewSession(llm.NewClient(), newAnthropicProfile("claude-test"), execenv.NewLocalExecutionEnvironment(project), SessionConfig{SkillsDirs: []string{extraDir}})
+	if err != nil {
+		t.Fatalf("NewSession: %v", err)
+	}
+	defer sess.Close()
+
+	if got := sess.skills["same-name"].Description; got != "configured" {
+		t.Fatalf("skill description = %q, want configured", got)
+	}
+}
+
+func TestProjectSkillShadowsAutomaticUserSkill(t *testing.T) {
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	project := t.TempDir()
+	markGitRoot(t, project)
+	writeSkillMD(t, project, "same-name", "---\nname: same-name\ndescription: project\n---\nproject body\n")
+
+	userSkillDir := filepath.Join(os.Getenv("XDG_CONFIG_HOME"), "evener", "skills", "same-name")
+	if err := os.MkdirAll(userSkillDir, 0o755); err != nil {
+		t.Fatalf("MkdirAll user skill: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(userSkillDir, "SKILL.md"), []byte("---\nname: same-name\ndescription: user\n---\nuser body\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile user skill: %v", err)
+	}
+
+	sess, err := NewSession(llm.NewClient(), newAnthropicProfile("claude-test"), execenv.NewLocalExecutionEnvironment(project), SessionConfig{})
+	if err != nil {
+		t.Fatalf("NewSession: %v", err)
+	}
+	defer sess.Close()
+
+	if got := sess.skills["same-name"].Description; got != "project" {
+		t.Fatalf("skill description = %q, want project", got)
 	}
 }

@@ -1,0 +1,409 @@
+[
+  {
+    "case": "status/env",
+    "note": "the curated openai instance authenticated by OPENAI_API_KEY",
+    "method": "evener/auth/status",
+    "response": {
+      "provider": "openai",
+      "supported": true,
+      "signedIn": true,
+      "activeSource": "env:OPENAI_API_KEY",
+      "authModes": [
+        "apiKey"
+      ],
+      "hasStoredOAuth": false,
+      "envVar": "OPENAI_API_KEY"
+    }
+  },
+  {
+    "case": "status/store",
+    "note": "a key entered in the pane and kept in credentials.toml",
+    "method": "evener/auth/status",
+    "response": {
+      "provider": "anthropic",
+      "supported": true,
+      "signedIn": true,
+      "activeSource": "store",
+      "authModes": [
+        "apiKey"
+      ],
+      "hasStoredOAuth": false,
+      "hasStoredFile": true
+    }
+  },
+  {
+    "case": "status/api_key",
+    "note": "an instance carrying its own api_key reference in providers.toml",
+    "method": "evener/auth/status",
+    "response": {
+      "provider": "work",
+      "supported": true,
+      "signedIn": true,
+      "activeSource": "api_key",
+      "authModes": [
+        "apiKey"
+      ],
+      "hasStoredOAuth": false
+    }
+  },
+  {
+    "case": "status/credential_headers",
+    "note": "a gateway authenticated by an authored Authorization header",
+    "method": "evener/auth/status",
+    "response": {
+      "provider": "gateway",
+      "supported": true,
+      "signedIn": true,
+      "activeSource": "credential_headers",
+      "authModes": [
+        "none",
+        "apiKey"
+      ],
+      "hasStoredOAuth": false
+    }
+  },
+  {
+    "case": "status/oauth",
+    "note": "the Codex instance with a live OAuth record",
+    "method": "evener/auth/status",
+    "response": {
+      "provider": "openai-codex",
+      "supported": true,
+      "signedIn": true,
+      "activeSource": "oauth",
+      "authModes": [
+        "oauth"
+      ],
+      "hasStoredOAuth": true,
+      "email": "bot@example.com",
+      "storedEmail": "bot@example.com"
+    }
+  },
+  {
+    "case": "status/oauth-refreshable",
+    "note": "a Codex record inside its refresh window",
+    "method": "evener/auth/status",
+    "response": {
+      "provider": "openai-codex",
+      "supported": true,
+      "signedIn": true,
+      "activeSource": "oauth",
+      "authModes": [
+        "oauth"
+      ],
+      "hasStoredOAuth": true,
+      "email": "bot@example.com",
+      "storedEmail": "bot@example.com",
+      "needsRefresh": true
+    }
+  },
+  {
+    "case": "status/oauth-expired",
+    "note": "a Codex record whose access token has expired",
+    "method": "evener/auth/status",
+    "response": {
+      "provider": "openai-codex",
+      "supported": true,
+      "signedIn": false,
+      "activeSource": "oauth",
+      "authModes": [
+        "oauth"
+      ],
+      "hasStoredOAuth": true,
+      "email": "bot@example.com",
+      "storedEmail": "bot@example.com",
+      "needsLogin": true
+    }
+  },
+  {
+    "case": "status/oauth-none",
+    "note": "the Codex instance with no record: /login's starting state",
+    "method": "evener/auth/status",
+    "response": {
+      "provider": "openai-codex",
+      "supported": true,
+      "signedIn": false,
+      "activeSource": "none",
+      "authModes": [
+        "oauth"
+      ],
+      "hasStoredOAuth": false
+    }
+  },
+  {
+    "case": "status/adc",
+    "note": "an instance on application-default credentials",
+    "method": "evener/auth/status",
+    "response": {
+      "provider": "vertexish",
+      "supported": true,
+      "signedIn": true,
+      "activeSource": "adc",
+      "authModes": [
+        "adc"
+      ],
+      "hasStoredOAuth": false
+    }
+  },
+  {
+    "case": "status/auth-none",
+    "note": "a local endpoint that wants no credential at all",
+    "method": "evener/auth/status",
+    "response": {
+      "provider": "local",
+      "supported": true,
+      "signedIn": false,
+      "activeSource": "none",
+      "authModes": [
+        "none"
+      ],
+      "hasStoredOAuth": false
+    }
+  },
+  {
+    "case": "status/missing-key",
+    "note": "a curated instance with no credential anywhere",
+    "method": "evener/auth/status",
+    "response": {
+      "provider": "anthropic",
+      "supported": true,
+      "signedIn": false,
+      "activeSource": "none",
+      "authModes": [
+        "apiKey"
+      ],
+      "hasStoredOAuth": false
+    }
+  },
+  {
+    "case": "status/unsupported",
+    "note": "a name that is no instance and no curated provider",
+    "method": "evener/auth/status",
+    "response": {
+      "provider": "not-a-provider",
+      "supported": false,
+      "signedIn": false,
+      "activeSource": "none",
+      "hasStoredOAuth": false
+    }
+  },
+  {
+    "case": "logout/oauth-removed",
+    "note": "signing out of the Codex instance deletes its OAuth record",
+    "method": "evener/auth/logout",
+    "response": {
+      "removed": true,
+      "status": {
+        "provider": "openai-codex",
+        "supported": true,
+        "signedIn": false,
+        "activeSource": "none",
+        "authModes": [
+          "oauth"
+        ],
+        "hasStoredOAuth": false
+      }
+    }
+  },
+  {
+    "case": "logout/stored-key-cleared",
+    "note": "signing out of a key-authenticated instance clears the stored key",
+    "method": "evener/auth/logout",
+    "response": {
+      "removed": true,
+      "status": {
+        "provider": "anthropic",
+        "supported": true,
+        "signedIn": false,
+        "activeSource": "none",
+        "authModes": [
+          "apiKey"
+        ],
+        "hasStoredOAuth": false
+      }
+    }
+  },
+  {
+    "case": "logout/nothing-to-remove",
+    "note": "signing out of the Codex instance that was never signed in",
+    "method": "evener/auth/logout",
+    "response": {
+      "removed": false,
+      "status": {
+        "provider": "openai-codex",
+        "supported": true,
+        "signedIn": false,
+        "activeSource": "none",
+        "authModes": [
+          "oauth"
+        ],
+        "hasStoredOAuth": false
+      }
+    }
+  },
+  {
+    "case": "instances/mixed-sources",
+    "note": "the instance rows the credentials panes render, one per credential source",
+    "method": "evener/instance/list",
+    "field": "instances",
+    "response": [
+      {
+        "name": "anthropic",
+        "providerId": "anthropic",
+        "protocol": "anthropic",
+        "surface": "anthropic",
+        "auth": "header",
+        "baseUrl": "https://api.anthropic.com/v1",
+        "implicit": true,
+        "isDefault": true,
+        "authModes": [
+          "apiKey"
+        ],
+        "activeSource": "store",
+        "hasStoredFile": true,
+        "hasStoredOAuth": false,
+        "credentialRequired": true
+      },
+      {
+        "name": "openai-codex",
+        "providerId": "openai-codex",
+        "protocol": "openai-responses",
+        "surface": "openai",
+        "auth": "oauth-openai-codex",
+        "baseUrl": "https://chatgpt.com/backend-api/codex",
+        "implicit": true,
+        "isDefault": false,
+        "authModes": [
+          "oauth"
+        ],
+        "activeSource": "oauth",
+        "hasStoredOAuth": true,
+        "storedEmail": "bot@example.com",
+        "credentialRequired": true
+      },
+      {
+        "name": "openai",
+        "providerId": "openai",
+        "protocol": "openai-responses",
+        "surface": "openai",
+        "auth": "bearer",
+        "baseUrl": "https://api.openai.com/v1",
+        "implicit": true,
+        "isDefault": false,
+        "authModes": [
+          "apiKey"
+        ],
+        "activeSource": "env:OPENAI_API_KEY",
+        "hasStoredOAuth": false,
+        "envVar": "OPENAI_API_KEY",
+        "credentialRequired": true
+      },
+      {
+        "name": "ollama",
+        "providerId": "ollama",
+        "protocol": "openai-chat",
+        "surface": "generic",
+        "auth": "optional-bearer",
+        "baseUrl": "http://localhost:11434/v1",
+        "implicit": true,
+        "isDefault": false,
+        "authModes": [
+          "none",
+          "apiKey"
+        ],
+        "activeSource": "none",
+        "hasStoredOAuth": false,
+        "credentialRequired": false
+      },
+      {
+        "name": "authored",
+        "base": "anthropic",
+        "providerId": "anthropic",
+        "protocol": "anthropic",
+        "surface": "anthropic",
+        "auth": "header",
+        "baseUrl": "https://api.anthropic.com/v1",
+        "implicit": false,
+        "isDefault": false,
+        "authModes": [
+          "apiKey"
+        ],
+        "activeSource": "api_key",
+        "hasStoredOAuth": false,
+        "credentialRequired": true
+      },
+      {
+        "name": "gateway",
+        "base": "openai-compatible",
+        "providerId": "openai-compatible",
+        "protocol": "openai-chat",
+        "surface": "generic",
+        "auth": "none",
+        "baseUrl": "http://127.0.0.1:9/v1",
+        "implicit": false,
+        "isDefault": false,
+        "authModes": [
+          "none"
+        ],
+        "activeSource": "none",
+        "hasStoredOAuth": false,
+        "credentialRequired": false
+      },
+      {
+        "name": "headered",
+        "base": "openai-compatible",
+        "providerId": "openai-compatible",
+        "protocol": "openai-chat",
+        "surface": "generic",
+        "auth": "optional-bearer",
+        "baseUrl": "http://127.0.0.1:9/v1",
+        "implicit": false,
+        "isDefault": false,
+        "authModes": [
+          "none",
+          "apiKey"
+        ],
+        "activeSource": "credential_headers",
+        "hasStoredOAuth": false,
+        "credentialRequired": false
+      },
+      {
+        "name": "unkeyed",
+        "base": "anthropic",
+        "providerId": "anthropic",
+        "protocol": "anthropic",
+        "surface": "anthropic",
+        "auth": "header",
+        "baseUrl": "https://api.anthropic.com/v1",
+        "implicit": false,
+        "isDefault": false,
+        "authModes": [
+          "apiKey"
+        ],
+        "activeSource": "none",
+        "hasStoredOAuth": false,
+        "credentialRequired": true,
+        "warnings": [
+          "no credential"
+        ]
+      },
+      {
+        "name": "vertexish",
+        "base": "openai-compatible",
+        "providerId": "openai-compatible",
+        "protocol": "openai-chat",
+        "surface": "generic",
+        "auth": "gcp-adc",
+        "baseUrl": "http://127.0.0.1:9/v1",
+        "implicit": false,
+        "isDefault": false,
+        "authModes": [
+          "adc"
+        ],
+        "activeSource": "adc",
+        "hasStoredOAuth": false,
+        "credentialRequired": true
+      }
+    ]
+  }
+]

@@ -1,18 +1,20 @@
 import { mutationErrorData, WireError } from "../protocol/errors";
 import type { AppwireClientLike } from "../protocol/testing/fakeClient";
-import type { MethodName, MutationReceipt } from "../protocol/types.gen";
+import type { MethodName, MutationReceipt, ThreadClearResponse } from "../protocol/types.gen";
 import type { MutationOutboxRecord } from "./mutationOutbox";
 import type { MutationOutboxIndexedDB } from "./mutationOutboxIndexedDB";
 
 export interface MutationDispatcherOptions {
   getClient: (targetRef: string) => AppwireClientLike | null | undefined;
   onStorageChange?: (targetRefs: string[]) => void;
+  onClearResponse?: (targetRef: string, response: ThreadClearResponse) => void;
 }
 
 export class MutationDispatcher {
   readonly #storage: MutationOutboxIndexedDB;
   readonly #getClient: MutationDispatcherOptions["getClient"];
   readonly #onStorageChange: NonNullable<MutationDispatcherOptions["onStorageChange"]>;
+  readonly #onClearResponse: NonNullable<MutationDispatcherOptions["onClearResponse"]>;
   readonly #dispatching = new Map<string, Promise<void>>();
   readonly #requestedRuns = new Map<string, number>();
 
@@ -20,6 +22,7 @@ export class MutationDispatcher {
     this.#storage = storage;
     this.#getClient = options.getClient;
     this.#onStorageChange = options.onStorageChange ?? (() => undefined);
+    this.#onClearResponse = options.onClearResponse ?? (() => undefined);
   }
 
   async dispatchTargets(targetRefs: Iterable<string>): Promise<void> {
@@ -107,6 +110,11 @@ export class MutationDispatcher {
       ) {
         return "stop";
       }
+      if (method === "thread/clear") {
+        const response = clearResponse(result, record.targetRef);
+        if (!response) return "stop";
+        this.#onClearResponse(record.targetRef, response);
+      }
       await this.#storage.settleReceipt(record.clientMutationId, receipt.projectionState);
       this.#onStorageChange([record.targetRef]);
       return "advance";
@@ -174,6 +182,7 @@ const RETRY_SAFE_MUTATION_METHODS: ReadonlySet<string> = new Set([
   "turn/drainAsSteer",
   "turn/promoteQueuedAsSteer",
   "turn/cancelQueued",
+  "thread/clear",
 ]);
 
 // rejectionReason extracts what to show a user whose control was refused.
@@ -217,4 +226,16 @@ function mutationReceipt(result: unknown): MutationReceipt | undefined {
     return undefined;
   }
   return candidate as MutationReceipt;
+}
+
+function clearResponse(result: unknown, targetRef: string): ThreadClearResponse | undefined {
+  if (!result || typeof result !== "object") return undefined;
+  const candidate = result as Partial<ThreadClearResponse>;
+  if (candidate.ref !== targetRef || typeof candidate.ref !== "string") return undefined;
+  if (!candidate.thread || typeof candidate.thread !== "object") return undefined;
+  const thread = candidate.thread;
+  if (typeof thread.id !== "string" || thread.id === "") return undefined;
+  if (!thread.evener || typeof thread.evener !== "object") return undefined;
+  if (thread.evener.ref !== targetRef) return undefined;
+  return candidate as ThreadClearResponse;
 }

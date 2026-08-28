@@ -5,6 +5,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -192,6 +193,77 @@ func TestForkSession_CopiesPrefixAndAppliesEdit(t *testing.T) {
 	}
 }
 
+func TestForkAndAsidePreserveCheapModel(t *testing.T) {
+	operations := []struct {
+		name   string
+		create func(string, string) (string, error)
+	}{
+		{
+			name: "fork",
+			create: func(stateDir, parentID string) (string, error) {
+				return ForkSession(stateDir, parentID, 3, "edited", "")
+			},
+		},
+		{name: "aside", create: AsideSession},
+	}
+	routes := []struct {
+		name         string
+		ref          string
+		wantProvider string
+		wantModel    string
+	}{
+		{name: "relative", ref: "gpt-5-mini", wantProvider: "openai", wantModel: "gpt-5-mini"},
+		{name: "qualified", ref: "anthropic/claude-haiku-4-5-20251001", wantProvider: "anthropic", wantModel: "claude-haiku-4-5-20251001"},
+	}
+	for _, operation := range operations {
+		for _, route := range routes {
+			t.Run(operation.name+"/"+route.name, func(t *testing.T) {
+				stateDir, parentID := buildParentSession(t)
+				parentMeta, err := schema.LoadSessionMeta(stateDir, parentID)
+				if err != nil {
+					t.Fatalf("LoadSessionMeta(parent): %v", err)
+				}
+				parentMeta.CheapModel = route.ref
+				if err := schema.SaveSessionMeta(stateDir, parentMeta); err != nil {
+					t.Fatalf("SaveSessionMeta(parent): %v", err)
+				}
+
+				childID, err := operation.create(stateDir, parentID)
+				if err != nil {
+					t.Fatalf("%s: %v", operation.name, err)
+				}
+				childMeta, err := schema.LoadSessionMeta(stateDir, childID)
+				if err != nil {
+					t.Fatalf("LoadSessionMeta(child): %v", err)
+				}
+				if childMeta.CheapModel != route.ref {
+					t.Fatalf("child CheapModel = %q, want %q", childMeta.CheapModel, route.ref)
+				}
+
+				client := llm.NewClient()
+				client.Register(&fakeAdapter{name: "openai"})
+				client.Register(&fakeAdapter{name: "anthropic"})
+				restored, err := RestoreSessionFromMetaWithConfig(
+					client,
+					NewOpenAIProfile(childMeta.Model),
+					execenv.NewLocalExecutionEnvironment(t.TempDir()),
+					childMeta,
+					RestoreSessionConfig{StateDir: stateDir},
+				)
+				if err != nil {
+					t.Fatalf("RestoreSessionFromMetaWithConfig: %v", err)
+				}
+				defer restored.Close()
+				providerName, model := restored.profile.CheapModelRef()
+				if providerName != route.wantProvider || model != route.wantModel {
+					t.Fatalf("restored CheapModelRef() = (%q, %q), want (%q, %q)",
+						providerName, model, route.wantProvider, route.wantModel)
+				}
+			})
+		}
+	}
+}
+
 func TestForkSession_RejectsMixedAPICallWithoutCreatingChild(t *testing.T) {
 	t.Parallel()
 	stateDir, parentID := buildParentSession(t)
@@ -360,7 +432,7 @@ func TestForkSession_ChildLineagePreservedAcrossMetaRewrite(t *testing.T) {
 	}
 
 	c := llm.NewClient()
-	sess, err := RestoreSessionFromMeta(c, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(t.TempDir()), childMeta, stateDir)
+	sess, err := RestoreSessionFromMeta(c, withTestSessionNamer(c, NewOpenAIProfile("gpt-5.2")), execenv.NewLocalExecutionEnvironment(t.TempDir()), childMeta, stateDir)
 	if err != nil {
 		t.Fatalf("RestoreSessionFromMeta: %v", err)
 	}
@@ -390,7 +462,7 @@ func TestForkSession_ParentForkLabelPreservedAcrossMetaRewrite(t *testing.T) {
 	}
 
 	c := llm.NewClient()
-	sess, err := RestoreSessionFromMeta(c, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(t.TempDir()), parentMeta, stateDir)
+	sess, err := RestoreSessionFromMeta(c, withTestSessionNamer(c, NewOpenAIProfile("gpt-5.2")), execenv.NewLocalExecutionEnvironment(t.TempDir()), parentMeta, stateDir)
 	if err != nil {
 		t.Fatalf("RestoreSessionFromMeta: %v", err)
 	}
@@ -474,6 +546,32 @@ func TestForkSession_RestorePreservesAcceptedInputBudget(t *testing.T) {
 	requireBudgetExhaustion(t, err, exhaustedBudgetTurns, 7, false)
 	if got := len(adapter.Requests()); got != 5 {
 		t.Fatalf("model requests after rejected input = %d, want 5", got)
+	}
+}
+
+func TestForkSession_PreservesSelectedPluginDirs(t *testing.T) {
+	t.Parallel()
+	stateDir, parentID := buildParentSession(t)
+	parentMeta, err := schema.LoadSessionMeta(stateDir, parentID)
+	if err != nil {
+		t.Fatalf("LoadSessionMeta(parent): %v", err)
+	}
+	want := []string{"/plugins/selected-alpha", "/plugins/selected-beta"}
+	parentMeta.Config.PluginDirs = want
+	if err := schema.SaveSessionMeta(stateDir, parentMeta); err != nil {
+		t.Fatalf("SaveSessionMeta(parent): %v", err)
+	}
+
+	childID, err := ForkSession(stateDir, parentID, 3, "second task, selected plugins", "")
+	if err != nil {
+		t.Fatalf("ForkSession: %v", err)
+	}
+	childMeta, err := schema.LoadSessionMeta(stateDir, childID)
+	if err != nil {
+		t.Fatalf("LoadSessionMeta(child): %v", err)
+	}
+	if !slices.Equal(childMeta.Config.PluginDirs, want) {
+		t.Fatalf("child PluginDirs = %v, want %v", childMeta.Config.PluginDirs, want)
 	}
 }
 
