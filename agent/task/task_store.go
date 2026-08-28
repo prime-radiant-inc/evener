@@ -165,6 +165,7 @@ func cloneTasks(tasks []Task) []Task {
 type TaskStore struct {
 	mu                    sync.Mutex
 	mutationPublicationMu sync.Mutex
+	publicationRevision   uint64
 	tasks                 []Task
 	nextID                int
 	path                  string
@@ -188,9 +189,11 @@ func NewTaskStore(stateDir, sessionID string) *TaskStore {
 
 // MutateAndPublish serializes one logical mutation through publication of the
 // resulting state. The serializer belongs to the store so sessions sharing one
-// TaskStore also share publication order. The store's data mutex remains scoped
-// to individual data operations inside fn and is never held by this method.
-func (s *TaskStore) MutateAndPublish(fn func() error) error {
+// TaskStore also share publication order. revision is monotonic for the lifetime
+// of this store and is internal routing metadata; failed publications may leave
+// gaps. The store's data mutex remains scoped to individual data operations
+// inside fn and is never held by this method.
+func (s *TaskStore) MutateAndPublish(fn func(revision uint64) error) error {
 	if !s.mutationPublicationMu.TryLock() {
 		if s.beforeMutationPublicationWait != nil {
 			s.beforeMutationPublicationWait()
@@ -198,7 +201,8 @@ func (s *TaskStore) MutateAndPublish(fn func() error) error {
 		s.mutationPublicationMu.Lock()
 	}
 	defer s.mutationPublicationMu.Unlock()
-	return fn()
+	s.publicationRevision++
+	return fn(s.publicationRevision)
 }
 
 // SetClock overrides the store's time source. Used by tests for deterministic

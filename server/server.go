@@ -305,6 +305,10 @@ type Server struct {
 	appThreadID    string
 	appProjector   *appprojector.AppEventProjector
 	appDescendants map[string]*appDescendantProjection
+	// appTaskPublicationRevisions is the newest applied nonzero task publication
+	// per shared-store owner for the current root identity. It is internal routing
+	// state and resets with that identity.
+	appTaskPublicationRevisions map[string]uint64
 	// appTurns is the daemon's one materialized turn authority. Every turn read
 	// -- thread/read, the latest window, an older page -- clones or windows this
 	// and nothing else.
@@ -429,13 +433,14 @@ func NewServer(cfg ServerConfig) *Server {
 		// replay for a reconnecting subscriber. It does not bound the turn
 		// snapshot: eviction changes how far a client can catch up from
 		// deltas, never what the thread contains.
-		appNotifier:    appserver.NewNotifier(replaySize),
-		appSourceID:    "local",
-		appTurns:       &appTurnSnapshot{},
-		appDescendants: make(map[string]*appDescendantProjection),
-		inputCh:        make(chan InputMessage, 1),
-		hubToken:       strings.TrimSpace(cfg.HubToken),
-		sameOrigin:     httpguard.NewSameOriginPolicy(cfg.AllowedHost),
+		appNotifier:                 appserver.NewNotifier(replaySize),
+		appSourceID:                 "local",
+		appTurns:                    &appTurnSnapshot{},
+		appDescendants:              make(map[string]*appDescendantProjection),
+		appTaskPublicationRevisions: make(map[string]uint64),
+		inputCh:                     make(chan InputMessage, 1),
+		hubToken:                    strings.TrimSpace(cfg.HubToken),
+		sameOrigin:                  httpguard.NewSameOriginPolicy(cfg.AllowedHost),
 	}
 	s.registerAppWireHandlers()
 	s.mux.HandleFunc("/rpc", s.appServer.ServeWebSocket)

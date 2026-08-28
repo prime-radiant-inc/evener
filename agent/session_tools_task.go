@@ -104,11 +104,11 @@ func taskToolStateSnapshot(tasks []taskpkg.Task, inProgressUpdates map[int]struc
 	return snapshot
 }
 
-func mutateAndPublishTaskStore(store *taskpkg.TaskStore, mutation func() (any, error)) (any, error) {
+func mutateAndPublishTaskStore(store *taskpkg.TaskStore, mutation func(revision uint64) (any, error)) (any, error) {
 	var result any
-	err := store.MutateAndPublish(func() error {
+	err := store.MutateAndPublish(func(revision uint64) error {
 		var err error
-		result, err = mutation()
+		result, err = mutation(revision)
 		return err
 	})
 	return result, err
@@ -165,7 +165,7 @@ func registerTaskTools(reg *tool.Registry, deps *toolDeps) {
 						ReasoningEffort: reasoningEffort,
 					})
 				}
-				return mutateAndPublishTaskStore(store, func() (any, error) {
+				return mutateAndPublishTaskStore(store, func(revision uint64) (any, error) {
 					added, err := store.Append(items)
 					if err != nil {
 						return nil, err
@@ -176,7 +176,7 @@ func registerTaskTools(reg *tool.Registry, deps *toolDeps) {
 					// message when the agent actually transitions one to
 					// in_progress, either manually or via auto-advance.
 					tasks := store.View()
-					taskUpdate := taskUpdatedData(taskpkg.Summarize(tasks), "")
+					taskUpdate := taskUpdatedData(taskpkg.Summarize(tasks), "", revision)
 					deps.emit(events.EventTaskUpdated, taskUpdate)
 					return tool.StateResult{
 						Output: fmt.Sprintf("Added %d task(s). Progress: %d/%d tasks complete.", len(added), taskUpdate.Done, taskUpdate.Total),
@@ -225,7 +225,7 @@ func registerTaskTools(reg *tool.Registry, deps *toolDeps) {
 					}
 					updates = append(updates, u)
 				}
-				return mutateAndPublishTaskStore(store, func() (any, error) {
+				return mutateAndPublishTaskStore(store, func(revision uint64) (any, error) {
 					mutation, err := store.UpdateWithSnapshot(updates)
 					if err != nil {
 						return nil, err
@@ -280,7 +280,7 @@ func registerTaskTools(reg *tool.Registry, deps *toolDeps) {
 					}
 
 					if !completedAny && manuallyStartedID == 0 {
-						deps.emit(events.EventTaskUpdated, taskUpdatedData(taskpkg.Summarize(mutation.After), ""))
+						deps.emit(events.EventTaskUpdated, taskUpdatedData(taskpkg.Summarize(mutation.After), "", revision))
 						return tool.StateResult{
 							Output: "Updated " + formatTaskUpdates(updates) + ".",
 							State:  taskToolStateSnapshot(mutation.After, inProgressUpdates, started),
@@ -325,7 +325,7 @@ func registerTaskTools(reg *tool.Registry, deps *toolDeps) {
 						}
 					}
 
-					taskUpdate := taskUpdatedData(taskpkg.Summarize(finalTasks), "")
+					taskUpdate := taskUpdatedData(taskpkg.Summarize(finalTasks), "", revision)
 					deps.emit(events.EventTaskUpdated, taskUpdate)
 					fmt.Fprintf(&msg, "Progress: %d/%d tasks complete.", taskUpdate.Done, taskUpdate.Total)
 					return tool.StateResult{Output: msg.String(), State: taskToolStateSnapshot(finalTasks, inProgressUpdates, started)}, nil
@@ -350,10 +350,11 @@ func taskStateData(summary taskpkg.ListSummary) events.TaskStateData {
 	return data
 }
 
-func taskUpdatedData(summary taskpkg.ListSummary, taskStoreOwnerSessionID string) events.TaskUpdatedData {
+func taskUpdatedData(summary taskpkg.ListSummary, taskStoreOwnerSessionID string, publicationRevision uint64) events.TaskUpdatedData {
 	return events.TaskUpdatedData{
 		TaskStateData:           taskStateData(summary),
 		TaskStoreOwnerSessionID: taskStoreOwnerSessionID,
+		TaskPublicationRevision: publicationRevision,
 	}
 }
 

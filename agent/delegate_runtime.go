@@ -1662,7 +1662,7 @@ func (runtime delegateRuntime) restoreIdle(started delegateStartCommit) (*subage
 	}
 	if len(descriptor.TaskTemplates) != 0 {
 		childStore := child.getOrCreateTaskStore()
-		if err := childStore.MutateAndPublish(func() error {
+		if err := childStore.MutateAndPublish(func(revision uint64) error {
 			if len(childStore.View()) != 0 {
 				return nil
 			}
@@ -1670,7 +1670,7 @@ func (runtime delegateRuntime) restoreIdle(started delegateStartCommit) (*subage
 				return err
 			}
 			summary := task.Summarize(childStore.View())
-			child.emit(events.EventTaskUpdated, taskUpdatedData(summary, child.taskStoreOwnerSessionID()))
+			child.emit(events.EventTaskUpdated, taskUpdatedData(summary, child.taskStoreOwnerSessionID(), revision))
 			return nil
 		}); err != nil {
 			child.discardRestoredCandidate()

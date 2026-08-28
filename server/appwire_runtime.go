@@ -115,6 +115,7 @@ func (s *Server) ReplaceAppIdentity(prepared PreparedAppIdentity, activate func(
 			oldDescendantIDs = append(oldDescendantIDs, threadID)
 		}
 		s.appDescendants = make(map[string]*appDescendantProjection)
+		s.appTaskPublicationRevisions = make(map[string]uint64)
 		s.appActiveTurnID = ""
 		s.appReservedTurnID = ""
 		s.appLastStampedFailedToolCalls = nil
@@ -225,10 +226,14 @@ func (s *Server) RecordAppEvent(event events.SessionEvent) {
 		for _, item := range projected {
 			switch params := item.Params.(type) {
 			case appwire.ThreadStartedParams:
-				mergeStartCurrentWork(&params.Thread.Evener, s.appEnvelope.Tasks, s.appEnvelope.Goal, start.CurrentWork)
+				startSeed := start.CurrentWork
+				if !s.acceptTaskPublicationLocked(item.TaskStoreOwnerSessionID, item.TaskPublicationRevision) {
+					startSeed = currentWorkSeedWithoutTasks(startSeed)
+				}
+				mergeStartCurrentWork(&params.Thread.Evener, s.appEnvelope.Tasks, s.appEnvelope.Goal, startSeed)
 				s.appEnvelope.Tasks = cloneTaskAggregate(params.Thread.Evener.Tasks)
 				s.appEnvelope.Goal = cloneGoalState(params.Thread.Evener.Goal)
-				if start.CurrentWork != nil && start.CurrentWork.Tasks != nil {
+				if startSeed != nil && startSeed.Tasks != nil {
 					s.appEnvelope.taskCarrierGeneration++
 				}
 				if start.CurrentWork != nil {
@@ -239,10 +244,17 @@ func (s *Server) RecordAppEvent(event events.SessionEvent) {
 				}
 				pending = append(pending, pendingAppNotification{threadID: threadID, ref: ref, method: item.Method, params: params, snapshot: s.appTurns})
 			case appwire.TaskUpdatedParams:
+				if !s.acceptTaskPublicationLocked(item.TaskStoreOwnerSessionID, item.TaskPublicationRevision) {
+					continue
+				}
 				if item.TaskStoreOwnerSessionID != "" {
 					s.appEnvelope.TaskStoreOwnerSessionID = item.TaskStoreOwnerSessionID
 				}
-				for _, target := range s.taskCarrierTargetsLocked(threadID, item.TaskStoreOwnerSessionID) {
+				routeOwner := item.TaskStoreOwnerSessionID
+				if item.TaskPublicationRevision == 0 {
+					routeOwner = ""
+				}
+				for _, target := range s.taskCarrierTargetsLocked(threadID, routeOwner) {
 					targetParams := params
 					targetParams.ThreadID = target.threadID
 					targetParams.Ref = target.ref
@@ -330,7 +342,15 @@ func (s *Server) RecordDescendantAppEvent(ownerThreadID string, event events.Ses
 		for _, item := range projected {
 			switch params := item.Params.(type) {
 			case appwire.ThreadStartedParams:
-				mergeStartCurrentWork(&params.Thread.Evener, projection.thread.Evener.Tasks, projection.thread.Evener.Goal, start.CurrentWork)
+				startSeed := start.CurrentWork
+				cachedTasks := projection.thread.Evener.Tasks
+				if !s.acceptTaskPublicationLocked(item.TaskStoreOwnerSessionID, item.TaskPublicationRevision) {
+					if sharedTasks := s.taskAggregateForOwnerLocked(item.TaskStoreOwnerSessionID); sharedTasks != nil {
+						cachedTasks = sharedTasks
+					}
+					startSeed = currentWorkSeedWithoutTasks(startSeed)
+				}
+				mergeStartCurrentWork(&params.Thread.Evener, cachedTasks, projection.thread.Evener.Goal, startSeed)
 				projection.thread = params.Thread
 				projection.thread.Evener.Kind = "subagent"
 				projection.thread.Evener.Tasks = cloneTaskAggregate(params.Thread.Evener.Tasks)
@@ -341,7 +361,14 @@ func (s *Server) RecordDescendantAppEvent(ownerThreadID string, event events.Ses
 				projection.thread.Status = params.Status
 				pending = append(pending, pendingAppNotification{threadID: threadID, method: item.Method, params: params, snapshot: projection.turns})
 			case appwire.TaskUpdatedParams:
-				for _, target := range s.taskCarrierTargetsLocked(threadID, item.TaskStoreOwnerSessionID) {
+				if !s.acceptTaskPublicationLocked(item.TaskStoreOwnerSessionID, item.TaskPublicationRevision) {
+					continue
+				}
+				routeOwner := item.TaskStoreOwnerSessionID
+				if item.TaskPublicationRevision == 0 {
+					routeOwner = ""
+				}
+				for _, target := range s.taskCarrierTargetsLocked(threadID, routeOwner) {
 					targetParams := params
 					targetParams.ThreadID = target.threadID
 					targetParams.Ref = target.ref
@@ -406,6 +433,50 @@ func sourceIDForProjection(sourceID string) string {
 	return sourceID
 }
 
+// acceptTaskPublicationLocked advances the per-owner task publication fence.
+// Revision zero is the compatibility path for old producers and is deliberately
+// never compared or recorded; those events remain source-only at the call site.
+func (s *Server) acceptTaskPublicationLocked(ownerSessionID string, revision uint64) bool {
+	if ownerSessionID == "" || revision == 0 {
+		return true
+	}
+	if latest := s.appTaskPublicationRevisions[ownerSessionID]; revision < latest {
+		return false
+	}
+	if s.appTaskPublicationRevisions == nil {
+		s.appTaskPublicationRevisions = make(map[string]uint64)
+	}
+	if revision > s.appTaskPublicationRevisions[ownerSessionID] {
+		s.appTaskPublicationRevisions[ownerSessionID] = revision
+	}
+	return true
+}
+
+// taskAggregateForOwnerLocked returns an already-materialized snapshot for a
+// shared store, preferring the root. It is used only when a delayed descendant
+// start seed is older than the owner's accepted revision.
+func (s *Server) taskAggregateForOwnerLocked(ownerSessionID string) *appwire.TaskAggregate {
+	if ownerSessionID == "" {
+		return nil
+	}
+	if s.appEnvelope.TaskStoreOwnerSessionID == ownerSessionID {
+		return cloneTaskAggregate(s.appEnvelope.Tasks)
+	}
+	ids := make([]string, 0, len(s.appDescendants))
+	for id, projection := range s.appDescendants {
+		if projection.taskStoreOwnerSessionID() == ownerSessionID {
+			ids = append(ids, id)
+		}
+	}
+	sort.Strings(ids)
+	for _, id := range ids {
+		if tasks := s.appDescendants[id].thread.Evener.Tasks; tasks != nil {
+			return cloneTaskAggregate(tasks)
+		}
+	}
+	return nil
+}
+
 // taskCarrierTargetsLocked computes one deterministic task-store fanout while
 // s.mu is held. The root, when selected, precedes lexically sorted descendants;
 // the source is always present exactly once, including for old ownerless events.
@@ -443,6 +514,15 @@ func mergeStartCurrentWork(target *appwire.EvenerThread, cachedTasks *appwire.Ta
 	// A present seed's Goal is authoritative, including nil clear. The projector
 	// already converted it into target.Goal.
 	target.Goal = cloneGoalState(target.Goal)
+}
+
+func currentWorkSeedWithoutTasks(seed *events.CurrentWorkSeedData) *events.CurrentWorkSeedData {
+	if seed == nil {
+		return nil
+	}
+	clone := *seed
+	clone.Tasks = nil
+	return &clone
 }
 
 func taskPatch(params appwire.TaskUpdatedParams) *appwire.TaskAggregate {

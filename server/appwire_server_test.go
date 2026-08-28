@@ -1047,6 +1047,7 @@ func TestServerAppWireCheckpointCannotOverwriteDescendantSharedTaskCarrier(t *te
 	})
 	srv.RecordDescendantAppEvent("root", events.SessionEvent{Kind: events.EventSessionStart, SessionID: "child", Data: events.SessionStartData{
 		TaskStoreOwnerSessionID: "root",
+		TaskPublicationRevision: 1,
 		CurrentWork: &events.CurrentWorkSeedData{Tasks: &events.TaskStateData{
 			Total: 1, Current: &events.TaskSummaryData{ID: 1, Description: "old sampled task"},
 		}},
@@ -1074,6 +1075,7 @@ func TestServerAppWireCheckpointCannotOverwriteDescendantSharedTaskCarrier(t *te
 			Total: 2, Done: 1, Current: &events.TaskSummaryData{ID: 2, Description: "new shared-owner task"},
 		},
 		TaskStoreOwnerSessionID: "root",
+		TaskPublicationRevision: 2,
 	}})
 	notifications := srv.AppNotificationsAfter(0, "root")
 	if len(notifications) == 0 || notifications[len(notifications)-1].Notification.Method != appwire.NotifyEvenerTaskUpdated {
@@ -1309,6 +1311,7 @@ func TestServerAppWireSharedTaskOwnerFansOutInOneCommit(t *testing.T) {
 	} {
 		srv.RecordDescendantAppEvent("root", events.SessionEvent{Kind: events.EventSessionStart, SessionID: start.id, Data: events.SessionStartData{
 			TaskStoreOwnerSessionID: start.owner,
+			TaskPublicationRevision: 1,
 			CurrentWork:             &events.CurrentWorkSeedData{Tasks: &events.TaskStateData{Total: 1, Current: &events.TaskSummaryData{ID: 1, Description: start.task}}},
 		}})
 	}
@@ -1316,6 +1319,7 @@ func TestServerAppWireSharedTaskOwnerFansOutInOneCommit(t *testing.T) {
 	srv.RecordDescendantAppEvent("root", events.SessionEvent{Kind: events.EventTaskUpdated, SessionID: "matching-child", Data: events.TaskUpdatedData{
 		TaskStateData:           events.TaskStateData{Total: 2, Done: 1, Current: &events.TaskSummaryData{ID: 2, Description: "shared replacement"}},
 		TaskStoreOwnerSessionID: "root",
+		TaskPublicationRevision: 2,
 	}})
 	for _, id := range []string{"root", "matching-child"} {
 		thread := readThreadOverWire(t, srv, "local:"+id)
@@ -1343,17 +1347,88 @@ func TestServerAppWireSharedTaskOwnerFansOutInOneCommit(t *testing.T) {
 	}
 }
 
+func TestServerAppWireTaskPublicationRevisionRejectsDelayedRootCarrier(t *testing.T) {
+	srv := NewServer(ServerConfig{})
+	srv.SetAppIdentity("local", "root")
+	publishEnvelope(srv, &stubThreadEnvelopeSource{tasks: &appwire.TaskAggregate{Total: 1, Current: &appwire.TaskSummary{ID: 1, Description: "base task"}}})
+	srv.RecordAppEvent(events.SessionEvent{Kind: events.EventSessionStart, SessionID: "root", Data: events.SessionStartData{
+		TaskStoreOwnerSessionID: "root",
+		TaskPublicationRevision: 1,
+		CurrentWork: &events.CurrentWorkSeedData{Tasks: &events.TaskStateData{
+			Total: 1, Current: &events.TaskSummaryData{ID: 1, Description: "base task"},
+		}},
+	}})
+	srv.RecordDescendantAppEvent("root", events.SessionEvent{Kind: events.EventSessionStart, SessionID: "child", Data: events.SessionStartData{
+		TaskStoreOwnerSessionID: "root",
+		TaskPublicationRevision: 1,
+		CurrentWork: &events.CurrentWorkSeedData{Tasks: &events.TaskStateData{
+			Total: 1, Current: &events.TaskSummaryData{ID: 1, Description: "base task"},
+		}},
+	}})
+
+	srv.RecordDescendantAppEvent("root", events.SessionEvent{Kind: events.EventTaskUpdated, SessionID: "child", Data: events.TaskUpdatedData{
+		TaskStateData: events.TaskStateData{
+			Total: 2, Done: 1, Current: &events.TaskSummaryData{ID: 2, Description: "newer child carrier"},
+		},
+		TaskStoreOwnerSessionID: "root",
+		TaskPublicationRevision: 3,
+	}})
+	afterChild := srv.appNotifier.CurrentSequence()
+
+	// This models the actual transport inversion: the root committed revision 2
+	// first but its asynchronous event drain delivers it only after the child has
+	// synchronously applied revision 3.
+	srv.RecordAppEvent(events.SessionEvent{Kind: events.EventTaskUpdated, SessionID: "root", Data: events.TaskUpdatedData{
+		TaskStateData: events.TaskStateData{
+			Total: 2, Current: &events.TaskSummaryData{ID: 1, Description: "delayed older root carrier"},
+		},
+		TaskStoreOwnerSessionID: "root",
+		TaskPublicationRevision: 2,
+	}})
+	for _, id := range []string{"root", "child"} {
+		thread := readThreadOverWire(t, srv, "local:"+id)
+		if thread.Evener.Tasks == nil || thread.Evener.Tasks.Current == nil || thread.Evener.Tasks.Current.Description != "newer child carrier" {
+			t.Fatalf("%s tasks after delayed root = %+v, want newer child carrier", id, thread.Evener.Tasks)
+		}
+		if notifications := srv.AppNotificationsAfter(afterChild, id); len(notifications) != 0 {
+			t.Fatalf("%s received delayed older notification: %+v", id, notifications)
+		}
+	}
+
+	srv.RecordAppEvent(events.SessionEvent{Kind: events.EventTaskUpdated, SessionID: "root", Data: events.TaskUpdatedData{
+		TaskStateData: events.TaskStateData{
+			Total: 3, Done: 2, Current: &events.TaskSummaryData{ID: 3, Description: "newest root carrier"},
+		},
+		TaskStoreOwnerSessionID: "root",
+		TaskPublicationRevision: 4,
+	}})
+	for _, id := range []string{"root", "child"} {
+		thread := readThreadOverWire(t, srv, "local:"+id)
+		if thread.Evener.Tasks == nil || thread.Evener.Tasks.Current == nil || thread.Evener.Tasks.Current.Description != "newest root carrier" {
+			t.Fatalf("%s tasks after newer root = %+v", id, thread.Evener.Tasks)
+		}
+		notifications := srv.AppNotificationsAfter(afterChild, id)
+		if len(notifications) != 1 || notifications[0].Notification.Method != appwire.NotifyEvenerTaskUpdated {
+			t.Fatalf("%s newer-root notifications = %+v, want one task update", id, notifications)
+		}
+	}
+}
+
 func TestServerAppWireOldTaskProducerUpdatesOnlySource(t *testing.T) {
 	srv := NewServer(ServerConfig{})
 	srv.SetAppIdentity("local", "root")
 	publishEnvelope(srv, &stubThreadEnvelopeSource{tasks: &appwire.TaskAggregate{Total: 1, Current: &appwire.TaskSummary{ID: 1, Description: "root old"}}})
 	srv.RecordDescendantAppEvent("root", events.SessionEvent{Kind: events.EventSessionStart, SessionID: "child", Data: events.SessionStartData{
 		TaskStoreOwnerSessionID: "root",
+		TaskPublicationRevision: 5,
 		CurrentWork:             &events.CurrentWorkSeedData{Tasks: &events.TaskStateData{Total: 1, Current: &events.TaskSummaryData{ID: 1, Description: "child old"}}},
 	}})
 	cursor := srv.appNotifier.CurrentSequence()
 	srv.RecordDescendantAppEvent("root", events.SessionEvent{Kind: events.EventTaskUpdated, SessionID: "child", Data: events.TaskUpdatedData{
-		TaskStateData: events.TaskStateData{Total: 1, Current: &events.TaskSummaryData{ID: 2, Description: "legacy source only"}},
+		TaskStateData:           events.TaskStateData{Total: 1, Current: &events.TaskSummaryData{ID: 2, Description: "legacy source only"}},
+		TaskStoreOwnerSessionID: "root",
+		// Revision zero identifies a producer predating the ordering fence. Even
+		// with owner metadata, compatibility routing must remain source-only.
 	}})
 	child := readThreadOverWire(t, srv, "local:child")
 	if child.Evener.Tasks == nil || child.Evener.Tasks.Current == nil || child.Evener.Tasks.Current.Description != "legacy source only" {
@@ -1365,6 +1440,29 @@ func TestServerAppWireOldTaskProducerUpdatesOnlySource(t *testing.T) {
 	}
 	if got := srv.AppNotificationsAfter(cursor, "root"); len(got) != 0 {
 		t.Fatalf("legacy producer notified root: %+v", got)
+	}
+}
+
+func TestServerAppWireTaskPublicationRevisionResetsWithIdentity(t *testing.T) {
+	srv := NewServer(ServerConfig{})
+	srv.SetAppIdentity("local", "root")
+	srv.RecordAppEvent(events.SessionEvent{Kind: events.EventTaskUpdated, SessionID: "root", Data: events.TaskUpdatedData{
+		TaskStateData:           events.TaskStateData{Total: 1, Current: &events.TaskSummaryData{ID: 1, Description: "old identity high revision"}},
+		TaskStoreOwnerSessionID: "root",
+		TaskPublicationRevision: 10,
+	}})
+
+	// A restored/replaced identity can reuse the same durable session ID while
+	// owning a newly constructed TaskStore whose in-memory revision restarts.
+	srv.SetAppIdentity("local", "root")
+	srv.RecordAppEvent(events.SessionEvent{Kind: events.EventTaskUpdated, SessionID: "root", Data: events.TaskUpdatedData{
+		TaskStateData:           events.TaskStateData{Total: 1, Current: &events.TaskSummaryData{ID: 1, Description: "replacement low revision"}},
+		TaskStoreOwnerSessionID: "root",
+		TaskPublicationRevision: 1,
+	}})
+	thread := readThreadOverWire(t, srv, "local:root")
+	if thread.Evener.Tasks == nil || thread.Evener.Tasks.Current == nil || thread.Evener.Tasks.Current.Description != "replacement low revision" {
+		t.Fatalf("replacement tasks = %+v, want reset revision fence", thread.Evener.Tasks)
 	}
 }
 
