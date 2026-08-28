@@ -73,6 +73,8 @@ func TestUpdateGoalTool_Blocked(t *testing.T) {
 	if snap.Status != goal.StatusBlocked {
 		t.Fatalf("status = %v, want blocked", snap.Status)
 	}
+	assertGoalUpdatedMatchesStore(t, sess, nextGoalUpdated(t, sess))
+	assertNoGoalUpdated(t, sess)
 }
 
 func TestUpdateGoalTool_RejectsBadStatus(t *testing.T) {
