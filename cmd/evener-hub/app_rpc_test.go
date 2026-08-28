@@ -7875,7 +7875,7 @@ func TestHubRPCThreadResumeNamesLiveIncompatibleDaemonWhenReplacementFails(t *te
 				"evener-appwire-v1",
 				appwire.ProtocolVersion,
 				// the remedy the operator can actually run
-				"http://" + blockerHTTP + "/shutdown",
+				"kill 104",
 				// the underlying cause, preserved
 				spawnFailure,
 			},
