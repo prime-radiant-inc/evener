@@ -450,8 +450,8 @@ func TestClientRequestWrappersRoundTrip(t *testing.T) {
 		}},
 		{"CommandList", MethodEvenerCommandList, `{}`, map[string]any{}, func(ctx context.Context, c *Client) error { _, err := c.CommandList(ctx); return err }},
 		{"MarketplaceList", MethodEvenerMarketplaceList, `{}`, map[string]any{}, func(ctx context.Context, c *Client) error { _, err := c.MarketplaceList(ctx); return err }},
-		{"MarketplaceAdd", MethodEvenerMarketplaceAdd, `{"name":"acme","source":{"kind":"git","repo":"acme/plugins"}}`, map[string]any{}, func(ctx context.Context, c *Client) error {
-			_, err := c.MarketplaceAdd(ctx, MarketplaceAddParams{Name: "acme", Source: MarketplaceSourceInput{Kind: "git", Repo: "acme/plugins"}})
+		{"MarketplaceAdd", MethodEvenerMarketplaceAdd, `{"name":"acme","source":{"kind":"url","repo":"acme/plugins"}}`, map[string]any{}, func(ctx context.Context, c *Client) error {
+			_, err := c.MarketplaceAdd(ctx, MarketplaceAddParams{Name: "acme", Source: MarketplaceSourceInput{Kind: "url", Repo: "acme/plugins"}})
 			return err
 		}},
 		{"MarketplaceRemove", MethodEvenerMarketplaceRemove, `{"name":"acme"}`, map[string]any{}, func(ctx context.Context, c *Client) error {

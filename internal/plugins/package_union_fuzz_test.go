@@ -20,7 +20,7 @@ func FuzzPackageUnion(f *testing.F) {
 		t.Run("TestUpgrade_ManifestLessPlugin_FallbackAppliedToNewShaDir", TestUpgrade_ManifestLessPlugin_FallbackAppliedToNewShaDir)
 		t.Run("TestSource_UnmarshalObjectForms", TestSource_UnmarshalObjectForms)
 		t.Run("TestSource_UnmarshalStringForm", TestSource_UnmarshalStringForm)
-		t.Run("TestSource_MarshalNeverWritesGit", TestSource_MarshalNeverWritesGit)
+		t.Run("TestSource_MarshalWritesCanonicalKind", TestSource_MarshalWritesCanonicalKind)
 		t.Run("TestSource_UnmarshalRejectsUnknownKind", TestSource_UnmarshalRejectsUnknownKind)
 		t.Run("TestSource_RelSurvivesRoundTrip", TestSource_RelSurvivesRoundTrip)
 		t.Run("TestList_FlagsBroken", TestList_FlagsBroken)
