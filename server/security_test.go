@@ -1,6 +1,7 @@
 package server
 
 import (
+	"context"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -21,14 +22,15 @@ func TestServerHubTokenRejectsMissingBearer(t *testing.T) {
 
 func TestServerHubTokenAllowsMatchingBearer(t *testing.T) {
 	srv := NewServer(ServerConfig{HubToken: "secret"})
+	srv.SetClearFunc(func(context.Context) error { return nil })
 
-	req := httptest.NewRequest(http.MethodGet, "/tasks", nil)
+	req := httptest.NewRequest(http.MethodPost, "/clear", nil)
 	req.Header.Set("Authorization", "Bearer secret")
 	rec := httptest.NewRecorder()
 	srv.ServeHTTP(rec, req)
 
-	if rec.Code != http.StatusOK {
-		t.Fatalf("status=%d, want %d; body=%q", rec.Code, http.StatusOK, rec.Body.String())
+	if rec.Code != http.StatusNoContent {
+		t.Fatalf("status=%d, want %d; body=%q", rec.Code, http.StatusNoContent, rec.Body.String())
 	}
 }
 
@@ -50,15 +52,16 @@ func TestServerSameOriginGuardRejectsBadHost(t *testing.T) {
 
 func TestServerSameOriginGuardAllowsLocalhostAlias(t *testing.T) {
 	srv := NewServer(ServerConfig{AllowedHost: "127.0.0.1:9131"})
+	srv.SetClearFunc(func(context.Context) error { return nil })
 
-	req := httptest.NewRequest(http.MethodGet, "/tasks", nil)
+	req := httptest.NewRequest(http.MethodPost, "/clear", nil)
 	req.Host = "localhost:9131"
 	req.Header.Set("Origin", "http://localhost:9131")
 	rec := httptest.NewRecorder()
 	srv.ServeHTTP(rec, req)
 
-	if rec.Code != http.StatusOK {
-		t.Fatalf("status=%d, want %d; body=%q", rec.Code, http.StatusOK, rec.Body.String())
+	if rec.Code != http.StatusNoContent {
+		t.Fatalf("status=%d, want %d; body=%q", rec.Code, http.StatusNoContent, rec.Body.String())
 	}
 }
 
