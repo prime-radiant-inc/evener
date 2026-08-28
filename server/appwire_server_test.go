@@ -866,6 +866,91 @@ func TestServerAppWireErrorEventNotifiesSubscribers(t *testing.T) {
 	}
 }
 
+func TestServerAppWireGoalUpdatedFanoutToEverySubscribedClient(t *testing.T) {
+	srv := NewServer(ServerConfig{})
+	srv.SetAppIdentity("local", "th_1")
+
+	httpServer := httptest.NewServer(http.HandlerFunc(srv.AppServer().ServeWebSocket))
+	defer httpServer.Close()
+	ctx := context.Background()
+	newClient := func(name string) *appwire.Client {
+		t.Helper()
+		transport, err := appwire.DialWebSocket(ctx, "ws"+httpServer.URL[len("http"):], httpServer.Client())
+		if err != nil {
+			t.Fatalf("%s dial: %v", name, err)
+		}
+		t.Cleanup(func() { _ = transport.Close() })
+		client := appwire.NewClient(transport)
+		client.Start(ctx)
+		if _, err := client.Initialize(ctx, appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
+			t.Fatalf("%s initialize: %v", name, err)
+		}
+		return client
+	}
+	awaitGoalUpdated := func(name string, client *appwire.Client, want *appwire.GoalState) {
+		t.Helper()
+		deadline := time.NewTimer(time.Second)
+		defer deadline.Stop()
+		for {
+			select {
+			case notification := <-client.Notifications():
+				if notification.Method != appwire.NotifyEvenerGoalUpdated {
+					continue
+				}
+				var params appwire.GoalUpdatedParams
+				if err := json.Unmarshal(notification.Params, &params); err != nil {
+					t.Fatalf("%s decode goal update: %v", name, err)
+				}
+				if params.ThreadID != "th_1" || params.Ref != "local:th_1" {
+					t.Fatalf("%s goal update target = %+v, want th_1/local:th_1", name, params)
+				}
+				if want == nil {
+					if params.Goal != nil {
+						t.Fatalf("%s clear goal = %+v, want nil", name, params.Goal)
+					}
+					return
+				}
+				if params.Goal == nil || *params.Goal != *want {
+					t.Fatalf("%s goal = %+v, want %+v", name, params.Goal, want)
+				}
+				return
+			case <-deadline.C:
+				t.Fatalf("%s timed out waiting for evener/goal/updated", name)
+			}
+		}
+	}
+
+	first := newClient("first")
+	second := newClient("second")
+	for _, subscriber := range []struct {
+		name   string
+		client *appwire.Client
+	}{
+		{name: "first", client: first},
+		{name: "second", client: second},
+	} {
+		if _, err := subscriber.client.ThreadRead(ctx, appwire.ThreadReadParams{Ref: "local:th_1", Subscribe: true}); err != nil {
+			t.Fatalf("%s thread/read: %v", subscriber.name, err)
+		}
+	}
+	if got := srv.AppServer().SubscriberCount("th_1"); got != 2 {
+		t.Fatalf("subscriber count=%d, want 2", got)
+	}
+
+	wantSet := &appwire.GoalState{Objective: "ship every client", Status: "active", Iterations: 3}
+	srv.RecordAppEvent(events.SessionEvent{
+		Kind:      events.EventGoalUpdated,
+		SessionID: "th_1",
+		Data:      events.GoalUpdatedData{Goal: &events.GoalStateData{Objective: wantSet.Objective, Status: wantSet.Status, Iterations: wantSet.Iterations}},
+	})
+	awaitGoalUpdated("first", first, wantSet)
+	awaitGoalUpdated("second", second, wantSet)
+
+	srv.RecordAppEvent(events.SessionEvent{Kind: events.EventGoalUpdated, SessionID: "th_1", Data: events.GoalUpdatedData{Goal: nil}})
+	awaitGoalUpdated("first", first, nil)
+	awaitGoalUpdated("second", second, nil)
+}
+
 func TestServerAppWireThreadReadReturnsStatus(t *testing.T) {
 	exitCode := 7
 	srv := NewServer(ServerConfig{})
