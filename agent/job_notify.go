@@ -8,6 +8,7 @@ import (
 	"primeradiant.com/evener/agent/events"
 	"primeradiant.com/evener/agent/internal/jobstore"
 	"primeradiant.com/evener/agent/provenance"
+	"primeradiant.com/evener/envvars"
 )
 
 type deliverableJobNotification struct {
@@ -80,7 +81,7 @@ func jobNotificationFromRecord(rec *jobstore.JobRecord) jobNotification {
 func jobFinishedEventIdentity(n jobNotification, data events.JobFinishedData) jobNotification {
 	n.JobID = data.JobID
 	n.JobType = data.JobType
-	n.Description = firstNonEmptyJobString(data.Task, data.Command)
+	n.Description = envvars.FirstNonEmpty(data.Task, data.Command)
 	n.Status = data.Status
 	n.Reason = data.Reason
 	n.ExhaustionBudget = data.ExhaustionBudget

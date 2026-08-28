@@ -8,6 +8,7 @@ import (
 	"sort"
 	"strings"
 
+	"primeradiant.com/evener/envvars"
 	"primeradiant.com/evener/llm"
 	"primeradiant.com/evener/llm/providers/internal/transport"
 )
@@ -123,11 +124,11 @@ type codexModelListEntry struct {
 }
 
 func (m codexModelListEntry) modelInfo() llm.ModelInfo {
-	id := firstNonEmpty(m.Slug, m.Model, m.ID)
+	id := envvars.FirstNonEmpty(m.Slug, m.Model, m.ID)
 	info := llm.ModelInfo{
 		ID:                    id,
 		Provider:              "openai",
-		DisplayName:           firstNonEmpty(m.DisplayName, id),
+		DisplayName:           envvars.FirstNonEmpty(m.DisplayName, id),
 		ContextWindow:         firstPositiveInt(m.MaxContextWindow, m.ContextWindow, m.MaxInputTokens, m.InputTokenLimit),
 		SupportsReasoning:     m.DefaultReasoningLevel != "" || len(m.SupportedReasoningLevels) > 0,
 		ReasoningEffortLevels: codexReasoningEfforts(m.SupportedReasoningLevels),

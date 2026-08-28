@@ -6,6 +6,7 @@ import (
 	"strings"
 
 	"primeradiant.com/evener/appwire"
+	"primeradiant.com/evener/envvars"
 )
 
 func codexInput(prompt string, items []appwire.InputItem) ([]map[string]any, error) {
@@ -27,13 +28,13 @@ func codexInput(prompt string, items []appwire.InputItem) ([]map[string]any, err
 			if len(item.Data) == 0 {
 				return nil, appwire.InvalidParams("codex image input requires image data")
 			}
-			mediaType := firstNonEmpty(item.MediaType, "image/png")
+			mediaType := envvars.FirstNonEmpty(item.MediaType, "image/png")
 			input = append(input, map[string]any{
 				"type": "image",
 				"url":  "data:" + mediaType + ";base64," + base64.StdEncoding.EncodeToString(item.Data),
 			})
 		case "local_image", "localImage":
-			path := firstNonEmpty(item.Path, item.Name)
+			path := envvars.FirstNonEmpty(item.Path, item.Name)
 			if path == "" {
 				return nil, appwire.InvalidParams("codex localImage input requires path")
 			}
@@ -82,12 +83,12 @@ func codexInputImages(raw json.RawMessage) []appwire.InputItem {
 		switch rawString(input["type"]) {
 		case "image", "input_image":
 			url := rawString(input["url"])
-			item := codexInputImageFromURL(url, firstNonEmpty(rawString(input["mediaType"]), rawString(input["mimeType"])))
+			item := codexInputImageFromURL(url, envvars.FirstNonEmpty(rawString(input["mediaType"]), rawString(input["mimeType"])))
 			if item.URL != "" || item.MediaType != "" || len(item.Data) > 0 {
 				images = append(images, item)
 			}
 		case "localImage", "local_image":
-			path := firstNonEmpty(rawString(input["path"]), rawString(input["name"]))
+			path := envvars.FirstNonEmpty(rawString(input["path"]), rawString(input["name"]))
 			if path != "" {
 				images = append(images, appwire.InputItem{
 					Type: "local_image",
@@ -109,7 +110,7 @@ func codexInputImageFromURL(rawURL, mediaType string) appwire.InputItem {
 	if data, dataMediaType, ok := decodeDataImageURL(rawURL); ok {
 		item.URL = ""
 		item.Data = data
-		item.MediaType = firstNonEmpty(mediaType, dataMediaType)
+		item.MediaType = envvars.FirstNonEmpty(mediaType, dataMediaType)
 	}
 	return item
 }

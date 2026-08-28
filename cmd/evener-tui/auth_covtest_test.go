@@ -4,6 +4,7 @@ import (
 	"testing"
 
 	authopenai "primeradiant.com/evener/auth/openai"
+	"primeradiant.com/evener/envvars"
 )
 
 // ---- formatAuthStatusSummary: openai env source ------------------------------
@@ -41,25 +42,25 @@ func TestCovFormatAuthStatusSummary(t *testing.T) {
 // ---- firstNonEmptyString ----------------------------------------------------
 
 func TestCovFirstNonEmptyString_FirstNonEmpty(t *testing.T) {
-	if got := firstNonEmptyString("", "", "third", "fourth"); got != "third" {
+	if got := envvars.FirstNonEmpty("", "", "third", "fourth"); got != "third" {
 		t.Fatalf("firstNonEmptyString = %q, want third", got)
 	}
 }
 
 func TestCovFirstNonEmptyString_AllEmpty(t *testing.T) {
-	if got := firstNonEmptyString(" ", "  ", "\t"); got != "" {
+	if got := envvars.FirstNonEmpty(" ", "  ", "\t"); got != "" {
 		t.Fatalf("all whitespace = %q, want empty", got)
 	}
 }
 
 func TestCovFirstNonEmptyString_None(t *testing.T) {
-	if got := firstNonEmptyString(); got != "" {
+	if got := envvars.FirstNonEmpty(); got != "" {
 		t.Fatalf("no args = %q, want empty", got)
 	}
 }
 
 func TestCovFirstNonEmptyString_FirstValue(t *testing.T) {
-	if got := firstNonEmptyString("first", "second"); got != "first" {
+	if got := envvars.FirstNonEmpty("first", "second"); got != "first" {
 		t.Fatalf("first value = %q, want first", got)
 	}
 }

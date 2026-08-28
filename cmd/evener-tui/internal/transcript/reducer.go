@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"primeradiant.com/evener/appwire"
+	"primeradiant.com/evener/envvars"
 )
 
 type TranscriptReducer struct {
@@ -380,13 +381,13 @@ func (r *TranscriptReducer) ApplyEvenerDelegate(delegate appwire.EvenerDelegateI
 		}
 		info.Subagent = &run
 		info.Name = "delegate"
-		info.Description = firstNonEmptyString(run.Task, run.Description)
+		info.Description = envvars.FirstNonEmpty(run.Task, run.Description)
 		info.Done = run.Terminal || subagentTerminalStatus(run.Status)
 		return
 	}
 	info := &ToolCallInfo{
 		Name:        "delegate",
-		Description: firstNonEmptyString(run.Task, run.Description),
+		Description: envvars.FirstNonEmpty(run.Task, run.Description),
 		Done:        run.Terminal || subagentTerminalStatus(run.Status),
 		Subagent:    &run,
 	}
@@ -715,15 +716,6 @@ func subagentTerminalStatus(status string) bool {
 	default:
 		return false
 	}
-}
-
-func firstNonEmptyString(values ...string) string {
-	for _, value := range values {
-		if strings.TrimSpace(value) != "" {
-			return value
-		}
-	}
-	return ""
 }
 
 func systemMessageItemText(item appwire.ThreadItem) string {

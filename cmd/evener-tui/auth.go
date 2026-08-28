@@ -66,12 +66,3 @@ func formatAuthStatusSummary(status authStatus) string {
 		return fmt.Sprintf("Auth is not supported for provider %q.", status.Provider)
 	}
 }
-
-func firstNonEmptyString(values ...string) string {
-	for _, value := range values {
-		if strings.TrimSpace(value) != "" {
-			return value
-		}
-	}
-	return ""
-}

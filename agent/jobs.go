@@ -25,6 +25,7 @@ import (
 	"primeradiant.com/evener/agent/internal/runetrim"
 	"primeradiant.com/evener/agent/provenance"
 	"primeradiant.com/evener/agent/schema"
+	"primeradiant.com/evener/envvars"
 	"primeradiant.com/evener/identifier"
 )
 
@@ -1046,11 +1047,11 @@ func (jm *jobManager) emitJobStarted(e jobstore.Event, run *runningJob) {
 			}
 			background = run.rec.Background
 			command = run.rec.Command
-			parentDelegateID = firstNonEmptyJobString(run.rec.ParentDelegateID, parentDelegateID)
-			task = firstNonEmptyJobString(run.rec.Task, task)
-			originTurnID = firstNonEmptyJobString(run.rec.OriginTurnID, originTurnID)
-			originToolCallID = firstNonEmptyJobString(run.rec.OriginToolCallID, originToolCallID)
-			originItemID = firstNonEmptyJobString(run.rec.OriginItemID, originItemID)
+			parentDelegateID = envvars.FirstNonEmpty(run.rec.ParentDelegateID, parentDelegateID)
+			task = envvars.FirstNonEmpty(run.rec.Task, task)
+			originTurnID = envvars.FirstNonEmpty(run.rec.OriginTurnID, originTurnID)
+			originToolCallID = envvars.FirstNonEmpty(run.rec.OriginToolCallID, originToolCallID)
+			originItemID = envvars.FirstNonEmpty(run.rec.OriginItemID, originItemID)
 		}
 	}
 	if jobType != string(jobstore.JobShell) {
@@ -1071,15 +1072,6 @@ func (jm *jobManager) emitJobStarted(e jobstore.Event, run *runningJob) {
 	}, e.Provenance)
 }
 
-func firstNonEmptyJobString(values ...string) string {
-	for _, value := range values {
-		if strings.TrimSpace(value) != "" {
-			return value
-		}
-	}
-	return ""
-}
-
 func (jm *jobManager) emitJobFinished(e jobstore.Event, run *runningJob) {
 	if jm == nil || jm.emit == nil {
 		return
@@ -1098,11 +1090,11 @@ func (jm *jobManager) emitJobFinished(e jobstore.Event, run *runningJob) {
 		}
 		background = run.rec.Background
 		command = run.rec.Command
-		parentDelegateID = firstNonEmptyJobString(run.rec.ParentDelegateID, parentDelegateID)
-		task = firstNonEmptyJobString(run.rec.Task, task)
-		originTurnID = firstNonEmptyJobString(run.rec.OriginTurnID, originTurnID)
-		originToolCallID = firstNonEmptyJobString(run.rec.OriginToolCallID, originToolCallID)
-		originItemID = firstNonEmptyJobString(run.rec.OriginItemID, originItemID)
+		parentDelegateID = envvars.FirstNonEmpty(run.rec.ParentDelegateID, parentDelegateID)
+		task = envvars.FirstNonEmpty(run.rec.Task, task)
+		originTurnID = envvars.FirstNonEmpty(run.rec.OriginTurnID, originTurnID)
+		originToolCallID = envvars.FirstNonEmpty(run.rec.OriginToolCallID, originToolCallID)
+		originItemID = envvars.FirstNonEmpty(run.rec.OriginItemID, originItemID)
 	}
 	if jobType != string(jobstore.JobShell) {
 		return

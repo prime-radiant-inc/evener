@@ -10,6 +10,7 @@ import (
 	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/agent/transcript"
 	"primeradiant.com/evener/appwire"
+	"primeradiant.com/evener/envvars"
 	"primeradiant.com/evener/llm"
 )
 
@@ -95,8 +96,8 @@ func exerciseTranscriptSurface(t testing.TB) {
 	WebSearchProjection(&llm.WebSearchData{Raw: []byte(`{"input":{"query":"input"},"webSearchQueries":["gemini"],"groundingChunks":[{"web":{"title":"Title","uri":"https://example"}}],"content":[{"type":"ignored"}]}`)})
 	_ = webSearchResultLine("title", "")
 	_ = webSearchResultLine("", "")
-	firstNonEmpty(" ", "value")
-	firstNonEmpty(" ")
+	envvars.FirstNonEmpty(" ", "value")
+	envvars.FirstNonEmpty(" ")
 	ProjectTurn("turn_direct", 1, schema.Turn{}, nil, nil, nil)
 	ProjectTurn("turn_direct", 2, schema.Turn{Kind: schema.TurnToolResults, Message: llm.Message{Content: []llm.ContentPart{{
 		Kind: llm.ContentToolResult,

@@ -15,6 +15,7 @@ import (
 	"github.com/charmbracelet/lipgloss"
 	"primeradiant.com/evener/cmd/evener-tui/internal/transcript"
 	"primeradiant.com/evener/cmd/evener-tui/internal/tuitheme"
+	"primeradiant.com/evener/envvars"
 	"primeradiant.com/evener/identifier"
 )
 
@@ -279,7 +280,7 @@ func SubagentRunBody(run transcript.SubagentRunInfo, width int) string {
 			label += " " + run.DelegateID
 		}
 		parts = append(parts, label)
-		if task := strings.TrimSpace(firstNonEmpty(run.Task, run.Description)); task != "" {
+		if task := strings.TrimSpace(envvars.FirstNonEmpty(run.Task, run.Description)); task != "" {
 			parts = append(parts, task)
 		}
 		parts = append(parts, "("+status+")")
@@ -325,15 +326,6 @@ func SubagentRunBody(run transcript.SubagentRunInfo, width int) string {
 		}
 	}
 	return lipgloss.NewStyle().Foreground(tuitheme.ActiveTheme().StateSubagent).Render(strings.Join(parts, " · "))
-}
-
-func firstNonEmpty(values ...string) string {
-	for _, value := range values {
-		if strings.TrimSpace(value) != "" {
-			return value
-		}
-	}
-	return ""
 }
 
 // RenderSubagentRail consolidates a contiguous run of subagent / background-job

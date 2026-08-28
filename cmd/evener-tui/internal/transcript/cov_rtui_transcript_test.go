@@ -4,6 +4,7 @@ import (
 	"testing"
 
 	"primeradiant.com/evener/appwire"
+	"primeradiant.com/evener/envvars"
 )
 
 func TestParseJobNotificationHeadline(t *testing.T) {
@@ -176,10 +177,10 @@ func TestClipStrAndShortHash(t *testing.T) {
 }
 
 func TestFirstNonEmptyStr(t *testing.T) {
-	if got := firstNonEmptyStr("", "  ", "hit", "later"); got != "hit" {
+	if got := envvars.FirstNonEmpty("", "  ", "hit", "later"); got != "hit" {
 		t.Fatalf("firstNonEmptyStr = %q, want hit", got)
 	}
-	if got := firstNonEmptyStr("", "   "); got != "" {
+	if got := envvars.FirstNonEmpty("", "   "); got != "" {
 		t.Fatalf("firstNonEmptyStr(all empty) = %q, want empty", got)
 	}
 }

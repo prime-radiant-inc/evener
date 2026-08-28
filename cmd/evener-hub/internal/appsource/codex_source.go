@@ -16,6 +16,7 @@ import (
 
 	"github.com/coder/websocket"
 	"primeradiant.com/evener/appwire"
+	"primeradiant.com/evener/envvars"
 )
 
 type CodexSourceConfig struct {
@@ -360,7 +361,7 @@ func (s *CodexSource) ListModels(ctx context.Context, params appwire.ModelListPa
 	}
 	resp := appwire.ModelListResponse{}
 	for _, model := range out.Data {
-		resp.Data = append(resp.Data, appwire.ModelDescriptor{Provider: s.sourceID, Model: firstNonEmpty(model.Model, model.ID)})
+		resp.Data = append(resp.Data, appwire.ModelDescriptor{Provider: s.sourceID, Model: envvars.FirstNonEmpty(model.Model, model.ID)})
 	}
 	return resp, nil
 }
@@ -761,7 +762,7 @@ func (s *CodexSource) mapThread(thread codexThread) appwire.Thread {
 	ref := appwire.Ref{SourceID: s.sourceID, ThreadID: thread.ID}.String()
 	out := appwire.Thread{
 		ID:            thread.ID,
-		SessionID:     firstNonEmpty(thread.SessionID, thread.ID),
+		SessionID:     envvars.FirstNonEmpty(thread.SessionID, thread.ID),
 		ForkedFromID:  thread.ForkedFromID,
 		Preview:       thread.Preview,
 		Ephemeral:     thread.Ephemeral,
@@ -846,7 +847,7 @@ func (s *CodexSource) mapNotification(threadID string, notification appwire.Noti
 			Delta    string `json:"delta"`
 		}
 		if json.Unmarshal(notification.Params, &params) == nil {
-			params.ThreadID = firstNonEmpty(params.ThreadID, threadID)
+			params.ThreadID = envvars.FirstNonEmpty(params.ThreadID, threadID)
 			// Still map[string]any, not appwire.ToolOutputDeltaParams (kcb5):
 			// params.TurnID comes straight off this relayed Codex app-server
 			// notification, not this codebase's own turn tracking, so unlike
@@ -865,14 +866,14 @@ func (s *CodexSource) mapNotification(threadID string, notification appwire.Noti
 	case appwire.NotifyAgentMessageDelta:
 		var params appwire.AgentMessageDeltaParams
 		if json.Unmarshal(notification.Params, &params) == nil {
-			params.ThreadID = firstNonEmpty(params.ThreadID, threadID)
+			params.ThreadID = envvars.FirstNonEmpty(params.ThreadID, threadID)
 			params.Ref = appwire.Ref{SourceID: s.sourceID, ThreadID: params.ThreadID}.String()
 			return notificationMessage(appwire.NotifyAgentMessageDelta, params)
 		}
 	case appwire.NotifyReasoningSummaryDelta:
 		var params appwire.ReasoningSummaryDeltaParams
 		if json.Unmarshal(notification.Params, &params) == nil {
-			params.ThreadID = firstNonEmpty(params.ThreadID, threadID)
+			params.ThreadID = envvars.FirstNonEmpty(params.ThreadID, threadID)
 			params.Ref = appwire.Ref{SourceID: s.sourceID, ThreadID: params.ThreadID}.String()
 			return notificationMessage(appwire.NotifyReasoningSummaryDelta, params)
 		}
@@ -882,7 +883,7 @@ func (s *CodexSource) mapNotification(threadID string, notification appwire.Noti
 			Status   codexThreadStatus `json:"status"`
 		}
 		if json.Unmarshal(notification.Params, &params) == nil {
-			params.ThreadID = firstNonEmpty(params.ThreadID, threadID)
+			params.ThreadID = envvars.FirstNonEmpty(params.ThreadID, threadID)
 			return notificationMessage(appwire.NotifyThreadStatusChanged, appwire.ThreadStatusChangedParams{
 				ThreadID: params.ThreadID,
 				Ref:      appwire.Ref{SourceID: s.sourceID, ThreadID: params.ThreadID}.String(),
@@ -896,7 +897,7 @@ func (s *CodexSource) mapNotification(threadID string, notification appwire.Noti
 			Item     json.RawMessage `json:"item"`
 		}
 		if json.Unmarshal(notification.Params, &params) == nil {
-			mappedThreadID := firstNonEmpty(params.ThreadID, threadID)
+			mappedThreadID := envvars.FirstNonEmpty(params.ThreadID, threadID)
 			return notificationMessage(notification.Method, appwire.ItemLifecycleParams{
 				ThreadID: mappedThreadID,
 				Ref:      appwire.Ref{SourceID: s.sourceID, ThreadID: mappedThreadID}.String(),
@@ -910,7 +911,7 @@ func (s *CodexSource) mapNotification(threadID string, notification appwire.Noti
 			Turn     codexTurn `json:"turn"`
 		}
 		if json.Unmarshal(notification.Params, &params) == nil {
-			mappedThreadID := firstNonEmpty(params.ThreadID, threadID)
+			mappedThreadID := envvars.FirstNonEmpty(params.ThreadID, threadID)
 			// Still map[string]any, not TurnCompletedParams - same declared-type-
 			// doesn't-match-the-wire reason as appwire_projection.go's own
 			// turn/completed sites (kcb5).
@@ -951,13 +952,4 @@ func emptyNil(value string) any {
 		return nil
 	}
 	return value
-}
-
-func firstNonEmpty(values ...string) string {
-	for _, value := range values {
-		if value != "" {
-			return value
-		}
-	}
-	return ""
 }

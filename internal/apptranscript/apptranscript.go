@@ -12,6 +12,7 @@ import (
 	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/agent/transcript"
 	"primeradiant.com/evener/appwire"
+	"primeradiant.com/evener/envvars"
 	"primeradiant.com/evener/invariant"
 	"primeradiant.com/evener/llm"
 )
@@ -603,7 +604,7 @@ func WebSearchProjection(ws *llm.WebSearchData) (query string, results string) {
 		_ = json.Unmarshal(ws.Raw, &raw)
 	}
 	if query == "" {
-		query = firstNonEmpty(raw.Action.Query, raw.Input.Query, strings.Join(raw.WebSearchQueries, "; "))
+		query = envvars.FirstNonEmpty(raw.Action.Query, raw.Input.Query, strings.Join(raw.WebSearchQueries, "; "))
 	}
 	var lines []string
 	for _, chunk := range raw.GroundingChunks {
@@ -633,15 +634,6 @@ func webSearchResultLine(title, url string) string {
 	default:
 		return url
 	}
-}
-
-func firstNonEmpty(values ...string) string {
-	for _, v := range values {
-		if strings.TrimSpace(v) != "" {
-			return v
-		}
-	}
-	return ""
 }
 
 // ImagesFromContent maps image content parts into AppWire image items.
