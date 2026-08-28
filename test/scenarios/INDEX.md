@@ -463,11 +463,10 @@ verified against a real hub + a real model turn (`openai/gpt-5.4-mini`).
   reflected in the AppWire navigation manifest/pin-section resources and
   renders as a Pinned row that
   survives a hard reload; confirms no `localStorage` favorite cache exists.
-- `sidebar-project-delete-full-cycle.md` — `POST /api/project/delete`'s full
-  state machine: path-mismatch 400, live-session 409 (files intact),
-  post-shutdown 200 (files removed), the open-workspace `/new` redirect, and
-  that a re-created project at the same working dir is not silently
-  archived.
+- `sidebar-project-delete-full-cycle.md` — `evener/project/delete`'s full
+  state machine: invalid path rejection, live-session conflict (files intact),
+  post-shutdown deletion (files removed), open-pane behavior, and that a
+  re-created project at the same working dir is not silently archived.
 - `sidebar-rename-live-and-ended.md` — row-menu rename on a live session
   survives its own post-POST resync and a subsequent real compaction turn
   (namer suppression via `name_source:"user"`); rename on an ended session

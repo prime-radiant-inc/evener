@@ -92,6 +92,7 @@ func NewWebServer(cfg hubcore.WebConfig) *WebServer {
 	web.navigation = newNavigationService(navigationServiceConfig{Source: webNavigationSource{web: web}})
 	web.appRPC = newHubAppServerWithNavigation(web.cfg, sources, web.navigation)
 	registerArchiveHandler(web.appRPC, web.cfg, func() *NavigationService { return web.navigation })
+	registerProjectDeleteHandler(web.appRPC, web)
 	if deletionStoreErr == nil {
 		_ = web.resumeProjectDeletions()
 	}
@@ -174,7 +175,6 @@ func (s *WebServer) Handler() http.Handler {
 	mux.HandleFunc("/api/pin-sections", s.handleAPIPinSections)
 	mux.HandleFunc("/api/pin-sections/", s.handleAPIPinSection)
 	mux.HandleFunc("/api/session-pin", s.handleAPISessionPin)
-	mux.HandleFunc("/api/project/delete", s.handleAPIProjectDelete)
 	mux.HandleFunc("/api/sessions/", s.handleAPISession)
 
 	mux.HandleFunc("/auth", hubedge.HandleAuth(s.cfg.AuthToken))

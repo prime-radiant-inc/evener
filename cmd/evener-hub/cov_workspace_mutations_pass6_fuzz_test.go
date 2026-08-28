@@ -150,28 +150,21 @@ func FuzzWorkspaceMutationsPass6(f *testing.F) {
 			source.nameErr = errors.New("rename")
 			call(func(w http.ResponseWriter, r *http.Request) { liveWeb.handleAPIRename(w, r, "remote:thread") }, http.MethodPost, "/", `{"name":"x"}`)
 		case 7:
-			call(web.handleAPIProjectDelete, http.MethodGet, "/", "")
-			call(web.handleAPIProjectDelete, http.MethodPost, "/", "{")
-			call(web.handleAPIProjectDelete, http.MethodPost, "/", `{}`)
-			NewWebServer(hubcore.WebConfig{}).handleAPIProjectDelete(httptest.NewRecorder(), httptest.NewRequest(http.MethodPost, "/", strings.NewReader(`{"key":"x","working_dir":"x"}`)))
-			call(web.handleAPIProjectDelete, http.MethodPost, "/", `{"key":"wrong","working_dir":"`+work+`"}`)
+			_, _ = web.projectDelete(context.Background(), appwire.ProjectDeleteParams{})
+			_, _ = NewWebServer(hubcore.WebConfig{}).projectDelete(context.Background(), appwire.ProjectDeleteParams{Key: "x", WorkingDir: "x"})
+			_, _ = web.projectDelete(context.Background(), appwire.ProjectDeleteParams{Key: "wrong", WorkingDir: work})
 		case 8:
-			body := `{"key":"` + testProjectID(t, work) + `","working_dir":"` + work + `"}`
+			params := appwire.ProjectDeleteParams{Key: testProjectID(t, work), WorkingDir: work}
 			live := NewWebServer(hubcore.WebConfig{Past: past, Roster: hubcore.NewRosterWithEntries(hubcore.LiveEntry{SessionID: "ended", Status: "active"})})
-			call = func(fn func(http.ResponseWriter, *http.Request), method, target, b string) *httptest.ResponseRecorder {
-				rr := httptest.NewRecorder()
-				fn(rr, httptest.NewRequest(method, target, strings.NewReader(b)))
-				return rr
-			}
-			call(live.handleAPIProjectDelete, http.MethodPost, "/", body)
+			_, _ = live.projectDelete(context.Background(), params)
 			removeProjectSessionFile = func(string) error { return errors.New("remove") }
 			t.Cleanup(func() { removeProjectSessionFile = os.Remove })
-			call(web.handleAPIProjectDelete, http.MethodPost, "/", body)
+			_, _ = web.projectDelete(context.Background(), params)
 		case 9:
-			body := `{"key":"` + testProjectID(t, work) + `","working_dir":"` + work + `"}`
+			params := appwire.ProjectDeleteParams{Key: testProjectID(t, work), WorkingDir: work}
 			removeProjectSessionDir = func(string) error { return errors.New("ignored") }
 			t.Cleanup(func() { removeProjectSessionDir = os.RemoveAll })
-			call(web.handleAPIProjectDelete, http.MethodPost, "/", body)
+			_, _ = web.projectDelete(context.Background(), params)
 		}
 	})
 }

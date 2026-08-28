@@ -17,9 +17,8 @@ import (
 )
 
 // sessionDeleteResponse mirrors handleAPISessionDelete's JSON envelope, which
-// is deliberately the same shape handleAPIProjectDelete already returns
-// (deleted/skipped) - see that handler's own doc comment - just for a target
-// set of at most one.
+// retains the deleted/skipped outcome shape used by projectDelete, just for a
+// target set of at most one.
 type sessionDeleteResponse struct {
 	Deleted []string            `json:"deleted"`
 	Skipped []projectDeleteSkip `json:"skipped"`

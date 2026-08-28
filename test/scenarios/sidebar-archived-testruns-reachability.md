@@ -88,11 +88,11 @@ a browser, and only assert what the rail renders.
    `widgets/menu/index.tsx:337-366`). Click **Unarchive project**.
 8. Find `$B`'s project row under the `Test runs` heading and read its menu the
    same way. Do **not** click Delete project… here; drive the destructive step
-   over REST in step 9 so the assertion is on the server and the disk, not on
-   a dialog. (If you do want the UI path, see Sharp edges: it is a real
-   in-app `Dialog`, never `window.confirm`.)
-9. **Delete `$B`.** `POST /api/project/delete` with
-   `{"key":"<B key>","working_dir":"<B working_dir from the navigation manifest>"}`.
+   through a separate AppWire client in step 9 so the assertion is on the
+   server and the disk, not on a dialog. (If you do want the UI path, see
+   Sharp edges: it is a real in-app `Dialog`, never `window.confirm`.)
+9. **Delete `$B`.** Request `evener/project/delete` with
+   `{"key":"<B key>","workingDir":"<B working_dir from the navigation manifest>"}`.
 10. Read the AppWire navigation manifest and check the disk under the isolated state root.
 
 ## Expected
@@ -134,16 +134,16 @@ a browser, and only assert what the rail renders.
   the row), or a zero-count header lingers.
 - **Step 8**: `$B`'s menu offers `Archive project` (not Unarchive — `$B` was
   never archived, only classified as a test run) and `Delete project…`.
-- **Step 9 (exact)**: `200 {"deleted":["<SID_B>"],"skipped":[]}`
-  (`web_api_project_delete.go:193`). Falsify: `deleted` empty on a genuine
-  delete, or a 409 (means the session never actually shut down — see Sharp
-  edges).
+- **Step 9 (exact)**: a response with
+  `{"deleted":["<SID_B>"],"skipped":[],"navigation":<receipt>}`. Falsify:
+  `deleted` empty on a genuine delete, or AppWire conflict code `-32013`
+  (means the session never actually shut down — see Sharp edges).
 - **Step 10 (exact)**: `$B`'s key absent from all three of `projects[]`,
   `archived_projects[]`, `test_runs[]`; and
   `find "$HOME/.local/state/evener/projects" -name "$SID_B*"` returns nothing.
   In the browser, the `Test runs` heading is gone (its bucket is empty and
   `RailSection` returns null at `Rail.tsx:101`). Falsify: files surviving a
-  `200`, or a heading rendering for an empty bucket.
+  successful response, or a heading rendering for an empty bucket.
 
 ## Cleanup
 
@@ -186,10 +186,9 @@ a browser, and only assert what the rail renders.
   Setting it in the hub's own environment would stamp `origin=test` onto every
   session the hub ever spawns.
 - **"Live" for the delete refusal means a registered daemon, not a running
-  turn.** A session sitting in `awaiting` still 409s
-  (`web_api_project_delete.go:147-159`). Shut it down first and confirm the
-  shutdown landed, or step 9 fails for a reason that has nothing to do with
-  classification.
+  turn.** A session sitting in `awaiting` still returns an AppWire conflict
+  (`project_delete.go`). Shut it down first and confirm the shutdown landed,
+  or step 9 fails for a reason that has nothing to do with classification.
 - **The TestRuns-over-Archived overlap case is server-side only** and this
   card does not re-derive it live. The old text pointed at
   `cmd/evener-hub/jstest/test-sidebar-testruns.js`; that directory no longer

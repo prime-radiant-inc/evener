@@ -4,7 +4,6 @@ package hub
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"net/http"
 	"net/http/httptest"
@@ -208,14 +207,16 @@ func FuzzExactTails(f *testing.F) {
 		tree, _ := deleteWeb.memoTree(context.Background())
 		projects := append(append([]hubcore.TreeProject(nil), tree.Projects...), tree.ArchivedProjects...)
 		if len(projects) > 0 {
-			body, _ := json.Marshal(map[string]string{"key": projects[0].Key, "working_dir": projects[0].WorkingDir})
 			checks := 0
 			oldProjectLive := projectSessionLive
 			projectSessionLive = func(*hubcore.Roster, string) bool {
 				checks++
 				return checks > 1
 			}
-			deleteWeb.handleAPIProjectDelete(httptest.NewRecorder(), httptest.NewRequest(http.MethodPost, "/", strings.NewReader(string(body))))
+			_, _ = deleteWeb.projectDelete(context.Background(), appwire.ProjectDeleteParams{
+				Key:        projects[0].Key,
+				WorkingDir: projects[0].WorkingDir,
+			})
 			projectSessionLive = oldProjectLive
 		}
 

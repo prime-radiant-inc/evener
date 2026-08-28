@@ -3,10 +3,7 @@ package hub
 import (
 	"context"
 	"database/sql"
-	"encoding/json"
 	"errors"
-	"net/http"
-	"net/http/httptest"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -45,26 +42,18 @@ func TestProjectDeleteRejectsRecomputedIDMismatchAndNoProject(t *testing.T) {
 	}
 	past := hubcore.NewPastIndex(filepath.Join(root, "projects", "*"))
 	web := NewWebServer(hubcore.WebConfig{Past: past, Roster: hubcore.NewRosterWithEntries()})
-	for name, body := range map[string]string{
-		"mismatch":   `{"key":"` + project.ID + `","working_dir":"` + filepath.Join(root, "other") + `"}`,
-		"no-project": `{"key":"no-project","working_dir":"` + projectDir + `"}`,
+	for name, params := range map[string]appwire.ProjectDeleteParams{
+		"mismatch":   {Key: project.ID, WorkingDir: filepath.Join(root, "other")},
+		"no-project": {Key: "no-project", WorkingDir: projectDir},
 	} {
 		t.Run(name, func(t *testing.T) {
-			req := httptest.NewRequest(http.MethodPost, "/api/project/delete", newBody(body))
-			req.Header.Set("Content-Type", "application/json")
-			rec := httptest.NewRecorder()
-			web.Handler().ServeHTTP(rec, req)
-			if rec.Code != http.StatusBadRequest {
-				t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+			_, err := dispatchProjectDelete(t, web, params)
+			var wireErr appwire.WireError
+			if !errors.As(err, &wireErr) || wireErr.Code != appwire.CodeInvalidParams {
+				t.Fatalf("error = %v, want AppWire invalid params", err)
 			}
 		})
 	}
-}
-
-// newBody returns an io.Reader suitable for httptest.NewRequest's body
-// argument from a raw JSON string.
-func newBody(body string) *strings.Reader {
-	return strings.NewReader(body)
 }
 
 func writeSession(t *testing.T, stateDir, id, wd string) {
@@ -142,7 +131,7 @@ func seedProjectDeleteDecisions(t *testing.T, archive *hubcore.ArchiveStore, fav
 	}
 }
 
-func TestAPIProjectDeleteRemovesPinsOnlyForDeletedSessions(t *testing.T) {
+func TestProjectDeleteRemovesPinsOnlyForDeletedSessions(t *testing.T) {
 	root := t.TempDir()
 	projectDir := filepath.Join(root, "project")
 	if err := os.MkdirAll(projectDir, 0o755); err != nil {
@@ -178,11 +167,11 @@ func TestAPIProjectDeleteRemovesPinsOnlyForDeletedSessions(t *testing.T) {
 		return checks > 2 && id == skippedID
 	}
 	t.Cleanup(func() { projectSessionLive = oldProjectSessionLive })
-	body := `{"key":"` + project.ID + `","working_dir":"` + project.CanonicalPath + `"}`
-	rec := httptest.NewRecorder()
-	web.Handler().ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/api/project/delete", newBody(body)))
-	if rec.Code != http.StatusOK {
-		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+	if _, err := dispatchProjectDelete(t, web, appwire.ProjectDeleteParams{
+		Key:        project.ID,
+		WorkingDir: project.CanonicalPath,
+	}); err != nil {
+		t.Fatalf("dispatch project delete: %v", err)
 	}
 	assignments, err := pins.Assignments()
 	if err != nil {
@@ -196,7 +185,7 @@ func TestAPIProjectDeleteRemovesPinsOnlyForDeletedSessions(t *testing.T) {
 	}
 }
 
-func TestAPIProjectDeleteReportsPinStoreCleanupError(t *testing.T) {
+func TestProjectDeleteReportsPinStoreCleanupError(t *testing.T) {
 	root := t.TempDir()
 	projectDir := filepath.Join(root, "project")
 	if err := os.MkdirAll(projectDir, 0o755); err != nil {
@@ -219,11 +208,13 @@ func TestAPIProjectDeleteReportsPinStoreCleanupError(t *testing.T) {
 	}
 	pins.SetFs(failingMkdirAllFS{Fs: afero.NewOsFs(), err: errors.New("forced pin cleanup failure")})
 	web := NewWebServer(hubcore.WebConfig{Past: past, PinSections: pins, Roster: hubcore.NewRosterWithEntries()})
-	body := `{"key":"` + project.ID + `","working_dir":"` + project.CanonicalPath + `"}`
-	rec := httptest.NewRecorder()
-	web.Handler().ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/api/project/delete", newBody(body)))
-	if rec.Code != http.StatusInternalServerError || !strings.Contains(rec.Body.String(), "pin section store error: forced pin cleanup failure") {
-		t.Fatalf("cleanup failure status=%d body=%s", rec.Code, rec.Body.String())
+	_, err = dispatchProjectDelete(t, web, appwire.ProjectDeleteParams{
+		Key:        project.ID,
+		WorkingDir: project.CanonicalPath,
+	})
+	var wireErr appwire.WireError
+	if !errors.As(err, &wireErr) || wireErr.Code != appwire.CodeInternalError || !strings.Contains(wireErr.Message, "pin section store error: forced pin cleanup failure") {
+		t.Fatalf("cleanup failure = %v, want AppWire internal error", err)
 	}
 }
 
@@ -311,19 +302,13 @@ func TestProjectDeleteRemovesFilesAndScrubs(t *testing.T) {
 	}
 	web := NewWebServer(hubcore.WebConfig{Past: past, Archive: archive, Favorite: favorite, Roster: hubcore.NewRosterWithEntries()})
 
-	body := `{"key":"` + project.ID + `","working_dir":"` + project.CanonicalPath + `"}`
-	req := httptest.NewRequest(http.MethodPost, "/api/project/delete", newBody(body))
-	req.Header.Set("Content-Type", "application/json")
-	rec := httptest.NewRecorder()
-	web.Handler().ServeHTTP(rec, req)
-	if rec.Code != http.StatusOK {
-		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+	resp, err := dispatchProjectDelete(t, web, appwire.ProjectDeleteParams{
+		Key:        project.ID,
+		WorkingDir: project.CanonicalPath,
+	})
+	if err != nil {
+		t.Fatalf("dispatch project delete: %v", err)
 	}
-	var resp struct {
-		Deleted []string                      `json:"deleted"`
-		Skipped []struct{ ID, Reason string } `json:"skipped"`
-	}
-	_ = json.Unmarshal(rec.Body.Bytes(), &resp)
 	if len(resp.Deleted) != 1 {
 		t.Fatalf("want 1 deleted ref, got %+v", resp)
 	}
@@ -396,19 +381,12 @@ func TestProjectDeleteRemovesCanonicalProjectMembers(t *testing.T) {
 	}
 	web := NewWebServer(hubcore.WebConfig{Past: past, Roster: hubcore.NewRosterWithEntries()})
 
-	body := `{"key":"` + project.ID + `","working_dir":"` + project.CanonicalPath + `"}`
-	req := httptest.NewRequest(http.MethodPost, "/api/project/delete", newBody(body))
-	req.Header.Set("Content-Type", "application/json")
-	rec := httptest.NewRecorder()
-	web.Handler().ServeHTTP(rec, req)
-	if rec.Code != http.StatusOK {
-		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
-	}
-	var resp struct {
-		Deleted []string `json:"deleted"`
-	}
-	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
-		t.Fatal(err)
+	resp, err := dispatchProjectDelete(t, web, appwire.ProjectDeleteParams{
+		Key:        project.ID,
+		WorkingDir: project.CanonicalPath,
+	})
+	if err != nil {
+		t.Fatalf("dispatch project delete: %v", err)
 	}
 	if len(resp.Deleted) != len(paths) {
 		t.Fatalf("deleted=%v, want main, linked worktree, nested, and symlink sessions", resp.Deleted)
@@ -441,13 +419,13 @@ func TestProjectDeleteResolutionFailureDoesNotPartiallyDelete(t *testing.T) {
 	}
 	web := NewWebServer(hubcore.WebConfig{Past: past, Roster: hubcore.NewRosterWithEntries()})
 
-	body := `{"key":"` + project.ID + `","working_dir":"` + project.CanonicalPath + `"}`
-	req := httptest.NewRequest(http.MethodPost, "/api/project/delete", newBody(body))
-	req.Header.Set("Content-Type", "application/json")
-	rec := httptest.NewRecorder()
-	web.Handler().ServeHTTP(rec, req)
-	if rec.Code != http.StatusInternalServerError {
-		t.Fatalf("status=%d body=%s, want resolution failure", rec.Code, rec.Body.String())
+	_, err = dispatchProjectDelete(t, web, appwire.ProjectDeleteParams{
+		Key:        project.ID,
+		WorkingDir: project.CanonicalPath,
+	})
+	var wireErr appwire.WireError
+	if !errors.As(err, &wireErr) || wireErr.Code != appwire.CodeInternalError {
+		t.Fatalf("error = %v, want AppWire internal resolution failure", err)
 	}
 	metaPath := filepath.Join(stateDir, "sessions", projectDeleteCanonicalSessionIDs[0]+".meta.json")
 	if _, err := os.Stat(metaPath); err != nil {
@@ -496,13 +474,10 @@ func TestProjectDeleteRejectsKeyWorkingDirMismatch(t *testing.T) {
 	favorite := hubcore.NewFavoriteStore(dbPath)
 	seedProjectDeleteDecisions(t, archive, favorite, project.ID, webTestSessionID)
 	web := NewWebServer(hubcore.WebConfig{Past: past, Archive: archive, Favorite: favorite, Roster: hubcore.NewRosterWithEntries()})
-	body := `{"key":"` + project.ID + `","working_dir":"` + wrongDir + `"}`
-	req := httptest.NewRequest(http.MethodPost, "/api/project/delete", newBody(body))
-	req.Header.Set("Content-Type", "application/json")
-	rec := httptest.NewRecorder()
-	web.Handler().ServeHTTP(rec, req)
-	if rec.Code != http.StatusBadRequest {
-		t.Fatalf("mismatch must be rejected 400, got %d", rec.Code)
+	_, err = dispatchProjectDelete(t, web, appwire.ProjectDeleteParams{Key: project.ID, WorkingDir: wrongDir})
+	var wireErr appwire.WireError
+	if !errors.As(err, &wireErr) || wireErr.Code != appwire.CodeInvalidParams {
+		t.Fatalf("mismatch error = %v, want AppWire invalid params", err)
 	}
 	assertArchiveDecisionPresent(t, archive, "session", webTestSessionID, true)
 	assertArchiveDecisionPresent(t, archive, "project", project.ID, true)
@@ -530,13 +505,17 @@ func TestProjectDeleteRefusesWhenLive(t *testing.T) {
 	seedProjectDeleteDecisions(t, archive, favorite, project.ID, webTestSessionID)
 	roster := hubcore.NewRosterWithEntries(hubcore.LiveEntry{SessionID: webTestSessionID, Status: "active"})
 	web := NewWebServer(hubcore.WebConfig{Past: past, Archive: archive, Favorite: favorite, Roster: roster})
-	body := `{"key":"` + project.ID + `","working_dir":"` + project.CanonicalPath + `"}`
-	req := httptest.NewRequest(http.MethodPost, "/api/project/delete", newBody(body))
-	req.Header.Set("Content-Type", "application/json")
-	rec := httptest.NewRecorder()
-	web.Handler().ServeHTTP(rec, req)
-	if rec.Code != http.StatusConflict {
-		t.Fatalf("live project delete must 409, got %d", rec.Code)
+	_, err = dispatchProjectDelete(t, web, appwire.ProjectDeleteParams{
+		Key:        project.ID,
+		WorkingDir: project.CanonicalPath,
+	})
+	var wireErr appwire.WireError
+	if !errors.As(err, &wireErr) || wireErr.Code != appwire.CodeConflict {
+		t.Fatalf("error = %v, want AppWire conflict", err)
+	}
+	data, ok := wireErr.Data.(appwire.ProjectDeleteConflictData)
+	if !ok || len(data.Live) != 1 || data.Live[0] != hubcore.ShortID(webTestSessionID) {
+		t.Fatalf("conflict data = %#v, want live session details", wireErr.Data)
 	}
 	if _, err := os.Stat(filepath.Join(stateDir, "sessions", webTestSessionID+".meta.json")); os.IsNotExist(err) {
 		t.Fatal("nothing should be removed when refused")
@@ -595,20 +574,12 @@ func TestProjectDeleteRemovesCrashedSessionAndStaleRendezvous(t *testing.T) {
 		Past: past, Archive: archive, Favorite: favorite, Roster: roster, RunDir: runDir,
 	})
 
-	body := `{"key":"` + project.ID + `","working_dir":"` + project.CanonicalPath + `"}`
-	req := httptest.NewRequest(http.MethodPost, "/api/project/delete", newBody(body))
-	req.Header.Set("Content-Type", "application/json")
-	rec := httptest.NewRecorder()
-	web.Handler().ServeHTTP(rec, req)
-	if rec.Code != http.StatusOK {
-		t.Fatalf("status=%d body=%s, want a retained crash marker to unblock deletion", rec.Code, rec.Body.String())
-	}
-	var resp struct {
-		Deleted []string            `json:"deleted"`
-		Skipped []projectDeleteSkip `json:"skipped"`
-	}
-	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
-		t.Fatal(err)
+	resp, err := dispatchProjectDelete(t, web, appwire.ProjectDeleteParams{
+		Key:        project.ID,
+		WorkingDir: project.CanonicalPath,
+	})
+	if err != nil {
+		t.Fatalf("dispatch project delete with retained crash marker: %v", err)
 	}
 	if len(resp.Deleted) != 1 || resp.Deleted[0] != webTestSessionID || len(resp.Skipped) != 0 {
 		t.Fatalf("crashed session must be deleted outright: %+v", resp)
@@ -683,13 +654,13 @@ func TestProjectDeleteRefusesLiveSessionWhoseProbeTransientlyFails(t *testing.T)
 	}
 
 	web := NewWebServer(hubcore.WebConfig{Past: past, Roster: roster})
-	body := `{"key":"` + project.ID + `","working_dir":"` + project.CanonicalPath + `"}`
-	req := httptest.NewRequest(http.MethodPost, "/api/project/delete", newBody(body))
-	req.Header.Set("Content-Type", "application/json")
-	rec := httptest.NewRecorder()
-	web.Handler().ServeHTTP(rec, req)
-	if rec.Code != http.StatusConflict {
-		t.Fatalf("status=%d body=%s, want refusal for a live session whose probe merely timed out", rec.Code, rec.Body.String())
+	_, err = dispatchProjectDelete(t, web, appwire.ProjectDeleteParams{
+		Key:        project.ID,
+		WorkingDir: project.CanonicalPath,
+	})
+	var wireErr appwire.WireError
+	if !errors.As(err, &wireErr) || wireErr.Code != appwire.CodeConflict {
+		t.Fatalf("error = %v, want AppWire conflict for a live session whose probe merely timed out", err)
 	}
 	if _, err := os.Stat(filepath.Join(stateDir, "sessions", webTestSessionID+".meta.json")); os.IsNotExist(err) {
 		t.Fatal("nothing should be removed when refused")
@@ -744,13 +715,11 @@ func TestProjectDeleteRefreshesRosterAndBustsTreeMemo(t *testing.T) {
 	})
 	before := inputs.Load()
 
-	body := `{"key":"` + project.ID + `","working_dir":"` + project.CanonicalPath + `"}`
-	req := httptest.NewRequest(http.MethodPost, "/api/project/delete", newBody(body))
-	req.Header.Set("Content-Type", "application/json")
-	rec := httptest.NewRecorder()
-	web.Handler().ServeHTTP(rec, req)
-	if rec.Code != http.StatusOK {
-		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+	if _, err := dispatchProjectDelete(t, web, appwire.ProjectDeleteParams{
+		Key:        project.ID,
+		WorkingDir: project.CanonicalPath,
+	}); err != nil {
+		t.Fatalf("dispatch project delete: %v", err)
 	}
 
 	if _, ok := roster.Find(webTestSessionID); ok {
@@ -794,19 +763,12 @@ func TestProjectDeleteSkipsSessionThatBecomesLive(t *testing.T) {
 	}
 	t.Cleanup(func() { projectSessionLive = oldProjectSessionLive })
 
-	body := `{"key":"` + project.ID + `","working_dir":"` + project.CanonicalPath + `"}`
-	req := httptest.NewRequest(http.MethodPost, "/api/project/delete", newBody(body))
-	rec := httptest.NewRecorder()
-	web.Handler().ServeHTTP(rec, req)
-	if rec.Code != http.StatusOK {
-		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
-	}
-	var resp struct {
-		Deleted []string            `json:"deleted"`
-		Skipped []projectDeleteSkip `json:"skipped"`
-	}
-	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
-		t.Fatal(err)
+	resp, err := dispatchProjectDelete(t, web, appwire.ProjectDeleteParams{
+		Key:        project.ID,
+		WorkingDir: project.CanonicalPath,
+	})
+	if err != nil {
+		t.Fatalf("dispatch project delete: %v", err)
 	}
 	if len(resp.Deleted) != 0 || len(resp.Skipped) != 1 || resp.Skipped[0].ID != webTestSessionID {
 		t.Fatalf("session that became live must only be skipped: %+v", resp)
@@ -859,22 +821,15 @@ func TestProjectDeleteDoesNotUnlinkSessionReservedAfterLivenessProbe(t *testing.
 	}
 	t.Cleanup(func() { projectSessionLive = oldProjectSessionLive })
 
-	body := `{"key":"` + project.ID + `","working_dir":"` + project.CanonicalPath + `"}`
-	req := httptest.NewRequest(http.MethodPost, "/api/project/delete", newBody(body))
-	rec := httptest.NewRecorder()
-	web.Handler().ServeHTTP(rec, req)
+	resp, deleteErr := dispatchProjectDelete(t, web, appwire.ProjectDeleteParams{
+		Key:        project.ID,
+		WorkingDir: project.CanonicalPath,
+	})
 	if reserveErr != nil {
 		t.Fatalf("resume reservation: %v", reserveErr)
 	}
-	if rec.Code != http.StatusOK {
-		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
-	}
-	var resp struct {
-		Deleted []string            `json:"deleted"`
-		Skipped []projectDeleteSkip `json:"skipped"`
-	}
-	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
-		t.Fatal(err)
+	if deleteErr != nil {
+		t.Fatalf("dispatch project delete: %v", deleteErr)
 	}
 	if len(resp.Deleted) != 0 || len(resp.Skipped) != 1 || resp.Skipped[0].ID != webTestSessionID {
 		t.Fatalf("reserved session must only be skipped: %+v", resp)
@@ -939,12 +894,11 @@ func TestProjectDeleteRemovesAPILogOnlyAfterResumeArtifacts(t *testing.T) {
 	}
 	t.Cleanup(func() { removeProjectSessionFile = oldRemove })
 
-	body := `{"key":"` + project.ID + `","working_dir":"` + project.CanonicalPath + `"}`
-	req := httptest.NewRequest(http.MethodPost, "/api/project/delete", newBody(body))
-	rec := httptest.NewRecorder()
-	web.Handler().ServeHTTP(rec, req)
-	if rec.Code != http.StatusOK {
-		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+	if _, err := dispatchProjectDelete(t, web, appwire.ProjectDeleteParams{
+		Key:        project.ID,
+		WorkingDir: project.CanonicalPath,
+	}); err != nil {
+		t.Fatalf("dispatch project delete: %v", err)
 	}
 }
 
@@ -982,21 +936,12 @@ func TestProjectDeleteSkipsOnRemoveFailure(t *testing.T) {
 	}
 	t.Cleanup(func() { removeProjectSessionFile = oldRemove })
 
-	body := `{"key":"` + project.ID + `","working_dir":"` + project.CanonicalPath + `"}`
-	req := httptest.NewRequest(http.MethodPost, "/api/project/delete", newBody(body))
-	req.Header.Set("Content-Type", "application/json")
-	rec := httptest.NewRecorder()
-	web.Handler().ServeHTTP(rec, req)
-	if rec.Code != http.StatusOK {
-		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
-	}
-
-	var resp struct {
-		Deleted []string            `json:"deleted"`
-		Skipped []projectDeleteSkip `json:"skipped"`
-	}
-	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
-		t.Fatalf("unmarshal response: %v", err)
+	resp, err := dispatchProjectDelete(t, web, appwire.ProjectDeleteParams{
+		Key:        project.ID,
+		WorkingDir: project.CanonicalPath,
+	})
+	if err != nil {
+		t.Fatalf("dispatch project delete: %v", err)
 	}
 	for _, id := range resp.Deleted {
 		if id == webTestSessionID {
@@ -1056,12 +1001,11 @@ func TestProjectDeleteDeletionStateResumesAfterRestart(t *testing.T) {
 		Roster:       hubcore.NewRosterWithEntries(),
 	}
 	web := NewWebServer(cfg)
-	body := `{"key":"` + project.ID + `","working_dir":"` + project.CanonicalPath + `"}`
-	req := httptest.NewRequest(http.MethodPost, "/api/project/delete", newBody(body))
-	rec := httptest.NewRecorder()
-	web.Handler().ServeHTTP(rec, req)
-	if rec.Code != http.StatusOK {
-		t.Fatalf("first delete status=%d body=%s", rec.Code, rec.Body.String())
+	if _, err := dispatchProjectDelete(t, web, appwire.ProjectDeleteParams{
+		Key:        project.ID,
+		WorkingDir: project.CanonicalPath,
+	}); err != nil {
+		t.Fatalf("first project delete: %v", err)
 	}
 	if _, err := os.Stat(filepath.Join(stateDir, "sessions", webTestSessionID+".meta.json")); err != nil {
 		t.Fatalf("failed cleanup removed later session state: %v", err)
@@ -1126,11 +1070,9 @@ func TestProjectDeleteRequestResumesCommittedDeletionWithoutPastEntry(t *testing
 	}
 	t.Cleanup(func() { removeProjectSessionDir = oldRemoveDir })
 
-	body := `{"key":"` + project.ID + `","working_dir":"` + project.CanonicalPath + `"}`
-	first := httptest.NewRecorder()
-	web.Handler().ServeHTTP(first, httptest.NewRequest(http.MethodPost, "/api/project/delete", newBody(body)))
-	if first.Code != http.StatusOK {
-		t.Fatalf("first delete status=%d body=%s", first.Code, first.Body.String())
+	params := appwire.ProjectDeleteParams{Key: project.ID, WorkingDir: project.CanonicalPath}
+	if _, err := dispatchProjectDelete(t, web, params); err != nil {
+		t.Fatalf("first project delete: %v", err)
 	}
 	if _, err := past.Rebuild(); err != nil {
 		t.Fatal(err)
@@ -1140,10 +1082,8 @@ func TestProjectDeleteRequestResumesCommittedDeletionWithoutPastEntry(t *testing
 	}
 
 	removeProjectSessionDir = oldRemoveDir
-	second := httptest.NewRecorder()
-	web.Handler().ServeHTTP(second, httptest.NewRequest(http.MethodPost, "/api/project/delete", newBody(body)))
-	if second.Code != http.StatusOK {
-		t.Fatalf("retry delete status=%d body=%s", second.Code, second.Body.String())
+	if _, err := dispatchProjectDelete(t, web, params); err != nil {
+		t.Fatalf("retry project delete: %v", err)
 	}
 	store, err := hubcore.NewDeletionStore(root)
 	if err != nil {
@@ -1261,15 +1201,17 @@ func TestProjectDeleteDeletionStateResumesEveryCleanupArtifact(t *testing.T) {
 				Roster:       hubcore.NewRosterWithEntries(),
 			}
 			web := NewWebServer(cfg)
-			body := `{"key":"` + project.ID + `","working_dir":"` + project.CanonicalPath + `"}`
-			first := httptest.NewRecorder()
-			web.Handler().ServeHTTP(first, httptest.NewRequest(http.MethodPost, "/api/project/delete", newBody(body)))
-			wantFirstStatus := http.StatusOK
+			_, deleteErr := dispatchProjectDelete(t, web, appwire.ProjectDeleteParams{
+				Key:        project.ID,
+				WorkingDir: project.CanonicalPath,
+			})
 			if step == "past-index" {
-				wantFirstStatus = http.StatusInternalServerError
-			}
-			if first.Code != wantFirstStatus {
-				t.Fatalf("first delete status=%d body=%s", first.Code, first.Body.String())
+				var wireErr appwire.WireError
+				if !errors.As(deleteErr, &wireErr) || wireErr.Code != appwire.CodeInternalError {
+					t.Fatalf("first delete error = %v, want AppWire internal error", deleteErr)
+				}
+			} else if deleteErr != nil {
+				t.Fatalf("first project delete: %v", deleteErr)
 			}
 			store, err := hubcore.NewDeletionStore(root)
 			if err != nil {
@@ -1328,19 +1270,12 @@ func TestProjectDeletePreservesDecisionsWhenSessionDirectoryRemovalFails(t *test
 	removeProjectSessionDir = func(string) error { return errors.New("session directory removal failed") }
 	t.Cleanup(func() { removeProjectSessionDir = oldRemove })
 
-	body := `{"key":"` + project.ID + `","working_dir":"` + project.CanonicalPath + `"}`
-	req := httptest.NewRequest(http.MethodPost, "/api/project/delete", newBody(body))
-	rec := httptest.NewRecorder()
-	web.Handler().ServeHTTP(rec, req)
-	if rec.Code != http.StatusOK {
-		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
-	}
-	var response struct {
-		Deleted []string            `json:"deleted"`
-		Skipped []projectDeleteSkip `json:"skipped"`
-	}
-	if err := json.Unmarshal(rec.Body.Bytes(), &response); err != nil {
-		t.Fatal(err)
+	response, err := dispatchProjectDelete(t, web, appwire.ProjectDeleteParams{
+		Key:        project.ID,
+		WorkingDir: project.CanonicalPath,
+	})
+	if err != nil {
+		t.Fatalf("dispatch project delete: %v", err)
 	}
 	if len(response.Deleted) != 0 || len(response.Skipped) != 1 || response.Skipped[0].ID != webTestSessionID {
 		t.Fatalf("directory failure must skip the session: %+v", response)
@@ -1385,19 +1320,12 @@ func TestProjectDeletePreservesDecisionsWhenAPILogRemovalFails(t *testing.T) {
 	}
 	t.Cleanup(func() { removeProjectSessionFile = oldRemove })
 
-	body := `{"key":"` + project.ID + `","working_dir":"` + project.CanonicalPath + `"}`
-	req := httptest.NewRequest(http.MethodPost, "/api/project/delete", newBody(body))
-	rec := httptest.NewRecorder()
-	web.Handler().ServeHTTP(rec, req)
-	if rec.Code != http.StatusOK {
-		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
-	}
-	var response struct {
-		Deleted []string            `json:"deleted"`
-		Skipped []projectDeleteSkip `json:"skipped"`
-	}
-	if err := json.Unmarshal(rec.Body.Bytes(), &response); err != nil {
-		t.Fatal(err)
+	response, err := dispatchProjectDelete(t, web, appwire.ProjectDeleteParams{
+		Key:        project.ID,
+		WorkingDir: project.CanonicalPath,
+	})
+	if err != nil {
+		t.Fatalf("dispatch project delete: %v", err)
 	}
 	if len(response.Deleted) != 0 || len(response.Skipped) != 1 || response.Skipped[0].ID != webTestSessionID {
 		t.Fatalf("API-log failure must skip the session: %+v", response)
@@ -1464,19 +1392,12 @@ func TestProjectDeleteRetainsSkippedDecisionsAndRemovesOnlyDeletedDecisions(t *t
 	}
 	t.Cleanup(func() { projectSessionLive = oldProjectSessionLive })
 
-	body := `{"key":"` + project.ID + `","working_dir":"` + project.CanonicalPath + `"}`
-	req := httptest.NewRequest(http.MethodPost, "/api/project/delete", newBody(body))
-	rec := httptest.NewRecorder()
-	web.Handler().ServeHTTP(rec, req)
-	if rec.Code != http.StatusOK {
-		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
-	}
-	var response struct {
-		Deleted []string            `json:"deleted"`
-		Skipped []projectDeleteSkip `json:"skipped"`
-	}
-	if err := json.Unmarshal(rec.Body.Bytes(), &response); err != nil {
-		t.Fatal(err)
+	response, err := dispatchProjectDelete(t, web, appwire.ProjectDeleteParams{
+		Key:        project.ID,
+		WorkingDir: project.CanonicalPath,
+	})
+	if err != nil {
+		t.Fatalf("dispatch project delete: %v", err)
 	}
 	if len(response.Deleted) != 1 || response.Deleted[0] != deletedID || len(response.Skipped) != 1 || response.Skipped[0].ID != skippedID {
 		t.Fatalf("partial deletion response=%+v", response)
@@ -1538,23 +1459,13 @@ func TestProjectDeleteReportsFavoriteStoreFailureAfterArtifactRemoval(t *testing
 		t.Fatalf("Initialize: %v", err)
 	}
 
-	body := `{"key":"` + project.ID + `","working_dir":"` + project.CanonicalPath + `"}`
-	response, err := http.Post(hub.URL+"/api/project/delete", "application/json", newBody(body))
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer response.Body.Close()
-	if response.StatusCode != http.StatusInternalServerError {
-		t.Fatalf("favorite store failure status=%d", response.StatusCode)
-	}
-	var failure struct {
-		Error string `json:"error"`
-	}
-	if err := json.NewDecoder(response.Body).Decode(&failure); err != nil {
-		t.Fatal(err)
-	}
-	if !strings.Contains(failure.Error, "favorite store error: favorite delete setup failure") {
-		t.Fatalf("favorite store failure was not reported: %s", failure.Error)
+	_, err = client.ProjectDelete(context.Background(), appwire.ProjectDeleteParams{
+		Key:        project.ID,
+		WorkingDir: project.CanonicalPath,
+	})
+	var wireErr appwire.WireError
+	if !errors.As(err, &wireErr) || wireErr.Code != appwire.CodeInternalError || !strings.Contains(wireErr.Message, "favorite store error: favorite delete setup failure") {
+		t.Fatalf("favorite store failure = %v, want AppWire internal error", err)
 	}
 	if pokes != 1 {
 		t.Fatalf("PokeAttention calls=%d, want exactly one after physical deletion", pokes)
@@ -1646,12 +1557,11 @@ func TestProjectDeleteDoesNotScrubProjectRowsAfterPastSnapshotRacesWithRebuild(t
 		Roster:   hubcore.NewRosterWithEntries(),
 		Inputs:   inputs,
 	})
-	body := `{"key":"` + project.ID + `","working_dir":"` + project.CanonicalPath + `"}`
-	req := httptest.NewRequest(http.MethodPost, "/api/project/delete", newBody(body))
-	rec := httptest.NewRecorder()
-	web.Handler().ServeHTTP(rec, req)
-	if rec.Code != http.StatusOK {
-		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+	if _, err := dispatchProjectDelete(t, web, appwire.ProjectDeleteParams{
+		Key:        project.ID,
+		WorkingDir: project.CanonicalPath,
+	}); err != nil {
+		t.Fatalf("dispatch project delete: %v", err)
 	}
 	if !interleaveObserved {
 		t.Fatal("snapshot/rebuild interleave did not execute")
@@ -1672,46 +1582,6 @@ func TestProjectDeleteDoesNotScrubProjectRowsAfterPastSnapshotRacesWithRebuild(t
 	if _, err := os.Stat(filepath.Join(stateDir, "sessions", sessionID)); err != nil {
 		t.Fatalf("remaining session directory was touched: %v", err)
 	}
-}
-
-func TestProjectDeleteBroadcastsTreeChangedExactlyOnce(t *testing.T) {
-	root := t.TempDir()
-	projectDir := filepath.Join(root, "project")
-	if err := os.MkdirAll(projectDir, 0o755); err != nil {
-		t.Fatal(err)
-	}
-	stateDir := filepath.Join(root, "projects", "project-delete-0123456789")
-	project, err := identifier.ResolveProject(projectDir)
-	if err != nil {
-		t.Fatal(err)
-	}
-	writeSession(t, stateDir, webTestSessionID, project.CanonicalPath)
-	past := hubcore.NewPastIndexWithDB(filepath.Join(root, "projects", "*"), filepath.Join(root, "index.db"))
-	if _, err := past.Rebuild(); err != nil {
-		t.Fatal(err)
-	}
-	hub, web := newHubRPCTestServerWithWeb(t, hubcore.WebConfig{Past: past, Roster: hubcore.NewRosterWithEntries()})
-	defer hub.Close()
-	// Mirror runMain's composed wiring (main.go): PastIndex.Rebuild's own
-	// onChange hook is the sole broadcast source for this path — the handler
-	// no longer calls notifyTreeChanged directly (it would double-broadcast).
-	past.SetOnChange(func() { web.navigation.Invalidate(navigationChangeHint{}) })
-	client := dialHubRPC(t, hub)
-	defer client.Close()
-	if _, err := client.Initialize(context.Background(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
-		t.Fatalf("Initialize: %v", err)
-	}
-
-	body := `{"key":"` + project.ID + `","working_dir":"` + project.CanonicalPath + `"}`
-	resp, err := http.Post(hub.URL+"/api/project/delete", "application/json", newBody(body))
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusOK {
-		t.Fatalf("status=%d", resp.StatusCode)
-	}
-
 }
 
 // TestProjectDeleteDoesNotBroadcastWhenNothingRemoved covers the no-op path:
@@ -1753,20 +1623,12 @@ func TestProjectDeleteDoesNotBroadcastWhenNothingRemoved(t *testing.T) {
 	}
 	t.Cleanup(func() { projectSessionLive = oldProjectSessionLive })
 
-	body := `{"key":"` + project.ID + `","working_dir":"` + project.CanonicalPath + `"}`
-	resp, err := http.Post(hub.URL+"/api/project/delete", "application/json", newBody(body))
+	got, err := client.ProjectDelete(context.Background(), appwire.ProjectDeleteParams{
+		Key:        project.ID,
+		WorkingDir: project.CanonicalPath,
+	})
 	if err != nil {
-		t.Fatal(err)
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusOK {
-		t.Fatalf("status=%d", resp.StatusCode)
-	}
-	var got struct {
-		Deleted []string `json:"deleted"`
-	}
-	if err := json.NewDecoder(resp.Body).Decode(&got); err != nil {
-		t.Fatal(err)
+		t.Fatalf("project delete: %v", err)
 	}
 	if len(got.Deleted) != 0 {
 		t.Fatalf("expected nothing actually deleted (session skipped), got %+v", got.Deleted)
