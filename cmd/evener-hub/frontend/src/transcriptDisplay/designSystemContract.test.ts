@@ -189,6 +189,7 @@ test("keeps feature rules from taking shared Card and Popover chrome", () => {
     ["max-block-size", "calc(100dvh - var(--space-8))"],
     ["padding", "var(--space-4)"],
     ["overflow-y", "auto"],
+    ["scrollbar-gutter", "stable"],
     ["container-type", "inline-size"],
     ["container-name", "transcript-detail-panel"],
   ]);

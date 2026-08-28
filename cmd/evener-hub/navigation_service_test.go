@@ -914,11 +914,17 @@ func TestNavigationServiceBuildDeadlineInterruptsProjectionWithoutCommitOrPublic
 		return navigationProjection{}, ctx.Err()
 	}
 	t.Cleanup(func() { buildNavigationServiceProjectionContext = previous })
-	service := newTestNavigationService(t, source, func(cfg *navigationServiceConfig) {
-		cfg.BuildTimeout = 10 * time.Millisecond
-	})
-	_, err := service.Refresh(t.Context(), navigationChangeHint{Projects: []string{"p1"}})
+	service := newTestNavigationService(t, source)
+	buildCtx := newTriggeredDeadlineContext(t.Context())
+	service.lifecycleCtx = buildCtx
+	result := make(chan error, 1)
+	go func() {
+		_, err := service.Refresh(t.Context(), navigationChangeHint{Projects: []string{"p1"}})
+		result <- err
+	}()
 	<-entered
+	buildCtx.expire()
+	err := <-result
 	if !errors.Is(err, context.DeadlineExceeded) {
 		t.Fatalf("error = %v, want deadline", err)
 	}
@@ -940,7 +946,6 @@ func TestNavigationServiceDeadlineAtCommitRevisesAndPublishesNothing(t *testing.
 	if _, err := service.Representation(t.Context(), navigationResourceKey{Kind: navigationResourceManifest}); err != nil {
 		t.Fatal(err)
 	}
-	service.buildTimeout = 20 * time.Millisecond
 	projectKey := (navigationResourceKey{Kind: navigationResourceProject, ProjectKey: "p1"}).Semantic()
 	beforeRevision := service.CurrentRevision(projectKey)
 	beforeStats := service.Stats()
@@ -963,8 +968,16 @@ func TestNavigationServiceDeadlineAtCommitRevisesAndPublishesNothing(t *testing.
 	}
 	t.Cleanup(func() { navigationBeforeSnapshotCommit = previous })
 	source.changeTitle("deadline-at-commit")
-	_, err := service.Refresh(t.Context(), navigationChangeHint{Projects: []string{"p1"}})
+	buildCtx := newTriggeredDeadlineContext(t.Context())
+	service.lifecycleCtx = buildCtx
+	result := make(chan error, 1)
+	go func() {
+		_, err := service.Refresh(t.Context(), navigationChangeHint{Projects: []string{"p1"}})
+		result <- err
+	}()
 	<-entered
+	buildCtx.expire()
+	err := <-result
 	if !errors.Is(err, context.DeadlineExceeded) {
 		t.Fatalf("error = %v, want commit deadline", err)
 	}
