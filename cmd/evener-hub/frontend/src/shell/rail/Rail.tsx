@@ -420,7 +420,7 @@ function railResources(state: ReturnType<typeof navigationStore.getState>): Rail
         sessions: dedupeSessions(sessions(section.sessions, `pin:${section.id}`, undefined, section.id)),
       };
     })
-    .filter((section) => section.member_count > 0 || section.sessions.length > 0);
+    .filter((section) => section.sessions.length > 0);
   return {
     live: live.sessions,
     needsYou: needsYou.sessions,

@@ -107,9 +107,10 @@ type navigationProjection struct {
 }
 
 type navigationPinSection struct {
-	id   string
-	name string
-	rows []hubcore.TreeNode
+	id          string
+	name        string
+	memberCount int
+	rows        []hubcore.TreeNode
 }
 
 // buildNavigationProjection has no ambient dependencies. The supplied tree is
@@ -494,7 +495,7 @@ func (p navigationProjection) PinCatalogPage(offset uint32, limit int) hubapi.Na
 	start, end := navigationRange(len(p.pinSections), offset, limit)
 	rows := make(hubapi.NavigationArray[hubapi.NavigationPinSectionDescriptor], 0, end-start)
 	for _, section := range p.pinSections[start:end] {
-		candidate := hubapi.NavigationPinSectionDescriptor{ID: section.id, Name: truncateNavigationRunes(section.name, maxNavigationLabelRunes), Count: len(section.rows)}
+		candidate := hubapi.NavigationPinSectionDescriptor{ID: section.id, Name: truncateNavigationRunes(section.name, maxNavigationLabelRunes), Count: section.memberCount}
 		response := hubapi.NavigationPinSectionCatalog{GenerationID: p.inputs.GenerationID, Revision: p.inputs.Revision, PinSections: append(append(hubapi.NavigationArray[hubapi.NavigationPinSectionDescriptor](nil), rows...), candidate), Remaining: len(p.pinSections) - start - len(rows) - 1}
 		if !navigationJSONFits(response, maxNavigationCatalogBytes) {
 			break
@@ -828,7 +829,7 @@ func (p navigationProjection) buildPinSectionsContext(ctx context.Context) ([]na
 		if err := ctx.Err(); err != nil {
 			return nil, err
 		}
-		byID[section.ID] = navigationPinSection{id: section.ID, name: section.Name}
+		byID[section.ID] = navigationPinSection{id: section.ID, name: section.Name, memberCount: section.MemberCount}
 	}
 	assignment := cloneNavigationStringMap(p.inputs.PinSectionBySession)
 	for sessionID, pin := range p.inputs.PinAssignments {
@@ -863,9 +864,7 @@ func (p navigationProjection) buildPinSectionsContext(ctx context.Context) ([]na
 		if err := ctx.Err(); err != nil {
 			return nil, err
 		}
-		if len(section.rows) != 0 {
-			out = append(out, section)
-		}
+		out = append(out, section)
 	}
 	for index := range out {
 		if err := ctx.Err(); err != nil {

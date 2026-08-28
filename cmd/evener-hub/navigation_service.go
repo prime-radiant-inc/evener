@@ -739,7 +739,7 @@ func navigationLogicalFingerprintsWithContext(ctx context.Context, projection na
 		if err := ctx.Err(); err != nil {
 			return nil, nil, err
 		}
-		pinCatalog = append(pinCatalog, hubapi.NavigationPinSectionDescriptor{ID: section.id, Name: section.name, Count: len(section.rows)})
+		pinCatalog = append(pinCatalog, hubapi.NavigationPinSectionDescriptor{ID: section.id, Name: section.name, Count: section.memberCount})
 		key := navigationResourceKey{Kind: navigationResourcePinSection, SectionID: section.id}
 		rows, err := navigationLogicalNodesContext(ctx, projection, section.rows)
 		if err != nil {

@@ -12,6 +12,7 @@ import (
 	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/appwire"
 	"primeradiant.com/evener/cmd/evener-hub/internal/hubcore"
+	"primeradiant.com/evener/hubapi"
 )
 
 func topLevelMeta(id string) schema.SessionMeta {
@@ -191,6 +192,42 @@ func TestHubPinSectionRenameAndDeletePreserveCanonicalReceipts(t *testing.T) {
 		t.Fatalf("delete response=%+v", deleted)
 	}
 	assertAppWirePinNavigationPublication(t, web, deleted.Navigation, []appwire.NavigationInvalidationTarget{{Kind: appwire.NavigationTargetManifest}, {Kind: appwire.NavigationTargetPinCatalog}, {Kind: appwire.NavigationTargetPinSection, SectionID: section.ID}, {Kind: appwire.NavigationTargetProject, ProjectKey: "no-project"}})
+}
+
+func TestHubPinCatalogRetainsDormantAssignmentsAndEmptySections(t *testing.T) {
+	store := hubcore.NewPinSectionStore(filepath.Join(t.TempDir(), "pins.db"))
+	dormant, _, err := store.CreateOrReuseAndAssign("Dormant", "02wMz5Txv1C3Hut0M8GCeB", time.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	empty, _, err := store.CreateOrReuseAndAssign("Empty", "temporary-session", time.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.Unpin("temporary-session"); err != nil {
+		t.Fatal(err)
+	}
+	web := NewWebServer(hubcore.WebConfig{Past: hubcore.NewPastIndex(""), PinSections: store})
+
+	representation, err := web.navigation.Representation(t.Context(), navigationResourceKey{Kind: navigationResourcePinCatalog})
+	if err != nil {
+		t.Fatal(err)
+	}
+	catalog, ok := representation.Object.(hubapi.NavigationPinSectionCatalog)
+	if !ok {
+		t.Fatalf("catalog type=%T", representation.Object)
+	}
+	if len(catalog.PinSections) != 2 || catalog.PinSections[0].ID != dormant.ID || catalog.PinSections[0].Count != 1 || catalog.PinSections[1].ID != empty.ID || catalog.PinSections[1].Count != 0 {
+		t.Fatalf("catalog=%+v, want durable dormant and empty sections", catalog.PinSections)
+	}
+	emptyRepresentation, err := web.navigation.Representation(t.Context(), navigationResourceKey{Kind: navigationResourcePinSection, SectionID: empty.ID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	emptyResource, ok := emptyRepresentation.Object.(hubapi.NavigationSectionResource)
+	if !ok || len(emptyResource.Sessions) != 0 {
+		t.Fatalf("empty resource=%T %+v", emptyRepresentation.Object, emptyRepresentation.Object)
+	}
 }
 
 func TestHubPinningErrorsPreserveTypedFailureKinds(t *testing.T) {

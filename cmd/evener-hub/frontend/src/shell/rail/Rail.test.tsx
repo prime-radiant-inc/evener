@@ -261,6 +261,24 @@ describe("resource-backed Rail", () => {
     expect(pins[0]).toMatchObject({ id: "p", name: "Pins", member_count: 4 });
     expect(pins[0]?.sessions.map((row) => row.title)).toEqual(["first"]);
   });
+  test("keeps a dormant durable section out of the visible rail", () => {
+    installState([
+      resource(
+        { kind: "pin_catalog", offset: 0, limit: 100 },
+        {
+          generation_id: "g1",
+          revision: 1,
+          pin_sections: [{ id: "dormant", name: "Dormant", count: 2 }],
+          remaining: 0,
+        },
+      ),
+      resource(
+        { kind: "pin_section", sectionId: "dormant", offset: 0, limit: 50 },
+        { generation_id: "g1", revision: 1, sessions: [], remaining: 0, truncated: false },
+      ),
+    ]);
+    expect(adaptNavigationResources(navigationStore.getState()).pinSections).toEqual([]);
+  });
   test("uses location lookup to reveal an unloaded project rather than scanning a tree", async () => {
     const lookupLocation = vi.fn().mockResolvedValue(undefined);
     installState([

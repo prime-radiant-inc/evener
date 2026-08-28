@@ -168,7 +168,7 @@ func TestNavigationProjectionPinsDecorationsAndOrder(t *testing.T) {
 			"session-a":        true,
 			"session-dangling": true,
 		},
-		PinSections:    []hubcore.PinSection{{ID: "pin", Name: "Pinned"}},
+		PinSections:    []hubcore.PinSection{{ID: "pin", Name: "Pinned", MemberCount: 3}, {ID: "empty", Name: "Empty", MemberCount: 0}},
 		PinAssignments: map[string]hubcore.SessionPin{"session-a": {SectionID: "pin"}, "session-z": {SectionID: "pin"}, "session-dangling": {SectionID: "missing"}},
 	})
 	if err != nil {
@@ -177,6 +177,17 @@ func TestNavigationProjectionPinsDecorationsAndOrder(t *testing.T) {
 	pins, ok := projection.PinSectionPage("pin", 0, 50)
 	if !ok || len(pins.Sessions) != 2 || pins.Sessions[0].Ref != "local:session-a" || pins.Sessions[1].Ref != "local:session-z" {
 		t.Fatalf("pin order=%+v, found=%v", pins.Sessions, ok)
+	}
+	empty, ok := projection.PinSectionPage("empty", 0, 50)
+	if !ok || len(empty.Sessions) != 0 {
+		t.Fatalf("empty pin section=%+v, found=%v", empty.Sessions, ok)
+	}
+	catalog := projection.PinCatalogPage(0, 50)
+	if len(catalog.PinSections) != 2 || catalog.PinSections[0].ID != "empty" || catalog.PinSections[0].Count != 0 || catalog.PinSections[1].ID != "pin" || catalog.PinSections[1].Count != 3 {
+		t.Fatalf("pin catalog=%+v, want every durable section and durable counts", catalog.PinSections)
+	}
+	if projection.Manifest().Sections.PinSections.Count != 2 {
+		t.Fatalf("manifest pin count=%d, want 2 durable sections", projection.Manifest().Sections.PinSections.Count)
 	}
 	if pins.Sessions[0].Favorite {
 		t.Fatal("named pin must clear legacy favorite")

@@ -50,7 +50,7 @@ Every browser `eval` below must return `location.port` and the check must assert
 }))()
 ```
 
-5. Transport cross-check: AppWire `evener/navigation/read` `pin_catalog` contains one `pin_sections[]` entry named `Client work` with `member_count: 1`. Use that descriptor's `id` as the `sectionId` for the `pin_section` read, verify that resource contains the pinned row, and verify the session's `location.pin_section_id` matches the same ID.
+5. Transport cross-check: AppWire `evener/navigation/read` `pin_catalog` contains one `pin_sections[]` entry named `Client work` with `count: 1`. Use that descriptor's `id` as the `sectionId` for the `pin_section` read, verify that resource contains the pinned row, and verify the session's `location.pin_section_id` matches the same ID.
 
 ### 2. Pin a second session into existing **Client work**
 
@@ -58,7 +58,7 @@ Every browser `eval` below must return `location.port` and the check must assert
 2. Choose **Pin this session…**.
 3. In the picker, choose the existing **Client work** section, not **New section…**.
 4. Assert in the browser that both sessions render under **Client work** and return the correct port.
-5. AppWire cross-check: the `pin_catalog` now reports `Client work` with `member_count: 2`.
+5. AppWire cross-check: the `pin_catalog` now reports `Client work` with `count: 2`.
 
 ### 3. Create **Research**, hard reload, and verify alphabetical top-level headings plus durable assignments
 
@@ -97,14 +97,14 @@ Every browser `eval` below must return `location.port` and the check must assert
 2. Open the row menu for `local:<SID_B>`.
 3. Choose **Move pinned session…** and select **Research**.
 4. Browser assertion: `local:<SID_B>` disappears from **Client work** and appears under **Research**.
-5. AppWire cross-check: the `pin_catalog` shows **Client work** `member_count: 1`, **Research** `member_count: 2`.
+5. AppWire cross-check: the `pin_catalog` shows **Client work** `count: 1`, **Research** `count: 2`.
 
 ### 6. Unpin the last **Client work** member and verify the empty section disappears
 
 1. Open the row menu for `local:<SID_A>`.
 2. Choose **Move pinned session… → Unpin**.
 3. Assert in the browser that the **Client work** heading disappears entirely.
-4. AppWire cross-check: the `pin_catalog` still reports **Client work** with `member_count: 0`, while its `pin_section` resource returns an empty `sessions` array and the rail omits the section.
+4. AppWire cross-check: the `pin_catalog` still reports **Client work** with `count: 0`, while its `pin_section` resource returns an empty `sessions` array and the rail omits the section.
 
 ### 7. Open another session’s picker and verify hidden **Client work** remains selectable
 
@@ -170,7 +170,7 @@ finally:
 PY
 ```
 
-2. Re-read the AppWire `pin_catalog` and assert that `CLIENT_SECTION_ID` has `member_count >= 2` even though the new member stays hidden from the navigation rail.
+2. Force the hub to capture the direct SQLite fixture by renaming the section to a temporary name through `evener/pin-section/rename`, then renaming it back to **Client renamed**. Await each navigation receipt before continuing. Re-read the AppWire `pin_catalog` and assert that `CLIENT_SECTION_ID` has `count >= 2` even though the new member stays hidden from the navigation rail.
 
 3. Hard reload the browser at `/auth?token=$TOKEN&next=/`, then open the heading overflow menu for **Client renamed** and choose **Delete**.
 4. Assert the confirmation text counts **all durable members**, including the dormant hidden one.
