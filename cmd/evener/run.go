@@ -20,17 +20,7 @@ import (
 	"primeradiant.com/evener/internal/apptranscript"
 	"primeradiant.com/evener/internal/plugins"
 	"primeradiant.com/evener/llm"
-	_ "primeradiant.com/evener/llm/providers/anthropic"
-	_ "primeradiant.com/evener/llm/providers/glm"
-	_ "primeradiant.com/evener/llm/providers/google"
-	_ "primeradiant.com/evener/llm/providers/kimi"
-	_ "primeradiant.com/evener/llm/providers/kimi_anthropic"
-	_ "primeradiant.com/evener/llm/providers/minimax"
-	_ "primeradiant.com/evener/llm/providers/ollama"
-	_ "primeradiant.com/evener/llm/providers/openai"
-	_ "primeradiant.com/evener/llm/providers/openaicompat"
-	_ "primeradiant.com/evener/llm/providers/openrouter"
-	_ "primeradiant.com/evener/llm/providers/openrouter_anthropic"
+	_ "primeradiant.com/evener/llm/providers/all"
 )
 
 type runConfig struct {
