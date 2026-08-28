@@ -35,7 +35,10 @@ import type {
 import * as projectModule from "../conversation/project";
 import type { createActivityService } from "./activity";
 import * as activityModule from "./activity";
-import { createConversationService } from "./conversation";
+import {
+  createConversationService,
+  type LiveConversationService,
+} from "./conversation";
 
 // --- minimal fake client (cannot import Hub testing modules) ----------------
 
@@ -137,14 +140,19 @@ function makeReadResponse(
   return { thread, olderCursor };
 }
 
-function makeReceipt(over: Partial<MutationReceipt> = {}): MutationReceipt {
-  return {
+function makeReceipt(
+  kind: "send" | "steer" | "queue" | "interrupt" = "send",
+  over: Partial<MutationReceipt> = {},
+): MutationReceipt {
+  const receipt: MutationReceipt = {
     clientMutationId: "cmid-1",
     disposition: "accepted",
     threadId: "thread-1",
     projectionState: "current",
-    ...over,
   };
+  if (kind === "send" || kind === "steer") receipt.turnId = "turn-1";
+  if (kind === "queue") receipt.queueEntryIds = ["queue-1"];
+  return { ...receipt, ...over };
 }
 
 let idCounter = 0;
@@ -298,7 +306,7 @@ describe("ConversationService", () => {
       const { client, service } = setup();
       client.on(
         "turn/steer",
-        () => ({ receipt: makeReceipt() }) as TurnSteerResponse,
+        () => ({ receipt: makeReceipt("steer") }) as TurnSteerResponse,
       );
       await service.open("ref-1");
       const receipt = await service.steer(textInput("steer this"));
@@ -314,7 +322,7 @@ describe("ConversationService", () => {
       const { client, service } = setup();
       client.on(
         "turn/queue",
-        () => ({ receipt: makeReceipt() }) as TurnQueueResponse,
+        () => ({ receipt: makeReceipt("queue") }) as TurnQueueResponse,
       );
       await service.open("ref-1");
       const receipt = await service.queue(textInput("queued"));
@@ -330,13 +338,91 @@ describe("ConversationService", () => {
       const { client, service } = setup();
       client.on(
         "turn/interrupt",
-        () => ({ receipt: makeReceipt() }) as TurnInterruptResponse,
+        () => ({ receipt: makeReceipt("interrupt") }) as TurnInterruptResponse,
       );
       await service.open("ref-1");
       const receipt = await service.interrupt();
       expect(receipt.clientMutationId).toBe("cmid-1");
       const call = client.calls.find((c) => c.method === "turn/interrupt");
       expect(call?.params).toMatchObject({ ref: "ref-1" });
+    });
+
+    it("rejects every malformed, stale, mismatched, or nonaccepted send receipt", async () => {
+      const validReceipt = makeReceipt("send");
+      const validTurn = { id: "t1", itemsView: "default", status: "running" };
+      const invalidResults: unknown[] = [
+        null,
+        { turn: validTurn },
+        { receipt: validReceipt },
+        { turn: validTurn, receipt: validReceipt, extra: true },
+        { turn: validTurn, receipt: null },
+        {
+          turn: validTurn,
+          receipt: { ...validReceipt, clientMutationId: "stale-cmid" },
+        },
+        {
+          turn: validTurn,
+          receipt: { ...validReceipt, disposition: "replayed" },
+        },
+        {
+          turn: validTurn,
+          receipt: { ...validReceipt, threadId: "" },
+        },
+        {
+          turn: validTurn,
+          receipt: { ...validReceipt, turnId: "" },
+        },
+        {
+          turn: validTurn,
+          receipt: { ...validReceipt, projectionState: "" },
+        },
+        {
+          turn: validTurn,
+          receipt: { ...validReceipt, queueEntryIds: ["forbidden"] },
+        },
+      ];
+      for (const invalid of invalidResults) {
+        const { client, service } = setup();
+        client.on("turn/start", () => invalid as TurnStartResponse);
+        await service.open("ref-1");
+        await expect(service.send(textInput("hello"))).rejects.toThrow(
+          /ConversationService/,
+        );
+      }
+    });
+
+    it("enforces exact steer, queue, and interrupt receipt fields", async () => {
+      const cases = [
+        {
+          method: "turn/steer" as const,
+          invoke: (service: LiveConversationService) =>
+            service.steer(textInput("steer")),
+          invalid: { receipt: makeReceipt("interrupt") },
+        },
+        {
+          method: "turn/queue" as const,
+          invoke: (service: LiveConversationService) =>
+            service.queue(textInput("queue")),
+          invalid: {
+            receipt: { ...makeReceipt("queue"), queueEntryIds: [] },
+          },
+        },
+        {
+          method: "turn/interrupt" as const,
+          invoke: (service: LiveConversationService) => service.interrupt(),
+          invalid: {
+            receipt: { ...makeReceipt("interrupt"), turnId: "forbidden" },
+          },
+        },
+      ];
+      for (const testCase of cases) {
+        const { client, service } = setup();
+        client.on(testCase.method, () => testCase.invalid as never);
+        await service.open("ref-1");
+        await expect(testCase.invoke(service)).rejects.toThrow(
+          /ConversationService/,
+        );
+      }
     });
 
     it("compact calls thread/compact/start", async () => {
@@ -451,7 +537,7 @@ describe("ConversationService", () => {
       const { client, service } = setup({ thread });
       client.on(
         "turn/steer",
-        () => ({ receipt: makeReceipt() }) as TurnSteerResponse,
+        () => ({ receipt: makeReceipt("steer") }) as TurnSteerResponse,
       );
       await service.open("ref-1");
       await expect(service.steer(textInput("steer"))).rejects.toThrow();
@@ -471,7 +557,7 @@ describe("ConversationService", () => {
       const { client, service } = setup({ thread });
       client.on(
         "turn/queue",
-        () => ({ receipt: makeReceipt() }) as TurnQueueResponse,
+        () => ({ receipt: makeReceipt("queue") }) as TurnQueueResponse,
       );
       await service.open("ref-1");
       await expect(service.queue(textInput("q"))).rejects.toThrow();
@@ -491,7 +577,7 @@ describe("ConversationService", () => {
       const { client, service } = setup({ thread });
       client.on(
         "turn/interrupt",
-        () => ({ receipt: makeReceipt() }) as TurnInterruptResponse,
+        () => ({ receipt: makeReceipt("interrupt") }) as TurnInterruptResponse,
       );
       await service.open("ref-1");
       await expect(service.interrupt()).rejects.toThrow();
@@ -2024,15 +2110,15 @@ describe("ConversationService", () => {
       );
       client.on(
         "turn/steer",
-        () => ({ receipt: makeReceipt() }) as TurnSteerResponse,
+        () => ({ receipt: makeReceipt("steer") }) as TurnSteerResponse,
       );
       client.on(
         "turn/queue",
-        () => ({ receipt: makeReceipt() }) as TurnQueueResponse,
+        () => ({ receipt: makeReceipt("queue") }) as TurnQueueResponse,
       );
       client.on(
         "turn/interrupt",
-        () => ({ receipt: makeReceipt() }) as TurnInterruptResponse,
+        () => ({ receipt: makeReceipt("interrupt") }) as TurnInterruptResponse,
       );
       client.on("thread/compact/start", () => EMPTY_RESPONSE);
       client.on("thread/shutdown", () => EMPTY_RESPONSE);

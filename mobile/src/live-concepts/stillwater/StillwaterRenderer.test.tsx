@@ -261,7 +261,7 @@ function buildState(
       canQueue: true,
       canInterrupt: false,
       pending: null,
-      accepted: { kind: "send", receipt: 9 },
+      accepted: { kind: "send" },
       error: null,
     },
     ui: {
@@ -478,7 +478,7 @@ describe("StillwaterRenderer conversation surface", () => {
       composer: {
         ...buildState().composer,
         draft: "draft-sentinel",
-        accepted: { kind: "send", receipt: 9 },
+        accepted: { kind: "send" },
       },
     });
     const { container, dispatch, rerender } = renderSurface(state);
@@ -487,7 +487,7 @@ describe("StillwaterRenderer conversation surface", () => {
     );
     expect(
       screen.getByRole("status", {
-        name: "Send accepted; update 9",
+        name: "Send accepted by Hub",
       }),
     ).toBeVisible();
     expect(

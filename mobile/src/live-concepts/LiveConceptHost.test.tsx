@@ -312,8 +312,7 @@ describe("LiveConceptHost ownership", () => {
         .getState()
         .setQuestionDraft("opaque-question", questionDraft);
       harness.uiStore.getState().setScrollAnchor("anchor-scope", {
-        itemKey: "opaque-item",
-        offset: 19,
+        scrollTop: 19,
       });
     });
     const conversationBefore = harness.runtime.conversationStore.getState();
@@ -339,6 +338,54 @@ describe("LiveConceptHost ownership", () => {
     expect(health).not.toHaveBeenCalled();
     expect(select).not.toHaveBeenCalled();
     expect(harness.writes).toEqual(["field-notes"]);
+  });
+
+  it("captures and restores real conversation and work scroller positions per concept", async () => {
+    const harness = makeHarness();
+    await openConversation(
+      harness,
+      conversation([{ kind: "user", id: "scroll-item", text: "scroll" }]),
+    );
+    const { container, rerender } = render(
+      <LiveConceptHost {...harness.props} surface="conversation" />,
+    );
+    let scroller = container.querySelector<HTMLElement>(
+      "[data-live-concept-scroller='true']",
+    );
+    expect(scroller).not.toBeNull();
+    if (scroller === null) return;
+    scroller.scrollTop = 147;
+    fireEvent.scroll(scroller);
+
+    act(() => harness.uiStore.getState().setConcept("constellation"));
+    scroller = container.querySelector<HTMLElement>(
+      "[data-live-concept-scroller='true']",
+    );
+    expect(scroller?.scrollTop).toBe(0);
+    if (scroller === null) return;
+    scroller.scrollTop = 63;
+    fireEvent.scroll(scroller);
+
+    act(() => harness.uiStore.getState().setConcept("stillwater"));
+    scroller = container.querySelector<HTMLElement>(
+      "[data-live-concept-scroller='true']",
+    );
+    expect(scroller?.scrollTop).toBe(147);
+
+    rerender(<LiveConceptHost {...harness.props} surface="work" />);
+    scroller = container.querySelector<HTMLElement>(
+      "[data-live-concept-scroller='true']",
+    );
+    expect(scroller?.scrollTop).toBe(0);
+    if (scroller === null) return;
+    scroller.scrollTop = 22;
+    fireEvent.scroll(scroller);
+    rerender(<LiveConceptHost {...harness.props} surface="conversation" />);
+    expect(
+      container.querySelector<HTMLElement>(
+        "[data-live-concept-scroller='true']",
+      )?.scrollTop,
+    ).toBe(147);
   });
 
   it("projects roster, conversation with truncation ownership, and strict activity", async () => {
@@ -570,8 +617,7 @@ describe("LiveConceptHost ownership", () => {
       });
       harness.uiStore.getState().setFocusedItemKey("item-key");
       harness.uiStore.getState().setScrollAnchor("scope", {
-        itemKey: "item-key",
-        offset: 8,
+        scrollTop: 8,
       });
     });
     const resetProfileScope = vi.spyOn(

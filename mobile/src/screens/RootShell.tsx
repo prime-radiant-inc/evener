@@ -95,6 +95,8 @@ interface ActiveProfileGraph {
   unsubscribeRoster: () => void;
   unsubscribeState: () => void;
   unsubscribeHandshake: () => void;
+  handshakeCount: number;
+  reconnectRehydrate: Promise<void>;
 }
 
 interface PendingProfileGraphDisposal {
@@ -362,6 +364,8 @@ export function RootShell({ services, stores }: RootShellProps): JSX.Element {
       unsubscribeRoster: () => {},
       unsubscribeState: () => {},
       unsubscribeHandshake: () => {},
+      handshakeCount: 0,
+      reconnectRehydrate: Promise.resolve(),
     };
     activeProfileGraphRef.current = graph;
     graph.unsubscribeRoster = connectRosterNotifications(
@@ -387,6 +391,23 @@ export function RootShell({ services, stores }: RootShellProps): JSX.Element {
         return;
       }
       setHandshake(result);
+      graph.handshakeCount += 1;
+      if (graph.handshakeCount > 1) {
+        graph.reconnectRehydrate = graph.reconnectRehydrate.then(async () => {
+          if (
+            graph.disposed ||
+            !graph.active ||
+            activeProfileGraphRef.current !== graph ||
+            !sameProfileScope(ownedProfileScopeRef.current, graph.scope) ||
+            conversationStore.getState().ref === null
+          ) {
+            return;
+          }
+          await conversationStore
+            .getState()
+            .rehydrate(scoped.conversationService, activityStore.getState());
+        });
+      }
     });
     setReachability("connecting");
 

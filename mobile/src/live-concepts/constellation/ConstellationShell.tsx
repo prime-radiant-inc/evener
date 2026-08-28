@@ -52,7 +52,11 @@ export function ConstellationShell({
       data-thread-key={state.conversation?.threadKey}
       aria-label={conceptRootAxLabel(state)}
     >
-      <main className="co-scroll" data-route={surface}>
+      <main
+        className="co-scroll"
+        data-route={surface}
+        data-live-concept-scroller="true"
+      >
         <header className="co-topbar">
           <div className="co-topbar__leading">
             {pushed ? (

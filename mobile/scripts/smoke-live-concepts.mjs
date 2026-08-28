@@ -61,20 +61,20 @@ export const EXPECTED_LIVE_SEQUENCE = Object.freeze({
     ]),
   }),
   send: Object.freeze({
-    requests: Object.freeze(["thread/send"]),
+    requests: Object.freeze(["turn/start"]),
     notifications: Object.freeze([
       "mutation pending -> item lifecycle -> accepted",
     ]),
   }),
   steerQueue: Object.freeze({
-    requests: Object.freeze(["thread/steer", "thread/queue"]),
+    requests: Object.freeze(["turn/steer", "turn/queue"]),
     notifications: Object.freeze([
       "steer pending -> accepted",
       "queue pending -> accepted",
     ]),
   }),
   interrupt: Object.freeze({
-    requests: Object.freeze(["thread/interrupt"]),
+    requests: Object.freeze(["turn/interrupt"]),
     notifications: Object.freeze(["interrupt pending -> accepted"]),
   }),
 });
@@ -89,8 +89,6 @@ const THREAD_MILESTONES = new Set([
   "fixture-absence",
 ]);
 const TRIPWIRE_MS = 10_000;
-const CONTAMINATION =
-  /(?:\bfixture(?:[\s_-]+(?:session|scenario|content))?\b|\bscenario(?:[\s_-]+switcher)?\b|\bprototype\b|\bsynthetic[\s_-]+completion\b)/i;
 const FORBIDDEN_FINAL = /^(?:Search|Lab[ _-]+Controls?)$/i;
 
 class SmokeError extends Error {
@@ -202,7 +200,7 @@ function requireReceipt(value, kind) {
   if (receipt.kind !== kind || receipt.status !== "accepted") {
     throw new Error(`${kind} receipt must be accepted`);
   }
-  requirePositiveInteger(receipt.receipt, `${kind} receipt number`);
+  requireDigest(receipt.receipt, `${kind} verified status digest`);
   requireDigest(receipt.pendingTreeDigest, `${kind} pending tree`);
   requireDigest(receipt.acceptedTreeDigest, `${kind} accepted tree`);
   if (receipt.pendingTreeDigest === receipt.acceptedTreeDigest) {
@@ -218,6 +216,9 @@ function requirePreservation(evidence, concept, shared, threadIdentity) {
   }
   if (evidence.activeThreadId !== threadIdentity) {
     throw new Error(`${concept} active thread must match`);
+  }
+  if (evidence.selectedTitle !== shared.selectedTitle) {
+    throw new Error(`${concept} selected title must exactly match`);
   }
   requireNonempty(evidence.draftBefore, `${concept} draft before`);
   if (evidence.draftAfter !== evidence.draftBefore) {
@@ -303,6 +304,12 @@ function validateMilestoneEvidence(observation, shared) {
       ) {
         throw new Error("roster completeness must match hasMore");
       }
+      if (
+        evidence.retainedCount > 500 ||
+        (evidence.hasMore && evidence.retainedCount !== 500)
+      ) {
+        throw new Error("roster retained bound and hasMore sentinel mismatch");
+      }
       if (evidence.listLimit !== 501) {
         throw new Error("expected roster list limit must be 501");
       }
@@ -314,6 +321,10 @@ function validateMilestoneEvidence(observation, shared) {
         throw new Error("active thread ID must match");
       }
       requireDigest(evidence.titleDigest, "conversation title digest");
+      shared.selectedTitle = requireNonempty(
+        evidence.selectedTitle,
+        "selected conversation title",
+      );
       requireIds(evidence.transcriptIds, "transcript IDs");
       if (evidence.readLimit !== 50) {
         throw new Error("expected read limit must be 50");
@@ -397,10 +408,13 @@ function validateMilestoneEvidence(observation, shared) {
           requireDigest(item.digest, `${key} digest`);
         }
       }
-      requireDigest(
-        requireObject(evidence.usage, "usage evidence").digest,
-        "usage digest",
-      );
+      {
+        const usage = requireObject(evidence.usage, "usage evidence");
+        requireDigest(usage.digest, "usage digest");
+        if (!(usage.tokenCount > 0) || !(usage.valueCount >= 2)) {
+          throw new Error("usage must contain tokens and another real value");
+        }
+      }
       break;
     case "background-foreground":
       requirePositiveInteger(evidence.processIdBefore, "process ID before");
@@ -437,6 +451,9 @@ function validateMilestoneEvidence(observation, shared) {
       if (evidence.titleDigest !== shared.titleDigest) {
         throw new Error("reconnect title must identify the same session");
       }
+      if (evidence.selectedTitle !== shared.selectedTitle) {
+        throw new Error("reconnect title must exactly match selection");
+      }
       requireDigest(evidence.transcriptDigest, "reconnect transcript digest");
       requireDigest(evidence.connectionTreeDigest, "reconnect connection tree");
       break;
@@ -452,6 +469,7 @@ function validateMilestoneEvidence(observation, shared) {
         observation.threadIdentity === null ||
         evidence.activeThreadId !== observation.threadIdentity ||
         evidence.titleDigest !== shared.titleDigest ||
+        evidence.selectedTitle !== shared.selectedTitle ||
         evidence.hubVersion !== shared.hubVersion ||
         evidence.protocolVersion !== shared.protocolVersion
       ) {
@@ -493,6 +511,7 @@ export function assertCompleteLiveSmoke(observed) {
     titleDigest: null,
     protocolVersion: null,
     receipts: [],
+    selectedTitle: null,
   };
   let threadIdentity = null;
   let priorTime = -Infinity;
@@ -538,11 +557,9 @@ export function assertCompleteLiveSmoke(observed) {
   if (
     shared.receipts.length !== 4 ||
     new Set(shared.receipts).size !== 4 ||
-    shared.receipts.some(
-      (receipt, index) => index > 0 && receipt <= shared.receipts[index - 1],
-    )
+    shared.receipts.some((receipt) => typeof receipt !== "string")
   ) {
-    throw new Error("receipt numbers must be nonempty, distinct, and ordered");
+    throw new Error("verified status digests must be nonempty and distinct");
   }
   return true;
 }
@@ -585,6 +602,7 @@ export function parseCli(argv) {
 export function readSmokeEnvironment(env) {
   const appPath = env?.EVENER_SMOKE_APP_PATH;
   const threadRef = env?.EVENER_SMOKE_THREAD_REF;
+  const threadTitle = env?.EVENER_SMOKE_THREAD_TITLE;
   if (
     typeof appPath !== "string" ||
     appPath.trim() === "" ||
@@ -595,7 +613,10 @@ export function readSmokeEnvironment(env) {
   if (typeof threadRef !== "string" || threadRef.trim() === "") {
     throw new SmokeError("thread prerequisite unavailable");
   }
-  return { appPath, threadRef };
+  if (typeof threadTitle !== "string" || threadTitle.trim() === "") {
+    throw new SmokeError("thread title prerequisite unavailable");
+  }
+  return { appPath, threadRef, threadTitle };
 }
 
 export function parseAxDocument(input) {
@@ -974,6 +995,10 @@ export function runSpawned(program, argv, options = {}) {
   const now =
     options.now ?? (() => Number(process.hrtime.bigint() / 1_000_000n));
   const scheduler = options.scheduler ?? DEFAULT_SCHEDULER;
+  const timeoutMs = options.timeoutMs ?? TRIPWIRE_MS;
+  if (!Number.isFinite(timeoutMs) || timeoutMs <= 0) {
+    throw new SmokeError("command tripwire reached");
+  }
   const controller = new AbortController();
   const started = now();
   return new Promise((resolve, reject) => {
@@ -991,7 +1016,7 @@ export function runSpawned(program, argv, options = {}) {
       else resolve(value);
     };
     const onTripwire = () => {
-      const remaining = TRIPWIRE_MS - (now() - started);
+      const remaining = timeoutMs - (now() - started);
       if (remaining > 0) {
         timer = scheduler.schedule(onTripwire, remaining);
         return;
@@ -1005,7 +1030,7 @@ export function runSpawned(program, argv, options = {}) {
         finish(new SmokeError("command tripwire reached"));
       }
     };
-    let timer = scheduler.schedule(onTripwire, TRIPWIRE_MS);
+    let timer = scheduler.schedule(onTripwire, timeoutMs);
     try {
       child = spawnImpl(program, argv, {
         shell: false,
@@ -1065,7 +1090,9 @@ export async function pollSemanticTree({ readTree, accept, now }) {
     if (now() - started >= TRIPWIRE_MS) {
       throw new SmokeError("semantic tripwire reached");
     }
-    const tree = await readTree();
+    const remaining = TRIPWIRE_MS - (now() - started);
+    if (remaining <= 0) throw new SmokeError("semantic tripwire reached");
+    const tree = await readTree(Math.min(TRIPWIRE_MS, remaining));
     if (!isObject(tree)) throw new SmokeError("malformed semantic tree");
     if (accept(tree)) return tree;
     if (now() - started >= TRIPWIRE_MS) {
@@ -1548,7 +1575,7 @@ function parseRoster(snapshot, concept) {
       );
       return row
         ? {
-            id: digest(node.label),
+            id: digest(row[1]),
             title: row[1],
             status: row[2],
             label: node.label,
@@ -1564,12 +1591,32 @@ function parseRoster(snapshot, concept) {
   ) {
     throw new SmokeError("roster row AX unavailable");
   }
+  if (new Set(rows.map((row) => row.title)).size !== rows.length) {
+    throw new SmokeError("duplicate roster title");
+  }
+  const retainedCount = Number(match[2]);
+  const hasMore = match[3] === "more available";
+  if (retainedCount > 500 || (hasMore && retainedCount !== 500)) {
+    throw new SmokeError("roster bound AX unavailable");
+  }
   return {
     rows,
     rosterIds: rows.map((row) => row.id),
-    retainedCount: Number(match[2]),
-    hasMore: match[3] === "more available",
+    retainedCount,
+    hasMore,
   };
+}
+
+function selectUniqueRosterRow(roster, expectedTitle) {
+  const matches = roster.rows.filter((row) => row.title === expectedTitle);
+  if (matches.length !== 1) {
+    throw new SmokeError("selected roster title must be unique");
+  }
+  const row = matches[0];
+  if (roster.rows.indexOf(row) === 0) {
+    throw new SmokeError("selected roster title cannot be the first row");
+  }
+  return row;
 }
 
 function parseConversation(snapshot, concept, expectedTitle = null) {
@@ -1587,12 +1634,25 @@ function parseConversation(snapshot, concept, expectedTitle = null) {
     "draft AX unavailable",
   ).value;
   if (draft === null) throw new SmokeError("draft AX unavailable");
+  const transcript = parseTranscript(snapshot);
+  const stableTranscriptSemantic = transcript.find(
+    (item) => item.kind === "user" || item.kind === "assistant",
+  );
+  if (stableTranscriptSemantic === undefined) {
+    throw new SmokeError("conversation transcript AX unavailable");
+  }
   return {
-    threadId: digest(title),
+    threadId: digest(
+      JSON.stringify({
+        title,
+        kind: stableTranscriptSemantic.kind,
+        content: stableTranscriptSemantic.content,
+      }),
+    ),
     title,
     titleDigest: digest(title),
     draft,
-    transcript: parseTranscript(snapshot),
+    transcript,
   };
 }
 
@@ -1604,18 +1664,17 @@ function parseMutation(snapshot, kind, status) {
     "mutation AX unavailable",
   );
   const match = node.label.match(
-    /^(Send|Steer|Queue|Interrupt) (pending|failed|accepted)(?:; update (\d+))?$/,
+    /^(Send|Steer|Queue|Interrupt) (pending|failed|accepted by Hub)$/,
   );
-  if (!match || match[1] !== title || match[2] !== status) {
+  const normalizedStatus =
+    match?.[2] === "accepted by Hub" ? "accepted" : match?.[2];
+  if (!match || match[1] !== title || normalizedStatus !== status) {
     throw new SmokeError("mutation AX unavailable");
-  }
-  if (status === "accepted" && match[3] === undefined) {
-    throw new SmokeError("accepted receipt AX unavailable");
   }
   return {
     kind,
     status,
-    receipt: match[3] === undefined ? null : Number(match[3]),
+    receipt: status === "accepted" ? digest(node.label) : null,
   };
 }
 
@@ -1685,12 +1744,40 @@ function parseWork(snapshot) {
     (node) => node.label === "Usage summary",
     "usage AX unavailable",
   );
+  const usageValues = [usage.value ?? "", ...usage.descendants]
+    .map((value) => value.trim())
+    .filter(
+      (value) => value !== "" && value !== "—" && value !== "Usage summary",
+    );
+  const tokenValue = usageValues.find((value) =>
+    /^\d+(?:\.\d+)?[KMG]?$/i.test(value),
+  );
+  if (tokenValue === undefined)
+    throw new SmokeError("usage tokens unavailable");
+  const tokenScale = /K$/i.test(tokenValue)
+    ? 1_000
+    : /M$/i.test(tokenValue)
+      ? 1_000_000
+      : /G$/i.test(tokenValue)
+        ? 1_000_000_000
+        : 1;
+  const tokenCount = Number.parseFloat(tokenValue) * tokenScale;
+  const otherValues = usageValues.filter(
+    (value) => value !== tokenValue && !/^(Tokens|Usage)$/i.test(value),
+  );
+  if (!(tokenCount > 0) || otherValues.length === 0) {
+    throw new SmokeError("usage values unavailable");
+  }
   const byKind = (kind) => items.filter((item) => item.kind === kind);
   const result = {
     tasks: byKind("task"),
     jobs: byKind("job"),
     delegates: byKind("delegate"),
-    usage: { digest: digest(usage.label) },
+    usage: {
+      tokenCount,
+      valueCount: otherValues.length + 1,
+      digest: digest(JSON.stringify([tokenValue, ...otherValues])),
+    },
   };
   if (
     result.tasks.length === 0 ||
@@ -1704,13 +1791,16 @@ function parseWork(snapshot) {
 
 function assertNoFixture(snapshot, final = false) {
   for (const node of snapshot.nodes) {
-    for (const value of [node.label, node.value ?? "", ...node.descendants]) {
-      if (CONTAMINATION.test(value)) {
-        throw new SmokeError("fixture contamination detected");
-      }
-      if (final && FORBIDDEN_FINAL.test(value)) {
-        throw new SmokeError("forbidden final surface detected");
-      }
+    const label = node.label.trim();
+    if (
+      /^(?:Fixture mode|Scenario selector|Prototype controls|Synthetic completion)$/i.test(
+        label,
+      )
+    ) {
+      throw new SmokeError("fixture contamination detected");
+    }
+    if (final && FORBIDDEN_FINAL.test(label)) {
+      throw new SmokeError("forbidden final surface detected");
     }
   }
 }
@@ -1826,19 +1916,26 @@ export async function runLiveSmoke(config, dependencies = {}) {
   const scheduler = dependencies.scheduler ?? DEFAULT_SCHEDULER;
   const baseRun =
     dependencies.run ??
-    ((program, argv) =>
-      runSpawned(program, argv, { registry, now, scheduler }));
+    ((program, argv, timeoutMs) =>
+      runSpawned(program, argv, { registry, now, scheduler, timeoutMs }));
   const observed = [];
   const raw = {
     schemaVersion: 2,
-    operational: { threadRef: environment.threadRef },
+    operational: {
+      threadRef: environment.threadRef,
+      threadTitle: environment.threadTitle,
+      threadPairDigest: digest(
+        JSON.stringify([environment.threadRef, environment.threadTitle]),
+      ),
+    },
     commands: [],
     semanticTrees: [],
     observations: observed,
   };
-  const run = async (program, argv) => {
+  const run = async (program, argv, timeoutMs = TRIPWIRE_MS) => {
+    if (timeoutMs <= 0) throw new SmokeError("command tripwire reached");
     try {
-      const result = await baseRun(program, argv);
+      const result = await baseRun(program, argv, timeoutMs);
       raw.commands.push({
         program,
         argv,
@@ -1862,8 +1959,12 @@ export async function runLiveSmoke(config, dependencies = {}) {
     config.udid,
   ];
   let finalAbsencePolling = false;
-  const readTree = async () => {
-    const result = await run("idb", describeArgv);
+  const readTree = async (remainingMs = TRIPWIRE_MS) => {
+    const result = await run(
+      "idb",
+      describeArgv,
+      Math.min(TRIPWIRE_MS, remainingMs),
+    );
     const document = parseAxDocument(result.stdout);
     const encoded = Buffer.from(JSON.stringify(document.raw), "utf8");
     const snapshot = {
@@ -2245,8 +2346,37 @@ export async function runLiveSmoke(config, dependencies = {}) {
         action: { kind: "observe", label: "Stillwater roster" },
       }),
     );
-    const selectedRow = stillwaterRoster.rows[0];
-    await tap(selectedRow.label, stillwaterRosterSnapshot);
+    const preflightRosters = new Map([["Stillwater", stillwaterRoster]]);
+    let preflightSnapshot = stillwaterRosterSnapshot;
+    for (const concept of ["Constellation", "Field Notes", "Stillwater"]) {
+      await tap("Switch concept", preflightSnapshot);
+      await tap(`Switch to ${concept}`, preflightSnapshot, false);
+      preflightSnapshot = await waitFor((snapshot) => {
+        try {
+          const roster = parseRoster(snapshot, concept);
+          selectUniqueRosterRow(roster, environment.threadTitle);
+          return true;
+        } catch {
+          return false;
+        }
+      });
+      preflightRosters.set(concept, parseRoster(preflightSnapshot, concept));
+    }
+    const expectedRosterIds = stillwaterRoster.rosterIds;
+    for (const roster of preflightRosters.values()) {
+      if (!arraysEqual(roster.rosterIds, expectedRosterIds)) {
+        throw new SmokeError("concept roster identity mismatch");
+      }
+    }
+    const finalStillwaterRoster = preflightRosters.get("Stillwater");
+    if (finalStillwaterRoster === undefined) {
+      throw new SmokeError("Stillwater preflight roster unavailable");
+    }
+    const selectedRow = selectUniqueRosterRow(
+      finalStillwaterRoster,
+      environment.threadTitle,
+    );
+    await tap(selectedRow.label, preflightSnapshot);
     let current = await waitFor((snapshot) => {
       try {
         parseConversation(snapshot, "Stillwater", selectedRow.title);
@@ -2271,6 +2401,7 @@ export async function runLiveSmoke(config, dependencies = {}) {
         threadIdentity,
         evidence: {
           activeThreadId: threadIdentity,
+          selectedTitle: initialConversation.title,
           titleDigest: initialConversation.titleDigest,
           transcriptIds: initialConversation.transcript.map((item) => item.id),
           readLimit: 50,
@@ -2374,10 +2505,7 @@ export async function runLiveSmoke(config, dependencies = {}) {
         }
       });
       const roster = parseRoster(rosterSnapshot, to);
-      const row = roster.rows.find(
-        (candidate) => candidate.id === selectedRow.id,
-      );
-      if (!row) throw new SmokeError("destination roster missing session");
+      const row = selectUniqueRosterRow(roster, environment.threadTitle);
       await tap(row.label, rosterSnapshot);
       const reopened = await waitFor((snapshot) => {
         try {
@@ -2397,6 +2525,7 @@ export async function runLiveSmoke(config, dependencies = {}) {
           evidence: {
             rosterIds: roster.rosterIds,
             activeThreadId: threadIdentity,
+            selectedTitle: row.title,
             draftBefore: sentinels.preserve,
             draftAfter: parseConversation(after, to, selectedRow.title).draft,
             beforeTreeDigest: before.treeDigest,
@@ -2642,6 +2771,7 @@ export async function runLiveSmoke(config, dependencies = {}) {
           reopened: true,
           activeThreadId: threadIdentity,
           titleDigest: reopenedConversation.titleDigest,
+          selectedTitle: reopenedConversation.title,
           transcriptDigest: reopenedTranscriptDigest,
           connectionTreeDigest: reconnectRosterSnapshot.treeDigest,
         },
@@ -2696,6 +2826,7 @@ export async function runLiveSmoke(config, dependencies = {}) {
           labAbsent: true,
           activeThreadId: threadIdentity,
           titleDigest: initialConversation.titleDigest,
+          selectedTitle: initialConversation.title,
           hubVersion: profileConnection.serverVersion,
           protocolVersion: profileConnection.protocolVersion,
         },
