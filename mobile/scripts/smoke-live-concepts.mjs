@@ -84,7 +84,10 @@ const OPAQUE_ID = /^[A-Za-z0-9._:-]+$/;
 const SAFE_VERSION = /^[A-Za-z0-9][A-Za-z0-9._+:-]{0,127}$/;
 const SAFE_BUNDLE_ID = /^[A-Za-z0-9][A-Za-z0-9.-]{0,254}$/;
 const SAFE_DEVICE_MODEL = /^[A-Za-z0-9][A-Za-z0-9 ._()+-]{0,127}$/;
-const THREAD_MILESTONES = new Set(REQUIRED_LIVE_MILESTONES.slice(2, 11));
+const THREAD_MILESTONES = new Set([
+  ...REQUIRED_LIVE_MILESTONES.slice(2, 11),
+  "fixture-absence",
+]);
 const TRIPWIRE_MS = 10_000;
 const CONTAMINATION =
   /(?:\bfixture(?:[\s_-]+(?:session|scenario|content))?\b|\bscenario(?:[\s_-]+switcher)?\b|\bprototype\b|\bsynthetic[\s_-]+completion\b)/i;
@@ -282,6 +285,7 @@ function validateMilestoneEvidence(observation, shared) {
         throw new Error("profile must be connected");
       }
       shared.hubVersion = hub.observedVersion;
+      shared.protocolVersion = hub.protocolVersion;
       shared.app = installed;
       break;
     }
@@ -444,6 +448,15 @@ function validateMilestoneEvidence(observation, shared) {
       ) {
         throw new Error("fixture, Search, and Lab must be absent");
       }
+      if (
+        observation.threadIdentity === null ||
+        evidence.activeThreadId !== observation.threadIdentity ||
+        evidence.titleDigest !== shared.titleDigest ||
+        evidence.hubVersion !== shared.hubVersion ||
+        evidence.protocolVersion !== shared.protocolVersion
+      ) {
+        throw new Error("final app, thread, and Hub identity must match");
+      }
       break;
     default:
       throw new Error("unsupported milestone");
@@ -478,6 +491,7 @@ export function assertCompleteLiveSmoke(observed) {
     rosterIds: null,
     hubVersion: null,
     titleDigest: null,
+    protocolVersion: null,
     receipts: [],
   };
   let threadIdentity = null;
@@ -591,13 +605,65 @@ export function parseAxDocument(input) {
   } catch {
     throw new SmokeError("malformed complete AX document");
   }
+  const expectedKeys = [
+    "automation",
+    "backend",
+    "coverage",
+    "elements",
+    "frames",
+    "interaction",
+    "modal",
+    "profile",
+    "screen",
+    "target",
+    "truncated",
+  ];
   if (
     !isObject(document) ||
+    !arraysEqual(Object.keys(document).sort(), expectedKeys) ||
     typeof document.backend !== "string" ||
-    document.backend.trim() === "" ||
-    Object.hasOwn(document, "format")
+    !["ax", "axbridge", "axbridge-persistent"].includes(document.backend) ||
+    document.truncated !== false ||
+    document.modal !== null ||
+    !Array.isArray(document.elements)
   ) {
     throw new SmokeError("malformed complete AX document");
+  }
+  const screen = document.screen;
+  if (
+    !isObject(screen) ||
+    !arraysEqual(Object.keys(screen).sort(), [
+      "coordinate_space",
+      "height",
+      "width",
+    ]) ||
+    screen.coordinate_space !== "screen" ||
+    typeof screen.width !== "number" ||
+    !Number.isFinite(screen.width) ||
+    screen.width <= 0 ||
+    typeof screen.height !== "number" ||
+    !Number.isFinite(screen.height) ||
+    screen.height <= 0
+  ) {
+    throw new SmokeError("malformed complete AX screen");
+  }
+  const target = document.target;
+  if (
+    !isObject(target) ||
+    !arraysEqual(Object.keys(target).sort(), [
+      "kind",
+      "match_key",
+      "pid",
+      "value",
+      "x",
+      "y",
+    ]) ||
+    target.kind !== "frontmost" ||
+    [target.pid, target.x, target.y, target.value, target.match_key].some(
+      (value) => value !== null,
+    )
+  ) {
+    throw new SmokeError("malformed complete AX target");
   }
   const nodes = [];
   const descendantStrings = (root) => {
@@ -609,7 +675,7 @@ export function parseAxDocument(input) {
       }
       if (!isObject(value)) return;
       if (!isRoot) {
-        for (const key of ["AXLabel", "AXValue"]) {
+        for (const key of ["label", "value"]) {
           const entry = value[key];
           if (
             ["string", "number", "boolean"].includes(typeof entry) &&
@@ -630,8 +696,8 @@ export function parseAxDocument(input) {
       return;
     }
     if (!isObject(value)) return;
-    if (typeof value.AXLabel === "string" && value.AXLabel.trim() !== "") {
-      const rawValue = value.AXValue;
+    if (typeof value.label === "string" && value.label.trim() !== "") {
+      const rawValue = value.value;
       if (
         rawValue !== undefined &&
         rawValue !== null &&
@@ -639,22 +705,22 @@ export function parseAxDocument(input) {
       ) {
         throw new SmokeError("malformed-AX-node");
       }
-      const role = value.role ?? value.AXRole ?? null;
+      const role = value.type ?? null;
       if (role !== null && typeof role !== "string") {
         throw new SmokeError("malformed-AX-node");
       }
       nodes.push({
-        label: value.AXLabel,
+        label: value.label,
         value: rawValue == null ? null : String(rawValue),
         role,
         descendants: descendantStrings(value),
       });
     }
     for (const child of Object.values(value)) {
-      if (child !== value.AXLabel && child !== value.AXValue) visit(child);
+      if (child !== value.label && child !== value.value) visit(child);
     }
   };
-  visit(document);
+  visit(document.elements);
   if (nodes.length === 0) throw new SmokeError("missing AX node");
   return {
     backend: document.backend,
@@ -1194,6 +1260,10 @@ function buildSafeSummary(input, linkDigest) {
   const status = ["passed", "failed", "blocked"].includes(input.status)
     ? input.status
     : "failed";
+  const originDigest = safeDigestOrNull(input.hub?.originDigest);
+  if (status === "passed" && originDigest === null) {
+    throw new SmokeError("successful evidence requires origin digest");
+  }
   return {
     schemaVersion: 2,
     status,
@@ -1219,7 +1289,7 @@ function buildSafeSummary(input, linkDigest) {
     hub: {
       version: safeVersionOrNull(input.hub?.version),
       protocol: safeVersionOrNull(input.hub?.protocol),
-      originDigest: safeDigestOrNull(input.hub?.originDigest),
+      originDigest,
     },
     observations: Array.isArray(input.observations)
       ? input.observations.map(safeObservationSummary)
@@ -1634,14 +1704,13 @@ function parseWork(snapshot) {
 
 function assertNoFixture(snapshot, final = false) {
   for (const node of snapshot.nodes) {
-    if (
-      CONTAMINATION.test(node.label) ||
-      CONTAMINATION.test(node.value ?? "")
-    ) {
-      throw new SmokeError("fixture contamination detected");
-    }
-    if (final && FORBIDDEN_FINAL.test(node.label)) {
-      throw new SmokeError("forbidden final surface detected");
+    for (const value of [node.label, node.value ?? "", ...node.descendants]) {
+      if (CONTAMINATION.test(value)) {
+        throw new SmokeError("fixture contamination detected");
+      }
+      if (final && FORBIDDEN_FINAL.test(value)) {
+        throw new SmokeError("forbidden final surface detected");
+      }
     }
   }
 }
@@ -1792,6 +1861,7 @@ export async function runLiveSmoke(config, dependencies = {}) {
     "--udid",
     config.udid,
   ];
+  let finalAbsencePolling = false;
   const readTree = async () => {
     const result = await run("idb", describeArgv);
     const document = parseAxDocument(result.stdout);
@@ -1802,7 +1872,7 @@ export async function runLiveSmoke(config, dependencies = {}) {
       commandDigest: digest(JSON.stringify(["idb", ...describeArgv])),
       observedAtMonotonicMs: now(),
     };
-    assertNoFixture(snapshot);
+    if (!finalAbsencePolling) assertNoFixture(snapshot);
     raw.semanticTrees.push(document.raw);
     return snapshot;
   };
@@ -2112,6 +2182,7 @@ export async function runLiveSmoke(config, dependencies = {}) {
       (node) => /^https?:\/\//.test(node.label),
       "server origin AX unavailable",
     ).label;
+    const originDigest = digest(origin);
     await tap("Done", serverSheet);
     const installedApp = {
       id: initialApp.bundleId,
@@ -2128,7 +2199,7 @@ export async function runLiveSmoke(config, dependencies = {}) {
         expectedVersion: config.hubVersion,
         observedVersion: profileConnection.serverVersion,
         protocolVersion: profileConnection.protocolVersion,
-        originDigest: digest(origin),
+        originDigest,
       },
       connection: {
         status: profileConnection.status,
@@ -2578,19 +2649,55 @@ export async function runLiveSmoke(config, dependencies = {}) {
       }),
     );
 
-    const absence = await waitFor((snapshot) => {
-      assertNoFixture(snapshot, true);
-      return true;
+    finalAbsencePolling = true;
+    const absence = await pollSemanticTree({
+      readTree: async () => {
+        try {
+          return await readTree();
+        } catch {
+          return { invalidCompleteTree: true, nodes: [] };
+        }
+      },
+      accept: (snapshot) => {
+        try {
+          if (snapshot.invalidCompleteTree === true) return false;
+          const connection = parseConnection(snapshot);
+          const conversation = parseConversation(
+            snapshot,
+            "Field Notes",
+            selectedRow.title,
+          );
+          if (
+            connection.status !== "connected" ||
+            connection.serverVersion !== profileConnection.serverVersion ||
+            connection.protocolVersion !== profileConnection.protocolVersion ||
+            conversation.threadId !== threadIdentity ||
+            conversation.titleDigest !== initialConversation.titleDigest
+          ) {
+            return false;
+          }
+          assertNoFixture(snapshot, true);
+          return true;
+        } catch {
+          return false;
+        }
+      },
+      now,
     });
+    finalAbsencePolling = false;
     observed.push(
       makeObservation({
         milestone: "fixture-absence",
         snapshot: absence,
-        threadIdentity: null,
+        threadIdentity,
         evidence: {
           fixtureAbsent: true,
           searchAbsent: true,
           labAbsent: true,
+          activeThreadId: threadIdentity,
+          titleDigest: initialConversation.titleDigest,
+          hubVersion: profileConnection.serverVersion,
+          protocolVersion: profileConnection.protocolVersion,
         },
         action: { kind: "observe", label: "final AX absence" },
       }),
@@ -2613,7 +2720,7 @@ export async function runLiveSmoke(config, dependencies = {}) {
       hub: {
         version: profileConnection.serverVersion,
         protocol: profileConnection.protocolVersion,
-        originDigest: profileConnection.originDigest,
+        originDigest: profileEvidence.hub.originDigest,
       },
       observations: observed,
     };
