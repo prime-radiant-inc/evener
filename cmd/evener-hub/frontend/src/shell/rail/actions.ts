@@ -1,8 +1,11 @@
-// actions.ts wraps the AppWire and REST mutations the rail's row menu drives.
-// No optimistic UI: callers await the response's exact navigation targets
-// before removing their overlay.
+// actions.ts wraps the application mutations the rail's row menu drives:
+// favorite/rename/archive/delete-project. REST-backed actions retain their
+// handler-specific request helpers below; favorite and archive use the typed
+// AppWire client. No optimistic UI: callers await the response's exact
+// navigation targets before removing their overlay.
 import type { AppwireClientLike } from "../../protocol/testing/fakeClient";
 import type { FavoriteSetResponse, NavigationMutation } from "../../protocol/types.gen";
+import { connectionStore } from "../../stores/connection";
 
 /** Wire shape of GET /api/pin-sections — { id, name, member_count }. */
 export interface PinSectionSummary {
@@ -142,20 +145,21 @@ export async function renameSession(ref: string, name: string): Promise<Navigati
   return postJSON(`/api/sessions/${encodeURIComponent(ref)}/rename`, { name });
 }
 
-/** POST /api/archive. Body: {kind, id, archived, working_dir?}. working_dir
- * is required server-side for kind="project" (validated against identifier
- * .ResolveProject) and ignored for kind="session" - omitted here rather
- * than sent as undefined so a session archive body carries only the fields
- * the handler actually reads. */
+/** Sets an archive decision through evener/archive/set. workingDir is required
+ * server-side for kind="project" (validated against identifier.ResolveProject)
+ * and omitted for kind="session". */
 export async function setArchived(
   kind: "session" | "project",
   id: string,
   archived: boolean,
   workingDir?: string,
 ): Promise<NavigationMutationReceipt> {
-  const body: { kind: string; id: string; archived: boolean; working_dir?: string } = { kind, id, archived };
-  if (workingDir !== undefined) body.working_dir = workingDir;
-  return postJSON("/api/archive", body);
+  const client: AppwireClientLike | null = connectionStore.getState().client;
+  if (!client) {
+    throw new Error("archive action: no client connected; call connectionStore.connect(client) first");
+  }
+  const params = { kind, id, archived, ...(workingDir === undefined ? {} : { workingDir }) };
+  return client.request("evener/archive/set", params);
 }
 
 /** POST /api/project/delete. Body: {key, working_dir}. Destructive -

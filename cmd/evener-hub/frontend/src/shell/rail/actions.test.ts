@@ -1,6 +1,7 @@
 // @vitest-environment node
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { FakeClient } from "../../protocol/testing/fakeClient";
+import { connectionStore } from "../../stores/connection";
 import {
   assignSessionPin,
   deletePinSection,
@@ -38,9 +39,11 @@ let fetchMock: ReturnType<typeof vi.fn>;
 beforeEach(() => {
   fetchMock = vi.fn();
   vi.stubGlobal("fetch", fetchMock);
+  connectionStore.setState({ state: "idle", serverInfo: undefined, client: null });
 });
 
 afterEach(() => {
+  connectionStore.setState({ state: "idle", serverInfo: undefined, client: null });
   vi.unstubAllGlobals();
   vi.restoreAllMocks();
 });
@@ -203,31 +206,51 @@ describe("renameSession", () => {
 });
 
 describe("setArchived", () => {
-  test("POSTs /api/archive for a session using the provided canonical session ID", async () => {
-    fetchMock.mockResolvedValueOnce(jsonResponse({ ok: true }));
-    await setArchived("session", "s1", true);
-    const [, init] = fetchMock.mock.calls[0] as [string, RequestInit];
-    expect(JSON.parse(init.body as string)).toEqual({ kind: "session", id: "s1", archived: true });
+  test("sends the typed AppWire request for a session and returns its receipt", async () => {
+    const response = { ok: true, navigation: { generation_id: "g1", targets: [] } };
+    const client = new FakeClient();
+    client.on("evener/archive/set", (params) => {
+      expect(params).toEqual({ kind: "session", id: "s1", archived: true });
+      return response;
+    });
+    connectionStore.getState().connect(client);
+
+    await expect(setArchived("session", "s1", true)).resolves.toEqual(response);
+    expect(client.calls).toEqual([
+      { method: "evener/archive/set", params: { kind: "session", id: "s1", archived: true } },
+    ]);
   });
 
-  test("POSTs /api/archive for a session with no working_dir field at all", async () => {
-    fetchMock.mockResolvedValueOnce(jsonResponse({ ok: true }));
+  test("omits workingDir for a session", async () => {
+    const client = new FakeClient();
+    client.on("evener/archive/set", () => ({ ok: true, navigation: { generation_id: "g1", targets: [] } }));
+    connectionStore.getState().connect(client);
+
     await setArchived("session", "local:abc", true);
-    const [, init] = fetchMock.mock.calls[0] as [string, RequestInit];
-    expect(JSON.parse(init.body as string)).toEqual({ kind: "session", id: "local:abc", archived: true });
+    expect(client.calls[0]?.params).toEqual({ kind: "session", id: "local:abc", archived: true });
   });
 
-  test("POSTs /api/archive for a project with working_dir included", async () => {
-    fetchMock.mockResolvedValueOnce(jsonResponse({ ok: true }));
+  test("includes workingDir for a project", async () => {
+    const client = new FakeClient();
+    client.on("evener/archive/set", () => ({ ok: true, navigation: { generation_id: "g1", targets: [] } }));
+    connectionStore.getState().connect(client);
+
     await setArchived("project", "proj-key", true, "/home/user/proj");
-    expect(fetchMock).toHaveBeenCalledWith(
-      "/api/archive",
-      JSON_INIT({ kind: "project", id: "proj-key", archived: true, working_dir: "/home/user/proj" }),
-    );
+    expect(client.calls[0]?.params).toEqual({
+      kind: "project",
+      id: "proj-key",
+      archived: true,
+      workingDir: "/home/user/proj",
+    });
   });
 
-  test("rejects with the server's error message on failure", async () => {
-    fetchMock.mockResolvedValueOnce(jsonResponse({ error: "archive store error: boom" }, 500));
+  test("propagates an AppWire failure", async () => {
+    const client = new FakeClient();
+    client.on("evener/archive/set", () => {
+      throw new Error("archive store error: boom");
+    });
+    connectionStore.getState().connect(client);
+
     await expect(setArchived("session", "x", true)).rejects.toThrow("archive store error: boom");
   });
 });

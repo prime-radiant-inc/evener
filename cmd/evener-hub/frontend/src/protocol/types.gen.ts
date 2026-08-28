@@ -15,6 +15,18 @@ export interface AgentMessageResetParams {
   itemId: string;
 }
 
+export interface ArchiveParams {
+  kind: string;
+  id: string;
+  workingDir?: string;
+  archived: boolean;
+}
+
+export interface ArchiveResponse {
+  ok: boolean;
+  navigation: NavigationMutation;
+}
+
 export interface AttentionChanged {
   threadId: string;
   title: string;
@@ -1802,6 +1814,7 @@ export const METHOD_NAMES = [
   "evener/git/head",
   "evener/navigation/read",
   "evener/favorite/set",
+  "evener/archive/set",
   "evener/search",
   "evener/harnesses/list",
   "evener/upgrade",
@@ -1965,6 +1978,7 @@ export interface MethodTypes {
   "evener/git/head": { params: GitHeadParams; result: GitHeadResponse };
   "evener/navigation/read": { params: NavigationReadParams; result: NavigationReadResponse };
   "evener/favorite/set": { params: FavoriteSetParams; result: FavoriteSetResponse };
+  "evener/archive/set": { params: ArchiveParams; result: ArchiveResponse };
   "evener/search": { params: SearchParams; result: SearchResponse };
   "evener/harnesses/list": { params: HarnessListParams; result: HarnessListResponse };
   "evener/upgrade": { params: UpgradeParams; result: UpgradeResponse };

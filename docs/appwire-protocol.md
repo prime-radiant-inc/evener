@@ -121,6 +121,7 @@ no router (reserved).
 | `evener/git/head` | hub | `GitHeadParams` | `GitHeadResponse` | Reads git HEAD for a working directory. |
 | `evener/navigation/read` | hub | `NavigationReadParams` | `NavigationReadResponse` | Reads one bounded, revisioned hub navigation resource, optionally conditional on its ETag. |
 | `evener/favorite/set` | hub | `FavoriteSetParams` | `FavoriteSetResponse` | Sets or clears a project favorite and returns the committed navigation invalidation targets. |
+| `evener/archive/set` | hub | `ArchiveParams` | `ArchiveResponse` | Sets or clears an explicit project or session archive decision and returns its committed navigation receipt. |
 | `evener/search` | hub | `SearchParams` | `SearchResponse` | Searches live and persisted sessions for the hub command palette. |
 | `evener/harnesses/list` | hub | `HarnessListParams` | `HarnessListResponse` | Lists available harness descriptors. |
 | `evener/upgrade` | hub | `UpgradeParams` | `UpgradeResponse` | Performs or reports a evener binary upgrade. |
@@ -228,6 +229,24 @@ An embedded type contributes its own fields inline.
 | `ref` | `string` |  |  |
 | `turnId` | `string` |  |  |
 | `itemId` | `string` |  |  |
+
+
+### `ArchiveParams`
+
+| Field | Go type | Omitempty | Embedded |
+|-------|---------|-----------|----------|
+| `kind` | `appwire.ArchiveTargetKind` |  |  |
+| `id` | `string` |  |  |
+| `workingDir` | `string` | yes |  |
+| `archived` | `bool` |  |  |
+
+
+### `ArchiveResponse`
+
+| Field | Go type | Omitempty | Embedded |
+|-------|---------|-----------|----------|
+| `ok` | `bool` |  |  |
+| `navigation` | `appwire.NavigationMutation` |  |  |
 
 
 ### `AttentionChangedPayload`

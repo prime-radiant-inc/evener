@@ -197,6 +197,27 @@ func TestClientRequestWrappersRoundTrip(t *testing.T) {
 		{"ThreadShutdown", MethodThreadShutdown, `{"ref":"local:th"}`, EmptyResponse{}, func(ctx context.Context, c *Client) error {
 			return c.ThreadShutdown(ctx, ThreadShutdownParams{Ref: "local:th"})
 		}},
+		{"ArchiveSet", MethodEvenerArchiveSet, `{"kind":"project","id":"project-key","workingDir":"/tmp/project","archived":true}`, ArchiveResponse{
+			OK: true,
+			Navigation: NavigationMutation{
+				GenerationID: "generation-a",
+				Targets:      []NavigationInvalidationTarget{{Kind: NavigationTargetProject, ProjectKey: "project-key", Revision: 3}},
+			},
+		}, func(ctx context.Context, c *Client) error {
+			out, err := c.ArchiveSet(ctx, ArchiveParams{
+				Kind:       ArchiveTargetProject,
+				ID:         "project-key",
+				WorkingDir: "/tmp/project",
+				Archived:   true,
+			})
+			if err != nil {
+				return err
+			}
+			if !out.OK || out.Navigation.GenerationID != "generation-a" || len(out.Navigation.Targets) != 1 {
+				return errors.New("ArchiveSet decode mismatch")
+			}
+			return nil
+		}},
 		{"TurnInterrupt", MethodTurnInterrupt, `{"ref":"local:th","clientMutationId":"cm_interrupt"}`, EmptyResponse{}, func(ctx context.Context, c *Client) error {
 			return c.TurnInterrupt(ctx, TurnInterruptParams{Ref: "local:th", ClientMutationID: "cm_interrupt"})
 		}},

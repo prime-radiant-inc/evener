@@ -8,6 +8,7 @@ import type {
   NavigationProjectResource,
   NavigationSessionSummary,
 } from "../../protocol/types.gen";
+import { connectionStore } from "../../stores/connection";
 import { navigationStore, resetNavigationStoreForTests } from "../../stores/navigation/store";
 import { keyID, type ResourceKey, type ResourceState } from "../../stores/navigation/types";
 import { threadsStore } from "../../stores/threads";
@@ -132,6 +133,7 @@ function render(ui: ReactElement, client = new FakeClient()) {
 }
 
 beforeEach(() => {
+  connectionStore.setState({ state: "idle", serverInfo: undefined, client: null });
   resetNavigationStoreForTests();
   resetNavigationStoreForTests();
   resetToastStoreForTests();
@@ -140,6 +142,7 @@ beforeEach(() => {
 });
 afterEach(() => {
   cleanup();
+  connectionStore.setState({ state: "idle", serverInfo: undefined, client: null });
   vi.unstubAllGlobals();
 });
 
@@ -507,7 +510,7 @@ describe("resource-backed Rail", () => {
     fireEvent.click(screen.getByText("Proj"));
     expect(localStorage.getItem(EXPANSION_STORAGE_KEY)).toContain("projectnode:p");
   });
-  test("retains an archive overlay through REST response and removes it at target convergence", async () => {
+  test("retains an archive overlay through AppWire response and removes it at target convergence", async () => {
     let resolveConvergence!: () => void;
     const convergence = new Promise<void>((resolve) => {
       resolveConvergence = resolve;
@@ -515,14 +518,15 @@ describe("resource-backed Rail", () => {
     const applyNavigationMutation = vi.fn(() => convergence);
     installState([sectionResource("live", [summary({ title: "Archivable", rename: true })])]);
     navigationStore.setState({ applyNavigationMutation });
-    vi.stubGlobal(
-      "fetch",
-      vi.fn().mockResolvedValue(
-        jsonResponse({
-          navigation: { generation_id: "g1", targets: [{ kind: "section", section: "live", revision: 2 }] },
-        }),
-      ),
-    );
+    const client = new FakeClient();
+    client.on("evener/archive/set", (params) => {
+      expect(params).toEqual({ kind: "session", id: "a", archived: true });
+      return {
+        ok: true,
+        navigation: { generation_id: "g1", targets: [{ kind: "section", section: "live", revision: 2 }] },
+      };
+    });
+    connectionStore.getState().connect(client);
     render(<Rail />);
     fireEvent.click(screen.getByRole("button", { name: /actions for archivable/i }));
     fireEvent.click(screen.getByRole("menuitem", { name: "Archive" }));
@@ -533,9 +537,13 @@ describe("resource-backed Rail", () => {
     await act(async () => undefined);
     expect(screen.getByText("Archivable")).toBeTruthy();
   });
-  test("rolls back a rejected REST archive and leaves the row visible with an error toast", async () => {
+  test("rolls back a rejected AppWire archive and leaves the row visible with an error toast", async () => {
     installState([sectionResource("live", [summary({ title: "Rejectable" })])]);
-    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(jsonResponse({ error: "denied" }, 403)));
+    const client = new FakeClient();
+    client.on("evener/archive/set", () => {
+      throw new Error("denied");
+    });
+    connectionStore.getState().connect(client);
     render(<Rail />);
     fireEvent.click(screen.getByRole("button", { name: /actions for rejectable/i }));
     fireEvent.click(screen.getByRole("menuitem", { name: "Archive" }));

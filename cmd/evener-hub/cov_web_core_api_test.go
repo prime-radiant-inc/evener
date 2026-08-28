@@ -4,7 +4,6 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
-	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -99,36 +98,6 @@ func TestCovWebCoreAPIHelpersAndRoutes(t *testing.T) {
 
 }
 
-func TestCovWebCoreAPIDecisionValidation(t *testing.T) {
-	root := t.TempDir()
-	archive := hubcore.NewArchiveStore(filepath.Join(root, "decisions.db"))
-	poked := 0
-	web := NewWebServer(hubcore.WebConfig{Archive: archive, PokeAttention: func() { poked++ }})
-
-	for _, endpoint := range []string{"archive"} {
-		for _, tc := range []struct{ method, body string }{
-			{http.MethodGet, ""}, {http.MethodPost, "{"},
-			{http.MethodPost, `{"kind":"bad","id":"x"}`},
-			{http.MethodPost, `{"kind":"session","id":""}`},
-		} {
-			_ = covWebRequest(t, web, tc.method, "/api/"+endpoint, tc.body)
-		}
-	}
-	_ = covWebRequest(t, NewWebServer(hubcore.WebConfig{}), http.MethodPost, "/api/archive", `{"kind":"session","id":"x","archived":true}`)
-	_ = covWebRequest(t, web, http.MethodPost, "/api/archive", `{"kind":"session","id":"02wMz5Txv1C3Hut0M8GCeB","archived":true}`)
-	_ = covWebRequest(t, web, http.MethodPost, "/api/archive", `{"kind":"project","id":"/a/proj","archived":false}`)
-	if poked != 1 {
-		t.Fatalf("pokes=%d", poked)
-	}
-
-	badPath := filepath.Join(root, "dbdir")
-	if err := os.Mkdir(badPath, 0o755); err != nil {
-		t.Fatal(err)
-	}
-	bad := NewWebServer(hubcore.WebConfig{Archive: hubcore.NewArchiveStore(badPath), Favorite: hubcore.NewFavoriteStore(badPath)})
-	_ = covWebRequest(t, bad, http.MethodPost, "/api/archive", `{"kind":"session","id":"x","archived":true}`)
-}
-
 func TestCovWebCoreAPIDeleteAndRenameValidation(t *testing.T) {
 	emptyPast := hubcore.NewPastIndex(filepath.Join(t.TempDir(), "projects", "*"))
 	if _, err := emptyPast.Rebuild(); err != nil {
@@ -190,7 +159,6 @@ func FuzzCovWebCoreAPI(f *testing.F) {
 	f.Fuzz(func(t *testing.T, order byte) {
 		tests := []func(*testing.T){
 			TestCovWebCoreAPIHelpersAndRoutes,
-			TestCovWebCoreAPIDecisionValidation,
 			TestCovWebCoreAPIDeleteAndRenameValidation,
 			TestProjectDeleteRemovesFilesAndScrubs,
 			TestProjectDeleteRejectsKeyWorkingDirMismatch,

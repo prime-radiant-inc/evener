@@ -565,6 +565,12 @@ func (c *Client) FavoriteSet(ctx context.Context, params FavoriteSetParams) (Fav
 	return out, err
 }
 
+func (c *Client) ArchiveSet(ctx context.Context, params ArchiveParams) (ArchiveResponse, error) {
+	var out ArchiveResponse
+	err := c.request(ctx, MethodEvenerArchiveSet, params, &out)
+	return out, err
+}
+
 func (c *Client) Search(ctx context.Context, params SearchParams) (SearchResponse, error) {
 	var out SearchResponse
 	err := c.request(ctx, MethodEvenerSearch, params, &out)

@@ -40,8 +40,8 @@ biggest change from the card's old text:
 - The frontend must be built (`make build-web`) *before* the hub for step 5+,
   or the SPA is a one-line placeholder (rebuild matrix item 3 in the runbook).
 - Two scratch working directories `$A` and `$B` that must both still exist for
-  the whole run — `identifier.ResolveProject` symlink-resolves them and every
-  archive/delete POST re-derives the project id from the path.
+  the whole run — `identifier.ResolveProject` symlink-resolves them and each
+  project archive/delete request re-derives the project id from the path.
 - A model the hub can spawn against. Nothing here needs a *good* answer, only
   a session that reaches the past index, so the cheapest model wins.
 
@@ -58,10 +58,11 @@ a browser, and only assert what the rail renders.
    `POST /api/sessions/local:$SID_B/shutdown`. Read the AppWire navigation manifest:
    `$B`'s key is in `data.catalogs.test_runs` and in neither
    `data.catalogs.projects` nor `data.catalogs.archived_projects`.
-3. **Archive `$A`.** `POST /api/archive` with
-   `{"kind":"project","id":"<A key>","archived":true,"working_dir":"<A working_dir from the navigation manifest>"}`.
+3. **Archive `$A`.** Send an AppWire `evener/archive/set` request with
+   `{"kind":"project","id":"<A key>","archived":true,"workingDir":"<A working_dir from the navigation manifest>"}`.
    Re-read the AppWire navigation manifest.
-4. **Unarchive `$A`.** Same POST with `"archived":false`. Re-read the AppWire navigation manifest.
+4. **Unarchive `$A`.** Send the same AppWire request with `"archived":false`.
+   Re-read the AppWire navigation manifest.
 5. **Browser, baseline.** Navigate to `/auth?token=$TOKEN&next=/`. Read the
    section shapes:
    ```javascript
@@ -73,9 +74,9 @@ a browser, and only assert what the rail renders.
        .filter(([t]) => /Archived sessions/.test(t)),
    })
    ```
-6. **Archive `$A` again** (step 3's POST) and let the rail refetch on its own —
+6. **Archive `$A` again** (step 3's request) and let the rail refetch on its own —
    the archive handler broadcasts `navigation invalidation` unconditionally
-   (`web_api_archive.go:71` → `notifyMutation`, `web_api_tree.go#notifyMutation`) and
+   (`app_archive.go` → `NavigationService.Refresh`) and
    the store refetches on a 250ms debounce
    (`stores/navigation/store.ts:443-450,455-467`). Re-read step 5's probe,
    then click the `Archived sessions (…)` button and confirm `$A`'s project row
@@ -102,7 +103,8 @@ a browser, and only assert what the rail renders.
   what routes it, and a mixed project (one unmarked session) is correctly
   *not* a test run (`fuzzScenarioAllTestSessionsClassifyAsTestRun`,
   `internal/hubcore/tree_test.go#fuzzScenarioAllTestSessionsClassifyAsTestRun`).
-- **Step 3 (exact)**: `200 {"ok":true}`; `$A` moves to `archived_projects[]`
+- **Step 3 (exact)**: a successful `evener/archive/set` response with
+  `{"ok":true}`; `$A` moves to `archived_projects[]`
   and is gone from `projects[]`. Its entry is a **stub**: `"sessions": null`
   with `session_count` carrying the real row count
   (`web_api_tree.go:167-176`). Falsify: `$A` still in `projects[]`, or the

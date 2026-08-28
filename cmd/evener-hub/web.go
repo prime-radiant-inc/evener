@@ -85,6 +85,7 @@ func NewWebServer(cfg hubcore.WebConfig) *WebServer {
 	}
 	web.navigation = newNavigationService(navigationServiceConfig{Source: webNavigationSource{web: web}})
 	web.appRPC = newHubAppServerWithNavigation(web.cfg, sources, web.navigation)
+	registerArchiveHandler(web.appRPC, web.cfg, func() *NavigationService { return web.navigation })
 	if deletionStoreErr == nil {
 		_ = web.resumeProjectDeletions()
 	}
@@ -166,7 +167,6 @@ func (s *WebServer) Handler() http.Handler {
 	mux.HandleFunc("/api/spawn", s.handleApiSpawn)
 	mux.HandleFunc("/api/health", s.handleAPIHealth)
 	mux.HandleFunc("/api/mobile/pairing", s.handleAPIMobilePairing)
-	mux.HandleFunc("/api/archive", s.handleAPIArchive)
 	mux.HandleFunc("/api/pin-sections", s.handleAPIPinSections)
 	mux.HandleFunc("/api/pin-sections/", s.handleAPIPinSection)
 	mux.HandleFunc("/api/session-pin", s.handleAPISessionPin)
