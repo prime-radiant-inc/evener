@@ -150,7 +150,12 @@ async function measureAt(cdpEndpoint, url, width) {
         // harness fixture failure to obscure the intended RED boundary.
         const legacyMeasurement = JSON.parse(await evaluate(send, "JSON.stringify(window.measure())"));
         if (!Array.isArray(legacyMeasurement.editors)) {
-          return { ...legacyMeasurement, exceptionSafety, detail: null, viewport: { ...measurementViewport, mobile: realizedLayout.mobile } };
+          return {
+            ...legacyMeasurement,
+            exceptionSafety,
+            detail: null,
+            viewport: { ...measurementViewport, mobile: realizedLayout.mobile },
+          };
         }
         throw error;
       }
@@ -303,7 +308,9 @@ async function measureTrustedFocus(send) {
 // with a check adornment for open ones. This fixture therefore drives the
 // menu directly: open Tasks, wait for the dock split to squeeze the main
 // composer's inline session chrome below 640px, then re-open the menu and
-// confirm "Tasks ✓".
+// confirm its counted label gains the checkmark. The harness seeds a real
+// aggregate, so SessionChrome passes `Tasks 1/4`, not the plain fallback
+// `Tasks`, to SessionMenu.
 async function verifyPanelCollapse(cdpEndpoint, url) {
   const page = await connectPage(cdpEndpoint);
   const { send } = page;
@@ -317,6 +324,7 @@ async function verifyPanelCollapse(cdpEndpoint, url) {
     });
     const out = await send("Runtime.evaluate", {
       expression: `(async () => {
+        const taskLabel = 'Tasks 1/4';
         const until = async (read, label) => {
           for (let i = 0; i < 180; i++) {
             const value = read();
@@ -330,8 +338,8 @@ async function verifyPanelCollapse(cdpEndpoint, url) {
         const actions = await until(actionsTrigger, 'session actions trigger');
         actions.click();
         const tasksItem = await until(
-          () => [...document.querySelectorAll('[role="menuitem"]')].find((item) => item.textContent === 'Tasks'),
-          'tasks menu item',
+          () => [...document.querySelectorAll('[role="menuitem"]')].find((item) => item.textContent === taskLabel),
+          'counted tasks menu item',
         );
         tasksItem.click();
         const panel = await until(() => document.querySelector('[data-pane-scaffold="session-panel:tasks:overflowharness"]'), 'tasks pane');
@@ -352,7 +360,10 @@ async function verifyPanelCollapse(cdpEndpoint, url) {
         const actionsAgain = actionsTrigger();
         if (!actionsAgain) throw new Error('session actions trigger missing');
         actionsAgain.click();
-        const checked = await until(() => [...document.querySelectorAll('[role="menuitem"]')].find((item) => item.textContent?.includes('Tasks ✓')), 'checked menu item');
+        const checked = await until(
+          () => [...document.querySelectorAll('[role="menuitem"]')].find((item) => item.textContent === taskLabel + ' ✓'),
+          'checked counted tasks menu item',
+        );
         const pane = document.getElementById('oh-pane');
         const horizontallyOverflowing = [...pane.querySelectorAll('*')].filter((element) => {
           const style = getComputedStyle(element);
@@ -494,7 +505,8 @@ function assertFieldsets(detail, label) {
     );
   }
   if (!detail.fieldsetsNonOverlapping) failures.push(`${label} fieldsets overlap`);
-  if (expectedColumns === 1 && !detail.fieldsetStacked) failures.push(`${label} one-column fieldsets are not vertically stacked`);
+  if (expectedColumns === 1 && !detail.fieldsetStacked)
+    failures.push(`${label} one-column fieldsets are not vertically stacked`);
   return failures;
 }
 
@@ -505,43 +517,84 @@ function assertDetail(result, width) {
   const expectedSegmentLabels = ["Chat", "Intent", "Tools", "Activity", "Full", "Custom"];
   const focusStates = result.focus?.states;
   if (!result.focus?.baseline || !Array.isArray(focusStates) || focusStates.length !== expectedFocusLabels.length) {
-    failures.push(`live editor trusted focus measurements found ${focusStates?.length ?? "none"}, expected first/middle/last`);
+    failures.push(
+      `live editor trusted focus measurements found ${focusStates?.length ?? "none"}, expected first/middle/last`,
+    );
   } else {
     const baseline = result.focus.baseline;
     for (const [index, focus] of focusStates.entries()) {
       if (focus.ownerTestId !== "transcript-detail-control") {
-        failures.push(`trusted focus owner is ${JSON.stringify(focus.ownerTestId)}, expected transcript-detail-control`);
+        failures.push(
+          `trusted focus owner is ${JSON.stringify(focus.ownerTestId)}, expected transcript-detail-control`,
+        );
       }
       if (JSON.stringify(focus.labels) !== JSON.stringify(expectedSegmentLabels)) {
-        failures.push(`trusted focus labels are ${JSON.stringify(focus.labels)}, expected ${JSON.stringify(expectedSegmentLabels)}`);
+        failures.push(
+          `trusted focus labels are ${JSON.stringify(focus.labels)}, expected ${JSON.stringify(expectedSegmentLabels)}`,
+        );
       }
       if (focus.activeLabel !== expectedFocusLabels[index] || !focus.activeElementIsSegment) {
-        failures.push(`trusted keyboard focus reached ${JSON.stringify(focus.activeLabel)}, expected ${expectedFocusLabels[index]}`);
+        failures.push(
+          `trusted keyboard focus reached ${JSON.stringify(focus.activeLabel)}, expected ${expectedFocusLabels[index]}`,
+        );
       }
       if (!focus.focusVisible || focus.outlineWidth <= 0) {
-        failures.push(`trusted focus for ${expectedFocusLabels[index]} has no positive :focus-visible outline: ${JSON.stringify(focus)}`);
+        failures.push(
+          `trusted focus for ${expectedFocusLabels[index]} has no positive :focus-visible outline: ${JSON.stringify(focus)}`,
+        );
       }
       if (focus.outlineStyle === "none" || focus.outlineOffset <= 0) {
-        failures.push(`trusted focus for ${expectedFocusLabels[index]} has no painted outline style/offset: ${JSON.stringify(focus)}`);
+        failures.push(
+          `trusted focus for ${expectedFocusLabels[index]} has no painted outline style/offset: ${JSON.stringify(focus)}`,
+        );
       }
       const bounds = focus.painted;
-      if (focus.clipped || !bounds || bounds.left < -GEOMETRY_TOLERANCE || bounds.right > (result.viewport?.windowInnerWidth ?? 0) + GEOMETRY_TOLERANCE) {
-        failures.push(`painted focus outline for ${JSON.stringify(expectedFocusLabels[index])} is clipped: ${JSON.stringify(focus)}`);
+      if (
+        focus.clipped ||
+        !bounds ||
+        bounds.left < -GEOMETRY_TOLERANCE ||
+        bounds.right > (result.viewport?.windowInnerWidth ?? 0) + GEOMETRY_TOLERANCE
+      ) {
+        failures.push(
+          `painted focus outline for ${JSON.stringify(expectedFocusLabels[index])} is clipped: ${JSON.stringify(focus)}`,
+        );
       }
       if (JSON.stringify(focus.checkedLabels) !== JSON.stringify([expectedFocusLabels[index]])) {
-        failures.push(`trusted selection is ${JSON.stringify(focus.checkedLabels)}, expected ${expectedFocusLabels[index]}`);
+        failures.push(
+          `trusted selection is ${JSON.stringify(focus.checkedLabels)}, expected ${expectedFocusLabels[index]}`,
+        );
       }
-      if (JSON.stringify(focus.labels) !== JSON.stringify(baseline.labels)) failures.push("segment labels changed during keyboard focus transitions");
-      if (!focus.track || !baseline.track || !nearlyEqual(focus.track.left, baseline.track.left) || !nearlyEqual(focus.track.right, baseline.track.right) || !nearlyEqual(focus.track.width, baseline.track.width) || focus.track.clientWidth !== baseline.track.clientWidth || focus.track.scrollWidth !== baseline.track.scrollWidth) {
+      if (JSON.stringify(focus.labels) !== JSON.stringify(baseline.labels))
+        failures.push("segment labels changed during keyboard focus transitions");
+      if (
+        !focus.track ||
+        !baseline.track ||
+        !nearlyEqual(focus.track.left, baseline.track.left) ||
+        !nearlyEqual(focus.track.right, baseline.track.right) ||
+        !nearlyEqual(focus.track.width, baseline.track.width) ||
+        focus.track.clientWidth !== baseline.track.clientWidth ||
+        focus.track.scrollWidth !== baseline.track.scrollWidth
+      ) {
         failures.push(
           `track geometry changed during trusted focus transition to ${expectedFocusLabels[index]}: ` +
             `baseline=${JSON.stringify(baseline.track)}, current=${JSON.stringify(focus.track)}`,
         );
       }
-      if (focus.geometry.length !== baseline.geometry.length || focus.geometry.some((segment, segmentIndex) => {
-        const before = baseline.geometry[segmentIndex];
-        return !before || !nearlyEqual(segment.left, before.left) || !nearlyEqual(segment.right, before.right) || !nearlyEqual(segment.top, before.top) || !nearlyEqual(segment.bottom, before.bottom) || !nearlyEqual(segment.width, before.width) || !nearlyEqual(segment.height, before.height);
-      })) {
+      if (
+        focus.geometry.length !== baseline.geometry.length ||
+        focus.geometry.some((segment, segmentIndex) => {
+          const before = baseline.geometry[segmentIndex];
+          return (
+            !before ||
+            !nearlyEqual(segment.left, before.left) ||
+            !nearlyEqual(segment.right, before.right) ||
+            !nearlyEqual(segment.top, before.top) ||
+            !nearlyEqual(segment.bottom, before.bottom) ||
+            !nearlyEqual(segment.width, before.width) ||
+            !nearlyEqual(segment.height, before.height)
+          );
+        })
+      ) {
         failures.push(
           `segment geometry changed during trusted focus transition to ${expectedFocusLabels[index]}: ` +
             `baseline=${JSON.stringify(baseline.geometry)}, current=${JSON.stringify(focus.geometry)}`,
@@ -562,27 +615,36 @@ function assertDetail(result, width) {
   if (!detail?.found || !detail.triggerReachable || !detail.triggerHitTestable)
     failures.push("Session actions trigger is not reachable or is occluded at its center hit point");
   if (!detail?.open) failures.push("Verbosity did not open its production Dialog/Sheet");
-  if (!detail?.overlayContained) failures.push(`Verbosity Dialog/Sheet escapes the viewport: ${JSON.stringify(detail?.panel)}`);
+  if (!detail?.overlayContained)
+    failures.push(`Verbosity Dialog/Sheet escapes the viewport: ${JSON.stringify(detail?.panel)}`);
   if ((detail?.horizontalOverflowCount ?? 1) !== 0) {
     failures.push(
       `Verbosity has ${detail?.horizontalOverflowCount ?? "unknown"} horizontal overflow element(s): ${JSON.stringify(detail?.overflowElements)}`,
     );
   }
   const mobile = result.viewport?.mobile === true;
-  if (detail?.mobile !== mobile) failures.push(`Verbosity layout mode is ${detail?.mobile}, realized viewport mode is ${mobile}`);
+  if (detail?.mobile !== mobile)
+    failures.push(`Verbosity layout mode is ${detail?.mobile}, realized viewport mode is ${mobile}`);
   failures.push(...assertFieldsets(detail, `${width}px Verbosity`));
   const expectedTargets = 31;
   if ((detail?.targets?.length ?? 0) !== expectedTargets) {
-    failures.push(`Verbosity mounted ${detail?.targets?.length ?? "unknown"} interactive targets, expected ${expectedTargets}`);
+    failures.push(
+      `Verbosity mounted ${detail?.targets?.length ?? "unknown"} interactive targets, expected ${expectedTargets}`,
+    );
   }
   if (!(detail?.targets ?? []).some((target) => target.kind === "menuitem" && target.label === "Verbosity…")) {
     failures.push("Verbosity menu item target measurement is missing");
   }
-  if (!(detail?.targets ?? []).some((target) => target.kind === "summary" && target.label.startsWith("Customize & advanced"))) {
+  if (
+    !(detail?.targets ?? []).some(
+      (target) => target.kind === "summary" && target.label.startsWith("Customize & advanced"),
+    )
+  ) {
     failures.push("Verbosity Advanced summary target measurement is missing");
   }
   const switchLabels = detail?.targets?.filter((target) => target.kind === "switch-label") ?? [];
-  if (switchLabels.length !== 9) failures.push(`Verbosity mounted ${switchLabels.length} Switch label targets, expected 9`);
+  if (switchLabels.length !== 9)
+    failures.push(`Verbosity mounted ${switchLabels.length} Switch label targets, expected 9`);
   if (!detail?.dialogCentered && !mobile) {
     failures.push(
       `Desktop Verbosity Dialog is not centered in the layout viewport: ${JSON.stringify({ panel: detail?.panel, viewport: result.viewport })}`,
@@ -592,11 +654,11 @@ function assertDetail(result, width) {
   if (!result.trigger) failures.push("Session actions trigger geometry is missing");
   const overlayScroll = detail?.overlayScroll;
   if (
-    (!overlayScroll?.connected ||
-      !overlayScroll.contained ||
-      !overlayScroll.scrollable ||
-      overlayScroll.scrollHeight <= overlayScroll.clientHeight ||
-      overlayScroll.afterTop <= overlayScroll.beforeTop)
+    !overlayScroll?.connected ||
+    !overlayScroll.contained ||
+    !overlayScroll.scrollable ||
+    overlayScroll.scrollHeight <= overlayScroll.clientHeight ||
+    overlayScroll.afterTop <= overlayScroll.beforeTop
   ) {
     failures.push(`Verbosity Dialog/Sheet failed internal-scroll containment: ${JSON.stringify(overlayScroll)}`);
   }
@@ -641,15 +703,20 @@ function assertEditors(result, width, surface) {
     failures.push(`${surface} editor measurement count is ${editors.length}, expected ${expectedOwners.size}`);
   }
   if (new Set(editors.map((editor) => editor.ownerTestId)).size !== expectedOwners.size) {
-    failures.push(`${surface} editor owners are not unique: ${JSON.stringify(editors.map((editor) => editor.ownerTestId))}`);
+    failures.push(
+      `${surface} editor owners are not unique: ${JSON.stringify(editors.map((editor) => editor.ownerTestId))}`,
+    );
   }
   for (const editor of editors) {
     if (!expectedOwners.has(editor.ownerTestId)) {
       failures.push(`${surface} editor has unexpected owner ${JSON.stringify(editor.ownerTestId)}`);
     }
-    if (editor.surface !== surface) failures.push(`${surface} editor ${editor.ownerTestId} reports surface ${editor.surface}`);
+    if (editor.surface !== surface)
+      failures.push(`${surface} editor ${editor.ownerTestId} reports surface ${editor.surface}`);
     if (editor.layout !== expectedLayouts.get(editor.ownerTestId)) {
-      failures.push(`${surface} editor ${editor.ownerTestId} reports layout ${editor.layout}, expected ${expectedLayouts.get(editor.ownerTestId)}`);
+      failures.push(
+        `${surface} editor ${editor.ownerTestId} reports layout ${editor.layout}, expected ${expectedLayouts.get(editor.ownerTestId)}`,
+      );
     }
     const track = editor.track;
     if (!track || !nearlyEqual(track.width, track.right - track.left)) {
@@ -663,11 +730,14 @@ function assertEditors(result, width, surface) {
     }
     const expectedLabels = ["Chat", "Intent", "Tools", "Activity", "Full", "Custom"];
     if (!Array.isArray(editor.segments) || editor.segments.length !== expectedLabels.length) {
-      failures.push(`${surface} editor ${editor.ownerTestId} has ${editor.segments?.length ?? "unknown"} segments, expected 6`);
+      failures.push(
+        `${surface} editor ${editor.ownerTestId} has ${editor.segments?.length ?? "unknown"} segments, expected 6`,
+      );
       continue;
     }
     const checked = editor.segments.filter((segment) => segment.checked);
-    if (checked.length !== 1) failures.push(`${surface} editor ${editor.ownerTestId} has ${checked.length} selected segments, expected 1`);
+    if (checked.length !== 1)
+      failures.push(`${surface} editor ${editor.ownerTestId} has ${checked.length} selected segments, expected 1`);
     const segmentWidth = (track.width - 16) / expectedLabels.length;
     const rowTop = editor.segments[0]?.top;
     const rowBottom = editor.segments[0]?.bottom;
@@ -689,10 +759,14 @@ function assertEditors(result, width, surface) {
         }
       }
       if (!Number.isFinite(segment.localLeft) || !Number.isFinite(segment.localRight)) {
-        failures.push(`${surface} editor ${editor.ownerTestId} segment ${JSON.stringify(segment.label)} has no local geometry`);
+        failures.push(
+          `${surface} editor ${editor.ownerTestId} segment ${JSON.stringify(segment.label)} has no local geometry`,
+        );
       }
       if (!nearlyEqual(segment.width, segment.right - segment.left) || !nearlyEqual(segment.width, segmentWidth)) {
-        failures.push(`${surface} editor ${editor.ownerTestId} segment ${JSON.stringify(segment.label)} has unstable width ${segment.width}px`);
+        failures.push(
+          `${surface} editor ${editor.ownerTestId} segment ${JSON.stringify(segment.label)} has unstable width ${segment.width}px`,
+        );
       }
       if (!nearlyEqual(segment.top, rowTop) || !nearlyEqual(segment.bottom, rowBottom)) {
         failures.push(`${surface} editor ${editor.ownerTestId} segments do not share one row: ${segment.label}`);
@@ -703,7 +777,9 @@ function assertEditors(result, width, surface) {
         segment.localLeft < -GEOMETRY_TOLERANCE ||
         segment.localRight > track.width + GEOMETRY_TOLERANCE
       ) {
-        failures.push(`${surface} editor ${editor.ownerTestId} segment ${JSON.stringify(segment.label)} escapes its track`);
+        failures.push(
+          `${surface} editor ${editor.ownerTestId} segment ${JSON.stringify(segment.label)} escapes its track`,
+        );
       }
       if (index === editor.segments.length - 1 && segment.localRight > track.width + GEOMETRY_TOLERANCE) {
         failures.push(
@@ -712,7 +788,9 @@ function assertEditors(result, width, surface) {
       }
       const requiresTouchTarget = surface === "settings" ? width < 900 : editor.layout === "mobile";
       if (requiresTouchTarget && segment.height < 44 - GEOMETRY_TOLERANCE) {
-        failures.push(`${surface} editor ${editor.ownerTestId} segment ${JSON.stringify(segment.label)} is below 44px: ${segment.height}px`);
+        failures.push(
+          `${surface} editor ${editor.ownerTestId} segment ${JSON.stringify(segment.label)} is below 44px: ${segment.height}px`,
+        );
       }
     }
   }
@@ -721,11 +799,15 @@ function assertEditors(result, width, surface) {
     const expectedSegment = width === 320 ? 40 : 51.667;
     for (const editor of editors) {
       if (!nearlyEqual(editor.track?.width ?? Number.NaN, expectedTrack)) {
-        failures.push(`${editor.ownerTestId} track is ${editor.track?.width ?? "unknown"}px, expected ${expectedTrack}px at ${width}px`);
+        failures.push(
+          `${editor.ownerTestId} track is ${editor.track?.width ?? "unknown"}px, expected ${expectedTrack}px at ${width}px`,
+        );
       }
       for (const segment of editor.segments ?? []) {
         if (!nearlyEqual(segment.width, expectedSegment)) {
-          failures.push(`${editor.ownerTestId} ${segment.label} segment is ${segment.width}px, expected ${expectedSegment}px at ${width}px`);
+          failures.push(
+            `${editor.ownerTestId} ${segment.label} segment is ${segment.width}px, expected ${expectedSegment}px at ${width}px`,
+          );
         }
       }
     }
@@ -743,26 +825,40 @@ function assertCanvases(result, width) {
     return [`Settings canvas measurements found ${result.canvases?.length ?? "none"}, expected 2`];
   }
   if (new Set(result.canvases.map((canvas) => canvas.testId)).size !== expectedCanvasLayouts.size) {
-    failures.push(`Settings canvas owners are not unique: ${JSON.stringify(result.canvases.map((canvas) => canvas.testId))}`);
+    failures.push(
+      `Settings canvas owners are not unique: ${JSON.stringify(result.canvases.map((canvas) => canvas.testId))}`,
+    );
   }
   const mobile = result.canvases.find((canvas) => canvas.testId === "transcript-display-preview-canvas-mobile");
   if (!mobile) failures.push("mobile preview canvas measurement is missing");
   for (const canvas of result.canvases) {
     if (canvas.layout !== expectedCanvasLayouts.get(canvas.testId)) {
-      failures.push(`${canvas.testId} reports layout ${canvas.layout}, expected ${expectedCanvasLayouts.get(canvas.testId)}`);
+      failures.push(
+        `${canvas.testId} reports layout ${canvas.layout}, expected ${expectedCanvasLayouts.get(canvas.testId)}`,
+      );
     }
-    if (canvas.width < 0 || canvas.availableWidth < 0) failures.push(`${canvas.testId} has negative available geometry`);
-    if (canvas.scrollWidth > canvas.clientWidth + GEOMETRY_TOLERANCE || canvas.scrollHeight > canvas.clientHeight + GEOMETRY_TOLERANCE) {
-      failures.push(`${canvas.testId} has inner scroll: ${canvas.scrollWidth}/${canvas.clientWidth}x${canvas.scrollHeight}/${canvas.clientHeight}`);
+    if (canvas.width < 0 || canvas.availableWidth < 0)
+      failures.push(`${canvas.testId} has negative available geometry`);
+    if (
+      canvas.scrollWidth > canvas.clientWidth + GEOMETRY_TOLERANCE ||
+      canvas.scrollHeight > canvas.clientHeight + GEOMETRY_TOLERANCE
+    ) {
+      failures.push(
+        `${canvas.testId} has inner scroll: ${canvas.scrollWidth}/${canvas.clientWidth}x${canvas.scrollHeight}/${canvas.clientHeight}`,
+      );
     }
   }
   if (mobile) {
     const expected = Math.min(390, mobile.availableWidth);
     if (!nearlyEqual(mobile.width, expected)) {
-      failures.push(`${mobile.testId} is ${mobile.width}px, expected min(390px, ${mobile.availableWidth}px) at ${width}px`);
+      failures.push(
+        `${mobile.testId} is ${mobile.width}px, expected min(390px, ${mobile.availableWidth}px) at ${width}px`,
+      );
     }
-    if (width === 320 && !nearlyEqual(mobile.width, 256)) failures.push(`320px mobile preview is ${mobile.width}px, expected 256px`);
-    if (width === 390 && !nearlyEqual(mobile.width, 326)) failures.push(`390px mobile preview is ${mobile.width}px, expected 326px`);
+    if (width === 320 && !nearlyEqual(mobile.width, 256))
+      failures.push(`320px mobile preview is ${mobile.width}px, expected 256px`);
+    if (width === 390 && !nearlyEqual(mobile.width, 326))
+      failures.push(`390px mobile preview is ${mobile.width}px, expected 326px`);
   }
   return failures;
 }
@@ -770,10 +866,12 @@ function assertCanvases(result, width) {
 function assertSettings(result, width) {
   const failures = [];
   if (result.cardsFound !== 2) failures.push(`expected two production Settings cards, found ${result.cardsFound}`);
-  if (result.previewsFound !== 2) failures.push(`expected two production Settings previews, found ${result.previewsFound}`);
+  if (result.previewsFound !== 2)
+    failures.push(`expected two production Settings previews, found ${result.previewsFound}`);
   if (!result.cardsStacked) failures.push("Settings Desktop/Mobile cards are not stacked");
   if (result.cardOverflowCount !== 0) failures.push(`Settings card overflow count is ${result.cardOverflowCount}`);
-  if (result.previewOverflowCount !== 0) failures.push(`Settings preview overflow count is ${result.previewOverflowCount}`);
+  if (result.previewOverflowCount !== 0)
+    failures.push(`Settings preview overflow count is ${result.previewOverflowCount}`);
   if (result.previewInnerScrollCount !== 0) {
     failures.push(`Settings previews contain ${result.previewInnerScrollCount} inner scroll element(s)`);
   }
@@ -885,10 +983,7 @@ async function main() {
       console.log("short mobile menu ... PASS - popup contained, scrollable, and last action keyboard/touch reachable");
     }
 
-    const chatFocus = await verifyChatFocus(
-      cdpEndpoint,
-      `http://127.0.0.1:${vitePort}/overflowharness.html?w=1024`,
-    );
+    const chatFocus = await verifyChatFocus(cdpEndpoint, `http://127.0.0.1:${vitePort}/overflowharness.html?w=1024`);
     if (
       !chatFocus.toolsRowFocused ||
       !chatFocus.groupFound ||
@@ -911,7 +1006,7 @@ async function main() {
     if (
       panelCollapse.mainWidth >= 640 ||
       !panelCollapse.panelVisible ||
-      panelCollapse.checkedText !== "Tasks ✓" ||
+      panelCollapse.checkedText !== "Tasks 1/4 ✓" ||
       panelCollapse.horizontalOverflowCount !== 0 ||
       !panelCollapse.detail?.triggerReachable ||
       !panelCollapse.detail?.triggerHitTestable ||
@@ -1013,7 +1108,9 @@ async function main() {
         !result.currentWork.orderedAboveComposer
       ) {
         widthFailed = true;
-        console.log(`${width}px ... FAIL - current work and compose controls geometry: ${JSON.stringify(result.currentWork)}`);
+        console.log(
+          `${width}px ... FAIL - current work and compose controls geometry: ${JSON.stringify(result.currentWork)}`,
+        );
       }
       if (
         width === 390 &&
