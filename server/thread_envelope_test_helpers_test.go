@@ -41,6 +41,9 @@ type stubThreadEnvelopeSource struct {
 	// parkOnMeta runs at the start of SessionMeta(), the last facet
 	// refreshFacets samples. Parking there holds a fully-populated sample open.
 	parkOnMeta func()
+	// parkAfterMeta runs after SessionMeta has copied its return value, allowing a
+	// test to hold an old goal sample in flight while a direct carrier commits.
+	parkAfterMeta func()
 }
 
 func (s *stubThreadEnvelopeSource) ContextPressure() float64       { return s.contextPressure }
@@ -57,7 +60,11 @@ func (s *stubThreadEnvelopeSource) SessionMeta() schema.SessionMeta {
 	if s.parkOnMeta != nil {
 		s.parkOnMeta()
 	}
-	return s.meta
+	meta := s.meta
+	if s.parkAfterMeta != nil {
+		s.parkAfterMeta()
+	}
+	return meta
 }
 
 func (s *stubThreadEnvelopeSource) ClientMutationProjection() (appwire.QueueState, []appwire.PendingMutation) {

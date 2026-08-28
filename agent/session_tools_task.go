@@ -104,6 +104,16 @@ func taskToolStateSnapshot(tasks []taskpkg.Task, inProgressUpdates map[int]struc
 	return snapshot
 }
 
+func mutateAndPublishTaskStore(store *taskpkg.TaskStore, mutation func() (any, error)) (any, error) {
+	var result any
+	err := store.MutateAndPublish(func() error {
+		var err error
+		result, err = mutation()
+		return err
+	})
+	return result, err
+}
+
 func registerTaskTools(reg *tool.Registry, deps *toolDeps) {
 	// Task management.
 	_ = reg.Register(tool.RegisteredTool{
@@ -155,22 +165,24 @@ func registerTaskTools(reg *tool.Registry, deps *toolDeps) {
 						ReasoningEffort: reasoningEffort,
 					})
 				}
-				added, err := store.Append(items)
-				if err != nil {
-					return nil, err
-				}
+				return mutateAndPublishTaskStore(store, func() (any, error) {
+					added, err := store.Append(items)
+					if err != nil {
+						return nil, err
+					}
 
-				// The tool response is a terse acknowledgement. The current
-				// task is announced via a separate SYSTEM-REMINDER steering
-				// message when the agent actually transitions one to
-				// in_progress, either manually or via auto-advance.
-				tasks := store.View()
-				taskUpdate := taskUpdatedData(taskpkg.Summarize(tasks), "")
-				deps.emit(events.EventTaskUpdated, taskUpdate)
-				return tool.StateResult{
-					Output: fmt.Sprintf("Added %d task(s). Progress: %d/%d tasks complete.", len(added), taskUpdate.Done, taskUpdate.Total),
-					State:  tasks,
-				}, nil
+					// The tool response is a terse acknowledgement. The current
+					// task is announced via a separate SYSTEM-REMINDER steering
+					// message when the agent actually transitions one to
+					// in_progress, either manually or via auto-advance.
+					tasks := store.View()
+					taskUpdate := taskUpdatedData(taskpkg.Summarize(tasks), "")
+					deps.emit(events.EventTaskUpdated, taskUpdate)
+					return tool.StateResult{
+						Output: fmt.Sprintf("Added %d task(s). Progress: %d/%d tasks complete.", len(added), taskUpdate.Done, taskUpdate.Total),
+						State:  tasks,
+					}, nil
+				})
 			case "update":
 				raw, ok := args["updates"].([]any)
 				if !ok || len(raw) == 0 {
@@ -213,109 +225,111 @@ func registerTaskTools(reg *tool.Registry, deps *toolDeps) {
 					}
 					updates = append(updates, u)
 				}
-				mutation, err := store.UpdateWithSnapshot(updates)
-				if err != nil {
-					return nil, err
-				}
+				return mutateAndPublishTaskStore(store, func() (any, error) {
+					mutation, err := store.UpdateWithSnapshot(updates)
+					if err != nil {
+						return nil, err
+					}
 
-				// Classify each ID from the final status the store applied, so
-				// duplicate entries cannot steer a task that ended completed or
-				// suppress auto-advance after the final state is known.
-				previous := make(map[int]taskpkg.TaskStatus, len(mutation.Before))
-				for _, task := range mutation.Before {
-					previous[task.ID] = task.Status
-				}
-				finalStatus := make(map[int]taskpkg.TaskStatus, len(updates))
-				for _, u := range updates {
-					finalStatus[u.ID] = u.Status
-				}
-				inProgressUpdates := make(map[int]struct{}, len(updates))
-				started := make(map[int]bool)
-				var completedAny bool
-				var manuallyStartedID int
-				seenIDs := make(map[int]struct{}, len(updates))
-				for _, u := range updates {
-					if _, seen := seenIDs[u.ID]; seen {
-						continue
+					// Classify each ID from the final status the store applied, so
+					// duplicate entries cannot steer a task that ended completed or
+					// suppress auto-advance after the final state is known.
+					previous := make(map[int]taskpkg.TaskStatus, len(mutation.Before))
+					for _, task := range mutation.Before {
+						previous[task.ID] = task.Status
 					}
-					seenIDs[u.ID] = struct{}{}
-					status := finalStatus[u.ID]
-					if status == taskpkg.TaskDone || status == taskpkg.TaskCancelled {
-						completedAny = true
+					finalStatus := make(map[int]taskpkg.TaskStatus, len(updates))
+					for _, u := range updates {
+						finalStatus[u.ID] = u.Status
 					}
-					if status == taskpkg.TaskInProgress {
-						inProgressUpdates[u.ID] = struct{}{}
-						if previous[u.ID] != taskpkg.TaskInProgress {
-							started[u.ID] = true
-							manuallyStartedID = u.ID
+					inProgressUpdates := make(map[int]struct{}, len(updates))
+					started := make(map[int]bool)
+					var completedAny bool
+					var manuallyStartedID int
+					seenIDs := make(map[int]struct{}, len(updates))
+					for _, u := range updates {
+						if _, seen := seenIDs[u.ID]; seen {
+							continue
 						}
-					}
-				}
-
-				// If the agent explicitly started a task, fire its current-task
-				// steering so the SYSTEM-REMINDER for the new task shows up on
-				// the next turn.
-				if manuallyStartedID != 0 {
-					for _, t := range mutation.After {
-						if t.ID == manuallyStartedID {
-							// Inside the task_list handler: the tool is registered by
-							// construction, so the steering may name it.
-							deps.steer(formatCurrentTaskSteering(t, true), events.SteeringKindCurrentTask)
-							break
+						seenIDs[u.ID] = struct{}{}
+						status := finalStatus[u.ID]
+						if status == taskpkg.TaskDone || status == taskpkg.TaskCancelled {
+							completedAny = true
 						}
-					}
-				}
-
-				if !completedAny && manuallyStartedID == 0 {
-					deps.emit(events.EventTaskUpdated, taskUpdatedData(taskpkg.Summarize(mutation.After), ""))
-					return tool.StateResult{
-						Output: "Updated " + formatTaskUpdates(updates) + ".",
-						State:  taskToolStateSnapshot(mutation.After, inProgressUpdates, started),
-					}, nil
-				}
-
-				var msg strings.Builder
-				msg.WriteString("Updated ")
-				msg.WriteString(formatTaskUpdates(updates))
-				msg.WriteString(". ")
-				finalTasks := mutation.After
-
-				if completedAny {
-					// Auto-advance unless the agent already picked what to do next.
-					if manuallyStartedID == 0 {
-						eligible := store.NextEligible()
-						if len(eligible) > 0 {
-							next := eligible[0]
-							if auto, err := store.UpdateWithSnapshot([]taskpkg.TaskUpdate{{ID: next.ID, Status: taskpkg.TaskInProgress}}); err == nil {
-								finalTasks = auto.After
-								deps.steer(formatCurrentTaskSteering(next, true), events.SteeringKindCurrentTask)
-							}
-						} else {
-							// No eligible task. If nothing remains open or in_progress,
-							// signal the agent that the list is exhausted.
-							allDone := taskListAllDone(finalTasks)
-							if allDone && len(finalTasks) > 0 {
-								var blockingDelegateIDs []string
-								if deps.blockingDelegateIDs != nil {
-									blockingDelegateIDs = deps.blockingDelegateIDs()
-								}
-								deps.sendTaskCompletionSteering(taskReminderAllDoneWhileDelegatesRun(deps.resultToolName(), blockingDelegateIDs), blockingDelegateIDs)
-								if len(blockingDelegateIDs) == 0 {
-									msg.WriteString("All tasks complete. ")
-								} else {
-									msg.WriteString("All tasks complete; waiting for delegate(s) ")
-									msg.WriteString(strings.Join(blockingDelegateIDs, ", "))
-									msg.WriteString(". ")
-								}
+						if status == taskpkg.TaskInProgress {
+							inProgressUpdates[u.ID] = struct{}{}
+							if previous[u.ID] != taskpkg.TaskInProgress {
+								started[u.ID] = true
+								manuallyStartedID = u.ID
 							}
 						}
 					}
-				}
 
-				taskUpdate := taskUpdatedData(taskpkg.Summarize(finalTasks), "")
-				deps.emit(events.EventTaskUpdated, taskUpdate)
-				fmt.Fprintf(&msg, "Progress: %d/%d tasks complete.", taskUpdate.Done, taskUpdate.Total)
-				return tool.StateResult{Output: msg.String(), State: taskToolStateSnapshot(finalTasks, inProgressUpdates, started)}, nil
+					// If the agent explicitly started a task, fire its current-task
+					// steering so the SYSTEM-REMINDER for the new task shows up on
+					// the next turn.
+					if manuallyStartedID != 0 {
+						for _, t := range mutation.After {
+							if t.ID == manuallyStartedID {
+								// Inside the task_list handler: the tool is registered by
+								// construction, so the steering may name it.
+								deps.steer(formatCurrentTaskSteering(t, true), events.SteeringKindCurrentTask)
+								break
+							}
+						}
+					}
+
+					if !completedAny && manuallyStartedID == 0 {
+						deps.emit(events.EventTaskUpdated, taskUpdatedData(taskpkg.Summarize(mutation.After), ""))
+						return tool.StateResult{
+							Output: "Updated " + formatTaskUpdates(updates) + ".",
+							State:  taskToolStateSnapshot(mutation.After, inProgressUpdates, started),
+						}, nil
+					}
+
+					var msg strings.Builder
+					msg.WriteString("Updated ")
+					msg.WriteString(formatTaskUpdates(updates))
+					msg.WriteString(". ")
+					finalTasks := mutation.After
+
+					if completedAny {
+						// Auto-advance unless the agent already picked what to do next.
+						if manuallyStartedID == 0 {
+							eligible := store.NextEligible()
+							if len(eligible) > 0 {
+								next := eligible[0]
+								if auto, err := store.UpdateWithSnapshot([]taskpkg.TaskUpdate{{ID: next.ID, Status: taskpkg.TaskInProgress}}); err == nil {
+									finalTasks = auto.After
+									deps.steer(formatCurrentTaskSteering(next, true), events.SteeringKindCurrentTask)
+								}
+							} else {
+								// No eligible task. If nothing remains open or in_progress,
+								// signal the agent that the list is exhausted.
+								allDone := taskListAllDone(finalTasks)
+								if allDone && len(finalTasks) > 0 {
+									var blockingDelegateIDs []string
+									if deps.blockingDelegateIDs != nil {
+										blockingDelegateIDs = deps.blockingDelegateIDs()
+									}
+									deps.sendTaskCompletionSteering(taskReminderAllDoneWhileDelegatesRun(deps.resultToolName(), blockingDelegateIDs), blockingDelegateIDs)
+									if len(blockingDelegateIDs) == 0 {
+										msg.WriteString("All tasks complete. ")
+									} else {
+										msg.WriteString("All tasks complete; waiting for delegate(s) ")
+										msg.WriteString(strings.Join(blockingDelegateIDs, ", "))
+										msg.WriteString(". ")
+									}
+								}
+							}
+						}
+					}
+
+					taskUpdate := taskUpdatedData(taskpkg.Summarize(finalTasks), "")
+					deps.emit(events.EventTaskUpdated, taskUpdate)
+					fmt.Fprintf(&msg, "Progress: %d/%d tasks complete.", taskUpdate.Done, taskUpdate.Total)
+					return tool.StateResult{Output: msg.String(), State: taskToolStateSnapshot(finalTasks, inProgressUpdates, started)}, nil
+				})
 			default:
 				return nil, fmt.Errorf("unknown task_list action %q: use view, append, or update", action)
 			}

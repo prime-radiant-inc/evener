@@ -953,17 +953,22 @@ func (s *Session) prepareSubagentRunFromSelection(
 	}
 	if len(defaultTasks) > 0 {
 		subStore := subSess.getOrCreateTaskStore()
-		populateErr := subStore.PopulateFromTemplates(defaultTasks, parentTasks)
-		if fault := s.subagentPrepareFault("task_populate"); fault != nil {
-			populateErr = fault
-		}
+		populateErr := subStore.MutateAndPublish(func() error {
+			err := subStore.PopulateFromTemplates(defaultTasks, parentTasks)
+			if fault := s.subagentPrepareFault("task_populate"); fault != nil {
+				err = fault
+			}
+			if err != nil {
+				return err
+			}
+			summary := taskpkg.Summarize(subStore.View())
+			subSess.emit(events.EventTaskUpdated, taskUpdatedData(summary, subSess.taskStoreOwnerSessionID()))
+			return nil
+		})
 		if err := populateErr; err != nil {
 			// Non-fatal: surface as a warning so the spawn still proceeds but the
 			// failure is observable instead of silently swallowed.
 			s.emit(events.EventWarning, warningDataFromError("failed to populate subagent tasks from templates", err))
-		} else {
-			summary := taskpkg.Summarize(subStore.View())
-			subSess.emit(events.EventTaskUpdated, taskUpdatedData(summary, subSess.taskStoreOwnerSessionID()))
 		}
 		// Inject the first task's prompt as a steering message.
 		if current, ok := subStore.CurrentInProgress(); ok {
