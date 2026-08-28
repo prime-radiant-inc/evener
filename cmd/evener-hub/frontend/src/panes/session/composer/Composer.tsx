@@ -34,12 +34,15 @@ import { sessionActionError } from "../../../protocol/errors";
 import { deriveSendQueueAvailability } from "../../../protocol/sendQueueAvailability";
 import type { PaletteRunContext } from "../../../shell/palette/commands";
 import { sessionBuiltinCommands, visibleCatalogCommands } from "../../../shell/palette/commands";
+import { useIsMobile } from "../../../shell/useIsMobile";
+import { workspaceStore } from "../../../shell/workspace";
 import { useCommandCatalog } from "../../../stores/commandCatalog";
 import type { MutationRecoveryRecord } from "../../../stores/mutationOutbox";
 import { prefsStore, usePrefsStore } from "../../../stores/prefs";
 import { type InputAttachment, threadsStore, useThreadsStore } from "../../../stores/threads";
 import {
   Button,
+  ConfirmDialog,
   chordLabel,
   Dropzone,
   IconButton,
@@ -51,6 +54,7 @@ import {
 } from "../../../widgets";
 import { requireClass } from "../../../widgets/internal/requireClass";
 import { SessionChrome } from "../chrome/SessionChrome";
+import { TasksPanel, type TasksPanelHandle } from "../chrome/TasksPanel";
 import { AttachmentTile } from "./AttachmentTile";
 import { AskDock, useAskDockPending } from "./askDock";
 import { AttachIcon } from "./attachments/AttachIcon";
@@ -152,9 +156,11 @@ export function Composer({ ref }: ComposerProps) {
   const model = useThreadsStore((s) => s.threads.get(ref));
   const pendingSendEntries = usePendingTurnEntries(ref, "send");
   const toasts = useToasts();
+  const isMobile = useIsMobile();
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const formRef = useRef<HTMLFormElement>(null);
+  const tasksPanelRef = useRef<TasksPanelHandle>(null);
   // Set by textEditor.write() below; consumed (and cleared) by the
   // cursor-restore layout effect once `text`'s new value has committed.
   const cursorToRestoreRef = useRef<number | null>(null);
@@ -183,6 +189,8 @@ export function Composer({ ref }: ComposerProps) {
   const recoveryWriteVersionRef = useRef(0);
   const recoveryOwnsLocalDraftRef = useRef(false);
   const [busyAction, setBusyAction] = useState<BusyAction>(null);
+  const [pendingGoalReplacement, setPendingGoalReplacement] = useState<string | null>(null);
+  const focusComposerAfterGoalDialogRef = useRef(false);
   // Whether a FINISHED session's collapsed follow-up field currently has focus,
   // which is what expands it from its one-line resting state. Only read on that
   // path (see the ended card's minLines below); harmless everywhere else.
@@ -326,6 +334,32 @@ export function Composer({ ref }: ComposerProps) {
   const attachmentItemsRef = useRef(attachments.items);
   attachmentItemsRef.current = attachments.items;
   const recoveryEntries = useRecoveryEntries(ref);
+
+  useEffect(() => {
+    if (pendingGoalReplacement !== null || !focusComposerAfterGoalDialogRef.current) return;
+    focusComposerAfterGoalDialogRef.current = false;
+    textareaRef.current?.focus();
+  }, [pendingGoalReplacement]);
+
+  const replaceDraftWithGoal = (objective: string, focus = true): void => {
+    const command = `/goal ${objective}`;
+    textEditor.write(command, command.length);
+    setPendingGoalReplacement(null);
+    if (focus) textareaRef.current?.focus();
+  };
+
+  const editGoal = (objective: string): void => {
+    if (textRef.current.trim() !== "") {
+      setPendingGoalReplacement(objective);
+      return;
+    }
+    replaceDraftWithGoal(objective);
+  };
+
+  const openTasks = (): void => {
+    if (isMobile) tasksPanelRef.current?.open();
+    else workspaceStore.getState().togglePane("sessionTasks", { ref });
+  };
 
   // A shared projection can outlive a Composer remount while its durable
   // discard is still being projected. Only auto-activate after this mount
@@ -1119,7 +1153,32 @@ export function Composer({ ref }: ComposerProps) {
           ))}
         </div>
       )}
-      {!askPending && <CurrentWork task={model.tasks?.current?.description} goal={model.goal?.objective} />}
+      {!askPending && (
+        <>
+          <TasksPanel ref={tasksPanelRef} sessionRef={ref} model={model} hideTrigger />
+          <CurrentWork
+            task={model.tasks?.current?.description}
+            goal={model.goal?.objective}
+            onOpenTasks={openTasks}
+            onEditGoal={() => editGoal((model.goal?.objective ?? "").trim())}
+          />
+        </>
+      )}
+      {pendingGoalReplacement !== null && (
+        <ConfirmDialog
+          open
+          title="Replace draft?"
+          confirmLabel="Replace draft"
+          cancelLabel="Keep draft"
+          onConfirm={() => {
+            focusComposerAfterGoalDialogRef.current = true;
+            replaceDraftWithGoal(pendingGoalReplacement, false);
+          }}
+          onCancel={() => setPendingGoalReplacement(null)}
+        >
+          This will discard the text currently in the composer.
+        </ConfirmDialog>
+      )}
       {(!ended || showFollowUpCard) && (
         <div className={CLASS.formAnchor}>
           {/* Anchored above the control row inside the card below, opening
@@ -1190,7 +1249,7 @@ export function Composer({ ref }: ComposerProps) {
                           onClick={() => fileInputRef.current?.click()}
                         />
                       </Tooltip>
-                      <SessionChrome ref={ref} placement="composer" />
+                      <SessionChrome ref={ref} placement="composer" onOpenTasks={openTasks} />
                     </div>
                   )
                 }

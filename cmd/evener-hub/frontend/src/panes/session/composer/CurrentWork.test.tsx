@@ -2,7 +2,8 @@ import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { cleanup, render, screen } from "@testing-library/react";
-import { afterEach, expect, test } from "vitest";
+import userEvent from "@testing-library/user-event";
+import { afterEach, expect, test, vi } from "vitest";
 import { CurrentWork } from "./CurrentWork";
 
 function currentWorkCssRule(selector: string): string {
@@ -19,7 +20,7 @@ const states = [
     name: "task plus goal",
     task: "Inspect the current working directory",
     goal: "Keep the session focused",
-    label: "Working on: Inspect the current working directory. Goal: Keep the session focused",
+    label: "Task: Inspect the current working directory. Goal: Keep the session focused",
     hasTask: true,
     hasGoal: true,
     hasDivider: true,
@@ -28,7 +29,7 @@ const states = [
     name: "task only",
     task: "Inspect the current working directory",
     goal: undefined,
-    label: "Working on: Inspect the current working directory",
+    label: "Task: Inspect the current working directory",
     hasTask: true,
     hasGoal: false,
     hasDivider: false,
@@ -56,7 +57,7 @@ const states = [
 afterEach(cleanup);
 
 test.each(states)("renders the $name state", ({ task, goal, label, hasTask, hasGoal, hasDivider }) => {
-  render(<CurrentWork task={task} goal={goal} />);
+  render(<CurrentWork task={task} goal={goal} onOpenTasks={vi.fn()} onEditGoal={vi.fn()} />);
 
   if (!label) {
     expect(screen.queryByTestId("current-work")).toBeNull();
@@ -67,17 +68,34 @@ test.each(states)("renders the $name state", ({ task, goal, label, hasTask, hasG
   expect(screen.queryByTestId("current-work-task") !== null).toBe(hasTask);
   expect(screen.queryByTestId("current-work-goal") !== null).toBe(hasGoal);
   expect(screen.queryByTestId("current-work-divider") !== null).toBe(hasDivider);
-  if (hasTask) expect(screen.getByText("Working on")).toBeTruthy();
+  if (hasTask) expect(screen.getByText("Task")).toBeTruthy();
   if (hasGoal) expect(screen.getByText("Goal")).toBeTruthy();
 });
 
-test("keeps long task and goal values in title attributes", () => {
+test("renders task and goal values as keyboard-accessible link actions with full-text titles", async () => {
+  const user = userEvent.setup();
   const task = "Task ".repeat(80);
   const goal = "Goal ".repeat(80);
-  render(<CurrentWork task={task} goal={goal} />);
+  const onOpenTasks = vi.fn();
+  const onEditGoal = vi.fn();
+  render(<CurrentWork task={task} goal={goal} onOpenTasks={onOpenTasks} onEditGoal={onEditGoal} />);
 
-  expect(screen.getByTestId("current-work-task-value").getAttribute("title")).toBe(task);
-  expect(screen.getByTestId("current-work-goal-value").getAttribute("title")).toBe(goal);
+  const taskLink = screen.getByRole("button", { name: `Open tasks: ${task.trim()}` });
+  const goalLink = screen.getByRole("button", { name: `Edit goal: ${goal.trim()}` });
+  expect(taskLink.getAttribute("title")).toBe(task);
+  expect(goalLink.getAttribute("title")).toBe(goal);
+
+  await user.click(taskLink);
+  await user.click(goalLink);
+  expect(onOpenTasks).toHaveBeenCalledOnce();
+  expect(onEditGoal).toHaveBeenCalledOnce();
+});
+
+test("left-justifies both mobile rows without indenting the goal", () => {
+  const css = readFileSync(join(dirname(fileURLToPath(import.meta.url)), "currentwork.module.css"), "utf8");
+  const compactRules = /@container \(max-width: 559px\)\s*\{([\s\S]*)\}\s*$/.exec(css)?.[1] ?? "";
+  expect(compactRules).not.toMatch(/\.goal\s*\{[^}]*padding-left/);
+  expect(compactRules).toMatch(/\.task,\s*\.goal\s*\{[^}]*justify-content:\s*flex-start/);
 });
 
 test("uses the approved semantic green ring and uppercase micro-label treatment", () => {

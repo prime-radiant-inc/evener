@@ -55,6 +55,7 @@ export type SessionChromePlacement = "footer" | "composer";
 export interface SessionChromeProps {
   ref: string;
   placement?: SessionChromePlacement;
+  onOpenTasks?: () => void;
 }
 
 const CLASS = {
@@ -70,7 +71,7 @@ const CLASS = {
 // the same for the header cadence).
 const EMPTY_FRAME_TIMES: number[] = [];
 
-export function SessionChrome({ ref: sessionRef, placement = "footer" }: SessionChromeProps) {
+export function SessionChrome({ ref: sessionRef, placement = "footer", onOpenTasks }: SessionChromeProps) {
   const client = useClient();
   const model = useThreadsStore((s) => s.threads.get(sessionRef));
   const isMobile = useIsMobile();
@@ -134,7 +135,8 @@ export function SessionChrome({ ref: sessionRef, placement = "footer" }: Session
     else workspaceStore.getState().togglePane("sessionDetails", { ref: sessionRef });
   };
   const openTasks = () => {
-    if (isMobile) tasksRef.current?.open();
+    if (onOpenTasks) onOpenTasks();
+    else if (isMobile) tasksRef.current?.open();
     else workspaceStore.getState().togglePane("sessionTasks", { ref: sessionRef });
   };
   const openActivity = () => {
@@ -171,7 +173,7 @@ export function SessionChrome({ ref: sessionRef, placement = "footer" }: Session
         )}
         <div className={CLASS.right}>
           <DetailsPanel ref={detailsRef} model={model} now={now} hideTrigger />
-          <TasksPanel ref={tasksRef} sessionRef={sessionRef} model={model} hideTrigger />
+          {!onOpenTasks && <TasksPanel ref={tasksRef} sessionRef={sessionRef} model={model} hideTrigger />}
           <ActivityPanel
             ref={activityRef}
             sessionRef={sessionRef}
