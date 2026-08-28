@@ -1372,11 +1372,16 @@ func agentToServerDetailedStatus(ds agent.DetailedStatus) server.DetailedStatus 
 			MCPCount:   p.MCPCount,
 		})
 	}
-	if len(ds.Hooks) > 0 {
-		out.Hooks = make(map[string]int, len(ds.Hooks))
-		for event, count := range ds.Hooks {
-			out.Hooks[string(event)] = count
+	for _, he := range ds.HookEvents {
+		if out.HookEvents == nil {
+			out.HookEvents = make([]server.HookEventStatus, 0, len(ds.HookEvents))
 		}
+		out.HookEvents = append(out.HookEvents, server.HookEventStatus{
+			Event:     string(he.Event),
+			Count:     he.Count,
+			Tier:      he.Tier,
+			Supported: he.Supported,
+		})
 	}
 	for _, job := range ds.Jobs {
 		out.Jobs = append(out.Jobs, server.JobStatusInfo{

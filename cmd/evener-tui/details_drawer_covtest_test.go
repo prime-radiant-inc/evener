@@ -110,7 +110,7 @@ func TestCovWriteEvenerDiagnostics_SkillsPluginsHooksJobsAgents(t *testing.T) {
 		Plugins: []appwire.EvenerPluginInfo{
 			{Name: "my-plugin", Version: "1.0", SkillCount: 2, AgentCount: 1, HookCount: 3},
 		},
-		Hooks:  map[string]int{"PreToolCall": 2, "PostToolCall": 5},
+		HookEvents: []appwire.EvenerHookEventStatus{{Event: "PreToolCall", Count: 2}, {Event: "PostToolCall", Count: 5}},
 		Jobs:   []appwire.EvenerJobInfo{{JobID: "job_1", JobType: "shell", Status: "running"}},
 		Agents: []string{"agent_one"},
 	}
@@ -122,8 +122,8 @@ func TestCovWriteEvenerDiagnostics_SkillsPluginsHooksJobsAgents(t *testing.T) {
 	if !strings.Contains(got, "Plugins (1)") || !strings.Contains(got, "my-plugin") {
 		t.Fatalf("should show plugins:\n%s", got)
 	}
-	if !strings.Contains(got, "Hooks (2)") {
-		t.Fatalf("should show hooks:\n%s", got)
+	if !strings.Contains(got, "Hook Events (2)") {
+		t.Fatalf("should show hook events:\n%s", got)
 	}
 	if !strings.Contains(got, "Jobs (1)") || !strings.Contains(got, "job_1") {
 		t.Fatalf("should show jobs:\n%s", got)
@@ -152,7 +152,7 @@ func TestCovWriteEvenerDiagnostics_NoHooks(t *testing.T) {
 	diag := &appwire.EvenerDiagnostics{}
 	writeEvenerDiagnostics(&b, diag)
 	got := b.String()
-	if !strings.Contains(got, "Hooks (0)") {
+	if !strings.Contains(got, "Hook Events (0)") {
 		t.Fatalf("should show hooks count 0:\n%s", got)
 	}
 }
@@ -211,25 +211,6 @@ func TestCovCapabilityList_Partial(t *testing.T) {
 	got := capabilityList(hubSessionCapabilities{Send: true, Compact: true})
 	if want := "send, compact"; got != want {
 		t.Fatalf("partial capabilities = %q, want %q", got, want)
-	}
-}
-
-// ---- sortedHookEntries -------------------------------------------------------
-
-func TestCovSortedHookEntries(t *testing.T) {
-	got := sortedHookEntries(map[string]int{"B": 2, "A": 1, "C": 3})
-	if len(got) != 3 {
-		t.Fatalf("count = %d, want 3", len(got))
-	}
-	if got[0] != "A: 1" || got[1] != "B: 2" || got[2] != "C: 3" {
-		t.Fatalf("sorted = %v, want [A: 1, B: 2, C: 3]", got)
-	}
-}
-
-func TestCovSortedHookEntries_Empty(t *testing.T) {
-	got := sortedHookEntries(nil)
-	if len(got) != 0 {
-		t.Fatalf("empty = %v, want empty", got)
 	}
 }
 

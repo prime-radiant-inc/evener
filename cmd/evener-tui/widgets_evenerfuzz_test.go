@@ -81,7 +81,7 @@ func exerciseDetailsAndNotices() {
 		MCP:     []appwire.EvenerMCPServerInfo{{Name: "server", Tools: []string{"mcp"}, Status: "ready", Error: "old"}},
 		Skills:  []appwire.EvenerSkillInfo{{Name: "skill"}},
 		Plugins: []appwire.EvenerPluginInfo{{Name: "plugin"}},
-		Hooks:   map[string]int{"turn": 1}, Jobs: []appwire.EvenerJobInfo{{JobID: "job", JobType: "exec", Status: "done"}}, Agents: []string{"agent"},
+		HookEvents: []appwire.EvenerHookEventStatus{{Event: "turn", Count: 1}}, Jobs: []appwire.EvenerJobInfo{{JobID: "job", JobType: "exec", Status: "done"}}, Agents: []string{"agent"},
 	}
 	writeEvenerDiagnostics(&b, diag)
 	_ = detailsDrawer{Detail: hubSessionDetail{Diagnostics: diag}}.View()

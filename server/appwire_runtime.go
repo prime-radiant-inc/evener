@@ -8,7 +8,6 @@ import (
 	"fmt"
 	"io"
 	"io/fs"
-	"maps"
 	"os"
 	"path/filepath"
 	"sort"
@@ -1304,9 +1303,7 @@ func (s *Server) appThread() appwire.Thread {
 }
 
 func appDiagnosticsFromDetailedStatus(ds DetailedStatus) *appwire.EvenerDiagnostics {
-	out := &appwire.EvenerDiagnostics{
-		Hooks: make(map[string]int, len(ds.Hooks)),
-	}
+	out := &appwire.EvenerDiagnostics{}
 	if ds.Plugins != nil {
 		out.Plugins = make([]appwire.EvenerPluginInfo, 0, len(ds.Plugins))
 	}
@@ -1329,7 +1326,17 @@ func appDiagnosticsFromDetailedStatus(ds DetailedStatus) *appwire.EvenerDiagnost
 			MCPCount:   plugin.MCPCount,
 		})
 	}
-	maps.Copy(out.Hooks, ds.Hooks)
+	for _, he := range ds.HookEvents {
+		if out.HookEvents == nil {
+			out.HookEvents = make([]appwire.EvenerHookEventStatus, 0, len(ds.HookEvents))
+		}
+		out.HookEvents = append(out.HookEvents, appwire.EvenerHookEventStatus{
+			Event:     he.Event,
+			Count:     he.Count,
+			Tier:      he.Tier,
+			Supported: he.Supported,
+		})
+	}
 	for _, job := range ds.Jobs {
 		out.Jobs = append(out.Jobs, appwire.EvenerJobInfo{
 			JobID:            job.JobID,

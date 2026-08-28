@@ -778,16 +778,14 @@ func TestDetailedStatus_HookEvents(t *testing.T) {
 
 	ds := sess.DetailedStatus()
 
-	// Legacy Hooks map should have PreToolUse with count ≥ 1.
-	if ds.Hooks[plugin.HookPreToolUse] < 1 {
-		t.Errorf("Hooks[PreToolUse] = %d, want ≥ 1", ds.Hooks[plugin.HookPreToolUse])
-	}
-
 	// HookEvents should include PreToolUse as supported/claude-compatible-subset.
 	var foundSupported, foundUnsupported bool
 	for _, he := range ds.HookEvents {
 		switch he.Event {
 		case plugin.HookPreToolUse:
+			if he.Count < 1 {
+				t.Errorf("HookEvents PreToolUse count = %d, want ≥ 1", he.Count)
+			}
 			if !he.Supported {
 				t.Errorf("PreToolUse: Supported = false, want true")
 			}

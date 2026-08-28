@@ -604,9 +604,9 @@ func TestStatusEndpoint_DetailedStatus(t *testing.T) {
 			Plugins: []PluginStatusInfo{
 				{Name: "superpowers", Version: "4.3.0", SkillCount: 8, HookCount: 12},
 			},
-			Hooks: map[string]int{
-				"PreToolUse":   3,
-				"SessionStart": 1,
+			HookEvents: []HookEventStatus{
+				{Event: "PreToolUse", Count: 3},
+				{Event: "SessionStart", Count: 1},
 			},
 			Agents: []string{"superpowers:code-reviewer"},
 		}
@@ -645,8 +645,17 @@ func TestStatusEndpoint_DetailedStatus(t *testing.T) {
 	if len(status.Detailed.Plugins) != 1 {
 		t.Errorf("plugins: got %d, want 1", len(status.Detailed.Plugins))
 	}
-	if status.Detailed.Hooks["PreToolUse"] != 3 {
-		t.Errorf("hooks PreToolUse: got %d, want 3", status.Detailed.Hooks["PreToolUse"])
+	if len(status.Detailed.HookEvents) != 2 {
+		t.Errorf("hook events: got %d, want 2", len(status.Detailed.HookEvents))
+	} else {
+		he := status.Detailed.HookEvents[0]
+		if he.Event != "PreToolUse" || he.Count != 3 {
+			t.Errorf("hook events[0]: got %+v, want {PreToolUse 3}", he)
+		}
+		he2 := status.Detailed.HookEvents[1]
+		if he2.Event != "SessionStart" || he2.Count != 1 {
+			t.Errorf("hook events[1]: got %+v, want {SessionStart 1}", he2)
+		}
 	}
 	if len(status.Detailed.Agents) != 1 {
 		t.Errorf("agents: got %d, want 1", len(status.Detailed.Agents))

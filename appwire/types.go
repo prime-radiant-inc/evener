@@ -778,16 +778,24 @@ type ThreadCapabilities struct {
 	Rename bool `json:"rename"`
 }
 
+// EvenerHookEventStatus describes a single hook event's registration state.
+type EvenerHookEventStatus struct {
+	Event     string `json:"event"`
+	Count     int    `json:"count"`
+	Tier      string `json:"tier,omitempty"`
+	Supported bool   `json:"supported"`
+}
+
 type EvenerDiagnostics struct {
-	Tools     []EvenerToolInfo      `json:"tools,omitempty"`
-	MCP       []EvenerMCPServerInfo `json:"mcp,omitempty"`
-	Skills    []EvenerSkillInfo     `json:"skills,omitempty"`
-	Plugins   []EvenerPluginInfo    `json:"plugins,omitempty"`
-	Hooks     map[string]int        `json:"hooks,omitempty"`
-	Jobs      []EvenerJobInfo       `json:"jobs,omitempty"`
-	Delegates []EvenerDelegateInfo  `json:"delegates,omitempty"`
-	TurnSlots *EvenerTurnSlots      `json:"turnSlots,omitempty"`
-	Agents    []string              `json:"agents,omitempty"`
+	Tools      []EvenerToolInfo        `json:"tools,omitempty"`
+	MCP        []EvenerMCPServerInfo   `json:"mcp,omitempty"`
+	Skills     []EvenerSkillInfo       `json:"skills,omitempty"`
+	Plugins    []EvenerPluginInfo      `json:"plugins,omitempty"`
+	HookEvents []EvenerHookEventStatus `json:"hook_events,omitempty"`
+	Jobs       []EvenerJobInfo         `json:"jobs,omitempty"`
+	Delegates  []EvenerDelegateInfo    `json:"delegates,omitempty"`
+	TurnSlots  *EvenerTurnSlots        `json:"turnSlots,omitempty"`
+	Agents     []string                `json:"agents,omitempty"`
 }
 
 // MarshalJSON preserves an explicit empty plugin inventory while keeping a

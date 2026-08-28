@@ -904,8 +904,8 @@ func TestAgentToServerDetailedStatus_Empty(t *testing.T) {
 	if len(got.Plugins) != 0 {
 		t.Errorf("Plugins = %d, want 0", len(got.Plugins))
 	}
-	if len(got.Hooks) != 0 {
-		t.Errorf("Hooks = %d, want 0", len(got.Hooks))
+	if len(got.HookEvents) != 0 {
+		t.Errorf("HookEvents = %d, want 0", len(got.HookEvents))
 	}
 	if len(got.Jobs) != 0 {
 		t.Errorf("Jobs = %d, want 0", len(got.Jobs))
@@ -937,7 +937,7 @@ func TestAgentToServerDetailedStatus_Partial(t *testing.T) {
 		MCP:     []mcpconfig.ServerInfo{{Name: "test-server", Tools: []string{"tool1", "tool2"}, Status: "degraded", Error: "boom"}},
 		Skills:  []skill.SkillMeta{{Name: "test-skill", Description: "A test skill"}},
 		Plugins: []agent.PluginInfo{{Name: "test-plugin", Version: "1.0.0", SkillCount: 2, AgentCount: 3, HookCount: 4, MCPCount: 5}},
-		Hooks:   map[plugin.HookEvent]int{"PreToolUse": 1, "PostToolUse": 7},
+		HookEvents: []agent.HookEventStatus{{Event: plugin.HookPreToolUse, Count: 1}, {Event: plugin.HookPostToolUse, Count: 7}},
 		Jobs:    []agent.JobStatusInfo{{JobID: "job1", JobType: "delegate", Status: "done", Reason: "finished", ExitCode: &exitCode, TranscriptRef: "ref1", OutputBytes: 100}},
 		Agents:  []string{"explorer", "default"},
 	}
@@ -982,8 +982,20 @@ func TestAgentToServerDetailedStatus_Partial(t *testing.T) {
 		t.Errorf("Plugins[0] = %+v, want {Name:test-plugin Version:1.0.0 SkillCount:2 AgentCount:3 HookCount:4 MCPCount:5}", p)
 	}
 
-	if len(got.Hooks) != 2 || got.Hooks["PreToolUse"] != 1 || got.Hooks["PostToolUse"] != 7 {
-		t.Errorf("Hooks = %v, want PreToolUse=1 PostToolUse=7", got.Hooks)
+	if len(got.HookEvents) != 2 {
+		t.Fatalf("HookEvents = %d, want 2", len(got.HookEvents))
+	}
+	for _, he := range got.HookEvents {
+		switch string(he.Event) {
+		case "PreToolUse":
+			if he.Count != 1 {
+				t.Errorf("HookEvents PreToolUse = %d, want 1", he.Count)
+			}
+		case "PostToolUse":
+			if he.Count != 7 {
+				t.Errorf("HookEvents PostToolUse = %d, want 7", he.Count)
+			}
+		}
 	}
 
 	if len(got.Jobs) != 1 {

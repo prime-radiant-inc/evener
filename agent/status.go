@@ -108,7 +108,7 @@ type DelegateStatusInfo struct {
 type HookEventStatus struct {
 	Event     plugin.HookEvent `json:"event"`
 	Count     int              `json:"count"`
-	Tier      string           `json:"tier"`
+	Tier      string           `json:"tier,omitempty"`
 	Supported bool             `json:"supported"`
 }
 
@@ -118,9 +118,6 @@ type DetailedStatus struct {
 	MCP     []mcpconfig.ServerInfo `json:"mcp,omitempty"`     // connected MCP servers
 	Skills  []skill.SkillMeta      `json:"skills,omitempty"`  // discovered skills, sorted by name
 	Plugins []PluginInfo           `json:"plugins,omitempty"` // loaded plugins
-	// Hooks maps each hook event to the number of registered hooks for it.
-	// Retained for backward compatibility; HookEvents carries richer per-event data.
-	Hooks map[plugin.HookEvent]int `json:"hooks,omitempty"`
 	// HookEvents lists all registered hook events (supported) plus any
 	// recognized-but-unsupported events declared by loaded plugins.
 	HookEvents []HookEventStatus    `json:"hook_events,omitempty"`
@@ -182,16 +179,10 @@ func (s *Session) DetailedStatus() DetailedStatus {
 		})
 	}
 
-	// Hooks: populate the backward-compatible map and the richer HookEvents slice.
+	// HookEvents supported entries count only hooks that can ACTUALLY run:
+	// hooks with an unsupported handler type or an invalid matcher are
+	// dispatch-time dead and surface as load warnings, not as active hooks.
 	if s.hookRunner != nil {
-		// Legacy map: every registered hook per event (registered, not necessarily
-		// runnable). Retained for backward compatibility.
-		if summary := s.hookRunner.Summary(); len(summary) > 0 {
-			ds.Hooks = summary
-		}
-		// HookEvents supported entries count only hooks that can ACTUALLY run:
-		// hooks with an unsupported handler type or an invalid matcher are
-		// dispatch-time dead and surface as load warnings, not as active hooks.
 		for event, count := range s.hookRunner.SupportedSummary() {
 			ds.HookEvents = append(ds.HookEvents, HookEventStatus{
 				Event:     event,

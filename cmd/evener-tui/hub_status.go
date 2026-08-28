@@ -213,15 +213,9 @@ func appendDiagnosticsSections(b *strings.Builder, ds *appwire.EvenerDiagnostics
 			p.Name, version, p.SkillCount, p.AgentCount, p.HookCount)
 	}
 
-	fmt.Fprintf(b, "\n\nHooks (%d):", len(ds.Hooks))
-	if len(ds.Hooks) > 0 {
-		parts := make([]string, 0, len(ds.Hooks))
-		for event, count := range ds.Hooks {
-			parts = append(parts, fmt.Sprintf("%s: %d", event, count))
-		}
-		sort.Strings(parts)
-		b.WriteString("\n  ")
-		b.WriteString(strings.Join(parts, "  "))
+	fmt.Fprintf(b, "\n\nHook Events (%d):", len(ds.HookEvents))
+	for _, he := range ds.HookEvents {
+		fmt.Fprintf(b, "\n  %s: %d", he.Event, he.Count)
 	}
 
 	fmt.Fprintf(b, "\n\nJobs (%d):", len(ds.Jobs))
