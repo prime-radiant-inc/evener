@@ -236,6 +236,7 @@ export function SessionChrome({ ref: sessionRef, placement = "footer" }: Session
             onPin: async (target) => {
               try {
                 const result = await assignSessionPin(client, sessionRef, target);
+                navigationStore.getState().trackPinSection(result.assignment.section.id);
                 if (result.navigation) await navigationStore.getState().applyNavigationMutation(result.navigation);
               } catch (err) {
                 toasts.push("error", sessionActionError("Couldn't assign pinned session", err));

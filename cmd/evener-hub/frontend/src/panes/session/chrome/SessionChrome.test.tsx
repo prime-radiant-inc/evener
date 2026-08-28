@@ -356,7 +356,10 @@ test("session-menu pin assignment uses typed AppWire and converges its navigatio
         session_ref: "local:sess_ref_pin",
         section: { id: "research", name: "Research", member_count: 1 },
       },
-      navigation: { generation_id: "generation_test", targets: [] },
+      navigation: {
+        generation_id: "generation_test",
+        targets: [{ kind: "pin_section", section_id: "research", revision: 2 }],
+      },
     };
   });
   await threadsStore.getState().ensureThread("ref_pin");
@@ -380,13 +383,18 @@ test("session-menu pin assignment uses typed AppWire and converges its navigatio
     error: null,
     generationID: "generation_test",
   };
-  const applyNavigationMutation = vi.fn().mockResolvedValue(undefined);
+  const convergenceOrder: string[] = [];
+  const trackPinSection = vi.fn((sectionID: string) => convergenceOrder.push(`track:${sectionID}`));
+  const applyNavigationMutation = vi.fn(async () => {
+    convergenceOrder.push("apply");
+  });
   navigationStore.setState((state) => {
     const resources = new Map(state.resources);
     resources.set(keyID(pinKey), pinCatalog);
     return {
       resources,
       loadPinCatalog: vi.fn().mockResolvedValue(pinCatalog),
+      trackPinSection,
       applyNavigationMutation,
     };
   });
@@ -402,7 +410,11 @@ test("session-menu pin assignment uses typed AppWire and converges its navigatio
       params: { session_ref: "ref_pin", section_id: "research" },
     }),
   );
-  expect(applyNavigationMutation).toHaveBeenCalledWith({ generation_id: "generation_test", targets: [] });
+  expect(applyNavigationMutation).toHaveBeenCalledWith({
+    generation_id: "generation_test",
+    targets: [{ kind: "pin_section", section_id: "research", revision: 2 }],
+  });
+  expect(convergenceOrder).toEqual(["track:research", "apply"]);
 });
 
 test("menu Shut down is gated on capabilities.shutdown", async () => {
