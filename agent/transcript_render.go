@@ -824,7 +824,7 @@ func writeEntry(b *strings.Builder, seq int, e transcript.Entry, resultTool stri
 			b.WriteString("\n> [SYSTEM turn omitted]\n")
 		}
 
-	case schema.TurnTool: // deprecated
+	case schema.TurnTool: // old transcript format
 		b.WriteString("\n> [TOOL turn omitted]\n")
 
 	default:
