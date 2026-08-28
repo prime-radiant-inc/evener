@@ -556,7 +556,7 @@ describe("Honest reachability — explicit fixture seeds", () => {
     await screen.findByText(/not checked/i);
     fireEvent.click(
       await screen.findByRole("button", {
-        name: /laptop.*active server.*not checked/i,
+        name: /laptop.*active server.*unknown/i,
       }),
     );
     await screen.findByRole("dialog", { name: /servers/i });

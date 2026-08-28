@@ -667,7 +667,25 @@ async fn handle_client_frame(
             .send(Message::Text(
                 json!({
                     "id": frame["id"],
-                    "result": { "protocolVersion": "evener-appwire-v3" },
+                    "result": {
+                        "serverInfo": { "name": "rust-harness", "version": "1.0.0" },
+                        "protocolVersion": "evener-appwire-v3",
+                        "sourceId": "rust-harness-source",
+                        "features": {
+                            "threadList": true,
+                            "threadTurnsList": true,
+                            "turnStart": true,
+                            "turnSteer": true,
+                            "threadClear": true,
+                            "threadShutdown": true,
+                            "forkFromTurn": true,
+                            "tasks": true,
+                            "transcriptList": true,
+                            "modelList": true,
+                            "directoryComplete": true,
+                            "auth": true,
+                        },
+                    },
                 })
                 .to_string()
                 .into(),
