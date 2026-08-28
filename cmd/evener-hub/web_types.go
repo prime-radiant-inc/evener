@@ -82,21 +82,20 @@ type WorkspaceData struct {
 	ObserverRouteIDs []string
 }
 
-// daemonStatus is the subset of /status fields the hub cares about.
+// daemonStatus is the subset of a daemon AppWire thread snapshot used by the
+// legacy workspace template projection.
 type daemonStatus struct {
-	SessionID        string  `json:"session_id"`
-	Model            string  `json:"model"`
-	Profile          string  `json:"profile"`
-	State            string  `json:"state"`
-	Turns            int     `json:"turns"`
-	WorkingDir       string  `json:"working_dir,omitempty"`
-	ContextPressure  float64 `json:"context_pressure"`
-	ContextUsed      int     `json:"context_used,omitempty"`
-	ContextWindow    int     `json:"context_window,omitempty"`
-	ContextRemaining int     `json:"context_remaining,omitempty"`
-	// Usage, WorkMillis, and ActiveTurnStartedAt mirror server.StatusInfo's
-	// WS2 working-state/token metrics fields.
-	WorkMillis          int64                `json:"work_millis,omitempty"`
-	Usage               *appwire.EvenerUsage `json:"usage,omitempty"`
-	ActiveTurnStartedAt int64                `json:"active_turn_started_at,omitempty"`
+	SessionID           string
+	Model               string
+	Profile             string
+	State               string
+	Turns               int
+	WorkingDir          string
+	ContextPressure     float64
+	ContextUsed         int
+	ContextWindow       int
+	ContextRemaining    int
+	WorkMillis          int64
+	Usage               *appwire.EvenerUsage
+	ActiveTurnStartedAt int64
 }

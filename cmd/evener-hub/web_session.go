@@ -2,31 +2,47 @@ package hub
 
 import (
 	"context"
-	"encoding/json"
-	"net/http"
 	"time"
 
+	"primeradiant.com/evener/appwire"
 	"primeradiant.com/evener/cmd/evener-hub/internal/hubcore"
+	"primeradiant.com/evener/cmd/evener-hub/internal/strutil"
 )
 
-// fetchStatus reads /status from the daemon at le.Address, returning nil on any error.
+// fetchStatus reads the daemon's bounded typed thread snapshot, returning nil
+// on any error so workspace hydration retains its roster-backed fallback.
 func (s *WebServer) fetchStatus(le hubcore.LiveEntry) *daemonStatus {
-	client := &http.Client{Timeout: 1 * time.Second}
 	ctx, cancel := context.WithTimeout(context.Background(), 1*time.Second)
 	defer cancel()
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, "http://"+le.Address+"/status", nil) //nolint:gosec
+	if s == nil || s.sources == nil {
+		return nil
+	}
+	source, ok := s.sources.Source("local")
+	if !ok {
+		return nil
+	}
+	threadID := strutil.FirstNonEmpty(le.SessionID, le.Entry.SessionID, le.ThreadID)
+	if threadID == "" {
+		return nil
+	}
+	resp, err := source.ReadThread(ctx, appwire.ThreadReadParams{Ref: localAppRef(threadID)})
 	if err != nil {
 		return nil
 	}
-	hubcore.SetDaemonAuthorization(req.Header, le.HubToken)
-	resp, err := client.Do(req)
-	if err != nil {
-		return nil
+	thread := resp.Thread
+	return &daemonStatus{
+		SessionID:           strutil.FirstNonEmpty(thread.SessionID, thread.ID),
+		Model:               thread.ModelProvider,
+		Profile:             thread.Evener.Profile,
+		State:               thread.Status.Type,
+		Turns:               thread.Evener.TurnCount,
+		WorkingDir:          thread.CWD,
+		ContextPressure:     thread.Evener.ContextPressure,
+		ContextUsed:         thread.Evener.ContextUsed,
+		ContextWindow:       thread.Evener.ContextWindow,
+		ContextRemaining:    thread.Evener.ContextRemaining,
+		WorkMillis:          thread.Evener.WorkMillis,
+		Usage:               thread.Evener.Usage,
+		ActiveTurnStartedAt: thread.Evener.ActiveTurnStartedAt,
 	}
-	defer resp.Body.Close() //nolint:errcheck // response body close on read path; error is not actionable
-	var info daemonStatus
-	if err := json.NewDecoder(resp.Body).Decode(&info); err != nil {
-		return nil
-	}
-	return &info
 }

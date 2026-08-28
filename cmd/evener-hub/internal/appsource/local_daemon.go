@@ -53,6 +53,9 @@ type LocalDaemonEntry struct {
 	// appwire.EvenerThread.AskPending so the TUI's per-row ask marker (Task 29)
 	// sees it when attaching through the hub.
 	PendingAsk bool
+	// RunningJobs carries the roster's non-terminal, non-agent work into the
+	// typed thread diagnostics consumed by hub and TUI status views.
+	RunningJobs []appwire.EvenerJobInfo
 }
 
 func NewLocalDaemonSource(sourceID string, entries func() []rendezvous.Entry, client *http.Client) *LocalDaemonSource {
@@ -870,6 +873,9 @@ func (s *LocalDaemonSource) threadFromEntry(item LocalDaemonEntry) appwire.Threa
 		},
 		Status: appwire.ThreadStatus{Type: status},
 	}
+	if len(item.RunningJobs) > 0 {
+		thread.Evener.Diagnostics = &appwire.EvenerDiagnostics{Jobs: cloneLocalDaemonJobs(item.RunningJobs)}
+	}
 	if item.ReadOnlyAlias {
 		thread.Evener.Capabilities = appwire.ThreadCapabilities{}
 		thread.Evener.Kind = "subagent"
@@ -878,6 +884,21 @@ func (s *LocalDaemonSource) threadFromEntry(item LocalDaemonEntry) appwire.Threa
 		}
 	}
 	return thread
+}
+
+func cloneLocalDaemonJobs(in []appwire.EvenerJobInfo) []appwire.EvenerJobInfo {
+	out := append([]appwire.EvenerJobInfo(nil), in...)
+	for i := range out {
+		if out[i].Resumable != nil {
+			resumable := *out[i].Resumable
+			out[i].Resumable = &resumable
+		}
+		if out[i].ExitCode != nil {
+			exitCode := *out[i].ExitCode
+			out[i].ExitCode = &exitCode
+		}
+	}
+	return out
 }
 
 func localDaemonRendezvousEntry(item LocalDaemonEntry) rendezvous.Entry {

@@ -617,6 +617,35 @@ func fuzzScenarioLocalDaemonSourceListCarriesAskPending(t *testing.T) {
 	}
 }
 
+func TestLocalDaemonSourceListCarriesRunningNonAgentJobs(t *testing.T) {
+	source := NewLocalDaemonSourceWithEntries("local", func() []LocalDaemonEntry {
+		return []LocalDaemonEntry{{
+			Entry: rendezvous.Entry{
+				Protocol:  appwire.ProtocolVersion,
+				Endpoint:  "ws://127.0.0.1/jobs",
+				ThreadID:  "th_jobs",
+				SessionID: "sess_jobs",
+			},
+			Status: appwire.ThreadStatusActive,
+			RunningJobs: []appwire.EvenerJobInfo{{
+				JobID: "job_shell", JobType: "shell", Status: "running",
+			}},
+		}}
+	}, nil)
+
+	resp, err := source.ListThreads(context.Background(), appwire.ThreadListParams{})
+	if err != nil {
+		t.Fatalf("ListThreads: %v", err)
+	}
+	if len(resp.Data) != 1 || resp.Data[0].Evener.Diagnostics == nil || len(resp.Data[0].Evener.Diagnostics.Jobs) != 1 {
+		t.Fatalf("thread list diagnostics = %+v, want one running shell job", resp.Data)
+	}
+	job := resp.Data[0].Evener.Diagnostics.Jobs[0]
+	if job.JobID != "job_shell" || job.JobType != "shell" || job.Status != "running" {
+		t.Fatalf("running job = %+v, want shell identity and status", job)
+	}
+}
+
 func fuzzScenarioLocalDaemonSourceSubscribeThreadRequestsSubscription(t *testing.T) {
 	gotSubscribe := make(chan bool, 1)
 	app := appserver.NewServer(appserver.ServerConfig{ServerName: "daemon", SourceID: "local"})

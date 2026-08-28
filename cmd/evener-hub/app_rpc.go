@@ -30,10 +30,11 @@ func newHubSourceRegistry(cfg hubcore.WebConfig) *appsource.Registry {
 					continue
 				}
 				entry := appsource.LocalDaemonEntry{
-					Entry:      item.Entry,
-					SessionID:  item.SessionID,
-					Status:     item.Status,
-					PendingAsk: item.PendingAsk,
+					Entry:       item.Entry,
+					SessionID:   item.SessionID,
+					Status:      item.Status,
+					PendingAsk:  item.PendingAsk,
+					RunningJobs: item.RunningJobs,
 				}
 				entries = append(entries, entry)
 				// In-process descendants are addressed as their own AppWire
@@ -42,6 +43,7 @@ func newHubSourceRegistry(cfg hubcore.WebConfig) *appsource.Registry {
 					child := entry
 					child.OwnerSessionID = entry.SessionID
 					child.SessionID = childID
+					child.RunningJobs = nil
 					// The child's own projected status when the daemon carries
 					// it — inheriting the parent's status would render a
 					// settled delegate as working (or vice versa). "" (old

@@ -99,7 +99,7 @@ func (s *WebServer) workspaceData(id string) WorkspaceData {
 				data.ContextNumbers = formatContextNumbers(status.ContextUsed, status.ContextWindow, status.ContextRemaining)
 				data.CompactContextNumbers = formatCompactContextNumbers(status.ContextUsed, status.ContextWindow)
 			}
-			// Branch isn't on the rendezvous entry or daemon /status — fall
+			// Branch isn't on the rendezvous entry or daemon AppWire snapshot — fall
 			// back to the past index where the agent persists EnvInfo.
 			if s.cfg.Past != nil {
 				if pe, ok := s.cfg.Past.Find(id); ok {

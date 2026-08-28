@@ -671,33 +671,59 @@ func TestWorkspaceDataProjectsStoppedInProcessSubagentEnded(t *testing.T) {
 	}
 }
 
-func TestWorkspaceDataUsesDaemonStatusTurnCountForLiveLocalSession(t *testing.T) {
+func webWithLiveAppWireStatus(t *testing.T, thread appwire.Thread) (*WebServer, <-chan appwire.ThreadReadParams) {
+	t.Helper()
+	reads := make(chan appwire.ThreadReadParams, 1)
+	app := appserver.NewServer(appserver.ServerConfig{ServerName: "daemon", SourceID: "local"})
+	appserver.HandleTyped(app.Router(), appwire.MethodThreadRead, func(_ context.Context, params appwire.ThreadReadParams) (appwire.ThreadReadResponse, error) {
+		reads <- params
+		return appwire.ThreadReadResponse{Thread: thread}, nil
+	})
 	daemon := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != "/status" {
+		if r.URL.Path != "/rpc" {
 			http.NotFound(w, r)
 			return
 		}
-		_ = json.NewEncoder(w).Encode(map[string]any{
-			"session_id":  "02wMz5TxvFpYrooBkiqxAp",
-			"state":       "active",
-			"turns":       37,
-			"model":       "gpt-5",
-			"working_dir": "/tmp/turns",
-		})
+		app.ServeWebSocket(w, r)
 	}))
-	defer daemon.Close()
-
-	addr := strings.TrimPrefix(daemon.URL, "http://")
+	t.Cleanup(daemon.Close)
+	entry := rendezvous.Entry{
+		Address:    strings.TrimPrefix(daemon.URL, "http://"),
+		Protocol:   appwire.ProtocolVersion,
+		Endpoint:   "ws" + daemon.URL[len("http"):] + "/rpc",
+		SourceID:   "local",
+		ThreadID:   thread.ID,
+		SessionID:  thread.SessionID,
+		Model:      thread.ModelProvider,
+		WorkingDir: thread.CWD,
+	}
 	roster := hubcore.NewRosterWithEntries(hubcore.LiveEntry{
-		Entry:     rendezvous.Entry{Address: addr, SessionID: "02wMz5TxvFpYrooBkiqxAp", Model: "gpt-5", WorkingDir: "/tmp/turns"},
-		SessionID: "02wMz5TxvFpYrooBkiqxAp",
-		Status:    "active",
+		Entry: entry, SessionID: thread.SessionID, Status: thread.Status.Type,
 	})
-	web := NewWebServer(hubcore.WebConfig{Roster: roster})
+	return NewWebServer(hubcore.WebConfig{Roster: roster}), reads
+}
 
-	got := web.workspaceData("02wMz5TxvFpYrooBkiqxAp")
+func TestWorkspaceDataUsesDaemonStatusTurnCountForLiveLocalSession(t *testing.T) {
+	const sessionID = "02wMz5TxvFpYrooBkiqxAp"
+	web, reads := webWithLiveAppWireStatus(t, appwire.Thread{
+		ID: sessionID, SessionID: sessionID, ModelProvider: "gpt-5", CWD: "/tmp/turns",
+		Status: appwire.ThreadStatus{Type: appwire.ThreadStatusActive},
+		Evener: appwire.EvenerThread{
+			Ref: "local:" + sessionID, TurnCount: 37,
+		},
+	})
+
+	got := web.workspaceData(sessionID)
 	if got.TurnCount != 37 {
-		t.Fatalf("TurnCount = %d, want daemon /status turns 37", got.TurnCount)
+		t.Fatalf("TurnCount = %d, want daemon AppWire turnCount 37", got.TurnCount)
+	}
+	select {
+	case params := <-reads:
+		if params.IncludeTurns {
+			t.Fatal("workspace status hydration must not request the transcript")
+		}
+	default:
+		t.Fatal("workspace status hydration did not call daemon thread/read")
 	}
 }
 
@@ -705,34 +731,17 @@ func TestWorkspaceDataUsesDaemonStatusTurnCountForLiveLocalSession(t *testing.T)
 // branch of workspaceData computes Cost from the daemon-reported Model and
 // Usage via appwire.EstimateCost, once both are finalized.
 func TestWorkspaceData_LiveSessionCarriesCostEstimate(t *testing.T) {
-	daemon := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != "/status" {
-			http.NotFound(w, r)
-			return
-		}
-		_ = json.NewEncoder(w).Encode(map[string]any{
-			"session_id":  "02wMz5TxvHIJQPOuIBJQct",
-			"state":       "active",
-			"turns":       1,
-			"model":       "claude-opus-4-5",
-			"working_dir": "/tmp/costlive",
-			"usage": map[string]any{
-				"inputTokens":  100_000,
-				"outputTokens": 20_000,
-			},
-		})
-	}))
-	defer daemon.Close()
-
-	addr := strings.TrimPrefix(daemon.URL, "http://")
-	roster := hubcore.NewRosterWithEntries(hubcore.LiveEntry{
-		Entry:     rendezvous.Entry{Address: addr, SessionID: "02wMz5TxvHIJQPOuIBJQct", Model: "claude-opus-4-5", WorkingDir: "/tmp/costlive"},
-		SessionID: "02wMz5TxvHIJQPOuIBJQct",
-		Status:    "active",
+	const sessionID = "02wMz5TxvHIJQPOuIBJQct"
+	web, _ := webWithLiveAppWireStatus(t, appwire.Thread{
+		ID: sessionID, SessionID: sessionID, ModelProvider: "claude-opus-4-5", CWD: "/tmp/costlive",
+		Status: appwire.ThreadStatus{Type: appwire.ThreadStatusActive},
+		Evener: appwire.EvenerThread{
+			Ref: "local:" + sessionID, TurnCount: 1,
+			Usage: &appwire.EvenerUsage{InputTokens: 100_000, OutputTokens: 20_000},
+		},
 	})
-	web := NewWebServer(hubcore.WebConfig{Roster: roster})
 
-	got := web.workspaceData("02wMz5TxvHIJQPOuIBJQct")
+	got := web.workspaceData(sessionID)
 	if got.Cost != "~$1.00" {
 		t.Fatalf("Cost = %q, want ~$1.00", got.Cost)
 	}
