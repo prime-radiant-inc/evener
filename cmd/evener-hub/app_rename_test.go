@@ -54,6 +54,65 @@ func drainRenamePublications(t *testing.T, navigation *NavigationService) []appw
 	return navigation.DrainPublications()
 }
 
+// endedRenameFixture is the shared environment for renaming an ended session:
+// the session meta on disk under a project state dir, a past index over it, and
+// a navigation service plus app server whose tree points at that project.
+// Renames dispatched through the server update the on-disk meta and feed title
+// changes into the navigation source.
+type endedRenameFixture struct {
+	stateDir   string
+	original   schema.SessionMeta
+	projectKey string
+	source     *testNavigationSource
+	navigation *NavigationService
+	server     *appserver.Server
+}
+
+func newEndedRenameFixture(t *testing.T, projectDir string) endedRenameFixture {
+	t.Helper()
+	root := t.TempDir()
+	stateDir := filepath.Join(root, "projects", projectDir)
+	original := schema.SessionMeta{
+		ID:         "02wMz5Txv1C3Hut0M8GCeB",
+		Name:       "old",
+		NameSource: "generated",
+		UpdatedAt:  time.Unix(1_700_000_000, 0).UTC(),
+		EnvInfo:    schema.EnvironmentInfo{WorkingDir: "/preserve"},
+	}
+	if err := schema.SaveSessionMeta(stateDir, original); err != nil {
+		t.Fatal(err)
+	}
+	past := hubcore.NewPastIndexWithDB(filepath.Join(root, "projects", "*"), filepath.Join(root, "index.db"))
+	if _, err := past.Rebuild(); err != nil {
+		t.Fatal(err)
+	}
+	source := newTestNavigationSource(time.Unix(1_700_000_000, 0).UTC())
+	projectKey := filepath.Base(stateDir)
+	source.inputs.Tree.Projects[0].Key = projectKey
+	source.inputs.Tree.Projects[0].Name = projectKey
+	source.inputs.Tree.Projects[0].Current[0].Project = projectKey
+	navigation := newTestNavigationService(t, source)
+	if _, err := navigation.Representation(t.Context(), navigationResourceKey{Kind: navigationResourceManifest}); err != nil {
+		t.Fatal(err)
+	}
+	oldSave := saveSessionMetaForRename
+	saveSessionMetaForRename = func(dir string, meta schema.SessionMeta) error {
+		source.changeTitle(meta.Name)
+		return oldSave(dir, meta)
+	}
+	t.Cleanup(func() { saveSessionMetaForRename = oldSave })
+	registry := appsource.NewRegistry()
+	server := newHubAppServerWithNavigation(hubcore.WebConfig{Past: past, Roster: hubcore.NewRosterWithEntries()}, registry, navigation, nil)
+	return endedRenameFixture{
+		stateDir:   stateDir,
+		original:   original,
+		projectKey: projectKey,
+		source:     source,
+		navigation: navigation,
+		server:     server,
+	}
+}
+
 func TestAppWireNavigationRenameConvergesLiveAndEnded(t *testing.T) {
 	t.Run("live changed and repeat no-op", func(t *testing.T) {
 		source := newTestNavigationSource(time.Unix(1_700_000_000, 0).UTC())
@@ -89,50 +148,24 @@ func TestAppWireNavigationRenameConvergesLiveAndEnded(t *testing.T) {
 	})
 
 	t.Run("ended changed and repeat no-op", func(t *testing.T) {
-		root := t.TempDir()
-		stateDir := filepath.Join(root, "projects", "project-0123456789")
-		original := schema.SessionMeta{ID: "02wMz5Txv1C3Hut0M8GCeB", Name: "old", NameSource: "generated", UpdatedAt: time.Unix(1_700_000_000, 0).UTC(), EnvInfo: schema.EnvironmentInfo{WorkingDir: "/preserve"}}
-		if err := schema.SaveSessionMeta(stateDir, original); err != nil {
-			t.Fatal(err)
-		}
-		past := hubcore.NewPastIndexWithDB(filepath.Join(root, "projects", "*"), filepath.Join(root, "index.db"))
-		if _, err := past.Rebuild(); err != nil {
-			t.Fatal(err)
-		}
-		source := newTestNavigationSource(time.Unix(1_700_000_000, 0).UTC())
-		projectKey := filepath.Base(stateDir)
-		source.inputs.Tree.Projects[0].Key = projectKey
-		source.inputs.Tree.Projects[0].Name = projectKey
-		source.inputs.Tree.Projects[0].Current[0].Project = projectKey
-		navigation := newTestNavigationService(t, source)
-		if _, err := navigation.Representation(t.Context(), navigationResourceKey{Kind: navigationResourceManifest}); err != nil {
-			t.Fatal(err)
-		}
-		registry := appsource.NewRegistry()
-		server := newHubAppServerWithNavigation(hubcore.WebConfig{Past: past, Roster: hubcore.NewRosterWithEntries()}, registry, navigation, nil)
-		oldSave := saveSessionMetaForRename
-		saveSessionMetaForRename = func(dir string, meta schema.SessionMeta) error {
-			source.changeTitle(meta.Name)
-			return oldSave(dir, meta)
-		}
-		defer func() { saveSessionMetaForRename = oldSave }()
+		fixture := newEndedRenameFixture(t, "project-0123456789")
 
-		if err := dispatchThreadNameSet(t, server, appwire.ThreadNameSetParams{Ref: "local:" + original.ID, Name: "  renamed-ended  "}); err != nil {
+		if err := dispatchThreadNameSet(t, fixture.server, appwire.ThreadNameSetParams{Ref: "local:" + fixture.original.ID, Name: "  renamed-ended  "}); err != nil {
 			t.Fatalf("thread name set: %v", err)
 		}
-		assertRenameTargets(t, drainRenamePublications(t, navigation), []appwire.NavigationInvalidationTarget{{Kind: appwire.NavigationTargetProject, ProjectKey: projectKey}})
-		got, err := schema.LoadSessionMeta(stateDir, original.ID)
+		assertRenameTargets(t, drainRenamePublications(t, fixture.navigation), []appwire.NavigationInvalidationTarget{{Kind: appwire.NavigationTargetProject, ProjectKey: fixture.projectKey}})
+		got, err := schema.LoadSessionMeta(fixture.stateDir, fixture.original.ID)
 		if err != nil {
 			t.Fatal(err)
 		}
-		if got.Name != "renamed-ended" || got.NameSource != "user" || got.ID != original.ID || !reflect.DeepEqual(got.EnvInfo, original.EnvInfo) {
-			t.Fatalf("renamed meta=%+v, preserved original=%+v", got, original)
+		if got.Name != "renamed-ended" || got.NameSource != "user" || got.ID != fixture.original.ID || !reflect.DeepEqual(got.EnvInfo, fixture.original.EnvInfo) {
+			t.Fatalf("renamed meta=%+v, preserved original=%+v", got, fixture.original)
 		}
 
-		if err := dispatchThreadNameSet(t, server, appwire.ThreadNameSetParams{Ref: "local:" + original.ID, Name: "renamed-ended"}); err != nil {
+		if err := dispatchThreadNameSet(t, fixture.server, appwire.ThreadNameSetParams{Ref: "local:" + fixture.original.ID, Name: "renamed-ended"}); err != nil {
 			t.Fatalf("repeat thread name set: %v", err)
 		}
-		if events := drainRenamePublications(t, navigation); len(events) != 0 {
+		if events := drainRenamePublications(t, fixture.navigation); len(events) != 0 {
 			t.Fatalf("repeat ended rename published events=%+v", events)
 		}
 	})
@@ -158,52 +191,24 @@ func TestAppWireRenameValidatesRefAndName(t *testing.T) {
 }
 
 func TestAppWireRenameReturnsBeforeNavigationRebuildCompletes(t *testing.T) {
-	root := t.TempDir()
-	stateDir := filepath.Join(root, "projects", "project-async-rename-0123456789")
-	original := schema.SessionMeta{ID: "02wMz5Txv1C3Hut0M8GCeB", Name: "old", NameSource: "generated", UpdatedAt: time.Unix(1_700_000_000, 0).UTC()}
-	if err := schema.SaveSessionMeta(stateDir, original); err != nil {
-		t.Fatal(err)
-	}
-	past := hubcore.NewPastIndexWithDB(filepath.Join(root, "projects", "*"), filepath.Join(root, "index.db"))
-	if _, err := past.Rebuild(); err != nil {
-		t.Fatal(err)
-	}
-	source := newTestNavigationSource(time.Unix(1_700_000_000, 0).UTC())
-	projectKey := filepath.Base(stateDir)
-	source.inputs.Tree.Projects[0].Key = projectKey
-	source.inputs.Tree.Projects[0].Name = projectKey
-	source.inputs.Tree.Projects[0].Current[0].Project = projectKey
-	navigation := newTestNavigationService(t, source)
-	if _, err := navigation.Representation(t.Context(), navigationResourceKey{Kind: navigationResourceManifest}); err != nil {
-		t.Fatal(err)
-	}
+	fixture := newEndedRenameFixture(t, "project-async-rename-0123456789")
 	// From here on, every capture blocks until released: a navigation rebuild
 	// that never completes on its own. The rename RPC must still return.
-	source.entered = make(chan struct{})
-	source.release = make(chan struct{})
-	oldSave := saveSessionMetaForRename
-	saveSessionMetaForRename = func(dir string, meta schema.SessionMeta) error {
-		source.changeTitle(meta.Name)
-		return oldSave(dir, meta)
-	}
-	defer func() { saveSessionMetaForRename = oldSave }()
-	registry := appsource.NewRegistry()
-	server := newHubAppServerWithNavigation(hubcore.WebConfig{Past: past, Roster: hubcore.NewRosterWithEntries()}, registry, navigation, nil)
+	fixture.source.entered = make(chan struct{})
+	fixture.source.release = make(chan struct{})
 
-	dispatched := make(chan error, 1)
+	var dispatchErr error
+	returned := make(chan struct{})
 	go func() {
-		dispatched <- dispatchThreadNameSet(t, server, appwire.ThreadNameSetParams{Ref: "local:" + original.ID, Name: "renamed-async"})
+		dispatchErr = dispatchThreadNameSet(t, fixture.server, appwire.ThreadNameSetParams{Ref: "local:" + fixture.original.ID, Name: "renamed-async"})
+		close(returned)
 	}()
-	select {
-	case err := <-dispatched:
-		if err != nil {
-			t.Fatalf("thread name set: %v", err)
-		}
-	case <-time.After(5 * time.Second):
-		t.Fatal("rename RPC blocked on the navigation rebuild")
+	waitNavigationSignal(t, returned, "rename RPC to return")
+	if dispatchErr != nil {
+		t.Fatalf("thread name set: %v", dispatchErr)
 	}
 	// The rename must be durably committed before the RPC returned.
-	meta, err := schema.LoadSessionMeta(stateDir, original.ID)
+	meta, err := schema.LoadSessionMeta(fixture.stateDir, fixture.original.ID)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -213,22 +218,16 @@ func TestAppWireRenameReturnsBeforeNavigationRebuildCompletes(t *testing.T) {
 	// The rebuild the rename kicked off is still pending, and any capture it
 	// triggers is stuck on the gate. Drive it the way the scheduler would
 	// (refreshPending) and only then let the capture finish.
-	events := make(chan []appwire.NavigationInvalidatedPayload, 1)
+	var publications []appwire.NavigationInvalidatedPayload
+	committed := make(chan struct{})
 	go func() {
-		events <- drainRenamePublications(t, navigation)
+		publications = drainRenamePublications(t, fixture.navigation)
+		close(committed)
 	}()
-	select {
-	case <-source.entered:
-	case <-time.After(5 * time.Second):
-		t.Fatal("pending rename hint did not start a rebuild")
-	}
-	close(source.release)
-	select {
-	case publications := <-events:
-		assertRenameTargets(t, publications, []appwire.NavigationInvalidationTarget{{Kind: appwire.NavigationTargetProject, ProjectKey: projectKey}})
-	case <-time.After(5 * time.Second):
-		t.Fatal("pending rename hint never committed an invalidation")
-	}
+	waitNavigationSignal(t, fixture.source.entered, "pending rename hint to start a rebuild")
+	close(fixture.source.release)
+	waitNavigationSignal(t, committed, "pending rename hint to commit an invalidation")
+	assertRenameTargets(t, publications, []appwire.NavigationInvalidationTarget{{Kind: appwire.NavigationTargetProject, ProjectKey: fixture.projectKey}})
 }
 
 func TestAppWireRenameKeepsNonLocalRefSeparateFromMatchingLocalSession(t *testing.T) {

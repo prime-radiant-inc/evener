@@ -44,9 +44,7 @@ func setThreadName(ctx context.Context, cfg hubcore.WebConfig, sources *appsourc
 	if err != nil {
 		return appwire.EmptyResponse{}, err
 	}
-	if err := completeThreadNameMutation(ctx, cfg, navigation, mutation); err != nil {
-		return appwire.EmptyResponse{}, err
-	}
+	completeThreadNameMutation(cfg, navigation, mutation)
 	return appwire.EmptyResponse{}, nil
 }
 
@@ -112,25 +110,18 @@ func refreshThreadNameMeta(cfg hubcore.WebConfig, ref appwire.Ref, name string) 
 	return mutation
 }
 
-func completeThreadNameMutation(ctx context.Context, cfg hubcore.WebConfig, navigation *NavigationService, mutation threadNameMutation) error {
+func completeThreadNameMutation(cfg hubcore.WebConfig, navigation *NavigationService, mutation threadNameMutation) {
 	pokeMutationAttention(cfg)
 	if navigation == nil {
-		return nil
+		return
 	}
 	hint := navigationChangeHint{AllLoadedProjects: true}
 	if mutation.projectKey != "" {
 		hint = navigationChangeHint{Projects: []string{mutation.projectKey}}
 	}
-	// The rename is durably committed above; rebuild navigation off the RPC
-	// path. Invalidate records the hint and wakes the service's scheduler,
-	// whose refreshPending commits the rebuild and appends the resulting
-	// NavigationInvalidated publications to the FIFO that the publisher loop
-	// broadcasts as evener/navigation/invalidated. If the rebuild fails, the
-	// scheduler re-arms the pending hint and retries, so the invalidation is
-	// still eventually published. The rpc's context is not used: nothing here
-	// depends on the request outliving the async rebuild.
+	// The rename is durably committed above; Invalidate queues the rebuild off
+	// the RPC path (see Invalidate/refreshPending for the retry contract).
 	navigation.Invalidate(hint)
-	return nil
 }
 
 func threadNameIsLive(cfg hubcore.WebConfig, threadID string) bool {
