@@ -164,7 +164,6 @@ func (s *WebServer) Handler() http.Handler {
 	mux.HandleFunc("/credentials", s.handleCredentials)
 
 	// API
-	mux.HandleFunc("/api/spawn", s.handleApiSpawn)
 	mux.HandleFunc("/api/health", s.handleAPIHealth)
 	mux.HandleFunc("/api/mobile/pairing", s.handleAPIMobilePairing)
 	mux.HandleFunc("/api/pin-sections", s.handleAPIPinSections)

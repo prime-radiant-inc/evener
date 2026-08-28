@@ -406,9 +406,9 @@ func logoutHubAuth(client *appwire.Client, provider string) tea.Cmd {
 	}
 }
 
-// datedSnapshotSuffix and prettifyModelDisplayName are duplicated from
-// cmd/evener-hub/web_spawn.go (a different binary/package; llm/model_catalog.go
-// isn't owned by this track — see the plan's Global Constraints).
+// datedSnapshotSuffix and prettifyModelDisplayName are duplicated from the hub
+// model-picker implementation in cmd/evener-hub/app_models.go because the TUI
+// and hub are separate binaries.
 var datedSnapshotSuffix = regexp.MustCompile(`-\d{8}(-v\d+)?$`)
 
 func isDatedSnapshotModelID(ref string) bool {

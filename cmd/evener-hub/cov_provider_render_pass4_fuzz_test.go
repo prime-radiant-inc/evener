@@ -2,7 +2,6 @@ package hub
 
 import (
 	"bytes"
-	"errors"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -11,7 +10,6 @@ import (
 	"time"
 
 	"primeradiant.com/evener/agent/schema"
-	"primeradiant.com/evener/appwire"
 	"primeradiant.com/evener/cmd/evener-hub/internal/hubcore"
 )
 
@@ -67,10 +65,6 @@ func FuzzProviderRenderPass4(f *testing.F) {
 		}
 		web.handleManifest(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "/manifest.webmanifest", nil))
 		web.handleCredentials(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "/credentials", nil))
-
-		writeSpawnError(httptest.NewRecorder(), appwire.InvalidParams(raw))
-		writeSpawnError(httptest.NewRecorder(), appwire.Unavailable(raw))
-		writeSpawnError(httptest.NewRecorder(), errors.New(raw))
 	})
 }
 

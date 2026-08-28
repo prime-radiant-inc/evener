@@ -8,23 +8,6 @@ import (
 	"primeradiant.com/evener/hubapi"
 )
 
-// spawnRequest is the JSON body for POST /api/spawn. Items
-// carries optional attachments (e.g. image bytes) that the composer wants
-// to include with the initial user turn (kata t5j6).
-type spawnRequest struct {
-	Prompt          string                     `json:"prompt"`
-	Harness         string                     `json:"harness"`
-	Model           string                     `json:"model"`
-	WorkingDir      string                     `json:"working_dir"`
-	Branch          string                     `json:"branch"`
-	AccessMode      string                     `json:"access_mode"`
-	Agent           string                     `json:"agent"`
-	ReasoningEffort string                     `json:"reasoning_effort"`
-	NonInteractive  *bool                      `json:"non_interactive,omitempty"`
-	LaunchOverrides *appwire.LaunchConfigLayer `json:"launch_overrides,omitempty"`
-	Items           []appwire.InputItem        `json:"items,omitempty"`
-}
-
 // modelsCache is a per-WebServer TTL cache of the raw live model list. Provider
 // configuration overlays are applied to fresh descriptors on each response.
 type modelsCache struct {

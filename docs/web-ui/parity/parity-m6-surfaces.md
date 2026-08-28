@@ -176,10 +176,10 @@ These are the findings most likely to bite a rewrite that "looks equivalent." Ea
 ### 1.14 Submission & result handling
 
 - [ ] Submit handler always calls `e.preventDefault()` and rebuilds the entire payload from `FormData` — there is no native form POST path (`spawn.js:1243-1245`)
-- [ ] AppWire `thread/start` sends the prompt/input, working directory, harness, model/provider, reasoning effort, and launch overrides; the resolved HEAD remains display-only (`startThread.ts`)
-- [ ] Prefers `window.EvenerAppwire.startThread(body)`; REST fallback POSTs `/api/spawn` with `attachments` re-encoded into `items: [{type:"image", mediaType, data(base64), name}]` and the raw `attachments` key stripped from the body first (`spawn.js:1305-1330`)
+- [ ] Payload shape: `{launch_overrides, prompt, harness, model, working_dir, branch, access_mode, agent, reasoning_effort, attachments}` (`spawn.js:1270-1288`)
+- [ ] Starts sessions through the typed AppWire `thread/start` request; there is no REST fallback (`panes/spawn/startThread.ts`)
 - [ ] `spawnEncodeAttachmentData` base64-encodes in `0x8000`-byte chunks (avoids `String.fromCharCode.apply` argument-count blowups on large images) and duck-types ArrayBuffer/typed-array/cross-realm buffers rather than using `instanceof`, specifically to survive JSDOM-originated buffers in tests (`spawn.js:11-38`, code comment at 11-15)
-- [ ] REST failure path parses the response body as JSON looking for an `.error` field, falling back to the raw text for older plain-text error responses (`spawn.js:419-427, 1327`)
+- [ ] AppWire start failures surface the structured error through the pane's normal error handling (`panes/spawn/startThread.ts`)
 - [ ] Spawn button is disabled and relabeled `spawning…` for the duration of the request, restored to the literal HTML `spawn <kbd>⌘↵</kbd>` on failure (`spawn.js:1303-1304, 1339`)
 - [ ] On success, the pending-attachment bag is cleared AND the paste marker-counter reset (`EvenerComposerAttachments.resetMarkerCounter`) BEFORE navigating away, so a back-button return can't resend the same images (`spawn.js:1331-1336`)
 - [ ] Success navigates via `window.location.href = "/s/" + encodeURIComponent(routeID)`; `routeID` strips a leading `local:` prefix from whichever of `ref` / `session_id` / `sessionId` is present, preferring a non-`local:` `ref` first (`spawn.js:404-417, 1337`)

@@ -34,8 +34,8 @@ const sandboxGitHead = "sandbox-branch"
 // or touch the real filesystem outside Root. The escapes a read-only harness
 // cannot drive are each neutralized:
 //
-//   - spawn (/api/spawn, thread/start) → Spawner records the request and returns
-//     a synthetic rendezvous entry with no address; no subprocess, no dial.
+//   - thread/start → Spawner records the request and returns a synthetic
+//     rendezvous entry with no address; no subprocess, no dial.
 //   - evener/git/head → ResolveGitHead seam returns sandboxGitHead; no `git`.
 //   - model/list → LiveModels seam returns a fixed list; no provider network.
 //   - the action verbs (send/steer/queue/clear/...) → an empty Roster and an

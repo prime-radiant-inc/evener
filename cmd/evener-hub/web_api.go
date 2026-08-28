@@ -100,7 +100,6 @@ func (s *WebServer) handleAPIHealth(w http.ResponseWriter, r *http.Request) {
 		FrontendHash:     s.frontendHash,
 		Capabilities: hubapi.HealthCapabilities{
 			TranscriptFollow: true,
-			Spawn:            s.cfg.Spawner != nil || len(s.cfg.CodexSources) > 0 || len(s.cfg.CodexLaunches) > 0 || s.cfg.CodexLauncher != nil,
 			Fork:             true,
 			RemoteSources:    len(s.cfg.CodexSources) > 0,
 		},

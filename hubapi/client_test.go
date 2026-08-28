@@ -89,9 +89,6 @@ func TestClientHealth(t *testing.T) {
 		Version:   "1.0.0",
 		StartedAt: time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC),
 		HubAddr:   "127.0.0.1:9180",
-		Capabilities: hubapi.HealthCapabilities{
-			Spawn: true,
-		},
 	}
 	client, srv := newTestClient(t, func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodGet {
@@ -113,9 +110,6 @@ func TestClientHealth(t *testing.T) {
 	}
 	if got.HubAddr != want.HubAddr {
 		t.Errorf("hub_addr: got %q, want %q", got.HubAddr, want.HubAddr)
-	}
-	if !got.Capabilities.Spawn {
-		t.Error("expected Spawn capability")
 	}
 	if !got.StartedAt.Equal(want.StartedAt) {
 		t.Errorf("started_at: got %v, want %v", got.StartedAt, want.StartedAt)
@@ -186,58 +180,6 @@ func TestClientSession_Error(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "404") {
 		t.Errorf("error should report status code 404, got %v", err)
-	}
-}
-
-func TestClientSpawn(t *testing.T) {
-	want := hubapi.SpawnResponse{
-		Ref:       "local:abc123",
-		HostID:    "local",
-		SessionID: "abc123",
-	}
-	client, srv := newTestClient(t, func(w http.ResponseWriter, r *http.Request) {
-		if r.Method != http.MethodPost {
-			t.Errorf("method: got %s, want POST", r.Method)
-		}
-		if r.URL.Path != "/api/spawn" {
-			t.Errorf("path: got %s, want /api/spawn", r.URL.Path)
-		}
-		var req hubapi.SpawnRequest
-		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-			t.Errorf("decode body: %v", err)
-		}
-		if req.Prompt != "do something" {
-			t.Errorf("prompt: got %q, want %q", req.Prompt, "do something")
-		}
-		_ = json.NewEncoder(w).Encode(want)
-	})
-	defer srv.Close()
-
-	req := hubapi.SpawnRequest{Prompt: "do something"}
-	got, err := client.Spawn(context.Background(), req)
-	if err != nil {
-		t.Fatalf("Spawn: %v", err)
-	}
-	if got.Ref != want.Ref {
-		t.Errorf("ref: got %q, want %q", got.Ref, want.Ref)
-	}
-	if got.HostID != want.HostID {
-		t.Errorf("host_id: got %q, want %q", got.HostID, want.HostID)
-	}
-	if got.SessionID != want.SessionID {
-		t.Errorf("session_id: got %q, want %q", got.SessionID, want.SessionID)
-	}
-}
-
-func TestClientSpawn_Error(t *testing.T) {
-	client, srv := newTestClient(t, func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(http.StatusInternalServerError)
-	})
-	defer srv.Close()
-
-	_, err := client.Spawn(context.Background(), hubapi.SpawnRequest{})
-	if err == nil {
-		t.Fatal("expected error for 500 response")
 	}
 }
 

@@ -56,11 +56,11 @@ So the assertion is **absence of the element**, not an empty one.
 2. Compare against a *catalogued* neighbour from the same response (any
    `openai` row) so the difference is visible rather than asserted in a
    vacuum.
-3. Launch it: `POST /api/spawn
-   {"prompt":"hi","harness":"evener","model":"ollama/gemma4:e4b","working_dir":"<dir>"}`.
-   Poll `GET /api/sessions/local:$SID` to `state: idle`, then read the
-   transcript with `go run ./cmd/evener doctor transcript "$SID"
-   --state-dir "$state" --format outline --range last:30`.
+3. Launch it with `thread/start` over the authenticated AppWire connection,
+   using `{"harness":"evener","cwd":"<dir>","model":"ollama/gemma4:e4b","input":[{"type":"text","text":"hi"}]}`.
+   Capture `result.thread.evener.ref`, poll `GET /api/sessions/local:$SID`
+   to `state: idle`, then read the transcript with `go run ./cmd/evener
+   doctor transcript "$SID" --state-dir "$state" --format outline --range last:30`.
 
 ### Browser
 
@@ -123,10 +123,9 @@ So the assertion is **absence of the element**, not an empty one.
   (`cmd/evener-tui/hub_model_picker_items_test.go#TestModelPickerItems_UncataloguedModelStillRendersEmptyMeta`). Contrast the
   adjacent `Gpt 5.4` row's
   `1M ctx · $2.50/$15.00 · tools,vision,reasoning`.
-- **Step 3**: the spawn returns 200 with
-  `{"ref":"local:…","host_id":…,"session_id":…}`
-  (`hubapi.SpawnResponse`, `hubapi/types.go#SpawnResponse`) and the transcript
-  outline shows real `USER_INPUT` and `ASSISTANT` turns with generated
+- **Step 3**: `thread/start` returns a
+  `result.thread.evener.ref` and the transcript outline shows real
+  `USER_INPUT` and `ASSISTANT` turns with generated
   content — not a turn failure. On the recorded run the transcript also
   carried a `STEERING` correction (the harness's tool-call-format nudge)
   and a subsequent real tool-call round, i.e. the uncatalogued model is

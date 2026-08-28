@@ -43,11 +43,6 @@ the area they exercise.
   checked alongside, since it is what makes the absence assertions mean
   anything (kata `rjc5`; replaces the retired `spawn-picker-enter-noop`
   card, kata `v0hg`).
-- `spawn-failure-ux-post-ws5.md` — the three remaining spawn-failure
-  classes (bogus model id, working dir that doesn't exist, harness
-  binary the hub can't execute) come back from `POST /api/spawn` as
-  legible errors rather than buried-stderr 500s. Browser-free.
-
 ## Session workspace
 
 - `tui-workspace-navigation.md` — evener tui dashboard + session
