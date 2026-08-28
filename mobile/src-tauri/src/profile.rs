@@ -509,13 +509,16 @@ impl ProfileStore {
                 message: e.to_string(),
             })?;
 
-        // Authenticated probe (health + harmless endpoint, redirects disabled).
+        // Authenticated probe (health + AppWire upgrade, redirects disabled).
         let mobile_api_version =
             self.probe
                 .probe(&origin, token, mode)
-                .map_err(|e| ProfileError::ProbeFailed {
-                    origin: origin.clone(),
-                    message: e.to_string(),
+                .map_err(|error| match error {
+                    ProfileError::ProbeTimedOut => ProfileError::ProbeTimedOut,
+                    other => ProfileError::ProbeFailed {
+                        origin: origin.clone(),
+                        message: other.to_string(),
+                    },
                 })?;
         if mobile_api_version != 1 {
             return Err(ProfileError::MobileApiMismatch(mobile_api_version));

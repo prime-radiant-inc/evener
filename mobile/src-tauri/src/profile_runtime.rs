@@ -214,7 +214,9 @@ impl RealPairingProbe {
     /// Overrides the fixed pairing deadline for deterministic protocol tests.
     #[doc(hidden)]
     pub fn with_pairing_timeout(mut self, timeout: Duration) -> Self {
-        self.pairing_timeout = timeout;
+        // Never pass an arbitrary oversized duration into OS timed-wait
+        // primitives. Production always uses the fixed upper bound.
+        self.pairing_timeout = timeout.min(PAIRING_REQUEST_TIMEOUT);
         self
     }
 }
@@ -228,33 +230,72 @@ impl Default for RealPairingProbe {
 impl PairingProbe for RealPairingProbe {
     fn probe(&self, origin: &str, token: &str, mode: ReleaseMode) -> Result<i64, ProfileError> {
         // PairingProbe is synchronous while both network phases are async, so
-        // execute their short-lived runtime on a fresh OS thread rather than
-        // re-entering Tauri's runtime. Preserve the resolver and additional
-        // roots while applying the caller's release/debug address policy.
+        // execute their short-lived runtime on exactly one fresh OS thread per
+        // explicit request rather than re-entering Tauri's runtime. The caller
+        // owns the total deadline: a synchronous OS resolver may finish later,
+        // but dropping a timed-out worker handle detaches it and releases the
+        // serialized profile lifecycle. There is no implicit retry or second
+        // worker. A dropped result receiver makes any later send harmless.
         let http_boundary = self.http_boundary.clone_with_mode(mode);
         let appwire_boundary = self.appwire_boundary.clone_with_mode(mode);
         let pairing_timeout = self.pairing_timeout;
         let origin_owned = origin.to_owned();
         let token_owned = token.to_owned();
-        let result = std::thread::spawn(move || {
-            probe_on_worker(
-                &http_boundary,
-                &appwire_boundary,
-                &origin_owned,
-                &token_owned,
-                pairing_timeout,
-            )
-        })
-        .join()
-        .map_err(|_| ProfileError::ProbeFailed {
-            origin: origin.to_owned(),
-            message: "probe worker failed".to_owned(),
-        })?;
-        result.map_err(|message| ProfileError::ProbeFailed {
-            origin: origin.to_owned(),
-            message,
-        })
+        let started = std::time::Instant::now();
+        let worker_started = started;
+        let (result_tx, result_rx) = std::sync::mpsc::sync_channel(1);
+        let worker = std::thread::Builder::new()
+            .name("evener-pairing-probe".to_owned())
+            .spawn(move || {
+                let remaining = pairing_timeout.saturating_sub(worker_started.elapsed());
+                let result = if remaining.is_zero() {
+                    Err(ProbeWorkerError::TimedOut)
+                } else {
+                    probe_on_worker(
+                        &http_boundary,
+                        &appwire_boundary,
+                        &origin_owned,
+                        &token_owned,
+                        remaining,
+                    )
+                };
+                let _ = result_tx.send(result);
+            })
+            .map_err(|_| ProfileError::ProbeFailed {
+                origin: origin.to_owned(),
+                message: "probe worker failed".to_owned(),
+            })?;
+
+        let remaining = pairing_timeout.saturating_sub(started.elapsed());
+        let result = match result_rx.recv_timeout(remaining) {
+            Ok(result) => result,
+            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
+                drop(worker);
+                return Err(ProfileError::ProbeTimedOut);
+            }
+            Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
+                drop(worker);
+                return Err(ProfileError::ProbeFailed {
+                    origin: origin.to_owned(),
+                    message: "probe worker failed".to_owned(),
+                });
+            }
+        };
+        drop(worker);
+        match result {
+            Ok(version) => Ok(version),
+            Err(ProbeWorkerError::TimedOut) => Err(ProfileError::ProbeTimedOut),
+            Err(ProbeWorkerError::Failed(message)) => Err(ProfileError::ProbeFailed {
+                origin: origin.to_owned(),
+                message,
+            }),
+        }
     }
+}
+
+enum ProbeWorkerError {
+    Failed(String),
+    TimedOut,
 }
 
 fn probe_on_worker(
@@ -263,39 +304,40 @@ fn probe_on_worker(
     origin: &str,
     token: &str,
     pairing_timeout: Duration,
-) -> Result<i64, String> {
+) -> Result<i64, ProbeWorkerError> {
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_io()
         .enable_time()
         .build()
-        .map_err(|_| "runtime creation failed".to_owned())?;
-    runtime.block_on(async {
-        // The policy resolver is synchronous and therefore cannot be
-        // interrupted mid-DNS call. Once it returns, this one deadline covers
-        // client creation, connect, response headers, and the complete bounded
-        // response body read.
-        let health_body =
-            tokio::time::timeout(pairing_timeout, pinned_health_get(http_boundary, origin))
+        .map_err(|_| ProbeWorkerError::Failed("runtime creation failed".to_owned()))?;
+    let result = runtime.block_on(async {
+        tokio::time::timeout(pairing_timeout, async {
+            // NetworkPolicy resolution is synchronous and cannot be interrupted
+            // inside this runtime poll. The caller-owned channel deadline above
+            // is the bound for that case. After resolution, this same total
+            // worker deadline covers health and authenticated AppWire phases.
+            let health_body = pinned_health_get(http_boundary, origin)
                 .await
-                .map_err(|_| "health request timed out".to_owned())?
                 .map_err(|e| format!("health request failed: {e}"))?;
-        let health_json: serde_json::Value = serde_json::from_slice(&health_body)
-            .map_err(|_| "health body parse failed".to_owned())?;
-        let version = health_json
-            .get("mobile_api_version")
-            .and_then(|v| v.as_i64())
-            .ok_or_else(|| "mobile_api_version missing".to_owned())?;
+            let health_json: serde_json::Value = serde_json::from_slice(&health_body)
+                .map_err(|_| "health body parse failed".to_owned())?;
+            let version = health_json
+                .get("mobile_api_version")
+                .and_then(|v| v.as_i64())
+                .ok_or_else(|| "mobile_api_version missing".to_owned())?;
 
-        tokio::time::timeout(
-            pairing_timeout,
-            authenticated_appwire_probe(appwire_boundary, origin, token),
-        )
+            authenticated_appwire_probe(appwire_boundary, origin, token)
+                .await
+                .map_err(|e| format!("auth probe failed: {e}"))?;
+
+            Ok(version)
+        })
         .await
-        .map_err(|_| "auth probe failed: handshake timed out".to_owned())?
-        .map_err(|e| format!("auth probe failed: {e}"))?;
-
-        Ok(version)
-    })
+    });
+    match result {
+        Ok(result) => result.map_err(ProbeWorkerError::Failed),
+        Err(_) => Err(ProbeWorkerError::TimedOut),
+    }
 }
 
 async fn authenticated_appwire_probe(
@@ -1844,5 +1886,122 @@ mod tests {
         assert!(matches!(err, ProfileError::ProbeFailed { .. }));
         assert!(!format!("{err}").contains("dummy-token"));
         assert!(!format!("{err:?}").contains("dummy-token"));
+    }
+
+    struct HangingResolverGate {
+        released: std::sync::Mutex<bool>,
+        release: std::sync::Condvar,
+    }
+
+    impl HangingResolverGate {
+        fn new() -> Self {
+            Self {
+                released: std::sync::Mutex::new(false),
+                release: std::sync::Condvar::new(),
+            }
+        }
+
+        fn release(&self) {
+            *self.released.lock().unwrap() = true;
+            self.release.notify_all();
+        }
+    }
+
+    struct HangingResolver {
+        gate: Arc<HangingResolverGate>,
+        entered: std::sync::mpsc::Sender<()>,
+        finished: std::sync::mpsc::Sender<()>,
+    }
+
+    impl crate::network_policy::DnsResolver for HangingResolver {
+        fn resolve(&self, _host: &str) -> Result<Vec<std::net::IpAddr>, String> {
+            let _ = self.entered.send(());
+            let mut released = self.gate.released.lock().unwrap();
+            while !*released {
+                released = self.gate.release.wait(released).unwrap();
+            }
+            let _ = self.finished.send(());
+            Err("scripted resolver released".to_owned())
+        }
+    }
+
+    #[test]
+    fn pairing_timeout_releases_profile_lifecycle_while_dns_worker_is_still_blocked() {
+        let gate = Arc::new(HangingResolverGate::new());
+        let (entered_tx, entered_rx) = std::sync::mpsc::channel();
+        let (finished_tx, finished_rx) = std::sync::mpsc::channel();
+        let probe = Arc::new(
+            RealPairingProbe::new(Arc::new(NetworkPolicy::new(Box::new(HangingResolver {
+                gate: gate.clone(),
+                entered: entered_tx,
+                finished: finished_tx,
+            }))))
+            .with_pairing_timeout(Duration::from_millis(100)),
+        );
+        // The store's independent policy is deterministic; only the real
+        // probe's DNS worker hangs. That isolates caller-bound probe timeout
+        // and proves the lifecycle mutex is released while that worker remains.
+        let (runtime, _) = make_runtime(
+            Arc::new(MemoryPreferences::new()),
+            Arc::new(MemorySecureStore::new()),
+            probe,
+            Arc::new(StepClock::new(0)),
+        );
+        let preview = runtime
+            .store()
+            .preview_pairing(&auth_url("hung.example.test"))
+            .unwrap();
+        let runtime = Arc::new(runtime);
+        let (result_tx, result_rx) = std::sync::mpsc::channel();
+        let started = std::time::Instant::now();
+        let caller = std::thread::spawn(move || {
+            let executor = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .unwrap();
+            let observation = executor.block_on(async {
+                let confirm = runtime
+                    .serialized(|store| {
+                        store.confirm_pairing(
+                            &preview.preview_id,
+                            "Hung Hub",
+                            false,
+                            ReleaseMode::Release,
+                        )
+                    })
+                    .await;
+                let list = runtime.serialized(|store| store.list()).await;
+                (confirm, list)
+            });
+            let _ = result_tx.send(observation);
+        });
+
+        entered_rx
+            .recv_timeout(Duration::from_secs(1))
+            .expect("resolver entered");
+        let bounded = result_rx.recv_timeout(Duration::from_secs(2));
+        let elapsed = started.elapsed();
+        let resolver_still_blocked = matches!(
+            finished_rx.try_recv(),
+            Err(std::sync::mpsc::TryRecvError::Empty)
+        );
+
+        // Always release and reap the deterministic resolver/caller before an
+        // assertion can fail, so a red test never strands a worker.
+        gate.release();
+        finished_rx
+            .recv_timeout(Duration::from_secs(1))
+            .expect("resolver finished after release");
+        caller.join().unwrap();
+
+        let (confirm, list) = bounded.expect("pairing caller exceeded its total deadline");
+        let error = confirm.unwrap_err();
+        assert!(matches!(error, ProfileError::ProbeTimedOut));
+        assert_eq!(error.to_string(), "pairing probe timed out");
+        assert!(!format!("{error:?}").contains(TOKEN));
+        assert!(!format!("{error:?}").contains("hung.example.test"));
+        assert!(elapsed < Duration::from_secs(2), "elapsed: {elapsed:?}");
+        assert!(resolver_still_blocked);
+        assert!(list.unwrap().is_empty(), "lifecycle remained usable");
     }
 }
