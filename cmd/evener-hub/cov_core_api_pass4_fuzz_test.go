@@ -109,22 +109,6 @@ func FuzzCoreAPIPass4(f *testing.F) {
 
 		call(http.MethodGet, "/api/health", "")
 		call(http.MethodPost, "/api/health", "")
-		direct := func(fn func(http.ResponseWriter, *http.Request), method, target, body string) *httptest.ResponseRecorder {
-			req := httptest.NewRequest(method, target, strings.NewReader(body))
-			rec := httptest.NewRecorder()
-			fn(rec, req)
-			return rec
-		}
-		call(http.MethodPost, "/api/sessions/remote:thread/clear", "")
-		direct(func(w http.ResponseWriter, r *http.Request) { web.handleAPIClear(w, r, "remote:thread") }, http.MethodGet, "/clear", "")
-		direct(func(w http.ResponseWriter, r *http.Request) { web.handleAPIClear(w, r, "local:missing") }, http.MethodPost, "/clear", "")
-		call(http.MethodPost, "/api/sessions/remote:thread/model", `{"model":"openai/gpt-pass4"}`)
-		direct(func(w http.ResponseWriter, r *http.Request) { web.handleAPIModel(w, r, "remote:thread") }, http.MethodGet, "/model", "")
-		direct(func(w http.ResponseWriter, r *http.Request) { web.handleAPIModel(w, r, "local:missing") }, http.MethodPost, "/model", `{}`)
-		call(http.MethodPost, "/api/sessions/remote:thread/reasoning-effort", `{"reasoning_effort":" high "}`)
-		direct(func(w http.ResponseWriter, r *http.Request) { web.handleAPIReasoningEffort(w, r, "remote:thread") }, http.MethodGet, "/effort", "")
-		direct(func(w http.ResponseWriter, r *http.Request) { web.handleAPIReasoningEffort(w, r, "local:missing") }, http.MethodPost, "/effort", `{}`)
-		call(http.MethodPost, "/api/sessions/remote:thread/model", `{`)
 		_ = hubGitHead(context.Background(), web.cfg, appwire.GitHeadParams{CWD: workingDir})
 		_ = hubGitHead(context.Background(), web.cfg, appwire.GitHeadParams{CWD: "/definitely/missing/pass4"})
 		_ = hubGitHead(context.Background(), web.cfg, appwire.GitHeadParams{})

@@ -321,8 +321,7 @@ func hubThreadResume(ctx context.Context, cfg hubcore.WebConfig, sources *appsou
 //
 // Every hub path that resumes a local session runs into the same wedge, so
 // they all report it through here: hubThreadResume above, which serves both
-// /rpc thread/resume and the turn/start auto-resume, and the REST send path's
-// resume in handleSend (kata x3hp). The original failure stays wrapped so a
+// /rpc thread/resume and the turn/start auto-resume. The original failure stays wrapped so a
 // caller that inspects the error, rather than its text, still sees what the
 // spawner returned.
 //

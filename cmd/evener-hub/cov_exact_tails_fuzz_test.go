@@ -9,7 +9,6 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
-	"strings"
 	"testing"
 	"time"
 
@@ -170,17 +169,6 @@ func FuzzExactTails(f *testing.F) {
 		_, _ = hubThreadList(context.Background(), hubcore.WebConfig{}, reg, appwire.ThreadListParams{Limit: 1})
 		_, _ = hubThreadTranscriptList(context.Background(), hubcore.WebConfig{}, reg, appwire.ThreadTranscriptListParams{})
 
-		// Missing live sources are a distinct API failure from ended sessions.
-		roster := hubcore.NewRosterWithEntries(
-			hubcore.LiveEntry{SessionID: "live-a", Entry: rendezvous.Entry{SessionID: "live-a"}},
-			hubcore.LiveEntry{SessionID: "live-b", Entry: rendezvous.Entry{SessionID: "live-b"}},
-			hubcore.LiveEntry{},
-		)
-		liveWeb := NewWebServer(hubcore.WebConfig{Roster: roster})
-		liveWeb.sources = appsource.NewRegistry()
-		liveWeb.handleAPIModel(httptest.NewRecorder(), httptest.NewRequest(http.MethodPost, "/", strings.NewReader(`{"model":"p/m"}`)), "live-a")
-		liveWeb.handleAPIReasoningEffort(httptest.NewRecorder(), httptest.NewRequest(http.MethodPost, "/", strings.NewReader(`{"reasoning_effort":"high"}`)), "live-a")
-
 		oldManagedList := ensureManagedCodexSourcesForList
 		ensureManagedCodexSourcesForList = func(context.Context, hubcore.WebConfig, *appsource.Registry, appwire.ThreadListParams) error {
 			return errors.New("managed source")
@@ -231,15 +219,6 @@ func FuzzExactTails(f *testing.F) {
 		_, _ = hubThreadTranscriptList(context.Background(), hubcore.WebConfig{}, duplicateRegistry, appwire.ThreadTranscriptListParams{Ref: "local:root"})
 		hubTranscriptRootForList = oldTranscriptRoot
 
-		oldEnsureAction := ensureAPIActionAvailable
-		ensureAPIActionAvailable = func(*WebServer, string, string) error { return nil }
-		liveWeb.sources = appsource.NewRegistry()
-		liveWeb.handleAPIClear(httptest.NewRecorder(), httptest.NewRequest(http.MethodPost, "/", nil), "live-a")
-		liveWeb.handleAPIModel(httptest.NewRecorder(), httptest.NewRequest(http.MethodPost, "/", strings.NewReader(`{"model":"p/m"}`)), "live-a")
-		liveWeb.sources.Add(&exactNameSource{scriptedAppSource: &scriptedAppSource{id: "local"}})
-		ensureAPIActionAvailable = func(*WebServer, string, string) error { return errors.New("denied") }
-		liveWeb.handleAPIModel(httptest.NewRecorder(), httptest.NewRequest(http.MethodPost, "/", strings.NewReader(`{"model":"p/m"}`)), "live-a")
-		ensureAPIActionAvailable = oldEnsureAction
 		_ = appendProjectDeleteLiveSkip(nil, "id")
 		t.Setenv(envvars.Home.Name, "")
 		(&WebServer{}).handleManifest(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "/manifest.webmanifest", nil))

@@ -309,46 +309,41 @@ AppWire: `idle`, `active`, `awaiting`, `warning`, `errored`,
 **`active`**, never `processing` — `processing` is not a wire value at
 all, and `test/scenarios/scenario_docs_test.go`'s
 `TestScenarioDocsUseCanonicalActiveState` fails the build on any card
-that writes `state=processing`. Wait for the state the scenario needs:
+that writes `state=processing`. Poll by sending `thread/read` on the
+authenticated AppWire socket:
 
-```bash
-for i in $(seq 1 60); do
-  state=$(curl -s -H "Authorization: Bearer $TOKEN" "$HUB/api/sessions/local:$SID" \
-            | jq -r '.state // ""' 2>/dev/null)
-  [ "$state" = "idle" ] && break          # change "idle" to "active" as needed
-  sleep 1
-done
-echo "state=$state"
+```json
+{"id":3,"method":"thread/read",
+ "params":{"ref":"local:<SID>","includeTurns":false}}
 ```
 
-The same `/api/sessions/local:$SID` response carries
-`capabilities.steer`, `capabilities.queue`, etc. — useful for
-asserting daemon-side gating (kata `wymv`). It also carries
-`active_turn_id`, which the steer paths need: a turn is only truly in
-flight once both the status flip and the turn id have landed
+Read `result.thread.status.type`; repeat until it reaches the state the
+scenario needs. The same response carries
+`result.thread.evener.capabilities` and
+`result.thread.evener.activeTurnId`. A turn is only truly in flight once
+both the `active` status and the active turn id have landed
 (`submitRouting.ts:48-50`'s `isTurnActive`).
 
-### The REST surface, and what is no longer on it
+### Session operations
 
-There is exactly one session REST namespace now: `/api/sessions/<ref>`,
-where `<ref>` is the canonical `local:<SID>` form. The dispatcher is
-`handleAPISession` (`cmd/evener-hub/web_api_tree.go#handleAPISession`) and the
-whole verb list is:
+Session reads and lifecycle actions use AppWire. The current methods are:
 
-| Route | Method | Notes |
-|---|---|---|
-| `/api/sessions/local:$SID` | GET | the detail object polled above |
-| `/api/sessions/local:$SID/details` | GET | same payload |
-| `/api/sessions/local:$SID/send` | POST | `{"text":"…"}` — a follow-up user turn |
-| `/api/sessions/local:$SID/interrupt` | POST | |
-| `/api/sessions/local:$SID/compact` | POST | the one action that can resume an ended session |
-| `/api/sessions/local:$SID/shutdown` | POST | |
-| `/api/sessions/local:$SID/clear` | POST | |
-| `/api/sessions/local:$SID/fork` | POST | |
-| `/api/sessions/local:$SID/model` | POST | |
-| `/api/sessions/local:$SID/reasoning-effort` | POST | |
+| Operation | AppWire method |
+|---|---|
+| read status/details | `thread/read` |
+| list tasks | `evener/tasks/list` |
+| start a follow-up turn | `turn/start` |
+| interrupt | `turn/interrupt` |
+| compact | `thread/compact/start` |
+| shutdown | `thread/shutdown` |
+| clear | `thread/clear` |
+| fork | `thread/fork` |
+| change model | `thread/model/set` |
+| change reasoning effort | `thread/reasoning-effort/set` |
 
-| `/api/sessions/local:$SID/tasks` | GET | |
+There are no session REST operations. The old `/api/sessions/<ref>`
+namespace is no longer registered; session reads, lifecycle actions, rename,
+and deletion all use AppWire.
 
 Rename is AppWire-only: send `evener/thread/name/set` with
 `{"ref":"local:<SID>","name":"<new name>"}` on the authenticated `/rpc`
@@ -363,19 +358,13 @@ the response's `skipped` array.
 `660376f78` deleted it along with the vanilla-JS frontend, and
 `web_workspace.go:16-22` says so in a comment: `/s/<id>` now serves only
 the SPA shell and `/s/<id>/images/<sha>`, and every other sub-path
-returns 404. A card that still curls `$HUB/s/$SID/shutdown` gets a 404
-and a silently-not-shut-down session, which then poisons the next run's
-`state: idle` poll.
+returns 404.
 
-**There is no REST route for steer, queue, or drain-as-steer at all.**
-Those three live only on the AppWire WebSocket as `turn/steer`,
-`turn/queue`, and `turn/drainAsSteer` (`appwire/types.go:24,26-27`), so
-a scenario that needs the *user-visible* behaviour has to drive the
-composer in a browser — see "Driving the web UI" below.
-`capabilities.steer`/`capabilities.queue` on the detail object still
-report whether the daemon *would* accept them, which is enough for a
-gating-only assertion without a browser. For the wire contract itself,
-dial the socket directly:
+Steer, queue, and drain-as-steer likewise use `turn/steer`,
+`turn/queue`, and `turn/drainAsSteer` (`appwire/types.go:24,26-27`).
+A scenario that needs the *user-visible* behaviour should drive the composer
+in a browser; a wire-contract or gating assertion should drive AppWire
+directly.
 
 ### Driving AppWire directly (the browser-free lever)
 
@@ -500,7 +489,7 @@ So the driving surface is the DOM, and only the DOM:
    sees").
 3. `localStorage` under the `evener.prefs.*` / `evener.rail.*` contracts, for
    preconditions, seeded **before** the first page load.
-4. The HTTP session APIs and the on-disk transcript, for anything the DOM can
+4. AppWire `thread/read` and the on-disk transcript, for anything the DOM can
    only hint at.
 
 ### Coordinate browser ownership first (kata `8ecz`)
@@ -738,13 +727,13 @@ JSON.stringify({
 `steerRendered` is the closest thing left to the old `activeTurnId`
 probe: Steer renders only while the turn is genuinely in flight
 (`Composer.tsx:382`). If it never appears while
-`/api/sessions/local:$SID` reports `state=active`, the AppWire socket
+`thread/read` reports `result.thread.status.type=active`, the AppWire socket
 did not hydrate — check `$run/hub.log`, and confirm the page is really
 the one you think it is via the `location.port` assertion above.
 
-The authoritative counterpart to any of this is the REST detail object
+The authoritative counterpart to any of this is the AppWire `thread/read` response
 and the on-disk transcript. When a DOM read is ambiguous, do not add
-more selectors — cross-check `/api/sessions/local:$SID` and
+more selectors — cross-check `thread/read` and
 `evener doctor transcript`, which cannot be fooled by a stale tab.
 
 ## Driving the TUI with tmux
@@ -950,14 +939,8 @@ scaffolding.
 Idempotent cleanup that won't fail if anything's already gone:
 
 ```bash
-# Shut down any sessions you spawned. The canonical ref form is
-# local:<SID> and the namespace is /api/sessions — the old
-# /s/<id>/shutdown shim 404s silently, leaving the daemon running.
-for sid in $SID1 $SID2 $SID3; do
-  curl -s -X POST -H "Content-Type: application/json" \
-    -H "Authorization: Bearer $TOKEN" -d '{}' \
-    "$HUB/api/sessions/local:$sid/shutdown" >/dev/null 2>&1
-done
+# Shut down each spawned session over the authenticated AppWire socket:
+# {"id":N,"method":"thread/shutdown","params":{"ref":"local:<SID>"}}
 
 # Kill any tmux sessions you opened.
 for name in evener-test evener-test-2; do tmux kill-session -t $name 2>/dev/null; done
@@ -1062,7 +1045,7 @@ file a kata. Don't try to drive past the gate from the scenario.
   checklist, never Jesse's real `9180`.
 - **Auth token**: `$HOME/.local/state/evener/auth-token` — the isolated `$HOME` from
   the Setup checklist, never Jesse's real one.
-- **Follow-up turn** (after the initial spawn prompt): `POST /api/sessions/local:<SID>/send` with body `{"text":"..."}` (the spawn only starts turn 1; subsequent user turns go here). See "The REST surface" above for the full verb list and for the three verbs — steer, queue, drain-as-steer — that have no REST route at all.
+- **Follow-up turn** (after the initial spawn prompt): send AppWire `turn/start` with `ref:"local:<SID>"`, a unique `clientMutationId`, and `input:[{"type":"text","text":"..."}]` (the spawn only starts turn 1; subsequent user turns use `turn/start`).
 - **Session URL**: `/s/local:<SID>`. A bare `/s/<SID>` renders "Page not found" client-side, by design.
 - **Recursion opt-in** (delegate subagents that can themselves delegate): per-spawn `launch_overrides.maxSubagentDepth:N` raises the root's own delegation allowance to N. Omitted/default is 1 (a root may delegate, but its delegates are leaves) — recursion is dark without this.
 - **Per-session transcript**: `$HOME/.local/state/evener/projects/<project-id>/sessions/<SID>.transcript.jsonl`

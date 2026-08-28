@@ -49,9 +49,6 @@ func FuzzCovWebTreeSessionPure(f *testing.F) {
 			_ = searchPastTitle(hubcore.PastEntry{Meta: meta})
 		}
 		_ = liveTitle("0123456789", hubcore.LiveEntry{}, nil)
-		_ = hubUsageFromAppwire(nil)
-		_ = hubUsageFromAppwire(&appwire.EvenerUsage{InputTokens: 1, OutputTokens: 2, CacheReadTokens: 3, TotalTokens: 6})
-
 		thread := appwire.Thread{
 			ID: "thread", SessionID: "session", Source: "remote", Name: title,
 			Status: appwire.ThreadStatus{Type: appwire.ThreadStatusActive},
@@ -63,10 +60,8 @@ func FuzzCovWebTreeSessionPure(f *testing.F) {
 		}
 		_ = workspaceDataFromAppThread(thread)
 		_ = activeTurnRunningFor(thread)
-		_ = hubDetailFromAppThread(thread)
 		_, _, _ = appThreadTreeEntries(thread)
 		_, _ = appThreadTreeRef(thread)
-		_ = hubRefFromAppThread(thread)
 		thread.Evener.ActiveTurnID = ""
 		_ = activeTurnIDFromAppwireThread(thread)
 		thread.Turns = nil
@@ -74,8 +69,6 @@ func FuzzCovWebTreeSessionPure(f *testing.F) {
 		_ = activeTurnRunningFor(thread)
 		thread.Preview, thread.SessionID = "", "session"
 		_ = workspaceDataFromAppThread(thread)
-		thread.Evener.Ref = "bad"
-		_ = hubRefFromAppThread(thread)
 		thread.Evener.Ref = ""
 		thread.Name, thread.Preview, thread.SessionID = "", title, ""
 		_ = workspaceDataFromAppThread(thread)
@@ -104,13 +97,9 @@ func FuzzCovWebTreeSessionHandlers(f *testing.F) {
 		sb := newSandbox(t)
 		h := sb.Web.Handler()
 		routes := []struct{ method, path string }{
-			{http.MethodGet, "/api/sessions/not-a-ref"},
-			{http.MethodPost, "/api/sessions/local%3A" + sandboxSessionID + "/fork"},
-			{http.MethodPost, "/s/" + sandboxSessionID + "/send"},
 			{http.MethodPost, "/s/" + sandboxSessionID + "/steer"},
 			{http.MethodPost, "/s/" + sandboxSessionID + "/queue"},
 			{http.MethodPost, "/s/" + sandboxSessionID + "/drain-as-steer"},
-			{http.MethodGet, "/s/" + sandboxSessionID + "/interrupt"},
 		}
 		// Rotate the matrix while still executing every row. This retains useful
 		// fuzz variation without leaving seed coverage to corpus scheduling.
@@ -124,38 +113,10 @@ func FuzzCovWebTreeSessionHandlers(f *testing.F) {
 			}
 		}
 
-		for _, action := range []string{"send", "steer", "interrupt", "compact", "clear", "fork", "shutdown", "model", "queue", "unknown"} {
-			_ = sessionCapabilityAvailable(hubCapabilitiesFromAppwire(appwire.ThreadCapabilities{
-				Send: true, Steer: true, Interrupt: true, Compact: true, Clear: true,
-				ForkFromTurn: true, Shutdown: true, ChangeModel: true, Queue: true,
-			}), action)
-		}
-		for _, method := range []string{http.MethodGet, http.MethodPost} {
-			for _, action := range []string{"interrupt", "clear", "shutdown", "compact", "unknown"} {
-				req := httptest.NewRequest(method, "/s/missing/"+action, bytes.NewReader(body))
-				rec := httptest.NewRecorder()
-				sb.Web.handleSessionAction(rec, req, "missing", action)
-			}
-		}
 		_ = sb.Web.archiveDecisions()
 		_, _ = sb.Web.favoriteDecisions()
 		_, _ = sb.Web.memoTree(t.Context())
 		_, _, _ = sb.Web.navigationTreeInputs(t.Context())
 		_ = sb.Web.remoteTreeThreads(t.Context())
-		_ = inputItemsForText("")
-		_ = inputItemsForText(" text ")
-		{
-			rec := httptest.NewRecorder()
-			req := httptest.NewRequest(http.MethodPost, "/api/sessions/local%3Amissing/fork", bytes.NewReader(body))
-			sb.Web.handleAPIFork(rec, req, "missing")
-		}
-		for _, api := range []bool{false, true} {
-			target := "/s/missing/send"
-			if api {
-				target = "/api/sessions/local%3Amissing/send"
-			}
-			rec := httptest.NewRecorder()
-			writeSessionActionError(rec, httptest.NewRequest(http.MethodPost, target, nil), appwire.Unavailable("unavailable"))
-		}
 	})
 }

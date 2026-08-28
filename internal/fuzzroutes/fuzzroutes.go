@@ -26,6 +26,6 @@ var ReadOnly = []string{
 	"/api/tree",                  // 12
 	"/api/health",                // 13
 	"/api/search",                // 14 former REST route; retained for corpus-index stability
-	"/api/sessions/",             // 15 GET reads a session detail; POST verbs excluded
+	"/api/health",                // 15 retired slot; duplicate retained for corpus-index stability
 	"/settings",                  // 16
 }

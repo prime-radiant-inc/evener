@@ -81,8 +81,6 @@ func FuzzCovWebViewsSpawn(f *testing.F) {
 		hx := httptest.NewRequest(http.MethodGet, "/settings", nil)
 		hx.Header.Set("HX-Request", "true")
 		sb.Web.handleSettings(httptest.NewRecorder(), hx)
-		sb.Web.renderSessionTasks(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "/", nil), sandboxSessionID)
-		sb.Web.renderSessionTasks(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "/", nil), "missing")
 		sb.Web.fillForkLineage(&WorkspaceData{}, schema.SessionMeta{})
 		sb.Web.fillForkLineage(&WorkspaceData{}, schema.SessionMeta{ID: "id", ForkLabel: "fork", DivergenceTurn: 2})
 		sb.Web.fillSubagentLineage(&WorkspaceData{}, schema.SessionMeta{})

@@ -100,10 +100,7 @@ func FuzzWorkspaceMutationsPass6(f *testing.F) {
 			web.handleSession(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "/s/remote:thread", nil))
 		case 2:
 			web.handleThreadDocument(httptest.NewRecorder(), httptest.NewRequest(http.MethodPost, "/thread/ended", nil))
-			web.renderSessionTasks(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "/", nil), "remote:thread")
 			source.tasksErr = errors.New("tasks")
-			web.renderSessionTasks(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "/", nil), "ended")
-			web.renderSessionTasks(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "/", nil), "missing")
 		case 3:
 			_ = web.workspaceData("remote:thread")
 			source.readErr = errors.New("read")

@@ -2,7 +2,6 @@ package hub
 
 import (
 	"context"
-	"encoding/json"
 	"net/http"
 	"strings"
 	"time"
@@ -47,45 +46,6 @@ func (s *WebServer) handleSession(w http.ResponseWriter, r *http.Request) {
 
 func (s *WebServer) handleThreadDocument(w http.ResponseWriter, r *http.Request) {
 	serveSPAIndex(w, r, distFS())
-}
-
-// renderSessionTasks returns the session's task list as JSON. For live
-// sessions it proxies the daemon's GET /tasks; for ended sessions it reads
-// the persisted <StateDir>/tasks/<id>.json through loadPersistedTasks
-// (app_tasks.go) — the same task.TaskStore.Load()+View() reader the
-// evener/tasks/list RPC's past fallback uses — rather than a second, hand-
-// rolled parser, so this path inherits TaskStore.Load's not-exist-is-empty
-// semantics and decode-error handling directly instead of a hand-copied
-// sibling of it. A missing file or absent session returns an empty array
-// (200) so the UI doesn't have to special-case "no tasks yet"; a corrupt or
-// unreadable task file now surfaces as a real error instead of being
-// forwarded to the client verbatim.
-func (s *WebServer) renderSessionTasks(w http.ResponseWriter, r *http.Request, id string) {
-	w.Header().Set("Content-Type", "application/json")
-
-	ref := appRefFromRouteID(id)
-	if source, err := sourceForThread(s.sources, ref, ""); err == nil {
-		resp, err := source.ListTasks(r.Context(), appwire.TaskListParams{Ref: ref})
-		if err == nil {
-			_ = json.NewEncoder(w).Encode(resp.Data)
-			return
-		}
-		// fall through to disk on daemon error
-	}
-
-	if isLocalRouteID(id) && s.cfg.Past != nil {
-		if pe, ok := s.cfg.Past.Find(id); ok && pe.StateDir != "" {
-			tasks, err := loadPersistedTasks(pe.StateDir, id)
-			if err != nil {
-				writeAPIError(w, http.StatusInternalServerError, "load tasks: "+err.Error())
-				return
-			}
-			_ = json.NewEncoder(w).Encode(tasks)
-			return
-		}
-	}
-
-	_, _ = w.Write([]byte("[]\n"))
 }
 
 func (s *WebServer) workspaceData(id string) WorkspaceData {

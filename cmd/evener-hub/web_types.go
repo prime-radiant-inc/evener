@@ -82,28 +82,6 @@ type WorkspaceData struct {
 	ObserverRouteIDs []string
 }
 
-// sendRequest is the JSON body accepted by POST /s/<id>/send. Items carries
-// Codex-style input parts; image entries carry their bytes as a base64-encoded
-// `data` field that Go's json unmarshals into `[]byte` automatically.
-type sendRequest struct {
-	Text  string              `json:"text"`
-	Items []appwire.InputItem `json:"items,omitempty"`
-}
-
-type sessionActionRequest struct {
-	TurnID string `json:"turn_id"`
-}
-
-type forkRequest struct {
-	Turn          int    `json:"turn"`
-	EditedMessage string `json:"edited_message"`
-	Label         string `json:"label"`
-	// DeferInput forks at the turn WITHOUT appending a replacement message:
-	// the child holds only the prefix, and the response carries the original
-	// input text so the client can stage it in the composer (issue #42).
-	DeferInput bool `json:"defer_input"`
-}
-
 // daemonStatus is the subset of /status fields the hub cares about.
 type daemonStatus struct {
 	SessionID        string  `json:"session_id"`

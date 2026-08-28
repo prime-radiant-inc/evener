@@ -7,7 +7,6 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
-	"strings"
 	"testing"
 
 	"primeradiant.com/evener/appwire"
@@ -438,73 +437,7 @@ func TestCovDocRawTotalSizeStatOK(t *testing.T) {
 	}
 }
 
-// --- web_api.go: handleAPIClear (method check) ---
-
-// TestCovHandleAPIClearMethodNotAllowed covers the method-not-allowed branch
-// (web_api.go:261-262).
-func TestCovHandleAPIClearMethodNotAllowed(t *testing.T) {
-	web := NewWebServer(hubcore.WebConfig{HubAddr: "127.0.0.1:9180"})
-	req := httptest.NewRequest(http.MethodGet, "/api/sessions/s1/clear", nil)
-	rec := httptest.NewRecorder()
-	web.handleAPIClear(rec, req, "s1")
-	if rec.Code != http.StatusMethodNotAllowed {
-		t.Fatalf("expected 405, got %d", rec.Code)
-	}
-}
-
-// --- web_api.go: handleAPIModel (method check) ---
-
-// TestCovHandleAPIModelMethodNotAllowed covers the method-not-allowed branch
-// (web_api.go:306-307).
-func TestCovHandleAPIModelMethodNotAllowed(t *testing.T) {
-	web := NewWebServer(hubcore.WebConfig{HubAddr: "127.0.0.1:9180"})
-	req := httptest.NewRequest(http.MethodGet, "/api/sessions/s1/model", nil)
-	rec := httptest.NewRecorder()
-	web.handleAPIModel(rec, req, "s1")
-	if rec.Code != http.StatusMethodNotAllowed {
-		t.Fatalf("expected 405, got %d", rec.Code)
-	}
-}
-
-// TestCovHandleAPIModelNotLive covers the not-live branch
-// (web_api.go:310-311).
-func TestCovHandleAPIModelNotLive(t *testing.T) {
-	web := NewWebServer(hubcore.WebConfig{HubAddr: "127.0.0.1:9180"})
-	req := httptest.NewRequest(http.MethodPost, "/api/sessions/02wMz5Txv1C3Hut0M8GCeB/model", strings.NewReader(`{"model":"test"}`))
-	rec := httptest.NewRecorder()
-	web.handleAPIModel(rec, req, "02wMz5Txv1C3Hut0M8GCeB")
-	if rec.Code != http.StatusNotFound {
-		t.Fatalf("expected 404, got %d", rec.Code)
-	}
-}
-
-// --- web_api.go: handleAPIReasoningEffort (method check) ---
-
-// TestCovHandleAPIReasoningEffortMethodNotAllowed covers the method-not-allowed
-// branch (web_api.go:350-351).
-func TestCovHandleAPIReasoningEffortMethodNotAllowed(t *testing.T) {
-	web := NewWebServer(hubcore.WebConfig{HubAddr: "127.0.0.1:9180"})
-	req := httptest.NewRequest(http.MethodGet, "/api/sessions/s1/reasoning", nil)
-	rec := httptest.NewRecorder()
-	web.handleAPIReasoningEffort(rec, req, "s1")
-	if rec.Code != http.StatusMethodNotAllowed {
-		t.Fatalf("expected 405, got %d", rec.Code)
-	}
-}
-
-// TestCovHandleAPIReasoningEffortNotLive covers the not-live branch
-// (web_api.go:354-355).
-func TestCovHandleAPIReasoningEffortNotLive(t *testing.T) {
-	web := NewWebServer(hubcore.WebConfig{HubAddr: "127.0.0.1:9180"})
-	req := httptest.NewRequest(http.MethodPost, "/api/sessions/02wMz5Txv1C3Hut0M8GCeB/reasoning", strings.NewReader(`{"reasoning_effort":"high"}`))
-	rec := httptest.NewRecorder()
-	web.handleAPIReasoningEffort(rec, req, "02wMz5Txv1C3Hut0M8GCeB")
-	if rec.Code != http.StatusNotFound {
-		t.Fatalf("expected 404, got %d", rec.Code)
-	}
-}
-
-// --- WebServer.resolveTopLevelSessionRef ---
+// --- web_api_tree.go: resolveTopLevelSessionRef ---
 
 // TestCovTopLevelFavoriteSessionIDClusterPrefix covers the cluster-prefix
 // rejection in the top-level session resolver.
@@ -573,69 +506,6 @@ func TestCovResumeProjectDeletionsWithEmptyStore(t *testing.T) {
 	})
 	if err := web.resumeProjectDeletions(); err != nil {
 		t.Fatalf("expected nil error for empty store, got %v", err)
-	}
-}
-
-// --- web_api_tree.go: hubDetailFromAppThread ---
-
-// TestCovHubDetailFromAppThreadEmptyTitle covers the title fallback chain
-// (web_api_tree.go:1040-1046).
-func TestCovHubDetailFromAppThreadEmptyTitle(t *testing.T) {
-	thread := appwire.Thread{
-		ID:        "02wMz5Txv1C3Hut0M8GCeB",
-		SessionID: "02wMz5Txv1C3Hut0M8GCeB",
-		Status:    appwire.ThreadStatus{Type: "idle"},
-		CWD:       "/projects/test",
-	}
-	detail := hubDetailFromAppThread(thread)
-	if detail.Title != "02wMz5Txv1C3Hut0M8GCeB" {
-		t.Fatalf("expected session ID as title, got %q", detail.Title)
-	}
-	if detail.Project != "test" {
-		t.Fatalf("expected project 'test', got %q", detail.Project)
-	}
-}
-
-// TestCovHubDetailFromAppThreadPreviewTitle covers the preview title fallback
-// (web_api_tree.go:1042-1043).
-func TestCovHubDetailFromAppThreadPreviewTitle(t *testing.T) {
-	thread := appwire.Thread{
-		ID:      "02wMz5Txv1C3Hut0M8GCeB",
-		Preview: "some preview",
-		Status:  appwire.ThreadStatus{Type: "active"},
-		CWD:     "/projects/test",
-	}
-	detail := hubDetailFromAppThread(thread)
-	if detail.Title != "some preview" {
-		t.Fatalf("expected preview as title, got %q", detail.Title)
-	}
-}
-
-// TestCovHubDetailFromAppThreadNoProject covers the no-project path
-// (web_api_tree.go:1048-1049).
-func TestCovHubDetailFromAppThreadNoProject(t *testing.T) {
-	thread := appwire.Thread{
-		ID:     "02wMz5Txv1C3Hut0M8GCeB",
-		Name:   "named",
-		Status: appwire.ThreadStatus{Type: "active"},
-	}
-	detail := hubDetailFromAppThread(thread)
-	if detail.Project != "(no project)" {
-		t.Fatalf("expected (no project), got %q", detail.Project)
-	}
-}
-
-// TestCovHubDetailFromAppThreadEmptyState covers the empty-state fallback
-// (web_api_tree.go:1037-1038).
-func TestCovHubDetailFromAppThreadEmptyState(t *testing.T) {
-	thread := appwire.Thread{
-		ID:   "02wMz5Txv1C3Hut0M8GCeB",
-		Name: "named",
-		CWD:  "/projects/test",
-	}
-	detail := hubDetailFromAppThread(thread)
-	if detail.State != "idle" {
-		t.Fatalf("expected idle state, got %q", detail.State)
 	}
 }
 
