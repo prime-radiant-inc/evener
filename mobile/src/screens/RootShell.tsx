@@ -12,11 +12,27 @@
  * indicator — not onboarding — to prevent an onboarding flash when the store
  * has saved profiles that haven't been read yet.
  */
-import { type JSX, useEffect, useRef, useState } from "react";
+import {
+  type JSX,
+  useCallback,
+  useEffect,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
+import { ConceptSwitcher } from "../live-concepts/ConceptSwitcher";
+import { LiveConceptHost } from "../live-concepts/LiveConceptHost";
+import {
+  type ConceptStorage,
+  createLiveConceptUiStore,
+} from "../live-concepts/live-ui-store";
+import { createActivityStore } from "../state/activity";
 import { createAttachmentStore } from "../state/attachments";
 import type { Reachability } from "../state/connection";
 import { createConversationStore } from "../state/conversation";
 import type { RootTab } from "../state/navigation";
+import { connectRosterNotifications } from "../state/roster";
 import { createVoiceStore } from "../state/voice";
 import { BottomBar, type BottomTab } from "../ui/BottomBar";
 import {
@@ -25,7 +41,7 @@ import {
 } from "../ui/platformPresentation";
 import { Sheet } from "../ui/Sheet";
 import { Loading } from "../ui/States";
-import { ConversationScreen } from "./ConversationScreen";
+import { type StatusKind, StatusMark } from "../ui/StatusMark";
 import { NewSessionScreen } from "./NewSessionScreen";
 import { OnboardingScreen } from "./OnboardingScreen";
 import type { ProfileScopedServices } from "./production-services";
@@ -36,7 +52,6 @@ import type {
   ShellServices,
 } from "./root-types";
 import { ServerSwitcherSheet } from "./ServerSwitcherSheet";
-import { SessionsScreen } from "./SessionsScreen";
 import { SettingsScreen } from "./SettingsScreen";
 import { VoiceScreen } from "./VoiceScreen";
 
@@ -56,6 +71,20 @@ const TABS: readonly BottomTab[] = [
 ];
 
 const PANEL_ID = "evener-tab-panel";
+const CONCEPT_STORAGE_KEY = "evener.live-concept";
+
+const conceptStorage: ConceptStorage = {
+  read: () => readLocalStorage(CONCEPT_STORAGE_KEY),
+  write: (conceptId) => writeLocalStorage(CONCEPT_STORAGE_KEY, conceptId),
+  remove: () => removeLocalStorage(CONCEPT_STORAGE_KEY),
+};
+
+interface OwnedProfileScope {
+  readonly profileId: string | null;
+  readonly origin: string | null;
+  readonly generation: number;
+  readonly epoch: number;
+}
 
 export function RootShell({ services, stores }: RootShellProps): JSX.Element {
   const { connection, navigation, preferences } = stores;
@@ -68,6 +97,11 @@ export function RootShell({ services, stores }: RootShellProps): JSX.Element {
     );
     return active?.origin ?? null;
   });
+  const activeProfileReachability = connection((s) =>
+    s.activeProfileId === null
+      ? "unknown"
+      : (s.reachability[s.activeProfileId] ?? "unknown"),
+  );
   const status = connection((s) => s.status);
   const tab = navigation((s) => s.tab);
   const conversationStack = navigation((s) => s.conversationStack);
@@ -83,19 +117,63 @@ export function RootShell({ services, stores }: RootShellProps): JSX.Element {
   // --keyboard-inset onto the document root and tears down on unmount.
   useViewportCoordinator();
 
-  const [switcherOpen, setSwitcherOpen] = useState(false);
+  const [serverSwitcherOpen, setServerSwitcherOpen] = useState(false);
+  const [conceptSwitcherOpen, setConceptSwitcherOpen] = useState(false);
   const [addingServer, setAddingServer] = useState(false);
   const [showVoice, setShowVoice] = useState(false);
 
-  // Conversation store created once and reused across re-renders. The store is
-  // always created (hook order must be stable); it stays idle until a
-  // conversation is pushed.
-  const conversationStoreRef = useRef(createConversationStore());
-  const voiceStoreRef = useRef(createVoiceStore());
-  const attachmentStoreRef = useRef(createAttachmentStore());
+  // RootShell owns exactly one identity for every cross-concept production
+  // store. They stay alive while renderers change and are reset together when
+  // the profile owner advances to a fresh scope.
+  const [conversationStore] = useState(createConversationStore);
+  const [activityStore] = useState(createActivityStore);
+  const [voiceStore] = useState(createVoiceStore);
+  // Metadata-only live attachment presentation is deferred, but RootShell
+  // retains the canonical attachment store identity for its existing viewer.
+  const [_attachmentStore] = useState(createAttachmentStore);
+  const [conceptUiStore] = useState(() =>
+    createLiveConceptUiStore(conceptStorage),
+  );
+  const selectedConcept = conceptUiStore((state) => state.concept);
+  const workOpen = conceptUiStore((state) => state.workOpen);
+
   const liveServicesRef = useRef<ProfileScopedServices | null>(null);
   const [liveServices, setLiveServices] =
     useState<ProfileScopedServices | null>(null);
+  const profileScopeEpochRef = useRef(0);
+  const initialProfileScope: OwnedProfileScope = {
+    profileId: activeProfileId,
+    origin: activeProfileOrigin,
+    generation: activeProfileGeneration,
+    epoch: profileScopeEpochRef.current,
+  };
+  const ownedProfileScopeRef = useRef<OwnedProfileScope>(initialProfileScope);
+  const [ownedProfileScope, setOwnedProfileScope] =
+    useState<OwnedProfileScope>(initialProfileScope);
+
+  const conceptSwitcherOpenerRef = useRef<HTMLElement | null>(null);
+  const conceptSwitcherWasOpenRef = useRef(false);
+  const openConceptSwitcher = useCallback(() => {
+    const activeElement = document.activeElement;
+    conceptSwitcherOpenerRef.current =
+      activeElement instanceof HTMLElement ? activeElement : null;
+    setConceptSwitcherOpen(true);
+  }, []);
+
+  // A concept selection replaces the trigger element. Update the restoration
+  // target after that DOM replacement but before ConceptSwitcher's passive
+  // close effect focuses it.
+  useLayoutEffect(() => {
+    if (!conceptSwitcherOpen && conceptSwitcherWasOpenRef.current) {
+      const replacementTrigger = document.querySelector<HTMLElement>(
+        '[data-concept-switch-trigger="true"]',
+      );
+      if (replacementTrigger !== null) {
+        conceptSwitcherOpenerRef.current = replacementTrigger;
+      }
+    }
+    conceptSwitcherWasOpenRef.current = conceptSwitcherOpen;
+  }, [conceptSwitcherOpen]);
 
   // Load profiles on mount.
   useEffect(() => {
@@ -142,15 +220,40 @@ export function RootShell({ services, stores }: RootShellProps): JSX.Element {
   }, [services.native, connection, preferences]);
 
   // Build one AppWire client and all server-scoped wrappers for the active
-  // profile. The native side selects the profile's credential by ID; JS only
-  // sees the redacted profile summary and never receives the token.
+  // profile. A changed profile tuple renders no concept until this owner effect
+  // has synchronously reset/replaced roster, conversation, activity, and UI
+  // scope, then advanced its own monotonic epoch. The epoch is deliberately
+  // independent of profile IDs and reusable connection/store generations.
   useEffect(() => {
+    const targetScope = {
+      profileId: activeProfileId,
+      origin: activeProfileOrigin,
+      generation: activeProfileGeneration,
+    };
+    const currentOwner = ownedProfileScopeRef.current;
+    const scopeChanged = !sameProfileScope(currentOwner, targetScope);
     const previous = liveServicesRef.current;
-    if (previous !== null) {
-      previous.client.close();
+
+    if (scopeChanged || previous !== null) {
+      previous?.rosterStore.getState().reset();
       liveServicesRef.current = null;
+      setLiveServices(null);
+      conversationStore.getState().reset();
+      activityStore.getState().reset();
+      conceptUiStore.getState().resetProfileScope();
+      setShowVoice(false);
+      setConceptSwitcherOpen(false);
+
+      profileScopeEpochRef.current += 1;
+      const nextOwner: OwnedProfileScope = {
+        ...targetScope,
+        epoch: profileScopeEpochRef.current,
+      };
+      // These four resets/replacements above are the complete owner
+      // transaction. Only publish the fresh epoch after all of them finish.
+      ownedProfileScopeRef.current = nextOwner;
+      setOwnedProfileScope(nextOwner);
     }
-    setLiveServices(null);
 
     const profile = connection
       .getState()
@@ -169,6 +272,11 @@ export function RootShell({ services, stores }: RootShellProps): JSX.Element {
     let disposed = false;
     const scoped = createScoped(profile);
     liveServicesRef.current = scoped;
+    const unsubscribeRoster = connectRosterNotifications(
+      scoped.rosterStore,
+      scoped.rosterService,
+      (handler) => scoped.client.onNotification(handler),
+    );
 
     const setReachability = (state: string): void => {
       const reachability = mapClientState(state);
@@ -185,6 +293,7 @@ export function RootShell({ services, stores }: RootShellProps): JSX.Element {
         if (disposed) return;
         connection.getState().setReachability(profile.id, "reachable");
         setLiveServices(scoped);
+        void scoped.rosterStore.getState().refresh(scoped.rosterService);
       })
       .catch(() => {
         if (!disposed) {
@@ -194,33 +303,53 @@ export function RootShell({ services, stores }: RootShellProps): JSX.Element {
 
     return () => {
       disposed = true;
+      unsubscribeRoster();
       unsubscribe();
       scoped.client.close();
-      if (liveServicesRef.current === scoped) {
-        liveServicesRef.current = null;
-      }
+      // Keep the closed graph reachable until the next owner effect resets its
+      // roster as part of the atomic profile-scope transaction.
     };
   }, [
     activeProfileId,
     activeProfileOrigin,
     activeProfileGeneration,
+    activityStore,
+    conceptUiStore,
     connection,
+    conversationStore,
     services.createProfileScopedServices,
   ]);
 
-  // Open the selected conversation only after the profile-scoped AppWire
-  // client exists. ConversationStore owns generation checks for late frames.
+  // Keep roster event refresh active only while the production Sessions
+  // surface is visible.
+  useEffect(() => {
+    if (liveServices === null) return;
+    const roster = liveServices.rosterStore.getState();
+    roster.setSessionsVisible(
+      tab === "sessions" && activeConversation === null,
+    );
+    return () => roster.setSessionsVisible(false);
+  }, [activeConversation, liveServices, tab]);
+
+  // Open the selected conversation and its sanitized activity projection only
+  // after the profile-scoped AppWire client exists. The production stores own
+  // exact binding/generation checks for late frames and reads.
   useEffect(() => {
     if (activeConversation === null || liveServices === null) {
       if (activeConversation === null) {
-        conversationStoreRef.current.getState().reset();
+        conversationStore.getState().reset();
+        activityStore.getState().reset();
       }
       return;
     }
-    void conversationStoreRef.current
+    void conversationStore
       .getState()
-      .open(liveServices.conversationService, activeConversation.sessionId);
-  }, [activeConversation, liveServices]);
+      .openProjected(
+        liveServices.conversationService,
+        activityStore.getState(),
+        activeConversation.sessionId,
+      );
+  }, [activeConversation, activityStore, conversationStore, liveServices]);
 
   const isLoading = status === "initial" || status === "loading";
   // Auto-select the first profile if profiles exist but none is active.
@@ -243,6 +372,68 @@ export function RootShell({ services, stores }: RootShellProps): JSX.Element {
   }, [profiles, activeProfileId, services.profile, connection]);
   const hasProfiles = profiles.length > 0 && activeProfileId !== null;
   const inConversation = conversationStack.length > 0;
+  const activeProfile =
+    profiles.find((profile) => profile.id === activeProfileId) ?? null;
+  const activeProfileStatus: StatusKind =
+    activeProfileReachability === "reachable"
+      ? "reachable"
+      : activeProfileReachability === "reconnecting"
+        ? "reconnecting"
+        : activeProfileReachability === "unreachable"
+          ? "offline"
+          : "unknown";
+  const profileScopeReady = sameProfileScope(ownedProfileScope, {
+    profileId: activeProfileId,
+    origin: activeProfileOrigin,
+    generation: activeProfileGeneration,
+  });
+
+  const runtime = useMemo(
+    () => ({
+      connection,
+      navigation,
+      preferences,
+      rosterStore: liveServices?.rosterStore ?? null,
+      rosterService: liveServices?.rosterService ?? null,
+      conversationStore,
+      conversationService: liveServices?.conversationService ?? null,
+      activityStore,
+      native: services.native,
+      profileId: ownedProfileScope.profileId,
+    }),
+    [
+      activityStore,
+      connection,
+      conversationStore,
+      liveServices,
+      navigation,
+      ownedProfileScope.profileId,
+      preferences,
+      services.native,
+    ],
+  );
+
+  const openConversation = useCallback(
+    (ref: string) => {
+      const entry = liveServices?.rosterStore
+        .getState()
+        .entries.find((candidate) => candidate.ref === ref);
+      navigation.getState().pushConversation({
+        sessionId: ref,
+        title: entry?.title ?? "Conversation",
+      });
+    },
+    [liveServices, navigation],
+  );
+  const openRootTab = useCallback(
+    (nextTab: Extract<RootTab, "new" | "settings">) => {
+      setShowVoice(false);
+      conceptUiStore.getState().setWorkOpen(false);
+      navigation.getState().popAllConversations();
+      navigation.getState().setTab(nextTab);
+    },
+    [conceptUiStore, navigation],
+  );
 
   const resolvedTheme = theme === "system" ? undefined : theme;
 
@@ -255,6 +446,17 @@ export function RootShell({ services, stores }: RootShellProps): JSX.Element {
 
   // Loading state — prevents onboarding flash while profiles load.
   if (isLoading && !addingServer && !hasProfiles) {
+    return (
+      <div {...shellAttrs}>
+        <Loading label="Loading…" />
+      </div>
+    );
+  }
+
+  // A profile change is visible to connection state before the RootShell owner
+  // effect can complete its reset transaction. Suppress the renderer during
+  // that gap; the fresh scope appears only with its newly published epoch.
+  if (hasProfiles && !addingServer && !profileScopeReady) {
     return (
       <div {...shellAttrs}>
         <Loading label="Loading…" />
@@ -300,15 +502,13 @@ export function RootShell({ services, stores }: RootShellProps): JSX.Element {
     );
   }
 
-  // Conversation push above the tab bar. ConversationScreen owns the top bar,
-  // virtualized timeline, and composer.
-  if (inConversation) {
-    if (showVoice) {
-      return (
-        <div {...shellAttrs}>
+  return (
+    <div {...shellAttrs}>
+      {inConversation ? (
+        showVoice ? (
           <VoiceScreen
-            conversationStore={conversationStoreRef.current}
-            voiceStore={voiceStoreRef.current}
+            conversationStore={conversationStore}
+            voiceStore={voiceStore}
             bridge={services.native}
             composerFocusRef={{ current: null }}
             onEnd={() => setShowVoice(false)}
@@ -316,73 +516,117 @@ export function RootShell({ services, stores }: RootShellProps): JSX.Element {
             connectionStatus="unknown"
             reducedMotion={reducedMotion}
           />
-        </div>
-      );
-    }
-    return (
-      <div {...shellAttrs}>
-        <ConversationScreen
-          conversationStore={conversationStoreRef.current}
-          navigationStore={navigation}
-          conversationService={liveServices?.conversationService}
-          attachmentStore={attachmentStoreRef.current}
-          onShowVoice={() => setShowVoice(true)}
-        />
-      </div>
-    );
-  }
-
-  return (
-    <div {...shellAttrs}>
-      <main
-        className="evener-screen-scroll"
-        role="tabpanel"
-        id={PANEL_ID}
-        aria-labelledby={`${PANEL_ID}-tab-${tab}`}
-      >
-        {tab === "sessions" ? (
-          <SessionsScreen
-            connection={connection}
-            onOpenSwitcher={() => setSwitcherOpen(true)}
-            rosterService={liveServices?.rosterService}
-            rosterStore={liveServices?.rosterStore}
-            navigation={navigation}
+        ) : (
+          <LiveConceptHost
+            runtime={runtime}
+            uiStore={conceptUiStore}
+            platform="ios"
+            profileScopeEpoch={ownedProfileScope.epoch}
+            surface={workOpen ? "work" : "conversation"}
+            onOpenConceptSwitcher={openConceptSwitcher}
+            onOpenConversation={openConversation}
+            onBack={() => navigation.getState().popConversation()}
+            onOpenNew={() => openRootTab("new")}
+            onOpenSettings={() => openRootTab("settings")}
+            onOpenVoice={() => setShowVoice(true)}
           />
-        ) : null}
-        {tab === "new" ? (
-          <NewSessionScreen
-            service={liveServices?.newSessionService}
-            navigation={navigation}
+        )
+      ) : (
+        <>
+          <div
+            className="evener-screen-scroll"
+            role="tabpanel"
+            id={PANEL_ID}
+            aria-labelledby={`${PANEL_ID}-tab-${tab}`}
+          >
+            {tab === "sessions" ? (
+              <>
+                <button
+                  type="button"
+                  className="evener-sessions-header"
+                  onClick={() => setServerSwitcherOpen(true)}
+                >
+                  <span className="evener-sessions-header__text">
+                    <span className="evener-sessions-header__name">
+                      {activeProfile?.name ?? "No server"}
+                    </span>{" "}
+                    {activeProfile?.origin ? (
+                      <>
+                        <span className="evener-sessions-header__origin">
+                          {activeProfile.origin}
+                        </span>{" "}
+                      </>
+                    ) : null}
+                    <span className="evener-sessions-header__label">
+                      active server
+                    </span>{" "}
+                    <StatusMark status={activeProfileStatus} />
+                  </span>
+                  <span
+                    className="evener-sessions-header__chevron"
+                    aria-hidden="true"
+                  >
+                    ›
+                  </span>
+                </button>
+                <LiveConceptHost
+                  runtime={runtime}
+                  uiStore={conceptUiStore}
+                  platform="ios"
+                  profileScopeEpoch={ownedProfileScope.epoch}
+                  surface="sessions"
+                  onOpenConceptSwitcher={openConceptSwitcher}
+                  onOpenConversation={openConversation}
+                  onBack={() => navigation.getState().popConversation()}
+                  onOpenNew={() => openRootTab("new")}
+                  onOpenSettings={() => openRootTab("settings")}
+                  onOpenVoice={() => setShowVoice(true)}
+                />
+              </>
+            ) : null}
+            {tab === "new" ? (
+              <NewSessionScreen
+                service={liveServices?.newSessionService}
+                navigation={navigation}
+              />
+            ) : null}
+            {tab === "settings" ? (
+              <SettingsScreen
+                connection={connection}
+                preferences={preferences}
+                onOpenSwitcher={() => setServerSwitcherOpen(true)}
+              />
+            ) : null}
+          </div>
+          <BottomBar
+            tabs={TABS}
+            activeId={tab}
+            onSelect={(id) => navigation.getState().setTab(id as RootTab)}
+            panelId={PANEL_ID}
           />
-        ) : null}
-        {tab === "settings" ? (
-          <SettingsScreen
-            connection={connection}
-            preferences={preferences}
-            onOpenSwitcher={() => setSwitcherOpen(true)}
-          />
-        ) : null}
-      </main>
-      <BottomBar
-        tabs={TABS}
-        activeId={tab}
-        onSelect={(id) => navigation.getState().setTab(id as RootTab)}
-        panelId={PANEL_ID}
+        </>
+      )}
+      <ConceptSwitcher
+        open={conceptSwitcherOpen}
+        selectedConcept={selectedConcept}
+        onSelect={(concept) => conceptUiStore.getState().setConcept(concept)}
+        onClose={() => setConceptSwitcherOpen(false)}
+        openerRef={conceptSwitcherOpenerRef}
       />
       <Sheet
-        open={switcherOpen}
-        onClose={() => setSwitcherOpen(false)}
+        open={serverSwitcherOpen}
+        onClose={() => setServerSwitcherOpen(false)}
         title="Servers"
       >
         <ServerSwitcherSheet
           connection={connection}
           navigation={navigation}
-          onSwitch={() => setSwitcherOpen(false)}
+          onSwitch={() => setServerSwitcherOpen(false)}
           onAdd={() => {
-            setSwitcherOpen(false);
+            setServerSwitcherOpen(false);
             setAddingServer(true);
           }}
-          onClose={() => setSwitcherOpen(false)}
+          onClose={() => setServerSwitcherOpen(false)}
         />
       </Sheet>
     </div>
@@ -401,4 +645,36 @@ function mapClientState(state: string): Reachability | null {
     default:
       return null;
   }
+}
+
+function sameProfileScope(
+  owned: Pick<OwnedProfileScope, "profileId" | "origin" | "generation">,
+  target: Pick<OwnedProfileScope, "profileId" | "origin" | "generation">,
+): boolean {
+  return (
+    owned.profileId === target.profileId &&
+    owned.origin === target.origin &&
+    owned.generation === target.generation
+  );
+}
+
+function localStorageOrNull(): Storage | null {
+  if (typeof window === "undefined") return null;
+  try {
+    return window.localStorage ?? null;
+  } catch {
+    return null;
+  }
+}
+
+function readLocalStorage(key: string): string | null {
+  return localStorageOrNull()?.getItem(key) ?? null;
+}
+
+function writeLocalStorage(key: string, value: string): void {
+  localStorageOrNull()?.setItem(key, value);
+}
+
+function removeLocalStorage(key: string): void {
+  localStorageOrNull()?.removeItem(key);
 }
