@@ -8,15 +8,14 @@
 // tests). It projects the wire Thread to a MobileConversation via projectThread,
 // subscribes to notifications, and enforces ThreadCapabilities before every
 // mutation: a false capability blocks the request entirely, never reaching the
-// wire. A server-reported actionUnavailable triggers a capability re-read so
-// the store's cached capabilities stay fresh.
+// wire. A server-reported actionUnavailable triggers a non-subscribing
+// capability re-read so the store's cached capabilities stay fresh.
 //
 // Generation safety is enforced by the store, not the service: the service is
 // stateless across opens (it holds only the current ref and last-read
 // capabilities). The store owns profile/connection/conversation generations.
 
 import type { AppwireClient } from "../../../cmd/evener-hub/frontend/src/protocol/client";
-import { WireError } from "../../../cmd/evener-hub/frontend/src/protocol/errors";
 import type {
   AnyNotification,
   InputItem,
@@ -34,6 +33,13 @@ import type {
   MobileTimelineItem,
 } from "../conversation/model";
 import { projectThread } from "../conversation/project";
+import type { ActivityView } from "./activity";
+import { createActivityService } from "./activity";
+
+// The bounded read page limit and retained item cap, centralized so every
+// caller uses the same constant.
+export const READ_TURN_LIMIT = 50;
+export const RETAINED_ITEM_CAP = 500;
 
 // The narrow client surface the service depends on. Structurally compatible
 // with AppwireClient and FakeClient, so tests inject a FakeClient without
@@ -55,6 +61,14 @@ export interface ConversationServiceOptions {
   readonly idFactory?: IdFactory;
 }
 
+export interface ConversationReadProjection {
+  conversation: MobileConversation;
+  activity: ActivityView;
+  olderCursor: string | null;
+}
+
+// The canonical service interface — preserved for screen test mocks that only
+// need the basic open/send/steer/queue/interrupt/close surface.
 export interface ConversationService {
   open(ref: string, cursor?: string): Promise<MobileConversation>;
   loadOlder(cursor: string): Promise<{
@@ -78,10 +92,15 @@ export interface ConversationService {
   close(): void;
 }
 
-// The evenerErrorInfo value the hub stamps when an action is not available for
-// the current thread state (appwire/errors.go: ErrorActionUnavailable). A
-// WireError carrying this triggers a capability re-read.
-const ERROR_INFO_ACTION_UNAVAILABLE = "actionUnavailable";
+// Required live behavior interface for the live read/projection path. This
+// must be implemented by any service that supports the live conversation
+// features (readProjection, openProjected, rehydrate, coalescer, mutation
+// state). It extends the canonical ConversationService with the live-only
+// methods that must not be optional-fallback to the old open() path.
+export interface LiveConversationService extends ConversationService {
+  readProjection(ref: string): Promise<ConversationReadProjection>;
+  refreshCapabilities(ref: string): Promise<ThreadCapabilities | null>;
+}
 
 let defaultIdCounter = 0;
 function defaultIdFactory(): string {
@@ -95,18 +114,100 @@ function defaultIdFactory(): string {
   return `cmid-${Date.now()}-${defaultIdCounter}`;
 }
 
+// The 11 required capability fields that must be present and boolean in
+// every ThreadCapabilities. Extra keys from future protocol versions are
+// allowed but never retained in the extracted copy.
+const REQUIRED_CAPABILITY_FIELDS = [
+  "send",
+  "steer",
+  "interrupt",
+  "compact",
+  "clear",
+  "forkFromTurn",
+  "shutdown",
+  "changeModel",
+  "queue",
+  "goal",
+  "rename",
+] as const;
+
+// Extract and runtime-validate capabilities into a complete plain local
+// ThreadCapabilities copy. All 11 required fields must be present and
+// boolean; extra keys are allowed but not retained. Null, non-object,
+// wrong-type, or throwing-getter inputs throw before any state write,
+// leaving the ref+capabilities pair null/fail-closed. The returned copy
+// never retains the response object or its getters.
+function extractCapabilities(raw: unknown): ThreadCapabilities {
+  if (raw === null || typeof raw !== "object") {
+    throw new Error("ConversationService: capabilities is not an object");
+  }
+  const obj = raw as Record<string, unknown>;
+  const caps: ThreadCapabilities = {
+    send: false,
+    steer: false,
+    interrupt: false,
+    compact: false,
+    clear: false,
+    forkFromTurn: false,
+    shutdown: false,
+    changeModel: false,
+    queue: false,
+    goal: false,
+    rename: false,
+  };
+  for (const field of REQUIRED_CAPABILITY_FIELDS) {
+    const value = obj[field];
+    if (typeof value !== "boolean") {
+      throw new Error(
+        `ConversationService: capability "${field}" is not a boolean`,
+      );
+    }
+    caps[field] = value;
+  }
+  return caps;
+}
+
 export function createConversationService(
   client: ConversationClientLike | AppwireClient,
   options: ConversationServiceOptions = {},
-): ConversationService {
+): LiveConversationService {
   const idFactory: IdFactory = options.idFactory ?? defaultIdFactory;
+  const activityService = createActivityService();
 
-  // Current thread identity and capabilities, set by open(). Mutations check
-  // these before reaching the wire; a re-read on actionUnavailable refreshes
-  // them.
+  // Current thread identity and capabilities, set by open() / readProjection().
+  // Mutations check these before reaching the wire; a re-read on
+  // actionUnavailable refreshes them. ref+capabilities form one fail-closed
+  // lifecycle pair: a new open/readProjection clears BOTH ref=null and
+  // capabilities=null BEFORE awaiting so the service is fail-closed while the
+  // read is in flight (a mutation cannot send against a prior thread's gates
+  // or the pending thread's not-yet-validated ref). The pair is installed
+  // together only on the current epoch's success; a failed read leaves both
+  // null, so requireRef-only operations (setReasoningEffort, cancelQueued,
+  // loadOlder) also fail before any wire call.
   let ref: string | null = null;
   let capabilities: ThreadCapabilities | null = null;
   let notificationUnsub: (() => void) | null = null;
+
+  // Monotonic service/open epoch. Every open/readProjection/close increments
+  // it; an in-flight read captures its epoch and only installs ref+caps if
+  // its epoch is still current when it resolves. This makes stale
+  // completions (an older open resolving after a newer open, or a refresh
+  // resolving after close/reopen) no-ops against the live pair.
+  let openEpoch = 0;
+
+  function beginOpen(_threadRef: string): number {
+    // Starting a new open invalidates the prior epoch and clears BOTH ref
+    // and capabilities before the await, so the service is truly fail-closed
+    // while the read is in flight: no mutation or requireRef-only operation
+    // (setReasoningEffort, cancelQueued, loadOlder) can reach the wire until
+    // the pair is installed together on success. The requested threadRef is
+    // captured only in the epoch; it is NOT written to ref until success.
+    openEpoch += 1;
+    const epoch = openEpoch;
+    ref = null;
+    capabilities = null;
+    return epoch;
+  }
 
   function requireRef(): string {
     if (ref === null) throw new Error("ConversationService: no thread open");
@@ -119,61 +220,115 @@ export function createConversationService(
     }
   }
 
-  async function refreshCapabilities(): Promise<void> {
-    if (ref === null) return;
+  // Non-subscribing capability refresh: reads the thread metadata WITHOUT
+  // subscribing or replacing the subscription, and WITHOUT loading all turns.
+  // Returns the refreshed capabilities. This is the only path the store should
+  // use for actionUnavailable recovery — it never disturbs the active
+  // subscription. The cache is published only when, at request START, the
+  // committed ref equaled threadRef AND, after the await, both the lifecycle
+  // epoch and the committed ref remain unchanged (epoch === epochStart and
+  // ref === threadRef). A refresh started while pending or closed (ref=null)
+  // may never activate the pending/failed ref: startRef !== threadRef, so the
+  // cache is left untouched. The requested capabilities are always returned to
+  // the caller (generation-safe store) even when stale.
+  async function refreshCapabilities(
+    threadRef: string,
+  ): Promise<ThreadCapabilities | null> {
+    const epoch = openEpoch;
+    const requestedRef = threadRef;
+    const startRef = ref;
     const response: ThreadReadResponse = await client.request("thread/read", {
-      ref,
+      ref: threadRef,
       includeTurns: false,
       subscribe: false,
     });
-    capabilities = response.thread.evener.capabilities;
-  }
-
-  // isActionUnavailable returns true when a WireError carries the
-  // actionUnavailable evenerErrorInfo, signalling the thread's capabilities
-  // changed since the last read.
-  function isActionUnavailable(err: unknown): boolean {
-    return (
-      err instanceof WireError &&
-      err.evenerErrorInfo === ERROR_INFO_ACTION_UNAVAILABLE
-    );
+    // Extract+validate capabilities into a plain copy; a malformed response
+    // rejects the refresh and cannot corrupt the current pair.
+    const refreshed = extractCapabilities(response.thread.evener.capabilities);
+    if (
+      startRef === requestedRef &&
+      openEpoch === epoch &&
+      ref === requestedRef
+    ) {
+      capabilities = refreshed;
+    }
+    return refreshed;
   }
 
   // withCapabilityRefresh wraps a mutation: if the server rejects with
-  // actionUnavailable, refresh capabilities and re-throw so the store can
-  // surface the error. The store never auto-retries the mutation.
+  // actionUnavailable, the service just re-throws — it does NOT auto-refresh
+  // capabilities. Exactly one non-subscribing thread/read occurs, and it is
+  // driven by the store's handleMutationError (F2). The store is the sole
+  // caller of refreshCapabilities; the service never duplicates the read.
   async function withCapabilityRefresh<T>(
     _action: string,
     fn: () => Promise<T>,
   ): Promise<T> {
-    try {
-      return await fn();
-    } catch (err) {
-      if (isActionUnavailable(err)) {
-        await refreshCapabilities();
-      }
-      throw err;
-    }
+    return fn();
   }
 
   return {
     async open(threadRef, _cursor) {
-      ref = threadRef;
+      // The compatibility cursor is intentionally ignored: open() must send
+      // exactly the canonical unbounded subscribed open request. Bounded
+      // live projection lives exclusively in readProjection; cursor paging
+      // lives exclusively in thread/turns/list. beginOpen clears BOTH ref
+      // and capabilities before the await so the service is fail-closed
+      // during the read; the pair is installed together only on success.
+      const epoch = beginOpen(threadRef);
       const response: ThreadReadResponse = await client.request("thread/read", {
         ref: threadRef,
         includeTurns: true,
         subscribe: true,
         replaceSubscription: true,
       });
-      capabilities = response.thread.evener.capabilities;
-      return projectThread(response.thread);
+      // Compute ALL response-derived projection work BEFORE committing the
+      // pair — a throw here leaves ref+capabilities null/fail-closed. Only
+      // commit the pair after projection succeeds and the epoch is still
+      // current; a stale successful result returns without committing.
+      const conversation = projectThread(response.thread);
+      const caps = extractCapabilities(response.thread.evener.capabilities);
+      if (openEpoch === epoch) {
+        ref = threadRef;
+        capabilities = caps;
+      }
+      return conversation;
+    },
+
+    async readProjection(threadRef) {
+      const epoch = beginOpen(threadRef);
+      const response: ThreadReadResponse = await client.request("thread/read", {
+        ref: threadRef,
+        includeTurns: true,
+        subscribe: true,
+        replaceSubscription: true,
+        turnLimit: READ_TURN_LIMIT,
+      });
+      // Compute ALL response-derived projection work BEFORE committing the
+      // pair — a throw in projectThread or activity projection (or a malformed
+      // response) leaves ref+capabilities null/fail-closed. Only commit the
+      // pair after all projection succeeds and the epoch is still current;
+      // a stale successful result returns without committing.
+      const conversation = projectThread(response.thread);
+      const activity = activityService.projectActivity(response.thread);
+      const olderCursor = response.olderCursor ?? null;
+      const caps = extractCapabilities(response.thread.evener.capabilities);
+      if (openEpoch === epoch) {
+        ref = threadRef;
+        capabilities = caps;
+      }
+      return {
+        conversation,
+        activity,
+        olderCursor,
+      };
     },
 
     async loadOlder(cursor) {
       const threadRef = requireRef();
       const response: ThreadTurnsListResponse = await client.request(
         "thread/turns/list",
-        { ref: threadRef, cursor },
+        { ref: threadRef, cursor, limit: READ_TURN_LIMIT },
       );
       // Project the older turns into mobile items by projecting a minimal
       // Thread containing just these turns. projectThread handles empty/missing
@@ -182,6 +337,8 @@ export function createConversationService(
       const items = projectOlderTurns(response.data);
       return { items, nextCursor: response.nextCursor };
     },
+
+    refreshCapabilities,
 
     subscribeNotifications(handler) {
       if (notificationUnsub !== null) {
@@ -311,6 +468,9 @@ export function createConversationService(
         notificationUnsub();
         notificationUnsub = null;
       }
+      // Increment the epoch and clear the pair so a refresh that was in
+      // flight before close cannot republish into the closed service.
+      openEpoch += 1;
       ref = null;
       capabilities = null;
     },
@@ -355,5 +515,10 @@ function projectOlderTurns(
       queue: { revision: 0 },
     },
   };
-  return projectThread(thread).items;
+  // I3: Filter out actionable question rows from historical pages. A pending
+  // ask cannot legitimately be older than newer continuation turns, and
+  // page-local projection otherwise resurrects settled calls. All other
+  // projected page items/order/dedupe/cursor are preserved — only question
+  // rows are omitted.
+  return projectThread(thread).items.filter((item) => item.kind !== "question");
 }

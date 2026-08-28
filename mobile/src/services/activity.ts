@@ -96,6 +96,25 @@ export interface ActivityService {
   projectActivity(thread: Thread): ActivityView;
 }
 
+// --- projection errors -------------------------------------------------------
+
+export type ActivityProjectionErrorCode =
+  | "duplicate-delegate"
+  | "duplicate-job"
+  | "cross-kind-collision"
+  | "self-parent"
+  | "delegate-cycle"
+  | "missing-parent";
+
+export class ActivityProjectionError extends Error {
+  readonly code: ActivityProjectionErrorCode;
+  constructor(code: ActivityProjectionErrorCode) {
+    super(`activity projection error: ${code}`);
+    this.name = "ActivityProjectionError";
+    this.code = code;
+  }
+}
+
 // --- tone classification -----------------------------------------------------
 
 const RUNNING_STATUSES = new Set([
@@ -179,6 +198,100 @@ function redactDelegate(dlg: EvenerDelegateInfo): RedactedDiagnostic {
   };
 }
 
+// --- hierarchy validation ----------------------------------------------------
+
+// Validates all delegate/job operational IDs before recursive projection.
+// Throws ActivityProjectionError (never recurses forever, flattens, or shares
+// entries) when the hierarchy is malformed:
+//   - duplicate delegate IDs within the delegate kind
+//   - duplicate job IDs within the job kind
+//   - cross-kind collision (delegate ID == job ID) — ambiguous
+//   - self-parent (delegate whose parentDelegateId === its own delegateId)
+//   - delegate parent cycle (A→B→A, A→B→C→A, …)
+//   - missing delegate parent (parentDelegateId not in the delegate set) for
+//     delegates or jobs
+function validateHierarchy(
+  delegates: EvenerDelegateInfo[],
+  jobs: EvenerJobInfo[],
+): void {
+  // --- no duplicate within kind ---
+  const delegateIds = new Set<string>();
+  for (const dlg of delegates) {
+    if (delegateIds.has(dlg.delegateId)) {
+      throw new ActivityProjectionError("duplicate-delegate");
+    }
+    delegateIds.add(dlg.delegateId);
+  }
+
+  const jobIds = new Set<string>();
+  for (const j of jobs) {
+    if (jobIds.has(j.jobId)) {
+      throw new ActivityProjectionError("duplicate-job");
+    }
+    jobIds.add(j.jobId);
+  }
+
+  // --- no cross-kind collision ---
+  for (const dlg of delegates) {
+    if (jobIds.has(dlg.delegateId)) {
+      throw new ActivityProjectionError("cross-kind-collision");
+    }
+  }
+
+  // --- no self-parent ---
+  for (const dlg of delegates) {
+    if (
+      dlg.parentDelegateId !== undefined &&
+      dlg.parentDelegateId !== "" &&
+      dlg.parentDelegateId === dlg.delegateId
+    ) {
+      throw new ActivityProjectionError("self-parent");
+    }
+  }
+
+  // --- no delegate parent cycle ---
+  // Walk the parent chain from each delegate; if we revisit a node already
+  // on the current path, the chain is cyclic. The "visiting" set detects
+  // the cycle; "visited" avoids re-walking already-proven-clean chains.
+  const visited = new Set<string>();
+  for (const dlg of delegates) {
+    if (visited.has(dlg.delegateId)) continue;
+    const visiting = new Set<string>();
+    let cursor: EvenerDelegateInfo | undefined = dlg;
+    while (cursor !== undefined) {
+      const id = cursor.delegateId;
+      if (visiting.has(id)) {
+        // Cycle detected — the cursor's id is on the current path.
+        throw new ActivityProjectionError("delegate-cycle");
+      }
+      visiting.add(id);
+      const parent: string | undefined =
+        cursor.parentDelegateId !== undefined && cursor.parentDelegateId !== ""
+          ? cursor.parentDelegateId
+          : undefined;
+      if (parent === undefined) break;
+      cursor = delegates.find((d) => d.delegateId === parent);
+    }
+    for (const id of visiting) visited.add(id);
+  }
+
+  // --- no missing delegate parent for nested delegates ---
+  for (const dlg of delegates) {
+    const parent = dlg.parentDelegateId;
+    if (parent !== undefined && parent !== "" && !delegateIds.has(parent)) {
+      throw new ActivityProjectionError("missing-parent");
+    }
+  }
+
+  // --- no missing delegate parent for nested jobs ---
+  for (const j of jobs) {
+    const parent = j.parentDelegateId;
+    if (parent !== undefined && parent !== "" && !delegateIds.has(parent)) {
+      throw new ActivityProjectionError("missing-parent");
+    }
+  }
+}
+
 // --- work projection ---------------------------------------------------------
 
 function projectJobEntry(job: EvenerJobInfo): WorkEntry {
@@ -196,11 +309,13 @@ function projectJobEntry(job: EvenerJobInfo): WorkEntry {
 
 function projectDelegateEntry(
   dlg: EvenerDelegateInfo,
-  childJobs: EvenerJobInfo[],
+  children: WorkEntry[],
 ): WorkEntry {
   const tone = classifyTone(dlg.status, dlg.terminal, undefined, dlg.outcome);
-  const label = dlg.description ?? dlg.type ?? "Delegate";
-  const children = childJobs.map((cj) => projectJobEntry(cj));
+  // Use the type (operation name) only, never description/task prompt — those
+  // may carry delegated task text. Fall back to a safe constant when type is
+  // absent or empty.
+  const label = dlg.type && dlg.type.length > 0 ? dlg.type : "Delegate";
   return {
     kind: "delegate",
     label,
@@ -217,28 +332,76 @@ function projectWork(diagnostics: EvenerDiagnostics | undefined): WorkEntry[] {
   const delegates = diagnostics.delegates ?? [];
   const jobs = diagnostics.jobs ?? [];
 
-  // Partition jobs: those with a parentDelegateId nest under that delegate;
-  // the rest are top-level entries.
-  const byParent = new Map<string, EvenerJobInfo[]>();
+  // Validate all operational IDs before any recursive projection. A
+  // malformed hierarchy (duplicate, cross-kind collision, self-parent,
+  // cycle, missing parent) fails closed with ActivityProjectionError.
+  validateHierarchy(delegates, jobs);
+
+  // Partition jobs by their parent delegate id.
+  const jobsByParent = new Map<string, EvenerJobInfo[]>();
   const topLevelJobs: EvenerJobInfo[] = [];
-  for (const job of jobs) {
-    const parent = job.parentDelegateId;
+  for (const j of jobs) {
+    const parent = j.parentDelegateId;
     if (parent !== undefined && parent !== "") {
-      const list = byParent.get(parent);
-      if (list !== undefined) list.push(job);
-      else byParent.set(parent, [job]);
+      const list = jobsByParent.get(parent);
+      if (list !== undefined) list.push(j);
+      else jobsByParent.set(parent, [j]);
     } else {
-      topLevelJobs.push(job);
+      topLevelJobs.push(j);
     }
+  }
+
+  // Build delegate entries recursively. A delegate with a parentDelegateId
+  // nests under that parent; a delegate whose parent is absent from the
+  // diagnostics is rendered at top level (never dropped).
+  const delegateById = new Map<string, EvenerDelegateInfo>();
+  for (const dlg of delegates) {
+    delegateById.set(dlg.delegateId, dlg);
+  }
+
+  // Memoized projection so each delegate is projected exactly once and
+  // children are assembled depth-first.
+  const projected = new Map<string, WorkEntry>();
+
+  function buildDelegate(dlg: EvenerDelegateInfo): WorkEntry {
+    const existing = projected.get(dlg.delegateId);
+    if (existing !== undefined) return existing;
+
+    // Gather child delegates (those whose parentDelegateId is this delegate)
+    // and child jobs.
+    const childEntries: WorkEntry[] = [];
+
+    // Child delegates — search the full delegate list for children.
+    for (const child of delegates) {
+      if (child.parentDelegateId === dlg.delegateId) {
+        childEntries.push(buildDelegate(child));
+      }
+    }
+
+    // Child jobs.
+    const childJobs = jobsByParent.get(dlg.delegateId) ?? [];
+    for (const cj of childJobs) {
+      childEntries.push(projectJobEntry(cj));
+    }
+
+    const entry = projectDelegateEntry(dlg, childEntries);
+    projected.set(dlg.delegateId, entry);
+    return entry;
   }
 
   const entries: WorkEntry[] = [];
   for (const dlg of delegates) {
-    const childJobs = byParent.get(dlg.delegateId) ?? [];
-    entries.push(projectDelegateEntry(dlg, childJobs));
+    // A delegate is top-level when it has no parentDelegateId, or when its
+    // parent is not present in the diagnostics.
+    const parent = dlg.parentDelegateId;
+    const hasParentInList =
+      parent !== undefined && parent !== "" && delegateById.has(parent);
+    if (!hasParentInList) {
+      entries.push(buildDelegate(dlg));
+    }
   }
-  for (const job of topLevelJobs) {
-    entries.push(projectJobEntry(job));
+  for (const j of topLevelJobs) {
+    entries.push(projectJobEntry(j));
   }
 
   return entries;

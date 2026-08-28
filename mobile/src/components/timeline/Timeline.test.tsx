@@ -12,6 +12,7 @@ import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type {
   ActivityDetail,
+  ActivityFamily,
   ActivityState,
   AskBatch,
   AttachmentRef,
@@ -90,8 +91,9 @@ function activityItem(
   label: string,
   state: ActivityState = "completed",
   detail: ActivityDetail = {},
+  family: ActivityFamily = "tool",
 ): MobileTimelineItem {
-  return { kind: "activity", id, label, state, detail };
+  return { kind: "activity", id, label, family, state, detail };
 }
 function noticeItem(
   id: string,
@@ -193,9 +195,15 @@ describe("TimelineItem dispatch — every item family", () => {
     // An activity with a neutral "Activity" label (forward-compatible unknown).
     render(
       <TimelineItem
-        item={activityItem("unk1", "Activity", "completed", {
-          output: "some unknown data",
-        })}
+        item={activityItem(
+          "unk1",
+          "Activity",
+          "completed",
+          {
+            output: "some unknown data",
+          },
+          "unknown",
+        )}
       />,
     );
     expect(screen.getByText("Activity")).toBeInTheDocument();

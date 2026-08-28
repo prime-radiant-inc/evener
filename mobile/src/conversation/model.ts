@@ -21,6 +21,15 @@ export interface AttachmentRef {
 // "completed" even for errored calls — error presence is the real signal).
 export type ActivityState = "running" | "completed" | "failed";
 
+// Durable activity family discriminator, independent of the display `label`.
+// The projection sets this from the wire item's *type* — commandExecution
+// (tool) vs reasoning vs anything else — never from the label string, so a
+// commandExecution whose toolName is "Reasoning" is still family "tool" and a
+// reasoning item is family "reasoning". Closed type: tool | reasoning | unknown.
+// Consumers branch on `family`, never on `label`, so a renamed or localized
+// label cannot change an item's family.
+export type ActivityFamily = "tool" | "reasoning" | "unknown";
+
 // Expandable detail behind a one-line activity card. Every field is plain
 // text — never raw HTML — and may be truncated by the renderer. `arguments`
 // is the tool's argumentsJson verbatim (untrusted JSON text), `output` is the
@@ -77,6 +86,12 @@ export type MobileTimelineItem =
       kind: "activity";
       id: string;
       label: string;
+      // Durable activity-family discriminator, independent of `label`. The
+      // projection sets this from the wire item's type (commandExecution →
+      // "tool", reasoning → "reasoning", anything else → "unknown"), never from
+      // the label text. Required: every activity constructor MUST set it to a
+      // concrete ActivityFamily; consumers branch on `family`, never `label`.
+      family: ActivityFamily;
       state: ActivityState;
       detail: ActivityDetail;
     }
