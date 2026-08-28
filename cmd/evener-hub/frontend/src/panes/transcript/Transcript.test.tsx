@@ -1,5 +1,4 @@
 import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
-import userEvent from "@testing-library/user-event";
 import { lazy } from "react";
 import { afterAll, afterEach, beforeEach, expect, test, vi } from "vitest";
 import { FakeClient } from "../../protocol/testing/fakeClient";
@@ -204,10 +203,10 @@ test("renders the thread's turns through the shared VirtualList/TurnBlock engine
   expect(within(screen.getByTestId("subagent-row")).getByText("Status: done")).toBeTruthy();
 });
 
-test("keeps the read-only Detail control reachable above the transcript", async () => {
+test("keeps transcript/history and projection announcements without standalone Detail or Verbosity controls", async () => {
   const fake = connectFakeClient();
-  fake.on("thread/read", () =>
-    readResponse("ref_a", {
+  fake.on("thread/read", () => ({
+    ...readResponse("ref_a", {
       turns: [
         {
           id: "turn_1",
@@ -217,8 +216,11 @@ test("keeps the read-only Detail control reachable above the transcript", async 
         },
       ],
     }),
-  );
-  const user = userEvent.setup();
+    olderCursor: "cursor_1",
+  }));
+  fake.on("thread/turns/list", () => {
+    throw new Error("older history unavailable");
+  });
 
   render(
     <ClientProvider client={fake}>
@@ -226,10 +228,10 @@ test("keeps the read-only Detail control reachable above the transcript", async 
     </ClientProvider>,
   );
 
-  const trigger = await screen.findByRole("button", { name: /^Detail:/ });
-  expect(trigger.closest('[data-testid="transcript-virtual-list"]')).toBeNull();
-  await user.click(trigger);
-  expect(screen.getByRole("radio", { name: "Tools" })).toBeTruthy();
+  expect(await screen.findByText("read me")).toBeTruthy();
+  expect(screen.getByTestId("load-older-row").textContent).not.toBe("");
+  expect(screen.queryByRole("button", { name: /^Detail:/ })).toBeNull();
+  expect(screen.queryByRole("menuitem", { name: "Verbosity…" })).toBeNull();
   transcriptDisplayStore.setState({ viewport: "desktop" });
   transcriptDisplayStore
     .getState()

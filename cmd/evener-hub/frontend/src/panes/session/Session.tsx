@@ -54,7 +54,6 @@ import {
   transcriptRowsForProjection,
   transcriptSourceTurnRowIndexesForRows,
 } from "./transcript/TranscriptBody";
-import { TranscriptDetailControl } from "./transcript/TranscriptDetailControl";
 import { SandboxEscalationRail } from "./transcript/tools/sandboxEscalation";
 import { isDormantTranscript } from "./transcript/transcriptVisibility";
 import { useTranscript } from "./transcript/useTranscript";
@@ -189,7 +188,6 @@ export default function Session({ params, paneId, focused: paneFocused }: PanePr
   // here, even though the ref only ever populates once turns.length > 0
   // (see useTranscriptScroll's own "hasContent" handling for that).
   const virtualListRef = useRef<VirtualListHandle>(null);
-  const detailTriggerRef = useRef<HTMLButtonElement>(null);
   const announcementSequence = useRef(0);
   const [viewAnnouncement, setViewAnnouncement] = useState({ text: "", key: 0 });
   // SelectionQuote's own positioning/containment context (its header
@@ -290,17 +288,6 @@ export default function Session({ params, paneId, focused: paneFocused }: PanePr
         disclosureScope={`transcript:live:${ref}`}
         sessionRef={ref}
         viewId={paneId}
-        detailTriggerRef={detailTriggerRef}
-        toolbar={
-          <TranscriptDetailControl
-            layout={displayViewport}
-            triggerRef={detailTriggerRef}
-            onEditHubDefaults={() => {
-              const url = paneToURL("settings", { section: "transcript" });
-              if (url !== null) navigate(url);
-            }}
-          />
-        }
         onAnnounceViewChange={(summary) => {
           announcementSequence.current += 1;
           setViewAnnouncement({ text: `Transcript detail: ${summary}`, key: announcementSequence.current });

@@ -93,6 +93,31 @@ test("panes group leads with open-state checkmarks and dispatches onOpenPane", a
   expect(actions.onOpenPane).toHaveBeenCalledWith("tasks");
 });
 
+test("pane-only Verbosity follows Activity, precedes the first separator, and dispatches its callback", async () => {
+  const user = userEvent.setup();
+  const onOpenVerbosity = vi.fn();
+  renderMenu({ onOpenVerbosity });
+  await openMenu(user);
+
+  const menu = screen.getByRole("menu");
+  const verbosity = within(menu).getByRole("menuitem", { name: "Verbosity…" });
+  const activity = within(menu).getByRole("menuitem", { name: "Activity" });
+  const firstSeparator = within(menu).getAllByRole("separator")[0];
+  if (!firstSeparator) throw new Error("Session menu is missing its first separator");
+  expect(activity.compareDocumentPosition(verbosity) & Node.DOCUMENT_POSITION_FOLLOWING).not.toBe(0);
+  expect(verbosity.compareDocumentPosition(firstSeparator) & Node.DOCUMENT_POSITION_FOLLOWING).not.toBe(0);
+
+  await user.click(verbosity);
+  expect(onOpenVerbosity).toHaveBeenCalledOnce();
+});
+
+test("rail-style callers that omit the pane-only callback do not get Verbosity", async () => {
+  const user = userEvent.setup();
+  renderMenu({ triggerLabel: "Actions for My session" });
+  await user.click(screen.getByRole("button", { name: "Actions for My session" }));
+  expect(screen.queryByRole("menuitem", { name: "Verbosity…" })).toBeNull();
+});
+
 test("live labels replace the plain pane names", async () => {
   const user = userEvent.setup();
   renderMenu({ taskLabel: "Tasks 3/7", activityLabel: "Activity · 2" });

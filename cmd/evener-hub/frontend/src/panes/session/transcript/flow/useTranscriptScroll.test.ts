@@ -1405,7 +1405,7 @@ describe("registered transcript view preservation", () => {
     el.remove();
   });
 
-  test("restores a surviving focused entry and focuses the Detail fallback when it disappears", () => {
+  test("restores a surviving focused entry and focuses the stable fallback when it disappears", () => {
     const list = makeListHandle();
     document.body.append(list.el);
     const oldAnchor = document.createElement("div");
@@ -1414,8 +1414,9 @@ describe("registered transcript view preservation", () => {
     const oldEntry = document.createElement("button");
     oldAnchor.append(oldEntry);
     list.el.append(oldAnchor);
-    const detail = document.createElement("button");
-    document.body.append(detail);
+    const fallback = document.createElement("div");
+    fallback.tabIndex = -1;
+    document.body.append(fallback);
     oldEntry.focus();
 
     let positions: ViewAnchorPosition[] = [
@@ -1434,7 +1435,7 @@ describe("registered transcript view preservation", () => {
           measureAnchors: () => positions,
           anchorEntries: entries,
           renderedRowCount: 2,
-          detailTriggerRef: { current: detail },
+          focusFallback: () => fallback.focus(),
         }),
       { initialProps: { viewKey: "everything", entries: anchorEntries } },
     );
@@ -1459,9 +1460,9 @@ describe("registered transcript view preservation", () => {
         });
       }, "Transcript display changed again");
     });
-    expect(document.activeElement).toBe(detail);
+    expect(document.activeElement).toBe(fallback);
     list.el.remove();
-    detail.remove();
+    fallback.remove();
   });
 
   test("waits for a virtualized source alias and restores the same descendant from Intent to Tools", () => {
@@ -1473,8 +1474,7 @@ describe("registered transcript view preservation", () => {
     const intentButton = document.createElement("button");
     intentAnchor.append(intentButton);
     list.el.append(intentAnchor);
-    const detail = document.createElement("button");
-    document.body.append(detail);
+    const focusFallback = vi.fn();
     intentButton.focus();
 
     let positions: ViewAnchorPosition[] = [
@@ -1493,7 +1493,7 @@ describe("registered transcript view preservation", () => {
           measureAnchors: () => positions,
           anchorEntries: entries,
           renderedRowCount: 2,
-          detailTriggerRef: { current: detail },
+          focusFallback,
         }),
       { initialProps: { viewKey: "intent", entries: intentEntries } },
     );
@@ -1509,7 +1509,7 @@ describe("registered transcript view preservation", () => {
       }, "Transcript display changed");
     });
     expect(list.scrollToIndex).toHaveBeenCalledWith(1, { align: "start" });
-    expect(document.activeElement).not.toBe(detail);
+    expect(focusFallback).not.toHaveBeenCalled();
 
     const toolAnchor = document.createElement("div");
     toolAnchor.dataset.viewAnchorId = "tool-1";
@@ -1521,9 +1521,8 @@ describe("registered transcript view preservation", () => {
     act(() => result.current.restoreAfterMeasurement());
 
     expect(document.activeElement).toBe(toolButton);
-    expect(document.activeElement).not.toBe(detail);
+    expect(focusFallback).not.toHaveBeenCalled();
     list.el.remove();
-    detail.remove();
   });
 });
 

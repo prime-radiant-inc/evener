@@ -27,6 +27,12 @@
   opacity: 0.5;
 }
 
+@media (max-width: 899px) {
+  .summary {
+    min-height: var(--tap-min);
+  }
+}
+
 /* The open disclosure's own persistent affordance - the same "which one is
  * currently active" wash Menu's quiet trigger keeps while its popup is open
  * (menu.module.css's .triggerQuiet[aria-expanded="true"]), so a reader

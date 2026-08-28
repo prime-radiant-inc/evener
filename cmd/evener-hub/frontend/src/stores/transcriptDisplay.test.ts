@@ -128,7 +128,6 @@ describe("effective transcript display state", () => {
         return leftSnapshot;
       }),
       restore: vi.fn(() => events.push("restore:left")),
-      focusDetailTrigger: vi.fn(),
       announce: vi.fn(() => events.push("announce:left")),
     };
     const right = {
@@ -138,7 +137,6 @@ describe("effective transcript display state", () => {
         return rightSnapshot;
       }),
       restore: vi.fn(() => events.push("restore:right")),
-      focusDetailTrigger: vi.fn(),
       announce: vi.fn(() => events.push("announce:right")),
     };
     const unregisterLeft = registerTranscriptView(left);
@@ -168,7 +166,6 @@ describe("effective transcript display state", () => {
       id: "pane",
       capture,
       restore: vi.fn(),
-      focusDetailTrigger: vi.fn(),
       announce,
     });
 
@@ -188,7 +185,6 @@ describe("effective transcript display state", () => {
       id: "announcement-pane",
       capture: vi.fn(() => viewSnapshot("announcement-pane")),
       restore: vi.fn(),
-      focusDetailTrigger: vi.fn(),
       announce,
     });
     const timings = makeTranscriptDisplayConfig({ kind: "preset", level: "tools" }, { roundTimings: true });
@@ -210,7 +206,6 @@ describe("effective transcript display state", () => {
         return viewSnapshot("pane");
       }),
       restore: vi.fn(() => events.push("restore")),
-      focusDetailTrigger: vi.fn(),
       announce: vi.fn(() => events.push("announce")),
     });
     const sameConfig = preset("full");
@@ -733,7 +728,6 @@ test("routes a storage reset through capture/restore, while masking a non-curren
     id: "pane",
     capture,
     restore,
-    focusDetailTrigger: vi.fn(),
     announce,
   });
 

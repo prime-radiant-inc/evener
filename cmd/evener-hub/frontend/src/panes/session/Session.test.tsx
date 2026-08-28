@@ -307,10 +307,10 @@ test("shows the thread's live name once hydrated, not the raw ref", async () => 
   await waitFor(() => expect(screen.getByText("My session")).toBeTruthy());
 });
 
-test("keeps the live Detail control reachable above the transcript", async () => {
+test("omits the old live Detail toolbar while transcript and older-history content remain reachable", async () => {
   const fake = connectFakeClient();
-  fake.on("thread/read", () =>
-    readResponse("ref_a", {
+  fake.on("thread/read", () => ({
+    ...readResponse("ref_a", {
       turns: [
         {
           id: "turn_1",
@@ -320,8 +320,8 @@ test("keeps the live Detail control reachable above the transcript", async () =>
         },
       ],
     }),
-  );
-  const user = userEvent.setup();
+    olderCursor: "cursor_1",
+  }));
 
   render(
     <ClientProvider client={fake}>
@@ -329,12 +329,9 @@ test("keeps the live Detail control reachable above the transcript", async () =>
     </ClientProvider>,
   );
 
-  const trigger = await screen.findByRole("button", { name: /^Detail:/ });
-  expect(trigger.closest('[data-testid="transcript-virtual-list"]')).toBeNull();
-  await user.click(trigger);
-  expect(screen.getByRole("radio", { name: "Tools" })).toBeTruthy();
-  await user.click(screen.getByRole("button", { name: "Edit hub defaults" }));
-  expect(window.location.pathname).toBe("/settings/transcript");
+  expect(await screen.findByText("hello")).toBeTruthy();
+  expect(screen.getByTestId("load-older-row").textContent).not.toBe("");
+  expect(screen.queryByRole("button", { name: /^Detail:/ })).toBeNull();
   transcriptDisplayStore.setState({ viewport: "desktop" });
   transcriptDisplayStore.getState().setLocal("desktop", makeTranscriptDisplayConfig({ kind: "preset", level: "full" }));
   await waitFor(() =>

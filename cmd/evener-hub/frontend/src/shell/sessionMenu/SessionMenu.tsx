@@ -52,6 +52,8 @@ export interface SessionMenuProps {
   panesOpen: { details: boolean; tasks: boolean; activity: boolean };
   taskLabel?: string; // e.g. "Tasks 3/7"; defaults to "Tasks"
   activityLabel?: string; // e.g. "Activity · 2"; defaults to "Activity"
+  /** Pane-only action. Rail/sidebar callers omit it. */
+  onOpenVerbosity?: () => void;
   actions: SessionMenuActions;
   triggerTabIndex?: number; // -1 inside rail rows (roving tabindex contract)
 }
@@ -77,6 +79,7 @@ export function SessionMenu({
   panesOpen,
   taskLabel,
   activityLabel,
+  onOpenVerbosity,
   actions,
   triggerTabIndex,
 }: SessionMenuProps) {
@@ -122,6 +125,9 @@ export function SessionMenu({
       onSelect: () => actions.onOpenPane("activity"),
     },
   ];
+  if (onOpenVerbosity) {
+    paneItems.push({ id: "verbosity", label: "Verbosity…", onSelect: onOpenVerbosity });
+  }
   const organizeItems: MenuEntry[] = [
     {
       id: "rename",

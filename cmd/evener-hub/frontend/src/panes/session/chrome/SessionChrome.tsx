@@ -21,12 +21,13 @@
 // composer is where you act on this session"; the command palette only
 // hands off to it - design-system.md §9) - so GoalControl below is the
 // goal chip + clear popover only.
-import { useRef } from "react";
+import { useRef, useState } from "react";
 import { sessionActionError } from "../../../protocol/errors";
 import type { NavigationSessionLocation } from "../../../protocol/types.gen";
 import { useClient } from "../../../shell/clientContext";
 import { closePanesForDeletedSessions } from "../../../shell/deletedSessionPanes";
 import { assignSessionPin, deleteSession, setArchived, unpinSession } from "../../../shell/rail/actions";
+import { navigate, paneToURL } from "../../../shell/routing";
 import { SessionMenu } from "../../../shell/sessionMenu/SessionMenu";
 import { useIsMobile } from "../../../shell/useIsMobile";
 import { isPaneOpen, useWorkspaceStore, workspaceStore } from "../../../shell/workspace";
@@ -39,6 +40,7 @@ import { Cadence, useToasts } from "../../../widgets";
 import { requireClass } from "../../../widgets/internal/requireClass";
 import { cadenceStateForStatus, NOW_TICK_MS, useNowTick } from "../liveness";
 import { navigationSummaryFor } from "../threadTitle";
+import { TranscriptDetailControl } from "../transcript/TranscriptDetailControl";
 import { ActivityPanel, type ActivityPanelHandle } from "./ActivityPanel";
 import { DetailsPanel, type DetailsPanelHandle } from "./DetailsPanel";
 import { GoalControl } from "./GoalControl";
@@ -71,6 +73,7 @@ export function SessionChrome({ ref: sessionRef, placement = "footer" }: Session
   const client = useClient();
   const model = useThreadsStore((s) => s.threads.get(sessionRef));
   const isMobile = useIsMobile();
+  const [verbosityOpen, setVerbosityOpen] = useState(false);
   const toasts = useToasts();
   const detailsOpen = useWorkspaceStore((s) => isPaneOpen(s, "sessionDetails", { ref: sessionRef }));
   const tasksOpen = useWorkspaceStore((s) => isPaneOpen(s, "sessionTasks", { ref: sessionRef }));
@@ -140,144 +143,156 @@ export function SessionChrome({ ref: sessionRef, placement = "footer" }: Session
   const activityLabel = activitySummary?.counts?.complete ? `Activity · ${activitySummary.counts.active}` : "Activity";
 
   return (
-    <div
-      className={placement === "composer" ? CLASS.inline : CLASS.chrome}
-      data-testid={placement === "composer" ? "session-chrome-inline" : "session-chrome"}
-    >
-      {placement === "composer" ? (
-        <div className={CLASS.body} data-testid="session-chrome-inline-status">
-          <StatusRow sessionRef={sessionRef} model={model} now={now} />
-          {/* Production mounts ONLY this placement (Composer.tsx), so the
+    <>
+      <div
+        className={placement === "composer" ? CLASS.inline : CLASS.chrome}
+        data-testid={placement === "composer" ? "session-chrome-inline" : "session-chrome"}
+      >
+        {placement === "composer" ? (
+          <div className={CLASS.body} data-testid="session-chrome-inline-status">
+            <StatusRow sessionRef={sessionRef} model={model} now={now} />
+            {/* Production mounts ONLY this placement (Composer.tsx), so the
               goal chip must ride here too — footer-only left it unreachable
               in the real app. */}
-          <GoalControl sessionRef={sessionRef} model={model} />
-        </div>
-      ) : (
-        /* .body owns compression (sessionchrome.module.css says why): its
+            <GoalControl sessionRef={sessionRef} model={model} />
+          </div>
+        ) : (
+          /* .body owns compression (sessionchrome.module.css says why): its
            inline-size container progressively simplifies status content, so
            .right - and with it the "..." menu - always shares this one line. */
-        <div className={CLASS.body} data-testid="session-chrome-body">
-          <span className={CLASS.cadenceSlot} data-testid="session-chrome-cadence">
-            <Cadence state={cadenceStateForStatus(model.status.type)} frameTimes={frameTimes} now={now} />
-          </span>
-          <StatusRow sessionRef={sessionRef} model={model} now={now} />
-          <GoalControl sessionRef={sessionRef} model={model} />
+          <div className={CLASS.body} data-testid="session-chrome-body">
+            <span className={CLASS.cadenceSlot} data-testid="session-chrome-cadence">
+              <Cadence state={cadenceStateForStatus(model.status.type)} frameTimes={frameTimes} now={now} />
+            </span>
+            <StatusRow sessionRef={sessionRef} model={model} now={now} />
+            <GoalControl sessionRef={sessionRef} model={model} />
+          </div>
+        )}
+        <div className={CLASS.right}>
+          <DetailsPanel ref={detailsRef} model={model} now={now} hideTrigger />
+          <TasksPanel ref={tasksRef} sessionRef={sessionRef} model={model} hideTrigger />
+          <ActivityPanel
+            ref={activityRef}
+            sessionRef={sessionRef}
+            model={model}
+            now={now}
+            hideTrigger
+            refreshWhenHidden
+          />
+          <SessionMenu
+            sessionRef={sessionRef}
+            title={model.name}
+            triggerLabel="Session actions"
+            canRename={model.capabilities.rename}
+            canShutdown={model.capabilities.shutdown}
+            session={menuSession}
+            panesOpen={{ details: detailsOpen, tasks: tasksOpen, activity: activityOpen }}
+            taskLabel={model.tasks ? `Tasks ${model.tasks.done}/${model.tasks.total}` : undefined}
+            activityLabel={activityLabel}
+            onOpenVerbosity={() => setVerbosityOpen(true)}
+            actions={{
+              onOpenPane: (pane) => {
+                if (pane === "details") openDetails();
+                else if (pane === "tasks") openTasks();
+                else openActivity();
+              },
+              // Failure convention (SessionMenu.tsx's header comment): the
+              // ADAPTER toasts with sessionActionError and rethrows, so a
+              // rejected action leaves SessionMenu's dialog open with its
+              // confirm button re-enabled; only success closes it.
+              onRename: async (name) => {
+                try {
+                  await threadsStore.getState().rename(sessionRef, name);
+                } catch (err) {
+                  toasts.push("error", sessionActionError("Couldn't rename session", err));
+                  throw err;
+                }
+              },
+              onShutdown: async () => {
+                const invalidation =
+                  navigation.mode === "v1"
+                    ? navigationStore
+                        .getState()
+                        .awaitNavigationInvalidation((payload) =>
+                          payload.targets.some(
+                            (target) =>
+                              target.kind === "all_loaded_projects" ||
+                              (target.kind === "section" &&
+                                (target.section === "live" || target.section === "needs_you")) ||
+                              (target.kind === "pin_section" && target.sectionId === menuSession?.pin_section_id) ||
+                              (target.kind === "project" && target.projectKey === location?.project_key),
+                          ),
+                        )
+                    : null;
+                void invalidation?.promise.catch(() => undefined);
+                try {
+                  await threadsStore.getState().shutdown(sessionRef);
+                  if (invalidation) {
+                    const payload = await invalidation.promise;
+                    await navigationStore.getState().awaitNavigationTargets(payload.targets, payload.generationId);
+                  }
+                } catch (err) {
+                  invalidation?.cancel();
+                  toasts.push("error", sessionActionError("Couldn't shut down session", err));
+                  throw err;
+                }
+              },
+              onPin: async (target) => {
+                try {
+                  const result = await assignSessionPin(client, sessionRef, target);
+                  navigationStore.getState().trackPinSection(result.assignment.section.id);
+                  if (result.navigation) await navigationStore.getState().applyNavigationMutation(result.navigation);
+                } catch (err) {
+                  toasts.push("error", sessionActionError("Couldn't assign pinned session", err));
+                  throw err;
+                }
+              },
+              onUnpin: async () => {
+                try {
+                  const result = await unpinSession(client, sessionRef);
+                  if (result.navigation) await navigationStore.getState().applyNavigationMutation(result.navigation);
+                } catch (err) {
+                  toasts.push("error", sessionActionError("Couldn't unpin session", err));
+                  throw err;
+                }
+              },
+              onToggleArchive: async () => {
+                if (!menuSession) return;
+                try {
+                  const result = await setArchived("session", menuSession.session_id, menuSession.tier !== "archived");
+                  if (result.navigation) await navigationStore.getState().applyNavigationMutation(result.navigation);
+                } catch (err) {
+                  toasts.push("error", sessionActionError("Couldn't update archive state", err));
+                  throw err;
+                }
+              },
+              onDelete: async () => {
+                try {
+                  const result = await deleteSession(client, sessionRef);
+                  if (result.navigation) await navigationStore.getState().applyNavigationMutation(result.navigation);
+                  closePanesForDeletedSessions(result.deleted);
+                  if (result.skipped.length > 0) {
+                    const reason = result.skipped[0]?.reason ?? "still in use";
+                    toasts.push("warning", `Couldn't delete "${model.name}": ${reason}`);
+                  }
+                } catch (err) {
+                  toasts.push("error", sessionActionError(`Couldn't delete "${model.name}"`, err));
+                  throw err;
+                }
+              },
+            }}
+          />
         </div>
-      )}
-      <div className={CLASS.right}>
-        <DetailsPanel ref={detailsRef} model={model} now={now} hideTrigger />
-        <TasksPanel ref={tasksRef} sessionRef={sessionRef} model={model} hideTrigger />
-        <ActivityPanel
-          ref={activityRef}
-          sessionRef={sessionRef}
-          model={model}
-          now={now}
-          hideTrigger
-          refreshWhenHidden
-        />
-        <SessionMenu
-          sessionRef={sessionRef}
-          title={model.name}
-          triggerLabel="Session actions"
-          canRename={model.capabilities.rename}
-          canShutdown={model.capabilities.shutdown}
-          session={menuSession}
-          panesOpen={{ details: detailsOpen, tasks: tasksOpen, activity: activityOpen }}
-          taskLabel={model.tasks ? `Tasks ${model.tasks.done}/${model.tasks.total}` : undefined}
-          activityLabel={activityLabel}
-          actions={{
-            onOpenPane: (pane) => {
-              if (pane === "details") openDetails();
-              else if (pane === "tasks") openTasks();
-              else openActivity();
-            },
-            // Failure convention (SessionMenu.tsx's header comment): the
-            // ADAPTER toasts with sessionActionError and rethrows, so a
-            // rejected action leaves SessionMenu's dialog open with its
-            // confirm button re-enabled; only success closes it.
-            onRename: async (name) => {
-              try {
-                await threadsStore.getState().rename(sessionRef, name);
-              } catch (err) {
-                toasts.push("error", sessionActionError("Couldn't rename session", err));
-                throw err;
-              }
-            },
-            onShutdown: async () => {
-              const invalidation =
-                navigation.mode === "v1"
-                  ? navigationStore
-                      .getState()
-                      .awaitNavigationInvalidation((payload) =>
-                        payload.targets.some(
-                          (target) =>
-                            target.kind === "all_loaded_projects" ||
-                            (target.kind === "section" &&
-                              (target.section === "live" || target.section === "needs_you")) ||
-                            (target.kind === "pin_section" && target.sectionId === menuSession?.pin_section_id) ||
-                            (target.kind === "project" && target.projectKey === location?.project_key),
-                        ),
-                      )
-                  : null;
-              void invalidation?.promise.catch(() => undefined);
-              try {
-                await threadsStore.getState().shutdown(sessionRef);
-                if (invalidation) {
-                  const payload = await invalidation.promise;
-                  await navigationStore.getState().awaitNavigationTargets(payload.targets, payload.generationId);
-                }
-              } catch (err) {
-                invalidation?.cancel();
-                toasts.push("error", sessionActionError("Couldn't shut down session", err));
-                throw err;
-              }
-            },
-            onPin: async (target) => {
-              try {
-                const result = await assignSessionPin(client, sessionRef, target);
-                navigationStore.getState().trackPinSection(result.assignment.section.id);
-                if (result.navigation) await navigationStore.getState().applyNavigationMutation(result.navigation);
-              } catch (err) {
-                toasts.push("error", sessionActionError("Couldn't assign pinned session", err));
-                throw err;
-              }
-            },
-            onUnpin: async () => {
-              try {
-                const result = await unpinSession(client, sessionRef);
-                if (result.navigation) await navigationStore.getState().applyNavigationMutation(result.navigation);
-              } catch (err) {
-                toasts.push("error", sessionActionError("Couldn't unpin session", err));
-                throw err;
-              }
-            },
-            onToggleArchive: async () => {
-              if (!menuSession) return;
-              try {
-                const result = await setArchived("session", menuSession.session_id, menuSession.tier !== "archived");
-                if (result.navigation) await navigationStore.getState().applyNavigationMutation(result.navigation);
-              } catch (err) {
-                toasts.push("error", sessionActionError("Couldn't update archive state", err));
-                throw err;
-              }
-            },
-            onDelete: async () => {
-              try {
-                const result = await deleteSession(client, sessionRef);
-                if (result.navigation) await navigationStore.getState().applyNavigationMutation(result.navigation);
-                closePanesForDeletedSessions(result.deleted);
-                if (result.skipped.length > 0) {
-                  const reason = result.skipped[0]?.reason ?? "still in use";
-                  toasts.push("warning", `Couldn't delete "${model.name}": ${reason}`);
-                }
-              } catch (err) {
-                toasts.push("error", sessionActionError(`Couldn't delete "${model.name}"`, err));
-                throw err;
-              }
-            },
-          }}
-        />
       </div>
-    </div>
+      <TranscriptDetailControl
+        open={verbosityOpen}
+        onClose={() => setVerbosityOpen(false)}
+        layout={isMobile ? "mobile" : "desktop"}
+        onEditHubDefaults={() => {
+          const url = paneToURL("settings", { section: "transcript" });
+          if (url !== null) navigate(url);
+        }}
+      />
+    </>
   );
 }

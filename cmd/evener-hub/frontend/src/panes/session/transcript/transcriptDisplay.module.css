@@ -46,24 +46,10 @@
   }
 }
 
-.detailControl {
-  min-width: 0;
-}
-
 .detailPanel {
-  box-sizing: border-box;
-  inline-size: min(42rem, calc(100vw - var(--space-8)));
-  max-block-size: calc(100dvh - var(--space-8));
-  padding: var(--space-4);
-  overflow-y: auto;
+  min-width: 0;
   container-type: inline-size;
   container-name: transcript-detail-panel;
-}
-
-.detailPanelTitle {
-  margin: 0;
-  color: var(--ink-hi);
-  font-size: var(--font-size-pane-title);
 }
 
 .detailContent,

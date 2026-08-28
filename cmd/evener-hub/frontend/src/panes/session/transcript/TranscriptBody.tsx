@@ -1,5 +1,5 @@
 import type { ReactNode, RefObject } from "react";
-import { useMemo } from "react";
+import { useMemo, useRef } from "react";
 import { useStore } from "zustand";
 import type { ThreadModel } from "../../../protocol/model";
 import { transcriptDisplayStore } from "../../../stores/transcriptDisplay";
@@ -220,12 +220,8 @@ export interface TranscriptBodyProps {
   listRef?: RefObject<VirtualListHandle | null>;
   onMeasurementsChange?: () => void;
   trailingContent?: ReactNode;
-  toolbar?: ReactNode;
   /** Stable pane identity for host-remount scroll state; optional for callers. */
   viewId?: string;
-  /** Optional focus target supplied by the live Detail control. */
-  detailTriggerRef?: RefObject<HTMLElement | null>;
-  onFocusDetailTrigger?: () => void;
   onAnnounceViewChange?: (summary: string) => void;
 }
 
@@ -241,12 +237,10 @@ export function TranscriptBody({
   listRef,
   onMeasurementsChange,
   trailingContent,
-  toolbar,
   viewId,
-  detailTriggerRef,
-  onFocusDetailTrigger,
   onAnnounceViewChange,
 }: TranscriptBodyProps) {
+  const focusFallbackRef = useRef<HTMLElement>(null);
   const projection = useMemo(() => projectThread(model, config), [model, config]);
   const rows = useMemo(() => transcriptRowsForProjection(projection), [projection]);
   const openers = useMemo(() => exchangeOpenersFor(model.turns), [model.turns]);
@@ -280,8 +274,7 @@ export function TranscriptBody({
     listRef,
     anchorEntries: transcriptAnchorEntriesForRows(rows),
     renderedRowCount: rows.length,
-    detailTriggerRef,
-    focusDetailTrigger: onFocusDetailTrigger,
+    focusFallback: () => focusFallbackRef.current?.focus(),
     announce: onAnnounceViewChange,
   });
 
@@ -334,7 +327,13 @@ export function TranscriptBody({
   };
 
   const list = (
-    <div className={styles.transcriptList} data-testid="transcript-virtual-list">
+    <section
+      ref={focusFallbackRef}
+      className={styles.transcriptList}
+      data-testid="transcript-virtual-list"
+      aria-label="Transcript"
+      tabIndex={-1}
+    >
       <VirtualList
         ref={listRef}
         dynamic
@@ -351,7 +350,7 @@ export function TranscriptBody({
           }
         }}
       />
-    </div>
+    </section>
   );
 
   let content: ReactNode;
@@ -369,7 +368,6 @@ export function TranscriptBody({
       transcriptContent = (
         <FlowOverlay top={loadOlderRow} pill={liveOverlay}>
           <div className={styles.transcriptContent}>
-            {toolbar}
             {list}
             {trailingContent}
           </div>
@@ -380,7 +378,6 @@ export function TranscriptBody({
         <>
           {loadOlderRow}
           <div className={styles.transcriptContent}>
-            {toolbar}
             {list}
             {trailingContent}
           </div>

@@ -163,7 +163,7 @@ test("keeps transcript display surfaces on shared design-system primitives", () 
   expect(settingsCard).toMatch(/<Button(?:\s|>)/);
   expect(settingsCard).toMatch(/<Card(?:\s|>)/);
   expect(liveControl).toMatch(/<Button(?:\s|>)/);
-  expect(liveControl).toMatch(/<Popover(?:\s|>)/);
+  expect(liveControl).toMatch(/<Dialog(?:\s|>)/);
   expect(liveControl).toMatch(/<Sheet(?:\s|>)/);
   expect(editor).not.toMatch(/<(?:button|input|select|textarea)\b/);
   expect(settingsCard).not.toMatch(/<(?:button|input|select|textarea)\b/);
@@ -171,7 +171,7 @@ test("keeps transcript display surfaces on shared design-system primitives", () 
   expect(settingsCard).not.toMatch(/(?:style|width)\s*=\s*[{"]|style\s*:/i);
 });
 
-test("keeps feature rules from taking shared Card and Popover chrome", () => {
+test("keeps feature rules from taking shared Card and overlay chrome", () => {
   const cardPath = "src/panes/settings/sections/transcriptDisplayCard.module.css";
   const contentRule = expectExactlyOneRule(cardPath, ".content");
   expectDeclarations(contentRule, [
@@ -184,11 +184,7 @@ test("keeps feature rules from taking shared Card and Popover chrome", () => {
   const detailPath = "src/panes/session/transcript/transcriptDisplay.module.css";
   const detailRule = expectExactlyOneRule(detailPath, ".detailPanel");
   expectDeclarations(detailRule, [
-    ["box-sizing", "border-box"],
-    ["inline-size", "min(42rem, calc(100vw - var(--space-8)))"],
-    ["max-block-size", "calc(100dvh - var(--space-8))"],
-    ["padding", "var(--space-4)"],
-    ["overflow-y", "auto"],
+    ["min-width", "0"],
     ["container-type", "inline-size"],
     ["container-name", "transcript-detail-panel"],
   ]);
@@ -200,13 +196,12 @@ test("keeps feature rules from taking shared Card and Popover chrome", () => {
       [".detailStatus,\n.detailWarning", [["background", "var(--surface-inset)"]]],
     ]),
   );
-  expectOnlyAllowedOverflow(detailPath, new Map([[".detailPanel", [["overflow-y", "auto"]]]]));
+  expectOnlyAllowedOverflow(detailPath, new Map());
   expectOnlyAllowedPadding(
     detailPath,
     new Map([
       [".fieldset", [["padding", "0"]]],
       [".fieldset legend", [["padding", "0"]]],
-      [".detailPanel", [["padding", "var(--space-4)"]]],
       [".detailStatus,\n.detailWarning", [["padding", "var(--space-2) var(--space-3)"]]],
     ]),
   );

@@ -155,7 +155,6 @@ async function measureAt(cdpEndpoint, url, width) {
         throw error;
       }
     }
-    if (detail) await evaluate(send, "window.markLiveOwner?.()");
     const focus = detail ? await measureTrustedFocus(send) : null;
     const finalMeasurement = JSON.parse(await evaluate(send, "JSON.stringify(window.measure())"));
     return {
@@ -210,81 +209,24 @@ async function dispatchTrustedKey(send, key, code, windowsVirtualKeyCode) {
   await evaluate(send, "new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)))");
 }
 
-async function waitForDesktopScrollbar(send) {
-  await evaluate(
-    send,
-    `new Promise((resolve, reject) => {
-      const panel = document.querySelector('[data-testid="transcript-detail-popover"] [role="dialog"]');
-      if (!panel) {
-        resolve(null);
-        return;
-      }
-      const track = panel.querySelector('[role="radiogroup"]');
-      if (!track) {
-        resolve(null);
-        return;
-      }
-      // A classic scrollbar can be laid out asynchronously after focus moves
-      // into an overflowing panel. Do not compare against a detached probe:
-      // headless Chromium can report that probe as an overlay scrollbar while
-      // the real panel acquires a 15px gutter on its next layout.
-      const geometry = () => {
-        const box = track.getBoundingClientRect();
-        return [
-          panel.scrollHeight,
-          panel.clientHeight,
-          panel.clientWidth,
-          track.clientWidth,
-          box.left,
-          box.right,
-          box.width,
-        ];
-      };
-      let previous = null;
-      let stable = 0;
-      let frames = 0;
-      const check = () => {
-        const current = geometry();
-        if (JSON.stringify(current) === JSON.stringify(previous)) stable++;
-        else stable = 0;
-        if (panel.scrollHeight > panel.clientHeight && stable >= 3) {
-          resolve({ geometry: current });
-          return;
-        }
-        if (++frames >= 120) {
-          reject(new Error('desktop Detail scrollbar geometry did not settle: geometry=' + JSON.stringify(current) + ', scroll=' + panel.scrollHeight + '/' + panel.clientHeight));
-          return;
-        }
-        previous = current;
-        requestAnimationFrame(check);
-      };
-      requestAnimationFrame(check);
-    })`,
-  );
-}
-
 async function measureTrustedFocus(send) {
   await evaluate(
     send,
     `(() => {
-      const editor = document.querySelector('section[aria-label="Transcript detail editor"]');
+      const owner = document.querySelector('[data-testid="transcript-detail-control"]');
+      const editor = owner?.querySelector('section[aria-label="Transcript detail editor"]');
       const segments = editor ? [...editor.querySelectorAll('[role="radio"]')] : [];
       segments[0]?.focus();
-      if (!editor || segments.length !== 6) throw new Error('live Detail focus fixture is incomplete');
+      if (!editor || segments.length !== 6) throw new Error('live Verbosity focus fixture is incomplete');
     })()`,
   );
-  // Chromium can report the pre-scrollbar content width until the first
-  // trusted keyboard interaction makes the overflowing Popover's scrollbar
-  // visible. Warm the control with the first transition before establishing
-  // the baseline; the transition itself remains in the asserted sequence.
-  await waitForDesktopScrollbar(send);
   const readState = async () =>
     evaluate(
       send,
       `(() => {
-        const editor = document.querySelector('section[aria-label="Transcript detail editor"]');
-        const segments = editor ? [...editor.querySelectorAll('[role="radio"]')] : [];
         const owner = document.querySelector('[data-testid="transcript-detail-control"]');
+        const editor = owner?.querySelector('section[aria-label="Transcript detail editor"]');
+        const segments = editor ? [...editor.querySelectorAll('[role="radio"]')] : [];
         const track = editor?.querySelector('[role="radiogroup"]');
         const trackBox = track?.getBoundingClientRect();
         const labels = segments.map((segment) => segment.querySelector('span')?.textContent?.trim() ?? segment.getAttribute('aria-label') ?? '');
@@ -302,6 +244,7 @@ async function measureTrustedFocus(send) {
         const inset = outlineWidth + outlineOffset;
         const painted = box ? { left: box.left - inset, right: box.right + inset, top: box.top - inset, bottom: box.bottom + inset } : null;
         let clipped = painted === null || painted.left < 0 || painted.right > window.innerWidth || painted.top < 0 || painted.bottom > window.innerHeight;
+        const clippingAncestors = [];
         for (let ancestor = focused?.parentElement; ancestor && ancestor !== document.body; ancestor = ancestor.parentElement) {
           const ancestorStyle = getComputedStyle(ancestor);
           const clipsX = ancestorStyle.overflowX !== 'visible';
@@ -312,8 +255,18 @@ async function measureTrustedFocus(send) {
             const clipTop = ancestorBox.top + ancestor.clientTop;
             const clipRight = clipLeft + ancestor.clientWidth;
             const clipBottom = clipTop + ancestor.clientHeight;
-            clipped = clipped || (clipsX && (painted.left < clipLeft || painted.right > clipRight));
-            clipped = clipped || (clipsY && (painted.top < clipTop || painted.bottom > clipBottom));
+            const clippedX = clipsX && (painted.left < clipLeft || painted.right > clipRight);
+            const clippedY = clipsY && (painted.top < clipTop || painted.bottom > clipBottom);
+            clippingAncestors.push({
+              tag: ancestor.tagName.toLowerCase(),
+              testId: ancestor.dataset.testid ?? null,
+              overflowX: ancestorStyle.overflowX,
+              overflowY: ancestorStyle.overflowY,
+              clip: { left: clipLeft, right: clipRight, top: clipTop, bottom: clipBottom },
+              clippedX,
+              clippedY,
+            });
+            clipped = clipped || clippedX || clippedY;
           }
         }
         return {
@@ -327,6 +280,7 @@ async function measureTrustedFocus(send) {
           outlineOffset,
           painted,
           clipped,
+          clippingAncestors,
           checkedLabels: segments.filter((segment) => segment.getAttribute('aria-checked') === 'true').map((segment) => segment.querySelector('span')?.textContent?.trim() ?? ''),
           track: trackBox ? { left: trackBox.left, right: trackBox.right, width: trackBox.width, clientWidth: track.clientWidth, scrollWidth: track.scrollWidth } : null,
           geometry,
@@ -334,7 +288,6 @@ async function measureTrustedFocus(send) {
       })()`,
     );
   await dispatchTrustedKey(send, "Home", "Home", 36);
-  await waitForDesktopScrollbar(send);
   const baseline = await readState();
   const first = await readState();
   for (let index = 0; index < 3; index++) await dispatchTrustedKey(send, "ArrowRight", "ArrowRight", 39);
@@ -391,6 +344,11 @@ async function verifyPanelCollapse(cdpEndpoint, url) {
         // its named container-width/fieldset-column invariant is exercised at
         // the narrow main-pane width as well.
         const detail = await window.inspectDetail(true);
+        const verbosityDialog = document.querySelector('[role="dialog"][aria-modal="true"]');
+        const closeVerbosity = verbosityDialog?.querySelector('button[aria-label="Close"]');
+        if (!closeVerbosity) throw new Error('Verbosity close button missing after dock-collapse measurement');
+        closeVerbosity.click();
+        await until(() => !document.querySelector('[role="dialog"][aria-modal="true"]'), 'Verbosity dialog close');
         const actionsAgain = actionsTrigger();
         if (!actionsAgain) throw new Error('session actions trigger missing');
         actionsAgain.click();
@@ -424,7 +382,86 @@ async function verifyPanelCollapse(cdpEndpoint, url) {
   }
 }
 
+async function verifyShortSessionMenu(cdpEndpoint, url) {
+  const page = await connectPage(cdpEndpoint);
+  const { send } = page;
+  try {
+    await applyViewport(send, { width: 844, height: 390, mobile: true });
+    await send("Emulation.setTouchEmulationEnabled", { enabled: true, maxTouchPoints: 1 });
+    await navigateTo(page, url);
+    await evaluate(send, "window.settled");
+    await waitForFonts(send);
+    await waitForDynamicViewport(send);
+    const initial = await evaluate(
+      send,
+      `(async () => {
+        const trigger = [...document.querySelectorAll('button')].find((button) =>
+          button.textContent?.includes('Session actions'),
+        );
+        if (!trigger) throw new Error('short-height Session actions trigger is missing');
+        trigger.scrollIntoView({ block: 'nearest', inline: 'nearest' });
+        await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+        trigger.click();
+        await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+        const animations = document.getAnimations().filter(
+          (animation) => animation.effect?.getTiming().iterations !== Number.POSITIVE_INFINITY,
+        );
+        await Promise.all(animations.map((animation) => animation.finished.catch(() => undefined)));
+        const menu = [...document.querySelectorAll('[role="menu"]')].find(
+          (candidate) => candidate.getAttribute('aria-labelledby') === trigger.id,
+        );
+        if (!menu) throw new Error('short-height Session menu is missing');
+        const box = menu.getBoundingClientRect();
+        return {
+          itemCount: menu.querySelectorAll('[role="menuitem"]').length,
+          top: box.top,
+          bottom: box.bottom,
+          clientHeight: menu.clientHeight,
+          scrollHeight: menu.scrollHeight,
+          overflowY: getComputedStyle(menu).overflowY,
+          viewportWidth: window.innerWidth,
+          viewportHeight: window.innerHeight,
+        };
+      })()`,
+    );
+    await dispatchTrustedKey(send, "End", "End", 35);
+    const focused = await evaluate(
+      send,
+      `(() => {
+        const trigger = [...document.querySelectorAll('button')].find((button) =>
+          button.textContent?.includes('Session actions'),
+        );
+        const menu = [...document.querySelectorAll('[role="menu"]')].find(
+          (candidate) => candidate.getAttribute('aria-labelledby') === trigger?.id,
+        );
+        if (!menu) throw new Error('short-height Session menu disappeared');
+        const items = [...menu.querySelectorAll('[role="menuitem"]')].filter(
+          (item) => item.getAttribute('aria-disabled') !== 'true',
+        );
+        const last = items.at(-1);
+        if (!last) throw new Error('short-height Session menu has no enabled item');
+        const menuBox = menu.getBoundingClientRect();
+        const lastBox = last.getBoundingClientRect();
+        const center = { x: (lastBox.left + lastBox.right) / 2, y: (lastBox.top + lastBox.bottom) / 2 };
+        const hit = document.elementFromPoint(center.x, center.y);
+        return {
+          activeIsLast: document.activeElement === last,
+          lastVisible: lastBox.top >= menuBox.top - 0.5 && lastBox.bottom <= menuBox.bottom + 0.5,
+          lastHitTestable: hit === last || (hit instanceof Node && last.contains(hit)),
+          scrollTop: menu.scrollTop,
+        };
+      })()`,
+    );
+    return { ...initial, ...focused };
+  } finally {
+    await send("Emulation.setTouchEmulationEnabled", { enabled: false }).catch(() => {});
+    await clearViewportOverride(send);
+    page.close();
+  }
+}
+
 function assertFieldsets(detail, label) {
+  const failures = [];
   if (!detail || !Number.isFinite(detail.rootRemPx) || detail.rootRemPx <= 0) {
     return [`${label} fieldset root rem measurement is missing`];
   }
@@ -433,12 +470,14 @@ function assertFieldsets(detail, label) {
   }
   const expectedColumns = detail.editorContainerWidth <= 34 * detail.rootRemPx ? 1 : 3;
   if (detail.fieldsetColumns !== expectedColumns) {
-    return [
+    failures.push(
       `${label} editor container is ${detail.editorContainerWidth}px (${detail.rootRemPx}px root rem), ` +
         `so fieldsets must use ${expectedColumns} column(s), found ${detail.fieldsetColumns ?? "unknown"}`,
-    ];
+    );
   }
-  return [];
+  if (!detail.fieldsetsNonOverlapping) failures.push(`${label} fieldsets overlap`);
+  if (expectedColumns === 1 && !detail.fieldsetStacked) failures.push(`${label} one-column fieldsets are not vertically stacked`);
+  return failures;
 }
 
 function assertDetail(result, width) {
@@ -493,7 +532,7 @@ function assertDetail(result, width) {
     }
   }
   if (!Array.isArray(result.scrollContainers) || result.scrollContainers.length === 0) {
-    failures.push("live Detail scroll-container ancestor measurements are missing");
+    failures.push("live Verbosity scroll-container ancestor measurements are missing");
   }
   const overflowingAncestors = (result.scrollContainers ?? []).filter(
     (container) => container.scrollWidth > container.clientWidth + GEOMETRY_TOLERANCE,
@@ -503,49 +542,53 @@ function assertDetail(result, width) {
   }
   const detail = result.detail;
   if (!detail?.found || !detail.triggerReachable || !detail.triggerHitTestable)
-    failures.push("Detail trigger is not reachable or is occluded at its center hit point");
-  if (!detail?.open) failures.push("Detail trigger did not open its production portal/sheet");
-  if (!detail?.portalContained) failures.push(`Detail portal/sheet escapes the viewport: ${JSON.stringify(detail?.panel)}`);
+    failures.push("Session actions trigger is not reachable or is occluded at its center hit point");
+  if (!detail?.open) failures.push("Verbosity did not open its production Dialog/Sheet");
+  if (!detail?.overlayContained) failures.push(`Verbosity Dialog/Sheet escapes the viewport: ${JSON.stringify(detail?.panel)}`);
   if ((detail?.horizontalOverflowCount ?? 1) !== 0) {
     failures.push(
-      `Detail control has ${detail?.horizontalOverflowCount ?? "unknown"} horizontal overflow element(s): ${JSON.stringify(detail?.overflowElements)}`,
+      `Verbosity has ${detail?.horizontalOverflowCount ?? "unknown"} horizontal overflow element(s): ${JSON.stringify(detail?.overflowElements)}`,
     );
   }
   const mobile = result.viewport?.mobile === true;
-  if (detail?.mobile !== mobile) failures.push(`Detail layout mode is ${detail?.mobile}, realized viewport mode is ${mobile}`);
-  failures.push(...assertFieldsets(detail, `${width}px Detail`));
-  const expectedTargets = mobile ? 29 : 28;
+  if (detail?.mobile !== mobile) failures.push(`Verbosity layout mode is ${detail?.mobile}, realized viewport mode is ${mobile}`);
+  failures.push(...assertFieldsets(detail, `${width}px Verbosity`));
+  const expectedTargets = 31;
   if ((detail?.targets?.length ?? 0) !== expectedTargets) {
-    failures.push(`Detail mounted ${detail?.targets?.length ?? "unknown"} interactive targets, expected ${expectedTargets}`);
+    failures.push(`Verbosity mounted ${detail?.targets?.length ?? "unknown"} interactive targets, expected ${expectedTargets}`);
+  }
+  if (!(detail?.targets ?? []).some((target) => target.kind === "menuitem" && target.label === "Verbosity…")) {
+    failures.push("Verbosity menu item target measurement is missing");
+  }
+  if (!(detail?.targets ?? []).some((target) => target.kind === "summary" && target.label.startsWith("Customize & advanced"))) {
+    failures.push("Verbosity Advanced summary target measurement is missing");
   }
   const switchLabels = detail?.targets?.filter((target) => target.kind === "switch-label") ?? [];
-  if (switchLabels.length !== 9) failures.push(`Detail mounted ${switchLabels.length} Switch label targets, expected 9`);
-  if (!detail?.popoverAnchored && !mobile) failures.push("Desktop Detail popover is not spatially anchored to its trigger");
-  if (!detail?.sheetBottomAnchored && mobile) failures.push("Mobile Detail sheet is not bottom-anchored");
-  if (!result.trigger) failures.push("live Detail trigger geometry is missing");
-  const popoverScroll = detail?.popoverScroll;
+  if (switchLabels.length !== 9) failures.push(`Verbosity mounted ${switchLabels.length} Switch label targets, expected 9`);
+  if (!detail?.dialogCentered && !mobile) failures.push("Desktop Verbosity Dialog is not centered in the viewport");
+  if (!detail?.sheetBottomAnchored && mobile) failures.push("Mobile Verbosity Sheet is not bottom-anchored");
+  if (!result.trigger) failures.push("Session actions trigger geometry is missing");
+  const overlayScroll = detail?.overlayScroll;
   if (
-    !mobile &&
-    (!popoverScroll?.connected ||
-      !popoverScroll.contained ||
-      !popoverScroll.expanded ||
-      !popoverScroll.scrollable ||
-      popoverScroll.scrollHeight <= popoverScroll.clientHeight ||
-      popoverScroll.afterTop <= popoverScroll.beforeTop)
+    (!overlayScroll?.connected ||
+      !overlayScroll.contained ||
+      !overlayScroll.scrollable ||
+      overlayScroll.scrollHeight <= overlayScroll.clientHeight ||
+      overlayScroll.afterTop <= overlayScroll.beforeTop)
   ) {
-    failures.push(`Desktop Detail dialog failed internal-scroll containment: ${JSON.stringify(popoverScroll)}`);
+    failures.push(`Verbosity Dialog/Sheet failed internal-scroll containment: ${JSON.stringify(overlayScroll)}`);
   }
   if (mobile) {
     const undersized = (detail?.targets ?? []).filter((target) => target.height < 44 - 0.5);
     const undersizedEffective = (detail?.effectiveTargets ?? []).filter((target) => target.height < 44 - 0.5);
     if (undersized.length > 0) {
       failures.push(
-        `Mobile Detail target(s) are below 44px: ${undersized.map((target) => `${target.kind}:${JSON.stringify(target.label)}=${target.height}`).join(", ")}`,
+        `Mobile Verbosity target(s) are below 44px: ${undersized.map((target) => `${target.kind}:${JSON.stringify(target.label)}=${target.height}`).join(", ")}`,
       );
     }
     if (undersizedEffective.length > 0) {
       failures.push(
-        `Mobile Detail effective target(s) are below 44px: ${undersizedEffective.map((target) => `${target.kind}:${JSON.stringify(target.label)}=${target.height}`).join(", ")}`,
+        `Mobile Verbosity effective target(s) are below 44px: ${undersizedEffective.map((target) => `${target.kind}:${JSON.stringify(target.label)}=${target.height}`).join(", ")}`,
       );
     }
   }
@@ -783,6 +826,43 @@ async function main() {
       startupDeadline.clear();
     }
 
+    const shortMenu = await verifyShortSessionMenu(
+      cdpEndpoint,
+      `http://127.0.0.1:${vitePort}/overflowharness.html?w=844`,
+    );
+    const shortMenuFailures = [];
+    if (shortMenu.viewportWidth !== 844 || shortMenu.viewportHeight !== 390) {
+      shortMenuFailures.push(`realized viewport=${shortMenu.viewportWidth}x${shortMenu.viewportHeight}`);
+    }
+    if (shortMenu.itemCount !== 9) shortMenuFailures.push(`items=${shortMenu.itemCount}, expected 9`);
+    if (shortMenu.top < 8 - GEOMETRY_TOLERANCE || shortMenu.bottom > 390 - 8 + GEOMETRY_TOLERANCE) {
+      shortMenuFailures.push(`bounds=${shortMenu.top}-${shortMenu.bottom}, expected within 8-382`);
+    }
+    if (
+      shortMenu.scrollHeight <= shortMenu.clientHeight ||
+      (shortMenu.overflowY !== "auto" && shortMenu.overflowY !== "scroll")
+    ) {
+      shortMenuFailures.push(
+        `vertical scroll=${shortMenu.scrollHeight}/${shortMenu.clientHeight}, overflow-y=${shortMenu.overflowY}`,
+      );
+    }
+    if (!shortMenu.activeIsLast || !shortMenu.lastVisible || !shortMenu.lastHitTestable || shortMenu.scrollTop <= 0) {
+      shortMenuFailures.push(
+        `End reachability=${JSON.stringify({
+          activeIsLast: shortMenu.activeIsLast,
+          lastVisible: shortMenu.lastVisible,
+          lastHitTestable: shortMenu.lastHitTestable,
+          scrollTop: shortMenu.scrollTop,
+        })}`,
+      );
+    }
+    if (shortMenuFailures.length > 0) {
+      failed++;
+      console.log(`short mobile menu ... FAIL - ${shortMenuFailures.join("; ")}`);
+    } else {
+      console.log("short mobile menu ... PASS - popup contained, scrollable, and last action keyboard/touch reachable");
+    }
+
     const panelCollapse = await verifyPanelCollapse(
       cdpEndpoint,
       `http://127.0.0.1:${vitePort}/overflowharness.html?w=1024&panels=1`,
@@ -797,7 +877,7 @@ async function main() {
       !panelCollapse.detail?.triggerHitTestable ||
       !panelCollapse.detail?.open ||
       panelCollapse.detail.horizontalOverflowCount !== 0 ||
-      !panelCollapse.detail.portalContained ||
+      !panelCollapse.detail.overlayContained ||
       panelFieldsetFailures.length > 0
     ) {
       failed++;
@@ -805,7 +885,7 @@ async function main() {
     } else {
       console.log(
         `panel collapse ... PASS - ${panelCollapse.mainWidth}px main pane, checked Tasks adornment visible, ` +
-          `reachable Detail popover, no horizontal overflow`,
+          `reachable Verbosity Dialog, no horizontal overflow`,
       );
     }
 
@@ -975,14 +1055,14 @@ async function main() {
       const detailFailures = assertDetail(result, width);
       if (detailFailures.length > 0) {
         failed++;
-        console.log(`${width}px Detail ... FAIL - ${detailFailures.join("; ")}`);
+        console.log(`${width}px Verbosity ... FAIL - ${detailFailures.join("; ")}`);
       } else {
         console.log(
-          `${width}px Detail ... PASS - trigger reachable, ${result.detail.mobile ? "sheet" : "popover"} contained, ` +
+          `${width}px Verbosity ... PASS - Session actions reachable, ${result.detail.mobile ? "Sheet" : "Dialog"} contained, ` +
             `no horizontal scroll${result.detail.mobile ? ", 44px targets" : ""}; ` +
             `final panel=${JSON.stringify(result.detail.panel)}, model=${result.footer.modelClientWidth}px` +
             `, root rem=${result.detail.rootRemPx}px, editor=${result.detail.editorContainerWidth}px/${result.detail.fieldsetColumns} fieldset columns` +
-            `${result.detail.mobile ? "" : `, internal scroll=${result.detail.popoverScroll.afterTop}/${result.detail.popoverScroll.scrollHeight} in ${result.detail.popoverScroll.clientHeight}px`}`,
+            `${result.detail.mobile ? "" : `, internal scroll=${result.detail.overlayScroll.afterTop}/${result.detail.overlayScroll.scrollHeight} in ${result.detail.overlayScroll.clientHeight}px`}`,
         );
       }
     }
