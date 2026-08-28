@@ -120,6 +120,14 @@ export function WorkView({ state, dispatch }: WorkViewProps) {
         <p>Tasks, delegates, and jobs retain their canonical hierarchy.</p>
       </section>
 
+      <section className="fn-work-tasks" aria-label="Task summary">
+        {activity.tasks.map((task) => (
+          <span key={task.status}>
+            {task.count} {task.status}
+          </span>
+        ))}
+      </section>
+
       {workItems.length === 0 ? (
         <section className="fn-inline-state">
           <h2>No active work</h2>

@@ -78,6 +78,7 @@ export function StillwaterRenderer({
       data-reduced-motion={state.reducedMotion}
       data-surface={surface}
       data-text-scale={state.textScale}
+      data-thread-key={state.conversation?.threadKey}
     >
       <main className="sw-scroll" data-route={meta.route}>
         <header className="sw-topbar">
