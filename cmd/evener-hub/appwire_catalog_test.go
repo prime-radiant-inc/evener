@@ -19,9 +19,10 @@ func TestHubRouterMatchesCatalog(t *testing.T) {
 	cfg := hubcore.WebConfig{
 		Past:                hubcore.NewPastIndex(""),
 		ProvidersConfigPath: filepath.Join(t.TempDir(), "providers.toml"),
+		HubStateRoot:        t.TempDir(),
 	}
-	server := newHubAppServer(cfg, appsource.NewRegistry())
-	got := excludeHubMethods(server.Router().Methods(), appwire.ConnectionMethodNames())
+	web := NewWebServer(cfg)
+	got := excludeHubMethods(web.appRPC.Router().Methods(), appwire.ConnectionMethodNames())
 	want := appwire.CatalogMethodNames(appwire.ScopeHub)
 
 	miss, extra := setDiff(want, got)
