@@ -1835,3 +1835,4 @@ _(no fields)_
 | `warning` | `interface {}` | yes |  |
 | `cause` | `*appwire.DiagnosticCause` | yes |  |
 
+
