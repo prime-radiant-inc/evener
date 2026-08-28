@@ -1,20 +1,17 @@
 # workspace-title-bar-actions: interrupt, compact, shutdown end-to-end
 
 **What this covers**: kata `gx92`. The session actions (interrupt, compact,
-shutdown) hit `handleSessionAction` in `cmd/evener-hub/web_session.go#handleSessionAction`,
-which forwards to the daemon via appwire (`TurnInterruptParams`,
-`ThreadCompactStartParams`, `ThreadShutdownParams`). This scenario is the
+shutdown) use the AppWire `turn/interrupt`, `thread/compact/start`, and
+`thread/shutdown` methods registered by `newHubAppServerWithNavigation`
+(`cmd/evener-hub/app_rpc.go#newHubAppServerWithNavigation`). This scenario is the
 server-side counterpart to `SessionActionsMenu.test.tsx`: did the daemon
 actually stop / compact / exit? Without this, a regression in the daemon-side
 wiring of these RPCs would not be caught.
 
-**Surface**: see `docs/developing-evener/agentic-testing.md`, "The REST surface, and what is no
-longer on it" — the verb table there is the single place these routes are
-maintained. This card is **almost entirely browser-free**; only step 2b's
-queue leg needs a client, because queue has no REST route at all. The old
-`$HUB/s/$SID/<action>` form-POST shim is gone (`660376f78`) and now 404s
-silently, leaving the daemon running — every action below uses
-`$HUB/api/sessions/local:$SID/<action>`.
+**Surface**: see `docs/developing-evener/agentic-testing.md`, "Session operations"
+— the method table there is the maintained operation map. The commands below
+record the original adapter-era run; when executing the card, translate those
+operations to the current AppWire methods from that table.
 
 ## Pre-state
 

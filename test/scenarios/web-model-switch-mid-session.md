@@ -60,20 +60,18 @@ mid-turn, and this card previously asserted that it was.
    step 1's `eval` in tab 2.
 
 4. **[browser-free] AC 4 — the mid-turn rejection, exactly.** Start a turn
-   that runs for a few seconds (`POST /api/sessions/local:$SID/send`), wait
-   until `state` is `active` **and** `active_turn_id` is non-empty, then
-   attempt the switch over REST and capture status + body:
-   ```bash
-   curl -s -o "$run/model-reject.json" -w "%{http_code}\n" \
-     -X POST -H "Content-Type: application/json" -H "Authorization: Bearer $TOKEN" \
-     -d '{"model":"anthropic/claude-haiku-4-5-20251001"}' \
-     "$HUB/api/sessions/local:$SID/model"
-   cat "$run/model-reject.json"
-   # Re-read the session and confirm its model did NOT move.
-   curl -s -H "Authorization: Bearer $TOKEN" "$HUB/api/sessions/local:$SID" | jq .model
+   that runs for a few seconds with AppWire `turn/start` and a unique
+   `clientMutationId`, wait until `thread/read` reports
+   `result.thread.status.type` as `active`, then send:
+   ```json
+   {"id":5,"method":"thread/model/set",
+    "params":{"ref":"local:<SID>","modelProvider":"anthropic",
+              "model":"claude-haiku-4-5-20251001"}}
    ```
-   `handleAPIModel` (`cmd/evener-hub/web_api.go#handleAPIModel`) forwards
-   `ThreadModelSetParams` to the same source the browser's RPC reaches.
+   Capture the error response, then re-read the thread and confirm its
+   `modelProvider` did not move. `setThreadModelWithResume`
+   (`cmd/evener-hub/app_model.go#setThreadModelWithResume`) forwards
+   `appwire.ThreadModelSetParams` to the selected source.
 
 5. **[browser, optional] The same rejection through the UI.** Repeat step 4's
    timing, but drive tab 1's picker instead. Then read the toast region:
@@ -84,11 +82,11 @@ mid-turn, and this card previously asserted that it was.
 6. **[browser-free] Queued-input case.** While the turn from step 4 is still
    active, queue a second message (`turn/queue` over `/rpc`, or Send in the
    composer — see `docs/developing-evener/agentic-testing.md`; there is no REST queue verb).
-   Wait for the first turn to finish, then re-issue step 4's `curl` *during*
+   Wait for the first turn to finish, then re-issue step 4's request *during*
    the drain window and capture the result the same way.
 
 7. **[browser-free]** Wait for the queue to fully drain to `idle`, then
-   re-issue the identical `curl` from step 4 and confirm it now succeeds.
+   re-issue the identical request from step 4 and confirm it now succeeds.
 
 ## Expected
 
@@ -102,12 +100,12 @@ mid-turn, and this card previously asserted that it was.
   *replaces* `reasoningEffortLevels`/`supportsReasoning` rather than patching
   them, so an empty ladder on the new model clears the old one's).
   Falsification: tab 2 needs a manual reload to see model B.
-- **Step 4 (AC 4, exact)**: HTTP **409** with a JSON body whose `error` is
+- **Step 4 (AC 4, exact)**: AppWire **conflict** with an error whose message is
   the daemon's own `turn <reservedTurnID> is active`
   (`server/appwire_runtime.go:820-831`; `appwire.Conflict` →
-  `CodeConflict` → 409 via `statusForWireError`, `web_api.go#statusForWireError`). The
-  re-read `model` is unchanged — no partial state. Falsification: 204, or a
-  200 with the model mutated, or a 5xx that hides which layer refused.
+  `CodeConflict`). The re-read `modelProvider` is unchanged — no partial state.
+  Falsification: a successful response with the model mutated, or an internal
+  error that hides which layer refused.
 - **Step 5**: the toast region contains `Couldn't change model:` followed by
   the same server detail (`ModelSwitch.tsx:110`,
   `protocol/errors.ts:63-67`). Falsification: the picker's click silently

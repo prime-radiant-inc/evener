@@ -8,14 +8,14 @@ exercises both surfaces added/extended to close that gap: the TUI
 Session-details panel's ended-session rows
 (`cmd/evener-hub/frontend/src/panes/session/chrome/DetailsPanel.tsx:183-196`).
 
-**Surface**: see `docs/developing-evener/agentic-testing.md`, "The REST surface, and what is no
-longer on it" and "Driving the web UI" — the selector map there is the single
+**Surface**: see `docs/developing-evener/agentic-testing.md`, "Session operations"
+and "Driving the web UI" — the selector map there is the single
 place these hooks are maintained. The web half used to `GET
 /_partials/s/<id>/details` and read a `<dl class="details-list">`; the whole
 `/_partials` URL space and `renderDetailsPanel` / `tokensAndCostRows` went
 with the vanilla frontend (`660376f78`) — `web_workspace.go:17-22` says so
 in a comment, and neither function exists anywhere now. What
-replaces them is one REST object and one React panel — see steps 3 and 4.
+replaces them is one AppWire thread object and one React panel — see steps 3 and 4.
 
 ## Pre-state
 
@@ -38,19 +38,19 @@ replaces them is one REST object and one React panel — see steps 3 and 4.
    daemon process exits and `/api/sessions/local:<id>` subsequently reports
    `state:"ended"`, `live:false`.
 
-3. **[browser-free] The exact numbers, from the wire.** The same REST detail
+3. **[browser-free] The exact numbers, from the wire.** The same AppWire thread
    object carries every figure both UIs render, so the arithmetic assertion
    belongs here rather than in a DOM read:
-   ```bash
-   curl -s -H "Authorization: Bearer $TOKEN" "$HUB/api/sessions/local:$SID" \
-     | jq '{state, live, work_millis, usage, turn_count}'
+   ```json
+   {"id":3,"method":"thread/read",
+    "params":{"ref":"local:<SID>","includeTurns":false}}
    ```
-   Field names are `hubapi.SessionDetail` (`hubapi/types.go#SessionDetail`):
-   `work_millis`, and `usage.{input_tokens,output_tokens,cache_read_tokens,total_tokens}`
-   (`hubapi.Usage`, `:180-185`). Cost is **not** on this object — it is a
-   server-formatted `~$X.XX` string on the appwire thread
-   (`EvenerThread.Cost`, `appwire/types.go:288-303`), which the web displays
-   verbatim (no client-side formatter; the pricing table is Go-side).
+   Read `result.thread.status.type` and the fields on `result.thread.evener`.
+   Their wire names come from `appwire.EvenerThread`
+   (`appwire/types.go#EvenerThread`): `workMillis`,
+   `usage.{inputTokens,outputTokens,cacheReadTokens,totalTokens}`, and the
+   server-formatted `cost` string. The web displays that cost verbatim (no
+   client-side formatter; the pricing table is Go-side).
 
 4. **[browser] Web.** Navigate to `/auth?token=$TOKEN&next=/s/local:$SID`,
    open **Session details**, and read the three rows:
@@ -75,11 +75,11 @@ replaces them is one REST object and one React panel — see steps 3 and 4.
 
 ## Expected
 
-- **Step 3 (exact, browser-free)**: `state` is `ended`, `live` is `false`,
-  `work_millis` is a real non-zero measurement matching the turn that ran,
+- **Step 3 (exact, browser-free)**: `status.type` is `ended`,
+  `evener.workMillis` is a real non-zero measurement matching the turn that ran,
   and `usage` carries non-zero input/output totals. Falsification: `usage` is
   absent or zeroed on a session that demonstrably ran a turn, or
-  `work_millis` is 0 — that is the WS2 gap reopening.
+  `workMillis` is 0 — that is the WS2 gap reopening.
 - **Step 4 (web)**: all three rows are present with values consistent with
   step 3's wire figures — `session-details-work-time`, `session-details-tokens`
   (rendered `↑<in> ↓<out>`, `DetailsPanel.tsx:188-191`), and, when the model
