@@ -170,7 +170,7 @@ test.each([
   },
 );
 
-test("groups model and effort visually while retaining two independent controls", () => {
+test("groups model, effort, and vision controls visually", () => {
   render(
     <StatusRow
       sessionRef="ref_a"
