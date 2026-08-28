@@ -110,14 +110,34 @@ export function createProductionServices(): ProductionServices {
   };
 }
 
-function createBrowserConceptStorage(): ConceptStorage {
+export function createBrowserConceptStorage(): ConceptStorage {
   return {
-    read: () => localStorageOrNull()?.getItem(CONCEPT_STORAGE_KEY) ?? null,
+    read: () => {
+      const storage = localStorageOrNull();
+      if (storage === null) return null;
+      try {
+        return storage.getItem(CONCEPT_STORAGE_KEY);
+      } catch {
+        return null;
+      }
+    },
     write: (conceptId) => {
-      localStorageOrNull()?.setItem(CONCEPT_STORAGE_KEY, conceptId);
+      const storage = localStorageOrNull();
+      if (storage === null) return;
+      try {
+        storage.setItem(CONCEPT_STORAGE_KEY, conceptId);
+      } catch {
+        // Selected-concept persistence is best-effort; in-memory UI still moves.
+      }
     },
     remove: () => {
-      localStorageOrNull()?.removeItem(CONCEPT_STORAGE_KEY);
+      const storage = localStorageOrNull();
+      if (storage === null) return;
+      try {
+        storage.removeItem(CONCEPT_STORAGE_KEY);
+      } catch {
+        // Removal is best-effort for the same unavailable-storage boundary.
+      }
     },
   };
 }
