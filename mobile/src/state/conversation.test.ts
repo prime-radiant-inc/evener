@@ -7353,7 +7353,7 @@ describe("ConversationStore", () => {
       }
     });
 
-    // Task 2A-Family (round 2, fix 1): controlled-reread adversarial tests,
+    // Task 2A-Family (round 2, fix 2): controlled-reread adversarial tests,
     // resliced into separate (A) and (B) deterministic proofs. Do NOT conflate
     // A/B.
     //
@@ -7372,13 +7372,16 @@ describe("ConversationStore", () => {
     // Stored-missing-callId and unknown-family cases get (A) only — no valid
     // exact family/call delta exists, so (B) is not applicable.
     //
-    // Fix 1 timing: after releasing the controlled read, WAIT for
-    // post-rehydrate reconciliation/store state to complete using a
-    // store.subscribe level-triggered barrier (not an immediate assertion).
-    // In EVERY A/B case, reassert started=1, done=1, and
-    // service.readProjectionCalls=readsAfterOpen+1 AFTER reconciliation so
-    // queued duplicates cannot hide. Any unexpected controlled read is
-    // released so it fails cleanly rather than leaving a hang. Positive valid
+    // Fix 2 timing: install the reconciliation barrier (store.subscribe
+    // level-triggered against the pre-release snapshot) BEFORE releasing
+    // read1, so a synchronous rehydrate commit during release cannot be
+    // missed. After release+complete, await the barrier, then cross exactly
+    // one scheduler dispatch (yieldMicrotask). In EVERY A/B case, reassert
+    // started=1, done=1, and service.readProjectionCalls=readsAfterOpen+1
+    // AFTER reconciliation+dispatch so queued duplicates cannot hide. Any
+    // unexpected straggler read is released AND awaited to completion plus
+    // scheduler drain quiescence in try/finally BEFORE asserting exact
+    // counts — fire-and-forget release is not sufficient. Positive valid
     // controls cross an actual scheduler dispatch turn/barrier before
     // asserting zero controlled reads/unchanged service count.
 
@@ -7430,28 +7433,27 @@ describe("ConversationStore", () => {
       };
     }
 
-    // Fix 1: Deterministic post-rehydrate reconciliation barrier. The
+    // Fix 2: Deterministic post-rehydrate reconciliation barrier. The
     // rehydrate commit calls set({ conversation: ... }) synchronously in the
     // same microtask turn that the controlled read resolves. store.subscribe
     // fires synchronously on every set(), so this level-triggered promise
     // resolves when the conversation items change — a true state barrier, not
     // a microtask count guess.
     //
-    // The caller MUST capture preReleaseConv (store.getState().conversation)
-    // BEFORE calling ctrl.release() and pass it here. This avoids the
-    // snapshot==current tautology: if the rehydrate already committed
-    // synchronously during release+complete, the conversation captured at
-    // call-time would already BE the post-rehydrate value, so the barrier
-    // would wait for an unrelated future change. By passing the pre-release
-    // snapshot, the barrier checks against the conversation that existed
-    // before the rehydrate effect ran.
-    function waitForReconcile(
+    // CRITICAL: the subscription MUST be installed BEFORE ctrl.release() so
+    // the barrier cannot miss a synchronous commit that fires during release.
+    // The caller captures preReleaseConv, calls installReconcileBarrier to get
+    // the barrier promise, THEN releases+completes, THEN awaits the promise.
+    // This avoids the snapshot==current tautology: preReleaseConv is captured
+    // before the rehydrate effect runs, so the barrier checks against the
+    // conversation that existed before release.
+    function installReconcileBarrier(
       store: ReturnType<typeof createConversationStore>,
       preReleaseConv: MobileConversation | null,
     ): Promise<void> {
-      // Level-triggered: if already changed (sync commit during release),
-      // resolve now — the post-rehydrate conversation differs from the
-      // pre-release snapshot.
+      // Level-triggered: if already changed (sync commit before install),
+      // resolve now. This should not happen when called before release, but
+      // is kept for safety.
       if (store.getState().conversation !== preReleaseConv) {
         return Promise.resolve();
       }
@@ -7465,27 +7467,32 @@ describe("ConversationStore", () => {
       });
     }
 
-    // Fix 1: Release any unexpected remaining controlled reads so a queued
-    // duplicate fails cleanly with an assertion error rather than hanging.
-    // Call after all assertions to drain any straggler reads.
-    function releaseStragglers(
+    // Fix 2: Detect and drain any straggler reads with full quiescence. Each
+    // released straggler read must be awaited to completion AND followed by a
+    // scheduler drain yield so its rehydrate effect fully commits before
+    // exact assertions. Fire-and-forget release is not sufficient — an
+    // unreleased read leaves a hanging job and an unawaited released read
+    // may still be in-flight when counts are asserted.
+    //
+    // This pairs every detected straggler release with:
+    //   1. await ctrl.completed(target) — the read resolves
+    //   2. await yieldMicrotask() — scheduler drain / observable quiescence
+    async function drainAndAwaitStragglers(
       ctrl: ReturnType<typeof makeControlledRead>,
-    ): void {
-      // The release queue is FIFO; releasing with nothing pending is a no-op.
-      // Release up to a bounded count to drain any unexpected straggler.
+    ): Promise<void> {
+      const started = ctrl.getStartedCount();
+      const done = ctrl.getDoneCount();
+      const stragglerCount = started - done;
+      // Release and await each straggler read to completion, then yield so
+      // its rehydrate effect drains through the scheduler.
+      for (let i = 0; i < stragglerCount; i++) {
+        ctrl.release();
+        await ctrl.completed(done + i + 1);
+        await yieldMicrotask();
+      }
+      // Safety: release any remaining pending reads that may have started
+      // during the drain (bounded to avoid infinite loops).
       for (let i = 0; i < 10; i++) ctrl.release();
-    }
-
-    // Detect any started read2, then release/complete all stragglers in a
-    // try/finally BEFORE asserting exact counts, so failures cannot leave
-    // jobs blocked. Returns the number of additional reads that were
-    // released.
-    function drainStragglers(
-      ctrl: ReturnType<typeof makeControlledRead>,
-    ): number {
-      const extra = ctrl.getStartedCount() - 1;
-      releaseStragglers(ctrl);
-      return extra;
     }
 
     // --- (A) invalid-only ownership tests ---
@@ -7533,11 +7540,12 @@ describe("ConversationStore", () => {
       // live-owned, so it drops as omitted old history.
       // Capture pre-release conversation BEFORE release (avoids tautology).
       const preReleaseConv = store.getState().conversation;
+      const reconcileP = installReconcileBarrier(store, preReleaseConv);
       ctrl.release();
       await ctrl.completed(1);
-      // Fix 1: WAIT for post-rehydrate reconciliation via store.subscribe
-      // level-triggered barrier against the pre-release snapshot.
-      await waitForReconcile(store, preReleaseConv);
+      // Fix 2: the barrier was installed BEFORE release (above) so the
+      // synchronous rehydrate commit cannot be missed. Await it now.
+      await reconcileP;
       // Cross exactly one scheduler dispatch turn before final count
       // capture so any queued trailing reread has dispatched.
       await yieldMicrotask();
@@ -7555,7 +7563,7 @@ describe("ConversationStore", () => {
           .conversation?.items.find((i) => i.id === "tool-r");
         expect(item1).toBeUndefined();
       } finally {
-        drainStragglers(ctrl);
+        await drainAndAwaitStragglers(ctrl);
       }
     });
 
@@ -7597,9 +7605,10 @@ describe("ConversationStore", () => {
       }
       // Release — reread omits reason-1. Invalid did NOT mark it live-owned.
       const preReleaseConv = store.getState().conversation;
+      const reconcileP = installReconcileBarrier(store, preReleaseConv);
       ctrl.release();
       await ctrl.completed(1);
-      await waitForReconcile(store, preReleaseConv);
+      await reconcileP;
       await yieldMicrotask();
       try {
         expect(ctrl.getStartedCount()).toBe(1);
@@ -7611,7 +7620,7 @@ describe("ConversationStore", () => {
           .conversation?.items.find((i) => i.id === "reason-1");
         expect(item1).toBeUndefined();
       } finally {
-        drainStragglers(ctrl);
+        await drainAndAwaitStragglers(ctrl);
       }
     });
 
@@ -7653,9 +7662,10 @@ describe("ConversationStore", () => {
       }
       // Release — reread omits tool-mismatch. Invalid did NOT mark it live-owned.
       const preReleaseConv = store.getState().conversation;
+      const reconcileP = installReconcileBarrier(store, preReleaseConv);
       ctrl.release();
       await ctrl.completed(1);
-      await waitForReconcile(store, preReleaseConv);
+      await reconcileP;
       await yieldMicrotask();
       try {
         expect(ctrl.getStartedCount()).toBe(1);
@@ -7667,7 +7677,7 @@ describe("ConversationStore", () => {
           .conversation?.items.find((i) => i.id === "tool-mismatch");
         expect(item1).toBeUndefined();
       } finally {
-        drainStragglers(ctrl);
+        await drainAndAwaitStragglers(ctrl);
       }
     });
 
@@ -7708,9 +7718,10 @@ describe("ConversationStore", () => {
       }
       // Release — reread omits tool-hascall. Invalid did NOT mark it live-owned.
       const preReleaseConv = store.getState().conversation;
+      const reconcileP = installReconcileBarrier(store, preReleaseConv);
       ctrl.release();
       await ctrl.completed(1);
-      await waitForReconcile(store, preReleaseConv);
+      await reconcileP;
       await yieldMicrotask();
       try {
         expect(ctrl.getStartedCount()).toBe(1);
@@ -7722,7 +7733,7 @@ describe("ConversationStore", () => {
           .conversation?.items.find((i) => i.id === "tool-hascall");
         expect(item1).toBeUndefined();
       } finally {
-        drainStragglers(ctrl);
+        await drainAndAwaitStragglers(ctrl);
       }
     });
 
@@ -7765,9 +7776,10 @@ describe("ConversationStore", () => {
       }
       // Release — reread omits tool-nocall. Invalid did NOT mark it live-owned.
       const preReleaseConv = store.getState().conversation;
+      const reconcileP = installReconcileBarrier(store, preReleaseConv);
       ctrl.release();
       await ctrl.completed(1);
-      await waitForReconcile(store, preReleaseConv);
+      await reconcileP;
       await yieldMicrotask();
       try {
         expect(ctrl.getStartedCount()).toBe(1);
@@ -7779,7 +7791,7 @@ describe("ConversationStore", () => {
           .conversation?.items.find((i) => i.id === "tool-nocall");
         expect(item1).toBeUndefined();
       } finally {
-        drainStragglers(ctrl);
+        await drainAndAwaitStragglers(ctrl);
       }
     });
 
@@ -7822,9 +7834,10 @@ describe("ConversationStore", () => {
       }
       // Release — reread omits unk-1. Invalid did NOT mark it live-owned.
       const preReleaseConv = store.getState().conversation;
+      const reconcileP = installReconcileBarrier(store, preReleaseConv);
       ctrl.release();
       await ctrl.completed(1);
-      await waitForReconcile(store, preReleaseConv);
+      await reconcileP;
       await yieldMicrotask();
       try {
         expect(ctrl.getStartedCount()).toBe(1);
@@ -7836,7 +7849,7 @@ describe("ConversationStore", () => {
           .conversation?.items.find((i) => i.id === "unk-1");
         expect(item1).toBeUndefined();
       } finally {
-        drainStragglers(ctrl);
+        await drainAndAwaitStragglers(ctrl);
       }
     });
 
@@ -7879,9 +7892,10 @@ describe("ConversationStore", () => {
       }
       // Release — reread omits unk-2. Invalid did NOT mark it live-owned.
       const preReleaseConv = store.getState().conversation;
+      const reconcileP = installReconcileBarrier(store, preReleaseConv);
       ctrl.release();
       await ctrl.completed(1);
-      await waitForReconcile(store, preReleaseConv);
+      await reconcileP;
       await yieldMicrotask();
       try {
         expect(ctrl.getStartedCount()).toBe(1);
@@ -7893,7 +7907,7 @@ describe("ConversationStore", () => {
           .conversation?.items.find((i) => i.id === "unk-2");
         expect(item1).toBeUndefined();
       } finally {
-        drainStragglers(ctrl);
+        await drainAndAwaitStragglers(ctrl);
       }
     });
 
@@ -7950,7 +7964,7 @@ describe("ConversationStore", () => {
           delta: "\nappended",
         },
       } as AnyNotification);
-      // Fix 1: cross a scheduler dispatch turn before asserting the valid
+      // Fix 2: cross a scheduler dispatch turn before asserting the valid
       // delta did NOT trigger a second controlled read.
       await yieldMicrotask();
       // Exactly one controlled read — valid delta does NOT trigger a reread.
@@ -7965,9 +7979,10 @@ describe("ConversationStore", () => {
       // it live-owned, so the rehydrate preserves it as superseded live tail.
       // The invalid reasoning delta did NOT mark it — only the valid one did.
       const preReleaseConv = store.getState().conversation;
+      const reconcileP = installReconcileBarrier(store, preReleaseConv);
       ctrl.release();
       await ctrl.completed(1);
-      await waitForReconcile(store, preReleaseConv);
+      await reconcileP;
       await yieldMicrotask();
       try {
         // Reassert exact counts after reconciliation — queued duplicates
@@ -7985,7 +8000,7 @@ describe("ConversationStore", () => {
           expect(item2.detail.output).toBe("out0\nappended");
         }
       } finally {
-        drainStragglers(ctrl);
+        await drainAndAwaitStragglers(ctrl);
       }
     });
 
@@ -8038,7 +8053,7 @@ describe("ConversationStore", () => {
           delta: " more",
         },
       } as AnyNotification);
-      // Fix 1: cross a scheduler dispatch turn before asserting.
+      // Fix 2: cross a scheduler dispatch turn before asserting.
       await yieldMicrotask();
       expect(ctrl.getStartedCount()).toBe(1);
       const item1 = store
@@ -8050,9 +8065,10 @@ describe("ConversationStore", () => {
       // Release — reread omits reason-1. Valid reasoning delta marked it
       // live-owned, so the rehydrate preserves it.
       const preReleaseConv = store.getState().conversation;
+      const reconcileP = installReconcileBarrier(store, preReleaseConv);
       ctrl.release();
       await ctrl.completed(1);
-      await waitForReconcile(store, preReleaseConv);
+      await reconcileP;
       await yieldMicrotask();
       try {
         expect(ctrl.getStartedCount()).toBe(1);
@@ -8067,7 +8083,7 @@ describe("ConversationStore", () => {
           expect(item2.detail.output).toBe("Thinking more");
         }
       } finally {
-        drainStragglers(ctrl);
+        await drainAndAwaitStragglers(ctrl);
       }
     });
 
@@ -8120,7 +8136,7 @@ describe("ConversationStore", () => {
           delta: "\nappended",
         },
       } as AnyNotification);
-      // Fix 1: cross a scheduler dispatch turn before asserting.
+      // Fix 2: cross a scheduler dispatch turn before asserting.
       await yieldMicrotask();
       expect(ctrl.getStartedCount()).toBe(1);
       const item1 = store
@@ -8132,9 +8148,10 @@ describe("ConversationStore", () => {
       // Release — reread omits tool-mismatch. Valid matching callId delta
       // marked it live-owned, so the rehydrate preserves it.
       const preReleaseConv = store.getState().conversation;
+      const reconcileP = installReconcileBarrier(store, preReleaseConv);
       ctrl.release();
       await ctrl.completed(1);
-      await waitForReconcile(store, preReleaseConv);
+      await reconcileP;
       await yieldMicrotask();
       try {
         expect(ctrl.getStartedCount()).toBe(1);
@@ -8149,7 +8166,7 @@ describe("ConversationStore", () => {
           expect(item2.detail.output).toBe("base\nappended");
         }
       } finally {
-        drainStragglers(ctrl);
+        await drainAndAwaitStragglers(ctrl);
       }
     });
 
@@ -8201,7 +8218,7 @@ describe("ConversationStore", () => {
           delta: "\nappended",
         },
       } as AnyNotification);
-      // Fix 1: cross a scheduler dispatch turn before asserting.
+      // Fix 2: cross a scheduler dispatch turn before asserting.
       await yieldMicrotask();
       expect(ctrl.getStartedCount()).toBe(1);
       const item1 = store
@@ -8213,9 +8230,10 @@ describe("ConversationStore", () => {
       // Release — reread omits tool-hascall. Valid matching callId delta
       // marked it live-owned, so the rehydrate preserves it.
       const preReleaseConv = store.getState().conversation;
+      const reconcileP = installReconcileBarrier(store, preReleaseConv);
       ctrl.release();
       await ctrl.completed(1);
-      await waitForReconcile(store, preReleaseConv);
+      await reconcileP;
       await yieldMicrotask();
       try {
         expect(ctrl.getStartedCount()).toBe(1);
@@ -8230,7 +8248,7 @@ describe("ConversationStore", () => {
           expect(item2.detail.output).toBe("base\nappended");
         }
       } finally {
-        drainStragglers(ctrl);
+        await drainAndAwaitStragglers(ctrl);
       }
     });
 
@@ -8260,7 +8278,7 @@ describe("ConversationStore", () => {
           delta: "\nappended",
         },
       } as AnyNotification);
-      // Fix 1: cross an actual scheduler dispatch turn/barrier before
+      // Fix 2: cross an actual scheduler dispatch turn/barrier before
       // asserting zero controlled reads/unchanged service count. Immediate
       // sync count is insufficient — a queued reread would dispatch on the
       // next microtask.
@@ -8274,7 +8292,7 @@ describe("ConversationStore", () => {
       if (item?.kind === "activity") {
         expect(item.detail.output).toBe("base\nappended");
       }
-      releaseStragglers(ctrl);
+      await drainAndAwaitStragglers(ctrl);
     });
 
     it("2A-Family-r2: exact reasoning match appends reasoning delta synchronously", async () => {
@@ -8301,7 +8319,7 @@ describe("ConversationStore", () => {
           delta: " appended",
         },
       } as AnyNotification);
-      // Fix 1: cross an actual scheduler dispatch turn/barrier before
+      // Fix 2: cross an actual scheduler dispatch turn/barrier before
       // asserting zero controlled reads/unchanged service count.
       await yieldMicrotask();
       // No reread — exact family match accepted.
@@ -8313,7 +8331,7 @@ describe("ConversationStore", () => {
       if (item?.kind === "activity") {
         expect(item.detail.output).toBe("base appended");
       }
-      releaseStragglers(ctrl);
+      await drainAndAwaitStragglers(ctrl);
     });
   });
 
