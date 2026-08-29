@@ -172,6 +172,7 @@ function isScopedSelector(selectorList) {
   for (const root of [
     ".live-concept-switcher",
     ".live-conversation-frame",
+    ".live-conversation-evidence",
   ]) {
     if (!selectorList.includes(root)) continue;
     const parts = selectorList.split(",");

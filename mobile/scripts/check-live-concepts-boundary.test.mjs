@@ -27,6 +27,8 @@ const rejections = [
   ["unscoped descendant", ".live-concept-switcher body { color: red; }", "unscoped-css", "css"],
   ["evil frame prefix", ".live-conversation-frame-evil { color: red; }", "unscoped-css", "css"],
   ["mixed frame unscoped", ".live-conversation-frame, body { color: red; }", "unscoped-css", "css"],
+  ["evil evidence prefix", ".live-conversation-evidence-evil { color: red; }", "unscoped-css", "css"],
+  ["mixed evidence unscoped", ".live-conversation-evidence, body { color: red; }", "unscoped-css", "css"],
 ];
 
 function slug(name) {
@@ -55,6 +57,15 @@ async function buildTempTree() {
     ".live-conversation-frame {}\n" +
       ".live-conversation-frame .live-conversation-composer textarea {}\n" +
       ".live-conversation-frame__status:empty {}\n",
+    "utf8",
+  );
+
+  // Accepted: the production-owned Activity/Evidence portal sibling root.
+  await writeFile(
+    join(liveConcepts, "good-conversation-evidence-scoped.css"),
+    ".live-conversation-evidence .evener-sheet__body {}\n" +
+      ".live-conversation-evidence__plain-detail,\n" +
+      '.live-conversation-evidence [data-virtual-list-scroll="true"] {}\n',
     "utf8",
   );
 
@@ -125,6 +136,13 @@ describe("checkLiveConceptBoundary", () => {
         ),
         undefined,
         "scoped .live-conversation-frame CSS should not be flagged",
+      );
+      assert.equal(
+        violations.find((v) =>
+          v.file.includes("good-conversation-evidence-scoped.css"),
+        ),
+        undefined,
+        "scoped .live-conversation-evidence CSS should not be flagged",
       );
     } finally {
       await rm(root, { recursive: true, force: true });
