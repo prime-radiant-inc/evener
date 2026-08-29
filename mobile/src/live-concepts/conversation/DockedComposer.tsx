@@ -108,6 +108,7 @@ export function DockedComposer({
         <textarea
           ref={textareaRef}
           aria-label="Message"
+          data-live-conversation-message="true"
           placeholder="Message or steer…"
           value={composer.draft}
           disabled={!hasTextCapability || pending}
