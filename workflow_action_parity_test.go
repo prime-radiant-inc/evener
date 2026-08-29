@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -90,6 +91,55 @@ func TestWorkflowAndCompositeActionPinsReadCompositeActionDotYaml(t *testing.T) 
 	errs := actionPinParity(t, workflowDir, compositeDir)
 	if len(errs) == 0 {
 		t.Fatal("an action.yaml composite pinning v6 against a workflow v7 was not flagged")
+	}
+}
+
+// Reviewer reproduction (round 2): identical full-SHA pins on BOTH sides are
+// a zero-drift configuration, but the fail-on-unparseable-major hardening
+// rejected them. Identical refs cannot be drift, however they are spelled.
+func TestWorkflowAndCompositeActionPinsAcceptIdenticalRefsOnBothSides(t *testing.T) {
+	const shaRef = "0123456789abcdef0123456789abcdef01234567"
+	workflowDir := t.TempDir()
+	compositeDir := t.TempDir()
+
+	writeActionFixture(t, filepath.Join(workflowDir, "ci.yml"),
+		"jobs:\n  build:\n    steps:\n      - uses: actions/setup-node@"+shaRef+"\n")
+	writeActionFixture(t, filepath.Join(compositeDir, "setup-toolchain", "action.yml"),
+		"runs:\n  using: composite\n  steps:\n    - uses: actions/setup-node@"+shaRef+"\n")
+
+	if errs := actionPinParity(t, workflowDir, compositeDir); len(errs) != 0 {
+		t.Fatalf("identical refs on both sides must pass, got: %s", strings.Join(errs, "; "))
+	}
+}
+
+// Reviewer reproduction (round 2): deleting the cross-file ref-conflict
+// detection left every test green — nothing pinned it. The same action pinned
+// at two different majors across two workflow files must be flagged as a
+// conflict, by name, with both refs, and without a misleading secondary
+// diagnostic.
+func TestWorkflowAndCompositeActionPinsFlagWorkflowSideRefConflicts(t *testing.T) {
+	workflowDir := t.TempDir()
+	compositeDir := t.TempDir()
+
+	writeActionFixture(t, filepath.Join(workflowDir, "ci.yml"),
+		"jobs:\n  build:\n    steps:\n      - uses: actions/setup-node@v6\n")
+	writeActionFixture(t, filepath.Join(workflowDir, "nightly.yml"),
+		"jobs:\n  build:\n    steps:\n      - uses: actions/setup-node@v7\n")
+	writeActionFixture(t, filepath.Join(compositeDir, "setup-toolchain", "action.yml"),
+		"runs:\n  using: composite\n  steps:\n    - uses: actions/setup-node@v7\n")
+
+	errs := actionPinParity(t, workflowDir, compositeDir)
+	if len(errs) != 1 {
+		t.Fatalf("want exactly the ref-conflict diagnostic, got %d: %s", len(errs), strings.Join(errs, "; "))
+	}
+	diagnostic := errs[0]
+	if !strings.Contains(diagnostic, "conflicting refs") {
+		t.Errorf("diagnostic is not the ref-conflict error: %s", diagnostic)
+	}
+	for _, want := range []string{"actions/setup-node", "v6", "v7"} {
+		if !strings.Contains(diagnostic, want) {
+			t.Errorf("conflict diagnostic does not name %s: %s", want, diagnostic)
+		}
 	}
 }
 
@@ -203,9 +253,11 @@ func actionPinRefs(t *testing.T, files []string) map[string][]string {
 // workflow tree against the refs it is pinned at inside the composite tree.
 // An action used in both places must: sit at exactly one ref across all
 // workflows, sit at exactly one ref across all composites, and those refs
-// must share a major version. Refs without a v<n> major (commit SHAs,
-// branches) cannot be compared by major, so they fail loudly instead of
-// silently escaping the invariant.
+// must share a major version. Identical ref sets on both sides pass however
+// the refs are spelled — identical pins cannot drift, so a SHA pin used on
+// both sides stays valid. Refs without a v<n> major (commit SHAs, branches)
+// cannot be compared by major, so a non-identical pair fails loudly instead
+// of silently escaping the invariant.
 func pinParityErrors(workflowPins, compositePins map[string][]string) []string {
 	names := make([]string, 0, len(compositePins))
 	for name := range compositePins {
@@ -217,28 +269,43 @@ func pinParityErrors(workflowPins, compositePins map[string][]string) []string {
 
 	var errs []string
 	for _, name := range names {
+		workflowRefs := distinctRefs(workflowPins[name])
+		compositeRefs := distinctRefs(compositePins[name])
+
+		// Identical pin sets cannot be drift, however spelled.
+		if slices.Equal(workflowRefs, compositeRefs) {
+			continue
+		}
+
+		conflicted := false
 		for _, side := range []struct {
 			label string
 			refs  []string
 		}{
-			{"workflow", workflowPins[name]},
-			{"composite", compositePins[name]},
+			{"workflow", workflowRefs},
+			{"composite", compositeRefs},
 		} {
-			if distinct := distinctRefs(side.refs); len(distinct) > 1 {
+			if len(side.refs) > 1 {
+				conflicted = true
 				errs = append(errs, fmt.Sprintf("%s is pinned at conflicting refs across %s files (%s); the %s side must agree on a single pin",
-					name, side.label, strings.Join(distinct, ", "), side.label))
+					name, side.label, strings.Join(side.refs, ", "), side.label))
 			}
 		}
+		// A side with conflicting refs already failed above; comparing the
+		// unresolvable majors would only add a misleading second diagnostic.
+		if conflicted {
+			continue
+		}
 
-		workflowMajor, workflowOK := singleMajorVersion(workflowPins[name])
-		compositeMajor, compositeOK := singleMajorVersion(compositePins[name])
+		workflowMajor, workflowOK := majorVersion(workflowRefs[0])
+		compositeMajor, compositeOK := majorVersion(compositeRefs[0])
 		switch {
 		case !workflowOK || !compositeOK:
 			errs = append(errs, fmt.Sprintf("%s is pinned at a ref without a v<n> major version (workflows: %s, composite: %s); the parity audit only understands major-version pins, so switch both sides to one",
-				name, strings.Join(workflowPins[name], ", "), strings.Join(compositePins[name], ", ")))
+				name, workflowRefs[0], compositeRefs[0]))
 		case workflowMajor != compositeMajor:
 			errs = append(errs, fmt.Sprintf("%s is pinned at v%d in a workflow but v%d in a composite action; dependabot cannot see composite pins, so the pair must be bumped together (workflows: %s, composite: %s)",
-				name, workflowMajor, compositeMajor, strings.Join(workflowPins[name], ", "), strings.Join(compositePins[name], ", ")))
+				name, workflowMajor, compositeMajor, workflowRefs[0], compositeRefs[0]))
 		}
 	}
 	return errs
@@ -256,17 +323,6 @@ func distinctRefs(refs []string) []string {
 	}
 	sort.Strings(distinct)
 	return distinct
-}
-
-// singleMajorVersion reports the shared major version of refs, or ok=false
-// when refs is empty, holds more than one distinct ref, or any ref has no
-// v<n> major.
-func singleMajorVersion(refs []string) (int, bool) {
-	distinct := distinctRefs(refs)
-	if len(distinct) != 1 {
-		return 0, false
-	}
-	return majorVersion(distinct[0])
 }
 
 var actionRefPattern = regexp.MustCompile(`^actions/([a-z0-9-]+)@(.+)$`)
