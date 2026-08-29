@@ -585,6 +585,10 @@ func (c *delegateTreeController) completionSnapshot(lease delegateLease) (delega
 	}
 	if evidence.fallback != nil {
 		fallback := *evidence.fallback
+		if evidence.fallback.exhaustionResumable != nil {
+			resumable := *evidence.fallback.exhaustionResumable
+			fallback.exhaustionResumable = &resumable
+		}
 		if evidence.fallback.packet != nil {
 			packet := cloneDelegateTerminalPacket(*evidence.fallback.packet)
 			fallback.packet = &packet

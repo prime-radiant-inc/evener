@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"encoding/json"
 	"errors"
 	"testing"
 
@@ -103,6 +104,48 @@ func TestDelegateGenerationEvidenceClearsOnRelease(t *testing.T) {
 	defer c.mu.Unlock()
 	if live := c.live[lease.delegateID]; live != nil && live.binding != nil {
 		t.Fatalf("released generation retained binding: %#v", live.binding)
+	}
+}
+
+func TestDelegateGenerationEvidenceSnapshotDeepClonesFallback(t *testing.T) {
+	c, _ := newDelegateControllerTestHarness(t, 1, 1)
+	seedDelegateControllerIdle(t, c, "dlg_target", "")
+	lease, _ := startDelegateDeliveryGeneration(t, c, "dlg_target", false)
+	resumable := true
+	valid := true
+	c.mu.Lock()
+	c.live[lease.delegateID].binding.evidence.fallback = &delegateFinish{
+		outcome:             delegatestore.OutcomeExhausted,
+		disposition:         delegatestore.DispositionReported,
+		reason:              "original reason",
+		packet:              &delegatestore.TerminalPacket{Kind: delegatestore.PacketReported, Message: json.RawMessage(`"original message"`), StructuredResult: json.RawMessage(`{"original":true}`), StructuredResultValid: &valid, Warnings: []string{"original warning"}, Metadata: json.RawMessage(`{"original":true}`)},
+		exhaustionBudget:    delegatestore.ExhaustionBudgetTurns,
+		exhaustionLimit:     3,
+		exhaustionResumable: &resumable,
+	}
+	c.mu.Unlock()
+
+	snapshot, err := c.completionSnapshot(lease)
+	if err != nil {
+		t.Fatalf("first completionSnapshot: %v", err)
+	}
+	snapshot.fallback.reason = "mutated reason"
+	*snapshot.fallback.exhaustionResumable = false
+	*snapshot.fallback.packet.StructuredResultValid = false
+	snapshot.fallback.packet.Message[0] = 'X'
+	snapshot.fallback.packet.StructuredResult[0] = 'X'
+	snapshot.fallback.packet.Warnings[0] = "mutated warning"
+	snapshot.fallback.packet.Metadata[0] = 'X'
+
+	second, err := c.completionSnapshot(lease)
+	if err != nil {
+		t.Fatalf("second completionSnapshot: %v", err)
+	}
+	if second.fallback == nil || second.fallback.reason != "original reason" || second.fallback.exhaustionResumable == nil || !*second.fallback.exhaustionResumable {
+		t.Fatalf("controller fallback changed through snapshot: %#v", second.fallback)
+	}
+	if second.fallback.packet == nil || string(second.fallback.packet.Message) != `"original message"` || string(second.fallback.packet.StructuredResult) != `{"original":true}` || second.fallback.packet.StructuredResultValid == nil || !*second.fallback.packet.StructuredResultValid || second.fallback.packet.Warnings[0] != "original warning" || string(second.fallback.packet.Metadata) != `{"original":true}` {
+		t.Fatalf("controller fallback packet changed through snapshot: %#v", second.fallback.packet)
 	}
 }
 
