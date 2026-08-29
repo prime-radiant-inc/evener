@@ -84,9 +84,12 @@ type toolDeps struct {
 	pressure            func() float64
 
 	// setCommunicateResult records a terminal communicate tool result on the
-	// session. Fields stay Session-owned; this is the only writer reachable from
-	// the handler.
+	// session for direct tool dependency constructions that predate lease-aware
+	// stable delegates.
 	setCommunicateResult func(message, reply, output string)
+	// setCommunicateResultContext is the Session-owned writer used by live
+	// sessions. The tool context carries the exact stable generation lease.
+	setCommunicateResultContext func(context.Context, string, string, string)
 
 	// setCommunicateStructured records the raw output object the model emitted,
 	// before communicate canonicalization, for delegate structured_result capture.
@@ -273,7 +276,7 @@ func newToolDeps(s *Session) *toolDeps {
 		setPinnedNote:       s.setPinnedNote,
 		requestForceCompact: s.requestForceCompact,
 		pressure:            s.ContextPressure,
-		setCommunicateResult: func(message, reply, output string) {
+		setCommunicateResultContext: func(ctx context.Context, message, reply, output string) {
 			s.mu.Lock()
 			if s.comm.called {
 				s.mu.Unlock()
@@ -286,6 +289,10 @@ func newToolDeps(s *Session) *toolDeps {
 				output: output,
 			}
 			s.mu.Unlock()
+			lease, stableRun := ctx.Value(delegateRunLeaseContextKey{}).(delegateLease)
+			if stableRun && s.delegateController != nil {
+				_ = s.delegateController.recordTerminalSeen(lease)
+			}
 		},
 		setCommunicateStructured: func(raw any) {
 			s.mu.Lock()
