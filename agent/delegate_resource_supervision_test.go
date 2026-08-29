@@ -25,30 +25,28 @@ import (
 	"primeradiant.com/evener/llm"
 )
 
-func TestRouteNoToolCallsDelegateAttention(t *testing.T) {
+func TestRouteNoToolCalls(t *testing.T) {
 	tests := []struct {
-		name       string
-		noContent  bool
-		allowNoAct bool
-		want       noCallsRoute
+		name          string
+		kind          EntryKind
+		noContent     bool
+		afterTerminal bool
+		want          noCallsRoute
 	}{
-		{"bare eligible attention", false, true, finishDelegateAttentionNoAction},
-		{"bare report-required attention", false, false, runNoToolCalls},
-		{"empty eligible attention", true, true, runNoToolCalls},
+		{name: "notification acknowledgement", kind: EntryNotification, want: finishIdle},
+		{name: "notification silence", kind: EntryNotification, noContent: true, want: runNoToolCalls},
+		{name: "notification silence after terminal", kind: EntryNotification, noContent: true, afterTerminal: true, want: finishIdle},
+		{name: "user input", kind: EntryUserInput, want: runNoToolCalls},
+		{name: "continuation", kind: EntryContinuation, want: runNoToolCalls},
+		{name: "delegate attention", kind: EntryDelegateAttention, want: runNoToolCalls},
+		{name: "steering carrier", kind: EntrySteeringCarrier, want: runNoToolCalls},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			if got := routeNoToolCalls(EntryDelegateAttention, tt.noContent, false, tt.allowNoAct); got != tt.want {
+			if got := routeNoToolCalls(tt.kind, tt.noContent, tt.afterTerminal); got != tt.want {
 				t.Fatalf("routeNoToolCalls() = %v, want %v", got, tt.want)
 			}
 		})
-	}
-
-	if got := routeNoToolCalls(EntryNotification, false, false, false); got != finishIdle {
-		t.Fatalf("non-empty notification route = %v, want finishIdle", got)
-	}
-	if got := routeNoToolCalls(EntryNotification, true, true, false); got != finishIdle {
-		t.Fatalf("post-terminal empty notification route = %v, want finishIdle", got)
 	}
 }
 

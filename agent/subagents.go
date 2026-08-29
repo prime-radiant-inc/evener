@@ -1553,7 +1553,7 @@ func (a *subagent) run(ctx context.Context, input string, inputProvenance *prove
 				cancelRequested = true
 			}
 		}
-		needsNudge := !a.sess.Communicated()
+		var needsNudge bool
 		if stableRun && a.sess.delegateController != nil {
 			decision, decisionErr := a.sess.delegateController.completionDecision(lease)
 			if decisionErr != nil {
@@ -1562,6 +1562,8 @@ func (a *subagent) run(ctx context.Context, input string, inputProvenance *prove
 			} else {
 				needsNudge = decision == delegateCompletionNeedsNudge
 			}
+		} else {
+			needsNudge = !a.sess.Communicated()
 		}
 		shouldNudge := nudgeAvailable && !cancelRequested &&
 			!budgetExhausted &&
@@ -1579,19 +1581,7 @@ func (a *subagent) run(ctx context.Context, input string, inputProvenance *prove
 		}
 		restoreParentDriveNotify = nil
 		if err == nil {
-			a.sess.mu.Lock()
-			parentDriveNotify := a.sess.notifyFunc
-			a.sess.mu.Unlock()
-			a.mu.Lock()
-			a.finalizing = true
-			a.mu.Unlock()
-			drained, drainErr := a.sess.DrainJobTree(ctx)
-			restoreParentDriveNotify = parentDriveNotify
-			if drainErr != nil {
-				err = drainErr
-			} else if drained != "" {
-				res = drained
-			}
+			res, restoreParentDriveNotify, err = a.drainForFinalization(ctx, res)
 		}
 		if stableRun && a.sess.delegateController != nil && nudgeAvailable && !cancelRequested && !budgetExhausted && a.nudgeEnabled &&
 			(err == nil || errors.Is(err, errBareTextWithoutResultTool) || errors.Is(err, errEmptyResponseExhausted)) {
@@ -1626,19 +1616,7 @@ func (a *subagent) run(ctx context.Context, input string, inputProvenance *prove
 					cancelRequested = true
 				}
 				if err == nil {
-					a.sess.mu.Lock()
-					parentDriveNotify := a.sess.notifyFunc
-					a.sess.mu.Unlock()
-					a.mu.Lock()
-					a.finalizing = true
-					a.mu.Unlock()
-					drained, drainErr := a.sess.DrainJobTree(ctx)
-					restoreParentDriveNotify = parentDriveNotify
-					if drainErr != nil {
-						err = drainErr
-					} else if drained != "" {
-						res = drained
-					}
+					res, restoreParentDriveNotify, err = a.drainForFinalization(ctx, res)
 				}
 			}
 		}
@@ -1824,6 +1802,23 @@ func (a *subagent) run(ctx context.Context, input string, inputProvenance *prove
 			a.sess.emit(events.EventWarning, warningDataFromError("delegate finalization quiescence report failed", reportErr))
 		}
 	}
+}
+
+func (a *subagent) drainForFinalization(ctx context.Context, result string) (string, func(), error) {
+	a.sess.mu.Lock()
+	parentDriveNotify := a.sess.notifyFunc
+	a.sess.mu.Unlock()
+	a.mu.Lock()
+	a.finalizing = true
+	a.mu.Unlock()
+	drained, err := a.sess.DrainJobTree(ctx)
+	if err != nil {
+		return result, parentDriveNotify, err
+	}
+	if drained != "" {
+		result = drained
+	}
+	return result, parentDriveNotify, nil
 }
 
 func delegateSettlementModeForRun(err error, cancelRequested bool) delegateSettlementMode {

@@ -506,27 +506,13 @@ const (
 	finishIdle noCallsRoute = iota
 	// runNoToolCalls routes through the empty/bare-text retry budget.
 	runNoToolCalls
-	// finishDelegateAttentionNoAction ends an eligible stable delegate attention
-	// turn after recording that its non-empty response requires no action.
-	finishDelegateAttentionNoAction
 )
 
-// routeNoToolCalls decides the no-tool-calls route for a round from the input
-// kind, whether the round had no content, whether a terminal communicate
-// (end_turn under TurnEndsProcess) has already been accepted, and whether an
-// exact stable-attention lease accepted explicit no-action. It is pure and total
-// over EntryKind: eligible non-empty delegate attention records no-action; a
-// non-empty notification turn finishes idle; and once the model has explicitly
-// ended the process-ending turn an EMPTY notification turn does too — the retry
-// budget's "please continue" steering must not resurrect a run the model already
-// declared over (issue #329, sanitize-git-repo). Everything else routes through
-// the retry budget.
-func routeNoToolCalls(kind EntryKind, noContent bool, afterTerminalCommunicate, allowDelegateNoAction bool) noCallsRoute {
+// routeNoToolCalls lets notification acknowledgements finish idle. After a
+// terminal communicate, notification silence must not resurrect the run (#329).
+func routeNoToolCalls(kind EntryKind, noContent bool, afterTerminalCommunicate bool) noCallsRoute {
 	if kind == EntryNotification && (!noContent || afterTerminalCommunicate) {
 		return finishIdle
-	}
-	if kind == EntryDelegateAttention && !noContent && allowDelegateNoAction {
-		return finishDelegateAttentionNoAction
 	}
 	return runNoToolCalls
 }
@@ -1403,18 +1389,20 @@ func (s *Session) processOneInput(ctx context.Context, input string, images []Im
 			// empty-retry path below — EXCEPT after a terminal communicate, where
 			// silence means "nothing to add to a finished run" and retrying would
 			// resurrect it (issue #329).
-			allowDelegateNoAction := false
 			if kind == EntryDelegateAttention && !noContent && s.delegateController != nil {
 				if lease, ok := ctx.Value(delegateRunLeaseContextKey{}).(delegateLease); ok {
-					var recordErr error
-					allowDelegateNoAction, recordErr = s.delegateController.recordAttentionNoAction(lease)
+					allowDelegateNoAction, recordErr := s.delegateController.recordAttentionNoAction(lease)
 					if recordErr != nil {
 						return "", progressed, recordErr
 					}
+					if allowDelegateNoAction {
+						s.finishProcessingAtBoundary(ctx, SessionIdle)
+						return "", progressed, nil
+					}
 				}
 			}
-			route := routeNoToolCalls(kind, noContent, s.hasAcceptedTerminalCommunicate(), allowDelegateNoAction)
-			if route == finishIdle || route == finishDelegateAttentionNoAction {
+			route := routeNoToolCalls(kind, noContent, s.hasAcceptedTerminalCommunicate())
+			if route == finishIdle {
 				s.finishProcessingAtBoundary(ctx, SessionIdle)
 				return "", progressed, nil
 			}

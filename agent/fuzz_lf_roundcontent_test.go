@@ -20,7 +20,7 @@ import (
 // The lf_ prefix marks helpers owned by this refactor/fuzz lane.
 
 var lf_entryKinds = []EntryKind{
-	EntryUserInput, EntryContinuation, EntryNotification, EntryDelegateAttention,
+	EntryUserInput, EntryContinuation, EntryNotification, EntryDelegateAttention, EntrySteeringCarrier,
 }
 
 // lf_buildContent turns a byte mask into content parts, setting a non-empty Phase
@@ -78,7 +78,7 @@ func FuzzLfClassifyRoundContent(f *testing.F) {
 
 func FuzzLfRouteNoToolCalls(f *testing.F) {
 	f.Add(uint8(0), true, false, false)  // EntryUserInput, empty => runNoToolCalls
-	f.Add(uint8(3), false, false, true)  // EntryDelegateAttention, non-empty, eligible => finishDelegateAttentionNoAction
+	f.Add(uint8(3), false, false, true)  // EntryDelegateAttention, non-empty => runNoToolCalls
 	f.Add(uint8(3), false, false, false) // EntryDelegateAttention, non-empty, report-required => runNoToolCalls
 	f.Add(uint8(3), true, false, true)   // EntryDelegateAttention, empty, eligible => runNoToolCalls
 	f.Add(uint8(2), false, false, false) // EntryNotification, non-empty => finishIdle
@@ -89,16 +89,17 @@ func FuzzLfRouteNoToolCalls(f *testing.F) {
 
 	f.Fuzz(func(t *testing.T, kindSel uint8, noContent bool, afterTerminal bool, allowDelegateNoAction bool) {
 		kind := lf_entryKinds[int(kindSel)%len(lf_entryKinds)]
+		_ = allowDelegateNoAction // retained in the fuzz wire shape for existing corpus entries
 
-		route := routeNoToolCalls(kind, noContent, afterTerminal, allowDelegateNoAction)
+		route := routeNoToolCalls(kind, noContent, afterTerminal)
 
 		// Determinism.
-		if route2 := routeNoToolCalls(kind, noContent, afterTerminal, allowDelegateNoAction); route != route2 {
+		if route2 := routeNoToolCalls(kind, noContent, afterTerminal); route != route2 {
 			t.Fatalf("nondeterministic route: %v vs %v", route, route2)
 		}
-		// Total function: exactly one of the three valid routes.
+		// Total function: exactly one of the two valid routes.
 		switch route {
-		case finishIdle, runNoToolCalls, finishDelegateAttentionNoAction:
+		case finishIdle, runNoToolCalls:
 		default:
 			t.Fatalf("invalid route %v", route)
 		}
@@ -109,8 +110,6 @@ func FuzzLfRouteNoToolCalls(f *testing.F) {
 		want := runNoToolCalls
 		if kind == EntryNotification && (!noContent || afterTerminal) {
 			want = finishIdle
-		} else if kind == EntryDelegateAttention && !noContent && allowDelegateNoAction {
-			want = finishDelegateAttentionNoAction
 		}
 		if route != want {
 			t.Fatalf("route=%v want=%v (kind=%v noContent=%v afterTerminal=%v allowDelegateNoAction=%v)", route, want, kind, noContent, afterTerminal, allowDelegateNoAction)
