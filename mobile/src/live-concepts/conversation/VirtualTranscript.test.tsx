@@ -1,4 +1,10 @@
-import { cleanup, render, screen } from "@testing-library/react";
+import {
+  act,
+  cleanup,
+  fireEvent,
+  render,
+  screen,
+} from "@testing-library/react";
 import {
   forwardRef,
   type ReactNode,
@@ -22,6 +28,7 @@ const list = vi.hoisted(() => ({
       offset: number;
       viewport: number;
       total: number;
+      measured: boolean;
     }): void;
     renderItem(item: ConversationDisplayItem, index: number): ReactNode;
   },
@@ -43,6 +50,7 @@ vi.mock("../../components/timeline/VariableHeightVirtualList", () => ({
         offset: number;
         viewport: number;
         total: number;
+        measured: boolean;
       }): void;
       renderItem(item: ConversationDisplayItem, index: number): ReactNode;
     },
@@ -59,7 +67,12 @@ vi.mock("../../components/timeline/VariableHeightVirtualList", () => ({
     useLayoutEffect(() => {
       if (notified.current) return;
       notified.current = true;
-      props.onScroll({ offset: 640, viewport: 360, total: 1_000 });
+      props.onScroll({
+        offset: 640,
+        viewport: 360,
+        total: 1_000,
+        measured: true,
+      });
     }, [props]);
     return (
       <div role="feed" aria-label="Conversation transcript">
@@ -116,20 +129,29 @@ function skin(id: ConversationSkin["id"]): ConversationSkin {
 function transcript(
   items: readonly ConversationDisplayItem[],
   overrides: Partial<{
+    threadKey: string;
     skin: ConversationSkin;
     savedAnchor: ConversationAnchor | null;
+    unseen: number;
+    onAnchorChange: (anchor: ConversationAnchor) => void;
+    onUnseenChange: (count: number) => void;
+    onFocusIntentChange: (key: string | null) => void;
   }> = {},
   ref?: React.Ref<VirtualTranscriptHandle>,
 ) {
   return (
     <VirtualTranscript
       ref={ref}
-      threadKey="thread-live"
+      threadKey={overrides.threadKey ?? "thread-live"}
       skinId={(overrides.skin ?? skin("stillwater")).id}
       contentSize="large"
       items={items}
       skin={overrides.skin ?? skin("stillwater")}
       savedAnchor={overrides.savedAnchor ?? null}
+      unseen={overrides.unseen ?? 0}
+      onAnchorChange={overrides.onAnchorChange ?? (() => {})}
+      onUnseenChange={overrides.onUnseenChange ?? (() => {})}
+      onFocusIntentChange={overrides.onFocusIntentChange ?? (() => {})}
     />
   );
 }
@@ -188,33 +210,103 @@ describe("VirtualTranscript transitions", () => {
     expect(list.scrollToEnd).not.toHaveBeenCalled();
   });
 
-  it("uses the exact 48px follow boundary and counts only unseen logical keys", () => {
-    const view = render(transcript([narrative("item-1"), narrative("item-2")]));
-    list.scrollToEnd.mockClear();
-    list.props?.onScroll({ offset: 592, viewport: 360, total: 1_000 });
-    view.rerender(
-      transcript([
-        narrative("item-1"),
-        narrative("item-2"),
-        narrative("item-3"),
-      ]),
+  it("atomically resets initialization, anchor, follow, unseen, and focus intent on thread switch", () => {
+    const onUnseenChange = vi.fn();
+    const onFocusIntentChange = vi.fn();
+    const ref = { current: null as VirtualTranscriptHandle | null };
+    const view = render(
+      transcript(
+        [narrative("a-1"), narrative("a-2")],
+        { threadKey: "thread-a", onUnseenChange, onFocusIntentChange },
+        ref,
+      ),
     );
-    expect(list.scrollToEnd).toHaveBeenCalledWith("auto");
-    expect(screen.queryByRole("button", { name: /new activity/i })).toBeNull();
+    ref.current?.focusKey("a-2");
+    act(() =>
+      list.props?.onScroll({
+        offset: 200,
+        viewport: 360,
+        total: 1_000,
+        measured: false,
+      }),
+    );
+    list.restoreAnchor.mockClear();
+    list.scrollToEnd.mockClear();
 
-    list.props?.onScroll({ offset: 591, viewport: 360, total: 1_000 });
+    const savedB: ConversationAnchor = {
+      threadKey: "thread-b",
+      itemKey: "b-1",
+      offsetPx: -13,
+      following: false,
+    };
     view.rerender(
-      transcript([
-        narrative("item-1"),
-        narrative("item-2"),
-        narrative("item-3"),
-        narrative("item-4"),
-        narrative("item-5"),
-      ]),
+      transcript([narrative("b-1"), narrative("b-2")], {
+        threadKey: "thread-b",
+        savedAnchor: savedB,
+        unseen: 0,
+        onUnseenChange,
+        onFocusIntentChange,
+      }),
+    );
+    expect(list.restoreAnchor).toHaveBeenCalledWith({
+      key: "b-1",
+      offsetPx: -13,
+      priorIndex: 0,
+    });
+    expect(list.scrollToEnd).not.toHaveBeenCalled();
+    expect(onUnseenChange).not.toHaveBeenCalledWith(2);
+    expect(onFocusIntentChange).toHaveBeenLastCalledWith(null);
+  });
+
+  it("returns exact 48px follow, anchor, unseen, and New activity ownership to the frame", () => {
+    const onAnchorChange = vi.fn();
+    const onUnseenChange = vi.fn();
+    const view = render(
+      transcript([narrative("item-1"), narrative("item-2")], {
+        unseen: 2,
+        onAnchorChange,
+        onUnseenChange,
+      }),
     );
     expect(
       screen.getByRole("button", { name: /2 new activity/i }),
     ).toBeVisible();
+
+    act(() =>
+      list.props?.onScroll({
+        offset: 591,
+        viewport: 360,
+        total: 1_000,
+        measured: false,
+      }),
+    );
+    expect(onUnseenChange).not.toHaveBeenCalledWith(0);
+    act(() =>
+      list.props?.onScroll({
+        offset: 592,
+        viewport: 360,
+        total: 1_000,
+        measured: false,
+      }),
+    );
+    expect(onUnseenChange).toHaveBeenCalledWith(0);
+    expect(onAnchorChange).toHaveBeenLastCalledWith(
+      expect.objectContaining({
+        threadKey: "thread-live",
+        itemKey: "item-2",
+        offsetPx: -7,
+        following: true,
+      }),
+    );
+
+    view.rerender(
+      transcript([narrative("item-1"), narrative("item-2")], {
+        unseen: 0,
+        onAnchorChange,
+        onUnseenChange,
+      }),
+    );
+    expect(screen.queryByRole("button", { name: /new activity/i })).toBeNull();
   });
 
   it("follows streaming growth at tail and preserves the anchor without unseen away from tail", () => {
@@ -225,7 +317,12 @@ describe("VirtualTranscript transitions", () => {
       ]),
     );
     list.scrollToEnd.mockClear();
-    list.props?.onScroll({ offset: 592, viewport: 360, total: 1_000 });
+    list.props?.onScroll({
+      offset: 592,
+      viewport: 360,
+      total: 1_000,
+      measured: false,
+    });
     view.rerender(
       transcript([
         narrative("item-1"),
@@ -235,7 +332,12 @@ describe("VirtualTranscript transitions", () => {
     expect(list.scrollToEnd).toHaveBeenCalledWith("auto");
 
     list.scrollToEnd.mockClear();
-    list.props?.onScroll({ offset: 300, viewport: 360, total: 1_000 });
+    list.props?.onScroll({
+      offset: 300,
+      viewport: 360,
+      total: 1_000,
+      measured: false,
+    });
     view.rerender(
       transcript([
         narrative("item-1"),
@@ -256,7 +358,12 @@ describe("VirtualTranscript transitions", () => {
         narrative("d"),
       ]),
     );
-    list.props?.onScroll({ offset: 300, viewport: 360, total: 1_000 });
+    list.props?.onScroll({
+      offset: 300,
+      viewport: 360,
+      total: 1_000,
+      measured: false,
+    });
     for (const [anchorKey, next, expected] of [
       ["b", ["a", "b", "c", "d"], "b"],
       ["b", ["a", "c", "d"], "c"],
@@ -276,7 +383,12 @@ describe("VirtualTranscript transitions", () => {
         offsetPx: -7,
         priorIndex: anchorKey === "d" ? 3 : 1,
       };
-      list.props?.onScroll({ offset: 300, viewport: 360, total: 1_000 });
+      list.props?.onScroll({
+        offset: 300,
+        viewport: 360,
+        total: 1_000,
+        measured: false,
+      });
       list.restoreAnchor.mockClear();
       view.rerender(transcript(next.map((key) => narrative(key))));
       expect(list.restoreAnchor).toHaveBeenLastCalledWith(
@@ -287,7 +399,15 @@ describe("VirtualTranscript transitions", () => {
 
   it("forwards capture, restore, tail, and focus handle intent", async () => {
     const ref = { current: null as VirtualTranscriptHandle | null };
-    render(transcript([narrative("item-1"), narrative("item-2")], {}, ref));
+    const onUnseenChange = vi.fn();
+    const onFocusIntentChange = vi.fn();
+    render(
+      transcript(
+        [narrative("item-1"), narrative("item-2")],
+        { unseen: 3, onUnseenChange, onFocusIntentChange },
+        ref,
+      ),
+    );
 
     expect(ref.current?.captureAnchor()).toEqual({
       threadKey: "thread-live",
@@ -310,6 +430,11 @@ describe("VirtualTranscript transitions", () => {
     });
     expect(list.scrollToEnd).toHaveBeenLastCalledWith("auto");
     expect(list.focusKey).toHaveBeenCalledWith("item-1");
+    expect(onUnseenChange).toHaveBeenCalledWith(0);
+    expect(onFocusIntentChange).toHaveBeenCalledWith("item-1");
+    fireEvent.click(screen.getByRole("button", { name: /3 new activity/i }));
+    expect(onUnseenChange).toHaveBeenLastCalledWith(0);
+    expect(list.scrollToEnd).toHaveBeenLastCalledWith("smooth");
   });
 
   it("renders each stable item through all three ConversationSkin callbacks", () => {

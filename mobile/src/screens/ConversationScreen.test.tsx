@@ -4,67 +4,63 @@
 // the composer placeholder slot. Uses fake stores so no real service or wire
 // is required.
 
-import { cleanup, fireEvent, render, screen } from "@testing-library/react";
+import {
+  act,
+  cleanup,
+  fireEvent,
+  render,
+  screen,
+} from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { StoreApi, UseBoundStore } from "zustand";
 import { create } from "zustand";
+import type { TimelineProps } from "../components/timeline/Timeline";
 import type {
   MobileConversation,
   MobileTimelineItem,
 } from "../conversation/model";
+import type { ContentSizeCategory } from "../native/contract";
 import type { ConversationService } from "../services/conversation";
 import type { AttachmentState } from "../state/attachments";
 import type { ConversationState } from "../state/conversation";
 import type { NavigationState } from "../state/navigation";
-import { ConversationScreen } from "./ConversationScreen";
+import {
+  type ConversationScreenProps,
+  ConversationScreen as ProductionConversationScreen,
+} from "./ConversationScreen";
 
-// --- virtualizer mock: render every item in jsdom (no layout) ---------------
-vi.mock("@tanstack/react-virtual", () => {
-  interface VizOptions {
-    readonly count: number;
-    readonly estimateSize: () => number;
-    readonly getItemKey?: (index: number) => string | number;
-  }
+function ConversationScreen(
+  props: Omit<ConversationScreenProps, "contentSize"> & {
+    readonly contentSize?: ContentSizeCategory;
+  },
+) {
+  return <ProductionConversationScreen contentSize="large" {...props} />;
+}
 
-  interface MockVirtualItem {
-    readonly index: number;
-    readonly key: string | number;
-    readonly start: number;
-    readonly size: number;
-    readonly lane: number;
-  }
+const screenTimeline = vi.hoisted(() => ({
+  props: null as TimelineProps | null,
+}));
 
-  return {
-    useVirtualizer: (options: VizOptions) => {
-      const size = options.estimateSize();
-      const items: MockVirtualItem[] = Array.from(
-        { length: options.count },
-        (_, i) => ({
-          index: i,
-          key: options.getItemKey ? options.getItemKey(i) : i,
-          start: i * size,
-          size,
-          lane: 0,
-        }),
-      );
-      return {
-        getTotalSize: () => options.count * size,
-        getVirtualItems: () => items,
-        scrollToIndex: () => {},
-        scrollToOffset: () => {},
-        measureElement: () => undefined,
-        range: {
-          start: 0,
-          end: options.count - 1,
-          overscan: 0,
-          overscanMain: 0,
-          overscanReverse: 0,
-          size: options.count,
-        },
-      };
-    },
-  };
-});
+vi.mock("../components/timeline/Timeline", () => ({
+  Timeline(props: TimelineProps) {
+    screenTimeline.props = props;
+    return (
+      <div role="feed">
+        {props.items.map((item) => (
+          <div key={item.id}>
+            {"text" in item
+              ? item.text
+              : "markdown" in item
+                ? item.markdown
+                : "label" in item
+                  ? item.label
+                  : item.id}
+          </div>
+        ))}
+      </div>
+    );
+  },
+}));
 
 // --- fake conversation store ------------------------------------------------
 
@@ -151,6 +147,7 @@ function createFakeNavigationStore(title: string): NavigationStoreHook {
 
 afterEach(() => {
   cleanup();
+  screenTimeline.props = null;
 });
 
 // --- tests ------------------------------------------------------------------
@@ -245,6 +242,94 @@ describe("ConversationScreen — timeline", () => {
     );
     expect(screen.getByText("hello there")).toBeInTheDocument();
     expect(screen.getByText("hi back")).toBeInTheDocument();
+  });
+
+  it("passes real thread/content-size identity through conversation and Dynamic Type switches", () => {
+    const conversationStore = createFakeConversationStore(
+      makeConversation([{ kind: "user", id: "a", text: "A" }], {
+        id: "thread-a",
+      }),
+    );
+    const navigationStore = createFakeNavigationStore("Chat");
+    const view = render(
+      <ConversationScreen
+        conversationStore={conversationStore}
+        navigationStore={navigationStore}
+        contentSize="large"
+      />,
+    );
+    expect(screenTimeline.props?.threadKey).toBe("thread-a");
+    expect(screenTimeline.props?.contentSize).toBe("large");
+
+    act(() =>
+      conversationStore.setState({
+        conversation: makeConversation([{ kind: "user", id: "b", text: "B" }], {
+          id: "thread-b",
+        }),
+      }),
+    );
+    expect(screenTimeline.props?.threadKey).toBe("thread-b");
+
+    view.rerender(
+      <ConversationScreen
+        conversationStore={conversationStore}
+        navigationStore={navigationStore}
+        contentSize="accessibilityExtraExtraExtraLarge"
+      />,
+    );
+    expect(screenTimeline.props?.contentSize).toBe(
+      "accessibilityExtraExtraExtraLarge",
+    );
+  });
+
+  it("accepts bidirectional follow feedback and clears unseen on 48px re-entry", () => {
+    const conversationStore = createFakeConversationStore(
+      makeConversation([{ kind: "user", id: "a", text: "A" }]),
+    );
+    const navigationStore = createFakeNavigationStore("Chat");
+    render(
+      <ConversationScreen
+        conversationStore={conversationStore}
+        navigationStore={navigationStore}
+      />,
+    );
+    act(() => screenTimeline.props?.onFollowingChange?.(false));
+    expect(screenTimeline.props?.following).toBe(false);
+
+    act(() =>
+      conversationStore.setState({
+        conversation: makeConversation([
+          { kind: "user", id: "a", text: "A" },
+          { kind: "assistant", id: "b", markdown: "B", streaming: false },
+        ]),
+      }),
+    );
+    expect(screenTimeline.props?.unseen).toBe(1);
+    act(() => screenTimeline.props?.onFollowingChange?.(true));
+    expect(screenTimeline.props?.following).toBe(true);
+    expect(screenTimeline.props?.unseen).toBe(0);
+  });
+
+  it("returns the store's completed load result to Timeline", async () => {
+    const conversationStore = createFakeConversationStore(makeConversation());
+    conversationStore.setState({
+      loadOlder: vi.fn(async () => ({
+        status: "loaded" as const,
+        itemKeys: ["older"],
+      })),
+    });
+    const navigationStore = createFakeNavigationStore("Chat");
+    render(
+      <ConversationScreen
+        conversationStore={conversationStore}
+        navigationStore={navigationStore}
+        conversationService={{} as ConversationService}
+      />,
+    );
+    await expect(screenTimeline.props?.loadOlder?.()).resolves.toEqual({
+      status: "loaded",
+      itemKeys: ["older"],
+    });
   });
 });
 

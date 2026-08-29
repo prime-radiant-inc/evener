@@ -11,6 +11,7 @@ import {
   useImperativeHandle,
   useLayoutEffect,
   useMemo,
+  useReducer,
   useRef,
 } from "react";
 import {
@@ -42,6 +43,7 @@ export interface VariableHeightVirtualListProps<T> {
     offset: number;
     viewport: number;
     total: number;
+    measured: boolean;
   }) => void;
   readonly renderItem: (item: T, index: number) => ReactNode;
 }
@@ -133,11 +135,17 @@ function measuredHeight(
   element: HTMLElement,
   entry: ResizeObserverEntry | undefined,
   fallback: number,
-): number {
-  const observed = entry?.borderBoxSize[0]?.blockSize;
-  if (observed !== undefined && observed > 0) return Math.round(observed);
+): { readonly size: number; readonly measured: boolean } {
+  const observed =
+    entry?.borderBoxSize[0]?.blockSize ?? entry?.contentRect.height;
+  if (observed !== undefined && observed > 0) {
+    return { size: Math.round(observed), measured: true };
+  }
   const rectHeight = element.getBoundingClientRect().height;
-  return rectHeight > 0 ? Math.round(rectHeight) : fallback;
+  return {
+    size: rectHeight > 0 ? Math.round(rectHeight) : fallback,
+    measured: false,
+  };
 }
 
 export const VariableHeightVirtualList = forwardRef(
@@ -157,14 +165,28 @@ export const VariableHeightVirtualList = forwardRef(
     const scrollRef = useRef<HTMLDivElement>(null);
     const focusedKeyRef = useRef<string | null>(null);
     const pendingFocusRef = useRef(false);
+    const onScrollRef = useRef(onScroll);
+    onScrollRef.current = onScroll;
     const pendingResizeRef = useRef<{
       readonly anchor: MeasuredAnchor | null;
       readonly following: boolean;
     } | null>(null);
-    const restoreWaitersRef = useRef<Array<() => void>>([]);
+    const measurementWaitersRef = useRef(new Map<string, Set<() => void>>());
+    const pendingMeasuredKeysRef = useRef(new Set<string>());
+    const offsetWaitersRef = useRef<
+      Array<{ readonly target: number; readonly resolve: () => void }>
+    >([]);
+    const rowElementsRef = useRef(new Map<string, HTMLElement>());
+    const rowRefCallbacksRef = useRef(
+      new Map<string, (node: HTMLElement | null) => void>(),
+    );
     const previousScopeRef = useRef(cacheScope);
     const previousAnchorRef = useRef<MeasuredAnchor | null>(null);
     const activeCacheRef = useRef(measurementsFor(cacheScope));
+    const [measurementRevision, notifyMeasurement] = useReducer(
+      (revision: number) => revision + 1,
+      0,
+    );
     const itemKeys = useMemo(
       () => items.map((item) => getItemKey(item)),
       [getItemKey, items],
@@ -210,9 +232,10 @@ export const VariableHeightVirtualList = forwardRef(
         const item = items[index];
         if (item === undefined) return 0;
         const key = getItemKey(item);
-        const size = measuredHeight(element, entry, estimateSize(item));
+        const measurement = measuredHeight(element, entry, estimateSize(item));
+        const { size } = measurement;
         if (
-          activeCacheRef.current.get(key) !== size &&
+          instance.itemSizeCache.get(key) !== size &&
           pendingResizeRef.current === null
         ) {
           const scrollElement = scrollRef.current;
@@ -227,7 +250,11 @@ export const VariableHeightVirtualList = forwardRef(
             following: instance.getTotalSize() - (offset + viewport) <= 48,
           };
         }
-        activeCacheRef.current.set(key, size);
+        if (measurement.measured) {
+          activeCacheRef.current.set(key, size);
+          pendingMeasuredKeysRef.current.add(key);
+          notifyMeasurement();
+        }
         return size;
       },
       onChange: (instance) => {
@@ -259,28 +286,26 @@ export const VariableHeightVirtualList = forwardRef(
           instance.getVirtualItems(),
           finalOffset,
         );
-        onScroll({
+        onScrollRef.current({
           offset: finalOffset,
           viewport,
           total: instance.getTotalSize(),
+          measured: false,
         });
-
-        const active = document.activeElement?.closest<HTMLElement>(
-          '[data-testid="virtual-transcript-row"]',
-        );
-        const activeKey = active?.dataset.itemKey;
-        if (
-          activeKey !== undefined &&
-          !instance
-            .getVirtualItems()
-            .some((candidate) => String(candidate.key) === activeKey)
-        ) {
-          focusedKeyRef.current = activeKey;
-          element?.focus({ preventScroll: true });
+        const pendingOffsets = offsetWaitersRef.current;
+        offsetWaitersRef.current = [];
+        let retryOffset: number | null = null;
+        for (const waiter of pendingOffsets) {
+          if (Math.abs(finalOffset - waiter.target) <= 2) {
+            waiter.resolve();
+          } else {
+            offsetWaitersRef.current.push(waiter);
+            retryOffset = waiter.target;
+          }
         }
-
-        const waiters = restoreWaitersRef.current.splice(0);
-        for (const resolve of waiters) resolve();
+        if (retryOffset !== null) {
+          instance.scrollToOffset(retryOffset, { behavior: "auto" });
+        }
       },
     });
     virtualizer.shouldAdjustScrollPositionOnItemSizeChange = (
@@ -288,6 +313,29 @@ export const VariableHeightVirtualList = forwardRef(
       _delta,
       instance,
     ) => virtualItem.start < (instance.scrollOffset ?? 0);
+
+    useLayoutEffect(() => {
+      if (measurementRevision === 0) return;
+      const element = scrollRef.current;
+      if (element === null) return;
+      const measuredKeys = [...pendingMeasuredKeysRef.current];
+      pendingMeasuredKeysRef.current.clear();
+      for (const key of measuredKeys) {
+        const waiters = measurementWaitersRef.current.get(key);
+        if (waiters === undefined) continue;
+        measurementWaitersRef.current.delete(key);
+        for (const resolve of waiters) resolve();
+      }
+      onScrollRef.current({
+        offset: virtualizer.scrollOffset ?? element.scrollTop,
+        viewport:
+          virtualizer.scrollRect?.height ??
+          element.clientHeight ??
+          element.offsetHeight,
+        total: virtualizer.getTotalSize(),
+        measured: true,
+      });
+    }, [measurementRevision, virtualizer]);
 
     const captureAnchor = useCallback((): MeasuredAnchor | null => {
       const element = scrollRef.current;
@@ -300,40 +348,45 @@ export const VariableHeightVirtualList = forwardRef(
       return anchor;
     }, [virtualizer]);
 
-    const nextChange = useCallback(
-      () =>
-        new Promise<void>((resolve) => {
-          restoreWaitersRef.current.push(resolve);
-        }),
-      [],
-    );
-
     const restoreAnchor = useCallback(
       async (anchor: MeasuredAnchor): Promise<void> => {
         const index = itemKeys.indexOf(anchor.key);
         if (index < 0) return;
-        const mounted = virtualizer
+
+        let target = virtualizer
           .getVirtualItems()
           .find((item) => String(item.key) === anchor.key);
-        if (mounted !== undefined && activeCacheRef.current.has(anchor.key)) {
-          virtualizer.scrollToOffset(mounted.start - anchor.offsetPx, {
+        if (target === undefined || !activeCacheRef.current.has(anchor.key)) {
+          const measured = new Promise<void>((resolve) => {
+            const waiters = measurementWaitersRef.current.get(anchor.key);
+            if (waiters === undefined) {
+              measurementWaitersRef.current.set(anchor.key, new Set([resolve]));
+            } else {
+              waiters.add(resolve);
+            }
+          });
+          virtualizer.scrollToIndex(index, {
+            align: "start",
             behavior: "auto",
           });
-          return;
+          await measured;
+          target = virtualizer
+            .getVirtualItems()
+            .find((item) => String(item.key) === anchor.key);
         }
-        const changed = nextChange();
-        virtualizer.scrollToIndex(index, { align: "start", behavior: "auto" });
-        await changed;
-        const measured = virtualizer
-          .getVirtualItems()
-          .find((item) => String(item.key) === anchor.key);
-        if (measured !== undefined) {
-          virtualizer.scrollToOffset(measured.start - anchor.offsetPx, {
-            behavior: "auto",
-          });
-        }
+
+        if (target === undefined) return;
+        const targetOffset = target.start - anchor.offsetPx;
+        const currentOffset =
+          virtualizer.scrollOffset ?? scrollRef.current?.scrollTop ?? 0;
+        if (Math.abs(currentOffset - targetOffset) <= 2) return;
+        const adjusted = new Promise<void>((resolve) => {
+          offsetWaitersRef.current.push({ target: targetOffset, resolve });
+        });
+        virtualizer.scrollToOffset(targetOffset, { behavior: "auto" });
+        await adjusted;
       },
-      [itemKeys, nextChange, virtualizer],
+      [itemKeys, virtualizer],
     );
 
     const focusKey = useCallback(
@@ -358,6 +411,36 @@ export const VariableHeightVirtualList = forwardRef(
       [itemKeys, virtualizer],
     );
 
+    const rowRefFor = useCallback(
+      (key: string): ((node: HTMLElement | null) => void) => {
+        const existing = rowRefCallbacksRef.current.get(key);
+        if (existing !== undefined) return existing;
+        const callback = (node: HTMLElement | null): void => {
+          if (node !== null) {
+            rowElementsRef.current.set(key, node);
+            virtualizer.measureElement(node);
+            return;
+          }
+          const outgoing = rowElementsRef.current.get(key);
+          if (
+            outgoing !== undefined &&
+            document.activeElement !== null &&
+            outgoing.contains(document.activeElement)
+          ) {
+            focusedKeyRef.current = key;
+            pendingFocusRef.current = false;
+            scrollRef.current?.focus({ preventScroll: true });
+          }
+          rowElementsRef.current.delete(key);
+          rowRefCallbacksRef.current.delete(key);
+          virtualizer.measureElement(null);
+        };
+        rowRefCallbacksRef.current.set(key, callback);
+        return callback;
+      },
+      [virtualizer],
+    );
+
     useImperativeHandle(
       forwardedRef,
       () => ({
@@ -379,7 +462,6 @@ export const VariableHeightVirtualList = forwardRef(
       const incoming = measurementsFor(cacheScope);
       if (
         previousScope.threadKey === cacheScope.threadKey &&
-        previousScope.skinId === cacheScope.skinId &&
         previousScope.contentSize !== cacheScope.contentSize
       ) {
         incoming.clear();
@@ -418,15 +500,6 @@ export const VariableHeightVirtualList = forwardRef(
         aria-label="Conversation transcript"
         data-page-scroll-owner="true"
         tabIndex={-1}
-        onScrollCapture={() => {
-          const active = document.activeElement?.closest<HTMLElement>(
-            '[data-testid="virtual-transcript-row"]',
-          );
-          if (active !== null && active !== undefined) {
-            focusedKeyRef.current = active.dataset.itemKey ?? null;
-            scrollRef.current?.focus({ preventScroll: true });
-          }
-        }}
       >
         <div
           style={{
@@ -442,7 +515,7 @@ export const VariableHeightVirtualList = forwardRef(
             return (
               <article
                 key={key}
-                ref={virtualizer.measureElement}
+                ref={rowRefFor(key)}
                 data-index={virtualItem.index}
                 data-item-key={key}
                 data-testid="virtual-transcript-row"

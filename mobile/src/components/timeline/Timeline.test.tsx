@@ -8,7 +8,13 @@
 // accessible expansion, new-activity pill, load-older row, and the
 // "no raw protocol JSON by default" rule.
 
-import { cleanup, fireEvent, render, screen } from "@testing-library/react";
+import {
+  act,
+  cleanup,
+  fireEvent,
+  render,
+  screen,
+} from "@testing-library/react";
 import { forwardRef, type ReactNode, useImperativeHandle } from "react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type {
@@ -20,12 +26,32 @@ import type {
   MobileTimelineItem,
   NoticeTone,
 } from "../../conversation/model";
-import { Timeline } from "./Timeline";
+import type { ContentSizeCategory } from "../../native/contract";
+import { Timeline as ProductionTimeline, type TimelineProps } from "./Timeline";
 import { TimelineItem } from "./TimelineItem";
+
+function Timeline(
+  props: Omit<TimelineProps, "threadKey" | "contentSize"> & {
+    readonly threadKey?: string;
+    readonly contentSize?: ContentSizeCategory;
+  },
+) {
+  return (
+    <ProductionTimeline
+      threadKey="timeline-test-thread"
+      contentSize="large"
+      {...props}
+    />
+  );
+}
 
 const virtualList = vi.hoisted(() => ({
   props: null as null | {
     items: readonly MobileTimelineItem[];
+    cacheScope: {
+      threadKey: string;
+      contentSize: ContentSizeCategory;
+    };
     onScroll(metrics: {
       offset: number;
       viewport: number;
@@ -45,6 +71,10 @@ vi.mock("./VariableHeightVirtualList", () => ({
   VariableHeightVirtualList: forwardRef(function MockVariableHeightVirtualList(
     props: {
       items: readonly MobileTimelineItem[];
+      cacheScope: {
+        threadKey: string;
+        contentSize: ContentSizeCategory;
+      };
       onScroll(metrics: {
         offset: number;
         viewport: number;
@@ -354,7 +384,7 @@ describe("Timeline — load-older row", () => {
   // We test that loadOlder fires when the scroll position is at the top.
 
   it("calls loadOlder when scrolled near the top", () => {
-    const loadOlder = vi.fn();
+    const loadOlder = vi.fn(async () => ({ status: "ignored" as const }));
     render(
       <Timeline
         items={[userItem("u1", "hi")]}
@@ -376,8 +406,16 @@ describe("Timeline — load-older row", () => {
     expect(() => fireEvent.scroll(scroller as Element)).not.toThrow();
   });
 
-  it("restores a measured anchor only for an explicit load-older generation", () => {
-    const loadOlder = vi.fn();
+  it("correlates restoration with the completed load generation despite interleaved append and replacement", async () => {
+    let complete:
+      | ((result: { status: "loaded"; itemKeys: string[] }) => void)
+      | null = null;
+    const loadOlder = vi.fn(
+      () =>
+        new Promise<{ status: "loaded"; itemKeys: string[] }>((resolve) => {
+          complete = resolve;
+        }),
+    );
     const initial = [userItem("u1", "one"), assistantItem("a1", "two")];
     const view = render(
       <Timeline
@@ -391,29 +429,23 @@ describe("Timeline — load-older row", () => {
     expect(loadOlder).toHaveBeenCalledOnce();
     expect(virtualList.captureAnchor).toHaveBeenCalledOnce();
 
-    // Same-count authoritative replacement still completes the explicit load;
-    // array-length inference could not distinguish this transition.
+    // Neither an interleaved append nor same-count authoritative replacement
+    // is the explicit page completion.
     view.rerender(
       <Timeline
-        items={[userItem("older", "older"), userItem("u1", "one")]}
+        items={[...initial, assistantItem("new", "new")]}
         following={false}
         unseen={0}
         loadOlder={loadOlder}
       />,
     );
-    expect(virtualList.restoreAnchor).toHaveBeenCalledWith({
-      key: "u1",
-      offsetPx: -9,
-      priorIndex: 1,
-    });
+    expect(virtualList.restoreAnchor).not.toHaveBeenCalled();
 
-    virtualList.restoreAnchor.mockClear();
-    // Count growth without a pending load generation is an append, not prepend.
     view.rerender(
       <Timeline
         items={[
-          userItem("older", "older"),
           userItem("u1", "one"),
+          assistantItem("replacement", "replacement"),
           assistantItem("new", "new"),
         ]}
         following={false}
@@ -422,6 +454,70 @@ describe("Timeline — load-older row", () => {
       />,
     );
     expect(virtualList.restoreAnchor).not.toHaveBeenCalled();
+
+    view.rerender(
+      <Timeline
+        items={[
+          userItem("older", "older"),
+          userItem("u1", "one"),
+          assistantItem("replacement", "replacement"),
+          assistantItem("new", "new"),
+        ]}
+        following={false}
+        unseen={0}
+        loadOlder={loadOlder}
+      />,
+    );
+    expect(virtualList.restoreAnchor).not.toHaveBeenCalled();
+    await act(async () => {
+      complete?.({ status: "loaded", itemKeys: ["older"] });
+    });
+    expect(virtualList.restoreAnchor).toHaveBeenCalledWith({
+      key: "u1",
+      offsetPx: -9,
+      priorIndex: 1,
+    });
+  });
+
+  it("clears a failed generation so a later retry can restore", async () => {
+    const completions: Array<
+      (
+        result: { status: "failed" } | { status: "loaded"; itemKeys: string[] },
+      ) => void
+    > = [];
+    const loadOlder = vi.fn(
+      () =>
+        new Promise<
+          { status: "failed" } | { status: "loaded"; itemKeys: string[] }
+        >((resolve) => completions.push(resolve)),
+    );
+    const view = render(
+      <Timeline
+        items={[userItem("u1", "one")]}
+        following={false}
+        unseen={0}
+        loadOlder={loadOlder}
+      />,
+    );
+    fireEvent.scroll(screen.getByRole("feed"));
+    await act(async () => completions[0]?.({ status: "failed" }));
+    fireEvent.scroll(screen.getByRole("feed"));
+    expect(loadOlder).toHaveBeenCalledTimes(2);
+
+    view.rerender(
+      <Timeline
+        items={[userItem("older", "older"), userItem("u1", "one")]}
+        following={false}
+        unseen={0}
+        loadOlder={loadOlder}
+      />,
+    );
+    await act(async () =>
+      completions[1]?.({ status: "loaded", itemKeys: ["older"] }),
+    );
+    expect(virtualList.restoreAnchor).toHaveBeenCalledWith(
+      expect.objectContaining({ key: "u1" }),
+    );
   });
 });
 
@@ -438,6 +534,49 @@ describe("Timeline — shared measured anchor boundary", () => {
       expect.objectContaining({ overscan: 6, maxMountedRows: 48 }),
     );
     expect(virtualList.props?.items[0]?.id).toBe("stable-user");
+  });
+
+  it("uses real thread/content-size scope and reports the exact 48px follow transition", () => {
+    const onFollowingChange = vi.fn();
+    const view = render(
+      <Timeline
+        threadKey="thread-a"
+        contentSize="large"
+        items={[userItem("stable-user", "hi")]}
+        following={false}
+        unseen={0}
+        onFollowingChange={onFollowingChange}
+      />,
+    );
+    expect(virtualList.props?.cacheScope).toEqual({
+      threadKey: "thread-a",
+      skinId: "stillwater",
+      contentSize: "large",
+    });
+    act(() =>
+      virtualList.props?.onScroll({ offset: 592, viewport: 360, total: 1_000 }),
+    );
+    expect(onFollowingChange).toHaveBeenLastCalledWith(true);
+    act(() =>
+      virtualList.props?.onScroll({ offset: 591, viewport: 360, total: 1_000 }),
+    );
+    expect(onFollowingChange).toHaveBeenLastCalledWith(false);
+
+    view.rerender(
+      <Timeline
+        threadKey="thread-b"
+        contentSize="accessibilityExtraExtraExtraLarge"
+        items={[userItem("stable-user", "hi")]}
+        following={false}
+        unseen={0}
+        onFollowingChange={onFollowingChange}
+      />,
+    );
+    expect(virtualList.props?.cacheScope).toEqual({
+      threadKey: "thread-b",
+      skinId: "stillwater",
+      contentSize: "accessibilityExtraExtraExtraLarge",
+    });
   });
 });
 

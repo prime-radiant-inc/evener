@@ -72,6 +72,11 @@ export interface AcceptedConversationMutation {
   readonly receipt: MutationReceipt;
 }
 
+export type LoadOlderResult =
+  | { readonly status: "loaded"; readonly itemKeys: readonly string[] }
+  | { readonly status: "failed" }
+  | { readonly status: "ignored" };
+
 interface DrainScheduler {
   request(key: string, effect: () => Promise<void>): Promise<void>;
 }
@@ -354,7 +359,7 @@ export interface ConversationState {
   readonly lastAcceptedMutation?: AcceptedConversationMutation | null;
 
   open(service: ConversationService, ref: string): Promise<void>;
-  loadOlder(service: ConversationService): Promise<void>;
+  loadOlder(service: ConversationService): Promise<LoadOlderResult>;
   setDraft(text: string): void;
   send(service: ConversationService, input: InputItem[]): Promise<void>;
   steer(service: ConversationService, input: InputItem[]): Promise<void>;
@@ -1518,15 +1523,17 @@ export function createConversationStore() {
 
       async loadOlder(service) {
         const state = get();
-        if (state.loadingOlder || state.conversation === null) return;
+        if (state.loadingOlder || state.conversation === null) {
+          return { status: "ignored" };
+        }
         // F8: Never request with a null/empty cursor — no more older pages.
-        if (state.olderCursor === null) return;
+        if (state.olderCursor === null) return { status: "ignored" };
         const cursor = state.olderCursor;
         const gen = state.conversationGeneration;
         // C1: Capture a service-specific operation binding. If the supplied
         // service is wrong (A after B bound), binding is null — zero request.
         const opBinding = captureOperationBinding(service);
-        if (opBinding === null) return;
+        if (opBinding === null) return { status: "ignored" };
         // Task 2A-Ops-2: Operation token for loadOlder — a stale success/failure
         // from an older operation must make no state change at all after a
         // newer conversation or newer page operation owns those fields.
@@ -1542,13 +1549,15 @@ export function createConversationStore() {
           // C1: Recheck the exact operation binding after the await. If the
           // binding changed (rebind to B), A's completion makes ZERO state
           // changes — no items/cursor/loading.
-          if (!isBindingCurrent(opBinding)) return;
+          if (!isBindingCurrent(opBinding)) return { status: "ignored" };
           // Fix round 1 I2: generation/identity-stale — perform ZERO set calls
           // (including loadingOlder). The newer conversation owns all fields.
-          if (get().conversationGeneration !== gen) return;
+          if (get().conversationGeneration !== gen) {
+            return { status: "ignored" };
+          }
           // Task 2A-Ops-2: Stale loadOlder — a newer page operation owns the
           // loadingOlder/error fields. Make no state change at all.
-          if (olderToken !== loadOlderToken) return;
+          if (olderToken !== loadOlderToken) return { status: "ignored" };
           const currentConv = get().conversation;
           if (currentConv !== null) {
             // F10: Dedupe by source item identity — items from older pages
@@ -1608,12 +1617,20 @@ export function createConversationStore() {
               olderCursor: nextCursor,
               loadingOlder: false,
             });
+            const retainedIds = new Set(merged.map((item) => item.id));
+            return {
+              status: "loaded",
+              itemKeys: deduped
+                .map((item) => item.id)
+                .filter((id) => retainedIds.has(id)),
+            };
           }
+          return { status: "ignored" };
         } catch (err) {
           // C1: Recheck the exact operation binding after the await. If the
           // binding changed (rebind to B), A's completion makes ZERO state
           // changes — no loadingOlder/error.
-          if (!isBindingCurrent(opBinding)) return;
+          if (!isBindingCurrent(opBinding)) return { status: "ignored" };
           // I1: A current page failure always settles its own loadingOlder,
           // but writes error only if its captured error owner is unchanged;
           // a newer mutation/page error/clear/ABA survives.
@@ -1635,7 +1652,9 @@ export function createConversationStore() {
               // only settle loadingOlder.
               set({ loadingOlder: false });
             }
+            return { status: "failed" };
           }
+          return { status: "ignored" };
         }
       },
 

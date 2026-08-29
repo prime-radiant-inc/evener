@@ -294,14 +294,20 @@ describe("ConversationStore", () => {
   describe("loadOlder", () => {
     it("sets loadingOlder and prepends items", async () => {
       const service = new FakeConversationService();
-      service.olderItems = { items: [], nextCursor: "next" };
+      service.olderItems = {
+        items: [{ kind: "user", id: "older-result", text: "older" }],
+        nextCursor: "next",
+      };
       const store = createConversationStore();
       await store.getState().open(service, "ref-1");
       // Set a cursor so loadOlder has a page to request.
       store.setState({ olderCursor: "cursor-1" });
       const p = store.getState().loadOlder(service);
       expect(store.getState().loadingOlder).toBe(true);
-      await p;
+      await expect(p).resolves.toEqual({
+        status: "loaded",
+        itemKeys: ["older-result"],
+      });
       expect(store.getState().loadingOlder).toBe(false);
     });
 
@@ -312,7 +318,9 @@ describe("ConversationStore", () => {
       await store.getState().open(service, "ref-1");
       // olderCursor is null after open — loadOlder should not request.
       expect(store.getState().olderCursor).toBeNull();
-      await store.getState().loadOlder(service);
+      await expect(store.getState().loadOlder(service)).resolves.toEqual({
+        status: "ignored",
+      });
       expect(store.getState().loadingOlder).toBe(false);
     });
   });
