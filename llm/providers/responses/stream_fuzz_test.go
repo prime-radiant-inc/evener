@@ -121,6 +121,9 @@ func FuzzResponsesStreamMetamorphic(f *testing.F) {
 			`data: {"type":"response.output_text.delta","delta":"hi"}` + "\n\n" +
 			`data: {"type":"response.output_item.done","item":{"type":"compaction","id":"cmp_1"}}` + "\n\n" +
 			`data: {"type":"response.completed","response":{"id":"resp_56","model":"gpt-5.6-sol","status":"completed","output":[{"type":"program","id":"prog_1"},{"type":"message","content":[{"type":"output_text","text":"hi"}]},{"type":"compaction","id":"cmp_1"}],"usage":{"input_tokens":1,"output_tokens":2,"total_tokens":3}}}` + "\n\n",
+		// A failure delivered in-band on a 200 stream: the flat "error"
+		// event, whose typed error ends the stream.
+		"event: error\n" + `data: {"type":"error","message":"slow down","code":429}` + "\n\n",
 	}
 	for _, s := range seeds {
 		f.Add([]byte(s))

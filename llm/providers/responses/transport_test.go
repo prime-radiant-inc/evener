@@ -227,3 +227,40 @@ func TestEndpointFamilies(t *testing.T) {
 		})
 	}
 }
+
+// TestStreamInbandErrorEndsTheStream covers the one path in stream.go that
+// was not ported from the old adapter: a Responses failure delivered
+// in-band on an HTTP 200 stream must end the stream with the typed error,
+// stamped with the instance (spec §7.5) and carrying the wire status.
+func TestStreamInbandErrorEndsTheStream(t *testing.T) {
+	for _, tc := range []struct{ name, sse string }{
+		// The flat "error" event carries the fields at the top level; only
+		// "response.failed" nests them under response.error.
+		{"error", "event: error\n" +
+			`data: {"type":"error","message":"slow down","code":429}` + "\n\n"},
+		{"response.failed", "event: response.failed\n" +
+			`data: {"type":"response.failed","response":{"error":{"type":"rate_limit_error","message":"slow down","code":429}}}` + "\n\n"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			srv, _ := server(t, 200, tc.sse)
+			res := liveRes(srv, openaiCaps)
+			st, err := (&Protocol{Client: srv.Client()}).Stream(context.Background(), userReq("hi"), res)
+			if err != nil {
+				t.Fatal(err)
+			}
+			var streamErr error
+			for ev := range st.Events() {
+				if ev.Type == llm.StreamEventError {
+					streamErr = ev.Err
+				}
+			}
+			le, ok := errors.AsType[llm.Error](streamErr)
+			if !ok {
+				t.Fatalf("stream error = %v, want an llm.Error", streamErr)
+			}
+			if le.Provider() != res.Instance || le.StatusCode() != 429 || !strings.Contains(le.Error(), "slow down") {
+				t.Fatalf("stream error = %v provider = %q status = %d", streamErr, le.Provider(), le.StatusCode())
+			}
+		})
+	}
+}
