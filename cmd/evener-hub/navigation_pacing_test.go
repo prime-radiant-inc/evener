@@ -71,24 +71,11 @@ func (c *countingSource) Capture(ctx context.Context, generation string, now tim
 	return c.inner.Capture(ctx, generation, now)
 }
 
-var errBoom = &staticErr{}
+var errBoom = &staticError{}
 
-type staticErr struct{}
+type staticError struct{}
 
-func (*staticErr) Error() string { return "persistent failure" }
-
-// failFirstForcedSource fails exactly the FIRST forced capture (the one a
-// pending invalidation drives) and succeeds thereafter, so the Start loop
-// reaches its boundary branch with a paced retry deadline armed.
-type failFirstForcedSource struct {
-	inner  *testNavigationSource
-	failed atomic.Bool
-}
-
-func (f *failFirstForcedSource) Revision() navigationSourceRevision { return f.inner.Revision() }
-func (f *failFirstForcedSource) Capture(ctx context.Context, generation string, now time.Time) (navigationSourceSnapshot, error) {
-	return f.inner.Capture(ctx, generation, now)
-}
+func (*staticError) Error() string { return "persistent failure" }
 
 // The boundary branch must shorten its park to the retry deadline: with a
 // 24h boundary and retryAfter far shorter, the loop's second park is the
@@ -122,7 +109,7 @@ func TestNavigationBoundaryParkShortensToRetryDeadline(t *testing.T) {
 	source.captured = make(chan struct{}, 8)
 	// Fail the first forced capture only: err set before Invalidate, cleared
 	// after the first failed capture is observed.
-	source.err = &staticErr{}
+	source.err = &staticError{}
 	source.mu.Unlock()
 	ctx, cancel := context.WithCancel(t.Context())
 	defer cancel()
