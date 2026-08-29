@@ -604,6 +604,28 @@ export function ConversationFrame({
   const evidenceOpen = openEvidence !== null;
   const frameLocked = evidenceSheet !== null && state.openEvidenceKey !== null;
 
+  const activeSkinRef = useRef(skin.id);
+  // The skin identity is the transition boundary. Its cleanup must retain the
+  // outgoing callback closure so a final measured anchor is written under the
+  // outgoing concept before the incoming skin restores its preference.
+  // biome-ignore lint/correctness/useExhaustiveDependencies: adding changing callbacks would turn every scroll publication into a skin transition
+  useLayoutEffect(() => {
+    if (activeSkinRef.current !== skin.id) {
+      activeSkinRef.current = skin.id;
+      if (state.anchor === null) {
+        transcriptRef.current?.scrollToTail();
+      } else {
+        void transcriptRef.current
+          ?.restoreAnchor(state.anchor)
+          .catch(() => transcriptRef.current?.scrollToTail());
+      }
+    }
+    return () => {
+      const outgoing = transcriptRef.current?.captureAnchor() ?? null;
+      if (outgoing !== null) onAnchorChange(outgoing);
+    };
+  }, [skin.id]);
+
   useEffect(() => {
     mountedRef.current = true;
     return () => {
