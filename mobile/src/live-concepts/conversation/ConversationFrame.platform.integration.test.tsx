@@ -2,7 +2,6 @@ import { readFileSync } from "node:fs";
 import path from "node:path";
 import { cleanup, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { focusElement } from "@testing-library/user-event/dist/esm/event/focus.js";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { createViewportCoordinator } from "../../ui/platformPresentation";
 import { ConversationFrame } from "./ConversationFrame";
@@ -113,20 +112,6 @@ function elementRect(top: number, bottom: number): DOMRect {
     y: top,
     toJSON: () => ({}),
   } as DOMRect;
-}
-
-function installFixtureFocusScope(
-  root: HTMLElement,
-  first: HTMLElement,
-  last: HTMLElement,
-): () => void {
-  const wrapAtEnd = (event: KeyboardEvent): void => {
-    if (event.key !== "Tab" || event.shiftKey || event.target !== last) return;
-    event.preventDefault();
-    focusElement(first);
-  };
-  root.addEventListener("keydown", wrapAtEnd);
-  return () => root.removeEventListener("keydown", wrapAtEnd);
 }
 
 afterEach(() => {
@@ -277,14 +262,6 @@ describe("ConversationFrame platform integration", () => {
       element.scrollIntoView = scrollIntoView;
       element.addEventListener("focus", () => focusOrder.push(name));
     }
-    const firstControl = controls[0]?.element;
-    if (firstControl === undefined) throw new Error("Back control missing");
-    const releaseFocusScope = installFixtureFocusScope(
-      frame,
-      firstControl,
-      composer,
-    );
-
     for (const [index, { name, element }] of controls.entries()) {
       await user.tab();
       expect(document.activeElement, `${name} active after Tab`).toBe(element);
@@ -305,9 +282,35 @@ describe("ConversationFrame platform integration", () => {
       expect(tabKeys).toHaveLength(index + 1);
     }
     expect(focusOrder).toEqual(["Back", "Work", "Switch concept"]);
-    releaseFocusScope();
     coordinator.stop();
   });
+
+  it.each([
+    {
+      name: "Submit",
+      composer: { draft: "ready", canInterrupt: false },
+      target: "Submit message",
+    },
+    {
+      name: "Interrupt",
+      composer: { draft: "", canInterrupt: true },
+      target: "Interrupt",
+    },
+  ])(
+    "leaves native textarea traversal active when $name is enabled",
+    async ({ composer: composerOverrides, target }) => {
+      const user = userEvent.setup();
+      render(<ConversationFrame {...frameProps(composerOverrides)} />);
+      const message = screen.getByRole("textbox", { name: "Message" });
+      const expected = screen.getByRole("button", { name: target });
+
+      message.focus();
+      await user.tab();
+
+      expect(document.activeElement).toBe(expected);
+      expect(screen.getByRole("button", { name: "Back" })).not.toHaveFocus();
+    },
+  );
 
   it("audits existing shell, Voice, dock, and old composer safe-area ownership", () => {
     expect(css("ui/global.css")).toMatch(
