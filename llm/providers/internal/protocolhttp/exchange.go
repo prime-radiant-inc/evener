@@ -96,6 +96,31 @@ func Do(parentCtx context.Context, c *Call, finish func(r *Result) (*llm.Respons
 	return nil
 }
 
+// Complete runs a non-streaming completion whose 2xx body is a JSON object:
+// decode maps that object to the Response, and Complete then stamps the
+// endpoint URL and the response's rate-limit headers on it. A body that is
+// not a JSON object fails under the call's operation name.
+func Complete(ctx context.Context, c *Call, decode func(raw map[string]any) (llm.Response, error)) (llm.Response, error) {
+	var out llm.Response
+	err := Do(ctx, c, func(r *Result) (*llm.Response, error) {
+		if r.Raw == nil {
+			return nil, errors.New(c.Operation + ": response is not a JSON object")
+		}
+		resp, err := decode(r.Raw)
+		if err != nil {
+			return nil, err
+		}
+		out = resp
+		llm.StampEndpointURL(&out, r.EndpointURL, r.Material)
+		out.RateLimit = llm.ParseRateLimitHeaders(r.Header)
+		return &out, nil
+	})
+	if err != nil {
+		return llm.Response{}, err
+	}
+	return out, nil
+}
+
 // CompleteViaStream runs a streaming exchange to completion and returns the
 // accumulated Response; the Codex backend answers every request as a stream
 // (spec §9.5, RequiresStreamingComplete).

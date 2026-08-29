@@ -2,7 +2,6 @@ package responses
 
 import (
 	"context"
-	"errors"
 	"net/http"
 
 	"primeradiant.com/evener/llm"
@@ -25,22 +24,12 @@ func (p *Protocol) Complete(ctx context.Context, req llm.Request, res registry.R
 	if err != nil {
 		return llm.Response{}, err
 	}
-	var out llm.Response
-	err = protocolhttp.Do(ctx, p.call("responses.create", http.MethodPost, protocolhttp.URL(res, res.Transport.Endpoint), body, req, res), func(r *protocolhttp.Result) (*llm.Response, error) {
-		if r.Raw == nil {
-			return nil, errors.New("responses.create: response is not a JSON object")
-		}
-		resp := fromResponses(r.Raw, req.Model)
+	call := p.call("responses.create", http.MethodPost, protocolhttp.URL(res, res.Transport.Endpoint), body, req, res)
+	return protocolhttp.Complete(ctx, call, func(raw map[string]any) (llm.Response, error) {
+		resp := fromResponses(raw, req.Model)
 		p.stampResponseIDHash(&resp)
-		llm.StampEndpointURL(&resp, r.EndpointURL, r.Material)
-		resp.RateLimit = llm.ParseRateLimitHeaders(r.Header)
-		out = resp
-		return &out, nil
+		return resp, nil
 	})
-	if err != nil {
-		return llm.Response{}, err
-	}
-	return out, nil
 }
 
 // Stream implements llm.Protocol.

@@ -42,20 +42,10 @@ func (p *Protocol) Complete(ctx context.Context, req llm.Request, res registry.R
 	if err != nil {
 		return llm.Response{}, err
 	}
-	var out llm.Response
-	err = protocolhttp.Do(ctx, p.call("generateContent", "google_generate_content", http.MethodPost, protocolhttp.URL(res, res.Transport.Endpoint), body, req, res), func(r *protocolhttp.Result) (*llm.Response, error) {
-		if r.Raw == nil {
-			return nil, errors.New("generateContent: response is not a JSON object")
-		}
-		out = fromGeminiResponse(r.Raw, req.Model)
-		llm.StampEndpointURL(&out, r.EndpointURL, r.Material)
-		out.RateLimit = llm.ParseRateLimitHeaders(r.Header)
-		return &out, nil
+	call := p.call("generateContent", "google_generate_content", http.MethodPost, protocolhttp.URL(res, res.Transport.Endpoint), body, req, res)
+	return protocolhttp.Complete(ctx, call, func(raw map[string]any) (llm.Response, error) {
+		return fromGeminiResponse(raw, req.Model), nil
 	})
-	if err != nil {
-		return llm.Response{}, err
-	}
-	return out, nil
 }
 
 // Stream implements llm.Protocol.

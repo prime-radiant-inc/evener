@@ -2,7 +2,6 @@ package chatcompletions
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"net/http"
 	"strings"
@@ -38,24 +37,10 @@ func (p *Protocol) Complete(ctx context.Context, req llm.Request, res registry.R
 	if err != nil {
 		return llm.Response{}, err
 	}
-	var out llm.Response
-	err = protocolhttp.Do(ctx, p.call("chat.completions", http.MethodPost, protocolhttp.URL(res, res.Transport.Endpoint), body, req, res), func(r *protocolhttp.Result) (*llm.Response, error) {
-		if r.Raw == nil {
-			return nil, errors.New("chat.completions: response is not a JSON object")
-		}
-		resp, err := fromChatCompletionResponse(r.Raw, res.Caps.FinishReasonMap)
-		if err != nil {
-			return nil, err
-		}
-		llm.StampEndpointURL(&resp, r.EndpointURL, r.Material)
-		resp.RateLimit = llm.ParseRateLimitHeaders(r.Header)
-		out = resp
-		return &out, nil
+	call := p.call("chat.completions", http.MethodPost, protocolhttp.URL(res, res.Transport.Endpoint), body, req, res)
+	return protocolhttp.Complete(ctx, call, func(raw map[string]any) (llm.Response, error) {
+		return fromChatCompletionResponse(raw, res.Caps.FinishReasonMap)
 	})
-	if err != nil {
-		return llm.Response{}, err
-	}
-	return out, nil
 }
 
 // Stream implements llm.Protocol.
