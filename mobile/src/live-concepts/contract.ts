@@ -10,7 +10,10 @@ import type { ConversationState } from "../state/conversation";
 import type { NavigationState } from "../state/navigation";
 import type { PreferencesState } from "../state/preferences";
 import type { RosterState } from "../state/roster";
-import type { ConversationSkin } from "./conversation/contract";
+import type {
+  ConversationAnchor,
+  ConversationSkin,
+} from "./conversation/contract";
 import type {
   ConversationFrameAction,
   LiveComposerView as ConversationLiveComposerView,
@@ -34,19 +37,25 @@ export type * from "./conversation/contract";
 export type * from "./conversation/primitives";
 export type { ConversationLiveComposerView as LiveComposerView, QuestionDraft };
 
-export interface ScrollAnchor {
-  scrollTop: number;
+export interface ConversationUiMemory {
+  readonly anchor: ConversationAnchor | null;
+  readonly unseen: number;
+  readonly evidenceKey: string | null;
+  readonly evidenceTriggerKey: string | null;
+  readonly focusedItemKey: string | null;
+  readonly expandedEvidenceKeys: ReadonlySet<string>;
 }
 
 export interface LiveConceptUiState {
-  concept: ConceptId;
-  workOpen: boolean;
-  composerMode: "send" | "steer" | "queue";
-  expandedToolKeys: ReadonlySet<string>;
-  expandedWorkKeys: ReadonlySet<string>;
-  questionDrafts: Readonly<Record<string, QuestionDraft>>;
-  focusedItemKey: string | null;
-  scrollAnchors: Readonly<Record<string, ScrollAnchor>>;
+  readonly concept: ConceptId;
+  readonly workOpen: boolean;
+  readonly composerMode: "send" | "steer" | "queue";
+  readonly expandedToolKeys: ReadonlySet<string>;
+  readonly expandedWorkKeys: ReadonlySet<string>;
+  readonly questionDrafts: Readonly<Record<string, QuestionDraft>>;
+  /** Sessions/Work renderer compatibility fields; conversation state never uses them. */
+  readonly focusedItemKey: null;
+  readonly scrollAnchors: Readonly<Record<string, never>>;
 }
 
 export interface LiveConceptState {
@@ -66,22 +75,32 @@ export interface LiveConceptState {
   ui: LiveConceptUiState;
 }
 
+export type RootOwnedIntent =
+  | { readonly type: "switchConcept"; readonly concept: ConceptId }
+  | { readonly type: "closeWork" }
+  | { readonly type: "openNew" }
+  | { readonly type: "openSettings" }
+  | { readonly type: "openVoice" };
+
+export type RosterIntent =
+  | { readonly type: "refreshRoster" }
+  | { readonly type: "setRosterQuery"; readonly value: string }
+  | { readonly type: "openConversation"; readonly key: string };
+
+export type WorkIntent = { readonly type: "toggleWork"; readonly key: string };
+
+type DisclosureIntent = { readonly type: "toggleTool"; readonly key: string };
+
 type MutableAction<Action> = Action extends object
   ? { -readonly [Key in keyof Action]: Action[Key] }
   : Action;
 
 export type LiveConceptIntent =
   | MutableAction<ConversationFrameAction>
-  | { type: "switchConcept"; concept: ConceptId }
-  | { type: "refreshRoster" }
-  | { type: "setRosterQuery"; value: string }
-  | { type: "openConversation"; key: string }
-  | { type: "closeWork" }
-  | { type: "toggleTool"; key: string }
-  | { type: "toggleWork"; key: string }
-  | { type: "openNew" }
-  | { type: "openSettings" }
-  | { type: "openVoice" };
+  | MutableAction<RootOwnedIntent>
+  | MutableAction<RosterIntent>
+  | MutableAction<WorkIntent>
+  | MutableAction<DisclosureIntent>;
 
 export interface LiveConceptRendererProps {
   state: LiveConceptState;
@@ -89,10 +108,10 @@ export interface LiveConceptRendererProps {
 }
 
 export interface LiveConceptModule {
-  id: ConceptId;
-  label: string;
-  Renderer: ComponentType<LiveConceptRendererProps>;
-  conversationSkin?: ConversationSkin;
+  readonly id: ConceptId;
+  readonly label: string;
+  readonly Renderer: ComponentType<LiveConceptRendererProps>;
+  readonly conversationSkin: ConversationSkin;
 }
 
 type BoundStore<State> = UseBoundStore<StoreApi<State>>;
