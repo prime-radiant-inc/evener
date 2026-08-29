@@ -100,7 +100,14 @@ function noticeItem(
   tone: NoticeTone,
   text: string,
 ): MobileTimelineItem {
-  return { kind: "notice", id, tone, text };
+  return {
+    kind: "notice",
+    id,
+    origin: "steering",
+    family: tone === "warning" ? "warning" : "informational",
+    tone,
+    text,
+  };
 }
 function questionItem(id: string, batch: AskBatch): MobileTimelineItem {
   return { kind: "question", id, batch };
