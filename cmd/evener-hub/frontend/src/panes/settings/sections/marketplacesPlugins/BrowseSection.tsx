@@ -14,8 +14,6 @@ import { sourceLabel } from "./sourceLabel";
 
 const CLASS = {
   section: requireClass(styles.section, "marketplacesPlugins.module.css", "section"),
-  header: requireClass(styles.header, "marketplacesPlugins.module.css", "header"),
-  title: requireClass(styles.title, "marketplacesPlugins.module.css", "title"),
   filterRow: requireClass(styles.filterRow, "marketplacesPlugins.module.css", "filterRow"),
   tree: requireClass(styles.tree, "marketplacesPlugins.module.css", "tree"),
   treeNode: requireClass(styles.treeNode, "marketplacesPlugins.module.css", "treeNode"),
@@ -152,9 +150,6 @@ export function BrowseSection({ expandedMarketplaces, setExpandedMarketplaces }:
 
   return (
     <section className={CLASS.section}>
-      <header className={CLASS.header}>
-        <h3 className={CLASS.title}>Browse</h3>
-      </header>
       <div className={CLASS.filterRow}>
         <Input
           value={filterQuery}
@@ -164,7 +159,7 @@ export function BrowseSection({ expandedMarketplaces, setExpandedMarketplaces }:
       </div>
       <ul aria-label="Marketplace browse tree" className={CLASS.tree}>
         {marketplaces.length === 0 ? (
-          <li className={CLASS.empty}>No marketplaces registered. Add one above to browse plugins.</li>
+          <li className={CLASS.empty}>No marketplaces registered. Add one from the Marketplaces tab.</li>
         ) : trimmedQuery !== "" && filterLoading ? (
           <li className={CLASS.empty}>Loading marketplaces…</li>
         ) : trimmedQuery !== "" && visibleMarketplaces.length === 0 ? (

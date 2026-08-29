@@ -70,7 +70,7 @@ test("shows the no-marketplaces empty state", () => {
   connectFakeClient();
   extensionsStore.setState({ marketplaces: [], plugins: [] });
   render(<Harness />);
-  expect(screen.getByText("No marketplaces registered. Add one above to browse plugins.")).toBeTruthy();
+  expect(screen.getByText("No marketplaces registered. Add one from the Marketplaces tab.")).toBeTruthy();
 });
 
 test("expanding a node lazily fetches its catalog once; re-expanding does not refetch", async () => {

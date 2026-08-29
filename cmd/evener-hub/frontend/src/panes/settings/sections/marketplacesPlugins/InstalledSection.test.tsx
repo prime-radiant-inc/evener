@@ -1,11 +1,11 @@
-import { cleanup, render, screen, waitFor, within } from "@testing-library/react";
+import { cleanup, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
 import { FakeClient } from "../../../../protocol/testing/fakeClient";
 import type { PluginEntry } from "../../../../protocol/types.gen";
 import { connectionStore } from "../../../../stores/connection";
 import { extensionsStore, resetExtensionsStoreForTests } from "../../../../stores/extensions";
-import { getToasts, resetToastStoreForTests } from "../../../../widgets/toast/store";
+import { resetToastStoreForTests } from "../../../../widgets/toast/store";
 import { InstalledSection } from "./InstalledSection";
 
 const LINTER: PluginEntry = {
@@ -18,6 +18,13 @@ const LINTER: PluginEntry = {
   installPath: "/x",
   installedAt: 1,
   lastUpdated: 1,
+};
+
+const FORMATTER: PluginEntry = {
+  ...LINTER,
+  plugin: "formatter",
+  marketplace: "other-market",
+  version: "0.3.1",
 };
 
 function connectFakeClient(): FakeClient {
@@ -37,30 +44,26 @@ afterEach(() => {
   vi.restoreAllMocks();
 });
 
-test("renders the heading, count, name, marketplace, and version", () => {
+test("renders a row per plugin with name, marketplace, and version", () => {
   connectFakeClient();
   extensionsStore.setState({ plugins: [LINTER] });
-  render(<InstalledSection />);
-  expect(screen.getByText("Installed")).toBeTruthy();
-  expect(screen.getByText("1 entry")).toBeTruthy();
+  render(<InstalledSection onSelect={() => {}} />);
   expect(screen.getByText("linter")).toBeTruthy();
-  expect(screen.getByText("@ acme-plugins")).toBeTruthy();
-  expect(screen.getByText("v1.2.0")).toBeTruthy();
+  expect(screen.getByText("@ acme-plugins · v1.2.0")).toBeTruthy();
 });
 
 test("shows v.unknown when version is empty", () => {
   connectFakeClient();
   extensionsStore.setState({ plugins: [{ ...LINTER, version: "" }] });
-  render(<InstalledSection />);
-  expect(screen.getByText("vunknown")).toBeTruthy();
+  render(<InstalledSection onSelect={() => {}} />);
+  expect(screen.getByText("@ acme-plugins · vunknown")).toBeTruthy();
 });
 
-test("shows the empty state and pluralizes the count", () => {
+test("shows the empty state when no plugins are installed", () => {
   connectFakeClient();
   extensionsStore.setState({ plugins: [] });
-  render(<InstalledSection />);
-  expect(screen.getByText("No plugins installed yet. Install one from Browse above.")).toBeTruthy();
-  expect(screen.getByText("0 entries")).toBeTruthy();
+  render(<InstalledSection onSelect={() => {}} />);
+  expect(screen.getByText("No plugins installed yet. Install one from Browse.")).toBeTruthy();
 });
 
 test("shows broken/disabled/auto-upgrade badges only when applicable", () => {
@@ -68,7 +71,7 @@ test("shows broken/disabled/auto-upgrade badges only when applicable", () => {
   extensionsStore.setState({
     plugins: [{ ...LINTER, broken: true, enabled: false, autoUpgrade: true }],
   });
-  render(<InstalledSection />);
+  render(<InstalledSection onSelect={() => {}} />);
   expect(screen.getByText("broken")).toBeTruthy();
   expect(screen.getByText("disabled")).toBeTruthy();
   expect(screen.getByText("auto-upgrade")).toBeTruthy();
@@ -77,7 +80,7 @@ test("shows broken/disabled/auto-upgrade badges only when applicable", () => {
 test("no badges render for a healthy, enabled, non-auto-upgrading plugin", () => {
   connectFakeClient();
   extensionsStore.setState({ plugins: [LINTER] });
-  render(<InstalledSection />);
+  render(<InstalledSection onSelect={() => {}} />);
   expect(screen.queryByText("broken")).toBeNull();
   expect(screen.queryByText("disabled")).toBeNull();
   expect(screen.queryByText("auto-upgrade")).toBeNull();
@@ -92,245 +95,62 @@ test("the status dot reads broken > disabled > idle, in that priority order", ()
       { ...LINTER, plugin: "healthy-one", broken: false, enabled: true },
     ],
   });
-  render(<InstalledSection />);
+  render(<InstalledSection onSelect={() => {}} />);
   expect(screen.getAllByRole("img", { name: "Failed" })).toHaveLength(1);
   expect(screen.getAllByRole("img", { name: "Ended" })).toHaveLength(1);
   expect(screen.getAllByRole("img", { name: "Idle" })).toHaveLength(1);
 });
 
-test("Disable calls pluginDisable (enabled plugin); no success toast", async () => {
+test("clicking a row calls onSelect with the plugin and marketplace", async () => {
   const user = userEvent.setup();
-  const fake = connectFakeClient();
+  connectFakeClient();
+  extensionsStore.setState({ plugins: [LINTER, FORMATTER] });
+  const onSelect = vi.fn();
+  render(<InstalledSection onSelect={onSelect} />);
+  await user.click(screen.getByRole("button", { name: /formatter/ }));
+  expect(onSelect).toHaveBeenCalledWith({ plugin: "formatter", marketplace: "other-market" });
+});
+
+test("rows carry no per-row action buttons - actions live in the detail sheet", () => {
+  connectFakeClient();
   extensionsStore.setState({ plugins: [LINTER] });
-  fake.on("evener/plugin/disable", (params) => {
-    expect(params).toEqual({ plugin: "linter", marketplace: "acme-plugins" });
-    return { plugins: [{ ...LINTER, enabled: false }] };
-  });
-  render(<InstalledSection />);
-  await user.click(screen.getByRole("button", { name: "Disable" }));
-  expect(await screen.findByRole("button", { name: "Enable" })).toBeTruthy();
-  expect(getToasts()).toEqual([]);
+  render(<InstalledSection onSelect={() => {}} />);
+  expect(screen.queryByRole("button", { name: "Disable" })).toBeNull();
+  expect(screen.queryByRole("button", { name: "Enable" })).toBeNull();
+  expect(screen.queryByRole("button", { name: "Upgrade" })).toBeNull();
+  expect(screen.queryByRole("button", { name: "Remove" })).toBeNull();
+  expect(screen.queryByRole("button", { name: /Auto-upgrade/ })).toBeNull();
 });
 
-test("Enable calls pluginEnable (disabled plugin)", async () => {
+test("the filter narrows rows by plugin name, case-insensitively", async () => {
   const user = userEvent.setup();
-  const fake = connectFakeClient();
-  extensionsStore.setState({ plugins: [{ ...LINTER, enabled: false }] });
-  fake.on("evener/plugin/enable", (params) => {
-    expect(params).toEqual({ plugin: "linter", marketplace: "acme-plugins" });
-    return { plugins: [{ ...LINTER, enabled: true }] };
-  });
-  render(<InstalledSection />);
-  await user.click(screen.getByRole("button", { name: "Enable" }));
-  expect(await screen.findByRole("button", { name: "Disable" })).toBeTruthy();
+  connectFakeClient();
+  extensionsStore.setState({ plugins: [LINTER, FORMATTER] });
+  render(<InstalledSection onSelect={() => {}} />);
+  await user.type(screen.getByRole("textbox", { name: "Filter installed" }), "FORM");
+  expect(screen.queryByText("linter")).toBeNull();
+  expect(screen.getByText("formatter")).toBeTruthy();
 });
 
-test("a failed enable/disable toggle toasts 'Toggle enable failed'", async () => {
+test("the filter also matches the marketplace name", async () => {
   const user = userEvent.setup();
-  const fake = connectFakeClient();
+  connectFakeClient();
+  extensionsStore.setState({ plugins: [LINTER, FORMATTER] });
+  render(<InstalledSection onSelect={() => {}} />);
+  await user.type(screen.getByRole("textbox", { name: "Filter installed" }), "other-mark");
+  expect(screen.queryByText("linter")).toBeNull();
+  expect(screen.getByText("formatter")).toBeTruthy();
+});
+
+test("a filter with no match says so, and clearing it restores the rows", async () => {
+  const user = userEvent.setup();
+  connectFakeClient();
   extensionsStore.setState({ plugins: [LINTER] });
-  fake.on("evener/plugin/disable", () => {
-    throw new Error("boom");
-  });
-  render(<InstalledSection />);
-  await user.click(screen.getByRole("button", { name: "Disable" }));
-  await waitFor(() =>
-    expect(getToasts().some((t) => t.kind === "error" && t.text === "Toggle enable failed: boom")).toBe(true),
-  );
-});
-
-test("the auto-upgrade toggle shows on/off and flips the current value; no success toast", async () => {
-  const user = userEvent.setup();
-  const fake = connectFakeClient();
-  extensionsStore.setState({ plugins: [LINTER] });
-  fake.on("evener/plugin/setAutoUpgrade", (params) => {
-    expect(params).toEqual({ plugin: "linter", marketplace: "acme-plugins", autoUpgrade: true });
-    return { plugins: [{ ...LINTER, autoUpgrade: true }] };
-  });
-  render(<InstalledSection />);
-  expect(screen.getByRole("button", { name: "Auto-upgrade: off" })).toBeTruthy();
-  await user.click(screen.getByRole("button", { name: "Auto-upgrade: off" }));
-  expect(await screen.findByRole("button", { name: "Auto-upgrade: on" })).toBeTruthy();
-  expect(getToasts()).toEqual([]);
-});
-
-test("a failed auto-upgrade toggle toasts 'Toggle auto-upgrade failed'", async () => {
-  const user = userEvent.setup();
-  const fake = connectFakeClient();
-  extensionsStore.setState({ plugins: [LINTER] });
-  fake.on("evener/plugin/setAutoUpgrade", () => {
-    throw new Error("boom");
-  });
-  render(<InstalledSection />);
-  await user.click(screen.getByRole("button", { name: "Auto-upgrade: off" }));
-  await waitFor(() =>
-    expect(getToasts().some((t) => t.kind === "error" && t.text === "Toggle auto-upgrade failed: boom")).toBe(true),
-  );
-});
-
-test("Upgrade calls pluginUpgrade and toasts a checked-for-upgrades success", async () => {
-  const user = userEvent.setup();
-  const fake = connectFakeClient();
-  extensionsStore.setState({ plugins: [LINTER] });
-  fake.on("evener/plugin/upgrade", (params) => {
-    expect(params).toEqual({ plugin: "linter", marketplace: "acme-plugins" });
-    return { plugins: [{ ...LINTER, version: "1.3.0" }] };
-  });
-  render(<InstalledSection />);
-  await user.click(screen.getByRole("button", { name: "Upgrade" }));
-  await waitFor(() =>
-    expect(getToasts().some((t) => t.kind === "success" && t.text === "Checked linter for upgrades")).toBe(true),
-  );
-});
-
-test("a failed upgrade toasts failure", async () => {
-  const user = userEvent.setup();
-  const fake = connectFakeClient();
-  extensionsStore.setState({ plugins: [LINTER] });
-  fake.on("evener/plugin/upgrade", () => {
-    throw new Error("boom");
-  });
-  render(<InstalledSection />);
-  await user.click(screen.getByRole("button", { name: "Upgrade" }));
-  await waitFor(() =>
-    expect(getToasts().some((t) => t.kind === "error" && t.text === "Upgrade failed: boom")).toBe(true),
-  );
-});
-
-test("Disable disables its own button while the RPC is in flight, and re-enables after", async () => {
-  const user = userEvent.setup();
-  const fake = connectFakeClient();
-  extensionsStore.setState({ plugins: [LINTER] });
-  let resolveDisable: (v: { plugins: PluginEntry[] }) => void = () => {};
-  fake.on(
-    "evener/plugin/disable",
-    () =>
-      new Promise((resolve) => {
-        resolveDisable = resolve;
-      }),
-  );
-  render(<InstalledSection />);
-  const disableButton = screen.getByRole("button", { name: "Disable" });
-  await user.click(disableButton);
-  expect((disableButton as HTMLButtonElement).disabled).toBe(true);
-
-  resolveDisable({ plugins: [{ ...LINTER, enabled: false }] });
-  await waitFor(() => expect(screen.getByRole("button", { name: "Enable" })).toBeTruthy());
-});
-
-test("a failed enable/disable toggle re-enables the button too", async () => {
-  const user = userEvent.setup();
-  const fake = connectFakeClient();
-  extensionsStore.setState({ plugins: [LINTER] });
-  fake.on("evener/plugin/disable", () => {
-    throw new Error("boom");
-  });
-  render(<InstalledSection />);
-  const disableButton = screen.getByRole("button", { name: "Disable" });
-  await user.click(disableButton);
-  await waitFor(() => expect((disableButton as HTMLButtonElement).disabled).toBe(false));
-});
-
-test("the auto-upgrade toggle disables its own button while in flight, without disabling this row's other actions", async () => {
-  const user = userEvent.setup();
-  const fake = connectFakeClient();
-  extensionsStore.setState({ plugins: [LINTER] });
-  fake.on("evener/plugin/setAutoUpgrade", () => new Promise(() => {})); // never resolves - observe mid-flight only
-  render(<InstalledSection />);
-  const autoUpgradeButton = screen.getByRole("button", { name: "Auto-upgrade: off" });
-  await user.click(autoUpgradeButton);
-  expect((autoUpgradeButton as HTMLButtonElement).disabled).toBe(true);
-  expect((screen.getByRole("button", { name: "Disable" }) as HTMLButtonElement).disabled).toBe(false);
-  expect((screen.getByRole("button", { name: "Upgrade" }) as HTMLButtonElement).disabled).toBe(false);
-});
-
-test("Upgrade disables its own button while in flight, and re-enables after", async () => {
-  const user = userEvent.setup();
-  const fake = connectFakeClient();
-  extensionsStore.setState({ plugins: [LINTER] });
-  let resolveUpgrade: (v: { plugins: PluginEntry[] }) => void = () => {};
-  fake.on(
-    "evener/plugin/upgrade",
-    () =>
-      new Promise((resolve) => {
-        resolveUpgrade = resolve;
-      }),
-  );
-  render(<InstalledSection />);
-  const upgradeButton = screen.getByRole("button", { name: "Upgrade" });
-  await user.click(upgradeButton);
-  expect((upgradeButton as HTMLButtonElement).disabled).toBe(true);
-
-  resolveUpgrade({ plugins: [LINTER] });
-  await waitFor(() => expect((upgradeButton as HTMLButtonElement).disabled).toBe(false));
-});
-
-test("a busy row action does not disable the same action on a different row", async () => {
-  const user = userEvent.setup();
-  const fake = connectFakeClient();
-  const OTHER: PluginEntry = { ...LINTER, plugin: "formatter" };
-  extensionsStore.setState({ plugins: [LINTER, OTHER] });
-  fake.on("evener/plugin/upgrade", () => new Promise(() => {})); // never resolves - observe mid-flight only
-  render(<InstalledSection />);
-  const upgradeButtons = screen.getAllByRole("button", { name: "Upgrade" });
-  await user.click(upgradeButtons[0]!);
-  expect((upgradeButtons[0] as HTMLButtonElement).disabled).toBe(true);
-  expect((upgradeButtons[1] as HTMLButtonElement).disabled).toBe(false);
-});
-
-test("Remove opens a destructive confirm; confirming removes and toasts success", async () => {
-  const user = userEvent.setup();
-  const fake = connectFakeClient();
-  extensionsStore.setState({ plugins: [LINTER] });
-  fake.on("evener/plugin/remove", (params) => {
-    expect(params).toEqual({ plugin: "linter", marketplace: "acme-plugins" });
-    return { plugins: [] };
-  });
-  render(<InstalledSection />);
-  await user.click(screen.getByRole("button", { name: "Remove" }));
-  const dialog = screen.getByRole("dialog", { name: "Remove plugin" });
-  expect(within(dialog).getByText('Remove plugin "linter"?')).toBeTruthy();
-  await user.click(within(dialog).getByRole("button", { name: "Remove" }));
-  await waitFor(() => expect(getToasts().some((t) => t.kind === "success" && t.text === "Removed linter")).toBe(true));
-});
-
-test("cancelling the remove confirm does not call pluginRemove", async () => {
-  const user = userEvent.setup();
-  const fake = connectFakeClient();
-  extensionsStore.setState({ plugins: [LINTER] });
-  const removeSpy = vi.fn();
-  fake.on("evener/plugin/remove", removeSpy);
-  render(<InstalledSection />);
-  await user.click(screen.getByRole("button", { name: "Remove" }));
-  await user.click(screen.getByRole("button", { name: "Cancel" }));
-  expect(removeSpy).not.toHaveBeenCalled();
-});
-
-test("a failed remove toasts failure", async () => {
-  const user = userEvent.setup();
-  const fake = connectFakeClient();
-  extensionsStore.setState({ plugins: [LINTER] });
-  fake.on("evener/plugin/remove", () => {
-    throw new Error("boom");
-  });
-  render(<InstalledSection />);
-  await user.click(screen.getByRole("button", { name: "Remove" }));
-  const dialog = screen.getByRole("dialog", { name: "Remove plugin" });
-  await user.click(within(dialog).getByRole("button", { name: "Remove" }));
-  await waitFor(() =>
-    expect(getToasts().some((t) => t.kind === "error" && t.text === "Remove failed: boom")).toBe(true),
-  );
-});
-
-test("the remove confirm's buttons disable while the removal is in flight", async () => {
-  const user = userEvent.setup();
-  const fake = connectFakeClient();
-  extensionsStore.setState({ plugins: [LINTER] });
-  fake.on("evener/plugin/remove", () => new Promise(() => {})); // never resolves - just observe the mid-flight state
-  render(<InstalledSection />);
-  await user.click(screen.getByRole("button", { name: "Remove" }));
-  const dialog = screen.getByRole("dialog", { name: "Remove plugin" });
-  await user.click(within(dialog).getByRole("button", { name: "Remove" }));
-  expect((within(dialog).getByRole("button", { name: "Remove" }) as HTMLButtonElement).disabled).toBe(true);
-  expect((within(dialog).getByRole("button", { name: "Cancel" }) as HTMLButtonElement).disabled).toBe(true);
+  render(<InstalledSection onSelect={() => {}} />);
+  const filter = screen.getByRole("textbox", { name: "Filter installed" });
+  await user.type(filter, "zzz");
+  expect(screen.getByText('No plugins match "zzz".')).toBeTruthy();
+  expect(screen.queryByText("linter")).toBeNull();
+  await user.clear(filter);
+  expect(screen.getByText("linter")).toBeTruthy();
 });
