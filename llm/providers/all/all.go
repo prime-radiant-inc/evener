@@ -5,6 +5,7 @@ package all
 
 import (
 	_ "primeradiant.com/evener/llm/providers/anthropic"            // register anthropic provider adapter
+	_ "primeradiant.com/evener/llm/providers/chatcompletions"      // register the openai-chat protocol
 	_ "primeradiant.com/evener/llm/providers/glm"                  // register glm provider adapter
 	_ "primeradiant.com/evener/llm/providers/google"               // register google/gemini provider adapter
 	_ "primeradiant.com/evener/llm/providers/kimi"                 // register kimi provider adapter
@@ -15,4 +16,6 @@ import (
 	_ "primeradiant.com/evener/llm/providers/openaicompat"         // register openai-compatible provider adapter
 	_ "primeradiant.com/evener/llm/providers/openrouter"           // register openrouter provider adapter
 	_ "primeradiant.com/evener/llm/providers/openrouter_anthropic" // register openrouter-anthropic provider adapter
+	_ "primeradiant.com/evener/llm/providers/responses"            // register the openai-responses protocol
+	_ "primeradiant.com/evener/llm/providers/tokenauth"            // register the gcp-adc and oauth-openai-codex authenticators
 )
