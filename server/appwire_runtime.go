@@ -461,9 +461,14 @@ func (s *Server) RecordDescendantAppEvent(ownerThreadID string, event events.Ses
 		s.mu.Unlock()
 
 		committed := make([]appserver.SequencedNotification, 0, len(pending))
+		rootNotificationTarget := s.appNotificationTarget(ownerThreadID)
 		for _, item := range pending {
 			params := stampAppNotificationTarget(item.params, item.threadID, item.ref)
-			record := s.appNotifier.Record(item.threadID, item.method, params)
+			notificationTarget := item.threadID
+			if item.threadID == ownerThreadID {
+				notificationTarget = rootNotificationTarget
+			}
+			record := s.appNotifier.Record(notificationTarget, item.method, params)
 			item.snapshot.Apply([]appserver.SequencedNotification{record})
 			committed = append(committed, record)
 		}

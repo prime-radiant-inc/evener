@@ -935,7 +935,7 @@ func TestServerAppWireGoalUpdatedFanoutToEverySubscribedClient(t *testing.T) {
 			t.Fatalf("%s thread/read: %v", subscriber.name, err)
 		}
 	}
-	if got := srv.AppServer().SubscriberCount("th_1"); got != 2 {
+	if got := srv.AppSubscriberCount("th_1"); got != 2 {
 		t.Fatalf("subscriber count=%d, want 2", got)
 	}
 
