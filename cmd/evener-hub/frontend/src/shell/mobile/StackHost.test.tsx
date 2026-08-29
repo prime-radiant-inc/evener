@@ -706,16 +706,25 @@ test("mounting already at the focused pane's own URL does not dispatch a redunda
   expect(handler).not.toHaveBeenCalled();
 });
 
-// --- bottom safe-area padding (requirement 4) ------------------------
+// --- bottom safe-area accommodation (requirement 4) -------------------
 //
-// jsdom does not evaluate real CSS (env(), viewport units, etc.), so - same
-// idiom as sheet.test.tsx's own prefers-reduced-motion check - this reads
-// the CSS module's own source rather than asserting on computed style.
+// The blanket host padding that used to carry the bottom inset lifted the
+// whole stack - docked composer footer included - off the screen's bottom
+// edge, leaving a dead surface-0 band under the input. The accommodation
+// moved to where the composer docks (PaneScaffold's footer and body rules);
+// the host deliberately carries none of it so the pane chrome fills to the
+// bottom edge. jsdom does not evaluate real CSS (env(), viewport units,
+// etc.), so - same idiom as sheet.test.tsx's own prefers-reduced-motion
+// check - this reads the CSS module's own source rather than asserting on
+// computed style, comments stripped so the .host comment's own mention of
+// the inset cannot false-positive the match.
 
-test("the stack container reserves the device's bottom safe-area inset", () => {
+test("the host lifts nothing off the bottom edge - docked chrome owns the bottom inset", () => {
   const here = dirname(fileURLToPath(import.meta.url));
-  const css = readFileSync(join(here, "StackHost.module.css"), "utf8");
-  expect(css).toContain("env(safe-area-inset-bottom)");
+  const css = readFileSync(join(here, "StackHost.module.css"), "utf8").replace(/\/\*[\s\S]*?\*\//g, "");
+  expect(css).not.toContain("env(safe-area-inset-bottom)");
+  const hostRule = css.match(/\.host \{([^}]*)\}/)?.[1] ?? "";
+  expect(hostRule).not.toContain("padding-bottom");
 });
 
 test("the top bar reserves the device's top safe-area inset", () => {

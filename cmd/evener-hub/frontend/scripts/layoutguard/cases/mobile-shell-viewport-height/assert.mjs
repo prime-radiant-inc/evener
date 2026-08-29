@@ -112,6 +112,18 @@ export default async function assert(measurements) {
       }
     }
 
+    // The composer's dock fills the screen's bottom edge: the footer is the
+    // pane's last column item, so its bottom must REACH the visible viewport
+    // bottom, not float above a dead band. Catches a container lift (the old
+    // blanket host padding) in one direction and an overflow push in the
+    // other. Headless env() resolves to 0, so the inset-bearing variant of
+    // this contract is the CSS-source tests' job, not this measurement's.
+    if (measurement.footer && Math.abs(measurement.footer.bottom - visibleViewportHeight) > tolerance) {
+      failures.push(
+        `${fixtureName}: footer chrome ends ${(measurement.footer.bottom - visibleViewportHeight).toFixed(1)}px off the ${visibleViewportHeight}px screen bottom - the composer's dock must fill to the bottom edge`,
+      );
+    }
+
     if (!measurement.shell) failures.push(`${fixtureName}: missing [data-shell]`);
     if (!measurement.pane) failures.push(`${fixtureName}: missing [data-pane]`);
     if (!measurement.paneBody) failures.push(`${fixtureName}: missing [data-pane-body]`);
