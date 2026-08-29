@@ -1268,9 +1268,7 @@ else
 fi
 exit 0
 `
-	if err := os.WriteFile(filepath.Join(fakeBin, "npm"), []byte(npmShim), 0o755); err != nil {
-		t.Fatalf("write fake npm: %v", err)
-	}
+	writeExecutable(t, filepath.Join(fakeBin, "npm"), npmShim)
 
 	path := os.Getenv("PATH")
 	for _, item := range env {
