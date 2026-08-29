@@ -166,14 +166,22 @@ function checkTransports(source, fileRel, violations) {
 function isScopedSelector(selectorList) {
   // .concept-* scoped selectors (existing broad acceptance).
   if (selectorList.includes(".concept-")) return true;
-  // .live-concept-switcher root-scoped selectors: every comma-separated
-  // part must start with the .live-concept-switcher root class (or BEM
-  // element/modifier) and must not contain global element selectors.
-  if (selectorList.includes(".live-concept-switcher")) {
+  // Production-owned shared roots: every comma-separated part must start with
+  // the same root class (or its BEM element/modifier) and must not contain
+  // global element selectors.
+  for (const root of [
+    ".live-concept-switcher",
+    ".live-conversation-frame",
+  ]) {
+    if (!selectorList.includes(root)) continue;
     const parts = selectorList.split(",");
     for (const part of parts) {
       const trimmed = part.trim();
-      if (!trimmed.startsWith(".live-concept-switcher")) {
+      if (!trimmed.startsWith(root)) {
+        return false;
+      }
+      const suffix = trimmed.slice(root.length);
+      if (suffix !== "" && !/^(?:__|--|[\s:[.#>+~])/.test(suffix)) {
         return false;
       }
       if (/\b(body|html)\b/.test(trimmed) || trimmed.includes("*")) {

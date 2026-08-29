@@ -1,8 +1,10 @@
+import type { ContentSizeCategory } from "../native/contract";
+
 export type ConceptId = "stillwater" | "constellation" | "field-notes";
 export type LiveConceptSurface = "sessions" | "conversation" | "work";
 export type Platform = "ios" | "android";
 export type Appearance = "system" | "light" | "dark";
-export type TextScale = "standard" | "accessibility";
+export type TextScale = ContentSizeCategory;
 export type DisplayTone =
   | "attention"
   | "running"

@@ -6,6 +6,7 @@ import {
   useMemo,
   useReducer,
   useRef,
+  useState,
   useSyncExternalStore,
 } from "react";
 import type { StoreApi } from "zustand";
@@ -15,10 +16,14 @@ import type { RosterEntry } from "../services/roster";
 import type { LiveConversationState } from "../state/conversation";
 import { connectionStatusAxLabel } from "./accessibility-semantics";
 import type {
+  ConversationAnchor,
+  ConversationFrameState,
   LiveComposerView,
+  LiveConceptModule,
   LiveConceptRuntime,
   LiveConceptState,
 } from "./contract";
+import { ConversationFrame } from "./conversation/ConversationFrame";
 import {
   createLiveIntentDispatcher,
   type LiveIntentDispatcherRuntime,
@@ -181,6 +186,13 @@ export function LiveConceptHost({
   const questionDrafts = uiStore((state) => state.questionDrafts);
   const focusedItemKey = uiStore((state) => state.focusedItemKey);
   const scrollAnchors = uiStore((state) => state.scrollAnchors);
+  const [conversationAnchor, setConversationAnchor] =
+    useState<ConversationAnchor | null>(null);
+  const [unseen, setUnseen] = useState(0);
+  const [openEvidenceKey, setOpenEvidenceKey] = useState<string | null>(null);
+  const [evidenceTriggerKey, setEvidenceTriggerKey] = useState<string | null>(
+    null,
+  );
 
   const connectionStatus = runtime.connection((state) => state.status);
   const reachabilityByProfile = runtime.connection(
@@ -233,6 +245,7 @@ export function LiveConceptHost({
     (state) => state.lastAcceptedMutation ?? null,
   );
   const conversationError = runtime.conversationStore((state) => state.error);
+  const conversationStatus = runtime.conversationStore((state) => state.status);
   const activityView = runtime.activityStore((state) => state.view);
 
   const acceptedProfileScope = useRef<{
@@ -410,7 +423,16 @@ export function LiveConceptHost({
     [activityProjector, conversationProjector],
   );
 
-  const dispatchRuntime: LiveIntentDispatcherRuntime = runtime;
+  const dispatchRuntime: LiveIntentDispatcherRuntime = useMemo(
+    () => ({
+      rosterStore: runtime.rosterStore,
+      rosterService: runtime.rosterService,
+      conversationStore: runtime.conversationStore,
+      conversationService: runtime.conversationService,
+      activitySink: runtime.activityStore.getState(),
+    }),
+    [runtime],
+  );
   const dispatch = useMemo(
     () =>
       createLiveIntentDispatcher(
@@ -424,6 +446,13 @@ export function LiveConceptHost({
           onOpenNew,
           onOpenSettings,
           onOpenVoice,
+          onOpenEvidence: (evidenceKey, triggerKey) => {
+            setOpenEvidenceKey(evidenceKey);
+            setEvidenceTriggerKey(triggerKey);
+          },
+          onCloseEvidence: () => {
+            setOpenEvidenceKey(null);
+          },
         },
         uiStore,
       ),
@@ -489,9 +518,7 @@ export function LiveConceptHost({
     concept,
     platform,
     appearance,
-    textScale: contentSize.startsWith("accessibility")
-      ? "accessibility"
-      : "standard",
+    textScale: contentSize,
     reducedMotion,
     surface,
     connection: {
@@ -515,7 +542,8 @@ export function LiveConceptHost({
       scrollAnchors,
     },
   };
-  const Renderer = liveConceptRegistry[concept].Renderer;
+  const activeModule: LiveConceptModule = liveConceptRegistry[concept];
+  const Renderer = activeModule.Renderer;
   const connectionLabel = connectionStatusAxLabel(state.connection);
   const scrollIdentity = conversation?.threadKey ?? "roster";
   const scrollAnchorKey = `${concept}:${surface}:${scrollIdentity}`;
@@ -542,6 +570,31 @@ export function LiveConceptHost({
       if (observedScroll || saved !== undefined) capture();
     };
   }, [scrollAnchorKey, uiStore]);
+  const frameState: ConversationFrameState = {
+    concept,
+    platform,
+    appearance,
+    contentSize,
+    reducedMotion,
+    phase:
+      conversationStatus === "opening"
+        ? "loading"
+        : conversationResult.failed || conversationError !== null
+          ? "read-error"
+          : conversation === null
+            ? "empty"
+            : "ready",
+    connection: state.connection,
+    conversation,
+    composer,
+    composerMode,
+    questionDrafts,
+    anchor: conversationAnchor,
+    focusedItemKey,
+    unseen,
+    openEvidenceKey,
+    evidenceTriggerKey,
+  };
   return (
     <>
       <p
@@ -551,7 +604,21 @@ export function LiveConceptHost({
       >
         {connectionLabel}
       </p>
-      <Renderer state={state} dispatch={dispatch} />
+      {surface === "conversation" &&
+      activeModule.conversationSkin !== undefined ? (
+        <ConversationFrame
+          state={frameState}
+          skin={activeModule.conversationSkin}
+          dispatch={dispatch}
+          onAnchorChange={setConversationAnchor}
+          onUnseenChange={setUnseen}
+          onFocusIntentChange={(key) =>
+            uiStore.getState().setFocusedItemKey(key)
+          }
+        />
+      ) : (
+        <Renderer state={state} dispatch={dispatch} />
+      )}
     </>
   );
 }

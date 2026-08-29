@@ -1,0 +1,104 @@
+.live-conversation-frame {
+  block-size: calc(var(--viewport-height, 100dvh) - var(--keyboard-inset, 0px));
+  min-block-size: 0;
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr) auto auto;
+  overflow: hidden;
+}
+
+.live-conversation-frame [data-frame-part="chrome"] {
+  padding-block-start: max(var(--safe-area-top, 0px), 0.75rem);
+  flex-shrink: 0;
+}
+
+.live-conversation-frame [data-frame-part="transcript"] {
+  min-block-size: 0;
+  overflow-y: auto;
+  overscroll-behavior-y: contain;
+}
+
+.live-conversation-frame [data-frame-part="composer"] {
+  min-block-size: 0;
+  flex-shrink: 0;
+  padding-block-end: var(--safe-area-bottom, 0px);
+}
+
+.live-conversation-frame button,
+.live-conversation-frame input,
+.live-conversation-frame textarea {
+  min-inline-size: 44px;
+  min-block-size: 44px;
+}
+
+.live-conversation-frame .live-conversation-composer {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto auto;
+  align-items: end;
+  gap: 0.5rem;
+}
+
+.live-conversation-frame .live-conversation-composer__modes {
+  grid-column: 1 / -1;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+}
+
+.live-conversation-frame .live-conversation-composer__mode > span {
+  display: block;
+}
+
+.live-conversation-frame .live-conversation-composer__field,
+.live-conversation-frame .live-conversation-composer textarea {
+  inline-size: 100%;
+}
+
+.live-conversation-frame .live-conversation-composer textarea {
+  max-block-size: calc(6 * 1.5em + 1rem);
+  overflow-y: auto;
+  resize: none;
+}
+
+.live-conversation-frame .live-conversation-frame__chrome,
+.live-conversation-frame .live-conversation-frame__chrome-controls,
+.live-conversation-frame .live-conversation-frame__question-actions {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.live-conversation-frame .live-conversation-frame__chrome-ornament {
+  min-inline-size: 0;
+  flex: 1;
+}
+
+.live-conversation-frame .live-conversation-frame__status:empty {
+  display: none;
+}
+
+.live-conversation-frame .live-conversation-frame__feed {
+  display: contents;
+}
+
+.live-conversation-frame .live-conversation-frame__question-options {
+  display: grid;
+  gap: 0.5rem;
+}
+
+.live-conversation-frame .live-conversation-frame__question-option {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  gap: 0.5rem;
+}
+
+.live-conversation-frame .live-conversation-visually-hidden {
+  position: absolute;
+  inline-size: 1px;
+  block-size: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}

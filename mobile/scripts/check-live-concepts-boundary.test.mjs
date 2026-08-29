@@ -25,6 +25,8 @@ const rejections = [
   ["evil prefix", ".live-concept-evil { color: red; }", "unscoped-css", "css"],
   ["mixed unscoped", ".live-concept-switcher__row, body { color: red; }", "unscoped-css", "css"],
   ["unscoped descendant", ".live-concept-switcher body { color: red; }", "unscoped-css", "css"],
+  ["evil frame prefix", ".live-conversation-frame-evil { color: red; }", "unscoped-css", "css"],
+  ["mixed frame unscoped", ".live-conversation-frame, body { color: red; }", "unscoped-css", "css"],
 ];
 
 function slug(name) {
@@ -44,6 +46,15 @@ async function buildTempTree() {
   await writeFile(
     join(liveConcepts, "good-scoped.css"),
     ".concept-stillwater .sw-row {}\n",
+    "utf8",
+  );
+
+  // Accepted: the production-owned shared conversation frame root.
+  await writeFile(
+    join(liveConcepts, "good-conversation-frame-scoped.css"),
+    ".live-conversation-frame {}\n" +
+      ".live-conversation-frame .live-conversation-composer textarea {}\n" +
+      ".live-conversation-frame__status:empty {}\n",
     "utf8",
   );
 
@@ -107,6 +118,13 @@ describe("checkLiveConceptBoundary", () => {
         violations.find((v) => v.file.includes("good-switcher-scoped.css")),
         undefined,
         "scoped .live-concept-switcher CSS should not be flagged",
+      );
+      assert.equal(
+        violations.find((v) =>
+          v.file.includes("good-conversation-frame-scoped.css"),
+        ),
+        undefined,
+        "scoped .live-conversation-frame CSS should not be flagged",
       );
     } finally {
       await rm(root, { recursive: true, force: true });

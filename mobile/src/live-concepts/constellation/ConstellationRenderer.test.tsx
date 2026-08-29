@@ -268,7 +268,7 @@ function buildState(
     concept: "constellation",
     platform: "ios",
     appearance: "dark",
-    textScale: "standard",
+    textScale: "large",
     reducedMotion,
     surface,
     connection: {

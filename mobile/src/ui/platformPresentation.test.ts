@@ -12,7 +12,7 @@
  * flushes, or source regex. `EventTarget.dispatchEvent` is synchronous, so
  * assertions follow dispatch directly.
  */
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { ContentSizeCategory } from "../native/contract";
 import {
   applyPlatformPresentation,
@@ -821,5 +821,59 @@ describe("7C coordinator — ownership token guard", () => {
     expect(
       document.documentElement.style.getPropertyValue("--viewport-height"),
     ).toBe(`${window.innerHeight}px`);
+  });
+});
+
+describe("conversation focus settlement", () => {
+  beforeEach(resetDocument);
+  afterEach(restoreTestEnvironment);
+
+  it("keeps token semantics and scrolls a newly focused control only when panned outside", async () => {
+    const fakeWindow = new EventTarget() as unknown as Window &
+      typeof globalThis & { innerHeight: number };
+    (fakeWindow as { innerHeight: number }).innerHeight = 852;
+    const viewport = createFakeVisualViewport({ height: 500, offsetTop: 47 });
+    const coordinator = createViewportCoordinator({
+      document,
+      visualViewport: viewport,
+      window: fakeWindow,
+    });
+    coordinator.start();
+    expect(
+      document.documentElement.style.getPropertyValue("--viewport-height"),
+    ).toBe("852px");
+    expect(
+      document.documentElement.style.getPropertyValue("--keyboard-inset"),
+    ).toBe("305px");
+
+    const control = document.createElement("button");
+    document.body.append(control);
+    let rect = { top: 0, bottom: 44 };
+    control.getBoundingClientRect = () =>
+      ({
+        ...rect,
+        left: 0,
+        right: 100,
+        width: 100,
+        height: rect.bottom - rect.top,
+        x: 0,
+        y: rect.top,
+        toJSON: () => ({}),
+      }) as DOMRect;
+    const scrollIntoView = vi.fn(() => {
+      rect = { top: 47, bottom: 91 };
+    });
+    control.scrollIntoView = scrollIntoView;
+    control.focus();
+
+    await coordinator.settleFocusedControlInVisualViewport(control);
+    expect(scrollIntoView).toHaveBeenCalledWith({
+      block: "nearest",
+      inline: "nearest",
+    });
+    expect(document.activeElement).toBe(control);
+    expect(control.getBoundingClientRect().top).toBeGreaterThanOrEqual(47);
+    expect(control.getBoundingClientRect().bottom).toBeLessThanOrEqual(547);
+    coordinator.stop();
   });
 });

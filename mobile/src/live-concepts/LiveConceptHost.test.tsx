@@ -23,6 +23,7 @@ import { createNavigationStore } from "../state/navigation";
 import { createPreferencesStore } from "../state/preferences";
 import { createRosterStore } from "../state/roster";
 import { FakeProfileService } from "../test/fakeProfileService";
+import type { ConversationSkin } from "./conversation/contract";
 import { DISPLAY_LIMITS, TRUNCATION_MARKER } from "./display-text";
 import {
   LiveConceptHost,
@@ -30,6 +31,7 @@ import {
   type LiveConceptHostRuntime,
 } from "./LiveConceptHost";
 import { createLiveConceptUiStore } from "./live-ui-store";
+import { liveConceptRegistry } from "./registry";
 
 const capabilities: MobileCapabilities = {
   send: true,
@@ -239,6 +241,37 @@ afterEach(() => {
 });
 
 describe("LiveConceptHost ownership", () => {
+  it("adapts a migrated module into the shared frame without exposing host state", async () => {
+    const harness = makeHarness();
+    await openConversation(
+      harness,
+      conversation([{ kind: "user", id: "frame-user", text: "Frame item" }]),
+    );
+    const testSkin: ConversationSkin = {
+      id: "stillwater",
+      className: "host-frame-skin",
+      composerAppearance: { density: "compact", accent: "forest" },
+      renderNarrativeItem: ({ body }) => body,
+      renderActivityMarker: ({ item }) => item.label.text,
+      renderConversationChrome: ({ title }) => title.text,
+    };
+    const migrated = liveConceptRegistry.stillwater as {
+      conversationSkin?: ConversationSkin;
+    };
+    migrated.conversationSkin = testSkin;
+    try {
+      render(<LiveConceptHost {...harness.props} surface="conversation" />);
+      expect(screen.getByRole("main", { name: "Conversation" })).toHaveClass(
+        "host-frame-skin",
+      );
+      expect(screen.getByText("Frame item")).toBeVisible();
+      fireEvent.click(screen.getByRole("button", { name: "Back" }));
+      expect(harness.callbacks.onBack).toHaveBeenCalledTimes(1);
+    } finally {
+      delete migrated.conversationSkin;
+    }
+  });
+
   it("redacts and bounds mutation errors before renderer DOM creation", async () => {
     const harness = makeHarness();
     await openConversation(
@@ -578,7 +611,17 @@ describe("LiveConceptHost ownership", () => {
     const root = container.querySelector("[data-concept-root]");
     expect(root).toHaveAttribute("data-platform", "android");
     expect(root).toHaveAttribute("data-appearance", "dark");
-    expect(root).toHaveAttribute("data-text-scale", "accessibility");
+    expect(root).toHaveAttribute("data-text-scale", "accessibilityLarge");
+    for (const category of [
+      "large",
+      "extraExtraLarge",
+      "accessibilityExtraExtraExtraLarge",
+    ] as const) {
+      act(() => {
+        harness.runtime.preferences.getState().setContentSize(category);
+      });
+      expect(root).toHaveAttribute("data-text-scale", category);
+    }
     expect(
       screen.getByRole("button", { name: "Use send mode" }),
     ).toBeDisabled();

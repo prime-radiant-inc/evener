@@ -15,9 +15,16 @@ import { composeAskAnswers } from "../components/composer/composeAskAnswers";
 import type { MobileConversation } from "../conversation/model";
 import type { LiveConversationService } from "../services/conversation";
 import type { RosterService } from "../services/roster";
-import type { LiveConversationState } from "../state/conversation";
+import type {
+  LiveActivitySink,
+  LiveConversationState,
+} from "../state/conversation";
 import type { RosterState } from "../state/roster";
-import type { LiveConceptIntent, QuestionDraft } from "./contract";
+import type { LiveConceptIntent } from "./contract";
+import type {
+  ConversationFrameAction,
+  QuestionDraft,
+} from "./conversation/primitives";
 import {
   createLiveIntentDispatcher,
   type LiveConceptDispatcherCallbacks,
@@ -149,12 +156,16 @@ interface ConvRecord {
   openProjectedCalls: number;
   readProjectionCalls: number;
   subscribeNotificationsCalls: number;
+  rehydrateCalls: number;
+  rehydrateService: unknown | null;
+  rehydrateSink: unknown | null;
   // Optional overrides: if set, these replace the default resolved methods.
   loadOlderImpl?: () => Promise<void>;
   sendImpl?: (svc: unknown, input: InputItem[]) => Promise<void>;
   steerImpl?: (svc: unknown, input: InputItem[]) => Promise<void>;
   queueImpl?: (svc: unknown, input: InputItem[]) => Promise<void>;
   interruptImpl?: () => Promise<void>;
+  rehydrateImpl?: () => Promise<void>;
 }
 
 function createFakeConversationStore(
@@ -203,6 +214,9 @@ function createFakeConversationStore(
     openProjectedCalls: 0,
     readProjectionCalls: 0,
     subscribeNotificationsCalls: 0,
+    rehydrateCalls: 0,
+    rehydrateService: null,
+    rehydrateSink: null,
     ...initial,
   };
   const reactive = {
@@ -256,6 +270,12 @@ function createFakeConversationStore(
       rec.interruptCalls++;
       rec.interruptService = service;
       return rec.interruptImpl ? rec.interruptImpl() : Promise.resolve();
+    },
+    rehydrate(service: unknown, sink: unknown) {
+      rec.rehydrateCalls++;
+      rec.rehydrateService = service;
+      rec.rehydrateSink = sink;
+      return rec.rehydrateImpl ? rec.rehydrateImpl() : Promise.resolve();
     },
     publishExternalError(
       message: string,
@@ -454,6 +474,8 @@ interface RecordedCallbacks {
   new: number;
   settings: number;
   voice: number;
+  evidence: Array<{ evidenceKey: string; triggerKey: string }>;
+  closeEvidence: number;
 }
 
 function createFakeCallbacks(
@@ -471,6 +493,8 @@ function createFakeCallbacks(
     new: 0,
     settings: 0,
     voice: 0,
+    evidence: [],
+    closeEvidence: 0,
   };
   const callbacks: LiveConceptDispatcherCallbacks = {
     onOpenConceptSwitcher: () => {
@@ -494,6 +518,12 @@ function createFakeCallbacks(
     },
     onOpenVoice: () => {
       recorded.voice++;
+    },
+    onOpenEvidence: (evidenceKey, triggerKey) => {
+      recorded.evidence.push({ evidenceKey, triggerKey });
+    },
+    onCloseEvidence: () => {
+      recorded.closeEvidence++;
     },
   };
   return { callbacks, recorded };
@@ -581,11 +611,18 @@ function makeRuntime(overrides: Partial<LiveIntentDispatcherRuntime> = {}): {
   const rosterStore = createFakeRosterStore();
   const liveService = createFakeLiveService();
   const rosterService = createFakeRosterService();
+  const activitySink: LiveActivitySink = {
+    setLiveView: () => true,
+    applyLiveNotification: () => ({ applied: true }) as never,
+    setLiveCapabilities: () => true,
+    reset: () => undefined,
+  };
   const runtime: LiveIntentDispatcherRuntime = {
     rosterStore,
     rosterService,
     conversationStore,
     conversationService: liveService,
+    activitySink,
     ...overrides,
   };
   return {
@@ -795,6 +832,89 @@ describe("createLiveIntentDispatcher — loadOlder never reopens", () => {
     );
     dispatch({ type: "loadOlder" });
     expect(conversationStore.__record().loadOlderCalls).toBe(0);
+  });
+});
+
+describe("createLiveIntentDispatcher — generation-fenced retryRead", () => {
+  it("rehydrates through the existing service and current activity sink", () => {
+    const { runtime, conversationStore, liveService } = makeRuntime();
+    const { callbacks } = createFakeCallbacks();
+    const dispatch = createLiveIntentDispatcher(
+      runtime,
+      callbacks,
+      createFakeUiStore(),
+    );
+    dispatch({ type: "retryRead" });
+    const record = conversationStore.__record();
+    expect(record.rehydrateCalls).toBe(1);
+    expect(record.rehydrateService).toBe(liveService);
+    expect(record.rehydrateSink).toBe(runtime.activitySink);
+  });
+
+  it("publishes a current retry rejection through the store-owned fence", async () => {
+    const { runtime, conversationStore } = makeRuntime();
+    conversationStore.__set({
+      ref: "retry-ref",
+      conversationGeneration: 4,
+      rehydrateImpl: () => Promise.reject(new Error("private retry detail")),
+    });
+    const { callbacks } = createFakeCallbacks();
+    createLiveIntentDispatcher(
+      runtime,
+      callbacks,
+      createFakeUiStore(),
+    )({
+      type: "retryRead",
+    });
+    await flush();
+    const record = conversationStore.__record();
+    expect(record.pubErrorRef).toBe("retry-ref");
+    expect(record.pubErrorGen).toBe(4);
+    expect(record.error).toBe("Conversation operation failed");
+    expect(record.error).not.toContain("private retry detail");
+  });
+
+  it("suppresses a retry rejection after generation advances", async () => {
+    let rejectRetry: ((reason: Error) => void) | undefined;
+    const retry = new Promise<void>((_resolve, reject) => {
+      rejectRetry = reject;
+    });
+    const { runtime, conversationStore } = makeRuntime();
+    conversationStore.__set({
+      ref: "retry-ref",
+      conversationGeneration: 7,
+      rehydrateImpl: () => retry,
+    });
+    const { callbacks } = createFakeCallbacks();
+    createLiveIntentDispatcher(
+      runtime,
+      callbacks,
+      createFakeUiStore(),
+    )({
+      type: "retryRead",
+    });
+    conversationStore.__set({ conversationGeneration: 8, error: null });
+    rejectRetry?.(new Error("stale private retry detail"));
+    await flush();
+    const record = conversationStore.__record();
+    expect(record.pubErrorRef).toBe("retry-ref");
+    expect(record.pubErrorGen).toBe(7);
+    expect(record.error).toBeNull();
+  });
+
+  it("does nothing without the existing conversation service", () => {
+    const { runtime, conversationStore } = makeRuntime({
+      conversationService: null,
+    });
+    const { callbacks } = createFakeCallbacks();
+    createLiveIntentDispatcher(
+      runtime,
+      callbacks,
+      createFakeUiStore(),
+    )({
+      type: "retryRead",
+    });
+    expect(conversationStore.__record().rehydrateCalls).toBe(0);
   });
 });
 
@@ -1014,6 +1134,26 @@ describe("createLiveIntentDispatcher — RootShell callbacks", () => {
     );
     dispatch({ type: "openVoice" });
     expect(recorded.voice).toBe(1);
+  });
+
+  it("routes opaque evidence keys without deriving source identifiers", () => {
+    const { runtime } = makeRuntime();
+    const { callbacks, recorded } = createFakeCallbacks();
+    const dispatch = createLiveIntentDispatcher(
+      runtime,
+      callbacks,
+      createFakeUiStore(),
+    );
+    dispatch({
+      type: "openEvidence",
+      evidenceKey: "opaque-evidence",
+      triggerKey: "opaque-trigger",
+    });
+    dispatch({ type: "closeEvidence" });
+    expect(recorded.evidence).toEqual([
+      { evidenceKey: "opaque-evidence", triggerKey: "opaque-trigger" },
+    ]);
+    expect(recorded.closeEvidence).toBe(1);
   });
 });
 
@@ -2033,24 +2173,18 @@ describe("createLiveIntentDispatcher — error safety (I1/I2)", () => {
 
 describe("createLiveIntentDispatcher — compile-time exhaustiveness", () => {
   it("LiveConceptIntent has exactly the expected variants", () => {
+    type Mutable<Action> = Action extends object
+      ? { -readonly [Key in keyof Action]: Action[Key] }
+      : Action;
     type Expected =
+      | Mutable<ConversationFrameAction>
       | { type: "switchConcept"; concept: ConceptId }
-      | { type: "openConceptSwitcher" }
       | { type: "refreshRoster" }
       | { type: "setRosterQuery"; value: string }
       | { type: "openConversation"; key: string }
-      | { type: "loadOlder" }
-      | { type: "openWork" }
       | { type: "closeWork" }
-      | { type: "setDraft"; value: string }
-      | { type: "setComposerMode"; mode: "send" | "steer" | "queue" }
-      | { type: "submit"; mode: "send" | "steer" | "queue" }
-      | { type: "interrupt" }
       | { type: "toggleTool"; key: string }
       | { type: "toggleWork"; key: string }
-      | { type: "setQuestionDraft"; key: string; value: QuestionDraft }
-      | { type: "submitQuestion"; key: string }
-      | { type: "goBack" }
       | { type: "openNew" }
       | { type: "openSettings" }
       | { type: "openVoice" };
