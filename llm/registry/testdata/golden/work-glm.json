@@ -10,9 +10,6 @@
     "stream_endpoint": "/chat/completions",
     "models_endpoint": "/models",
     "count_tokens_endpoint": "-",
-    "vars": {
-      "BASE_URL": "https://api.openai.com/v1"
-    },
     "vars_env": {
       "BASE_URL": "OPENAI_BASE_URL"
     }

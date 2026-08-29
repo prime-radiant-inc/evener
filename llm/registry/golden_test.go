@@ -71,11 +71,17 @@ surface = "anthropic"
 context_window = 40960
 `
 
+// goldenSecrets are the credential values of the golden environment; the
+// test asserts none of them ever appears in a serialized Resolved record.
+var goldenSecrets = map[string]string{
+	"ANTHROPIC_API_KEY": "SECRET-anthropic", "OPENAI_API_KEY": "SECRET-openai", "GROQ_API_KEY": "SECRET-groq",
+	"OPENROUTER_API_KEY": "SECRET-openrouter", "KIMI_API_KEY": "SECRET-kimi", "MINIMAX_API_KEY": "SECRET-minimax",
+	"MOONSHOT_API_KEY": "SECRET-moonshot", "AZURE_API_KEY": "SECRET-azure", "AWS_BEARER_TOKEN_BEDROCK": "SECRET-bedrock",
+	"PORTKEY_KEY": "SECRET-portkey", "XAI_API_KEY": "SECRET-xai",
+}
+
 var goldenEnv = map[string]string{
-	"ANTHROPIC_API_KEY": "sk-ant", "OPENAI_API_KEY": "sk-openai", "OPENAI_ORG_ID": "org-golden", "GROQ_API_KEY": "gsk",
-	"OPENROUTER_API_KEY": "sk-or", "KIMI_API_KEY": "kimi", "MINIMAX_API_KEY": "mm", "MOONSHOT_API_KEY": "moon",
-	"AZURE_API_KEY": "az", "AWS_BEARER_TOKEN_BEDROCK": "bt", "PORTKEY_KEY": "pk", "XAI_API_KEY": "xk",
-	"GOOGLE_VERTEX_PROJECT": "my-project", "GOOGLE_VERTEX_LOCATION": "global", "OLLAMA_HOST": "localhost",
+	"OPENAI_ORG_ID": "org-golden", "GOOGLE_VERTEX_PROJECT": "my-project", "GOOGLE_VERTEX_LOCATION": "global", "OLLAMA_HOST": "localhost",
 }
 
 type goldenView struct {
@@ -95,6 +101,7 @@ func goldenRegistry(t *testing.T, extraEnv map[string]string) *Registry {
 	_ = os.WriteFile(oauthRecordPath(state, "openai-codex"), []byte("{}"), 0o600)
 	env := map[string]string{"HOME": home}
 	maps.Copy(env, goldenEnv)
+	maps.Copy(env, goldenSecrets)
 	maps.Copy(env, extraEnv)
 	r := fixtureLoad(t, env, goldenConfig, WithStateRoot(state))
 	r.ApplyLive("ollama", []Model{{ID: "llama3:8b", Caps: Caps{ContextWindow: new(8192)}}, {ID: "qwen3:8b"}})
@@ -173,7 +180,7 @@ func TestGoldenResolved(t *testing.T) {
 			}
 		}},
 		{"openai-gpt-5.5-proxy", "openai/gpt-5.5", map[string]string{"OPENAI_BASE_URL": "https://proxy.example/v1"}, func(t *testing.T, res Resolved) {
-			if res.Transport.BaseURL != "https://proxy.example/v1" || res.Credential.Source != "env:OPENAI_API_KEY" {
+			if res.Transport.BaseURL != "https://proxy.example/v1" || res.Credential.Source != "env:OPENAI_API_KEY" || res.Credential.Value != goldenSecrets["OPENAI_API_KEY"] {
 				t.Errorf("override must keep the inherited credential: %+v %+v", res.Transport, res.Credential)
 			}
 		}},
@@ -395,6 +402,11 @@ func TestGoldenResolved(t *testing.T) {
 				t.Fatal(err)
 			}
 			got = append(got, '\n')
+			for name, secret := range goldenSecrets {
+				if bytes.Contains(got, []byte(secret)) {
+					t.Fatalf("%s: the serialized record contains the value of %s", c.ref, name)
+				}
+			}
 			path := filepath.Join("testdata", "golden", c.name+".json")
 			if *updateGolden {
 				_ = os.MkdirAll(filepath.Dir(path), 0o755)

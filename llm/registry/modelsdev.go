@@ -184,9 +184,12 @@ func templateURL(api string) (string, []string) {
 	return out, vars
 }
 
+// isKeyVar reports whether an env var name is credential-shaped. Substring
+// matches on purpose: AWS_BEARER_TOKEN_BEDROCK and AWS_ACCESS_KEY_ID must
+// never become template variables, whose resolved values Resolve exposes.
 func isKeyVar(name string) bool {
-	return strings.HasSuffix(name, "_API_KEY") || strings.HasSuffix(name, "_KEY") ||
-		strings.HasSuffix(name, "_TOKEN") || strings.HasSuffix(name, "_PAT")
+	return strings.Contains(name, "_KEY") || strings.Contains(name, "_TOKEN") ||
+		strings.Contains(name, "_SECRET") || strings.HasSuffix(name, "_PAT")
 }
 
 // FromModelsDev converts a raw models.dev api.json into registry providers

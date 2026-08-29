@@ -480,11 +480,23 @@ func (r *Registry) buildTransport(rec *record, row Model, proto string) (Transpo
 	for _, name := range slices.Compact(missing) {
 		warnings = append(warnings, "unresolved variable "+name)
 	}
+	// Expose only the variables the templates reference: URL parts such as a
+	// region, resource, or project. A vars_env name is never a credential by
+	// construction (the converter routes credential-shaped names to
+	// APIKeyEnv), but the templates are the authoritative list, and Resolved
+	// is serialized by `evener models inspect`.
 	resolved := map[string]string{}
-	for _, m := range []map[string]string{t.Vars, t.VarsEnv, rec.userVars} {
-		for name := range m {
-			if v, ok := lookup(name); ok {
-				resolved[name] = v
+	for _, tpl := range []string{rec.head.Transport.BaseURL, t.Endpoint, t.StreamEndpoint, t.ModelsEndpoint, t.CountTokensEndpoint} {
+		for _, m := range placeholderRe.FindAllStringSubmatch(tpl, -1) {
+			if v, ok := lookup(m[1]); ok {
+				resolved[m[1]] = v
+			}
+		}
+	}
+	if row.Transport != nil && row.Transport.BaseURL != "" {
+		for _, m := range placeholderRe.FindAllStringSubmatch(row.Transport.BaseURL, -1) {
+			if v, ok := lookup(m[1]); ok {
+				resolved[m[1]] = v
 			}
 		}
 	}
