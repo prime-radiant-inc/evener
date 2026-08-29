@@ -579,7 +579,8 @@ export function LiveConceptHost({
     phase:
       conversationStatus === "opening"
         ? "loading"
-        : conversationResult.failed || conversationError !== null
+        : conversationResult.failed ||
+            (conversationError !== null && pendingMutation?.status !== "failed")
           ? "read-error"
           : conversation === null
             ? "empty"
