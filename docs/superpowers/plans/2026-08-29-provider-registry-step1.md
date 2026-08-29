@@ -6787,6 +6787,7 @@ git commit -m "feat(registry): Resolve with lookup order, alias seeding, glob or
 package registry
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -6893,7 +6894,7 @@ func TestRefresh_SanityFloorsAndFailuresKeepCache(t *testing.T) {
 			t.Errorf("%s: expected an error", name)
 		}
 		after, _, _ := readCache(state)
-		if string(after) != string(before) {
+		if !bytes.Equal(after, before) {
 			t.Errorf("%s: a failed refresh must keep the previous cache", name)
 		}
 	}
@@ -7258,12 +7259,14 @@ func (r *Registry) maybeStartRefresh(o *options) {
 	}
 	r.refreshStarted = true
 	r.refreshDone = make(chan struct{})
-	stateRoot, now, logf := o.stateRoot, o.now, o.logf
+	// The sanity floors compare against the embedded snapshot (spec §6.4);
+	// o.snapshot is nil in production and the injected snapshot in tests.
+	stateRoot, now, logf, baseline := o.stateRoot, o.now, o.logf, o.snapshot
 	go func() {
 		defer close(r.refreshDone)
 		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 		defer cancel()
-		if _, err := Refresh(ctx, RefreshOptions{StateRoot: stateRoot, Fetcher: fetcher, Now: now}); err != nil {
+		if _, err := Refresh(ctx, RefreshOptions{StateRoot: stateRoot, Fetcher: fetcher, Now: now, Baseline: baseline}); err != nil {
 			logf("models.dev refresh: %v (keeping the previous catalog)", err)
 		}
 	}()
