@@ -1,15 +1,14 @@
 # Provider Registry and Capability Resolution
 
-**Date:** 2026-08-28 (revision 8, after six adversarial review rounds)
+**Date:** 2026-08-28 (revision 9, after seven adversarial review rounds)
 **Status:** Draft for review
 **Replaces:** the LiteLLM-vendored model catalog, `providercfg.CompatConfig`,
 `openaicompat.ProviderQuirks` presets, the vendor wrapper adapter packages, the
-behavior-tag split, env-seeded adapter factories, and `api_style`. No backward
-compatibility is kept, with one deliberate exception: a one-time pre-load
-migration (§14.1) rewrites an old-schema `providers.toml` into the new schema
-(preserving the default and the old instance names), renames the Codex OAuth
-record and the renamed providers' credential-store entries, so existing
-installs keep working instead of failing.
+behavior-tag split, env-seeded adapter factories, and `api_style`. This is a
+**flag day** (Jesse, 2026-08-29): no runtime compatibility code, no
+migration. An old-schema `providers.toml` fails to load with a pointer to
+this document, old instance names and environment variables stop meaning
+anything, and §14.1 lists what a user does once after upgrading.
 
 ## 1. Goals
 
@@ -219,6 +218,7 @@ type Caps struct {
     MaxOutputTokens   *int       // catalog/live values ≥ ContextWindow are cleared (§7.4)
     Tools             *bool
     StructuredOutput  *bool      // json_schema accepted; false downgrades to json_object at build time
+    Sampling          *bool      // false: the model rejects temperature/top_p; the builder omits both (models.dev `temperature: false`)
     Reasoning         *bool      // false: no reasoning controls, no thinking replay, empty effort list
     ReasoningControls []string   // subset of effort, budget_tokens, toggle (models.dev names); replace on overlay
     EffortValues      []string   // wire-spelled ladder, ascending; replace on overlay; non-empty implies effort
@@ -332,10 +332,19 @@ provider or `"provider-id/id"`).
 
 `Base` inheritance is the same at every layer: the record's merged form is
 its base's merged form with the record's own fields overlaid, models
-included unless `InheritModels = false`. `Hidden` is not inherited; it is
-recomputed after the merge at both levels. `Resolve` on a hidden row or a
-hidden provider still succeeds (the user named it) with `Warnings: hidden`;
-only listings hide it.
+included unless `InheritModels = false`. An explicit `base` always wins over
+a name match (`[providers.openai] base = "openai-codex"` is a Codex instance
+named `openai`); `base` names resolve against the curated registry (layers
+1–3) only, never against user instances, so chains cannot loop through the
+user layer, and an instance's `ProviderID` is the first registry id on its
+chain. `Hidden` is not inherited; it is recomputed after the merge at both
+levels. `Resolve` on a hidden row or a hidden provider still succeeds (the
+user named it) with `Warnings: hidden`; only listings hide it. A dangling
+`alias_of` in the **curated** layer (upstream dropped the target between
+releases; the runtime cache of §6.4 can do that) degrades the row to
+`Hidden` with `Warnings: dangling alias` instead of failing the load; a
+dangling alias in the user layer, and any dangling alias seen by the refresh
+script, is an error.
 
 **Cross-protocol rule.** Any record (instance or model) whose resolved
 protocol differs from the record it inherits from does **not** inherit the
@@ -399,7 +408,7 @@ the effective order of §4.1 (1 → 2 → 3 → live → 4).
 | 1 | **Upstream snapshot** | `llm/data/models.dev.json.gz`, the raw models.dev `api.json`, converted at load (§6.1) | `make refresh-model-catalog` |
 | 2 | **Upstream cache** | `<state-root>/catalog/models.dev.json` + `.meta` (etag, fetched-at), same converter | background, 24h (§6.4) |
 | 3 | **Curated overlay** | `llm/data/providers_overlay.toml`, hand-maintained | with the release |
-| 4 | **User config** | `<config-root>/providers.toml` (`cmdutil.DefaultConfigRoot()`, `$XDG_CONFIG_HOME/evener`, or the `EVENER_PROVIDERS_CONFIG` path; `credentials.toml` is its sibling, as today, `cmd/evener-hub/main.go:222-243`) | by the user or hub |
+| 4 | **User config** | `<config-root>/providers.toml` (`cmdutil.DefaultConfigRoot()`, `$XDG_CONFIG_HOME/evener`, or the `EVENER_PROVIDERS_CONFIG` path, called `<path>` below; `credentials.toml` is its sibling, as today, `cmd/evener-hub/main.go:222-243`; OAuth records stay under the state root at `auth/<instance>.json`, `auth/openai/storage.go:79-99`) | by the user or hub |
 | live | **Live listing** | the instance's `ModelsEndpoint` | per process, cached |
 
 Layer 2 replaces layer 1 wholesale when its fetched-at timestamp is newer
@@ -570,7 +579,7 @@ Model-level mapping:
 | `tool_call`, `structured_output` | `Tools`, `StructuredOutput` |
 | `reasoning` | `Reasoning` |
 | `reasoning_options[].type` (a list; 752 rows carry two or three, 1237 text rows carry an empty list) | `ReasoningControls` as the set of types present, models.dev spelling (`effort`, `budget_tokens`, `toggle`); the `effort` entry's `values` → `EffortValues` with `none` dropped (evener's `none` clears the setting); values outside evener's vocabulary (`default`, `null`, one descending ladder) are kept verbatim; `ClampReasoningEffort` skips entries it cannot rank and passes the request through, as today (`llm/types.go:699-733`) |
-| `temperature: false` | the row's protocol temperature and top-p paths set `false` in `Fields` (`temperature`/`top_p` on the OpenAI protocols and anthropic, `generationConfig.temperature`/`generationConfig.topP` on google) |
+| `temperature: false` | `Sampling = false`, a fact (so alias rows inherit it); the builder then omits the protocol's temperature and top-p paths (`temperature`/`top_p` on the OpenAI protocols and anthropic, `generationConfig.temperature`/`generationConfig.topP` on google) regardless of `Fields` |
 | `modalities.input` | `InputModalities` |
 | `knowledge` | `KnowledgeCutoff` |
 | `status` | `Model.Status` |
@@ -601,35 +610,32 @@ the merge order of §4.1 applies to them.
   (`auth = bearer`, `models_endpoint = /models`, `count_tokens_endpoint =
   "-"`).
 - **Base URLs and their environment overrides.** Every implicit provider's
-  `base_url` is a template `{<ID>_BASE_URL}` whose curated default sits in
-  `vars`, so the variable in the environment overrides it (§9.1 order) and
-  today's public overrides keep working: `OPENAI_BASE_URL`
-  (`https://api.openai.com/v1`), `ANTHROPIC_BASE_URL`
-  (`https://api.anthropic.com/v1`), `GEMINI_BASE_URL`
-  (`https://generativelanguage.googleapis.com/v1beta`), `OPENROUTER_BASE_URL`
-  (`https://openrouter.ai/api/v1`), `MINIMAX_BASE_URL`
-  (`https://api.minimax.io/anthropic/v1`), `KIMI_BASE_URL` on `moonshotai`
-  (`https://api.moonshot.ai/v1`), `KIMI_CODING_BASE_URL` on `kimi-for-coding`
-  (`https://api.kimi.com/coding/v1`), `GLM_BASE_URL` on `zai`
-  (`https://api.z.ai/api/paas/v4`) (`cmdutil/materialize.go:32-45`,
-  `docs/llm-providers.md:157`), and by the same convention `GROQ_BASE_URL`
+  `base_url` is a template `{BASE_URL}` with the curated default in `vars`
+  and `vars_env = { BASE_URL = "<ID>_BASE_URL" }`, so an environment
+  variable overrides the URL (§9.1 order) and a gateway or proxy needs no
+  config file: `OPENAI_BASE_URL` (default `https://api.openai.com/v1`),
+  `ANTHROPIC_BASE_URL` (`https://api.anthropic.com/v1`), `GOOGLE_BASE_URL`
+  (`https://generativelanguage.googleapis.com/v1beta`), `GROQ_BASE_URL`
   (`https://api.groq.com/openai/v1`), `XAI_BASE_URL` (`https://api.x.ai/v1`),
   `CEREBRAS_BASE_URL` (`https://api.cerebras.ai/v1`), `MISTRAL_BASE_URL`
-  (`https://api.mistral.ai/v1`), `DEEPSEEK_BASE_URL`, `TOGETHERAI_BASE_URL`
-  (`https://api.together.ai/v1`, the models.dev id is `togetherai`), and
-  `ZAI_CODING_PLAN_BASE_URL`. `azure` and `azure-cognitive-services` (§9.2),
-  `amazon-bedrock` (§9.3), `google-vertex` and `google-vertex-anthropic`
-  (§9.4) keep their own templates.
-- **Key variables that differ from models.dev's**: `moonshotai` →
-  `api_key_env = [MOONSHOT_API_KEY, KIMI_API_KEY]` (today's `kimi` instance
-  reads `KIMI_API_KEY` for the Moonshot platform, `envvars/providers.go`);
-  `kimi-for-coding` → `[KIMI_CODING_API_KEY]` only (today's `kimi-anthropic`
-  variable; models.dev's `KIMI_API_KEY` for this provider collides with
-  evener's platform-key meaning, and a `KIMI_API_KEY`-only shell must not
-  turn into a Kimi coding-plan default that 401s); `zai` → `[ZHIPU_API_KEY,
-  GLM_API_KEY]`; `google` → `[GEMINI_API_KEY, GOOGLE_API_KEY]`;
+  (`https://api.mistral.ai/v1`), `TOGETHERAI_BASE_URL`
+  (`https://api.together.ai/v1`, the models.dev id is `togetherai`), and for
+  the providers whose URL models.dev supplies (`openrouter`, `deepseek`,
+  `zai`, `zai-coding-plan`, `moonshotai`, `kimi-for-coding`, `minimax`) the
+  same `<ID>_BASE_URL` name with models.dev's `api` as the default. The
+  variable's value is the full base URL **including the version segment**
+  (`https://proxy.example/v1`), matching models.dev's convention (§6.1);
+  today's version-less `ANTHROPIC_BASE_URL`/`GEMINI_BASE_URL` values and the
+  `KIMI_*`/`GLM_*`/`OPENAI_CHATGPT_BASE_URL` names stop working (flag day,
+  §14.1). `azure` and `azure-cognitive-services` (§9.2), `amazon-bedrock`
+  (§9.3), `google-vertex` and `google-vertex-anthropic` (§9.4) keep their own
+  templates.
+- **Key variable pins** where the converter's heuristic (§6.1) gives the
+  wrong answer: `google` → `api_key_env = [GEMINI_API_KEY, GOOGLE_API_KEY]`;
   `amazon-bedrock` → `[AWS_BEARER_TOKEN_BEDROCK]`; the Vertex providers →
-  empty.
+  empty. Everything else uses models.dev's variables verbatim
+  (`MOONSHOT_API_KEY`, `KIMI_API_KEY` for `kimi-for-coding`, `ZHIPU_API_KEY`
+  for `zai`, …).
 - **Implicit list** (`implicit = true`), which is also `default_order`, in
   this order: `anthropic`, `openai-codex`, `openai`, `google`, `groq`, `zai`,
   `deepseek`, `openrouter`, `xai`, `mistral`, `cerebras`, `togetherai`,
@@ -673,8 +679,9 @@ the merge order of §4.1 applies to them.
   and `previous_response_id`). **xAI**: `store`, `include` (what Pi enables
   for it). Everything else on those two stays at baseline.
 - **`openai-codex`**: `base = "openai"`, `inherit_models = false`,
-  `Transport.Auth = "oauth-openai-codex"`, `BaseURL =
-  https://chatgpt.com/backend-api/codex`, `ModelsEndpoint =
+  `Transport.Auth = "oauth-openai-codex"`, `base_url = {BASE_URL}` with the
+  default `https://chatgpt.com/backend-api/codex` and `vars_env = { BASE_URL
+  = "OPENAI_CODEX_BASE_URL" }`, `ModelsEndpoint =
   /models?client_version=0.0.0`, `CountTokensEndpoint = "-"`, `headers = {
   OpenAI-Organization = "", OpenAI-Project = "" }` (removes the inherited
   platform headers; today's Codex adapter is built without org/project,
@@ -702,15 +709,14 @@ the merge order of §4.1 applies to them.
   Sonnet 4.6+, Sonnet 5, Fable 5, Mythos, says Sonnet 4.5 is 200k, and says
   "no beta header" for the 1M models; models.dev already has Opus 4.5 and
   Haiku 4.5 at 200000; the same Sonnet 4.5 rows on gateways are left to
-  those gateways' live listings). **`[1m]` rows** for every
-  `claude-opus-4-*` and `claude-sonnet-4-*` row upstream carries (today's
-  `anthropic/models.go:93-108` synthesized `<id>[1m]` for all of them, so
-  saved sessions and launch configs hold such refs): each is `alias_of` and
-  `wire_id` naming the base row; the Sonnet 4.5 and Opus 4.5 rows add
-  `context_window = 1000000` and `headers = { anthropic-beta =
-  "context-1m-2025-08-07" }` (the live test in §13 verifies the beta still
-  works before they ship); the 4.6/4.7/4.8 rows add nothing, since their 1M
-  window is native and the alias only keeps the old spelling resolvable.
+  those gateways' live listings). **`[1m]` rows** only where the 1M window
+  is a beta: `claude-sonnet-4-5[1m]`, `claude-sonnet-4-5-20250929[1m]`,
+  `claude-opus-4-5[1m]`, and `claude-opus-4-5-20251101[1m]`, each `alias_of`
+  and `wire_id` naming the base row, `context_window = 1000000`, and
+  `headers = { anthropic-beta = "context-1m-2025-08-07" }` (the live test in
+  §13 verifies the beta still works before they ship). The 4.6+ rows are 1M
+  natively, so `claude-opus-4-6[1m]` is not a row and a saved ref spelled
+  that way fails to resolve (flag day, §14.1).
   Two Mythos rows models.dev lacks under `anthropic`: `claude-mythos-5` with
   `alias_of = "azure/claude-mythos-5"` (facts only; the transport stays
   `anthropic`'s, §4.2), and `claude-mythos-preview` with `context_window`,
@@ -720,9 +726,8 @@ the merge order of §4.1 applies to them.
   shape; the refresh report flags both when upstream adds them. No
   provider-level thinking pin: shapes, always-on, and display are derived
   per row (§7.4), and the provider `family = "claude"` covers an
-  uncataloged id. `Fields["temperature"] = false` on Claude 5 rows is
-  already true from models.dev `temperature: false`; listed here only if
-  upstream regresses. The refresh script lists every pinned row whose
+  uncataloged id. `Sampling = false` on Claude 5 rows is already true from
+  models.dev `temperature: false`; listed here only if upstream regresses. The refresh script lists every pinned row whose
   upstream value changed so pins get re-examined.
 - **Top-level glob rows** (`[models."<glob>"]`, applied to every provider):
   `"*claude-opus-4-5*"` → `thinking_shape = "budget+effort"` (models.dev
@@ -783,8 +788,15 @@ the merge order of §4.1 applies to them.
   `ResolveOllamaBaseURL` does), `Auth = optional-bearer`, `api_key_env =
   [OLLAMA_API_KEY]`, no models (live only), no `DefaultModel`.
 - **Pseudo-providers** `openai-compatible`, `anthropic-compatible`,
-  `google-compatible`: protocol only, `generic` surface, no base URL, no
-  models, `Hidden` (usable only as a `base`).
+  `google-compatible`: protocol only, `generic` surface, no models. Each
+  has `base_url = {BASE_URL}` with no default and `vars_env = { BASE_URL =
+  "<ID>_BASE_URL" }`, `auth = optional-bearer`, `api_key_env =
+  [<ID>_API_KEY]`, and `implicit = true`, so `OPENAI_COMPATIBLE_BASE_URL`
+  plus `OPENAI_COMPATIBLE_API_KEY` in the environment is an instance with
+  no config file (today's env-seeded compat instance,
+  `openaicompat/adapter.go:110-116`); with the variable unset the record
+  has no base URL and is `Hidden`, usable only as a `base`. No
+  `DefaultModel`, so never the default.
 
 Everything in `evener_model_catalog_overrides.json` today either exists
 upstream now (`gpt-5.6*`, `claude-opus-5`, `claude-sonnet-5`,
@@ -807,17 +819,19 @@ that upstream now covers.
   uses that instead.
 - If the cache is absent or older than 24h and `opts.Offline` is false, a
   goroutine fetches `https://models.dev/api.json` with `If-None-Match`,
-  validates it with the converter (must parse; must contain ≥ 90% of the
-  provider count and ≥ 90% of the model count of the embedded snapshot), and
-  writes it atomically (temp + rename). The running process keeps its
-  already-loaded registry; the refresh takes effect on the next load. A
-  failed refresh logs one line and keeps the cache.
+  validates it by running the **full layered load** against it (the
+  converter must accept it; it must contain ≥ 90% of the provider count and
+  ≥ 90% of the model count of the embedded snapshot; the curated overlay
+  must still load on top of it, with any dangling curated alias reported
+  rather than fatal, §4.2), and writes it atomically (temp + rename). The
+  running process keeps its already-loaded registry; the refresh takes
+  effect on the next load. A failed refresh or validation logs one line and
+  keeps the previous cache.
 - `EVENER_OFFLINE=1` sets `opts.Offline`. `cmdutil` test helpers set it, the
   registry fetcher is an injected `func(ctx, etag) (…)`, and the default test
   state root is a temp dir, so default tests cannot reach the network.
   Nothing else in `registry.Load` or `Resolve` performs I/O beyond reading
-  local files and environment variables; the one-time migration of §14.1
-  runs before `Load`, in `cmdutil`, not inside the registry.
+  local files and environment variables.
 - `make refresh-model-catalog` replaces the embedded snapshot (curl → gzip),
   writes `models.dev.meta.json`, runs the converter tests, and prints:
   providers added/removed, models added/removed, overlay rows upstream now
@@ -1112,7 +1126,8 @@ Body assembly runs in a fixed order:
    `ReasoningSummary`, `ImageDetail`, `ResponsesLite`, `MaxTokensField`,
    `ThinkingShape`/`ThinkingFormat`/`ReasoningControls`/`ThinkingAlwaysOn`,
    `CacheControl`, `StructuredOutput` (false downgrades `json_schema` to
-   `json_object`) all act here.
+   `json_object`), and `Sampling` (false omits the temperature and top-p
+   paths before the prune ever sees them) all act here.
 2. **Prune** by `Fields`, a denylist over an enumerated set. The registry
    owns the authoritative per-protocol path table (data, so it can seed
    `Caps.Fields` and validate config without importing protocol packages);
@@ -1192,7 +1207,7 @@ overlay or a derivation, set on the rows it applies to:
 | `codexLite` (`gpt-5.6` on the Codex backend) | `responses_lite` + `body` constants on the `openai-codex` `gpt-5.6*` glob row (§6.2, §9.5) |
 | `defaultImageDetail` (`gpt-5.4/5.5/gpt-6`) | `ImageDetail = "original"` on those rows; baseline `"high"` |
 | `reasoningSummaryLevel` (`gpt-5/gpt-6`) | `ReasoningSummary = "detailed"` on those rows, `"auto"` on the rest of `openai`; baseline `none` |
-| `isClaude5OrNewer` (temperature, adaptive, display) | `Fields["temperature"]=false` (from models.dev); `ThinkingShape = "adaptive"`, `ThinkingAlwaysOn`, and `ThinkingDisplay = "summarized"` derived (§7.4) on every instance serving those rows |
+| `isClaude5OrNewer` (temperature, adaptive, display) | `Sampling = false` (from models.dev, inherited by aliases such as the `[1m]` and Mythos rows); `ThinkingShape = "adaptive"`, `ThinkingAlwaysOn`, and `ThinkingDisplay = "summarized"` derived (§7.4) on every instance serving those rows |
 | `adaptiveThinking` for Opus/Sonnet 4.6 | derived (§7.4): adaptive, always on, no display (they still carry `budget_tokens`) |
 | the Opus 4.5 hybrid | top-level `"*claude-opus-4-5*"` glob row, which also reaches aliases of those rows |
 | `geminiSupportsMultimodalFunctionResponse` (`gemini-3`) | top-level `"*gemini-3*"` glob row |
@@ -1292,11 +1307,14 @@ them needs request signing or non-SSE framing.
 templates that may contain `{model}` and `{VAR}`; empty means the protocol
 default (§6.1), `-` means unsupported. Variables resolve in this order: the
 user layer's `Vars` (instance config), then the environment through
-`VarsEnv`, then `Vars` from the curated and upstream layers (defaults), then
-a resolve error naming the variable and the instance. That order is what
-makes `OPENAI_BASE_URL` and the other `*_BASE_URL` variables of §6.2 work:
-the curated URL is the default, the environment overrides it, and an
-explicit instance `base_url` wins over both. `HostRule` names one of two
+`VarsEnv` (a user-layer `vars_env` merges key-wise like `vars`), then `Vars`
+from the curated and upstream layers (defaults), then a resolve error naming
+the variable and the instance. That order is what makes `OPENAI_BASE_URL`
+and the other `*_BASE_URL` variables of §6.2 work: the curated URL is the
+default, the environment overrides it, and an explicit instance `base_url`
+wins over both. A variable's value is substituted verbatim; there is no
+path normalization beyond the host rules below, which is why every
+`*_BASE_URL` value carries its version segment. `HostRule` names one of two
 normalizers, the only host-aware code in the system: `vertex-location`
 derives the Vertex host from the location variable (§9.4); `ollama-host` is
 today's `envvars.ResolveOllamaBaseURL` + `NormalizeOllamaHost`
@@ -1434,10 +1452,14 @@ This is the one transport with behavior beyond auth, all of it existing code
 in `llm/providers/openai/adapter.go` and `responses.go` that moves behind the
 `Authenticator` + `RequestPreparer` pair (§8.1). Listed so nothing is lost:
 
-- the OAuth record lives at `auth/openai-codex.json`. Today it is
+- the OAuth record is per instance at `auth/<instance>.json` under the
+  state root (`auth/openai/storage.go:72-99`), so the implicit
+  `openai-codex` instance reads `auth/openai-codex.json`. Today's record is
   `auth/openai.json` (`adapter.go:114-121`, written by `evener openai login`
-  whose `--instance` defaults to `openai`); the pre-load migration of §14.1
-  renames it once;
+  whose `--instance` defaults to `openai`); nothing renames it: a stray
+  `auth/openai.json` with no `[providers.openai]` on the Codex transport
+  produces a one-line startup notice telling the user to run `evener openai
+  login` again (flag day, §14.1);
 - per-request headers from the request: `session-id`, `thread-id`,
   `x-client-request-id` (`setRequestHeaders`); `ChatGPT-Account-ID` from the
   token claims; `originator` and `User-Agent`; the inherited
@@ -1514,8 +1536,9 @@ TOML keys map onto the structs in §4 as follows: `base`, `inherit_models`,
 `api_key`, `api_key_env`, `headers`, `credential_headers`, `surface`,
 `family`, `default_model`, `cheap_model` → `Provider`; `transport` (a preset
 name), `base_url`, `host_rule`, `auth`, `auth_header`, `endpoint`,
-`stream_endpoint`, `models_endpoint`, `count_tokens_endpoint`, `vars`, `body`
-→ `Provider.Transport`; `protocol` → `Provider.Protocol`; every `Caps` field
+`stream_endpoint`, `models_endpoint`, `count_tokens_endpoint`, `vars`,
+`vars_env`, `body` → `Provider.Transport`; `protocol` → `Provider.Protocol`;
+every `Caps` field
 by its snake_case name (`context_window`, `effort_values`,
 `reasoning_controls`, `thinking_format`, `fields`, …) at the instance level
 → `Provider.Caps`, and inside `[providers.X.models."<id or glob>"]` →
@@ -1532,8 +1555,10 @@ Rules, enforced at load with errors that name the instance and key:
   implicit id = warning)
 - `protocol` must be a registered protocol; `surface` one of the four values
 - `auth` ∈ `bearer | optional-bearer | header | none | gcp-adc | oauth-openai-codex`
-- `fields` keys must be in the row's resolved-protocol prunable set (typo
-  guard)
+- `fields` keys in a provider entry or an exact row must be in that
+  record's resolved-protocol prunable set (typo guard); a glob row's keys
+  are checked against each row it matches and silently skipped for rows on
+  another protocol
 - `thinking_format`, `thinking_shape`, `max_tokens_field`, `cache_control`,
   `reasoning_field`, `host_rule`, `image_detail` are validated against their
   vocabularies; `reasoning_controls` entries must be `effort`,
@@ -1544,28 +1569,31 @@ Rules, enforced at load with errors that name the instance and key:
   instance's missing variable never blocks another; an unset variable there
   is a resolve error. In `headers` an unset variable **drops the header**
   (that is how the optional `OpenAI-Organization`/`OpenAI-Project` headers
-  work); an empty-string value removes an inherited header of that name.
+  work; today it is an error, `apikey.go:261-276`); an empty-string value
+  removes an inherited header of that name.
 - **credential inheritance stops at the endpoint**: an instance that sets
-  `base_url` to anything other than its base's `base_url` template does not
-  inherit the base's `APIKeyEnv` or credentials-store entry; unless its
-  `auth` is `none`, `optional-bearer`, `gcp-adc`, or `oauth-openai-codex`,
-  it must set `api_key`, `api_key_env`, or `credential_headers`, else
-  resolving it fails at first request with "no credential for <instance>"
-  (today's `CredentialTag` returns `""` for exactly this shape,
-  `providercfg.go:177-186`, so a gateway never receives the vendor key by
-  accident). An instance that keeps the template and only supplies `vars`
-  (the `bedrock` and `vertex` examples), or that overrides the URL through
-  the `*_BASE_URL` environment variable (§9.1), inherits normally, as
-  today's env-seeded instances do.
+  a literal `base_url` different from its base's `base_url` template does
+  not inherit the base's `APIKeyEnv`; unless its `auth` is `none`,
+  `optional-bearer`, `gcp-adc`, or `oauth-openai-codex`, it must set
+  `api_key`, `api_key_env`, or `credential_headers`, else resolving it fails
+  at first request with "no credential for <instance>". Today's
+  `CredentialTag` applies this only to the openai-compatible shape
+  (`providercfg.go:177-186`); the rule here generalizes it to every base,
+  so a gateway never receives a vendor key by accident. An instance that
+  keeps the template and supplies `vars` (the `bedrock` and `vertex`
+  examples) or overrides the URL through its `*_BASE_URL` variable (§9.1)
+  inherits normally. Credentials-store entries are looked up by instance
+  name only, as today, never through the base.
 - `WriteFile` keeps today's scrub-and-restore so hub rewrites never persist a
   credential the user did not author
 - when both `auth = bearer` and a `credential_headers.Authorization` are
   present, the header wins and no bearer is derived from the key
 
 `type`, `api_style`, `quirks`, `[instances.*]`, and `compat` are gone. A file
-that still uses them is rewritten by the migration of §14.1 before the
-registry loads; a file that mixes old and new keys after that fails to load
-with a message pointing at this document.
+that uses any of them fails to load with a message pointing at this
+document and §14.1; the CLI exits with it, and the hub starts with implicit
+instances only and shows it as a diagnostic so the user can fix the file
+from the UI.
 
 Credentials keep the existing `internal/credentials.Store` semantics (file
 entry by instance name → env vars by instance name → the provider's env
@@ -1609,7 +1637,10 @@ Ollama host helpers in `envvars` stay.
 
 The hub's instance CRUD (`cmd/evener-hub/app_instances.go`) calls the same
 functions, with the implicit-instance semantics of §5.1 (edit and
-set-default write a shadowing entry; remove is refused). The appwire types
+set-default write a shadowing entry that carries only the fields the user
+changed, never a literal `base_url` the form merely displayed, so §10's
+credential-inheritance stop does not fire on an untouched URL; remove is
+refused). The appwire types
 change shape (`appwire/types.go:2488-2523`): `InstanceEntry` drops `Type` and
 `APIStyle` and gains `Base`, `Protocol`, `Surface`, `Vars`, `Auth`,
 `Implicit`; its existing `BaseURL`, `IsDefault`, `HasStoredOAuth`,
@@ -1627,8 +1658,9 @@ covers them. The spawn credential gate (`spawn.go:649-684`) keys on
 `Transport.Auth`: `none` and `optional-bearer` need nothing;
 `oauth-openai-codex` is satisfied by the instance's OAuth record; `gcp-adc`
 by the ADC variable or file; everything else by a resolved key or
-credential header. The migration notice of §14.1 is also surfaced as a hub
-diagnostic so web-UI users see it.
+credential header. A `providers.toml` load error and the stray
+`auth/openai.json` notice (§9.5) are surfaced as hub diagnostics so web-UI
+users see them.
 
 `model/list` returns `Resolved`-derived rows straight from the registry, so
 `enrichModelDescriptors` and `applyInstanceModelOverride` are deleted.
@@ -1641,21 +1673,24 @@ diagnostic so web-UI users see it.
 `errorFromHTTPStatus`/`classifyByMessage` (`llm/errors.go:262-375`), which
 already match context-length, content-filter, quota, and not-found messages,
 carry `RetryAfter`, mark `cyber_policy_violation` retryable, and treat 413 as
-context length. Evaluation order: **specific codes** from the structured
-body, then **status**, then **message patterns**, then the **generic type**;
-a generic type such as `invalid_request_error` never short-circuits the
-message rows (today's order is status → code → message,
-`errors.go:274-282,344-365`, and the message rows must stay live so
-compaction-on-context-length keeps firing). The 429 branch keeps today's
-message check for the "usage limit" phrase (`usagelimit.go:67,90-92`) so no
-current classification is lost. The code table:
+context length. Evaluation order: **413 first** (Groq's TPM ceiling arrives
+as HTTP 413 with `code: "rate_limit_exceeded"`, and it is a per-request size
+limit that recurs on retry, so status must beat that code), then **specific
+codes** from the structured body, then **status**, then **message
+patterns**, then the **generic type**; a generic type such as
+`invalid_request_error` never short-circuits the message rows (today's order
+is status → code → message, `errors.go:274-282,344-365`, and the message
+rows must stay live so compaction-on-context-length keeps firing). The 429
+branch keeps today's message check for the "usage limit" phrase
+(`usagelimit.go:67,90-92`) so no current classification is lost. The code
+table:
 
 | Signal | Kind |
 |---|---|
+| 413 (any wording or code, including Groq's per-request TPM ceiling); codes `context_length_exceeded`, `request_too_large`; 400 matching `context length\|maximum context\|too many tokens\|reduce the length`; Anthropic `prompt is too long` (new) | `KindContextLength`, non-retryable, message verbatim |
 | codes `usage_limit_reached`, `insufficient_quota`, Kimi's quota 403 body (`llm/usagelimit.go`), or the "usage limit" phrase on 429 | `KindQuotaExceeded`, non-retryable, carries the reset time (unchanged from today; listed so it is not lost) |
-| code `rate_limit_exceeded`; other 429 | `KindRateLimit` (retryable, honors `retry-after` and `x-ratelimit-reset-*`) |
-| codes `context_length_exceeded`, `request_too_large`; 413 (any wording, including Groq's per-request TPM ceiling, which recurs on retry); 400 matching `context length\|maximum context\|too many tokens\|reduce the length`; Anthropic `prompt is too long` (new) | `KindContextLength`, non-retryable, message verbatim |
-| codes `unknown_parameter`, `unsupported_parameter` (name from `error.param`); 400 messages `Unrecognized request argument supplied: <name>` (bare token; OpenAI Chat sends `param: null` here), `Unknown parameter: '<name>'` (Responses), `Unsupported parameter: '<name>'`, `unknown field <name>` | `KindInvalidRequest` with `Hint: run evener models inspect <ref> and set fields.<name> = false` |
+| code `rate_limit_exceeded` on 429; other 429 | `KindRateLimit` (retryable, honors `retry-after` and `x-ratelimit-reset-*`) |
+| codes `unknown_parameter`, `unsupported_parameter` (name from `error.param`); 400 messages `Unrecognized request argument supplied: <name>` (bare token; OpenAI Chat sends `param: null` here), `Unknown parameter: '<name>'` (Responses), `Unsupported parameter: '<name>'`, `unknown field <name>` | `KindInvalidRequest`; when `<name>` is in the row's prunable set the hint is `Hint: run evener models inspect <ref> and set fields.<name> = false`, otherwise the generic hint below (a cap-governed or nested path such as `max_tokens` or `reasoning.summary` is not a valid `fields` key) |
 | 400 `invalid JSON body` or another generic `invalid_request_error` with no parameter token (including Anthropic's "not supported with thinking" family, which names no parameter) | `KindInvalidRequest` with `Hint: run evener models inspect <ref>; this endpoint rejected a field the registry sends — compare the pruned-field list against the provider's documentation` |
 | 401/403 otherwise, 404 with `model` in the message | as today |
 
@@ -1699,26 +1734,21 @@ error types is removed; `Provider()` returns the instance name and a new
   (only `implicit = true` providers; gcp-adc from the env var and the
   well-known file, never the metadata server: the test asserts no HTTP
   client is constructed); default selection in all four branches including
-  `XAI_API_KEY` alone, `KIMI_API_KEY` alone (`moonshotai`, not
-  `kimi-for-coding`), `GLM_API_KEY` alone (`zai`), the ADC file alone
-  (`google-vertex-anthropic` by `default_order`), and an explicit
-  `[providers.ollama]` next to `ANTHROPIC_API_KEY`; shadowing by explicit
-  entries; the credential-inheritance stop for gateways and its
-  non-application to `vars`-only instances and to `OPENAI_BASE_URL`
-  overrides; `WithInstances` injection; resolution without a credential
-  carrying the warning, and no warning for `optional-bearer`.
-- **Migration** (§14.1): an old-schema hub-materialized `providers.toml`
-  (with `default = "google"`, `[instances.glm]`, `[instances.kimi-anthropic]`,
-  a hand-authored `base_url` and `api_key`) is rewritten to a new-schema file
-  with the same default, `base =` entries for the renamed ids, and the
-  hand-authored values preserved, the original kept as
-  `providers.toml.pre-registry`, the notice printed, and the process
-  continuing; `auth/openai.json` renamed; credential-store entries renamed
-  per the id table; idempotence on a second run; a concurrent second
-  process seeing ENOENT and continuing; an existing `.pre-registry` file
-  getting a numeric suffix; a read-only config dir warning and continuing
-  with implicit instances; a mixed old/new file after migration failing to
-  load with the pointer.
+  `XAI_API_KEY` alone, `OPENAI_COMPATIBLE_BASE_URL` alone (an instance, never
+  the default), the ADC file alone (`google-vertex-anthropic` by
+  `default_order`), and an explicit `[providers.ollama]` next to
+  `ANTHROPIC_API_KEY`; shadowing by explicit entries; the
+  credential-inheritance stop for gateways and its non-application to
+  `vars`-only instances and to `OPENAI_BASE_URL` overrides; `WithInstances`
+  injection; resolution without a credential carrying the warning, and no
+  warning for `optional-bearer`.
+- **Flag day** (§14.1): an old-schema hub-materialized `providers.toml`
+  fails to load with the pointer; the CLI exits with it; the hub starts
+  with implicit instances only and surfaces it as a diagnostic; a stray
+  `auth/openai.json` produces the notice and nothing else; a
+  `credentials.toml` entry under an unknown instance name is reported by
+  `evener providers list` and ignored; the old `evener_model_catalog_overrides.json`
+  and LiteLLM data are gone from the build.
 - **Resolution**: golden `Resolved` records (JSON) for a fixed set of
   references: `groq/openai/gpt-oss-120b` (chat and responses),
   `openai/gpt-5.5`, `openai/gpt-5.6` (asserting `thinking_always_on`,
@@ -1755,9 +1785,13 @@ error types is removed; `Provider()` returns the instance name and a new
   with no effort (asserting no `reasoning` object in the built body),
   `openrouter/anthropic/claude-sonnet-4.5 --reasoning-effort high`
   (asserting `reasoning.effort == "high"` on the wire),
-  `openrouter-anthropic/minimax/minimax-m2.7` under a migrated `base =
+  `orclaude/minimax/minimax-m2.7` under a user `[providers.orclaude] base =
   "openrouter", protocol = "anthropic"` entry (asserting `/messages` and
-  OpenRouter's key), `openrouter/minimax/minimax-m2.7` (asserting the enable
+  OpenRouter's key through the cross-protocol rule),
+  `anthropic/claude-opus-4-7[1m]` (asserting it is unknown: no such row),
+  `anthropic/claude-opus-4-5[1m]` and `anthropic/claude-mythos-5` (asserting
+  `Sampling = false` inherited through the alias),
+  `openrouter/minimax/minimax-m2.7` (asserting the enable
   object with no effort), `openrouter/deepseek/deepseek-r1` and
   `kimi-for-coding/kimi-for-coding` with `--reasoning-effort high`
   (asserting the effort reaches the wire; the Kimi row also `budget` and the
@@ -1824,14 +1858,15 @@ building the new packages beside the old ones and cutting over last.
    and glob rows, config loader, merge with provenance and alias seeding,
    instances and `WithInstances`, `Resolve`, `FindModel`, derived caps, the
    prunable-path table and `Prune`, embedded snapshot, cache/refresh with
-   injected fetcher; `llm.ShapeRequest` and the interfaces of §8.1 in `llm`;
-   the pre-load migration of §14.1 in `cmdutil` (so `evener models
-   list|inspect|refresh`, which lands here, works on every existing install,
-   all of which carry an old-schema file). Nothing else consumes the
-   registry yet. The §13 golden `Resolved` records for `azure/…`,
-   `bedrock/…`, and `vertex/…` are written here, so the data model is proven
-   for the cloud providers before any cloud call is made. (~2,800 lines +
-   ~2,600 lines of tests + data.)
+   injected fetcher; `llm.ShapeRequest` and the interfaces of §8.1 in `llm`.
+   `evener models list|inspect|refresh` lands here and reads the new-schema
+   `providers.toml` only; on an install that still has an old-schema file it
+   reports the §14.1 pointer and continues with implicit instances, while
+   every other command keeps using the old loader until step 3. Nothing else
+   consumes the registry yet. The §13 golden `Resolved` records for
+   `azure/…`, `bedrock/…`, and `vertex/…` are written here, so the data model
+   is proven for the cloud providers before any cloud call is made. (~2,600
+   lines + ~2,400 lines of tests + data.)
 2. **New protocol packages** (additive): `chatcompletions` (consolidating
    `openaicompat` and `openai/chatcompletions.go`), `responses`, and
    `Resolved`-driven types added inside the existing `anthropic` and
@@ -1848,9 +1883,11 @@ building the new packages beside the old ones and cutting over last.
    and catalog branches move per §7.5; hub `model/list`, instance CRUD,
    appwire types, generated TS, and frontend dialogs; `providers
    probe|add`; `llmcall` on `LoadClient`; credentials store takes the
-   registry table; `envvars` roster, `cmdutil/seed.go`, `materialize.go`,
-   `providercfg`, `model_catalog*.go`, the LiteLLM data, the wrapper
-   packages, `openaicompat`, the old `openai` adapter, and the old
+   registry table; the old-schema load error with its §14.1 pointer and the
+   stray-record notice wired into the CLI and the hub diagnostics; `envvars`
+   roster, `cmdutil/seed.go`, `materialize.go`, `providercfg`,
+   `model_catalog*.go`, the LiteLLM data, the wrapper packages,
+   `openaicompat`, the old `openai` adapter, and the old
    `anthropic`/`google` adapter types deleted, along with the fuzz targets
    that exercise them (`llm/client_capabilities_fuzz_test.go`,
    `lcfg_config_surface_fuzz_test.go`, `client_config_edges_fuzz_test.go`,
@@ -1868,56 +1905,47 @@ building the new packages beside the old ones and cutting over last.
    inheritance rule, `WireID`), the authenticators, and the `Fields`
    baselines are designed for these three from the start.
 
-### 14.1 One-time migration
+### 14.1 Flag day
 
-`cmdutil.LoadClient` and the hub's startup run the same pre-load step, in
-`cmdutil`, before `registry.Load` (so §6.4's no-I/O rule for the registry
-holds). It operates on the config root of §5.
+There is no migration code. After upgrading, a user does the following
+once, and the release notes and the load-error pointer say so:
 
-1. **Rewrite an old-schema `providers.toml`.** If `<config-root>/providers.toml`
-   parses and contains any of the old keys (`type`, `api_style`, `quirks`,
-   `[instances.*]`, `compat`), copy it to `providers.toml.pre-registry`
-   (an existing file of that name gets a numeric suffix) and write a fresh
-   new-schema `providers.toml` derived from it:
-   - `default` is preserved, mapped through the id table below (today
-     every hub install has one, `providercfg/materialize.go:360`, set by
-     the old election order or by the user in the hub, and losing it would
-     silently change the default instance, e.g. from `google` to `openai`
-     for a user with both keys);
-   - each old instance whose name is not a registry id gets an entry
-     `[providers.<old-name>] base = "<new-id>"` from the id table: `glm` →
-     `zai`, `kimi` → `moonshotai`, `kimi-anthropic` → `kimi-for-coding`,
-     `openrouter-anthropic` → `openrouter` with `protocol = "anthropic"`,
-     `openai-compatible` → `openai-compatible` with the old `base_url`;
-     `openai` with a stored OAuth record and no API key → `openai-codex`
-     (the entry is named `openai`, `base = "openai-codex"`, so saved
-     sessions and launch configs naming `openai/…` keep the Codex backend);
-     so every ref in a saved session, `launch.toml`, or plugin `model:`
-     declaration keeps resolving;
-   - hand-authored `base_url`, `api_key`, `headers`, `credential_headers`,
-     and `[instances.X.models]` context/output/reasoning values are carried
-     over onto the corresponding entry (`compat` and `quirks` values are
-     dropped with a line in the notice naming them, since the registry now
-     derives them);
-   - one notice names both files and this document; the hub also shows it
-     as a diagnostic (§11.3). Every hub install has such a file today
-     (`cmd/evener-hub/main.go:245-262` materialized it), so the hub must
-     start rather than exit on a load error.
-2. **Rename the Codex OAuth record.** If `auth/openai.json` exists and
-   `auth/openai-codex.json` does not, rename it and add a line to the
-   notice.
-3. **Rename credential-store entries** in `credentials.toml` per the id
-   table (`glm` → `zai`, `kimi` → `moonshotai`, `kimi-anthropic` →
-   `kimi-for-coding`, `openrouter-anthropic` → `openrouter`), keeping the
-   old entry when the new name already has one, and add a line to the
-   notice.
-4. **Failure and concurrency rules.** A rename or write that fails with
-   ENOENT means another process migrated first: continue silently. Any other
-   failure (EACCES on a read-only config dir, a full disk) prints the notice
-   with the error and continues with implicit instances; nothing is lost
-   because the original file is untouched until the copy succeeds. The step
-   is idempotent: a new-schema file is left alone, and a file that mixes
-   old and new keys after migration is a load error with the pointer.
+- **`providers.toml`**: an old-schema file (`[instances.*]`, `type`,
+  `api_style`, `quirks`, `compat`) fails to load. The CLI exits with the
+  pointer; the hub starts with implicit instances only and shows the error
+  as a diagnostic (§10, §11.3). The user deletes or rewrites the file. Most
+  users need no file at all afterwards: every provider on the implicit list
+  (§6.2) exists from its key, and `*_BASE_URL` variables cover proxies. A
+  gateway or a custom-named instance is re-created with `evener providers
+  add` (§11.2).
+- **Instance names**: `kimi`, `glm`, `kimi-anthropic`, `openrouter-anthropic`,
+  and `openai-compatible`-as-a-vendor-name are gone; the registry ids are
+  `moonshotai`, `zai`, `kimi-for-coding`, and (for the anthropic-protocol
+  route to OpenRouter) a user entry `base = "openrouter", protocol =
+  "anthropic"`. A saved session, `launch.toml`, `EVENER_MODEL`, or plugin
+  `model:` declaration that names an old instance fails with the unknown
+  instance error naming the available instances.
+- **Environment variables**: `KIMI_API_KEY` now means the Kimi coding plan
+  (models.dev's convention); Moonshot's platform key is
+  `MOONSHOT_API_KEY`; `GLM_API_KEY` is `ZHIPU_API_KEY`;
+  `KIMI_CODING_API_KEY`, `KIMI_BASE_URL`, `KIMI_CODING_BASE_URL`,
+  `GLM_BASE_URL`, `GEMINI_BASE_URL` (now `GOOGLE_BASE_URL`),
+  `OPENAI_CHATGPT_BASE_URL` (now `OPENAI_CODEX_BASE_URL`), and
+  `OPENAI_COMPATIBLE_PROVIDER_QUIRKS` are not read. Every `*_BASE_URL` value
+  now includes the version segment (§6.2).
+- **Codex OAuth**: `auth/openai.json` is not read; `evener openai login`
+  writes `auth/openai-codex.json` and the instance is `openai-codex`
+  (§9.5). `openai/…` always means the platform API.
+- **Credentials store**: entries keyed by an old instance name are ignored
+  and reported by `evener providers list`; the hub's credentials pane
+  re-enters them under the new names.
+- **`[1m]` references**: only the Sonnet 4.5 and Opus 4.5 rows keep the
+  suffix (§6.2); `claude-opus-4-6[1m]` and later are unknown ids.
+- **Sessions on Fable 5 with no `--reasoning-effort`** move from the
+  injected `medium` to Anthropic's default `high` (§7.4).
+
+None of this is detected or translated at runtime, and none of the old
+files are renamed or deleted.
 
 ## 15. Decisions taken
 
@@ -1944,12 +1972,10 @@ holds). It operates on the config root of §5.
 - Implicit instances only for the curated list; everything else is opt-in
   through `providers.toml`. Resolution never requires a credential;
   requests do.
-- Today's `*_BASE_URL` overrides and `KIMI_*`/`GLM_*` variables keep
-  working through templates and `api_key_env` pins; today's instance names
-  keep resolving through migrated `base =` entries.
-- One pre-load migration (§14.1) is the only compatibility code; it rewrites
-  the old config once, renames the Codex record and the store entries, and
-  never runs again.
+- Flag day (Jesse, 2026-08-29): no migration, no runtime compatibility
+  code. Old config, old instance names, old variables, and the old OAuth
+  record path stop working; §14.1 is the checklist. `*_BASE_URL` overrides
+  survive as a feature with models.dev's URL convention.
 - Bedrock via Anthropic's Messages endpoint on `bedrock-mantle`, bearer
   token only. No SigV4, no event-stream framing, no AWS SDK dependency.
   Global routing ships now, as `global.` inference-profile model ids on the
@@ -2147,11 +2173,39 @@ never adding an effort (§7.4, §7.5, §8.4, §13, §15); `unknown_parameter`,
 in the hint rule (§12, §13); `Provider.Family` for synthesized rows instead
 of keying the *claude* rule on the provider surface (§4, §6.2, §7.3, §7.4);
 `Resolve` on hidden rows succeeding with a warning (§4.2, §4.4); the
-`openrouter-anthropic` rationale corrected and its migrated replacement
-named (§3.2, §4.2, §14.1); `credential-less default` as a warning (§5.1,
-§10); the Mythos preview facts sourced from the LiteLLM snapshot with
-`reasoning` and `effort_values` (§6.2); live `ThinkingAlwaysOn` only when
-`mandatory` is `true` (§5); `golang.org/x/oauth2` as a direct dependency
-(§8.1, §14); the OpenRouter MiniMax effort note (§6.2); the migration notice
-as a hub diagnostic (§11.3, §14.1); the `default` credential-less warning
-instead of a load error (§5.1).
+`openrouter-anthropic` rationale corrected and its replacement named (§3.2,
+§4.2); `credential-less default` as a warning (§5.1, §10); the Mythos
+preview facts sourced from the LiteLLM snapshot with `reasoning` and
+`effort_values` (§6.2); live `ThinkingAlwaysOn` only when `mandatory` is
+`true` (§5); `golang.org/x/oauth2` as a direct dependency (§8.1, §14); the
+OpenRouter MiniMax effort note (§6.2); load errors as hub diagnostics
+(§11.3); the `default` credential-less warning instead of a load error
+(§5.1).
+
+Revision 9 applied Jesse's ruling that the cut-over is a flag day with no
+runtime compatibility code, which removed the migration of revisions 7–8
+and with it 14 of the 22 findings of the seventh review (the OAuth-record
+rename versus the `openai` entry, the OAuth-plus-API-key precedence, the
+credential-store renames, the `api_style` dimension of the id table, the
+`compat`/`thinking_levels` translation, the hub-captured `base_url`,
+`default` mapping, the no-file installs, the mixed-file trigger, the
+step-1 rewrite that broke old readers, the `.pre-registry` naming under
+`EVENER_PROVIDERS_CONFIG`, the scrub bypass, the store load order, and the
+legacy `[1m]` refs); §14.1 is now the user-facing checklist. The remaining
+findings were accepted: `Sampling` as an alias-inheritable fact replacing
+the converter's `Fields["temperature"]` (§4.1, §6.1, §8.2, §8.3, §13);
+`*_BASE_URL` templates redefined with models.dev's version-segment
+convention, `vars_env` as a config key, and the pseudo-providers implicit
+from `OPENAI_COMPATIBLE_BASE_URL` with `OPENAI_COMPATIBLE_API_KEY` (§6.2,
+§9.1, §10, §14.1); `base` winning over a name match, `base` resolving
+against the curated registry only, and `ProviderID` defined (§4.2); a
+dangling curated alias degrading to a hidden row with cache validation by
+full layered load (§4.2, §6.4); the credential-inheritance stop limited to
+a literal `base_url` with the `CredentialTag` citation corrected (§10);
+413 evaluated before the code table and `rate_limit_exceeded` scoped to 429
+(§12); the parameter hint gated on the prunable set (§12); the glob typo
+guard per matched row (§10); hub shadowing entries never carrying an
+untouched `base_url` (§11.3); the OAuth record per instance with the stray
+`auth/openai.json` notice (§9.5, §11.3); the `[1m]` rows limited to the
+beta-gated 4.5 rows (§6.2); the unset-`$VAR` header drop noted as a change
+(§10); and the Fable 5 `medium` → `high` note (§14.1).
