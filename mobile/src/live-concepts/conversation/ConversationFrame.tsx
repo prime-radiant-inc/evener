@@ -9,6 +9,7 @@ import {
   useRef,
   useState,
 } from "react";
+import { AssistantMessage } from "../../components/timeline/AssistantMessage";
 import { settleFocusedControlInVisualViewport } from "../../ui/platformPresentation";
 import {
   conversationItemAxDescription,
@@ -296,11 +297,22 @@ function NarrativeBody({
   item,
   state,
   dispatch,
+  onExternalLink,
 }: {
   readonly item: NarrativeDisplayItem;
   readonly state: ConversationFrameState;
   readonly dispatch: (action: ConversationFrameAction) => void;
+  readonly onExternalLink: (url: string) => void;
 }): ReactNode {
+  if (item.sourceKind === "assistant") {
+    return (
+      <AssistantMessage
+        source={item.body.text}
+        streaming={item.streaming}
+        onExternalLink={onExternalLink}
+      />
+    );
+  }
   if (item.sourceKind !== "question") {
     return (
       <section role={item.sourceKind === "failure" ? "group" : undefined}>
@@ -341,6 +353,7 @@ function TranscriptItem({
   dispatch,
   onOpenEvidence,
   onFocusIntentChange,
+  onExternalLink,
 }: {
   readonly item: ConversationDisplayItem;
   readonly index: number;
@@ -350,6 +363,7 @@ function TranscriptItem({
   readonly dispatch: (action: ConversationFrameAction) => void;
   readonly onOpenEvidence: (evidenceKey: string, triggerKey: string) => void;
   readonly onFocusIntentChange: (key: string | null) => void;
+  readonly onExternalLink: (url: string) => void;
 }): ReactElement {
   const description = conversationItemAxDescription(item);
   const descriptionId =
@@ -363,7 +377,14 @@ function TranscriptItem({
     "body" in item
       ? skin.renderNarrativeItem({
           item,
-          body: <NarrativeBody item={item} state={state} dispatch={dispatch} />,
+          body: (
+            <NarrativeBody
+              item={item}
+              state={state}
+              dispatch={dispatch}
+              onExternalLink={onExternalLink}
+            />
+          ),
           focused,
         })
       : skin.renderActivityMarker({ item, focused });
@@ -427,10 +448,12 @@ function ConversationStatus({
   state,
   dispatch,
   streamingMessage,
+  linkError,
 }: {
   readonly state: ConversationFrameState;
   readonly dispatch: (action: ConversationFrameAction) => void;
   readonly streamingMessage: string | null;
+  readonly linkError: boolean;
 }): ReactElement {
   const mutationLabel = mutationAxLabel(state.composer);
   const mutationFailed = state.composer.pending?.status === "failed";
@@ -438,7 +461,7 @@ function ConversationStatus({
   const connectionFailed =
     state.connection.status === "error" ||
     state.connection.status === "offline";
-  const alert = mutationFailed || readFailed || connectionFailed;
+  const alert = mutationFailed || readFailed || connectionFailed || linkError;
   const noDataReadFailure = readFailed && state.conversation === null;
   const retryRef = useRef<HTMLButtonElement>(null);
   useLayoutEffect(() => {
@@ -479,6 +502,7 @@ function ConversationStatus({
           {readFailed && !mutationFailed && state.composer.error !== null ? (
             <p>{state.composer.error.text}</p>
           ) : null}
+          {linkError ? <p>Unable to open link</p> : null}
           {readFailed ? (
             <button
               type="button"
@@ -502,6 +526,7 @@ export function ConversationFrame({
   state,
   skin,
   dispatch,
+  onExternalLink,
   onAnchorChange,
   onUnseenChange,
   onFocusIntentChange,
@@ -510,6 +535,7 @@ export function ConversationFrame({
   const transcriptRef = useRef<VirtualTranscriptHandle>(null);
   const mountedRef = useRef(false);
   const lifecycleGenerationRef = useRef(0);
+  const linkGenerationRef = useRef(0);
   const sheetGenerationRef = useRef(0);
   const closeOperationRef = useRef<{ readonly generation: number } | null>(
     null,
@@ -527,6 +553,7 @@ export function ConversationFrame({
   const [evidenceSheet, setEvidenceSheet] = useState<EvidenceSheetState | null>(
     null,
   );
+  const [linkError, setLinkError] = useState(false);
   const evidenceSheetRef = useRef<EvidenceSheetState | null>(null);
   evidenceSheetRef.current = evidenceSheet;
   const items = state.conversation?.items ?? [];
@@ -572,11 +599,26 @@ export function ConversationFrame({
     return () => {
       mountedRef.current = false;
       lifecycleGenerationRef.current += 1;
+      linkGenerationRef.current += 1;
       closeOperationRef.current = null;
       pendingOpenRef.current = null;
       pendingTriggerFocusRef.current = null;
     };
   }, []);
+
+  const openExternalLink = useCallback(
+    (url: string): void => {
+      const generation = linkGenerationRef.current + 1;
+      linkGenerationRef.current = generation;
+      setLinkError(false);
+      void onExternalLink(url).catch(() => {
+        if (mountedRef.current && linkGenerationRef.current === generation) {
+          setLinkError(true);
+        }
+      });
+    },
+    [onExternalLink],
+  );
 
   const openEvidenceSheet = useCallback(
     (evidenceKey: string, triggerKey: string): void => {
@@ -748,6 +790,7 @@ export function ConversationFrame({
                   dispatch={dispatch}
                   onOpenEvidence={openEvidenceSheet}
                   onFocusIntentChange={onFocusIntentChange}
+                  onExternalLink={openExternalLink}
                 />
               )}
               savedAnchor={state.anchor}
@@ -780,6 +823,7 @@ export function ConversationFrame({
           state={state}
           dispatch={dispatch}
           streamingMessage={streamingMessage}
+          linkError={linkError}
         />
         <section
           data-frame-part="composer"

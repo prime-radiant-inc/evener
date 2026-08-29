@@ -611,6 +611,7 @@ export function LiveConceptHost({
           state={frameState}
           skin={activeModule.conversationSkin}
           dispatch={dispatch}
+          onExternalLink={(url) => runtime.native.openExternalUrl(url)}
           onAnchorChange={setConversationAnchor}
           onUnseenChange={setUnseen}
           onFocusIntentChange={(key) =>

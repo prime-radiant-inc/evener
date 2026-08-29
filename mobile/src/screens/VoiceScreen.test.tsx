@@ -59,6 +59,7 @@ class FakeNativeBridge implements NativeBridge {
   async clipboardPaste(): Promise<string> {
     return "";
   }
+  async openExternalUrl(): Promise<void> {}
   async requestPermission(kind: PermissionKind): Promise<{
     kind: PermissionKind;
     granted: boolean;
