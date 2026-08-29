@@ -21,7 +21,7 @@ import (
 func decodeStream(sctx context.Context, cancel context.CancelFunc, resp *http.Response, s *llm.ChanStream, req llm.Request, res registry.Resolved, r *protocolhttp.Result, attempt *transport.APIAttemptCapture) {
 	rl := llm.ParseRateLimitHeaders(resp.Header)
 	defer func() {
-		resp.Body.Close() //nolint:errcheck
+		_ = resp.Body.Close()
 		cancel()
 		s.CloseSend()
 	}()
