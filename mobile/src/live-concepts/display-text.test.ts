@@ -126,6 +126,11 @@ describe("boundDisplayText", () => {
       "delegate_id=delegate-private-123",
       "[redacted:operational-id]",
     ],
+    [
+      "opaque delegate ID",
+      "delegate dlg_01JABCDEF234567890",
+      "[redacted:operational-id]",
+    ],
     ["call ID", "callId=call-private-123", "[redacted:operational-id]"],
     ["home path", "/Users/alice/private/project/file.txt", "[redacted:path]"],
     ["filesystem path", "/var/private/secret.sock", "[redacted:path]"],
