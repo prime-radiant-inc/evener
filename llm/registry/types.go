@@ -191,8 +191,3 @@ type Ref struct {
 
 // String renders the reference in instance/model form.
 func (r Ref) String() string { return r.Instance + "/" + r.Model }
-
-// Pointer helpers for the optional scalar fields.
-func boolp(b bool) *bool    { return &b }
-func intp(i int) *int       { return &i }
-func strp(s string) *string { return &s }

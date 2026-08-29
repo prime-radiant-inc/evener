@@ -7,8 +7,8 @@ import (
 
 func TestMergeCaps_LaterSetFieldWins_NilInherits(t *testing.T) {
 	prov := map[string]string{}
-	dst := Caps{ContextWindow: intp(1000), Tools: boolp(true), EffortValues: []string{"low"}}
-	src := Caps{ContextWindow: intp(2000), EffortValues: []string{"high", "max"}}
+	dst := Caps{ContextWindow: new(1000), Tools: new(true), EffortValues: []string{"low"}}
+	src := Caps{ContextWindow: new(2000), EffortValues: []string{"high", "max"}}
 	mergeCaps(&dst, src, "overlay/provider", prov)
 	if *dst.ContextWindow != 2000 {
 		t.Fatalf("ContextWindow = %d, want 2000", *dst.ContextWindow)
