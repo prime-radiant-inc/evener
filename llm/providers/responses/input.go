@@ -353,7 +353,6 @@ func reasoningSummaryInput(summary []string) []any {
 	return out
 }
 
-//nolint:unused // ported alongside reasoningSummaryInput per the task brief; Task 9 calls it from this package's response decoding, which this body-builder-only task does not add.
 func parseReasoningSummary(raw any) []string {
 	items, ok := raw.([]any)
 	if !ok {

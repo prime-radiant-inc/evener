@@ -80,6 +80,8 @@ native:llm:./providers/openaicompat:FuzzOpenAICompatStreamMetamorphic
 native:llm:./providers/openaicompat:FuzzOpenAICompatStreamStructured
 native:llm:./providers/chatcompletions:FuzzChatCompletionsBuildBody
 native:llm:./providers/chatcompletions:FuzzChatCompletionsStreamMetamorphic
+native:llm:./providers/responses:FuzzResponsesBuildBody
+native:llm:./providers/responses:FuzzResponsesStreamMetamorphic
 native:.:./cmd/evener-hub:FuzzWebHandler
 native:.:./appwire:FuzzCodexItemDecode
 native:llm:./providercfg:FuzzProvidersTOMLLoad
