@@ -52,7 +52,6 @@ import (
 	"testing"
 
 	"primeradiant.com/evener/agent/internal/delegatestore"
-	"primeradiant.com/evener/agent/transcript"
 )
 
 func TestDelegateGenerationEvidenceInitialRequirement(t *testing.T) {
@@ -184,9 +183,8 @@ func startDelegateAttentionEvidenceGeneration(t *testing.T, c *delegateTreeContr
 		t.Fatalf("CommitStart attention: %v", err)
 	}
 	return started.lease
+}
 ```
-
-The production mutations```
 
 The production mutations these tests catch are: wrong initial requirement, delegate-ID-only mutation, requirement downgrade, or evidence surviving generation release.
 
@@ -233,7 +231,7 @@ Add `evidence *delegateGenerationEvidence` to `delegateRuntimeBinding`.
 
 In `CommitStart`, derive requirement from `record.trigger`:
 
-```go
+```text
 requirement := delegateCompletionReportRequired
 if record.trigger == delegatestore.TriggerAttention {
     requirement = delegateCompletionAttentionOnly
@@ -254,7 +252,7 @@ live.binding = &delegateRuntimeBinding{
 
 Add controller methods that lock `c.mu`, call `exactLeaseLocked`, verify `live.binding.lease == lease`, and then operate on evidence:
 
-```go
+```text
 type delegateCompletionSnapshot struct {
     requirement  delegateCompletionRequirement
     outcome      delegateCompletionOutcome
@@ -398,8 +396,6 @@ func TestDelegateControllerLateSteeringEscalatesOnNextRequest(t *testing.T) {
 }
 ```
 
-Run:```
-
 Run:
 
 ```bash
@@ -447,8 +443,6 @@ func TestRouteNoToolCallsDelegateAttention(t *testing.T) {
 }
 ```
 
-Run:```
-
 Run:
 
 ```bash
@@ -469,8 +463,10 @@ Retain both communicate dependency callbacks. Direct and legacy `toolDeps`
 constructions continue to provide the legacy callback:
 
 ```go
-setCommunicateResult        func(message, reply, output string)
-setCommunicateResultContext func(context.Context, string, string, string)
+type communicateCallbacks struct {
+	setCommunicateResult        func(message, reply, output string)
+	setCommunicateResultContext func(context.Context, string, string, string)
+}
 ```
 
 Add and use `setCommunicateResultContext` for live `Session` registrations in
@@ -518,8 +514,6 @@ func TestDelegateTerminalCommunicateMarksGenerationEvidence(t *testing.T) {
 	}
 }
 ```
-
-It must prove```
 
 It must prove a later attempt to record no-action is refused while the existing reported path remains unchanged.
 
@@ -786,8 +780,6 @@ func TestDelegateResourceSupervision_UserRunWithoutCommunicateRemainsMissingTerm
 	assertSingleRecoveryNudge(t, fixture.adapter)
 }
 ```
-
-`CompletionGateRecoversEveryCleanExit````
 
 `CompletionGateRecoversEveryCleanExit` must have deterministic subtests for:
 
@@ -1188,9 +1180,8 @@ func eligibleDelegateNoActionClaimForRun(t *testing.T, c *delegateTreeController
 	c.live[delegateID].attentionIDs = nil
 	c.mu.Unlock()
 	return claim
+}
 ```
-
-The stop test```
 
 The stop test must assert task, worktree, scratch, usage, timing, and warnings in the retained fallback, not only status.
 
@@ -1240,8 +1231,6 @@ func TestDelegateResourceSupervision_BareShellAttentionCompletesNoActionWithoutS
 }
 ```
 
-Use `newColdStableDelegateFixture````
-
 Use `newColdStableDelegateFixture`, `restoreSupervisionRoot`, `waitForStableSupervisionRun`, and stable shell helpers. Drive one initially reported generation, one stable-owned shell completion attention, and one bare attention response. Assert one attention provider request, consumed attention, completed/private `completed_no_action`, nil packet, empty delivery ID, no pending delivery, and no second parent result notification.
 
 Run:
@@ -1256,7 +1245,7 @@ Expected: compile failure because `FinishNoAction` does not exist and, after the
 
 Add a method used after attention resolutions and before local state publication:
 
-```go
+```text
 func (c *delegateTreeController) prepareNoAction(
     claim *delegateSettlementClaim,
     fallback delegateFinish,
