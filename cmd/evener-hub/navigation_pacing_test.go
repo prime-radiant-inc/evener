@@ -76,3 +76,72 @@ var errBoom = &staticErr{}
 type staticErr struct{}
 
 func (*staticErr) Error() string { return "persistent failure" }
+
+// failFirstForcedSource fails exactly the FIRST forced capture (the one a
+// pending invalidation drives) and succeeds thereafter, so the Start loop
+// reaches its boundary branch with a paced retry deadline armed.
+type failFirstForcedSource struct {
+	inner  *testNavigationSource
+	failed atomic.Bool
+}
+
+func (f *failFirstForcedSource) Revision() navigationSourceRevision { return f.inner.Revision() }
+func (f *failFirstForcedSource) Capture(ctx context.Context, generation string, now time.Time) (navigationSourceSnapshot, error) {
+	return f.inner.Capture(ctx, generation, now)
+}
+
+// The boundary branch must shorten its park to the retry deadline: with a
+// 24h boundary and retryAfter far shorter, the loop's second park is the
+// retry window, not the boundary.
+func TestNavigationBoundaryParkShortensToRetryDeadline(t *testing.T) {
+	now := time.Unix(1_700_000_000, 0).UTC()
+	source := newTestNavigationSource(now)
+	source.nextBoundary = now.Add(24 * time.Hour)
+	retitling := &perCaptureRetitleSource{inner: source}
+	created := make(chan *fakeNavigationTimer, 16)
+	service := newTestNavigationService(t, source, func(cfg *navigationServiceConfig) {
+		cfg.Source = retitling
+		cfg.RetryAfter = 10 * time.Millisecond
+		start := time.Now()
+		base := time.Unix(1_700_000_000, 0).UTC()
+		cfg.Now = func() time.Time { return base.Add(time.Since(start)) }
+		cfg.NewTimer = func(delay time.Duration) navigationTimer {
+			timer := &fakeNavigationTimer{delay: delay, ch: make(chan time.Time, 1)}
+			created <- timer
+			go func() {
+				time.Sleep(delay)
+				select {
+				case timer.ch <- time.Now():
+				default:
+				}
+			}()
+			return timer
+		}
+	})
+	source.mu.Lock()
+	source.captured = make(chan struct{}, 8)
+	// Fail the first forced capture only: err set before Invalidate, cleared
+	// after the first failed capture is observed.
+	source.err = &staticErr{}
+	source.mu.Unlock()
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+	go service.Start(ctx)
+	<-created // boundary park (24h minus elapsed)
+	source.changeTitle("renamed")
+	service.Invalidate(navigationChangeHint{Projects: []string{"p1"}})
+	<-source.captured // failed forced capture
+	source.mu.Lock()
+	source.err = nil
+	source.mu.Unlock()
+	// The next park after the failure must be the retry deadline (~10ms),
+	// not the 24h boundary.
+	select {
+	case timer := <-created:
+		if d := 24*time.Hour - timer.delay; d < 0 || d > time.Second {
+			t.Fatalf("post-failure park = %v, want ~retryAfter (10ms), not the boundary", timer.delay)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("no park after failed forced refresh")
+	}
+}
