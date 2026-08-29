@@ -20,6 +20,7 @@
 - Spec §4 field names are the API: `Provider`, `Model`, `Transport`, `Caps`, `Cost`, `CostTier`, `Credential`, `Resolved`. Do not rename.
 - Protocol ids: `openai-chat`, `openai-responses`, `anthropic`, `google`. Auth schemes: `bearer`, `optional-bearer`, `header`, `none`, `gcp-adc`, `oauth-openai-codex`. Surfaces: `openai`, `anthropic`, `google`, `generic`. Endpoint sentinel for "unsupported": `-`.
 - Id comparison is case-sensitive everywhere (§4.1, §7.1).
+- `errcheck` is on: never discard an error implicitly (`defer func() { _ = f.Close() }()`, `_ = os.Remove(...)`); `fmt.Print*` are exempt.
 - Optional scalars are set with Go 1.26+ `new(expr)` (`new(1000)`, `new(true)`, `new("x")`); do not add pointer-helper functions — golangci-lint `modernize` flags them.
 - Code blocks in this plan are not column-aligned; run `gofmt -w` on each new file before the `gofmt -l` check.
 - Run tests from the workspace root: `go test ./llm/registry/...` (the `go.work` file resolves the module). Run the gate before the final commit of each task: `make lint` is slow; `gofmt -l llm/registry` + `go vet ./llm/registry/...` per task, full `make lint` at the end of the plan.
@@ -1601,7 +1602,7 @@ func gunzip(data []byte) ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
-	defer zr.Close()
+	defer func() { _ = zr.Close() }()
 	return io.ReadAll(zr)
 }
 ```
@@ -6922,12 +6923,12 @@ func writeAtomic(path string, data []byte) error {
 		return err
 	}
 	if _, err := tmp.Write(data); err != nil {
-		tmp.Close()
-		os.Remove(tmp.Name())
+		_ = tmp.Close()
+		_ = os.Remove(tmp.Name())
 		return err
 	}
 	if err := tmp.Close(); err != nil {
-		os.Remove(tmp.Name())
+		_ = os.Remove(tmp.Name())
 		return err
 	}
 	return os.Rename(tmp.Name(), path)
@@ -6947,7 +6948,7 @@ func HTTPFetcher(client *http.Client) Fetcher {
 		if err != nil {
 			return nil, "", false, err
 		}
-		defer resp.Body.Close()
+		defer func() { _ = resp.Body.Close() }()
 		if resp.StatusCode == http.StatusNotModified {
 			return nil, etag, true, nil
 		}
