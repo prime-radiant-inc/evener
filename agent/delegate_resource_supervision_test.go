@@ -106,6 +106,118 @@ func TestDelegateResourceSupervision_AttentionBareTextRecordsExplicitNoAction(t 
 	}
 }
 
+func TestDelegateResourceSupervision_AttentionFollowUpRequiresReport(t *testing.T) {
+	fixture := newColdStableDelegateFixture(t, "")
+	bare := func(llm.Request) llm.Response {
+		return llm.Response{Message: llm.Assistant("bare without communicate")}
+	}
+	var root *Session
+	fixture.adapter.steps = []func(llm.Request) llm.Response{
+		func(llm.Request) llm.Response { return finalResponse("warm result") },
+		func(llm.Request) llm.Response {
+			root.subagents.get(fixture.childID).sess.FollowUp("queued follow-up work")
+			return llm.Response{Message: llm.Assistant("attention requires no action")}
+		},
+		bare, bare, bare, bare,
+		func(llm.Request) llm.Response { return finalResponse("follow-up report") },
+	}
+	root = restoreSupervisionRoot(t, fixture, nil)
+	sub := warmStableSupervisionDelegate(t, root, fixture)
+	snapshots := make(chan delegateCompletionSnapshot, 1)
+	sub.sess.cfg.testOnly.subagentBeforeSettlement = captureStableCompletionSnapshot(snapshots)
+	armStableSupervisionAttention(t, sub, "attention:follow-up", "inspect before follow-up")
+	waitForStableSupervisionRun(t, root, fixture.childID)
+
+	snapshot := <-snapshots
+	if snapshot.requirement != delegateCompletionReportRequired || !snapshot.terminalSeen {
+		t.Fatalf("attention follow-up evidence = %#v, want report-required terminal", snapshot)
+	}
+	finished := latestDelegateControllerRunFinished(t, root.delegateController, fixture.delegateID)
+	aggregate := delegateAggregateSnapshot(t, root.delegateController, fixture.delegateID)
+	if finished.Disposition != delegatestore.DispositionReported || finished.DeliveryID == "" || aggregate.LatestPacket == nil || aggregate.LatestPacket.Kind != delegatestore.PacketReported {
+		t.Fatalf("attention follow-up finish = %#v aggregate=%#v, want reported delivery", finished, aggregate)
+	}
+	if got := supervisionRequestCount(fixture.adapter); got != 7 {
+		t.Fatalf("provider requests = %d, want warm, attention, four follow-up attempts, and recovery report", got)
+	}
+}
+
+func TestDelegateResourceSupervision_AttentionGoalContinuationRequiresReport(t *testing.T) {
+	fixture := newColdStableDelegateFixture(t, "")
+	bare := func(llm.Request) llm.Response {
+		return llm.Response{Message: llm.Assistant("bare without communicate")}
+	}
+	var root *Session
+	fixture.adapter.steps = []func(llm.Request) llm.Response{
+		func(llm.Request) llm.Response { return finalResponse("warm result") },
+		func(llm.Request) llm.Response {
+			started, err := root.subagents.get(fixture.childID).sess.SetGoal(context.Background(), "finish continuation work")
+			if err != nil || started {
+				t.Errorf("SetGoal during attention = started:%t err:%v, want deferred", started, err)
+			}
+			return llm.Response{Message: llm.Assistant("attention requires no action")}
+		},
+		bare, bare, bare, bare,
+		func(llm.Request) llm.Response { return finalResponse("continuation report") },
+	}
+	root = restoreSupervisionRoot(t, fixture, nil)
+	sub := warmStableSupervisionDelegate(t, root, fixture)
+	snapshots := make(chan delegateCompletionSnapshot, 1)
+	sub.sess.cfg.testOnly.subagentBeforeSettlement = captureStableCompletionSnapshot(snapshots)
+	armStableSupervisionAttention(t, sub, "attention:goal", "inspect before continuation")
+	waitForStableSupervisionRun(t, root, fixture.childID)
+
+	snapshot := <-snapshots
+	if snapshot.requirement != delegateCompletionReportRequired || !snapshot.terminalSeen {
+		t.Fatalf("attention continuation evidence = %#v, want report-required terminal", snapshot)
+	}
+	finished := latestDelegateControllerRunFinished(t, root.delegateController, fixture.delegateID)
+	aggregate := delegateAggregateSnapshot(t, root.delegateController, fixture.delegateID)
+	if finished.Disposition != delegatestore.DispositionReported || finished.DeliveryID == "" || aggregate.LatestPacket == nil || aggregate.LatestPacket.Kind != delegatestore.PacketReported {
+		t.Fatalf("attention continuation finish = %#v aggregate=%#v, want reported delivery", finished, aggregate)
+	}
+	if got := supervisionRequestCount(fixture.adapter); got != 7 {
+		t.Fatalf("provider requests = %d, want warm, attention, four continuation attempts, and recovery report", got)
+	}
+}
+
+func TestDelegateResourceSupervision_AttentionNotificationRemainsNoAction(t *testing.T) {
+	fixture := newColdStableDelegateFixture(t, "")
+	var root *Session
+	fixture.adapter.steps = []func(llm.Request) llm.Response{
+		func(llm.Request) llm.Response { return finalResponse("warm result") },
+		func(llm.Request) llm.Response {
+			root.subagents.get(fixture.childID).sess.enqueueJobNotification(jobNotification{
+				Kind:   jobNotificationKindWatch,
+				JobID:  "system-only",
+				Status: jobNotificationEventWatch,
+			})
+			return llm.Response{Message: llm.Assistant("attention requires no action")}
+		},
+		func(llm.Request) llm.Response {
+			return llm.Response{Message: llm.Assistant("notification acknowledged")}
+		},
+	}
+	root = restoreSupervisionRoot(t, fixture, nil)
+	sub := warmStableSupervisionDelegate(t, root, fixture)
+	snapshots := make(chan delegateCompletionSnapshot, 1)
+	sub.sess.cfg.testOnly.subagentBeforeSettlement = captureStableCompletionSnapshot(snapshots)
+	armStableSupervisionAttention(t, sub, "attention:notification", "inspect before notification")
+	waitForStableSupervisionRun(t, root, fixture.childID)
+
+	snapshot := <-snapshots
+	if snapshot.requirement != delegateCompletionAttentionOnly || snapshot.outcome != delegateCompletionOutcomeAttentionNoAction || snapshot.terminalSeen {
+		t.Fatalf("system-only attention evidence = %#v, want attention no-action", snapshot)
+	}
+	finished := latestDelegateControllerRunFinished(t, root.delegateController, fixture.delegateID)
+	if finished.Disposition != delegatestore.DispositionCompletedNoAction || finished.DeliveryID != "" {
+		t.Fatalf("system-only attention finish = %#v, want private no-action", finished)
+	}
+	if got := supervisionRequestCount(fixture.adapter); got != 3 {
+		t.Fatalf("provider requests = %d, want warm, attention, and notification only", got)
+	}
+}
+
 func TestDelegateResourceSupervision_BareShellAttentionCompletesNoActionWithoutSecondReport(t *testing.T) {
 	fixture := newColdStableDelegateFixture(t, "")
 	fixture.adapter.steps = []func(llm.Request) llm.Response{

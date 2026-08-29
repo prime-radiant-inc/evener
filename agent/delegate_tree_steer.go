@@ -326,8 +326,13 @@ func (c *delegateTreeController) CompleteModelRequest(claim *delegateModelReques
 		}
 	}
 	history, bound := projectDelegatePendingSteers(history, pending, lateIDs)
-	if len(bound) != 0 && live.binding.evidence != nil && live.binding.evidence.requirement == delegateCompletionAttentionOnly {
-		live.binding.evidence.requirement = delegateCompletionReportRequired
+	if len(bound) != 0 {
+		if err := c.escalateCompletionRequirementLocked(claim.lease); err != nil {
+			c.releaseModelClaimLocked(claim.token)
+			c.evidenceVersion++
+			c.mu.Unlock()
+			return nil, err
+		}
 	}
 	var consumedProvenance *provenance.Causal
 	for entryID := range bound {
