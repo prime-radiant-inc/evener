@@ -8288,11 +8288,11 @@ func TestModelsList(t *testing.T) {
 		t.Fatalf("list --provider groq:\n%s", stdout.String())
 	}
 	stdout.Reset()
-	if err := runModels([]string{"list", "--all"}, strings.NewReader(""), &stdout, &stderr); err != nil {
+	if err := runModels([]string{"list", "--provider", "cohere", "--all"}, strings.NewReader(""), &stdout, &stderr); err != nil {
 		t.Fatal(err)
 	}
 	if !strings.Contains(stdout.String(), "needs base_url") {
-		t.Fatalf("--all must flag hidden providers:\n%s", stdout.String())
+		t.Fatalf("--all must flag a hidden provider:\n%s", stdout.String())
 	}
 }
 
