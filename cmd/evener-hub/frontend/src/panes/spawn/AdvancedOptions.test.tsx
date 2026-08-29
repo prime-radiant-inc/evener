@@ -241,6 +241,17 @@ test("max_rounds -1 renders as unlimited in the placeholder, matching the flag w
   expect((screen.getByLabelText("Max rounds") as HTMLInputElement).placeholder).toBe("unlimited (default)");
 });
 
+test("max_rounds 0 also renders as unlimited, matching applyDefaults' 0→-1 conversion", async () => {
+  const user = userEvent.setup();
+  renderPanel([option({ wireField: "maxRounds", kind: "integer", label: "Max rounds" })], {
+    resolvedDefaults: { maxRounds: 0 },
+  });
+
+  await user.click(screen.getByRole("button", { name: "Advanced options" }));
+
+  expect((screen.getByLabelText("Max rounds") as HTMLInputElement).placeholder).toBe("unlimited (default)");
+});
+
 test("a text control's placeholder names the resolved default, clipped when long", async () => {
   const user = userEvent.setup();
   renderPanel(

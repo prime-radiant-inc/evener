@@ -21,12 +21,15 @@ func schemaForTest() []LaunchOption {
 		{Field: "reasoning_effort", WireField: "reasoningEffort", Kind: LaunchControlSelect, EnvFallback: &LaunchOptionEnvFallback{Name: envvars.EVENERReasoningEffort.Name}},
 		{Field: "context_strategy", WireField: "contextStrategy", Kind: LaunchControlSelect, BuiltinDefault: "compact"},
 		{Field: "sandbox", WireField: "sandbox", Kind: LaunchControlSelect, BuiltinDefault: "off"},
-		{Field: "sandbox_net", WireField: "sandboxNet", Kind: LaunchControlBoolean, BuiltinDefaultBool: boolPtr(true)},
+		{Field: "sandbox_net", WireField: "sandboxNet", Kind: LaunchControlBoolean, BuiltinDefaultBool: &builtinBoolTrue},
 		{Field: "openai_responses_continuation", WireField: "openAIResponsesContinuation", Kind: LaunchControlSelect, BuiltinDefault: "off", EnvFallback: &LaunchOptionEnvFallback{Name: envvars.EVENEROpenAIResponsesContinuation.Name}},
-		{Field: "max_rounds", WireField: "maxRounds", Kind: LaunchControlInteger, BuiltinDefaultInt: intPtr(-1)},
-		{Field: "max_subagent_depth", WireField: "maxSubagentDepth", Kind: LaunchControlInteger, BuiltinDefaultInt: intPtr(2)},
-		{Field: "verbose", WireField: "verbose", Kind: LaunchControlBoolean, BuiltinDefaultBool: boolPtr(false)},
-		{Field: "app_replay_size", WireField: "appReplaySize", Kind: LaunchControlInteger, BuiltinDefaultInt: intPtr(1000)},
+		{Field: "max_rounds", WireField: "maxRounds", Kind: LaunchControlInteger, BuiltinDefaultInt: &builtinIntNeg1},
+		{Field: "max_subagent_depth", WireField: "maxSubagentDepth", Kind: LaunchControlInteger, BuiltinDefaultInt: &builtinInt2},
+		{Field: "max_concurrent_delegate_turns", WireField: "maxConcurrentDelegateTurns", Kind: LaunchControlInteger, BuiltinDefaultInt: &builtinInt50},
+		{Field: "max_retained_terminal", WireField: "maxRetainedTerminal", Kind: LaunchControlInteger, BuiltinDefaultInt: &builtinInt2048},
+		{Field: "no_project_prompts", WireField: "noProjectPrompts", Kind: LaunchControlBoolean, BuiltinDefaultBool: &builtinBoolFalse},
+		{Field: "verbose", WireField: "verbose", Kind: LaunchControlBoolean, BuiltinDefaultBool: &builtinBoolFalse},
+		{Field: "app_replay_size", WireField: "appReplaySize", Kind: LaunchControlInteger, BuiltinDefaultInt: &builtinInt1000},
 		{Field: "export_atif_provider_handles", WireField: "exportATIFProviderHandles", Kind: LaunchControlSelect, BuiltinDefault: "redacted"},
 		// A field with neither env nor builtin stays unset.
 		{Field: "trace_file", WireField: "traceFile", Kind: LaunchControlPath},
@@ -57,6 +60,15 @@ func TestApplyRuntimeDefaultsFillsBuiltinsFromSchema(t *testing.T) {
 	}
 	if got.Effective.MaxSubagentDepth == nil || *got.Effective.MaxSubagentDepth != 2 {
 		t.Errorf("MaxSubagentDepth = %v, want builtin 2", got.Effective.MaxSubagentDepth)
+	}
+	if got.Effective.MaxConcurrentDelegateTurns == nil || *got.Effective.MaxConcurrentDelegateTurns != 50 {
+		t.Errorf("MaxConcurrentDelegateTurns = %v, want builtin 50", got.Effective.MaxConcurrentDelegateTurns)
+	}
+	if got.Effective.MaxRetainedTerminal == nil || *got.Effective.MaxRetainedTerminal != 2048 {
+		t.Errorf("MaxRetainedTerminal = %v, want builtin 2048", got.Effective.MaxRetainedTerminal)
+	}
+	if got.Effective.NoProjectPrompts == nil || *got.Effective.NoProjectPrompts {
+		t.Errorf("NoProjectPrompts = %v, want builtin false", got.Effective.NoProjectPrompts)
 	}
 	if got.Effective.Verbose == nil || *got.Effective.Verbose {
 		t.Errorf("Verbose = %v, want builtin false", got.Effective.Verbose)
@@ -94,6 +106,9 @@ func TestApplyRuntimeDefaultsProvenance(t *testing.T) {
 		"openai_responses_continuation": LayerBuiltin,
 		"max_rounds":                    LayerBuiltin,
 		"max_subagent_depth":            LayerBuiltin,
+		"max_concurrent_delegate_turns": LayerBuiltin,
+		"max_retained_terminal":         LayerBuiltin,
+		"no_project_prompts":            LayerBuiltin,
 		"verbose":                       LayerBuiltin,
 		"app_replay_size":               LayerBuiltin,
 		"export_atif_provider_handles":  LayerBuiltin,
@@ -204,5 +219,86 @@ func TestApplyRuntimeDefaultsReturnsEmptySchemaGracefully(t *testing.T) {
 	got := ApplyRuntimeDefaults(resolved, envOf(nil), nil)
 	if !reflect.DeepEqual(got.Effective, Layer{}) {
 		t.Errorf("empty schema should produce no changes: %#v", got.Effective)
+	}
+}
+
+// TestSchemaBuiltinsMatchAgentDefaults is a tripwire: the schema's
+// BuiltinDefault/BuiltinDefaultInt/BuiltinDefaultBool values must match the
+// agent's own defaults. Int/bool fields come from applyDefaults (session_config.go)
+// and constants (tree_counter.go, subagent_manager.go); string fields come from
+// flag defaults (session_tools.go: defaultAgentName="default"), server.NewServer,
+// and the agent's own hardcoded defaults. The agent's applyDefaults is
+// unexported, so this test hard-codes the expected values alongside their source
+// location. If either side changes, this test fails and forces a deliberate sync —
+// the schema is a display-only copy, not the agent's source of truth, so drift
+// would make the resolve preview lie about what a spawned session would run with.
+// Note: this test catches intended drift (someone changes the schema without
+// updating the agent or vice versa) but cannot catch unintended drift in the
+// agent's applyDefaults that no one mirrors here — it is a best-effort guard,
+// not a structural guarantee.
+func TestSchemaBuiltinsMatchAgentDefaults(t *testing.T) {
+	schema := LaunchOptionSchema()
+	opt := func(field string) LaunchOption {
+		for _, o := range schema {
+			if o.Field == field {
+				return o
+			}
+		}
+		t.Fatalf("field %q not in schema", field)
+		return LaunchOption{}
+	}
+
+	// Int fields: agent/session_config.go applyDefaults + agent/tree_counter.go,
+	// agent/subagent_manager.go constants.
+	if got := opt("max_rounds"); got.BuiltinDefaultInt == nil || *got.BuiltinDefaultInt != -1 {
+		t.Errorf("max_rounds builtin = %v, want -1 (applyDefaults: 0→-1 unlimited)", got.BuiltinDefaultInt)
+	}
+	if got := opt("max_subagent_depth"); got.BuiltinDefaultInt == nil || *got.BuiltinDefaultInt != 2 {
+		t.Errorf("max_subagent_depth builtin = %v, want 2 (applyDefaults: ≤0→2)", got.BuiltinDefaultInt)
+	}
+	if got := opt("max_concurrent_delegate_turns"); got.BuiltinDefaultInt == nil || *got.BuiltinDefaultInt != 50 {
+		t.Errorf("max_concurrent_delegate_turns builtin = %v, want 50 (defaultMaxConcurrentDelegateTurns)", got.BuiltinDefaultInt)
+	}
+	if got := opt("max_retained_terminal"); got.BuiltinDefaultInt == nil || *got.BuiltinDefaultInt != 2048 {
+		t.Errorf("max_retained_terminal builtin = %v, want 2048 (defaultMaxRetainedTerminal)", got.BuiltinDefaultInt)
+	}
+	if got := opt("app_replay_size"); got.BuiltinDefaultInt == nil || *got.BuiltinDefaultInt != 1000 {
+		t.Errorf("app_replay_size builtin = %v, want 1000", got.BuiltinDefaultInt)
+	}
+
+	// Bool fields: agent applyDefaults (EnableLoopDetection true) and flag
+	// defaults (verbose=false, sandbox_net=true, no_project_prompts=false).
+	if got := opt("sandbox_net"); got.BuiltinDefaultBool == nil || *got.BuiltinDefaultBool != true {
+		t.Errorf("sandbox_net builtin = %v, want true", got.BuiltinDefaultBool)
+	}
+	if got := opt("verbose"); got.BuiltinDefaultBool == nil || *got.BuiltinDefaultBool != false {
+		t.Errorf("verbose builtin = %v, want false", got.BuiltinDefaultBool)
+	}
+	if got := opt("no_project_prompts"); got.BuiltinDefaultBool == nil || *got.BuiltinDefaultBool != false {
+		t.Errorf("no_project_prompts builtin = %v, want false", got.BuiltinDefaultBool)
+	}
+
+	// String fields: agent flag defaults (session_tools.go: defaultAgentName),
+	// server.NewServer defaults, and agent hardcoded defaults.
+	if got := opt("agent"); got.BuiltinDefault != "default" {
+		t.Errorf("agent builtin = %q, want \"default\"", got.BuiltinDefault)
+	}
+	if got := opt("context_strategy"); got.BuiltinDefault != "compact" {
+		t.Errorf("context_strategy builtin = %q, want \"compact\"", got.BuiltinDefault)
+	}
+	if got := opt("sandbox"); got.BuiltinDefault != "off" {
+		t.Errorf("sandbox builtin = %q, want \"off\"", got.BuiltinDefault)
+	}
+	if got := opt("openai_responses_continuation"); got.BuiltinDefault != "off" {
+		t.Errorf("openai_responses_continuation builtin = %q, want \"off\"", got.BuiltinDefault)
+	}
+	if got := opt("export_atif_provider_handles"); got.BuiltinDefault != "redacted" {
+		t.Errorf("export_atif_provider_handles builtin = %q, want \"redacted\"", got.BuiltinDefault)
+	}
+
+	// non_interactive has no builtin: it's per-launch only with no
+	// DefaultableLayers, so the resolve preview must not show a builtin.
+	if got := opt("non_interactive"); got.BuiltinDefaultBool != nil {
+		t.Errorf("non_interactive should have no BuiltinDefaultBool (per-launch only, not layer-settable), got %v", got.BuiltinDefaultBool)
 	}
 }

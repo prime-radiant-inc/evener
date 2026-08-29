@@ -49,7 +49,7 @@ func TestLaunchController_Resolve_Empty(t *testing.T) {
 func TestLaunchController_SetLayer_GlobalRoundtrip(t *testing.T) {
 	stateRoot := t.TempDir()
 	cwd := canonicalTempDir(t)
-	c := newHubLaunchController(stateRoot)
+	c := newHubLaunchControllerWithEnv(stateRoot, func(string) string { return "" })
 	model := "openai/gpt-5"
 	fastCheapModel := "openai/gpt-5-mini"
 	_, err := c.SetLayer(context.Background(), appwire.LaunchConfigSetLayerParams{
@@ -75,7 +75,7 @@ func TestLaunchController_SetLayer_RejectsEnabledPlugins(t *testing.T) {
 	stateRoot := t.TempDir()
 	cwd := canonicalTempDir(t)
 	empty := []string{}
-	c := newHubLaunchController(stateRoot)
+	c := newHubLaunchControllerWithEnv(stateRoot, func(string) string { return "" })
 	_, err := c.SetLayer(context.Background(), appwire.LaunchConfigSetLayerParams{
 		CWD: cwd, Layer: "global",
 		Config: appwire.LaunchConfigLayer{EnabledPlugins: &empty},
@@ -95,7 +95,7 @@ func TestLaunchController_SetLayer_RejectsEnabledPlugins(t *testing.T) {
 func TestLaunchController_SetLayer_ProjectWritesLocalFile(t *testing.T) {
 	stateRoot := t.TempDir()
 	cwd := canonicalTempDir(t)
-	c := newHubLaunchController(stateRoot)
+	c := newHubLaunchControllerWithEnv(stateRoot, func(string) string { return "" })
 	_, err := c.SetLayer(context.Background(), appwire.LaunchConfigSetLayerParams{
 		CWD:    cwd,
 		Layer:  "project",
@@ -126,7 +126,7 @@ func TestLaunchController_SetLayer_ProjectWritesLocalFile(t *testing.T) {
 func TestLaunchController_GetLayer_ProjectReadsLegacyFallback(t *testing.T) {
 	stateRoot := t.TempDir()
 	cwd := canonicalTempDir(t)
-	c := newHubLaunchController(stateRoot)
+	c := newHubLaunchControllerWithEnv(stateRoot, func(string) string { return "" })
 	paths, err := launchconfig.PathsFor(stateRoot, cwd)
 	if err != nil {
 		t.Fatal(err)
@@ -156,7 +156,7 @@ func TestLaunchController_TrustRepo_RecordsDecision(t *testing.T) {
 	}
 	hash, _ := launchconfig.CanonicalHashTOML(contents)
 
-	c := newHubLaunchController(stateRoot)
+	c := newHubLaunchControllerWithEnv(stateRoot, func(string) string { return "" })
 	got, err := c.TrustRepo(context.Background(), appwire.LaunchConfigTrustRepoParams{CWD: cwd, Hash: hash})
 	if err != nil {
 		t.Fatalf("TrustRepo: %v", err)
@@ -205,7 +205,7 @@ func TestLaunchController_TrustRepo_DoesNotCarryRejectedHashes(t *testing.T) {
 		t.Fatalf("SaveMeta: %v", err)
 	}
 
-	c := newHubLaunchController(stateRoot)
+	c := newHubLaunchControllerWithEnv(stateRoot, func(string) string { return "" })
 	if _, err := c.TrustRepo(context.Background(), appwire.LaunchConfigTrustRepoParams{CWD: cwd, Hash: hash}); err != nil {
 		t.Fatalf("TrustRepo: %v", err)
 	}
@@ -234,7 +234,7 @@ func TestLaunchController_TrustRepo_HashMismatch(t *testing.T) {
 	if err := os.WriteFile(repoPath, []byte(`model = "x"`), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	c := newHubLaunchController(stateRoot)
+	c := newHubLaunchControllerWithEnv(stateRoot, func(string) string { return "" })
 	if _, err := c.TrustRepo(context.Background(), appwire.LaunchConfigTrustRepoParams{CWD: cwd, Hash: "sha256:nope"}); err == nil {
 		t.Errorf("TrustRepo with wrong hash should error")
 	}

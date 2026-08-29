@@ -209,12 +209,13 @@ export function resolvedDefaultLabel(
     else value = undefined;
   } else if (opt.kind === "integer") {
     // Integers arrive as numbers from the resolved effective layer. The
-    // max_rounds -1 sentinel is the flag's own "unlimited" wording
-    // (fs.Int("max-rounds", -1, "... 0=unlimited")), so the label uses it
-    // rather than the opaque number. Keyed on the wire field, which both
-    // surfaces carry verbatim.
+    // The max_rounds -1 and 0 sentinels both mean unlimited: the flag's
+    // own "unlimited" wording (fs.Int("max-rounds", -1, "... 0=unlimited")),
+    // and the agent's applyDefaults converts 0 to -1. So the label uses
+    // "unlimited" rather than the opaque number. Keyed on the wire field,
+    // which both surfaces carry verbatim.
     if (typeof raw === "number" && Number.isFinite(raw)) {
-      value = opt.wireField === "maxRounds" && raw === -1 ? "unlimited" : String(raw);
+      value = opt.wireField === "maxRounds" && (raw === -1 || raw === 0) ? "unlimited" : String(raw);
     } else {
       value = undefined;
     }

@@ -463,6 +463,10 @@ describe("resolvedDefaultLabel with runtime-resolved effective layers", () => {
     expect(resolvedDefaultLabel(maxRoundsOpt, "global", { maxRounds: -1 })).toBe("unlimited (default)");
   });
 
+  test("max_rounds 0 also names unlimited, matching applyDefaults' 0→-1 conversion", () => {
+    expect(resolvedDefaultLabel(maxRoundsOpt, "global", { maxRounds: 0 })).toBe("unlimited (default)");
+  });
+
   test("an integer field with no resolved value stays undefined", () => {
     expect(resolvedDefaultLabel(integerOpt, "global", {})).toBeUndefined();
     expect(resolvedDefaultLabel(integerOpt, "global", { maxSubagentDepth: undefined })).toBeUndefined();
