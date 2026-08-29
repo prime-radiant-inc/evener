@@ -246,11 +246,11 @@ func buildLiveOpTable() opTableT {
 		opPing:          {name: "ping", build: req(appwire.MethodPing, nil), expect: always(appwire.MessageResponse)},
 		opNotification:  {name: "notification", build: func(int64) appwire.Message { return appwire.NotificationMessage(appwire.MethodInitialized, nil) }, expect: always(appwire.MessageInvalid)},
 		opThreadList:    {name: "thread/list", build: req(appwire.MethodThreadList, appwire.ThreadListParams{}), expect: gated},
-		opTurnStart:     {name: "turn/start", build: req(appwire.MethodTurnStart, appwire.TurnStartParams{ClientMutationID: "test-mutation"}), expect: gated},
-		opTurnSteer:     {name: "turn/steer", build: req(appwire.MethodTurnSteer, appwire.TurnSteerParams{ClientMutationID: "test-mutation"}), expect: gated},
-		opTurnInterrupt: {name: "turn/interrupt", build: req(appwire.MethodTurnInterrupt, appwire.TurnInterruptParams{ClientMutationID: "test-mutation"}), expect: gated},
-		opTurnQueue:     {name: "turn/queue", build: req(appwire.MethodTurnQueue, appwire.TurnQueueParams{ClientMutationID: "test-mutation"}), expect: gated},
-		opThreadClear:   {name: "thread/clear", build: req(appwire.MethodThreadClear, appwire.ThreadClearParams{}), expect: gated},
+		opTurnStart:     {name: "turn/start", build: req(appwire.MethodTurnStart, appwire.TurnStartParams{ClientMutationID: "test-mutation", ExpectedInstanceID: "test-instance"}), expect: gated},
+		opTurnSteer:     {name: "turn/steer", build: req(appwire.MethodTurnSteer, appwire.TurnSteerParams{ClientMutationID: "test-mutation", ExpectedInstanceID: "test-instance"}), expect: gated},
+		opTurnInterrupt: {name: "turn/interrupt", build: req(appwire.MethodTurnInterrupt, appwire.TurnInterruptParams{ClientMutationID: "test-mutation", ExpectedInstanceID: "test-instance"}), expect: gated},
+		opTurnQueue:     {name: "turn/queue", build: req(appwire.MethodTurnQueue, appwire.TurnQueueParams{ClientMutationID: "test-mutation", ExpectedInstanceID: "test-instance"}), expect: gated},
+		opThreadClear:   {name: "thread/clear", build: req(appwire.MethodThreadClear, appwire.ThreadClearParams{ClientMutationID: "test-mutation", ExpectedInstanceID: "test-instance"}), expect: gated},
 		// Unknown method and malformed params both yield an error in any state
 		// (the gate fires first when fresh; MethodNotFound / InvalidParams once
 		// initialized).
