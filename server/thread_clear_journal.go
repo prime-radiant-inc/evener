@@ -28,10 +28,10 @@ const (
 // recover the already-installed replacement) without accepting a second clear
 // against the same stable workspace ref.
 type threadClearRecord struct {
-	ClientMutationID   string                       `json:"clientMutationId"`
-	RequestHash        string                       `json:"requestHash"`
+	ClientMutationID   string                       `json:"client_mutation_id"`
+	RequestHash        string                       `json:"request_hash"`
 	Ref                string                       `json:"ref"`
-	ExpectedInstanceID string                       `json:"expectedInstanceId"`
+	ExpectedInstanceID string                       `json:"expected_instance_id"`
 	State              threadClearRecordState       `json:"state"`
 	Response           *appwire.ThreadClearResponse `json:"response,omitempty"`
 }
