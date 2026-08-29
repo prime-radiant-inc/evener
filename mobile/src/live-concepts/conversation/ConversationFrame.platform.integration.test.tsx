@@ -1,6 +1,7 @@
 import { readFileSync } from "node:fs";
 import path from "node:path";
 import { cleanup, render, screen, waitFor } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { createViewportCoordinator } from "../../ui/platformPresentation";
 import { ConversationFrame } from "./ConversationFrame";
@@ -178,6 +179,7 @@ describe("ConversationFrame platform integration", () => {
   });
 
   it("starts panned with composer focused and conditionally settles top controls in the current viewport", async () => {
+    const user = userEvent.setup();
     const viewport = new MutableViewport(500, 47);
     const fakeWindow = Object.create(window) as Window & typeof globalThis;
     Object.defineProperty(fakeWindow, "innerHeight", {
@@ -217,37 +219,61 @@ describe("ConversationFrame platform integration", () => {
     composer.focus();
     expect(document.activeElement).toBe(composer);
 
-    for (const control of [
-      screen.getByRole("button", { name: "Back" }),
-      screen.getByRole("button", { name: "Work" }),
-      screen.getByRole("button", { name: "Switch concept" }),
-    ]) {
+    const controls = [
+      { name: "Back", element: screen.getByRole("button", { name: "Back" }) },
+      { name: "Work", element: screen.getByRole("button", { name: "Work" }) },
+      {
+        name: "Switch concept",
+        element: screen.getByRole("button", { name: "Switch concept" }),
+      },
+    ];
+    const focusOrder: string[] = [];
+    const tabKeys: string[] = [];
+    frame.addEventListener("keydown", (event) => {
+      if (event.key === "Tab") tabKeys.push(event.key);
+    });
+    const rects = new Map<HTMLElement, { top: number; bottom: number }>();
+    const scrollCalls = new Map<HTMLElement, ReturnType<typeof vi.fn>>();
+    for (const { name, element } of controls) {
       let rect = { top: 0, bottom: 44 };
-      control.getBoundingClientRect = () => elementRect(rect.top, rect.bottom);
+      rects.set(element, rect);
+      element.getBoundingClientRect = () => {
+        const current = rects.get(element);
+        if (current === undefined) throw new Error("control rectangle missing");
+        return elementRect(current.top, current.bottom);
+      };
       const scrollIntoView = vi.fn(() => {
         queueMicrotask(() => {
           rect = { top: viewport.offsetTop, bottom: viewport.offsetTop + 44 };
+          rects.set(element, rect);
           viewport.dispatchEvent(new Event("scroll"));
         });
       });
-      control.scrollIntoView = scrollIntoView;
-      control.focus();
+      scrollCalls.set(element, scrollIntoView);
+      element.scrollIntoView = scrollIntoView;
+      element.addEventListener("focus", () => focusOrder.push(name));
+    }
+
+    for (const [index, { name, element }] of controls.entries()) {
+      await user.tab();
+      expect(document.activeElement, `${name} active after Tab`).toBe(element);
       await waitFor(() => {
         const current = {
           top: viewport.offsetTop,
           bottom: viewport.offsetTop + viewport.height,
         };
-        const settled = control.getBoundingClientRect();
-        expect(document.activeElement).toBe(control);
+        const settled = element.getBoundingClientRect();
+        expect(document.activeElement).toBe(element);
         expect(settled.bottom).toBeGreaterThan(current.top);
         expect(settled.top).toBeLessThan(current.bottom);
       });
-      expect(scrollIntoView).toHaveBeenCalledWith({
+      expect(scrollCalls.get(element)).toHaveBeenCalledWith({
         block: "nearest",
         inline: "nearest",
       });
-      composer.focus();
+      expect(tabKeys).toHaveLength(index + 1);
     }
+    expect(focusOrder).toEqual(["Back", "Work", "Switch concept"]);
     coordinator.stop();
   });
 
