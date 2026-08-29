@@ -257,6 +257,7 @@ native:llm:./providers/anthropic:FuzzAnthropicRequestBuild
 native:llm:./providers/anthropic:FuzzAnthropicProtocolBuildBody
 native:llm:./providers/anthropic:FuzzAnthropicComplete
 native:llm:./providers/google:FuzzGoogleRequestBuild
+native:llm:./providers/google:FuzzGoogleProtocolBuildBody
 native:llm:./providers/google:FuzzGoogleComplete
 native:llm:./providers/openaicompat:FuzzOpenAICompatRequestBuild
 native:llm:./providers/openaicompat:FuzzOpenAICompatComplete

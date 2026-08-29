@@ -91,7 +91,7 @@ func FuzzGoogleRequestBuild(f *testing.F) {
 	f.Fuzz(func(t *testing.T, model, system, user string, toolArgs, toolParams []byte, sel byte) {
 		req := buildFuzzRequest(model, system, user, toolArgs, toolParams, sel)
 
-		sys, contents, err := toGeminiContents(req.Model, req.Messages)
+		sys, contents, err := toGeminiContents(req.Model, req.Messages, geminiSupportsMultimodalFunctionResponse(req.Model))
 		if err != nil {
 			return // unsupported content shape is an acceptable structured error.
 		}

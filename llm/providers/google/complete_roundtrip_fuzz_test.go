@@ -90,7 +90,7 @@ func fuzzGoogleStatus(statusSel byte) int {
 // error before touching the transport (unrepresentable messages, unmarshalable
 // body, or an unparseable endpoint URL).
 func googleReference(a *Adapter, req llm.Request, streaming bool) (wantBytes []byte, wantURL string, ok bool) {
-	system, contents, err := toGeminiContents(req.Model, req.Messages)
+	system, contents, err := toGeminiContents(req.Model, req.Messages, geminiSupportsMultimodalFunctionResponse(req.Model))
 	if err != nil {
 		return nil, "", false
 	}

@@ -133,7 +133,7 @@ func (a *Adapter) Complete(ctx context.Context, req llm.Request) (result llm.Res
 	}
 	parentCtx := ctx
 
-	system, contents, err := toGeminiContents(req.Model, req.Messages)
+	system, contents, err := toGeminiContents(req.Model, req.Messages, geminiSupportsMultimodalFunctionResponse(req.Model))
 	if err != nil {
 		return llm.Response{}, err
 	}
@@ -238,7 +238,7 @@ func (a *Adapter) CountInputTokens(ctx context.Context, req llm.Request) (llm.In
 		a.Client = &http.Client{Timeout: 0}
 	}
 
-	system, contents, err := toGeminiContents(req.Model, req.Messages)
+	system, contents, err := toGeminiContents(req.Model, req.Messages, geminiSupportsMultimodalFunctionResponse(req.Model))
 	if err != nil {
 		return llm.InputTokenCount{}, err
 	}
@@ -347,7 +347,7 @@ func (a *Adapter) Stream(ctx context.Context, req llm.Request) (llm.Stream, erro
 		timeoutCancel()
 	}
 
-	system, contents, err := toGeminiContents(req.Model, req.Messages)
+	system, contents, err := toGeminiContents(req.Model, req.Messages, geminiSupportsMultimodalFunctionResponse(req.Model))
 	if err != nil {
 		cancelAll()
 		return nil, err
@@ -436,6 +436,16 @@ func (a *Adapter) Stream(ctx context.Context, req llm.Request) (llm.Stream, erro
 // Response when the model signals a finish reason. It owns closing the response
 // body and the ChanStream.
 func (a *Adapter) decodeStream(sctx context.Context, cancel context.CancelFunc, resp *http.Response, s *llm.ChanStream, req llm.Request, _ []byte, endpoint string, attempt *transport.APIAttemptCapture) {
+	decodeGenerateContentStream(sctx, cancel, resp, s, req, a.Name(), endpoint, a.apiLogCredentialMaterial(nil), attempt)
+}
+
+// decodeGenerateContentStream consumes the streamGenerateContent SSE stream in
+// its own goroutine: it translates each chunk into llm stream events and emits
+// the final accumulated Response when the model signals a finish reason. It
+// owns closing the response body and the ChanStream. provider stamps every
+// Response/error the decoder produces; endpointURL and material back
+// llm.StampEndpointURL's fallback and credential-sanitization inputs.
+func decodeGenerateContentStream(sctx context.Context, cancel context.CancelFunc, resp *http.Response, s *llm.ChanStream, req llm.Request, provider, endpointURL string, material llm.APILogCredentialMaterial, attempt *transport.APIAttemptCapture) {
 	defer func() {
 		_ = resp.Body.Close()
 		s.CloseSend()
@@ -459,7 +469,7 @@ func (a *Adapter) decodeStream(sctx context.Context, cancel context.CancelFunc, 
 	}
 
 	runner := &transport.StreamRunner{
-		Provider:   "google",
+		Provider:   provider,
 		Resp:       resp,
 		Stream:     s,
 		Attempt:    attempt,
@@ -491,7 +501,7 @@ func (a *Adapter) decodeStream(sctx context.Context, cancel context.CancelFunc, 
 				// the failure to the generic incomplete-stream error, hiding
 				// quota/overload causes from retry logic and forensics.
 				if inband := inbandStreamError(ev.Data); inband != nil {
-					return &transport.FatalStreamError{Err: inband}
+					return &transport.FatalStreamError{Err: llm.RewriteErrorProvider(inband, provider)}
 				}
 			}
 
@@ -600,14 +610,14 @@ func (a *Adapter) decodeStream(sctx context.Context, cancel context.CancelFunc, 
 						}
 						msg := llm.Message{Role: llm.RoleAssistant, Content: contentParts}
 						r := llm.Response{
-							Provider: "google",
+							Provider: provider,
 							Model:    req.Model,
 							Message:  msg,
 							Finish:   finish,
 							Usage:    usage,
 							Raw:      raw,
 						}
-						llm.StampEndpointURL(&r, llm.FinalResponseEndpointURL(resp, endpoint), a.apiLogCredentialMaterial(nil))
+						llm.StampEndpointURL(&r, llm.FinalResponseEndpointURL(resp, endpointURL), material)
 						if len(r.ToolCalls()) > 0 {
 							r.Finish = llm.FinishReason{Reason: "tool_calls", Raw: r.Finish.Raw}
 						}

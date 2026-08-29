@@ -109,7 +109,7 @@ func FuzzGoogleCountInputTokensRoundTrip(f *testing.F) {
 		var wantBytes []byte
 		var wantURL string
 		var buildErr error
-		system, contents, err := toGeminiContents(req.Model, req.Messages)
+		system, contents, err := toGeminiContents(req.Model, req.Messages, geminiSupportsMultimodalFunctionResponse(req.Model))
 		if err != nil {
 			buildErr = err
 		} else if genReq, gerr := a.buildRequestBody(req, system, contents); gerr != nil {

@@ -11,7 +11,10 @@ import (
 	"primeradiant.com/evener/llm"
 )
 
-func (a *Adapter) buildRequestBody(req llm.Request, system string, contents []map[string]any) (map[string]any, error) {
+// generateContentBody assembles generationConfig, systemInstruction,
+// tools (google_search only when webSearch is on and there are no
+// function declarations), toolConfig, and the caller's options.
+func generateContentBody(req llm.Request, system string, contents []map[string]any, webSearch bool, options map[string]any) (map[string]any, error) {
 	genCfg := map[string]any{}
 	if req.Temperature != nil {
 		genCfg["temperature"] = *req.Temperature
@@ -58,7 +61,7 @@ func (a *Adapter) buildRequestBody(req llm.Request, system string, contents []ma
 			"parts": []map[string]any{{"text": system}},
 		}
 	}
-	if len(req.Tools) > 0 || req.WebSearch {
+	if len(req.Tools) > 0 || webSearch {
 		var toolEntries []map[string]any
 		if len(req.Tools) > 0 {
 			toolEntries = append(toolEntries, map[string]any{
@@ -66,7 +69,7 @@ func (a *Adapter) buildRequestBody(req llm.Request, system string, contents []ma
 			})
 		}
 		// Gemini does not support google_search combined with functionDeclarations.
-		if req.WebSearch && len(req.Tools) == 0 {
+		if webSearch && len(req.Tools) == 0 {
 			toolEntries = append(toolEntries, map[string]any{
 				"google_search": map[string]any{},
 			})
@@ -94,15 +97,18 @@ func (a *Adapter) buildRequestBody(req llm.Request, system string, contents []ma
 		}
 		body["toolConfig"] = map[string]any{"functionCallingConfig": cfg}
 	}
-	if req.ProviderOptions != nil {
-		if ov, ok := req.ProviderOptions["google"].(map[string]any); ok {
-			maps.Copy(body, ov)
-		}
-		if ov, ok := req.ProviderOptions["gemini"].(map[string]any); ok {
-			maps.Copy(body, ov)
+	maps.Copy(body, options)
+	return body, nil
+}
+
+func (a *Adapter) buildRequestBody(req llm.Request, system string, contents []map[string]any) (map[string]any, error) {
+	options := map[string]any{}
+	for _, key := range []string{"google", "gemini"} {
+		if ov, ok := req.ProviderOptions[key].(map[string]any); ok {
+			maps.Copy(options, ov)
 		}
 	}
-	return body, nil
+	return generateContentBody(req, system, contents, req.WebSearch, options)
 }
 
 func toGeminiFunctionDecls(tools []llm.ToolDefinition) []map[string]any {
@@ -251,7 +257,7 @@ func geminiSupportsMultimodalFunctionResponse(model string) bool {
 	return strings.HasPrefix(strings.ToLower(strings.TrimSpace(model)), "gemini-3")
 }
 
-func toGeminiContents(model string, msgs []llm.Message) (system string, contents []map[string]any, _ error) {
+func toGeminiContents(model string, msgs []llm.Message, multimodalToolResults bool) (system string, contents []map[string]any, _ error) {
 	var sysParts []string
 	appendContent := func(role string, parts []map[string]any) {
 		if len(parts) == 0 {
@@ -375,7 +381,7 @@ func toGeminiContents(model string, msgs []llm.Message) (system string, contents
 					"response": respObj,
 				}
 				if len(p.ToolResult.ImageData) > 0 {
-					if !geminiSupportsMultimodalFunctionResponse(model) {
+					if !multimodalToolResults {
 						return "", nil, &llm.ConfigurationError{Message: fmt.Sprintf("google model %q does not support tool-result images: multimodal function responses require a Gemini 3 series model", model)}
 					}
 					mt := p.ToolResult.ImageMediaType

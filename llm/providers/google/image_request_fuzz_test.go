@@ -44,7 +44,7 @@ func FuzzGeminiImageRequestBuild(f *testing.F) {
 			},
 		}
 
-		sys, contents, err := toGeminiContents(req.Model, req.Messages)
+		sys, contents, err := toGeminiContents(req.Model, req.Messages, geminiSupportsMultimodalFunctionResponse(req.Model))
 		if err != nil {
 			return
 		}

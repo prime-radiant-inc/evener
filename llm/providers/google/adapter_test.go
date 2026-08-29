@@ -1144,7 +1144,7 @@ func TestToGeminiContents_SanitizesMalformedHistoricalToolCallArguments(t *testi
 				Type:      "function",
 			},
 		}},
-	}})
+	}}, geminiSupportsMultimodalFunctionResponse("gemini-3-pro-preview"))
 	if err != nil {
 		t.Fatalf("toGeminiContents: %v", err)
 	}

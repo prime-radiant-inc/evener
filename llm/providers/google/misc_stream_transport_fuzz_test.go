@@ -113,7 +113,7 @@ func FuzzMiscGoogleStreamRoundTrip(f *testing.F) {
 		}
 
 		// Reference: what the pre-transport build path produces for this request.
-		system, contents, contentsErr := toGeminiContents(req.Model, req.Messages)
+		system, contents, contentsErr := toGeminiContents(req.Model, req.Messages, geminiSupportsMultimodalFunctionResponse(req.Model))
 		var wantBytes []byte
 		var buildErr error
 		if contentsErr == nil {
