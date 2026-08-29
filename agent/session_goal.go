@@ -194,9 +194,13 @@ func (s *Session) callsMadeProgress(calls []llm.ToolCallData) bool {
 // that can fire the breaker one turn before the already-armed report lands
 // (the report still arrives and the block is now transcript-visible); and a
 // wedged delegate yields at most one quiet-watchdog wake per quiet stretch,
-// after which the hold parks the goal on a supervised-but-silent dependent —
-// the wedge is surfaced to the user and model on that one wake, and repeat
-// watchdog cadence is a delegate-supervision follow-up, not this gate's.
+// after which the hold parks the goal on a supervised-but-silent dependent
+// until the delegate's own turn budget (or a hung-tool timeout) forces its
+// terminal notification — the wedge is surfaced to the user and model on
+// that one wake, and repeat watchdog cadence is a delegate-supervision
+// follow-up, not this gate's. The hold also requires both serve-loop
+// callbacks to be wired, which only root daemon sessions are: delegate-child
+// sessions are out of scope (see the wiring note in armGoalContinuation).
 //
 // It takes delegate-controller and job-manager locks and must never be called
 // with goalUpdateMu or s.mu held (see the askPending lock-discipline comment
@@ -231,9 +235,11 @@ func (s *Session) armGoalContinuation(progressed, wasContinuation bool) (string,
 	// and job-manager locks, which must never be held under the goal serializer.
 	// Two short-circuits keep hot paths free of it: only a non-progressed
 	// continuation can hold at all, and the hold can only fire when both
-	// serve-loop callbacks are wired (bridgeSession installs them together) — an
-	// unwired session (e.g. one-shot `evener run`, where the drain's defer chain
-	// is the only driver) never pays for the dependent scan it cannot use.
+	// serve-loop callbacks are wired (bridgeSession installs them together).
+	// Unwired sessions never pay for the dependent scan they cannot use: a
+	// one-shot `evener run` (the drain's defer chain is the only driver) and —
+	// see the wiring note on the hold branch below — delegate-child sessions,
+	// whose goals stay covered by the documented child-session gap follow-up.
 	var wakePending bool
 	if wasContinuation && !progressed {
 		s.mu.Lock()
@@ -279,7 +285,12 @@ func (s *Session) armGoalContinuation(progressed, wasContinuation bool) (string,
 		// makes the held decision visible to settleGoalOnIdle so it does not
 		// immediately re-kick past the same wait. wakePending implies the
 		// kick+notify pair is wired (the gate's short-circuit), so the held
-		// decision always has a live resume path.
+		// decision always has a live resume path. Wiring note: only root daemon
+		// sessions have both callbacks (serve.go's bridgeSession). Delegate
+		// children get SetNotifyFunc but never SetKickFunc — their restored
+		// active goals self-drive through the drain's inline continuation path,
+		// where the hold cannot apply; that gap is the documented child-session
+		// follow-up, not this gate's.
 		s.mu.Lock()
 		s.goalDependentsHeld = true
 		s.mu.Unlock()

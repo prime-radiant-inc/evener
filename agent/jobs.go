@@ -305,6 +305,14 @@ func (jm *jobManager) currentCausalProvenance() *provenance.Causal {
 // unreachable. This mirrors the wait contract session_jobtree_drain.go
 // teaches the model: to wait on a long command, watch it with a
 // progress_interval.
+//
+// Scope caveat: the scan does not filter by the watch's receiver. A watch
+// configured on behalf of a descendant (configureDescendantReceiverWatch)
+// routes its ticks to that descendant's session, not to this one, so counting
+// it would hold the goal on ticks that wake someone else. That shape is not
+// reachable today — descendant-receiver watches live in the descendant's job
+// manager, not this one — but a future change that mirrors them here must add
+// a receiver filter or this predicate overcounts.
 func (jm *jobManager) hasSupervisedRunningJobs() bool {
 	if jm == nil {
 		return false
