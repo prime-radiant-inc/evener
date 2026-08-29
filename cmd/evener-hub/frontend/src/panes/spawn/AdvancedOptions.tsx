@@ -187,10 +187,15 @@ function resolvedValue(option: LaunchOption, resolvedDefaults: LaunchConfigLayer
 }
 
 /** The "<value> (default)" label for an unset string-valued control, or plain
- * "(default)" when the effective layer doesn't set the field. */
+ * "(default)" when the effective layer doesn't set the field. Falls back to
+ * the schema's builtinDefaultLabel for a field whose default is dynamic
+ * (fast_cheap_model → "primary model") — the resolve can't compute the
+ * actual value, so the label names the answer in prose instead. */
 function stringDefaultLabel(option: LaunchOption, resolvedDefaults: LaunchConfigLayer | undefined): string {
   const value = resolvedValue(option, resolvedDefaults);
-  return typeof value === "string" && value !== "" ? `${value} (default)` : "(default)";
+  if (typeof value === "string" && value !== "") return `${value} (default)`;
+  if (option.builtinDefaultLabel) return `${option.builtinDefaultLabel} (default)`;
+  return "(default)";
 }
 
 /** The "<On|Off> (default)" label for an unset boolean control - the panel's
@@ -213,7 +218,14 @@ const DEFAULT_PLACEHOLDER_MAX = 60;
  * bare then, exactly as they were before the resolved-default labels. */
 function inputDefaultPlaceholder(option: LaunchOption, resolvedDefaults: LaunchConfigLayer | undefined): string {
   const value = resolvedValue(option, resolvedDefaults);
-  if (typeof value === "number" && Number.isFinite(value)) return `${value} (default)`;
+  if (typeof value === "number" && Number.isFinite(value)) {
+    // max_rounds -1 is the flag's own "unlimited" sentinel
+    // (fs.Int("max-rounds", -1, "... 0=unlimited")), so the placeholder
+    // uses that wording rather than the opaque number. Keyed on the wire
+    // field: the spawn panel's option objects carry it verbatim.
+    if (option.wireField === "maxRounds" && value === -1) return "unlimited (default)";
+    return `${value} (default)`;
+  }
   if (typeof value === "string" && value.trim() !== "") {
     const trimmed = value.trim();
     const shown =

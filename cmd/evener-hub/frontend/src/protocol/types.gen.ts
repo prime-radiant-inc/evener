@@ -779,6 +779,10 @@ export interface LaunchOption {
   envFallback?: LaunchOptionEnvFallback;
   choices?: LaunchOptionChoice[];
   driverSupport?: Record<string, boolean>;
+  builtinDefault?: string;
+  builtinDefaultInt?: number;
+  builtinDefaultBool?: boolean;
+  builtinDefaultLabel?: string;
 }
 
 export interface LaunchOptionChoice {

@@ -2444,20 +2444,24 @@ type LaunchOptionEnvFallback struct {
 }
 
 type LaunchOption struct {
-	Field             string                   `json:"field"`
-	WireField         string                   `json:"wireField"`
-	Label             string                   `json:"label"`
-	Description       string                   `json:"description,omitempty"`
-	Group             string                   `json:"group"`
-	Kind              string                   `json:"kind"`
-	PathKind          string                   `json:"pathKind,omitempty"`
-	Repeatable        bool                     `json:"repeatable,omitempty"`
-	DefaultableLayers []string                 `json:"defaultableLayers,omitempty"`
-	PerLaunch         bool                     `json:"perLaunch"`
-	DebugOnly         bool                     `json:"debugOnly,omitempty"`
-	EnvFallback       *LaunchOptionEnvFallback `json:"envFallback,omitempty"`
-	Choices           []LaunchOptionChoice     `json:"choices,omitempty"`
-	DriverSupport     map[string]bool          `json:"driverSupport,omitempty"`
+	Field               string                   `json:"field"`
+	WireField           string                   `json:"wireField"`
+	Label               string                   `json:"label"`
+	Description         string                   `json:"description,omitempty"`
+	Group               string                   `json:"group"`
+	Kind                string                   `json:"kind"`
+	PathKind            string                   `json:"pathKind,omitempty"`
+	Repeatable          bool                     `json:"repeatable,omitempty"`
+	DefaultableLayers   []string                 `json:"defaultableLayers,omitempty"`
+	PerLaunch           bool                     `json:"perLaunch"`
+	DebugOnly           bool                     `json:"debugOnly,omitempty"`
+	EnvFallback         *LaunchOptionEnvFallback `json:"envFallback,omitempty"`
+	Choices             []LaunchOptionChoice     `json:"choices,omitempty"`
+	DriverSupport       map[string]bool          `json:"driverSupport,omitempty"`
+	BuiltinDefault      string                   `json:"builtinDefault,omitempty"`
+	BuiltinDefaultInt   *int                     `json:"builtinDefaultInt,omitempty"`
+	BuiltinDefaultBool  *bool                    `json:"builtinDefaultBool,omitempty"`
+	BuiltinDefaultLabel string                   `json:"builtinDefaultLabel,omitempty"`
 }
 
 type LaunchOptionSchemaResponse struct {

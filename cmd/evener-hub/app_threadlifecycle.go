@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
 	"strconv"
 	"strings"
 
@@ -111,6 +112,15 @@ func hubThreadStart(ctx context.Context, cfg hubcore.WebConfig, sources *appsour
 	if resolveErr != nil {
 		return appwire.ThreadStartResponse{}, resolveErr
 	}
+	// The env floor (EVENER_MODEL etc.) applies to the spawn decision too,
+	// matching the agent's own flag > env fallback: a session started now
+	// would run with the env model, so the required-model gate must accept
+	// it and the spawned child must receive it. Layers and per-launch
+	// overrides still win — the floor only fills what nothing else set.
+	// Env only, deliberately NOT the builtin floor: the agent applies its
+	// own builtins, and pinning them in the hub's argv would skew across
+	// versions (ApplyEnvDefaults' doc comment).
+	spawnResolved = launchconfig.ApplyEnvDefaults(spawnResolved, os.Getenv, launchconfig.LaunchOptionSchema())
 	resolvedModel := strings.TrimSpace(spawnResolved.Effective.Model)
 	if resolvedModel == "" {
 		return appwire.ThreadStartResponse{}, appwire.InvalidParams("model is required")
