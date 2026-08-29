@@ -1718,8 +1718,6 @@ func (a *subagent) run(ctx context.Context, input string, inputProvenance *prove
 		}
 		break
 	}
-	exhaustion, budgetExhausted := budgetExhaustionFromError(err)
-
 	a.sess.mu.Lock()
 	turns := a.sess.turns
 	a.sess.mu.Unlock()
@@ -1740,16 +1738,10 @@ func (a *subagent) run(ctx context.Context, input string, inputProvenance *prove
 	a.running = false
 	a.turnsUsed = turns
 	a.endedAt = &finalizeTime
-	switch {
-	case a.cancelRequested && errors.Is(err, context.Canceled):
-		a.status = SubagentCancelled
-	case budgetExhausted:
-		a.status = SubagentExhausted
-		a.err = exhaustion
-	case err != nil:
-		a.status = SubagentFailed
-	default:
-		a.status = SubagentCompleted
+	runEnd := classifyRunEnd(err, a.cancelRequested)
+	a.status = runEnd.status
+	if runEnd.exhaustion != nil {
+		a.err = runEnd.exhaustion
 	}
 	done := a.done
 	a.endEmitted = true
@@ -1819,25 +1811,72 @@ func (a *subagent) drainForFinalization(ctx context.Context, result string) (str
 	return result, parentDriveNotify, nil
 }
 
-func delegateSettlementModeForRun(err error, cancelRequested bool) delegateSettlementMode {
+// runEndClass is the shared classification of a delegate run's terminal
+// error, with the three projections every consumer derives from the same
+// taxonomy: settlement mode (can the run still be nudged or steered),
+// fatality (should the error be gated as a fatal run), and the published
+// subagent status.
+type runEndClass struct {
+	mode       delegateSettlementMode
+	fatal      bool
+	status     SubagentStatus
+	exhaustion *budgetExhaustionError
+}
+
+// classifyRunEnd maps a run error plus the local cancel request onto the
+// settlement-mode, fatality, and status projections in one pattern-match over
+// the run-end taxonomy. It is pure: no locking, I/O, Session, or controller
+// access. Pins:
+//
+//   - Settlement mode is terminal when cancelRequested regardless of err,
+//     while SubagentCancelled additionally requires errors.Is(err,
+//     context.Canceled). The two are deliberately distinct; one is "this
+//     runtime can no longer settle ordinarily", the other is "the user
+//     stopped this run".
+//   - Budget exhaustion is terminal settlement, published as status
+//     Exhausted, never fatal, and its payload replaces the run error in the
+//     subagent's terminal state (the caller applies runEnd.exhaustion).
+//   - context.Canceled is never fatal even when cancelRequested is false —
+//     a host interrupt, not a user stop.
+//   - errors.Is/errors.As semantics are preserved for wrapped and joined
+//     (errors.Join) error values, matching the pre-refactor matching.
+func classifyRunEnd(err error, cancelRequested bool) runEndClass {
+	exhaustion, budgetExhausted := budgetExhaustionFromError(err)
+	// Order matters for joined errors: the pre-refactor settlement-mode
+	// logic tested budget exhaustion BEFORE the bare-text/empty-response
+	// sentinels, so Join(bareText, exhaustion) settles terminally.
+	ordinary := !budgetExhausted && (err == nil ||
+		errors.Is(err, errBareTextWithoutResultTool) || errors.Is(err, errEmptyResponseExhausted))
+	nonFatal := err == nil || errors.Is(err, context.Canceled) || ordinary || budgetExhausted
+	cls := runEndClass{exhaustion: exhaustion}
 	if cancelRequested {
-		return delegateSettlementTerminal
+		// Cancel-requested runs always settle terminally, regardless of err.
+		cls.mode = delegateSettlementTerminal
+	} else if ordinary {
+		cls.mode = delegateSettlementOrdinary
+	} else {
+		cls.mode = delegateSettlementTerminal
 	}
-	if _, exhausted := budgetExhaustionFromError(err); exhausted {
-		return delegateSettlementTerminal
+	cls.fatal = !nonFatal
+	switch {
+	case cancelRequested && errors.Is(err, context.Canceled):
+		cls.status = SubagentCancelled
+	case budgetExhausted:
+		cls.status = SubagentExhausted
+	case err != nil:
+		cls.status = SubagentFailed
+	default:
+		cls.status = SubagentCompleted
 	}
-	if err == nil || errors.Is(err, errBareTextWithoutResultTool) || errors.Is(err, errEmptyResponseExhausted) {
-		return delegateSettlementOrdinary
-	}
-	return delegateSettlementTerminal
+	return cls
+}
+
+func delegateSettlementModeForRun(err error, cancelRequested bool) delegateSettlementMode {
+	return classifyRunEnd(err, cancelRequested).mode
 }
 
 func stableDelegateFatalRun(err error) bool {
-	if err == nil || errors.Is(err, context.Canceled) || errors.Is(err, errBareTextWithoutResultTool) || errors.Is(err, errEmptyResponseExhausted) {
-		return false
-	}
-	_, exhausted := budgetExhaustionFromError(err)
-	return !exhausted
+	return classifyRunEnd(err, false).fatal
 }
 
 func stableDelegateFinish(sess *Session, result string, runErr error) delegateFinish {
