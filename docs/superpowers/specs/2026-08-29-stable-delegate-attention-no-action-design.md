@@ -231,7 +231,12 @@ Under the controller mutex, validate:
 
 On the running path, construct the fixed completed/no-action finish internally, append packetless `RunFinished`, and release the claim and generation. On a live stop race, pass the retained fallback through the existing stopped branch.
 
-If the append fails, keep claim, evidence, fallback, and capacity live for existing finalization recovery. Live recovery may retry or stop with the fallback. A process crash may lose late process-only operational evidence and follows existing `runtime_lost`/stopped recovery; this spec makes no stronger crash guarantee.
+If the append fails, keep claim, evidence, fallback, and capacity live and
+latch the existing stop-only finalization recovery path. Live recovery does not
+retry no action directly; it can use the retained fallback when the existing
+stop recovery closes the generation. A process crash may lose late
+process-only operational evidence and follows existing `runtime_lost`/stopped
+recovery; this spec makes no stronger crash guarantee.
 
 Use existing locked event/release helpers. Reject missing, stale, mismatched, or unready claims.
 
