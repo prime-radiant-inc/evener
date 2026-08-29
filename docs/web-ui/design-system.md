@@ -476,6 +476,52 @@ text into the focused session's composer and moves focus there, closing the pale
 itself never executes a session mutation or makes a wire call for one. With no session focused,
 the same row explains that there's nowhere to hand off to yet, rather than silently doing nothing.
 
+## 10. Collection pages: segmented workspaces and detail sheets
+
+**The pattern (2026-08-29): when one page holds several same-weight collections, segment them —
+never stack them.** The first collection page this shipped on is Settings → Marketplaces &
+Plugins (`panes/settings/sections/marketplacesPlugins/`), which previously stacked three
+sections (registered marketplaces, the browse tree, the installed list) down one long scroll.
+It is now the reference implementation for the two idioms below; any future page with the same
+shape (several sibling lists, plus per-item detail and actions) should reuse them rather than
+inventing a third layout.
+
+**One list at a time, chosen by a page-level SegmentedControl.** Each sibling collection becomes
+a segment; the segment labels carry the counts (`Installed (7)`, `Marketplaces (3)`), and the
+per-section headers — title plus count — are deleted, because duplicating that identity under
+the segment control is noise. The default segment is the one the user maintains most (Installed,
+not Browse). Switching segments is a page-level navigation act: page-scoped overlays owned by
+the outgoing segment close (see the sheet rule below), while per-segment UI state that is
+expensive to rebuild (the browse tree's expansion and its lazy catalog cache) is lifted to the
+page so it survives the round trip.
+
+**Rows are single tappable targets; actions live in a detail sheet.** A collection row carries
+identity and status only — `StatusDot`, name, state chips, one mono meta line
+(`@ marketplace · v1.2.0`) — and a trailing chevron; it is one full-width `<button>`, so the
+whole row is the target on desktop and touch alike. A row NEVER grows a trailing cluster of
+small action buttons (the pre-redesign installed row had four): every action on the item moves
+into the item's **detail sheet**, a `Sheet` with `side="right"` on desktop and `side="bottom"`
+at the mobile breakpoint (chosen via `useIsMobile`, the same source the shell uses). The sheet
+is the item's inspector: state chips, its catalog description (pulled lazily through the browse
+cache — re-open is free), a meta table, and its actions. Binary state (Enabled, Auto-upgrade)
+is a `Switch` row inside the sheet, disabled while its RPC is in flight; the primary mutation
+is a footer `Button`; the destructive action keeps its `ConfirmDialog` even though that nests a
+second modal over the sheet — `OverlayPanel` instances stack in DOM order, each traps and
+restores focus down the stack, and its `preventDefault` on Escape is what keeps the settings
+pane's own document-level Escape handler from closing the pane out from under an open overlay.
+
+**The meta table idiom.** Inside an inspector, facts render as label/value rows: a fixed-width
+(96px) caption-color label column, values in the UI font, and `var(--font-mono)` for anything
+machine-shaped — versions, sources, paths — truncating with ellipsis rather than wrapping.
+This is the same vocabulary as the list row's meta line, one zoom level up.
+
+**An inspector is only as alive as its subject.** The detail sheet reads its entity from the
+store rather than a prop snapshot, so cross-client changes land while it is open; when the
+entity disappears from the store (its own Remove completing, or another client's), the sheet
+closes itself instead of offering actions on a ghost, and a failed Remove keeps the sheet and
+dialog open for retry. Segments own their overlays: switching away closes the sheet, coming
+back does not reopen it.
+
 ## 11. Mobile forms and honest cold starts
 
 Mobile forms use settings-style rows when several related choices must remain
