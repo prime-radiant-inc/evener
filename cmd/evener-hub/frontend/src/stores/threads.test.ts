@@ -11,8 +11,9 @@ import {
 import type { ConnectionState } from "../protocol/client";
 import { ClientNotReadyError, errorKind, RequestTimeoutError, WireError } from "../protocol/errors";
 import type { ThreadModel } from "../protocol/model";
-import { hydrateThread } from "../protocol/reducer";
+import { applyNotification, hydrateThread, notificationTargetsThread } from "../protocol/reducer";
 import { FakeClient, type RequestHandler } from "../protocol/testing/fakeClient";
+import { mulberry32 } from "../protocol/testing/tokenFlood";
 import type {
   AnyNotification,
   MethodName,
@@ -23,6 +24,7 @@ import type {
   ThreadCapabilities,
   ThreadClearResponse,
   ThreadReadResponse,
+  ThreadStatus,
   ThreadTurnsListResponse,
   TurnQueueResponse,
   TurnStartResponse,
@@ -35,11 +37,13 @@ import {
   FRAME_TIMES_MAX_ENTRIES,
   FRAME_TIMES_WINDOW_MS,
   installHydrationRetrySchedulerForTests,
+  putThreadModel,
   readMutationPersistence,
   resendRecoveryMutation,
   resetThreadsStoreForTests,
   setMutationStorageForTests,
   subscribeMutationPersistence,
+  threadRoutingIndexesForTests,
   threadsStore,
   useThreadsStore,
 } from "./threads";
@@ -136,6 +140,15 @@ function testThread(ref: string, overrides: TestThreadOverrides = {}): Thread {
 
 function readResponse(ref: string, overrides: TestThreadOverrides = {}): ThreadReadResponse {
   return { thread: testThread(ref, overrides) };
+}
+
+// readResponse derives the wire thread id as thr_<ref>. The routing-index
+// tests need models with known and sometimes SHARED thread ids (a lean watch
+// of a ref that is also pane-owned resolves to the same thread id), so this
+// variant pins the id explicitly.
+function readResponseWithId(ref: string, threadId: string, overrides: TestThreadOverrides = {}): ThreadReadResponse {
+  const base = readResponse(ref, overrides);
+  return { thread: { ...base.thread, id: threadId } };
 }
 
 function clearResponse(params: { clientMutationId: string }, thread: Thread): ThreadClearResponse {
@@ -2712,6 +2725,516 @@ describe("notification routing", () => {
   });
 });
 
+describe("notification routing index (ref / threadId fast path)", () => {
+  test("a ref-routed notification reaches exactly the model with that ref (sibling and watched models untouched)", async () => {
+    const fake = connectFakeClient();
+    fake.on("thread/read", (params) => readResponse((params as { ref: string }).ref));
+    await threadsStore.getState().ensureThread("ref_a");
+    await threadsStore.getState().ensureThread("ref_b");
+    await threadsStore.getState().watchThread("ref_w");
+
+    const beforeB = threadsStore.getState().threads.get("ref_b");
+    const beforeWatched = threadsStore.getState().watchedThreads.get("ref_w");
+
+    fake.emitNotification({
+      method: "thread/status/changed",
+      params: { threadId: "thr_ref_a", ref: "ref_a", status: { type: "active" } },
+    });
+
+    expect(threadsStore.getState().threads.get("ref_a")?.status).toEqual({ type: "active" });
+    // Same-reference no-op for the sibling pane and the lean watch: both hold
+    // distinct models the scan would not have selected.
+    expect(threadsStore.getState().threads.get("ref_b")).toBe(beforeB);
+    expect(threadsStore.getState().watchedThreads.get("ref_w")).toBe(beforeWatched);
+  });
+
+  test("a threadId-routed notification (no ref on the frame) reaches every model with that thread id, in both maps", async () => {
+    const fake = connectFakeClient();
+    // ref_primary and ref_alias hydrate from snapshots carrying the SAME
+    // thread id thr_shared (distinct refs, one thread); ref_watched is a lean
+    // watch of a third ref whose thread id is also thr_shared; ref_other is
+    // an unrelated pane. A frame with only threadId = thr_shared must select
+    // every model the old scan would have: primary, alias, and the watch —
+    // and nothing else.
+    fake.on("thread/read", (params) => {
+      const ref = (params as { ref: string }).ref;
+      if (ref === "ref_primary" || ref === "ref_alias") return readResponseWithId(ref, "thr_shared");
+      if (ref === "ref_watched") return readResponseWithId(ref, "thr_shared");
+      return readResponse(ref);
+    });
+    await threadsStore.getState().ensureThread("ref_primary");
+    await threadsStore.getState().ensureThread("ref_alias");
+    await threadsStore.getState().ensureThread("ref_other");
+    await threadsStore.getState().watchThread("ref_watched");
+
+    const beforeOther = threadsStore.getState().threads.get("ref_other");
+
+    // thread/status/changed with threadId but NO ref: not wire-true for this
+    // method (the hub always sends both), so cast like the suite's other
+    // wire-shape probes. The routing layer must key on threadId alone.
+    fake.emitNotification({
+      method: "thread/status/changed",
+      params: { threadId: "thr_shared", status: { type: "active" } },
+    } as AnyNotification);
+
+    expect(threadsStore.getState().threads.get("ref_primary")?.status).toEqual({ type: "active" });
+    expect(threadsStore.getState().threads.get("ref_alias")?.status).toEqual({ type: "active" });
+    expect(threadsStore.getState().watchedThreads.get("ref_watched")?.status).toEqual({ type: "active" });
+    expect(threadsStore.getState().threads.get("ref_other")).toBe(beforeOther);
+  });
+
+  test("a ref-routed notification wins over a contradictory threadId (ref has precedence, like the scan)", async () => {
+    const fake = connectFakeClient();
+    fake.on("thread/read", (params) => readResponse((params as { ref: string }).ref));
+    await threadsStore.getState().ensureThread("ref_a"); // thr_ref_a
+    await threadsStore.getState().ensureThread("ref_b"); // thr_ref_b
+
+    const beforeB = threadsStore.getState().threads.get("ref_b");
+
+    // ref names ref_a but threadId names ref_b's thread: notificationTargetsThread
+    // checks ref FIRST, so the scan selected only ref_a — the index must too.
+    fake.emitNotification({
+      method: "thread/status/changed",
+      params: { threadId: "thr_ref_b", ref: "ref_a", status: { type: "active" } },
+    });
+
+    expect(threadsStore.getState().threads.get("ref_a")?.status).toEqual({ type: "active" });
+    expect(threadsStore.getState().threads.get("ref_b")).toBe(beforeB);
+  });
+
+  test("a notification for an unknown ref changes nothing (no model, same map reference)", async () => {
+    const fake = connectFakeClient();
+    fake.on("thread/read", (params) => readResponse((params as { ref: string }).ref));
+    await threadsStore.getState().ensureThread("ref_a");
+    await threadsStore.getState().watchThread("ref_w");
+
+    const before = threadsStore.getState().threads;
+    const beforeWatched = threadsStore.getState().watchedThreads;
+
+    fake.emitNotification({
+      method: "item/agentMessage/delta",
+      params: { threadId: "thr_nowhere", ref: "ref_nowhere", turnId: "turn_1", itemId: "item_1", delta: "x" },
+    });
+    // threadId-only frame for an unknown id, too.
+    fake.emitNotification({
+      method: "thread/status/changed",
+      params: { threadId: "thr_nowhere", status: { type: "active" } },
+    } as AnyNotification);
+
+    expect(threadsStore.getState().threads).toBe(before);
+    expect(threadsStore.getState().watchedThreads).toBe(beforeWatched);
+  });
+
+  test("identity-free broadcast-style notifications match no model (same map reference, like the scan)", async () => {
+    const fake = connectFakeClient();
+    fake.on("thread/read", (params) => readResponse((params as { ref: string }).ref));
+    await threadsStore.getState().ensureThread("ref_a");
+    await threadsStore.getState().watchThread("ref_w");
+
+    const before = threadsStore.getState().threads;
+    const beforeWatched = threadsStore.getState().watchedThreads;
+
+    const broadcasts: AnyNotification[] = [
+      { method: "evener/auth/updated", params: { provider: "p" } },
+      { method: "evener/launch/updated", params: { cwd: "/tmp", layer: "test" } },
+      { method: "evener/navigation/invalidated", params: { generationId: "g", sequence: 1, targets: [] } },
+      { method: "evener/marketplace/updated", params: {} },
+      { method: "evener/plugin/updated", params: {} },
+      {
+        method: "evener/settings/transcriptDisplay/changed",
+        params: {
+          layout: "compact",
+          revision: 1,
+          config: { version: 1, content: {}, advanced: {} },
+        },
+      } as AnyNotification,
+    ];
+    for (const n of broadcasts) fake.emitNotification(n);
+
+    expect(threadsStore.getState().threads).toBe(before);
+    expect(threadsStore.getState().watchedThreads).toBe(beforeWatched);
+  });
+
+  test("a notification arriving mid-hydration for a pending ref is withheld from the stale model but buffered for replay", async () => {
+    const fake = connectFakeClient();
+    const cut = { reached: false };
+    let resolveRead: ((response: ThreadReadResponse) => void) | null = null;
+    fake.on(
+      "thread/read",
+      () =>
+        new Promise<ThreadReadResponse>((resolve) => {
+          resolveRead = resolve;
+        }),
+    );
+
+    const ensuring = threadsStore.getState().ensureThread("ref_a");
+    await flushUntil(() => resolveRead !== null);
+    const finishRead = resolveRead as unknown as (response: ThreadReadResponse) => void;
+    finishRead(markResponseCut(readResponse("ref_a"), cut));
+    // The pending hydration still owns ref_a: a live frame for it must be
+    // buffered, and the (absent) stale model must not be resurrected.
+    await emitAtResponseCut(cut, "ref_a", () =>
+      fake.emitNotification({
+        method: "thread/status/changed",
+        params: { threadId: "thr_ref_a", ref: "ref_a", status: { type: "active" } },
+      }),
+    );
+    await ensuring;
+
+    // The buffered frame replayed onto the published snapshot.
+    expect(threadsStore.getState().threads.get("ref_a")?.status).toEqual({ type: "active" });
+  });
+
+  test("index survives release and re-ensure of the same ref (no stale model left behind)", async () => {
+    const fake = connectFakeClient();
+    fake.on("thread/read", (params) => readResponse((params as { ref: string }).ref));
+    await threadsStore.getState().ensureThread("ref_a");
+    threadsStore.getState().releaseThread("ref_a");
+    expect(threadsStore.getState().threads.has("ref_a")).toBe(false);
+
+    // A frame for the released ref must find no model through the index —
+    // the released model must have been de-indexed, not just unmapped.
+    const before = threadsStore.getState().threads;
+    fake.emitNotification({
+      method: "thread/status/changed",
+      params: { threadId: "thr_ref_a", ref: "ref_a", status: { type: "active" } },
+    });
+    expect(threadsStore.getState().threads).toBe(before);
+
+    // Re-ensure republishes and the index must pick the ref up again.
+    await threadsStore.getState().ensureThread("ref_a");
+    fake.emitNotification({
+      method: "thread/status/changed",
+      params: { threadId: "thr_ref_a", ref: "ref_a", status: { type: "active" } },
+    });
+    expect(threadsStore.getState().threads.get("ref_a")?.status).toEqual({ type: "active" });
+  });
+
+  test("index survives release and re-watch of the same ref (watched map)", async () => {
+    const fake = connectFakeClient();
+    fake.on("thread/read", (params) => readResponse((params as { ref: string }).ref));
+    await threadsStore.getState().watchThread("ref_w");
+    threadsStore.getState().releaseWatchedThread("ref_w");
+    expect(threadsStore.getState().watchedThreads.has("ref_w")).toBe(false);
+
+    const before = threadsStore.getState().watchedThreads;
+    fake.emitNotification({
+      method: "thread/status/changed",
+      params: { threadId: "thr_ref_w", ref: "ref_w", status: { type: "active" } },
+    });
+    expect(threadsStore.getState().watchedThreads).toBe(before);
+
+    await threadsStore.getState().watchThread("ref_w");
+    fake.emitNotification({
+      method: "thread/status/changed",
+      params: { threadId: "thr_ref_w", ref: "ref_w", status: { type: "active" } },
+    });
+    expect(threadsStore.getState().watchedThreads.get("ref_w")?.status).toEqual({ type: "active" });
+  });
+
+  test("index follows model replacement on rehydration (resync publishes a fresh model under the same ref)", async () => {
+    const fake = connectFakeClient();
+    let status: ThreadStatus = { type: "idle" };
+    fake.on("thread/read", () => readResponse("ref_a", { status }));
+    await threadsStore.getState().ensureThread("ref_a");
+
+    // A targeted resync republishes a whole new model; routing must follow it.
+    status = { type: "active" };
+    fake.emitNotification({ method: "evener/thread/resync", params: { threadId: "thr_ref_a", ref: "ref_a" } });
+    // hydrations counts the initial ensureThread publish too, so the resync
+    // lands on 2 (and the second resync below on 3).
+    await flushUntil(() => threadsStore.getState().hydrations.get("ref_a") === 2);
+    expect(threadsStore.getState().threads.get("ref_a")?.status).toEqual({ type: "active" });
+
+    status = { type: "idle" };
+    fake.emitNotification({ method: "evener/thread/resync", params: { threadId: "thr_ref_a", ref: "ref_a" } });
+    await flushUntil(() => threadsStore.getState().hydrations.get("ref_a") === 3);
+    expect(threadsStore.getState().threads.get("ref_a")?.status).toEqual({ type: "idle" });
+
+    // And live routing still lands on the newest model.
+    fake.emitNotification({
+      method: "thread/status/changed",
+      params: { threadId: "thr_ref_a", ref: "ref_a", status: { type: "active" } },
+    });
+    expect(threadsStore.getState().threads.get("ref_a")?.status).toEqual({ type: "active" });
+  });
+});
+
+describe("notification routing differential (randomized: index vs scan reference)", () => {
+  // A scan-based reference implementation of the pre-index applyToMap: for
+  // every tracked model, select via notificationTargetsThread exactly as the
+  // old store did, fold via applyNotification, and record frame times the
+  // way handleNotification does. The randomized tests below fold the SAME
+  // random notification sequence through this reference and through the real
+  // store, then assert the resulting maps are structurally identical. The
+  // reference is reimplemented from the pre-change shape of applyToMap +
+  // handleNotification rather than sharing code with the index path, so it
+  // is an independent oracle for the equivalence claim.
+  interface FoldResult {
+    threads: Map<string, ThreadModel>;
+    watchedThreads: Map<string, ThreadModel>;
+    frameTimes: Map<string, number[]>;
+  }
+
+  function scanFold(state: FoldResult, n: AnyNotification, now: number, skipped: ReadonlySet<string>): void {
+    for (const mapName of ["threads", "watchedThreads"] as const) {
+      const map = state[mapName];
+      const next = new Map(map);
+      let changed = false;
+      for (const [ref, model] of map) {
+        if (skipped.has(ref)) continue;
+        if (!notificationTargetsThread(n, model)) continue;
+        const updated = applyNotification(model, n, now);
+        if (updated === model) continue;
+        next.set(ref, updated);
+        changed = true;
+        if (mapName === "threads") {
+          state.frameTimes.set(ref, appendFrameTime(state.frameTimes.get(ref) ?? [], now));
+        }
+      }
+      if (changed) state[mapName] = next;
+    }
+  }
+
+  // snapshotFor compares two fold results by value, as compact JSON digests:
+  // a mismatch fails with a small string diff (a deep object comparison over
+  // 200-notification-grown models produces an unprintably large diff), while
+  // any content divergence still changes the digest.
+  function snapshotFor(state: FoldResult): Record<string, unknown> {
+    const capture = (map: Map<string, ThreadModel>) =>
+      JSON.stringify(
+        Array.from(map, ([ref, model]) => [
+          ref,
+          model.threadId,
+          model.status,
+          model.lastFrameAt,
+          model.turns,
+          model.activeTurnId,
+          model.queue,
+        ]),
+      );
+    return {
+      threads: capture(state.threads),
+      watchedThreads: capture(state.watchedThreads),
+      frameTimes: JSON.stringify(Array.from(state.frameTimes)),
+    };
+  }
+
+  // assertIndexesConsistent checks the thread-id routing index agrees with
+  // the maps it indexes, by KEY SET: every tracked model's threadId is
+  // indexed under exactly the model's ref, and nothing the maps dropped
+  // lingers in an index. Identity needs no assertion any more — a
+  // threadId-routed frame resolves its refs back through the map at route
+  // time, so a stale model object cannot exist in the index at all; only a
+  // stale ref could, and key-set equality is precisely the property that
+  // rules it out. Without this, a skipped index update only fails when a
+  // random notification sequence happens to observe the staleness.
+  function assertIndexesConsistent(): void {
+    const indexes = threadRoutingIndexesForTests();
+    const check = (
+      name: string,
+      map: Map<string, ThreadModel>,
+      byThreadId: ReadonlyMap<string, ReadonlySet<string>>,
+    ): void => {
+      const expected = new Map<string, Set<string>>();
+      for (const [ref, model] of map) {
+        let refs = expected.get(model.threadId);
+        if (!refs) {
+          refs = new Set();
+          expected.set(model.threadId, refs);
+        }
+        refs.add(ref);
+      }
+      expect(byThreadId.size, `${name}: byThreadId key set matches the models' thread ids`).toBe(expected.size);
+      for (const [threadId, refs] of expected) {
+        const indexed = byThreadId.get(threadId);
+        expect(indexed, `${name}: byThreadId holds ${threadId}`).toBeDefined();
+        expect([...(indexed ?? [])].sort(), `${name}: byThreadId refs for ${threadId}`).toEqual([...refs].sort());
+      }
+      for (const threadId of byThreadId.keys()) {
+        expect(expected.has(threadId), `${name}: byThreadId key ${threadId} exists in the map`).toBe(true);
+      }
+    };
+    check("threads", threadsStore.getState().threads, indexes.threadsByThreadId);
+    check("watchedThreads", threadsStore.getState().watchedThreads, indexes.watchedByThreadId);
+  }
+
+  test("folding random catalog notifications through the store matches the scan reference exactly", async () => {
+    // Deterministic PRNG so a failure is reproducible from the seed printed
+    // in the assertion message (mulberry32, shared with the token-flood
+    // harness).
+    const prng = mulberry32(20260828);
+    const pick = <T>(items: readonly T[]): T => {
+      const item = items[Math.floor(prng() * items.length)];
+      if (item === undefined) throw new Error("pick: empty list");
+      return item;
+    };
+
+    const refs = ["ref_a", "ref_b", "ref_c"];
+    const threadIds: Record<string, string> = {
+      ref_a: "thr_shared",
+      ref_b: "thr_shared", // ref_a and ref_b deliberately share a thread id
+      ref_c: "thr_c",
+    };
+
+    const fake = connectFakeClient();
+    fake.on("thread/read", (params) => {
+      const ref = (params as { ref: string }).ref;
+      const threadId = threadIds[ref];
+      if (!threadId) throw new Error(`unexpected thread/read ref ${ref}`);
+      return readResponseWithId(ref, threadId);
+    });
+    for (const ref of refs) await threadsStore.getState().ensureThread(ref);
+    await threadsStore.getState().watchThread("ref_a");
+
+    // The reference starts from the same published models the store has.
+    const reference: FoldResult = {
+      threads: new Map(threadsStore.getState().threads),
+      watchedThreads: new Map(threadsStore.getState().watchedThreads),
+      frameTimes: new Map(threadsStore.getState().frameTimes),
+    };
+
+    // Notification generators covering every routing shape: ref+threadId
+    // frames (consistent and contradictory), threadId-only frames, ref-only
+    // frames for unknown refs, identity-free broadcasts, and turn/item
+    // streaming shapes with turn/item id spaces shared across threads.
+    const turnIds = ["turn_1", "turn_2"];
+    const itemIds = ["item_1", "item_2"];
+    const generators: Array<() => AnyNotification> = [
+      () => ({
+        method: "thread/status/changed",
+        params: {
+          threadId: pick(Object.values(threadIds)),
+          ref: pick(refs),
+          status: pick([{ type: "idle" }, { type: "active" }]),
+        },
+      }),
+      () =>
+        ({
+          method: "thread/status/changed",
+          params: { threadId: pick(Object.values(threadIds)), status: { type: "active" } },
+        }) as AnyNotification,
+      () => ({
+        method: "thread/status/changed",
+        params: { threadId: "thr_unknown", ref: "ref_unknown", status: { type: "active" } },
+      }),
+      () =>
+        ({
+          method: "thread/status/changed",
+          params: { threadId: "thr_unknown", status: { type: "active" } },
+        }) as AnyNotification,
+      () => ({ method: "evener/auth/updated", params: { provider: "p" } }),
+      () => ({ method: "evener/marketplace/updated", params: {} }),
+      () => ({
+        method: "turn/started",
+        params: {
+          threadId: pick(Object.values(threadIds)),
+          ref: pick(refs),
+          turn: { id: pick(turnIds), status: "inProgress", itemsView: "" },
+        },
+      }),
+      () => ({
+        method: "item/started",
+        params: {
+          threadId: pick(Object.values(threadIds)),
+          ref: pick(refs),
+          turnId: pick(turnIds),
+          item: { type: "agentMessage", id: pick(itemIds), turnId: pick(turnIds), status: "inProgress" },
+        },
+      }),
+      () => ({
+        method: "item/agentMessage/delta",
+        params: {
+          threadId: pick(Object.values(threadIds)),
+          ref: pick(refs),
+          turnId: pick(turnIds),
+          itemId: pick(itemIds),
+          delta: "x",
+        },
+      }),
+      () => ({
+        method: "item/completed",
+        params: {
+          threadId: pick(Object.values(threadIds)),
+          ref: pick(refs),
+          turnId: pick(turnIds),
+          item: { type: "agentMessage", id: pick(itemIds), turnId: pick(turnIds), text: "done", status: "completed" },
+        },
+      }),
+      () => ({
+        method: "turn/completed",
+        params: {
+          threadId: pick(Object.values(threadIds)),
+          ref: pick(refs),
+          turnId: pick(turnIds),
+          turn: { id: pick(turnIds), status: "completed", itemsView: "" },
+        },
+      }),
+      () => ({
+        method: "thread/queueChanged",
+        params: { threadId: pick(Object.values(threadIds)), ref: pick(refs), queue: { revision: 1 } },
+      }),
+    ];
+
+    let clock = 10_000;
+    const history: AnyNotification[] = [];
+    for (let i = 0; i < 200; i += 1) {
+      const n = pick(generators)();
+      history.push(n);
+      clock += 7;
+      const dateNowSpy = vi.spyOn(Date, "now").mockReturnValue(clock);
+      try {
+        fake.emitNotification(n);
+      } finally {
+        dateNowSpy.mockRestore();
+      }
+      scanFold(reference, n, clock, new Set());
+      // The index must stay in lockstep with the maps after every fold, not
+      // just at the end: a skipped re-index must fail at the frame that
+      // skipped it, not only if a later random frame observes the staleness.
+      assertIndexesConsistent();
+    }
+
+    const actual = snapshotFor({
+      threads: threadsStore.getState().threads,
+      watchedThreads: threadsStore.getState().watchedThreads,
+      frameTimes: threadsStore.getState().frameTimes,
+    });
+    const expected = snapshotFor(reference);
+    expect(actual, `differential mismatch after ${history.length} random notifications`).toEqual(expected);
+  });
+});
+
+describe("notification routing for out-of-catalog methods", () => {
+  test("an unknown method carrying a matching ref still routes by that ref", async () => {
+    const fake = connectFakeClient();
+    fake.on("thread/read", () => readResponse("ref_a"));
+    await threadsStore.getState().ensureThread("ref_a");
+    await threadsStore.getState().ensureThread("ref_b");
+
+    const beforeB = threadsStore.getState().threads.get("ref_b");
+    const before = threadsStore.getState().threads;
+
+    // A method this build predates. Routing reads only the frame's own
+    // ref/threadId (notificationRoutingKey is method-agnostic), so an
+    // out-of-catalog frame routes exactly like a catalog frame: the
+    // ref-routed model is selected, and no full-scan fallback exists to
+    // behave differently. The reducer's default case returns the same
+    // reference, so the pin here is selection-plus-no-side-effect: the
+    // map is untouched for the sibling and the map reference is identical,
+    // and a follow-up catalog frame still lands on the selected model.
+    fake.emitUnknownNotification({ method: "totally/unknown", params: { ref: "ref_a" } });
+
+    expect(threadsStore.getState().threads).toBe(before);
+    expect(threadsStore.getState().threads.get("ref_b")).toBe(beforeB);
+    fake.emitNotification({
+      method: "thread/status/changed",
+      params: { threadId: "thr_ref_a", ref: "ref_a", status: { type: "active" } },
+    });
+    expect(threadsStore.getState().threads.get("ref_a")?.status).toEqual({ type: "active" });
+  });
+});
+
 describe("reconnect resubscribe", () => {
   test("a reconnect publishes the completion represented by its authoritative response cut", async () => {
     const fake = connectFakeClient();
@@ -3918,6 +4441,40 @@ describe("useThreadsStore session actions (setModel/setReasoningEffort/setGoal/r
     expect(threadsStore.getState().watchedThreads.get("ref_a")?.turns).toEqual([]);
   });
 
+  // Dual-map atomicity (round-2 fix): thread/clear's response snapshot lands
+  // in threads and watchedThreads through ONE setState (applyClearResponse's
+  // single patch), so a synchronous subscriber never sees threads cleared
+  // while watchedThreads still holds the old turns.
+  test("clearThread replaces both maps in one setState - no synchronous subscriber sees split state", async () => {
+    const fake = connectFakeClient();
+    fake.on("thread/read", () =>
+      readResponse("ref_a", { turns: [{ id: "turn_1", status: "completed", itemsView: "full", items: [] }] }),
+    );
+    await threadsStore.getState().ensureThread("ref_a");
+    await threadsStore.getState().watchThread("ref_a");
+
+    fake.on("thread/clear", (params) => clearResponse(params, testThread("ref_a", { turns: [] })));
+
+    const snapshots: { tracked: number; watched: number }[] = [];
+    const unsubscribe = threadsStore.subscribe((state) => {
+      snapshots.push({
+        tracked: state.threads.get("ref_a")?.turns.length ?? -1,
+        watched: state.watchedThreads.get("ref_a")?.turns.length ?? -1,
+      });
+    });
+    try {
+      await threadsStore.getState().clearThread("ref_a");
+    } finally {
+      unsubscribe();
+    }
+
+    for (const [i, snap] of snapshots.entries()) {
+      expect(snap.tracked, `snapshot ${i} must not be split`).toBe(snap.watched);
+    }
+    expect(threadsStore.getState().threads.get("ref_a")?.turns).toEqual([]);
+    expect(threadsStore.getState().watchedThreads.get("ref_a")?.turns).toEqual([]);
+  });
+
   test("clearThread retains a transport failure for retry and leaves the tracked model untouched", async () => {
     const fake = connectFakeClient();
     fake.on("thread/read", () => readResponse("ref_a"));
@@ -4669,6 +5226,44 @@ describe("useThreadsStore.resolveEscalation", () => {
 
     await threadsStore.getState().resolveEscalation("ref_a", "esc_1", true);
 
+    expect(threadsStore.getState().threads.get("ref_a")?.pendingEscalations).toEqual([]);
+    expect(threadsStore.getState().watchedThreads.get("ref_a")?.pendingEscalations).toEqual([]);
+  });
+
+  // Dual-map atomicity (round-2 fix): the escalation clear in threads and the
+  // clear in watchedThreads are one setState, so a synchronous subscriber
+  // running between the two halves of the update — which the sequential
+  // putThreadModel + putWatchedThreadModel pair this replaced made possible —
+  // cannot observe threads updated while watchedThreads still holds the
+  // escalation. The subscriber records every intermediate snapshot it sees;
+  // after the resolve it must have seen exactly the before-state and the
+  // after-state, never a mixed one.
+  test("resolveEscalation clears both maps in one setState - no synchronous subscriber sees split state", async () => {
+    const fake = connectFakeClient();
+    fake.on("thread/read", () => threadWithEscalation("ref_a", "esc_1"));
+    fake.on("evener/sandbox/escalation/resolve", () => ({}));
+    await threadsStore.getState().ensureThread("ref_a");
+    await threadsStore.getState().watchThread("ref_a");
+
+    const snapshots: { tracked: number; watched: number }[] = [];
+    const unsubscribe = threadsStore.subscribe((state) => {
+      snapshots.push({
+        tracked: state.threads.get("ref_a")?.pendingEscalations.length ?? -1,
+        watched: state.watchedThreads.get("ref_a")?.pendingEscalations.length ?? -1,
+      });
+    });
+    try {
+      await threadsStore.getState().resolveEscalation("ref_a", "esc_1", true);
+    } finally {
+      unsubscribe();
+    }
+
+    // Every observed snapshot is consistent: both maps agree on the
+    // escalation count (or the model was absent from both, -1). A split
+    // update would leave a { tracked: 0, watched: 1 } snapshot behind.
+    for (const [i, snap] of snapshots.entries()) {
+      expect(snap.tracked, `snapshot ${i} must not be split`).toBe(snap.watched);
+    }
     expect(threadsStore.getState().threads.get("ref_a")?.pendingEscalations).toEqual([]);
     expect(threadsStore.getState().watchedThreads.get("ref_a")?.pendingEscalations).toEqual([]);
   });
@@ -6487,5 +7082,38 @@ describe("retry-safe mutation outbox integration", () => {
     currentRead.resolve(readResponse("ref_a"));
     await flushIndexedDBUntil(() => current.calls.some((call) => call.method === "turn/queue"));
     expect(current.calls.filter((call) => call.method === "turn/queue")).toHaveLength(1);
+  });
+});
+
+describe("putThreadModel ref invariant (map key === model.ref)", () => {
+  // Round-2 fix, second finding: the replace path already threw when a
+  // model's ref disagreed with the slot it was filed under; the pure-add
+  // path now throws for the same disagreement. Both guards exist for the
+  // routing index (see the routing-index describe block above): a model
+  // filed under a key its own ref contradicts would mis-route every
+  // ref-routed frame for that key, so it fails loudly at the membership
+  // boundary instead.
+  test("adding a model whose ref disagrees with the map key throws", () => {
+    const model = hydrateThread(readResponse("ref_other"), "ref_other", Date.now());
+    expect(() => putThreadModel("ref_a", model)).toThrow(/map key and model\.ref must agree/);
+    // Nothing was filed: the store keeps whatever it had at that key.
+    expect(threadsStore.getState().threads.has("ref_a")).toBe(false);
+  });
+
+  test("replacing a model whose ref disagrees with the map key still throws (pre-existing guard)", async () => {
+    const fake = connectFakeClient();
+    fake.on("thread/read", () => readResponse("ref_a"));
+    await threadsStore.getState().ensureThread("ref_a");
+
+    const moved = hydrateThread(readResponse("ref_moved"), "ref_moved", Date.now());
+    expect(() => putThreadModel("ref_a", moved)).toThrow(/map key and model\.ref must agree/);
+    // The tracked model is untouched by the rejected put.
+    expect(threadsStore.getState().threads.get("ref_a")?.ref).toBe("ref_a");
+  });
+
+  test("an agreeing add still lands (guard does not reject the legitimate path)", () => {
+    const model = hydrateThread(readResponse("ref_a"), "ref_a", Date.now());
+    putThreadModel("ref_a", model);
+    expect(threadsStore.getState().threads.get("ref_a")?.ref).toBe("ref_a");
   });
 });

@@ -16,7 +16,7 @@ import type { AnyNotification, Thread, ThreadCapabilities, ThreadReadResponse } 
 // Deterministic so the correctness assertions below are 100% reproducible
 // (a real dropped/reordered chunk must never depend on which random run
 // happened to expose it).
-function mulberry32(seed: number): () => number {
+export function mulberry32(seed: number): () => number {
   let a = seed;
   return () => {
     a |= 0;

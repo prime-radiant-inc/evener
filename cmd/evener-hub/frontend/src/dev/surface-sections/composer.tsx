@@ -18,7 +18,7 @@ import { hydrateThread } from "../../protocol/reducer";
 import { FakeClient } from "../../protocol/testing/fakeClient";
 import type { Thread, ThreadCapabilities, ThreadReadResponse } from "../../protocol/types.gen";
 import { ClientProvider } from "../../shell/clientContext";
-import { threadsStore } from "../../stores/threads";
+import { putThreadModel } from "../../stores/threads";
 import styles from "../gallery-section.module.css";
 import { ThemeFlip } from "../ThemeFlip";
 
@@ -99,11 +99,18 @@ const askThread: Thread = fixtureThread(ASK_REF, {
 
 function seedComposerFixtures(): void {
   const now = Date.now();
-  const next = new Map(threadsStore.getState().threads);
-  next.set(RESTING_REF, hydrateThread({ thread: fixtureThread(RESTING_REF) } as ThreadReadResponse, RESTING_REF, now));
-  next.set(DRAFTED_REF, hydrateThread({ thread: fixtureThread(DRAFTED_REF) } as ThreadReadResponse, DRAFTED_REF, now));
-  next.set(ASK_REF, hydrateThread({ thread: askThread } as ThreadReadResponse, ASK_REF, now));
-  threadsStore.setState({ threads: next });
+  // putThreadModel is the store's membership path (index maintenance
+  // included), so these fixture panes are routable by ref and threadId
+  // exactly like a production-hydrated thread.
+  putThreadModel(
+    RESTING_REF,
+    hydrateThread({ thread: fixtureThread(RESTING_REF) } as ThreadReadResponse, RESTING_REF, now),
+  );
+  putThreadModel(
+    DRAFTED_REF,
+    hydrateThread({ thread: fixtureThread(DRAFTED_REF) } as ThreadReadResponse, DRAFTED_REF, now),
+  );
+  putThreadModel(ASK_REF, hydrateThread({ thread: askThread } as ThreadReadResponse, ASK_REF, now));
   writeDraft(DRAFTED_REF, "One more thing - can you also add a CHANGELOG entry for this?");
 }
 

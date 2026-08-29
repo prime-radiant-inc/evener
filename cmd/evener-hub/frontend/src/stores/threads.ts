@@ -16,7 +16,7 @@ import {
   applyNotification,
   collectAuthoritativeMutationIds,
   hydrateThread,
-  notificationTargetsThread,
+  notificationRoutingKey,
   prependOlderTurns,
   resolvePendingEscalation,
 } from "../protocol/reducer";
@@ -285,6 +285,211 @@ type PendingThreadHydration = {
 // then fold them onto the returned snapshot before publishing it.
 const pendingThreadHydrations = new Map<string, PendingThreadHydration>();
 const pendingWatchedHydrations = new Map<string, PendingThreadHydration>();
+
+// --- Notification routing index ---------------------------------------------
+//
+// handleNotification fires for EVERY notification on the socket. During a
+// streaming turn that is dozens of delta frames per second, and its old shape
+// ran notificationTargetsThread over EVERY entry of threads/watchedThreads for
+// EVERY frame — O(tracked threads) per token. notificationRoutingKey
+// (protocol/reducer.ts) is the single source of the routing precedence: a
+// frame targets models by its own params.ref first, else by its
+// params.threadId, else nothing. The models a frame can target are therefore
+// fully determined by the frame's own keys, and only threadId needs an index:
+// the ref route is the map itself (model.ref === its map key — every model
+// enters a map through hydrateThread(resp, ref, ...), see the put/remove
+// helpers below, which are the only membership paths).
+//
+// byThreadId: threadId -> Set<ref>  (several models may share a threadId: the
+// same thread watched lean in watchedThreads while pane-owned in threads, or
+// distinct refs the daemon maps to one id). A threadId-routed frame resolves
+// each ref back through the map at route time, so it always folds onto the
+// live model — a stale model object cannot linger, only a stale ref could,
+// and one ref per slot is exactly what the map's own key invariant already
+// guarantees.
+//
+// Index stability — why model identity changes never desynchronize it:
+// applyNotification, prependOlderTurns and resolvePendingEscalation all build
+// their results with `...model`, and hydrateThread is the ONLY function that
+// ever sets a model's ref/threadId (protocol/reducer.ts). A model's routing
+// keys are therefore stable for its lifetime in a map, so the index only
+// needs maintenance on membership changes (add/replace/remove) — a reducer
+// fold that produces a new model object under the same keys costs ZERO index
+// work. The put helpers' ref invariant is the loud failure mode: a future
+// code path that somehow violated it throws there rather than silently
+// mis-routing.
+type ThreadModelIndex = Map<string, Set<string>>;
+
+function newThreadModelIndex(): ThreadModelIndex {
+  return new Map();
+}
+
+// Record ref under model.threadId. `previous` is the model being replaced in
+// the same map slot (or undefined for a pure add); a replace whose threadId
+// moved is handled exactly — both memberships are updated.
+function putThreadModelIndex(index: ThreadModelIndex, previous: ThreadModel | undefined, model: ThreadModel): void {
+  if (previous && previous.threadId !== model.threadId) removeThreadModelIndex(index, previous);
+  let refs = index.get(model.threadId);
+  if (!refs) {
+    refs = new Set();
+    index.set(model.threadId, refs);
+  }
+  refs.add(model.ref);
+}
+
+function removeThreadModelIndex(index: ThreadModelIndex, model: ThreadModel): void {
+  const refs = index.get(model.threadId);
+  if (!refs) return;
+  refs.delete(model.ref);
+  if (refs.size === 0) index.delete(model.threadId);
+}
+
+// routeByNotificationKey selects the models a frame targets: the single
+// model for a ref-routed frame (no wrapper array), the model list for a
+// threadId-routed frame, or null when the frame routes nowhere. Routing
+// equivalence with the pre-index scan lives on applyToMap — one-line version:
+// ref route = map.get(ref), threadId route = byThreadId.get(threadId)
+// resolved through the map. `skippedRefs` mirrors the scan's own exclusion
+// set (a pending hydration owns the ref for this frame).
+function routeByNotificationKey(
+  map: Map<string, ThreadModel>,
+  index: ThreadModelIndex,
+  n: AnyNotification,
+  skippedRefs: ReadonlySet<string> | undefined,
+): ThreadModel | ThreadModel[] | null {
+  const key = notificationRoutingKey(n);
+  if (!key) return null;
+  if ("ref" in key) {
+    const model = map.get(key.ref);
+    // model.ref === map key is the store's invariant (see the put helpers);
+    // the check keeps this route exactly equivalent to the scan even for a
+    // model that somehow violates it, instead of folding onto it.
+    if (!model || model.ref !== key.ref) return null;
+    return skippedRefs?.has(model.ref) ? null : model;
+  }
+  const refs = index.get(key.threadId);
+  if (!refs) return null;
+  const candidates: ThreadModel[] = [];
+  for (const ref of refs) {
+    if (skippedRefs?.has(ref)) continue;
+    const model = map.get(ref);
+    if (model) candidates.push(model);
+  }
+  return candidates.length > 0 ? candidates : null;
+}
+
+const threadsIndex = newThreadModelIndex();
+const watchedThreadsIndex = newThreadModelIndex();
+
+// Shared empty pending-ref set: handleNotification's steady state (no
+// hydration in flight) allocates nothing per frame.
+const EMPTY_PENDING_REFS: ReadonlySet<string> = new Set();
+
+// The membership maintenance surface for threads/watchedThreads — the ONLY
+// places a model enters or leaves either map, so no future mutation site can
+// forget its index line. Each computes the next map at the call site and
+// passes a plain patch to setState (matching the release paths' shape): a
+// zustand updater must stay a pure compute-next-state function, not a home
+// for module-level side effects an updater rerun would replay.
+//
+// putThreadModel is exported for the dev harness seeders
+// (dev/surface-sections/composer.tsx, dev/overflowharness-entry.tsx), which
+// seed fixture panes exactly the way production hydration publishes real
+// ones — through the same membership path, index maintenance included, so
+// dev-seeded models are routable by ref AND threadId like any other.
+// assertModelRefMatchesKey guards BOTH membership paths — pure add and
+// replace. The replace path used to be the only one that threw, but a pure
+// add filed under a key its own ref contradicts breaks the same map key ===
+// model.ref invariant every ref-routed frame's map.get (and the index) leans
+// on, so it throws for the same reason: loudly, before it can mis-route.
+function assertModelRefMatchesKey(
+  ref: string,
+  model: ThreadModel,
+  watched: boolean,
+  previous: ThreadModel | undefined,
+): void {
+  if (model.ref === ref) return;
+  const mapName = watched ? "watched " : "";
+  if (!previous) {
+    throw new Error(
+      `threads store: added ${mapName}model ref disagrees with map key (${ref} != ${model.ref}) — map key and model.ref must agree`,
+    );
+  }
+  throw new Error(
+    `threads store: replaced ${mapName}model ref moved (${previous.ref} -> ${model.ref}) — map key and model.ref must agree`,
+  );
+}
+
+export function putThreadModel(ref: string, model: ThreadModel): void {
+  putThreadModels(ref, model, undefined);
+}
+
+function putWatchedThreadModel(ref: string, model: ThreadModel): void {
+  putThreadModels(ref, undefined, model);
+}
+
+// putThreadModels is the dual-map variant the combined actions use: the SAME
+// model (or its two per-map resolutions) lands in threads and watchedThreads
+// through ONE setState, so a synchronous subscriber between the two halves
+// of the update — the split the sequential putThreadModel +
+// putWatchedThreadModel pair introduced — cannot observe threads updated
+// while watchedThreads still holds the stale model. `threadModel`/
+// `watchedModel` are the models to file (the caller computes them first:
+// hydrateThread for clearThread, resolvePendingEscalation for
+// resolveEscalation); pass undefined for either to leave that map untouched,
+// matching the old single-setState patch shape exactly. Both routing indexes
+// are maintained in the same step, and both put helpers' ref invariant is
+// re-checked here (the same assertModelRefMatchesKey) rather than trusted.
+function putThreadModels(
+  ref: string,
+  threadModel: ThreadModel | undefined,
+  watchedModel: ThreadModel | undefined,
+): void {
+  const state = threadsStore.getState();
+  const previousThread = state.threads.get(ref);
+  const previousWatched = state.watchedThreads.get(ref);
+  if (threadModel) assertModelRefMatchesKey(ref, threadModel, false, previousThread);
+  if (watchedModel) assertModelRefMatchesKey(ref, watchedModel, true, previousWatched);
+
+  const patch: Partial<ThreadsStoreState> = {};
+  if (threadModel) {
+    putThreadModelIndex(threadsIndex, previousThread, threadModel);
+    patch.threads = new Map(state.threads).set(ref, threadModel);
+  }
+  if (watchedModel) {
+    putThreadModelIndex(watchedThreadsIndex, previousWatched, watchedModel);
+    patch.watchedThreads = new Map(state.watchedThreads).set(ref, watchedModel);
+  }
+  if (!threadModel && !watchedModel) return;
+  threadsStore.setState(patch);
+}
+
+function removeThreadModel(ref: string): void {
+  const removed = threadsStore.getState().threads.get(ref);
+  if (removed) removeThreadModelIndex(threadsIndex, removed);
+  threadsStore.setState((s) => {
+    if (!s.threads.has(ref) && !s.frameTimes.has(ref) && !s.deletedRefs.has(ref)) return s;
+    const nextThreads = new Map(s.threads);
+    nextThreads.delete(ref);
+    const nextFrameTimes = new Map(s.frameTimes);
+    nextFrameTimes.delete(ref);
+    const nextDeletedRefs = new Set(s.deletedRefs);
+    nextDeletedRefs.delete(ref);
+    return { threads: nextThreads, frameTimes: nextFrameTimes, deletedRefs: nextDeletedRefs };
+  });
+}
+
+function removeWatchedThreadModel(ref: string): void {
+  const removed = threadsStore.getState().watchedThreads.get(ref);
+  if (removed) removeThreadModelIndex(watchedThreadsIndex, removed);
+  threadsStore.setState((s) => {
+    if (!s.watchedThreads.has(ref)) return s;
+    const nextWatchedThreads = new Map(s.watchedThreads);
+    nextWatchedThreads.delete(ref);
+    return { watchedThreads: nextWatchedThreads };
+  });
+}
+
 // One owned hydration lifecycle per (ref, owner kind, owner generation). It
 // exists only while that owner still needs a first authoritative model and the
 // newest attempt has failed: the attempt that failed schedules exactly one
@@ -374,17 +579,20 @@ function applyClearResponse(targetRef: string, response: ThreadClearResponse): v
   // the replacement so a late pre-clear snapshot cannot overwrite it.
   pendingThreadHydrations.delete(targetRef);
   pendingWatchedHydrations.delete(targetRef);
-  threadsStore.setState((state) => {
-    const patch: Partial<ThreadsStoreState> = {};
-    if (state.threads.has(targetRef)) {
-      patch.threads = new Map(state.threads).set(targetRef, model);
-      patch.hydrations = new Map(state.hydrations).set(targetRef, (state.hydrations.get(targetRef) ?? 0) + 1);
-    }
-    if (state.watchedThreads.has(targetRef)) {
-      patch.watchedThreads = new Map(state.watchedThreads).set(targetRef, model);
-    }
-    return Object.keys(patch).length > 0 ? patch : state;
-  });
+  // One setState for both maps (putThreadModels), so a synchronous subscriber
+  // never sees threads cleared while watchedThreads still holds the old turns;
+  // both routing indexes are maintained in the same step.
+  const stateBefore = threadsStore.getState();
+  putThreadModels(
+    targetRef,
+    stateBefore.threads.has(targetRef) ? model : undefined,
+    stateBefore.watchedThreads.has(targetRef) ? model : undefined,
+  );
+  if (stateBefore.threads.has(targetRef)) {
+    threadsStore.setState((state) => ({
+      hydrations: new Map(state.hydrations).set(targetRef, (state.hydrations.get(targetRef) ?? 0) + 1),
+    }));
+  }
 }
 
 function currentDispatchClient(targetRef?: string): AppwireClientLike | null {
@@ -397,6 +605,10 @@ function dropUnpinnedModel(ref: string): void {
   if (pinnedMutationRefs.has(ref) || (refCounts.get(ref) ?? 0) > 0) return;
   // Nothing owns this ref any more, so no scheduled retry may outlive it.
   retireOwnedHydration("thread", ref);
+  // The model is leaving `threads` here, so its index membership leaves with
+  // it (see putThreadModel/removeThreadModel — the membership paths).
+  const dropped = threadsStore.getState().threads.get(ref);
+  if (dropped) removeThreadModelIndex(threadsIndex, dropped);
   threadsStore.setState((state) => {
     if (!state.threads.has(ref) && !state.frameTimes.has(ref) && !state.hydrations.has(ref)) return state;
     const threads = new Map(state.threads);
@@ -970,6 +1182,32 @@ function pendingHydrationRouting(ref: string, model: ThreadModel | undefined): P
   return { ref, threadId: model?.threadId };
 }
 
+// Collects the refs a notification must skip in applyToMap because a pending
+// hydration owns them for this frame — either the frame targets the pending
+// record's own routing (so it is buffered for replay onto the eventual
+// snapshot) or it is a contradictory ref-targeted frame: it belongs to this
+// subscription's identity space, but its thread identity is unsafe to replay
+// onto the stale model, so it is dropped. Only called when the pending map is
+// non-empty (handleNotification guards), so the steady state allocates
+// nothing for this.
+function collectPendingRefs(
+  pendingHydrations: Map<string, PendingThreadHydration>,
+  n: AnyNotification,
+  refs: Set<string>,
+  targetedRefs?: Set<string>,
+): void {
+  const ref = notificationRef(n);
+  for (const [pendingRef, pending] of pendingHydrations) {
+    if (targetsPendingHydration(n, pending)) {
+      bufferPendingNotification(pending, n);
+      refs.add(pendingRef);
+      targetedRefs?.add(pendingRef);
+    } else if (ref === pendingRef) {
+      refs.add(pendingRef);
+    }
+  }
+}
+
 function beginThreadHydration(
   ref: string,
   client: AppwireClientLike,
@@ -1040,18 +1278,17 @@ function publishThreadHydration(ref: string, pending: PendingThreadHydration, mo
   const { model: hydrated, appliedAt } = replayHydrationNotifications(model, pending.notifications);
 
   pendingThreadHydrations.delete(ref);
+  putThreadModel(ref, hydrated);
   invalidateGoalResponseFallback(ref);
   threadsStore.setState((s) => {
-    const nextThreads = new Map(s.threads);
-    nextThreads.set(ref, hydrated);
     const hydrations = new Map(s.hydrations);
     hydrations.set(ref, (hydrations.get(ref) ?? 0) + 1);
-    if (appliedAt.length === 0) return { threads: nextThreads, hydrations };
+    if (appliedAt.length === 0) return { hydrations };
     const nextFrameTimes = new Map(s.frameTimes);
     let times = nextFrameTimes.get(ref) ?? [];
     for (const now of appliedAt) times = appendFrameTime(times, now);
     nextFrameTimes.set(ref, times);
-    return { threads: nextThreads, frameTimes: nextFrameTimes, hydrations };
+    return { frameTimes: nextFrameTimes, hydrations };
   });
   settleOwnedHydration("thread", ref, hydrated);
   return hydrated;
@@ -1112,8 +1349,33 @@ function publishWatchedHydration(
 
 // Fold one notification into matching models; real-pane updates also append
 // the same timestamp to their liveness trace.
+//
+// Routing equivalence argument (why routeByNotificationKey is the scan):
+// notificationTargetsThread (protocol/reducer.ts) targets a model by
+// params.ref first, else by params.threadId, and both are read off the
+// frame's own params — method-agnostic, so the equivalence holds for EVERY
+// notification, in the generated catalog or not, and no per-method gate or
+// fallback scan is needed:
+//   - ref present: exactly the model with model.ref === params.ref, which is
+//     map.get(params.ref) (model.ref === map key, hydrateThread
+//     construction). A ref matching no map entry means the scan would select
+//     nothing.
+//   - ref absent, threadId present: exactly the models with
+//     model.threadId === params.threadId, which is byThreadId.get(threadId)
+//     resolved through the map. The reducer never rewrites threadId (only
+//     hydrateThread sets it), so the index is authoritative.
+//   - both absent: notificationTargetsThread returns false for every model —
+//     the scan is a guaranteed no-op, and routeByNotificationKey's null
+//     return produces the same result (no changedRefs, no frame-time writes).
+// A reducer fold that produces a new model object keeps its ref/threadId
+// (index-stability note above), so routing needs NO re-index here. For a
+// ref-routed frame the router returns the single model directly (no wrapper
+// array); changedRefs order differs from the scan's map-iteration order, but
+// its only consumer (handleNotification's frameTimes loop) is
+// order-insensitive, and applyToMap is module-private.
 function applyToMap(
   map: Map<string, ThreadModel>,
+  index: ThreadModelIndex,
   n: AnyNotification,
   now: number,
   skippedRefs?: ReadonlySet<string>,
@@ -1121,15 +1383,28 @@ function applyToMap(
   let next: Map<string, ThreadModel> | null = null;
   const changedRefs: string[] = [];
   const acceptedRefs: string[] = [];
-  for (const [ref, model] of map) {
-    if (skippedRefs?.has(ref)) continue;
-    if (!notificationTargetsThread(n, model)) continue;
-    acceptedRefs.push(ref);
-    const updated = applyNotification(model, n, now);
-    if (updated === model) continue;
-    next ??= new Map(map);
-    next.set(ref, updated);
-    changedRefs.push(ref);
+  const routed = routeByNotificationKey(map, index, n, skippedRefs);
+  if (!routed) return { next, changedRefs, acceptedRefs };
+  const accept = (model: ThreadModel): void => {
+    acceptedRefs.push(model.ref);
+  };
+  if (Array.isArray(routed)) {
+    for (const model of routed) {
+      accept(model);
+      const updated = applyNotification(model, n, now);
+      if (updated === model) continue;
+      next ??= new Map(map);
+      next.set(model.ref, updated);
+      changedRefs.push(model.ref);
+    }
+    return { next, changedRefs, acceptedRefs };
+  }
+  accept(routed);
+  const updated = applyNotification(routed, n, now);
+  if (updated !== routed) {
+    next = new Map(map);
+    next.set(routed.ref, updated);
+    changedRefs.push(routed.ref);
   }
   return { next, changedRefs, acceptedRefs };
 }
@@ -1157,36 +1432,39 @@ function handleNotification(n: AnyNotification): void {
   const now = Date.now();
   const { threads, frameTimes, watchedThreads } = threadsStore.getState();
   const acceptedGoalRefs = new Set<string>();
-  const pendingRefs = new Set<string>();
-  for (const [ref, pending] of pendingThreadHydrations) {
-    if (targetsPendingHydration(n, pending)) {
-      bufferPendingNotification(pending, n);
-      pendingRefs.add(ref);
-      if (n.method === "evener/goal/updated") acceptedGoalRefs.add(ref);
-    } else if (notificationRef(n) === ref) {
-      // Do not let a contradictory ref-targeted frame mutate the stale model
-      // through applyToMap. It belongs to this subscription's identity space,
-      // but its thread identity is unsafe to replay here, so drop it.
-      pendingRefs.add(ref);
-    }
+  // Pending-hydration routing: pendingThreadHydrations/pendingWatchedHydrations
+  // are intentionally left as plain map iterations (NOT indexed). They are
+  // usually tiny — at most one entry per in-flight thread/read (bounded by
+  // concurrent pane mounts and reconnect fan-out), not per tracked thread —
+  // and targetsPendingHydration's decision depends on the pending record's
+  // own learned routing (ref/threadId), so an index would add maintenance
+  // surface to every hydration begin/publish/release for no measurable win.
+  // The hot path this store pays per delta is the threads/watchedThreads
+  // fan-out, which IS indexed (see applyToMap).
+  let pendingRefs: ReadonlySet<string> = EMPTY_PENDING_REFS;
+  if (pendingThreadHydrations.size > 0) {
+    const refs = new Set<string>();
+    const targeted = n.method === "evener/goal/updated" ? new Set<string>() : undefined;
+    collectPendingRefs(pendingThreadHydrations, n, refs, targeted);
+    if (refs.size > 0) pendingRefs = refs;
+    if (targeted) for (const ref of targeted) acceptedGoalRefs.add(ref);
   }
-  const pendingWatchedRefs = new Set<string>();
-  for (const [ref, pending] of pendingWatchedHydrations) {
-    if (targetsPendingHydration(n, pending)) {
-      bufferPendingNotification(pending, n);
-      pendingWatchedRefs.add(ref);
-      if (n.method === "evener/goal/updated") acceptedGoalRefs.add(ref);
-    } else if (notificationRef(n) === ref) {
-      pendingWatchedRefs.add(ref);
-    }
+  let pendingWatchedRefs: ReadonlySet<string> = EMPTY_PENDING_REFS;
+  if (pendingWatchedHydrations.size > 0) {
+    const refs = new Set<string>();
+    const targeted = n.method === "evener/goal/updated" ? new Set<string>() : undefined;
+    collectPendingRefs(pendingWatchedHydrations, n, refs, targeted);
+    if (refs.size > 0) pendingWatchedRefs = refs;
+    if (targeted) for (const ref of targeted) acceptedGoalRefs.add(ref);
   }
   const {
     next: nextThreads,
     changedRefs: changedThreads,
     acceptedRefs: acceptedThreads,
-  } = applyToMap(threads, n, now, pendingRefs);
+  } = applyToMap(threads, threadsIndex, n, now, pendingRefs);
   const { next: nextWatchedThreads, acceptedRefs: acceptedWatchedThreads } = applyToMap(
     watchedThreads,
+    watchedThreadsIndex,
     n,
     now,
     pendingWatchedRefs,
@@ -1221,7 +1499,7 @@ function storeWatchedModel(ref: string, model: ThreadModel, includeTurns: boolea
   if (!includeTurns && hydratedRich) return;
   watchHydratedIncludeTurns.set(ref, hydratedRich || includeTurns);
   invalidateGoalResponseFallback(ref);
-  threadsStore.setState((s) => ({ watchedThreads: new Map(s.watchedThreads).set(ref, model) }));
+  putWatchedThreadModel(ref, model);
 }
 
 function ownedHydrationsFor(kind: HydrationOwnerKind): Map<string, OwnedHydration> {
@@ -1832,16 +2110,7 @@ export const threadsStore = createStore<ThreadsStoreState>(() => ({
     // frameTimes is dropped in lockstep — an untracked ref has no business
     // holding onto a liveness trace a future ensureThread() of the same ref
     // should start fresh, the same way it re-reads a fresh model.
-    threadsStore.setState((s) => {
-      if (!s.threads.has(ref) && !s.frameTimes.has(ref) && !s.deletedRefs.has(ref)) return s;
-      const nextThreads = new Map(s.threads);
-      nextThreads.delete(ref);
-      const nextFrameTimes = new Map(s.frameTimes);
-      nextFrameTimes.delete(ref);
-      const nextDeletedRefs = new Set(s.deletedRefs);
-      nextDeletedRefs.delete(ref);
-      return { threads: nextThreads, frameTimes: nextFrameTimes, deletedRefs: nextDeletedRefs };
-    });
+    removeThreadModel(ref);
   },
 
   // watchThread is the transcript/tools stream's own sanctioned addition:
@@ -1974,12 +2243,7 @@ export const threadsStore = createStore<ThreadsStoreState>(() => ({
     // the same ref starts lean again (yd16 §4.2).
     watchIncludeTurns.delete(ref);
     watchHydratedIncludeTurns.delete(ref);
-    threadsStore.setState((s) => {
-      if (!s.watchedThreads.has(ref)) return s;
-      const nextWatchedThreads = new Map(s.watchedThreads);
-      nextWatchedThreads.delete(ref);
-      return { watchedThreads: nextWatchedThreads };
-    });
+    removeWatchedThreadModel(ref);
   },
 
   async loadOlderTurns(ref) {
@@ -1999,11 +2263,7 @@ export const threadsStore = createStore<ThreadsStoreState>(() => ({
     // clobbered by prepending onto a stale snapshot.
     const current = threadsStore.getState().threads.get(ref);
     if (!current) return;
-    threadsStore.setState((s) => {
-      const next = new Map(s.threads);
-      next.set(ref, prependOlderTurns(current, resp));
-      return { threads: next };
-    });
+    putThreadModel(ref, prependOlderTurns(current, resp));
   },
 
   async send(ref, text, attachments) {
@@ -2239,28 +2499,22 @@ export const threadsStore = createStore<ThreadsStoreState>(() => ({
     } catch (err) {
       throw mapConflict(err);
     }
-    threadsStore.setState((s) => {
-      const patch: Partial<ThreadsStoreState> = {};
-      const model = s.threads.get(ref);
-      if (model) {
-        const resolved = resolvePendingEscalation(model, escalationId);
-        if (resolved !== model) {
-          const next = new Map(s.threads);
-          next.set(ref, resolved);
-          patch.threads = next;
-        }
-      }
-      const watchedModel = s.watchedThreads.get(ref);
-      if (watchedModel) {
-        const resolved = resolvePendingEscalation(watchedModel, escalationId);
-        if (resolved !== watchedModel) {
-          const next = new Map(s.watchedThreads);
-          next.set(ref, resolved);
-          patch.watchedThreads = next;
-        }
-      }
-      return Object.keys(patch).length > 0 ? patch : s;
-    });
+    // One setState for both maps (putThreadModels), same as clearThread:
+    // two sequential puts would let a synchronous subscriber see the
+    // escalation cleared in threads but not yet in watchedThreads. Both
+    // resolutions are computed first, then filed together; each is dropped
+    // when the resolver made no change (same-reference no-op), matching the
+    // old single-setState patch shape exactly.
+    const stateBefore = threadsStore.getState();
+    const model = stateBefore.threads.get(ref);
+    const resolvedModel = model ? resolvePendingEscalation(model, escalationId) : undefined;
+    const watchedModel = stateBefore.watchedThreads.get(ref);
+    const resolvedWatched = watchedModel ? resolvePendingEscalation(watchedModel, escalationId) : undefined;
+    putThreadModels(
+      ref,
+      resolvedModel !== undefined && resolvedModel !== model ? resolvedModel : undefined,
+      resolvedWatched !== undefined && resolvedWatched !== watchedModel ? resolvedWatched : undefined,
+    );
   },
 }));
 
@@ -2321,6 +2575,8 @@ export function resetThreadsStoreForTests(): void {
   watchGenerations.clear();
   watchIncludeTurns.clear();
   watchHydratedIncludeTurns.clear();
+  threadsIndex.clear();
+  watchedThreadsIndex.clear();
   modelsCache = null;
   inflightModelsList = null;
   unwireNotification?.();
@@ -2354,4 +2610,21 @@ export function resetThreadsStoreForTests(): void {
     },
     true,
   );
+}
+
+// Read-only snapshot of the thread-id routing indexes for the store's own
+// tests: the differential test asserts key-set consistency with the maps
+// after every notification — every tracked model's threadId is indexed under
+// its ref, and nothing the maps dropped lingers in an index — which is what
+// makes a stale index fail immediately instead of only when a random
+// sequence happens to diverge. (The ref route needs no test-visible index:
+// it IS the map.)
+export function threadRoutingIndexesForTests(): {
+  threadsByThreadId: ReadonlyMap<string, ReadonlySet<string>>;
+  watchedByThreadId: ReadonlyMap<string, ReadonlySet<string>>;
+} {
+  return {
+    threadsByThreadId: threadsIndex,
+    watchedByThreadId: watchedThreadsIndex,
+  };
 }
