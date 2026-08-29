@@ -1801,6 +1801,7 @@ func TestParseConfig_Rejects(t *testing.T) {
 		"bad thinking_shape":       "[providers.x.models.m]\nthinking_shape = \"effort\"\n",
 		"bad thinking_display":     "[providers.x.models.m]\nthinking_display = \"verbose\"\n",
 		"protocol on glob row":     "[providers.x.models.\"g*\"]\nprotocol = \"anthropic\"\n",
+		"preset on glob row":       "[providers.x.models.\"g*\"]\ntransport = \"vertex-anthropic\"\n",
 		"bad max_tokens_field":     "[providers.x]\nmax_tokens_field = \"max_len\"\n",
 		"bad cache_control":        "[providers.x]\ncache_control = \"openai\"\n",
 		"bad reasoning_field":      "[providers.x]\nreasoning_field = \"thoughts\"\n",
@@ -2247,6 +2248,9 @@ func parseLayer(data []byte, tag string, curated bool) (*Layer, error) {
 		if ms.Protocol != "" {
 			return nil, fmt.Errorf("%s: models.%q: protocol is not allowed on a glob row", tag, key)
 		}
+		if ms.Preset != "" {
+			return nil, fmt.Errorf("%s: models.%q: transport presets are not allowed on a glob row", tag, key)
+		}
 		if err := validateModel(ms, fmt.Sprintf("models.%q", key)); err != nil {
 			return nil, fmt.Errorf("%s: %w", tag, err)
 		}
@@ -2275,6 +2279,9 @@ func parseLayer(data []byte, tag string, curated bool) (*Layer, error) {
 		for key, ms := range ps.Models {
 			if isGlob(key) && ms.Protocol != "" {
 				return nil, fmt.Errorf("%s: %s.models.%q: protocol is not allowed on a glob row", tag, where, key)
+			}
+			if isGlob(key) && ms.Preset != "" {
+				return nil, fmt.Errorf("%s: %s.models.%q: transport presets are not allowed on a glob row", tag, where, key)
 			}
 			if err := validateModel(ms, fmt.Sprintf("%s.models.%q", where, key)); err != nil {
 				return nil, fmt.Errorf("%s: %w", tag, err)
@@ -6606,10 +6613,12 @@ func (r *Registry) applyGlobs(c *Caps, row *Model, rows map[string]Model, tag, r
 }
 
 // applyRowScalars overlays a layer row's or glob row's scalars onto the
-// resolved row. A glob row's transport (the Codex `gpt-5.6*` row's `body`
-// constants, spec §6.2) merges field-wise onto the row transport, which the
-// load already folded from every layer's exact row, so on a conflicting key
-// the glob wins. Protocol is never taken from a glob (the parser rejects it).
+// resolved row. Replay order per layer is globs then the exact row, so within
+// a layer the exact row wins and across layers the later layer wins (spec
+// §4.1). A glob row's transport (the Codex `gpt-5.6*` row's `body` constants,
+// spec §6.2) merges field-wise onto the row transport; glob rows carry
+// neither a protocol nor a preset (the parser rejects both), so nothing here
+// needs preset expansion.
 func applyRowScalars(row *Model, src Model, tag string, prov map[string]string) {
 	if src.Surface != "" {
 		row.Surface = src.Surface
