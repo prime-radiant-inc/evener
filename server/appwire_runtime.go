@@ -1985,14 +1985,16 @@ func cloneServerInt64(value *int64) *int64 {
 func (s *Server) appCapabilities(state string, processing bool) appwire.ThreadCapabilities {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
-	// Derived from the status this thread PUBLISHES, not assembled again from
-	// the fields behind it. That is the whole point: a client reading a status
-	// and the capabilities beside it is reading one decision, so no window can
-	// open where the two describe different threads.
+	// Status-dependent capabilities derive from the status this thread PUBLISHES,
+	// not assembled again from the fields behind it. Clear additionally requires
+	// its handler and state gate to report that the action is currently safe.
+	// A client reading a status and the capabilities beside it is reading one
+	// decision, so no window can open where the two describe different threads.
 	status := appStatus(state, processing, strings.TrimSpace(s.appReservedTurnID) != "")
 	active := status == appwire.ThreadStatusActive
 	closed := status == appwire.ThreadStatusClosed
 	steerAvailable := s.steerFunc != nil || s.steerWithImagesFunc != nil
+	clearAvailable := s.clearFunc != nil && !active && !closed && s.clearBlockedReasonLocked() == ""
 	return appwire.ThreadCapabilities{
 		Send:  !active && !closed,
 		Steer: steerAvailable && active && !closed,
@@ -2017,7 +2019,7 @@ func (s *Server) appCapabilities(state string, processing bool) appwire.ThreadCa
 		// quiescence precondition (kata vewa).
 		Interrupt:         s.interruptWired && active && !closed,
 		Compact:           s.compactFunc != nil && !closed,
-		Clear:             false,
+		Clear:             clearAvailable,
 		ForkFromTurn:      false,
 		Shutdown:          s.shutdownFunc != nil,
 		ChangeModel:       s.modelFunc != nil && !closed,

@@ -65,9 +65,9 @@ func parityResumeFixture(t *testing.T, register func(daemon *appserver.Server)) 
 	return cfg, sessionID, &calls
 }
 
-// TestHubRPCThreadClearRejectsPastThreadWithoutResume proves the v2 clear
-// removal is enforced before an exited session can be resumed.
-func TestHubRPCThreadClearRejectsPastThreadWithoutResume(t *testing.T) {
+// TestHubRPCThreadClearResumesPastThread proves clear can act on a cold local
+// session through the same managed resume path as the other session actions.
+func TestHubRPCThreadClearResumesPastThread(t *testing.T) {
 	var sessionID string
 	clearCalled := false
 	cfg, sid, resumeCalls := parityResumeFixture(t, func(daemon *appserver.Server) {
@@ -100,14 +100,18 @@ func TestHubRPCThreadClearRejectsPastThreadWithoutResume(t *testing.T) {
 	if _, err := client.Initialize(context.Background(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
 		t.Fatalf("Initialize: %v", err)
 	}
-	if _, err := client.ThreadClear(context.Background(), appwire.ThreadClearParams{Ref: "local:" + sessionID, ClientMutationID: "clear-past", ExpectedInstanceID: sessionID}); err == nil {
-		t.Fatal("ThreadClear succeeded; want past-thread rejection")
+	response, err := client.ThreadClear(context.Background(), appwire.ThreadClearParams{Ref: "local:" + sessionID, ClientMutationID: "clear-past", ExpectedInstanceID: sessionID})
+	if err != nil {
+		t.Fatalf("ThreadClear: %v", err)
 	}
-	if *resumeCalls != 0 {
-		t.Fatalf("resume calls=%d, want 0", *resumeCalls)
+	if response.Ref != "local:"+sessionID {
+		t.Fatalf("ThreadClear ref=%q, want local:%s", response.Ref, sessionID)
 	}
-	if clearCalled {
-		t.Fatal("clear was routed to the daemon")
+	if *resumeCalls != 1 {
+		t.Fatalf("resume calls=%d, want 1", *resumeCalls)
+	}
+	if !clearCalled {
+		t.Fatal("clear was not routed to the resumed daemon")
 	}
 }
 

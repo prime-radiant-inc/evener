@@ -402,7 +402,10 @@ func classifySession(decision *bool, lastActivity, now time.Time) string {
 //   - "cluster"  – a fold of N same-titled idle sessions (mockup #10/#C); the
 //     individual runs are the cluster's Children and ClusterCount is N.
 type TreeNode struct {
-	ID         string
+	ID string
+	// Ref is the canonical navigation identity advertised by a live daemon. It
+	// is empty when the metadata ID is already the canonical navigation identity.
+	Ref        string
 	Title      string
 	Project    string
 	Branch     string // git branch at session start; empty when unknown
@@ -706,9 +709,15 @@ func resolveProjectMap(metas []schema.SessionMeta, live []LiveEntry, strict bool
 
 // treeMetasWithLive combines indexed metadata with live-only project sessions.
 func treeMetasWithLive(metas []schema.SessionMeta, live []LiveEntry, now time.Time, resolvedProjects map[string]identifier.Project) ([]schema.SessionMeta, map[string]bool) {
-	effectiveMetas := append([]schema.SessionMeta(nil), metas...)
+	superseded := supersededSessionIDs(live)
+	replacementSources := replacementMetadataSources(metas, live)
+	effectiveMetas := make([]schema.SessionMeta, 0, len(metas))
 	sessionIsIndexed := make(map[string]bool, len(metas))
-	for _, m := range effectiveMetas {
+	for _, m := range metas {
+		if _, replaced := superseded[m.ID]; replaced {
+			continue
+		}
+		effectiveMetas = append(effectiveMetas, m)
 		if m.ID == "" {
 			continue
 		}
@@ -718,12 +727,14 @@ func treeMetasWithLive(metas []schema.SessionMeta, live []LiveEntry, now time.Ti
 	// next rebuild. Give live sessions with a resolved project identity a
 	// temporary metadata record so they still populate that project's catalog.
 	// Pathless and unresolved live sessions remain in the flat Live tier until
-	// they acquire metadata or a project identity.
+	// they acquire metadata or a project identity, except for a replacement
+	// whose retired metadata can provide the same temporary project anchor.
 	for _, le := range live {
 		if le.SessionID == "" || le.WorkingDir == "" {
 			continue
 		}
-		if _, resolved := resolvedProjects[le.WorkingDir]; !resolved {
+		_, replacement := replacementSources[le.SessionID]
+		if _, resolved := resolvedProjects[le.WorkingDir]; !resolved && !replacement {
 			continue
 		}
 		if _, exists := sessionIsIndexed[le.SessionID]; exists {
@@ -733,15 +744,78 @@ func treeMetasWithLive(metas []schema.SessionMeta, live []LiveEntry, now time.Ti
 		if startedAt.IsZero() {
 			startedAt = now
 		}
-		effectiveMetas = append(effectiveMetas, schema.SessionMeta{
+		meta := schema.SessionMeta{
 			ID:        le.SessionID,
 			CreatedAt: startedAt,
 			UpdatedAt: startedAt,
 			EnvInfo:   schema.EnvironmentInfo{WorkingDir: le.WorkingDir},
-		})
+		}
+		if source, ok := replacementSources[le.SessionID]; ok {
+			// The replacement is a new thread instance. Carry only the
+			// environment/project identity needed to keep it catalogued while
+			// its own metadata lands; its title, prompt, and lineage belong to
+			// the retired instance and must not be copied into the new row.
+			meta.EnvInfo = source.EnvInfo
+			meta.Origin = source.Origin
+			meta.WorktreePath = source.WorktreePath
+			meta.WorktreeManaged = source.WorktreeManaged
+			meta.WorktreeRestoreRoot = source.WorktreeRestoreRoot
+			if le.WorkingDir != "" {
+				meta.EnvInfo.WorkingDir = le.WorkingDir
+			}
+		}
+		effectiveMetas = append(effectiveMetas, meta)
 		sessionIsIndexed[le.SessionID] = false
 	}
 	return effectiveMetas, sessionIsIndexed
+}
+
+func liveWorkspaceIdentity(entry LiveEntry) (string, appwire.Ref, bool) {
+	currentID := strings.TrimSpace(entry.SessionID)
+	ref, err := appwire.ParseRef(strings.TrimSpace(entry.WorkspaceRef))
+	if err != nil || currentID == "" || (entry.SourceID != "" && ref.SourceID != entry.SourceID) {
+		return "", appwire.Ref{}, false
+	}
+	return currentID, ref, true
+}
+
+// supersededSessionIDs identifies persisted instance IDs that a live daemon
+// has replaced under a stable workspace ref. Keeping those stale metadata rows
+// in the navigation tree would render the same logical session twice.
+func supersededSessionIDs(live []LiveEntry) map[string]struct{} {
+	ids := make(map[string]struct{})
+	for _, entry := range live {
+		currentID, ref, ok := liveWorkspaceIdentity(entry)
+		if !ok || ref.ThreadID == currentID {
+			continue
+		}
+		ids[ref.ThreadID] = struct{}{}
+	}
+	return ids
+}
+
+func replacementMetadataSources(metas []schema.SessionMeta, live []LiveEntry) map[string]schema.SessionMeta {
+	byID := make(map[string]schema.SessionMeta, len(metas))
+	for _, meta := range metas {
+		if meta.ID == "" {
+			continue
+		}
+		current, exists := byID[meta.ID]
+		if !exists || sessionMetaLess(meta, current) {
+			byID[meta.ID] = meta
+		}
+	}
+	sources := make(map[string]schema.SessionMeta)
+	for _, entry := range live {
+		currentID, ref, ok := liveWorkspaceIdentity(entry)
+		if !ok || ref.ThreadID == currentID {
+			continue
+		}
+		if source, ok := byID[ref.ThreadID]; ok {
+			sources[currentID] = source
+		}
+	}
+	return sources
 }
 
 func projectKeyForPath(path string, resolvedProjects map[string]identifier.Project) string {
@@ -780,11 +854,15 @@ func buildTreeAtWithProjects(metas []schema.SessionMeta, live []LiveEntry, decis
 
 	// Index live entries by SessionID.
 	liveMap := make(map[string]LiveEntry, len(live))
+	liveRefMap := make(map[string]string, len(live))
 	runningSubagentIDs := make(map[string]bool)
 	runningSubagentStates := make(map[string]string)
 	for _, le := range live {
 		if le.SessionID != "" {
 			liveMap[le.SessionID] = le
+			if _, ref, ok := liveWorkspaceIdentity(le); ok {
+				liveRefMap[le.SessionID] = ref.String()
+			}
 		}
 		for _, childID := range le.RunningSubagentIDs {
 			if childID != "" {
@@ -1005,6 +1083,7 @@ func buildTreeAtWithProjects(metas []schema.SessionMeta, live []LiveEntry, decis
 		// status with the parent's projection).
 		node := TreeNode{
 			ID:         m.ID,
+			Ref:        liveRefMap[m.ID],
 			Title:      nodeTitle(m, kind),
 			Project:    acc.name,
 			Branch:     m.EnvInfo.GitBranch,
@@ -1205,6 +1284,7 @@ func buildTreeAtWithProjects(metas []schema.SessionMeta, live []LiveEntry, decis
 		state := stateFor(le.SessionID)
 		node := TreeNode{
 			ID:         le.SessionID,
+			Ref:        liveRefMap[le.SessionID],
 			State:      state,
 			AskPending: askPendingFor(le.SessionID),
 			Dormant:    dormantFor(le.SessionID),

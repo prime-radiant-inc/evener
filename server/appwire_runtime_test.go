@@ -2,6 +2,7 @@ package server
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"reflect"
@@ -48,6 +49,29 @@ func TestAppCapabilities_SteerGatedOnActiveTurn(t *testing.T) {
 			got := s.appCapabilities(tc.state, tc.processing)
 			if got.Steer != tc.wantSteer {
 				t.Fatalf("Steer = %v, want %v", got.Steer, tc.wantSteer)
+			}
+		})
+	}
+}
+
+func TestAppCapabilities_AdvertisesClearWhenConfiguredAndSettled(t *testing.T) {
+	t.Parallel()
+	s := NewServer(ServerConfig{})
+	s.SetClearFunc(func(context.Context, appwire.ThreadClearParams) error { return nil })
+
+	for _, tc := range []struct {
+		name       string
+		state      string
+		processing bool
+		wantClear  bool
+	}{
+		{name: "idle", state: appwire.ThreadStatusIdle, wantClear: true},
+		{name: "active", state: appwire.ThreadStatusActive, processing: true},
+		{name: "closed", state: appwire.ThreadStatusClosed},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := s.appCapabilities(tc.state, tc.processing).Clear; got != tc.wantClear {
+				t.Fatalf("Clear = %v, want %v", got, tc.wantClear)
 			}
 		})
 	}

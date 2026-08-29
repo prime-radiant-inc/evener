@@ -297,7 +297,7 @@ func pastThreadCapabilities() appwire.ThreadCapabilities {
 		Send:         true,
 		ForkFromTurn: true,
 		Compact:      true,
-		Clear:        false,
+		Clear:        true,
 		ChangeModel:  true,
 		Shutdown:     true,
 		Goal:         true,

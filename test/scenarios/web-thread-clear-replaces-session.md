@@ -1,11 +1,11 @@
 # web-thread-clear-replaces-session: clear context keeps the session ref and replaces its live instance
 
 **What this covers**: issue `#139`. The web command-palette **Clear context**
-action must reach typed AppWire `thread/clear`, replace the live daemon
-instance, preserve the stable workspace ref, and leave the same browser pane
-usable for a new turn. This is the user-visible counterpart to
-`server/appwire_runtime.go#handleAppThreadClear` and the store's
-`cmd/evener-hub/frontend/src/stores/threads.ts#clearThread` response path.
+handoff and composer action must reach typed AppWire `thread/clear`, replace
+the live daemon instance, preserve the stable workspace ref, and leave the same
+browser pane usable for a new turn. This is the user-visible counterpart to
+`server/appwire_runtime.go#handleAppThreadClear` and the dispatcher's
+`cmd/evener-hub/frontend/src/stores/mutationDispatcher.ts#MutationDispatcher` response path.
 
 The run also checks the failure mode that motivated the change: a clear that
 looks successful but leaves the browser attached to the retired instance. A
@@ -29,21 +29,30 @@ session rather than disappearing or creating a second rail row.
    and fake model. Start a session with a prompt that yields one short, unique
    reply, for example: `Reply with exactly INITIAL-CLEAR-MARKER.`
 2. Open the new session from the Live rail and wait for the first turn to
-   settle. Confirm the pane shows the marker and the rail has one row for its
-   `local:<SID>` ref. Record the stable ref and the live `instanceId` from an
-   authenticated AppWire `thread/read` with `includeTurns:false`, following
-   `docs/developing-evener/agentic-testing.md` "Driving AppWire directly".
+   settle. Confirm the pane shows the marker and record its stable
+   `local:<SID>` ref along with the set of unique rail refs.
+   Record the stable ref and the live `instanceId` from an authenticated
+   AppWire `thread/read` with
+   `includeTurns:false`, following `docs/developing-evener/agentic-testing.md`
+   "Driving AppWire directly".
 3. With the session idle and still open, open the command palette with
-   `⌘K`/`Ctrl-K`, choose **Clear context**, and wait for the action to settle.
-   Do not reload or navigate away.
+   `⌘K`/`Ctrl-K`, type `/clear`, and activate the **Continue in the composer**
+   handoff. Confirm the composer contains `/clear`, submit it from the
+   composer, and wait for the action to settle. Do not reload or navigate away.
 4. Re-read the pane and rail in the browser:
    ```javascript
+   const stableRef = "local:<SID>";
+   const railRefs = [...document.querySelectorAll("[data-session-ref]")]
+     .map((row) => row.getAttribute("data-session-ref"))
+     .filter(Boolean);
+   const transcript = document.querySelector('[aria-label="Transcript"]')?.textContent ?? "";
    ({
      port: location.port,
      path: decodeURIComponent(location.pathname),
-     rowCount: document.querySelectorAll('[data-session-ref="local:<SID>"]').length,
+     stableRefVisible: railRefs.includes(stableRef),
+     uniqueRailRefs: [...new Set(railRefs)],
      turnCount: document.querySelectorAll('[data-testid="turn-block"]').length,
-     initialMarker: document.body.textContent?.includes("INITIAL-CLEAR-MARKER") ?? false,
+     initialMarker: transcript.includes("INITIAL-CLEAR-MARKER"),
      composer: !!document.querySelector('[data-testid="composer-input-card"]'),
      toast: document.querySelector('[aria-label="Notifications"]')?.textContent ?? "",
    })
@@ -52,25 +61,31 @@ session rather than disappearing or creating a second rail row.
    type `Reply with exactly AFTER-CLEAR-MARKER.` into the visible composer and
    click **Send**. Wait for the reply.
 6. Re-read the browser and AppWire state. Confirm the post-clear marker is
-   visible, the initial marker is absent, the pane is still on the same stable
-   ref, and the rail still has one row. Shut down the disposable session and
-   hub using the captured run directory.
+   visible, the initial marker is absent from the active transcript, the pane
+   is still on the same stable ref, and the rail's unique ref set is unchanged.
+   Shut down the disposable session and hub using the captured run directory.
 
 ## Expected
 
 - **Step 2**: the first marker is visible, the session is idle, and AppWire
   reports a non-empty live instance for the stable `local:<SID>` ref.
 - **Step 4**: the browser remains on the same decoded `/s/local:<SID>` path;
-  `rowCount` is `1`, `initialMarker` is `false`, the composer is present, and
-  there is no error toast. A transient clear notification is acceptable while
-  the response is arriving, but it must be gone before step 5.
+  `stableRefVisible` is `true`, `uniqueRailRefs` is unchanged from step 2 and
+  contains no instance-ID replacement row, `initialMarker` is `false` in the
+  active transcript, the composer is present, and there is no error toast. A
+  transient clear notification is acceptable while the response is arriving,
+  but it must be gone before step 5. The number of DOM occurrences may change
+  when an idle Projects tier collapses; identity is checked by the unique ref
+  set.
 - **Step 5**: AppWire still reports the same stable ref but a different,
   non-empty `instanceId`. The replacement is therefore real, not merely a
   client-side transcript wipe.
-- **Step 6**: `AFTER-CLEAR-MARKER` appears in the pane, `INITIAL-CLEAR-MARKER`
-  does not, and no duplicate rail row appears. Falsify the scenario if the
-  pane is blank but cannot send, the old marker returns after hydration, the
-  ref changes, or the post-clear message is lost.
+- **Step 6**: `AFTER-CLEAR-MARKER` appears in the pane,
+  `INITIAL-CLEAR-MARKER` does not appear in the active transcript, and the
+  unique rail ref set is still unchanged. Falsify the scenario if the pane is
+  blank but cannot send, the old marker returns after hydration, the ref
+  changes, an extra instance-ID row appears, or the post-clear message is
+  lost.
 
 ## Cleanup
 
@@ -90,6 +105,6 @@ run directory. Do not use `pkill`.
   `local:<SID>` across clear while `instanceId` changes. Comparing only the
   visible URL misses the replacement half of the contract.
 - **This is a browser scenario, not a REST substitute.** The clear action must
-  be performed from the command palette, and the post-clear prompt must use the
-  same browser composer. Use AppWire `thread/read` only for the authoritative
-  identity cross-check.
+  be handed off from the command palette and submitted by the same browser
+  composer. Use AppWire `thread/read` only for the authoritative identity
+  cross-check.

@@ -59,6 +59,19 @@ func compactThreadOnce(ctx context.Context, cfg hubcore.WebConfig, sources *apps
 	return err
 }
 
+func clearThreadWithResume(ctx context.Context, cfg hubcore.WebConfig, sources *appsource.Registry, params appwire.ThreadClearParams) (appwire.ThreadClearResponse, error) {
+	return withSessionResume(ctx, cfg, sources, params.Ref, params.ClientMutationID, func() (appwire.ThreadClearResponse, error) {
+		source, err := sourceForThreadWithManagedLaunchUnlocked(ctx, cfg, sources, params.Ref, "")
+		if err != nil {
+			return appwire.ThreadClearResponse{}, err
+		}
+		if err := ensureThreadActionAvailable(ctx, source, params.Ref, "", "clear"); err != nil {
+			return appwire.ThreadClearResponse{}, err
+		}
+		return source.ClearThread(ctx, params)
+	})
+}
+
 func ensureThreadActionAvailable(ctx context.Context, source appsource.Source, ref, threadID, action string) error {
 	resp, err := source.ReadThread(ctx, appwire.ThreadReadParams{Ref: ref, ThreadID: threadID, IncludeTurns: false})
 	if err != nil {
