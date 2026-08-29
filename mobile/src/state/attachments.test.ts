@@ -17,11 +17,14 @@ describe("AttachmentStore", () => {
     const store = createAttachmentStore();
     store.getState().add("h1", "image/jpeg", "a.jpg");
     const atts = store.getState().attachments;
-    expect(atts).toHaveLength(1);
-    expect(atts[0]!.handle).toBe("h1");
-    expect(atts[atts.length - 1]!.mediaType).toBe("image/jpeg");
-    expect(atts[atts.length - 1]!.name).toBe("a.jpg");
-    expect(typeof atts[atts.length - 1]!.id).toBe("string");
+    expect(atts).toEqual([
+      expect.objectContaining({
+        handle: "h1",
+        mediaType: "image/jpeg",
+        name: "a.jpg",
+        id: expect.any(String),
+      }),
+    ]);
   });
 
   it("add assigns a unique id per attachment", () => {
@@ -29,18 +32,19 @@ describe("AttachmentStore", () => {
     store.getState().add("h1", "image/jpeg");
     store.getState().add("h2", "image/png");
     const atts = store.getState().attachments;
-    expect(atts[0]!.id).not.toBe(atts[1]!.id);
+    expect(new Set(atts.map((attachment) => attachment.id)).size).toBe(2);
   });
 
   it("remove drops the attachment with the matching id", () => {
     const store = createAttachmentStore();
     store.getState().add("h1", "image/jpeg");
-    const id = store.getState().attachments[0]!.id;
+    const first = store.getState().attachments[0];
+    if (first === undefined) throw new Error("expected seeded attachment");
+    const id = first.id;
     store.getState().add("h2", "image/png");
     store.getState().remove(id);
     const atts = store.getState().attachments;
-    expect(atts).toHaveLength(1);
-    expect(atts[0]!.handle).toBe("h2");
+    expect(atts).toEqual([expect.objectContaining({ handle: "h2" })]);
   });
 
   it("remove is a no-op for an unknown id", () => {
@@ -69,7 +73,9 @@ describe("AttachmentStore", () => {
   it("add accepts an attachment with no name", () => {
     const store = createAttachmentStore();
     store.getState().add("h1", "image/jpeg");
-    expect(store.getState().attachments[0]!.name).toBeUndefined();
+    expect(store.getState().attachments).toEqual([
+      expect.objectContaining({ name: undefined }),
+    ]);
   });
 });
 
@@ -77,8 +83,11 @@ describe("AttachmentStore — PendingAttachment shape", () => {
   it("stores the opaque handle and mediaType", () => {
     const store = createAttachmentStore();
     store.getState().add("opaque-123", "image/heic");
-    const att = store.getState().attachments[0]!;
-    expect(att.handle).toBe("opaque-123");
-    expect(att.mediaType).toBe("image/heic");
+    expect(store.getState().attachments).toEqual([
+      expect.objectContaining({
+        handle: "opaque-123",
+        mediaType: "image/heic",
+      }),
+    ]);
   });
 });
