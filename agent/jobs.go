@@ -294,18 +294,31 @@ func (jm *jobManager) currentCausalProvenance() *provenance.Causal {
 	return provenance.Clone(jm.currentProvenance())
 }
 
-// hasRunningJobs reports whether any job is live in the manager. Every entry
-// in jm.running notifies its session on terminal, and detached processes are
-// deliberately kept out of the manager (session_tools_jobs.go), so a live
-// entry is exactly "a non-detached job whose completion wake is guaranteed" —
-// the job half of the goal gate's wake-pending-dependents hold.
-func (jm *jobManager) hasRunningJobs() bool {
+// hasSupervisedRunningJobs reports whether any live job is guaranteed to keep
+// waking the session even if it never exits: a running job covered by an
+// active watch with a progress interval (periodic ticks, on top of the
+// automatic terminal notification every jm.running entry gets — detached
+// processes are deliberately kept out of the manager, session_tools_jobs.go).
+// A bare running job does NOT qualify: jobs have no watchdog, so a
+// never-exiting unwatched job delivers nothing, and the goal gate's
+// wake-pending hold must not park the goal on it with the no-progress breaker
+// unreachable. This mirrors the wait contract session_jobtree_drain.go
+// teaches the model: to wait on a long command, watch it with a
+// progress_interval.
+func (jm *jobManager) hasSupervisedRunningJobs() bool {
 	if jm == nil {
 		return false
 	}
 	jm.mu.Lock()
 	defer jm.mu.Unlock()
-	return len(jm.running) > 0
+	for jobID := range jm.running {
+		for _, cfg := range jm.watches {
+			if cfg.target == jobID && cfg.progressIntervalMS > 0 {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 type runningJob struct {

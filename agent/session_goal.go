@@ -178,22 +178,37 @@ func (s *Session) callsMadeProgress(calls []llm.ToolCallData) bool {
 // hasWakePendingDependents reports whether the session owns work that is
 // guaranteed to deliver a future wake: a delegate in a non-terminal phase
 // (running/settling/stopping — a report or terminal notification is coming,
-// and the quiet watchdog covers a silent runner) or a live job-manager entry
-// (non-detached by construction, terminal notification automatic). Dependents
-// that can never wake the session on their own do NOT count: idle delegates
-// awaiting delegate_send, closed delegates, and detached processes (kept out
-// of the job manager). The goal gate's no-progress hold keys on this: waiting
-// on a guaranteed wake is not stalling, but holding on a dependent that will
-// never deliver would strand the goal the other way.
+// turn/drive budgets bound the run, and the quiet watchdog covers a silent
+// runner) or a supervised running job (progress-interval watch: periodic
+// ticks even if the job never exits). Dependents that can never wake the
+// session on their own do NOT count: idle delegates awaiting delegate_send,
+// closed delegates, detached processes (kept out of the job manager), and
+// unwatched running jobs (no job watchdog — holding on one would park the
+// goal forever with the breaker unreachable). The goal gate's no-progress
+// hold keys on this: waiting on a guaranteed wake is not stalling, but
+// holding on a dependent that will never deliver would strand the goal the
+// other way.
+//
+// Known residual windows, accepted and documented rather than closed: a
+// dependent that terminates between this read and the gate's fold (or the
+// settle's re-check) can cost one no-progress fold — with a pre-loaded streak
+// that can fire the breaker one turn before the already-armed report lands
+// (the report still arrives and the block is now transcript-visible); and a
+// wedged delegate yields at most one quiet-watchdog wake per quiet stretch,
+// after which the hold parks the goal on a supervised-but-silent dependent —
+// the wedge is surfaced to the user and model on that one wake, and repeat
+// watchdog cadence is a delegate-supervision follow-up, not this gate's.
 //
 // It takes delegate-controller and job-manager locks and must never be called
 // with goalUpdateMu or s.mu held (see the askPending lock-discipline comment
-// in SetGoal): callers compute it before taking either.
+// in SetGoal): callers compute it before taking either. Callers should also
+// keep it lazy — the delegate side snapshots the whole tree — computing it
+// only on paths that can use the answer.
 func (s *Session) hasWakePendingDependents() bool {
 	if s == nil {
 		return false
 	}
-	if s.jobManager.hasRunningJobs() {
+	if s.jobManager.hasSupervisedRunningJobs() {
 		return true
 	}
 	for _, row := range stableDelegateRowsForSession(s, false) {
@@ -217,9 +232,15 @@ func (s *Session) hasWakePendingDependents() bool {
 // runs until it is completed or the no-progress breaker fires. With no goal set
 // it is a no-op returning ("", false).
 func (s *Session) armGoalContinuation(progressed, wasContinuation bool) (string, bool) {
-	// Computed before goalUpdateMu: the query takes delegate-controller and
-	// job-manager locks, which must never be held under the goal serializer.
-	wakePending := s.hasWakePendingDependents()
+	// Lazy, and computed before goalUpdateMu: the query takes delegate-controller
+	// and job-manager locks, which must never be held under the goal serializer,
+	// and a full delegate-tree snapshot must not be paid by turns that cannot use
+	// the answer (non-continuation turns, progressed continuations, goal-less
+	// sessions — none of which can hold).
+	var wakePending bool
+	if wasContinuation && !progressed {
+		wakePending = s.hasWakePendingDependents()
+	}
 	s.goalUpdateMu.Lock()
 	store := s.getOrCreateGoalStore()
 	snap, ok := store.Snapshot()
@@ -256,12 +277,15 @@ func (s *Session) armGoalContinuation(progressed, wasContinuation bool) (string,
 		// re-arms the goal. The settle flag makes the held decision visible to
 		// settleGoalOnIdle so it does not immediately re-kick past the same wait.
 		//
-		// The hold requires kickFunc: with no kick wired (e.g. one-shot
-		// `evener run`), the goal advances only through the drain's defer chain,
-		// so the gate keeps folding and re-arming exactly as before rather than
-		// stranding the goal after the first notification.
+		// The hold requires BOTH serve-loop callbacks: kickFunc to re-arm the
+		// goal after a notification turn, and notifyFunc for the dependent's
+		// wake to reach an idle session at all (serve.go wires the two
+		// together in bridgeSession; requiring both keeps an unwired session —
+		// e.g. one-shot `evener run`, where the drain's defer chain is the
+		// only driver — folding exactly as before rather than parking on a
+		// wake that cannot arrive).
 		s.mu.Lock()
-		hold := s.kickFunc != nil
+		hold := s.kickFunc != nil && s.notifyFunc != nil
 		if hold {
 			s.goalDependentsHeld = true
 		}
@@ -275,11 +299,15 @@ func (s *Session) armGoalContinuation(progressed, wasContinuation bool) (string,
 	s.emitGoalUpdated(snap)
 	s.goalUpdateMu.Unlock()
 	if !stillActive {
-		// The no-progress breaker fired this turn. Persist the terminal transition:
-		// it happens after processOneInput's defer-save, so without this a blocked
-		// goal would be saved as still-active and resume on restart (/par A4).
-		s.appendTurn(schema.TurnSystem, llm.System(fmt.Sprintf(
-			"Goal blocked: no mutating progress in %d consecutive goal-continuation turns. The goal engine has stopped driving the objective; it resumes only via /goal clear, a new /goal, or an update_goal verdict.",
+		// The no-progress breaker fired this turn. Record it as a steering turn
+		// (user-role, the channel the goal engine already speaks on): durable in
+		// the transcript and projected on reload, without becoming a mid-history
+		// system-role message provider adapters would fold into persistent
+		// instructions. Then persist the terminal transition: it happens after
+		// processOneInput's defer-save, so without the save a blocked goal would
+		// be saved as still-active and resume on restart (/par A4).
+		s.appendTurn(schema.TurnSteering, llm.User(fmt.Sprintf(
+			"[goal-no-progress-breaker] Goal blocked: no mutating progress in %d consecutive goal-continuation turns. The goal engine has stopped driving the objective; it resumes only via /goal clear or a new /goal.",
 			snap.NoProgressStreak)))
 		s.reportGoalEnded()
 		s.maybeAutoSave()
@@ -324,9 +352,17 @@ func (s *Session) reportGoalEnded() {
 // in flight (attention-status-model v5: a kicked goal suppresses awaiting —
 // suppressor condition 3 of the idle→awaiting upgrade).
 func (s *Session) settleGoalOnIdle() bool {
-	// Computed before s.mu: the query takes delegate-controller and job-manager
-	// locks, which must never be acquired under s.mu.
-	wakePending := s.hasWakePendingDependents()
+	// Probe the hold flag first so the delegate-tree snapshot is paid only when
+	// a hold actually stands. The flag can only transition true→false between
+	// the probe and the main section (the gate that sets it runs on this same
+	// goroutine; SetGoal/ClearGoal only clear), so a false probe never misses a
+	// hold — and a true probe is re-read authoritatively below.
+	s.mu.Lock()
+	probe := s.goalDependentsHeld
+	s.mu.Unlock()
+	// Computed outside s.mu: the query takes delegate-controller and
+	// job-manager locks, which must never be acquired under s.mu.
+	wakePending := probe && s.hasWakePendingDependents()
 	s.mu.Lock()
 	s.goalInTurn = false
 	kick := s.kickFunc
