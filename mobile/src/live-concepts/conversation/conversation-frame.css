@@ -17,6 +17,31 @@
   overscroll-behavior-y: contain;
 }
 
+.live-conversation-frame .live-conversation-frame__virtual-transcript {
+  position: relative;
+  min-block-size: 0;
+  overflow: hidden;
+}
+
+.live-conversation-frame
+  .live-conversation-frame__virtual-transcript
+  > [role="feed"] {
+  block-size: 100%;
+  min-block-size: 0;
+  overflow-y: auto;
+  overscroll-behavior-y: contain;
+  padding: 0;
+}
+
+.live-conversation-frame
+  .live-conversation-frame__virtual-transcript
+  > button[aria-label$="new activity"] {
+  position: absolute;
+  inset-inline-end: 1rem;
+  inset-block-end: 1rem;
+  z-index: 1;
+}
+
 .live-conversation-frame [data-frame-part="composer"] {
   min-block-size: 0;
   flex-shrink: 0;
@@ -76,8 +101,8 @@
   display: none;
 }
 
-.live-conversation-frame .live-conversation-frame__feed {
-  display: contents;
+.live-conversation-frame [data-testid="virtual-transcript-row"] {
+  contain: layout style;
 }
 
 .live-conversation-frame .live-conversation-frame__question-options {
