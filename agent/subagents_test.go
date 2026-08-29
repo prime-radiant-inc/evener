@@ -451,6 +451,70 @@ func TestCancelAgent_GenuineFailureRacingCancelStaysFailed(t *testing.T) {
 	}
 }
 
+// TestCancelAgent_JoinedCanceledAndExhaustionStaysCancelledWithJoinedError pins
+// the interaction between the cancelled status and the budget-exhaustion payload
+// when both are present in one joined run error: cancelRequested with
+// errors.Join(context.Canceled, budgetExhaustionError) publishes SubagentCancelled
+// (the cancel branch wins the status) and must keep the joined error verbatim —
+// errors.Is(a.err, context.Canceled) stays true and the exhaustion component is
+// only inside its budgetExhausted case, which this branch never reached.
+func TestCancelAgent_JoinedCanceledAndExhaustionStaysCancelledWithJoinedError(t *testing.T) {
+	t.Parallel()
+	joined := errors.Join(context.Canceled, &budgetExhaustionError{Budget: exhaustedBudgetTurns, Limit: 23, Resumable: false})
+	dir := t.TempDir()
+	c := llm.NewClient()
+	c.Register(&fakeErrAdapter{
+		name: "openai",
+		steps: []func(req llm.Request) (llm.Response, error){
+			func(req llm.Request) (llm.Response, error) {
+				return llm.Response{}, joined
+			},
+		},
+	})
+	noRetry := llm.RetryPolicy{MaxRetries: 0}
+	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{
+		MaxSubagentDepth: 1,
+		LLMRetryPolicy:   &noRetry,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer sess.Close()
+
+	// The sub drives sub.run directly (not via the manager), so it is
+	// intentionally not tracked; see the note in
+	// TestCancelAgent_GenuineFailureRacingCancelStaysFailed.
+	sub := &subagent{
+		id:              sess.id,
+		sess:            sess,
+		emit:            sess.emit,
+		running:         true,
+		status:          SubagentRunning,
+		done:            make(chan struct{}),
+		cancelRequested: true, // a cancel is racing this joined cancel+exhaustion error
+	}
+
+	sub.run(context.Background(), "do work", nil)
+
+	sub.mu.Lock()
+	status := sub.status
+	runErr := sub.err
+	sub.mu.Unlock()
+	if status != SubagentCancelled {
+		t.Fatalf("status = %q, want %q (cancel plus context.Canceled must publish cancelled even with a joined exhaustion component)", status, SubagentCancelled)
+	}
+	if runErr == nil || !errors.Is(runErr, context.Canceled) {
+		t.Fatalf("sub.err = %v, want the joined error kept verbatim so errors.Is(sub.err, context.Canceled) holds", runErr)
+	}
+	if runErr.Error() != joined.Error() {
+		t.Fatalf("sub.err = %q, want the original joined error text %q", runErr.Error(), joined.Error())
+	}
+	var exhaustion *budgetExhaustionError
+	if !errors.As(runErr, &exhaustion) || exhaustion == nil {
+		t.Fatalf("sub.err = %v, want the joined error preserved (errors.As still finds its exhaustion component)", runErr)
+	}
+}
+
 // TestCancelAgent_NotRunning asserts cancelling an idle/terminal child returns the
 // "is not running" error rather than fabricating a cancelled outcome.
 func TestCancelAgent_NotRunning(t *testing.T) {
