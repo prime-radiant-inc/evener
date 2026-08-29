@@ -19,6 +19,7 @@
   "dependencies": {
     "@tanstack/react-virtual": "3.14.7",
     "@tauri-apps/api": "2.11.1",
+    "@tauri-apps/plugin-opener": "2.5.4",
     "dompurify": "^3.4.12",
     "marked": "^18.0.6",
     "react": "19.2.7",

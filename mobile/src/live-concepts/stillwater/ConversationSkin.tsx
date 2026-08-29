@@ -1,5 +1,4 @@
 import type { ReactElement } from "react";
-import { AssistantMessage } from "../../components/timeline/AssistantMessage";
 import type {
   ActivityMarkerRenderProps,
   ChromeRenderProps,
@@ -47,11 +46,7 @@ function StillwaterNarrativeItem({
         className="sw-conversation-row-rule"
         data-stillwater-decoration="row-rule"
       />
-      {item.sourceKind === "assistant" ? (
-        <AssistantMessage source={item.body.text} streaming={item.streaming} />
-      ) : (
-        body
-      )}
+      {body}
     </div>
   );
 }

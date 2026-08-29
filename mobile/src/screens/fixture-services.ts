@@ -70,6 +70,7 @@ export function createOnboardingServices(
     async clipboardPaste() {
       return "";
     },
+    async openExternalUrl() {},
     async requestPermission(kind) {
       return { kind, granted: true };
     },
@@ -153,6 +154,7 @@ export function createShellServices(
     async clipboardPaste() {
       return "";
     },
+    async openExternalUrl() {},
     async requestPermission(kind) {
       return { kind, granted: true };
     },
