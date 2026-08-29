@@ -36,8 +36,9 @@ import (
 // the run-started event (PhaseRunning: a report or terminal notification is
 // guaranteed to wake the session); running=false leaves it created-but-never-
 // started (PhaseIdle: no autonomous wake, must not hold the goal).
-func seedSessionDelegate(t *testing.T, sess *Session, c *delegateTreeController, id string, running bool) {
+func seedSessionDelegate(t *testing.T, sess *Session, id string, running bool) {
 	t.Helper()
+	c := sess.delegateController
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	evs := []delegatestore.Event{{
@@ -66,24 +67,23 @@ func seedSessionDelegate(t *testing.T, sess *Session, c *delegateTreeController,
 // seedSessionRunningDelegate seeds the controller with one delegate owned by
 // sess in PhaseRunning (created + run started), the state whose terminal or
 // report notification is guaranteed to wake the session.
-func seedSessionRunningDelegate(t *testing.T, sess *Session, c *delegateTreeController, id string) {
+func seedSessionRunningDelegate(t *testing.T, sess *Session, id string) {
 	t.Helper()
-	seedSessionDelegate(t, sess, c, id, true)
+	seedSessionDelegate(t, sess, id, true)
 }
 
 // seedSessionIdleDelegate seeds a delegate that was created but never started:
 // PhaseIdle delivers no autonomous wake, so it must not hold the goal.
-func seedSessionIdleDelegate(t *testing.T, sess *Session, c *delegateTreeController, id string) {
+func seedSessionIdleDelegate(t *testing.T, sess *Session, id string) {
 	t.Helper()
-	seedSessionDelegate(t, sess, c, id, false)
+	seedSessionDelegate(t, sess, id, false)
 }
 
-func attachDelegateController(t *testing.T, sess *Session) *delegateTreeController {
+func attachDelegateController(t *testing.T, sess *Session) {
 	t.Helper()
 	c, _ := newDelegateControllerTestHarness(t, 10, 10)
 	c.rootRuntime = sess
 	sess.delegateController = c
-	return c
 }
 
 // seedRunningBackgroundJob registers one live job in the job manager. Detached
@@ -114,13 +114,11 @@ func seedProgressWatch(t *testing.T, sess *Session, jobID string) {
 // wireKickAndNotify mirrors serve.go's bridgeSession pairing: the idle kick and
 // the notification wake are always installed together, and the goal hold
 // legitimately depends on both.
-func wireKickAndNotify(sess *Session, kicks *int) {
-	sess.SetKickFunc(func(string) {
-		if kicks != nil {
-			*kicks++
-		}
-	})
+func wireKickAndNotify(sess *Session) *int {
+	kicks := 0
+	sess.SetKickFunc(func(string) { kicks++ })
 	sess.SetNotifyFunc(func() {})
+	return &kicks
 }
 
 func goalSnapshot(t *testing.T, sess *Session) goal.Snapshot {
@@ -139,10 +137,9 @@ func TestGoalHoldRunningDelegateSkipsFoldAndRearm(t *testing.T) {
 	t.Parallel()
 	sess := newGoalMethodSession(t)
 	defer sess.Close()
-	wireKickAndNotify(sess, nil)
+	wireKickAndNotify(sess)
 	attachDelegateController(t, sess)
-	c := sess.delegateController
-	seedSessionRunningDelegate(t, sess, c, "dlg_hold")
+	seedSessionRunningDelegate(t, sess, "dlg_hold")
 
 	sess.getOrCreateGoalStore().Set("wait for the triage fleet", time.Now())
 	// One progressed fold so the two-tier breaker is in its strict regime
@@ -173,9 +170,9 @@ func TestGoalHoldProgressedTurnFoldsNormally(t *testing.T) {
 	t.Parallel()
 	sess := newGoalMethodSession(t)
 	defer sess.Close()
-	wireKickAndNotify(sess, nil)
+	wireKickAndNotify(sess)
 	attachDelegateController(t, sess)
-	seedSessionRunningDelegate(t, sess, sess.delegateController, "dlg_hold")
+	seedSessionRunningDelegate(t, sess, "dlg_hold")
 
 	sess.getOrCreateGoalStore().Set("interleave fix waves", time.Now())
 	prompt, ok := sess.armGoalContinuation(true, true)
@@ -195,9 +192,9 @@ func TestGoalHoldIdleDelegateDoesNotHold(t *testing.T) {
 	t.Parallel()
 	sess := newGoalMethodSession(t)
 	defer sess.Close()
-	wireKickAndNotify(sess, nil)
+	wireKickAndNotify(sess)
 	attachDelegateController(t, sess)
-	seedSessionIdleDelegate(t, sess, sess.delegateController, "dlg_idle")
+	seedSessionIdleDelegate(t, sess, "dlg_idle")
 
 	sess.getOrCreateGoalStore().Set("no wake will come", time.Now())
 	if _, ok := sess.armGoalContinuation(true, true); !ok {
@@ -220,7 +217,7 @@ func TestGoalHoldRunningBackgroundJobHolds(t *testing.T) {
 	t.Parallel()
 	sess := newGoalMethodSession(t)
 	defer sess.Close()
-	wireKickAndNotify(sess, nil)
+	wireKickAndNotify(sess)
 	seedRunningBackgroundJob(t, sess, "job_hold")
 	seedProgressWatch(t, sess, "job_hold")
 
@@ -246,7 +243,7 @@ func TestGoalHoldUnwatchedBackgroundJobDoesNotHold(t *testing.T) {
 	t.Parallel()
 	sess := newGoalMethodSession(t)
 	defer sess.Close()
-	wireKickAndNotify(sess, nil)
+	wireKickAndNotify(sess)
 	seedRunningBackgroundJob(t, sess, "job_unwatched")
 
 	sess.getOrCreateGoalStore().Set("wait for the build", time.Now())
@@ -271,7 +268,7 @@ func TestGoalHoldNoNotifyFuncDoesNotHold(t *testing.T) {
 	defer sess.Close()
 	sess.SetKickFunc(func(string) {})
 	attachDelegateController(t, sess)
-	seedSessionRunningDelegate(t, sess, sess.delegateController, "dlg_hold")
+	seedSessionRunningDelegate(t, sess, "dlg_hold")
 
 	sess.getOrCreateGoalStore().Set("kick but no notify", time.Now())
 	if _, ok := sess.armGoalContinuation(false, true); !ok {
@@ -291,7 +288,7 @@ func TestGoalHoldNoKickFuncDoesNotHold(t *testing.T) {
 	sess := newGoalMethodSession(t)
 	defer sess.Close()
 	attachDelegateController(t, sess)
-	seedSessionRunningDelegate(t, sess, sess.delegateController, "dlg_hold")
+	seedSessionRunningDelegate(t, sess, "dlg_hold")
 
 	sess.getOrCreateGoalStore().Set("one-shot run", time.Now())
 	if _, ok := sess.armGoalContinuation(false, true); !ok {
@@ -309,10 +306,9 @@ func TestGoalHoldSettleSuppressesKickWhileDependentsPending(t *testing.T) {
 	t.Parallel()
 	sess := newGoalMethodSession(t)
 	defer sess.Close()
-	kicks := 0
-	wireKickAndNotify(sess, &kicks)
+	kicks := wireKickAndNotify(sess)
 	attachDelegateController(t, sess)
-	seedSessionRunningDelegate(t, sess, sess.delegateController, "dlg_hold")
+	seedSessionRunningDelegate(t, sess, "dlg_hold")
 	sess.getOrCreateGoalStore().Set("held goal", time.Now())
 
 	sess.mu.Lock()
@@ -322,8 +318,8 @@ func TestGoalHoldSettleSuppressesKickWhileDependentsPending(t *testing.T) {
 	if sess.settleGoalOnIdle() {
 		t.Fatal("settle after a hold with dependents still pending must not kick")
 	}
-	if kicks != 0 {
-		t.Fatalf("kicks = %d, want 0 while the hold stands", kicks)
+	if *kicks != 0 {
+		t.Fatalf("kicks = %d, want 0 while the hold stands", *kicks)
 	}
 	sess.mu.Lock()
 	held := sess.goalDependentsHeld
@@ -341,8 +337,7 @@ func TestGoalHoldSettleKicksOnceDependentsDrain(t *testing.T) {
 	t.Parallel()
 	sess := newGoalMethodSession(t)
 	defer sess.Close()
-	kicks := 0
-	wireKickAndNotify(sess, &kicks)
+	kicks := wireKickAndNotify(sess)
 	sess.getOrCreateGoalStore().Set("held goal", time.Now())
 
 	sess.mu.Lock()
@@ -352,8 +347,8 @@ func TestGoalHoldSettleKicksOnceDependentsDrain(t *testing.T) {
 	if !sess.settleGoalOnIdle() {
 		t.Fatal("settle after a hold whose dependents are gone must kick the goal back in")
 	}
-	if kicks != 1 {
-		t.Fatalf("kicks = %d, want 1 once no wake-pending dependents remain", kicks)
+	if *kicks != 1 {
+		t.Fatalf("kicks = %d, want 1 once no wake-pending dependents remain", *kicks)
 	}
 }
 
@@ -365,17 +360,16 @@ func TestGoalHoldSettleWithoutHoldKicksDespiteDependents(t *testing.T) {
 	t.Parallel()
 	sess := newGoalMethodSession(t)
 	defer sess.Close()
-	kicks := 0
-	wireKickAndNotify(sess, &kicks)
+	kicks := wireKickAndNotify(sess)
 	attachDelegateController(t, sess)
-	seedSessionRunningDelegate(t, sess, sess.delegateController, "dlg_hold")
+	seedSessionRunningDelegate(t, sess, "dlg_hold")
 	sess.getOrCreateGoalStore().Set("adjudicate batch", time.Now())
 
 	if !sess.settleGoalOnIdle() {
 		t.Fatal("a settle that did not just hold must kick even with dependents running")
 	}
-	if kicks != 1 {
-		t.Fatalf("kicks = %d, want 1", kicks)
+	if *kicks != 1 {
+		t.Fatalf("kicks = %d, want 1", *kicks)
 	}
 }
 
@@ -385,7 +379,7 @@ func TestGoalHoldSetGoalVoidsPendingHold(t *testing.T) {
 	t.Parallel()
 	sess := newGoalMethodSession(t)
 	defer sess.Close()
-	wireKickAndNotify(sess, nil)
+	wireKickAndNotify(sess)
 
 	sess.mu.Lock()
 	sess.goalDependentsHeld = true
@@ -418,10 +412,9 @@ func TestGoalHoldContinuationWaitsOnRunningDelegate(t *testing.T) {
 		},
 	))
 	attachDelegateController(t, sess)
-	seedSessionRunningDelegate(t, sess, sess.delegateController, "dlg_hold")
+	seedSessionRunningDelegate(t, sess, "dlg_hold")
 
-	kicks := 0
-	wireKickAndNotify(sess, &kicks)
+	kicks := wireKickAndNotify(sess)
 	sess.getOrCreateGoalStore().Set("triage the fleet", time.Now())
 
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second) // TRIPWIRE: scripted in-process adapter, no real I/O; only fires on a genuine hang.
@@ -434,8 +427,8 @@ func TestGoalHoldContinuationWaitsOnRunningDelegate(t *testing.T) {
 	if snap.Status != goal.StatusActive || snap.Iterations != 0 || snap.NoProgressStreak != 0 {
 		t.Fatalf("snapshot = %+v, want active and unfolded after a held wait-turn", snap)
 	}
-	if kicks != 0 {
-		t.Fatalf("kicks = %d, want 0 (the settle must not re-kick past the wait)", kicks)
+	if *kicks != 0 {
+		t.Fatalf("kicks = %d, want 0 (the settle must not re-kick past the wait)", *kicks)
 	}
 }
 
@@ -451,10 +444,9 @@ func TestGoalHoldNotificationTurnRearmsGoal(t *testing.T) {
 		},
 	))
 	attachDelegateController(t, sess)
-	seedSessionRunningDelegate(t, sess, sess.delegateController, "dlg_hold")
+	seedSessionRunningDelegate(t, sess, "dlg_hold")
 
-	kicks := 0
-	wireKickAndNotify(sess, &kicks)
+	kicks := wireKickAndNotify(sess)
 	sess.getOrCreateGoalStore().Set("triage the fleet", time.Now())
 
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second) // TRIPWIRE: scripted in-process adapter, no real I/O; only fires on a genuine hang.
@@ -462,16 +454,16 @@ func TestGoalHoldNotificationTurnRearmsGoal(t *testing.T) {
 	if _, err := sess.ProcessInputKind(ctx, "continue toward the goal", nil, EntryContinuation); err != nil {
 		t.Fatalf("continuation: %v", err)
 	}
-	if kicks != 0 {
-		t.Fatalf("kicks after the held continuation = %d, want 0", kicks)
+	if *kicks != 0 {
+		t.Fatalf("kicks after the held continuation = %d, want 0", *kicks)
 	}
 
 	sess.enqueueJobNotification(watchNotification("job_batch1", "output_match: done"))
 	if _, err := sess.ProcessInputKind(ctx, "", nil, EntryNotification); err != nil {
 		t.Fatalf("notification turn: %v", err)
 	}
-	if kicks != 1 {
-		t.Fatalf("kicks after the notification turn = %d, want 1 (the goal must re-arm when reports land)", kicks)
+	if *kicks != 1 {
+		t.Fatalf("kicks after the notification turn = %d, want 1 (the goal must re-arm when reports land)", *kicks)
 	}
 	if snap := goalSnapshot(t, sess); snap.Status != goal.StatusActive {
 		t.Fatalf("goal status = %q, want active", snap.Status)
@@ -501,7 +493,7 @@ func TestGoalBreakerSystemTurnAppendedOnce(t *testing.T) {
 		return llm.Response{}
 	})
 	sess := newSession(t, withSteps(steps...))
-	wireKickAndNotify(sess, nil)
+	wireKickAndNotify(sess)
 	sess.getOrCreateGoalStore().Set("doomed polling loop", time.Now())
 
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second) // TRIPWIRE: scripted in-process adapter, no real I/O; only fires on a genuine hang.

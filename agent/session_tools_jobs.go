@@ -630,14 +630,9 @@ func stableDelegateRowsForSession(s *Session, includeDescendants bool) []stableD
 		byID[snapshot.id] = snapshot
 	}
 
-	baseParentID := s.owningDelegateID
 	depths := make(map[string]int)
 	for _, snapshot := range snapshots {
-		if snapshot.parentID != baseParentID {
-			continue
-		}
-		ownerID := snapshot.descriptor.OwnerSessionID
-		if ownerID != "" && ownerID != s.id {
+		if !delegateRowVisibleTo(s, snapshot.parentID, snapshot.descriptor.OwnerSessionID) {
 			continue
 		}
 		depths[snapshot.id] = 0

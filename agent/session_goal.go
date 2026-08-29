@@ -201,8 +201,9 @@ func (s *Session) callsMadeProgress(calls []llm.ToolCallData) bool {
 // It takes delegate-controller and job-manager locks and must never be called
 // with goalUpdateMu or s.mu held (see the askPending lock-discipline comment
 // in SetGoal): callers compute it before taking either. Callers should also
-// keep it lazy — the delegate side snapshots the whole tree — computing it
-// only on paths that can use the answer.
+// keep it lazy — the delegate side is an O(len(c.durable)) early-exit scan
+// under the controller lock — computing it only on paths that can use the
+// answer.
 func (s *Session) hasWakePendingDependents() bool {
 	if s == nil {
 		return false
@@ -265,8 +266,9 @@ func (s *Session) armGoalContinuation(progressed, wasContinuation bool) (string,
 		// count toward those (/par #4).
 		return goal.Render(snap.Objective), true
 	}
-	if !progressed && wakePending {
-		// Wake-pending hold: the turn made no mutating call, but owned work is
+	if wakePending {
+		// Wake-pending hold: the turn made no mutating call (wakePending is
+		// computed only for non-progressed continuations), but owned work is
 		// guaranteed to wake the session (a running delegate's report/terminal
 		// notification, a supervised background job's progress tick or terminal
 		// notification). Waiting on a guaranteed wake is not stalling, so the

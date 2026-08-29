@@ -448,11 +448,11 @@ func (c *delegateTreeController) stableDelegateOwnedBySessionLocked(owner *Sessi
 // hasWakePendingDelegateFor reports whether owner has any direct delegate in a
 // non-terminal phase (running/settling/stopping — a report or terminal
 // notification is guaranteed). It is the goal gate's early-exit existence
-// scan: same base-row filter as stableDelegateRowsForSession (parentID ==
-// owner.owningDelegateID, OwnerSessionID empty or == owner.id) and the same
-// wake-capable phase set as Session.hasWakePendingDependents, kept in sync so
-// the hold keys on exactly the delegates the session can see — but without
-// Snapshot()'s full-tree JSON clones and row sort.
+// scan: same delegateRowVisibleTo base-row filter as stableDelegateRowsForSession
+// (see that helper for the visibility rule) and the same wake-capable phase
+// set as Session.hasWakePendingDependents, so the hold keys on exactly the
+// delegates the session can see — but without Snapshot()'s full-tree JSON
+// clones and row sort.
 func (c *delegateTreeController) hasWakePendingDelegateFor(owner *Session) bool {
 	if c == nil || owner == nil || owner.delegateController != c {
 		return false
@@ -460,20 +460,28 @@ func (c *delegateTreeController) hasWakePendingDelegateFor(owner *Session) bool 
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	for _, aggregate := range c.durable {
-		switch aggregate.Phase {
-		case delegatestore.PhaseRunning, delegatestore.PhaseSettling, delegatestore.PhaseStopping:
-		default:
+		if aggregate.Phase != delegatestore.PhaseRunning && aggregate.Phase != delegatestore.PhaseSettling && aggregate.Phase != delegatestore.PhaseStopping {
 			continue
 		}
-		if aggregate.Descriptor.ParentDelegateID != owner.owningDelegateID {
-			continue
-		}
-		if ownerID := aggregate.Descriptor.OwnerSessionID; ownerID != "" && ownerID != owner.id {
+		if !delegateRowVisibleTo(owner, aggregate.Descriptor.ParentDelegateID, aggregate.Descriptor.OwnerSessionID) {
 			continue
 		}
 		return true
 	}
 	return false
+}
+
+// delegateRowVisibleTo is the base-row visibility filter the session's stable
+// delegate listings are built on: a row is visible to s when it hangs off s's
+// own delegate slot (parentID == s.owningDelegateID) and is either unowned or
+// owned by s. stableDelegateRowsForSession and the goal gate's
+// hasWakePendingDelegateFor both key on it so the hold cannot see a delegate
+// the session's own listings would not show.
+func delegateRowVisibleTo(s *Session, parentID, ownerSessionID string) bool {
+	if parentID != s.owningDelegateID {
+		return false
+	}
+	return ownerSessionID == "" || ownerSessionID == s.id
 }
 
 // closeStableWorktreeResumability atomically revalidates that a direct-owned
