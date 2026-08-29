@@ -48,6 +48,19 @@ export interface VariableHeightVirtualListProps<T> {
   readonly renderItem: (item: T, index: number) => ReactNode;
 }
 
+interface RestoreOperation {
+  readonly key: string;
+  cancelled: boolean;
+  measurementResolver: (() => void) | null;
+  offsetWaiter: OffsetWaiter | null;
+}
+
+interface OffsetWaiter {
+  readonly target: number;
+  readonly resolve: () => void;
+  readonly operation: RestoreOperation;
+}
+
 type ItemMeasurements = Map<string, number>;
 type ContentSizeMeasurements = Map<ContentSizeCategory, ItemMeasurements>;
 type SkinMeasurements = Map<ConceptId, ContentSizeMeasurements>;
@@ -173,9 +186,8 @@ export const VariableHeightVirtualList = forwardRef(
     } | null>(null);
     const measurementWaitersRef = useRef(new Map<string, Set<() => void>>());
     const pendingMeasuredKeysRef = useRef(new Set<string>());
-    const offsetWaitersRef = useRef<
-      Array<{ readonly target: number; readonly resolve: () => void }>
-    >([]);
+    const offsetWaitersRef = useRef<OffsetWaiter[]>([]);
+    const restoreOperationsRef = useRef(new Set<RestoreOperation>());
     const rowElementsRef = useRef(new Map<string, HTMLElement>());
     const rowRefCallbacksRef = useRef(
       new Map<string, (node: HTMLElement | null) => void>(),
@@ -187,6 +199,34 @@ export const VariableHeightVirtualList = forwardRef(
       (revision: number) => revision + 1,
       0,
     );
+    const cancelRestore = useCallback((operation: RestoreOperation): void => {
+      if (operation.cancelled) return;
+      operation.cancelled = true;
+      if (operation.measurementResolver !== null) {
+        const waiters = measurementWaitersRef.current.get(operation.key);
+        waiters?.delete(operation.measurementResolver);
+        if (waiters?.size === 0) {
+          measurementWaitersRef.current.delete(operation.key);
+        }
+        const resolve = operation.measurementResolver;
+        operation.measurementResolver = null;
+        resolve();
+      }
+      if (operation.offsetWaiter !== null) {
+        const waiter = operation.offsetWaiter;
+        offsetWaitersRef.current = offsetWaitersRef.current.filter(
+          (candidate) => candidate !== waiter,
+        );
+        operation.offsetWaiter = null;
+        waiter.resolve();
+      }
+      restoreOperationsRef.current.delete(operation);
+    }, []);
+    const cancelAllRestores = useCallback((): void => {
+      for (const operation of [...restoreOperationsRef.current]) {
+        cancelRestore(operation);
+      }
+    }, [cancelRestore]);
     const itemKeys = useMemo(
       () => items.map((item) => getItemKey(item)),
       [getItemKey, items],
@@ -296,7 +336,9 @@ export const VariableHeightVirtualList = forwardRef(
         offsetWaitersRef.current = [];
         let retryOffset: number | null = null;
         for (const waiter of pendingOffsets) {
+          if (waiter.operation.cancelled) continue;
           if (Math.abs(finalOffset - waiter.target) <= 2) {
+            waiter.operation.offsetWaiter = null;
             waiter.resolve();
           } else {
             offsetWaitersRef.current.push(waiter);
@@ -352,39 +394,61 @@ export const VariableHeightVirtualList = forwardRef(
       async (anchor: MeasuredAnchor): Promise<void> => {
         const index = itemKeys.indexOf(anchor.key);
         if (index < 0) return;
-
-        let target = virtualizer
-          .getVirtualItems()
-          .find((item) => String(item.key) === anchor.key);
-        if (target === undefined || !activeCacheRef.current.has(anchor.key)) {
-          const measured = new Promise<void>((resolve) => {
-            const waiters = measurementWaitersRef.current.get(anchor.key);
-            if (waiters === undefined) {
-              measurementWaitersRef.current.set(anchor.key, new Set([resolve]));
-            } else {
-              waiters.add(resolve);
-            }
-          });
-          virtualizer.scrollToIndex(index, {
-            align: "start",
-            behavior: "auto",
-          });
-          await measured;
-          target = virtualizer
+        const operation: RestoreOperation = {
+          key: anchor.key,
+          cancelled: false,
+          measurementResolver: null,
+          offsetWaiter: null,
+        };
+        restoreOperationsRef.current.add(operation);
+        try {
+          let target = virtualizer
             .getVirtualItems()
             .find((item) => String(item.key) === anchor.key);
-        }
+          if (target === undefined || !activeCacheRef.current.has(anchor.key)) {
+            const measured = new Promise<void>((resolve) => {
+              const wake = (): void => {
+                operation.measurementResolver = null;
+                resolve();
+              };
+              operation.measurementResolver = wake;
+              const waiters = measurementWaitersRef.current.get(anchor.key);
+              if (waiters === undefined) {
+                measurementWaitersRef.current.set(anchor.key, new Set([wake]));
+              } else {
+                waiters.add(wake);
+              }
+            });
+            virtualizer.scrollToIndex(index, {
+              align: "start",
+              behavior: "auto",
+            });
+            await measured;
+            if (operation.cancelled) return;
+            target = virtualizer
+              .getVirtualItems()
+              .find((item) => String(item.key) === anchor.key);
+          }
 
-        if (target === undefined) return;
-        const targetOffset = target.start - anchor.offsetPx;
-        const currentOffset =
-          virtualizer.scrollOffset ?? scrollRef.current?.scrollTop ?? 0;
-        if (Math.abs(currentOffset - targetOffset) <= 2) return;
-        const adjusted = new Promise<void>((resolve) => {
-          offsetWaitersRef.current.push({ target: targetOffset, resolve });
-        });
-        virtualizer.scrollToOffset(targetOffset, { behavior: "auto" });
-        await adjusted;
+          if (target === undefined || operation.cancelled) return;
+          const targetOffset = target.start - anchor.offsetPx;
+          const currentOffset =
+            virtualizer.scrollOffset ?? scrollRef.current?.scrollTop ?? 0;
+          if (Math.abs(currentOffset - targetOffset) <= 2) return;
+          const adjusted = new Promise<void>((resolve) => {
+            const waiter: OffsetWaiter = {
+              target: targetOffset,
+              resolve,
+              operation,
+            };
+            operation.offsetWaiter = waiter;
+            offsetWaitersRef.current.push(waiter);
+          });
+          virtualizer.scrollToOffset(targetOffset, { behavior: "auto" });
+          await adjusted;
+        } finally {
+          restoreOperationsRef.current.delete(operation);
+        }
       },
       [itemKeys, virtualizer],
     );
@@ -455,10 +519,25 @@ export const VariableHeightVirtualList = forwardRef(
     );
 
     useLayoutEffect(() => {
+      for (const operation of [...restoreOperationsRef.current]) {
+        if (!itemKeys.includes(operation.key)) cancelRestore(operation);
+      }
+    }, [cancelRestore, itemKeys]);
+
+    useLayoutEffect(
+      () => () => {
+        cancelAllRestores();
+      },
+      [cancelAllRestores],
+    );
+
+    useLayoutEffect(() => {
       const previousScope = previousScopeRef.current;
       if (sameScope(previousScope, cacheScope)) return;
 
-      const outgoingAnchor = previousAnchorRef.current;
+      cancelAllRestores();
+      const threadChanged = previousScope.threadKey !== cacheScope.threadKey;
+      const outgoingAnchor = threadChanged ? null : captureAnchor();
       const incoming = measurementsFor(cacheScope);
       if (
         previousScope.threadKey === cacheScope.threadKey &&
@@ -468,13 +547,21 @@ export const VariableHeightVirtualList = forwardRef(
       }
       activeCacheRef.current = incoming;
       previousScopeRef.current = cacheScope;
+      if (threadChanged) previousAnchorRef.current = null;
       virtualizer.measure();
       for (const [key, size] of incoming) {
         const index = itemKeys.indexOf(key);
         if (index >= 0) virtualizer.resizeItem(index, size);
       }
       if (outgoingAnchor !== null) void restoreAnchor(outgoingAnchor);
-    }, [cacheScope, itemKeys, restoreAnchor, virtualizer]);
+    }, [
+      cacheScope,
+      cancelAllRestores,
+      captureAnchor,
+      itemKeys,
+      restoreAnchor,
+      virtualizer,
+    ]);
 
     useLayoutEffect(() => {
       previousAnchorRef.current = captureAnchor();

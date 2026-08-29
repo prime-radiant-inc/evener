@@ -11,12 +11,12 @@ import {
   onTapNewActivity,
 } from "../conversation/follow";
 import type { MobileTimelineItem } from "../conversation/model";
-import type { ContentSizeCategory } from "../native/contract";
 import type { ActivityView } from "../services/activity";
 import type { ConversationService } from "../services/conversation";
 import type { AttachmentState } from "../state/attachments";
 import type { ConversationState, LoadOlderResult } from "../state/conversation";
 import type { NavigationState } from "../state/navigation";
+import type { PreferencesState } from "../state/preferences";
 
 export interface ConversationScreenProps {
   /** The conversation store hook (Zustand). */
@@ -31,8 +31,8 @@ export interface ConversationScreenProps {
   readonly activityView?: ActivityView | null;
   /** Called when the user taps the voice button in the composer. */
   readonly onShowVoice?: () => void;
-  /** Exact native Dynamic Type category owned by the platform preference store. */
-  readonly contentSize: ContentSizeCategory;
+  /** Authoritative platform preference store, including native Dynamic Type. */
+  readonly preferencesStore: UseBoundStore<StoreApi<PreferencesState>>;
 }
 
 /**
@@ -53,11 +53,12 @@ export function ConversationScreen({
   attachmentStore,
   activityView: activityViewProp,
   onShowVoice,
-  contentSize,
+  preferencesStore,
 }: ConversationScreenProps): JSX.Element {
   const conversation = conversationStore((s) => s.conversation);
   const status = conversationStore((s) => s.status);
   const error = conversationStore((s) => s.error);
+  const contentSize = preferencesStore((s) => s.contentSize);
   const navTitle =
     navigationStore((s) => s.activeConversation?.title) ?? "Conversation";
   const navigationConversationId =
