@@ -50,6 +50,9 @@ type APIAttemptMeta struct {
 	Headers            http.Header
 	RequestBody        []byte
 	RequestBodyInexact bool
+	// PrunedFields lists the body paths registry.Prune removed before the
+	// request was sent (spec §8.2); recorded as pruned_fields on the attempt.
+	PrunedFields       []string
 	StartedAt          time.Time
 	CredentialMaterial APILogCredentialMaterial
 }
@@ -505,6 +508,7 @@ func buildAPIAttemptRecord(groupID, attemptID string, index int, meta APIAttempt
 			Model:          omitCredentialString(meta.RequestModel, patterns, secretNames),
 			HistoryMode:    omitCredentialString(string(meta.HistoryMode), patterns, secretNames),
 			EndpointFamily: omitCredentialString(meta.EndpointFamily, patterns, secretNames),
+			PrunedFields:   append([]string(nil), meta.PrunedFields...),
 		},
 		Outcome:    canonicalAPIAttemptOutcome(result),
 		ErrorClass: omitCredentialString(result.ErrorClass, patterns, secretNames),

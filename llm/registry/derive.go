@@ -99,3 +99,16 @@ func derive(c *Caps, m *Model, in deriveInput, prov map[string]string) {
 		prov["ThinkingDisplay"] = provDerived
 	}
 }
+
+// EffortCapable reports whether a row accepts a reasoning effort (spec
+// §8.4): effort ∈ ReasoningControls, which after derivation is every
+// reasoning row except one that lists controls without effort. A row with
+// no controls and no Reasoning verdict (an unknown model) is capable too,
+// so an explicit effort still reaches the wire as it did before the
+// registry.
+func (c Caps) EffortCapable() bool {
+	if slices.Contains(c.ReasoningControls, "effort") {
+		return true
+	}
+	return len(c.ReasoningControls) == 0 && c.Reasoning == nil
+}

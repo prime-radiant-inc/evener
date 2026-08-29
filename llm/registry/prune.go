@@ -120,6 +120,22 @@ func Prune(body map[string]any, caps Caps) []string {
 	return pruned
 }
 
+// ApplyBodyConstants sets each Transport.Body constant on body, creating
+// parent objects as needed (spec §8.2 step 3). Constants run after the
+// prune so they survive it, and they override any value the builder or a
+// caller's ProviderOptions put at the same path. Keys are applied in sorted
+// order so the result never depends on map iteration.
+func ApplyBodyConstants(body map[string]any, constants map[string]any) {
+	keys := make([]string, 0, len(constants))
+	for k := range constants {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	for _, k := range keys {
+		setPath(body, k, constants[k])
+	}
+}
+
 // setPath sets a dotted path, creating parent objects (used by Transport.Body
 // constants and tests).
 func setPath(body map[string]any, path string, value any) {

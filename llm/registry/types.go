@@ -202,3 +202,14 @@ type Ref struct {
 
 // String renders the reference in instance/model form.
 func (r Ref) String() string { return r.Instance + "/" + r.Model }
+
+// BoolValue reads an optional bool cap: nil and false both read as false.
+func BoolValue(p *bool) bool { return p != nil && *p }
+
+// StringValue reads an optional string cap: nil reads as "".
+func StringValue(p *string) string {
+	if p == nil {
+		return ""
+	}
+	return *p
+}
