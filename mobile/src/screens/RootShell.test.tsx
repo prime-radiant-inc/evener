@@ -34,9 +34,61 @@ import {
 } from "./production-services";
 import { RootShell } from "./RootShell";
 
+class RootShellResizeObserver implements ResizeObserver {
+  static readonly instances = new Set<RootShellResizeObserver>();
+  readonly targets = new Set<Element>();
+
+  constructor(private readonly callback: ResizeObserverCallback) {
+    RootShellResizeObserver.instances.add(this);
+  }
+
+  observe(target: Element): void {
+    this.targets.add(target);
+  }
+
+  unobserve(target: Element): void {
+    this.targets.delete(target);
+  }
+
+  disconnect(): void {
+    this.targets.clear();
+    RootShellResizeObserver.instances.delete(this);
+  }
+
+  static flush(): void {
+    for (const observer of RootShellResizeObserver.instances) {
+      const entries = [...observer.targets].map(
+        (target) =>
+          ({
+            target,
+            borderBoxSize: [{ blockSize: 96, inlineSize: 393 }],
+            contentBoxSize: [{ blockSize: 96, inlineSize: 393 }],
+            devicePixelContentBoxSize: [],
+            contentRect: {
+              x: 0,
+              y: 0,
+              top: 0,
+              right: 393,
+              bottom: 96,
+              left: 0,
+              width: 393,
+              height: 96,
+              toJSON: () => ({}),
+            },
+          }) as ResizeObserverEntry,
+      );
+      if (entries.length > 0) observer.callback(entries, observer);
+    }
+  }
+}
+
+const originalResizeObserver = globalThis.ResizeObserver;
+
 afterEach(() => {
   cleanup();
   vi.restoreAllMocks();
+  globalThis.ResizeObserver = originalResizeObserver;
+  RootShellResizeObserver.instances.clear();
 });
 
 const PROFILES: readonly ProfileRedacted[] = [
@@ -391,30 +443,6 @@ async function openServerSwitcher(): Promise<void> {
   );
 }
 
-function VoiceRouteRenderer({
-  state,
-  dispatch,
-}: LiveConceptRendererProps): ReactElement {
-  if (state.surface === "sessions") {
-    const row = state.roster.groups.flatMap((group) => group.rows)[0];
-    return row === undefined ? (
-      <p>No controlled session</p>
-    ) : (
-      <button
-        type="button"
-        onClick={() => dispatch({ type: "openConversation", key: row.key })}
-      >
-        Open {row.title}
-      </button>
-    );
-  }
-  return (
-    <button type="button" onClick={() => dispatch({ type: "openVoice" })}>
-      Open canonical Voice
-    </button>
-  );
-}
-
 function LifecycleObservationRenderer({
   state,
   dispatch,
@@ -438,21 +466,6 @@ function LifecycleObservationRenderer({
           Open {row.title}
         </button>
       ))}
-      {state.conversation?.items.map((item) => (
-        <p key={item.key}>
-          {"body" in item ? item.body.text : item.preview?.text}
-        </p>
-      ))}
-      {state.conversation?.olderAvailable === true ? (
-        <button type="button" onClick={() => dispatch({ type: "loadOlder" })}>
-          Load controlled older
-        </button>
-      ) : null}
-      {state.conversation !== null && state.surface === "conversation" ? (
-        <button type="button" onClick={() => dispatch({ type: "openWork" })}>
-          Open controlled Work
-        </button>
-      ) : null}
     </div>
   );
 }
@@ -548,9 +561,7 @@ async function preparePendingOlderTransition() {
     await readA.promise;
   });
   expect(screen.getByText("Current A transcript")).toBeInTheDocument();
-  fireEvent.click(
-    screen.getByRole("button", { name: "Load controlled older" }),
-  );
+  fireEvent.click(screen.getByRole("button", { name: "Load older messages" }));
   const clientA = harness.clients[0];
   const scopedA = harness.scopedServices[0];
   if (clientA === undefined || scopedA === undefined) {
@@ -560,7 +571,7 @@ async function preparePendingOlderTransition() {
     method: "thread/turns/list",
     params: { ref: "ref-a", cursor: "older-a", limit: 50 },
   });
-  fireEvent.click(screen.getByRole("button", { name: "Open controlled Work" }));
+  fireEvent.click(screen.getByRole("button", { name: "Work" }));
   const observation = screen.getByTestId("lifecycle-observation");
   expect(observation).toHaveAttribute("data-surface", "work");
   expect(observation).toHaveAttribute("data-work-open", "true");
@@ -634,6 +645,7 @@ describe("RootShell — live connection evidence", () => {
   });
 
   it("updates visible server identity after an automatic reconnect handshake", async () => {
+    globalThis.ResizeObserver = RootShellResizeObserver;
     const harness = renderProductionShell(
       () =>
         new ProductionClientFake(
@@ -651,7 +663,12 @@ describe("RootShell — live connection evidence", () => {
     fireEvent.click(
       await screen.findByRole("button", { name: /Open Known live session/ }),
     );
-    await screen.findByRole("region", { name: "Stillwater conversation" });
+    const conversation = await screen.findByRole("main", {
+      name: "Conversation",
+    });
+    expect(conversation).toHaveAttribute("data-concept-root", "true");
+    expect(conversation).toHaveAttribute("data-surface", "conversation");
+    act(() => RootShellResizeObserver.flush());
     const client = harness.clients[0];
     expect(client).toBeDefined();
     expect(
@@ -713,6 +730,7 @@ describe("RootShell — live connection evidence", () => {
         },
       } as AnyNotification);
     });
+    act(() => RootShellResizeObserver.flush());
     expect(await screen.findByText("Recovered after reconnect")).toBeVisible();
   });
 
@@ -1039,15 +1057,16 @@ describe("RootShell — live concept production composition", () => {
   });
 
   it("routes the Host Voice callback to the canonical Voice screen", async () => {
-    vi.spyOn(liveConceptRegistry.stillwater, "Renderer").mockImplementation(
-      VoiceRouteRenderer,
-    );
     const thread = makeThread({ id: "thread-a", ref: "ref-a", name: "Alpha" });
     renderProductionShell(() => new ProductionClientFake(thread));
 
-    fireEvent.click(await screen.findByRole("button", { name: "Open Alpha" }));
+    fireEvent.click(await screen.findByText("Alpha"));
+    const conversation = await screen.findByRole("main", {
+      name: "Conversation",
+    });
+    expect(conversation).toHaveAttribute("data-surface", "conversation");
     fireEvent.click(
-      await screen.findByRole("button", { name: "Open canonical Voice" }),
+      within(conversation).getByRole("button", { name: "Voice" }),
     );
 
     expect(
@@ -1846,7 +1865,13 @@ describe("RootShell — profile-scope ownership", () => {
         '[data-concept-root][data-surface="conversation"]',
       ),
     ).not.toBeNull();
-    expect(screen.getByText("No conversation")).toBeInTheDocument();
-    expect(screen.queryByRole("button", { name: /^work$/i })).toBeNull();
+    expect(
+      screen.getByRole("button", { name: "Retry conversation" }),
+    ).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Work" })).toBeInTheDocument();
+    expect(screen.getByRole("textbox", { name: "Message" })).toBeDisabled();
+    expect(screen.getByRole("alert")).toHaveTextContent(
+      "controlled read rejection",
+    );
   });
 });

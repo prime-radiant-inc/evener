@@ -277,8 +277,11 @@ afterEach(async () => {
 
 describe("ConversationFrame", () => {
   it("owns the stable direct frame composition and the only page scroll owner", () => {
-    const frame = render(<ConversationFrame {...props()} />);
+    const frameProps = props();
+    const frame = render(<ConversationFrame {...frameProps} />);
     const root = frame.getByRole("main", { name: "Conversation" });
+    expect(root).toHaveAttribute("data-concept-root", "true");
+    expect(root).toHaveAttribute("data-surface", "conversation");
     expect(
       [...root.children].map((node) => node.getAttribute("data-frame-part")),
     ).toEqual(["chrome", "transcript", "status", "composer"]);
@@ -289,7 +292,10 @@ describe("ConversationFrame", () => {
     expect(frame.getByRole("button", { name: "Submit message" })).toBeVisible();
     expect(frame.getByRole("button", { name: "Back" })).toBeVisible();
     expect(frame.getByRole("button", { name: "Work" })).toBeVisible();
+    expect(frame.getByRole("button", { name: "Voice" })).toBeVisible();
     expect(frame.getByRole("button", { name: "Switch concept" })).toBeVisible();
+    fireEvent.click(frame.getByRole("button", { name: "Voice" }));
+    expect(frameProps.dispatch).toHaveBeenCalledWith({ type: "openVoice" });
   });
 
   it("owns assistant Markdown and link routing while keeping other narrative plain", () => {

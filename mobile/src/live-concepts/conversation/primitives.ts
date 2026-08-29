@@ -35,6 +35,7 @@ export interface LiveComposerView {
 export type ConversationFrameAction =
   | { readonly type: "goBack" }
   | { readonly type: "openWork" }
+  | { readonly type: "openVoice" }
   | { readonly type: "openConceptSwitcher" }
   | { readonly type: "loadOlder" }
   | { readonly type: "retryRead" }

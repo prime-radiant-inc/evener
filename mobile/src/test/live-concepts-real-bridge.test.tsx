@@ -7,6 +7,7 @@ import {
   fireEvent,
   render,
   screen,
+  waitFor,
   within,
 } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -22,6 +23,56 @@ import type {
 } from "../../../cmd/evener-hub/frontend/src/protocol/types.gen";
 import { App } from "../App";
 import type { TauriBridge, TauriChannel, TauriEvent } from "../services/tauri";
+
+class RealBridgeResizeObserver implements ResizeObserver {
+  static readonly instances = new Set<RealBridgeResizeObserver>();
+  readonly targets = new Set<Element>();
+
+  constructor(private readonly callback: ResizeObserverCallback) {
+    RealBridgeResizeObserver.instances.add(this);
+  }
+
+  observe(target: Element): void {
+    this.targets.add(target);
+  }
+
+  unobserve(target: Element): void {
+    this.targets.delete(target);
+  }
+
+  disconnect(): void {
+    this.targets.clear();
+    RealBridgeResizeObserver.instances.delete(this);
+  }
+
+  static flush(): void {
+    for (const observer of RealBridgeResizeObserver.instances) {
+      const entries = [...observer.targets].map(
+        (target) =>
+          ({
+            target,
+            borderBoxSize: [{ blockSize: 96, inlineSize: 393 }],
+            contentBoxSize: [{ blockSize: 96, inlineSize: 393 }],
+            devicePixelContentBoxSize: [],
+            contentRect: {
+              x: 0,
+              y: 0,
+              top: 0,
+              right: 393,
+              bottom: 96,
+              left: 0,
+              width: 393,
+              height: 96,
+              toJSON: () => ({}),
+            },
+          }) as ResizeObserverEntry,
+      );
+      if (entries.length > 0) observer.callback(entries, observer);
+    }
+  }
+}
+
+const originalResizeObserver = globalThis.ResizeObserver;
 
 type JsonObject = Record<string, unknown>;
 type ServerFrame = JsonObject & {
@@ -790,17 +841,34 @@ function chooseConcept(name: "Stillwater" | "Constellation" | "Field Notes") {
   fireEvent.click(screen.getByRole("button", { name: new RegExp(name) }));
 }
 
-function expectExpandedMarkerSurfaces(
-  article: HTMLElement,
-  expectedText: string,
-): void {
+function expectMarkerPreview(article: HTMLElement, expectedText: string): void {
   const descriptionId = article.getAttribute("aria-describedby");
   expect(descriptionId).not.toBeNull();
   expect(document.getElementById(descriptionId ?? "")).toHaveTextContent(
     expectedText,
   );
-  const detail = within(article).getByRole("region");
-  expect(within(detail).getByText(expectedText)).toBeVisible();
+  expect(within(article).queryByRole("region")).toBeNull();
+}
+
+async function openAssociatedActivityEvidence(
+  article: HTMLElement,
+  expectedText: string,
+): Promise<HTMLElement> {
+  fireEvent.click(
+    within(article).getByRole("button", { name: "Show activity" }),
+  );
+  const dialog = await screen.findByRole("dialog");
+  expect(dialog).toHaveTextContent(expectedText);
+  return dialog;
+}
+
+async function closeActivityEvidence(dialog: HTMLElement): Promise<void> {
+  fireEvent.click(
+    within(dialog).getByRole("button", {
+      name: "Close activity and evidence",
+    }),
+  );
+  await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
 }
 
 function transcriptKeyForArticle(article: HTMLElement): string {
@@ -819,11 +887,11 @@ function expectConversationEvidence(
   const reasoning = screen.getByRole("article", {
     name: "Reasoning activity; running",
   });
-  expectExpandedMarkerSurfaces(reasoning, REASONING_TEXT);
+  expectMarkerPreview(reasoning, REASONING_TEXT);
   const completedTool = screen.getByRole("article", {
     name: "Tool activity, exec_command; completed",
   });
-  expectExpandedMarkerSurfaces(completedTool, TOOL_COMPLETED_TEXT);
+  expectMarkerPreview(completedTool, TOOL_COMPLETED_TEXT);
   expect(
     screen.queryByText(`${TOOL_STARTED_TEXT}${TOOL_DELTA_TEXT}`),
   ).toBeNull();
@@ -871,7 +939,7 @@ function expectAuthoritativeConversationEvidence(
   const completedTool = screen.getByRole("article", {
     name: "Tool activity, exec_command; completed",
   });
-  expectExpandedMarkerSurfaces(completedTool, AUTHORITATIVE_TOOL_TEXT);
+  expectMarkerPreview(completedTool, AUTHORITATIVE_TOOL_TEXT);
   expect(screen.queryByText(STREAMED_TEXT)).toBeNull();
   expect(screen.queryByText(REASONING_TEXT)).toBeNull();
   expect(screen.queryByText(TOOL_COMPLETED_TEXT)).toBeNull();
@@ -893,26 +961,26 @@ function expectAuthoritativeWorkEvidence(
   expectRawRefsAbsentFromLiveConcept();
 }
 
-function pendingMutationElement(): HTMLElement | null {
-  return document.querySelector<HTMLElement>(
-    "[data-composer-pending], [data-pending-mutation]",
-  );
-}
-
 function expectComposerPending(
   kind: "send" | "steer" | "queue" | "interrupt",
   expectedDraft: string,
 ): void {
-  const pending = pendingMutationElement();
-  expect(pending).not.toBeNull();
-  expect(pending).toHaveTextContent(new RegExp(kind, "i"));
+  expect(
+    screen.getByRole("status", {
+      name: new RegExp(`^${kind} pending$`, "i"),
+    }),
+  ).toBeInTheDocument();
   const textbox = screen.getByRole("textbox", { name: "Message" });
   expect(textbox).toBeDisabled();
   expect(textbox).toHaveValue(expectedDraft);
 }
 
 function expectComposerReady(expectedDraft: string): void {
-  expect(pendingMutationElement()).toBeNull();
+  expect(
+    screen.queryByRole("status", {
+      name: /^(send|steer|queue|interrupt) pending$/i,
+    }),
+  ).toBeNull();
   const textbox = screen.getByRole("textbox", { name: "Message" });
   expect(textbox).toBeEnabled();
   expect(textbox).toHaveValue(expectedDraft);
@@ -1145,6 +1213,8 @@ afterEach(() => {
     vi.useRealTimers();
     fakeTimersActive = false;
   }
+  globalThis.ResizeObserver = originalResizeObserver;
+  RealBridgeResizeObserver.instances.clear();
 });
 
 describe("production App live concepts over the real native AppWire bridge", () => {
@@ -1492,6 +1562,7 @@ describe("production App live concepts over the real native AppWire bridge", () 
   it("runs one deterministic composed graph through all concepts and controls", async () => {
     window.history.replaceState(null, "", "/");
     installMemoryLocalStorage();
+    globalThis.ResizeObserver = RealBridgeResizeObserver;
     const bridge = await RustHarnessBridge.start();
     tauriHarness.bridge = bridge;
     let mounted = false;
@@ -1632,28 +1703,24 @@ describe("production App live concepts over the real native AppWire bridge", () 
           delta: TOOL_DELTA_TEXT,
         }),
       );
-      fireEvent.click(screen.getByRole("button", { name: "exec_command" }));
+      act(() => RealBridgeResizeObserver.flush());
       const runningTool = screen.getByRole("article", {
         name: "Tool activity, exec_command; running",
       });
       const runningDescriptionId = runningTool.getAttribute("aria-describedby");
-      expect(runningDescriptionId).toMatch(/^sw-transcript-preview-/);
+      expect(runningDescriptionId).toMatch(/^conversation-preview-/);
       const runningPreview = document.getElementById(
         runningDescriptionId ?? "",
       );
-      expect(runningPreview).toHaveClass("sw-visually-hidden");
+      expect(runningPreview).toHaveClass("live-conversation-visually-hidden");
       expect(runningPreview).toHaveTextContent(
         `${TOOL_STARTED_TEXT}${TOOL_DELTA_TEXT}`,
       );
-      const runningDetail =
-        runningTool.querySelector<HTMLElement>(".sw-tool-detail");
-      expect(runningDetail).not.toBeNull();
-      expect(
-        within(runningDetail as HTMLElement).getByText(
-          `${TOOL_STARTED_TEXT}${TOOL_DELTA_TEXT}`,
-          { selector: "pre" },
-        ),
-      ).toBeVisible();
+      const runningEvidence = await openAssociatedActivityEvidence(
+        runningTool,
+        `${TOOL_STARTED_TEXT}${TOOL_DELTA_TEXT}`,
+      );
+      await closeActivityEvidence(runningEvidence);
       expect(
         screen.getByRole("article", {
           name: "Assistant message; streaming",
@@ -1684,20 +1751,24 @@ describe("production App live concepts over the real native AppWire bridge", () 
       expect(
         document.getElementById(completedDescriptionId ?? ""),
       ).toHaveTextContent(TOOL_COMPLETED_TEXT);
-      const completedDetail =
-        completedTool.querySelector<HTMLElement>(".sw-tool-detail");
-      expect(completedDetail).not.toBeNull();
-      expect(
-        within(completedDetail as HTMLElement).getByText(TOOL_COMPLETED_TEXT, {
-          selector: "pre",
-        }),
-      ).toBeVisible();
+      const completedEvidence = await openAssociatedActivityEvidence(
+        completedTool,
+        TOOL_COMPLETED_TEXT,
+      );
+      await closeActivityEvidence(completedEvidence);
       expect(
         screen.queryByText(`${TOOL_STARTED_TEXT}${TOOL_DELTA_TEXT}`),
       ).toBeNull();
       expect(completedTool).toHaveAttribute("data-streaming", "false");
 
-      fireEvent.click(screen.getByRole("button", { name: "Reasoning" }));
+      const runningReasoning = screen.getByRole("article", {
+        name: "Reasoning activity; running",
+      });
+      const reasoningEvidence = await openAssociatedActivityEvidence(
+        runningReasoning,
+        REASONING_TEXT,
+      );
+      await closeActivityEvidence(reasoningEvidence);
       fireEvent.change(screen.getByRole("textbox", { name: "Message" }), {
         target: { value: DRAFT_SENTINEL },
       });
