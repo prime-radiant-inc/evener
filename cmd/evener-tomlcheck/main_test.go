@@ -6,6 +6,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 )
@@ -65,6 +66,35 @@ func TestViolationString(t *testing.T) {
 	v := Violation{File: "a/b.toml", Line: 42, Message: "boom"}
 	if got := v.String(); got != "a/b.toml:42: boom" {
 		t.Fatalf("String()=%q", got)
+	}
+}
+
+// splitTOMLKeyPath must treat a dot inside a quoted segment as a literal
+// character, not a separator, and hand quoted segments back verbatim
+// (quotes included) regardless of neighboring unquoted segments.
+func TestSplitTOMLKeyPath(t *testing.T) {
+	cases := []struct {
+		in   string
+		want []string
+	}{
+		{"foo", []string{"foo"}},
+		{"providers.openai", []string{"providers", "openai"}},
+		{` foo . bar `, []string{"foo", "bar"}},
+		{`a.b."c.d".'e.f'.g`, []string{"a", "b", `"c.d"`, `'e.f'`, "g"}},
+		{`providers.openai.models."gpt-4.1*"`, []string{"providers", "openai", "models", `"gpt-4.1*"`}},
+		{
+			`providers."amazon-bedrock".models."anthropic.claude-haiku-4-5"`,
+			[]string{"providers", `"amazon-bedrock"`, "models", `"anthropic.claude-haiku-4-5"`},
+		},
+		{`"reasoning.context"`, []string{`"reasoning.context"`}},
+		{`"a\"b".c`, []string{`"a\"b"`, "c"}},
+	}
+	for _, c := range cases {
+		t.Run(c.in, func(t *testing.T) {
+			if got := splitTOMLKeyPath(c.in); !reflect.DeepEqual(got, c.want) {
+				t.Fatalf("splitTOMLKeyPath(%q) = %#v, want %#v", c.in, got, c.want)
+			}
+		})
 	}
 }
 
@@ -175,6 +205,15 @@ func TestCheckTOMLFileMultilineAndQuotedKeys(t *testing.T) {
 	if err != nil {
 		t.Fatalf("checkTOMLFile: %v", err)
 	}
+	// A single quoted key containing multiple dots (e.g. "quoted.key.with.dots")
+	// must produce no violations at all: it is one verbatim key, not four
+	// dot-separated ones. This is what actually catches the bug this fixture
+	// is named for — the two substring checks below predate the fix and
+	// would not have failed on the tail-fragment violation the old
+	// dot-then-check-quote-prefix splitter produced (e.g. `"dots\""`).
+	if len(vs) != 0 {
+		t.Fatalf("want zero violations, got: %+v", vs)
+	}
 	for _, v := range vs {
 		if strings.Contains(v.Message, "badKey") {
 			t.Fatalf("content inside a triple-quoted string was linted: %+v", vs)
@@ -182,6 +221,57 @@ func TestCheckTOMLFileMultilineAndQuotedKeys(t *testing.T) {
 		if strings.Contains(v.Message, "quoted.key") {
 			t.Fatalf("quoted table key should be accepted verbatim: %+v", vs)
 		}
+	}
+}
+
+// A table header where a quoted key segment itself embeds a literal dot
+// (a real model id like "gpt-4.1*", or a Bedrock wire id like
+// "anthropic.claude-haiku-4-5") must not be torn apart at that dot. Only a
+// genuinely unquoted, non-snake_case sibling segment is flagged.
+func TestCheckTOMLFileQuotedDottedTableKey(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "x.toml")
+	body := `[providers.openai.models."gpt-4.1*"]
+fields = { prompt_cache_retention = true }
+
+[providers."amazon-bedrock".models."anthropic.claude-haiku-4-5"]
+alias_of = "anthropic.claude-haiku-4-5-20251001-v1:0"
+
+[providers.BadKey.models."a.b"]
+alias_of = "x"
+`
+	if err := os.WriteFile(path, []byte(body), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	vs, err := checkTOMLFile(path, "x.toml")
+	if err != nil {
+		t.Fatalf("checkTOMLFile: %v", err)
+	}
+	if len(vs) != 1 {
+		t.Fatalf("want exactly 1 violation (BadKey), got %d: %+v", len(vs), vs)
+	}
+	if !strings.Contains(vs[0].Message, `toml table key "BadKey"`) {
+		t.Errorf("want BadKey flagged, got: %+v", vs)
+	}
+}
+
+// A key = value line is unaffected by a quoted dotted key elsewhere in the
+// file — the ordinary non-snake_case key on another line is still flagged.
+func TestCheckTOMLFileQuotedDottedKeyValue(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "x.toml")
+	body := "\"reasoning.context\" = \"all_turns\"\n" +
+		"badKey = 1\n" +
+		"good_key = 2\n"
+	if err := os.WriteFile(path, []byte(body), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	vs, err := checkTOMLFile(path, "x.toml")
+	if err != nil {
+		t.Fatalf("checkTOMLFile: %v", err)
+	}
+	if len(vs) != 1 || !strings.Contains(vs[0].Message, `toml key "badKey"`) {
+		t.Fatalf("want exactly 1 violation (badKey), got %d: %+v", len(vs), vs)
 	}
 }
 
