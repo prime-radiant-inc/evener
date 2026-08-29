@@ -11,7 +11,7 @@
     "Originator": "evener",
     "Session-Id": "sess-golden",
     "Thread-Id": "thread-golden",
-    "User-Agent": "evener/dev (linux amd64)",
+    "User-Agent": "evener/dev (\u003cos\u003e \u003carch\u003e)",
     "X-Client-Request-Id": "thread-golden",
     "X-Openai-Internal-Codex-Responses-Lite": "true"
   },

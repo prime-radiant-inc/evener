@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"runtime"
 	"slices"
 	"strings"
 	"sync"
@@ -351,7 +352,7 @@ func (h *harness) run(t *testing.T, c wireCase) capture {
 	}
 	headers := map[string]string{}
 	for name, values := range rec.last.Header {
-		headers[name] = redact(strings.Join(values, ", "))
+		headers[name] = normalizePlatform(redact(strings.Join(values, ", ")))
 	}
 	var body bytes.Buffer
 	if len(rec.lastBody) > 0 {
@@ -370,6 +371,14 @@ func (h *harness) run(t *testing.T, c wireCase) capture {
 	}
 	h.sink.mu.Unlock()
 	return capture{Case: c.name, Ref: c.ref, Stream: c.stream, Method: rec.last.Method, URL: rec.last.URL.String(), Headers: headers, Body: bytes.TrimSpace(body.Bytes()), PrunedFields: pruned}
+}
+
+// normalizePlatform replaces the host's GOOS/GOARCH with placeholders so a
+// User-Agent built from runtime.GOOS/GOARCH (tokenauth's Codex header) does
+// not bake this machine's platform into a checked-in golden.
+func normalizePlatform(v string) string {
+	v = strings.ReplaceAll(v, runtime.GOOS, "<os>")
+	return strings.ReplaceAll(v, runtime.GOARCH, "<arch>")
 }
 
 // redact replaces each fixture secret where it appears inside a header
