@@ -65,6 +65,8 @@ func (e *ConfigurationError) Unwrap() error { return e.Cause }
 type httpBaseError struct {
 	provider    string
 	behaviorTag string
+	protocol    string
+	hint        string
 	statusCode  int
 	message     string
 	errorCode   string
@@ -75,13 +77,18 @@ type httpBaseError struct {
 }
 
 // Error returns the error message in the form "<provider> error (status=<code>): <message>",
-// falling back to "request failed" when the message is empty.
+// falling back to "request failed" when the message is empty, followed by
+// " (hint: <hint>)" when the classifier attached one (spec §12).
 func (e *httpBaseError) Error() string {
 	msg := strings.TrimSpace(e.message)
 	if msg == "" {
 		msg = "request failed"
 	}
-	return fmt.Sprintf("%s error (status=%d): %s", e.provider, e.statusCode, msg)
+	s := fmt.Sprintf("%s error (status=%d): %s", e.provider, e.statusCode, msg)
+	if e.hint != "" {
+		s += " (hint: " + e.hint + ")"
+	}
+	return s
 }
 
 // Provider returns the provider that produced the error.
@@ -92,6 +99,12 @@ func (e *httpBaseError) setProvider(name string) { e.provider = strings.TrimSpac
 // the error, or the empty string if none was set.
 func (e *httpBaseError) BehaviorTag() string       { return e.behaviorTag }
 func (e *httpBaseError) setBehaviorTag(tag string) { e.behaviorTag = strings.TrimSpace(tag) }
+
+// Protocol returns the protocol id stamped by ClassifyHTTPError, or "".
+func (e *httpBaseError) Protocol() string { return e.protocol }
+
+// Hint returns the configuration hint attached by ClassifyHTTPError, or "".
+func (e *httpBaseError) Hint() string { return e.hint }
 
 // StatusCode returns the HTTP status code that produced the error.
 func (e *httpBaseError) StatusCode() int { return e.statusCode }
@@ -353,7 +366,9 @@ func classifyByMessage(base httpBaseError) error {
 	case strings.Contains(lower, "content filter") || strings.Contains(lower, "safety") ||
 		strings.Contains(lower, "usage policy"):
 		return &contentFilterError{base}
-	case strings.Contains(lower, "context length") || strings.Contains(lower, "too many tokens"):
+	case strings.Contains(lower, "context length") || strings.Contains(lower, "too many tokens") ||
+		strings.Contains(lower, "maximum context") || strings.Contains(lower, "reduce the length") ||
+		strings.Contains(lower, "prompt is too long"):
 		return &contextLengthError{base}
 	case strings.Contains(lower, "quota") || strings.Contains(lower, "billing"):
 		return &quotaExceededError{httpBaseError: base}

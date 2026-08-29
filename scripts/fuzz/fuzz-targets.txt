@@ -259,6 +259,7 @@ native:llm:./providers/openai:FuzzOpenAIResponsesRequestBuild
 native:llm:./providers/openai:FuzzOpenAIChatCompletionsRequestBuild
 native:llm:./providers/openai:FuzzOpenAIResponsesDecode
 native:llm:.:FuzzErrorFromHTTPStatus
+native:llm:.:FuzzClassifyHTTPError
 native:llm:.:FuzzClassify
 native:llm:.:FuzzClientDispatch
 native:llm:./providers/openai:FuzzOpenAICompleteRoundTrip
