@@ -10,6 +10,7 @@ import (
 	"regexp"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -100,7 +101,8 @@ type Registry struct {
 	catalogMeta  Meta
 	warnings     []string
 	instances    map[string]*instance
-	live         map[string]liveListing //nolint:unused // filled by Task 8
+	liveMu       sync.RWMutex
+	live         map[string]liveListing
 }
 
 // record is one merged provider: its head (scalar fields folded across the
@@ -766,6 +768,3 @@ func (r *Registry) Warnings() []string { return append([]string(nil), r.warnings
 
 // Catalog reports which upstream layer is in use and its fetch metadata.
 func (r *Registry) Catalog() (string, Meta) { return r.catalogTag, r.catalogMeta }
-
-// liveListing is filled in by Task 10.
-type liveListing struct{ rows map[string]Model } //nolint:unused

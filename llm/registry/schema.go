@@ -193,6 +193,9 @@ func parseLayer(data []byte, tag string, curated bool) (*Layer, error) {
 		if !isGlob(key) {
 			return nil, fmt.Errorf("%s: models.%q: top-level model rows must be globs", tag, key)
 		}
+		if ms.Protocol != "" {
+			return nil, fmt.Errorf("%s: models.%q: protocol is not allowed on a glob row", tag, key)
+		}
 		if err := validateModel(ms, fmt.Sprintf("models.%q", key)); err != nil {
 			return nil, fmt.Errorf("%s: %w", tag, err)
 		}
@@ -219,6 +222,9 @@ func parseLayer(data []byte, tag string, curated bool) (*Layer, error) {
 			p.APIKeyEnv = append([]string{}, ps.APIKeyEnv...)
 		}
 		for key, ms := range ps.Models {
+			if isGlob(key) && ms.Protocol != "" {
+				return nil, fmt.Errorf("%s: %s.models.%q: protocol is not allowed on a glob row", tag, where, key)
+			}
 			if err := validateModel(ms, fmt.Sprintf("%s.models.%q", where, key)); err != nil {
 				return nil, fmt.Errorf("%s: %w", tag, err)
 			}

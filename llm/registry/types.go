@@ -172,19 +172,20 @@ type Credential struct {
 
 // Resolved is the fully materialized record adapters consume (spec §4.4).
 type Resolved struct {
-	Instance   string            `json:"instance,omitempty"`
-	ProviderID string            `json:"provider_id,omitempty"`
-	Protocol   string            `json:"protocol,omitempty"`
-	Surface    string            `json:"surface,omitempty"`
-	Transport  Transport         `json:"transport"`
-	ModelID    string            `json:"model_id,omitempty"`
-	WireID     string            `json:"wire_id,omitempty"`
-	Model      Model             `json:"model"`
-	Caps       Caps              `json:"caps"`
-	Headers    map[string]string `json:"headers,omitempty"`
-	Credential Credential        `json:"-"`
-	Provenance map[string]string `json:"provenance,omitempty"`
-	Warnings   []string          `json:"warnings,omitempty"`
+	Instance          string            `json:"instance,omitempty"`
+	ProviderID        string            `json:"provider_id,omitempty"`
+	Protocol          string            `json:"protocol,omitempty"`
+	Surface           string            `json:"surface,omitempty"`
+	Transport         Transport         `json:"transport"`
+	ModelID           string            `json:"model_id,omitempty"`
+	WireID            string            `json:"wire_id,omitempty"`
+	Model             Model             `json:"model"`
+	Caps              Caps              `json:"caps"`
+	Headers           map[string]string `json:"headers,omitempty"`
+	Credential        Credential        `json:"-"`
+	CredentialHeaders map[string]string `json:"-"`
+	Provenance        map[string]string `json:"provenance,omitempty"`
+	Warnings          []string          `json:"warnings,omitempty"`
 }
 
 // Ref names an instance/model pair (spec §7).
