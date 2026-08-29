@@ -13,8 +13,8 @@
 
 .live-conversation-frame [data-frame-part="transcript"] {
   min-block-size: 0;
-  overflow-y: auto;
-  overscroll-behavior-y: contain;
+  overflow: hidden;
+  position: relative;
 }
 
 .live-conversation-frame .live-conversation-frame__virtual-transcript {
@@ -31,6 +31,13 @@
   overflow-y: auto;
   overscroll-behavior-y: contain;
   padding: 0;
+}
+
+.live-conversation-frame
+  .live-conversation-frame__virtual-transcript
+  > [data-scroll-locked="true"] {
+  overflow-y: hidden;
+  overscroll-behavior: none;
 }
 
 .live-conversation-frame
@@ -108,6 +115,30 @@
 .live-conversation-frame .live-conversation-frame__question-options {
   display: grid;
   gap: 0.5rem;
+}
+
+.live-conversation-frame .live-conversation-frame__activity-state {
+  display: block;
+  text-transform: capitalize;
+}
+
+.live-conversation-evidence .evener-sheet__body {
+  min-block-size: 0;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+}
+
+.live-conversation-evidence__plain-detail,
+.live-conversation-evidence [data-virtual-list-scroll="true"] {
+  min-block-size: 0;
+  block-size: min(65dvh, 42rem);
+  overflow-y: auto;
+  overscroll-behavior-y: contain;
+}
+
+.live-conversation-evidence__section {
+  overflow-wrap: anywhere;
 }
 
 .live-conversation-frame .live-conversation-frame__question-option {

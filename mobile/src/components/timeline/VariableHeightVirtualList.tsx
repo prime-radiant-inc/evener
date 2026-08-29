@@ -1,11 +1,14 @@
 import {
   defaultRangeExtractor,
+  observeElementRect,
   type Range,
   useVirtualizer,
   type VirtualItem,
 } from "@tanstack/react-virtual";
 import {
+  createElement,
   forwardRef,
+  type KeyboardEventHandler,
   type ReactNode,
   useCallback,
   useImperativeHandle,
@@ -28,15 +31,49 @@ export interface VariableHeightVirtualListHandle {
   focusKey(key: string): void;
 }
 
-export interface VariableHeightVirtualListProps<T> {
+export interface VariableHeightMeasurementScope {
+  readonly threadKey: string;
+  readonly skinId: ConceptId;
+  readonly contentSize: ContentSizeCategory;
+}
+
+type VariableHeightMeasurementCache =
+  | {
+      /** Existing persistent cache keyed by exact nested conversation identity. */
+      readonly cacheScope: VariableHeightMeasurementScope;
+      readonly measurementCache?: never;
+    }
+  | {
+      /** Private to this mounted component instance; never enters shared caches. */
+      readonly cacheScope?: never;
+      readonly measurementCache: { readonly mode: "ephemeral" };
+    };
+
+export type VariableHeightRowSemantics =
+  | { readonly mode: "semantic-article" }
+  | { readonly mode: "caller-owned" };
+
+export type VariableHeightScrollSemantics =
+  | { readonly mode: "conversation-feed" }
+  | {
+      readonly mode: "custom";
+      readonly role: "feed" | "region";
+      readonly ariaLabel: string;
+      readonly pageScrollOwner: boolean;
+      readonly locked: boolean;
+    };
+
+interface VariableHeightVirtualListBaseProps<T> {
   readonly items: readonly T[];
   readonly getItemKey: (item: T) => string;
   readonly estimateSize: (item: T) => number;
-  readonly cacheScope: {
-    readonly threadKey: string;
-    readonly skinId: ConceptId;
-    readonly contentSize: ContentSizeCategory;
-  };
+  /** Defaults to semantic articles with logical aria position and set size. */
+  readonly rowSemantics?: VariableHeightRowSemantics;
+  /** Defaults to the owned, interactive Conversation transcript feed. */
+  readonly scrollSemantics?: VariableHeightScrollSemantics;
+  /** Optional pre-layout viewport estimate for callers that must render a row
+   * before their host supplies its first measured rectangle. */
+  readonly initialViewportEstimate?: number;
   readonly overscan: 6;
   readonly maxMountedRows: 48;
   readonly onScroll: (metrics: {
@@ -45,8 +82,12 @@ export interface VariableHeightVirtualListProps<T> {
     total: number;
     measured: boolean;
   }) => void;
+  readonly onKeyDown?: KeyboardEventHandler<HTMLElement>;
   readonly renderItem: (item: T, index: number) => ReactNode;
 }
+
+export type VariableHeightVirtualListProps<T> =
+  VariableHeightVirtualListBaseProps<T> & VariableHeightMeasurementCache;
 
 interface RestoreOperation {
   readonly key: string;
@@ -92,8 +133,8 @@ function measurementsFor(scope: {
 }
 
 function sameScope(
-  left: VariableHeightVirtualListProps<unknown>["cacheScope"],
-  right: VariableHeightVirtualListProps<unknown>["cacheScope"],
+  left: VariableHeightMeasurementScope,
+  right: VariableHeightMeasurementScope,
 ): boolean {
   return (
     left.threadKey === right.threadKey &&
@@ -168,14 +209,19 @@ export const VariableHeightVirtualList = forwardRef(
       getItemKey,
       estimateSize,
       cacheScope,
+      measurementCache,
+      rowSemantics = { mode: "semantic-article" },
+      scrollSemantics = { mode: "conversation-feed" },
       overscan,
       maxMountedRows,
       onScroll,
+      onKeyDown,
+      initialViewportEstimate,
       renderItem,
     }: VariableHeightVirtualListProps<T>,
     forwardedRef: React.ForwardedRef<VariableHeightVirtualListHandle>,
   ) {
-    const scrollRef = useRef<HTMLDivElement>(null);
+    const scrollRef = useRef<HTMLElement>(null);
     const focusedKeyRef = useRef<string | null>(null);
     const pendingFocusRef = useRef(false);
     const onScrollRef = useRef(onScroll);
@@ -192,9 +238,26 @@ export const VariableHeightVirtualList = forwardRef(
     const rowRefCallbacksRef = useRef(
       new Map<string, (node: HTMLElement | null) => void>(),
     );
-    const previousScopeRef = useRef(cacheScope);
+    const ephemeralCacheRef = useRef<ItemMeasurements | null>(null);
+    if (ephemeralCacheRef.current === null) {
+      ephemeralCacheRef.current = new Map();
+    }
+    const ephemeral = measurementCache?.mode === "ephemeral";
+    const cacheIdentity:
+      | { readonly mode: "ephemeral" }
+      | {
+          readonly mode: "scoped";
+          readonly scope: VariableHeightMeasurementScope;
+        } = ephemeral
+      ? { mode: "ephemeral" }
+      : { mode: "scoped", scope: cacheScope as VariableHeightMeasurementScope };
+    const previousCacheIdentityRef = useRef(cacheIdentity);
     const previousAnchorRef = useRef<MeasuredAnchor | null>(null);
-    const activeCacheRef = useRef(measurementsFor(cacheScope));
+    const activeCacheRef = useRef(
+      ephemeral
+        ? ephemeralCacheRef.current
+        : measurementsFor(cacheScope as VariableHeightMeasurementScope),
+    );
     const [measurementRevision, notifyMeasurement] = useReducer(
       (revision: number) => revision + 1,
       0,
@@ -247,7 +310,7 @@ export const VariableHeightVirtualList = forwardRef(
       [maxMountedRows],
     );
 
-    const virtualizer = useVirtualizer<HTMLDivElement, HTMLElement>({
+    const virtualizer = useVirtualizer<HTMLElement, HTMLElement>({
       useFlushSync: false,
       count: items.length,
       getScrollElement: () => scrollRef.current,
@@ -264,6 +327,18 @@ export const VariableHeightVirtualList = forwardRef(
         return estimateSize(item);
       },
       initialMeasurementsCache: initialCache,
+      initialRect:
+        initialViewportEstimate === undefined
+          ? undefined
+          : { width: 0, height: initialViewportEstimate },
+      observeElementRect: (instance, notify) =>
+        observeElementRect(instance, (rect) =>
+          notify(
+            initialViewportEstimate !== undefined && rect.height === 0
+              ? { ...rect, height: initialViewportEstimate }
+              : rect,
+          ),
+        ),
       overscan,
       rangeExtractor,
       anchorTo: "end",
@@ -532,21 +607,34 @@ export const VariableHeightVirtualList = forwardRef(
     );
 
     useLayoutEffect(() => {
-      const previousScope = previousScopeRef.current;
-      if (sameScope(previousScope, cacheScope)) return;
+      const previousIdentity = previousCacheIdentityRef.current;
+      const sameIdentity =
+        previousIdentity.mode === cacheIdentity.mode &&
+        (previousIdentity.mode === "ephemeral" ||
+          (cacheIdentity.mode === "scoped" &&
+            sameScope(previousIdentity.scope, cacheIdentity.scope)));
+      if (sameIdentity) return;
 
       cancelAllRestores();
-      const threadChanged = previousScope.threadKey !== cacheScope.threadKey;
+      const threadChanged =
+        previousIdentity.mode !== "scoped" ||
+        cacheIdentity.mode !== "scoped" ||
+        previousIdentity.scope.threadKey !== cacheIdentity.scope.threadKey;
       const outgoingAnchor = threadChanged ? null : captureAnchor();
-      const incoming = measurementsFor(cacheScope);
+      const incoming =
+        cacheIdentity.mode === "ephemeral"
+          ? (ephemeralCacheRef.current as ItemMeasurements)
+          : measurementsFor(cacheIdentity.scope);
       if (
-        previousScope.threadKey === cacheScope.threadKey &&
-        previousScope.contentSize !== cacheScope.contentSize
+        previousIdentity.mode === "scoped" &&
+        cacheIdentity.mode === "scoped" &&
+        previousIdentity.scope.threadKey === cacheIdentity.scope.threadKey &&
+        previousIdentity.scope.contentSize !== cacheIdentity.scope.contentSize
       ) {
         incoming.clear();
       }
       activeCacheRef.current = incoming;
-      previousScopeRef.current = cacheScope;
+      previousCacheIdentityRef.current = cacheIdentity;
       if (threadChanged) previousAnchorRef.current = null;
       virtualizer.measure();
       for (const [key, size] of incoming) {
@@ -555,7 +643,7 @@ export const VariableHeightVirtualList = forwardRef(
       }
       if (outgoingAnchor !== null) void restoreAnchor(outgoingAnchor);
     }, [
-      cacheScope,
+      cacheIdentity,
       cancelAllRestores,
       captureAnchor,
       itemKeys,
@@ -579,50 +667,85 @@ export const VariableHeightVirtualList = forwardRef(
     });
 
     const virtualItems = virtualizer.getVirtualItems();
-    return (
+    const resolvedScrollSemantics =
+      scrollSemantics.mode === "custom"
+        ? scrollSemantics
+        : {
+            mode: "custom" as const,
+            role: "feed" as const,
+            ariaLabel: "Conversation transcript",
+            pageScrollOwner: true,
+            locked: false,
+          };
+    const content = (
       <div
-        ref={scrollRef}
-        className="evener-timeline__scroll"
-        role="feed"
-        aria-label="Conversation transcript"
-        data-page-scroll-owner="true"
-        tabIndex={-1}
+        style={{
+          height: `${virtualizer.getTotalSize()}px`,
+          position: "relative",
+          width: "100%",
+        }}
       >
-        <div
-          style={{
-            height: `${virtualizer.getTotalSize()}px`,
-            position: "relative",
-            width: "100%",
-          }}
-        >
-          {virtualItems.map((virtualItem) => {
-            const item = items[virtualItem.index];
-            if (item === undefined) return null;
-            const key = getItemKey(item);
+        {virtualItems.map((virtualItem) => {
+          const item = items[virtualItem.index];
+          if (item === undefined) return null;
+          const key = getItemKey(item);
+          const sharedProps = {
+            ref: rowRefFor(key),
+            "data-index": virtualItem.index,
+            "data-item-key": key,
+            "data-testid": "virtual-transcript-row",
+            tabIndex: -1,
+            style: {
+              position: "absolute" as const,
+              top: 0,
+              left: 0,
+              width: "100%",
+              transform: `translateY(${virtualItem.start}px)`,
+            },
+          };
+          if (rowSemantics.mode === "caller-owned") {
             return (
-              <article
-                key={key}
-                ref={rowRefFor(key)}
-                data-index={virtualItem.index}
-                data-item-key={key}
-                data-testid="virtual-transcript-row"
-                aria-posinset={virtualItem.index + 1}
-                aria-setsize={items.length}
-                tabIndex={-1}
-                style={{
-                  position: "absolute",
-                  top: 0,
-                  left: 0,
-                  width: "100%",
-                  transform: `translateY(${virtualItem.start}px)`,
-                }}
-              >
+              <div key={key} {...sharedProps}>
                 {renderItem(item, virtualItem.index)}
-              </article>
+              </div>
             );
-          })}
-        </div>
+          }
+          return (
+            <article
+              key={key}
+              {...sharedProps}
+              aria-posinset={virtualItem.index + 1}
+              aria-setsize={items.length}
+            >
+              {renderItem(item, virtualItem.index)}
+            </article>
+          );
+        })}
       </div>
+    );
+    return createElement(
+      resolvedScrollSemantics.role === "region" ? "section" : "div",
+      {
+        ref: scrollRef,
+        className: "evener-timeline__scroll",
+        role: resolvedScrollSemantics.role === "feed" ? "feed" : undefined,
+        "aria-label": resolvedScrollSemantics.ariaLabel,
+        "data-virtual-list-scroll": "true",
+        "data-page-scroll-owner": resolvedScrollSemantics.pageScrollOwner
+          ? "true"
+          : undefined,
+        "data-scroll-locked": resolvedScrollSemantics.locked
+          ? "true"
+          : undefined,
+        "aria-hidden": resolvedScrollSemantics.locked ? true : undefined,
+        inert: resolvedScrollSemantics.locked ? true : undefined,
+        tabIndex: -1,
+        onKeyDown,
+        style: {
+          overflowY: resolvedScrollSemantics.locked ? "hidden" : undefined,
+        },
+      },
+      content,
     );
   },
 ) as <T>(
