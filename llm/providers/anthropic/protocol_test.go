@@ -2,6 +2,7 @@ package anthropic
 
 import (
 	"encoding/json"
+	"errors"
 	"reflect"
 	"testing"
 
@@ -160,5 +161,19 @@ func TestBetaHeaderMergesRowAndCallerBetas(t *testing.T) {
 	}
 	if got := betaHeader(protoRes(nil), protoReq("")); got != "" {
 		t.Fatalf("no betas = %q", got)
+	}
+}
+
+// TestProtocolUnsupportedToolChoiceCarriesTheInstance pins the spec §7.5
+// rule that every error stamp is res.Instance, not a provider literal.
+func TestProtocolUnsupportedToolChoiceCarriesTheInstance(t *testing.T) {
+	res := protoRes(nil)
+	req := protoReq("")
+	req.Tools = []llm.ToolDefinition{{Name: "f"}}
+	req.ToolChoice = &llm.ToolChoice{Mode: "sometimes"}
+	_, err := (&Protocol{}).BuildBody(llm.ShapeRequest(req, res), res)
+	le, ok := errors.AsType[llm.Error](err)
+	if !ok || le.Provider() != res.Instance {
+		t.Fatalf("err = %v provider = %v, want %q", err, ok, res.Instance)
 	}
 }

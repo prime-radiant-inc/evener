@@ -2,6 +2,7 @@ package chatcompletions
 
 import (
 	"encoding/json"
+	"errors"
 	"reflect"
 	"testing"
 
@@ -275,5 +276,19 @@ func TestBuildBody_ReasoningDetailsRowKeepsTheDialectControl(t *testing.T) {
 	body = build(t, req, res)
 	if got := body["reasoning"]; !reflect.DeepEqual(got, map[string]any{"effort": "high"}) {
 		t.Fatalf("provider option's reasoning object must reach the wire unchanged: %v", got)
+	}
+}
+
+// TestUnsupportedToolChoiceCarriesTheInstance pins the spec §7.5 rule that
+// every error stamp is res.Instance, not the protocol id.
+func TestUnsupportedToolChoiceCarriesTheInstance(t *testing.T) {
+	res := resolved(nil)
+	req := userReq("hi")
+	req.Tools = []llm.ToolDefinition{{Name: "f"}}
+	req.ToolChoice = &llm.ToolChoice{Mode: "sometimes"}
+	_, err := (&Protocol{}).BuildBody(llm.ShapeRequest(req, res), res)
+	le, ok := errors.AsType[llm.Error](err)
+	if !ok || le.Provider() != res.Instance {
+		t.Fatalf("err = %v provider = %v, want %q", err, ok, res.Instance)
 	}
 }

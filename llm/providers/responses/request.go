@@ -15,7 +15,12 @@ const encryptedReasoning = "reasoning.encrypted_content"
 // 1, §8.4, §9.5). Prunable control fields are emitted whenever the request
 // carries them and pruned by the row's Fields; the lite shape, strict
 // tools, image detail, and the reasoning object are cap decisions.
-func buildBody(req llm.Request, res registry.Resolved, stream bool) (map[string]any, error) {
+func buildBody(req llm.Request, res registry.Resolved, stream bool) (out map[string]any, err error) {
+	// Every error this builder returns carries the instance, not the
+	// protocol id or a vendor literal (spec §7.5: provider identity is
+	// res.Instance). RewriteErrorProvider leaves errors with no provider
+	// attribution alone.
+	defer func() { err = llm.RewriteErrorProvider(err, res.Instance) }()
 	caps := res.Caps
 	lite := registry.BoolValue(caps.ResponsesLite)
 	detail := "high"

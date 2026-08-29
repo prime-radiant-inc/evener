@@ -12,7 +12,12 @@ import (
 // the row's caps (spec §8.2, §8.4): ThinkingShape picks one of the three
 // thinking bodies, ThinkingDisplay and ThinkingAlwaysOn refine it, and no
 // model-id branch remains.
-func buildProtocolBody(req llm.Request, res registry.Resolved) (map[string]any, error) {
+func buildProtocolBody(req llm.Request, res registry.Resolved) (out map[string]any, err error) {
+	// Every error this builder returns carries the instance, not the
+	// protocol id or a vendor literal (spec §7.5: provider identity is
+	// res.Instance). RewriteErrorProvider leaves errors with no provider
+	// attribution alone.
+	defer func() { err = llm.RewriteErrorProvider(err, res.Instance) }()
 	caps := res.Caps
 	system, messages, err := toAnthropicMessages(req.Messages)
 	if err != nil {

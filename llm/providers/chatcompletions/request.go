@@ -14,7 +14,12 @@ import (
 // branches on the model id. Prunable paths are emitted whenever the
 // request carries them; the runner's prune removes the ones the row turns
 // off.
-func buildBody(req llm.Request, res registry.Resolved, stream bool) (map[string]any, error) {
+func buildBody(req llm.Request, res registry.Resolved, stream bool) (out map[string]any, err error) {
+	// Every error this builder returns carries the instance, not the
+	// protocol id or a vendor literal (spec §7.5: provider identity is
+	// res.Instance). RewriteErrorProvider leaves errors with no provider
+	// attribution alone.
+	defer func() { err = llm.RewriteErrorProvider(err, res.Instance) }()
 	caps := res.Caps
 	if !registry.BoolValue(caps.MultimodalToolResults) {
 		req = requestWithoutToolResultImages(req)

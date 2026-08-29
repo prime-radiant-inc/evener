@@ -35,7 +35,12 @@ func (*Protocol) PrunablePaths() []string {
 }
 
 // BuildBody implements llm.Protocol.
-func (*Protocol) BuildBody(req llm.Request, res registry.Resolved) (map[string]any, error) {
+func (*Protocol) BuildBody(req llm.Request, res registry.Resolved) (out map[string]any, err error) {
+	// Every error this builder returns carries the instance, not the
+	// protocol id or a vendor literal (spec §7.5: provider identity is
+	// res.Instance). RewriteErrorProvider leaves errors with no provider
+	// attribution alone.
+	defer func() { err = llm.RewriteErrorProvider(err, res.Instance) }()
 	caps := res.Caps
 	system, contents, err := toGeminiContents(res.WireID, req.Messages, registry.BoolValue(caps.MultimodalToolResults))
 	if err != nil {
