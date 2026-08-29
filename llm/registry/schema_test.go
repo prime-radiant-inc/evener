@@ -95,6 +95,26 @@ func TestParseConfig_ExplicitEmptyAPIKeyEnv(t *testing.T) {
 	}
 }
 
+func TestParseConfig_ThinkingDisplayValues(t *testing.T) {
+	l, err := ParseConfig([]byte("[providers.x.models.m]\nthinking_display = \"\"\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	row := l.Providers["x"].Models["m"]
+	if row.Caps.ThinkingDisplay == nil || *row.Caps.ThinkingDisplay != "" {
+		t.Fatalf("thinking_display = \"\": %+v", row.Caps.ThinkingDisplay)
+	}
+
+	l, err = ParseConfig([]byte("[providers.x.models.m]\nthinking_display = \"summarized\"\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	row = l.Providers["x"].Models["m"]
+	if row.Caps.ThinkingDisplay == nil || *row.Caps.ThinkingDisplay != "summarized" {
+		t.Fatalf("thinking_display = \"summarized\": %+v", row.Caps.ThinkingDisplay)
+	}
+}
+
 func TestParseConfig_Rejects(t *testing.T) {
 	cases := map[string]string{
 		"unknown key":              "[providers.x]\nthinking_levels = { a = \"b\" }\n",
@@ -111,6 +131,7 @@ func TestParseConfig_Rejects(t *testing.T) {
 		"bad host rule":            "[providers.x]\nhost_rule = \"magic\"\n",
 		"bad thinking_format":      "[providers.x]\nthinking_format = \"claude\"\n",
 		"bad thinking_shape":       "[providers.x.models.m]\nthinking_shape = \"effort\"\n",
+		"bad thinking_display":     "[providers.x.models.m]\nthinking_display = \"verbose\"\n",
 		"bad max_tokens_field":     "[providers.x]\nmax_tokens_field = \"max_len\"\n",
 		"bad cache_control":        "[providers.x]\ncache_control = \"openai\"\n",
 		"bad reasoning_field":      "[providers.x]\nreasoning_field = \"thoughts\"\n",

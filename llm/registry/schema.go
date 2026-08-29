@@ -50,7 +50,7 @@ var (
 
 	thinkingFormats       = map[string]bool{"openai": true, "openrouter": true, "zai": true, "deepseek": true, "together": true, "qwen": true, "qwen-chat-template": true, "chat-template": true, "string-thinking": true}
 	thinkingShapes        = map[string]bool{"adaptive": true, "budget": true, "budget+effort": true}
-	thinkingDisplays      = map[string]bool{"summarized": true}
+	thinkingDisplays      = map[string]bool{"": true, "summarized": true}
 	maxTokensFields       = map[string]bool{"max_tokens": true, "max_completion_tokens": true}
 	cacheControls         = map[string]bool{"anthropic": true}
 	reasoningFields       = map[string]bool{"reasoning_content": true, "reasoning": true, "reasoning_text": true, "reasoning_details": true}
@@ -333,6 +333,9 @@ func validateCaps(c Caps, where string) error {
 func vocabList(m map[string]bool) string {
 	keys := make([]string, 0, len(m))
 	for k := range m {
+		if k == "" {
+			k = `""`
+		}
 		keys = append(keys, k)
 	}
 	sort.Strings(keys)
