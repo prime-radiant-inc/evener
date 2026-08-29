@@ -251,12 +251,6 @@ func mkFixtureFifos(t *testing.T, names ...string) string {
 	return dir
 }
 
-// fifoReadTripwire bounds a FIFO read that should complete in milliseconds. It
-// is a tripwire, never the synchronisation mechanism: the wave's exit is what
-// actually tells us a writer is never coming (see readFifoLineOrExit). Generous
-// on purpose, so a loaded machine never trips it before the real signal lands.
-const fifoReadTripwire = 60 * time.Second
-
 // postExitGrace is the minimum grace for descendants that outlived the wave.
 // An orphan already past its TERM trap writes within milliseconds, so this
 // only elapses when no writer exists at all. It is also the whole grace for a
@@ -290,6 +284,18 @@ func graceFor(deadline, now time.Time) time.Duration {
 	return min(max(deadline.Sub(now)-deadlineReportReserve, postExitGrace), postExitGraceMax)
 }
 
+// fifoReadTripwireFor scales the FIFO read tripwire from the same deadline
+// arithmetic graceFor uses (#173): a TERMed suite legitimately gets graceFor of
+// KillGrace before its group is KILLed, and a writer that outlives the wave
+// gets up to postExitGraceMax more after its exit, so the tripwire sits a full
+// post-exit ceiling beyond the grace the deadline still grants. The flat 60s
+// constant it replaces sat exactly on top of both ceilings and raced them
+// under load. graceFor's own postExitGrace floor keeps the no-deadline case at
+// 65s, the same generosity the old constant carried.
+func fifoReadTripwireFor(deadline, now time.Time) time.Duration {
+	return graceFor(deadline, now) + postExitGraceMax
+}
+
 // waveRun is a running wave whose exit any number of waiters can observe.
 // A plain exit-code channel could be received only once, which is why the FIFO
 // reads could not consult it and blocked forever instead.
@@ -314,17 +320,19 @@ func (w *waveRun) wait() int {
 // that is reported immediately with the exit code rather than as a timeout.
 //
 // deadline is the caller's own test deadline (t.Deadline(), zero if it has
-// none); graceFor turns it into how long the post-exit wait may run.
+// none); graceFor turns it into how long the post-exit wait may run, and
+// fifoReadTripwireFor into how long the still-running wait may run.
 //
 // The goroutine may outlive this call, blocked in open() on a FIFO nobody will
 // ever write to. That is deliberate: it holds only a file descriptor, the test
 // binary is about to exit, and the alternative (a non-blocking open plus a
 // readiness poll) would reintroduce polling where an awaitable event exists.
-func readFifoLineOrExit(path string, run *waveRun, tripwire time.Duration, deadline time.Time) (string, error) {
+func readFifoLineOrExit(path string, run *waveRun, deadline time.Time) (string, error) {
 	type result struct {
 		line string
 		err  error
 	}
+	tripwire := fifoReadTripwireFor(deadline, time.Now())
 	lines := make(chan result, 1)
 	go func() {
 		f, err := os.Open(path)
@@ -370,7 +378,7 @@ func readFifoLineOrExit(path string, run *waveRun, tripwire time.Duration, deadl
 func readFifoLine(t *testing.T, path string, run *waveRun) string {
 	t.Helper()
 	deadline, _ := t.Deadline()
-	line, err := readFifoLineOrExit(path, run, fifoReadTripwire, deadline)
+	line, err := readFifoLineOrExit(path, run, deadline)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -580,7 +588,7 @@ func TestReadFifoLineFailsWhenWaveExitsWithoutWriting(t *testing.T) {
 	close(dead.done) // the wave is already over; nobody will ever open for write
 
 	start := time.Now()
-	_, err := readFifoLineOrExit(filepath.Join(fx, "never-written"), dead, time.Minute, time.Time{})
+	_, err := readFifoLineOrExit(filepath.Join(fx, "never-written"), dead, time.Time{})
 	elapsed := time.Since(start)
 
 	if err == nil {
@@ -620,7 +628,7 @@ func TestReadFifoLineWaitsForWriterThatOutlivesTheWave(t *testing.T) {
 		_, _ = f.WriteString("late-descendant\n")
 	}()
 
-	line, err := readFifoLineOrExit(path, dead, time.Minute, time.Time{})
+	line, err := readFifoLineOrExit(path, dead, time.Time{})
 	if err != nil {
 		t.Fatalf("read failed on a writer that outlived the wave: %v", err)
 	}
@@ -655,6 +663,45 @@ func TestGraceFor(t *testing.T) {
 	}
 }
 
+// TestFifoReadTripwireOutlivesTheGraceWindow pins the #173 fix: the FIFO read
+// tripwire must be derived from the same deadline arithmetic that sizes the
+// post-exit grace and the wave's KillGrace (graceFor), so it can never fire
+// inside a window the grace logic still considers live. A wave whose suite was
+// TERMed right now can legitimately still deliver a writer up to a full grace
+// later (KillGrace while running, plus up to postExitGraceMax after the wave
+// exits); a tripwire that expires inside that span reports "no line ... and the
+// wave is still running" while the wave is behaving exactly as configured.
+//
+// This is the strongest deterministic pin available: the race it guards is
+// load-sensitivity in which select case wins, so it is pinned structurally
+// (tripwire > graceFor + postExitGraceMax for every deadline) rather than by
+// reproducing the timing, per docs/developing-evener/testing.md's no-sleeps rule.
+func TestFifoReadTripwireOutlivesTheGraceWindow(t *testing.T) {
+	t.Parallel()
+
+	now := time.Now()
+	for _, deadline := range []time.Time{
+		{},                        // no deadline (`go test` without -timeout)
+		now,                       // already expired
+		now.Add(time.Second),      // inside the report reserve
+		now.Add(30 * time.Second), // between floor and ceiling
+		now.Add(deadlineReportReserve + 30*time.Second),
+		now.Add(deadlineReportReserve + 9*time.Minute), // capped grace
+		now.Add(10 * time.Minute),                      // the 10m package gate
+	} {
+		grace := graceFor(deadline, now)
+		tripwire := fifoReadTripwireFor(deadline, now)
+		// A TERMed suite gets KillGrace = graceFor to exit before KILL, and a
+		// writer that outlives the wave gets up to postExitGraceMax more after
+		// its exit. The tripwire must sit beyond that whole live window.
+		liveWindow := grace + postExitGraceMax
+		if tripwire < liveWindow {
+			t.Errorf("deadline %v from now: tripwire %v expires inside the live grace window (grace %v + post-exit max %v = %v)",
+				deadline.Sub(now), tripwire, grace, postExitGraceMax, liveWindow)
+		}
+	}
+}
+
 // TestReadFifoLineGraceFollowsTheTestDeadline is the wiring half: TestGraceFor
 // proves the arithmetic, and this proves readFifoLineOrExit actually waits the
 // duration that arithmetic returns rather than the floor it used to.
@@ -673,7 +720,7 @@ func TestReadFifoLineGraceFollowsTheTestDeadline(t *testing.T) {
 
 	grace := postExitGrace + 2*time.Second
 	start := time.Now()
-	_, err := readFifoLineOrExit(filepath.Join(fx, "never-written"), dead, time.Minute,
+	_, err := readFifoLineOrExit(filepath.Join(fx, "never-written"), dead,
 		start.Add(deadlineReportReserve+grace))
 	elapsed := time.Since(start)
 
