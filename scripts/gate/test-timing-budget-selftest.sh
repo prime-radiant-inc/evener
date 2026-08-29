@@ -3,11 +3,11 @@
 # comparison contract against fixture "already-measured" duration rows and
 # fixture testing-budget.json files, via --measured (test-timing-budget.sh's
 # own reuse-shaped seam — see coverage-floor.sh's web row for the same
-# idea), plus its measurement contract against a stub `go` binary (the
-# web-preflight selftest's stub pattern). No real go test, no vitest, no
-# network: every check here is about the ratio/ceiling/missing-entry/
-# no-baseline arithmetic, the strict-vs-warn-only exit policy, and the
-# producer's own failure handling, not about running a real suite. Run via
+# idea), plus its measurement contract against real `go` runs on tiny
+# fixture modules via --repo-root (no vitest, no network). The comparison
+# checks are offline --measured fixtures; the measurement checks — producer
+# exit status, package completeness, bless refusal — run the real toolchain
+# on fixture modules that break in exactly the way under test. Run via
 # `make test-timing-budget-selftest` or the dev-tooling wave.
 set -uo pipefail
 
@@ -212,12 +212,21 @@ make_broken_mod() {
 
 # run_measure ARGS... — invoke the runner against the fixture repo's modules.
 # --repo-root points its module discovery at the fixture; --budget keeps the
-# budget file in the selftest's scratch.
+# budget file in the selftest's scratch; $measure_modules overrides the
+# default module list (scenarios that need their own broken module).
 run_measure() {
 	TMPDIR="$work/tmp" bash "$script" \
 		--no-web --repo-root "$fixture_repo" --budget "$budget" \
-		--modules 'healthymod brokenmod' "$@" \
+		--modules "${measure_modules:-healthymod brokenmod}" "$@" \
 		>"$out" 2>&1
+}
+
+# seed_refused_budget — the sentinel budget every bless-refusal scenario
+# starts from: a real entry for the healthy package, so "the file was not
+# rewritten" is an assertion about content, not about a file that started
+# empty.
+seed_refused_budget() {
+	printf '{"perTestCeilingSeconds": 2, "packages": {"fixture.test/healthy/pkgwithtests": 9.0}}\n' >"$budget"
 }
 
 # ---- 7. the healthy shape still measures and blesses every listed package. ----
@@ -234,7 +243,7 @@ assert_has "$budget" '"fixture.test/healthy/pkgnotests"' "a package with no test
 #         packages contribute no rows — the run must fail, and --bless must
 #         leave the budget untouched rather than quietly delete the module.
 make_broken_mod nobuild
-printf '{"perTestCeilingSeconds": 2, "packages": {"fixture.test/healthy/pkgwithtests": 9.0}}\n' >"$budget"
+seed_refused_budget
 run_measure --bless
 assert_eq "$?" "1" "a package that failed to build fails the run, not blesses around it"
 assert_has "$out" "brokenmod" "the failing module is named in the diagnostic"
@@ -243,7 +252,7 @@ assert_has "$budget" '"fixture.test/healthy/pkgwithtests": 9.0' "a refused bless
 # ---- 9. a nonzero go test exit status is a failure, not an empty measurement ----
 #         — even after rows were parsed and look plausible (#172).
 make_broken_mod failing
-printf '{"perTestCeilingSeconds": 2, "packages": {"fixture.test/healthy/pkgwithtests": 9.0}}\n' >"$budget"
+seed_refused_budget
 run_measure --bless
 assert_eq "$?" "1" "a nonzero go test exit fails the run even when the healthy module's rows were parsed"
 assert_has "$out" "go test in brokenmod" "the failed producer's module is named in the diagnostic"
@@ -255,5 +264,52 @@ assert_has "$budget" '"fixture.test/healthy/pkgwithtests": 9.0' "a refused bless
 make_broken_mod failing
 run_measure --check --local
 assert_eq "$?" "1" "a failed producer fails --check even in warn-only mode: no verdict is better than a wrong one"
+
+# ---- 10. a nonzero go list exit status is a failure even when go test ----
+#         itself would pass on the listed packages (#172 round 2): a module
+#         whose cmd/evener-fuzzcov imports a nonexistent package makes
+#         `go list ./...` exit 1 while still printing the package list, and
+#         the fuzz-cmd exclusion then hides the only broken package from
+#         `go test` — without the exit check the run blessed anyway.
+rm -rf "$fixture_repo/brokenmod"
+mkdir -p "$fixture_repo/listbrokenmod/goodpkg" "$fixture_repo/listbrokenmod/cmd/evener-fuzzcov"
+printf 'module fixture.test/listbroken\n\ngo 1.27\n' >"$fixture_repo/listbrokenmod/go.mod"
+printf 'package goodpkg\nimport "testing"\nfunc TestG(t *testing.T) {}\n' \
+	>"$fixture_repo/listbrokenmod/goodpkg/g_test.go"
+printf 'package main\nimport "fixture.test/nonexistent/pkg"\nfunc main() {}\n' \
+	>"$fixture_repo/listbrokenmod/cmd/evener-fuzzcov/main.go"
+seed_refused_budget
+measure_modules='healthymod listbrokenmod' run_measure --bless
+assert_eq "$?" "1" "a nonzero go list exit fails the run even though every tested package passes"
+assert_has "$out" "go list ./... in listbrokenmod exited nonzero" "the failing go list names its module"
+assert_has "$out" "go-list" "the diagnostic names the saved go list stderr artifact"
+assert_has "$budget" '"fixture.test/healthy/pkgwithtests": 9.0' "a refused bless leaves the budget file untouched after a failed go list"
+
+# ---- 11. the oracle branch on its own: go test exits 0, but a package go ----
+#         list reported never appears in the stream. The measurement scenarios
+#         above all fail at the producer's exit status first, so this drives
+#         the parser directly with a crafted stream — no faked toolchain, the
+#         real go_test_json_to_tsv with fixture inputs.
+oracle_stream="$work/oracle-stream.jsonl"
+oracle_expected="$work/oracle-expected.txt"
+oracle_rows="$work/oracle-rows.tsv"
+printf '%s\n' \
+	'{"Action":"pass","Package":"fixture.test/x/present","Test":"TestA","Elapsed":0.1}' \
+	'{"Action":"pass","Package":"fixture.test/x/present","Elapsed":0.2}' \
+	>"$oracle_stream"
+printf 'fixture.test/x/present\nfixture.test/x/vanished\n' >"$oracle_expected"
+# Extract the parser straight out of the script under test rather than running
+# the whole runner (whose producer would fail at exit status first) or copying
+# the function here (which would drift). Coupling, so it cannot break silently:
+# the extraction pattern is anchored on the exact function name at column 0
+# and its closing brace at column 0 — indent or rename it in the script and
+# this eval fails loudly, never truncates into a wrong-but-running function.
+eval "$(awk '/^go_test_json_to_tsv\(\)/,/^}/' "$script")"
+go_test_json_to_tsv "$oracle_stream" "$oracle_expected" >"$oracle_rows" 2>"$out"
+assert_eq "$?" "1" "the parser fails when a listed package has no terminal event in the stream"
+assert_has "$out" "fixture.test/x/vanished" "the vanished package is named in the parser's diagnostic"
+assert_has "$out" "no terminal event" "the diagnostic says what was missing, not just the package name"
+# The healthy half of the stream still produced its rows before failing.
+assert_has "$oracle_rows" "SUM	fixture.test/x/present	0.1" "the parser emits the measured rows it could parse before failing"
 
 selftest_summary

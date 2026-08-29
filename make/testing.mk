@@ -152,7 +152,9 @@ vet:
 ##   it measures the same surface ROOT_FULL=1 make test proves.
 ## fails-when: Under CHECK=1 in a CI-shaped environment, a package over 1.5x
 ##   its budget or any per-test ceiling breach is nonzero; a missing or
-##   empty budget file always exits zero.
+##   empty budget file always exits zero. A broken measurement (go list, go
+##   test, or vitest exiting nonzero, or a listed package missing from the
+##   stream) fails unconditionally and refuses --bless.
 test-timing-budget:
 	@scripts/gate/test-timing-budget.sh $(if $(CHECK),--check) $(TIMING_ARGS)
 

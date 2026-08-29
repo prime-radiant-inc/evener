@@ -79,14 +79,14 @@
 set -uo pipefail
 
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
-budget_file="${repo_root}/testing-budget.json"
 modules=". agent llm auth envvars invariant identifier"
-web_dir="${repo_root}/cmd/evener-hub/frontend"
 web=true
 check=false
 bless=false
 strict_override=""
 measured_override=""
+budget_file=""
+web_dir=""
 
 while [ $# -gt 0 ]; do
 	case "$1" in
@@ -104,6 +104,12 @@ while [ $# -gt 0 ]; do
 		*) echo "unknown flag: $1" >&2; exit 2 ;;
 	esac
 done
+
+# Path defaults derive from repo_root AFTER flag parsing, so --repo-root
+# relocates the budget and frontend defaults with it instead of silently
+# pointing at this checkout while measuring another tree.
+[ -n "$budget_file" ] || budget_file="${repo_root}/testing-budget.json"
+[ -n "$web_dir" ] || web_dir="${repo_root}/cmd/evener-hub/frontend"
 
 # The gate's test-selection surface, shared with run-module-tests.sh and
 # `evener dev coverage-floor` so this ratchet cannot drift into measuring a
@@ -225,12 +231,16 @@ else
 		pkglist="$base.packages"
 		short="$(module_short_flag "$m")"
 		pkgs=()
+		if ! ( cd "$repo_root/$m" && go list ./... ) >"$pkglist.raw" 2>"$base.go-list.stderr"; then
+			echo "test-timing-budget: go list ./... in $m exited nonzero (see $base.go-list.stderr)" >&2
+			go_measure_failed=1; continue
+		fi
 		while IFS= read -r pkg; do
 			case "$pkg" in
 				*/cmd/evener-fuzzcov|*/cmd/evener-fuzz-harvest) continue ;;
 			esac
 			pkgs+=("$pkg")
-		done < <(cd "$repo_root/$m" && go list ./... 2>"$base.go-list.stderr")
+		done <"$pkglist.raw"
 		if [ "${#pkgs[@]}" -eq 0 ]; then
 			echo "test-timing-budget: go list ./... in $m returned no packages" >&2
 			go_measure_failed=1; continue
@@ -364,7 +374,10 @@ for pkg, name, secs in tests:
 # make it a no-op rather than three scattered ones that could drift apart.
 
 if bless:
-	budget["packages"] = {pkg: round(m, 2) for pkg, m in sums.items()}
+	# sorted, so the blessed file's key order is a function of the package
+	# names alone — never of which module happened to stream first — and a
+	# re-bless of an unchanged measurement reproduces the file byte-for-byte.
+	budget["packages"] = {pkg: round(m, 2) for pkg, m in sorted(sums.items())}
 	budget.setdefault("perTestCeilingSeconds", DEFAULT_CEILING)
 	with open(budget_path, "w") as fh:
 		# indent=1 (spaces) is the checked-in file's format: byte-identical
