@@ -5183,7 +5183,28 @@ In `fold`, inside `if tag == LayerConfig { … }` after the `t.Vars = nil` line,
 		}
 ```
 
-Replace the placeholder `type instance struct{ rec *record }` with nothing (Task 8 defines it). At the end of `Load`, after the `computeHidden` loop and before `return r, nil`, add:
+Replace the placeholder `type instance struct{ rec *record }` with nothing (Task 8 defines it).
+
+Split `resolveBaseURL` so the endpoint-stop comparison can resolve a base URL with curated defaults only (spec §10: "compared after substituting the curated defaults, so copying the default URL verbatim is not 'different'"): rename the existing body to `resolveBaseURLWith(rec *record, t Transport, lookup func(string) (string, bool)) (string, []string, []string)` taking the variable lookup as a parameter (the host-rule wrappers wrap that `lookup` exactly as they wrapped `r.varLookup(rec)` before), and re-add:
+
+```go
+// resolveBaseURL substitutes t.BaseURL for rec with the spec §9.1 variable
+// order (user vars, environment, curated defaults).
+func (r *Registry) resolveBaseURL(rec *record, t Transport) (string, []string, []string) {
+	return r.resolveBaseURLWith(rec, t, r.varLookup(rec))
+}
+
+// defaultVarLookup consults only the curated and upstream defaults — no user
+// vars, no environment (spec §10's "after substituting the curated defaults").
+func (r *Registry) defaultVarLookup(rec *record) func(string) (string, bool) {
+	return func(name string) (string, bool) {
+		v, ok := rec.head.Transport.Vars[name]
+		return v, ok && v != ""
+	}
+}
+```
+
+At the end of `Load`, after the `computeHidden` loop and before `return r, nil`, add:
 
 ```go
 	r.computeInstances()
@@ -5260,16 +5281,20 @@ func adcAvailable(env func(string) (string, bool)) bool {
 }
 
 // effectiveAPIKeyEnv applies the endpoint stop (spec §10): an explicit
-// instance whose literal base_url differs from its base's resolved URL does
-// not inherit the base's api_key_env; its own api_key_env always counts.
+// instance whose literal base_url names a different endpoint from its base
+// does not inherit the base's api_key_env; its own api_key_env always
+// counts. "Different" is judged against the base's URL both as resolved in
+// this environment and with the curated defaults alone, so copying the
+// default URL verbatim is not different even when an env override is set.
 func (r *Registry) effectiveAPIKeyEnv(rec *record) []string {
 	if rec.curated || rec.providerID == "" || rec.ownBaseURL == "" {
 		return rec.head.APIKeyEnv
 	}
 	base := r.curated[rec.providerID]
-	baseURL, _, _ := r.resolveBaseURL(base, base.head.Transport)
 	own, _, _ := r.resolveBaseURL(rec, rec.head.Transport)
-	if own == baseURL {
+	live, _, _ := r.resolveBaseURL(base, base.head.Transport)
+	defaults, _, _ := r.resolveBaseURLWith(base, base.head.Transport, r.defaultVarLookup(base))
+	if own == live || own == defaults {
 		return rec.head.APIKeyEnv
 	}
 	return rec.ownAPIKeyEnv
