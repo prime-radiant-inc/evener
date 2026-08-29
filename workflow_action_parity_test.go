@@ -5,7 +5,6 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
-	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -143,6 +142,33 @@ func TestWorkflowAndCompositeActionPinsFlagWorkflowSideRefConflicts(t *testing.T
 	}
 }
 
+// Reviewer reproduction (round 3): the identical-refs pass compared full ref
+// SETS before the per-side conflict check, so the same action pinned at
+// {v6, v7} across two workflows AND {v6, v7} across two composites — mirrored
+// drift on both sides — passed silently. The identical-refs pass may only
+// cover single pins.
+func TestWorkflowAndCompositeActionPinsFlagMirroredMultiRefSets(t *testing.T) {
+	workflowDir := t.TempDir()
+	compositeDir := t.TempDir()
+
+	writeActionFixture(t, filepath.Join(workflowDir, "ci.yml"),
+		"jobs:\n  build:\n    steps:\n      - uses: actions/setup-node@v6\n")
+	writeActionFixture(t, filepath.Join(workflowDir, "nightly.yml"),
+		"jobs:\n  build:\n    steps:\n      - uses: actions/setup-node@v7\n")
+	writeActionFixture(t, filepath.Join(compositeDir, "setup-toolchain", "action.yml"),
+		"runs:\n  using: composite\n  steps:\n    - uses: actions/setup-node@v6\n")
+	writeActionFixture(t, filepath.Join(compositeDir, "setup-web", "action.yml"),
+		"runs:\n  using: composite\n  steps:\n    - uses: actions/setup-node@v7\n")
+
+	errs := actionPinParity(t, workflowDir, compositeDir)
+	if len(errs) == 0 {
+		t.Fatal("mirrored multi-ref sets on both sides must be flagged as per-side conflicts, not pass")
+	}
+	if diagnostic := strings.Join(errs, "; "); !strings.Contains(diagnostic, "conflicting refs") {
+		t.Errorf("expected per-side conflict diagnostics, got: %s", diagnostic)
+	}
+}
+
 // actionPinParity collects action pins from the workflow and composite trees
 // and returns the parity violations between them.
 func actionPinParity(t *testing.T, workflowDir, compositeDir string) []string {
@@ -253,11 +279,12 @@ func actionPinRefs(t *testing.T, files []string) map[string][]string {
 // workflow tree against the refs it is pinned at inside the composite tree.
 // An action used in both places must: sit at exactly one ref across all
 // workflows, sit at exactly one ref across all composites, and those refs
-// must share a major version. Identical ref sets on both sides pass however
-// the refs are spelled — identical pins cannot drift, so a SHA pin used on
-// both sides stays valid. Refs without a v<n> major (commit SHAs, branches)
-// cannot be compared by major, so a non-identical pair fails loudly instead
-// of silently escaping the invariant.
+// must share a major version. The single exception is one identical pin on
+// both sides, which passes however it is spelled — identical pins cannot
+// drift, so a SHA pin used on both sides stays valid. Refs without a v<n>
+// major (commit SHAs, branches) cannot be compared by major, so any other
+// non-identical pair fails loudly instead of silently escaping the
+// invariant.
 func pinParityErrors(workflowPins, compositePins map[string][]string) []string {
 	names := make([]string, 0, len(compositePins))
 	for name := range compositePins {
@@ -272,8 +299,10 @@ func pinParityErrors(workflowPins, compositePins map[string][]string) []string {
 		workflowRefs := distinctRefs(workflowPins[name])
 		compositeRefs := distinctRefs(compositePins[name])
 
-		// Identical pin sets cannot be drift, however spelled.
-		if slices.Equal(workflowRefs, compositeRefs) {
+		// A single identical pin on both sides cannot be drift, however
+		// spelled (a SHA ref used on both sides stays valid). Multi-ref sets
+		// fall through: mirrored conflicts are still per-side drift.
+		if len(workflowRefs) == 1 && len(compositeRefs) == 1 && workflowRefs[0] == compositeRefs[0] {
 			continue
 		}
 
