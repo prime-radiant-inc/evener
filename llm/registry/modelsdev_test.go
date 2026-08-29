@@ -3,6 +3,7 @@ package registry
 import (
 	"os"
 	"reflect"
+	"strings"
 	"testing"
 )
 
@@ -237,5 +238,62 @@ func TestFromModelsDev_Deterministic(t *testing.T) {
 		if a[i-1].ID >= a[i].ID {
 			t.Fatalf("providers must be sorted by id: %q >= %q", a[i-1].ID, a[i].ID)
 		}
+	}
+}
+
+func TestNPMProtocol_Table(t *testing.T) {
+	cases := []struct {
+		npm      string
+		protocol string
+		auth     string
+		hidden   bool
+		known    bool
+	}{
+		{"@ai-sdk/groq", ProtocolOpenAIChat, AuthBearer, false, true},
+		{"@ai-sdk/openai", ProtocolOpenAIResponses, AuthBearer, false, true},
+		{"@ai-sdk/azure", ProtocolOpenAIResponses, AuthHeader, false, true},
+		{"@ai-sdk/anthropic", ProtocolAnthropic, AuthHeader, false, true},
+		{"@ai-sdk/google-vertex/anthropic", ProtocolAnthropic, AuthGCPADC, false, true},
+		{"@ai-sdk/google", ProtocolGoogle, AuthHeader, false, true},
+		{"@ai-sdk/google-vertex", ProtocolGoogle, AuthGCPADC, false, true},
+		{"@ai-sdk/cohere", "", "", true, true},
+		{"some-unknown-sdk", ProtocolOpenAIChat, AuthBearer, false, false},
+	}
+	for _, c := range cases {
+		protocol, auth, hidden, known := npmProtocol(c.npm)
+		if protocol != c.protocol || auth != c.auth || hidden != c.hidden || known != c.known {
+			t.Errorf("npmProtocol(%q) = (%q, %q, %v, %v), want (%q, %q, %v, %v)",
+				c.npm, protocol, auth, hidden, known, c.protocol, c.auth, c.hidden, c.known)
+		}
+	}
+}
+
+func TestFromModelsDev_UnknownNPMFallsBackWithNote(t *testing.T) {
+	data := []byte(`{"acme":{"id":"acme","npm":"some-unknown-sdk","models":{"m":{"id":"m","modalities":{"output":["text"]}}}}}`)
+	provs, err := FromModelsDev(data)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(provs) != 1 {
+		t.Fatalf("want 1 provider, got %d", len(provs))
+	}
+	p := provs[0]
+	if p.Protocol != ProtocolOpenAIChat {
+		t.Fatalf("protocol = %q, want %q", p.Protocol, ProtocolOpenAIChat)
+	}
+	if p.Transport.Auth != AuthBearer {
+		t.Fatalf("auth = %q, want %q", p.Transport.Auth, AuthBearer)
+	}
+	if p.Hidden {
+		t.Fatalf("provider must not be hidden")
+	}
+	found := false
+	for _, n := range p.notes {
+		if strings.Contains(n, "protocol unverified") && strings.Contains(n, "some-unknown-sdk") {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("notes = %v, want a note containing %q and %q", p.notes, "protocol unverified", "some-unknown-sdk")
 	}
 }
