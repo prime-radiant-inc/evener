@@ -33,14 +33,14 @@ func ClassifyHTTPError(operation string, status int, headers http.Header, body [
 		retryAfter:  retryDelayFromHeaders(headers, now),
 		rawResponse: raw,
 	}
-	code, param := errorCodeAndParam(raw)
+	code := base.errorCode
 	switch {
 	case status == 413, code == "context_length_exceeded", code == "request_too_large":
 		base.retryable = false
 		return &contextLengthError{base}
 	case code == "unknown_parameter", code == "unsupported_parameter":
 		base.retryable = false
-		base.hint = fieldHint(param, res)
+		base.hint = fieldHint(paramFromError(raw), res)
 		return &invalidRequestError{base}
 	}
 	if usageLimitCodes[code] {
@@ -83,17 +83,16 @@ func ErrorProtocol(err error) string {
 	return ""
 }
 
-func errorCodeAndParam(raw map[string]any) (code, param string) {
+// paramFromError reads error.param from a decoded provider body, or "" when
+// the body has no error object or the param is absent or non-string
+// (including JSON null, which OpenAI sends when no parameter is implicated).
+func paramFromError(raw map[string]any) string {
 	errObj, ok := raw["error"].(map[string]any)
 	if !ok {
-		return "", ""
+		return ""
 	}
-	code, _ = errObj["code"].(string)
-	if code == "" {
-		code, _ = errObj["type"].(string)
-	}
-	param, _ = errObj["param"].(string)
-	return code, param
+	param, _ := errObj["param"].(string)
+	return param
 }
 
 // retryDelayFromHeaders honors Retry-After first, then the

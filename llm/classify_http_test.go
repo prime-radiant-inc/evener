@@ -44,8 +44,19 @@ func TestClassifyHTTPErrorTable(t *testing.T) {
 			res:  chatRes(""), kind: KindContextLength, code: "context_length_exceeded",
 		},
 		{
+			name: "request_too_large code names context length", status: 400,
+			body: `{"error":{"message":"Request too large","type":"invalid_request_error","code":"request_too_large"}}`,
+			res:  chatRes(""), kind: KindContextLength, code: "request_too_large",
+		},
+		{
 			name: "openai chat unrecognized argument with param null names the other spelling", status: 400,
 			body: `{"error":{"message":"Unrecognized request argument supplied: max_completion_tokens","type":"invalid_request_error","param":null,"code":null}}`,
+			res:  chatRes("max_completion_tokens"), kind: KindInvalidRequest, code: "invalid_request_error",
+			hint: `set max_tokens_field = "max_tokens" on work/glm-5.2-nvfp4`,
+		},
+		{
+			name: "openai unknown field regex names the max-tokens spelling", status: 400,
+			body: `{"error":{"message":"unknown field max_completion_tokens","type":"invalid_request_error"}}`,
 			res:  chatRes("max_completion_tokens"), kind: KindInvalidRequest, code: "invalid_request_error",
 			hint: `set max_tokens_field = "max_tokens" on work/glm-5.2-nvfp4`,
 		},
@@ -53,6 +64,12 @@ func TestClassifyHTTPErrorTable(t *testing.T) {
 			name: "openai unsupported max_tokens names max_completion_tokens", status: 400,
 			body: `{"error":{"message":"Unsupported parameter: 'max_tokens' is not supported with this model. Use 'max_completion_tokens' instead.","type":"invalid_request_error","param":"max_tokens","code":"unsupported_parameter"}}`,
 			res:  chatRes(""), kind: KindInvalidRequest, code: "unsupported_parameter",
+			hint: `set max_tokens_field = "max_completion_tokens" on work/glm-5.2-nvfp4`,
+		},
+		{
+			name: "openai unsupported parameter regex without a structured param", status: 400,
+			body: `{"error":{"message":"Unsupported parameter: 'max_tokens' is not supported with this model. Use 'max_completion_tokens' instead.","type":"invalid_request_error","param":null,"code":null}}`,
+			res:  chatRes(""), kind: KindInvalidRequest, code: "invalid_request_error",
 			hint: `set max_tokens_field = "max_completion_tokens" on work/glm-5.2-nvfp4`,
 		},
 		{
@@ -67,6 +84,12 @@ func TestClassifyHTTPErrorTable(t *testing.T) {
 			res:  responsesRes, kind: KindInvalidRequest, code: "unknown_parameter", hint: "generic",
 		},
 		{
+			name: "responses unknown parameter regex without a structured param", status: 400,
+			body: `{"error":{"message":"Unknown parameter: 'metadata'.","type":"invalid_request_error","param":null,"code":null}}`,
+			res:  responsesRes, kind: KindInvalidRequest, code: "invalid_request_error",
+			hint: "run `evener models inspect groq-responses/openai/gpt-oss-120b` and set fields.metadata = false",
+		},
+		{
 			name: "groq invalid JSON body", status: 400,
 			body: `{"error":{"message":"invalid JSON body","type":"invalid_request_error"}}`,
 			res:  responsesRes, kind: KindInvalidRequest, code: "invalid_request_error", hint: "generic",
@@ -75,6 +98,16 @@ func TestClassifyHTTPErrorTable(t *testing.T) {
 			name: "anthropic prompt is too long", status: 400,
 			body: `{"type":"error","error":{"type":"invalid_request_error","message":"prompt is too long: 213462 tokens > 200000 maximum"}}`,
 			res:  anthropicRes, kind: KindContextLength, code: "invalid_request_error",
+		},
+		{
+			name: "reduce the length message names context length", status: 400,
+			body: `{"error":{"message":"Please reduce the length of the messages.","type":"invalid_request_error"}}`,
+			res:  chatRes(""), kind: KindContextLength, code: "invalid_request_error",
+		},
+		{
+			name: "maximum context length message without a structured code", status: 400,
+			body: `{"error":{"message":"This model's maximum context length is 8192 tokens.","type":"invalid_request_error"}}`,
+			res:  chatRes(""), kind: KindContextLength, code: "invalid_request_error",
 		},
 		{
 			name: "anthropic not supported with thinking names no parameter", status: 400,
