@@ -84,6 +84,24 @@ function animationDurationMs(body: string): number {
   return match?.[2] === "s" ? value * 1_000 : value;
 }
 
+function groupedRuleBody(source: string, selector: string): string {
+  const normalizedSource = source.replace(/\s+/g, " ");
+  const selectorStart = normalizedSource.indexOf(selector);
+  expect(
+    selectorStart,
+    `missing CSS selector ${selector}`,
+  ).toBeGreaterThanOrEqual(0);
+  const bodyStart = normalizedSource.indexOf("{", selectorStart);
+  expect(bodyStart, `missing CSS body for ${selector}`).toBeGreaterThan(
+    selectorStart,
+  );
+  const bodyEnd = normalizedSource.indexOf("}", bodyStart);
+  expect(bodyEnd, `unterminated CSS body for ${selector}`).toBeGreaterThan(
+    bodyStart,
+  );
+  return normalizedSource.slice(bodyStart + 1, bodyEnd);
+}
+
 afterEach(cleanup);
 
 describe("constellationConversationSkin", () => {
@@ -217,6 +235,16 @@ describe("constellationConversationSkin", () => {
     reduced.dataset.reducedMotion = "true";
     document.body.append(reduced);
     expect(getComputedStyle(reduced).animationDuration).toBe("0s");
+
+    const reducedMotionMedia = constellationCss.match(
+      /@media \(prefers-reduced-motion: reduce\) \{([\s\S]*?)\n\}\n\n@media \(forced-colors: active\)/,
+    )?.[1];
+    expect(reducedMotionMedia).toBeDefined();
+    const mediaRootCrossfade =
+      ':root .concept-constellation.co-conversation-skin[data-surface="conversation"]';
+    expect(
+      groupedRuleBody(reducedMotionMedia ?? "", mediaRootCrossfade),
+    ).toMatch(/animation\s*:\s*none/);
     reduced.remove();
     style.remove();
   });
