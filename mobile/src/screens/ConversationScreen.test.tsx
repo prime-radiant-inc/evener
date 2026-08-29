@@ -19,23 +19,31 @@ import type {
   MobileConversation,
   MobileTimelineItem,
 } from "../conversation/model";
-import type { ContentSizeCategory } from "../native/contract";
 import type { ConversationService } from "../services/conversation";
 import type { AttachmentState } from "../state/attachments";
 import type { ConversationState } from "../state/conversation";
 import type { NavigationState } from "../state/navigation";
+import { createPreferencesStore } from "../state/preferences";
 import {
   type ConversationScreenProps,
   ConversationScreen as ProductionConversationScreen,
 } from "./ConversationScreen";
+import type { PreferencesStore } from "./root-types";
 
 function ConversationScreen(
-  props: Omit<ConversationScreenProps, "contentSize"> & {
-    readonly contentSize?: ContentSizeCategory;
+  props: Omit<ConversationScreenProps, "preferencesStore"> & {
+    readonly preferencesStore?: PreferencesStore;
   },
 ) {
-  return <ProductionConversationScreen contentSize="large" {...props} />;
+  return (
+    <ProductionConversationScreen
+      preferencesStore={defaultPreferencesStore}
+      {...props}
+    />
+  );
 }
+
+const defaultPreferencesStore = createPreferencesStore();
 
 const screenTimeline = vi.hoisted(() => ({
   props: null as TimelineProps | null,
@@ -148,6 +156,7 @@ function createFakeNavigationStore(title: string): NavigationStoreHook {
 afterEach(() => {
   cleanup();
   screenTimeline.props = null;
+  defaultPreferencesStore.setState({ contentSize: "large" });
 });
 
 // --- tests ------------------------------------------------------------------
@@ -251,11 +260,12 @@ describe("ConversationScreen — timeline", () => {
       }),
     );
     const navigationStore = createFakeNavigationStore("Chat");
-    const view = render(
+    const preferencesStore = createPreferencesStore();
+    render(
       <ConversationScreen
         conversationStore={conversationStore}
         navigationStore={navigationStore}
-        contentSize="large"
+        preferencesStore={preferencesStore}
       />,
     );
     expect(screenTimeline.props?.threadKey).toBe("thread-a");
@@ -270,12 +280,10 @@ describe("ConversationScreen — timeline", () => {
     );
     expect(screenTimeline.props?.threadKey).toBe("thread-b");
 
-    view.rerender(
-      <ConversationScreen
-        conversationStore={conversationStore}
-        navigationStore={navigationStore}
-        contentSize="accessibilityExtraExtraExtraLarge"
-      />,
+    act(() =>
+      preferencesStore
+        .getState()
+        .setContentSize("accessibilityExtraExtraExtraLarge"),
     );
     expect(screenTimeline.props?.contentSize).toBe(
       "accessibilityExtraExtraExtraLarge",

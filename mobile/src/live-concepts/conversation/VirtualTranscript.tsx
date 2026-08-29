@@ -100,18 +100,25 @@ const ForwardedLiveVirtualTranscriptSession = forwardRef(
     const measuredAnchorRef = useRef<MeasuredAnchor | null>(null);
     const previousItemsRef = useRef(items);
     const activeRef = useRef(true);
+    const lifecycleEpochRef = useRef(0);
     const onFocusIntentChangeRef = useRef(onFocusIntentChange);
     onFocusIntentChangeRef.current = onFocusIntentChange;
     const [focusedKey, setFocusedKey] = useState<string | null>(null);
     const keys = items.map((item) => item.key);
 
-    useEffect(
-      () => () => {
+    useEffect(() => {
+      const epoch = lifecycleEpochRef.current + 1;
+      lifecycleEpochRef.current = epoch;
+      activeRef.current = true;
+      return () => {
         activeRef.current = false;
-        onFocusIntentChangeRef.current(null);
-      },
-      [],
-    );
+        void Promise.resolve().then(() => {
+          if (lifecycleEpochRef.current === epoch && !activeRef.current) {
+            onFocusIntentChangeRef.current(null);
+          }
+        });
+      };
+    }, []);
 
     const publishAnchor = useCallback(
       (following: boolean): void => {

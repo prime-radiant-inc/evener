@@ -65,6 +65,7 @@ export function Timeline({
   const loadGenerationRef = useRef(0);
   const pendingLoadRef = useRef<PendingLoad | null>(null);
   const followingRef = useRef(following);
+  const pendingThreadTailRef = useRef(true);
   const previousThreadRef = useRef(threadKey);
   const itemKeys = items.map((item) => item.id);
   const currentKeysRef = useRef(itemKeys);
@@ -84,6 +85,7 @@ export function Timeline({
     previousThreadRef.current = threadKey;
     loadGenerationRef.current += 1;
     pendingLoadRef.current = null;
+    pendingThreadTailRef.current = true;
     setCompletedLoad(null);
   }, [threadKey]);
 
@@ -136,7 +138,15 @@ export function Timeline({
     offset: number;
     viewport: number;
     total: number;
+    measured: boolean;
   }): void => {
+    if (metrics.measured && pendingThreadTailRef.current) {
+      pendingThreadTailRef.current = false;
+      followingRef.current = true;
+      onFollowingChange?.(true);
+      listRef.current?.scrollToEnd("auto");
+      return;
+    }
     const nextFollowing =
       metrics.total - (metrics.offset + metrics.viewport) <= FOLLOW_BOUNDARY_PX;
     if (nextFollowing !== followingRef.current) {

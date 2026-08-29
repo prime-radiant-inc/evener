@@ -8,6 +8,7 @@ import {
 import {
   forwardRef,
   type ReactNode,
+  StrictMode,
   useImperativeHandle,
   useLayoutEffect,
   useRef,
@@ -210,7 +211,7 @@ describe("VirtualTranscript transitions", () => {
     expect(list.scrollToEnd).not.toHaveBeenCalled();
   });
 
-  it("atomically resets initialization, anchor, follow, unseen, and focus intent on thread switch", () => {
+  it("atomically resets initialization, anchor, follow, unseen, and focus intent on thread switch", async () => {
     const onUnseenChange = vi.fn();
     const onFocusIntentChange = vi.fn();
     const ref = { current: null as VirtualTranscriptHandle | null };
@@ -239,15 +240,17 @@ describe("VirtualTranscript transitions", () => {
       offsetPx: -13,
       following: false,
     };
-    view.rerender(
-      transcript([narrative("b-1"), narrative("b-2")], {
-        threadKey: "thread-b",
-        savedAnchor: savedB,
-        unseen: 0,
-        onUnseenChange,
-        onFocusIntentChange,
-      }),
-    );
+    await act(async () => {
+      view.rerender(
+        transcript([narrative("b-1"), narrative("b-2")], {
+          threadKey: "thread-b",
+          savedAnchor: savedB,
+          unseen: 0,
+          onUnseenChange,
+          onFocusIntentChange,
+        }),
+      );
+    });
     expect(list.restoreAnchor).toHaveBeenCalledWith({
       key: "b-1",
       offsetPx: -13,
@@ -459,5 +462,86 @@ describe("VirtualTranscript transitions", () => {
       "data-skin",
       "field-notes",
     );
+  });
+
+  it("keeps StrictMode replay ownership live while rejecting late stale-thread work", async () => {
+    const onAnchorChange = vi.fn();
+    const onUnseenChange = vi.fn();
+    const onFocusIntentChange = vi.fn();
+    let releaseThreadA: (() => void) | null = null;
+    list.restoreAnchor.mockImplementationOnce(
+      () =>
+        new Promise<void>((resolve) => {
+          releaseThreadA = resolve;
+        }),
+    );
+    const savedA: ConversationAnchor = {
+      threadKey: "strict-thread-a",
+      itemKey: "a-1",
+      offsetPx: -7,
+      following: false,
+    };
+    const view = render(
+      <StrictMode>
+        {transcript([narrative("a-1"), narrative("a-2")], {
+          threadKey: "strict-thread-a",
+          savedAnchor: savedA,
+          unseen: 2,
+          onAnchorChange,
+          onUnseenChange,
+          onFocusIntentChange,
+        })}
+      </StrictMode>,
+    );
+    expect(onFocusIntentChange).not.toHaveBeenCalledWith(null);
+
+    act(() =>
+      list.props?.onScroll({
+        offset: 591,
+        viewport: 360,
+        total: 1_000,
+        measured: false,
+      }),
+    );
+    act(() =>
+      list.props?.onScroll({
+        offset: 592,
+        viewport: 360,
+        total: 1_000,
+        measured: false,
+      }),
+    );
+    expect(onUnseenChange).toHaveBeenCalledWith(0);
+    expect(onAnchorChange).toHaveBeenCalledWith(
+      expect.objectContaining({
+        threadKey: "strict-thread-a",
+        following: true,
+      }),
+    );
+    const publishedBeforeSwitch = onAnchorChange.mock.calls.length;
+
+    view.rerender(
+      <StrictMode>
+        {transcript([narrative("b-1")], {
+          threadKey: "strict-thread-b",
+          unseen: 0,
+          onAnchorChange,
+          onUnseenChange,
+          onFocusIntentChange,
+        })}
+      </StrictMode>,
+    );
+    await act(async () => {
+      releaseThreadA?.();
+    });
+    expect(onAnchorChange).toHaveBeenCalledTimes(publishedBeforeSwitch);
+    expect(
+      onFocusIntentChange.mock.calls.filter(([key]) => key === null),
+    ).toHaveLength(1);
+
+    await act(async () => view.unmount());
+    expect(
+      onFocusIntentChange.mock.calls.filter(([key]) => key === null),
+    ).toHaveLength(2);
   });
 });
