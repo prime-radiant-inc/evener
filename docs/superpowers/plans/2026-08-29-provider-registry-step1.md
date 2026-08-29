@@ -20,6 +20,7 @@
 - Spec §4 field names are the API: `Provider`, `Model`, `Transport`, `Caps`, `Cost`, `CostTier`, `Credential`, `Resolved`. Do not rename.
 - Protocol ids: `openai-chat`, `openai-responses`, `anthropic`, `google`. Auth schemes: `bearer`, `optional-bearer`, `header`, `none`, `gcp-adc`, `oauth-openai-codex`. Surfaces: `openai`, `anthropic`, `google`, `generic`. Endpoint sentinel for "unsupported": `-`.
 - Id comparison is case-sensitive everywhere (§4.1, §7.1).
+- Optional scalars are set with Go 1.26+ `new(expr)` (`new(1000)`, `new(true)`, `new("x")`); do not add pointer-helper functions — golangci-lint `modernize` flags them.
 - Code blocks in this plan are not column-aligned; run `gofmt -w` on each new file before the `gofmt -l` check.
 - Run tests from the workspace root: `go test ./llm/registry/...` (the `go.work` file resolves the module). Run the gate before the final commit of each task: `make lint` is slow; `gofmt -l llm/registry` + `go vet ./llm/registry/...` per task, full `make lint` at the end of the plan.
 
@@ -79,8 +80,8 @@ import (
 
 func TestMergeCaps_LaterSetFieldWins_NilInherits(t *testing.T) {
 	prov := map[string]string{}
-	dst := Caps{ContextWindow: intp(1000), Tools: boolp(true), EffortValues: []string{"low"}}
-	src := Caps{ContextWindow: intp(2000), EffortValues: []string{"high", "max"}}
+	dst := Caps{ContextWindow: new(1000), Tools: new(true), EffortValues: []string{"low"}}
+	src := Caps{ContextWindow: new(2000), EffortValues: []string{"high", "max"}}
 	mergeCaps(&dst, src, "overlay/provider", prov)
 	if *dst.ContextWindow != 2000 {
 		t.Fatalf("ContextWindow = %d, want 2000", *dst.ContextWindow)
@@ -378,11 +379,6 @@ type Ref struct {
 
 // String renders the reference in instance/model form.
 func (r Ref) String() string { return r.Instance + "/" + r.Model }
-
-// Pointer helpers for the optional scalar fields.
-func boolp(b bool) *bool    { return &b }
-func intp(i int) *int       { return &i }
-func strp(s string) *string { return &s }
 ```
 
 - [ ] **Step 4: Write `merge.go`**
@@ -1229,18 +1225,18 @@ func convertModel(providerID, key string, mm mdModel) (Model, bool) {
 	}
 	c := &m.Caps
 	if mm.Limit.Input > 0 {
-		c.ContextWindow = intp(mm.Limit.Input)
+		c.ContextWindow = new(mm.Limit.Input)
 	} else if mm.Limit.Context > 0 {
-		c.ContextWindow = intp(mm.Limit.Context)
+		c.ContextWindow = new(mm.Limit.Context)
 	}
 	if mm.Limit.Output > 0 {
-		c.MaxOutputTokens = intp(mm.Limit.Output)
+		c.MaxOutputTokens = new(mm.Limit.Output)
 	}
-	c.Tools = boolp(mm.ToolCall)
+	c.Tools = new(mm.ToolCall)
 	c.StructuredOutput = mm.StructuredOutput
-	c.Reasoning = boolp(mm.Reasoning)
+	c.Reasoning = new(mm.Reasoning)
 	if mm.Temperature != nil && !*mm.Temperature {
-		c.Sampling = boolp(false)
+		c.Sampling = new(false)
 	}
 	for _, ro := range mm.ReasoningOptions {
 		c.ReasoningControls = append(c.ReasoningControls, ro.Type)
@@ -1256,7 +1252,7 @@ func convertModel(providerID, key string, mm mdModel) (Model, bool) {
 		c.InputModalities = append([]string(nil), mm.Modalities.Input...)
 	}
 	if mm.Knowledge != "" {
-		c.KnowledgeCutoff = strp(mm.Knowledge)
+		c.KnowledgeCutoff = new(mm.Knowledge)
 	}
 	if mm.Cost != nil {
 		cost := &Cost{Input: mm.Cost.Input, Output: mm.Cost.Output, CacheRead: mm.Cost.CacheRead, CacheWrite: mm.Cost.CacheWrite}
@@ -1272,7 +1268,7 @@ func convertModel(providerID, key string, mm mdModel) (Model, bool) {
 			Field string `json:"field"`
 		}
 		if json.Unmarshal(mm.Interleaved, &obj) == nil && obj.Field != "" {
-			c.ReasoningField = strp(obj.Field)
+			c.ReasoningField = new(obj.Field)
 		}
 	}
 	hasOverride := false
@@ -5534,7 +5530,7 @@ func TestDerive_PinnedShapeAndOtherProtocolsUntouched(t *testing.T) {
 
 func TestDerive_ReasoningFalseClearsEverything(t *testing.T) {
 	caps, m, in := anth("claude-opus", "effort")
-	caps.Reasoning = boolp(false)
+	caps.Reasoning = new(false)
 	caps.EffortValues = []string{"low", "high"}
 	derive(&caps, &m, in, map[string]string{})
 	if caps.ReasoningControls != nil || caps.EffortValues != nil || caps.ThinkingShape != nil || caps.ThinkingAlwaysOn != nil {
@@ -5562,20 +5558,20 @@ func TestDerive_EffortControlRules(t *testing.T) {
 }
 
 func TestDerive_MaxOutputTokensJunkCap(t *testing.T) {
-	caps := Caps{ContextWindow: intp(262144), MaxOutputTokens: intp(262144)}
+	caps := Caps{ContextWindow: new(262144), MaxOutputTokens: new(262144)}
 	m := Model{}
 	prov := map[string]string{"MaxOutputTokens": "snapshot/row"}
 	derive(&caps, &m, deriveInput{Protocol: ProtocolOpenAIChat}, prov)
 	if caps.MaxOutputTokens != nil || prov["MaxOutputTokens"] != "derived" {
 		t.Fatalf("catalog cap ≥ window must be cleared: %v %v", caps.MaxOutputTokens, prov)
 	}
-	caps = Caps{ContextWindow: intp(1000), MaxOutputTokens: intp(2000)}
+	caps = Caps{ContextWindow: new(1000), MaxOutputTokens: new(2000)}
 	prov = map[string]string{"MaxOutputTokens": "config/row"}
 	derive(&caps, &m, deriveInput{Protocol: ProtocolOpenAIChat}, prov)
 	if caps.MaxOutputTokens == nil || *caps.MaxOutputTokens != 2000 {
 		t.Fatal("a user-layer cap is kept as written")
 	}
-	caps = Caps{ContextWindow: intp(1000), MaxOutputTokens: intp(2000)}
+	caps = Caps{ContextWindow: new(1000), MaxOutputTokens: new(2000)}
 	prov = map[string]string{"MaxOutputTokens": "live"}
 	derive(&caps, &m, deriveInput{Protocol: ProtocolOpenAIChat}, prov)
 	if caps.MaxOutputTokens != nil {
@@ -5702,7 +5698,7 @@ func derive(c *Caps, m *Model, in deriveInput, prov map[string]string) {
 	}
 	// 5. Adaptive rows send the thinking object on every request.
 	if c.ThinkingAlwaysOn == nil {
-		c.ThinkingAlwaysOn = boolp(true)
+		c.ThinkingAlwaysOn = new(true)
 		prov["ThinkingAlwaysOn"] = provDerived
 	}
 	// 6. Effort-only adaptive rows get the summarized display.
@@ -5797,7 +5793,7 @@ func TestResolve_LookupSteps(t *testing.T) {
 	if _, err := r.Resolve("openai-codex/gpt-5.9"); err == nil || !strings.Contains(err.Error(), "gpt-5.6-sol") {
 		t.Fatalf("codex unknown id must error naming the allowlist: %v", err)
 	}
-	r.ApplyLive("ollama", []Model{{ID: "llama3:8b", Caps: Caps{ContextWindow: intp(8192)}}, {ID: "qwen3:8b"}})
+	r.ApplyLive("ollama", []Model{{ID: "llama3:8b", Caps: Caps{ContextWindow: new(8192)}}, {ID: "qwen3:8b"}})
 	res = mustResolve(t, r, "ollama/llama3:8b")
 	if res.Provenance["model"] != "live" || *res.Caps.ContextWindow != 8192 || res.Provenance["ContextWindow"] != "live" {
 		t.Fatalf("live: %+v", res.Provenance)
@@ -5807,7 +5803,7 @@ func TestResolve_LookupSteps(t *testing.T) {
 		t.Fatalf("live row without a window keeps the provider default: %v %v", res.Caps.ContextWindow, res.Provenance["ContextWindow"])
 	}
 	r = fixtureLoad(t, nil, "[providers.ollama.models.\"qwen3*\"]\ncontext_window = 40960\n")
-	r.ApplyLive("ollama", []Model{{ID: "qwen3:8b", Caps: Caps{ContextWindow: intp(8192)}}})
+	r.ApplyLive("ollama", []Model{{ID: "qwen3:8b", Caps: Caps{ContextWindow: new(8192)}}})
 	res = mustResolve(t, r, "ollama/qwen3:8b")
 	if *res.Caps.ContextWindow != 40960 || res.Provenance["ContextWindow"] != "config/glob:qwen3*" {
 		t.Fatalf("a user glob beats live and reaches a live-only id: %v %v", res.Caps.ContextWindow, res.Provenance)
@@ -5877,12 +5873,12 @@ func TestResolve_LayerOrder(t *testing.T) {
 
 func TestResolve_LiveSitsBetweenOverlayAndConfig(t *testing.T) {
 	r := orderLoad(t, "")
-	r.ApplyLive("x", []Model{{ID: "m", Caps: Caps{ContextWindow: intp(5000)}}})
+	r.ApplyLive("x", []Model{{ID: "m", Caps: Caps{ContextWindow: new(5000)}}})
 	if res := mustResolve(t, r, "x/m"); *res.Caps.ContextWindow != 5000 || res.Provenance["ContextWindow"] != "live" {
 		t.Fatalf("live must beat the curated fact: %+v", res.Provenance)
 	}
 	r = orderLoad(t, "[providers.x.models.\"m\"]\ncontext_window = 7000\n")
-	r.ApplyLive("x", []Model{{ID: "m", Caps: Caps{ContextWindow: intp(5000)}}})
+	r.ApplyLive("x", []Model{{ID: "m", Caps: Caps{ContextWindow: new(5000)}}})
 	if res := mustResolve(t, r, "x/m"); *res.Caps.ContextWindow != 7000 || res.Provenance["ContextWindow"] != "config/row" {
 		t.Fatalf("live must never beat the user layer: %+v", res.Provenance)
 	}
@@ -6052,9 +6048,9 @@ func TestApplyLive_FactsOnlyAndNonChatDropped(t *testing.T) {
 	r := fixtureLoad(t, nil, "")
 	shape := "adaptive"
 	r.ApplyLive("openrouter", []Model{
-		{ID: "whisper-large", Caps: Caps{Tools: boolp(true)}},
-		{ID: "anthropic/claude-opus-4.6", Caps: Caps{Tools: boolp(true), ContextWindow: intp(1000000), ThinkingShape: &shape, ThinkingAlwaysOn: boolp(false)}},
-		{ID: "minimax/minimax-m3", Caps: Caps{ThinkingAlwaysOn: boolp(true)}},
+		{ID: "whisper-large", Caps: Caps{Tools: new(true)}},
+		{ID: "anthropic/claude-opus-4.6", Caps: Caps{Tools: new(true), ContextWindow: new(1000000), ThinkingShape: &shape, ThinkingAlwaysOn: new(false)}},
+		{ID: "minimax/minimax-m3", Caps: Caps{ThinkingAlwaysOn: new(true)}},
 	})
 	live := r.LiveModels("openrouter")
 	if len(live) != 2 {
@@ -6196,7 +6192,7 @@ func liveFacts(m Model) Model {
 		MaxOutputTokens: m.Caps.MaxOutputTokens, EffortValues: m.Caps.EffortValues, Cost: m.Caps.Cost, Reasoning: m.Caps.Reasoning,
 	}}
 	if m.Caps.ThinkingAlwaysOn != nil && *m.Caps.ThinkingAlwaysOn {
-		out.Caps.ThinkingAlwaysOn = boolp(true)
+		out.Caps.ThinkingAlwaysOn = new(true)
 	}
 	return out
 }
@@ -7332,11 +7328,6 @@ import (
 	"primeradiant.com/evener/llm/registry"
 )
 
-func f64(v float64) *float64 { return &v }
-func str(v string) *string   { return &v }
-func i(v int) *int           { return &v }
-func b(v bool) *bool         { return &v }
-
 func resolved(protocol string, caps registry.Caps) registry.Resolved {
 	if caps.Fields == nil {
 		caps.Fields = registry.Baseline(protocol)
@@ -7345,8 +7336,8 @@ func resolved(protocol string, caps registry.Caps) registry.Resolved {
 }
 
 func TestShapeRequest_ReasoningOffAndClamp(t *testing.T) {
-	req := Request{ReasoningEffort: str("high")}
-	got := ShapeRequest(req, resolved(registry.ProtocolOpenAIChat, registry.Caps{Reasoning: b(false)}))
+	req := Request{ReasoningEffort: new("high")}
+	got := ShapeRequest(req, resolved(registry.ProtocolOpenAIChat, registry.Caps{Reasoning: new(false)}))
 	if got.ReasoningEffort != nil {
 		t.Fatal("reasoning = false must clear the effort")
 	}
@@ -7358,23 +7349,23 @@ func TestShapeRequest_ReasoningOffAndClamp(t *testing.T) {
 	if got.ReasoningEffort == nil || *got.ReasoningEffort != "high" {
 		t.Fatal("an empty ladder passes the effort through")
 	}
-	got = ShapeRequest(Request{}, resolved(registry.ProtocolAnthropic, registry.Caps{ThinkingAlwaysOn: b(true), EffortValues: []string{"low", "high"}}))
+	got = ShapeRequest(Request{}, resolved(registry.ProtocolAnthropic, registry.Caps{ThinkingAlwaysOn: new(true), EffortValues: []string{"low", "high"}}))
 	if got.ReasoningEffort != nil {
 		t.Fatal("ShapeRequest never adds an effort the caller did not set")
 	}
 }
 
 func TestShapeRequest_MaxTokensAndSampling(t *testing.T) {
-	req := Request{Temperature: f64(0.2), TopP: f64(0.9), StopSequences: []string{"a", "b"}}
-	got := ShapeRequest(req, resolved(registry.ProtocolOpenAIChat, registry.Caps{MaxOutputTokens: i(4096)}))
+	req := Request{Temperature: new(0.2), TopP: new(0.9), StopSequences: []string{"a", "b"}}
+	got := ShapeRequest(req, resolved(registry.ProtocolOpenAIChat, registry.Caps{MaxOutputTokens: new(4096)}))
 	if got.MaxTokens == nil || *got.MaxTokens != 4096 || got.Temperature == nil || got.TopP == nil || len(got.StopSequences) != 2 {
 		t.Fatalf("defaults: %+v", got)
 	}
-	req.MaxTokens = i(10)
-	if got := ShapeRequest(req, resolved(registry.ProtocolOpenAIChat, registry.Caps{MaxOutputTokens: i(4096)})); *got.MaxTokens != 10 {
+	req.MaxTokens = new(10)
+	if got := ShapeRequest(req, resolved(registry.ProtocolOpenAIChat, registry.Caps{MaxOutputTokens: new(4096)})); *got.MaxTokens != 10 {
 		t.Fatal("a caller's max tokens is kept")
 	}
-	got = ShapeRequest(req, resolved(registry.ProtocolOpenAIChat, registry.Caps{Sampling: b(false)}))
+	got = ShapeRequest(req, resolved(registry.ProtocolOpenAIChat, registry.Caps{Sampling: new(false)}))
 	if got.Temperature != nil || got.TopP != nil {
 		t.Fatal("sampling = false drops temperature and top_p")
 	}
@@ -7394,7 +7385,7 @@ func TestShapeRequest_MaxTokensAndSampling(t *testing.T) {
 	if got.StopSequences != nil {
 		t.Fatal("the Responses API has no stop parameter")
 	}
-	got = ShapeRequest(req, resolved(registry.ProtocolAnthropic, registry.Caps{MaxStopSequences: i(1)}))
+	got = ShapeRequest(req, resolved(registry.ProtocolAnthropic, registry.Caps{MaxStopSequences: new(1)}))
 	if !reflect.DeepEqual(got.StopSequences, []string{"a"}) {
 		t.Fatalf("max_stop_sequences truncates: %v", got.StopSequences)
 	}
@@ -7411,8 +7402,8 @@ func TestShapeRequest_PromptCacheGates(t *testing.T) {
 }
 
 func TestShapeRequest_DoesNotMutateInput(t *testing.T) {
-	req := Request{Temperature: f64(0.2), ReasoningEffort: str("max")}
-	_ = ShapeRequest(req, resolved(registry.ProtocolOpenAIChat, registry.Caps{Sampling: b(false), EffortValues: []string{"low"}}))
+	req := Request{Temperature: new(0.2), ReasoningEffort: new("max")}
+	_ = ShapeRequest(req, resolved(registry.ProtocolOpenAIChat, registry.Caps{Sampling: new(false), EffortValues: []string{"low"}}))
 	if *req.Temperature != 0.2 || *req.ReasoningEffort != "max" {
 		t.Fatal("ShapeRequest must not write through the caller's pointers")
 	}
@@ -7666,7 +7657,7 @@ func goldenRegistry(t *testing.T, extraEnv map[string]string) *Registry {
 		env[k] = v
 	}
 	r := fixtureLoad(t, env, goldenConfig, WithStateRoot(state))
-	r.ApplyLive("ollama", []Model{{ID: "llama3:8b", Caps: Caps{ContextWindow: intp(8192)}}, {ID: "qwen3:8b"}})
+	r.ApplyLive("ollama", []Model{{ID: "llama3:8b", Caps: Caps{ContextWindow: new(8192)}}, {ID: "qwen3:8b"}})
 	return r
 }
 
