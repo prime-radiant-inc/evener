@@ -95,6 +95,16 @@ function ConversationChrome({
         </button>
         <button
           type="button"
+          aria-label="Voice"
+          onFocus={(event) => {
+            void settleFocusedControlInVisualViewport(event.currentTarget);
+          }}
+          onClick={() => dispatch({ type: "openVoice" })}
+        >
+          Voice
+        </button>
+        <button
+          type="button"
           aria-label="Switch concept"
           onFocus={(event) => {
             void settleFocusedControlInVisualViewport(event.currentTarget);
@@ -754,6 +764,13 @@ export function ConversationFrame({
       <main
         className={`live-conversation-frame ${skin.className}`}
         data-live-conversation-frame="true"
+        data-concept-root="true"
+        data-surface="conversation"
+        data-platform={state.platform}
+        data-appearance={state.appearance}
+        data-reduced-motion={state.reducedMotion}
+        data-text-scale={state.contentSize}
+        data-thread-key={state.conversation?.threadKey}
         aria-label="Conversation"
         aria-hidden={frameLocked ? true : undefined}
         inert={frameLocked ? true : undefined}
