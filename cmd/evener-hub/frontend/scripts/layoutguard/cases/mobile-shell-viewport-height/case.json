@@ -1,6 +1,6 @@
 {
   "name": "mobile-shell-viewport-height",
-  "description": "mobile shell height chain at an explicit 390x844 phone viewport: the shared shell, StackHost top bar/body, pane body, and optional session footer must stay inside the visible viewport for both session and non-session fixtures",
+  "description": "mobile shell height chain at an explicit 390x844 phone viewport: the shared shell, StackHost top bar/body, pane body, and optional session footer must stay inside the visible viewport for both session and non-session fixtures, and the session footer's chrome must reach the screen's bottom edge (the composer's dock fills the bottom; only its controls are inset)",
   "viewport": {
     "width": 390,
     "height": 844,
