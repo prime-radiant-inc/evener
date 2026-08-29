@@ -21,6 +21,7 @@ import type {
   QueueState,
   Thread,
   ThreadCapabilities,
+  ThreadClearResponse,
   ThreadReadResponse,
   ThreadTurnsListResponse,
   TurnQueueResponse,
@@ -109,8 +110,9 @@ type TestThreadOverrides = Omit<Partial<Thread>, "evener"> & {
 
 function testThread(ref: string, overrides: TestThreadOverrides = {}): Thread {
   const { evener, ...threadOverrides } = overrides;
+  const threadID = threadOverrides.id ?? `thr_${ref}`;
   return {
-    id: `thr_${ref}`,
+    id: threadID,
     sessionId: `sess_${ref}`,
     preview: "test",
     ephemeral: false,
@@ -121,13 +123,33 @@ function testThread(ref: string, overrides: TestThreadOverrides = {}): Thread {
     cwd: "/tmp/project",
     cliVersion: "1.0.0",
     source: "evener",
-    evener: { ref, capabilities: CAPABILITIES, ...evener, queue: { revision: 0, ...evener?.queue } },
+    evener: {
+      ref,
+      instanceId: threadID,
+      capabilities: CAPABILITIES,
+      ...evener,
+      queue: { revision: 0, ...evener?.queue },
+    },
     ...threadOverrides,
   };
 }
 
 function readResponse(ref: string, overrides: TestThreadOverrides = {}): ThreadReadResponse {
   return { thread: testThread(ref, overrides) };
+}
+
+function clearResponse(params: { clientMutationId: string }, thread: Thread): ThreadClearResponse {
+  return {
+    thread,
+    ref: thread.evener.ref,
+    receipt: {
+      clientMutationId: params.clientMutationId,
+      disposition: "applied",
+      threadId: thread.id,
+      instanceId: thread.evener.instanceId,
+      projectionState: "reflected",
+    },
+  };
 }
 
 // A pending hydration's notification buffer only ever matters in one window:
@@ -1699,7 +1721,7 @@ describe("useThreadsStore.ensureThread", () => {
       if (readCount === 1) return readResponse("ref_a");
       return new Promise<ThreadReadResponse>((resolve) => resyncReads.push(resolve));
     });
-    fake.on("thread/clear", () => ({ thread: testThread("ref_a", { id: "thr_cleared" }), ref: "ref_a" }));
+    fake.on("thread/clear", (params) => clearResponse(params, testThread("ref_a", { id: "thr_cleared", turns: [] })));
 
     await threadsStore.getState().ensureThread("ref_a");
     expect(threadsStore.getState().threads.get("ref_a")?.threadId).toBe("thr_ref_a");
@@ -3323,6 +3345,7 @@ describe("useThreadsStore.steer / queue / interrupt", () => {
     expect(call?.params).toEqual({
       ref: "ref_a",
       clientMutationId: expect.any(String),
+      expectedInstanceId: "thr_ref_a",
       input: [{ type: "text", text: "steer text" }],
     });
   });
@@ -3341,6 +3364,7 @@ describe("useThreadsStore.steer / queue / interrupt", () => {
     expect(call?.params).toEqual({
       ref: "ref_a",
       clientMutationId: expect.any(String),
+      expectedInstanceId: "thr_ref_a",
       input: [
         { type: "text", text: "steer text" },
         { type: "image", mediaType: "image/png", data: "aGVsbG8=" },
@@ -3365,6 +3389,7 @@ describe("useThreadsStore.steer / queue / interrupt", () => {
     expect(call?.params).toEqual({
       ref: "ref_a",
       clientMutationId: expect.any(String),
+      expectedInstanceId: "thr_ref_a",
     });
   });
 
@@ -3387,6 +3412,7 @@ describe("useThreadsStore.steer / queue / interrupt", () => {
     expect(call?.params).toEqual({
       ref: "ref_a",
       clientMutationId: expect.any(String),
+      expectedInstanceId: "thr_ref_a",
     });
   });
 
@@ -3402,6 +3428,7 @@ describe("useThreadsStore.steer / queue / interrupt", () => {
     expect(call?.params).toEqual({
       ref: "ref_a",
       clientMutationId: expect.any(String),
+      expectedInstanceId: "thr_ref_a",
       input: [{ type: "text", text: "queued text" }],
     });
   });
@@ -3458,6 +3485,7 @@ describe("useThreadsStore.drainAsSteer", () => {
     expect(call?.params).toEqual({
       ref: "ref_a",
       clientMutationId: expect.any(String),
+      expectedInstanceId: "thr_ref_a",
       expectedQueueRevision: 7,
       input: [
         { type: "text", text: "drain text" },
@@ -3478,6 +3506,7 @@ describe("useThreadsStore.drainAsSteer", () => {
     expect(call?.params).toEqual({
       ref: "ref_a",
       clientMutationId: expect.any(String),
+      expectedInstanceId: "thr_ref_a",
       expectedQueueRevision: 7,
       input: [],
     });
@@ -3498,6 +3527,7 @@ describe("useThreadsStore.promoteQueuedAsSteer / cancelQueued", () => {
       ref: "ref_a",
       index: 1,
       clientMutationId: expect.any(String),
+      expectedInstanceId: "thr_ref_a",
       expectedEntryId: "entry_2",
     });
   });
@@ -3851,12 +3881,9 @@ describe("useThreadsStore session actions (setModel/setReasoningEffort/setGoal/r
     expect(call?.params).toEqual({ ref: "ref_a", aside: true, sourceTurnId: "" });
   });
 
-  // clearThread has no corresponding live notification (appwire/protocol.go's
-  // Notifications catalog carries no "thread cleared" entry - verified), so
-  // the response's fresh Thread snapshot is the ONLY signal the transcript
-  // is now empty; this store applies it directly rather than leaving the
-  // tracked model stale until some unrelated future notification/reconnect.
-  test("clearThread sends thread/clear with {ref} and replaces the tracked model from the response snapshot", async () => {
+  // The durable clear response is the authoritative replacement snapshot; the
+  // dispatcher applies it before settling the outbox record.
+  test("clearThread queues thread/clear with the instance fence and applies the response snapshot", async () => {
     const fake = connectFakeClient();
     fake.on("thread/read", () =>
       readResponse("ref_a", { turns: [{ id: "turn_1", status: "completed", itemsView: "full", items: [] }] }),
@@ -3864,11 +3891,15 @@ describe("useThreadsStore session actions (setModel/setReasoningEffort/setGoal/r
     await threadsStore.getState().ensureThread("ref_a");
     expect(threadsStore.getState().threads.get("ref_a")?.turns).toHaveLength(1);
 
-    fake.on("thread/clear", () => ({ thread: testThread("ref_a", { turns: [] }), ref: "ref_a" }));
+    fake.on("thread/clear", (params) => clearResponse(params, testThread("ref_a", { turns: [] })));
     await threadsStore.getState().clearThread("ref_a");
 
     const call = fake.calls.find((c) => c.method === "thread/clear");
-    expect(call?.params).toEqual({ ref: "ref_a" });
+    expect(call?.params).toEqual({
+      ref: "ref_a",
+      expectedInstanceId: "thr_ref_a",
+      clientMutationId: expect.any(String),
+    });
     expect(threadsStore.getState().threads.get("ref_a")?.turns).toEqual([]);
   });
 
@@ -3880,14 +3911,14 @@ describe("useThreadsStore session actions (setModel/setReasoningEffort/setGoal/r
     await threadsStore.getState().ensureThread("ref_a");
     await threadsStore.getState().watchThread("ref_a");
 
-    fake.on("thread/clear", () => ({ thread: testThread("ref_a", { turns: [] }), ref: "ref_a" }));
+    fake.on("thread/clear", (params) => clearResponse(params, testThread("ref_a", { turns: [] })));
     await threadsStore.getState().clearThread("ref_a");
 
     expect(threadsStore.getState().threads.get("ref_a")?.turns).toEqual([]);
     expect(threadsStore.getState().watchedThreads.get("ref_a")?.turns).toEqual([]);
   });
 
-  test("clearThread propagates a rejection and leaves the tracked model untouched", async () => {
+  test("clearThread retains a transport failure for retry and leaves the tracked model untouched", async () => {
     const fake = connectFakeClient();
     fake.on("thread/read", () => readResponse("ref_a"));
     await threadsStore.getState().ensureThread("ref_a");
@@ -3896,8 +3927,11 @@ describe("useThreadsStore session actions (setModel/setReasoningEffort/setGoal/r
     });
 
     const before = threadsStore.getState().threads.get("ref_a");
-    await expect(threadsStore.getState().clearThread("ref_a")).rejects.toThrow("turn in progress");
+    await threadsStore.getState().clearThread("ref_a");
     expect(threadsStore.getState().threads.get("ref_a")).toBe(before);
+    const persistence = await readMutationPersistence("ref_a");
+    expect(persistence.outbox).toHaveLength(1);
+    expect(persistence.outbox[0]?.method).toBe("thread/clear");
   });
 
   // One representative Conflict-mapping test standing in for every

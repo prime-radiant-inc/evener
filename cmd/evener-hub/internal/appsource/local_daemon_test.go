@@ -501,7 +501,7 @@ func fuzzScenarioLocalDaemonSourceDrainUsesInputShapeDirectly(t *testing.T) {
 		}}
 	}, httpServer.Client())
 
-	_, err := source.DrainAsSteer(context.Background(), appwire.TurnDrainAsSteerParams{ClientMutationID: "test-mutation", ExpectedQueueRevision: 0, Ref: "local:th_1", Input: []appwire.InputItem{{Type: "text", Text: "composer payload"}}})
+	_, err := source.DrainAsSteer(context.Background(), appwire.TurnDrainAsSteerParams{ClientMutationID: "test-mutation", ExpectedInstanceID: "sess_1", ExpectedQueueRevision: 0, Ref: "local:th_1", Input: []appwire.InputItem{{Type: "text", Text: "composer payload"}}})
 	if err != nil {
 		t.Fatalf("DrainAsSteer: %v", err)
 	}
@@ -643,6 +643,28 @@ func TestLocalDaemonSourceListCarriesRunningNonAgentJobs(t *testing.T) {
 	job := resp.Data[0].Evener.Diagnostics.Jobs[0]
 	if job.JobID != "job_shell" || job.JobType != "shell" || job.Status != "running" {
 		t.Fatalf("running job = %+v, want shell identity and status", job)
+	}
+}
+
+func TestThreadFromEntryCarriesStableRefAndLiveInstance(t *testing.T) {
+	source := NewLocalDaemonSourceWithEntries("local", func() []LocalDaemonEntry { return nil }, nil)
+	thread := source.threadFromEntry(LocalDaemonEntry{Entry: rendezvous.Entry{
+		Protocol:     appwire.ProtocolVersion,
+		Endpoint:     "ws://127.0.0.1/rpc",
+		ThreadID:     "instance-new",
+		SessionID:    "instance-new",
+		WorkspaceRef: "local:workspace",
+		InstanceID:   "instance-new",
+	}})
+
+	if thread.ID != "instance-new" {
+		t.Fatalf("thread id = %q, want live instance id", thread.ID)
+	}
+	if thread.Evener.Ref != "local:workspace" {
+		t.Fatalf("thread ref = %q, want stable workspace ref", thread.Evener.Ref)
+	}
+	if thread.Evener.InstanceID != "instance-new" {
+		t.Fatalf("thread instance id = %q, want live instance id", thread.Evener.InstanceID)
 	}
 }
 
@@ -808,7 +830,7 @@ func fuzzScenarioLocalDaemonSourceStartTurnMapsDroppedTransportToMutationOutcome
 		}}
 	}, httpServer.Client())
 
-	_, err := source.StartTurn(context.Background(), appwire.TurnStartParams{ClientMutationID: "test-mutation", Ref: "local:th_1", Input: []appwire.InputItem{{Type: "text", Text: "hi"}}})
+	_, err := source.StartTurn(context.Background(), appwire.TurnStartParams{ClientMutationID: "test-mutation", ExpectedInstanceID: "sess_1", Ref: "local:th_1", Input: []appwire.InputItem{{Type: "text", Text: "hi"}}})
 	var wire appwire.WireError
 	if !errors.As(err, &wire) {
 		t.Fatalf("StartTurn error %T=%v, want WireError", err, err)

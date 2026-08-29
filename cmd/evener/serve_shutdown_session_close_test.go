@@ -11,6 +11,7 @@ import (
 
 	"primeradiant.com/evener/agent"
 	"primeradiant.com/evener/agent/events"
+	"primeradiant.com/evener/appwire"
 )
 
 // TestServeClosesAReplacementInstalledDuringShutdown pins the invariant the
@@ -18,9 +19,9 @@ import (
 // current, not only the one that happened to be live when shutdown ran.
 //
 // Shutdown makes ONE closing pass (closeLiveSession) once the input loop has
-// exited. POST /clear is still a live route at that moment -- httpSrv.Close()
+// exited. typed thread/clear is still live at that moment -- httpSrv.Close()
 // joins no handlers, and the clear closure never consults the cancelled request
-// context -- so a /clear can install a whole replacement session just after
+// context -- so thread/clear can install a whole replacement session just after
 // that pass, and the pass never comes round again. Left to shutdown alone the
 // replacement is simply never closed, and everything Session.Close() does never
 // happens for it:
@@ -41,7 +42,7 @@ import (
 // decide anything. serveHTTP cancels the context and then parks until the FIRST
 // session's own drain reports, which can only happen after Close() closed its
 // channel -- so shutdown's pass has demonstrably run, and it picked session 0.
-// The /clear then runs from inside serveHTTP, which serve has not returned from
+// thread/clear then runs from inside serveHTTP, which serve has not returned from
 // yet, so the teardown snapshot has not been taken and teardownStarted -- which
 // guards the adjacent, already-closed AFTER case -- is still false.
 //
@@ -89,7 +90,10 @@ func TestServeClosesAReplacementInstalledDuringShutdown(t *testing.T) {
 				"pass never ran and the window under test was never entered")
 			return http.ErrServerClosed
 		}
-		cleared <- state.srv.clear(context.Background())
+		old := state.session(0)
+		cleared <- state.srv.clear(context.Background(), appwire.ThreadClearParams{
+			Ref: "local:" + old.ID(), ClientMutationID: "clear-test", ExpectedInstanceID: old.ID(),
+		})
 		return http.ErrServerClosed
 	}
 

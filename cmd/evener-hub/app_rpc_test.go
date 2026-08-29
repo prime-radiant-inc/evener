@@ -153,10 +153,11 @@ func TestHubRPCSteersSurvivingDaemonAfterHubRestart(t *testing.T) {
 
 	var response appwire.TurnSteerResponse
 	err = client.Request(t.Context(), appwire.MethodTurnSteer, appwire.TurnSteerParams{
-		Ref:              "local:" + threadID,
-		ThreadID:         threadID,
-		ClientMutationID: mutationID,
-		Input:            []appwire.InputItem{{Type: "text", Text: "survived the hub restart"}},
+		Ref:                "local:" + threadID,
+		ThreadID:           threadID,
+		ClientMutationID:   mutationID,
+		ExpectedInstanceID: threadID,
+		Input:              []appwire.InputItem{{Type: "text", Text: "survived the hub restart"}},
 	}, &response)
 	if err != nil {
 		t.Fatalf("TurnSteer: %v", err)
@@ -601,10 +602,11 @@ func TestDeletionFenceTurnStartDoesNotWaitForRelayWhileOwningTarget(t *testing.T
 	<-placeholderPublished
 
 	raw, err := json.Marshal(appwire.TurnStartParams{
-		ThreadID:         threadID,
-		Ref:              ref,
-		ClientMutationID: "turn-start-relay-ownership",
-		Input:            []appwire.InputItem{{Type: "text", Text: "continue"}},
+		ThreadID:           threadID,
+		Ref:                ref,
+		ClientMutationID:   "turn-start-relay-ownership",
+		ExpectedInstanceID: threadID,
+		Input:              []appwire.InputItem{{Type: "text", Text: "continue"}},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -5864,13 +5866,13 @@ func TestHubRPCTurnMutationsForwardWithoutDynamicCapabilityGates(t *testing.T) {
 		params any
 		result any
 	}{
-		{"start after response loss", appwire.MethodTurnStart, "mutation-start", appwire.TurnStartParams{Ref: "local:th_1", ClientMutationID: "mutation-start", Input: []appwire.InputItem{{Type: "text", Text: "start"}}}, &appwire.TurnStartResponse{}},
-		{"steer", appwire.MethodTurnSteer, "mutation-steer", appwire.TurnSteerParams{Ref: "local:th_1", ClientMutationID: "mutation-steer", Input: []appwire.InputItem{{Type: "text", Text: "steer"}}}, &appwire.TurnSteerResponse{}},
-		{"interrupt", appwire.MethodTurnInterrupt, "mutation-interrupt", appwire.TurnInterruptParams{Ref: "local:th_1", ClientMutationID: "mutation-interrupt"}, &appwire.TurnInterruptResponse{}},
-		{"queue", appwire.MethodTurnQueue, "mutation-queue", appwire.TurnQueueParams{Ref: "local:th_1", ClientMutationID: "mutation-queue", Input: []appwire.InputItem{{Type: "text", Text: "queue"}}}, &appwire.TurnQueueResponse{}},
-		{"drain", appwire.MethodTurnDrainAsSteer, "mutation-drain", appwire.TurnDrainAsSteerParams{Ref: "local:th_1", ClientMutationID: "mutation-drain", ExpectedQueueRevision: 1}, &appwire.TurnDrainAsSteerResponse{}},
-		{"promote", appwire.MethodTurnPromoteQueuedAsSteer, "mutation-promote", appwire.TurnPromoteQueuedAsSteerParams{Ref: "local:th_1", ClientMutationID: "mutation-promote", ExpectedEntryID: "queue_1", Index: 0}, &appwire.TurnPromoteQueuedAsSteerResponse{}},
-		{"cancel", appwire.MethodTurnCancelQueued, "mutation-cancel", appwire.TurnCancelQueuedParams{Ref: "local:th_1", ClientMutationID: "mutation-cancel", ExpectedEntryID: "queue_1", Index: 0}, &appwire.TurnCancelQueuedResponse{}},
+		{"start after response loss", appwire.MethodTurnStart, "mutation-start", appwire.TurnStartParams{Ref: "local:th_1", ClientMutationID: "mutation-start", ExpectedInstanceID: "sess_1", Input: []appwire.InputItem{{Type: "text", Text: "start"}}}, &appwire.TurnStartResponse{}},
+		{"steer", appwire.MethodTurnSteer, "mutation-steer", appwire.TurnSteerParams{Ref: "local:th_1", ClientMutationID: "mutation-steer", ExpectedInstanceID: "sess_1", Input: []appwire.InputItem{{Type: "text", Text: "steer"}}}, &appwire.TurnSteerResponse{}},
+		{"interrupt", appwire.MethodTurnInterrupt, "mutation-interrupt", appwire.TurnInterruptParams{Ref: "local:th_1", ClientMutationID: "mutation-interrupt", ExpectedInstanceID: "sess_1"}, &appwire.TurnInterruptResponse{}},
+		{"queue", appwire.MethodTurnQueue, "mutation-queue", appwire.TurnQueueParams{Ref: "local:th_1", ClientMutationID: "mutation-queue", ExpectedInstanceID: "sess_1", Input: []appwire.InputItem{{Type: "text", Text: "queue"}}}, &appwire.TurnQueueResponse{}},
+		{"drain", appwire.MethodTurnDrainAsSteer, "mutation-drain", appwire.TurnDrainAsSteerParams{Ref: "local:th_1", ClientMutationID: "mutation-drain", ExpectedInstanceID: "sess_1", ExpectedQueueRevision: 1}, &appwire.TurnDrainAsSteerResponse{}},
+		{"promote", appwire.MethodTurnPromoteQueuedAsSteer, "mutation-promote", appwire.TurnPromoteQueuedAsSteerParams{Ref: "local:th_1", ClientMutationID: "mutation-promote", ExpectedInstanceID: "sess_1", ExpectedEntryID: "queue_1", Index: 0}, &appwire.TurnPromoteQueuedAsSteerResponse{}},
+		{"cancel", appwire.MethodTurnCancelQueued, "mutation-cancel", appwire.TurnCancelQueuedParams{Ref: "local:th_1", ClientMutationID: "mutation-cancel", ExpectedInstanceID: "sess_1", ExpectedEntryID: "queue_1", Index: 0}, &appwire.TurnCancelQueuedResponse{}},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
@@ -5913,9 +5915,10 @@ func TestHubRPCTurnMutationsForwardWithoutDynamicCapabilityGates(t *testing.T) {
 	}
 
 	rejected := appwire.TurnQueueParams{
-		Ref:              "local:th_1",
-		ClientMutationID: "mutation-reject",
-		Input:            []appwire.InputItem{{Type: "text", Text: "reject"}},
+		Ref:                "local:th_1",
+		ClientMutationID:   "mutation-reject",
+		ExpectedInstanceID: "sess_1",
+		Input:              []appwire.InputItem{{Type: "text", Text: "reject"}},
 	}
 	var response appwire.TurnQueueResponse
 	err := client.Request(context.Background(), appwire.MethodTurnQueue, rejected, &response)
@@ -5950,9 +5953,10 @@ func TestHubRPCTurnSteerMissingLocalSessionReturnsTerminalRejection(t *testing.T
 	}
 
 	params := appwire.TurnSteerParams{
-		Ref:              "local:missing",
-		ClientMutationID: "mutation-missing-session",
-		Input:            []appwire.InputItem{{Type: "text", Text: "steer"}},
+		Ref:                "local:missing",
+		ClientMutationID:   "mutation-missing-session",
+		ExpectedInstanceID: "missing",
+		Input:              []appwire.InputItem{{Type: "text", Text: "steer"}},
 	}
 	var response appwire.TurnSteerResponse
 	err := client.Request(context.Background(), appwire.MethodTurnSteer, params, &response)
@@ -7510,7 +7514,7 @@ func TestHubRPCTurnStartEnsuresManagedCodexAppServerAfterExit(t *testing.T) {
 	if _, err := client.Initialize(context.Background(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
 		t.Fatalf("Initialize: %v", err)
 	}
-	if _, err := client.TurnStart(context.Background(), appwire.TurnStartParams{ClientMutationID: "test-mutation", Ref: "codex-managed:th_fake", Input: []appwire.InputItem{{Type: "text", Text: "continue"}}}); err == nil {
+	if _, err := client.TurnStart(context.Background(), appwire.TurnStartParams{ClientMutationID: "test-mutation", ExpectedInstanceID: "th_fake", Ref: "codex-managed:th_fake", Input: []appwire.InputItem{{Type: "text", Text: "continue"}}}); err == nil {
 		t.Fatal("TurnStart succeeded for Codex source")
 	}
 	next := launcherRunningProcess(t, launcher, "codex-managed")
@@ -8423,7 +8427,7 @@ func TestHubRPCTurnStartResumesPastThread(t *testing.T) {
 	if _, err := client.Initialize(context.Background(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
 		t.Fatalf("Initialize: %v", err)
 	}
-	if _, err := client.TurnStart(context.Background(), appwire.TurnStartParams{ClientMutationID: "test-mutation", Ref: "local:" + sessionID, Input: []appwire.InputItem{{Type: "text", Text: "resume work"}}}); err != nil {
+	if _, err := client.TurnStart(context.Background(), appwire.TurnStartParams{ClientMutationID: "test-mutation", ExpectedInstanceID: sessionID, Ref: "local:" + sessionID, Input: []appwire.InputItem{{Type: "text", Text: "resume work"}}}); err != nil {
 		t.Fatalf("TurnStart: %v", err)
 	}
 	if gotPrompt != "resume work" {
@@ -8476,7 +8480,7 @@ func TestHubRPCTurnStartResumesPastThreadAfterRelaySubscribeUnavailable(t *testi
 	if _, err := client.Initialize(context.Background(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
 		t.Fatalf("Initialize: %v", err)
 	}
-	if _, err := client.TurnStart(context.Background(), appwire.TurnStartParams{ClientMutationID: "test-mutation", Ref: "local:" + sessionID, Input: []appwire.InputItem{{Type: "text", Text: "resume after relay"}}}); err != nil {
+	if _, err := client.TurnStart(context.Background(), appwire.TurnStartParams{ClientMutationID: "test-mutation", ExpectedInstanceID: sessionID, Ref: "local:" + sessionID, Input: []appwire.InputItem{{Type: "text", Text: "resume after relay"}}}); err != nil {
 		t.Fatalf("TurnStart: %v", err)
 	}
 	if prompt := source.lastStartPrompt(); prompt != "resume after relay" {
@@ -8533,7 +8537,7 @@ func TestHubRPCTurnStartDoesNotResumePastThreadOnLiveStartError(t *testing.T) {
 	if _, err := client.Initialize(context.Background(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
 		t.Fatalf("Initialize: %v", err)
 	}
-	_, err := client.TurnStart(context.Background(), appwire.TurnStartParams{ClientMutationID: "test-mutation", Ref: "local:" + sessionID, Input: []appwire.InputItem{{Type: "text", Text: "resume work"}}})
+	_, err := client.TurnStart(context.Background(), appwire.TurnStartParams{ClientMutationID: "test-mutation", ExpectedInstanceID: sessionID, Ref: "local:" + sessionID, Input: []appwire.InputItem{{Type: "text", Text: "resume work"}}})
 	if err == nil || !strings.Contains(err.Error(), "session is processing") {
 		t.Fatalf("TurnStart err=%v, want live start error", err)
 	}
@@ -8588,7 +8592,7 @@ func TestHubRPCTurnStartDoesNotResumePastThreadOnGenericSubstringError(t *testin
 	if _, err := client.Initialize(context.Background(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
 		t.Fatalf("Initialize: %v", err)
 	}
-	_, err := client.TurnStart(context.Background(), appwire.TurnStartParams{ClientMutationID: "test-mutation", Ref: "local:" + sessionID, Input: []appwire.InputItem{{Type: "text", Text: "resume work"}}})
+	_, err := client.TurnStart(context.Background(), appwire.TurnStartParams{ClientMutationID: "test-mutation", ExpectedInstanceID: sessionID, Ref: "local:" + sessionID, Input: []appwire.InputItem{{Type: "text", Text: "resume work"}}})
 	if err == nil || !strings.Contains(err.Error(), "connection refused") {
 		t.Fatalf("TurnStart err=%v, want live start error", err)
 	}
@@ -8649,7 +8653,7 @@ func TestHubRPCTurnStartResumesPastThreadAndRelaysNotifications(t *testing.T) {
 	if _, err := client.ThreadRead(context.Background(), appwire.ThreadReadParams{Ref: "local:" + sessionID, IncludeTurns: true}); err != nil {
 		t.Fatalf("ThreadRead: %v", err)
 	}
-	if _, err := client.TurnStart(context.Background(), appwire.TurnStartParams{ClientMutationID: "test-mutation", Ref: "local:" + sessionID, Input: []appwire.InputItem{{Type: "text", Text: "resume work"}}}); err != nil {
+	if _, err := client.TurnStart(context.Background(), appwire.TurnStartParams{ClientMutationID: "test-mutation", ExpectedInstanceID: sessionID, Ref: "local:" + sessionID, Input: []appwire.InputItem{{Type: "text", Text: "resume work"}}}); err != nil {
 		t.Fatalf("TurnStart: %v", err)
 	}
 
@@ -8757,7 +8761,7 @@ func TestHubRPCTurnStartResumesPastThreadAfterLocalTransportError(t *testing.T) 
 	if _, err := client.Initialize(context.Background(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
 		t.Fatalf("Initialize: %v", err)
 	}
-	resp, err := client.TurnStart(context.Background(), appwire.TurnStartParams{ClientMutationID: "test-mutation", Ref: "local:" + sessionID, Input: []appwire.InputItem{{Type: "text", Text: "resume work"}}})
+	resp, err := client.TurnStart(context.Background(), appwire.TurnStartParams{ClientMutationID: "test-mutation", ExpectedInstanceID: sessionID, Ref: "local:" + sessionID, Input: []appwire.InputItem{{Type: "text", Text: "resume work"}}})
 	if err != nil {
 		t.Fatalf("TurnStart: %v", err)
 	}
@@ -8879,8 +8883,9 @@ func TestHubRPCTurnStartResumesManagedLaunchRefOnSessionUnavailable(t *testing.T
 		t.Fatalf("Initialize: %v", err)
 	}
 	resp, err := client.TurnStart(context.Background(), appwire.TurnStartParams{ClientMutationID: "test-mutation",
-		Ref:   "codex-managed:th_managed",
-		Input: []appwire.InputItem{{Type: "text", Text: "keep going"}},
+		ExpectedInstanceID: "th_managed",
+		Ref:                "codex-managed:th_managed",
+		Input:              []appwire.InputItem{{Type: "text", Text: "keep going"}},
 	})
 	if err != nil {
 		t.Fatalf("TurnStart: %v", err)
@@ -8971,8 +8976,9 @@ func TestHubRPCTurnStartDoesNotResumeUnknownNonLocalRef(t *testing.T) {
 		t.Fatalf("Initialize: %v", err)
 	}
 	_, err := client.TurnStart(context.Background(), appwire.TurnStartParams{ClientMutationID: "test-mutation",
-		Ref:   "codex:th_unknown",
-		Input: []appwire.InputItem{{Type: "text", Text: "should not resume"}},
+		ExpectedInstanceID: "th_unknown",
+		Ref:                "codex:th_unknown",
+		Input:              []appwire.InputItem{{Type: "text", Text: "should not resume"}},
 	})
 	if err == nil {
 		t.Fatal("TurnStart succeeded, want SessionUnavailable error")

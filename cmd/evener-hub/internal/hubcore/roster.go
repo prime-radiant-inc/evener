@@ -58,7 +58,7 @@ type ProbeResult struct {
 // Prober is implemented by liveness-checking strategies.
 //
 // A Prober verifies a daemon is reachable AND returns its current
-// session_id (which may have changed under POST /clear since the
+// session_id (which may have changed under thread/clear since the
 // rendezvous file was written) and the daemon's current state.
 type Prober interface {
 	Probe(entry rendezvous.Entry) ProbeResult

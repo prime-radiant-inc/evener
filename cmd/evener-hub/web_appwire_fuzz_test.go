@@ -220,7 +220,7 @@ func FuzzAppWireDispatch(f *testing.F) {
 		{appwire.MethodThreadFork, `{"ref":"` + ref + `","sourceTurnId":"turn_1","editedInput":"hi"}`},
 		{appwire.MethodTurnStart, `{"ref":"` + ref + `","input":[]}`},
 		{appwire.MethodTurnSteer, `{"ref":"` + ref + `","text":"go"}`},
-		{appwire.MethodThreadClear, `{"ref":"` + ref + `"}`},
+		{appwire.MethodThreadClear, `{"ref":"` + ref + `","clientMutationId":"fuzz-clear","expectedInstanceId":"` + sandboxSessionID + `"}`},
 		{appwire.MethodThreadModelSet, `{"ref":"` + ref + `","model":"gpt-5.5"}`},
 		{appwire.MethodThreadCompactStart, `{"ref":"` + ref + `"}`},
 		{appwire.MethodModelList, `{}`},

@@ -34,16 +34,18 @@ func TestAppWireMutationResponseLossRetriesOnce(t *testing.T) {
 	// Started for its side effect: several cases below need the session to be
 	// processing, and this is what makes it so.
 	_, err = sess.AcceptClientMutationStart(appwire.TurnStartParams{
-		ClientMutationID: "start-active-turn",
-		Input:            []appwire.InputItem{{Type: "text", Text: "keep the turn active"}},
+		ClientMutationID:   "start-active-turn",
+		ExpectedInstanceID: sess.ID(),
+		Input:              []appwire.InputItem{{Type: "text", Text: "keep the turn active"}},
 	})
 	if err != nil {
 		t.Fatalf("AcceptClientMutationStart: %v", err)
 	}
 	params := appwire.TurnQueueParams{
-		Ref:              "local:" + sess.ID(),
-		ClientMutationID: "queue-after-response-loss",
-		Input:            []appwire.InputItem{{Type: "text", Text: "queued exactly once"}},
+		Ref:                "local:" + sess.ID(),
+		ClientMutationID:   "queue-after-response-loss",
+		ExpectedInstanceID: sess.ID(),
+		Input:              []appwire.InputItem{{Type: "text", Text: "queued exactly once"}},
 	}
 
 	srv := NewServer(ServerConfig{})
@@ -92,9 +94,10 @@ func TestAppWireMutationReplayTable(t *testing.T) {
 			method: appwire.MethodTurnStart,
 			setup: func(_ *testing.T, sess *agent.Session, _ *int) any {
 				return appwire.TurnStartParams{
-					ClientMutationID: "replay-start",
-					Ref:              "local:" + sess.ID(),
-					Input:            []appwire.InputItem{{Type: "text", Text: "start once"}},
+					ClientMutationID:   "replay-start",
+					ExpectedInstanceID: sess.ID(),
+					Ref:                "local:" + sess.ID(),
+					Input:              []appwire.InputItem{{Type: "text", Text: "start once"}},
 				}
 			},
 			assert: func(t *testing.T, _ *agent.Session, _ *int, response appwire.Message) {
@@ -110,9 +113,10 @@ func TestAppWireMutationReplayTable(t *testing.T) {
 			setup: func(t *testing.T, sess *agent.Session, _ *int) any {
 				acceptMutationReplayActiveTurn(t, sess)
 				return appwire.TurnSteerParams{
-					ClientMutationID: "replay-steer",
-					Ref:              "local:" + sess.ID(),
-					Input:            []appwire.InputItem{{Type: "text", Text: "steer once"}},
+					ClientMutationID:   "replay-steer",
+					ExpectedInstanceID: sess.ID(),
+					Ref:                "local:" + sess.ID(),
+					Input:              []appwire.InputItem{{Type: "text", Text: "steer once"}},
 				}
 			},
 			assert: func(t *testing.T, sess *agent.Session, _ *int, _ appwire.Message) {
@@ -128,9 +132,10 @@ func TestAppWireMutationReplayTable(t *testing.T) {
 			setup: func(t *testing.T, sess *agent.Session, _ *int) any {
 				acceptMutationReplayActiveTurn(t, sess)
 				return appwire.TurnQueueParams{
-					ClientMutationID: "replay-queue",
-					Ref:              "local:" + sess.ID(),
-					Input:            []appwire.InputItem{{Type: "text", Text: "queue once"}},
+					ClientMutationID:   "replay-queue",
+					ExpectedInstanceID: sess.ID(),
+					Ref:                "local:" + sess.ID(),
+					Input:              []appwire.InputItem{{Type: "text", Text: "queue once"}},
 				}
 			},
 			assert: func(t *testing.T, sess *agent.Session, _ *int, _ appwire.Message) {
@@ -149,6 +154,7 @@ func TestAppWireMutationReplayTable(t *testing.T) {
 				}
 				return appwire.TurnDrainAsSteerParams{
 					ClientMutationID:      "replay-drain",
+					ExpectedInstanceID:    sess.ID(),
 					Ref:                   "local:" + sess.ID(),
 					ExpectedQueueRevision: 1,
 				}
@@ -169,10 +175,11 @@ func TestAppWireMutationReplayTable(t *testing.T) {
 					t.Fatalf("Enqueue: %v", err)
 				}
 				return appwire.TurnPromoteQueuedAsSteerParams{
-					ClientMutationID: "replay-promote",
-					Ref:              "local:" + sess.ID(),
-					Index:            0,
-					ExpectedEntryID:  sess.QueueIDs()[0],
+					ClientMutationID:   "replay-promote",
+					ExpectedInstanceID: sess.ID(),
+					Ref:                "local:" + sess.ID(),
+					Index:              0,
+					ExpectedEntryID:    sess.QueueIDs()[0],
 				}
 			},
 			assert: func(t *testing.T, sess *agent.Session, _ *int, _ appwire.Message) {
@@ -190,10 +197,11 @@ func TestAppWireMutationReplayTable(t *testing.T) {
 					t.Fatalf("Enqueue: %v", err)
 				}
 				return appwire.TurnCancelQueuedParams{
-					ClientMutationID: "replay-cancel",
-					Ref:              "local:" + sess.ID(),
-					Index:            0,
-					ExpectedEntryID:  sess.QueueIDs()[0],
+					ClientMutationID:   "replay-cancel",
+					ExpectedInstanceID: sess.ID(),
+					Ref:                "local:" + sess.ID(),
+					Index:              0,
+					ExpectedEntryID:    sess.QueueIDs()[0],
 				}
 			},
 			assert: func(t *testing.T, sess *agent.Session, _ *int, response appwire.Message) {
@@ -211,8 +219,9 @@ func TestAppWireMutationReplayTable(t *testing.T) {
 				// be processing, and this is what starts a turn.
 				acceptMutationReplayActiveTurn(t, sess)
 				return appwire.TurnInterruptParams{
-					ClientMutationID: "replay-interrupt",
-					Ref:              "local:" + sess.ID(),
+					ClientMutationID:   "replay-interrupt",
+					ExpectedInstanceID: sess.ID(),
+					Ref:                "local:" + sess.ID(),
 				}
 			},
 			assert: func(t *testing.T, _ *agent.Session, interrupts *int, _ appwire.Message) {
@@ -280,9 +289,10 @@ func TestAppWireMutationPayloadMismatchIsInvalidRequest(t *testing.T) {
 	conn := srv.AppServer().NewConnection("mismatch")
 	initializeMutationRecoveryConnection(t, conn)
 	params := appwire.TurnQueueParams{
-		ClientMutationID: "reused-mutation-id",
-		Ref:              "local:" + sess.ID(),
-		Input:            []appwire.InputItem{{Type: "text", Text: "first payload"}},
+		ClientMutationID:   "reused-mutation-id",
+		ExpectedInstanceID: sess.ID(),
+		Ref:                "local:" + sess.ID(),
+		Input:              []appwire.InputItem{{Type: "text", Text: "first payload"}},
 	}
 	first := conn.HandleMessage(
 		context.Background(),
@@ -318,6 +328,7 @@ func TestAppWireMutationHandlersRejectNonCanonicalInputShapes(t *testing.T) {
 		t.Run(input.name, func(t *testing.T) {
 			called := 0
 			srv := NewServer(ServerConfig{})
+			srv.SetAppIdentity("local", "th_1")
 			srv.SetRetrySafeTurnFunctions(RetrySafeTurnFunctions{
 				Start: func(appwire.TurnStartParams) (appwire.TurnStartResponse, error) {
 					called++
@@ -341,19 +352,19 @@ func TestAppWireMutationHandlersRejectNonCanonicalInputShapes(t *testing.T) {
 				call func() error
 			}{
 				{"start", func() error {
-					_, err := srv.handleAppTurnStart(context.Background(), appwire.TurnStartParams{ClientMutationID: "start", Input: input.input})
+					_, err := srv.handleAppTurnStart(context.Background(), appwire.TurnStartParams{ClientMutationID: "start", ExpectedInstanceID: "th_1", Input: input.input})
 					return err
 				}},
 				{"steer", func() error {
-					_, err := srv.handleAppTurnSteer(context.Background(), appwire.TurnSteerParams{ClientMutationID: "steer", Input: input.input})
+					_, err := srv.handleAppTurnSteer(context.Background(), appwire.TurnSteerParams{ClientMutationID: "steer", ExpectedInstanceID: "th_1", Input: input.input})
 					return err
 				}},
 				{"queue", func() error {
-					_, err := srv.handleAppTurnQueue(context.Background(), appwire.TurnQueueParams{ClientMutationID: "queue", Input: input.input})
+					_, err := srv.handleAppTurnQueue(context.Background(), appwire.TurnQueueParams{ClientMutationID: "queue", ExpectedInstanceID: "th_1", Input: input.input})
 					return err
 				}},
 				{"drain", func() error {
-					_, err := srv.handleAppTurnDrainAsSteer(context.Background(), appwire.TurnDrainAsSteerParams{ClientMutationID: "drain", Input: input.input})
+					_, err := srv.handleAppTurnDrainAsSteer(context.Background(), appwire.TurnDrainAsSteerParams{ClientMutationID: "drain", ExpectedInstanceID: "th_1", Input: input.input})
 					return err
 				}},
 			}
@@ -391,9 +402,10 @@ func TestAppWireMutationPersistenceFailureCanRecoverInProcess(t *testing.T) {
 	conn := srv.AppServer().NewConnection("persistence-recovery")
 	initializeMutationRecoveryConnection(t, conn)
 	params := appwire.TurnQueueParams{
-		ClientMutationID: "recover-after-persistence",
-		Ref:              "local:" + sess.ID(),
-		Input:            []appwire.InputItem{{Type: "text", Text: "apply after recovery"}},
+		ClientMutationID:   "recover-after-persistence",
+		ExpectedInstanceID: sess.ID(),
+		Ref:                "local:" + sess.ID(),
+		Input:              []appwire.InputItem{{Type: "text", Text: "apply after recovery"}},
 	}
 	failed := conn.HandleMessage(
 		context.Background(),
@@ -441,10 +453,11 @@ func TestAppWireMutationTerminalRejectionReplays(t *testing.T) {
 	// index is a precondition that names a real object -- unlike a turn id,
 	// which control mutations no longer carry.
 	params := appwire.TurnCancelQueuedParams{
-		ClientMutationID: "terminal-rejection",
-		Ref:              "local:" + sess.ID(),
-		Index:            7,
-		ExpectedEntryID:  "qe_gone",
+		ClientMutationID:   "terminal-rejection",
+		ExpectedInstanceID: sess.ID(),
+		Ref:                "local:" + sess.ID(),
+		Index:              7,
+		ExpectedEntryID:    "qe_gone",
 	}
 	for requestID := int64(2); requestID <= 3; requestID++ {
 		rejected := conn.HandleMessage(
@@ -498,8 +511,9 @@ func newMutationReplaySessionWithAdapter(t *testing.T, adapter llm.ProviderAdapt
 func acceptMutationReplayActiveTurn(t *testing.T, sess *agent.Session) string {
 	t.Helper()
 	response, err := sess.AcceptClientMutationStart(appwire.TurnStartParams{
-		ClientMutationID: "active-" + t.Name(),
-		Input:            []appwire.InputItem{{Type: "text", Text: "active turn"}},
+		ClientMutationID:   "active-" + t.Name(),
+		ExpectedInstanceID: sess.ID(),
+		Input:              []appwire.InputItem{{Type: "text", Text: "active turn"}},
 	})
 	if err != nil {
 		t.Fatalf("AcceptClientMutationStart: %v", err)

@@ -104,7 +104,7 @@ func TestBridge_UsesSessionStartStateWhenProvided(t *testing.T) {
 // id, model, profile and state -- must already be true by the time the
 // projection commit publishes the notification that announces it. Otherwise a
 // client that reduces thread/started and then reads thread/read can observe the
-// two disagreeing, and on /clear the disagreement spans a whole session swap.
+// two disagreeing, and on thread/clear the disagreement spans a whole session swap.
 //
 // beforeAppProjectionCommit runs on the bridge's own goroutine immediately
 // before CommitProjection, so it samples exactly the window the notification is
@@ -152,7 +152,7 @@ func TestBridgeUpdatesSessionMetadataBeforeProjectionCommit(t *testing.T) {
 //
 // The bridge tests acceptance without a lock and then applies the event's
 // status. An identity replacement landing between the two would let a
-// straggling SESSION_START from the session /clear just retired write that
+// straggling SESSION_START from the thread/clear session just retired write that
 // retired session's id, model, profile and state over the replacement's --
 // permanently, since no later event re-derives them.
 //

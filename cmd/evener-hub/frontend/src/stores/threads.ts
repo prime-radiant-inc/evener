@@ -179,13 +179,10 @@ export interface ThreadsStoreState {
   setGoal(ref: string, objective: string): Promise<GoalSetResponse>;
   rename(ref: string, name: string): Promise<void>;
   compact(ref: string): Promise<void>;
-  // Clears the thread's conversation. Unlike the actions above, thread/clear
-  // has no corresponding live notification, so its response's fresh Thread
-  // snapshot is the only signal the transcript is now empty; this action
-  // applies that snapshot to whichever of threads/watchedThreads track
-  // `ref` (mirroring resolveEscalation's own dual-map update below) so the
-  // pane doesn't keep showing stale turns until some unrelated future
-  // notification or reconnect.
+  // Clears the thread's conversation through the durable mutation outbox. The
+  // daemon's response carries the replacement snapshot; the dispatcher hands
+  // it to applyClearResponse before settling the intent so both real and lean
+  // views switch to the new instance together.
   clearThread(ref: string): Promise<void>;
   shutdown(ref: string): Promise<void>;
   // Forks a thread from a source turn, or - with opts.aside - forks the
@@ -369,6 +366,27 @@ function notifyMutationPersistence(targetRefs: Iterable<string>): void {
   for (const listener of mutationPersistenceListeners) listener(refs);
 }
 
+function applyClearResponse(targetRef: string, response: ThreadClearResponse): void {
+  const now = Date.now();
+  const model = hydrateThread({ thread: response.thread }, targetRef, now);
+  // A clear response is a newer authoritative cut than any thread/read that
+  // was already in flight for this ref. Retire those reads before publishing
+  // the replacement so a late pre-clear snapshot cannot overwrite it.
+  pendingThreadHydrations.delete(targetRef);
+  pendingWatchedHydrations.delete(targetRef);
+  threadsStore.setState((state) => {
+    const patch: Partial<ThreadsStoreState> = {};
+    if (state.threads.has(targetRef)) {
+      patch.threads = new Map(state.threads).set(targetRef, model);
+      patch.hydrations = new Map(state.hydrations).set(targetRef, (state.hydrations.get(targetRef) ?? 0) + 1);
+    }
+    if (state.watchedThreads.has(targetRef)) {
+      patch.watchedThreads = new Map(state.watchedThreads).set(targetRef, model);
+    }
+    return Object.keys(patch).length > 0 ? patch : state;
+  });
+}
+
 function currentDispatchClient(targetRef?: string): AppwireClientLike | null {
   if (wiredClient !== dispatchReadyClient || readyEpoch !== dispatchReadyEpoch) return null;
   if (targetRef && !dispatchableMutationRefs.has(targetRef)) return null;
@@ -456,6 +474,7 @@ function getMutationRuntime(): MutationRuntime | null {
     onStorageChange: (targetRefs) => {
       if (isCurrentMutationRuntime(runtime)) notifyMutationPersistence(targetRefs);
     },
+    onClearResponse: applyClearResponse,
   });
   const outbox = new MutationOutbox(storage, {
     isReady: () => isCurrentMutationRuntime(runtime) && currentDispatchClient() !== null,
@@ -741,7 +760,9 @@ function buildInput(text: string, attachments?: InputAttachment[]): InputItem[] 
   const input: InputItem[] = [];
   if (text.trim()) input.push({ type: "text", text });
   for (const att of attachments ?? []) {
-    input.push({ type: "image", mediaType: att.mediaType, data: att.data, name: att.name });
+    const image: InputItem = { type: "image", mediaType: att.mediaType, data: att.data };
+    if (att.name !== undefined) image.name = att.name;
+    input.push(image);
   }
   return input;
 }
@@ -761,18 +782,28 @@ function durableAttachments(attachments?: InputAttachment[]): MutationAttachment
   }));
 }
 
+function trackedThreadModel(ref: string): ThreadModel | undefined {
+  const state = threadsStore.getState();
+  return state.threads.get(ref) ?? state.watchedThreads.get(ref);
+}
+
+function threadInstanceID(model: ThreadModel | undefined): string | undefined {
+  return model?.instanceId ?? model?.threadId;
+}
+
 function composerMutationIntent(
   ref: string,
   route: ComposerMutationRoute,
   text: string,
   attachments?: InputAttachment[],
 ): MutationIntent {
-  const model = threadsStore.getState().threads.get(ref);
+  const model = trackedThreadModel(ref);
   // Translated HERE, not inside buildInput: this is the submit boundary. The
   // untranslated text rides along as composerText so a record that fails and
   // lands in recovery can be restored into a composer with its marker anchors
   // intact - the tiles remove those anchors, and prose is not one.
   const input = buildInput(translateAttachmentMarkers(text, attachments), attachments);
+  const expectedInstanceId = threadInstanceID(model);
   const base = {
     targetRef: ref,
     threadId: model?.threadId,
@@ -783,7 +814,7 @@ function composerMutationIntent(
     return {
       ...base,
       method: "turn/start",
-      payload: { ref, input },
+      payload: { ref, expectedInstanceId, input },
       optimisticDisplay: { method: "turn/start", input },
     };
   }
@@ -792,7 +823,7 @@ function composerMutationIntent(
     return {
       ...base,
       method,
-      payload: { ref, input },
+      payload: { ref, expectedInstanceId, input },
       optimisticDisplay: { method, input },
     };
   }
@@ -803,7 +834,7 @@ function composerMutationIntent(
   return {
     ...base,
     method: "turn/drainAsSteer",
-    payload: { ref, expectedQueueRevision, input },
+    payload: { ref, expectedInstanceId, expectedQueueRevision, input },
     optimisticDisplay: { method: "turn/drainAsSteer", input },
   };
 }
@@ -855,6 +886,25 @@ function mapConflict(err: unknown): Error {
     return new ConflictError(err.message);
   }
   return err instanceof Error ? err : new Error(String(err));
+}
+
+function clearMutationIntent(ref: string): MutationIntent {
+  const model = trackedThreadModel(ref);
+  if (!model) throw new Error(`threads store: cannot clear unhydrated thread ${ref}`);
+  const expectedInstanceId = threadInstanceID(model);
+  if (!expectedInstanceId) throw new Error(`threads store: thread ${ref} has no instance identity`);
+  return {
+    targetRef: ref,
+    threadId: model.threadId,
+    method: "thread/clear",
+    payload: { ref, expectedInstanceId },
+    attachments: [],
+    optimisticDisplay: { method: "thread/clear" },
+  };
+}
+
+function expectedInstanceID(ref: string): string | undefined {
+  return threadInstanceID(trackedThreadModel(ref));
 }
 
 function notificationRef(n: AnyNotification): string | undefined {
@@ -1975,7 +2025,12 @@ export const threadsStore = createStore<ThreadsStoreState>(() => ({
     // drain, a cold client -- and stale in the race where a turn rolls over
     // between the click and the request. Neither refusal is what the button
     // means. "Stop" means stop what you are doing.
-    await enqueueMutation(ref, "turn/interrupt", { ref }, { method: "turn/interrupt" });
+    await enqueueMutation(
+      ref,
+      "turn/interrupt",
+      { ref, expectedInstanceId: expectedInstanceID(ref) },
+      { method: "turn/interrupt" },
+    );
   },
 
   async drainAsSteer(ref, text, attachments) {
@@ -1989,7 +2044,7 @@ export const threadsStore = createStore<ThreadsStoreState>(() => ({
     await enqueueMutation(
       ref,
       "turn/promoteQueuedAsSteer",
-      { ref, index, expectedEntryId },
+      { ref, index, expectedInstanceId: expectedInstanceID(ref), expectedEntryId },
       { method: "turn/promoteQueuedAsSteer", index, expectedEntryId },
     );
   },
@@ -1998,7 +2053,7 @@ export const threadsStore = createStore<ThreadsStoreState>(() => ({
     await enqueueMutation(
       ref,
       "turn/cancelQueued",
-      { ref, index, expectedEntryId },
+      { ref, index, expectedInstanceId: expectedInstanceID(ref), expectedEntryId },
       { method: "turn/cancelQueued", index, expectedEntryId },
     );
   },
@@ -2069,28 +2124,15 @@ export const threadsStore = createStore<ThreadsStoreState>(() => ({
   },
 
   async clearThread(ref) {
-    const client = requireClient();
-    let resp: ThreadClearResponse;
-    try {
-      resp = await client.request("thread/clear", { ref });
-    } catch (err) {
-      throw mapConflict(err);
-    }
-    const now = Date.now();
-    threadsStore.setState((s) => {
-      const patch: Partial<ThreadsStoreState> = {};
-      if (s.threads.has(ref)) {
-        const next = new Map(s.threads);
-        next.set(ref, hydrateThread({ thread: resp.thread }, ref, now));
-        patch.threads = next;
-      }
-      if (s.watchedThreads.has(ref)) {
-        const next = new Map(s.watchedThreads);
-        next.set(ref, hydrateThread({ thread: resp.thread }, ref, now));
-        patch.watchedThreads = next;
-      }
-      return Object.keys(patch).length > 0 ? patch : s;
-    });
+    const runtime = requireMutationRuntime();
+    await runtime.start;
+    await enqueueMutationIntent(clearMutationIntent(ref));
+    // A clear is fenced by the model's instance id, so it can dispatch while
+    // an older resync read is in flight. Its response is the newer cut and
+    // retires that read in applyClearResponse.
+    dispatchableMutationRefs.add(ref);
+    await runtime.dispatcher.dispatchTargets([ref]);
+    await refreshMutationPins(runtime, [ref]);
   },
 
   async shutdown(ref) {

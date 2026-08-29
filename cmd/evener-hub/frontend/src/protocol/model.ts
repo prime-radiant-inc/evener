@@ -206,6 +206,10 @@ export interface ThreadDiagnostics {
 export interface ThreadModel {
   ref: string;
   threadId: string;
+  // The current daemon/session instance behind this stable ref. Clear uses
+  // it as the fencing precondition so an intent cannot replace a newer
+  // instance that took the ref after a reconnect or restart.
+  instanceId?: string;
   name: string;
   status: ThreadStatus;
   modelProvider: string;

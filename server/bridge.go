@@ -141,7 +141,7 @@ func BridgeEvent(srv *Server, ev events.SessionEvent, observer func(events.Sessi
 // notification arrives on the subscription, the status it describes is read
 // back from thread/read. Projecting first leaves a window where a
 // client that reduces thread/started and immediately re-reads sees the
-// PREVIOUS session's model, profile and state — and across /clear that window
+// PREVIOUS session's model, profile and state — and across thread/clear that window
 // spans a whole identity, because ReplaceAppIdentity has already moved
 // status.SessionID to the replacement while the rest still describes what it
 // replaced.
@@ -149,7 +149,7 @@ func BridgeEvent(srv *Server, ev events.SessionEvent, observer func(events.Sessi
 // Acceptance with application. The bridge tests acceptance unlocked, so an
 // event admitted a moment before an identity replacement would otherwise write
 // the REPLACED session's metadata on top of the replacement's — a straggling
-// SESSION_START from the session /clear just retired renaming the thread that
+// SESSION_START from the session thread/clear just retired renaming the thread that
 // retired it, with nothing to correct it afterwards. Re-testing here, in the
 // same hold as the writes, drops it instead.
 //

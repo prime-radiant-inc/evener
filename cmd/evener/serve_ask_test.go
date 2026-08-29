@@ -200,9 +200,10 @@ func TestServeAsk_StatusAwaitingAtRest(t *testing.T) {
 	ref := appwire.Ref{SourceID: "local", ThreadID: entry.SessionID}.String()
 
 	if _, err := client.TurnStart(ctx, appwire.TurnStartParams{
-		ClientMutationID: "ask-awaiting-question",
-		Ref:              ref,
-		Input:            []appwire.InputItem{{Type: "text", Text: "which db should we use?"}},
+		ClientMutationID:   "ask-awaiting-question",
+		ExpectedInstanceID: entry.SessionID,
+		Ref:                ref,
+		Input:              []appwire.InputItem{{Type: "text", Text: "which db should we use?"}},
 	}); err != nil {
 		t.Fatalf("TurnStart (question): %v", err)
 	}
@@ -215,9 +216,10 @@ func TestServeAsk_StatusAwaitingAtRest(t *testing.T) {
 	// The reply is the next user message on the SAME input path (spec §5.2): an
 	// ordinary turn/start, not a new wire method.
 	if _, err := client.TurnStart(ctx, appwire.TurnStartParams{
-		ClientMutationID: "ask-awaiting-answer",
-		Ref:              ref,
-		Input:            []appwire.InputItem{{Type: "text", Text: "[answers]\n1. [DB] → \"Postgres\""}},
+		ClientMutationID:   "ask-awaiting-answer",
+		ExpectedInstanceID: entry.SessionID,
+		Ref:                ref,
+		Input:              []appwire.InputItem{{Type: "text", Text: "[answers]\n1. [DB] → \"Postgres\""}},
 	}); err != nil {
 		t.Fatalf("TurnStart (reply): %v", err)
 	}
@@ -328,9 +330,10 @@ func TestServeAsk_NoFlickerOnJobCompletion(t *testing.T) {
 	ref := appwire.Ref{SourceID: "local", ThreadID: entry.SessionID}.String()
 
 	if _, err := client.TurnStart(ctx, appwire.TurnStartParams{
-		ClientMutationID: "ask-no-flicker",
-		Ref:              ref,
-		Input:            []appwire.InputItem{{Type: "text", Text: "which db should we use? kick off the background prep too"}},
+		ClientMutationID:   "ask-no-flicker",
+		ExpectedInstanceID: entry.SessionID,
+		Ref:                ref,
+		Input:              []appwire.InputItem{{Type: "text", Text: "which db should we use? kick off the background prep too"}},
 	}); err != nil {
 		t.Fatalf("TurnStart: %v", err)
 	}
@@ -437,9 +440,10 @@ func TestServeAsk_RestoreReportsAwaitingImmediately(t *testing.T) {
 	ref := appwire.Ref{SourceID: "local", ThreadID: entry1.SessionID}.String()
 
 	if _, err := client.TurnStart(ctx, appwire.TurnStartParams{
-		ClientMutationID: "ask-restore",
-		Ref:              ref,
-		Input:            []appwire.InputItem{{Type: "text", Text: "which db should we use?"}},
+		ClientMutationID:   "ask-restore",
+		ExpectedInstanceID: entry1.SessionID,
+		Ref:                ref,
+		Input:              []appwire.InputItem{{Type: "text", Text: "which db should we use?"}},
 	}); err != nil {
 		t.Fatalf("TurnStart: %v", err)
 	}

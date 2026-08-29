@@ -790,5 +790,5 @@ func (m hubModel) updateQuestionOverlayKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) 
 	// practice, and the next ctrl+q self-heals via the empty-pending check
 	// above.
 	m.questionOverlay.deferred = true
-	return m, sendHubInput(m.client, ref, composed, composed, nil)
+	return m, sendHubInput(m.client, ref, composed, composed, nil, m.detail.InstanceID)
 }

@@ -3,8 +3,6 @@ package server
 import (
 	"context"
 	"errors"
-	"net/http"
-	"net/http/httptest"
 	"strings"
 	"testing"
 	"time"
@@ -12,81 +10,6 @@ import (
 	"primeradiant.com/evener/agent"
 	"primeradiant.com/evener/appwire"
 )
-
-func TestClearEndpoint(t *testing.T) {
-	srv := NewServer(ServerConfig{})
-
-	called := false
-	srv.SetClearFunc(func(ctx context.Context) error {
-		called = true
-		return nil
-	})
-
-	req := httptest.NewRequest(http.MethodPost, "/clear", nil)
-	w := httptest.NewRecorder()
-	srv.ServeHTTP(w, req)
-
-	if w.Code != http.StatusNoContent {
-		t.Fatalf("status code: got %d, want 204", w.Code)
-	}
-	if !called {
-		t.Error("clear function not called")
-	}
-}
-
-func TestClearEndpoint_NoFunc(t *testing.T) {
-	srv := NewServer(ServerConfig{})
-
-	req := httptest.NewRequest(http.MethodPost, "/clear", nil)
-	w := httptest.NewRecorder()
-	srv.ServeHTTP(w, req)
-
-	if w.Code != http.StatusServiceUnavailable {
-		t.Fatalf("status code: got %d, want 503", w.Code)
-	}
-}
-
-func TestClear_409WhileProcessing(t *testing.T) {
-	srv := NewServer(ServerConfig{})
-	called := false
-	srv.SetClearFunc(func(ctx context.Context) error {
-		called = true
-		return nil
-	})
-	srv.SetProcessing(true)
-
-	req := httptest.NewRequest(http.MethodPost, "/clear", nil)
-	rec := httptest.NewRecorder()
-	srv.ServeHTTP(rec, req)
-
-	if rec.Code != http.StatusConflict {
-		t.Fatalf("status: got %d, want %d (409)", rec.Code, http.StatusConflict)
-	}
-	if called {
-		t.Fatal("clearFunc should not have been called while processing")
-	}
-}
-
-func TestClear_OKWhenIdle(t *testing.T) {
-	srv := NewServer(ServerConfig{})
-	called := false
-	srv.SetClearFunc(func(ctx context.Context) error {
-		called = true
-		return nil
-	})
-	srv.SetProcessing(false)
-
-	req := httptest.NewRequest(http.MethodPost, "/clear", nil)
-	rec := httptest.NewRecorder()
-	srv.ServeHTTP(rec, req)
-
-	if rec.Code != http.StatusNoContent {
-		t.Fatalf("status: got %d, want %d", rec.Code, http.StatusNoContent)
-	}
-	if !called {
-		t.Fatal("clearFunc should have been called when idle")
-	}
-}
 
 func TestSubmitNotification_PushesEntryNotification(t *testing.T) {
 	srv := NewServer(ServerConfig{})
@@ -119,21 +42,6 @@ func TestSubmitNotification_DropIfFull(t *testing.T) {
 		// expected: returned without blocking
 	case <-time.After(time.Second):
 		t.Fatal("SubmitNotification blocked on full channel")
-	}
-}
-
-func TestClearEndpoint_FuncError(t *testing.T) {
-	srv := NewServer(ServerConfig{})
-	srv.SetProcessing(false)
-	srv.SetClearFunc(func(ctx context.Context) error {
-		return errors.New("clear failed")
-	})
-
-	req := httptest.NewRequest(http.MethodPost, "/clear", nil)
-	rec := httptest.NewRecorder()
-	srv.ServeHTTP(rec, req)
-	if rec.Code != http.StatusInternalServerError {
-		t.Fatalf("status: got %d, want 500; body=%q", rec.Code, rec.Body.String())
 	}
 }
 

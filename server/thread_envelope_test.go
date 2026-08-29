@@ -797,7 +797,7 @@ func TestClearingTheGoalClearsItOnTheWire(t *testing.T) {
 // the I/O back under a lock the read path takes. It also takes no projection
 // lock, so unlike the pull it replaced it is no longer mutually excluded from
 // ReplaceAppIdentity's commit. In production that race is not theoretical: the
-// identity commit for /clear runs while the OLD session's bridge is still
+// identity commit for thread/clear runs while the OLD session's bridge is still
 // draining, and only closes it afterwards.
 //
 // A sample that started before the replacement therefore describes the retired
@@ -904,9 +904,10 @@ func TestEveryMutationHandlerPublishesItsQueueChange(t *testing.T) {
 			},
 			params: func(id string) any {
 				return appwire.TurnStartParams{
-					Ref:              "local:th_1",
-					ClientMutationID: id,
-					Input:            []appwire.InputItem{{Type: "text", Text: "go"}},
+					Ref:                "local:th_1",
+					ClientMutationID:   id,
+					ExpectedInstanceID: "th_1",
+					Input:              []appwire.InputItem{{Type: "text", Text: "go"}},
 				}
 			},
 		},
@@ -921,9 +922,10 @@ func TestEveryMutationHandlerPublishesItsQueueChange(t *testing.T) {
 			},
 			params: func(id string) any {
 				return appwire.TurnSteerParams{
-					Ref:              "local:th_1",
-					ClientMutationID: id,
-					Input:            []appwire.InputItem{{Type: "text", Text: "steer"}},
+					Ref:                "local:th_1",
+					ClientMutationID:   id,
+					ExpectedInstanceID: "th_1",
+					Input:              []appwire.InputItem{{Type: "text", Text: "steer"}},
 				}
 			},
 		},
@@ -938,9 +940,10 @@ func TestEveryMutationHandlerPublishesItsQueueChange(t *testing.T) {
 			},
 			params: func(id string) any {
 				return appwire.TurnQueueParams{
-					Ref:              "local:th_1",
-					ClientMutationID: id,
-					Input:            []appwire.InputItem{{Type: "text", Text: "later"}},
+					Ref:                "local:th_1",
+					ClientMutationID:   id,
+					ExpectedInstanceID: "th_1",
+					Input:              []appwire.InputItem{{Type: "text", Text: "later"}},
 				}
 			},
 		},
@@ -955,8 +958,9 @@ func TestEveryMutationHandlerPublishesItsQueueChange(t *testing.T) {
 			},
 			params: func(id string) any {
 				return appwire.TurnInterruptParams{
-					Ref:              "local:th_1",
-					ClientMutationID: id,
+					Ref:                "local:th_1",
+					ClientMutationID:   id,
+					ExpectedInstanceID: "th_1",
 				}
 			},
 		},
@@ -971,8 +975,9 @@ func TestEveryMutationHandlerPublishesItsQueueChange(t *testing.T) {
 			},
 			params: func(id string) any {
 				return appwire.TurnDrainAsSteerParams{
-					Ref:              "local:th_1",
-					ClientMutationID: id,
+					Ref:                "local:th_1",
+					ClientMutationID:   id,
+					ExpectedInstanceID: "th_1",
 				}
 			},
 		},
@@ -987,10 +992,11 @@ func TestEveryMutationHandlerPublishesItsQueueChange(t *testing.T) {
 			},
 			params: func(id string) any {
 				return appwire.TurnPromoteQueuedAsSteerParams{
-					Ref:              "local:th_1",
-					Index:            0,
-					ClientMutationID: id,
-					ExpectedEntryID:  "entry_1",
+					Ref:                "local:th_1",
+					Index:              0,
+					ClientMutationID:   id,
+					ExpectedInstanceID: "th_1",
+					ExpectedEntryID:    "entry_1",
 				}
 			},
 		},
@@ -1005,10 +1011,11 @@ func TestEveryMutationHandlerPublishesItsQueueChange(t *testing.T) {
 			},
 			params: func(id string) any {
 				return appwire.TurnCancelQueuedParams{
-					Ref:              "local:th_1",
-					Index:            0,
-					ClientMutationID: id,
-					ExpectedEntryID:  "entry_1",
+					Ref:                "local:th_1",
+					Index:              0,
+					ClientMutationID:   id,
+					ExpectedInstanceID: "th_1",
+					ExpectedEntryID:    "entry_1",
 				}
 			},
 		},

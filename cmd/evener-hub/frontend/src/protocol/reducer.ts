@@ -316,6 +316,7 @@ export function hydrateThread(resp: ThreadReadResponse, ref: string, now: number
   return {
     ref,
     threadId: thread.id,
+    ...(thread.evener.instanceId === undefined ? {} : { instanceId: thread.evener.instanceId }),
     name: thread.name ?? "",
     status: thread.status,
     modelProvider: thread.modelProvider,
