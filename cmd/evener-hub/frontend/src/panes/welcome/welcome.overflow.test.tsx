@@ -117,17 +117,17 @@ test("welcome.module.css overrides white-space: nowrap for the resume-candidate 
   expect(css).not.toMatch(/white-space:\s*nowrap/);
 });
 
-// Issue #197 symptom: the inflated resume button cascades into .examples and
-// .hints, whose `width: min(100%, 36rem)` resolves its 100% against the
-// now-inflated .actions. The fix must cap the .actions / title containers so
-// wide content wraps instead of inflating the flex layout. This asserts the
-// containers that hold the title and examples/hints carry a max-width (or
-// equivalent width cap) plus overflow-wrap so long unbroken text wraps.
-test("welcome.module.css caps width and wraps long text in the title/examples/hints containers", () => {
+// Issue #197 symptom: the inflated resume button cascades into .hints, whose
+// `width: min(100%, 36rem)` resolves its 100% against the now-inflated .actions.
+// The fix must cap the .actions / title containers so wide content wraps
+// instead of inflating the flex layout. This asserts the containers that hold
+// the title and hints carry a max-width (or equivalent width cap) plus
+// overflow-wrap so long unbroken text wraps.
+test("welcome.module.css caps width and wraps long text in the title/hints containers", () => {
   const css = welcomeCss();
   // .actions is the flex column holding the resume button, the orientation
-  // paragraph, .examples and .hints. It must cap its own width so an
-  // unbreakable child cannot inflate it past the viewport.
+  // paragraph and .hints. It must cap its own width so an unbreakable child
+  // cannot inflate it past the viewport.
   const actionsBlock = css.match(/\.actions\s*\{([^}]*)\}/);
   expect(actionsBlock, "welcome.module.css must define an .actions rule").toBeTruthy();
   const actionsRules = actionsBlock?.[1] ?? "";

@@ -6,6 +6,7 @@ import { navigationStore, resetNavigationStoreForTests } from "../../stores/navi
 import { keyID } from "../../stores/navigation/types";
 import buttonStyles from "../../widgets/button/button.module.css";
 import Welcome from "./Welcome";
+import { WelcomeContent } from "./WelcomeContent";
 
 afterEach(() => {
   cleanup();
@@ -80,17 +81,6 @@ test("orients a new person to what a session can do", () => {
   expect(screen.getByText(/delegate work to helpers/i)).toBeTruthy();
 });
 
-test("offers concrete example tasks that activate the real Spawn prefill", async () => {
-  const user = userEvent.setup();
-  render(<Welcome params={{}} paneId="welcome" focused={true} />);
-
-  const example = screen.getByRole("button", { name: /Find and fix the root cause of a flaky test/i });
-  await user.click(example);
-
-  expect(window.location.pathname).toBe("/new");
-  expect(new URLSearchParams(window.location.search).get("prompt")).toBe("Find and fix the root cause of a flaky test");
-});
-
 test('clicking "New session" navigates to /new', async () => {
   const user = userEvent.setup();
   render(<Welcome params={{}} paneId="welcome" focused={true} />);
@@ -106,6 +96,26 @@ test("shows params.note as a hint when provided", () => {
 test("shows no hint when params.note is absent", () => {
   const { container } = render(<Welcome params={{}} paneId="welcome" focused={true} />);
   expect(container.textContent).not.toMatch(/available yet/i);
+});
+
+test("WelcomeContent does not render example prompts", () => {
+  render(<WelcomeContent />);
+  expect(screen.queryByRole("button", { name: /Find and fix the root cause/i })).toBeNull();
+  expect(screen.queryByText("Try a task to get started")).toBeNull();
+});
+
+test("WelcomeContent renders New session only when showNewSession is true", () => {
+  const { rerender } = render(<WelcomeContent />);
+  expect(screen.queryByRole("button", { name: "New session" })).toBeNull();
+  rerender(<WelcomeContent showNewSession />);
+  expect(screen.getByRole("button", { name: "New session" })).toBeTruthy();
+});
+
+test("WelcomeContent renders chord hints only when showHints is true", () => {
+  const { rerender } = render(<WelcomeContent />);
+  expect(screen.queryByText("command palette")).toBeNull();
+  rerender(<WelcomeContent showHints />);
+  expect(screen.getByText("command palette")).toBeTruthy();
 });
 
 // tbk8: a cold "/" with no restored pane layout (a fresh browser, or
