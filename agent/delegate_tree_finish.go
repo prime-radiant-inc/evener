@@ -59,12 +59,10 @@ func (c *delegateTreeController) SupervisionBoundary(lease delegateLease, mode d
 	return delegateSupervisionProceed, nil
 }
 
-// supervisionSuppressedLocked reports whether ordinary supervision must be
-// suppressed because the controller is closing, the generation is stopping or
-// stop-pending, or its live state needs recovery. It is the single
-// suppression predicate behind SupervisionBoundary's suppress-without-cause
-// branch; the not-running/not-ready path (errDelegateTargetBusy) is a
-// different case and deliberately not covered here. Caller holds c.mu.
+// supervisionSuppressedLocked reports whether ordinary supervision must be suppressed
+// (controller closing, generation stopping or stop-pending, or recovery required).
+// The not-running/not-ready path (errDelegateTargetBusy) is not part of this predicate.
+// Caller holds c.mu.
 func (c *delegateTreeController) supervisionSuppressedLocked(aggregate *delegatestore.Aggregate, live *delegateLiveState) bool {
 	return c.closing || aggregate.Phase == delegatestore.PhaseStopping || aggregate.PendingStopSeq != 0 || live.recoveryRequired
 }

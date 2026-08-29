@@ -1740,12 +1740,9 @@ func (a *subagent) run(ctx context.Context, input string, inputProvenance *prove
 	a.endedAt = &finalizeTime
 	runEnd := classifyRunEnd(err, a.cancelRequested)
 	a.status = runEnd.status
-	// The exhaustion payload replaces the run error only when the exhausted
-	// status branch actually matched: a cancelled run whose error is
-	// Join(context.Canceled, budgetExhaustionError) publishes Cancelled and
-	// keeps the joined error verbatim (the pre-classifier switch overwrote
-	// a.err only inside its budgetExhausted case).
-	if runEnd.status == SubagentExhausted {
+	// The payload is non-nil exactly when the run published Exhausted
+	// (classifier contract), so its presence alone is the overwrite decision.
+	if runEnd.exhaustion != nil {
 		a.err = runEnd.exhaustion
 	}
 	done := a.done
@@ -1816,48 +1813,41 @@ func (a *subagent) drainForFinalization(ctx context.Context, result string) (str
 	return result, parentDriveNotify, nil
 }
 
-// runEndClass is the shared classification of a delegate run's terminal
-// error, with the three projections every consumer derives from the same
-// taxonomy: settlement mode (can the run still be nudged or steered),
-// fatality (should the error be gated as a fatal run), and the published
-// subagent status.
+// runEndClass is the shared classification of a delegate run's terminal error.
 type runEndClass struct {
-	mode       delegateSettlementMode
-	fatal      bool
-	status     SubagentStatus
+	mode   delegateSettlementMode
+	fatal  bool
+	status SubagentStatus
+	// exhaustion is non-nil exactly when status == SubagentExhausted; its
+	// presence is the caller's decision to replace the run error, so a
+	// cancelled run whose error also carries a budget component never sees it.
 	exhaustion *budgetExhaustionError
 }
 
 // classifyRunEnd maps a run error plus the local cancel request onto the
 // settlement-mode, fatality, and status projections in one pattern-match over
 // the run-end taxonomy. It is pure: no locking, I/O, Session, or controller
-// access. Pins:
+// access. Load-bearing pins:
 //
 //   - Settlement mode is terminal when cancelRequested regardless of err,
 //     while SubagentCancelled additionally requires errors.Is(err,
-//     context.Canceled). The two are deliberately distinct; one is "this
-//     runtime can no longer settle ordinarily", the other is "the user
-//     stopped this run".
-//   - Budget exhaustion is terminal settlement, published as status
-//     Exhausted, never fatal, and its payload replaces the run error in the
-//     subagent's terminal state (the caller applies runEnd.exhaustion).
+//     context.Canceled): "this runtime can no longer settle ordinarily" vs
+//     "the user stopped this run".
+//   - Budget exhaustion is tested BEFORE the bare-text/empty-response
+//     sentinels (so Join(bareText, exhaustion) settles terminally), and a
+//     joined exhaustion+Canceled under cancel still publishes Cancelled with
+//     no exhaustion payload — the error is kept verbatim there.
 //   - context.Canceled is never fatal even when cancelRequested is false —
 //     a host interrupt, not a user stop.
 //   - errors.Is/errors.As semantics are preserved for wrapped and joined
-//     (errors.Join) error values, matching the pre-refactor matching.
+//     (errors.Join) error values.
 func classifyRunEnd(err error, cancelRequested bool) runEndClass {
 	exhaustion, budgetExhausted := budgetExhaustionFromError(err)
-	// Order matters for joined errors: the pre-refactor settlement-mode
-	// logic tested budget exhaustion BEFORE the bare-text/empty-response
-	// sentinels, so Join(bareText, exhaustion) settles terminally.
 	ordinary := !budgetExhausted && (err == nil ||
 		errors.Is(err, errBareTextWithoutResultTool) || errors.Is(err, errEmptyResponseExhausted))
-	nonFatal := err == nil || errors.Is(err, context.Canceled) || ordinary || budgetExhausted
-	cls := runEndClass{exhaustion: exhaustion}
-	if cancelRequested {
-		// Cancel-requested runs always settle terminally, regardless of err.
-		cls.mode = delegateSettlementTerminal
-	} else if ordinary {
+	nonFatal := ordinary || budgetExhausted || errors.Is(err, context.Canceled)
+	var cls runEndClass
+	if !cancelRequested && ordinary {
 		cls.mode = delegateSettlementOrdinary
 	} else {
 		cls.mode = delegateSettlementTerminal
@@ -1868,6 +1858,7 @@ func classifyRunEnd(err error, cancelRequested bool) runEndClass {
 		cls.status = SubagentCancelled
 	case budgetExhausted:
 		cls.status = SubagentExhausted
+		cls.exhaustion = exhaustion
 	case err != nil:
 		cls.status = SubagentFailed
 	default:

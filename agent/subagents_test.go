@@ -457,30 +457,25 @@ func TestCancelAgent_GenuineFailureRacingCancelStaysFailed(t *testing.T) {
 // errors.Join(context.Canceled, budgetExhaustionError) publishes SubagentCancelled
 // (the cancel branch wins the status) and must keep the joined error verbatim —
 // errors.Is(a.err, context.Canceled) stays true and the exhaustion component is
+// not substituted for the whole error. The pre-classifier switch overwrote a.err
 // only inside its budgetExhausted case, which this branch never reached.
 func TestCancelAgent_JoinedCanceledAndExhaustionStaysCancelledWithJoinedError(t *testing.T) {
 	t.Parallel()
 	joined := errors.Join(context.Canceled, &budgetExhaustionError{Budget: exhaustedBudgetTurns, Limit: 23, Resumable: false})
-	dir := t.TempDir()
-	c := llm.NewClient()
-	c.Register(&fakeErrAdapter{
-		name: "openai",
-		steps: []func(req llm.Request) (llm.Response, error){
-			func(req llm.Request) (llm.Response, error) {
-				return llm.Response{}, joined
+	sess := newSession(t,
+		withAdapter(&fakeErrAdapter{
+			name: "openai",
+			steps: []func(req llm.Request) (llm.Response, error){
+				func(req llm.Request) (llm.Response, error) {
+					return llm.Response{}, joined
+				},
 			},
-		},
-	})
-	noRetry := llm.RetryPolicy{MaxRetries: 0}
-	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{
-		MaxSubagentDepth: 1,
-		LLMRetryPolicy:   &noRetry,
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer sess.Close()
-
+		}),
+		withConfig(SessionConfig{
+			MaxSubagentDepth: 1,
+			LLMRetryPolicy:   &llm.RetryPolicy{MaxRetries: 0},
+		}),
+	)
 	// The sub drives sub.run directly (not via the manager), so it is
 	// intentionally not tracked; see the note in
 	// TestCancelAgent_GenuineFailureRacingCancelStaysFailed.
