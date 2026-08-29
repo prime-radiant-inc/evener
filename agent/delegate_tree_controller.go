@@ -535,9 +535,15 @@ func (c *delegateTreeController) escalateCompletionRequirement(lease delegateLea
 }
 
 func (c *delegateTreeController) escalateCompletionRequirementLocked(lease delegateLease) error {
-	evidence, err := c.completionEvidenceLocked(lease)
+	_, live, err := c.exactLeaseLocked(lease)
 	if err != nil {
 		return err
+	}
+	evidence := live.binding.evidence
+	// Production start commits always attach evidence, but exact legacy/manual
+	// bindings may omit it and must still consume admitted steering.
+	if evidence == nil {
+		return nil
 	}
 	if evidence.requirement == delegateCompletionAttentionOnly {
 		evidence.requirement = delegateCompletionReportRequired
