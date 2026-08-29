@@ -1117,12 +1117,26 @@ func (s *NavigationService) refreshPending(ctx context.Context) {
 		return
 	}
 	if _, err := s.Refresh(ctx, hint); err != nil {
+		retained := false
 		s.mu.Lock()
 		if s.pendingEpoch == epoch {
 			s.pendingHint = mergeNavigationChangeHints(hint, s.pendingHint)
 			s.pendingInvalidation = true
+			retained = true
 		}
 		s.mu.Unlock()
+		// A failed forced rebuild re-arms the pending invalidation but would
+		// otherwise leave no wake pending: the Start loop's next non-forced
+		// rebuild publishes nothing (the pending epoch survives it) and the
+		// loop parks in waitBoundaryOrWake until the next snapshot boundary —
+		// up to 24h. Re-send the wake token exactly as Invalidate does so the
+		// retryAfter retry window governs the next attempt.
+		if retained {
+			select {
+			case s.wake <- struct{}{}:
+			default:
+			}
+		}
 		return
 	}
 	s.mu.Lock()
