@@ -1,16 +1,17 @@
 // Persistence and in-memory UI state for the live concept switcher.
 //
-// Only the concept ID is persisted to storage. All other UI state (drafts,
-// disclosures, question state, scroll anchors) lives in memory for the
-// lifetime of the store. resetProfileScope() clears thread-keyed UI when the
-// active profile changes, but preserves the persisted concept.
+// Only the concept ID is persisted. Production composer/question/disclosure
+// state remains shared, while frame-owned presentation memory is scoped by the
+// exact nested {concept, threadKey} tuple. resetProfileScope() clears every
+// profile/thread-bound value but preserves the persisted concept selection.
 
 import { create } from "zustand";
 import type {
+  ConversationUiMemory,
   LiveConceptUiState,
   QuestionDraft,
-  ScrollAnchor,
 } from "./contract";
+import type { ConversationAnchor } from "./conversation/contract";
 import type { ConceptId } from "./model";
 
 export interface ConceptStorage {
@@ -20,15 +21,37 @@ export interface ConceptStorage {
 }
 
 export interface LiveConceptUiStore extends LiveConceptUiState {
+  readonly conversationUi: ReadonlyMap<
+    ConceptId,
+    ReadonlyMap<string, ConversationUiMemory>
+  >;
   setConcept(concept: ConceptId): void;
   setWorkOpen(open: boolean): void;
   setComposerMode(mode: "send" | "steer" | "queue"): void;
   toggleTool(key: string): void;
   toggleWork(key: string): void;
   setQuestionDraft(key: string, draft: QuestionDraft): void;
-  setFocusedItemKey(key: string | null): void;
-  setScrollAnchor(anchorKey: string, anchor: ScrollAnchor): void;
-  clearScrollAnchor(anchorKey: string): void;
+  setConversationAnchor(
+    concept: ConceptId,
+    threadKey: string,
+    anchor: ConversationAnchor,
+  ): void;
+  setConversationUnseen(
+    concept: ConceptId,
+    threadKey: string,
+    count: number,
+  ): void;
+  setEvidenceState(
+    concept: ConceptId,
+    threadKey: string,
+    evidenceKey: string | null,
+    triggerKey: string | null,
+  ): void;
+  setConversationFocus(
+    concept: ConceptId,
+    threadKey: string,
+    itemKey: string | null,
+  ): void;
   resetProfileScope(): void;
 }
 
@@ -46,6 +69,85 @@ function loadConcept(storage: ConceptStorage): ConceptId {
   return "stillwater";
 }
 
+function immutableSet<Value>(values: Iterable<Value> = []): ReadonlySet<Value> {
+  const snapshot = new Set(values);
+  Object.defineProperties(snapshot, {
+    add: {
+      value: () => {
+        throw new TypeError("Cannot mutate an immutable set");
+      },
+    },
+    delete: {
+      value: () => {
+        throw new TypeError("Cannot mutate an immutable set");
+      },
+    },
+    clear: {
+      value: () => {
+        throw new TypeError("Cannot mutate an immutable set");
+      },
+    },
+  });
+  return Object.freeze(snapshot);
+}
+
+function immutableMap<Key, Value>(
+  entries: Iterable<readonly [Key, Value]> = [],
+): ReadonlyMap<Key, Value> {
+  const snapshot = new Map(entries);
+  Object.defineProperties(snapshot, {
+    set: {
+      value: () => {
+        throw new TypeError("Cannot mutate an immutable map");
+      },
+    },
+    delete: {
+      value: () => {
+        throw new TypeError("Cannot mutate an immutable map");
+      },
+    },
+    clear: {
+      value: () => {
+        throw new TypeError("Cannot mutate an immutable map");
+      },
+    },
+  });
+  return Object.freeze(snapshot);
+}
+
+function emptyConversationMemory(): ConversationUiMemory {
+  return Object.freeze({
+    anchor: null,
+    unseen: 0,
+    evidenceKey: null,
+    evidenceTriggerKey: null,
+    focusedItemKey: null,
+    expandedEvidenceKeys: immutableSet<string>(),
+  });
+}
+
+function updateConversationMemory(
+  state: Pick<LiveConceptUiStore, "conversationUi">,
+  concept: ConceptId,
+  threadKey: string,
+  update: (memory: ConversationUiMemory) => ConversationUiMemory,
+): Pick<LiveConceptUiStore, "conversationUi"> {
+  const currentConcept = state.conversationUi.get(concept);
+  const currentMemory =
+    currentConcept?.get(threadKey) ?? emptyConversationMemory();
+  const nextMemory = Object.freeze(update(currentMemory));
+  const nextConcept = new Map(currentConcept ?? []);
+  nextConcept.set(threadKey, nextMemory);
+  const next = new Map(state.conversationUi);
+  next.set(concept, immutableMap(nextConcept));
+  return { conversationUi: immutableMap(next) };
+}
+
+function normalizeUnseen(count: number): number {
+  if (!Number.isFinite(count) || count <= 0) return 0;
+  return Math.floor(count);
+}
+
 export function createLiveConceptUiStore(storage: ConceptStorage) {
   return create<LiveConceptUiStore>((set) => ({
     concept: loadConcept(storage),
@@ -54,6 +156,7 @@ export function createLiveConceptUiStore(storage: ConceptStorage) {
     expandedToolKeys: new Set<string>(),
     expandedWorkKeys: new Set<string>(),
     questionDrafts: {},
+    conversationUi: immutableMap(),
     focusedItemKey: null,
     scrollAnchors: {},
 
@@ -87,17 +190,35 @@ export function createLiveConceptUiStore(storage: ConceptStorage) {
       set((state) => ({
         questionDrafts: { ...state.questionDrafts, [key]: draft },
       })),
-    setFocusedItemKey: (focusedItemKey) => set({ focusedItemKey }),
-    setScrollAnchor: (anchorKey, anchor) =>
-      set((state) => ({
-        scrollAnchors: { ...state.scrollAnchors, [anchorKey]: anchor },
-      })),
-    clearScrollAnchor: (anchorKey) =>
-      set((state) => {
-        const next = { ...state.scrollAnchors };
-        delete next[anchorKey];
-        return { scrollAnchors: next };
-      }),
+    setConversationAnchor: (concept, threadKey, anchor) =>
+      set((state) =>
+        updateConversationMemory(state, concept, threadKey, (memory) => ({
+          ...memory,
+          anchor: Object.freeze({ ...anchor }),
+        })),
+      ),
+    setConversationUnseen: (concept, threadKey, count) =>
+      set((state) =>
+        updateConversationMemory(state, concept, threadKey, (memory) => ({
+          ...memory,
+          unseen: normalizeUnseen(count),
+        })),
+      ),
+    setEvidenceState: (concept, threadKey, evidenceKey, evidenceTriggerKey) =>
+      set((state) =>
+        updateConversationMemory(state, concept, threadKey, (memory) => ({
+          ...memory,
+          evidenceKey,
+          evidenceTriggerKey: evidenceKey === null ? null : evidenceTriggerKey,
+        })),
+      ),
+    setConversationFocus: (concept, threadKey, focusedItemKey) =>
+      set((state) =>
+        updateConversationMemory(state, concept, threadKey, (memory) => ({
+          ...memory,
+          focusedItemKey,
+        })),
+      ),
     resetProfileScope: () =>
       set({
         workOpen: false,
@@ -105,6 +226,7 @@ export function createLiveConceptUiStore(storage: ConceptStorage) {
         expandedToolKeys: new Set<string>(),
         expandedWorkKeys: new Set<string>(),
         questionDrafts: {},
+        conversationUi: immutableMap(),
         focusedItemKey: null,
         scrollAnchors: {},
       }),
