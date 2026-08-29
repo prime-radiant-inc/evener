@@ -508,11 +508,27 @@ export function ConversationFrame({
 }: ConversationFrameProps): ReactElement {
   const backRef = useRef<HTMLButtonElement>(null);
   const transcriptRef = useRef<VirtualTranscriptHandle>(null);
-  const closingEvidenceRef = useRef(false);
-  const pendingTriggerFocusRef = useRef<string | null>(null);
+  const mountedRef = useRef(false);
+  const lifecycleGenerationRef = useRef(0);
+  const sheetGenerationRef = useRef(0);
+  const closeOperationRef = useRef<{ readonly generation: number } | null>(
+    null,
+  );
+  const pendingOpenRef = useRef<{
+    readonly generation: number;
+    readonly evidenceKey: string;
+    readonly triggerKey: string;
+  } | null>(null);
+  const pendingTriggerFocusRef = useRef<{
+    readonly generation: number;
+    readonly triggerKey: string;
+    readonly restored: boolean;
+  } | null>(null);
   const [evidenceSheet, setEvidenceSheet] = useState<EvidenceSheetState | null>(
     null,
   );
+  const evidenceSheetRef = useRef<EvidenceSheetState | null>(null);
+  evidenceSheetRef.current = evidenceSheet;
   const items = state.conversation?.items ?? [];
   const previousItems = useRef<ReadonlyMap<string, ConversationDisplayItem>>(
     new Map(),
@@ -538,19 +554,40 @@ export function ConversationFrame({
           canInterrupt: false,
         }
       : state.composer;
-  const openEvidence =
+  const evidenceStateMatches =
     evidenceSheet !== null &&
-    state.openEvidenceKey === evidenceSheet.evidenceKey
+    state.openEvidenceKey === evidenceSheet.evidenceKey &&
+    state.evidenceTriggerKey === evidenceSheet.triggerKey;
+  const openEvidence =
+    evidenceStateMatches && evidenceSheet !== null
       ? (state.conversation?.evidence.find(
           (evidence) => evidence.key === evidenceSheet.evidenceKey,
         ) ?? null)
       : null;
   const evidenceOpen = openEvidence !== null;
+  const frameLocked = evidenceSheet !== null && state.openEvidenceKey !== null;
+
+  useEffect(() => {
+    mountedRef.current = true;
+    return () => {
+      mountedRef.current = false;
+      lifecycleGenerationRef.current += 1;
+      closeOperationRef.current = null;
+      pendingOpenRef.current = null;
+      pendingTriggerFocusRef.current = null;
+    };
+  }, []);
 
   const openEvidenceSheet = useCallback(
     (evidenceKey: string, triggerKey: string): void => {
       const anchor = transcriptRef.current?.captureAnchor() ?? null;
       if (anchor === null) return;
+      const generation = lifecycleGenerationRef.current + 1;
+      lifecycleGenerationRef.current = generation;
+      sheetGenerationRef.current = generation;
+      closeOperationRef.current = null;
+      pendingTriggerFocusRef.current = null;
+      pendingOpenRef.current = { generation, evidenceKey, triggerKey };
       setEvidenceSheet({ evidenceKey, triggerKey, anchor });
       dispatch({ type: "openEvidence", evidenceKey, triggerKey });
     },
@@ -558,44 +595,98 @@ export function ConversationFrame({
   );
 
   const closeEvidenceSheet = useCallback((): void => {
-    const closing = evidenceSheet;
-    if (closing === null || closingEvidenceRef.current) return;
-    closingEvidenceRef.current = true;
+    const closing = evidenceSheetRef.current;
+    if (closing === null) return;
+    const generation = sheetGenerationRef.current;
+    if (closeOperationRef.current?.generation === generation) return;
+    const operation = { generation };
+    closeOperationRef.current = operation;
     void (async () => {
-      await transcriptRef.current?.restoreAnchor(closing.anchor);
-      pendingTriggerFocusRef.current = closing.triggerKey;
-      dispatch({ type: "closeEvidence" });
-      closingEvidenceRef.current = false;
+      let restored = false;
+      try {
+        const transcript = transcriptRef.current;
+        if (transcript === null) throw new Error("Transcript unavailable");
+        await transcript.restoreAnchor(closing.anchor);
+        restored = true;
+      } catch {
+        restored = false;
+      }
+      const active =
+        mountedRef.current &&
+        lifecycleGenerationRef.current === generation &&
+        closeOperationRef.current === operation;
+      try {
+        if (!active) return;
+        pendingTriggerFocusRef.current = {
+          generation,
+          triggerKey: closing.triggerKey,
+          restored,
+        };
+        dispatch({ type: "closeEvidence" });
+      } finally {
+        if (closeOperationRef.current === operation) {
+          closeOperationRef.current = null;
+        }
+      }
     })();
-  }, [dispatch, evidenceSheet]);
+  }, [dispatch]);
 
   useEffect(() => {
     if (state.openEvidenceKey === null) return;
-    const currentEvidence = state.conversation?.evidence.some(
-      (evidence) => evidence.key === state.openEvidenceKey,
-    );
-    if (
-      currentEvidence !== true ||
-      evidenceSheet === null ||
-      evidenceSheet.evidenceKey !== state.openEvidenceKey ||
-      evidenceSheet.triggerKey !== state.evidenceTriggerKey
-    ) {
-      dispatch({ type: "closeEvidence" });
+    if (evidenceSheet === null) {
+      const triggerKey = state.evidenceTriggerKey;
+      const anchor = transcriptRef.current?.captureAnchor() ?? null;
+      if (triggerKey === null || anchor === null) return;
+      const generation = lifecycleGenerationRef.current + 1;
+      lifecycleGenerationRef.current = generation;
+      sheetGenerationRef.current = generation;
+      setEvidenceSheet({
+        evidenceKey: state.openEvidenceKey,
+        triggerKey,
+        anchor,
+      });
+      return;
     }
+    const pendingOpen = pendingOpenRef.current;
+    if (
+      pendingOpen !== null &&
+      pendingOpen.generation === sheetGenerationRef.current
+    ) {
+      if (
+        state.openEvidenceKey === pendingOpen.evidenceKey &&
+        state.evidenceTriggerKey === pendingOpen.triggerKey
+      ) {
+        pendingOpenRef.current = null;
+      } else {
+        return;
+      }
+    }
+    if (!evidenceStateMatches || openEvidence === null) closeEvidenceSheet();
   }, [
-    dispatch,
+    closeEvidenceSheet,
     evidenceSheet,
-    state.conversation,
+    evidenceStateMatches,
+    openEvidence,
     state.evidenceTriggerKey,
     state.openEvidenceKey,
   ]);
 
   useLayoutEffect(() => {
-    const triggerKey = pendingTriggerFocusRef.current;
-    if (triggerKey === null || state.openEvidenceKey !== null) return;
+    const pending = pendingTriggerFocusRef.current;
+    if (pending === null || state.openEvidenceKey !== null) return;
     pendingTriggerFocusRef.current = null;
+    if (
+      !mountedRef.current ||
+      pending.generation !== lifecycleGenerationRef.current
+    ) {
+      return;
+    }
     setEvidenceSheet(null);
-    const trigger = evidenceTrigger(triggerKey);
+    if (!pending.restored) {
+      transcriptRef.current?.focusFeed();
+      return;
+    }
+    const trigger = evidenceTrigger(pending.triggerKey);
     if (trigger === null) {
       transcriptRef.current?.focusFeed();
       return;
@@ -603,14 +694,27 @@ export function ConversationFrame({
     trigger.focus({ preventScroll: true });
   }, [state.openEvidenceKey]);
 
+  const focusUnavailableTriggerFeed = useCallback((): void => {
+    const pending = pendingTriggerFocusRef.current;
+    if (
+      !mountedRef.current ||
+      pending === null ||
+      !pending.restored ||
+      pending.generation !== lifecycleGenerationRef.current
+    ) {
+      return;
+    }
+    transcriptRef.current?.focusFeed();
+  }, []);
+
   return (
     <>
       <main
         className={`live-conversation-frame ${skin.className}`}
         data-live-conversation-frame="true"
         aria-label="Conversation"
-        aria-hidden={evidenceOpen ? true : undefined}
-        inert={evidenceOpen ? true : undefined}
+        aria-hidden={frameLocked ? true : undefined}
+        inert={frameLocked ? true : undefined}
         onKeyDown={(event) => wrapTerminalComposerTab(event, backRef.current)}
       >
         <ConversationChrome
@@ -648,7 +752,7 @@ export function ConversationFrame({
               )}
               savedAnchor={state.anchor}
               unseen={state.unseen}
-              locked={evidenceOpen}
+              locked={frameLocked}
               onAnchorChange={onAnchorChange}
               onUnseenChange={onUnseenChange}
               onFocusIntentChange={onFocusIntentChange}
@@ -694,7 +798,7 @@ export function ConversationFrame({
         evidence={openEvidence}
         triggerKey={evidenceSheet?.triggerKey ?? null}
         onClose={closeEvidenceSheet}
-        onTriggerUnavailable={() => transcriptRef.current?.focusFeed()}
+        onTriggerUnavailable={focusUnavailableTriggerFeed}
       />
     </>
   );

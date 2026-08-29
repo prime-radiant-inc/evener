@@ -83,6 +83,12 @@ interface VariableHeightVirtualListBaseProps<T> {
     measured: boolean;
   }) => void;
   readonly onKeyDown?: KeyboardEventHandler<HTMLElement>;
+  /** Caller-owned rows may nominate their semantic descendant as the focus
+   * target. Defaults to the measured row wrapper. */
+  readonly resolveFocusTarget?: (
+    rowElement: HTMLElement,
+    item: T,
+  ) => HTMLElement | null;
   readonly renderItem: (item: T, index: number) => ReactNode;
 }
 
@@ -217,6 +223,7 @@ export const VariableHeightVirtualList = forwardRef(
       onScroll,
       onKeyDown,
       initialViewportEstimate,
+      resolveFocusTarget,
       renderItem,
     }: VariableHeightVirtualListProps<T>,
     forwardedRef: React.ForwardedRef<VariableHeightVirtualListHandle>,
@@ -540,14 +547,16 @@ export const VariableHeightVirtualList = forwardRef(
           ) ?? []),
         ].find((row) => row.dataset.itemKey === key);
         if (mounted !== null && mounted !== undefined) {
-          mounted.focus({ preventScroll: true });
+          (resolveFocusTarget?.(mounted, items[index] as T) ?? mounted).focus({
+            preventScroll: true,
+          });
           pendingFocusRef.current = false;
           return;
         }
         scrollRef.current?.focus({ preventScroll: true });
         virtualizer.scrollToIndex(index, { align: "center", behavior: "auto" });
       },
-      [itemKeys, virtualizer],
+      [itemKeys, items, resolveFocusTarget, virtualizer],
     );
 
     const rowRefFor = useCallback(
@@ -661,7 +670,12 @@ export const VariableHeightVirtualList = forwardRef(
         ) ?? []),
       ].find((row) => row.dataset.itemKey === key);
       if (mounted !== null && mounted !== undefined) {
-        mounted.focus({ preventScroll: true });
+        const index = itemKeys.indexOf(key);
+        const item = items[index];
+        (item === undefined
+          ? mounted
+          : (resolveFocusTarget?.(mounted, item) ?? mounted)
+        ).focus({ preventScroll: true });
         pendingFocusRef.current = false;
       }
     });

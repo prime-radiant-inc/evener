@@ -322,6 +322,8 @@ function renderList({
   ref = createRef<VariableHeightVirtualListHandle>(),
   estimate = 40,
   renderRow = (item: Item) => <div data-height={item.height}>{item.key}</div>,
+  resolveFocusTarget,
+  callerOwned = false,
 }: {
   values?: readonly Item[];
   threadKey?: string;
@@ -330,6 +332,11 @@ function renderList({
   ref?: RefObject<VariableHeightVirtualListHandle | null>;
   estimate?: number | ((item: Item) => number);
   renderRow?: (item: Item) => ReactNode;
+  resolveFocusTarget?: (
+    rowElement: HTMLElement,
+    item: Item,
+  ) => HTMLElement | null;
+  callerOwned?: boolean;
 } = {}): {
   readonly ref: RefObject<VariableHeightVirtualListHandle | null>;
   readonly rerenderList: (
@@ -358,7 +365,9 @@ function renderList({
       }}
       overscan={6}
       maxMountedRows={48}
+      rowSemantics={callerOwned ? { mode: "caller-owned" } : undefined}
       onScroll={() => {}}
+      resolveFocusTarget={resolveFocusTarget}
       renderItem={renderRow}
     />
   );
@@ -904,6 +913,37 @@ describe("VariableHeightVirtualList", () => {
         .getByText("item-12")
         .closest('[data-testid="virtual-transcript-row"]'),
     ).toHaveFocus();
+  });
+
+  it("uses an explicit caller-owned semantic focus target instead of the measured wrapper", async () => {
+    const { ref } = renderList({
+      values: items(100, 72),
+      renderRow: (item) => (
+        <section
+          aria-label={`Evidence ${item.key}`}
+          data-height={item.height}
+          data-semantic-focus-target="true"
+          tabIndex={-1}
+        >
+          {item.key}
+        </section>
+      ),
+      resolveFocusTarget: (rowElement) =>
+        rowElement.querySelector<HTMLElement>(
+          '[data-semantic-focus-target="true"]',
+        ),
+      callerOwned: true,
+    });
+    await emitMeasurements();
+
+    act(() => ref.current?.focusKey("item-80"));
+    const target = await screen.findByRole("region", {
+      name: "Evidence item-80",
+    });
+    await waitFor(() => expect(target).toHaveFocus());
+    expect(
+      target.closest('[data-testid="virtual-transcript-row"]'),
+    ).not.toHaveFocus();
   });
 
   it("preserves descendant focus for retained rows and moves it before same-count removal", async () => {

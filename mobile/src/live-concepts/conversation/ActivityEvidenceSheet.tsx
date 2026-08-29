@@ -29,6 +29,11 @@ interface EvidenceSectionRow {
   readonly logicalPosition: number;
 }
 
+interface EvidenceProjection {
+  readonly instanceKey: string;
+  readonly rows: readonly EvidenceSectionRow[];
+}
+
 function triggerForKey(key: string): HTMLElement | null {
   return (
     [
@@ -42,6 +47,8 @@ function EvidenceSectionView({ row }: { readonly row: EvidenceSectionRow }) {
     <section
       className="live-conversation-evidence__section"
       aria-label={`Evidence section ${row.logicalPosition}`}
+      data-evidence-section="true"
+      tabIndex={-1}
     >
       <h3>{row.section.heading.text}</h3>
       <p>{row.section.body.text}</p>
@@ -57,27 +64,38 @@ export function ActivityEvidenceSheet({
   onTriggerUnavailable,
 }: ActivityEvidenceSheetProps): ReactElement {
   const listRef = useRef<VariableHeightVirtualListHandle>(null);
-  const sectionIdentitiesRef = useRef(new WeakMap<EvidenceSection, string>());
-  const nextSectionIdentityRef = useRef(0);
+  const plainDetailRef = useRef<HTMLElement>(null);
+  const evidenceProjectionsRef = useRef(
+    new WeakMap<EvidenceDisplayItem, EvidenceProjection>(),
+  );
+  const nextEvidenceIdentityRef = useRef(0);
+  const nextOccurrenceIdentityRef = useRef(0);
   const previousOpenRef = useRef(false);
   const closingTriggerRef = useRef<string | null>(null);
 
-  const rows = useMemo(() => {
-    if (evidence === null) return [];
-    return evidence.sections.map((section, index) => {
-      let key = sectionIdentitiesRef.current.get(section);
-      if (key === undefined) {
-        nextSectionIdentityRef.current += 1;
-        key = `${evidence.key}:section:${nextSectionIdentityRef.current}`;
-        sectionIdentitiesRef.current.set(section, key);
-      }
-      return {
-        key,
+  const projection = useMemo(() => {
+    if (evidence === null) return null;
+    const existing = evidenceProjectionsRef.current.get(evidence);
+    if (existing !== undefined) return existing;
+    nextEvidenceIdentityRef.current += 1;
+    const instanceKey = `evidence-instance:${nextEvidenceIdentityRef.current}`;
+    const rows: EvidenceSectionRow[] = [];
+    for (const section of evidence.sections) {
+      nextOccurrenceIdentityRef.current += 1;
+      rows.push({
+        key: `${instanceKey}:occurrence:${nextOccurrenceIdentityRef.current}`,
         section,
-        logicalPosition: index + 1,
-      };
-    });
+        logicalPosition: rows.length + 1,
+      });
+    }
+    const created = {
+      instanceKey,
+      rows,
+    } satisfies EvidenceProjection;
+    evidenceProjectionsRef.current.set(evidence, created);
+    return created;
   }, [evidence]);
+  const rows = projection?.rows ?? [];
 
   useLayoutEffect(() => {
     if (open) {
@@ -99,13 +117,21 @@ export function ActivityEvidenceSheet({
     const finalRow = rows.at(-1);
     if (finalRow === undefined) return;
     event.preventDefault();
-    listRef.current?.focusKey(finalRow.key);
+    if (rows.length > MAX_MOUNTED_EVIDENCE_SECTIONS) {
+      listRef.current?.focusKey(finalRow.key);
+      return;
+    }
+    const sections = plainDetailRef.current?.querySelectorAll<HTMLElement>(
+      '[data-evidence-section="true"]',
+    );
+    if (sections === undefined) return;
+    sections.item(sections.length - 1)?.focus({ preventScroll: true });
   };
 
   const detail =
     rows.length > MAX_MOUNTED_EVIDENCE_SECTIONS ? (
       <VariableHeightVirtualList
-        key={evidence?.key}
+        key={projection?.instanceKey}
         ref={listRef}
         items={rows}
         getItemKey={(row) => row.key}
@@ -122,11 +148,16 @@ export function ActivityEvidenceSheet({
         overscan={6}
         maxMountedRows={48}
         onScroll={() => {}}
-        onKeyDown={focusFinalSection}
+        resolveFocusTarget={(rowElement) =>
+          rowElement.querySelector<HTMLElement>(
+            '[data-evidence-section="true"]',
+          )
+        }
         renderItem={(row) => <EvidenceSectionView row={row} />}
       />
     ) : (
       <section
+        ref={plainDetailRef}
         className="live-conversation-evidence__plain-detail"
         aria-label="Activity and evidence details"
         data-page-scroll-owner="true"
@@ -157,6 +188,7 @@ export function ActivityEvidenceSheet({
           <button
             type="button"
             aria-label="Close activity and evidence"
+            onKeyDown={focusFinalSection}
             onClick={onClose}
           >
             Close activity and evidence

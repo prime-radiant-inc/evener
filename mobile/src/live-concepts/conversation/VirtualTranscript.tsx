@@ -219,6 +219,7 @@ const ForwardedLiveVirtualTranscriptSession = forwardRef(
       forwardedRef,
       () => ({
         captureAnchor(): ConversationAnchor | null {
+          if (!initializedRef.current) return null;
           const anchor = listRef.current?.captureAnchor();
           return anchor === null || anchor === undefined
             ? null
