@@ -1,14 +1,14 @@
 import type { ReactNode } from "react";
 import {
+  conversationItemAxLabel,
   mutationAxLabel,
-  transcriptItemAxLabel,
 } from "../accessibility-semantics";
 import type {
   LiveConceptIntent,
   LiveConceptState,
   QuestionDraft,
 } from "../contract";
-import type { LiveQuestionView, LiveTranscriptItem } from "../model";
+import type { ConversationDisplayItem, LiveQuestionView } from "../model";
 import { Disclosure } from "../shared/Disclosure";
 import { Icon } from "../shared/Icon";
 import { StatusLabel } from "../shared/StatusLabel";
@@ -52,7 +52,7 @@ function QuestionCard({
         role="status"
       >
         <StatusLabel state="success" />
-        <h3>{question.prompt}</h3>
+        <h3>{question.prompt.text}</h3>
         <p>
           {resolution === "answer"
             ? "Answer submitted"
@@ -83,7 +83,7 @@ function QuestionCard({
           <span className="sw-eyebrow">
             {question.multiple ? "Choose one or more" : "Choose one"}
           </span>
-          <span>{question.prompt}</span>
+          <span>{question.prompt.text}</span>
         </legend>
         <div className="sw-question-options">
           {question.options.map((option) => {
@@ -93,7 +93,7 @@ function QuestionCard({
                 <input
                   type={question.multiple ? "checkbox" : "radio"}
                   name={`question-${question.key}`}
-                  aria-label={option.label}
+                  aria-label={option.label.text}
                   aria-describedby={detailId}
                   checked={selected.includes(option.key)}
                   disabled={!canSend || hasPending}
@@ -111,8 +111,8 @@ function QuestionCard({
                   }
                 />
                 <span>
-                  <strong>{option.label}</strong>
-                  <small id={detailId}>{option.detail}</small>
+                  <strong>{option.label.text}</strong>
+                  <small id={detailId}>{option.detail.text}</small>
                 </span>
               </label>
             );
@@ -154,7 +154,7 @@ function TranscriptContent({
   state,
   dispatch,
 }: {
-  item: LiveTranscriptItem;
+  item: ConversationDisplayItem;
   state: LiveConceptState;
   dispatch(intent: LiveConceptIntent): void;
 }): ReactNode {
@@ -162,22 +162,27 @@ function TranscriptContent({
   const canSend = composer.canSend || composer.canSteer || composer.canQueue;
   const hasPending = composer.pending !== null;
 
-  switch (item.kind) {
+  switch (item.sourceKind) {
     case "user":
-      return <p className="sw-user-message">{item.body}</p>;
+      return <p className="sw-user-message">{item.body.text}</p>;
     case "assistant":
-      return <p className="sw-assistant-message">{item.body}</p>;
+      return <p className="sw-assistant-message">{item.body.text}</p>;
+    case "notice":
+    case "system":
+    case "reasoning":
     case "tool":
+    case "diagnostic":
+    case "unknown":
       return (
         <div className="sw-tool-disclosure">
           <Disclosure
-            summary={<span>{item.label}</span>}
+            summary={<span>{item.label.text}</span>}
             expanded={state.ui.expandedToolKeys.has(item.key)}
             onToggle={() => dispatch({ type: "toggleTool", key: item.key })}
           >
             <div className="sw-tool-detail">
               <StatusLabel state={item.tone} />
-              <pre>{item.body}</pre>
+              {item.preview ? <pre>{item.preview.text}</pre> : null}
             </div>
           </Disclosure>
         </div>
@@ -217,16 +222,16 @@ function TranscriptContent({
       return (
         <section className="sw-transcript-error" role="alert">
           <StatusLabel state="failed" />
-          <h3>{item.label}</h3>
-          <p>{item.body}</p>
+          <h3>{item.label?.text}</h3>
+          <p>{item.body.text}</p>
         </section>
       );
     case "attachment":
       return (
         <section className="sw-attachment">
           <p className="sw-eyebrow">Attachment</p>
-          <h3>{item.label}</h3>
-          <p>{item.body}</p>
+          <h3>{item.label.text}</h3>
+          {item.preview ? <p>{item.preview.text}</p> : null}
         </section>
       );
   }
@@ -267,14 +272,14 @@ export function ConversationView({ state, dispatch }: ConversationViewProps) {
     <div className="sw-conversation">
       <section
         className="sw-session-summary"
-        aria-label={`Session ${conversation.title}`}
+        aria-label={`Session ${conversation.title.text}`}
       >
         <div>
-          <p className="sw-eyebrow">{conversation.project}</p>
-          <h2>{conversation.title}</h2>
-          <p>{conversation.status}</p>
+          <p className="sw-eyebrow">{conversation.project.text}</p>
+          <h2>{conversation.title.text}</h2>
+          <p>{conversation.status.text}</p>
           {conversation.updatedLabel ? (
-            <p className="sw-updated-label">{conversation.updatedLabel}</p>
+            <p className="sw-updated-label">{conversation.updatedLabel.text}</p>
           ) : null}
         </div>
         <StatusLabel state={conversation.tone} />
@@ -297,12 +302,24 @@ export function ConversationView({ state, dispatch }: ConversationViewProps) {
         ) : (
           conversation.items.map((item) => (
             <article
-              className={`sw-transcript-item sw-transcript-item--${item.kind}`}
-              aria-label={transcriptItemAxLabel(item)}
+              className={`sw-transcript-item sw-transcript-item--${item.sourceKind}`}
+              aria-label={conversationItemAxLabel(
+                item,
+                item.sourceKind === "question"
+                  ? (ui.questionDrafts[item.questionKey ?? ""]?.resolution ??
+                      null)
+                  : null,
+              )}
               data-transcript-item-id={item.key}
               data-focused={ui.focusedItemKey === item.key ? "true" : "false"}
-              data-streaming={item.streaming ? "true" : "false"}
-              data-truncated={item.truncated ? "true" : "false"}
+              data-streaming={
+                "streaming" in item && item.streaming ? "true" : "false"
+              }
+              data-truncated={
+                ("body" in item ? item.body : item.preview)?.truncated
+                  ? "true"
+                  : "false"
+              }
               tabIndex={ui.focusedItemKey === item.key ? -1 : undefined}
               key={item.key}
             >

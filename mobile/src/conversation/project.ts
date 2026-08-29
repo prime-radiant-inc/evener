@@ -30,6 +30,7 @@ import type {
   MobileQueue,
   MobileTimelineItem,
   MobileUsage,
+  NoticeFamily,
   NoticeTone,
 } from "./model";
 
@@ -44,6 +45,31 @@ const WARNING_STEERING_KINDS = new Set([
 
 // systemMessage eventKinds that warrant a warning tone.
 const WARNING_EVENT_KINDS = new Set(["loop_detection", "turn_limit", "error"]);
+
+const HIDDEN_EVENT_KINDS = new Set(["system_prompt", "prompt_loaded"]);
+const PRELUDE_EVENT_KINDS = new Set(["environment"]);
+const DIAGNOSTIC_EVENT_KINDS = new Set(["round_timings"]);
+const LIFECYCLE_EVENT_KINDS = new Set([
+  "plugin_loaded",
+  "skill_activated",
+  "hook_completed",
+  "context_compaction",
+  "compaction",
+  "goal_ended",
+  "fork_summary",
+  "tool_repair",
+  "model_switch",
+]);
+
+function systemFamily(eventKind: string | undefined): NoticeFamily {
+  if (eventKind && WARNING_EVENT_KINDS.has(eventKind)) return "warning";
+  if (eventKind && HIDDEN_EVENT_KINDS.has(eventKind))
+    return "hidden-instruction";
+  if (eventKind && PRELUDE_EVENT_KINDS.has(eventKind)) return "system-prelude";
+  if (eventKind && DIAGNOSTIC_EVENT_KINDS.has(eventKind)) return "diagnostic";
+  if (eventKind && LIFECYCLE_EVENT_KINDS.has(eventKind)) return "lifecycle";
+  return "unknown-system";
+}
 
 function isUserMessage(item: ThreadItem): boolean {
   return item.type === "userMessage";
@@ -346,7 +372,14 @@ function projectItem(
         : "info";
     return {
       kind: "final",
-      item: { kind: "notice", id: item.id, tone, text: item.text ?? "" },
+      item: {
+        kind: "notice",
+        id: item.id,
+        origin: "steering",
+        family: tone === "warning" ? "warning" : "informational",
+        tone,
+        text: item.text ?? "",
+      },
     };
   }
 
@@ -358,7 +391,14 @@ function projectItem(
         : "system";
     return {
       kind: "final",
-      item: { kind: "notice", id: item.id, tone, text: item.text ?? "" },
+      item: {
+        kind: "notice",
+        id: item.id,
+        origin: "system",
+        family: systemFamily(item.eventKind),
+        tone,
+        text: item.text ?? "",
+      },
     };
   }
 
