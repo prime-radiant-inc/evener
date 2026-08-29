@@ -3,7 +3,6 @@ import { conceptRootAxLabel } from "../accessibility-semantics";
 import type { LiveConceptRendererProps } from "../contract";
 import type { LiveConceptSurface } from "../model";
 import { Icon } from "../shared/Icon";
-import { ConversationView } from "./ConversationView";
 import { SessionsView } from "./SessionsView";
 import { WorkView } from "./WorkView";
 
@@ -18,17 +17,14 @@ interface SurfaceMeta {
   pushed: boolean;
 }
 
-const surfaceMeta: Readonly<Record<LiveConceptSurface, SurfaceMeta>> = {
+type StillwaterOwnedSurface = Exclude<LiveConceptSurface, "conversation">;
+
+const surfaceMeta: Readonly<Record<StillwaterOwnedSurface, SurfaceMeta>> = {
   sessions: {
     route: "sessions",
     title: "Sessions",
     subtitle: "Needs You first. Everything else stays quiet.",
     pushed: false,
-  },
-  conversation: {
-    route: "conversation",
-    title: "Conversation",
-    pushed: true,
   },
   work: {
     route: "work",
@@ -41,24 +37,17 @@ export function StillwaterRenderer({
   state,
   dispatch,
 }: LiveConceptRendererProps) {
+  if (state.surface === "conversation") return null;
   const { surface, conversation } = state;
   const meta = surfaceMeta[surface];
   let content: ReactNode;
-  let title = meta.title;
+  const title = meta.title;
   let subtitle: string | undefined = meta.subtitle;
 
   switch (surface) {
     case "sessions":
       content = <SessionsView state={state} dispatch={dispatch} />;
       break;
-    case "conversation": {
-      if (conversation) {
-        title = conversation.title.text;
-        subtitle = conversation.project.text;
-      }
-      content = <ConversationView state={state} dispatch={dispatch} />;
-      break;
-    }
     case "work": {
       if (conversation) {
         subtitle = conversation.title.text;

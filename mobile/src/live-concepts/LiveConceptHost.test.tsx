@@ -23,7 +23,6 @@ import { createNavigationStore } from "../state/navigation";
 import { createPreferencesStore } from "../state/preferences";
 import { createRosterStore } from "../state/roster";
 import { FakeProfileService } from "../test/fakeProfileService";
-import type { ConversationSkin } from "./conversation/contract";
 import { DISPLAY_LIMITS, TRUNCATION_MARKER } from "./display-text";
 import {
   LiveConceptHost,
@@ -31,7 +30,6 @@ import {
   type LiveConceptHostRuntime,
 } from "./LiveConceptHost";
 import { createLiveConceptUiStore } from "./live-ui-store";
-import { liveConceptRegistry } from "./registry";
 
 const capabilities: MobileCapabilities = {
   send: true,
@@ -47,6 +45,56 @@ const capabilities: MobileCapabilities = {
   goal: false,
   rename: false,
 };
+
+class HostMeasuredResizeObserver implements ResizeObserver {
+  static readonly instances = new Set<HostMeasuredResizeObserver>();
+  readonly targets = new Set<Element>();
+
+  constructor(private readonly callback: ResizeObserverCallback) {
+    HostMeasuredResizeObserver.instances.add(this);
+  }
+
+  observe(target: Element): void {
+    this.targets.add(target);
+  }
+
+  unobserve(target: Element): void {
+    this.targets.delete(target);
+  }
+
+  disconnect(): void {
+    this.targets.clear();
+    HostMeasuredResizeObserver.instances.delete(this);
+  }
+
+  static flush(): void {
+    for (const observer of HostMeasuredResizeObserver.instances) {
+      const entries = [...observer.targets].map(
+        (target) =>
+          ({
+            target,
+            borderBoxSize: [{ blockSize: 96, inlineSize: 393 }],
+            contentBoxSize: [{ blockSize: 96, inlineSize: 393 }],
+            devicePixelContentBoxSize: [],
+            contentRect: {
+              x: 0,
+              y: 0,
+              top: 0,
+              right: 393,
+              bottom: 96,
+              left: 0,
+              width: 393,
+              height: 96,
+              toJSON: () => ({}),
+            },
+          }) as ResizeObserverEntry,
+      );
+      if (entries.length > 0) observer.callback(entries, observer);
+    }
+  }
+}
+
+const originalResizeObserver = globalThis.ResizeObserver;
 
 function conversation(items: MobileConversation["items"]): MobileConversation {
   return {
@@ -238,38 +286,144 @@ async function resetAllProfileSources(
 afterEach(() => {
   cleanup();
   vi.restoreAllMocks();
+  globalThis.ResizeObserver = originalResizeObserver;
+  HostMeasuredResizeObserver.instances.clear();
 });
 
 describe("LiveConceptHost ownership", () => {
-  it("adapts a migrated module into the shared frame without exposing host state", async () => {
+  it("routes Stillwater through the shared frame without exposing host state", async () => {
     const harness = makeHarness();
     await openConversation(
       harness,
       conversation([{ kind: "user", id: "frame-user", text: "Frame item" }]),
     );
-    const testSkin: ConversationSkin = {
-      id: "stillwater",
-      className: "host-frame-skin",
-      composerAppearance: { density: "compact", accent: "forest" },
-      renderNarrativeItem: ({ body }) => body,
-      renderActivityMarker: ({ item }) => item.label.text,
-      renderConversationChrome: ({ title }) => title.text,
-    };
-    const migrated = liveConceptRegistry.stillwater as {
-      conversationSkin?: ConversationSkin;
-    };
-    migrated.conversationSkin = testSkin;
-    try {
-      render(<LiveConceptHost {...harness.props} surface="conversation" />);
-      expect(screen.getByRole("main", { name: "Conversation" })).toHaveClass(
-        "host-frame-skin",
-      );
-      expect(screen.getByText("Frame item")).toBeVisible();
-      fireEvent.click(screen.getByRole("button", { name: "Back" }));
-      expect(harness.callbacks.onBack).toHaveBeenCalledTimes(1);
-    } finally {
-      delete migrated.conversationSkin;
+    const { container } = render(
+      <LiveConceptHost {...harness.props} surface="conversation" />,
+    );
+    expect(screen.getByRole("main", { name: "Conversation" })).toHaveClass(
+      "sw-conversation-skin",
+    );
+    expect(container.querySelector(".live-conversation-frame")).not.toBeNull();
+    expect(
+      container.querySelectorAll("[data-page-scroll-owner='true']"),
+    ).toHaveLength(1);
+    expect(
+      container.querySelector("[data-live-concept-scroller='true']"),
+    ).toBeNull();
+    expect(screen.getByText("Frame item")).toBeVisible();
+    fireEvent.click(screen.getByRole("button", { name: "Back" }));
+    expect(harness.callbacks.onBack).toHaveBeenCalledTimes(1);
+  });
+
+  it("routes shared composer, question, evidence, and chrome actions for Stillwater", async () => {
+    globalThis.ResizeObserver = HostMeasuredResizeObserver;
+    const harness = makeHarness();
+    await openConversation(
+      harness,
+      conversation([
+        { kind: "user", id: "action-user", text: "Action row" },
+        {
+          kind: "question",
+          id: "action-question",
+          batch: {
+            callId: "private-question-call",
+            questions: [
+              {
+                key: "private-question-key",
+                header: "Choose",
+                question: "Which route?",
+                options: [
+                  { label: "Safe route", detail: "Use the bounded path" },
+                ],
+                multiSelect: false,
+                ifUnanswered: "Use the fallback",
+              },
+            ],
+          },
+        },
+        {
+          kind: "activity",
+          id: "action-tool",
+          label: "read_file",
+          family: "tool",
+          state: "completed",
+          detail: { output: "Bounded evidence body", durationMs: 12 },
+        },
+      ]),
+    );
+    const conversationService = {} as NonNullable<
+      LiveConceptHostRuntime["conversationService"]
+    >;
+    harness.runtime.conversationService = conversationService;
+    const store = harness.runtime.conversationStore.getState();
+    const send = vi.spyOn(store, "send").mockResolvedValue();
+    const steer = vi.spyOn(store, "steer").mockResolvedValue();
+    const queue = vi.spyOn(store, "queue").mockResolvedValue();
+    const interrupt = vi.spyOn(store, "interrupt").mockResolvedValue();
+
+    render(<LiveConceptHost {...harness.props} surface="conversation" />);
+    act(() => HostMeasuredResizeObserver.flush());
+    fireEvent.click(screen.getByRole("button", { name: "Work" }));
+    expect(harness.uiStore.getState().workOpen).toBe(true);
+    fireEvent.click(screen.getByRole("button", { name: "Switch concept" }));
+    expect(harness.callbacks.onOpenConceptSwitcher).toHaveBeenCalledTimes(1);
+
+    const message = screen.getByRole("textbox", { name: "Message" });
+    for (const [mode, action] of [
+      ["send", send],
+      ["steer", steer],
+      ["queue", queue],
+    ] as const) {
+      fireEvent.click(screen.getByRole("button", { name: `Use ${mode} mode` }));
+      fireEvent.change(message, { target: { value: `${mode} body` } });
+      fireEvent.click(screen.getByRole("button", { name: "Submit message" }));
+      expect(action).toHaveBeenCalledWith(conversationService, [
+        { type: "text", text: `${mode} body` },
+      ]);
     }
+    fireEvent.click(screen.getByRole("button", { name: "Interrupt" }));
+    expect(interrupt).toHaveBeenCalledWith(conversationService);
+
+    fireEvent.click(screen.getByRole("radio", { name: "Safe route" }));
+    fireEvent.change(screen.getByRole("textbox", { name: "Note" }), {
+      target: { value: "Question note" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Submit answer" }));
+    expect(send).toHaveBeenCalledTimes(2);
+
+    const questionKey = Object.keys(
+      harness.uiStore.getState().questionDrafts,
+    )[0];
+    expect(questionKey).toBeDefined();
+    for (const [name, resolution] of [
+      ["Use fallback", "fallback"],
+      ["Let Evener decide", "decide"],
+      ["Skip question", "skip"],
+    ] as const) {
+      act(() => {
+        harness.uiStore.getState().setQuestionDraft(questionKey as string, {
+          selectedOptionKeys: [
+            Object.values(harness.uiStore.getState().questionDrafts)[0]
+              ?.selectedOptionKeys[0] as string,
+          ],
+          note: "Question note",
+          resolution: null,
+        });
+      });
+      fireEvent.click(screen.getByRole("button", { name }));
+      expect(
+        harness.uiStore.getState().questionDrafts[questionKey as string]
+          ?.resolution,
+      ).toBe(resolution);
+    }
+
+    fireEvent.click(screen.getByRole("button", { name: "Show activity" }));
+    expect(screen.getByRole("dialog", { name: "read_file" })).toHaveTextContent(
+      "Bounded evidence body",
+    );
+    fireEvent.click(
+      screen.getByRole("button", { name: "Close activity and evidence" }),
+    );
   });
 
   it("classifies a failed mutation as editable mutation recovery, not a read error", async () => {
@@ -294,33 +448,17 @@ describe("LiveConceptHost ownership", () => {
         },
       });
     });
-    const testSkin: ConversationSkin = {
-      id: "stillwater",
-      className: "host-failed-mutation-skin",
-      composerAppearance: { density: "compact", accent: "forest" },
-      renderNarrativeItem: ({ body }) => body,
-      renderActivityMarker: ({ item }) => item.label.text,
-      renderConversationChrome: ({ title }) => title.text,
-    };
-    const migrated = liveConceptRegistry.stillwater as {
-      conversationSkin?: ConversationSkin;
-    };
-    migrated.conversationSkin = testSkin;
-    try {
-      render(<LiveConceptHost {...harness.props} surface="conversation" />);
-      expect(
-        screen.queryByRole("button", { name: "Retry conversation" }),
-      ).toBeNull();
-      expect(screen.getByRole("alert")).toHaveTextContent(
-        "Mutation operation failed",
-      );
-      expect(screen.getByRole("textbox", { name: "Message" })).toBeEnabled();
-      expect(screen.getByRole("textbox", { name: "Message" })).toHaveValue(
-        "restore this exact draft",
-      );
-    } finally {
-      delete migrated.conversationSkin;
-    }
+    render(<LiveConceptHost {...harness.props} surface="conversation" />);
+    expect(
+      screen.queryByRole("button", { name: "Retry conversation" }),
+    ).toBeNull();
+    expect(screen.getByRole("alert")).toHaveTextContent(
+      "Mutation operation failed",
+    );
+    expect(screen.getByRole("textbox", { name: "Message" })).toBeEnabled();
+    expect(screen.getByRole("textbox", { name: "Message" })).toHaveValue(
+      "restore this exact draft",
+    );
   });
 
   it("redacts and bounds mutation errors before renderer DOM creation", async () => {
@@ -337,7 +475,11 @@ describe("LiveConceptHost ownership", () => {
 
     render(<LiveConceptHost {...harness.props} surface="conversation" />);
     const error = screen.getByRole("alert");
-    const text = error.textContent ?? "";
+    const boundedError = [...error.querySelectorAll("p")].find((paragraph) =>
+      paragraph.textContent?.includes("[redacted:credential]"),
+    );
+    expect(boundedError).toBeDefined();
+    const text = boundedError?.textContent ?? "";
     expect(text).toContain("[redacted:credential]");
     expect(text).not.toContain(secret);
     expect(new TextEncoder().encode(text).length).toBeLessThanOrEqual(
@@ -449,7 +591,7 @@ describe("LiveConceptHost ownership", () => {
     expect(harness.writes).toEqual(["field-notes"]);
   });
 
-  it("captures and restores real conversation and work scroller positions per concept", async () => {
+  it("uses the shared conversation scroll owner while retaining the Work scroller", async () => {
     const harness = makeHarness();
     await openConversation(
       harness,
@@ -458,31 +600,15 @@ describe("LiveConceptHost ownership", () => {
     const { container, rerender } = render(
       <LiveConceptHost {...harness.props} surface="conversation" />,
     );
-    let scroller = container.querySelector<HTMLElement>(
-      "[data-live-concept-scroller='true']",
-    );
-    expect(scroller).not.toBeNull();
-    if (scroller === null) return;
-    scroller.scrollTop = 147;
-    fireEvent.scroll(scroller);
-
-    act(() => harness.uiStore.getState().setConcept("constellation"));
-    scroller = container.querySelector<HTMLElement>(
-      "[data-live-concept-scroller='true']",
-    );
-    expect(scroller?.scrollTop).toBe(0);
-    if (scroller === null) return;
-    scroller.scrollTop = 63;
-    fireEvent.scroll(scroller);
-
-    act(() => harness.uiStore.getState().setConcept("stillwater"));
-    scroller = container.querySelector<HTMLElement>(
-      "[data-live-concept-scroller='true']",
-    );
-    expect(scroller?.scrollTop).toBe(147);
+    expect(
+      container.querySelectorAll("[data-page-scroll-owner='true']"),
+    ).toHaveLength(1);
+    expect(
+      container.querySelector("[data-live-concept-scroller='true']"),
+    ).toBeNull();
 
     rerender(<LiveConceptHost {...harness.props} surface="work" />);
-    scroller = container.querySelector<HTMLElement>(
+    const scroller = container.querySelector<HTMLElement>(
       "[data-live-concept-scroller='true']",
     );
     expect(scroller?.scrollTop).toBe(0);
@@ -491,10 +617,11 @@ describe("LiveConceptHost ownership", () => {
     fireEvent.scroll(scroller);
     rerender(<LiveConceptHost {...harness.props} surface="conversation" />);
     expect(
-      container.querySelector<HTMLElement>(
-        "[data-live-concept-scroller='true']",
-      )?.scrollTop,
-    ).toBe(147);
+      container.querySelector("[data-live-concept-scroller='true']"),
+    ).toBeNull();
+    expect(
+      container.querySelectorAll("[data-page-scroll-owner='true']"),
+    ).toHaveLength(1);
   });
 
   it("projects roster, conversation with truncation ownership, and strict activity", async () => {
@@ -591,13 +718,17 @@ describe("LiveConceptHost ownership", () => {
       sessions.container.querySelector(".sw-updated-label")?.textContent,
     ).not.toBe("");
     const assistantRows = sessions.container.querySelectorAll(
-      ".sw-transcript-item--assistant",
+      ".sw-conversation-assistant",
     );
     expect(assistantRows).toHaveLength(2);
-    expect(assistantRows[0]).toHaveAttribute("data-truncated", "true");
-    expect(assistantRows[0]?.textContent).toBe(expectedFrozenBody);
-    expect(assistantRows[1]).toHaveAttribute("data-truncated", "false");
-    expect(assistantRows[1]?.textContent).toBe("genuine short content ");
+    const displayedFrozenBody = assistantRows[0]?.textContent ?? "";
+    expect(displayedFrozenBody).toContain(TRUNCATION_MARKER);
+    expect(
+      new TextEncoder().encode(displayedFrozenBody.replace(/\n$/u, "")).length,
+    ).toBeLessThanOrEqual(DISPLAY_LIMITS.assistantProse);
+    expect(assistantRows[1]?.textContent?.replace(/\n$/u, "")).toBe(
+      "genuine short content ",
+    );
     serializedSurfaces.push(document.body.innerHTML);
     sessions.rerender(<LiveConceptHost {...harness.props} surface="work" />);
     expect(screen.getByText("Activity projector sentinel")).toBeInTheDocument();
@@ -616,7 +747,7 @@ describe("LiveConceptHost ownership", () => {
     }
   });
 
-  it("maps injected platform, appearance, text scale, and independent capabilities", async () => {
+  it("keeps the shared frame mounted across text scales and independent capabilities", async () => {
     const harness = makeHarness();
     await openConversation(harness, conversation([]));
     const currentConversation =
@@ -659,10 +790,8 @@ describe("LiveConceptHost ownership", () => {
         surface="conversation"
       />,
     );
-    const root = container.querySelector("[data-concept-root]");
-    expect(root).toHaveAttribute("data-platform", "android");
-    expect(root).toHaveAttribute("data-appearance", "dark");
-    expect(root).toHaveAttribute("data-text-scale", "accessibilityLarge");
+    const root = container.querySelector(".live-conversation-frame");
+    expect(root).toHaveClass("sw-conversation-skin");
     for (const category of [
       "large",
       "extraExtraLarge",
@@ -671,8 +800,24 @@ describe("LiveConceptHost ownership", () => {
       act(() => {
         harness.runtime.preferences.getState().setContentSize(category);
       });
-      expect(root).toHaveAttribute("data-text-scale", category);
+      expect(container.querySelector(".live-conversation-frame")).toBe(root);
+      expect(
+        container.querySelectorAll("[data-page-scroll-owner='true']"),
+      ).toHaveLength(1);
     }
+    expect(
+      screen.getByRole("button", { name: "Use send mode" }),
+    ).toBeDisabled();
+    expect(
+      screen.getByRole("button", { name: "Use steer mode" }),
+    ).toBeDisabled();
+    expect(
+      screen.getByRole("button", { name: "Use queue mode" }),
+    ).toBeDisabled();
+    expect(screen.getByRole("button", { name: /Interrupt/i })).toBeEnabled();
+    act(() => {
+      harness.runtime.conversationStore.setState({ pendingMutation: null });
+    });
     expect(
       screen.getByRole("button", { name: "Use send mode" }),
     ).toBeDisabled();
@@ -682,7 +827,6 @@ describe("LiveConceptHost ownership", () => {
     expect(
       screen.getByRole("button", { name: "Use queue mode" }),
     ).toBeDisabled();
-    expect(screen.getByRole("button", { name: /Interrupt/i })).toBeEnabled();
   });
 
   it("blocks stale profile data until a higher scope epoch accepts reset sources", async () => {
