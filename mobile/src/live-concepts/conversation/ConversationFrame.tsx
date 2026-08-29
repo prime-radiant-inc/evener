@@ -9,6 +9,7 @@ import {
   conversationItemAxDescription,
   conversationItemAxLabel,
   mutationAxLabel,
+  streamingAnnouncement,
 } from "../accessibility-semantics";
 import type {
   ConversationDisplayItem,
@@ -270,7 +271,7 @@ function NarrativeBody({
       question={question}
       draft={state.questionDrafts[key]}
       canSend={state.composer.canSend}
-      pending={state.composer.pending !== null}
+      pending={state.composer.pending?.status === "pending"}
       dispatch={dispatch}
     />
   );
@@ -350,9 +351,11 @@ function TranscriptItem({
 function ConversationStatus({
   state,
   dispatch,
+  streamingMessage,
 }: {
   readonly state: ConversationFrameState;
   readonly dispatch: (action: ConversationFrameAction) => void;
+  readonly streamingMessage: string | null;
 }): ReactElement {
   const mutationLabel = mutationAxLabel(state.composer);
   const mutationFailed = state.composer.pending?.status === "failed";
@@ -375,6 +378,11 @@ function ConversationStatus({
         <p role="status">Loading conversation</p>
       ) : null}
       {state.phase === "empty" ? <p role="status">No conversation</p> : null}
+      {streamingMessage !== null ? (
+        <p role="status" aria-live="polite" aria-atomic="true">
+          {streamingMessage}
+        </p>
+      ) : null}
       {!mutationFailed && mutationLabel !== null ? (
         <p role="status" aria-label={mutationLabel}>
           {mutationLabel}
@@ -424,6 +432,20 @@ export function ConversationFrame({
   onFocusIntentChange,
 }: ConversationFrameProps): ReactElement {
   const items = state.conversation?.items ?? [];
+  const previousItems = useRef<ReadonlyMap<string, ConversationDisplayItem>>(
+    new Map(),
+  );
+  let streamingMessage: string | null = null;
+  for (const item of items) {
+    const nextAnnouncement = streamingAnnouncement(
+      previousItems.current.get(item.key) ?? null,
+      item,
+    );
+    if (nextAnnouncement !== null) streamingMessage = nextAnnouncement;
+  }
+  useLayoutEffect(() => {
+    previousItems.current = new Map(items.map((item) => [item.key, item]));
+  }, [items]);
   const composer =
     state.phase === "loading" || state.conversation === null
       ? {
@@ -470,7 +492,7 @@ export function ConversationFrame({
           <button
             type="button"
             aria-label="Load older messages"
-            disabled={state.composer.pending !== null}
+            disabled={state.composer.pending?.status === "pending"}
             onClick={() => dispatch({ type: "loadOlder" })}
           >
             Load older messages
@@ -499,7 +521,11 @@ export function ConversationFrame({
           </section>
         ) : null}
       </VirtualTranscript>
-      <ConversationStatus state={state} dispatch={dispatch} />
+      <ConversationStatus
+        state={state}
+        dispatch={dispatch}
+        streamingMessage={streamingMessage}
+      />
       <section
         data-frame-part="composer"
         data-live-conversation-composer="true"

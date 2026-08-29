@@ -272,6 +272,57 @@ describe("LiveConceptHost ownership", () => {
     }
   });
 
+  it("classifies a failed mutation as editable mutation recovery, not a read error", async () => {
+    const harness = makeHarness();
+    await openConversation(
+      harness,
+      conversation([
+        { kind: "user", id: "failed-user", text: "Before failure" },
+      ]),
+    );
+    act(() => {
+      harness.runtime.conversationStore.setState({
+        error: "Mutation operation failed",
+        pendingMutation: {
+          kind: "send",
+          status: "failed",
+          draftSnapshot: "restore this exact draft",
+          draftRevisionAtSubmit: 3,
+          generation:
+            harness.runtime.conversationStore.getState().conversationGeneration,
+          mutationId: 9,
+        },
+      });
+    });
+    const testSkin: ConversationSkin = {
+      id: "stillwater",
+      className: "host-failed-mutation-skin",
+      composerAppearance: { density: "compact", accent: "forest" },
+      renderNarrativeItem: ({ body }) => body,
+      renderActivityMarker: ({ item }) => item.label.text,
+      renderConversationChrome: ({ title }) => title.text,
+    };
+    const migrated = liveConceptRegistry.stillwater as {
+      conversationSkin?: ConversationSkin;
+    };
+    migrated.conversationSkin = testSkin;
+    try {
+      render(<LiveConceptHost {...harness.props} surface="conversation" />);
+      expect(
+        screen.queryByRole("button", { name: "Retry conversation" }),
+      ).toBeNull();
+      expect(screen.getByRole("alert")).toHaveTextContent(
+        "Mutation operation failed",
+      );
+      expect(screen.getByRole("textbox", { name: "Message" })).toBeEnabled();
+      expect(screen.getByRole("textbox", { name: "Message" })).toHaveValue(
+        "restore this exact draft",
+      );
+    } finally {
+      delete migrated.conversationSkin;
+    }
+  });
+
   it("redacts and bounds mutation errors before renderer DOM creation", async () => {
     const harness = makeHarness();
     await openConversation(

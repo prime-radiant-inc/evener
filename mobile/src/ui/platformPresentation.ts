@@ -266,6 +266,15 @@ export function createViewportCoordinator(
   let token: unknown = null;
   let visualTop = 0;
   let visualHeight = finiteNonnegative(win.innerHeight);
+  let viewportRevision = 0;
+  type SettlementWake = "frame" | "update" | "stopped";
+  const settlementWaiters = new Set<(wake: SettlementWake) => void>();
+
+  const wakeSettlementWaiters = (wake: SettlementWake): void => {
+    const waiters = [...settlementWaiters];
+    settlementWaiters.clear();
+    for (const waiter of waiters) waiter(wake);
+  };
 
   const priorViewportHeight = snapshotCssDecl(el, VIEWPORT_HEIGHT);
   const priorKeyboardInset = snapshotCssDecl(el, KEYBOARD_INSET);
@@ -283,6 +292,8 @@ export function createViewportCoordinator(
       vv !== null && Number.isFinite(vv.height)
         ? finiteNonnegative(vv.height)
         : metrics.viewportHeight;
+    viewportRevision += 1;
+    wakeSettlementWaiters("update");
   };
 
   const afterNativeFocusProcessing = (): Promise<void> =>
@@ -304,6 +315,30 @@ export function createViewportCoordinator(
     const rect = target.getBoundingClientRect();
     return rect.bottom > visualTop && rect.top < visualTop + visualHeight;
   };
+
+  const waitForViewportUpdateOrFrame = (
+    expectedRevision: number,
+  ): Promise<SettlementWake> =>
+    new Promise((resolve) => {
+      let settled = false;
+      const finish = (wake: SettlementWake): void => {
+        if (settled) return;
+        settled = true;
+        settlementWaiters.delete(onUpdate);
+        resolve(wake);
+      };
+      const onUpdate = (wake: SettlementWake): void => finish(wake);
+      if (stopped) {
+        finish("stopped");
+        return;
+      }
+      if (viewportRevision !== expectedRevision) {
+        finish("update");
+        return;
+      }
+      settlementWaiters.add(onUpdate);
+      void afterNativeFocusProcessing().then(() => finish("frame"));
+    });
 
   const listeners: Array<{
     target: EventTarget;
@@ -337,6 +372,7 @@ export function createViewportCoordinator(
     stop() {
       if (stopped) return;
       stopped = true;
+      wakeSettlementWaiters("stopped");
       for (const { target, type, handler } of listeners) {
         target.removeEventListener(type, handler);
       }
@@ -360,7 +396,12 @@ export function createViewportCoordinator(
       if (doc.activeElement !== target) return;
       if (intersectsCurrentVisualInterval(target)) return;
       target.scrollIntoView?.({ block: "nearest", inline: "nearest" });
-      await afterNativeFocusProcessing();
+      while (!stopped && doc.activeElement === target) {
+        const expectedRevision = viewportRevision;
+        const wake = await waitForViewportUpdateOrFrame(expectedRevision);
+        if (wake === "stopped" || doc.activeElement !== target) return;
+        if (intersectsCurrentVisualInterval(target)) return;
+      }
     },
   };
   return coordinator;

@@ -217,6 +217,130 @@ describe("ConversationFrame", () => {
     expect(screen.getByRole("alert")).toHaveTextContent("Mutation failed");
   });
 
+  it("keeps question controls editable after a terminal mutation failure", () => {
+    const conversation = readyState().conversation;
+    if (conversation === null) throw new Error("fixture");
+    const frameProps = props({
+      conversation: {
+        ...conversation,
+        items: [
+          {
+            key: "failed-question-item",
+            sourceKind: "question",
+            body: bounded("Recover question"),
+            label: bounded("Question"),
+            tone: "attention",
+            streaming: false,
+            questionKey: "failed-question",
+            evidenceKey: null,
+            sequence: "failed-1",
+          },
+        ],
+        questions: [
+          {
+            key: "failed-question",
+            header: bounded("Header"),
+            prompt: bounded("Choose again"),
+            options: [
+              {
+                key: "recover-option",
+                label: bounded("Recover"),
+                detail: bounded("Try again"),
+              },
+            ],
+            multiple: false,
+            why: null,
+            ifUnanswered: null,
+          },
+        ],
+      },
+      composer: {
+        ...readyState().composer,
+        pending: {
+          kind: "send",
+          status: "failed",
+          draftSnapshot: "failed draft",
+          generation: 12,
+        },
+        error: bounded("Mutation failed"),
+      },
+    });
+    render(<ConversationFrame {...frameProps} />);
+    expect(screen.getByRole("radio", { name: "Recover" })).toBeEnabled();
+    expect(screen.getByRole("textbox", { name: "Note" })).toBeEnabled();
+    fireEvent.click(screen.getByRole("radio", { name: "Recover" }));
+    expect(frameProps.dispatch).toHaveBeenCalledWith({
+      type: "setQuestionDraft",
+      key: "failed-question",
+      value: {
+        selectedOptionKeys: ["recover-option"],
+        note: "",
+        resolution: null,
+      },
+    });
+  });
+
+  it("announces streaming only at start, phrase boundaries, and completion", () => {
+    const conversation = readyState().conversation;
+    if (conversation === null) throw new Error("fixture");
+    const assistant = (body: string, streaming: boolean) => ({
+      key: "assistant-stream",
+      sourceKind: "assistant" as const,
+      body: bounded(body),
+      label: null,
+      tone: "running" as const,
+      streaming,
+      questionKey: null,
+      evidenceKey: null,
+      sequence: "stream-1",
+    });
+    const stateWith = (body: string, streaming: boolean) =>
+      readyState({
+        conversation: {
+          ...conversation,
+          items: [assistant(body, streaming)],
+        },
+      });
+    const frameProps = props();
+    const { rerender } = render(
+      <ConversationFrame {...frameProps} state={stateWith("Hello", false)} />,
+    );
+    expect(screen.queryByRole("status")).toBeNull();
+
+    rerender(
+      <ConversationFrame {...frameProps} state={stateWith("Hello", true)} />,
+    );
+    expect(screen.getByRole("status")).toHaveTextContent(
+      "Assistant message streaming",
+    );
+
+    rerender(
+      <ConversationFrame
+        {...frameProps}
+        state={stateWith("Hello world", true)}
+      />,
+    );
+    expect(screen.queryByRole("status")).toBeNull();
+
+    rerender(
+      <ConversationFrame
+        {...frameProps}
+        state={stateWith("Hello world.", true)}
+      />,
+    );
+    expect(screen.getByRole("status")).toHaveTextContent("Hello world.");
+
+    rerender(
+      <ConversationFrame
+        {...frameProps}
+        state={stateWith("Hello world.", false)}
+      />,
+    );
+    expect(screen.getByRole("status")).toHaveTextContent(
+      "Assistant message completed",
+    );
+  });
+
   it("renders a bounded malformed-question fallback", () => {
     const conversation = readyState().conversation;
     if (conversation === null) throw new Error("fixture");

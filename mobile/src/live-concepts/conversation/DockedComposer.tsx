@@ -1,4 +1,4 @@
-import type { ReactElement } from "react";
+import { type ReactElement, useLayoutEffect, useRef } from "react";
 import type { ComposerAppearance } from "./contract";
 import type {
   ComposerMode,
@@ -18,6 +18,18 @@ function canUseMode(mode: ComposerMode, composer: LiveComposerView): boolean {
   return composer.canQueue;
 }
 
+function cssPixels(value: string, fallback: number): number {
+  const parsed = Number.parseFloat(value);
+  return Number.isFinite(parsed) ? parsed : fallback;
+}
+
+function measuredLineHeight(style: CSSStyleDeclaration): number {
+  const fontSize = cssPixels(style.fontSize, 16);
+  const parsed = Number.parseFloat(style.lineHeight);
+  if (!Number.isFinite(parsed)) return fontSize * 1.2;
+  return style.lineHeight.trim().endsWith("px") ? parsed : parsed * fontSize;
+}
+
 export interface DockedComposerProps {
   readonly composer: LiveComposerView;
   readonly mode: ComposerMode;
@@ -31,11 +43,29 @@ export function DockedComposer({
   appearance,
   dispatch,
 }: DockedComposerProps): ReactElement {
-  const pending = composer.pending !== null;
+  const textareaRef = useRef<HTMLTextAreaElement>(null);
+  const pending = composer.pending?.status === "pending";
   const hasTextCapability =
     composer.canSend || composer.canSteer || composer.canQueue;
+  const draft = composer.draft;
   const canSubmit =
-    canUseMode(mode, composer) && composer.draft.trim().length > 0 && !pending;
+    canUseMode(mode, composer) && draft.trim().length > 0 && !pending;
+  useLayoutEffect(() => {
+    const textarea = textareaRef.current;
+    if (textarea === null) return;
+    if (textarea.value !== draft) return;
+    textarea.style.blockSize = "auto";
+    const style = window.getComputedStyle(textarea);
+    const lineHeight = measuredLineHeight(style);
+    const padding =
+      cssPixels(style.paddingBlockStart, 0) +
+      cssPixels(style.paddingBlockEnd, 0);
+    const minimum = lineHeight + padding;
+    const maximum = 6 * lineHeight + padding;
+    const measured = Math.max(textarea.scrollHeight, minimum);
+    textarea.style.blockSize = `${Math.min(measured, maximum)}px`;
+    textarea.style.overflowY = measured > maximum ? "auto" : "hidden";
+  }, [draft]);
 
   return (
     <div
@@ -76,6 +106,7 @@ export function DockedComposer({
       <label className="live-conversation-composer__field">
         <span className="live-conversation-visually-hidden">Message</span>
         <textarea
+          ref={textareaRef}
           aria-label="Message"
           placeholder="Message or steer…"
           value={composer.draft}

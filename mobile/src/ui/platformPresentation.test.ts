@@ -830,8 +830,21 @@ describe("conversation focus settlement", () => {
 
   it("keeps token semantics and scrolls a newly focused control only when panned outside", async () => {
     const fakeWindow = new EventTarget() as unknown as Window &
-      typeof globalThis & { innerHeight: number };
+      typeof globalThis & {
+        innerHeight: number;
+        requestAnimationFrame(callback: FrameRequestCallback): number;
+      };
     (fakeWindow as { innerHeight: number }).innerHeight = 852;
+    const frames: FrameRequestCallback[] = [];
+    fakeWindow.requestAnimationFrame = (callback) => {
+      frames.push(callback);
+      return frames.length;
+    };
+    const runFrame = (): void => {
+      const callback = frames.shift();
+      if (callback === undefined) throw new Error("expected animation frame");
+      callback(0);
+    };
     const viewport = createFakeVisualViewport({ height: 500, offsetTop: 47 });
     const coordinator = createViewportCoordinator({
       document,
@@ -860,17 +873,33 @@ describe("conversation focus settlement", () => {
         y: rect.top,
         toJSON: () => ({}),
       }) as DOMRect;
-    const scrollIntoView = vi.fn(() => {
-      rect = { top: 47, bottom: 91 };
-    });
+    const scrollIntoView = vi.fn();
     control.scrollIntoView = scrollIntoView;
     control.focus();
 
-    await coordinator.settleFocusedControlInVisualViewport(control);
+    let resolved = false;
+    const settlement = coordinator
+      .settleFocusedControlInVisualViewport(control)
+      .then(() => {
+        resolved = true;
+      });
+    runFrame();
+    await Promise.resolve();
+    await Promise.resolve();
     expect(scrollIntoView).toHaveBeenCalledWith({
       block: "nearest",
       inline: "nearest",
     });
+    expect(resolved).toBe(false);
+
+    runFrame();
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(resolved).toBe(false);
+
+    rect = { top: 47, bottom: 91 };
+    viewport.dispatchEvent(new Event("scroll"));
+    await settlement;
     expect(document.activeElement).toBe(control);
     expect(control.getBoundingClientRect().top).toBeGreaterThanOrEqual(47);
     expect(control.getBoundingClientRect().bottom).toBeLessThanOrEqual(547);

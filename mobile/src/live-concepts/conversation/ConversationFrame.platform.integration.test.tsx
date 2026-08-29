@@ -1,7 +1,7 @@
 import { readFileSync } from "node:fs";
 import path from "node:path";
-import { cleanup, render, screen } from "@testing-library/react";
-import { afterEach, describe, expect, it } from "vitest";
+import { cleanup, render, screen, waitFor } from "@testing-library/react";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { createViewportCoordinator } from "../../ui/platformPresentation";
 import { ConversationFrame } from "./ConversationFrame";
 import type { ConversationFrameProps, ConversationSkin } from "./contract";
@@ -96,8 +96,23 @@ function numberToken(name: string): number {
   );
 }
 
+function elementRect(top: number, bottom: number): DOMRect {
+  return {
+    top,
+    bottom,
+    left: 0,
+    right: 100,
+    width: 100,
+    height: bottom - top,
+    x: 0,
+    y: top,
+    toJSON: () => ({}),
+  } as DOMRect;
+}
+
 afterEach(() => {
   cleanup();
+  vi.restoreAllMocks();
   document.documentElement.removeAttribute("style");
 });
 
@@ -131,10 +146,16 @@ describe("ConversationFrame platform integration", () => {
       '[data-frame-part="composer"][data-live-conversation-composer="true"]',
     );
     expect(composer).not.toBeNull();
+    const frame = view.getByRole("main", { name: "Conversation" });
+    frame.getBoundingClientRect = () => elementRect(0, 532);
+    if (composer === null) throw new Error("composer target missing");
+    composer.getBoundingClientRect = () => elementRect(430, 532);
     const frameBottom =
       numberToken("--viewport-height") - numberToken("--keyboard-inset");
     expect(frameBottom).toBe(532);
     expect(frameBottom).toBe(viewport.offsetTop + viewport.height);
+    expect(frame.getBoundingClientRect().bottom).toBe(532);
+    expect(composer.getBoundingClientRect().bottom).toBe(532);
     expect(
       document.documentElement.style.getPropertyValue("--safe-area-bottom"),
     ).toBe("34px");
@@ -169,7 +190,7 @@ describe("ConversationFrame platform integration", () => {
       document,
     });
     coordinator.start();
-    render(<ConversationFrame {...frameProps()} />);
+    const view = render(<ConversationFrame {...frameProps()} />);
 
     expect(
       document.documentElement.style.getPropertyValue("--viewport-height"),
@@ -181,18 +202,18 @@ describe("ConversationFrame platform integration", () => {
       numberToken("--viewport-height") - numberToken("--keyboard-inset"),
     ).toBe(547);
 
+    const frame = view.getByRole("main", { name: "Conversation" });
+    const composerWrapper = view.container.querySelector<HTMLElement>(
+      '[data-frame-part="composer"][data-live-conversation-composer="true"]',
+    );
+    if (composerWrapper === null) throw new Error("composer target missing");
+    frame.getBoundingClientRect = () => elementRect(0, 547);
+    composerWrapper.getBoundingClientRect = () => elementRect(470, 547);
+    expect(frame.getBoundingClientRect().bottom).toBe(547);
+    expect(composerWrapper.getBoundingClientRect().bottom).toBe(547);
+
     const composer = screen.getByRole("textbox", { name: "Message" });
-    let composerRect = { top: 490, bottom: 534 };
-    composer.getBoundingClientRect = () => ({
-      ...composerRect,
-      left: 0,
-      right: 100,
-      width: 100,
-      height: composerRect.bottom - composerRect.top,
-      x: 0,
-      y: composerRect.top,
-      toJSON: () => ({}),
-    });
+    composer.getBoundingClientRect = () => elementRect(490, 534);
     composer.focus();
     expect(document.activeElement).toBe(composer);
 
@@ -202,30 +223,29 @@ describe("ConversationFrame platform integration", () => {
       screen.getByRole("button", { name: "Switch concept" }),
     ]) {
       let rect = { top: 0, bottom: 44 };
-      control.getBoundingClientRect = () => ({
-        ...rect,
-        left: 0,
-        right: 100,
-        width: 100,
-        height: rect.bottom - rect.top,
-        x: 0,
-        y: rect.top,
-        toJSON: () => ({}),
+      control.getBoundingClientRect = () => elementRect(rect.top, rect.bottom);
+      const scrollIntoView = vi.fn(() => {
+        queueMicrotask(() => {
+          rect = { top: viewport.offsetTop, bottom: viewport.offsetTop + 44 };
+          viewport.dispatchEvent(new Event("scroll"));
+        });
       });
-      control.scrollIntoView = () => {
-        rect = { top: viewport.offsetTop, bottom: viewport.offsetTop + 44 };
-      };
+      control.scrollIntoView = scrollIntoView;
       control.focus();
-      await coordinator.settleFocusedControlInVisualViewport(control);
-      const current = {
-        top: viewport.offsetTop,
-        bottom: viewport.offsetTop + viewport.height,
-      };
-      const settled = control.getBoundingClientRect();
-      expect(document.activeElement).toBe(control);
-      expect(settled.bottom).toBeGreaterThan(current.top);
-      expect(settled.top).toBeLessThan(current.bottom);
-      composerRect = { top: 490, bottom: 534 };
+      await waitFor(() => {
+        const current = {
+          top: viewport.offsetTop,
+          bottom: viewport.offsetTop + viewport.height,
+        };
+        const settled = control.getBoundingClientRect();
+        expect(document.activeElement).toBe(control);
+        expect(settled.bottom).toBeGreaterThan(current.top);
+        expect(settled.top).toBeLessThan(current.bottom);
+      });
+      expect(scrollIntoView).toHaveBeenCalledWith({
+        block: "nearest",
+        inline: "nearest",
+      });
       composer.focus();
     }
     coordinator.stop();
