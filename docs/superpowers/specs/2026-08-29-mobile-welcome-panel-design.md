@@ -50,7 +50,10 @@ three regions, top to bottom:
    session" button, pin sections, archived). Always present.
 2. **Welcome actions** — "Jump back in" (resume candidate) + orientation text.
    Present **only when no session is focused** (the panel is then the landing
-   screen). Hidden when a session is live.
+   screen). Hidden when a session is live. Note: the `<Rail/>` already renders
+   its own "+ New session" button (Rail.tsx ~line 1086), so the panel does NOT
+   duplicate it here — the welcome actions render "Jump back in" and the
+   orientation text only; "New session" lives in the Rail above.
 3. **Key bindings** — the chord hints. Present only when no session is focused,
    at the panel's bottom.
 
@@ -97,8 +100,14 @@ interface SheetProps {
 ```
 
 **Behavior:**
-- A drag handle renders at the top of the panel (above the title), visible
-  only when `expandable` is set.
+- A drag handle renders at the top of the panel, **above the title**. This
+  requires a new optional `handle` slot on `OverlayPanel` (rendered before the
+  `<header>`); `Sheet` passes the handle element through it when `expandable`
+  is set. `OverlayPanel`'s `handle` prop defaults to `undefined` — every
+  existing Dialog and Sheet consumer is unchanged. (The handle cannot live in
+  `children` because `OverlayPanel` renders `<header>` before the body
+  `<div>{children}</div>`, so a child would appear below the title in DOM
+  order.)
 - **Drag:** pointer/touch drag on the handle transitions the panel height
   continuously between `peekHeight` and `100vh`. Release snaps to the nearer
   bound (with a small hysteresis band; >50% of the way to the other bound
@@ -110,9 +119,10 @@ interface SheetProps {
   expandable; it animates between the two bounds. The existing `.bottom` rule
   stays the default for non-expandable sheets.
 
-**Why additive:** `expandable` defaults to `undefined`; every existing
-`<Sheet>` call site is byte-for-byte identical in behavior and geometry. No
-existing test or consumer changes.
+**Why additive:** `expandable` defaults to `undefined` and `OverlayPanel`'s
+`handle` defaults to `undefined`; every existing `<Sheet>` and `<Dialog>` call
+site is byte-for-byte identical in behavior and geometry. No existing test or
+consumer changes.
 
 ### 2. Welcome content module (`src/panes/welcome/WelcomeContent.tsx`)
 
@@ -123,18 +133,25 @@ panel render the same markup:
 ```tsx
 interface WelcomeContentProps {
   note?: string;
-  /** Hide the chord-hint block. Desktop keeps it; the mobile panel shows it
-   *  only when nothing is focused (it controls visibility itself). */
+  /** Render the "New session" button. Desktop's standalone Welcome pane
+   *  shows it (no rail beside it on a cold load). The mobile panel hides it
+   *  — the Rail inside the same panel already renders its own "+ New
+   *  session" button, so a second one would stack two primaries. */
+  showNewSession?: boolean;
+  /** Render the chord-hint block. Desktop keeps it; the mobile panel shows
+   *  it only when nothing is focused (it controls visibility itself). */
   showHints?: boolean;
 }
 ```
 
 Renders: optional note hint, "Jump back in" (resume candidate, when one
-exists), "New session" button, orientation text. **No example prompts** in
-either consumer. The chord hints render only when `showHints` is true.
+exists), "New session" button (only when `showNewSession`), orientation text.
+**No example prompts** in either consumer. The chord hints render only when
+`showHints` is true.
 
-`Welcome.tsx` becomes a thin wrapper: `PaneScaffold` + `EmptyState` +
-`<WelcomeContent showHints />`.
+`Welcome.tsx` (desktop) becomes a thin wrapper: `PaneScaffold` + `EmptyState` +
+`<WelcomeContent showNewSession showHints />`. The mobile panel renders
+`<WelcomeContent showHints />` (no `showNewSession` — the Rail owns that).
 
 ### 3. Unified mobile panel (`src/shell/mobile/MobilePanel.tsx`)
 
@@ -148,15 +165,24 @@ New component, replacing the `TreeDrawer`-as-welcome role on mobile. It composes
 ```
 
 **State it reads:**
-- `useWorkspaceStore.focusedPaneId` — to decide `nothingFocused`
-  (`focusedPaneId === null || focusedPane.type === "welcome"`).
+- `useWorkspaceStore.focusedPaneId` + the focused pane's type — to decide
+  `nothingFocused` (`focusedPaneId === null || focusedPane?.type === "welcome"`).
+  The welcome pane stays registered and is still opened as the backstop on
+  mobile (StackHost line 282, AppShell line 244), but on mobile it renders
+  *behind* the panel — the panel covers it. `nothingFocused` is true when the
+  backstop has landed on "welcome" (no real session is focused), which is
+  exactly when the panel shows welcome content.
 - `useNavigationStore` — for the resume candidate (inside `WelcomeContent`).
 
 **Entry points:**
-- `StackHost` renders `MobilePanel` (open, full-screen-first) when no session
-  is focused — instead of the standalone `Welcome` pane.
-- The top-bar Sessions button (today's `TreeDrawer` trigger) opens `MobilePanel`
-  when a session is focused.
+- `StackHost` opens `MobilePanel` (full-screen-first) when `nothingFocused`
+  becomes true — instead of showing the standalone `Welcome` pane as the
+  visible surface. The welcome pane still mounts behind the panel (the
+  backstop effect that calls `openPane("welcome")` stays; it is what makes
+  `nothingFocused` true). The panel's `open` state is driven by the shared
+  `useState` in `StackHost` (see Decision).
+- The top-bar Sessions button (today's `TreeDrawer` trigger) opens
+  `MobilePanel` when a session is focused (sets the shared `open` state true).
 
 **Auto-close on navigation:** unchanged from today's `TreeDrawer` — selecting a
 session row calls `openPane("session", {ref})`, which changes `focusedPaneId`,
@@ -169,15 +195,21 @@ panel, regardless of geometry).
 no longer owns a `Sheet`. The bottom `Sheet` and its `EmptyState` placeholder
 are removed; `MobilePanel` is the single panel (see Decision: Sheet ownership).
 
-### Decision: Sheet ownership
+### Decision: Sheet ownership and shared open state
 
-`MobilePanel` owns the `Sheet` and the `expandable` state. `TreeDrawer` keeps
-only the trigger button + badge; on open it calls into `MobilePanel`'s open
-state. This keeps the one-sheet invariant (never two panels) and lets
-`MobilePanel` decide full-screen-first based on focus state, which the trigger
-alone cannot know. `StackHost` mounts `MobilePanel` once (always mounted; the
-`Sheet`'s `open` prop gates visibility), so the trigger and the focus-driven
-opening share one state holder.
+`StackHost` owns the panel-open state (`useState<boolean>`) and threads it to
+both children:
+- `MobilePanel` receives `open` + `onClose` (it owns the `Sheet` and the
+  `expandable` geometry state internally).
+- `TreeDrawer`'s trigger receives `onOpen` (sets the state true). `TreeDrawer`
+  keeps only the trigger button + badge; it no longer owns a `Sheet`.
+
+This is the mechanism: one `useState` in `StackHost` is the single source of
+truth for "is the panel open," shared by both entry points. `StackHost` mounts
+`MobilePanel` once (always mounted; the `Sheet`'s `open` prop gates
+visibility). `MobilePanel` decides `fullScreenFirst` based on focus state, which
+the trigger alone cannot know. This keeps the one-sheet invariant (never two
+panels).
 
 ## State machine
 
@@ -205,11 +237,23 @@ trigger or a return-to-welcome reopens it.
 
 ### Focus transitions
 - `nothingFocused` → session focused (user tapped a row): panel closes.
-- session focused → `nothingFocused` (user went back to welcome, or closed the
-  last session): `StackHost` reopens `MobilePanel` full-screen-first. The
-  back-button path in `StackHost` that currently calls
-  `workspaceStore.getState().openPane("welcome")` is replaced by opening the
-  panel (see StackHost changes below).
+- session focused → `nothingFocused` (user went back, or closed the last
+  session): `StackHost`'s backstop effect (line 282) fires
+  `openPane("welcome")` as today, which makes `nothingFocused` true, and the
+  panel reopens full-screen-first off that same effect (the shared `open`
+  state is set true when `nothingFocused` transitions to true).
+
+### `handleBack` backstop (line 291)
+`handleBack` today calls `openPane("welcome")` when the back-stack is
+exhausted. This stays **unchanged** — it still opens the welcome pane (which
+makes `nothingFocused` true), and the panel opens off the same
+`nothingFocused` effect above. The back-stack logic itself
+(`backStackRef`, `wentBackRef`, `popValidBackTarget`) is untouched. The panel
+is a shell overlay, not a pane, so it does not participate in the pane
+back-stack; Back walks to the previous pane or lands on welcome (panel opens),
+exactly as today. The only change to `StackHost` is: (a) it owns the shared
+panel-open `useState`, (b) it opens the panel when `nothingFocused` becomes
+true, (c) it passes `onOpen` to `TreeDrawer`'s trigger.
 
 ## Interaction detail
 
@@ -246,6 +290,14 @@ trigger or a return-to-welcome reopens it.
 - Peek height: **`min(40vh, 360px)`** (chosen so the session tree's first
   ~6 rows are visible without consuming the whole screen; tunable via a CSS
   variable `--sheet-peek-height` so it can be adjusted without code changes).
+- **Scrolling:** the panel body (`OverlayPanel`'s `.body`) scrolls
+  vertically when content exceeds the panel height — `overflow-y: auto` at
+  peek, same at full (content rarely exceeds full screen, but the tree can).
+  The drag handle and title are sticky (do not scroll). At peek height, the
+  session tree is visible first; the welcome actions and key bindings are
+  below it and reached by scrolling down. At full screen, all three regions
+  are visible (tree at top, welcome actions, key bindings at bottom); the
+  tree itself scrolls internally if it overflows.
 - Drag handle and welcome content reuse existing design tokens (`--space-*`,
   `--ink-*`, `--surface-*`, `--edge`).
 
@@ -329,16 +381,23 @@ anymore, so it is hidden to avoid redundancy with the live session behind it.
 1. **Shared `Sheet` regressions.** The `expandable` prop defaults off; add a
    regression test asserting a default `<Sheet side="bottom">` renders
    identically before and after. Run the full `make test-web` suite.
-2. **Drag gesture on real touch devices.** jsdom has no real pointer events;
-   the drag is unit-tested with dispatched `PointerEvent`s (the existing
-   `OverlayPanel` scrim test already dispatches synthetic mouse events the
-   same way). A real-device smoke is noted as a follow-up, not a gate.
+2. **Drag gesture on real touch devices.** jsdom does not implement real
+   pointer capture or touch events; the drag is unit-tested with manually
+   dispatched `PointerEvent` constructors (`new PointerEvent("pointerdown",
+   {...})` + `dispatchEvent`), which jsdom does support for event dispatch even
+   without real capture. Note the gap: jsdom's lack of pointer capture means
+   `setPointerCapture` is a no-op, so the test attaches `pointermove`/`pointerup`
+   listeners to `window` directly (the same approach the implementation takes).
+   The existing `OverlayPanel` scrim tests dispatch synthetic `MouseEvent`s,
+   not `PointerEvent`s — this is a new test pattern, not a reuse. A
+   real-device smoke is noted as a follow-up, not a gate.
 3. **Two-panel race.** Only one `MobilePanel` is ever mounted (StackHost owns
    it); the `Sheet`'s `open` prop is the single visibility gate. No second
    `Sheet` is instantiated.
-4. **Back-stack interaction.** `StackHost`'s back button today calls
-   `openPane("welcome")` as the backstop. The change replaces that with
-   opening/closing the panel. The back-stack logic (`backStackRef`,
+4. **Back-stack interaction.** `StackHost`'s `handleBack` backstop and the
+   null-focus backstop effect (line 282) both still call
+   `openPane("welcome")` as today — this is what makes `nothingFocused` true,
+   which opens the panel. The back-stack logic (`backStackRef`,
    `wentBackRef`, `popValidBackTarget`) is untouched — the panel is a shell
    overlay, not a pane, so it does not participate in the pane back-stack.
 5. **Focus trap.** `OverlayPanel`'s `FocusScope` traps focus inside the panel.
@@ -349,20 +408,21 @@ anymore, so it is hidden to avoid redundancy with the live session behind it.
 
 | File | Change |
 |---|---|
-| `src/widgets/sheet/index.tsx` | Add `expandable` prop + handle + state. |
+| `src/widgets/dialog/OverlayPanel.tsx` | Add optional `handle` slot (rendered before `<header>`); defaults to undefined. |
+| `src/widgets/sheet/index.tsx` | Add `expandable` prop; pass handle element through OverlayPanel's `handle` slot. |
 | `src/widgets/sheet/sheet.module.css` | Add `.handle`, `.expandable` rules; keep `.bottom` default. |
 | `src/widgets/sheet/sheet.test.tsx` | Add expandable tests; keep existing. |
-| `src/panes/welcome/WelcomeContent.tsx` | **New:** extracted focus-dependent content. |
+| `src/panes/welcome/WelcomeContent.tsx` | **New:** extracted focus-dependent content (`showNewSession`, `showHints`). |
 | `src/panes/welcome/Welcome.tsx` | Thin wrapper over `WelcomeContent`; remove example prompts. |
 | `src/panes/welcome/welcome.module.css` | Remove `.examples*`; keep hints/orientation. |
 | `src/panes/welcome/Welcome.test.tsx` | Remove example-prompt test; keep rest. |
 | `src/shell/mobile/MobilePanel.tsx` | **New:** unified panel (Sheet + Rail + WelcomeContent). |
-| `src/shell/mobile/MobilePanel.module.css` | **New:** panel layout styles. |
+| `src/shell/mobile/MobilePanel.module.css` | **New:** panel layout + scroll styles. |
 | `src/shell/mobile/MobilePanel.test.tsx` | **New:** panel state/content tests. |
-| `src/shell/mobile/TreeDrawer.tsx` | Trigger only; delegate panel to `MobilePanel`. |
-| `src/shell/mobile/TreeDrawer.test.tsx` | Update: no owned Sheet. |
-| `src/shell/mobile/StackHost.tsx` | Render `MobilePanel` when `nothingFocused`; wire trigger. |
-| `src/shell/mobile/StackHost.test.tsx` | Update welcome-landing assertions. |
+| `src/shell/mobile/TreeDrawer.tsx` | Trigger only; receives `onOpen` prop instead of owning a Sheet. |
+| `src/shell/mobile/TreeDrawer.test.tsx` | Update: no owned Sheet; assert trigger calls onOpen. |
+| `src/shell/mobile/StackHost.tsx` | Own shared panel-open `useState`; open panel when `nothingFocused`; pass `onOpen` to TreeDrawer, `open`/`onClose` to MobilePanel. `handleBack` and backstop effect unchanged (still call `openPane("welcome")`). |
+| `src/shell/mobile/StackHost.test.tsx` | Update welcome-landing assertions (panel opens, not standalone pane). |
 | `src/shell/mobile/StackHost.module.css` | (Likely none — panel is an overlay.) |
 
 ## Out of scope / follow-ups
