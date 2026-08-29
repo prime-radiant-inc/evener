@@ -1,9 +1,17 @@
 import { readFileSync } from "node:fs";
 import path from "node:path";
-import { cleanup, render, screen, waitFor } from "@testing-library/react";
+import {
+  act,
+  cleanup,
+  fireEvent,
+  render,
+  screen,
+  waitFor,
+} from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { createViewportCoordinator } from "../../ui/platformPresentation";
+import { __resetSheetHistory, __sheetHistorySettled } from "../../ui/Sheet";
 import { ConversationFrame } from "./ConversationFrame";
 import type { ConversationFrameProps, ConversationSkin } from "./contract";
 
@@ -114,13 +122,269 @@ function elementRect(top: number, bottom: number): DOMRect {
   } as DOMRect;
 }
 
-afterEach(() => {
+afterEach(async () => {
   cleanup();
+  await __sheetHistorySettled();
+  __resetSheetHistory();
+  history.replaceState(null, "");
   vi.restoreAllMocks();
   document.documentElement.removeAttribute("style");
 });
 
 describe("ConversationFrame platform integration", () => {
+  it("requires genuine measurement before evidence opens and reflects the sole-scroller inert lock", async () => {
+    class PlatformResizeObserver implements ResizeObserver {
+      static readonly instances = new Set<PlatformResizeObserver>();
+      readonly targets = new Set<Element>();
+      constructor(private readonly callback: ResizeObserverCallback) {
+        PlatformResizeObserver.instances.add(this);
+      }
+      observe(target: Element): void {
+        this.targets.add(target);
+      }
+      unobserve(target: Element): void {
+        this.targets.delete(target);
+      }
+      disconnect(): void {
+        this.targets.clear();
+        PlatformResizeObserver.instances.delete(this);
+      }
+      static emitAll(): void {
+        for (const observer of PlatformResizeObserver.instances) {
+          const entries = [...observer.targets].map((target) => {
+            const rect = target.getBoundingClientRect();
+            return {
+              target,
+              contentRect: rect,
+              borderBoxSize: [
+                { inlineSize: rect.width, blockSize: rect.height },
+              ],
+              contentBoxSize: [
+                { inlineSize: rect.width, blockSize: rect.height },
+              ],
+              devicePixelContentBoxSize: [
+                { inlineSize: rect.width, blockSize: rect.height },
+              ],
+            } as unknown as ResizeObserverEntry;
+          });
+          if (entries.length > 0) observer.callback(entries, observer);
+        }
+      }
+    }
+
+    const originalResizeObserver = globalThis.ResizeObserver;
+    const originalRect = HTMLElement.prototype.getBoundingClientRect;
+    const originalFocus = HTMLElement.prototype.focus;
+    const originalInert = Object.getOwnPropertyDescriptor(
+      HTMLElement.prototype,
+      "inert",
+    );
+    const originalOffsetHeight = Object.getOwnPropertyDescriptor(
+      HTMLElement.prototype,
+      "offsetHeight",
+    );
+    const originalClientHeight = Object.getOwnPropertyDescriptor(
+      HTMLElement.prototype,
+      "clientHeight",
+    );
+    globalThis.ResizeObserver = PlatformResizeObserver;
+    Object.defineProperty(HTMLElement.prototype, "offsetHeight", {
+      configurable: true,
+      get() {
+        return this.hasAttribute("data-virtual-list-scroll") ? 360 : 0;
+      },
+    });
+    Object.defineProperty(HTMLElement.prototype, "clientHeight", {
+      configurable: true,
+      get() {
+        return this.hasAttribute("data-virtual-list-scroll") ? 360 : 0;
+      },
+    });
+    Object.defineProperty(HTMLElement.prototype, "inert", {
+      configurable: true,
+      get() {
+        return this.hasAttribute("inert");
+      },
+      set(value: boolean) {
+        this.toggleAttribute("inert", value);
+      },
+    });
+    HTMLElement.prototype.getBoundingClientRect = function () {
+      const height = this.matches('[data-testid="virtual-transcript-row"]')
+        ? 96
+        : this.hasAttribute("data-virtual-list-scroll")
+          ? 360
+          : 0;
+      return elementRect(0, height);
+    };
+    HTMLElement.prototype.focus = function (options?: FocusOptions): void {
+      if (this.closest("[inert]") !== null) return;
+      originalFocus.call(this, options);
+    };
+
+    let mountedView: ReturnType<typeof render> | null = null;
+    try {
+      const base = frameProps();
+      const conversation = base.state.conversation;
+      if (conversation === null)
+        throw new Error("conversation fixture missing");
+      const dispatch = vi.fn<ConversationFrameProps["dispatch"]>();
+      const onAnchorChange = vi.fn<ConversationFrameProps["onAnchorChange"]>();
+      const state = {
+        ...base.state,
+        conversation: {
+          ...conversation,
+          items: [
+            {
+              key: "platform-evidence-item",
+              sourceKind: "failure" as const,
+              body: bounded("Bounded platform failure"),
+              label: bounded("Failure"),
+              tone: "failed" as const,
+              streaming: false,
+              questionKey: null,
+              evidenceKey: "platform-evidence",
+              sequence: "platform-1",
+            },
+          ],
+          evidence: [
+            {
+              key: "platform-evidence",
+              family: "failure" as const,
+              title: bounded("Platform evidence"),
+              sections: [
+                {
+                  heading: bounded("Detail"),
+                  body: bounded("Platform bounded detail"),
+                },
+              ],
+              redacted: true,
+            },
+          ],
+        },
+      };
+      const view = render(
+        <ConversationFrame
+          {...base}
+          state={state}
+          dispatch={dispatch}
+          onAnchorChange={onAnchorChange}
+        />,
+      );
+      mountedView = view;
+      const trigger = await screen.findByRole("button", {
+        name: "Show evidence",
+      });
+
+      fireEvent.click(trigger);
+      expect(dispatch).not.toHaveBeenCalledWith(
+        expect.objectContaining({ type: "openEvidence" }),
+      );
+      act(() => PlatformResizeObserver.emitAll());
+      const measuredScroller = document.querySelector<HTMLElement>(
+        '[data-virtual-list-scroll="true"]',
+      );
+      if (measuredScroller === null)
+        throw new Error("measured scroller missing");
+      fireEvent.scroll(measuredScroller);
+      await waitFor(() =>
+        expect(onAnchorChange).toHaveBeenCalledWith({
+          threadKey: "thread",
+          itemKey: "platform-evidence-item",
+          offsetPx: 0,
+          following: true,
+        }),
+      );
+      fireEvent.click(trigger);
+      expect(dispatch).toHaveBeenCalledWith({
+        type: "openEvidence",
+        evidenceKey: "platform-evidence",
+        triggerKey: "platform-evidence-item",
+      });
+
+      view.rerender(
+        <ConversationFrame
+          {...base}
+          dispatch={dispatch}
+          onAnchorChange={onAnchorChange}
+          state={{
+            ...state,
+            openEvidenceKey: "platform-evidence",
+            evidenceTriggerKey: "platform-evidence-item",
+          }}
+        />,
+      );
+      const main = screen.getByRole("main", { hidden: true });
+      const transcript = main.querySelector<HTMLElement>(
+        '[data-virtual-list-scroll="true"]',
+      );
+      if (transcript === null) throw new Error("transcript scroller missing");
+      expect(main.inert).toBe(true);
+      expect(transcript.inert).toBe(true);
+      expect(transcript).toHaveAttribute("aria-hidden", "true");
+      expect(transcript).toHaveAttribute("data-scroll-locked", "true");
+      expect(transcript).not.toHaveAttribute("data-page-scroll-owner");
+      expect(
+        document.querySelectorAll('[data-page-scroll-owner="true"]'),
+      ).toHaveLength(1);
+      expect(
+        screen.getByRole("region", { name: "Activity and evidence details" }),
+      ).toHaveAttribute("data-page-scroll-owner", "true");
+      transcript.focus();
+      expect(transcript).not.toHaveFocus();
+
+      fireEvent.click(
+        screen.getByRole("button", { name: "Close activity and evidence" }),
+      );
+      await waitFor(() =>
+        expect(dispatch).toHaveBeenCalledWith({ type: "closeEvidence" }),
+      );
+      view.rerender(
+        <ConversationFrame
+          {...base}
+          dispatch={dispatch}
+          onAnchorChange={onAnchorChange}
+          state={state}
+        />,
+      );
+      await waitFor(() => expect(main.inert).toBe(false));
+      expect(transcript.inert).toBe(false);
+      expect(transcript).not.toHaveAttribute("aria-hidden");
+      expect(transcript).not.toHaveAttribute("data-scroll-locked");
+      expect(transcript).toHaveAttribute("data-page-scroll-owner", "true");
+      expect(
+        document.querySelectorAll('[data-page-scroll-owner="true"]'),
+      ).toHaveLength(1);
+      transcript.focus();
+      expect(transcript).toHaveFocus();
+    } finally {
+      mountedView?.unmount();
+      PlatformResizeObserver.instances.clear();
+      globalThis.ResizeObserver = originalResizeObserver;
+      HTMLElement.prototype.getBoundingClientRect = originalRect;
+      HTMLElement.prototype.focus = originalFocus;
+      if (originalInert === undefined)
+        Reflect.deleteProperty(HTMLElement.prototype, "inert");
+      else Object.defineProperty(HTMLElement.prototype, "inert", originalInert);
+      if (originalOffsetHeight === undefined)
+        Reflect.deleteProperty(HTMLElement.prototype, "offsetHeight");
+      else
+        Object.defineProperty(
+          HTMLElement.prototype,
+          "offsetHeight",
+          originalOffsetHeight,
+        );
+      if (originalClientHeight === undefined)
+        Reflect.deleteProperty(HTMLElement.prototype, "clientHeight");
+      else
+        Object.defineProperty(
+          HTMLElement.prototype,
+          "clientHeight",
+          originalClientHeight,
+        );
+    }
+  });
+
   it("uses coordinator tokens to subtract keyboard once and apply safe area once", () => {
     const viewport = new MutableViewport(532, 0);
     const fakeWindow = Object.create(window) as Window & typeof globalThis;
