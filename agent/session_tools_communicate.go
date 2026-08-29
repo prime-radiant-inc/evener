@@ -100,23 +100,27 @@ func registerCommunicateTool(reg *tool.Registry, deps *toolDeps) {
 				deps.prependSteering(deferred)
 			}
 
+			// end_turn=false calls never reach the terminal capture, so they stay
+			// accepted; end_turn=true calls are accepted iff they won the capture.
+			accepted := !endTurn
 			if endTurn {
-				if deps.setCommunicateResultContext != nil {
-					deps.setCommunicateResultContext(ctx, message, resultText, structuredText)
-				} else {
-					deps.setCommunicateResult(message, resultText, structuredText)
-				}
+				// Atomic terminal capture (issue #570): the call's message,
+				// canonical output, and raw structured value (when it carries
+				// one) are handed to the setter together, so a later competing
+				// terminal call can never pair its structured value with this
+				// call's message — and a losing call reports accepted:false.
+				var capturedOutput any
 				if explicitStructuredOutput {
-					capturedOutput := rawOutput
+					capturedOutput = rawOutput
 					if capturedOutput == nil && outputPresent {
 						capturedOutput = json.RawMessage(`null`)
 					}
-					deps.setCommunicateStructured(capturedOutput)
 				}
+				accepted = deps.setCommunicateTerminal(ctx, message, resultText, structuredText, capturedOutput)
 			}
 
 			resp := map[string]any{
-				"accepted": true,
+				"accepted": accepted,
 				"end_turn": endTurn,
 				"inbox":    inbox,
 			}

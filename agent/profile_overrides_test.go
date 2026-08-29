@@ -121,13 +121,12 @@ func TestWithAllowedDecisions_RegistryPreservesDecisionSchema(t *testing.T) {
 	// will overwrite the profile's decision-bearing definition with the plain
 	// base, and the assertion below will fail.
 	deps := &toolDeps{
-		emit:                     func(events.EventKind, events.EventData) {},
-		abort:                    func(context.Context) error { return nil },
-		drainSteering:            func() []steeringMessage { return nil },
-		prependSteering:          func([]steeringMessage) {},
-		resultToolName:           func() string { return "communicate" },
-		setCommunicateResult:     func(string, string, string) {},
-		setCommunicateStructured: func(any) {},
+		emit:                   func(events.EventKind, events.EventData) {},
+		abort:                  func(context.Context) error { return nil },
+		drainSteering:          func() []steeringMessage { return nil },
+		prependSteering:        func([]steeringMessage) {},
+		resultToolName:         func() string { return "communicate" },
+		setCommunicateTerminal: func(context.Context, string, string, string, any) bool { return true },
 	}
 	registerCommunicateTool(reg, deps)
 

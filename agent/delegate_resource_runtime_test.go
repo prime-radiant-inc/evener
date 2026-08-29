@@ -1791,13 +1791,15 @@ func TestDelegateResourceRuntime_TerminalPacketUsesProductionActivityBoundary(t 
 func TestDelegateResourceRuntime_StructuredResultExplicitNullIsPresent(t *testing.T) {
 	var captured any
 	deps := &toolDeps{
-		emit:                     func(events.EventKind, events.EventData) {},
-		abort:                    func(context.Context) error { return nil },
-		drainSteering:            func() []steeringMessage { return nil },
-		prependSteering:          func([]steeringMessage) {},
-		resultToolName:           func() string { return "communicate" },
-		setCommunicateResult:     func(string, string, string) {},
-		setCommunicateStructured: func(raw any) { captured = raw },
+		emit:            func(events.EventKind, events.EventData) {},
+		abort:           func(context.Context) error { return nil },
+		drainSteering:   func() []steeringMessage { return nil },
+		prependSteering: func([]steeringMessage) {},
+		resultToolName:  func() string { return "communicate" },
+		setCommunicateTerminal: func(_ context.Context, _, _, _ string, raw any) bool {
+			captured = raw
+			return true
+		},
 	}
 	reg := toolpkg.NewRegistry()
 	def := toolpkg.DefCommunicateNamed("communicate")

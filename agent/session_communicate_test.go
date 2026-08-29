@@ -488,8 +488,10 @@ func TestCommunicateCapturesRawStructuredOutput(t *testing.T) {
 		resultToolName: func() string {
 			return "communicate"
 		},
-		setCommunicateResult:     func(string, string, string) {},
-		setCommunicateStructured: func(raw any) { captured = raw },
+		setCommunicateTerminal: func(_ context.Context, _, _, _ string, raw any) bool {
+			captured = raw
+			return true
+		},
 	}
 	reg := tool.NewRegistry()
 	registerCommunicateTool(reg, deps)
@@ -532,8 +534,10 @@ func TestCommunicateCapturesEmptyRawStructuredOutputForCustomSchema(t *testing.T
 		resultToolName: func() string {
 			return "communicate"
 		},
-		setCommunicateResult:     func(string, string, string) {},
-		setCommunicateStructured: func(raw any) { captured = raw },
+		setCommunicateTerminal: func(_ context.Context, _, _, _ string, raw any) bool {
+			captured = raw
+			return true
+		},
 	}
 	reg := tool.NewRegistry()
 	def := tool.DefCommunicateNamed("communicate")
