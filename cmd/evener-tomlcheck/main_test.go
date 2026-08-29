@@ -98,6 +98,34 @@ func TestSplitTOMLKeyPath(t *testing.T) {
 	}
 }
 
+// tomlTableHeaderPath must find the closing ]/]] outside any quoted span, so
+// a ] embedded in a quoted key (e.g. the "[1m]" in a model id) does not end
+// the header early, and must still tolerate a trailing # comment.
+func TestTomlTableHeaderPath(t *testing.T) {
+	cases := []struct {
+		in     string
+		path   string
+		wantOK bool
+	}{
+		{`[foo]`, "foo", true},
+		{`[providers.openai]`, "providers.openai", true},
+		{`[providers.anthropic.models."claude-sonnet-4-5[1m]"]`, `providers.anthropic.models."claude-sonnet-4-5[1m]"`, true},
+		{`[a."b]c".d]  # note`, `a."b]c".d`, true},
+		{`[[a."b[1]"]]`, `a."b[1]"`, true},
+		{`foo = [1, 2, 3]`, "", false},
+		{`[[a]`, "", false},      // mismatched bracket count
+		{`[a] stray`, "", false}, // trailing content that isn't a comment
+	}
+	for _, c := range cases {
+		t.Run(c.in, func(t *testing.T) {
+			path, ok := tomlTableHeaderPath(c.in)
+			if ok != c.wantOK || (ok && path != c.path) {
+				t.Fatalf("tomlTableHeaderPath(%q) = (%q, %v), want (%q, %v)", c.in, path, ok, c.path, c.wantOK)
+			}
+		})
+	}
+}
+
 // --- TOML checker tests ----------------------------------------------------
 
 func TestCheckTOMLFile(t *testing.T) {
@@ -272,6 +300,39 @@ func TestCheckTOMLFileQuotedDottedKeyValue(t *testing.T) {
 	}
 	if len(vs) != 1 || !strings.Contains(vs[0].Message, `toml key "badKey"`) {
 		t.Fatalf("want exactly 1 violation (badKey), got %d: %+v", len(vs), vs)
+	}
+}
+
+// A table header whose quoted key embeds a literal ] (a [1m]-suffixed model
+// id, e.g. "claude-sonnet-4-5[1m]") must still be recognized as a table
+// header and checked: the quoted key passes verbatim, but an unquoted
+// non-snake_case sibling on the same header is still flagged. Before the
+// fix, the whole line was invisible to checkTOMLFile (it matched neither
+// the table-header nor the key=value regex), so BadKey went unchecked too.
+func TestCheckTOMLFileBracketInQuotedTableKey(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "x.toml")
+	body := `[providers.anthropic.models."claude-sonnet-4-5[1m]"]
+alias_of = "claude-sonnet-4-5"
+
+[providers.BadKey.models."x[1m]"]
+alias_of = "x"
+
+[[a."b[1]"]]
+inner_key = 1
+`
+	if err := os.WriteFile(path, []byte(body), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	vs, err := checkTOMLFile(path, "x.toml")
+	if err != nil {
+		t.Fatalf("checkTOMLFile: %v", err)
+	}
+	if len(vs) != 1 {
+		t.Fatalf("want exactly 1 violation (BadKey), got %d: %+v", len(vs), vs)
+	}
+	if !strings.Contains(vs[0].Message, `toml table key "BadKey"`) {
+		t.Errorf("want BadKey flagged, got: %+v", vs)
 	}
 }
 
