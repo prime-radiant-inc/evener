@@ -36,6 +36,7 @@ import {
   FRAME_TIMES_MAX_ENTRIES,
   FRAME_TIMES_WINDOW_MS,
   installHydrationRetrySchedulerForTests,
+  putThreadModel,
   readMutationPersistence,
   resendRecoveryMutation,
   resetThreadsStoreForTests,
@@ -4189,6 +4190,41 @@ describe("useThreadsStore session actions (setModel/setReasoningEffort/setGoal/r
     expect(threadsStore.getState().watchedThreads.get("ref_a")?.turns).toEqual([]);
   });
 
+  // Dual-map atomicity (round-2 fix): thread/clear's response snapshot lands
+  // in threads and watchedThreads through ONE setState, so a synchronous
+  // subscriber between the two halves — possible while the update was two
+  // sequential puts — never sees threads cleared while watchedThreads still
+  // holds the old turns.
+  test("clearThread replaces both maps in one setState - no synchronous subscriber sees split state", async () => {
+    const fake = connectFakeClient();
+    fake.on("thread/read", () =>
+      readResponse("ref_a", { turns: [{ id: "turn_1", status: "completed", itemsView: "full", items: [] }] }),
+    );
+    await threadsStore.getState().ensureThread("ref_a");
+    await threadsStore.getState().watchThread("ref_a");
+
+    fake.on("thread/clear", () => ({ thread: testThread("ref_a", { turns: [] }), ref: "ref_a" }));
+
+    const snapshots: { tracked: number; watched: number }[] = [];
+    const unsubscribe = threadsStore.subscribe((state) => {
+      snapshots.push({
+        tracked: state.threads.get("ref_a")?.turns.length ?? -1,
+        watched: state.watchedThreads.get("ref_a")?.turns.length ?? -1,
+      });
+    });
+    try {
+      await threadsStore.getState().clearThread("ref_a");
+    } finally {
+      unsubscribe();
+    }
+
+    for (const [i, snap] of snapshots.entries()) {
+      expect(snap.tracked, `snapshot ${i} must not be split`).toBe(snap.watched);
+    }
+    expect(threadsStore.getState().threads.get("ref_a")?.turns).toEqual([]);
+    expect(threadsStore.getState().watchedThreads.get("ref_a")?.turns).toEqual([]);
+  });
+
   test("clearThread propagates a rejection and leaves the tracked model untouched", async () => {
     const fake = connectFakeClient();
     fake.on("thread/read", () => readResponse("ref_a"));
@@ -4937,6 +4973,44 @@ describe("useThreadsStore.resolveEscalation", () => {
 
     await threadsStore.getState().resolveEscalation("ref_a", "esc_1", true);
 
+    expect(threadsStore.getState().threads.get("ref_a")?.pendingEscalations).toEqual([]);
+    expect(threadsStore.getState().watchedThreads.get("ref_a")?.pendingEscalations).toEqual([]);
+  });
+
+  // Dual-map atomicity (round-2 fix): the escalation clear in threads and the
+  // clear in watchedThreads are one setState, so a synchronous subscriber
+  // running between the two halves of the update — which the sequential
+  // putThreadModel + putWatchedThreadModel pair this replaced made possible —
+  // cannot observe threads updated while watchedThreads still holds the
+  // escalation. The subscriber records every intermediate snapshot it sees;
+  // after the resolve it must have seen exactly the before-state and the
+  // after-state, never a mixed one.
+  test("resolveEscalation clears both maps in one setState - no synchronous subscriber sees split state", async () => {
+    const fake = connectFakeClient();
+    fake.on("thread/read", () => threadWithEscalation("ref_a", "esc_1"));
+    fake.on("evener/sandbox/escalation/resolve", () => ({}));
+    await threadsStore.getState().ensureThread("ref_a");
+    await threadsStore.getState().watchThread("ref_a");
+
+    const snapshots: { tracked: number; watched: number }[] = [];
+    const unsubscribe = threadsStore.subscribe((state) => {
+      snapshots.push({
+        tracked: state.threads.get("ref_a")?.pendingEscalations.length ?? -1,
+        watched: state.watchedThreads.get("ref_a")?.pendingEscalations.length ?? -1,
+      });
+    });
+    try {
+      await threadsStore.getState().resolveEscalation("ref_a", "esc_1", true);
+    } finally {
+      unsubscribe();
+    }
+
+    // Every observed snapshot is consistent: both maps agree on the
+    // escalation count (or the model was absent from both, -1). A split
+    // update would leave a { tracked: 0, watched: 1 } snapshot behind.
+    for (const [i, snap] of snapshots.entries()) {
+      expect(snap.tracked, `snapshot ${i} must not be split`).toBe(snap.watched);
+    }
     expect(threadsStore.getState().threads.get("ref_a")?.pendingEscalations).toEqual([]);
     expect(threadsStore.getState().watchedThreads.get("ref_a")?.pendingEscalations).toEqual([]);
   });
@@ -6755,5 +6829,38 @@ describe("retry-safe mutation outbox integration", () => {
     currentRead.resolve(readResponse("ref_a"));
     await flushIndexedDBUntil(() => current.calls.some((call) => call.method === "turn/queue"));
     expect(current.calls.filter((call) => call.method === "turn/queue")).toHaveLength(1);
+  });
+});
+
+describe("putThreadModel ref invariant (map key === model.ref)", () => {
+  // Round-2 fix, second finding: the replace path already threw when a
+  // model's ref disagreed with the slot it was filed under; the pure-add
+  // path now throws for the same disagreement. Both guards exist for the
+  // routing index (see the routing-index describe block above): a model
+  // filed under a key its own ref contradicts would mis-route every
+  // ref-routed frame for that key, so it fails loudly at the membership
+  // boundary instead.
+  test("adding a model whose ref disagrees with the map key throws", () => {
+    const model = hydrateThread(readResponse("ref_other"), "ref_other", Date.now());
+    expect(() => putThreadModel("ref_a", model)).toThrow(/map key and model\.ref must agree/);
+    // Nothing was filed: the store keeps whatever it had at that key.
+    expect(threadsStore.getState().threads.has("ref_a")).toBe(false);
+  });
+
+  test("replacing a model whose ref disagrees with the map key still throws (pre-existing guard)", async () => {
+    const fake = connectFakeClient();
+    fake.on("thread/read", () => readResponse("ref_a"));
+    await threadsStore.getState().ensureThread("ref_a");
+
+    const moved = hydrateThread(readResponse("ref_moved"), "ref_moved", Date.now());
+    expect(() => putThreadModel("ref_a", moved)).toThrow(/map key and model\.ref must agree/);
+    // The tracked model is untouched by the rejected put.
+    expect(threadsStore.getState().threads.get("ref_a")?.ref).toBe("ref_a");
+  });
+
+  test("an agreeing add still lands (guard does not reject the legitimate path)", () => {
+    const model = hydrateThread(readResponse("ref_a"), "ref_a", Date.now());
+    putThreadModel("ref_a", model);
+    expect(threadsStore.getState().threads.get("ref_a")?.ref).toBe("ref_a");
   });
 });

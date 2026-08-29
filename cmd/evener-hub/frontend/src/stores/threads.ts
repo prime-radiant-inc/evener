@@ -391,14 +391,33 @@ const EMPTY_PENDING_REFS: ReadonlySet<string> = new Set();
 // seed fixture panes exactly the way production hydration publishes real
 // ones — through the same membership path, index maintenance included, so
 // dev-seeded models are routable by ref AND threadId like any other.
+// assertModelRefMatchesKey guards BOTH membership paths — pure add and
+// replace. The replace path used to be the only one that threw, but a pure
+// add filed under a key its own ref contradicts breaks the same map key ===
+// model.ref invariant every ref-routed frame's map.get (and the index) leans
+// on, so it throws for the same reason: loudly, before it can mis-route.
+function assertModelRefMatchesKey(
+  ref: string,
+  model: ThreadModel,
+  watched: boolean,
+  previous: ThreadModel | undefined,
+): void {
+  if (model.ref === ref) return;
+  const mapName = watched ? "watched " : "";
+  if (!previous) {
+    throw new Error(
+      `threads store: added ${mapName}model ref disagrees with map key (${ref} != ${model.ref}) — map key and model.ref must agree`,
+    );
+  }
+  throw new Error(
+    `threads store: replaced ${mapName}model ref moved (${previous.ref} -> ${model.ref}) — map key and model.ref must agree`,
+  );
+}
+
 export function putThreadModel(ref: string, model: ThreadModel): void {
   const state = threadsStore.getState();
   const previous = state.threads.get(ref);
-  if (previous && previous.ref !== model.ref) {
-    throw new Error(
-      `threads store: replaced model ref moved (${previous.ref} -> ${model.ref}) — map key and model.ref must agree`,
-    );
-  }
+  assertModelRefMatchesKey(ref, model, false, previous);
   putThreadModelIndex(threadsIndex, previous, model);
   threadsStore.setState({ threads: new Map(state.threads).set(ref, model) });
 }
@@ -406,13 +425,45 @@ export function putThreadModel(ref: string, model: ThreadModel): void {
 function putWatchedThreadModel(ref: string, model: ThreadModel): void {
   const state = threadsStore.getState();
   const previous = state.watchedThreads.get(ref);
-  if (previous && previous.ref !== model.ref) {
-    throw new Error(
-      `threads store: replaced watched model ref moved (${previous.ref} -> ${model.ref}) — map key and model.ref must agree`,
-    );
-  }
+  assertModelRefMatchesKey(ref, model, true, previous);
   putThreadModelIndex(watchedThreadsIndex, previous, model);
   threadsStore.setState({ watchedThreads: new Map(state.watchedThreads).set(ref, model) });
+}
+
+// putThreadModels is the dual-map variant the combined actions use: the SAME
+// model (or its two per-map resolutions) lands in threads and watchedThreads
+// through ONE setState, so a synchronous subscriber between the two halves
+// of the update — the split the sequential putThreadModel +
+// putWatchedThreadModel pair introduced — cannot observe threads updated
+// while watchedThreads still holds the stale model. `threadModel`/
+// `watchedModel` are the models to file (the caller computes them first:
+// hydrateThread for clearThread, resolvePendingEscalation for
+// resolveEscalation); pass undefined for either to leave that map untouched,
+// matching the old single-setState patch shape exactly. Both routing indexes
+// are maintained in the same step, and both put helpers' ref invariant is
+// re-checked here (the same assertModelRefMatchesKey) rather than trusted.
+function putThreadModels(
+  ref: string,
+  threadModel: ThreadModel | undefined,
+  watchedModel: ThreadModel | undefined,
+): void {
+  const state = threadsStore.getState();
+  const previousThread = state.threads.get(ref);
+  const previousWatched = state.watchedThreads.get(ref);
+  if (threadModel) assertModelRefMatchesKey(ref, threadModel, false, previousThread);
+  if (watchedModel) assertModelRefMatchesKey(ref, watchedModel, true, previousWatched);
+
+  const patch: Partial<ThreadsStoreState> = {};
+  if (threadModel) {
+    putThreadModelIndex(threadsIndex, previousThread, threadModel);
+    patch.threads = new Map(state.threads).set(ref, threadModel);
+  }
+  if (watchedModel) {
+    putThreadModelIndex(watchedThreadsIndex, previousWatched, watchedModel);
+    patch.watchedThreads = new Map(state.watchedThreads).set(ref, watchedModel);
+  }
+  if (!threadModel && !watchedModel) return;
+  threadsStore.setState(patch);
 }
 
 function removeThreadModel(ref: string): void {
@@ -2225,11 +2276,17 @@ export const threadsStore = createStore<ThreadsStoreState>(() => ({
       throw mapConflict(err);
     }
     const now = Date.now();
+    const model = hydrateThread({ thread: resp.thread }, ref, now);
+    // One setState for both maps (putThreadModels): the pre-index code
+    // patched threads and watchedThreads in a single atomic step, and a
+    // synchronous subscriber must never observe the half-updated state two
+    // sequential puts would show (threads cleared, watchedThreads stale).
     const stateBefore = threadsStore.getState();
-    if (stateBefore.threads.has(ref)) putThreadModel(ref, hydrateThread({ thread: resp.thread }, ref, now));
-    if (stateBefore.watchedThreads.has(ref)) {
-      putWatchedThreadModel(ref, hydrateThread({ thread: resp.thread }, ref, now));
-    }
+    putThreadModels(
+      ref,
+      stateBefore.threads.has(ref) ? model : undefined,
+      stateBefore.watchedThreads.has(ref) ? model : undefined,
+    );
   },
 
   async shutdown(ref) {
@@ -2336,17 +2393,22 @@ export const threadsStore = createStore<ThreadsStoreState>(() => ({
     } catch (err) {
       throw mapConflict(err);
     }
+    // One setState for both maps (putThreadModels), same as clearThread:
+    // two sequential puts would let a synchronous subscriber see the
+    // escalation cleared in threads but not yet in watchedThreads. Both
+    // resolutions are computed first, then filed together; each is dropped
+    // when the resolver made no change (same-reference no-op), matching the
+    // old single-setState patch shape exactly.
     const stateBefore = threadsStore.getState();
     const model = stateBefore.threads.get(ref);
-    if (model) {
-      const resolved = resolvePendingEscalation(model, escalationId);
-      if (resolved !== model) putThreadModel(ref, resolved);
-    }
+    const resolvedModel = model ? resolvePendingEscalation(model, escalationId) : undefined;
     const watchedModel = stateBefore.watchedThreads.get(ref);
-    if (watchedModel) {
-      const resolved = resolvePendingEscalation(watchedModel, escalationId);
-      if (resolved !== watchedModel) putWatchedThreadModel(ref, resolved);
-    }
+    const resolvedWatched = watchedModel ? resolvePendingEscalation(watchedModel, escalationId) : undefined;
+    putThreadModels(
+      ref,
+      resolvedModel !== undefined && resolvedModel !== model ? resolvedModel : undefined,
+      resolvedWatched !== undefined && resolvedWatched !== watchedModel ? resolvedWatched : undefined,
+    );
   },
 }));
 
