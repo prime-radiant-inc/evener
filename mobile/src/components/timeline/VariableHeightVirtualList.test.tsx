@@ -13,6 +13,12 @@ import {
   type RefObject,
 } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import type { StoreApi, UseBoundStore } from "zustand";
+import { create } from "zustand";
+import type {
+  MobileConversation,
+  MobileTimelineItem,
+} from "../../conversation/model";
 import type {
   ConversationAnchor,
   ConversationSkin,
@@ -27,6 +33,10 @@ import type {
   NarrativeDisplayItem,
 } from "../../live-concepts/model";
 import type { ContentSizeCategory } from "../../native/contract";
+import { ConversationScreen } from "../../screens/ConversationScreen";
+import type { ConversationState } from "../../state/conversation";
+import type { NavigationState } from "../../state/navigation";
+import { createPreferencesStore } from "../../state/preferences";
 import {
   VariableHeightVirtualList,
   type VariableHeightVirtualListHandle,
@@ -38,6 +48,8 @@ interface Item {
 }
 
 const VIEWPORT_HEIGHT = 360;
+let dispatchProgrammaticScrollEvents = true;
+let fallbackVirtualRowHeight = 72;
 
 class DeterministicResizeObserver implements ResizeObserver {
   static readonly instances = new Set<DeterministicResizeObserver>();
@@ -106,6 +118,8 @@ const originalScrollHeight = Object.getOwnPropertyDescriptor(
 );
 
 beforeEach(() => {
+  dispatchProgrammaticScrollEvents = true;
+  fallbackVirtualRowHeight = 72;
   globalThis.ResizeObserver = DeterministicResizeObserver;
   Object.defineProperty(HTMLElement.prototype, "offsetHeight", {
     configurable: true,
@@ -140,9 +154,11 @@ beforeEach(() => {
       : null;
     const height = article
       ? Number(article.dataset.height)
-      : this.getAttribute("role") === "feed"
-        ? VIEWPORT_HEIGHT
-        : 0;
+      : this.matches('[data-testid="virtual-transcript-row"]')
+        ? fallbackVirtualRowHeight
+        : this.getAttribute("role") === "feed"
+          ? VIEWPORT_HEIGHT
+          : 0;
     return {
       x: 0,
       y: 0,
@@ -164,7 +180,9 @@ beforeEach(() => {
         ? (y ?? 0)
         : (optionsOrX?.top ?? this.scrollTop);
     this.scrollTop = top;
-    this.dispatchEvent(new Event("scroll"));
+    if (dispatchProgrammaticScrollEvents) {
+      this.dispatchEvent(new Event("scroll"));
+    }
   };
 });
 
@@ -307,10 +325,13 @@ function renderList({
     next: readonly Item[],
     nextSkin?: ConceptId,
     nextSize?: ContentSizeCategory,
+    nextThread?: string,
   ) => void;
+  readonly unmount: () => void;
 } {
   let activeSkin = skinId;
   let activeSize = contentSize;
+  let activeThread = threadKey;
   const element = (next: readonly Item[]): ReactElement => (
     <VariableHeightVirtualList
       ref={ref}
@@ -319,7 +340,11 @@ function renderList({
       estimateSize={(item) =>
         typeof estimate === "number" ? estimate : estimate(item)
       }
-      cacheScope={{ threadKey, skinId: activeSkin, contentSize: activeSize }}
+      cacheScope={{
+        threadKey: activeThread,
+        skinId: activeSkin,
+        contentSize: activeSize,
+      }}
       overscan={6}
       maxMountedRows={48}
       onScroll={() => {}}
@@ -329,11 +354,18 @@ function renderList({
   const view = render(element(values));
   return {
     ref,
-    rerenderList(next, nextSkin = activeSkin, nextSize = activeSize) {
+    rerenderList(
+      next,
+      nextSkin = activeSkin,
+      nextSize = activeSize,
+      nextThread = activeThread,
+    ) {
       activeSkin = nextSkin;
       activeSize = nextSize;
+      activeThread = nextThread;
       view.rerender(element(next));
     },
+    unmount: view.unmount,
   };
 }
 
@@ -485,6 +517,102 @@ describe("VariableHeightVirtualList", () => {
     if (restoration === undefined) throw new Error("restore handle missing");
     await expect(restoration).resolves.toBeUndefined();
     expect(ref.current?.captureAnchor()).toEqual(anchor);
+  });
+
+  it("settles restoration when the target is removed before measurement", async () => {
+    const values = items(100, 72);
+    const { ref, rerenderList } = renderList({
+      values,
+      threadKey: "cancel-removed-target",
+    });
+    await emitMeasurements();
+    const restoration = ref.current?.restoreAnchor({
+      key: "item-50",
+      offsetPx: -7,
+      priorIndex: 50,
+    });
+    if (restoration === undefined) throw new Error("restore handle missing");
+    let settled = false;
+    void restoration.then(() => {
+      settled = true;
+    });
+
+    await act(async () => {
+      rerenderList(values.filter((item) => item.key !== "item-50"));
+    });
+    expect(settled).toBe(true);
+  });
+
+  it("cancels old-thread same-key restoration without a stale adjustment", async () => {
+    const values = items(100, 72);
+    const { ref, rerenderList } = renderList({
+      values,
+      threadKey: "cancel-thread-a",
+    });
+    await emitMeasurements();
+    const restoration = ref.current?.restoreAnchor({
+      key: "item-50",
+      offsetPx: -17,
+      priorIndex: 50,
+    });
+    if (restoration === undefined) throw new Error("restore handle missing");
+    let settled = false;
+    void restoration.then(() => {
+      settled = true;
+    });
+
+    await act(async () => {
+      rerenderList(values, "stillwater", "large", "cancel-thread-b");
+    });
+    expect(settled).toBe(true);
+    const offsetAfterSwitch = screen.getByRole("feed").scrollTop;
+    emitMeasurementWhere(
+      (target) => (target as HTMLElement).dataset.itemKey === "item-50",
+    );
+    expect(screen.getByRole("feed").scrollTop).toBe(offsetAfterSwitch);
+  });
+
+  it("settles target-measurement restoration when the list unmounts", async () => {
+    const { ref, unmount } = renderList({
+      values: items(100, 72),
+      threadKey: "cancel-unmount-measurement",
+    });
+    await emitMeasurements();
+    const restoration = ref.current?.restoreAnchor({
+      key: "item-50",
+      offsetPx: -7,
+      priorIndex: 50,
+    });
+    if (restoration === undefined) throw new Error("restore handle missing");
+    let settled = false;
+    void restoration.then(() => {
+      settled = true;
+    });
+    await act(async () => unmount());
+    expect(settled).toBe(true);
+  });
+
+  it("settles a pending offset correction on unmount", async () => {
+    const { ref, unmount } = renderList({
+      values: items(40, 72),
+      threadKey: "cancel-unmount-offset",
+    });
+    await emitMeasurements();
+    const anchor = ref.current?.captureAnchor();
+    if (anchor === null || anchor === undefined)
+      throw new Error("anchor missing");
+    dispatchProgrammaticScrollEvents = false;
+    const restoration = ref.current?.restoreAnchor({
+      ...anchor,
+      offsetPx: anchor.offsetPx - 20,
+    });
+    if (restoration === undefined) throw new Error("restore handle missing");
+    let settled = false;
+    void restoration.then(() => {
+      settled = true;
+    });
+    await act(async () => unmount());
+    expect(settled).toBe(true);
   });
 
   it("keeps exact nested thread, skin, content-size measurement scopes isolated", async () => {
@@ -658,6 +786,205 @@ describe("VariableHeightVirtualList", () => {
     );
     expect(feed).toHaveFocus();
     expect(screen.queryByRole("button", { name: "Action item-5" })).toBeNull();
+  });
+});
+
+function productionConversation(
+  id: string,
+  prefix: string,
+  count = 30,
+): MobileConversation {
+  const timelineItems: MobileTimelineItem[] = Array.from(
+    { length: count },
+    (_, index) => ({
+      kind: "user",
+      id: `shared-${index}`,
+      text: `${prefix}-${index}`,
+    }),
+  );
+  return {
+    id,
+    sessionId: `${id}-session`,
+    name: id,
+    preview: "",
+    modelProvider: "test",
+    status: "ready",
+    items: timelineItems,
+    capabilities: {
+      send: true,
+      steer: true,
+      interrupt: true,
+      compact: true,
+      clear: true,
+      forkFromTurn: true,
+      shutdown: true,
+      changeModel: true,
+      changeVisionModel: true,
+      queue: true,
+      goal: true,
+      rename: true,
+    },
+    queue: { depth: 0, preview: [] },
+    usage: {},
+    askPending: false,
+  };
+}
+
+function productionConversationStore(
+  conversation: MobileConversation,
+): UseBoundStore<StoreApi<ConversationState>> {
+  return create<ConversationState>(() => ({
+    ref: conversation.id,
+    profileId: "profile",
+    connectionGeneration: 0,
+    conversationGeneration: 1,
+    conversation,
+    olderCursor: null,
+    loadingOlder: false,
+    status: "open",
+    error: null,
+    draft: "",
+    pendingSend: null,
+    open: vi.fn(),
+    loadOlder: vi.fn(async () => ({ status: "ignored" as const })),
+    setDraft: vi.fn(),
+    send: vi.fn(),
+    steer: vi.fn(),
+    queue: vi.fn(),
+    interrupt: vi.fn(),
+    close: vi.fn(),
+    applyNotification: vi.fn(),
+    reset: vi.fn(),
+  }));
+}
+
+function productionNavigationStore(): UseBoundStore<StoreApi<NavigationState>> {
+  return create<NavigationState>((_, get) => ({
+    tab: "sessions",
+    conversationStack: [{ sessionId: "thread-a", title: "Thread" }],
+    activeConversation: { sessionId: "thread-a", title: "Thread" },
+    setTab: vi.fn(),
+    pushConversation: vi.fn(),
+    popConversation: vi.fn(),
+    popAllConversations: vi.fn(),
+    clearConversations: vi.fn(),
+    canGoBack: () => get().conversationStack.length > 0,
+  }));
+}
+
+function visibleVirtualAnchor(): { key: string; offsetPx: number } {
+  const feed = screen.getByRole("feed", { name: "Conversation transcript" });
+  const rows = screen
+    .getAllByTestId("virtual-transcript-row")
+    .map((row) => {
+      const start = Number(
+        (row as HTMLElement).style.transform.match(
+          /translateY\(([-\d.]+)px\)/,
+        )?.[1],
+      );
+      return {
+        key: (row as HTMLElement).dataset.itemKey ?? "",
+        start,
+        height: row.getBoundingClientRect().height,
+      };
+    })
+    .sort((left, right) => left.start - right.start);
+  const row = rows.find(
+    (candidate) => candidate.start + candidate.height > feed.scrollTop,
+  );
+  if (row === undefined) throw new Error("no visible virtual anchor");
+  return { key: row.key, offsetPx: row.start - feed.scrollTop };
+}
+
+describe("ConversationScreen authoritative real Timeline boundary", () => {
+  it("isolates thread scope, restores same-thread Dynamic Type, and reports 48/49px follow", async () => {
+    const conversationStore = productionConversationStore(
+      productionConversation("thread-a", "A"),
+    );
+    const navigationStore = productionNavigationStore();
+    const preferencesStore = createPreferencesStore();
+    render(
+      <ConversationScreen
+        conversationStore={conversationStore}
+        navigationStore={navigationStore}
+        preferencesStore={preferencesStore}
+      />,
+    );
+    await emitMeasurements();
+    const feed = screen.getByRole("feed", { name: "Conversation transcript" });
+    act(() => {
+      feed.scrollTop = 0;
+      fireEvent.scroll(feed);
+    });
+    await emitMeasurements();
+
+    act(() => {
+      feed.scrollTop = rowStart("A-5") + 11;
+      fireEvent.scroll(feed);
+    });
+    const beforeScale = visibleVirtualAnchor();
+    fallbackVirtualRowHeight = 131;
+    act(() => preferencesStore.getState().setContentSize("extraExtraLarge"));
+    await emitMeasurements();
+    const afterScale = visibleVirtualAnchor();
+    expect(afterScale.key).toBe(beforeScale.key);
+    expect(
+      Math.abs(afterScale.offsetPx - beforeScale.offsetPx),
+    ).toBeLessThanOrEqual(2);
+    const beforeReturn = visibleVirtualAnchor();
+    fallbackVirtualRowHeight = 72;
+    act(() => preferencesStore.getState().setContentSize("large"));
+    await waitFor(() => expect(rowStart("A-5")).toBe(5 * 64));
+    await emitMeasurements();
+    const afterReturn = visibleVirtualAnchor();
+    expect(afterReturn.key).toBe(beforeReturn.key);
+    expect(
+      Math.abs(afterReturn.offsetPx - beforeReturn.offsetPx),
+    ).toBeLessThanOrEqual(2);
+
+    act(() => {
+      feed.scrollTop = feed.scrollHeight - feed.clientHeight - 49;
+      fireEvent.scroll(feed);
+      conversationStore.setState({
+        conversation: productionConversation("thread-a", "A", 31),
+      });
+    });
+    expect(screen.getByRole("button", { name: "1 new" })).toBeVisible();
+    act(() => {
+      feed.scrollTop = feed.scrollHeight - feed.clientHeight - 48;
+      fireEvent.scroll(feed);
+    });
+    expect(screen.queryByRole("button", { name: "1 new" })).toBeNull();
+
+    act(() => {
+      feed.scrollTop = 0;
+      fireEvent.scroll(feed);
+    });
+    await emitMeasurements();
+    act(() => {
+      feed.scrollTop = rowStart("A-5") + 11;
+      fireEvent.scroll(feed);
+    });
+    fallbackVirtualRowHeight = 219;
+    act(() => {
+      conversationStore.setState({
+        ref: "thread-b",
+        conversationGeneration: 2,
+        conversation: productionConversation("thread-b", "B"),
+      });
+    });
+    await emitMeasurements();
+    await waitFor(() =>
+      expect(
+        feed.scrollHeight - (feed.scrollTop + feed.clientHeight),
+      ).toBeLessThanOrEqual(48),
+    );
+    act(() => {
+      feed.scrollTop = 0;
+      fireEvent.scroll(feed);
+    });
+    await emitMeasurements();
+    expect(rowStart("B-5")).toBe(5 * 219);
   });
 });
 
