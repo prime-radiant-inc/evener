@@ -8,11 +8,40 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"testing"
 
 	"primeradiant.com/evener/llm"
+	"primeradiant.com/evener/llm/apilog"
 	"primeradiant.com/evener/llm/registry"
 )
+
+// captureSink collects the api-log attempt records a call emits.
+type captureSink struct {
+	mu       sync.Mutex
+	attempts []apilog.APIAttemptRecord
+}
+
+func (s *captureSink) AppendAttempt(_ context.Context, r apilog.APIAttemptRecord) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.attempts = append(s.attempts, r)
+	return nil
+}
+
+func (s *captureSink) AppendSettlement(context.Context, apilog.APIAttemptGroupSettlement) error {
+	return nil
+}
+
+func (s *captureSink) families() []string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	out := make([]string, 0, len(s.attempts))
+	for _, a := range s.attempts {
+		out = append(out, a.Request.EndpointFamily)
+	}
+	return out
+}
 
 const generateJSON = `{"candidates":[{"content":{"role":"model","parts":[{"text":"hello"}]},"finishReason":"STOP"}],"usageMetadata":{"promptTokenCount":5,"candidatesTokenCount":2,"totalTokenCount":7}}`
 
@@ -113,5 +142,54 @@ func TestProtocolListModelsAndCountTokens(t *testing.T) {
 	}
 	if gcr := got2.body["generateContentRequest"].(map[string]any); gcr["model"] != "models/gemini-2.5-flash" || gcr["contents"] == nil {
 		t.Fatalf("count body = %v", got2.body)
+	}
+}
+
+// TestProtocolEndpointFamilies pins the api-log endpoint_family of each
+// operation; the stream must not report the non-streaming family.
+func TestProtocolEndpointFamilies(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		body string
+		want string
+		run  func(p *Protocol, ctx context.Context, res registry.Resolved) error
+	}{
+		{"generate_content", generateJSON, "google_generate_content", func(p *Protocol, ctx context.Context, res registry.Resolved) error {
+			_, err := p.Complete(ctx, protoReq(""), res)
+			return err
+		}},
+		{"stream_generate_content", generateSSE, "google_stream_generate_content", func(p *Protocol, ctx context.Context, res registry.Resolved) error {
+			s, err := p.Stream(ctx, protoReq(""), res)
+			if err != nil {
+				return err
+			}
+			for ev := range s.Events() {
+				if ev.Type == llm.StreamEventError {
+					return ev.Err
+				}
+			}
+			return nil
+		}},
+		{"count_tokens", `{"totalTokens":13}`, "google_count_tokens", func(p *Protocol, ctx context.Context, res registry.Resolved) error {
+			_, err := p.CountTokens(ctx, protoReq(""), res)
+			return err
+		}},
+		{"models", `{"models":[{"name":"models/gemini-2.5-flash","supportedGenerationMethods":["generateContent"]}]}`, "google_models", func(p *Protocol, ctx context.Context, res registry.Resolved) error {
+			_, err := p.ListModels(ctx, res)
+			return err
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			srv, _ := protoServer(t, 200, tc.body)
+			sink := &captureSink{}
+			ctx := llm.WithAPIAttemptSink(llm.WithAPIAttemptGroup(context.Background(), llm.NewAPIAttemptGroup("ag_"+tc.name)), sink)
+			if err := tc.run(&Protocol{Client: srv.Client()}, ctx, protoLive(srv)); err != nil {
+				t.Fatal(err)
+			}
+			llm.WaitForPriorAPIAttempts(ctx)
+			if got := sink.families(); len(got) != 1 || got[0] != tc.want {
+				t.Fatalf("endpoint families = %v, want [%s]", got, tc.want)
+			}
+		})
 	}
 }

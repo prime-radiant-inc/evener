@@ -64,7 +64,7 @@ func (p *Protocol) Stream(ctx context.Context, req llm.Request, res registry.Res
 	if err != nil {
 		return nil, err
 	}
-	call := p.call("streamGenerateContent", "google_generate_content", http.MethodPost, protocolhttp.URL(res, res.Transport.StreamEndpoint), body, req, res)
+	call := p.call("streamGenerateContent", "google_stream_generate_content", http.MethodPost, protocolhttp.URL(res, res.Transport.StreamEndpoint), body, req, res)
 	return protocolhttp.Stream(ctx, call, func(sctx context.Context, cancel context.CancelFunc, resp *http.Response, s *llm.ChanStream, r *protocolhttp.Result, attempt *transport.APIAttemptCapture) {
 		decodeGenerateContentStream(sctx, cancel, resp, s, req, res.Instance, r.EndpointURL, r.Material, attempt)
 	})

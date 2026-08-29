@@ -8,11 +8,40 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"testing"
 
 	"primeradiant.com/evener/llm"
+	"primeradiant.com/evener/llm/apilog"
 	"primeradiant.com/evener/llm/registry"
 )
+
+// captureSink collects the api-log attempt records a call emits.
+type captureSink struct {
+	mu       sync.Mutex
+	attempts []apilog.APIAttemptRecord
+}
+
+func (s *captureSink) AppendAttempt(_ context.Context, r apilog.APIAttemptRecord) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.attempts = append(s.attempts, r)
+	return nil
+}
+
+func (s *captureSink) AppendSettlement(context.Context, apilog.APIAttemptGroupSettlement) error {
+	return nil
+}
+
+func (s *captureSink) families() []string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	out := make([]string, 0, len(s.attempts))
+	for _, a := range s.attempts {
+		out = append(out, a.Request.EndpointFamily)
+	}
+	return out
+}
 
 const messagesJSON = `{"id":"msg_1","type":"message","role":"assistant","model":"claude-x-wire","content":[{"type":"text","text":"hello"}],"stop_reason":"end_turn","usage":{"input_tokens":7,"output_tokens":3}}`
 
@@ -130,6 +159,43 @@ func TestProtocolListModelsPaginatesAndCountTokensStrips(t *testing.T) {
 	}
 	if _, err := p.CountTokens(context.Background(), req, res); !errors.Is(err, llm.ErrInputTokenCountUnsupported) {
 		t.Fatalf("err = %v", err)
+	}
+}
+
+// TestProtocolEndpointFamilies pins the api-log endpoint_family of each
+// operation; count_tokens and models must not inherit anthropic_messages.
+func TestProtocolEndpointFamilies(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		body string
+		want string
+		run  func(p *Protocol, ctx context.Context, res registry.Resolved) error
+	}{
+		{"messages", messagesJSON, "anthropic_messages", func(p *Protocol, ctx context.Context, res registry.Resolved) error {
+			_, err := p.Complete(ctx, protoReq(""), res)
+			return err
+		}},
+		{"count_tokens", `{"input_tokens":21}`, "anthropic_count_tokens", func(p *Protocol, ctx context.Context, res registry.Resolved) error {
+			_, err := p.CountTokens(ctx, protoReq(""), res)
+			return err
+		}},
+		{"models", `{"data":[{"id":"m1"}],"has_more":false,"last_id":"m1"}`, "anthropic_models", func(p *Protocol, ctx context.Context, res registry.Resolved) error {
+			_, err := p.ListModels(ctx, res)
+			return err
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			srv, _ := protoServer(t, func(*http.Request) (int, string) { return 200, tc.body })
+			sink := &captureSink{}
+			ctx := llm.WithAPIAttemptSink(llm.WithAPIAttemptGroup(context.Background(), llm.NewAPIAttemptGroup("ag_"+tc.name)), sink)
+			if err := tc.run(&Protocol{Client: srv.Client()}, ctx, protoLive(srv)); err != nil {
+				t.Fatal(err)
+			}
+			llm.WaitForPriorAPIAttempts(ctx)
+			if got := sink.families(); len(got) != 1 || got[0] != tc.want {
+				t.Fatalf("endpoint families = %v, want [%s]", got, tc.want)
+			}
+		})
 	}
 }
 

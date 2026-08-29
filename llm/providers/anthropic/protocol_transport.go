@@ -116,8 +116,10 @@ func (p *Protocol) CountTokens(ctx context.Context, req llm.Request, res registr
 	for _, k := range []string{"max_tokens", "temperature", "top_p", "stop_sequences", "service_tier", "cache_control"} {
 		delete(body, k)
 	}
+	call := p.call("messages.count_tokens", http.MethodPost, protocolhttp.URL(res, res.Transport.CountTokensEndpoint), body, req, res)
+	call.EndpointFamily = "anthropic_count_tokens"
 	var count int
-	err = protocolhttp.Do(ctx, p.call("messages.count_tokens", http.MethodPost, protocolhttp.URL(res, res.Transport.CountTokensEndpoint), body, req, res), func(r *protocolhttp.Result) (*llm.Response, error) {
+	err = protocolhttp.Do(ctx, call, func(r *protocolhttp.Result) (*llm.Response, error) {
 		n := intFromAny(r.Raw["input_tokens"])
 		if n <= 0 && r.Raw["input_tokens"] == nil {
 			return nil, fmt.Errorf("messages.count_tokens: missing input_tokens in %q", r.Body)

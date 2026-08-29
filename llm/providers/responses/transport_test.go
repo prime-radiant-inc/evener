@@ -12,8 +12,36 @@ import (
 	"testing"
 
 	"primeradiant.com/evener/llm"
+	"primeradiant.com/evener/llm/apilog"
 	"primeradiant.com/evener/llm/registry"
 )
+
+// captureSink collects the api-log attempt records a call emits.
+type captureSink struct {
+	mu       sync.Mutex
+	attempts []apilog.APIAttemptRecord
+}
+
+func (s *captureSink) AppendAttempt(_ context.Context, r apilog.APIAttemptRecord) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.attempts = append(s.attempts, r)
+	return nil
+}
+
+func (s *captureSink) AppendSettlement(context.Context, apilog.APIAttemptGroupSettlement) error {
+	return nil
+}
+
+func (s *captureSink) families() []string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	out := make([]string, 0, len(s.attempts))
+	for _, a := range s.attempts {
+		out = append(out, a.Request.EndpointFamily)
+	}
+	return out
+}
 
 const responseJSON = `{"id":"resp_1","status":"completed","model":"gpt-5.5","output":[{"id":"msg_1","type":"message","role":"assistant","content":[{"type":"output_text","text":"hello"}]},{"id":"fc_1","type":"function_call","call_id":"call_1","name":"f","arguments":"{\"a\":1}"}],"usage":{"input_tokens":12,"input_tokens_details":{"cached_tokens":2},"output_tokens":4,"output_tokens_details":{"reasoning_tokens":1},"total_tokens":16}}`
 
@@ -156,5 +184,42 @@ func TestCountTokens(t *testing.T) {
 	res.Transport.CountTokensEndpoint = registry.EndpointUnsupported
 	if _, err := (&Protocol{Client: srv.Client()}).CountTokens(context.Background(), req, res); !errors.Is(err, llm.ErrInputTokenCountUnsupported) {
 		t.Fatalf("err = %v", err)
+	}
+}
+
+// TestEndpointFamilies pins the api-log endpoint_family of each operation;
+// input_tokens must not inherit the completion family.
+func TestEndpointFamilies(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		body string
+		want string
+		run  func(p *Protocol, ctx context.Context, res registry.Resolved) error
+	}{
+		{"responses", responseJSON, string(llm.ResponsesEndpointFamilyOpenAIPublic), func(p *Protocol, ctx context.Context, res registry.Resolved) error {
+			_, err := p.Complete(ctx, userReq("hi"), res)
+			return err
+		}},
+		{"input_tokens", `{"object":"response.input_tokens","input_tokens":42}`, "openai_input_tokens", func(p *Protocol, ctx context.Context, res registry.Resolved) error {
+			_, err := p.CountTokens(ctx, userReq("hi"), res)
+			return err
+		}},
+		{"models", `{"data":[{"id":"m1"}]}`, "openai_models", func(p *Protocol, ctx context.Context, res registry.Resolved) error {
+			_, err := p.ListModels(ctx, res)
+			return err
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			srv, _ := server(t, 200, tc.body)
+			sink := &captureSink{}
+			ctx := llm.WithAPIAttemptSink(llm.WithAPIAttemptGroup(context.Background(), llm.NewAPIAttemptGroup("ag_"+tc.name)), sink)
+			if err := tc.run(&Protocol{Client: srv.Client()}, ctx, liveRes(srv, openaiCaps)); err != nil {
+				t.Fatal(err)
+			}
+			llm.WaitForPriorAPIAttempts(ctx)
+			if got := sink.families(); len(got) != 1 || got[0] != tc.want {
+				t.Fatalf("endpoint families = %v, want [%s]", got, tc.want)
+			}
+		})
 	}
 }

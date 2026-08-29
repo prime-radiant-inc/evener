@@ -30,8 +30,10 @@ func (p *Protocol) CountTokens(ctx context.Context, req llm.Request, res registr
 	for _, f := range inputTokenCountOutputFields {
 		delete(body, f)
 	}
+	call := p.call("responses.input_tokens", http.MethodPost, protocolhttp.URL(res, res.Transport.CountTokensEndpoint), body, req, res)
+	call.EndpointFamily = "openai_input_tokens"
 	var count int
-	err = protocolhttp.Do(ctx, p.call("responses.input_tokens", http.MethodPost, protocolhttp.URL(res, res.Transport.CountTokensEndpoint), body, req, res), func(r *protocolhttp.Result) (*llm.Response, error) {
+	err = protocolhttp.Do(ctx, call, func(r *protocolhttp.Result) (*llm.Response, error) {
 		n, ok := r.Raw["input_tokens"].(float64)
 		if !ok {
 			return nil, fmt.Errorf("responses.input_tokens: missing input_tokens in %q", r.Body)
