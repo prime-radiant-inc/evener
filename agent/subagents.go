@@ -1740,7 +1740,12 @@ func (a *subagent) run(ctx context.Context, input string, inputProvenance *prove
 	a.endedAt = &finalizeTime
 	runEnd := classifyRunEnd(err, a.cancelRequested)
 	a.status = runEnd.status
-	if runEnd.exhaustion != nil {
+	// The exhaustion payload replaces the run error only when the exhausted
+	// status branch actually matched: a cancelled run whose error is
+	// Join(context.Canceled, budgetExhaustionError) publishes Cancelled and
+	// keeps the joined error verbatim (the pre-classifier switch overwrote
+	// a.err only inside its budgetExhausted case).
+	if runEnd.status == SubagentExhausted {
 		a.err = runEnd.exhaustion
 	}
 	done := a.done
