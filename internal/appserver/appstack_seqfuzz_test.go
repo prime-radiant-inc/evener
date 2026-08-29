@@ -187,12 +187,9 @@ func exerciseReceiveLoops(t rapidTB) {
 	c.closeSend()
 	ctx, cancel := context.WithCancel(context.Background())
 	c.setCancel(cancel)
-	runWebSocketReceiveLoop(ctx, closer, &ctxTransport{
-		stackTransport: stackTransport{
-			messages: []appwire.Message{appwire.RequestMessage(appwire.NewIntID(1), appwire.MethodPing, nil)},
-		},
-		ctx: ctx,
-	}, c, newWebSocketReadGate())
+	transport := &ctxTransport{ctx: ctx}
+	transport.messages = []appwire.Message{appwire.RequestMessage(appwire.NewIntID(1), appwire.MethodPing, nil)}
+	runWebSocketReceiveLoop(ctx, closer, transport, c, newWebSocketReadGate())
 }
 
 type stackPinger struct {
