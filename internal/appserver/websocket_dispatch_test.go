@@ -2,9 +2,11 @@ package appserver
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"sort"
 	"strconv"
 	"sync"
 	"testing"
@@ -371,4 +373,160 @@ func TestServeWebSocketInFlightOverflowAnswersUnavailableAndPingStillAnswered(t 
 	case <-time.After(time.Second):
 		t.Fatal("ping was starved while all in-flight slots were held")
 	}
+}
+
+// hydrationMarkerParams is the notification payload the read-then-mutation
+// interleaving test commits: a thread-scoped marker identifying exactly which
+// mutation produced the record, so the test can assert every record arrived
+// exactly once across the buffered replay set and the live stream.
+type hydrationMarkerParams struct {
+	ThreadID string `json:"threadId"`
+	Marker   string `json:"marker"`
+}
+
+// TestServeWebSocketHydrationThenMutationDeliversEveryNotificationExactlyOnce
+// pins the record accounting when one connection issues a hydrating read
+// immediately followed by mutations: under concurrent dispatch the mutation
+// can run (and commit notifications) while the hydration read is still in
+// flight, so the sequence-cut discipline — not dispatch order — decides which
+// set each record lands in. Whatever the interleaving, every notification
+// must reach the client exactly once, in whichever set (the hydration's
+// buffered replay or the live stream), and none may be lost or duplicated.
+func TestServeWebSocketHydrationThenMutationDeliversEveryNotificationExactlyOnce(t *testing.T) {
+	const threadID = "th_hydration"
+	server := NewServer(ServerConfig{ServerName: "test-server", Version: "test", SourceID: "local"})
+	notifier := NewNotifier(64)
+
+	// releaseHydrationRead parks the hydrating read AFTER its buffering
+	// subscription is open (the capture has returned, locks released), which is
+	// exactly the in-flight window a follow-up request can now dispatch into:
+	// before concurrent dispatch it would have queued behind the read.
+	hydrationReadParked := make(chan struct{})
+	releaseHydrationRead := make(chan struct{})
+	HandleTyped(server.Router(), appwire.MethodThreadRead, func(ctx context.Context, params appwire.ThreadReadParams) (appwire.ThreadReadResponse, error) {
+		var response appwire.ThreadReadResponse
+		response.Thread = appwire.Thread{ID: params.ThreadID}
+		if !CaptureSubscription(
+			ctx,
+			false,
+			func() string { return threadID },
+			notifier.CurrentSequence,
+			func() bool { return true },
+		) {
+			t.Error("hydration capture was rejected")
+		}
+		// Park with the buffering subscription open: the cut is already taken,
+		// so records committed from here on land in the buffered replay set.
+		close(hydrationReadParked)
+		<-releaseHydrationRead
+		return response, nil
+	})
+	// The mutation commits its notification through CommitProjection from the
+	// handler itself — the same path hub handlers use — so the commit runs
+	// while the hydration read is still parked in flight. Each mutation names
+	// itself through the Model field so its record is identifiable on arrival.
+	HandleTyped(server.Router(), appwire.MethodThreadModelSet, func(_ context.Context, params appwire.ThreadModelSetParams) (appwire.EmptyResponse, error) {
+		server.CommitProjection(func() []SequencedNotification {
+			record := notifier.Record(threadID, appwire.NotifyThreadStatusChanged, hydrationMarkerParams{
+				ThreadID: threadID,
+				Marker:   params.Model,
+			})
+			return []SequencedNotification{record}
+		})
+		return appwire.EmptyResponse{}, nil
+	})
+
+	httpServer := serveWebSocketHTTP(t, server)
+	client := dialAppWireClient(t, httpServer)
+	ctx := context.Background()
+	t.Cleanup(func() {
+		select {
+		case <-releaseHydrationRead:
+		default:
+			close(releaseHydrationRead)
+		}
+	})
+
+	// One connection issues the hydrating read, then — while that read is
+	// still in flight — two mutations. Both commits land above the open
+	// capture's cut, so both records must be buffered into the replay set.
+	hydrateDone := make(chan error, 1)
+	go func() {
+		_, err := client.ThreadRead(ctx, appwire.ThreadReadParams{ThreadID: threadID})
+		hydrateDone <- err
+	}()
+	waitFor(t, "hydrating read to park in flight", hydrationReadParked)
+
+	runMutation := func(marker string) chan error {
+		done := make(chan error, 1)
+		go func() {
+			done <- client.ThreadModelSet(ctx, appwire.ThreadModelSetParams{
+				Ref:           "local:" + threadID,
+				ModelProvider: "test-provider",
+				Model:         marker,
+			})
+		}()
+		return done
+	}
+	for i := range 2 {
+		if err := waitFor(t, "in-flight mutation to complete", runMutation("inflight-"+strconv.Itoa(i))); err != nil {
+			t.Fatalf("mutation during hydration failed: %v", err)
+		}
+	}
+
+	// Let the hydrating read finish. Its response enqueues, the capture
+	// commits, and the buffered records flush behind it — after this the
+	// subscription is live again.
+	close(releaseHydrationRead)
+	if err := waitFor(t, "hydrating read to complete", hydrateDone); err != nil {
+		t.Fatalf("hydrating read failed: %v", err)
+	}
+
+	// Two more mutations on the same connection, now against the live
+	// subscription: their records must stream directly. Together with the
+	// buffered pair above, both delivery sets are exercised.
+	for i := range 2 {
+		if err := waitFor(t, "live mutation to complete", runMutation("live-"+strconv.Itoa(i))); err != nil {
+			t.Fatalf("live mutation failed: %v", err)
+		}
+	}
+
+	// Every notification must arrive exactly once, in whichever set. The
+	// buffered pair rides the replay flush; the live pair streams; a record
+	// crossing both sets (or neither) fails by count or duplicate marker.
+	seen := make(map[string]bool)
+	deadline := time.Now().Add(5 * time.Second)
+	for len(seen) < 4 && time.Now().Before(deadline) {
+		select {
+		case notif := <-client.Notifications():
+			if notif.Method != appwire.NotifyThreadStatusChanged {
+				continue
+			}
+			var marker hydrationMarkerParams
+			if err := json.Unmarshal(notif.Params, &marker); err != nil {
+				t.Fatalf("decode notification params: %v", err)
+			}
+			if marker.ThreadID != threadID {
+				continue
+			}
+			if seen[marker.Marker] {
+				t.Fatalf("notification marker %q delivered twice", marker.Marker)
+			}
+			seen[marker.Marker] = true
+		case <-time.After(50 * time.Millisecond):
+		}
+	}
+	if len(seen) != 4 {
+		t.Fatalf("distinct notifications received=%d of 4 (markers %v): records lost", len(seen), seenMarkers(seen))
+	}
+}
+
+// seenMarkers sorts the delivered markers for stable failure messages.
+func seenMarkers(seen map[string]bool) []string {
+	markers := make([]string, 0, len(seen))
+	for marker := range seen {
+		markers = append(markers, marker)
+	}
+	sort.Strings(markers)
+	return markers
 }

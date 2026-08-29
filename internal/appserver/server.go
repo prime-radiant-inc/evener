@@ -799,6 +799,12 @@ func (c *Connection) setInitialized() {
 // It runs each post-initialize request on its own goroutine so a slow
 // handler no longer head-of-line blocks the connection's other requests —
 //
+// Per-connection frame ordering is NOT serialized: a later request can
+// dispatch while an earlier one (including a hydrating read parked in its
+// snapshot clone) is still in flight. Responses pair by request ID, and only
+// the sequence-cut discipline governs how notifications interleave with a
+// hydration response — dispatch order no longer does.
+//
 // Ordering constraints that survive concurrency:
 //
 //   - initialize must be the first request. Until the connection reports
