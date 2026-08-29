@@ -462,11 +462,10 @@ On `finishDelegateAttentionNoAction`, end the input idle and return without `han
 Retain both communicate dependency callbacks. Direct and legacy `toolDeps`
 constructions continue to provide the legacy callback:
 
-```go
-type communicateCallbacks struct {
-	setCommunicateResult        func(message, reply, output string)
-	setCommunicateResultContext func(context.Context, string, string, string)
-}
+```text
+// Inside the existing toolDeps struct:
+setCommunicateResult        func(message, reply, output string)
+setCommunicateResultContext func(context.Context, string, string, string)
 ```
 
 Add and use `setCommunicateResultContext` for live `Session` registrations in
