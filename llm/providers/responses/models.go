@@ -44,12 +44,12 @@ type codexReasoningLevel struct {
 	Effort string `json:"effort"`
 }
 
-// codexModelListEntry is one /models row from the Codex backend.
+// codexModelListEntry is one /models row from the Codex backend, narrowed
+// to the fields row() advertises.
 type codexModelListEntry struct {
 	Slug                     string                `json:"slug"`
 	ID                       string                `json:"id"`
 	Model                    string                `json:"model"`
-	DisplayName              string                `json:"display_name"`
 	ContextWindow            int                   `json:"context_window"`
 	MaxContextWindow         int                   `json:"max_context_window"`
 	MaxInputTokens           int                   `json:"max_input_tokens"`
@@ -57,19 +57,18 @@ type codexModelListEntry struct {
 	MaxOutputTokens          int                   `json:"max_output_tokens"`
 	OutputTokenLimit         int                   `json:"output_token_limit"`
 	SupportedReasoningLevels []codexReasoningLevel `json:"supported_reasoning_levels"`
-	DefaultReasoningLevel    string                `json:"default_reasoning_level"`
-	SupportsParallelTools    bool                  `json:"supports_parallel_tool_calls"`
-	SupportsImageOriginal    bool                  `json:"supports_image_detail_original"`
-	SupportsSearchTool       bool                  `json:"supports_search_tool"`
-	WebSearchToolType        string                `json:"web_search_tool_type"`
 	InputModalities          []string              `json:"input_modalities"`
-	ExperimentalTools        []string              `json:"experimental_supported_tools"`
 }
 
 // id is the row's identifier: the Codex backend reports it under any of
 // three keys, in this order of preference.
 func (m codexModelListEntry) id() string {
-	return firstNonEmpty(m.Slug, m.ID, m.Model)
+	for _, candidate := range []string{m.Slug, m.ID, m.Model} {
+		if strings.TrimSpace(candidate) != "" {
+			return candidate
+		}
+	}
+	return ""
 }
 
 // row keeps only advertised facts (registry.Model carries no field this
@@ -126,17 +125,6 @@ func skipOpenAIModel(id string) bool {
 		}
 	}
 	return false
-}
-
-// firstNonEmpty returns the first argument whose trimmed value is
-// non-empty, or "" if every argument is empty or whitespace-only.
-func firstNonEmpty(values ...string) string {
-	for _, v := range values {
-		if strings.TrimSpace(v) != "" {
-			return v
-		}
-	}
-	return ""
 }
 
 // firstPositiveInt returns the first positive argument, or 0 if none is
