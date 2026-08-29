@@ -1800,6 +1800,7 @@ func TestParseConfig_Rejects(t *testing.T) {
 		"bad thinking_format":      "[providers.x]\nthinking_format = \"claude\"\n",
 		"bad thinking_shape":       "[providers.x.models.m]\nthinking_shape = \"effort\"\n",
 		"bad thinking_display":     "[providers.x.models.m]\nthinking_display = \"verbose\"\n",
+		"protocol on glob row":     "[providers.x.models.\"g*\"]\nprotocol = \"anthropic\"\n",
 		"bad max_tokens_field":     "[providers.x]\nmax_tokens_field = \"max_len\"\n",
 		"bad cache_control":        "[providers.x]\ncache_control = \"openai\"\n",
 		"bad reasoning_field":      "[providers.x]\nreasoning_field = \"thoughts\"\n",
@@ -2243,6 +2244,9 @@ func parseLayer(data []byte, tag string, curated bool) (*Layer, error) {
 		if !isGlob(key) {
 			return nil, fmt.Errorf("%s: models.%q: top-level model rows must be globs", tag, key)
 		}
+		if ms.Protocol != "" {
+			return nil, fmt.Errorf("%s: models.%q: protocol is not allowed on a glob row", tag, key)
+		}
 		if err := validateModel(ms, fmt.Sprintf("models.%q", key)); err != nil {
 			return nil, fmt.Errorf("%s: %w", tag, err)
 		}
@@ -2269,6 +2273,9 @@ func parseLayer(data []byte, tag string, curated bool) (*Layer, error) {
 			p.APIKeyEnv = append([]string{}, ps.APIKeyEnv...)
 		}
 		for key, ms := range ps.Models {
+			if isGlob(key) && ms.Protocol != "" {
+				return nil, fmt.Errorf("%s: %s.models.%q: protocol is not allowed on a glob row", tag, where, key)
+			}
 			if err := validateModel(ms, fmt.Sprintf("%s.models.%q", where, key)); err != nil {
 				return nil, fmt.Errorf("%s: %w", tag, err)
 			}
@@ -5794,7 +5801,7 @@ git commit -m "feat(registry): derived caps: effort pass-through, junk-cap guard
 
 **Files:**
 - Create: `llm/registry/resolve.go`
-- Modify: `llm/registry/load.go` (add `liveMu sync.RWMutex` to `Registry`; drop the `liveListing` placeholder), `llm/registry/types.go` (add `CredentialHeaders map[string]string `json:"-"`` to `Resolved`, after `Credential`: the authenticator needs the expanded map; `Credential.Value` keeps the Authorization value for the continuation scope)
+- Modify: `llm/registry/load.go` (add `liveMu sync.RWMutex` to `Registry`; drop the `liveListing` placeholder), `llm/registry/types.go` (add `CredentialHeaders map[string]string `json:"-"`` to `Resolved`, after `Credential`: the authenticator needs the expanded map; `Credential.Value` keeps the Authorization value for the continuation scope), `llm/registry/schema.go` + `schema_test.go` (a glob row may not set `protocol`: `Resolve` takes a protocol only from exact rows, so `parseLayer` rejects `protocol` on any glob key — top-level or provider — with an error naming the row; add the case `"protocol on glob row": "[providers.x.models.\"g*\"]\nprotocol = \"anthropic\"\n",` to `TestParseConfig_Rejects`)
 - Test: `llm/registry/resolve_test.go`
 
 **Interfaces:**
@@ -6598,6 +6605,11 @@ func (r *Registry) applyGlobs(c *Caps, row *Model, rows map[string]Model, tag, r
 	}
 }
 
+// applyRowScalars overlays a layer row's or glob row's scalars onto the
+// resolved row. A glob row's transport (the Codex `gpt-5.6*` row's `body`
+// constants, spec §6.2) merges field-wise onto the row transport, which the
+// load already folded from every layer's exact row, so on a conflicting key
+// the glob wins. Protocol is never taken from a glob (the parser rejects it).
 func applyRowScalars(row *Model, src Model, tag string, prov map[string]string) {
 	if src.Surface != "" {
 		row.Surface = src.Surface
@@ -6609,6 +6621,15 @@ func applyRowScalars(row *Model, src Model, tag string, prov map[string]string) 
 	}
 	if len(src.Headers) > 0 {
 		row.Headers = mergeStringMap(row.Headers, src.Headers)
+	}
+	if src.Transport != nil {
+		if row.Transport == nil {
+			row.Transport = &Transport{}
+		} else {
+			c := cloneTransport(*row.Transport)
+			row.Transport = &c
+		}
+		mergeTransport(row.Transport, *src.Transport)
 	}
 }
 
@@ -6733,7 +6754,7 @@ Expected: PASS. Two assertions depend on facts in the fixture (`amazon-bedrock/o
 - [ ] **Step 6: Commit**
 
 ```bash
-git add llm/registry/resolve.go llm/registry/resolve_test.go llm/registry/load.go llm/registry/types.go
+git add llm/registry/resolve.go llm/registry/resolve_test.go llm/registry/load.go llm/registry/types.go llm/registry/schema.go llm/registry/schema_test.go
 git commit -m "feat(registry): Resolve with lookup order, alias seeding, glob ordering, live layer, transport assembly"
 ```
 
