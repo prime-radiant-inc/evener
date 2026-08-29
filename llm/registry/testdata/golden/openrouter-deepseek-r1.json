@@ -1,0 +1,103 @@
+{
+  "instance": "openrouter",
+  "provider_id": "openrouter",
+  "protocol": "openai-chat",
+  "surface": "generic",
+  "transport": {
+    "auth": "bearer",
+    "base_url": "https://openrouter.ai/api/v1",
+    "endpoint": "/chat/completions",
+    "stream_endpoint": "/chat/completions",
+    "models_endpoint": "/models",
+    "count_tokens_endpoint": "-",
+    "vars": {
+      "BASE_URL": "https://openrouter.ai/api/v1"
+    },
+    "vars_env": {
+      "BASE_URL": "OPENROUTER_BASE_URL"
+    }
+  },
+  "model_id": "deepseek/deepseek-r1",
+  "wire_id": "deepseek/deepseek-r1",
+  "model": {
+    "id": "deepseek/deepseek-r1",
+    "wire_id": "deepseek/deepseek-r1",
+    "family": "deepseek-thinking",
+    "surface": "generic",
+    "caps": {}
+  },
+  "caps": {
+    "context_window": 64000,
+    "max_output_tokens": 16000,
+    "tools": true,
+    "structured_output": true,
+    "reasoning": true,
+    "reasoning_controls": [
+      "effort"
+    ],
+    "input_modalities": [
+      "text"
+    ],
+    "knowledge_cutoff": "2024-07",
+    "cost": {
+      "input": 0.7,
+      "output": 2.5
+    },
+    "fields": {
+      "developer_role": false,
+      "frequency_penalty": false,
+      "logprobs": false,
+      "max_tokens": true,
+      "metadata": false,
+      "n": false,
+      "parallel_tool_calls": false,
+      "presence_penalty": false,
+      "prompt_cache_key": false,
+      "prompt_cache_retention": false,
+      "seed": false,
+      "service_tier": false,
+      "stop": true,
+      "store": false,
+      "stream_options": true,
+      "temperature": true,
+      "top_p": true,
+      "user": false
+    },
+    "thinking_format": "openrouter",
+    "tool_choice_forcing": false,
+    "session_affinity_headers": true
+  },
+  "provenance": {
+    "ContextWindow": "snapshot/row",
+    "Cost": "snapshot/row",
+    "Family": "snapshot/row",
+    "InputModalities": "snapshot/row",
+    "KnowledgeCutoff": "snapshot/row",
+    "MaxOutputTokens": "snapshot/row",
+    "Reasoning": "snapshot/row",
+    "ReasoningControls": "derived",
+    "SessionAffinityHeaders": "overlay/provider",
+    "StructuredOutput": "snapshot/row",
+    "Surface": "snapshot/row",
+    "ThinkingFormat": "overlay/provider",
+    "ToolChoiceForcing": "overlay/provider",
+    "Tools": "snapshot/row",
+    "model": "row:deepseek/deepseek-r1"
+  },
+  "credential_source": "env:OPENROUTER_API_KEY",
+  "pruned_fields": [
+    "developer_role",
+    "frequency_penalty",
+    "logprobs",
+    "metadata",
+    "n",
+    "parallel_tool_calls",
+    "presence_penalty",
+    "prompt_cache_key",
+    "prompt_cache_retention",
+    "seed",
+    "service_tier",
+    "store",
+    "user"
+  ]
+}

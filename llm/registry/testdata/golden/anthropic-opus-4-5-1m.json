@@ -1,0 +1,101 @@
+{
+  "instance": "anthropic",
+  "provider_id": "anthropic",
+  "protocol": "anthropic",
+  "surface": "anthropic",
+  "transport": {
+    "auth": "header",
+    "auth_header": "x-api-key",
+    "base_url": "https://api.anthropic.com/v1",
+    "endpoint": "/messages",
+    "stream_endpoint": "/messages",
+    "models_endpoint": "/models",
+    "count_tokens_endpoint": "/messages/count_tokens",
+    "vars": {
+      "BASE_URL": "https://api.anthropic.com/v1"
+    },
+    "vars_env": {
+      "BASE_URL": "ANTHROPIC_BASE_URL"
+    }
+  },
+  "model_id": "claude-opus-4-5[1m]",
+  "wire_id": "claude-opus-4-5",
+  "model": {
+    "id": "claude-opus-4-5[1m]",
+    "wire_id": "claude-opus-4-5",
+    "alias_of": "claude-opus-4-5",
+    "family": "claude-opus",
+    "headers": {
+      "anthropic-beta": "context-1m-2025-08-07"
+    },
+    "surface": "anthropic",
+    "caps": {}
+  },
+  "caps": {
+    "context_window": 1000000,
+    "max_output_tokens": 64000,
+    "tools": true,
+    "structured_output": true,
+    "reasoning": true,
+    "reasoning_controls": [
+      "effort",
+      "budget_tokens"
+    ],
+    "effort_values": [
+      "low",
+      "medium",
+      "high"
+    ],
+    "input_modalities": [
+      "text",
+      "image",
+      "pdf"
+    ],
+    "knowledge_cutoff": "2025-05",
+    "cost": {
+      "input": 5,
+      "output": 25,
+      "cache_read": 0.5,
+      "cache_write": 6.25
+    },
+    "fields": {
+      "container": false,
+      "fallbacks": false,
+      "max_tokens": true,
+      "metadata": false,
+      "service_tier": false,
+      "stop_sequences": true,
+      "temperature": true,
+      "top_p": true
+    },
+    "thinking_shape": "budget+effort",
+    "web_search": true
+  },
+  "headers": {
+    "anthropic-beta": "context-1m-2025-08-07"
+  },
+  "provenance": {
+    "ContextWindow": "overlay/row",
+    "Cost": "alias",
+    "EffortValues": "alias",
+    "Family": "alias",
+    "InputModalities": "alias",
+    "KnowledgeCutoff": "alias",
+    "MaxOutputTokens": "alias",
+    "Reasoning": "alias",
+    "ReasoningControls": "alias",
+    "StructuredOutput": "alias",
+    "Surface": "alias",
+    "ThinkingShape": "overlay/glob:*claude-opus-4-5*",
+    "Tools": "alias",
+    "WebSearch": "overlay/provider",
+    "model": "row:claude-opus-4-5[1m]"
+  },
+  "credential_source": "env:ANTHROPIC_API_KEY",
+  "pruned_fields": [
+    "container",
+    "fallbacks",
+    "metadata",
+    "service_tier"
+  ]
+}

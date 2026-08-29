@@ -1,0 +1,127 @@
+{
+  "instance": "bedrock",
+  "provider_id": "amazon-bedrock",
+  "protocol": "openai-responses",
+  "surface": "openai",
+  "transport": {
+    "preset": "bedrock-mantle-openai",
+    "auth": "bearer",
+    "auth_header": "x-api-key",
+    "base_url": "https://bedrock-mantle.us-east-1.api.aws/openai/v1",
+    "endpoint": "/responses",
+    "stream_endpoint": "/responses",
+    "models_endpoint": "/models",
+    "count_tokens_endpoint": "-",
+    "vars": {
+      "AWS_BEARER_TOKEN_BEDROCK": "bt",
+      "AWS_REGION": "us-east-1"
+    },
+    "vars_env": {
+      "AWS_ACCESS_KEY_ID": "AWS_ACCESS_KEY_ID",
+      "AWS_BEARER_TOKEN_BEDROCK": "AWS_BEARER_TOKEN_BEDROCK",
+      "AWS_REGION": "AWS_REGION"
+    }
+  },
+  "model_id": "openai.gpt-5.5",
+  "wire_id": "openai.gpt-5.5",
+  "model": {
+    "id": "openai.gpt-5.5",
+    "wire_id": "openai.gpt-5.5",
+    "family": "gpt",
+    "protocol": "openai-responses",
+    "transport": {
+      "preset": "bedrock-mantle-openai",
+      "auth": "bearer",
+      "base_url": "https://bedrock-mantle.{AWS_REGION}.api.aws/openai/v1",
+      "models_endpoint": "/models",
+      "count_tokens_endpoint": "-",
+      "vars_env": {
+        "AWS_REGION": "AWS_REGION"
+      }
+    },
+    "surface": "openai",
+    "caps": {}
+  },
+  "caps": {
+    "context_window": 272000,
+    "max_output_tokens": 128000,
+    "tools": true,
+    "structured_output": true,
+    "sampling": false,
+    "reasoning": true,
+    "reasoning_controls": [
+      "effort"
+    ],
+    "effort_values": [
+      "low",
+      "medium",
+      "high",
+      "xhigh"
+    ],
+    "input_modalities": [
+      "text",
+      "image",
+      "pdf"
+    ],
+    "knowledge_cutoff": "2025-12-01",
+    "cost": {
+      "input": 5.5,
+      "output": 33,
+      "cache_read": 0.55
+    },
+    "fields": {
+      "background": false,
+      "conversation": false,
+      "include": false,
+      "max_output_tokens": true,
+      "max_tool_calls": false,
+      "metadata": false,
+      "parallel_tool_calls": false,
+      "previous_response_id": false,
+      "prompt_cache_key": false,
+      "prompt_cache_retention": false,
+      "reasoning.context": false,
+      "safety_identifier": false,
+      "service_tier": false,
+      "store": false,
+      "temperature": true,
+      "text.verbosity": false,
+      "top_p": true,
+      "truncation": false
+    }
+  },
+  "provenance": {
+    "ContextWindow": "snapshot/row",
+    "Cost": "snapshot/row",
+    "EffortValues": "snapshot/row",
+    "Family": "snapshot/row",
+    "InputModalities": "snapshot/row",
+    "KnowledgeCutoff": "snapshot/row",
+    "MaxOutputTokens": "snapshot/row",
+    "Reasoning": "snapshot/row",
+    "ReasoningControls": "snapshot/row",
+    "Sampling": "snapshot/row",
+    "StructuredOutput": "snapshot/row",
+    "Surface": "snapshot/row",
+    "Tools": "snapshot/row",
+    "model": "row:openai.gpt-5.5"
+  },
+  "credential_source": "env:AWS_BEARER_TOKEN_BEDROCK",
+  "pruned_fields": [
+    "background",
+    "conversation",
+    "include",
+    "max_tool_calls",
+    "metadata",
+    "parallel_tool_calls",
+    "previous_response_id",
+    "prompt_cache_key",
+    "prompt_cache_retention",
+    "reasoning.context",
+    "safety_identifier",
+    "service_tier",
+    "store",
+    "text.verbosity",
+    "truncation"
+  ]
+}

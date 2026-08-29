@@ -1,0 +1,94 @@
+{
+  "instance": "anthropic",
+  "provider_id": "anthropic",
+  "protocol": "anthropic",
+  "surface": "anthropic",
+  "transport": {
+    "auth": "header",
+    "auth_header": "x-api-key",
+    "base_url": "https://api.anthropic.com/v1",
+    "endpoint": "/messages",
+    "stream_endpoint": "/messages",
+    "models_endpoint": "/models",
+    "count_tokens_endpoint": "/messages/count_tokens",
+    "vars": {
+      "BASE_URL": "https://api.anthropic.com/v1"
+    },
+    "vars_env": {
+      "BASE_URL": "ANTHROPIC_BASE_URL"
+    }
+  },
+  "model_id": "claude-opus-4-5",
+  "wire_id": "claude-opus-4-5",
+  "model": {
+    "id": "claude-opus-4-5",
+    "wire_id": "claude-opus-4-5",
+    "family": "claude-opus",
+    "surface": "anthropic",
+    "caps": {}
+  },
+  "caps": {
+    "context_window": 200000,
+    "max_output_tokens": 64000,
+    "tools": true,
+    "structured_output": true,
+    "reasoning": true,
+    "reasoning_controls": [
+      "effort",
+      "budget_tokens"
+    ],
+    "effort_values": [
+      "low",
+      "medium",
+      "high"
+    ],
+    "input_modalities": [
+      "text",
+      "image",
+      "pdf"
+    ],
+    "knowledge_cutoff": "2025-05",
+    "cost": {
+      "input": 5,
+      "output": 25,
+      "cache_read": 0.5,
+      "cache_write": 6.25
+    },
+    "fields": {
+      "container": false,
+      "fallbacks": false,
+      "max_tokens": true,
+      "metadata": false,
+      "service_tier": false,
+      "stop_sequences": true,
+      "temperature": true,
+      "top_p": true
+    },
+    "thinking_shape": "budget+effort",
+    "web_search": true
+  },
+  "provenance": {
+    "ContextWindow": "snapshot/row",
+    "Cost": "snapshot/row",
+    "EffortValues": "snapshot/row",
+    "Family": "snapshot/row",
+    "InputModalities": "snapshot/row",
+    "KnowledgeCutoff": "snapshot/row",
+    "MaxOutputTokens": "snapshot/row",
+    "Reasoning": "snapshot/row",
+    "ReasoningControls": "snapshot/row",
+    "StructuredOutput": "snapshot/row",
+    "Surface": "snapshot/row",
+    "ThinkingShape": "overlay/glob:*claude-opus-4-5*",
+    "Tools": "snapshot/row",
+    "WebSearch": "overlay/provider",
+    "model": "row:claude-opus-4-5"
+  },
+  "credential_source": "env:ANTHROPIC_API_KEY",
+  "pruned_fields": [
+    "container",
+    "fallbacks",
+    "metadata",
+    "service_tier"
+  ]
+}

@@ -1,0 +1,138 @@
+{
+  "instance": "openai",
+  "provider_id": "openai",
+  "protocol": "openai-responses",
+  "surface": "openai",
+  "transport": {
+    "auth": "bearer",
+    "base_url": "https://api.openai.com/v1",
+    "endpoint": "/responses",
+    "stream_endpoint": "/responses",
+    "models_endpoint": "/models",
+    "count_tokens_endpoint": "/responses/input_tokens",
+    "vars": {
+      "BASE_URL": "https://api.openai.com/v1"
+    },
+    "vars_env": {
+      "BASE_URL": "OPENAI_BASE_URL"
+    }
+  },
+  "model_id": "gpt-5.6",
+  "wire_id": "gpt-5.6",
+  "model": {
+    "id": "gpt-5.6",
+    "wire_id": "gpt-5.6",
+    "family": "gpt-sol",
+    "surface": "openai",
+    "caps": {}
+  },
+  "caps": {
+    "context_window": 922000,
+    "max_output_tokens": 128000,
+    "tools": true,
+    "structured_output": true,
+    "sampling": false,
+    "reasoning": true,
+    "reasoning_controls": [
+      "effort"
+    ],
+    "effort_values": [
+      "low",
+      "medium",
+      "high",
+      "xhigh",
+      "max"
+    ],
+    "input_modalities": [
+      "text",
+      "image",
+      "pdf"
+    ],
+    "knowledge_cutoff": "2026-02-16",
+    "cost": {
+      "input": 4,
+      "output": 20,
+      "cache_read": 0.4,
+      "cache_write": 5,
+      "tiers": [
+        {
+          "input_tokens_above": 272000,
+          "input": 8,
+          "output": 30,
+          "cache_read": 0.8,
+          "cache_write": 10
+        }
+      ]
+    },
+    "fields": {
+      "background": true,
+      "conversation": true,
+      "include": true,
+      "max_output_tokens": true,
+      "max_tool_calls": true,
+      "metadata": true,
+      "parallel_tool_calls": false,
+      "previous_response_id": true,
+      "prompt_cache_key": true,
+      "prompt_cache_retention": false,
+      "reasoning.context": false,
+      "safety_identifier": true,
+      "service_tier": true,
+      "store": true,
+      "temperature": true,
+      "text.verbosity": false,
+      "top_p": true,
+      "truncation": true
+    },
+    "max_tokens_field": "max_completion_tokens",
+    "thinking_always_on": true,
+    "reasoning_summary": "detailed",
+    "strict_tools": true,
+    "image_detail": "omit",
+    "web_search": true
+  },
+  "headers": {
+    "OpenAI-Organization": "org-golden"
+  },
+  "provenance": {
+    "ContextWindow": "snapshot/row",
+    "Cost": "snapshot/row",
+    "EffortValues": "snapshot/row",
+    "Family": "snapshot/row",
+    "Fields.background": "overlay/provider",
+    "Fields.conversation": "overlay/provider",
+    "Fields.include": "overlay/provider",
+    "Fields.max_tool_calls": "overlay/provider",
+    "Fields.metadata": "overlay/provider",
+    "Fields.previous_response_id": "overlay/provider",
+    "Fields.prompt_cache_key": "overlay/provider",
+    "Fields.prompt_cache_retention": "overlay/glob:gpt-5.6*",
+    "Fields.safety_identifier": "overlay/provider",
+    "Fields.service_tier": "overlay/provider",
+    "Fields.store": "overlay/provider",
+    "Fields.truncation": "overlay/provider",
+    "ImageDetail": "overlay/glob:gpt-5.6*",
+    "InputModalities": "snapshot/row",
+    "KnowledgeCutoff": "snapshot/row",
+    "MaxOutputTokens": "snapshot/row",
+    "MaxTokensField": "overlay/provider",
+    "Reasoning": "snapshot/row",
+    "ReasoningControls": "snapshot/row",
+    "ReasoningSummary": "overlay/glob:gpt-5*",
+    "Sampling": "snapshot/row",
+    "StrictTools": "overlay/provider",
+    "StructuredOutput": "snapshot/row",
+    "Surface": "snapshot/row",
+    "ThinkingAlwaysOn": "overlay/glob:gpt-5.6*",
+    "Tools": "snapshot/row",
+    "WebSearch": "overlay/provider",
+    "model": "row:gpt-5.6"
+  },
+  "credential_source": "env:OPENAI_API_KEY",
+  "pruned_fields": [
+    "parallel_tool_calls",
+    "prompt_cache_retention",
+    "reasoning.context",
+    "text.verbosity"
+  ]
+}

@@ -1,0 +1,97 @@
+{
+  "instance": "azure",
+  "provider_id": "azure",
+  "protocol": "anthropic",
+  "surface": "anthropic",
+  "transport": {
+    "auth": "header",
+    "auth_header": "api-key",
+    "base_url": "https://contoso-prod.services.ai.azure.com/anthropic/v1",
+    "endpoint": "/messages",
+    "stream_endpoint": "/messages",
+    "models_endpoint": "/models",
+    "count_tokens_endpoint": "/messages/count_tokens",
+    "vars": {
+      "AZURE_RESOURCE_NAME": "contoso-prod"
+    },
+    "vars_env": {
+      "AZURE_RESOURCE_NAME": "AZURE_RESOURCE_NAME"
+    }
+  },
+  "model_id": "claude-opus-4-5",
+  "wire_id": "claude-opus-4-5",
+  "model": {
+    "id": "claude-opus-4-5",
+    "wire_id": "claude-opus-4-5",
+    "family": "claude-opus",
+    "protocol": "anthropic",
+    "transport": {
+      "base_url": "https://{AZURE_RESOURCE_NAME}.services.ai.azure.com/anthropic/v1",
+      "vars_env": {
+        "AZURE_RESOURCE_NAME": "AZURE_RESOURCE_NAME"
+      }
+    },
+    "surface": "anthropic",
+    "caps": {}
+  },
+  "caps": {
+    "context_window": 200000,
+    "max_output_tokens": 64000,
+    "tools": true,
+    "reasoning": true,
+    "reasoning_controls": [
+      "effort",
+      "budget_tokens"
+    ],
+    "effort_values": [
+      "low",
+      "medium",
+      "high"
+    ],
+    "input_modalities": [
+      "text",
+      "image",
+      "pdf"
+    ],
+    "knowledge_cutoff": "2025-03-31",
+    "cost": {
+      "input": 5,
+      "output": 25,
+      "cache_read": 0.5,
+      "cache_write": 6.25
+    },
+    "fields": {
+      "container": false,
+      "fallbacks": false,
+      "max_tokens": true,
+      "metadata": false,
+      "service_tier": false,
+      "stop_sequences": true,
+      "temperature": true,
+      "top_p": true
+    },
+    "thinking_shape": "budget+effort"
+  },
+  "provenance": {
+    "ContextWindow": "snapshot/row",
+    "Cost": "snapshot/row",
+    "EffortValues": "snapshot/row",
+    "Family": "snapshot/row",
+    "InputModalities": "snapshot/row",
+    "KnowledgeCutoff": "snapshot/row",
+    "MaxOutputTokens": "snapshot/row",
+    "Reasoning": "snapshot/row",
+    "ReasoningControls": "snapshot/row",
+    "Surface": "snapshot/row",
+    "ThinkingShape": "overlay/glob:*claude-opus-4-5*",
+    "Tools": "snapshot/row",
+    "model": "row:claude-opus-4-5"
+  },
+  "credential_source": "env:AZURE_API_KEY",
+  "pruned_fields": [
+    "container",
+    "fallbacks",
+    "metadata",
+    "service_tier"
+  ]
+}

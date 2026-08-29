@@ -1,0 +1,99 @@
+{
+  "instance": "work",
+  "provider_id": "openai",
+  "protocol": "openai-chat",
+  "surface": "generic",
+  "transport": {
+    "auth": "bearer",
+    "base_url": "https://gw.example.com/v1",
+    "endpoint": "/chat/completions",
+    "stream_endpoint": "/chat/completions",
+    "models_endpoint": "/models",
+    "count_tokens_endpoint": "-",
+    "vars": {
+      "BASE_URL": "https://api.openai.com/v1"
+    },
+    "vars_env": {
+      "BASE_URL": "OPENAI_BASE_URL"
+    }
+  },
+  "model_id": "glm-5.2-nvfp4",
+  "wire_id": "glm-5.2-nvfp4",
+  "model": {
+    "id": "glm-5.2-nvfp4",
+    "wire_id": "glm-5.2-nvfp4",
+    "surface": "generic",
+    "caps": {}
+  },
+  "caps": {
+    "context_window": 1048576,
+    "max_output_tokens": 131072,
+    "reasoning_controls": [
+      "effort"
+    ],
+    "effort_values": [
+      "high",
+      "max"
+    ],
+    "fields": {
+      "developer_role": false,
+      "frequency_penalty": false,
+      "logprobs": false,
+      "max_tokens": true,
+      "metadata": false,
+      "n": false,
+      "parallel_tool_calls": false,
+      "presence_penalty": false,
+      "prompt_cache_key": false,
+      "prompt_cache_retention": false,
+      "seed": false,
+      "service_tier": false,
+      "stop": true,
+      "store": false,
+      "stream_options": false,
+      "temperature": true,
+      "top_p": true,
+      "user": false
+    },
+    "max_tokens_field": "max_completion_tokens",
+    "thinking_format": "zai",
+    "reasoning_summary": "auto",
+    "strict_tools": true,
+    "web_search": true
+  },
+  "headers": {
+    "OpenAI-Organization": "org-golden",
+    "X-Portkey-Provider": "openai"
+  },
+  "provenance": {
+    "ContextWindow": "config/row",
+    "EffortValues": "config/row",
+    "Fields.stream_options": "config/provider",
+    "MaxOutputTokens": "config/row",
+    "MaxTokensField": "overlay/provider",
+    "ReasoningControls": "derived",
+    "ReasoningSummary": "overlay/provider",
+    "StrictTools": "overlay/provider",
+    "Surface": "derived",
+    "ThinkingFormat": "config/row",
+    "WebSearch": "overlay/provider",
+    "model": "row:glm-5.2-nvfp4"
+  },
+  "credential_source": "credential_headers",
+  "pruned_fields": [
+    "developer_role",
+    "frequency_penalty",
+    "logprobs",
+    "metadata",
+    "n",
+    "parallel_tool_calls",
+    "presence_penalty",
+    "prompt_cache_key",
+    "prompt_cache_retention",
+    "seed",
+    "service_tier",
+    "store",
+    "stream_options",
+    "user"
+  ]
+}

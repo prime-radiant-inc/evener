@@ -1,0 +1,85 @@
+{
+  "instance": "kimi-for-coding",
+  "provider_id": "kimi-for-coding",
+  "protocol": "anthropic",
+  "surface": "anthropic",
+  "transport": {
+    "auth": "header",
+    "auth_header": "x-api-key",
+    "base_url": "https://api.kimi.com/coding/v1",
+    "endpoint": "/messages",
+    "stream_endpoint": "/messages",
+    "models_endpoint": "/models",
+    "count_tokens_endpoint": "/messages/count_tokens",
+    "vars": {
+      "BASE_URL": "https://api.kimi.com/coding/v1"
+    },
+    "vars_env": {
+      "BASE_URL": "KIMI_FOR_CODING_BASE_URL"
+    }
+  },
+  "model_id": "kimi-for-coding",
+  "wire_id": "kimi-for-coding",
+  "model": {
+    "id": "kimi-for-coding",
+    "wire_id": "kimi-for-coding",
+    "family": "kimi-k2",
+    "surface": "anthropic",
+    "caps": {}
+  },
+  "caps": {
+    "context_window": 262144,
+    "max_output_tokens": 32768,
+    "tools": true,
+    "structured_output": true,
+    "sampling": false,
+    "reasoning": true,
+    "reasoning_controls": [
+      "effort"
+    ],
+    "input_modalities": [
+      "text",
+      "image",
+      "video"
+    ],
+    "knowledge_cutoff": "2025-01",
+    "cost": {},
+    "fields": {
+      "container": false,
+      "fallbacks": false,
+      "max_tokens": true,
+      "metadata": false,
+      "service_tier": false,
+      "stop_sequences": true,
+      "temperature": true,
+      "top_p": true
+    },
+    "thinking_shape": "budget"
+  },
+  "headers": {
+    "User-Agent": "claude-cli/2.1.177 (external, cli)"
+  },
+  "provenance": {
+    "ContextWindow": "snapshot/row",
+    "Cost": "snapshot/row",
+    "Family": "snapshot/row",
+    "InputModalities": "snapshot/row",
+    "KnowledgeCutoff": "snapshot/row",
+    "MaxOutputTokens": "snapshot/row",
+    "Reasoning": "snapshot/row",
+    "ReasoningControls": "derived",
+    "Sampling": "snapshot/row",
+    "StructuredOutput": "snapshot/row",
+    "Surface": "overlay/glob:*",
+    "ThinkingShape": "overlay/glob:*",
+    "Tools": "snapshot/row",
+    "model": "row:kimi-for-coding"
+  },
+  "credential_source": "env:KIMI_API_KEY",
+  "pruned_fields": [
+    "container",
+    "fallbacks",
+    "metadata",
+    "service_tier"
+  ]
+}

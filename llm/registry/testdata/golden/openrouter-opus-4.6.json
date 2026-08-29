@@ -1,0 +1,127 @@
+{
+  "instance": "openrouter",
+  "provider_id": "openrouter",
+  "protocol": "openai-chat",
+  "surface": "anthropic",
+  "transport": {
+    "auth": "bearer",
+    "base_url": "https://openrouter.ai/api/v1",
+    "endpoint": "/chat/completions",
+    "stream_endpoint": "/chat/completions",
+    "models_endpoint": "/models",
+    "count_tokens_endpoint": "-",
+    "vars": {
+      "BASE_URL": "https://openrouter.ai/api/v1"
+    },
+    "vars_env": {
+      "BASE_URL": "OPENROUTER_BASE_URL"
+    }
+  },
+  "model_id": "anthropic/claude-opus-4.6",
+  "wire_id": "anthropic/claude-opus-4.6",
+  "model": {
+    "id": "anthropic/claude-opus-4.6",
+    "wire_id": "anthropic/claude-opus-4.6",
+    "family": "claude-opus",
+    "surface": "anthropic",
+    "caps": {}
+  },
+  "caps": {
+    "context_window": 1000000,
+    "max_output_tokens": 128000,
+    "tools": true,
+    "structured_output": true,
+    "reasoning": true,
+    "reasoning_controls": [
+      "toggle",
+      "effort",
+      "budget_tokens"
+    ],
+    "effort_values": [
+      "low",
+      "medium",
+      "high",
+      "max"
+    ],
+    "input_modalities": [
+      "text",
+      "image",
+      "pdf"
+    ],
+    "knowledge_cutoff": "2025-05-31",
+    "cost": {
+      "input": 5,
+      "output": 25,
+      "cache_read": 0.5,
+      "cache_write": 6.25,
+      "tiers": [
+        {
+          "input_tokens_above": 200000,
+          "input": 10,
+          "output": 37.5,
+          "cache_read": 1,
+          "cache_write": 12.5
+        }
+      ]
+    },
+    "fields": {
+      "developer_role": false,
+      "frequency_penalty": false,
+      "logprobs": false,
+      "max_tokens": true,
+      "metadata": false,
+      "n": false,
+      "parallel_tool_calls": false,
+      "presence_penalty": false,
+      "prompt_cache_key": false,
+      "prompt_cache_retention": false,
+      "seed": false,
+      "service_tier": false,
+      "stop": true,
+      "store": false,
+      "stream_options": true,
+      "temperature": true,
+      "top_p": true,
+      "user": false
+    },
+    "thinking_format": "openrouter",
+    "cache_control": "anthropic",
+    "tool_choice_forcing": false,
+    "session_affinity_headers": true
+  },
+  "provenance": {
+    "CacheControl": "overlay/glob:anthropic/*",
+    "ContextWindow": "snapshot/row",
+    "Cost": "snapshot/row",
+    "EffortValues": "snapshot/row",
+    "Family": "snapshot/row",
+    "InputModalities": "snapshot/row",
+    "KnowledgeCutoff": "snapshot/row",
+    "MaxOutputTokens": "snapshot/row",
+    "Reasoning": "snapshot/row",
+    "ReasoningControls": "snapshot/row",
+    "SessionAffinityHeaders": "overlay/provider",
+    "StructuredOutput": "snapshot/row",
+    "Surface": "snapshot/row",
+    "ThinkingFormat": "overlay/provider",
+    "ToolChoiceForcing": "overlay/provider",
+    "Tools": "snapshot/row",
+    "model": "row:anthropic/claude-opus-4.6"
+  },
+  "credential_source": "env:OPENROUTER_API_KEY",
+  "pruned_fields": [
+    "developer_role",
+    "frequency_penalty",
+    "logprobs",
+    "metadata",
+    "n",
+    "parallel_tool_calls",
+    "presence_penalty",
+    "prompt_cache_key",
+    "prompt_cache_retention",
+    "seed",
+    "service_tier",
+    "store",
+    "user"
+  ]
+}

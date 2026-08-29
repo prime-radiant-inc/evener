@@ -1,0 +1,88 @@
+{
+  "instance": "minimax",
+  "provider_id": "minimax",
+  "protocol": "anthropic",
+  "surface": "anthropic",
+  "transport": {
+    "auth": "header",
+    "auth_header": "x-api-key",
+    "base_url": "https://api.minimax.io/anthropic/v1",
+    "endpoint": "/messages",
+    "stream_endpoint": "/messages",
+    "models_endpoint": "/models",
+    "count_tokens_endpoint": "/messages/count_tokens",
+    "vars": {
+      "BASE_URL": "https://api.minimax.io/anthropic/v1"
+    },
+    "vars_env": {
+      "BASE_URL": "MINIMAX_BASE_URL"
+    }
+  },
+  "model_id": "MiniMax-M3",
+  "wire_id": "MiniMax-M3",
+  "model": {
+    "id": "MiniMax-M3",
+    "wire_id": "MiniMax-M3",
+    "family": "minimax",
+    "surface": "anthropic",
+    "caps": {}
+  },
+  "caps": {
+    "context_window": 1048576,
+    "max_output_tokens": 512000,
+    "tools": true,
+    "reasoning": true,
+    "reasoning_controls": [
+      "toggle"
+    ],
+    "input_modalities": [
+      "text",
+      "image",
+      "video"
+    ],
+    "cost": {
+      "input": 0.3,
+      "output": 1.2,
+      "cache_read": 0.06,
+      "tiers": [
+        {
+          "input_tokens_above": 512000,
+          "input": 0.6,
+          "output": 2.4,
+          "cache_read": 0.12
+        }
+      ]
+    },
+    "fields": {
+      "container": false,
+      "fallbacks": false,
+      "max_tokens": true,
+      "metadata": false,
+      "service_tier": false,
+      "stop_sequences": true,
+      "temperature": true,
+      "top_p": true
+    },
+    "thinking_shape": "budget"
+  },
+  "provenance": {
+    "ContextWindow": "snapshot/row",
+    "Cost": "snapshot/row",
+    "Family": "snapshot/row",
+    "InputModalities": "snapshot/row",
+    "MaxOutputTokens": "snapshot/row",
+    "Reasoning": "snapshot/row",
+    "ReasoningControls": "snapshot/row",
+    "Surface": "overlay/glob:*",
+    "ThinkingShape": "overlay/glob:*",
+    "Tools": "snapshot/row",
+    "model": "row:MiniMax-M3"
+  },
+  "credential_source": "env:MINIMAX_API_KEY",
+  "pruned_fields": [
+    "container",
+    "fallbacks",
+    "metadata",
+    "service_tier"
+  ]
+}
