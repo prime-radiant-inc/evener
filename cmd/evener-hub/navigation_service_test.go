@@ -83,6 +83,14 @@ func (s *testNavigationSource) changeTitle(title string) {
 	s.revision++
 }
 
+// retitle changes the captured tree without advancing the source revision, so
+// builds stay non-stale while resource fingerprints still move.
+func (s *testNavigationSource) retitle(title string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.inputs.Tree.Projects[0].Current[0].Title = title
+}
+
 func (s *testNavigationSource) captureCount() int {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -1436,6 +1444,104 @@ func TestNavigationServiceSchedulerRetriesEmptyAndFailedCaptures(t *testing.T) {
 	case <-done:
 	case <-time.After(time.Second):
 		t.Fatal("scheduler did not stop after retry")
+	}
+}
+
+// perCaptureRetitleSource serves a different title on every capture without
+// advancing the revision. A forced rebuild that follows a successful
+// non-forced rebuild therefore still has a fingerprint diff to publish, which
+// is exactly the retry shape a transiently failed forced refresh produces.
+type perCaptureRetitleSource struct {
+	inner *testNavigationSource
+	calls atomic.Int64
+}
+
+func (s *perCaptureRetitleSource) Revision() navigationSourceRevision {
+	return s.inner.Revision()
+}
+
+func (s *perCaptureRetitleSource) Capture(ctx context.Context, generation string, now time.Time) (navigationSourceSnapshot, error) {
+	s.inner.retitle(fmt.Sprintf("capture-%d", s.calls.Add(1)))
+	return s.inner.Capture(ctx, generation, now)
+}
+
+func TestNavigationServiceStartRetriesFailedForcedRefreshWithoutWaitingForBoundary(t *testing.T) {
+	now := time.Unix(1_700_000_000, 0).UTC()
+	source := newTestNavigationSource(now)
+	// Park the scheduler a full day out: without a failure wake, a failed
+	// forced refresh leaves the pending invalidation unpublished until that
+	// boundary elapses.
+	source.nextBoundary = now.Add(24 * time.Hour)
+	retitling := &perCaptureRetitleSource{inner: source}
+	created := make(chan *fakeNavigationTimer, 16)
+	service := newTestNavigationService(t, source, func(cfg *navigationServiceConfig) {
+		cfg.Source = retitling
+		cfg.RetryAfter = 10 * time.Millisecond
+		cfg.NewTimer = func(delay time.Duration) navigationTimer {
+			// Timers never fire on their own, so the only thing that can move
+			// the Start loop is a wake token.
+			timer := &fakeNavigationTimer{delay: delay, ch: make(chan time.Time, 1)}
+			created <- timer
+			return timer
+		}
+	})
+	if _, err := service.Representation(t.Context(), navigationResourceKey{Kind: navigationResourceManifest}); err != nil {
+		t.Fatal(err)
+	}
+	source.mu.Lock()
+	source.captured = make(chan struct{}, 8)
+	source.mu.Unlock()
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+	done := make(chan struct{})
+	cleared := make(chan struct{}, 1)
+	previousCleared := navigationPendingCleared
+	navigationPendingCleared = func() { cleared <- struct{}{} }
+	t.Cleanup(func() { navigationPendingCleared = previousCleared })
+	go func() { service.Start(ctx); close(done) }()
+	firstTimer := <-created
+	if got, want := firstTimer.delay, 24*time.Hour; got != want {
+		t.Fatalf("boundary delay = %v, want %v", got, want)
+	}
+	// The forced rebuild fails once, transiently.
+	source.mu.Lock()
+	source.err = errors.New("transient capture failure")
+	source.mu.Unlock()
+	source.changeTitle("renamed")
+	service.Invalidate(navigationChangeHint{Projects: []string{"p1"}})
+	waitNavigationSignal(t, source.captured, "failed forced capture")
+	source.mu.Lock()
+	source.err = nil
+	source.mu.Unlock()
+	// The commit signals PublicationReady before refreshPending re-acquires
+	// the lock to clear the pending epoch, so the clear notice is the
+	// deterministic completion signal for the retry.
+	waitNavigationSignal(t, cleared, "pending clear after failed forced refresh")
+	service.mu.Lock()
+	pending := service.pendingInvalidation
+	service.mu.Unlock()
+	if pending {
+		t.Fatal("successful retry left the pending invalidation set")
+	}
+	publications := service.DrainPublications()
+	if len(publications) != 1 || !hasNavigationTarget(publications[0].Targets, appwire.NavigationTargetProject, "p1") {
+		t.Fatalf("retry publications = %+v, want one project publication", publications)
+	}
+	cancel()
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("scheduler did not stop after retry")
+	}
+	for {
+		select {
+		case timer := <-created:
+			if len(timer.ch) != 0 {
+				t.Fatal("retry depended on a timer firing rather than the failure wake")
+			}
+		default:
+			return
+		}
 	}
 }
 
