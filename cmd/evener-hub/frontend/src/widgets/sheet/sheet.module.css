@@ -95,4 +95,53 @@
   .left {
     animation: none;
   }
+
+/* --- expandable bottom Sheet (Task 2) -------------------------------------
+ * A bottom-anchored Sheet can opt into a peek/full geometry: a drag handle
+ * at the top toggles or drags between a fixed peek height and full viewport
+ * height. .expandableBottom animates the height transition; .expandableHeader
+ * stays pinned so it survives the body's scroll; .expandableBody gives the
+ * inner scroll region a flex column that can actually shrink (min-height:
+ * 0) so the content clips instead of overflowing the panel.
+ */
+
+.handle {
+  display: flex;
+  justify-content: center;
+  padding: var(--space-2) 0 var(--space-1);
+  cursor: grab;
+  touch-action: none;
+}
+
+.handleBar {
+  width: 36px;
+  height: 4px;
+  border-radius: 2px;
+  background: var(--ink-low);
+}
+
+.expandableBottom {
+  height: 100vh;
+  transition: height var(--motion-duration-overlay) var(--motion-easing-standard);
+}
+
+.expandableHeader {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  background: var(--surface-inset);
+}
+
+.expandableBody {
+  flex: 1 1 auto;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .expandableBottom {
+    transition: none;
+  }
+}
 }
