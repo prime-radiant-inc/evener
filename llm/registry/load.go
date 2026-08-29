@@ -45,6 +45,7 @@ type options struct {
 	snapshot    []byte
 	overlay     []byte
 	logf        func(format string, args ...any)
+	noCache     bool
 }
 
 // WithConfigPath reads providers.toml from path instead of
@@ -84,6 +85,11 @@ func WithNow(now func() time.Time) Option { return func(o *options) { o.now = no
 
 // WithSnapshot replaces the embedded models.dev JSON (tests).
 func WithSnapshot(raw []byte) Option { return func(o *options) { o.snapshot = raw } }
+
+// WithoutCache ignores the runtime catalog cache so the load reflects the
+// snapshot alone: the refresh validation checks the candidate body, and the
+// snapshot report reads what ships in the binary.
+func WithoutCache() Option { return func(o *options) { o.noCache = true } }
 
 // WithOverlay replaces the embedded curated overlay (tests).
 func WithOverlay(data []byte) Option { return func(o *options) { o.overlay = data } }
@@ -199,7 +205,7 @@ func Load(opts ...Option) (*Registry, error) {
 		}
 	}
 	r.catalogTag, r.catalogMeta = LayerSnapshot, meta
-	if cachedRaw, cachedMeta, ok := readCache(o.stateRoot); ok && cachedMeta.FetchedAt.After(meta.FetchedAt) {
+	if cachedRaw, cachedMeta, ok := readCache(o.stateRoot); !o.noCache && ok && cachedMeta.FetchedAt.After(meta.FetchedAt) {
 		if _, err := FromModelsDev(cachedRaw); err != nil {
 			jsonPath, _ := cachePaths(o.stateRoot)
 			r.warnings = append(r.warnings, fmt.Sprintf("ignoring corrupt catalog cache %s: %v", jsonPath, err))
@@ -591,14 +597,14 @@ func (r *Registry) validateRecord(rec *record) error {
 		if !layer.own {
 			continue
 		}
-		if rec.head.Protocol == "" {
-			// No protocol (the upstream entry vanished, or an npm the
-			// converter hides): the record is Hidden, and there is no
-			// prunable set to check its fields against.
-			break
-		}
-		if err := ValidateFields(layer.provider.Fields, rec.head.Protocol, layer.tag+" "+where); err != nil {
-			return err
+		// A record with no protocol (the upstream entry vanished, or an npm
+		// the converter hides) is Hidden and has no prunable set to check
+		// provider-level fields against; rows that declare their own
+		// protocol are still checked.
+		if rec.head.Protocol != "" {
+			if err := ValidateFields(layer.provider.Fields, rec.head.Protocol, layer.tag+" "+where); err != nil {
+				return err
+			}
 		}
 		for id, row := range layer.rows {
 			if isGlob(id) {
@@ -607,6 +613,9 @@ func (r *Registry) validateRecord(rec *record) error {
 			proto := rec.head.Models[id].Protocol
 			if proto == "" {
 				proto = rec.head.Protocol
+			}
+			if proto == "" {
+				continue
 			}
 			if err := ValidateFields(row.Caps.Fields, proto, fmt.Sprintf("%s %s.models.%q", layer.tag, where, id)); err != nil {
 				return err

@@ -171,6 +171,36 @@ func TestLoad_PrefersNewerCacheAndOfflineDefault(t *testing.T) {
 	}
 }
 
+func TestLoad_WithoutCacheIgnoresANewerCache(t *testing.T) {
+	state := t.TempDir()
+	f := &fakeFetch{body: subsetFixture(t, 1), etag: "n"}
+	if _, err := Refresh(context.Background(), RefreshOptions{StateRoot: state, Fetcher: f.fetcher(), Force: true, Baseline: fixtureBytes(t)}); err != nil {
+		t.Fatal(err)
+	}
+	// subsetFixture(t, 1) drops amazon-bedrock (first by sorted id): with the
+	// cache in effect the overlay's stanza alone remains, protocol-less.
+	r, err := Load(WithSnapshot(fixtureBytes(t)), WithEnv(mapEnv(nil)), WithNoUserLayer(), WithStateRoot(state))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if tag, _ := r.Catalog(); tag != LayerCache {
+		t.Fatalf("without the option the newer cache wins: %q", tag)
+	}
+	if p, _ := r.Provider("amazon-bedrock"); p.Protocol != "" {
+		t.Fatalf("the cache lacks amazon-bedrock upstream; protocol = %q", p.Protocol)
+	}
+	r, err = Load(WithSnapshot(fixtureBytes(t)), WithoutCache(), WithEnv(mapEnv(nil)), WithNoUserLayer(), WithStateRoot(state))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if tag, _ := r.Catalog(); tag != LayerSnapshot {
+		t.Fatalf("WithoutCache must load the snapshot alone: %q", tag)
+	}
+	if p, _ := r.Provider("amazon-bedrock"); p.Protocol != ProtocolAnthropic {
+		t.Fatalf("the snapshot has amazon-bedrock upstream; protocol = %q", p.Protocol)
+	}
+}
+
 func TestLoad_CorruptCacheFallsBackToSnapshot(t *testing.T) {
 	state := t.TempDir()
 	jsonPath, metaPath := cachePaths(state)

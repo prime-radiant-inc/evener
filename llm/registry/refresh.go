@@ -183,7 +183,7 @@ func Refresh(ctx context.Context, opts RefreshOptions) (RefreshResult, error) {
 	if float64(res.ProvidersAfter) < float64(res.ProvidersBefore)*minKeepRatio || float64(res.ModelsAfter) < float64(res.ModelsBefore)*minKeepRatio {
 		return res, fmt.Errorf("refresh: rejected: upstream shrank to %d providers / %d models (baseline %d / %d)", res.ProvidersAfter, res.ModelsAfter, res.ProvidersBefore, res.ModelsBefore)
 	}
-	if _, err := Load(WithSnapshot(body), WithNoUserLayer(), WithOffline(true), WithEnv(func(string) (string, bool) { return "", false }), WithStateRoot(opts.StateRoot)); err != nil {
+	if _, err := Load(WithSnapshot(body), WithoutCache(), WithNoUserLayer(), WithOffline(true), WithEnv(func(string) (string, bool) { return "", false }), WithStateRoot(opts.StateRoot)); err != nil {
 		return res, fmt.Errorf("refresh: rejected: overlay does not load on the new snapshot: %w", err)
 	}
 	newMeta := Meta{FetchedAt: now(), Etag: newEtag, Source: UpstreamURL}

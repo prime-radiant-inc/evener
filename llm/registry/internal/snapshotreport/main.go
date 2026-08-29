@@ -48,7 +48,7 @@ func main() {
 	}
 
 	fmt.Println("\n== dangling overlay aliases")
-	r, err := registry.Load(registry.WithNoUserLayer(), registry.WithOffline(true), registry.WithEnv(func(string) (string, bool) { return "", false }), registry.WithStateRoot(os.TempDir()))
+	r, err := registry.Load(registry.WithoutCache(), registry.WithNoUserLayer(), registry.WithOffline(true), registry.WithEnv(func(string) (string, bool) { return "", false }))
 	if err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)
