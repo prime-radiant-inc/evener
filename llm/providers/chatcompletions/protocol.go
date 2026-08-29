@@ -20,7 +20,11 @@ type Protocol struct {
 	Client *http.Client
 }
 
-func init() { llm.RegisterProtocol(&Protocol{}) }
+// DefaultProtocol is the registered openai-chat instance; step 3 sets
+// Client on it from the llm client.
+var DefaultProtocol = &Protocol{}
+
+func init() { llm.RegisterProtocol(DefaultProtocol) }
 
 // ID implements llm.Protocol.
 func (*Protocol) ID() string { return registry.ProtocolOpenAIChat }

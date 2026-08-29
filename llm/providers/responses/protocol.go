@@ -23,7 +23,11 @@ type Protocol struct {
 	Hasher *llm.ContinuationHasher
 }
 
-func init() { llm.RegisterProtocol(&Protocol{}) }
+// DefaultProtocol is the registered openai-responses instance; step 3 sets
+// Client and Hasher on it from the llm client.
+var DefaultProtocol = &Protocol{}
+
+func init() { llm.RegisterProtocol(DefaultProtocol) }
 
 // ID implements llm.Protocol.
 func (*Protocol) ID() string { return registry.ProtocolOpenAIResponses }
