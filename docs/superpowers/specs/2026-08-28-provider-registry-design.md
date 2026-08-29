@@ -1,6 +1,6 @@
 # Provider Registry and Capability Resolution
 
-**Date:** 2026-08-28 (revision 10, after eight adversarial review rounds)
+**Date:** 2026-08-28 (revision 11, after nine adversarial review rounds)
 **Status:** Draft for review
 **Replaces:** the LiteLLM-vendored model catalog, `providercfg.CompatConfig`,
 `openaicompat.ProviderQuirks` presets, the vendor wrapper adapter packages, the
@@ -161,6 +161,7 @@ type Provider struct {
     Family        string            // curated: family assumed for synthesized rows ("claude" on anthropic, amazon-bedrock, google-vertex-anthropic; §7.4)
     Transport     Transport
     APIKeyEnv     []string          // env vars consulted for the key, in order
+    APIKey        string            // hand-authored literal or $ENV reference; scrubbed like CredentialHeaders
     Headers       map[string]string // constant request headers ($ENV refs allowed); non-secret
     CredentialHeaders map[string]string // secret headers; scrubbed from logs and hub rewrites
     Caps          Caps              // provider-level capability overlay
@@ -204,6 +205,14 @@ type Transport struct {
 nothing otherwise; the spawn gate treats it like `none`. It exists for
 Ollama, whose `OLLAMA_API_KEY` is optional today
 (`llm/providers/ollama/adapter.go:158-176`, `docs/ollama.md`).
+
+```go
+type Credential struct {
+    Value       string // the key or token; empty when nothing resolved
+    Source      string // store | env:<VAR> | api_key | oauth | adc | none
+    Fingerprint string // stable hash of Value, for the continuation scope (§7.6); never the value
+}
+```
 
 ### 4.1 Caps
 
@@ -337,10 +346,18 @@ included unless `InheritModels = false`. An explicit `base` always wins over
 a name match (`[providers.openai] base = "openai-codex"` is a Codex instance
 named `openai`); `base` names resolve against the curated registry (layers
 1–3) only, never against user instances, so chains cannot loop through the
-user layer, and an instance's `ProviderID` is the first registry id on its
-chain. `Hidden` is not inherited; it is recomputed after the merge at both
-levels. `Resolve` on a hidden row or a hidden provider still succeeds (the
-user named it) with `Warnings: hidden`; only listings hide it. A dangling
+user layer, and an instance's `ProviderID` is the first id reached through
+`base` (so `[providers.openai] base = "openai-codex"` has `ProviderID =
+openai-codex`), else the instance's own name when it is a registry id.
+`Hidden` is not inherited; it is recomputed after the merge at both
+levels, against the environment. `Resolve` on a hidden row or a hidden
+provider still succeeds (the user named it): a template variable that does
+not resolve is left unsubstituted in `Transport.BaseURL` with `Warnings:
+unresolved variable <NAME>`, exactly parallel to `Warnings: no credential`
+(§5.2), and the §9.1 error naming the variable and the instance fires at
+the first request. `Hidden` therefore governs listings and implicitness
+(§5.1, §11.1), never resolvability, and `evener models inspect
+azure/gpt55-prod` works with `AZURE_RESOURCE_NAME` unset. A dangling
 `alias_of` in the **curated** layer (upstream dropped the target between
 releases; the runtime cache of §6.4 can do that) degrades the row to
 `Hidden` with `Warnings: dangling alias` instead of failing the load; a
@@ -453,7 +470,12 @@ An **instance** is a named, usable provider. Instances come from two places:
   metadata-server probe in `FindDefaultCredentials` is never run at load; it
   runs at first request); `none` and `optional-bearer` need nothing beyond
   the base URL resolving (Ollama's does by default; a pseudo-provider's
-  only when its `<ID>_BASE_URL` is set). Nothing else becomes an instance
+  only when its `<ID>_BASE_URL` is set). "Not `Hidden`" means the base URL
+  template resolves, so the cloud providers need their variables as well as
+  their credential: `google-vertex*` need `GOOGLE_VERTEX_PROJECT` and
+  `GOOGLE_VERTEX_LOCATION`, `azure*` need `AZURE_RESOURCE_NAME`, and
+  `amazon-bedrock` needs `AWS_REGION`; the ADC file alone makes no Vertex
+  instance. Nothing else becomes an instance
   from an environment variable alone: `GITHUB_TOKEN`, `HF_TOKEN`, or
   `DATABRICKS_TOKEN` in a shell must not conjure a `github-copilot`,
   `huggingface`, or `databricks` instance.
@@ -466,18 +488,23 @@ making it the default writes a shadowing explicit entry; removing one is
 refused with a message naming the variable or record that makes it exist.
 
 The **default instance** is `default` from `providers.toml` when set; else
-the first explicit instance by sorted name that has a `DefaultModel`
-(today's sorted-name rule, `providercfg/load.go:257-260`, combined with
-today's `NonDefaultEligible` skip so an explicit `[providers.ollama]` is
-never the default); else the first implicit instance in the curated
-`default_order` list (§6.2), which orders the whole implicit list, that
-has a `DefaultModel`. A `default` that names neither an explicit instance
+the first instance, explicit or implicit, that has a `DefaultModel` in this
+ranking: the curated `default_order` (§6.2), where an explicit entry whose
+name is a curated implicit id keeps that id's position (a shadowing entry
+the hub or `probe --write` creates changes fields, not rank, so editing
+`groq` never promotes it over `anthropic`), followed by every other explicit
+instance by sorted name. This is a change from today's rule (the file
+loader picks the first sorted name with no eligibility skip,
+`providercfg/load.go:257-262`), disclosed in §14.1. A `default` that names
+neither an explicit instance
 nor a curated implicit id is a load error (a non-implicit registry id such
 as `huggingface` names no instance without a `[providers.huggingface]`
 entry); a `default` that names a curated implicit id whose credential does
 not resolve in this environment is a warning that falls through to the
 chain above (so `evener models inspect` and a shell without the key keep
-working, §5.2). An explicit entry that sets `default_model` on a provider
+working, §5.2); a `default` naming a curated implicit id that is hidden for
+an unset variable is the same warning. An explicit entry that sets
+`default_model` on a provider
 that has none (`[providers.ollama] default_model = "llama3:8b"`) is
 eligible like any other; the user asked for it. Every provider on the
 implicit list except `azure` (deployment names) and `ollama` (live only)
@@ -845,9 +872,13 @@ that upstream now covers.
   running process keeps its already-loaded registry; the refresh takes
   effect on the next load. A failed refresh or validation logs one line and
   keeps the previous cache.
-- `EVENER_OFFLINE=1` sets `opts.Offline`. `cmdutil` test helpers set it, the
-  registry fetcher is an injected `func(ctx, etag) (…)`, and the default test
-  state root is a temp dir, so default tests cannot reach the network.
+- `EVENER_OFFLINE=1` sets `opts.Offline`, and `registry.Load` also forces
+  `Offline` when `testing.Testing()` is true (the guard the repo already
+  uses, `agent/session_init.go:55-62`), so a bare `Load()` from any test
+  package never starts the refresh goroutine. `cmdutil` test helpers set the
+  variable too, the registry fetcher is an injected `func(ctx, etag) (…)`,
+  and the default test state root is a temp dir, so default tests cannot
+  reach the network.
   Nothing else in `registry.Load` or `Resolve` performs I/O beyond reading
   local files and environment variables.
 - `make refresh-model-catalog` replaces the embedded snapshot (curl → gzip),
@@ -941,7 +972,9 @@ excepted), `Resolve` derives, in this order:
    provider rejects). A user-layer value is kept as written.
 3. **`Surface`** from the row, else the provider (family-less and
    synthesized rows only, §6.1), else `generic`.
-4. **`ThinkingShape`**, on the `anthropic` protocol only, keyed on family
+4. **`ThinkingShape`**, on the `anthropic` protocol only and only when
+   `Reasoning != false` (steps 5 and 6 share that gate, so a
+   `reasoning = false` row shows no thinking in `inspect`), keyed on family
    (never on `Surface`, so a surface pin cannot change the wire shape). Let
    *claude* mean the row's `Family` starts with `claude`, or the row is
    synthesized and the provider's curated `Family` is `claude`. Then:
@@ -1002,7 +1035,7 @@ to exactly one of five keys:
 | `modelSwitchVisible` / `VisibleLiveModel` (`session_init.go:490`, `session_set_model.go:119-125`) | the live-layer rule of §5 | the openrouter-only tool gating is now "live `Tools = false` hides the row" for every provider |
 | sandbox net-off web egress allowlist (`agent/sandbox/provider_web.go:16-21`) | `ProviderID` | vendor identity; the `gemini` key becomes `google` |
 | subagent target comparison (`subagent_model_selection.go:183`) | `Instance` | routing identity |
-| plugin-agent `model:` declarations (`resolvePluginAgentCatalogRef`, `subagent_model_selection.go:155-190`, today via `catalog.ResolveAlias`) | `Registry.FindModel` | `instance/model` resolves directly; a bare id resolves to the session's current instance when that instance serves it, else to the single serving instance, else among several implicit serving instances to the first in `default_order`, else *ambiguous*; none → *unavailable*, preserving today's fallback-with-warning. With both `openai-codex` and `openai` present, a bare `gpt-5.6` from an `anthropic` session therefore goes to `openai-codex` |
+| plugin-agent `model:` declarations (`resolvePluginAgentCatalogRef`, `subagent_model_selection.go:155-190`, today via `catalog.ResolveAlias`) | `Registry.FindModel` | `instance/model` resolves directly; a bare id resolves to the session's current instance when that instance serves it, else to the highest-ranked serving instance under §5.1's default ranking (explicit or implicit alike), and to *unavailable* when none serves it, preserving today's fallback-with-warning. With both `openai-codex` and `openai` present, a bare `gpt-5.6` from an `anthropic` session therefore goes to `openai-codex` |
 | `ProviderOptions` map key and the API-log tag (`session_model_call.go:248`) | `Protocol` | options are protocol extras (beta headers, safety settings) |
 | `openAIPromptCacheSupported` (`session.go:1343`) | `PromptCacheKey` set iff `Fields["prompt_cache_key"]`; `PromptCacheRetention = "24h"` set iff `Fields["prompt_cache_retention"]` | two independent gates, so Codex keeps the cache key and GPT-5.6 drops only the legacy retention field |
 | the `ThinkingAlwaysOn` → `medium` injection (`session_model_call.go:806-816`) | deleted | §7.4: always-on is a builder concern, never an injected effort |
@@ -1326,8 +1359,10 @@ templates that may contain `{model}` and `{VAR}`; empty means the protocol
 default (§6.1), `-` means unsupported. Variables resolve in this order: the
 user layer's `Vars` (instance config), then the environment through
 `VarsEnv` (a user-layer `vars_env` merges key-wise like `vars`), then `Vars`
-from the curated and upstream layers (defaults), then a resolve error naming
-the variable and the instance. That order is what makes `OPENAI_BASE_URL`
+from the curated and upstream layers (defaults), then the variable is left
+unresolved with a warning and the error naming the variable and the
+instance fires at the first request (§4.2). That order is what makes
+`OPENAI_BASE_URL`
 and the other `*_BASE_URL` variables of §6.2 work: the curated URL is the
 default, the environment overrides it, and an explicit instance `base_url`
 wins over both. A variable's value is substituted verbatim; there is no
@@ -1571,6 +1606,9 @@ Rules, enforced at load with errors that name the instance and key:
   `alias_of` must name an existing non-alias row; `transport` must name a
   preset; `default` follows §5.1 (unknown name = error, credential-less
   implicit id = warning)
+- an unknown key anywhere in the file is a load error naming it
+  (`toml.MetaData.Undecoded()`), so a leftover `thinking_levels` or
+  `compat` cannot be silently ignored
 - `protocol` must be a registered protocol; `surface` one of the four values
 - `auth` ∈ `bearer | optional-bearer | header | none | gcp-adc | oauth-openai-codex`
 - `fields` keys in a provider entry or an exact row must be in that
@@ -1584,16 +1622,22 @@ Rules, enforced at load with errors that name the instance and key:
 - `effort_values` entries non-empty; `"off"` rejected
 - `$ENV` expansion in `api_key`, `credential_headers`, and `vars` uses
   today's `$NAME` / `${NAME}` / `$$` rules and happens at resolve time, so one
-  instance's missing variable never blocks another; an unset variable there
-  is a resolve error. In `headers` an unset variable **drops the header**
+  instance's missing variable never blocks another. An unset variable in
+  `api_key` or `credential_headers` yields an empty `Credential` with
+  `Warnings: no credential (<NAME> unset)` and the first-request error
+  (§5.2, so `inspect` keeps working); an unset variable in `vars` or a
+  template yields `Warnings: unresolved variable <NAME>` and the
+  first-request error (§4.2). In `headers` an unset variable **drops the header**
   (that is how the optional `OpenAI-Organization`/`OpenAI-Project` headers
   work; today it is an error, `apikey.go:261-276`); an empty-string value
   removes an inherited header of that name.
 - **credential inheritance stops at the endpoint**: an instance that sets
   a literal `base_url` different from its base's `base_url` (compared after
   substituting the curated defaults, so copying the default URL verbatim
-  is not "different") does not inherit the base's `APIKeyEnv`; unless its
-  `auth` is `none`,
+  is not "different") does not inherit the base's `APIKeyEnv`; a
+  credentials-store entry under the instance's own name always satisfies
+  it (that is the store's first layer, and the only way the hub's pane
+  enters a key); otherwise, unless its `auth` is `none`,
   `optional-bearer`, `gcp-adc`, or `oauth-openai-codex`, it must set
   `api_key`, `api_key_env`, or `credential_headers`, else resolving it fails
   at first request with "no credential for <instance>". Today's
@@ -1612,19 +1656,28 @@ Rules, enforced at load with errors that name the instance and key:
 `type`, `api_style`, `quirks`, `[instances.*]`, and `compat` are gone. A file
 that uses any of them fails to load with a message pointing at this
 document and §14.1. The CLI exits with it. The hub starts with implicit
-instances only, shows it as a diagnostic, **withholds
-`EVENER_PROVIDERS_CONFIG` from every child it spawns** (so sessions launch
-against the same implicit set instead of dying on the same error;
-today's spawn always passes the path, `launchconfig/env.go:52-54`), and
-refuses every instance write with the same pointer (today's CRUD reloads
-the file before each write, `app_instances.go:291-299`, and there is no
-raw-file editor in the web UI). The remedy is by hand: edit the file or
-move it aside; the hub never rewrites or deletes it.
+instances only, shows it as a diagnostic, and refuses every instance write
+with the same pointer (today's CRUD reloads the file before each write,
+`app_instances.go:291-299`, and there is no raw-file editor in the web UI).
+So that sessions still launch, `EVENER_PROVIDERS_CONFIG` gains a third
+state: **present and empty means "no user layer"** (`os.LookupEnv`, not
+`Getenv`; unset still means the default path, `load_client.go:38-41`). A
+hub whose file failed to load sets it empty in every child environment,
+replacing any inherited value (`launchconfig.ToEnv` starts from
+`os.Environ()`, `env.go:41`), and passes `EVENER_CREDENTIALS_CONFIG` naming
+its own `credentials.toml` (new variable; when unset, the store is the
+sibling of the providers path, else `<config-root>/credentials.toml`, as
+today, `main.go:236-239`). Children then compute the same implicit set from
+the environment and the store; the hub no longer injects the launched
+instance's key into the child (`env.go:56-60`, deleted with the roster).
+The remedy is by hand: edit the file or move it aside; the hub never
+rewrites or deletes it.
 
 Credentials keep the existing `internal/credentials.Store` semantics (file
-entry by instance name → env vars by instance name → the provider's env
-vars), with one change of direction: the store no longer owns a provider
-roster. It is constructed with the registry's `(id → APIKeyEnv)` table, so
+entry by instance name → `<NAME>_API_KEY` for the instance name under the
+§6.2 uppercase rule → the provider's `APIKeyEnv`), with one change of
+direction: the store no longer owns a provider roster. It is constructed
+with the registry's `(id → APIKeyEnv)` table, so
 `envvars.Providers()`, `envvars.APIKeyVars`, and `envvars.AuthModes` are
 deleted along with the seven-provider list; the generic env helpers and the
 Ollama host helpers in `envvars` stay.
@@ -1660,10 +1713,11 @@ Ollama host helpers in `envvars` stay.
   [--api-key-env NAME] [--credential-header K=V] [--surface S]` — writes
   the entry, then runs `probe --write` unless `--no-probe`. When the entry
   would resolve no credential under §10's rule (a gateway `--base-url` with
-  no `--api-key-env` or `--credential-header`), `add` writes it, skips the
-  probe, and prints which of the two to set (keys themselves are entered
-  through the hub's credentials pane or `credentials.toml`, never on the
-  command line).
+  no store entry under `<name>`, no `--api-key-env` whose variable is set,
+  and no `--credential-header`), `add` writes it, skips the probe, and
+  prints what to set. Secrets never appear on the command line: a
+  `--credential-header` value must be a `$VAR` reference, and keys are
+  entered through the hub's credentials pane or `credentials.toml`.
 
 ### 11.3 Hub and appwire
 
@@ -1683,7 +1737,10 @@ change shape (`appwire/types.go:2488-2523`): `InstanceEntry` drops `Type` and
 `APIKeyEnv` entry. `InstanceCreateParams` and `InstanceEditParams` follow;
 `InstanceListResponse.AvailableTypes` becomes `AvailableProviders` (registry
 ids with display names and `VarsEnv`, so the add form can render the right
-variable inputs). `protocol/types.gen.ts` is regenerated and the frontend
+variable inputs). The credentials pane lists every curated implicit
+provider whether or not it currently has a credential (§5.2 resolves them
+regardless), which is where a fresh install signs in to `openai-codex` or
+enters its first key. `protocol/types.gen.ts` is regenerated and the frontend
 instance dialogs and row (`panes/settings/sections/credentials/`,
 `InstanceRow.tsx`, `credentialLabels.ts`) are updated; `make test-web`
 covers them. The spawn credential gate (`spawn.go:649-684`) keys on
@@ -1724,7 +1781,7 @@ table:
 | 413 (any wording or code, including Groq's per-request TPM ceiling); codes `context_length_exceeded`, `request_too_large`; 400 matching `context length\|maximum context\|too many tokens\|reduce the length`; Anthropic `prompt is too long` (new) | `KindContextLength`, non-retryable, message verbatim |
 | codes `usage_limit_reached`, `insufficient_quota`, Kimi's quota 403 body (`llm/usagelimit.go`), or the "usage limit" phrase on 429 | `KindQuotaExceeded`, non-retryable, carries the reset time (unchanged from today; listed so it is not lost) |
 | code `rate_limit_exceeded` on 429; other 429 | `KindRateLimit` (retryable, honors `retry-after` and `x-ratelimit-reset-*`) |
-| codes `unknown_parameter`, `unsupported_parameter` (name from `error.param`); 400 messages `Unrecognized request argument supplied: <name>` (bare token; OpenAI Chat sends `param: null` here), `Unknown parameter: '<name>'` (Responses), `Unsupported parameter: '<name>'`, `unknown field <name>` | `KindInvalidRequest`. Hint selection: `<name>` equal to the row's max-tokens spelling (OpenAI's "Unsupported parameter: 'max_tokens' … Use 'max_completion_tokens' instead") → `Hint: set max_tokens_field = "max_completion_tokens"`; `<name>` in the row's prunable set → `Hint: run evener models inspect <ref> and set fields.<name> = false`; otherwise the generic hint below (a cap-governed or nested path such as `reasoning.summary` is not a valid `fields` key) |
+| codes `unknown_parameter`, `unsupported_parameter` (name from `error.param`); 400 messages `Unrecognized request argument supplied: <name>` (bare token; OpenAI Chat sends `param: null` here), `Unknown parameter: '<name>'` (Responses), `Unsupported parameter: '<name>'`, `unknown field <name>` | `KindInvalidRequest`. Hint selection: `<name>` equal to the row's current max-tokens spelling (`max_tokens` or `max_completion_tokens`; OpenAI's "Unsupported parameter: 'max_tokens' … Use 'max_completion_tokens' instead", or an older compatible server's "Unrecognized request argument supplied: max_completion_tokens" behind a `base = "openai"` gateway) → `Hint: set max_tokens_field = "<the other spelling>"`; `<name>` in the row's prunable set (the max-tokens path is always keyed `max_tokens` there, whatever spelling is in effect) → `Hint: run evener models inspect <ref> and set fields.<name> = false`; otherwise the generic hint below (a cap-governed or nested path such as `reasoning.summary` is not a valid `fields` key) |
 | 400 `invalid JSON body` or another generic `invalid_request_error` with no parameter token (including Anthropic's "not supported with thinking" family, which names no parameter) | `KindInvalidRequest` with `Hint: run evener models inspect <ref>; this endpoint rejected a field the registry sends — compare the pruned-field list against the provider's documentation` |
 | 401/403 otherwise, 404 with `model` in the message | as today |
 
@@ -1773,19 +1830,27 @@ error types is removed; `Provider()` returns the instance name and a new
   `XAI_API_KEY` alone, `OPENAI_API_KEY` alone (instances `{openai}`, no
   `openai-codex`), `OPENAI_COMPATIBLE_BASE_URL` alone (an instance, never
   the default) and unset (no pseudo-provider instance at all), the ADC file
-  alone (`google-vertex-anthropic` by `default_order`), an explicit
-  `[providers.ollama]` next to `ANTHROPIC_API_KEY` (anthropic wins), and the
-  same with `default_model` set on the Ollama entry (ollama wins);
-  shadowing by explicit entries; the
+  alone (no Vertex instance: `Hidden` for the unset project and location)
+  and with `GOOGLE_VERTEX_PROJECT` + `GOOGLE_VERTEX_LOCATION`
+  (`google-vertex-anthropic` by `default_order`), `ANTHROPIC_API_KEY` +
+  `GROQ_API_KEY` with a shadowing `[providers.groq] protocol = …` entry
+  (anthropic still wins) and with a custom `[providers.work] base =
+  "openai"` entry (anthropic still wins), an explicit `[providers.ollama]`
+  next to `ANTHROPIC_API_KEY` (anthropic wins), and the same with
+  `default_model` set on the Ollama entry (anthropic still wins by rank;
+  ollama wins only when it is the sole candidate); an unset `$VAR` in
+  `api_key` resolving with the warning; shadowing by explicit entries; the
   credential-inheritance stop for gateways and its non-application to
   `vars`-only instances and to `OPENAI_BASE_URL` overrides; `WithInstances`
   injection; resolution without a credential carrying the warning, and no
   warning for `optional-bearer`.
-- **Flag day** (§14.1): an old-schema hub-materialized `providers.toml`
-  fails to load with the pointer; the CLI exits with it; the hub starts
-  with implicit instances only, surfaces it as a diagnostic, spawns a
-  child without `EVENER_PROVIDERS_CONFIG` that launches against the
-  implicit set, and refuses an instance write with the pointer; a stray
+- **Flag day** (§14.1): an old-schema hub-materialized `providers.toml` at
+  the default path fails to load with the pointer; the CLI exits with it;
+  the hub starts with implicit instances only, surfaces it as a
+  diagnostic, spawns a child with `EVENER_PROVIDERS_CONFIG=` (empty) and
+  `EVENER_CREDENTIALS_CONFIG` set, and that child launches against the
+  implicit set with the hub's store (asserted at the default path and at a
+  custom path); the hub refuses an instance write with the pointer; a stray
   `auth/openai.json` produces the notice and nothing else; a
   `credentials.toml` entry under an unknown instance name is reported by
   `evener providers list` and ignored; the old `evener_model_catalog_overrides.json`
@@ -1967,10 +2032,12 @@ once, and the release notes and the load-error pointer say so:
   or `--credential-header K=V` (§11.2); an instance with its own
   `base_url` never inherits the vendor key (§10), which today's
   `[instances.anthropic] base_url = …` shape did.
-- **Default instance**: with more than one key and no `default`, the
-  default follows `default_order` (§6.2), not today's alphabetical
-  registration order; `GEMINI_API_KEY` + `OPENAI_API_KEY` now defaults to
-  `openai`, not `google`. Set `default` to keep the old pick.
+- **Default instance**: with more than one instance and no `default`, the
+  default follows the ranking of §5.1 (`default_order`, then custom-named
+  entries by name), not today's alphabetical registration order or the
+  file's sorted-name rule; `GEMINI_API_KEY` + `OPENAI_API_KEY` now defaults
+  to `openai`, not `google`, and a custom gateway entry never outranks an
+  implicit vendor. Set `default` to keep the old pick.
 - **Instance names**: `kimi`, `glm`, `kimi-anthropic`, `openrouter-anthropic`,
   and `openai-compatible`-as-a-vendor-name are gone; the registry ids are
   `moonshotai`, `zai`, `kimi-for-coding`, and (for the anthropic-protocol
@@ -2054,8 +2121,11 @@ files are renamed or deleted.
   provider fallback applies only to family-less and synthesized rows.
 - 413 stays a context-length error; the classifier's new work is the
   structured body and the unrecognized-parameter hint.
-- Ollama is never the default because it has no `DefaultModel`; the
-  `NonDefaultEligible` interface goes away.
+- Ollama is never the default unless the user gives it a `default_model`
+  and nothing outranks it; the `NonDefaultEligible` interface goes away.
+- `EVENER_PROVIDERS_CONFIG=` (present, empty) means "no user layer";
+  `EVENER_CREDENTIALS_CONFIG` names the store. The hub uses both to keep
+  launching sessions while its own file fails to load.
 - Vertex and Bedrock token counting is estimate-only; exact counting is
   [#565](https://github.com/prime-radiant-inc/evener/issues/565).
 - Azure, Bedrock, and Vertex may land as a later phase (§14 step 4), but the
@@ -2304,3 +2374,28 @@ Ollama entry with `default_model` (§5.1, §13); the credential stop comparing
 against substituted defaults (§10); the version-less variable list
 completed (§6.2); the `<ID>` uppercase rule (§6.2); and the sandbox path
 citation (§7.5).
+
+Revision 11 incorporated the ninth adversarial review (two reviewers, 9
+scored findings, all accepted), which reported §1–§3, §6–§9, §12, and §15
+as converged: the hub keeps sessions launching through an explicitly empty
+`EVENER_PROVIDERS_CONFIG` ("no user layer") and a new
+`EVENER_CREDENTIALS_CONFIG`, instead of withholding a variable the child
+would recompute (§10, §13, §15); `Hidden` governs listings and implicitness
+only, with an unresolved template variable a warning at resolve time and an
+error at first request, so `inspect` works for the cloud providers (§4.2,
+§5.1, §9.1, §10); the cloud providers need their template variables to be
+implicit, and the §13 fixture says so (§5.1, §13); an unset `$VAR` in
+`api_key` is a warning, not a resolve error (§10); a credentials-store
+entry under the instance name satisfies the credential stop and `add`
+consults it, with `<NAME>_API_KEY` defined for custom names (§10, §11.2);
+the `max_tokens_field` hint suggests the spelling not in effect (§12); the
+default ranking keeps a shadowed curated id at its `default_order`
+position and ranks custom entries after the list, disclosed in §14.1 with
+§15 corrected (§5.1, §13, §14.1, §15); plus the minor items: `--credential-header`
+values as `$VAR` references (§11.2); §7.4 steps 4–6 gated on `Reasoning`;
+`Provider.APIKey` and the `Credential` type (§4); unknown TOML keys as load
+errors (§10); `ProviderID` defined through `base` (§4.2); `FindModel`
+ranking for mixed explicit and implicit servers (§7.5); the sorted-name
+attribution corrected (§5.1); `registry.Load` offline under
+`testing.Testing()` (§6.4); and the credentials pane listing every curated
+implicit provider (§11.3).
