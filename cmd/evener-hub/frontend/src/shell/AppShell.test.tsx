@@ -545,7 +545,9 @@ test("shows no banner while the injected client is ready", async () => {
 
 test("banner reflects reconnecting state when injected", async () => {
   const fake = new FakeClient("ready");
-  render(<AppShell client={fake} />);
+  // bannerDelayMs={0} drives the banner synchronously so the test doesn't
+  // wait the production 10s reveal delay (see ConnectionBannerProps.delayMs).
+  render(<AppShell client={fake} bannerDelayMs={0} />);
   await screen.findByText("No session open");
 
   act(() => {
