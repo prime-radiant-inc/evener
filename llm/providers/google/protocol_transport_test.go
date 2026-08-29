@@ -85,7 +85,7 @@ func TestProtocolCompleteUsesHeaderAuthAndModelInPath(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if resp.Provider != "google" || resp.Text() != "hello" || resp.Usage.TotalTokens != 7 {
+	if resp.Provider != "gemini-prod" || resp.Text() != "hello" || resp.Usage.TotalTokens != 7 {
 		t.Fatalf("resp = %+v", resp)
 	}
 	if got.path != "/v1beta/models/gemini-2.5-flash:generateContent" || got.header.Get("x-goog-api-key") != "k-1" || strings.Contains(got.path, "key=") {
@@ -108,7 +108,7 @@ func TestProtocolStreamUsageOnFinishChunk(t *testing.T) {
 			final = ev.Response
 		}
 	}
-	if final == nil || final.Provider != "google" || final.Text() != "hello" || final.Usage.TotalTokens != 7 {
+	if final == nil || final.Provider != "gemini-prod" || final.Text() != "hello" || final.Usage.TotalTokens != 7 {
 		t.Fatalf("final = %+v", final)
 	}
 	if got.path != "/v1beta/models/gemini-2.5-flash:streamGenerateContent?alt=sse" {
@@ -120,7 +120,7 @@ func TestProtocolReclassifiesGRPCStatus(t *testing.T) {
 	srv, _ := protoServer(t, 400, `{"error":{"code":400,"message":"Resource has been exhausted (e.g. check quota).","status":"RESOURCE_EXHAUSTED"}}`)
 	_, err := (&Protocol{Client: srv.Client()}).Complete(context.Background(), protoReq(""), protoLive(srv))
 	le, ok := errors.AsType[llm.Error](err)
-	if llm.Kind(err) != llm.KindRateLimit || !ok || le.Provider() != "google" {
+	if llm.Kind(err) != llm.KindRateLimit || !ok || le.Provider() != "gemini-prod" {
 		t.Fatalf("RESOURCE_EXHAUSTED on 400 must reclassify to a rate limit stamped with the instance: %v", err)
 	}
 }

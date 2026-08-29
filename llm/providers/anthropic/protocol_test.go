@@ -14,7 +14,7 @@ func protoRes(mutate func(c *registry.Caps)) registry.Resolved {
 	if mutate != nil {
 		mutate(&caps)
 	}
-	return registry.Resolved{Instance: "anthropic", Protocol: registry.ProtocolAnthropic, ModelID: "claude-x", WireID: "claude-x-wire", Transport: registry.Transport{Endpoint: "/messages"}, Caps: caps}
+	return registry.Resolved{Instance: "anthropic-prod", Protocol: registry.ProtocolAnthropic, ModelID: "claude-x", WireID: "claude-x-wire", Transport: registry.Transport{Endpoint: "/messages"}, Caps: caps}
 }
 
 func protoReq(effort string) llm.Request {

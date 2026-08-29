@@ -92,7 +92,7 @@ func TestProtocolCompleteAndHeaders(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if resp.Provider != "anthropic" || resp.Text() != "hello" || resp.Finish.Reason != "stop" || resp.Usage.InputTokens != 7 {
+	if resp.Provider != "anthropic-prod" || resp.Text() != "hello" || resp.Finish.Reason != "stop" || resp.Usage.InputTokens != 7 {
 		t.Fatalf("resp = %+v", resp)
 	}
 	h := got.header
@@ -116,7 +116,7 @@ func TestProtocolStreamDecodesThroughTheSharedDecoder(t *testing.T) {
 			final = ev.Response
 		}
 	}
-	if final == nil || final.Provider != "anthropic" || final.Text() != "hello" || final.Usage.OutputTokens != 3 || got.body["stream"] != true {
+	if final == nil || final.Provider != "anthropic-prod" || final.Text() != "hello" || final.Usage.OutputTokens != 3 || got.body["stream"] != true {
 		t.Fatalf("final = %+v body = %v", final, got.body)
 	}
 }

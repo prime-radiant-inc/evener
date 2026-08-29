@@ -13,7 +13,7 @@ func protoRes(mutate func(c *registry.Caps)) registry.Resolved {
 	if mutate != nil {
 		mutate(&caps)
 	}
-	return registry.Resolved{Instance: "google", Protocol: registry.ProtocolGoogle, ModelID: "gemini-x", WireID: "gemini-x", Transport: registry.Transport{Endpoint: "/models/{model}:generateContent", StreamEndpoint: "/models/{model}:streamGenerateContent?alt=sse"}, Caps: caps}
+	return registry.Resolved{Instance: "gemini-prod", Protocol: registry.ProtocolGoogle, ModelID: "gemini-x", WireID: "gemini-x", Transport: registry.Transport{Endpoint: "/models/{model}:generateContent", StreamEndpoint: "/models/{model}:streamGenerateContent?alt=sse"}, Caps: caps}
 }
 
 func protoReq(effort string) llm.Request {

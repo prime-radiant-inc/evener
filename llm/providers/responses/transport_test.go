@@ -103,7 +103,7 @@ func TestCompleteDecodesOutputItems(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if resp.Provider != "openai" || resp.Text() != "hello" || len(resp.ToolCalls()) != 1 || resp.ToolCalls()[0].ID != "call_1" || resp.Finish.Reason != "tool_calls" {
+	if resp.Provider != "oai-prod" || resp.Text() != "hello" || len(resp.ToolCalls()) != 1 || resp.ToolCalls()[0].ID != "call_1" || resp.Finish.Reason != "tool_calls" {
 		t.Fatalf("resp = %+v", resp)
 	}
 	if resp.Usage.InputTokens != 10 || resp.Usage.OutputTokens != 4 || resp.Usage.CacheReadTokens == nil || *resp.Usage.CacheReadTokens != 2 {
@@ -133,7 +133,7 @@ func TestStreamEmitsDeltasAndFinish(t *testing.T) {
 			t.Fatalf("stream error: %v", ev.Err)
 		}
 	}
-	if strings.Join(deltas, "") != "hello" || final == nil || final.Provider != "openai" || final.Text() != "hello" || final.Usage.TotalTokens != 5 {
+	if strings.Join(deltas, "") != "hello" || final == nil || final.Provider != "oai-prod" || final.Text() != "hello" || final.Usage.TotalTokens != 5 {
 		t.Fatalf("deltas = %v final = %+v", deltas, final)
 	}
 	if got.body["stream"] != true {
@@ -166,9 +166,13 @@ func TestCompleteClassifiesFailures(t *testing.T) {
 func TestCountTokens(t *testing.T) {
 	srv, got := server(t, 200, `{"object":"response.input_tokens","input_tokens":42}`)
 	res := liveRes(srv, openaiCaps)
+	// metadata and temperature must reach the built body, so the assertion
+	// below proves CountTokens stripped them rather than the prune.
+	res.Caps.Fields["metadata"] = true
 	req := userReq("hi")
 	req.MaxTokens = new(10)
 	req.Metadata = map[string]string{"k": "v"}
+	req.Temperature = new(0.5)
 	n, err := (&Protocol{Client: srv.Client()}).CountTokens(context.Background(), req, res)
 	if err != nil || n != 42 {
 		t.Fatalf("n = %d err = %v", n, err)

@@ -13,7 +13,7 @@ func resolved(mutate func(c *registry.Caps)) registry.Resolved {
 	if mutate != nil {
 		mutate(&caps)
 	}
-	return registry.Resolved{Instance: "openai", Protocol: registry.ProtocolOpenAIResponses, ModelID: "gpt-5.5", WireID: "gpt-5.5", Transport: registry.Transport{Endpoint: "/responses"}, Caps: caps}
+	return registry.Resolved{Instance: "oai-prod", Protocol: registry.ProtocolOpenAIResponses, ModelID: "gpt-5.5", WireID: "gpt-5.5", Transport: registry.Transport{Endpoint: "/responses"}, Caps: caps}
 }
 
 func openaiCaps(c *registry.Caps) {
