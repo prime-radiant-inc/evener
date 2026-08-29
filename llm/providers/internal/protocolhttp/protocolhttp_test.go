@@ -7,6 +7,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -312,5 +313,47 @@ func TestCompleteViaStreamAccumulates(t *testing.T) {
 	registerTestSchemes()
 	if !RequiresStreamingComplete(registry.Resolved{Transport: registry.Transport{Auth: "test-runner-preparer"}}) || RequiresStreamingComplete(registry.Resolved{Transport: registry.Transport{Auth: registry.AuthBearer}}) {
 		t.Fatal("RequiresStreamingComplete must follow the scheme's preparer")
+	}
+}
+
+// TestCredentialMaterialCoversURLUserinfo pins the rule that a base_url
+// carrying user:pass@ is credential material like any key: the password
+// must never reach the api-log request metadata, and Prepare must name it
+// so every consumer of Prepared.material (endpoint stamps, error
+// sanitizing) can scrub it too. llm.BuildAPILogCredentialMaterial does the
+// same for the old adapters.
+func TestCredentialMaterialCoversURLUserinfo(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"id":"r1"}`))
+	}))
+	defer srv.Close()
+	const password = "userinfo-secret"
+	res := testRes(strings.Replace(srv.URL, "http://", "http://gwuser:"+password+"@", 1), registry.AuthBearer)
+	call := &Call{Operation: "responses.create", EndpointFamily: "test", Method: http.MethodPost, URL: URL(res, res.Transport.Endpoint), Body: map[string]any{"input": "hi"}, Req: llm.Request{Model: "m"}, Res: res, Client: srv.Client()}
+
+	p, err := Prepare(context.Background(), call)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Contains(p.material.Values, password) || !slices.Contains(p.material.Values, "gwuser") {
+		t.Fatalf("credential material must name the URL userinfo: %v", p.material.Values)
+	}
+
+	sink := &captureSink{}
+	ctx := llm.WithAPIAttemptSink(llm.WithAPIAttemptGroup(context.Background(), llm.NewAPIAttemptGroup("ag_userinfo")), sink)
+	if err := Do(ctx, call, func(*Result) (*llm.Response, error) { return nil, nil }); err != nil {
+		t.Fatal(err)
+	}
+	llm.WaitForPriorAPIAttempts(ctx)
+	if len(sink.attempts) != 1 {
+		t.Fatalf("attempts = %d", len(sink.attempts))
+	}
+	raw, err := json.Marshal(sink.attempts[0])
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(raw), password) {
+		t.Fatalf("URL password leaked into the attempt record: %s", raw)
 	}
 }

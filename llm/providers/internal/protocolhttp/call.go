@@ -131,8 +131,9 @@ func authHeaderName(res registry.Resolved) string {
 
 // credentialMaterial names every header that carries a credential and
 // every value that must never reach a log: the resolved credential, the
-// credential headers, and the value the authenticator wrote (a Codex or
-// ADC bearer token is not res.Credential.Value).
+// credential headers, the value the authenticator wrote (a Codex or ADC
+// bearer token is not res.Credential.Value), and any userinfo the base URL
+// carries, as llm.BuildAPILogCredentialMaterial does for the adapters.
 func credentialMaterial(res registry.Resolved, httpReq *http.Request) llm.APILogCredentialMaterial {
 	header := authHeaderName(res)
 	names := []string{header}
@@ -145,6 +146,12 @@ func credentialMaterial(res registry.Resolved, httpReq *http.Request) llm.APILog
 	for name, value := range res.CredentialHeaders {
 		names = append(names, name)
 		values = append(values, value)
+	}
+	if httpReq != nil && httpReq.URL != nil && httpReq.URL.User != nil {
+		values = append(values, httpReq.URL.User.Username())
+		if password, ok := httpReq.URL.User.Password(); ok {
+			values = append(values, password)
+		}
 	}
 	return llm.NewAPILogCredentialMaterial(names, nil, values...)
 }
