@@ -415,19 +415,11 @@ function assertModelRefMatchesKey(
 }
 
 export function putThreadModel(ref: string, model: ThreadModel): void {
-  const state = threadsStore.getState();
-  const previous = state.threads.get(ref);
-  assertModelRefMatchesKey(ref, model, false, previous);
-  putThreadModelIndex(threadsIndex, previous, model);
-  threadsStore.setState({ threads: new Map(state.threads).set(ref, model) });
+  putThreadModels(ref, model, undefined);
 }
 
 function putWatchedThreadModel(ref: string, model: ThreadModel): void {
-  const state = threadsStore.getState();
-  const previous = state.watchedThreads.get(ref);
-  assertModelRefMatchesKey(ref, model, true, previous);
-  putThreadModelIndex(watchedThreadsIndex, previous, model);
-  threadsStore.setState({ watchedThreads: new Map(state.watchedThreads).set(ref, model) });
+  putThreadModels(ref, undefined, model);
 }
 
 // putThreadModels is the dual-map variant the combined actions use: the SAME
