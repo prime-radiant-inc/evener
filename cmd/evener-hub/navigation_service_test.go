@@ -1465,6 +1465,18 @@ func (s *perCaptureRetitleSource) Capture(ctx context.Context, generation string
 	return s.inner.Capture(ctx, generation, now)
 }
 
+// captureCountingSource counts Capture calls for pacing assertions.
+type captureCountingSource struct {
+	inner    navigationSource
+	captures *atomic.Int64
+}
+
+func (c *captureCountingSource) Revision() navigationSourceRevision { return c.inner.Revision() }
+func (c *captureCountingSource) Capture(ctx context.Context, generation string, now time.Time) (navigationSourceSnapshot, error) {
+	c.captures.Add(1)
+	return c.inner.Capture(ctx, generation, now)
+}
+
 func TestNavigationServiceStartRetriesFailedForcedRefreshWithoutWaitingForBoundary(t *testing.T) {
 	now := time.Unix(1_700_000_000, 0).UTC()
 	source := newTestNavigationSource(now)
@@ -1473,9 +1485,11 @@ func TestNavigationServiceStartRetriesFailedForcedRefreshWithoutWaitingForBounda
 	// boundary elapses.
 	source.nextBoundary = now.Add(24 * time.Hour)
 	retitling := &perCaptureRetitleSource{inner: source}
+	var attempts atomic.Int64
+	counted := &captureCountingSource{inner: retitling, captures: &attempts}
 	created := make(chan *fakeNavigationTimer, 16)
 	service := newTestNavigationService(t, source, func(cfg *navigationServiceConfig) {
-		cfg.Source = retitling
+		cfg.Source = counted
 		cfg.RetryAfter = 10 * time.Millisecond
 		// A clock anchored at the frozen base but advancing in real time, so
 		// the failed refresh's retry deadline actually elapses.
@@ -1556,10 +1570,12 @@ func TestNavigationServiceStartRetriesFailedForcedRefreshWithoutWaitingForBounda
 	case <-time.After(time.Second):
 		t.Fatal("scheduler did not stop after retry")
 	}
-	// The retry was paced by the retryAfter window: with RetryAfter=10ms
-	// and the one-second wait budgets above, a spin (the pre-fix hot loop)
-	// would have completed many failed attempts inside those windows; the
-	// paced retry completes exactly one.
+	// The retry was paced by the retryAfter window: the failed-phase
+	// attempt count (captured by the counting wrapper below) stays small.
+	// A spin — the pre-fix hot loop — burned ~50 attempts per 500ms.
+	if n := attempts.Load(); n > 8 {
+		t.Fatalf("capture attempts = %d during the failed phase, want a paced handful", n)
+	}
 }
 
 func TestNavigationSnapshotBoundaryUsesNearest24HourOr14DayCutover(t *testing.T) {

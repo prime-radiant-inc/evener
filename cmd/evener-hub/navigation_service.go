@@ -246,6 +246,11 @@ func (s *NavigationService) Invalidate(hint navigationChangeHint) {
 	s.pendingHint = mergeNavigationChangeHints(s.pendingHint, hint)
 	s.pendingInvalidation = true
 	s.pendingEpoch++
+	// A fresh invalidation resets any failed-refresh pacing: the new attempt
+	// is a first try for this epoch, not a retry, and must not inherit the
+	// older failure's deadline. (Persistent failure re-arms a fresh deadline
+	// on its own next failure.)
+	s.pendingRetryAt = time.Time{}
 	s.mu.Unlock()
 	select {
 	case s.wake <- struct{}{}:
@@ -1158,7 +1163,8 @@ func (s *NavigationService) refreshPending(ctx context.Context) {
 	s.mu.Lock()
 	// Clear only the exact pending epoch consumed by this flight. A same-value
 	// invalidation racing after commit still advances the epoch and remains
-	// pending for a subsequent forced capture.
+	// pending for a subsequent forced capture — and, like any fresh
+	// invalidation, must not inherit this flight's failure pacing.
 	if s.pendingEpoch == epoch {
 		s.pendingHint = navigationChangeHint{}
 		s.pendingInvalidation = false
