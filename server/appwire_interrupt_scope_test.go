@@ -13,10 +13,9 @@ import (
 // the session is running, so naming a turn is not something a client has to do,
 // and a client that cannot name one is entitled to the same answer.
 //
-// The preconditions that name a real object stay required and are asserted here
-// too, because dropping the turn id must not drop them: drainAsSteer still needs
-// the queue revision it is compare-and-swapping, and promoteQueuedAsSteer still
-// needs the entry it is promoting.
+// The instance fence remains required even though these controls do not name a
+// turn: it prevents an old-generation intent from following a stable ref onto a
+// replacement session. Drain and promote also retain their object preconditions.
 func TestServerAppWireControlNeedsNoTurnID(t *testing.T) {
 	srv := NewServer(ServerConfig{})
 	srv.SetAppIdentity("local", "th_1")
@@ -62,20 +61,20 @@ func TestServerAppWireControlNeedsNoTurnID(t *testing.T) {
 		landed func() int
 	}{
 		{"steer", 2, appwire.MethodTurnSteer, appwire.TurnSteerParams{
-			ClientMutationID: "cm-steer", Ref: "local:th_1", Input: input,
+			ClientMutationID: "cm-steer", ExpectedInstanceID: "th_1", Ref: "local:th_1", Input: input,
 		}, func() int { return steers }},
 		{"queue", 3, appwire.MethodTurnQueue, appwire.TurnQueueParams{
-			ClientMutationID: "cm-queue", Ref: "local:th_1", Input: input,
+			ClientMutationID: "cm-queue", ExpectedInstanceID: "th_1", Ref: "local:th_1", Input: input,
 		}, func() int { return queues }},
 		{"interrupt", 4, appwire.MethodTurnInterrupt, appwire.TurnInterruptParams{
-			ClientMutationID: "cm-interrupt", Ref: "local:th_1",
+			ClientMutationID: "cm-interrupt", ExpectedInstanceID: "th_1", Ref: "local:th_1",
 		}, func() int { return len(interrupts) }},
 		{"drainAsSteer", 5, appwire.MethodTurnDrainAsSteer, appwire.TurnDrainAsSteerParams{
-			ClientMutationID: "cm-drain", Ref: "local:th_1", Input: input,
+			ClientMutationID: "cm-drain", ExpectedInstanceID: "th_1", Ref: "local:th_1", Input: input,
 			ExpectedQueueRevision: revision,
 		}, func() int { return drains }},
 		{"promoteQueuedAsSteer", 6, appwire.MethodTurnPromoteQueuedAsSteer, appwire.TurnPromoteQueuedAsSteerParams{
-			ClientMutationID: "cm-promote", Ref: "local:th_1", ExpectedEntryID: "entry_1",
+			ClientMutationID: "cm-promote", ExpectedInstanceID: "th_1", Ref: "local:th_1", ExpectedEntryID: "entry_1",
 		}, func() int { return promotes }},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -101,7 +100,7 @@ func TestServerAppWireControlNeedsNoTurnID(t *testing.T) {
 	// TestControlMutationsRequireNoTurnID covers that half.
 	t.Run("handlers refuse the preconditions that still name a real object", func(t *testing.T) {
 		if _, err := srv.handleAppTurnPromoteQueuedAsSteer(context.Background(), appwire.TurnPromoteQueuedAsSteerParams{
-			ClientMutationID: "cm-promote-direct", Ref: "local:th_1",
+			ClientMutationID: "cm-promote-direct", ExpectedInstanceID: "th_1", Ref: "local:th_1",
 		}); err == nil {
 			t.Fatal("promoteQueuedAsSteer with no expectedEntryId was accepted; the entry is what it promotes")
 		}

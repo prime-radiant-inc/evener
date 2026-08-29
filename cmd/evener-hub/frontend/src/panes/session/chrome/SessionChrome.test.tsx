@@ -21,9 +21,9 @@ import { keyID } from "../../../stores/navigation/types";
 import { resetThreadsStoreForTests, threadsStore } from "../../../stores/threads";
 import { resetTranscriptDisplayStoreForTests, transcriptDisplayStore } from "../../../stores/transcriptDisplay";
 import { makeTranscriptDisplayConfig } from "../../../transcriptDisplay/config";
+import { installMobileViewport } from "../testing/mobileViewport";
 import "../../sessionPanels";
 import { ActivityPanelBody } from "./ActivityPanel";
-import { resetGoalOverridesForTests } from "./GoalControl";
 import { SessionChrome as SessionChromeView } from "./SessionChrome";
 
 const here = dirname(fileURLToPath(import.meta.url));
@@ -155,7 +155,6 @@ beforeEach(() => {
   resetThreadsStoreForTests();
   resetWorkspaceStoreForTests();
   resetActivitySummaryStoreForTests();
-  resetGoalOverridesForTests();
   resetNavigationStoreForTests();
   resetTranscriptDisplayStoreForTests();
 });
@@ -174,19 +173,6 @@ afterEach(() => {
   resetThreadsStoreForTests();
   resetTranscriptDisplayStoreForTests();
 });
-
-function installMobileViewport(): () => void {
-  const original = window.matchMedia;
-  window.matchMedia = (() => ({
-    matches: true,
-    media: "(max-width: 899px)",
-    addEventListener() {},
-    removeEventListener() {},
-  })) as unknown as typeof window.matchMedia;
-  return () => {
-    window.matchMedia = original;
-  };
-}
 
 // Wave 5 T1 carved this slot as an empty placeholder ("renders nothing (T1
 // placeholder - T5 fills this in)"); this file supersedes that pin now that
@@ -390,7 +376,7 @@ test("mobile Session actions opens the full Verbosity bottom Sheet", async () =>
   }
 });
 
-test("menu Tasks item toggles the sessionTasks workspace pane on desktop", async () => {
+test("menu Tasks item toggles the sessionTasks workspace pane open and closed on desktop", async () => {
   const user = userEvent.setup();
   const fake = connectFakeClient();
   fake.on("thread/read", () => readResponse("ref_a"));
@@ -401,6 +387,10 @@ test("menu Tasks item toggles the sessionTasks workspace pane on desktop", async
   await user.click(screen.getByRole("menuitem", { name: /Tasks/ }));
 
   expect(isPaneOpen(workspaceStore.getState(), "sessionTasks", { ref: "ref_a" })).toBe(true);
+
+  await user.click(screen.getByRole("button", { name: /session actions/i }));
+  await user.click(screen.getByRole("menuitem", { name: /Tasks/ }));
+  expect(isPaneOpen(workspaceStore.getState(), "sessionTasks", { ref: "ref_a" })).toBe(false);
 });
 
 test("menu offers Pin/Archive/Delete when the session is in the tree; omits them otherwise", async () => {

@@ -65,9 +65,9 @@ func parityResumeFixture(t *testing.T, register func(daemon *appserver.Server)) 
 	return cfg, sessionID, &calls
 }
 
-// TestHubRPCThreadClearRejectsPastThreadWithoutResume proves the v2 clear
-// removal is enforced before an exited session can be resumed.
-func TestHubRPCThreadClearRejectsPastThreadWithoutResume(t *testing.T) {
+// TestHubRPCThreadClearResumesPastThread proves clear can act on a cold local
+// session through the same managed resume path as the other session actions.
+func TestHubRPCThreadClearResumesPastThread(t *testing.T) {
 	var sessionID string
 	clearCalled := false
 	cfg, sid, resumeCalls := parityResumeFixture(t, func(daemon *appserver.Server) {
@@ -78,6 +78,7 @@ func TestHubRPCThreadClearRejectsPastThreadWithoutResume(t *testing.T) {
 				Source:    "local",
 				Evener: appwire.EvenerThread{
 					Ref:          params.Ref,
+					InstanceID:   sessionID,
 					Capabilities: appwire.ThreadCapabilities{Clear: true},
 				},
 			}}, nil
@@ -99,14 +100,18 @@ func TestHubRPCThreadClearRejectsPastThreadWithoutResume(t *testing.T) {
 	if _, err := client.Initialize(context.Background(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
 		t.Fatalf("Initialize: %v", err)
 	}
-	if _, err := client.ThreadClear(context.Background(), appwire.ThreadClearParams{Ref: "local:" + sessionID}); err == nil {
-		t.Fatal("ThreadClear succeeded; want unsupported")
+	response, err := client.ThreadClear(context.Background(), appwire.ThreadClearParams{Ref: "local:" + sessionID, ClientMutationID: "clear-past", ExpectedInstanceID: sessionID})
+	if err != nil {
+		t.Fatalf("ThreadClear: %v", err)
 	}
-	if *resumeCalls != 0 {
-		t.Fatalf("resume calls=%d, want 0", *resumeCalls)
+	if response.Ref != "local:"+sessionID {
+		t.Fatalf("ThreadClear ref=%q, want local:%s", response.Ref, sessionID)
 	}
-	if clearCalled {
-		t.Fatal("clear was routed to the daemon")
+	if *resumeCalls != 1 {
+		t.Fatalf("resume calls=%d, want 1", *resumeCalls)
+	}
+	if !clearCalled {
+		t.Fatal("clear was not routed to the resumed daemon")
 	}
 }
 
@@ -343,22 +348,22 @@ func TestHubRPCTurnControlsDoNotResumeExitedSession(t *testing.T) {
 		call func(*appwire.Client) error
 	}{
 		{"steer", func(c *appwire.Client) error {
-			return c.TurnSteer(ctx, appwire.TurnSteerParams{ClientMutationID: "test-mutation", Ref: ref, Input: []appwire.InputItem{{Type: "text", Text: "x"}}})
+			return c.TurnSteer(ctx, appwire.TurnSteerParams{ClientMutationID: "test-mutation", ExpectedInstanceID: sessionID, Ref: ref, Input: []appwire.InputItem{{Type: "text", Text: "x"}}})
 		}},
 		{"interrupt", func(c *appwire.Client) error {
-			return c.TurnInterrupt(ctx, appwire.TurnInterruptParams{ClientMutationID: "test-mutation", Ref: ref})
+			return c.TurnInterrupt(ctx, appwire.TurnInterruptParams{ClientMutationID: "test-mutation", ExpectedInstanceID: sessionID, Ref: ref})
 		}},
 		{"queue", func(c *appwire.Client) error {
-			return c.TurnQueue(ctx, appwire.TurnQueueParams{ClientMutationID: "test-mutation", Ref: ref, Input: []appwire.InputItem{{Type: "text", Text: "x"}}})
+			return c.TurnQueue(ctx, appwire.TurnQueueParams{ClientMutationID: "test-mutation", ExpectedInstanceID: sessionID, Ref: ref, Input: []appwire.InputItem{{Type: "text", Text: "x"}}})
 		}},
 		{"drainAsSteer", func(c *appwire.Client) error {
-			return c.TurnDrainAsSteer(ctx, appwire.TurnDrainAsSteerParams{ClientMutationID: "test-mutation", ExpectedQueueRevision: 0, Ref: ref, Input: []appwire.InputItem{{Type: "text", Text: "x"}}})
+			return c.TurnDrainAsSteer(ctx, appwire.TurnDrainAsSteerParams{ClientMutationID: "test-mutation", ExpectedInstanceID: sessionID, ExpectedQueueRevision: 0, Ref: ref, Input: []appwire.InputItem{{Type: "text", Text: "x"}}})
 		}},
 		{"promoteQueuedAsSteer", func(c *appwire.Client) error {
-			return c.TurnPromoteQueuedAsSteer(ctx, appwire.TurnPromoteQueuedAsSteerParams{ClientMutationID: "test-mutation", ExpectedEntryID: "test-entry", Ref: ref, Index: 0})
+			return c.TurnPromoteQueuedAsSteer(ctx, appwire.TurnPromoteQueuedAsSteerParams{ClientMutationID: "test-mutation", ExpectedInstanceID: sessionID, ExpectedEntryID: "test-entry", Ref: ref, Index: 0})
 		}},
 		{"cancelQueued", func(c *appwire.Client) error {
-			_, err := c.TurnCancelQueued(ctx, appwire.TurnCancelQueuedParams{ClientMutationID: "test-mutation", ExpectedEntryID: "test-entry", Ref: ref, Index: 0})
+			_, err := c.TurnCancelQueued(ctx, appwire.TurnCancelQueuedParams{ClientMutationID: "test-mutation", ExpectedInstanceID: sessionID, ExpectedEntryID: "test-entry", Ref: ref, Index: 0})
 			return err
 		}},
 	}

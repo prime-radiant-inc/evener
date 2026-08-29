@@ -188,6 +188,10 @@ type Session struct {
 	//   detachedProcesses. It
 	//   does NOT guard reg — the tool.Registry self-synchronizes.
 	mu sync.Mutex
+	// goalUpdateMu serializes each goal-store mutation with the GOAL_UPDATED event
+	// that announces it. It is always acquired before mu; emit runs after mu is
+	// released, so observers see mutation order without event emission under mu.
+	goalUpdateMu sync.Mutex
 
 	// --- native worktree occupancy (spec §7) ---
 	//

@@ -2,6 +2,7 @@
 // ThinkBlock.tsx for the component that consumes these.
 
 import { Marked, type Token, type Tokens } from "marked";
+import { pendingTextJoined } from "../../../../protocol/reducer";
 
 // Reuse the app's existing Markdown tokenizer so nested links, block prefixes,
 // and emphasis are handled as syntax rather than accumulated regex cases.
@@ -15,9 +16,15 @@ const ISO_TIMESTAMP = /^(\d{4}|[+-]\d{6})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2}
 // whitespace-only) - "empty thoughts removed" per the wave-4 T2 scope, at
 // both the whole-item level (settle finds zero paragraphs -> render
 // nothing, see ThinkBlock) and the per-paragraph level.
+//
+// Each per-summary join goes through pendingTextJoined (protocol/reducer.ts):
+// live chunk views carry a brand-cached join text, so a per-render read over a
+// view is O(1) rather than the O(n) element-by-element Proxy walk this path
+// used to pay on every render of a streaming think block. Plain arrays (tests,
+// hydrate) fall back to a plain join inside the same helper.
 export function joinedReasoningParagraphs(summaries: string[][] | undefined): string[] {
   if (!summaries) return [];
-  return summaries.map((chunks) => chunks.join("")).filter((text) => text.trim() !== "");
+  return summaries.map((chunks) => pendingTextJoined(chunks)).filter((text) => text.trim() !== "");
 }
 
 // thoughtDurationMs computes elapsed milliseconds from two REAL ISO timestamps

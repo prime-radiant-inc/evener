@@ -33,7 +33,22 @@ type SessionStartData struct {
 	// agent.SessionAwaiting) reaches the wire instead of an assumed idle. A
 	// fresh session always starts idle and leaves this empty; downstream
 	// consumers already default an empty/unrecognized value to idle.
-	State string `json:"state,omitempty"`
+	State                   string               `json:"state,omitempty"`
+	CurrentWork             *CurrentWorkSeedData `json:"current_work,omitempty"`
+	TaskStoreOwnerSessionID string               `json:"task_store_owner_session_id,omitempty"`
+	// TaskPublicationEpoch identifies the process-local TaskStore incarnation;
+	// TaskPublicationRevision orders its snapshots. Both are in-process routing
+	// metadata and never enter event JSON.
+	TaskPublicationEpoch    uint64 `json:"-"`
+	TaskPublicationRevision uint64 `json:"-"`
+}
+
+// CurrentWorkSeedData is the self-contained task and goal state carried at
+// session start. A nil seed means unknown; within a present seed, nil Goal is
+// an authoritative clear and nil Tasks means task state is unavailable.
+type CurrentWorkSeedData struct {
+	Tasks *TaskStateData `json:"tasks,omitempty"`
+	Goal  *GoalStateData `json:"goal"`
 }
 
 // SessionEndData is the payload for an EventSessionEnd event.
@@ -426,12 +441,33 @@ type QueueChangedData struct {
 	Texts             []string `json:"texts,omitempty"`
 }
 
+// TaskSummaryData is the current task summary carried by a TaskUpdatedData
+// snapshot. It deliberately exposes only enough state for a status row.
+type TaskSummaryData struct {
+	ID          int    `json:"id"`
+	Description string `json:"description"`
+}
+
+// TaskStateData is an authoritative task-list progress snapshot.
+type TaskStateData struct {
+	Total   int              `json:"total"`
+	Done    int              `json:"done"`
+	Current *TaskSummaryData `json:"current,omitempty"`
+}
+
 // TaskUpdatedData is the payload for an EventTaskUpdated event: the current
 // task-list progress after an append or status change, so subscribers refresh
 // the task-status row without re-polling.
 type TaskUpdatedData struct {
-	Total int `json:"total"`
-	Done  int `json:"done"`
+	Total                   int              `json:"total"`
+	Done                    int              `json:"done"`
+	Current                 *TaskSummaryData `json:"current,omitempty"`
+	TaskStoreOwnerSessionID string           `json:"task_store_owner_session_id,omitempty"`
+	// TaskPublicationEpoch and TaskPublicationRevision are internal ordering
+	// metadata assigned by the shared TaskStore publication serializer. They never
+	// enter event JSON.
+	TaskPublicationEpoch    uint64 `json:"-"`
+	TaskPublicationRevision uint64 `json:"-"`
 }
 
 // SessionNameChangedData is the payload for an EventSessionNameChanged event.
@@ -740,6 +776,19 @@ type GoalEndedData struct {
 	Status     string `json:"status"`
 	Reason     string `json:"reason,omitempty"`
 	Iterations int    `json:"iterations"`
+}
+
+// GoalStateData is the complete client-facing state of a session goal.
+type GoalStateData struct {
+	Objective  string `json:"objective"`
+	Status     string `json:"status"`
+	Iterations int    `json:"iterations"`
+}
+
+// GoalUpdatedData is the payload for EventGoalUpdated. Goal is deliberately
+// not omitempty: nil is an explicit clear and must serialize as "goal":null.
+type GoalUpdatedData struct {
+	Goal *GoalStateData `json:"goal"`
 }
 
 // TurnEndedData is the payload for an EventTurnEnded event.

@@ -17,9 +17,12 @@ jobs:
     if: github.ref_type != 'tag'
     runs-on: ubuntu-latest
     steps:
+      # Depth 1 suffices: snapshot mode's version template reads the commit
+      # from HEAD (ShortCommit) and no changelog is generated. The tag release
+      # job keeps a full clone for its own template needs.
       - uses: actions/checkout@v7
         with:
-          fetch-depth: 0
+          fetch-depth: 1
 
       - uses: ./.github/actions/setup-toolchain
 
@@ -32,7 +35,9 @@ jobs:
           BUILD_CHANNEL: snapshot
 
       - name: Inspect archives
-        run: for f in dist/*.tar.gz; do echo "== $f"; tar -tzf "$f"; done
+        run: |
+          for f in dist/*.tar.gz; do echo "== $f"; tar -tzf "$f"; done
+          test -s dist/checksums.txt
 
       - name: Upload archives
         uses: actions/upload-artifact@v7

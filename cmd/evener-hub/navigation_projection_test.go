@@ -91,6 +91,26 @@ func TestNavigationProjectionRejectsMalformedIdentity(t *testing.T) {
 	}
 }
 
+func TestNavigationProjectionUsesStableTreeNodeRef(t *testing.T) {
+	projection, err := buildNavigationProjection(navigationBuildInputs{
+		GenerationID: "generation",
+		Tree: hubcore.Tree{Live: []hubcore.TreeNode{{
+			ID: "new-instance", Ref: "local:old-instance", Title: "session", Kind: "session", State: "idle",
+		}}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	page := projection.LivePage(0, 50)
+	if len(page.Sessions) != 1 || page.Sessions[0].Ref != "local:old-instance" {
+		t.Fatalf("live page = %#v, want stable ref", page.Sessions)
+	}
+	location, ok := projection.Location("local:old-instance")
+	if !ok || location.Session == nil || location.Session.Ref != "local:old-instance" {
+		t.Fatalf("location = %#v, found=%v, want stable ref", location, ok)
+	}
+}
+
 func TestNavigationBoundsLimitRowsCatalogAndStrings(t *testing.T) {
 	live := make([]hubcore.TreeNode, 51)
 	projects := make([]hubcore.TreeProject, 101)

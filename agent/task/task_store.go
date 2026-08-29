@@ -8,11 +8,14 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/spf13/afero"
 	"primeradiant.com/evener/llm"
 )
+
+var nextPublicationEpoch atomic.Uint64
 
 // TaskTemplate defines a default task in an agent's workflow. When a session
 // starts from such an agent, its templates seed the initial task list.
@@ -109,6 +112,30 @@ type TaskUpdateSnapshot struct {
 	After  []Task
 }
 
+// ListSummary is the transport-neutral progress and current-work view of a task
+// list. Current is an owned copy and may be mutated independently of the input.
+type ListSummary struct {
+	Total   int
+	Done    int
+	Current *Task
+}
+
+// Summarize derives progress and the first in-progress task from one list
+// snapshot. Only done tasks count as complete.
+func Summarize(tasks []Task) ListSummary {
+	summary := ListSummary{Total: len(tasks)}
+	for i := range tasks {
+		if tasks[i].Status == TaskDone {
+			summary.Done++
+		}
+		if summary.Current == nil && tasks[i].Status == TaskInProgress {
+			current := cloneTasks(tasks[i : i+1])[0]
+			summary.Current = &current
+		}
+	}
+	return summary
+}
+
 func cloneTime(value *time.Time) *time.Time {
 	if value == nil {
 		return nil
@@ -139,23 +166,49 @@ func cloneTasks(tasks []Task) []Task {
 
 // TaskStore manages a persistent list of tasks stored as JSON.
 type TaskStore struct {
-	mu     sync.Mutex
-	tasks  []Task
-	nextID int
-	path   string
-	now    func() time.Time
-	fs     afero.Fs
+	mu                    sync.Mutex
+	mutationPublicationMu sync.Mutex
+	publicationEpoch      uint64
+	publicationRevision   uint64
+	tasks                 []Task
+	nextID                int
+	path                  string
+	now                   func() time.Time
+	fs                    afero.Fs
+	// beforeMutationPublicationWait is a deterministic contention seam for the
+	// shared-producer ordering test. Production leaves it nil.
+	beforeMutationPublicationWait func()
 }
 
 // NewTaskStore creates a TaskStore that persists to <stateDir>/tasks/<sessionID>.json.
 // Each session (parent or subagent) gets its own task file, ensuring isolation.
 func NewTaskStore(stateDir, sessionID string) *TaskStore {
 	return &TaskStore{
-		nextID: 1,
-		path:   filepath.Join(stateDir, "tasks", sessionID+".json"),
-		now:    time.Now,
-		fs:     afero.NewOsFs(),
+		publicationEpoch: nextPublicationEpoch.Add(1),
+		nextID:           1,
+		path:             filepath.Join(stateDir, "tasks", sessionID+".json"),
+		now:              time.Now,
+		fs:               afero.NewOsFs(),
 	}
+}
+
+// MutateAndPublish serializes one logical mutation through publication of the
+// resulting state. The serializer belongs to the store so sessions sharing one
+// TaskStore also share publication order. epoch identifies this process-local
+// TaskStore incarnation; revision is monotonic within it. Both are internal
+// routing metadata, and failed publications may leave safe revision gaps. The
+// store's data mutex remains scoped to individual data operations inside fn and
+// is never held by this method.
+func (s *TaskStore) MutateAndPublish(fn func(epoch, revision uint64) error) error {
+	if !s.mutationPublicationMu.TryLock() {
+		if s.beforeMutationPublicationWait != nil {
+			s.beforeMutationPublicationWait()
+		}
+		s.mutationPublicationMu.Lock()
+	}
+	defer s.mutationPublicationMu.Unlock()
+	s.publicationRevision++
+	return fn(s.publicationEpoch, s.publicationRevision)
 }
 
 // SetClock overrides the store's time source. Used by tests for deterministic
@@ -398,13 +451,8 @@ func (s *TaskStore) Progress() (total, done int) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	total = len(s.tasks)
-	for _, t := range s.tasks {
-		if t.Status == TaskDone {
-			done++
-		}
-	}
-	return total, done
+	summary := Summarize(s.tasks)
+	return summary.Total, summary.Done
 }
 
 // NextEligible returns open tasks whose dependencies are all satisfied
@@ -449,10 +497,9 @@ func (s *TaskStore) CurrentInProgress() (Task, bool) {
 // currentInProgressLocked returns the first task with status in_progress, if
 // any. Callers must hold s.mu.
 func (s *TaskStore) currentInProgressLocked() (Task, bool) {
-	for _, t := range s.tasks {
-		if t.Status == TaskInProgress {
-			return t, true
-		}
+	summary := Summarize(s.tasks)
+	if summary.Current != nil {
+		return *summary.Current, true
 	}
 	return Task{}, false
 }

@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"reflect"
 	"testing"
 	"time"
 )
@@ -381,7 +382,51 @@ func TestUpdate_DoubleInProgress_DoesNotBlameATaskTheBatchResolves(t *testing.T)
 	}
 }
 
-func TestProgressCountsOnlyDone(t *testing.T) {
+func TestSummarizeCountsDoneAndSelectsFirstInProgress(t *testing.T) {
+	tasks := []Task{
+		{ID: 1, Status: TaskDone, Description: "done"},
+		{ID: 2, Status: TaskInProgress, Description: "first current"},
+		{ID: 3, Status: TaskInProgress, Description: "later current"},
+		{ID: 4, Status: TaskCancelled, Description: "cancelled"},
+		{ID: 5, Status: TaskOpen, Description: "open"},
+	}
+
+	summary := Summarize(tasks)
+	if summary.Total != 5 || summary.Done != 1 {
+		t.Fatalf("Summarize = %+v, want Total=5 Done=1", summary)
+	}
+	if summary.Current == nil || summary.Current.ID != 2 || summary.Current.Description != "first current" {
+		t.Fatalf("Summarize Current = %+v, want task 2 first current", summary.Current)
+	}
+}
+
+func TestSummarizeReturnsOwnedCurrentTask(t *testing.T) {
+	tasks := []Task{{
+		ID:          7,
+		Description: "original",
+		Status:      TaskInProgress,
+		DependsOn:   []int{1, 2},
+		Notes:       []string{"original note"},
+	}}
+
+	summary := Summarize(tasks)
+	tasks[0].Description = "mutated"
+	tasks[0].DependsOn[0] = 99
+	tasks[0].Notes[0] = "mutated note"
+
+	want := &Task{
+		ID:          7,
+		Description: "original",
+		Status:      TaskInProgress,
+		DependsOn:   []int{1, 2},
+		Notes:       []string{"original note"},
+	}
+	if !reflect.DeepEqual(summary.Current, want) {
+		t.Fatalf("Summarize Current = %+v after input mutation, want owned copy %+v", summary.Current, want)
+	}
+}
+
+func TestTaskStore_ProgressCountsOnlyDone(t *testing.T) {
 	s := newTestStore(t)
 	added, _ := s.Append([]TaskInput{{Description: "a"}, {Description: "b"}, {Description: "c"}})
 	_ = s.Update([]TaskUpdate{{ID: added[0].ID, Status: TaskDone}})
@@ -389,6 +434,10 @@ func TestProgressCountsOnlyDone(t *testing.T) {
 	total, done := s.Progress()
 	if total != 3 || done != 1 {
 		t.Errorf("Progress = (%d,%d), want (3,1) — cancelled is not done", total, done)
+	}
+	summary := Summarize(s.View())
+	if total != summary.Total || done != summary.Done {
+		t.Errorf("Progress = (%d,%d), Summarize = (%d,%d)", total, done, summary.Total, summary.Done)
 	}
 }
 
@@ -412,7 +461,7 @@ func TestNextEligible_GatedByDependencies(t *testing.T) {
 	}
 }
 
-func TestCurrentInProgress(t *testing.T) {
+func TestTaskStore_CurrentInProgress(t *testing.T) {
 	s := newTestStore(t)
 	added, _ := s.Append([]TaskInput{{Description: "a"}, {Description: "b"}})
 	if _, ok := s.CurrentInProgress(); ok {
@@ -422,6 +471,10 @@ func TestCurrentInProgress(t *testing.T) {
 	cur, ok := s.CurrentInProgress()
 	if !ok || cur.ID != added[1].ID {
 		t.Errorf("CurrentInProgress = (%+v,%v), want task %d", cur, ok, added[1].ID)
+	}
+	summary := Summarize(s.View())
+	if summary.Current == nil || !reflect.DeepEqual(cur, *summary.Current) {
+		t.Errorf("CurrentInProgress = %+v, Summarize Current = %+v", cur, summary.Current)
 	}
 }
 

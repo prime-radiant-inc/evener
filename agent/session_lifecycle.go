@@ -508,14 +508,8 @@ const (
 	runNoToolCalls
 )
 
-// routeNoToolCalls decides the no-tool-calls route for a round from the input
-// kind, whether the round had no content, and whether a terminal communicate
-// (end_turn under TurnEndsProcess) has already been accepted. It is pure and
-// total over EntryKind: a non-empty notification turn finishes idle, and once
-// the model has explicitly ended the process-ending turn an EMPTY notification
-// turn does too — the retry budget's "please continue" steering must not
-// resurrect a run the model already declared over (issue #329,
-// sanitize-git-repo). Everything else routes through the retry budget.
+// routeNoToolCalls lets notification acknowledgements finish idle. After a
+// terminal communicate, notification silence must not resurrect the run (#329).
 func routeNoToolCalls(kind EntryKind, noContent bool, afterTerminalCommunicate bool) noCallsRoute {
 	if kind == EntryNotification && (!noContent || afterTerminalCommunicate) {
 		return finishIdle
@@ -1029,6 +1023,15 @@ func (s *Session) processInputKindWithProvenance(ctx context.Context, input stri
 	}
 }
 
+func delegateEntryRequiresReport(kind EntryKind) bool {
+	switch kind {
+	case EntryUserInput, EntryContinuation, EntrySteeringCarrier:
+		return true
+	default:
+		return false
+	}
+}
+
 func (s *Session) processOneInput(ctx context.Context, input string, images []ImageAttachment, kind EntryKind, inputProvenance *provenance.Causal) (out string, progressed bool, err error) {
 	communicatePreviewCalls := map[string]struct{}{}
 	defer func() {
@@ -1234,6 +1237,13 @@ func (s *Session) processOneInput(ctx context.Context, input string, images []Im
 	} else if err := s.acceptUserInput(ctx, input, images, inputProvenance, kind == EntryUserInput); err != nil {
 		return "", false, err
 	}
+	if delegateEntryRequiresReport(kind) && s.delegateController != nil {
+		if lease, ok := ctx.Value(delegateRunLeaseContextKey{}).(delegateLease); ok {
+			if err := s.delegateController.escalateCompletionRequirement(lease); err != nil {
+				return "", false, err
+			}
+		}
+	}
 
 	var toolSigs []string
 	var toolSigFailed []bool
@@ -1379,7 +1389,20 @@ func (s *Session) processOneInput(ctx context.Context, input string, images []Im
 			// empty-retry path below — EXCEPT after a terminal communicate, where
 			// silence means "nothing to add to a finished run" and retrying would
 			// resurrect it (issue #329).
-			if routeNoToolCalls(kind, noContent, s.hasAcceptedTerminalCommunicate()) == finishIdle {
+			if kind == EntryDelegateAttention && !noContent && s.delegateController != nil {
+				if lease, ok := ctx.Value(delegateRunLeaseContextKey{}).(delegateLease); ok {
+					allowDelegateNoAction, recordErr := s.delegateController.recordAttentionNoAction(lease)
+					if recordErr != nil {
+						return "", progressed, recordErr
+					}
+					if allowDelegateNoAction {
+						s.finishProcessingAtBoundary(ctx, SessionIdle)
+						return "", progressed, nil
+					}
+				}
+			}
+			route := routeNoToolCalls(kind, noContent, s.hasAcceptedTerminalCommunicate())
+			if route == finishIdle {
 				s.finishProcessingAtBoundary(ctx, SessionIdle)
 				return "", progressed, nil
 			}

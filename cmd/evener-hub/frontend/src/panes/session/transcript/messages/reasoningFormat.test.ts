@@ -1,5 +1,8 @@
 // @vitest-environment node
 import { expect, test } from "vitest";
+import { applyNotification, chunkViewBackingForTests } from "../../../../protocol/reducer";
+import { buildFloodChunks, hydrateFloodModel } from "../../../../protocol/testing/tokenFlood";
+import type { AnyNotification } from "../../../../protocol/types.gen";
 import {
   formatThoughtDuration,
   joinedReasoningParagraphs,
@@ -41,6 +44,88 @@ test("drops a paragraph whose chunks join to all-whitespace", () => {
 
 test("all paragraphs empty yields an empty array (the whole thought is empty)", () => {
   expect(joinedReasoningParagraphs([[], ["   "]])).toEqual([]);
+});
+
+// --- joinedReasoningParagraphs over LIVE chunk views -------------------------
+// The reducer accumulates reasoning deltas into brand-carrying chunk views
+// (protocol/reducer.ts's appendChunk/appendReasoningDelta), so a streaming
+// think block hands this function view arrays, not plain ones. These pin the
+// contract the O(1) rerouting relies on: joining live views must return text
+// IDENTICAL to joining the same chunks as plain arrays, in every summary slot.
+
+// Folds a reasoning item up through `counts.length` summary indices, each fed
+// its own list of deltas, exactly the way the live wire would (item/started
+// then one item/reasoning/summaryTextDelta per chunk). Returns the model so
+// callers can read the item's reasoningSummaries straight out of the fold.
+function foldLiveReasoning(deltas: string[][]): { summaries: string[][] | undefined } {
+  let model = hydrateFloodModel("ref_t");
+  const threadId = "thr_ref_t";
+  const ref = "ref_t";
+  const turnId = "turn_1";
+  const itemId = "item_r";
+  model = applyNotification(
+    model,
+    {
+      method: "turn/started",
+      params: { threadId, ref, turn: { id: turnId, status: "inProgress", itemsView: "" } },
+    } as AnyNotification,
+    1001,
+  );
+  model = applyNotification(
+    model,
+    {
+      method: "item/started",
+      params: { threadId, ref, turnId, item: { type: "reasoning", id: itemId, turnId, status: "inProgress" } },
+    } as AnyNotification,
+    1002,
+  );
+  let now = 1003;
+  for (const [summaryIndex, chunks] of deltas.entries()) {
+    for (const delta of chunks) {
+      now += 1;
+      model = applyNotification(
+        model,
+        {
+          method: "item/reasoning/summaryTextDelta",
+          params: { threadId, ref, turnId, itemId, summaryIndex, delta },
+        } as AnyNotification,
+        now,
+      );
+    }
+  }
+  // Locate the reasoning item the fold produced (turn 0, item 0).
+  const turn = model.turns[0];
+  const item = turn?.items[0];
+  return { summaries: item?.reasoningSummaries };
+}
+
+test("joinedReasoningParagraphs over live chunk views returns the same paragraphs as plain-array joins", () => {
+  // Fixture: deterministic chunk lists in the live wire's observed size range
+  // (2..40 chars, the token-flood harness's own bounds).
+  const deltas = [buildFloodChunks(12, 7), buildFloodChunks(9, 11), buildFloodChunks(1, 13)];
+  const { summaries } = foldLiveReasoning(deltas);
+  expect(summaries).toBeDefined();
+  // The fold really produced views, not plain arrays (otherwise this test
+  // would silently stop exercising the cache path it exists to pin).
+  for (const chunks of summaries ?? []) {
+    expect(chunkViewBackingForTests(chunks ?? [])).toBeDefined();
+  }
+  // The paragraphs joined from views are IDENTICAL to plain-array joins of
+  // the same chunk contents, summary slot by summary slot.
+  const expected = (summaries ?? []).map((chunks) => (chunks ?? []).join(""));
+  expect(joinedReasoningParagraphs(summaries)).toEqual(expected);
+});
+
+test("joinedReasoningParagraphs drops empty live-view paragraphs exactly like plain ones", () => {
+  // Second summary joins to whitespace-only, so only the first survives -
+  // the same empty-thoughts rule the plain-array tests above pin, held to the
+  // view path. Plain counterpart: the same chunk CONTENTS as plain arrays.
+  const deltas = [buildFloodChunks(5, 3), ["  ", "\n", "\t"]];
+  const { summaries } = foldLiveReasoning(deltas);
+  expect(summaries).toBeDefined();
+  const plain = (summaries ?? []).map((chunks) => [...(chunks ?? [])]);
+  expect(joinedReasoningParagraphs(plain)).toEqual(joinedReasoningParagraphs(summaries));
+  expect(joinedReasoningParagraphs(summaries)).toHaveLength(1);
 });
 
 // --- thoughtDurationMs -------------------------------------------------------

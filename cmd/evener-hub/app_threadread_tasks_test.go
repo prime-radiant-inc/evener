@@ -2,6 +2,7 @@ package hub
 
 import (
 	"context"
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"testing"
@@ -52,6 +53,53 @@ func TestPastThreadReadProjectsPersistedTaskAggregate(t *testing.T) {
 	}
 }
 
+func TestPastThreadReadProjectsFirstInProgressTask(t *testing.T) {
+	cfg, sessionID, stateDir := seedPastSessionWithTasks(t, []task.TaskInput{
+		{Type: task.TaskTypeImplement, Description: "first current", Prompt: "one"},
+		{Type: task.TaskTypeVerify, Description: "second current", Prompt: "two"},
+	})
+	store := task.NewTaskStore(stateDir, sessionID)
+	if err := store.Load(); err != nil {
+		t.Fatalf("load persisted tasks: %v", err)
+	}
+	items := store.View()
+	for i := range items {
+		items[i].Status = task.TaskInProgress
+	}
+	data, err := json.Marshal(items)
+	if err != nil {
+		t.Fatalf("marshal persisted tasks: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(stateDir, "tasks", sessionID+".json"), data, 0o644); err != nil {
+		t.Fatalf("write persisted tasks: %v", err)
+	}
+
+	thread, ok, err := pastThreadForRead(cfg, appwire.ThreadReadParams{Ref: "local:" + sessionID})
+	if err != nil || !ok {
+		t.Fatalf("pastThreadForRead: found=%v err=%v", ok, err)
+	}
+	if thread.Evener.Tasks == nil || thread.Evener.Tasks.Current == nil || thread.Evener.Tasks.Current.ID != 1 || thread.Evener.Tasks.Current.Description != "first current" {
+		t.Fatalf("persisted current task = %+v, want first in-progress task", thread.Evener.Tasks)
+	}
+}
+
+func TestPastThreadReadProjectsPersistedGoal(t *testing.T) {
+	cfg, sessionID, _ := seedPastSessionWithTasks(t, nil)
+	entry, ok := cfg.Past.Find(sessionID)
+	if !ok {
+		t.Fatal("past entry not found")
+	}
+	entry.Meta.Goal = &schema.GoalSnapshot{Objective: "past goal objective", Status: "active", Iterations: 2}
+
+	thread, err := pastEntryThread(cfg, entry, false)
+	if err != nil {
+		t.Fatalf("pastEntryThread: %v", err)
+	}
+	if thread.Evener.Goal == nil || thread.Evener.Goal.Objective != "past goal objective" || thread.Evener.Goal.Status != "active" || thread.Evener.Goal.Iterations != 2 {
+		t.Fatalf("persisted goal = %+v, want objective/status/iterations", thread.Evener.Goal)
+	}
+}
+
 func TestPastThreadReadTaskAggregatePreservesAbsentAndZero(t *testing.T) {
 	t.Run("missing task file is unknown", func(t *testing.T) {
 		cfg, sessionID, _ := seedPastSessionWithTasks(t, nil)
@@ -82,7 +130,9 @@ func TestTaskAggregateMalformedPersistedStoreMatchesLiveAndColdUnknown(t *testin
 	workDir := t.TempDir()
 	client := llm.NewClient()
 	client.Register(taskAggregateScriptedAdapter{})
-	sess, err := agent.NewSession(client, provider.NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(workDir), agent.SessionConfig{
+	profile := provider.NewOpenAIProfile("gpt-5.2")
+	environment := execenv.NewLocalExecutionEnvironment(workDir)
+	sess, err := agent.NewSession(client, profile, environment, agent.SessionConfig{
 		StateDir:         stateDir,
 		NoProjectPrompts: true,
 	})
@@ -92,11 +142,17 @@ func TestTaskAggregateMalformedPersistedStoreMatchesLiveAndColdUnknown(t *testin
 	t.Cleanup(func() { sess.Close() })
 
 	tasksPath := filepath.Join(stateDir, "tasks", sess.ID()+".json")
+	meta := sess.Meta()
+	sess.Close()
 	if err := os.MkdirAll(filepath.Dir(tasksPath), 0o755); err != nil {
 		t.Fatalf("mkdir task store: %v", err)
 	}
 	if err := os.WriteFile(tasksPath, []byte("{malformed task JSON"), 0o644); err != nil {
 		t.Fatalf("write malformed task store: %v", err)
+	}
+	sess, err = agent.RestoreSessionFromMeta(client, profile, environment, meta, stateDir)
+	if err != nil {
+		t.Fatalf("restore session with malformed task store: %v", err)
 	}
 	if _, err := sess.TasksWithError(); err == nil {
 		t.Fatal("malformed task store load unexpectedly succeeded")
@@ -148,7 +204,6 @@ func (s sessionTaskEnvelopeSource) DetailedStatus() server.DetailedStatus {
 }
 func (s sessionTaskEnvelopeSource) AskPending() bool                        { return false }
 func (s sessionTaskEnvelopeSource) SessionMeta() schema.SessionMeta         { return schema.SessionMeta{} }
-func (s sessionTaskEnvelopeSource) GoalStatus() (string, int, bool)         { return "", 0, false }
 func (s sessionTaskEnvelopeSource) FailedToolCalls() (int, bool)            { return 0, false }
 func (s sessionTaskEnvelopeSource) ReasoningInfo() (string, []string, bool) { return "", nil, false }
 func (s sessionTaskEnvelopeSource) VisionModel() string                     { return "" }
@@ -169,11 +224,10 @@ func (s sessionTaskEnvelopeSource) TaskAggregate() *appwire.TaskAggregate {
 	if err != nil {
 		return nil
 	}
-	done := 0
-	for _, item := range tasks {
-		if item.Status == task.TaskDone {
-			done++
-		}
+	summary := task.Summarize(tasks)
+	aggregate := &appwire.TaskAggregate{Total: summary.Total, Done: summary.Done}
+	if summary.Current != nil {
+		aggregate.Current = &appwire.TaskSummary{ID: summary.Current.ID, Description: summary.Current.Description}
 	}
-	return &appwire.TaskAggregate{Total: len(tasks), Done: done}
+	return aggregate
 }

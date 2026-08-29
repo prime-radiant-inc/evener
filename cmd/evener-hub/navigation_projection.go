@@ -416,7 +416,7 @@ func validateNavigationNodesContext(ctx context.Context, rows []hubcore.TreeNode
 		if err := ctx.Err(); err != nil {
 			return err
 		}
-		if _, err := navigationRef(node.ID); err != nil {
+		if _, err := navigationNodeRef(node); err != nil {
 			return err
 		}
 		if err := validateNavigationNodesContext(ctx, node.Children); err != nil {
@@ -457,6 +457,13 @@ func navigationRef(id string) (hubapi.Ref, error) {
 		return hubapi.Ref{}, fmt.Errorf("navigation ref exceeds %d bytes", maxNavigationIdentityBytes)
 	}
 	return ref, nil
+}
+
+func navigationNodeRef(node hubcore.TreeNode) (hubapi.Ref, error) {
+	if node.Ref != "" {
+		return navigationRef(node.Ref)
+	}
+	return navigationRef(node.ID)
 }
 
 func (p navigationProjection) Manifest() hubapi.NavigationManifest {
@@ -844,7 +851,7 @@ func (p navigationProjection) buildPinSectionsContext(ctx context.Context) ([]na
 		if err := ctx.Err(); err != nil {
 			return nil, err
 		}
-		ref, err := navigationRef(node.ID)
+		ref, err := navigationNodeRef(node)
 		if err != nil {
 			continue
 		}
@@ -875,8 +882,8 @@ func (p navigationProjection) buildPinSectionsContext(ctx context.Context) ([]na
 			if !leftNode.UpdatedAt.Equal(rightNode.UpdatedAt) {
 				return leftNode.UpdatedAt.After(rightNode.UpdatedAt)
 			}
-			leftRef, _ := navigationRef(leftNode.ID)
-			rightRef, _ := navigationRef(rightNode.ID)
+			leftRef, _ := navigationNodeRef(leftNode)
+			rightRef, _ := navigationNodeRef(rightNode)
 			if leftRef.String() != rightRef.String() {
 				return leftRef.String() < rightRef.String()
 			}
@@ -931,11 +938,11 @@ func (p navigationProjection) indexLocationNodeContext(ctx context.Context, node
 	if err := ctx.Err(); err != nil {
 		return err
 	}
-	ref, err := navigationRef(node.ID)
+	ref, err := navigationNodeRef(node)
 	if err != nil {
 		return err
 	}
-	rootRef, err := navigationRef(root.ID)
+	rootRef, err := navigationNodeRef(root)
 	if err != nil {
 		return err
 	}
@@ -1023,7 +1030,7 @@ func (p *navigationProjector) projectNode(node hubcore.TreeNode, depth int) (hub
 }
 
 func (p navigationProjector) projectShallow(node hubcore.TreeNode) hubapi.NavigationSessionSummary {
-	ref, _ := navigationRef(node.ID)
+	ref, _ := navigationNodeRef(node)
 	updated := node.UpdatedAt
 	var updatedAt *time.Time
 	if !updated.IsZero() {

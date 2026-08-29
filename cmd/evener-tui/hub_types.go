@@ -59,6 +59,7 @@ type hubSessionCapabilities struct {
 type hubSessionDetail struct {
 	Ref         string
 	SessionID   string
+	InstanceID  string
 	SourceLabel string
 	Title       string
 	State       string
@@ -262,6 +263,7 @@ func hubDetailFromThread(thread appwire.Thread) hubSessionDetail {
 	return hubSessionDetail{
 		Ref:                   node.Ref,
 		SessionID:             thread.SessionID,
+		InstanceID:            thread.Evener.InstanceID,
 		SourceLabel:           node.SourceLabel,
 		Title:                 node.Title,
 		State:                 node.State,

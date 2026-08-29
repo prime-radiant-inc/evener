@@ -71,9 +71,10 @@ func TestE2E_QueuedInputRunsWhileAQuestionIsPending(t *testing.T) {
 
 	const queuedText = "EVENER-E2E-QUEUED-UNDER-ASK"
 	receipt, err := clientRequest[appwire.TurnQueueResponse](ctx, client, appwire.MethodTurnQueue, appwire.TurnQueueParams{
-		Ref:              ref,
-		ClientMutationID: newMutationID(t),
-		Input:            []appwire.InputItem{{Type: "text", Text: queuedText}},
+		Ref:                ref,
+		ClientMutationID:   newMutationID(t),
+		ExpectedInstanceID: localInstanceIDForTestRef(ref),
+		Input:              []appwire.InputItem{{Type: "text", Text: queuedText}},
 	})
 	if err != nil {
 		t.Fatalf("turn/queue against a session holding a question: %v", err)

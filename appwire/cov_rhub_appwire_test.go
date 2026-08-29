@@ -175,8 +175,8 @@ func TestClientRequestWrappersRoundTrip(t *testing.T) {
 			}
 			return nil
 		}},
-		{"ThreadClear", MethodThreadClear, `{"ref":"local:th"}`, ThreadClearResponse{Ref: "local:th"}, func(ctx context.Context, c *Client) error {
-			out, err := c.ThreadClear(ctx, ThreadClearParams{Ref: "local:th"})
+		{"ThreadClear", MethodThreadClear, `{"ref":"local:th","clientMutationId":"cm_clear","expectedInstanceId":"instance_1"}`, ThreadClearResponse{Ref: "local:th"}, func(ctx context.Context, c *Client) error {
+			out, err := c.ThreadClear(ctx, ThreadClearParams{Ref: "local:th", ClientMutationID: "cm_clear", ExpectedInstanceID: "instance_1"})
 			if err != nil {
 				return err
 			}
@@ -235,8 +235,8 @@ func TestClientRequestWrappersRoundTrip(t *testing.T) {
 			}
 			return nil
 		}},
-		{"TurnInterrupt", MethodTurnInterrupt, `{"ref":"local:th","clientMutationId":"cm_interrupt"}`, EmptyResponse{}, func(ctx context.Context, c *Client) error {
-			return c.TurnInterrupt(ctx, TurnInterruptParams{Ref: "local:th", ClientMutationID: "cm_interrupt"})
+		{"TurnInterrupt", MethodTurnInterrupt, `{"ref":"local:th","clientMutationId":"cm_interrupt","expectedInstanceId":"instance_1"}`, EmptyResponse{}, func(ctx context.Context, c *Client) error {
+			return c.TurnInterrupt(ctx, TurnInterruptParams{Ref: "local:th", ClientMutationID: "cm_interrupt", ExpectedInstanceID: "instance_1"})
 		}},
 		{"TasksList", MethodEvenerTasksList, `{"ref":"local:th"}`, TaskListResponse{Data: []map[string]any{{
 			"id": 5, "type": "implement", "description": "Wire up the status row",
@@ -424,27 +424,27 @@ func TestClientRequestWrappersRoundTrip(t *testing.T) {
 		{"ThreadNameSet", MethodEvenerThreadNameSet, `{"ref":"local:th","name":"renamed"}`, EmptyResponse{}, func(ctx context.Context, c *Client) error {
 			return c.ThreadNameSet(ctx, ThreadNameSetParams{Ref: "local:th", Name: "renamed"})
 		}},
-		{"TurnStart", MethodTurnStart, `{"ref":"local:th","clientMutationId":"cm_start","input":[{"type":"text","text":"hello"}]}`, TurnStartResponse{}, func(ctx context.Context, c *Client) error {
-			_, err := c.TurnStart(ctx, TurnStartParams{Ref: "local:th", ClientMutationID: "cm_start", Input: []InputItem{{Type: "text", Text: "hello"}}})
+		{"TurnStart", MethodTurnStart, `{"ref":"local:th","clientMutationId":"cm_start","expectedInstanceId":"instance_1","input":[{"type":"text","text":"hello"}]}`, TurnStartResponse{}, func(ctx context.Context, c *Client) error {
+			_, err := c.TurnStart(ctx, TurnStartParams{Ref: "local:th", ClientMutationID: "cm_start", ExpectedInstanceID: "instance_1", Input: []InputItem{{Type: "text", Text: "hello"}}})
 			return err
 		}},
-		{"TurnSteer", MethodTurnSteer, `{"ref":"local:th","clientMutationId":"cm_steer","input":[{"type":"text","text":"steer"}]}`, EmptyResponse{}, func(ctx context.Context, c *Client) error {
-			return c.TurnSteer(ctx, TurnSteerParams{Ref: "local:th", ClientMutationID: "cm_steer", Input: []InputItem{{Type: "text", Text: "steer"}}})
+		{"TurnSteer", MethodTurnSteer, `{"ref":"local:th","clientMutationId":"cm_steer","expectedInstanceId":"instance_1","input":[{"type":"text","text":"steer"}]}`, EmptyResponse{}, func(ctx context.Context, c *Client) error {
+			return c.TurnSteer(ctx, TurnSteerParams{Ref: "local:th", ClientMutationID: "cm_steer", ExpectedInstanceID: "instance_1", Input: []InputItem{{Type: "text", Text: "steer"}}})
 		}},
-		{"TurnQueue", MethodTurnQueue, `{"ref":"local:th","clientMutationId":"cm_queue","input":[{"type":"text","text":"queued"}]}`, EmptyResponse{}, func(ctx context.Context, c *Client) error {
-			return c.TurnQueue(ctx, TurnQueueParams{Ref: "local:th", ClientMutationID: "cm_queue", Input: []InputItem{{Type: "text", Text: "queued"}}})
+		{"TurnQueue", MethodTurnQueue, `{"ref":"local:th","clientMutationId":"cm_queue","expectedInstanceId":"instance_1","input":[{"type":"text","text":"queued"}]}`, EmptyResponse{}, func(ctx context.Context, c *Client) error {
+			return c.TurnQueue(ctx, TurnQueueParams{Ref: "local:th", ClientMutationID: "cm_queue", ExpectedInstanceID: "instance_1", Input: []InputItem{{Type: "text", Text: "queued"}}})
 		}},
-		{"TurnDrain", MethodTurnDrainAsSteer, `{"ref":"local:th","clientMutationId":"cm_drain","expectedQueueRevision":7}`, EmptyResponse{}, func(ctx context.Context, c *Client) error {
-			return c.TurnDrainAsSteer(ctx, TurnDrainAsSteerParams{Ref: "local:th", ClientMutationID: "cm_drain", ExpectedQueueRevision: 7})
+		{"TurnDrain", MethodTurnDrainAsSteer, `{"ref":"local:th","clientMutationId":"cm_drain","expectedInstanceId":"instance_1","expectedQueueRevision":7}`, EmptyResponse{}, func(ctx context.Context, c *Client) error {
+			return c.TurnDrainAsSteer(ctx, TurnDrainAsSteerParams{Ref: "local:th", ClientMutationID: "cm_drain", ExpectedInstanceID: "instance_1", ExpectedQueueRevision: 7})
 		}},
-		{"TurnPromoteQueuedAsSteer", MethodTurnPromoteQueuedAsSteer, `{"ref":"local:th","index":2,"clientMutationId":"cm_promote","expectedEntryId":"qe_1"}`, EmptyResponse{}, func(ctx context.Context, c *Client) error {
+		{"TurnPromoteQueuedAsSteer", MethodTurnPromoteQueuedAsSteer, `{"ref":"local:th","index":2,"clientMutationId":"cm_promote","expectedInstanceId":"instance_1","expectedEntryId":"qe_1"}`, EmptyResponse{}, func(ctx context.Context, c *Client) error {
 			return c.TurnPromoteQueuedAsSteer(ctx, TurnPromoteQueuedAsSteerParams{
-				Ref: "local:th", Index: 2, ClientMutationID: "cm_promote", ExpectedEntryID: "qe_1",
+				Ref: "local:th", Index: 2, ClientMutationID: "cm_promote", ExpectedInstanceID: "instance_1", ExpectedEntryID: "qe_1",
 			})
 		}},
-		{"TurnCancelQueued", MethodTurnCancelQueued, `{"ref":"local:th","index":1,"clientMutationId":"cm_cancel","expectedEntryId":"qe_2"}`, TurnCancelQueuedResponse{}, func(ctx context.Context, c *Client) error {
+		{"TurnCancelQueued", MethodTurnCancelQueued, `{"ref":"local:th","index":1,"clientMutationId":"cm_cancel","expectedInstanceId":"instance_1","expectedEntryId":"qe_2"}`, TurnCancelQueuedResponse{}, func(ctx context.Context, c *Client) error {
 			_, err := c.TurnCancelQueued(ctx, TurnCancelQueuedParams{
-				Ref: "local:th", Index: 1, ClientMutationID: "cm_cancel", ExpectedEntryID: "qe_2",
+				Ref: "local:th", Index: 1, ClientMutationID: "cm_cancel", ExpectedInstanceID: "instance_1", ExpectedEntryID: "qe_2",
 			})
 			return err
 		}},

@@ -17,6 +17,7 @@ import (
 	"primeradiant.com/evener/agent/execenv"
 	"primeradiant.com/evener/agent/provider"
 	"primeradiant.com/evener/agent/schema"
+	taskpkg "primeradiant.com/evener/agent/task"
 	"primeradiant.com/evener/appwire"
 	"primeradiant.com/evener/cmd/evener/internal/rvreg"
 	"primeradiant.com/evener/cmdutil"
@@ -49,7 +50,7 @@ type residualServeServer struct {
 	tasks          func() any
 	jobs           func(appwire.JobsListParams) (any, error)
 	jobOutput      func(string, int64, int64) (any, bool, error)
-	clear          func(context.Context) error
+	clear          func(context.Context, appwire.ThreadClearParams) error
 	shutdown       func()
 }
 
@@ -96,8 +97,10 @@ func (s *residualServeServer) SetJobsFunc(f func(appwire.JobsListParams) (any, e
 func (s *residualServeServer) SetJobOutputFunc(f func(string, int64, int64) (any, bool, error)) {
 	s.jobOutput = f
 }
-func (s *residualServeServer) SetClearFunc(f func(context.Context) error) { s.clear = f }
-func (s *residualServeServer) SetShutdownFunc(f func())                   { s.shutdown = f }
+func (s *residualServeServer) SetClearFunc(f func(context.Context, appwire.ThreadClearParams) error) {
+	s.clear = f
+}
+func (s *residualServeServer) SetShutdownFunc(f func()) { s.shutdown = f }
 
 func exerciseResidualCallbacks(s *residualServeServer, sessionID string) {
 	ctx := context.Background()
@@ -119,7 +122,6 @@ func exerciseResidualCallbacks(s *residualServeServer, sessionID string) {
 	_ = s.envelopeSource.DetailedStatus()
 	_, _ = s.envelopeSource.ClientMutationProjection()
 	_ = s.envelopeSource.TaskAggregate()
-	_, _, _ = s.envelopeSource.GoalStatus()
 	_, _, _ = s.envelopeSource.WorkMetrics()
 	_, _ = s.envelopeSource.FailedToolCalls()
 	_ = s.envelopeSource.AskPending()
@@ -134,6 +136,34 @@ func exerciseResidualCallbacks(s *residualServeServer, sessionID string) {
 	_ = s.tasks()
 	_, _ = s.jobs(appwire.JobsListParams{Ref: "local:" + sessionID})
 	_, _, _ = s.jobOutput("job_1", 0, 1024)
+}
+
+type residualTaskEnvelopeSampling struct {
+	agent.EnvelopeSampling
+	tasks []taskpkg.Task
+}
+
+func (s residualTaskEnvelopeSampling) TasksWithError() ([]taskpkg.Task, error) {
+	return s.tasks, nil
+}
+
+func TestLiveThreadEnvelopeTaskAggregateProjectsTaskSummary(t *testing.T) {
+	sample := residualTaskEnvelopeSampling{tasks: []taskpkg.Task{
+		{ID: 1, Description: "done", Status: taskpkg.TaskDone},
+		{ID: 2, Description: "first current", Status: taskpkg.TaskInProgress},
+		{ID: 3, Description: "later current", Status: taskpkg.TaskInProgress},
+		{ID: 4, Description: "open", Status: taskpkg.TaskOpen},
+	}}
+
+	got := (liveThreadEnvelopeSource{session: func() agent.EnvelopeSampling { return sample }}).TaskAggregate()
+	want := &appwire.TaskAggregate{
+		Total:   4,
+		Done:    1,
+		Current: &appwire.TaskSummary{ID: 2, Description: "first current"},
+	}
+	if got == nil || got.Total != want.Total || got.Done != want.Done || got.Current == nil || *got.Current != *want.Current {
+		t.Fatalf("live task aggregate = %+v, want %+v", got, want)
+	}
 }
 
 func TestRunServeResidualCoverage(t *testing.T) {
@@ -270,7 +300,7 @@ func TestRunServeResidualCoverage(t *testing.T) {
 			captured.input <- server.InputMessage{Text: "hello", Kind: agent.EntryUserInput}
 			close(captured.input)
 			time.Sleep(20 * time.Millisecond)
-			_ = captured.clear(context.Background())
+			_ = captured.clear(context.Background(), appwire.ThreadClearParams{Ref: "local:" + sessionID, ClientMutationID: "clear", ExpectedInstanceID: sessionID})
 			captured.shutdown()
 			return http.ErrServerClosed
 		}
@@ -310,12 +340,12 @@ func TestRunServeResidualCoverage(t *testing.T) {
 		{"clear prepare error", func(d *serveDeps) {
 			prepare := d.prepareAppIdentity
 			calls := 0
-			d.prepareAppIdentity = func(sourceID, threadID, transcriptPath string) (server.PreparedAppIdentity, error) {
+			d.prepareAppIdentity = func(sourceID, threadID, ref, transcriptPath string) (server.PreparedAppIdentity, error) {
 				calls++
 				if calls > 1 {
 					return server.PreparedAppIdentity{}, boom
 				}
-				return prepare(sourceID, threadID, transcriptPath)
+				return prepare(sourceID, threadID, ref, transcriptPath)
 			}
 		}},
 		{"clear rendezvous error", func(d *serveDeps) { d.updateSessionID = func(*rvreg.Registration, string) error { return boom } }},
@@ -329,7 +359,8 @@ func TestRunServeResidualCoverage(t *testing.T) {
 			}
 			clearCase.mutate(&d)
 			d.serveHTTP = func(*http.Server, net.Listener) error {
-				_ = captured.clear(context.Background())
+				sessionID := captured.GetStatus().SessionID
+				_ = captured.clear(context.Background(), appwire.ThreadClearParams{Ref: "local:" + sessionID, ClientMutationID: "clear", ExpectedInstanceID: sessionID})
 				captured.shutdown()
 				return http.ErrServerClosed
 			}

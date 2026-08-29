@@ -22,6 +22,7 @@ import type {
   QueueState,
   Thread,
   ThreadCapabilities,
+  ThreadClearResponse,
   ThreadReadResponse,
   ThreadStatus,
   ThreadTurnsListResponse,
@@ -113,8 +114,9 @@ type TestThreadOverrides = Omit<Partial<Thread>, "evener"> & {
 
 function testThread(ref: string, overrides: TestThreadOverrides = {}): Thread {
   const { evener, ...threadOverrides } = overrides;
+  const threadID = threadOverrides.id ?? `thr_${ref}`;
   return {
-    id: `thr_${ref}`,
+    id: threadID,
     sessionId: `sess_${ref}`,
     preview: "test",
     ephemeral: false,
@@ -125,7 +127,13 @@ function testThread(ref: string, overrides: TestThreadOverrides = {}): Thread {
     cwd: "/tmp/project",
     cliVersion: "1.0.0",
     source: "evener",
-    evener: { ref, capabilities: CAPABILITIES, ...evener, queue: { revision: 0, ...evener?.queue } },
+    evener: {
+      ref,
+      instanceId: threadID,
+      capabilities: CAPABILITIES,
+      ...evener,
+      queue: { revision: 0, ...evener?.queue },
+    },
     ...threadOverrides,
   };
 }
@@ -141,6 +149,20 @@ function readResponse(ref: string, overrides: TestThreadOverrides = {}): ThreadR
 function readResponseWithId(ref: string, threadId: string, overrides: TestThreadOverrides = {}): ThreadReadResponse {
   const base = readResponse(ref, overrides);
   return { thread: { ...base.thread, id: threadId } };
+}
+
+function clearResponse(params: { clientMutationId: string }, thread: Thread): ThreadClearResponse {
+  return {
+    thread,
+    ref: thread.evener.ref,
+    receipt: {
+      clientMutationId: params.clientMutationId,
+      disposition: "applied",
+      threadId: thread.id,
+      instanceId: thread.evener.instanceId,
+      projectionState: "reflected",
+    },
+  };
 }
 
 // A pending hydration's notification buffer only ever matters in one window:
@@ -1712,7 +1734,7 @@ describe("useThreadsStore.ensureThread", () => {
       if (readCount === 1) return readResponse("ref_a");
       return new Promise<ThreadReadResponse>((resolve) => resyncReads.push(resolve));
     });
-    fake.on("thread/clear", () => ({ thread: testThread("ref_a", { id: "thr_cleared" }), ref: "ref_a" }));
+    fake.on("thread/clear", (params) => clearResponse(params, testThread("ref_a", { id: "thr_cleared", turns: [] })));
 
     await threadsStore.getState().ensureThread("ref_a");
     expect(threadsStore.getState().threads.get("ref_a")?.threadId).toBe("thr_ref_a");
@@ -3846,6 +3868,7 @@ describe("useThreadsStore.steer / queue / interrupt", () => {
     expect(call?.params).toEqual({
       ref: "ref_a",
       clientMutationId: expect.any(String),
+      expectedInstanceId: "thr_ref_a",
       input: [{ type: "text", text: "steer text" }],
     });
   });
@@ -3864,6 +3887,7 @@ describe("useThreadsStore.steer / queue / interrupt", () => {
     expect(call?.params).toEqual({
       ref: "ref_a",
       clientMutationId: expect.any(String),
+      expectedInstanceId: "thr_ref_a",
       input: [
         { type: "text", text: "steer text" },
         { type: "image", mediaType: "image/png", data: "aGVsbG8=" },
@@ -3888,6 +3912,7 @@ describe("useThreadsStore.steer / queue / interrupt", () => {
     expect(call?.params).toEqual({
       ref: "ref_a",
       clientMutationId: expect.any(String),
+      expectedInstanceId: "thr_ref_a",
     });
   });
 
@@ -3910,6 +3935,7 @@ describe("useThreadsStore.steer / queue / interrupt", () => {
     expect(call?.params).toEqual({
       ref: "ref_a",
       clientMutationId: expect.any(String),
+      expectedInstanceId: "thr_ref_a",
     });
   });
 
@@ -3925,6 +3951,7 @@ describe("useThreadsStore.steer / queue / interrupt", () => {
     expect(call?.params).toEqual({
       ref: "ref_a",
       clientMutationId: expect.any(String),
+      expectedInstanceId: "thr_ref_a",
       input: [{ type: "text", text: "queued text" }],
     });
   });
@@ -3981,6 +4008,7 @@ describe("useThreadsStore.drainAsSteer", () => {
     expect(call?.params).toEqual({
       ref: "ref_a",
       clientMutationId: expect.any(String),
+      expectedInstanceId: "thr_ref_a",
       expectedQueueRevision: 7,
       input: [
         { type: "text", text: "drain text" },
@@ -4001,6 +4029,7 @@ describe("useThreadsStore.drainAsSteer", () => {
     expect(call?.params).toEqual({
       ref: "ref_a",
       clientMutationId: expect.any(String),
+      expectedInstanceId: "thr_ref_a",
       expectedQueueRevision: 7,
       input: [],
     });
@@ -4021,6 +4050,7 @@ describe("useThreadsStore.promoteQueuedAsSteer / cancelQueued", () => {
       ref: "ref_a",
       index: 1,
       clientMutationId: expect.any(String),
+      expectedInstanceId: "thr_ref_a",
       expectedEntryId: "entry_2",
     });
   });
@@ -4086,15 +4116,235 @@ describe("useThreadsStore session actions (setModel/setReasoningEffort/setGoal/r
     expect(call?.params).toEqual({ ref: "ref_a", reasoningEffort: "high" });
   });
 
-  test("setGoal sends goal/set with {ref, objective} and returns {started}", async () => {
+  test("setGoal sends goal/set and commits the successful result to the tracked model", async () => {
     const fake = connectFakeClient();
     fake.on("goal/set", () => ({ started: true }));
+
+    threadsStore.setState({
+      threads: new Map([["ref_a", hydrateThread(readResponse("ref_a"), "ref_a", 1000)]]),
+    });
 
     const result = await threadsStore.getState().setGoal("ref_a", "ship wave 5");
 
     const call = fake.calls.find((c) => c.method === "goal/set");
     expect(call?.params).toEqual({ ref: "ref_a", objective: "ship wave 5" });
     expect(result).toEqual({ started: true });
+    expect(threadsStore.getState().threads.get("ref_a")?.goal).toEqual({
+      objective: "ship wave 5",
+      status: "active",
+      iterations: 0,
+    });
+
+    await threadsStore.getState().setGoal("ref_a", "");
+    expect(threadsStore.getState().threads.get("ref_a")?.goal).toBeNull();
+  });
+
+  test("setGoal does not overwrite a newer accepted goal notification in either tracked map", async () => {
+    const fake = connectFakeClient();
+    let resolveSetGoal: (response: { started: boolean }) => void = () => {
+      throw new Error("goal/set handler was not reached");
+    };
+    const requestReachedHandler = nextHandledRequest(
+      fake,
+      "goal/set",
+      () =>
+        new Promise((resolve) => {
+          resolveSetGoal = resolve;
+        }),
+    );
+
+    const model = hydrateThread(readResponse("ref_a"), "ref_a", 1000);
+    threadsStore.setState({
+      threads: new Map([["ref_a", model]]),
+      watchedThreads: new Map([["ref_a", model]]),
+    });
+
+    const pending = threadsStore.getState().setGoal("ref_a", "local objective");
+    await requestReachedHandler;
+
+    const pushedGoal = { objective: "newer pushed objective", status: "active", iterations: 4 };
+    fake.emitNotification({
+      method: "evener/goal/updated",
+      params: { threadId: model.threadId, ref: "ref_a", goal: pushedGoal },
+    });
+    expect(threadsStore.getState().threads.get("ref_a")?.goal).toEqual(pushedGoal);
+    expect(threadsStore.getState().watchedThreads.get("ref_a")?.goal).toEqual(pushedGoal);
+
+    resolveSetGoal({ started: true });
+    await pending;
+
+    expect(threadsStore.getState().threads.get("ref_a")?.goal).toEqual(pushedGoal);
+    expect(threadsStore.getState().watchedThreads.get("ref_a")?.goal).toEqual(pushedGoal);
+  });
+
+  test("setGoal does not overwrite a newer authoritative hydration", async () => {
+    const fake = connectFakeClient();
+    fake.on("thread/read", () => readResponse("ref_a"));
+    await threadsStore.getState().ensureThread("ref_a");
+    await threadsStore.getState().watchThread("ref_a");
+
+    let resolveSetGoal: (response: { started: boolean }) => void = () => {
+      throw new Error("goal/set handler was not reached");
+    };
+    const setGoalReachedHandler = nextHandledRequest(
+      fake,
+      "goal/set",
+      () =>
+        new Promise((resolve) => {
+          resolveSetGoal = resolve;
+        }),
+    );
+    const pending = threadsStore.getState().setGoal("ref_a", "local objective");
+    await setGoalReachedHandler;
+
+    const refreshReads: Array<(response: ThreadReadResponse) => void> = [];
+    let resolveRefreshReadsReached: () => void = () => {
+      throw new Error("both hydration handlers were not reached");
+    };
+    const refreshReadsReached = new Promise<void>((resolve) => {
+      resolveRefreshReadsReached = resolve;
+    });
+    fake.on(
+      "thread/read",
+      () =>
+        new Promise<ThreadReadResponse>((resolve) => {
+          refreshReads.push(resolve);
+          if (refreshReads.length === 2) resolveRefreshReadsReached();
+        }),
+    );
+    fake.emitNotification({ method: "evener/thread/resync", params: { threadId: "thr_ref_a", ref: "ref_a" } });
+    await refreshReadsReached;
+
+    const hydratedGoal = { objective: "authoritative objective", status: "active" as const, iterations: 6 };
+    const authoritativeResponse = readResponse("ref_a", {
+      evener: {
+        ref: "ref_a",
+        capabilities: CAPABILITIES,
+        queue: { revision: 0 },
+        goal: hydratedGoal,
+      },
+    });
+    for (const resolveRead of refreshReads) resolveRead(authoritativeResponse);
+    await flushUntil(
+      () =>
+        threadsStore.getState().threads.get("ref_a")?.goal?.objective === hydratedGoal.objective &&
+        threadsStore.getState().watchedThreads.get("ref_a")?.goal?.objective === hydratedGoal.objective,
+    );
+    expect(threadsStore.getState().threads.get("ref_a")?.goal).toEqual(hydratedGoal);
+    expect(threadsStore.getState().watchedThreads.get("ref_a")?.goal).toEqual(hydratedGoal);
+
+    resolveSetGoal({ started: true });
+    await pending;
+
+    expect(threadsStore.getState().threads.get("ref_a")?.goal).toEqual(hydratedGoal);
+    expect(threadsStore.getState().watchedThreads.get("ref_a")?.goal).toEqual(hydratedGoal);
+  });
+
+  test("setGoal fallback survives an unaccepted contradictory notification", async () => {
+    const fake = connectFakeClient();
+    fake.on("thread/read", () => readResponse("ref_a"));
+    await threadsStore.getState().ensureThread("ref_a");
+    await threadsStore.getState().watchThread("ref_a");
+
+    const refreshReads: Array<(response: ThreadReadResponse) => void> = [];
+    let resolveRefreshReadsReached: () => void = () => {
+      throw new Error("both hydration handlers were not reached");
+    };
+    const refreshReadsReached = new Promise<void>((resolve) => {
+      resolveRefreshReadsReached = resolve;
+    });
+    fake.on(
+      "thread/read",
+      () =>
+        new Promise<ThreadReadResponse>((resolve) => {
+          refreshReads.push(resolve);
+          if (refreshReads.length === 2) resolveRefreshReadsReached();
+        }),
+    );
+    fake.emitNotification({ method: "evener/thread/resync", params: { threadId: "thr_ref_a", ref: "ref_a" } });
+    await refreshReadsReached;
+
+    let resolveSetGoal: (response: { started: boolean }) => void = () => {
+      throw new Error("goal/set handler was not reached");
+    };
+    const requestReachedHandler = nextHandledRequest(
+      fake,
+      "goal/set",
+      () =>
+        new Promise((resolve) => {
+          resolveSetGoal = resolve;
+        }),
+    );
+
+    const pending = threadsStore.getState().setGoal("ref_a", "local objective");
+    await requestReachedHandler;
+    fake.emitNotification({
+      method: "evener/goal/updated",
+      params: {
+        threadId: "thr_conflicting",
+        ref: "ref_a",
+        goal: { objective: "contradictory objective", status: "active", iterations: 9 },
+      },
+    });
+
+    resolveSetGoal({ started: true });
+    await pending;
+
+    const fallbackGoal = { objective: "local objective", status: "active", iterations: 0 };
+    expect(threadsStore.getState().threads.get("ref_a")?.goal).toEqual(fallbackGoal);
+    expect(threadsStore.getState().watchedThreads.get("ref_a")?.goal).toEqual(fallbackGoal);
+
+    threadsStore.getState().releaseThread("ref_a");
+    threadsStore.getState().releaseWatchedThread("ref_a");
+    for (const resolveRead of refreshReads) resolveRead(readResponse("ref_a"));
+  });
+
+  test("buffered accepted goal notification invalidates a pending response fallback", async () => {
+    const fake = connectFakeClient();
+    let resolveRead: (response: ThreadReadResponse) => void = () => {
+      throw new Error("thread/read handler was not reached");
+    };
+    const readReachedHandler = nextHandledRequest(
+      fake,
+      "thread/read",
+      () =>
+        new Promise<ThreadReadResponse>((resolve) => {
+          resolveRead = resolve;
+        }),
+    );
+    const ensuring = threadsStore.getState().ensureThread("ref_a");
+    await readReachedHandler;
+
+    let resolveSetGoal: (response: { started: boolean }) => void = () => {
+      throw new Error("goal/set handler was not reached");
+    };
+    const setGoalReachedHandler = nextHandledRequest(
+      fake,
+      "goal/set",
+      () =>
+        new Promise((resolve) => {
+          resolveSetGoal = resolve;
+        }),
+    );
+    const pending = threadsStore.getState().setGoal("ref_a", "local objective");
+    await setGoalReachedHandler;
+
+    const cut = { reached: false };
+    resolveRead(markResponseCut(readResponse("ref_a"), cut));
+    const pushedGoal = { objective: "buffered pushed objective", status: "active" as const, iterations: 3 };
+    await emitAtResponseCut(cut, "ref_a", () =>
+      fake.emitNotification({
+        method: "evener/goal/updated",
+        params: { threadId: "thr_ref_a", ref: "ref_a", goal: pushedGoal },
+      }),
+    );
+    await ensuring;
+    expect(threadsStore.getState().threads.get("ref_a")?.goal).toEqual(pushedGoal);
+
+    resolveSetGoal({ started: true });
+    await pending;
+
+    expect(threadsStore.getState().threads.get("ref_a")?.goal).toEqual(pushedGoal);
   });
 
   test("rename sends evener/thread/name/set with {ref, name}", async () => {
@@ -4154,12 +4404,9 @@ describe("useThreadsStore session actions (setModel/setReasoningEffort/setGoal/r
     expect(call?.params).toEqual({ ref: "ref_a", aside: true, sourceTurnId: "" });
   });
 
-  // clearThread has no corresponding live notification (appwire/protocol.go's
-  // Notifications catalog carries no "thread cleared" entry - verified), so
-  // the response's fresh Thread snapshot is the ONLY signal the transcript
-  // is now empty; this store applies it directly rather than leaving the
-  // tracked model stale until some unrelated future notification/reconnect.
-  test("clearThread sends thread/clear with {ref} and replaces the tracked model from the response snapshot", async () => {
+  // The durable clear response is the authoritative replacement snapshot; the
+  // dispatcher applies it before settling the outbox record.
+  test("clearThread queues thread/clear with the instance fence and applies the response snapshot", async () => {
     const fake = connectFakeClient();
     fake.on("thread/read", () =>
       readResponse("ref_a", { turns: [{ id: "turn_1", status: "completed", itemsView: "full", items: [] }] }),
@@ -4167,11 +4414,15 @@ describe("useThreadsStore session actions (setModel/setReasoningEffort/setGoal/r
     await threadsStore.getState().ensureThread("ref_a");
     expect(threadsStore.getState().threads.get("ref_a")?.turns).toHaveLength(1);
 
-    fake.on("thread/clear", () => ({ thread: testThread("ref_a", { turns: [] }), ref: "ref_a" }));
+    fake.on("thread/clear", (params) => clearResponse(params, testThread("ref_a", { turns: [] })));
     await threadsStore.getState().clearThread("ref_a");
 
     const call = fake.calls.find((c) => c.method === "thread/clear");
-    expect(call?.params).toEqual({ ref: "ref_a" });
+    expect(call?.params).toEqual({
+      ref: "ref_a",
+      expectedInstanceId: "thr_ref_a",
+      clientMutationId: expect.any(String),
+    });
     expect(threadsStore.getState().threads.get("ref_a")?.turns).toEqual([]);
   });
 
@@ -4183,7 +4434,7 @@ describe("useThreadsStore session actions (setModel/setReasoningEffort/setGoal/r
     await threadsStore.getState().ensureThread("ref_a");
     await threadsStore.getState().watchThread("ref_a");
 
-    fake.on("thread/clear", () => ({ thread: testThread("ref_a", { turns: [] }), ref: "ref_a" }));
+    fake.on("thread/clear", (params) => clearResponse(params, testThread("ref_a", { turns: [] })));
     await threadsStore.getState().clearThread("ref_a");
 
     expect(threadsStore.getState().threads.get("ref_a")?.turns).toEqual([]);
@@ -4191,10 +4442,9 @@ describe("useThreadsStore session actions (setModel/setReasoningEffort/setGoal/r
   });
 
   // Dual-map atomicity (round-2 fix): thread/clear's response snapshot lands
-  // in threads and watchedThreads through ONE setState, so a synchronous
-  // subscriber between the two halves — possible while the update was two
-  // sequential puts — never sees threads cleared while watchedThreads still
-  // holds the old turns.
+  // in threads and watchedThreads through ONE setState (applyClearResponse's
+  // single patch), so a synchronous subscriber never sees threads cleared
+  // while watchedThreads still holds the old turns.
   test("clearThread replaces both maps in one setState - no synchronous subscriber sees split state", async () => {
     const fake = connectFakeClient();
     fake.on("thread/read", () =>
@@ -4203,7 +4453,7 @@ describe("useThreadsStore session actions (setModel/setReasoningEffort/setGoal/r
     await threadsStore.getState().ensureThread("ref_a");
     await threadsStore.getState().watchThread("ref_a");
 
-    fake.on("thread/clear", () => ({ thread: testThread("ref_a", { turns: [] }), ref: "ref_a" }));
+    fake.on("thread/clear", (params) => clearResponse(params, testThread("ref_a", { turns: [] })));
 
     const snapshots: { tracked: number; watched: number }[] = [];
     const unsubscribe = threadsStore.subscribe((state) => {
@@ -4225,7 +4475,7 @@ describe("useThreadsStore session actions (setModel/setReasoningEffort/setGoal/r
     expect(threadsStore.getState().watchedThreads.get("ref_a")?.turns).toEqual([]);
   });
 
-  test("clearThread propagates a rejection and leaves the tracked model untouched", async () => {
+  test("clearThread retains a transport failure for retry and leaves the tracked model untouched", async () => {
     const fake = connectFakeClient();
     fake.on("thread/read", () => readResponse("ref_a"));
     await threadsStore.getState().ensureThread("ref_a");
@@ -4234,8 +4484,11 @@ describe("useThreadsStore session actions (setModel/setReasoningEffort/setGoal/r
     });
 
     const before = threadsStore.getState().threads.get("ref_a");
-    await expect(threadsStore.getState().clearThread("ref_a")).rejects.toThrow("turn in progress");
+    await threadsStore.getState().clearThread("ref_a");
     expect(threadsStore.getState().threads.get("ref_a")).toBe(before);
+    const persistence = await readMutationPersistence("ref_a");
+    expect(persistence.outbox).toHaveLength(1);
+    expect(persistence.outbox[0]?.method).toBe("thread/clear");
   });
 
   // One representative Conflict-mapping test standing in for every

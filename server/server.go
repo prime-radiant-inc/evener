@@ -280,6 +280,7 @@ type ServerConfig struct {
 	AppReplaySize int // default: 1000
 	HubToken      string
 	AllowedHost   string
+	StateDir      string
 }
 
 // appDescendantProjection is the in-memory AppWire view of one in-process
@@ -293,7 +294,12 @@ type appDescendantProjection struct {
 	activeTurnID string
 }
 
-// Server is the HTTP server that bridges an agent.Session to REST and appwire clients.
+type taskPublicationCursor struct {
+	epoch    uint64
+	revision uint64
+}
+
+// Server is the HTTP server that bridges an agent.Session to AppWire clients.
 type Server struct {
 	mux         *http.ServeMux
 	appServer   *appserver.Server
@@ -303,8 +309,13 @@ type Server struct {
 	status         StatusInfo
 	appSourceID    string
 	appThreadID    string
+	appRef         string
 	appProjector   *appprojector.AppEventProjector
 	appDescendants map[string]*appDescendantProjection
+	// appTaskPublications is the active TaskStore incarnation and newest applied
+	// revision per owner for the current root identity. It is internal routing
+	// state and resets with that identity.
+	appTaskPublications map[string]taskPublicationCursor
 	// appTurns is the daemon's one materialized turn authority. Every turn read
 	// -- thread/read, the latest window, an older page -- clones or windows this
 	// and nothing else.
@@ -358,7 +369,10 @@ type Server struct {
 	promoteSteerFunc                func(int, string) error
 	cancelQueuedFunc                func(int, string) (string, int, error)
 	compactFunc                     func(context.Context) error
-	clearFunc                       func(context.Context) error
+	clearFunc                       func(context.Context, appwire.ThreadClearParams) error
+	clearJournalPath                string
+	clearRecords                    map[string]threadClearRecord
+	clearJournalErr                 error
 	modelFunc                       func(string) error
 	visionModelFunc                 func(string) error
 	nameFunc                        func(string)
@@ -373,11 +387,11 @@ type Server struct {
 	// waiting tool-exec goroutine. nil when no session is attached.
 	sandboxEscalationResolveFunc func(escalationID string, approve bool) error
 	processing                   bool
-	// clearing is held for the duration of one POST /clear, which is the only
-	// caller of clearFunc. It gates a clear against another clear the way
-	// processing gates one against a turn: see handleClear for why a second
-	// concurrent clear is refused rather than queued.
-	clearing bool
+	// appMutationGate serializes retry-safe turn mutations with thread/clear.
+	// A clear must not rotate the live instance while an old-generation turn
+	// callback is still admitted, and a delayed turn must not enter after clear
+	// has acquired the write side of this gate.
+	appMutationGate sync.RWMutex
 	// notifyWakeRearmed is true while a goroutine is parked on the send of a
 	// notification kick that found the input slot full. It coalesces further
 	// drops into that one parked send. See SubmitNotification.
@@ -417,7 +431,7 @@ func NewServer(cfg ServerConfig) *Server {
 				ThreadTurnsList:   true,
 				TurnStart:         true,
 				TurnSteer:         true,
-				ThreadClear:       false,
+				ThreadClear:       true,
 				ThreadShutdown:    true,
 				ForkFromTurn:      false,
 				Tasks:             true,
@@ -429,17 +443,23 @@ func NewServer(cfg ServerConfig) *Server {
 		// replay for a reconnecting subscriber. It does not bound the turn
 		// snapshot: eviction changes how far a client can catch up from
 		// deltas, never what the thread contains.
-		appNotifier:    appserver.NewNotifier(replaySize),
-		appSourceID:    "local",
-		appTurns:       &appTurnSnapshot{},
-		appDescendants: make(map[string]*appDescendantProjection),
-		inputCh:        make(chan InputMessage, 1),
-		hubToken:       strings.TrimSpace(cfg.HubToken),
-		sameOrigin:     httpguard.NewSameOriginPolicy(cfg.AllowedHost),
+		appNotifier:         appserver.NewNotifier(replaySize),
+		appSourceID:         "local",
+		appTurns:            &appTurnSnapshot{},
+		appDescendants:      make(map[string]*appDescendantProjection),
+		appTaskPublications: make(map[string]taskPublicationCursor),
+		clearJournalPath:    threadClearJournalPath(cfg.StateDir),
+		clearRecords:        make(map[string]threadClearRecord),
+		inputCh:             make(chan InputMessage, 1),
+		hubToken:            strings.TrimSpace(cfg.HubToken),
+		sameOrigin:          httpguard.NewSameOriginPolicy(cfg.AllowedHost),
+	}
+	s.clearRecords, s.clearJournalErr = loadThreadClearJournal(s.clearJournalPath)
+	if s.clearRecords == nil {
+		s.clearRecords = make(map[string]threadClearRecord)
 	}
 	s.registerAppWireHandlers()
 	s.mux.HandleFunc("/rpc", s.appServer.ServeWebSocket)
-	s.mux.HandleFunc("/clear", s.handleClear)
 	return s
 }
 
@@ -629,8 +649,10 @@ func (s *Server) SetCompactFunc(fn func(context.Context) error) {
 	s.mu.Unlock()
 }
 
-// SetClearFunc sets the function called by POST /clear.
-func (s *Server) SetClearFunc(fn func(context.Context) error) {
+// SetClearFunc sets the operation called by the typed thread/clear method.
+// The server owns mutation identity, fencing, and the durable receipt; the
+// callback only performs the session replacement.
+func (s *Server) SetClearFunc(fn func(context.Context, appwire.ThreadClearParams) error) {
 	s.mu.Lock()
 	s.clearFunc = fn
 	s.mu.Unlock()

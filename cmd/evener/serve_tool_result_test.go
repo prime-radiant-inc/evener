@@ -197,9 +197,10 @@ func runServeForegroundShellPersistenceCase(t *testing.T, mode foregroundShellSe
 		client, signals = dialServeToolResultClient(ctx, t, entry.Address, string(mode), ref)
 		defer client.Close()
 		if _, err := client.TurnStart(ctx, appwire.TurnStartParams{
-			ClientMutationID: "foreground-shell-turn",
-			Ref:              ref,
-			Input:            []appwire.InputItem{{Type: "text", Text: "run the foreground shell"}},
+			ClientMutationID:   "foreground-shell-turn",
+			ExpectedInstanceID: entry.SessionID,
+			Ref:                ref,
+			Input:              []appwire.InputItem{{Type: "text", Text: "run the foreground shell"}},
 		}); err != nil {
 			t.Fatalf("TurnStart: %v", err)
 		}
@@ -207,9 +208,10 @@ func runServeForegroundShellPersistenceCase(t *testing.T, mode foregroundShellSe
 		client, _ = dialServeToolResultClient(ctx, t, entry.Address, string(mode), ref)
 		defer client.Close()
 		if _, err := client.TurnStart(ctx, appwire.TurnStartParams{
-			ClientMutationID: "foreground-shell-no-subscriber-turn",
-			Ref:              ref,
-			Input:            []appwire.InputItem{{Type: "text", Text: "run the foreground shell"}},
+			ClientMutationID:   "foreground-shell-no-subscriber-turn",
+			ExpectedInstanceID: entry.SessionID,
+			Ref:                ref,
+			Input:              []appwire.InputItem{{Type: "text", Text: "run the foreground shell"}},
 		}); err != nil {
 			t.Fatalf("TurnStart: %v", err)
 		}

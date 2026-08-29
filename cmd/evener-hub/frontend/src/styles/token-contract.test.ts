@@ -507,11 +507,16 @@ const WIDGET_STYLESHEET_RE = /^widgets\/([a-z0-9-]+)\/\1\.module\.css$/;
 // can never match WIDGET_STYLESHEET_RE. Its one semantic reach is --danger
 // on .pickerError, the rail dialogs' inline failure text - error text is the
 // danger hue's canonical, ungateable job.
+// focus-sentence: panes/session/composer/currentwork.module.css earns the same
+// exact-path exception because it is pane content, not a widget stylesheet.
+// Its --alive ring marks an actually in-progress task, which is precisely the
+// semantic "agent working" meaning the token contract reserves for that hue.
 const SEMANTIC_PATH_EXCEPTIONS = new Set([
   "shell/rail/RailRow.module.css",
   "shell/rail/railDialog.module.css",
   "panes/session/transcript/tools/subagentmodule.module.css",
   "panes/session/composer/askDock/askdock.module.css",
+  "panes/session/composer/currentwork.module.css",
   "panes/session/transcript/tools/taskcheck.module.css",
   "panes/session/chrome/activitypanel.module.css",
   "panes/session/chrome/taskspanel.module.css",
@@ -542,6 +547,12 @@ test("the askdock.module.css semantic-var exception is scoped to its exact path,
   // widget-allowlist check, exactly like the dockview-theme.css precedent.
   expect(SEMANTIC_PATH_EXCEPTIONS.has("widgets/askdock.module.css")).toBe(false);
   expect(SEMANTIC_PATH_EXCEPTIONS.has("askdock.module.css")).toBe(false);
+});
+
+test("the currentwork.module.css semantic-var exception is scoped to its exact path", () => {
+  expect(SEMANTIC_PATH_EXCEPTIONS.has("panes/session/composer/currentwork.module.css")).toBe(true);
+  expect(SEMANTIC_PATH_EXCEPTIONS.has("widgets/currentwork/currentwork.module.css")).toBe(false);
+  expect(SEMANTIC_PATH_EXCEPTIONS.has("currentwork.module.css")).toBe(false);
 });
 
 test("the taskspanel.module.css semantic-var exception is scoped to its exact path, not just its basename", () => {

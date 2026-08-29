@@ -222,7 +222,7 @@ var hubCommandRegistry = []hubCommandDefinition{
 				m.addSessionSystem("Session ref is invalid.")
 				return nil
 			}
-			return sendHubAction(m.client, ref, "interrupt")
+			return sendHubAction(m.client, ref, "interrupt", m.detail.InstanceID)
 		},
 	},
 	{
@@ -266,7 +266,7 @@ var hubCommandRegistry = []hubCommandDefinition{
 				m.addSessionSystem("Session ref is invalid.")
 				return nil
 			}
-			return sendHubClear(m.client, ref)
+			return sendHubClear(m.client, ref, mutationInstanceID(ref, m.detail.InstanceID, m.detail.SessionID))
 		},
 	},
 	{

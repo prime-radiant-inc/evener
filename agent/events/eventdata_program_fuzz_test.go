@@ -76,7 +76,7 @@ type eventDataProgramCase struct {
 func eventDataProgramCases(text string, n int, flag bool) []eventDataProgramCase {
 	exitCode := n
 	return []eventDataProgramCase{
-		{SessionStartData{Profile: text, Model: text, Restored: flag, Turns: n}, EventSessionStart},
+		{SessionStartData{Profile: text, Model: text, Restored: flag, Turns: n, CurrentWork: &CurrentWorkSeedData{Tasks: &TaskStateData{Total: n, Done: n}, Goal: &GoalStateData{Objective: text, Status: text, Iterations: n}}, TaskStoreOwnerSessionID: text}, EventSessionStart},
 		{SessionEndData{Reason: text, State: text, Turns: n, Interrupted: flag}, EventSessionEnd},
 		{UserInputData{Text: text, Turn: n}, EventUserInput},
 		{AssistantTextStartData{Model: text}, EventAssistantTextStart},
@@ -94,7 +94,7 @@ func eventDataProgramCases(text string, n int, flag bool) []eventDataProgramCase
 		{ToolCallRepairedData{ToolName: text, CallID: text, Changes: []string{text}}, EventToolCallRepaired},
 		{SteeringInjectedData{Text: text}, EventSteeringInjected},
 		{QueueChangedData{Depth: n, Preview: []string{text}}, EventQueueChanged},
-		{TaskUpdatedData{Total: n, Done: n}, EventTaskUpdated},
+		{TaskUpdatedData{Total: n, Done: n, Current: &TaskSummaryData{ID: n, Description: text}, TaskStoreOwnerSessionID: text}, EventTaskUpdated},
 		{SessionNameChangedData{Name: text, Source: text}, EventSessionNameChanged},
 		{ModelChangedData{OldProvider: text, OldModel: text, NewProvider: text, NewModel: text, ReasoningEffortLevels: []string{text}, SupportsReasoning: flag}, EventModelChanged},
 		{ReasoningEffortChangedData{ReasoningEffort: text}, EventReasoningEffortChanged},
@@ -121,6 +121,7 @@ func eventDataProgramCases(text string, n int, flag bool) []eventDataProgramCase
 		{ModelRetryData{Attempt: n, MaxAttempts: n, Message: text, Model: text}, EventModelRetry},
 		{GoalContinuationData{Text: text}, EventGoalContinuation},
 		{GoalEndedData{Status: text, Reason: text, Iterations: n}, EventGoalEnded},
+		{GoalUpdatedData{Goal: &GoalStateData{Objective: text, Status: text, Iterations: n}}, EventGoalUpdated},
 		{SandboxEscalationRequestedData{EscalationID: text, Mode: text, Tool: text, PartiallyRan: flag}, EventSandboxEscalationRequested},
 		{SandboxEscalationResolvedData{EscalationID: text}, EventSandboxEscalationResolved},
 	}

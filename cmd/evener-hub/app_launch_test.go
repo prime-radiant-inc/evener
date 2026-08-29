@@ -31,7 +31,9 @@ func TestHubLaunchControllerSchema(t *testing.T) {
 func TestLaunchController_Resolve_Empty(t *testing.T) {
 	stateRoot := t.TempDir()
 	cwd := canonicalTempDir(t)
-	c := newHubLaunchController(stateRoot)
+	// Fixed empty env so an ambient EVENER_MODEL can never leak in and
+	// flip this assertion on a developer machine.
+	c := newHubLaunchControllerWithEnv(stateRoot, func(string) string { return "" })
 	got, err := c.Resolve(context.Background(), appwire.LaunchConfigResolveParams{CWD: cwd})
 	if err != nil {
 		t.Fatalf("Resolve: %v", err)
@@ -47,7 +49,7 @@ func TestLaunchController_Resolve_Empty(t *testing.T) {
 func TestLaunchController_SetLayer_GlobalRoundtrip(t *testing.T) {
 	stateRoot := t.TempDir()
 	cwd := canonicalTempDir(t)
-	c := newHubLaunchController(stateRoot)
+	c := newHubLaunchControllerWithEnv(stateRoot, func(string) string { return "" })
 	model := "openai/gpt-5"
 	fastCheapModel := "openai/gpt-5-mini"
 	_, err := c.SetLayer(context.Background(), appwire.LaunchConfigSetLayerParams{
@@ -73,7 +75,7 @@ func TestLaunchController_SetLayer_RejectsEnabledPlugins(t *testing.T) {
 	stateRoot := t.TempDir()
 	cwd := canonicalTempDir(t)
 	empty := []string{}
-	c := newHubLaunchController(stateRoot)
+	c := newHubLaunchControllerWithEnv(stateRoot, func(string) string { return "" })
 	_, err := c.SetLayer(context.Background(), appwire.LaunchConfigSetLayerParams{
 		CWD: cwd, Layer: "global",
 		Config: appwire.LaunchConfigLayer{EnabledPlugins: &empty},
@@ -93,7 +95,7 @@ func TestLaunchController_SetLayer_RejectsEnabledPlugins(t *testing.T) {
 func TestLaunchController_SetLayer_ProjectWritesLocalFile(t *testing.T) {
 	stateRoot := t.TempDir()
 	cwd := canonicalTempDir(t)
-	c := newHubLaunchController(stateRoot)
+	c := newHubLaunchControllerWithEnv(stateRoot, func(string) string { return "" })
 	_, err := c.SetLayer(context.Background(), appwire.LaunchConfigSetLayerParams{
 		CWD:    cwd,
 		Layer:  "project",
@@ -124,7 +126,7 @@ func TestLaunchController_SetLayer_ProjectWritesLocalFile(t *testing.T) {
 func TestLaunchController_GetLayer_ProjectReadsLegacyFallback(t *testing.T) {
 	stateRoot := t.TempDir()
 	cwd := canonicalTempDir(t)
-	c := newHubLaunchController(stateRoot)
+	c := newHubLaunchControllerWithEnv(stateRoot, func(string) string { return "" })
 	paths, err := launchconfig.PathsFor(stateRoot, cwd)
 	if err != nil {
 		t.Fatal(err)
@@ -154,7 +156,7 @@ func TestLaunchController_TrustRepo_RecordsDecision(t *testing.T) {
 	}
 	hash, _ := launchconfig.CanonicalHashTOML(contents)
 
-	c := newHubLaunchController(stateRoot)
+	c := newHubLaunchControllerWithEnv(stateRoot, func(string) string { return "" })
 	got, err := c.TrustRepo(context.Background(), appwire.LaunchConfigTrustRepoParams{CWD: cwd, Hash: hash})
 	if err != nil {
 		t.Fatalf("TrustRepo: %v", err)
@@ -203,7 +205,7 @@ func TestLaunchController_TrustRepo_DoesNotCarryRejectedHashes(t *testing.T) {
 		t.Fatalf("SaveMeta: %v", err)
 	}
 
-	c := newHubLaunchController(stateRoot)
+	c := newHubLaunchControllerWithEnv(stateRoot, func(string) string { return "" })
 	if _, err := c.TrustRepo(context.Background(), appwire.LaunchConfigTrustRepoParams{CWD: cwd, Hash: hash}); err != nil {
 		t.Fatalf("TrustRepo: %v", err)
 	}
@@ -232,8 +234,78 @@ func TestLaunchController_TrustRepo_HashMismatch(t *testing.T) {
 	if err := os.WriteFile(repoPath, []byte(`model = "x"`), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	c := newHubLaunchController(stateRoot)
+	c := newHubLaunchControllerWithEnv(stateRoot, func(string) string { return "" })
 	if _, err := c.TrustRepo(context.Background(), appwire.LaunchConfigTrustRepoParams{CWD: cwd, Hash: "sha256:nope"}); err == nil {
 		t.Errorf("TrustRepo with wrong hash should error")
+	}
+}
+
+func TestLaunchController_ResolveAppliesRuntimeDefaults(t *testing.T) {
+	stateRoot := t.TempDir()
+	cwd := canonicalTempDir(t)
+	env := map[string]string{
+		"EVENER_MODEL": "anthropic/claude-sonnet-4",
+	}
+	c := newHubLaunchControllerWithEnv(stateRoot, func(name string) string { return env[name] })
+	got, err := c.Resolve(context.Background(), appwire.LaunchConfigResolveParams{CWD: cwd})
+	if err != nil {
+		t.Fatalf("Resolve: %v", err)
+	}
+	// Env floor: EVENER_MODEL fills the unset model.
+	if got.Effective.Model != "anthropic/claude-sonnet-4" {
+		t.Errorf("Model = %q, want env model", got.Effective.Model)
+	}
+	if got.Provenance["model"] != "env" {
+		t.Errorf("Provenance[model] = %q, want env", got.Provenance["model"])
+	}
+	// Builtin floor: the agent's own defaults for unset fields.
+	if got.Effective.ContextStrategy != "compact" {
+		t.Errorf("ContextStrategy = %q, want builtin compact", got.Effective.ContextStrategy)
+	}
+	if got.Effective.Sandbox != "off" {
+		t.Errorf("Sandbox = %q, want builtin off", got.Effective.Sandbox)
+	}
+	if got.Effective.SandboxNet == nil || !*got.Effective.SandboxNet {
+		t.Errorf("SandboxNet = %v, want builtin on", got.Effective.SandboxNet)
+	}
+	if got.Effective.OpenAIResponsesContinuation != "off" {
+		t.Errorf("OpenAIResponsesContinuation = %q, want builtin off", got.Effective.OpenAIResponsesContinuation)
+	}
+	if got.Effective.AppReplaySize == nil || *got.Effective.AppReplaySize != 1000 {
+		t.Errorf("AppReplaySize = %v, want builtin 1000", got.Effective.AppReplaySize)
+	}
+	if got.Provenance["context_strategy"] != "builtin" {
+		t.Errorf("Provenance[context_strategy] = %q, want builtin", got.Provenance["context_strategy"])
+	}
+	// The layer view itself stays pure: only the effective view carries
+	// the runtime floors.
+	if len(got.Layers) != 0 {
+		t.Errorf("Layers = %#v, want none on disk", got.Layers)
+	}
+}
+
+func TestLaunchController_ResolveLayerValueWinsOverRuntimeDefault(t *testing.T) {
+	stateRoot := t.TempDir()
+	cwd := canonicalTempDir(t)
+	if err := os.MkdirAll(stateRoot, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(stateRoot, "launch.toml"), []byte("context_strategy = \"ooda\"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	c := newHubLaunchControllerWithEnv(stateRoot, func(string) string { return "" })
+	got, err := c.Resolve(context.Background(), appwire.LaunchConfigResolveParams{CWD: cwd})
+	if err != nil {
+		t.Fatalf("Resolve: %v", err)
+	}
+	if got.Effective.ContextStrategy != "ooda" {
+		t.Errorf("ContextStrategy = %q, want layer value to win", got.Effective.ContextStrategy)
+	}
+	if got.Provenance["context_strategy"] != "global" {
+		t.Errorf("Provenance[context_strategy] = %q, want global", got.Provenance["context_strategy"])
+	}
+	// Unrelated unset fields still get their builtins.
+	if got.Effective.Sandbox != "off" {
+		t.Errorf("Sandbox = %q, want builtin off", got.Effective.Sandbox)
 	}
 }

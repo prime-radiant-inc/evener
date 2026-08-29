@@ -100,7 +100,7 @@ func TestCovSendHubQueue_WithAttachmentError(t *testing.T) {
 
 func TestCovSendHubDrainAsSteer_WithAttachmentError(t *testing.T) {
 	att := &clipboard.PastedImage{Path: filepath.Join(t.TempDir(), "missing.png")}
-	cmd := sendHubDrainAsSteer(nil, appwire.Ref{SourceID: "local", ThreadID: "01"}, "text", "draft", []*clipboard.PastedImage{att}, 0)
+	cmd := sendHubDrainAsSteer(nil, appwire.Ref{SourceID: "local", ThreadID: "01"}, "text", "draft", []*clipboard.PastedImage{att}, 0, 0)
 	msg := cmd()
 	dm, ok := msg.(hubDrainAsSteerMsg)
 	if !ok {

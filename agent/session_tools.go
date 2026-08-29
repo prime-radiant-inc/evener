@@ -1471,6 +1471,15 @@ func (s *Session) getOrCreateTaskStore() *task.TaskStore {
 	return s.taskStore
 }
 
+// taskStoreOwnerSessionID names the session whose durable task store backs this
+// session's task view. Shared descendants retain the original owner's identity.
+func (s *Session) taskStoreOwnerSessionID() string {
+	if owner := s.cfg.spawn.sharedTaskStoreOwnerSessionID; owner != "" {
+		return owner
+	}
+	return s.id
+}
+
 // getOrCreateGoalStore returns the session's goal store, initializing it lazily
 // on first call. The store has its own mutex and is goroutine-safe.
 func (s *Session) getOrCreateGoalStore() *goal.Store {

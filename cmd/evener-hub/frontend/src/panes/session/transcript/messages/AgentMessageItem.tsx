@@ -26,6 +26,7 @@
 // that starts and settles within a frame keeps the same DOM shape.
 
 import { memo, type ReactNode } from "react";
+import { pendingTextJoined } from "../../../../protocol/reducer";
 import { Markdown } from "../../../../widgets";
 import { requireClass } from "../../../../widgets/internal/requireClass";
 // Direct widget path, NOT the controller-owned widgets barrel: this pane
@@ -126,7 +127,7 @@ export const AgentMessageItem = memo(function AgentMessageItem({
     // stream's tail truncates, so formatting renders while streaming.
     return wrap(
       <div className={CLASS.stream} data-testid="agent-message-stream">
-        <Markdown source={chunks.join("")} live />
+        <Markdown source={pendingTextJoined(chunks)} live />
       </div>,
       "true",
     );

@@ -78,6 +78,61 @@ func TestDelegateResourceRuntime_RestoresDescriptorPluginDirs(t *testing.T) {
 	}
 }
 
+func TestRestoredDelegatePostStartPopulationEmitsTaskCorrection(t *testing.T) {
+	fixture := newColdStableDelegateFixtureConfigured(t, "", func(descriptor *delegatestore.Descriptor) {
+		descriptor.TaskTemplates = []taskpkg.TaskTemplate{{
+			Title:  "Restored committed workflow",
+			Prompt: "Resume the committed workflow.",
+		}}
+	})
+	root, err := restoreDelegateResourceBootstrapSession(fixture.client, fixture.profile, fixture.workspace, fixture.meta, fixture.stateDir)
+	if err != nil {
+		t.Fatalf("restore root: %v", err)
+	}
+	defer root.Close()
+	var recorder currentWorkEventRecorder
+	root.SetDescendantEventFunc(recorder.record)
+
+	reservation, err := root.delegateController.ReserveStart(rootDelegateActor(root.id), fixture.delegateID)
+	if err != nil {
+		t.Fatalf("ReserveStart: %v", err)
+	}
+	started, err := root.delegateController.CommitStart(reservation)
+	if err != nil {
+		t.Fatalf("CommitStart: %v", err)
+	}
+	sub, restored, err := (delegateRuntime{owner: root}).restoreIdle(started)
+	if err != nil {
+		t.Fatalf("restoreIdle: %v", err)
+	}
+	if !restored {
+		t.Fatal("restoreIdle unexpectedly reused a resident child")
+	}
+	defer func() {
+		sub.sess.discardRestoredCandidate()
+		_, _ = root.delegateController.FailCommittedRestart(started.lease, delegatePermanentStartFailure(context.Canceled, "test_cleanup"))
+	}()
+
+	relevant := childCurrentWorkEvents(recorder.snapshot(), fixture.childID)
+	if len(relevant) < 2 {
+		t.Fatalf("restored child current-work events = %#v, want SessionStart then TaskUpdated", relevant)
+	}
+	if relevant[0].Kind != events.EventSessionStart || relevant[1].Kind != events.EventTaskUpdated {
+		t.Fatalf("restored child current-work order = [%s, %s], want start then update", relevant[0].Kind, relevant[1].Kind)
+	}
+	start := relevant[0].Data.(events.SessionStartData)
+	if start.CurrentWork == nil || start.CurrentWork.Tasks == nil || start.CurrentWork.Tasks.Total != 0 {
+		t.Fatalf("restored child start = %+v, want empty pre-fallback tasks", start.CurrentWork)
+	}
+	update := relevant[1].Data.(events.TaskUpdatedData)
+	if update.Current == nil || update.Current.Description != "Restored committed workflow" {
+		t.Fatalf("restored task correction = %+v", update)
+	}
+	if update.TaskStoreOwnerSessionID != fixture.childID {
+		t.Fatalf("restored task correction owner = %q, want child %q", update.TaskStoreOwnerSessionID, fixture.childID)
+	}
+}
+
 func TestDelegateResourceRuntime_RunningSendDoesNotStartSuccessor(t *testing.T) {
 	c, _ := newDelegateControllerTestHarness(t, 1, 1)
 	seedDelegateControllerRunning(t, c, "dlg_target", "")

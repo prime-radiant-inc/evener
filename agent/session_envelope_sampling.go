@@ -12,11 +12,12 @@ import (
 // EnvelopeSampling is every Session read the daemon's AUTHORITATIVE event
 // consumer performs, and the only ones it may perform.
 //
-// The daemon materializes its thread envelope by sampling live session state at
-// the moment an event says it moved (server/thread_envelope.go's facetsByEvent,
-// implemented by cmd/evener's liveThreadEnvelopeSource). That sampling runs ON THE
-// DRAIN GOROUTINE, inside the same call that is consuming the session's event
-// stream.
+// The daemon uses this interface for the root envelope's pre-bridge seed and for
+// checkpoint/legacy sampling (server/thread_envelope.go's facetsByEvent,
+// implemented by cmd/evener's liveThreadEnvelopeSource). Typed task and goal
+// carriers do not sample through it: they patch root/descendant cached state
+// inside CommitProjection. Sampling still runs ON THE DRAIN GOROUTINE, inside
+// the same call that is consuming the session's event stream.
 //
 // THE RULE, and it is a deadlock rule rather than a style one:
 //
@@ -42,9 +43,10 @@ import (
 //
 // WHY THIS IS A NAMED INTERFACE and not just *Session. The rule constrains a
 // call graph inside agent, but the person who breaks it is adding an envelope
-// facet in server/ and cmd/evener/, where none of the above is visible. Typing the
-// daemon's window as this interface means a new facet cannot sample anything new
-// without adding a method HERE — in the file that states the rule, next to
+// seed/checkpoint facet in server/ and cmd/evener/, where none of the above is
+// visible. Typing the daemon's window as this interface means a new sampled
+// value cannot be added without adding a method HERE — in the file that states
+// the rule, next to
 // session_envelope_sampling_test.go, which proves it for every method the
 // interface declares. A type assertion back to *Session still escapes it; what
 // that costs is that escaping becomes a written decision instead of an omission.

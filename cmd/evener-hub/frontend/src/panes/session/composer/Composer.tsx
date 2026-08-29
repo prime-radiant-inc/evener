@@ -34,12 +34,15 @@ import { sessionActionError } from "../../../protocol/errors";
 import { deriveSendQueueAvailability } from "../../../protocol/sendQueueAvailability";
 import type { PaletteRunContext } from "../../../shell/palette/commands";
 import { sessionBuiltinCommands, visibleCatalogCommands } from "../../../shell/palette/commands";
+import { useIsMobile } from "../../../shell/useIsMobile";
+import { workspaceStore } from "../../../shell/workspace";
 import { useCommandCatalog } from "../../../stores/commandCatalog";
 import type { MutationRecoveryRecord } from "../../../stores/mutationOutbox";
 import { prefsStore, usePrefsStore } from "../../../stores/prefs";
 import { type InputAttachment, threadsStore, useThreadsStore } from "../../../stores/threads";
 import {
   Button,
+  ConfirmDialog,
   chordLabel,
   Dropzone,
   IconButton,
@@ -51,14 +54,16 @@ import {
 } from "../../../widgets";
 import { requireClass } from "../../../widgets/internal/requireClass";
 import { SessionChrome } from "../chrome/SessionChrome";
+import { TasksPanel, type TasksPanelHandle } from "../chrome/TasksPanel";
 import { AttachmentTile } from "./AttachmentTile";
 import { AskDock, useAskDockPending } from "./askDock";
 import { AttachIcon } from "./attachments/AttachIcon";
 import { imageFilesFromClipboard } from "./attachments/clipboard";
 import { type PendingAttachment, type TextEditor, useAttachments } from "./attachments/useAttachments";
 import { type BuiltinMatch, matchBuiltinInvocation, runBuiltinCommand } from "./builtinCommand";
+import { CurrentWork } from "./CurrentWork";
 import styles from "./composer.module.css";
-import { consumeComposerFocus, useComposerFocusRequest } from "./composerFocus";
+import { consumeComposerFocus, requestComposerFocus, useComposerFocusRequest } from "./composerFocus";
 import { clearDraft, readDraft, writeDraft } from "./draft";
 import { QueueStrip, submitWithPendingTracking, usePendingTurnEntries } from "./queue";
 import {
@@ -151,9 +156,11 @@ export function Composer({ ref }: ComposerProps) {
   const model = useThreadsStore((s) => s.threads.get(ref));
   const pendingSendEntries = usePendingTurnEntries(ref, "send");
   const toasts = useToasts();
+  const isMobile = useIsMobile();
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const formRef = useRef<HTMLFormElement>(null);
+  const tasksPanelRef = useRef<TasksPanelHandle>(null);
   // Set by textEditor.write() below; consumed (and cleared) by the
   // cursor-restore layout effect once `text`'s new value has committed.
   const cursorToRestoreRef = useRef<number | null>(null);
@@ -164,6 +171,10 @@ export function Composer({ ref }: ComposerProps) {
   // clearIfUnchanged's own submittedText snapshot for the classic drain
   // path below).
   const lastDrainSnapshotRef = useRef<{ text: string; markers: Set<number> } | null>(null);
+  // Invalidates the post-request cleanup captured by a submit that predates a
+  // canonical goal replacement. In particular, old marker ids may be reused
+  // after attachments.reset(), so stale cleanup must not strip new content.
+  const submissionVersionRef = useRef(0);
 
   // Restore-on-mount is unconditional, not leak-guarded: under dockview a
   // session pane's `ref` never changes across a mounted Composer's
@@ -180,8 +191,13 @@ export function Composer({ ref }: ComposerProps) {
   const activeRecoveryIdRef = useRef<string | null>(null);
   const recoveryWrites = useRef<Promise<void>>(Promise.resolve());
   const recoveryWriteVersionRef = useRef(0);
+  // Unlike write versions, this changes only when canonical replacement exits
+  // recovery ownership. Durable delete predicates capture it so a discard
+  // already awaiting storage cannot remove a row after replacement.
+  const recoveryReplacementEpochRef = useRef(0);
   const recoveryOwnsLocalDraftRef = useRef(false);
   const [busyAction, setBusyAction] = useState<BusyAction>(null);
+  const [pendingGoalReplacement, setPendingGoalReplacement] = useState<string | null>(null);
   // Whether a FINISHED session's collapsed follow-up field currently has focus,
   // which is what expands it from its one-line resting state. Only read on that
   // path (see the ended card's minLines below); harmless everywhere else.
@@ -326,6 +342,43 @@ export function Composer({ ref }: ComposerProps) {
   attachmentItemsRef.current = attachments.items;
   const recoveryEntries = useRecoveryEntries(ref);
 
+  const replaceComposerWithGoalDraft = (objective: string): void => {
+    // Invalidate queued recovery work before clearing ownership. Any operation
+    // already beyond its initial owner check is prevented by this version from
+    // clearing the ordinary draft written below when it eventually settles.
+    recoveryWriteVersionRef.current += 1;
+    recoveryReplacementEpochRef.current += 1;
+    recoveryOwnsLocalDraftRef.current = false;
+    setActiveRecoveryId(null);
+    attachments.reset();
+    setSlashToken(null);
+    setSlashHighlighted(0);
+    lastDrainSnapshotRef.current = null;
+    submissionVersionRef.current += 1;
+    const command = `/goal ${objective}`;
+    textEditor.write(command, command.length);
+    setPendingGoalReplacement(null);
+    requestComposerFocus(ref);
+  };
+
+  const editGoal = (objective: string): void => {
+    if (textRef.current !== "" || attachmentItemsRef.current.length > 0 || activeRecoveryIdRef.current !== null) {
+      setPendingGoalReplacement(objective);
+      return;
+    }
+    replaceComposerWithGoalDraft(objective);
+  };
+
+  const showTasks = (): void => {
+    if (isMobile) tasksPanelRef.current?.open();
+    else workspaceStore.getState().openPane("sessionTasks", { ref }, { slot: "secondary" });
+  };
+
+  const toggleTasks = (): void => {
+    if (isMobile) tasksPanelRef.current?.open();
+    else workspaceStore.getState().togglePane("sessionTasks", { ref });
+  };
+
   // A shared projection can outlive a Composer remount while its durable
   // discard is still being projected. Only auto-activate after this mount
   // has observed a successful IndexedDB refresh for the current session.
@@ -347,13 +400,22 @@ export function Composer({ ref }: ComposerProps) {
       nextAttachments: ReturnType<typeof attachments.toInputAttachments>,
     ): Promise<void> => {
       const version = ++recoveryWriteVersionRef.current;
+      const replacementEpoch = recoveryReplacementEpochRef.current;
       const operation = recoveryWrites.current
         .catch(() => undefined)
         .then(async () => {
           if (activeRecoveryIdRef.current !== clientMutationId) return;
           if (nextText.trim() === "" && nextAttachments.length === 0) {
             if (textRef.current.trim() !== "" || attachmentItemsRef.current.length > 0) return;
-            await discardRecoveryPendingTurn(clientMutationId, ref);
+            await discardRecoveryPendingTurn(
+              clientMutationId,
+              ref,
+              () =>
+                recoveryReplacementEpochRef.current === replacementEpoch &&
+                activeRecoveryIdRef.current === clientMutationId &&
+                textRef.current.trim() === "" &&
+                attachmentItemsRef.current.length === 0,
+            );
             if (
               activeRecoveryIdRef.current === clientMutationId &&
               textRef.current.trim() === "" &&
@@ -378,6 +440,7 @@ export function Composer({ ref }: ComposerProps) {
         });
       recoveryWrites.current = operation;
       void operation.catch((error) => {
+        if (activeRecoveryIdRef.current !== clientMutationId) return;
         toasts.push(
           "error",
           `Couldn't save recovered message: ${error instanceof Error ? error.message : String(error)}`,
@@ -525,10 +588,12 @@ export function Composer({ ref }: ComposerProps) {
   const consumedComposerFocusIdRef = useRef<number | null>(null);
   useEffect(() => {
     if (!composerFocusRequest || composerFocusRequest.id === consumedComposerFocusIdRef.current) return;
+    const textarea = textareaRef.current;
+    if (!textarea) return;
+    textarea.focus();
     consumedComposerFocusIdRef.current = composerFocusRequest.id;
-    textareaRef.current?.focus();
     consumeComposerFocus(ref);
-  }, [composerFocusRequest, ref]);
+  });
 
   if (!model) return null; // Session.tsx only mounts this once its own model is hydrated; defensive only.
 
@@ -770,11 +835,16 @@ export function Composer({ ref }: ComposerProps) {
     textareaRef.current?.focus();
 
     const ownerId = currentRecoveryId ?? record.clientMutationId;
+    const replacementEpoch = recoveryReplacementEpochRef.current;
     const persistence = queueRecoveryPersistence(ownerId, merged.text, settledInputAttachments(merged.attachments));
     if (currentRecoveryId !== null && currentRecoveryId !== record.clientMutationId) {
       void persistence
         .then(async () => {
-          await discardRecoveryPendingTurn(record.clientMutationId, ref);
+          await discardRecoveryPendingTurn(
+            record.clientMutationId,
+            ref,
+            () => recoveryReplacementEpochRef.current === replacementEpoch,
+          );
         })
         .catch(() => undefined);
     }
@@ -827,6 +897,7 @@ export function Composer({ ref }: ComposerProps) {
   async function submitAction(kind: "send" | "queue" | "steer" | "drain"): Promise<void> {
     const submittedText = textRef.current;
     const submittedMarkers = new Set(attachments.items.map((item) => item.marker));
+    const submissionVersion = submissionVersionRef.current;
     const payload = attachments.toInputAttachments();
     const submittedRecoveryId = activeRecoveryIdRef.current;
     let wonRecoveryResend = true;
@@ -861,8 +932,10 @@ export function Composer({ ref }: ComposerProps) {
         if (!wonRecoveryResend) toasts.push("info", "This message was already sent in another tab.");
         if (textRef.current !== submittedText) writeDraft(ref, textRef.current);
       }
-      clearIfUnchanged(submittedText);
-      attachments.clearSubmitted(submittedMarkers);
+      if (submissionVersionRef.current === submissionVersion) {
+        clearIfUnchanged(submittedText);
+        attachments.clearSubmitted(submittedMarkers);
+      }
     } catch {
       // The local durable write failed. The submitted composer payload stays
       // untouched and no network request was eligible to start.
@@ -1118,6 +1191,31 @@ export function Composer({ ref }: ComposerProps) {
           ))}
         </div>
       )}
+      {!askPending && (
+        <>
+          <TasksPanel ref={tasksPanelRef} sessionRef={ref} model={model} hideTrigger />
+          <CurrentWork
+            task={model.tasks?.current?.description}
+            goal={model.goal?.objective}
+            onOpenTasks={showTasks}
+            onEditGoal={() => editGoal((model.goal?.objective ?? "").trim())}
+          />
+        </>
+      )}
+      {pendingGoalReplacement !== null && (
+        <ConfirmDialog
+          open
+          title="Replace draft?"
+          confirmLabel="Replace draft"
+          cancelLabel="Keep draft"
+          onConfirm={() => {
+            replaceComposerWithGoalDraft(pendingGoalReplacement);
+          }}
+          onCancel={() => setPendingGoalReplacement(null)}
+        >
+          This will discard the current composer contents.
+        </ConfirmDialog>
+      )}
       {(!ended || showFollowUpCard) && (
         <div className={CLASS.formAnchor}>
           {/* Anchored above the control row inside the card below, opening
@@ -1188,7 +1286,7 @@ export function Composer({ ref }: ComposerProps) {
                           onClick={() => fileInputRef.current?.click()}
                         />
                       </Tooltip>
-                      <SessionChrome ref={ref} placement="composer" />
+                      <SessionChrome ref={ref} placement="composer" onOpenTasks={toggleTasks} />
                     </div>
                   )
                 }

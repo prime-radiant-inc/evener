@@ -55,7 +55,7 @@ var serveAttachSessionAPILogger = cmdutil.AttachSessionAPILogger
 type serveServer interface {
 	http.Handler
 	// ReplaceAppIdentity is the only way serve installs an identity: both the
-	// startup install and /clear publish a PreparedAppIdentity, so every
+	// startup install and thread/clear publish a PreparedAppIdentity, so every
 	// fallible step has already happened by the time anything is announced.
 	ReplaceAppIdentity(server.PreparedAppIdentity, func())
 	SetSandboxEscalationResolveFunc(func(string, bool) error)
@@ -82,7 +82,7 @@ type serveServer interface {
 	SetTasksFunc(func() any)
 	SetJobsFunc(func(appwire.JobsListParams) (any, error))
 	SetJobOutputFunc(func(string, int64, int64) (any, bool, error))
-	SetClearFunc(func(context.Context) error)
+	SetClearFunc(func(context.Context, appwire.ThreadClearParams) error)
 	SetWorkingDir(string)
 	SetShutdownFunc(func())
 	SetProcessing(bool)
@@ -147,8 +147,8 @@ type serveDeps struct {
 	// prepareAppIdentity projects a session's transcript into an installable
 	// AppWire identity. It is the one fallible step of an identity swap, so it
 	// is injectable: a test needs a deterministic preparation failure to prove
-	// /clear abandons a half-built session instead of publishing it.
-	prepareAppIdentity func(sourceID, threadID, transcriptPath string) (server.PreparedAppIdentity, error)
+	// thread/clear abandons a half-built session instead of publishing it.
+	prepareAppIdentity func(sourceID, threadID, ref, transcriptPath string) (server.PreparedAppIdentity, error)
 	updateSessionID    func(*rvreg.Registration, string) error
 	observeCallbacks   func(serveCallbackObserver)
 }
@@ -186,13 +186,13 @@ func defaultServeDeps() serveDeps {
 			}, onDrained)
 		},
 		drainWaitExpiry: func() <-chan time.Time { return time.After(shutdownDrainWaitBudget) },
-		subscriberCount: func(s serveServer, id string) int { return s.(*server.Server).AppServer().SubscriberCount(id) },
+		subscriberCount: func(s serveServer, id string) int { return s.(*server.Server).AppSubscriberCount(id) },
 		notifyContext:   signal.NotifyContext, startCPUProfile: cmdutil.StartCPUProfile, startTrace: cmdutil.StartTrace,
 		register:           func(r *rvreg.Registration, dir string, entry rendezvous.Entry) error { return r.Register(dir, entry) },
 		serveHTTP:          func(s *http.Server, l net.Listener) error { return s.Serve(l) },
 		provisionSandbox:   provisionSandbox,
 		newClearSession:    agent.NewSession,
-		prepareAppIdentity: server.PrepareAppIdentity,
+		prepareAppIdentity: server.PrepareAppIdentityForRef,
 		updateSessionID:    func(r *rvreg.Registration, id string) error { return r.UpdateSessionID(id) },
 	}
 }
@@ -526,13 +526,15 @@ func runServeWithDeps(args []string, deps serveDeps) error {
 		AppReplaySize: *appReplaySize,
 		HubToken:      hubToken,
 		AllowedHost:   listener.Addr().String(),
+		StateDir:      sd,
 	})
 	// Seed the daemon's turn snapshot from this session's transcript BEFORE the
 	// event bridge starts, so the first read answers from the same memory every
 	// later notification advances. Preparation is the only fallible half; a
 	// transcript that cannot be projected is a session this daemon must not
 	// serve, because every read after it would silently start mid-conversation.
-	prepared, err := deps.prepareAppIdentity("local", sess.ID(), sess.TranscriptPath())
+	workspaceRef := appwire.Ref{SourceID: "local", ThreadID: sess.ID()}.String()
+	prepared, err := deps.prepareAppIdentity("local", sess.ID(), workspaceRef, sess.TranscriptPath())
 	if err != nil {
 		sess.Close()
 		listener.Close() //nolint:errcheck // returning the preparation failure; the close error is not actionable
@@ -544,7 +546,7 @@ func runServeWithDeps(args []string, deps serveDeps) error {
 	var currentMu sync.RWMutex
 	currentSess := sess
 	// currentEnv tracks the CURRENT session's execution environment (each session
-	// owns its own). /clear reads it to inherit the live sandbox and swaps it
+	// owns its own). thread/clear reads it to inherit the live sandbox and swaps it
 	// alongside currentSess, so a cleared session's sandbox reflects what the running
 	// session actually enforces (on resume the persisted mode, not the launch flag).
 	currentEnv := env
@@ -602,7 +604,7 @@ func runServeWithDeps(args []string, deps serveDeps) error {
 	}
 
 	// Every bridge drain this serve starts, so teardown can wait for them.
-	// A session gets a new one on /clear, and each ends when its own session's
+	// A session gets a new one on thread/clear, and each ends when its own session's
 	// event channel closes.
 	var drainsMu sync.Mutex
 	var bridgeDrains []<-chan struct{}
@@ -641,8 +643,8 @@ func runServeWithDeps(args []string, deps serveDeps) error {
 	// "Genuine wedge" is a claim about every drain that can reach this wait, and
 	// it holds because every session this daemon makes current is closed by
 	// someone: shutdown's one pass (closeLiveSession) over whatever was live
-	// when it ran, or the /clear that installed a replacement past that pass and
-	// therefore closes its own. Without that second half, a /clear landing in
+	// when it ran, or the thread/clear that installed a replacement past that pass and
+	// therefore closes its own. Without that second half, a thread/clear landing in
 	// the window between the pass and this snapshot registered a drain on a
 	// session nothing would ever close, which no budget can end -- the expiry
 	// fired every time, on work that was neither wedged nor real.
@@ -701,7 +703,7 @@ func runServeWithDeps(args []string, deps serveDeps) error {
 	}
 	bridgeSession := func(s *agent.Session) {
 		// The idle kick is set on the Session, so it must be re-established
-		// whenever the session is replaced (e.g. on /clear). It feeds the
+		// whenever the session is replaced (e.g. on thread/clear). It feeds the
 		// first continuation prompt back into the serve loop's input channel
 		// as an EntryContinuation-kind message (the agent module must not
 		// import server, so this is a callback into the server, spec §C4/§7).
@@ -737,7 +739,7 @@ func runServeWithDeps(args []string, deps serveDeps) error {
 		// The M7 sandbox-escalation gate blocks a denied tool call only when a human
 		// is actually watching this thread; the probe reads the live AppWire
 		// subscriber count. Set per-session (like the kick/notify wakes) so it tracks
-		// the current session's id across /clear.
+		// the current session's id across thread/clear.
 		subscriberCallback = func() int { return deps.subscriberCount(srv, s.ID()) }
 		s.SetSubscriberCountFunc(subscriberCallback)
 		// Called synchronously, NOT with `go`: the bridge registers as the
@@ -780,7 +782,7 @@ func runServeWithDeps(args []string, deps serveDeps) error {
 		//
 		// Refusing leaves this session with no authoritative consumer, which
 		// anywhere else on this branch is the corruption being prevented. Here
-		// it costs nothing: the only caller that can reach this is /clear on a
+		// it costs nothing: the only caller that can reach this is thread/clear on a
 		// handler goroutine that outlived httpSrv.Close(), and by the time the
 		// snapshot has been taken the listener is closed, the rendezvous entry
 		// has been removed, and the input loop has exited. The replacement
@@ -788,7 +790,7 @@ func runServeWithDeps(args []string, deps serveDeps) error {
 		// for its projection to be permanently wrong for.
 		//
 		// It costs nothing on disk either, and that is a SEPARATE guarantee
-		// rather than a consequence of this refusal: a /clear reaching here
+		// rather than a consequence of this refusal: a thread/clear reaching here
 		// installed its replacement past shutdown's closing pass, so it has
 		// already closed it, which is what runs the env's Cleanup()
 		// (agent/execenv/local.go) and disposes the session's owned scratch
@@ -886,7 +888,7 @@ func runServeWithDeps(args []string, deps serveDeps) error {
 	srv.SetNameFunc(func(name string) { getSession().Rename(name) })
 	srv.SetReasoningEffortFunc(func(effort string) { getSession().SetReasoningEffort(effort) })
 	// Resolve the session per call like the model/effort hooks above: binding one
-	// session's method value here would pin the hook to the pre-/clear session.
+	// session's method value here would pin the hook to the pre-thread/clear session.
 	srv.SetVisionModelFunc(func(v string) error { return getSession().SetVisionModel(v) })
 	srv.SetListModelsFunc(cmdutil.ListModelsFunc(client, profile.ID()))
 	srv.SetTasksFunc(func() any { return getSession().Tasks() })
@@ -897,16 +899,20 @@ func runServeWithDeps(args []string, deps serveDeps) error {
 			if err != nil {
 				return nil, appwire.InvalidParams(err.Error())
 			}
-			if ref.SourceID != "local" || ref.ThreadID != sess.ID() {
+			if ref.SourceID != "local" || params.Ref != workspaceRef {
 				return nil, appwire.SessionUnavailable("thread not found: " + ref.ThreadID)
 			}
+			// The public ref names the stable workspace. JobActivityTree reads the
+			// live session's activity store, so translate that stable ref to the
+			// current instance after a thread/clear replacement.
+			params.Ref = appwire.Ref{SourceID: "local", ThreadID: sess.ID()}.String()
 		}
 		return sess.JobActivityTree(params)
 	})
 	srv.SetJobOutputFunc(func(jobID string, beforeBytes, maxBytes int64) (any, bool, error) {
 		return getSession().JobOutputTail(jobID, beforeBytes, maxBytes)
 	})
-	srv.SetClearFunc(func(ctx context.Context) error {
+	srv.SetClearFunc(func(ctx context.Context, _ appwire.ThreadClearParams) error {
 		oldSess := getSession()
 		currentMu.RLock()
 		oldEnv := currentEnv
@@ -918,7 +924,7 @@ func runServeWithDeps(args []string, deps serveDeps) error {
 		// it runs under. Reconcile from the live env before building the new session.
 		reconcileClearSandbox(&clearCfg, oldEnv)
 		// Build and provision a FRESH env for the cleared session BEFORE any destructive
-		// change. If provisioning fails, /clear aborts with oldSess still current rather
+		// change. If provisioning fails, thread/clear aborts with oldSess still current rather
 		// than leaving a live session running unconfined while persisting a sandbox mode
 		// (a fail-open). Each session owns its own env + session tmp, disposed on Close,
 		// so oldSess.Close() no longer pulls the tmp out from under the new session.
@@ -937,7 +943,7 @@ func runServeWithDeps(args []string, deps serveDeps) error {
 		// merely inelegant here: undoing a published identity means emitting a
 		// second thread/closed, and every subscriber has already been told the
 		// thread it is watching ended.
-		prepared, err := deps.prepareAppIdentity("local", newSess.ID(), newSess.TranscriptPath())
+		prepared, err := deps.prepareAppIdentity("local", newSess.ID(), workspaceRef, newSess.TranscriptPath())
 		if err != nil {
 			newSess.Close() // disposes clearEnv
 			return fmt.Errorf("prepare app identity: %w", err)
@@ -951,10 +957,9 @@ func runServeWithDeps(args []string, deps serveDeps) error {
 			newSess.Close() // disposes clearEnv
 			return fmt.Errorf("rendezvous update: %w", err)
 		}
-		// One projection commit swaps the live session, the daemon's identity
-		// and the turn snapshot, and closes the old thread's stream. No
-		// notification can be projected between the halves, so no client sees
-		// the old thread's authority answering for the new thread's id.
+		// One projection commit swaps the live session, the daemon's identity,
+		// and the turn snapshot. The stable workspace ref remains subscribed while
+		// a resync tells every client to hydrate the new instance.
 		srv.ReplaceAppIdentity(prepared, func() { setSession(newSess, clearEnv) })
 		// The commit above zeroed the envelope with the identity it described.
 		// Re-seed from the replacement session here rather than inside the
@@ -966,7 +971,7 @@ func runServeWithDeps(args []string, deps serveDeps) error {
 		oldSess.Close() // disposes oldEnv
 		// Every session this daemon makes current gets closed by someone, and
 		// shutdown covers only the one that was live when its pass ran. A
-		// replacement installed after that pass has no other closer, so /clear
+		// replacement installed after that pass has no other closer, so thread/clear
 		// closes its own. The check reads AFTER the swap above, so a negative
 		// answer means the pass is still to come and will find newSess itself.
 		//
@@ -1120,21 +1125,23 @@ func runServeWithDeps(args []string, deps serveDeps) error {
 		runDir = rendezvous.DefaultDir()
 	}
 	rvEntry := rendezvous.Entry{
-		PID:        os.Getpid(),
-		Address:    listener.Addr().String(),
-		Protocol:   appwire.ProtocolVersion,
-		Endpoint:   "ws://" + listener.Addr().String() + "/rpc",
-		SourceID:   "local",
-		ThreadID:   getSession().ID(),
-		SessionID:  getSession().ID(),
-		WorkingDir: wd,
-		StateDir:   sd,
-		Agent:      *agentName,
-		Model:      modelRef.Model,
-		Provider:   modelRef.Provider,
-		HubToken:   hubToken,
-		StartedAt:  time.Now().UTC(),
-		SpawnedBy:  spawnedBy,
+		PID:          os.Getpid(),
+		Address:      listener.Addr().String(),
+		Protocol:     appwire.ProtocolVersion,
+		Endpoint:     "ws://" + listener.Addr().String() + "/rpc",
+		SourceID:     "local",
+		ThreadID:     getSession().ID(),
+		SessionID:    getSession().ID(),
+		WorkspaceRef: workspaceRef,
+		InstanceID:   getSession().ID(),
+		WorkingDir:   wd,
+		StateDir:     sd,
+		Agent:        *agentName,
+		Model:        modelRef.Model,
+		Provider:     modelRef.Provider,
+		HubToken:     hubToken,
+		StartedAt:    time.Now().UTC(),
+		SpawnedBy:    spawnedBy,
 	}
 	if err := deps.register(rvRegistration, runDir, rvEntry); err != nil {
 		serveLogf(os.Stderr, getSession().ID(), "rendezvous write failed: %v", err)
@@ -1451,15 +1458,16 @@ func cloneServeWorktree(value *appwire.JobActivityWorktree) *appwire.JobActivity
 	return &clone
 }
 
-// liveThreadEnvelopeSource is the daemon's one window onto live session state
-// for the materialized thread envelope. The server samples it at the moments
-// those values change (server/thread_envelope.go's facetsByEvent), never on a
-// read: every method here can take the session's mutex, the task store's, or
-// read jobs.jsonl, and a read path that could reach them would hold the
-// projection gate across that work.
+// liveThreadEnvelopeSource is the daemon's one sampling window onto live session
+// state for the materialized root envelope. The server uses it for the
+// pre-bridge seed and retained checkpoint/legacy facets, never on a read. Typed
+// task and goal carriers bypass this adapter and patch cached root/descendant
+// state inside CommitProjection. Every method here can take the session's mutex,
+// the task store's, or read jobs.jsonl, and a read path that could reach them
+// would hold the projection gate across that work.
 //
 // It resolves the session per call rather than capturing one, so it follows
-// /clear onto the replacement session exactly as the sixteen closures it
+// thread/clear onto the replacement session exactly as the sixteen closures it
 // replaced did.
 //
 // The session is reached as agent.EnvelopeSampling rather than as *agent.Session
@@ -1500,17 +1508,12 @@ func (l liveThreadEnvelopeSource) TaskAggregate() *appwire.TaskAggregate {
 	if err != nil {
 		return nil
 	}
-	done := 0
-	for _, task := range tasks {
-		if task.Status == taskpkg.TaskDone {
-			done++
-		}
+	summary := taskpkg.Summarize(tasks)
+	aggregate := &appwire.TaskAggregate{Total: summary.Total, Done: summary.Done}
+	if summary.Current != nil {
+		aggregate.Current = &appwire.TaskSummary{ID: summary.Current.ID, Description: summary.Current.Description}
 	}
-	return &appwire.TaskAggregate{Total: len(tasks), Done: done}
-}
-
-func (l liveThreadEnvelopeSource) GoalStatus() (string, int, bool) {
-	return l.session().GoalStatus()
+	return aggregate
 }
 
 func (l liveThreadEnvelopeSource) WorkMetrics() (int64, *appwire.EvenerUsage, int64) {

@@ -132,6 +132,10 @@ func cloneTaskAggregate(value *TaskAggregate) *TaskAggregate {
 		return nil
 	}
 	clone := *value
+	if value.Current != nil {
+		current := *value.Current
+		clone.Current = &current
+	}
 	return &clone
 }
 

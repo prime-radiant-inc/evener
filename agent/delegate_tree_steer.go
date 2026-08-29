@@ -15,6 +15,30 @@ import (
 
 var errDelegateTranscriptUnavailable = errors.New("delegate transcript is unavailable")
 
+type delegateCompletionDecision uint8
+
+const (
+	delegateCompletionUseExistingTerminal delegateCompletionDecision = iota
+	delegateCompletionFinishNoAction
+	delegateCompletionNeedsNudge
+)
+
+func (c *delegateTreeController) completionDecision(lease delegateLease) (delegateCompletionDecision, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	evidence, err := c.completionEvidenceLocked(lease)
+	if err != nil {
+		return delegateCompletionNeedsNudge, err
+	}
+	if evidence.terminalSeen {
+		return delegateCompletionUseExistingTerminal, nil
+	}
+	if evidence.requirement == delegateCompletionAttentionOnly && evidence.outcome == delegateCompletionOutcomeAttentionNoAction {
+		return delegateCompletionFinishNoAction, nil
+	}
+	return delegateCompletionNeedsNudge, nil
+}
+
 type delegateSteeringAdmission struct {
 	entryID    string
 	provenance *provenance.Causal
@@ -302,6 +326,14 @@ func (c *delegateTreeController) CompleteModelRequest(claim *delegateModelReques
 		}
 	}
 	history, bound := projectDelegatePendingSteers(history, pending, lateIDs)
+	if len(bound) != 0 {
+		if err := c.escalateCompletionRequirementLocked(claim.lease); err != nil {
+			c.releaseModelClaimLocked(claim.token)
+			c.evidenceVersion++
+			c.mu.Unlock()
+			return nil, err
+		}
+	}
 	var consumedProvenance *provenance.Causal
 	for entryID := range bound {
 		consumedProvenance = provenance.Union(consumedProvenance, claim.steeringProvenance[entryID])

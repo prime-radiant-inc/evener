@@ -176,7 +176,7 @@ func TestConnectionValidatesExpectedQueueRevisionBeforeDispatch(t *testing.T) {
 				t.Fatalf("init kind=%v, want response", initResp.Kind())
 			}
 
-			params := json.RawMessage(`{"clientMutationId":"m1","expectedTurnId":"t1","expectedQueueRevision":` + tc.value + `}`)
+			params := json.RawMessage(`{"clientMutationId":"m1","expectedInstanceId":"instance-1","expectedTurnId":"t1","expectedQueueRevision":` + tc.value + `}`)
 			resp := conn.HandleMessage(context.Background(), appwire.RequestMessage(
 				appwire.NewIntID(2),
 				appwire.MethodTurnDrainAsSteer,

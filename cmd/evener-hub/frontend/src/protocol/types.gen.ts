@@ -347,6 +347,7 @@ export interface EvenerSubagentPreviewResponse {
 
 export interface EvenerThread {
   ref: string;
+  instanceId?: string;
   parentRef?: string;
   kind?: string;
   profile?: string;
@@ -445,8 +446,15 @@ export interface GoalSetResponse {
 }
 
 export interface GoalState {
+  objective?: string;
   status: string;
   iterations: number;
+}
+
+export interface GoalUpdatedParams {
+  threadId: string;
+  ref: string;
+  goal: GoalState | null;
 }
 
 export interface HarnessDescriptor {
@@ -771,6 +779,10 @@ export interface LaunchOption {
   envFallback?: LaunchOptionEnvFallback;
   choices?: LaunchOptionChoice[];
   driverSupport?: Record<string, boolean>;
+  builtinDefault?: string;
+  builtinDefaultInt?: number;
+  builtinDefaultBool?: boolean;
+  builtinDefaultLabel?: string;
 }
 
 export interface LaunchOptionChoice {
@@ -889,6 +901,7 @@ export interface MutationReceipt {
   clientMutationId: string;
   disposition: string;
   threadId: string;
+  instanceId?: string;
   turnId?: string;
   queueEntryIds?: string[];
   projectionState: string;
@@ -1417,6 +1430,7 @@ export interface Source {
 export interface TaskAggregate {
   total: number;
   done: number;
+  current?: TaskSummary;
 }
 
 export interface TaskListParams {
@@ -1427,11 +1441,17 @@ export interface TaskListResponse {
   data: unknown;
 }
 
+export interface TaskSummary {
+  id: number;
+  description: string;
+}
+
 export interface TaskUpdatedParams {
   threadId: string;
   ref: string;
   total: number;
   done: number;
+  current?: TaskSummary;
 }
 
 export interface Thread {
@@ -1476,11 +1496,14 @@ export interface ThreadCapabilities {
 
 export interface ThreadClearParams {
   ref: string;
+  clientMutationId: string;
+  expectedInstanceId: string;
 }
 
 export interface ThreadClearResponse {
   thread: Thread;
   ref: string;
+  receipt: MutationReceipt;
 }
 
 export interface ThreadClosedParams {
@@ -1819,6 +1842,7 @@ export interface TurnCancelQueuedParams {
   ref: string;
   index: number;
   clientMutationId: string;
+  expectedInstanceId: string;
   expectedEntryId: string;
 }
 
@@ -1838,6 +1862,7 @@ export interface TurnCompletedParams {
 export interface TurnDrainAsSteerParams {
   ref: string;
   clientMutationId: string;
+  expectedInstanceId: string;
   expectedQueueRevision: number;
   input?: InputItem[];
 }
@@ -1860,6 +1885,7 @@ export interface TurnInterruptParams {
   ref?: string;
   threadId?: string;
   clientMutationId: string;
+  expectedInstanceId: string;
 }
 
 export interface TurnInterruptResponse {
@@ -1870,6 +1896,7 @@ export interface TurnPromoteQueuedAsSteerParams {
   ref: string;
   index: number;
   clientMutationId: string;
+  expectedInstanceId: string;
   expectedEntryId: string;
 }
 
@@ -1880,6 +1907,7 @@ export interface TurnPromoteQueuedAsSteerResponse {
 export interface TurnQueueParams {
   ref: string;
   clientMutationId: string;
+  expectedInstanceId: string;
   input?: InputItem[];
 }
 
@@ -1891,6 +1919,7 @@ export interface TurnStartParams {
   ref?: string;
   threadId?: string;
   clientMutationId: string;
+  expectedInstanceId: string;
   input?: InputItem[];
 }
 
@@ -1909,6 +1938,7 @@ export interface TurnSteerParams {
   ref?: string;
   threadId?: string;
   clientMutationId: string;
+  expectedInstanceId: string;
   input?: InputItem[];
 }
 
@@ -2066,6 +2096,7 @@ export const NOTIFICATION_NAMES = [
   "evener/plugin/updated",
   "evener/thread/resync",
   "evener/task/updated",
+  "evener/goal/updated",
   "evener/sandbox/escalation/requested",
   "evener/sandbox/escalation/resolved",
   "evener/settings/transcriptDisplay/changed",
@@ -2238,6 +2269,7 @@ export interface NotificationTypes {
   "evener/plugin/updated": EmptyParams;
   "evener/thread/resync": ThreadResyncParams;
   "evener/task/updated": TaskUpdatedParams;
+  "evener/goal/updated": GoalUpdatedParams;
   "evener/sandbox/escalation/requested": SandboxEscalationRequested;
   "evener/sandbox/escalation/resolved": SandboxEscalationResolved;
   "evener/settings/transcriptDisplay/changed": TranscriptDisplayChangedParams;

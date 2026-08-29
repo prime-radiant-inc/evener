@@ -143,6 +143,65 @@ func TestDelegateControllerBeginModelRequestBindsPendingEntriesOnce(t *testing.T
 	}
 }
 
+func TestDelegateControllerBoundSteeringRequiresReport(t *testing.T) {
+	c, _ := newDelegateControllerTestHarness(t, 1, 1)
+	seedDelegateControllerIdle(t, c, "dlg_target", "")
+	lease := startDelegateAttentionEvidenceGeneration(t, c, "dlg_target")
+	attachDelegateSteerRuntime(t, c, lease.delegateID, afero.NewMemMapFs())
+	c.mu.Lock()
+	evidence := c.live[lease.delegateID].binding.evidence
+	c.mu.Unlock()
+	if evidence == nil {
+		t.Fatal("CommitStart retained no generation evidence")
+	}
+	if _, err := c.Steer(context.Background(), rootDelegateActor("root-session"), lease.delegateID, "inspect this"); err != nil {
+		t.Fatalf("Steer: %v", err)
+	}
+
+	if _, err := completeDelegateModelRequest(c, lease); err != nil {
+		t.Fatalf("complete model request: %v", err)
+	}
+	snapshot, err := c.completionSnapshot(lease)
+	if err != nil {
+		t.Fatalf("completionSnapshot: %v", err)
+	}
+	if snapshot.requirement != delegateCompletionReportRequired {
+		t.Fatalf("bound steering requirement = %v, want report-required", snapshot.requirement)
+	}
+	c.mu.Lock()
+	retained := c.live[lease.delegateID].binding.evidence
+	c.mu.Unlock()
+	if retained != evidence {
+		t.Fatalf("bound steering replaced generation evidence: before=%p after=%p", evidence, retained)
+	}
+}
+
+func TestDelegateControllerBoundSteeringLegacyBindingWithoutEvidenceDoesNotPanic(t *testing.T) {
+	c, _ := newDelegateControllerTestHarness(t, 1, 1)
+	seedDelegateControllerRunning(t, c, "dlg_target", "")
+	attachDelegateSteerRuntime(t, c, "dlg_target", afero.NewMemMapFs())
+	lease := delegateLease{delegateID: "dlg_target", generation: 1}
+	if _, err := c.Steer(context.Background(), rootDelegateActor("root-session"), lease.delegateID, "legacy steering"); err != nil {
+		t.Fatalf("Steer: %v", err)
+	}
+
+	history, err := completeDelegateModelRequest(c, lease)
+	if err != nil {
+		t.Fatalf("complete legacy model request: %v", err)
+	}
+	if len(history) != 1 || history[0].Text() != "legacy steering" {
+		t.Fatalf("legacy bound history = %#v, want projected steering", history)
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.live[lease.delegateID].binding.evidence != nil {
+		t.Fatal("legacy model binding synthesized production completion evidence")
+	}
+	if len(c.live[lease.delegateID].pendingSteers) != 0 {
+		t.Fatalf("legacy bound steering remained pending: %#v", c.live[lease.delegateID].pendingSteers)
+	}
+}
+
 func TestDelegateControllerBeginModelRequestProjectsInFlightSteersAfterResponseOnce(t *testing.T) {
 	c, _ := newDelegateControllerTestHarness(t, 1, 1)
 	seedDelegateControllerRunning(t, c, "dlg_target", "")
@@ -250,6 +309,42 @@ func TestDelegateControllerSteerAfterRequestBindWaitsForNextRequest(t *testing.T
 	defer c.mu.Unlock()
 	if len(c.live["dlg_target"].pendingSteers) != 0 {
 		t.Fatalf("next request did not bind later steer: %#v", c.live["dlg_target"].pendingSteers)
+	}
+}
+
+func TestDelegateControllerLateSteeringEscalatesOnNextRequest(t *testing.T) {
+	c, _ := newDelegateControllerTestHarness(t, 1, 1)
+	seedDelegateControllerIdle(t, c, "dlg_target", "")
+	lease := startDelegateAttentionEvidenceGeneration(t, c, "dlg_target")
+	attachDelegateSteerRuntime(t, c, lease.delegateID, afero.NewMemMapFs())
+
+	first, err := c.BeginModelRequest(lease)
+	if err != nil {
+		t.Fatalf("BeginModelRequest first: %v", err)
+	}
+	if _, err := c.Steer(context.Background(), rootDelegateActor("root-session"), lease.delegateID, "late steering"); err != nil {
+		t.Fatalf("Steer: %v", err)
+	}
+	if _, err := c.CompleteModelRequest(first, first.runtime.delegateModelHistorySnapshot(), replayScope{}); err != nil {
+		t.Fatalf("CompleteModelRequest first: %v", err)
+	}
+	before, err := c.completionSnapshot(lease)
+	if err != nil {
+		t.Fatalf("completionSnapshot before next request: %v", err)
+	}
+	if before.requirement != delegateCompletionAttentionOnly {
+		t.Fatalf("late steering escalated first request to %v, want attention-only", before.requirement)
+	}
+
+	if _, err := completeDelegateModelRequest(c, lease); err != nil {
+		t.Fatalf("complete next model request: %v", err)
+	}
+	after, err := c.completionSnapshot(lease)
+	if err != nil {
+		t.Fatalf("completionSnapshot after next request: %v", err)
+	}
+	if after.requirement != delegateCompletionReportRequired {
+		t.Fatalf("next request requirement = %v, want report-required", after.requirement)
 	}
 }
 

@@ -606,7 +606,7 @@ test("/reasoning-effort offers zero options for a non-reasoning model", () => {
 
 // --- fire-and-report session actions ---
 
-test("/goal sets the trimmed objective", async () => {
+test("/goal sets the trimmed objective through the threads store commit", async () => {
   const fake = connectFake();
   fake.on("goal/set", () => ({ started: true }));
   focusSession("ref_a");
@@ -617,6 +617,11 @@ test("/goal sets the trimmed objective", async () => {
   expect(fake.calls.find((call) => call.method === "goal/set")?.params).toMatchObject({
     ref: "ref_a",
     objective: "ship it",
+  });
+  expect(threadsStore.getState().threads.get("ref_a")?.goal).toEqual({
+    objective: "ship it",
+    status: "active",
+    iterations: 0,
   });
 });
 

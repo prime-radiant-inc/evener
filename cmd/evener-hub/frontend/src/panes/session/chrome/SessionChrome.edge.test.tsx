@@ -25,7 +25,6 @@ import { keyID } from "../../../stores/navigation/types";
 import { resetThreadsStoreForTests, threadsStore } from "../../../stores/threads";
 import { Toast } from "../../../widgets";
 import "../../sessionPanels";
-import { resetGoalOverridesForTests } from "./GoalControl";
 import { SessionChrome as SessionChromeView } from "./SessionChrome";
 
 const CAPABILITIES: ThreadCapabilities = {
@@ -144,7 +143,6 @@ beforeEach(() => {
   resetThreadsStoreForTests();
   resetWorkspaceStoreForTests();
   resetActivitySummaryStoreForTests();
-  resetGoalOverridesForTests();
   resetNavigationStoreForTests();
 });
 

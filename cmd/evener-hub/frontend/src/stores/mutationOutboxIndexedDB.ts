@@ -311,11 +311,15 @@ export class MutationOutboxIndexedDB {
     });
   }
 
-  async discardRecovery(clientMutationId: string): Promise<boolean> {
+  async discardRecovery(clientMutationId: string, shouldDiscard?: () => boolean): Promise<boolean> {
     return this.#write(RECOVERY_STORE, "discardRecovery", async (transaction) => {
       const store = transaction.objectStore(RECOVERY_STORE);
       const record = await requestResult<MutationRecoveryRecord | undefined>(store.get(clientMutationId));
       if (!record) return false;
+      // Evaluate immediately at the durable deletion boundary, after every
+      // asynchronous prerequisite. Callers use this to invalidate a discard
+      // that became stale while it was waiting to reach storage.
+      if (shouldDiscard && !shouldDiscard()) return false;
       await requestResult(store.delete(clientMutationId));
       return true;
     });

@@ -174,22 +174,15 @@ export interface ThreadsStoreState {
   // Sets or clears the session's /goal objective (an empty objective
   // clears it). Returns whether the goal loop started immediately (false
   // when cleared, or when a turn is already running and the goal picks up
-  // after it) - the goal is set either way. No live push exists for goal
-  // state (appwire/protocol.go's Notifications catalog has no goal-changed
-  // entry): reflecting this locally is left to the caller (T5 owns that
-  // "snapshot + optimistic local update" per the wave plan), not this
-  // store, which stays a plain fire-and-report wire call like setModel/
-  // setReasoningEffort/rename/compact/shutdown above.
+  // after it). A successful response commits the known goal state locally;
+  // the structured goal update push keeps every other client synchronized.
   setGoal(ref: string, objective: string): Promise<GoalSetResponse>;
   rename(ref: string, name: string): Promise<void>;
   compact(ref: string): Promise<void>;
-  // Clears the thread's conversation. Unlike the actions above, thread/clear
-  // has no corresponding live notification, so its response's fresh Thread
-  // snapshot is the only signal the transcript is now empty; this action
-  // applies that snapshot to whichever of threads/watchedThreads track
-  // `ref` (mirroring resolveEscalation's own dual-map update below) so the
-  // pane doesn't keep showing stale turns until some unrelated future
-  // notification or reconnect.
+  // Clears the thread's conversation through the durable mutation outbox. The
+  // daemon's response carries the replacement snapshot; the dispatcher hands
+  // it to applyClearResponse before settling the intent so both real and lean
+  // views switch to the new instance together.
   clearThread(ref: string): Promise<void>;
   shutdown(ref: string): Promise<void>;
   // Forks a thread from a source turn, or - with opts.aside - forks the
@@ -248,6 +241,19 @@ const refCounts = new Map<string, number>();
 // claims the ref. An ensure that fails after its pane lifecycle was retired
 // must not roll back a replacement lifecycle's claim.
 const ensureGenerations = new Map<string, number>();
+// A generation changes at every local goal request and every accepted goal
+// authority (a matching notification or full hydration). A request response may
+// publish its derived local state only while its generation is still current, so
+// neither a later request nor accepted authoritative state that arrived during
+// the await can be overwritten by that delayed response. This is independent of
+// producer age: an older producer that sends no goal notification leaves the
+// request generation current and keeps the existing immediate local commit
+// behavior.
+const goalUpdateGenerations = new Map<string, number>();
+
+function invalidateGoalResponseFallback(ref: string): void {
+  goalUpdateGenerations.set(ref, (goalUpdateGenerations.get(ref) ?? 0) + 1);
+}
 const inflightHydrates = new Map<string, Promise<ThreadModel | null>>();
 const inflightHydrateClients = new Map<string, AppwireClientLike>();
 const inflightHydrateEpochs = new Map<string, number>();
@@ -565,6 +571,30 @@ function notifyMutationPersistence(targetRefs: Iterable<string>): void {
   for (const listener of mutationPersistenceListeners) listener(refs);
 }
 
+function applyClearResponse(targetRef: string, response: ThreadClearResponse): void {
+  const now = Date.now();
+  const model = hydrateThread({ thread: response.thread }, targetRef, now);
+  // A clear response is a newer authoritative cut than any thread/read that
+  // was already in flight for this ref. Retire those reads before publishing
+  // the replacement so a late pre-clear snapshot cannot overwrite it.
+  pendingThreadHydrations.delete(targetRef);
+  pendingWatchedHydrations.delete(targetRef);
+  // One setState for both maps (putThreadModels), so a synchronous subscriber
+  // never sees threads cleared while watchedThreads still holds the old turns;
+  // both routing indexes are maintained in the same step.
+  const stateBefore = threadsStore.getState();
+  putThreadModels(
+    targetRef,
+    stateBefore.threads.has(targetRef) ? model : undefined,
+    stateBefore.watchedThreads.has(targetRef) ? model : undefined,
+  );
+  if (stateBefore.threads.has(targetRef)) {
+    threadsStore.setState((state) => ({
+      hydrations: new Map(state.hydrations).set(targetRef, (state.hydrations.get(targetRef) ?? 0) + 1),
+    }));
+  }
+}
+
 function currentDispatchClient(targetRef?: string): AppwireClientLike | null {
   if (wiredClient !== dispatchReadyClient || readyEpoch !== dispatchReadyEpoch) return null;
   if (targetRef && !dispatchableMutationRefs.has(targetRef)) return null;
@@ -656,6 +686,7 @@ function getMutationRuntime(): MutationRuntime | null {
     onStorageChange: (targetRefs) => {
       if (isCurrentMutationRuntime(runtime)) notifyMutationPersistence(targetRefs);
     },
+    onClearResponse: applyClearResponse,
   });
   const outbox = new MutationOutbox(storage, {
     isReady: () => isCurrentMutationRuntime(runtime) && currentDispatchClient() !== null,
@@ -736,10 +767,14 @@ export async function updateRecoveryMutation(
   return true;
 }
 
-export async function discardRecoveryMutation(clientMutationId: string, targetRef: string): Promise<boolean> {
+export async function discardRecoveryMutation(
+  clientMutationId: string,
+  targetRef: string,
+  shouldDiscard?: () => boolean,
+): Promise<boolean> {
   const runtime = requireMutationRuntime();
   await runtime.start;
-  const discarded = await runtime.storage.discardRecovery(clientMutationId);
+  const discarded = await runtime.storage.discardRecovery(clientMutationId, shouldDiscard);
   if (discarded) notifyMutationPersistence([targetRef]);
   return discarded;
 }
@@ -937,7 +972,9 @@ function buildInput(text: string, attachments?: InputAttachment[]): InputItem[] 
   const input: InputItem[] = [];
   if (text.trim()) input.push({ type: "text", text });
   for (const att of attachments ?? []) {
-    input.push({ type: "image", mediaType: att.mediaType, data: att.data, name: att.name });
+    const image: InputItem = { type: "image", mediaType: att.mediaType, data: att.data };
+    if (att.name !== undefined) image.name = att.name;
+    input.push(image);
   }
   return input;
 }
@@ -957,18 +994,28 @@ function durableAttachments(attachments?: InputAttachment[]): MutationAttachment
   }));
 }
 
+function trackedThreadModel(ref: string): ThreadModel | undefined {
+  const state = threadsStore.getState();
+  return state.threads.get(ref) ?? state.watchedThreads.get(ref);
+}
+
+function threadInstanceID(model: ThreadModel | undefined): string | undefined {
+  return model?.instanceId ?? model?.threadId;
+}
+
 function composerMutationIntent(
   ref: string,
   route: ComposerMutationRoute,
   text: string,
   attachments?: InputAttachment[],
 ): MutationIntent {
-  const model = threadsStore.getState().threads.get(ref);
+  const model = trackedThreadModel(ref);
   // Translated HERE, not inside buildInput: this is the submit boundary. The
   // untranslated text rides along as composerText so a record that fails and
   // lands in recovery can be restored into a composer with its marker anchors
   // intact - the tiles remove those anchors, and prose is not one.
   const input = buildInput(translateAttachmentMarkers(text, attachments), attachments);
+  const expectedInstanceId = threadInstanceID(model);
   const base = {
     targetRef: ref,
     threadId: model?.threadId,
@@ -979,7 +1026,7 @@ function composerMutationIntent(
     return {
       ...base,
       method: "turn/start",
-      payload: { ref, input },
+      payload: { ref, expectedInstanceId, input },
       optimisticDisplay: { method: "turn/start", input },
     };
   }
@@ -988,7 +1035,7 @@ function composerMutationIntent(
     return {
       ...base,
       method,
-      payload: { ref, input },
+      payload: { ref, expectedInstanceId, input },
       optimisticDisplay: { method, input },
     };
   }
@@ -999,7 +1046,7 @@ function composerMutationIntent(
   return {
     ...base,
     method: "turn/drainAsSteer",
-    payload: { ref, expectedQueueRevision, input },
+    payload: { ref, expectedInstanceId, expectedQueueRevision, input },
     optimisticDisplay: { method: "turn/drainAsSteer", input },
   };
 }
@@ -1051,6 +1098,25 @@ function mapConflict(err: unknown): Error {
     return new ConflictError(err.message);
   }
   return err instanceof Error ? err : new Error(String(err));
+}
+
+function clearMutationIntent(ref: string): MutationIntent {
+  const model = trackedThreadModel(ref);
+  if (!model) throw new Error(`threads store: cannot clear unhydrated thread ${ref}`);
+  const expectedInstanceId = threadInstanceID(model);
+  if (!expectedInstanceId) throw new Error(`threads store: thread ${ref} has no instance identity`);
+  return {
+    targetRef: ref,
+    threadId: model.threadId,
+    method: "thread/clear",
+    payload: { ref, expectedInstanceId },
+    attachments: [],
+    optimisticDisplay: { method: "thread/clear" },
+  };
+}
+
+function expectedInstanceID(ref: string): string | undefined {
+  return threadInstanceID(trackedThreadModel(ref));
 }
 
 function notificationRef(n: AnyNotification): string | undefined {
@@ -1128,12 +1194,14 @@ function collectPendingRefs(
   pendingHydrations: Map<string, PendingThreadHydration>,
   n: AnyNotification,
   refs: Set<string>,
+  targetedRefs?: Set<string>,
 ): void {
   const ref = notificationRef(n);
   for (const [pendingRef, pending] of pendingHydrations) {
     if (targetsPendingHydration(n, pending)) {
       bufferPendingNotification(pending, n);
       refs.add(pendingRef);
+      targetedRefs?.add(pendingRef);
     } else if (ref === pendingRef) {
       refs.add(pendingRef);
     }
@@ -1211,6 +1279,7 @@ function publishThreadHydration(ref: string, pending: PendingThreadHydration, mo
 
   pendingThreadHydrations.delete(ref);
   putThreadModel(ref, hydrated);
+  invalidateGoalResponseFallback(ref);
   threadsStore.setState((s) => {
     const hydrations = new Map(s.hydrations);
     hydrations.set(ref, (hydrations.get(ref) ?? 0) + 1);
@@ -1310,28 +1379,34 @@ function applyToMap(
   n: AnyNotification,
   now: number,
   skippedRefs?: ReadonlySet<string>,
-): { next: Map<string, ThreadModel> | null; changedRefs: string[] } {
+): { next: Map<string, ThreadModel> | null; changedRefs: string[]; acceptedRefs: string[] } {
   let next: Map<string, ThreadModel> | null = null;
   const changedRefs: string[] = [];
+  const acceptedRefs: string[] = [];
   const routed = routeByNotificationKey(map, index, n, skippedRefs);
-  if (!routed) return { next, changedRefs };
+  if (!routed) return { next, changedRefs, acceptedRefs };
+  const accept = (model: ThreadModel): void => {
+    acceptedRefs.push(model.ref);
+  };
   if (Array.isArray(routed)) {
     for (const model of routed) {
+      accept(model);
       const updated = applyNotification(model, n, now);
       if (updated === model) continue;
       next ??= new Map(map);
       next.set(model.ref, updated);
       changedRefs.push(model.ref);
     }
-    return { next, changedRefs };
+    return { next, changedRefs, acceptedRefs };
   }
+  accept(routed);
   const updated = applyNotification(routed, n, now);
   if (updated !== routed) {
     next = new Map(map);
     next.set(routed.ref, updated);
     changedRefs.push(routed.ref);
   }
-  return { next, changedRefs };
+  return { next, changedRefs, acceptedRefs };
 }
 
 function handleNotification(n: AnyNotification): void {
@@ -1356,6 +1431,7 @@ function handleNotification(n: AnyNotification): void {
   }
   const now = Date.now();
   const { threads, frameTimes, watchedThreads } = threadsStore.getState();
+  const acceptedGoalRefs = new Set<string>();
   // Pending-hydration routing: pendingThreadHydrations/pendingWatchedHydrations
   // are intentionally left as plain map iterations (NOT indexed). They are
   // usually tiny — at most one entry per in-flight thread/read (bounded by
@@ -1368,17 +1444,36 @@ function handleNotification(n: AnyNotification): void {
   let pendingRefs: ReadonlySet<string> = EMPTY_PENDING_REFS;
   if (pendingThreadHydrations.size > 0) {
     const refs = new Set<string>();
-    collectPendingRefs(pendingThreadHydrations, n, refs);
+    const targeted = n.method === "evener/goal/updated" ? new Set<string>() : undefined;
+    collectPendingRefs(pendingThreadHydrations, n, refs, targeted);
     if (refs.size > 0) pendingRefs = refs;
+    if (targeted) for (const ref of targeted) acceptedGoalRefs.add(ref);
   }
   let pendingWatchedRefs: ReadonlySet<string> = EMPTY_PENDING_REFS;
   if (pendingWatchedHydrations.size > 0) {
     const refs = new Set<string>();
-    collectPendingRefs(pendingWatchedHydrations, n, refs);
+    const targeted = n.method === "evener/goal/updated" ? new Set<string>() : undefined;
+    collectPendingRefs(pendingWatchedHydrations, n, refs, targeted);
     if (refs.size > 0) pendingWatchedRefs = refs;
+    if (targeted) for (const ref of targeted) acceptedGoalRefs.add(ref);
   }
-  const { next: nextThreads, changedRefs: changedThreads } = applyToMap(threads, threadsIndex, n, now, pendingRefs);
-  const { next: nextWatchedThreads } = applyToMap(watchedThreads, watchedThreadsIndex, n, now, pendingWatchedRefs);
+  const {
+    next: nextThreads,
+    changedRefs: changedThreads,
+    acceptedRefs: acceptedThreads,
+  } = applyToMap(threads, threadsIndex, n, now, pendingRefs);
+  const { next: nextWatchedThreads, acceptedRefs: acceptedWatchedThreads } = applyToMap(
+    watchedThreads,
+    watchedThreadsIndex,
+    n,
+    now,
+    pendingWatchedRefs,
+  );
+  if (n.method === "evener/goal/updated") {
+    for (const ref of acceptedThreads) acceptedGoalRefs.add(ref);
+    for (const ref of acceptedWatchedThreads) acceptedGoalRefs.add(ref);
+    for (const ref of acceptedGoalRefs) invalidateGoalResponseFallback(ref);
+  }
   if (!nextThreads && !nextWatchedThreads) return;
 
   const patch: Partial<ThreadsStoreState> = {};
@@ -1403,6 +1498,7 @@ function storeWatchedModel(ref: string, model: ThreadModel, includeTurns: boolea
   const hydratedRich = watchHydratedIncludeTurns.get(ref) ?? false;
   if (!includeTurns && hydratedRich) return;
   watchHydratedIncludeTurns.set(ref, hydratedRich || includeTurns);
+  invalidateGoalResponseFallback(ref);
   putWatchedThreadModel(ref, model);
 }
 
@@ -1859,6 +1955,18 @@ async function requireReadyClient(timeoutMs = REQUIRE_READY_TIMEOUT_MS): Promise
   return client;
 }
 
+function replaceThread(
+  models: Map<string, ThreadModel>,
+  ref: string,
+  update: (model: ThreadModel) => ThreadModel,
+): Map<string, ThreadModel> {
+  const current = models.get(ref);
+  if (!current) return models;
+  const next = new Map(models);
+  next.set(ref, update(current));
+  return next;
+}
+
 export const threadsStore = createStore<ThreadsStoreState>(() => ({
   threads: new Map(),
   frameTimes: new Map(),
@@ -2177,7 +2285,12 @@ export const threadsStore = createStore<ThreadsStoreState>(() => ({
     // drain, a cold client -- and stale in the race where a turn rolls over
     // between the click and the request. Neither refusal is what the button
     // means. "Stop" means stop what you are doing.
-    await enqueueMutation(ref, "turn/interrupt", { ref }, { method: "turn/interrupt" });
+    await enqueueMutation(
+      ref,
+      "turn/interrupt",
+      { ref, expectedInstanceId: expectedInstanceID(ref) },
+      { method: "turn/interrupt" },
+    );
   },
 
   async drainAsSteer(ref, text, attachments) {
@@ -2191,7 +2304,7 @@ export const threadsStore = createStore<ThreadsStoreState>(() => ({
     await enqueueMutation(
       ref,
       "turn/promoteQueuedAsSteer",
-      { ref, index, expectedEntryId },
+      { ref, index, expectedInstanceId: expectedInstanceID(ref), expectedEntryId },
       { method: "turn/promoteQueuedAsSteer", index, expectedEntryId },
     );
   },
@@ -2200,7 +2313,7 @@ export const threadsStore = createStore<ThreadsStoreState>(() => ({
     await enqueueMutation(
       ref,
       "turn/cancelQueued",
-      { ref, index, expectedEntryId },
+      { ref, index, expectedInstanceId: expectedInstanceID(ref), expectedEntryId },
       { method: "turn/cancelQueued", index, expectedEntryId },
     );
   },
@@ -2234,8 +2347,19 @@ export const threadsStore = createStore<ThreadsStoreState>(() => ({
 
   async setGoal(ref, objective) {
     const client = requireClient();
+    const generation = (goalUpdateGenerations.get(ref) ?? 0) + 1;
+    goalUpdateGenerations.set(ref, generation);
     try {
-      return await client.request("goal/set", { ref, objective });
+      const response = await client.request("goal/set", { ref, objective });
+      if (goalUpdateGenerations.get(ref) !== generation) return response;
+      const goal = objective === "" ? null : { objective, status: "active", iterations: 0 };
+      threadsStore.setState((state) => {
+        const threads = replaceThread(state.threads, ref, (model) => ({ ...model, goal }));
+        const watchedThreads = replaceThread(state.watchedThreads, ref, (model) => ({ ...model, goal }));
+        if (threads === state.threads && watchedThreads === state.watchedThreads) return state;
+        return { threads, watchedThreads };
+      });
+      return response;
     } catch (err) {
       throw mapConflict(err);
     }
@@ -2260,25 +2384,15 @@ export const threadsStore = createStore<ThreadsStoreState>(() => ({
   },
 
   async clearThread(ref) {
-    const client = requireClient();
-    let resp: ThreadClearResponse;
-    try {
-      resp = await client.request("thread/clear", { ref });
-    } catch (err) {
-      throw mapConflict(err);
-    }
-    const now = Date.now();
-    const model = hydrateThread({ thread: resp.thread }, ref, now);
-    // One setState for both maps (putThreadModels): the pre-index code
-    // patched threads and watchedThreads in a single atomic step, and a
-    // synchronous subscriber must never observe the half-updated state two
-    // sequential puts would show (threads cleared, watchedThreads stale).
-    const stateBefore = threadsStore.getState();
-    putThreadModels(
-      ref,
-      stateBefore.threads.has(ref) ? model : undefined,
-      stateBefore.watchedThreads.has(ref) ? model : undefined,
-    );
+    const runtime = requireMutationRuntime();
+    await runtime.start;
+    await enqueueMutationIntent(clearMutationIntent(ref));
+    // A clear is fenced by the model's instance id, so it can dispatch while
+    // an older resync read is in flight. Its response is the newer cut and
+    // retires that read in applyClearResponse.
+    dispatchableMutationRefs.add(ref);
+    await runtime.dispatcher.dispatchTargets([ref]);
+    await refreshMutationPins(runtime, [ref]);
   },
 
   async shutdown(ref) {
@@ -2447,6 +2561,7 @@ export function resetThreadsStoreForTests(): void {
   dispatchReadyEpoch = -1;
   refCounts.clear();
   ensureGenerations.clear();
+  goalUpdateGenerations.clear();
   inflightHydrates.clear();
   inflightHydrateClients.clear();
   inflightHydrateEpochs.clear();

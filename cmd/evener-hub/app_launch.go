@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"maps"
+	"os"
 	"time"
 
 	"primeradiant.com/evener/appwire"
@@ -15,6 +16,10 @@ import (
 type hubLaunchController struct {
 	stateRoot string
 	now       func() time.Time
+	// getenv reads the fallback env (EVENER_MODEL etc.) for
+	// ApplyRuntimeDefaults. A seam so tests inject a fixed environment
+	// instead of reading the ambient one (deterministic default tests).
+	getenv func(string) string
 }
 
 var (
@@ -23,7 +28,14 @@ var (
 )
 
 func newHubLaunchController(stateRoot string) *hubLaunchController {
-	return &hubLaunchController{stateRoot: stateRoot, now: time.Now}
+	return newHubLaunchControllerWithEnv(stateRoot, os.Getenv)
+}
+
+func newHubLaunchControllerWithEnv(stateRoot string, getenv func(string) string) *hubLaunchController {
+	if getenv == nil {
+		getenv = os.Getenv
+	}
+	return &hubLaunchController{stateRoot: stateRoot, now: time.Now, getenv: getenv}
 }
 
 func (c *hubLaunchController) Schema(ctx context.Context, params appwire.EmptyParams) (appwire.LaunchOptionSchemaResponse, error) {
@@ -34,17 +46,21 @@ func (c *hubLaunchController) Schema(ctx context.Context, params appwire.EmptyPa
 	}
 	for _, opt := range opts {
 		wire := appwire.LaunchOption{
-			Field:         opt.Field,
-			WireField:     opt.WireField,
-			Label:         opt.Label,
-			Description:   opt.Description,
-			Group:         string(opt.Group),
-			Kind:          string(opt.Kind),
-			PathKind:      string(opt.PathKind),
-			Repeatable:    opt.Repeatable,
-			PerLaunch:     opt.PerLaunch,
-			DebugOnly:     opt.DebugOnly,
-			DriverSupport: cloneBoolMap(opt.DriverSupport),
+			Field:               opt.Field,
+			WireField:           opt.WireField,
+			Label:               opt.Label,
+			Description:         opt.Description,
+			Group:               string(opt.Group),
+			Kind:                string(opt.Kind),
+			PathKind:            string(opt.PathKind),
+			Repeatable:          opt.Repeatable,
+			PerLaunch:           opt.PerLaunch,
+			DebugOnly:           opt.DebugOnly,
+			DriverSupport:       cloneBoolMap(opt.DriverSupport),
+			BuiltinDefault:      opt.BuiltinDefault,
+			BuiltinDefaultInt:   opt.BuiltinDefaultInt,
+			BuiltinDefaultBool:  opt.BuiltinDefaultBool,
+			BuiltinDefaultLabel: opt.BuiltinDefaultLabel,
 		}
 		for _, layer := range opt.DefaultableLayers {
 			wire.DefaultableLayers = append(wire.DefaultableLayers, string(layer))
@@ -73,7 +89,10 @@ func (c *hubLaunchController) Resolve(ctx context.Context, params appwire.Launch
 	if err != nil {
 		return appwire.LaunchConfigResolved{}, err
 	}
-	return launchconfig.ResolvedToWire(resolved), nil
+	// The resolve RPC answers "what would a session started now run with",
+	// so the effective view carries the env and builtin floors, not just the
+	// file layers. Layers still win; the floors only fill unset fields.
+	return launchconfig.ResolvedToWire(launchconfig.ApplyRuntimeDefaults(resolved, c.getenv, launchconfig.LaunchOptionSchema())), nil
 }
 
 func cloneBoolMap(in map[string]bool) map[string]bool {
@@ -149,7 +168,9 @@ func (c *hubLaunchController) SetLayer(ctx context.Context, params appwire.Launc
 	if err != nil {
 		return appwire.LaunchConfigResolved{}, err
 	}
-	return launchconfig.ResolvedToWire(resolved), nil
+	// Same effective-view contract as Resolve: the save returns what a
+	// session started now would run with, runtime floors included.
+	return launchconfig.ResolvedToWire(launchconfig.ApplyRuntimeDefaults(resolved, c.getenv, launchconfig.LaunchOptionSchema())), nil
 }
 
 func (c *hubLaunchController) TrustRepo(ctx context.Context, params appwire.LaunchConfigTrustRepoParams) (appwire.LaunchConfigResolved, error) {
@@ -199,5 +220,5 @@ func (c *hubLaunchController) TrustRepo(ctx context.Context, params appwire.Laun
 	if err != nil {
 		return appwire.LaunchConfigResolved{}, err
 	}
-	return launchconfig.ResolvedToWire(resolved), nil
+	return launchconfig.ResolvedToWire(launchconfig.ApplyRuntimeDefaults(resolved, c.getenv, launchconfig.LaunchOptionSchema())), nil
 }

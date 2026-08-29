@@ -341,13 +341,13 @@ func TestMutationShapesRequireIdentityAndPreconditions(t *testing.T) {
 		method string
 		valid  string
 	}{
-		{MethodTurnStart, `{"clientMutationId":"m1"}`},
-		{MethodTurnSteer, `{"clientMutationId":"m1","expectedTurnId":"t1"}`},
-		{MethodTurnInterrupt, `{"clientMutationId":"m1","expectedTurnId":"t1"}`},
-		{MethodTurnQueue, `{"clientMutationId":"m1","expectedTurnId":"t1"}`},
-		{MethodTurnDrainAsSteer, `{"clientMutationId":"m1","expectedTurnId":"t1","expectedQueueRevision":0}`},
-		{MethodTurnPromoteQueuedAsSteer, `{"clientMutationId":"m1","expectedTurnId":"t1","expectedEntryId":"q1"}`},
-		{MethodTurnCancelQueued, `{"clientMutationId":"m1","expectedEntryId":"q1"}`},
+		{MethodTurnStart, `{"clientMutationId":"m1","expectedInstanceId":"i1"}`},
+		{MethodTurnSteer, `{"clientMutationId":"m1","expectedInstanceId":"i1"}`},
+		{MethodTurnInterrupt, `{"clientMutationId":"m1","expectedInstanceId":"i1"}`},
+		{MethodTurnQueue, `{"clientMutationId":"m1","expectedInstanceId":"i1"}`},
+		{MethodTurnDrainAsSteer, `{"clientMutationId":"m1","expectedInstanceId":"i1","expectedQueueRevision":0}`},
+		{MethodTurnPromoteQueuedAsSteer, `{"clientMutationId":"m1","expectedInstanceId":"i1","expectedEntryId":"q1"}`},
+		{MethodTurnCancelQueued, `{"clientMutationId":"m1","expectedInstanceId":"i1","expectedEntryId":"q1"}`},
 	}
 	for _, tc := range tests {
 		t.Run(tc.method, func(t *testing.T) {
@@ -376,7 +376,7 @@ func TestMutationExpectedQueueRevisionRequiresUnsignedInteger(t *testing.T) {
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			raw := json.RawMessage(`{"clientMutationId":"m1","expectedTurnId":"t1","expectedQueueRevision":` + tc.value + `}`)
+			raw := json.RawMessage(`{"clientMutationId":"m1","expectedInstanceId":"i1","expectedQueueRevision":` + tc.value + `}`)
 			err := ValidateMutationParams(MethodTurnDrainAsSteer, raw)
 			if tc.wantErr && err == nil {
 				t.Fatal("invalid expectedQueueRevision accepted")
@@ -443,8 +443,8 @@ func TestJobsCatalogEntries(t *testing.T) {
 
 // TestControlMutationsRequireNoTurnID pins the flag-day validator's half of the
 // session-scoped rule: control applies to whatever is running, so no control
-// mutation may demand a turn id -- while the identity every retry-safe mutation
-// needs, and the preconditions that name a real object, are still required.
+// mutation may demand a turn id -- while the stable workspace identity and
+// current instance fence every retry-safe mutation.
 func TestControlMutationsRequireNoTurnID(t *testing.T) {
 	tests := []struct {
 		name    string
@@ -455,17 +455,17 @@ func TestControlMutationsRequireNoTurnID(t *testing.T) {
 		{
 			name:   "interrupt needs no expected turn",
 			method: MethodTurnInterrupt,
-			params: `{"clientMutationId":"m1"}`,
+			params: `{"clientMutationId":"m1","expectedInstanceId":"i1"}`,
 		},
 		{
 			name:   "steer needs no expected turn",
 			method: MethodTurnSteer,
-			params: `{"clientMutationId":"m1"}`,
+			params: `{"clientMutationId":"m1","expectedInstanceId":"i1"}`,
 		},
 		{
 			name:   "queue needs no expected turn",
 			method: MethodTurnQueue,
-			params: `{"clientMutationId":"m1"}`,
+			params: `{"clientMutationId":"m1","expectedInstanceId":"i1"}`,
 		},
 		{
 			name:    "interrupt still needs an identity",
@@ -476,7 +476,7 @@ func TestControlMutationsRequireNoTurnID(t *testing.T) {
 		{
 			name:   "drain needs the queue revision it swaps against, not a turn",
 			method: MethodTurnDrainAsSteer,
-			params: `{"clientMutationId":"m1","expectedQueueRevision":3}`,
+			params: `{"clientMutationId":"m1","expectedInstanceId":"i1","expectedQueueRevision":3}`,
 		},
 		{
 			name:    "drain without its queue revision is still refused",
@@ -487,7 +487,7 @@ func TestControlMutationsRequireNoTurnID(t *testing.T) {
 		{
 			name:   "promote needs the entry it moves, not a turn",
 			method: MethodTurnPromoteQueuedAsSteer,
-			params: `{"clientMutationId":"m1","expectedEntryId":"qe_1"}`,
+			params: `{"clientMutationId":"m1","expectedInstanceId":"i1","expectedEntryId":"qe_1"}`,
 		},
 		{
 			name:    "promote without its entry is still refused",

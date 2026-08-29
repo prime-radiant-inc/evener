@@ -287,9 +287,10 @@ func awaitSessionControlLifecycle(t *testing.T, lifecycle *sessionControlLifecyc
 func startHeldClientMutationTurn(t *testing.T, lifecycle *sessionControlLifecycle, mutationID, text string) appwire.TurnStartResponse {
 	t.Helper()
 	response, err := lifecycle.client.TurnStart(lifecycle.ctx, appwire.TurnStartParams{
-		ClientMutationID: mutationID,
-		Ref:              lifecycle.ref,
-		Input:            []appwire.InputItem{{Type: "text", Text: text}},
+		ClientMutationID:   mutationID,
+		ExpectedInstanceID: strings.TrimPrefix(lifecycle.ref, "local:"),
+		Ref:                lifecycle.ref,
+		Input:              []appwire.InputItem{{Type: "text", Text: text}},
 	})
 	if err != nil {
 		t.Fatalf("TurnStart: %v", err)
@@ -329,9 +330,10 @@ func TestRunServeRetrySafeTurnPublishesControllableStableIdentity(t *testing.T) 
 			t.Fatal("thread/read published no active turn while processing")
 		}
 		if err := lifecycle.client.TurnSteer(lifecycle.ctx, appwire.TurnSteerParams{
-			ClientMutationID: "stable-steer",
-			Ref:              lifecycle.ref,
-			Input:            []appwire.InputItem{{Type: "text", Text: "steer accepted"}},
+			ClientMutationID:   "stable-steer",
+			ExpectedInstanceID: strings.TrimPrefix(lifecycle.ref, "local:"),
+			Ref:                lifecycle.ref,
+			Input:              []appwire.InputItem{{Type: "text", Text: "steer accepted"}},
 		}); err != nil {
 			t.Fatalf("TurnSteer with published active ID %q: %v", activeTurnID, err)
 		}
@@ -372,8 +374,9 @@ func TestRunServeRetrySafeTurnPublishesControllableStableIdentity(t *testing.T) 
 		stopDone := make(chan error, 1)
 		go func() {
 			stopDone <- lifecycle.client.TurnInterrupt(lifecycle.ctx, appwire.TurnInterruptParams{
-				ClientMutationID: "stable-stop",
-				Ref:              lifecycle.ref,
+				ClientMutationID:   "stable-stop",
+				ExpectedInstanceID: strings.TrimPrefix(lifecycle.ref, "local:"),
+				Ref:                lifecycle.ref,
 			})
 		}()
 		awaitSessionControlLifecycle(t, lifecycle, lifecycle.server.interruptEntered, "interrupt handler entry")
@@ -470,9 +473,10 @@ func TestRunServe_StreamErrorPublishesIdleStatus(t *testing.T) {
 
 	ref := appwire.Ref{SourceID: "local", ThreadID: entry.SessionID}.String()
 	if _, err := client.TurnStart(ctx, appwire.TurnStartParams{
-		ClientMutationID: "stream-error-turn",
-		Ref:              ref,
-		Input:            []appwire.InputItem{{Type: "text", Text: "trigger a closed stream"}},
+		ClientMutationID:   "stream-error-turn",
+		ExpectedInstanceID: entry.SessionID,
+		Ref:                ref,
+		Input:              []appwire.InputItem{{Type: "text", Text: "trigger a closed stream"}},
 	}); err != nil {
 		t.Fatalf("TurnStart: %v", err)
 	}
@@ -546,18 +550,18 @@ func TestHoldServeStateForAwaitingWake(t *testing.T) {
 	}
 }
 
-// errClearProbe is the injected failure the /clear tests drive their fallible
+// errClearProbe is the injected failure the thread/clear tests drive their fallible
 // steps with. It is deliberately not a sentinel any production path inspects:
 // the contract under test is "any failure leaves the old identity intact",
 // not "this particular error does".
 var errClearProbe = errors.New("clear probe failure")
 
-// oldClearInputMarker is written into the OLD thread's snapshot before /clear
+// oldClearInputMarker is written into the OLD thread's snapshot before thread/clear
 // runs, so a replacement that leaks the previous authority into the new thread
 // is visible in thread/read rather than merely inferable.
 const oldClearInputMarker = "OLD-THREAD-INPUT"
 
-// clearTestState records what /clear did, in order, across the real daemon
+// clearTestState records what thread/clear did, in order, across the real daemon
 // server and the injected serveDeps. Every step it records is a production
 // call site; nothing here stands in for Evener internals.
 type clearTestState struct {
@@ -609,11 +613,12 @@ type clearIdentityServer struct {
 	*server.Server
 
 	state    *clearTestState
-	clear    func(context.Context) error
+	clear    func(context.Context, appwire.ThreadClearParams) error
+	jobs     func(appwire.JobsListParams) (any, error)
 	shutdown func()
 	// envelopeSource is the one seam the daemon reads live session state
 	// through. Capturing it lets this test observe WHICH session the daemon
-	// resolves after /clear, which is what the meta callback used to prove.
+	// resolves after thread/clear, which is what the meta callback used to prove.
 	envelopeSource server.ThreadEnvelopeSource
 }
 
@@ -629,9 +634,14 @@ func (s *clearIdentityServer) ReplaceAppIdentity(prepared server.PreparedAppIden
 	s.Server.ReplaceAppIdentity(prepared, activate)
 }
 
-func (s *clearIdentityServer) SetClearFunc(fn func(context.Context) error) {
+func (s *clearIdentityServer) SetClearFunc(fn func(context.Context, appwire.ThreadClearParams) error) {
 	s.clear = fn
 	s.Server.SetClearFunc(fn)
+}
+
+func (s *clearIdentityServer) SetJobsFunc(fn func(appwire.JobsListParams) (any, error)) {
+	s.jobs = fn
+	s.Server.SetJobsFunc(fn)
 }
 
 func (s *clearIdentityServer) SetShutdownFunc(fn func()) {
@@ -685,7 +695,7 @@ func newClearServeDeps(t *testing.T) (serveDeps, *clearTestState, []string) {
 		return state.srv.AppServer().SubscriberCount(id)
 	}
 	prepare := deps.prepareAppIdentity
-	deps.prepareAppIdentity = func(sourceID, threadID, transcriptPath string) (server.PreparedAppIdentity, error) {
+	deps.prepareAppIdentity = func(sourceID, threadID, ref, transcriptPath string) (server.PreparedAppIdentity, error) {
 		state.mu.Lock()
 		state.prepareCalls++
 		fail := state.failPrepareFrom > 0 && state.prepareCalls >= state.failPrepareFrom
@@ -694,7 +704,7 @@ func newClearServeDeps(t *testing.T) (serveDeps, *clearTestState, []string) {
 		if fail {
 			return server.PreparedAppIdentity{}, errClearProbe
 		}
-		return prepare(sourceID, threadID, transcriptPath)
+		return prepare(sourceID, threadID, ref, transcriptPath)
 	}
 	updateSessionID := deps.updateSessionID
 	deps.updateSessionID = func(reg *rvreg.Registration, id string) error {
@@ -731,11 +741,12 @@ type clearObservation struct {
 	oldSessionState  agent.SessionState
 	newSessionState  agent.SessionState
 	oldThreadClosed  int
+	threadResync     int
 	threadID         string
 	leakedOldTurn    bool
 }
 
-// runClearAttempt runs one real serve, drives /clear through the daemon's own
+// runClearAttempt runs one real serve, drives thread/clear through the daemon's own
 // clear callback, and samples the result. sample runs after the attempt with the
 // serve loop still live, for assertions the teardown would erase.
 func runClearAttempt(t *testing.T, deps serveDeps, state *clearTestState, args []string, sample func(*clearObservation)) clearObservation {
@@ -753,7 +764,11 @@ func runClearAttempt(t *testing.T, deps serveDeps, state *clearTestState, args [
 		})
 
 		before := len(state.recorded())
-		obs.clearErr = state.srv.clear(context.Background())
+		obs.clearErr = state.srv.clear(context.Background(), appwire.ThreadClearParams{
+			Ref:                "local:" + obs.oldSessionID,
+			ClientMutationID:   "clear-test",
+			ExpectedInstanceID: obs.oldSessionID,
+		})
 		obs.steps = state.recorded()[before:]
 
 		if state.srv.envelopeSource != nil {
@@ -765,9 +780,16 @@ func runClearAttempt(t *testing.T, deps serveDeps, state *clearTestState, args [
 			obs.newSessionID = newSess.ID()
 			obs.newSessionState = newSess.State()
 		}
-		for _, record := range state.srv.AppNotificationsAfter(0, obs.oldSessionID) {
+		notificationThreadID := obs.oldSessionID
+		if obs.newSessionID != "" {
+			notificationThreadID = obs.newSessionID
+		}
+		for _, record := range state.srv.AppNotificationsAfter(0, notificationThreadID) {
 			if record.Notification.Method == appwire.NotifyThreadClosed {
 				obs.oldThreadClosed++
+			}
+			if record.Notification.Method == appwire.NotifyEvenerThreadResync {
+				obs.threadResync++
 			}
 		}
 		read := clearThreadRead(t, state.srv)
@@ -899,8 +921,10 @@ func TestRunServeClearSuccessClosesOldStreamAndInstallsPreparedIdentity(t *testi
 	var lateStatus string
 	var lateThreadID string
 	var lateLeak bool
+	var jobsErr error
+	var jobsTree appwire.JobActivityTree
 	obs := runClearAttempt(t, deps, state, args, func(obs *clearObservation) {
-		// A straggling event from the session /clear just replaced must not
+		// A straggling event from the session thread/clear just replaced must not
 		// reach the new authority. This is the real bridge over a channel the
 		// test owns, so the ordering is fixed rather than raced.
 		stale := make(chan events.SessionEvent, 1)
@@ -916,6 +940,11 @@ func TestRunServeClearSuccessClosesOldStreamAndInstallsPreparedIdentity(t *testi
 		read := clearThreadRead(t, state.srv)
 		lateThreadID = read.Thread.ID
 		lateLeak = threadCarriesText(read, oldClearInputMarker)
+		data, err := state.srv.jobs(appwire.JobsListParams{Ref: "local:" + obs.oldSessionID})
+		jobsErr = err
+		if tree, ok := data.(appwire.JobActivityTree); ok {
+			jobsTree = tree
+		}
 	})
 
 	if obs.clearErr != nil {
@@ -940,8 +969,11 @@ func TestRunServeClearSuccessClosesOldStreamAndInstallsPreparedIdentity(t *testi
 	if obs.leakedOldTurn {
 		t.Error("thread/read served the old thread's turn out of the replacement snapshot")
 	}
-	if obs.oldThreadClosed != 1 {
-		t.Errorf("old thread received %d thread/closed record(s), want exactly 1", obs.oldThreadClosed)
+	if obs.oldThreadClosed != 0 {
+		t.Errorf("replacement received %d thread/closed record(s), want 0", obs.oldThreadClosed)
+	}
+	if obs.threadResync != 1 {
+		t.Errorf("replacement received %d evener/thread/resync record(s), want exactly 1", obs.threadResync)
 	}
 	if obs.oldSessionState != agent.SessionClosed {
 		t.Errorf("old session state = %q, want %q after replacement", obs.oldSessionState, agent.SessionClosed)
@@ -951,6 +983,12 @@ func TestRunServeClearSuccessClosesOldStreamAndInstallsPreparedIdentity(t *testi
 	}
 	if lateStatus == string(agent.SessionClosed) {
 		t.Error("a late old-session event closed the replacement's status")
+	}
+	if jobsErr != nil {
+		t.Fatalf("jobs for the stable workspace ref after clear: %v", jobsErr)
+	}
+	if jobsTree.Root.SessionID != obs.newSessionID {
+		t.Fatalf("jobs root session = %q, want replacement %q", jobsTree.Root.SessionID, obs.newSessionID)
 	}
 }
 

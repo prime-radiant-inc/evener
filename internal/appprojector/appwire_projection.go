@@ -18,9 +18,12 @@ import (
 )
 
 type AppNotification struct {
-	ThreadID string
-	Method   string
-	Params   any
+	ThreadID                string
+	Method                  string
+	Params                  any
+	TaskStoreOwnerSessionID string
+	TaskPublicationEpoch    uint64
+	TaskPublicationRevision uint64
 }
 
 type skillActivationCandidate struct {
@@ -37,6 +40,13 @@ var marshalContextCompaction = json.Marshal
 type AppEventProjector struct {
 	threadID string
 	ref      string
+	// taskStoreOwnerSessionID is routing metadata for the server's cached
+	// descendant projection. It never enters an AppWire params shape.
+	taskStoreOwnerSessionID string
+	// taskPublicationRevision is the newest internal task publication observed
+	// by this source projector. It never enters an AppWire params shape.
+	taskPublicationEpoch    uint64
+	taskPublicationRevision uint64
 
 	nextTurn       int
 	nextItem       int
@@ -161,6 +171,31 @@ func (p *AppEventProjector) SeedPersistedTurns(persistedEntries int) {
 	}
 }
 
+// TaskStoreOwnerSessionID returns internal routing metadata learned from typed
+// task carriers. It is not part of any public AppWire params shape.
+func (p *AppEventProjector) TaskStoreOwnerSessionID() string {
+	return p.taskStoreOwnerSessionID
+}
+
+// TaskPublicationEpoch returns the newest process-local TaskStore incarnation
+// observed by this projector. It is not part of any public AppWire params shape.
+func (p *AppEventProjector) TaskPublicationEpoch() uint64 {
+	return p.taskPublicationEpoch
+}
+
+// TaskPublicationRevision returns the newest internal task publication learned
+// from typed task carriers. It is not part of any public AppWire params shape.
+func (p *AppEventProjector) TaskPublicationRevision() uint64 {
+	return p.taskPublicationRevision
+}
+
+func (p *AppEventProjector) observeTaskPublication(epoch, revision uint64) {
+	if epoch > p.taskPublicationEpoch || (epoch == p.taskPublicationEpoch && revision > p.taskPublicationRevision) {
+		p.taskPublicationEpoch = epoch
+		p.taskPublicationRevision = revision
+	}
+}
+
 func (p *AppEventProjector) clearSkillCandidate() {
 	p.skillCandidate = skillActivationCandidate{}
 }
@@ -173,6 +208,10 @@ func (p *AppEventProjector) Project(event events.SessionEvent) []AppNotification
 	switch event.Kind {
 	case events.EventSessionStart:
 		data := eventData[events.SessionStartData](event.Data)
+		if data.TaskStoreOwnerSessionID != "" {
+			p.taskStoreOwnerSessionID = data.TaskStoreOwnerSessionID
+		}
+		p.observeTaskPublication(data.TaskPublicationEpoch, data.TaskPublicationRevision)
 		// A resumed session's turn ids must not reuse the "turn_%d" namespace
 		// the transcript projection (internal/apptranscript) already assigned by
 		// entry index to the session's persisted entries (kata eptj). The
@@ -192,7 +231,13 @@ func (p *AppEventProjector) Project(event events.SessionEvent) []AppNotification
 		case appwire.ThreadStatusIdle:
 			status = appwire.ThreadStatusIdle
 		}
-		return []AppNotification{
+		var tasks *appwire.TaskAggregate
+		var goal *appwire.GoalState
+		if data.CurrentWork != nil {
+			tasks = taskAggregate(data.CurrentWork.Tasks)
+			goal = goalState(data.CurrentWork.Goal)
+		}
+		out := []AppNotification{
 			p.notification(appwire.NotifyThreadStarted, appwire.ThreadStartedParams{
 				ThreadID: p.threadID,
 				Ref:      p.ref,
@@ -205,11 +250,19 @@ func (p *AppEventProjector) Project(event events.SessionEvent) []AppNotification
 					Evener: appwire.EvenerThread{
 						Ref:     p.ref,
 						Profile: data.Profile,
+						Tasks:   tasks,
+						Goal:    goal,
 					},
 				},
 			}),
 			p.threadStatus(status),
 		}
+		for i := range out {
+			out[i].TaskStoreOwnerSessionID = data.TaskStoreOwnerSessionID
+			out[i].TaskPublicationEpoch = data.TaskPublicationEpoch
+			out[i].TaskPublicationRevision = data.TaskPublicationRevision
+		}
+		return out
 	case events.EventTurnStarted:
 		// The one boundary for turns that carry no content event of their own.
 		// It owes its subscribers three things, and a notification turn needs
@@ -285,6 +338,21 @@ func (p *AppEventProjector) Project(event events.SessionEvent) []AppNotification
 			p.threadStatus(appwire.ThreadStatusActive),
 		)
 		return out
+	case events.EventGoalUpdated:
+		data := eventData[events.GoalUpdatedData](event.Data)
+		var state *appwire.GoalState
+		if data.Goal != nil {
+			state = &appwire.GoalState{
+				Objective:  data.Goal.Objective,
+				Status:     data.Goal.Status,
+				Iterations: data.Goal.Iterations,
+			}
+		}
+		return []AppNotification{p.notification(appwire.NotifyEvenerGoalUpdated, appwire.GoalUpdatedParams{
+			ThreadID: p.threadID,
+			Ref:      p.ref,
+			Goal:     state,
+		})}
 	case events.EventAssistantTextStart:
 		p.skillCandidate = skillActivationCandidate{}
 		out := p.ensureTurn(event.Timestamp)
@@ -921,12 +989,21 @@ func (p *AppEventProjector) Project(event events.SessionEvent) []AppNotification
 	case events.EventTaskUpdated:
 		p.clearSkillCandidate()
 		data := eventData[events.TaskUpdatedData](event.Data)
-		return []AppNotification{p.notification(appwire.NotifyEvenerTaskUpdated, appwire.TaskUpdatedParams{
+		if data.TaskStoreOwnerSessionID != "" {
+			p.taskStoreOwnerSessionID = data.TaskStoreOwnerSessionID
+		}
+		p.observeTaskPublication(data.TaskPublicationEpoch, data.TaskPublicationRevision)
+		notification := p.notification(appwire.NotifyEvenerTaskUpdated, appwire.TaskUpdatedParams{
 			ThreadID: p.threadID,
 			Ref:      p.ref,
 			Total:    data.Total,
 			Done:     data.Done,
-		})}
+			Current:  taskSummary(data.Current),
+		})
+		notification.TaskStoreOwnerSessionID = data.TaskStoreOwnerSessionID
+		notification.TaskPublicationEpoch = data.TaskPublicationEpoch
+		notification.TaskPublicationRevision = data.TaskPublicationRevision
+		return []AppNotification{notification}
 	case events.EventSandboxEscalationRequested:
 		// A harness-raised sandbox-exemption approval card (M7). It rides the event
 		// stream ONLY — it is never appended to the transcript, so the model can
@@ -1147,6 +1224,27 @@ func (p *AppEventProjector) Project(event events.SessionEvent) []AppNotification
 	default:
 		return nil
 	}
+}
+
+func taskSummary(data *events.TaskSummaryData) *appwire.TaskSummary {
+	if data == nil {
+		return nil
+	}
+	return &appwire.TaskSummary{ID: data.ID, Description: data.Description}
+}
+
+func taskAggregate(data *events.TaskStateData) *appwire.TaskAggregate {
+	if data == nil {
+		return nil
+	}
+	return &appwire.TaskAggregate{Total: data.Total, Done: data.Done, Current: taskSummary(data.Current)}
+}
+
+func goalState(data *events.GoalStateData) *appwire.GoalState {
+	if data == nil {
+		return nil
+	}
+	return &appwire.GoalState{Objective: data.Objective, Status: data.Status, Iterations: data.Iterations}
 }
 
 func appwireDelegateInfo(data events.DelegateUpdatedData) appwire.EvenerDelegateInfo {

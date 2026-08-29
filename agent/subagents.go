@@ -953,10 +953,18 @@ func (s *Session) prepareSubagentRunFromSelection(
 	}
 	if len(defaultTasks) > 0 {
 		subStore := subSess.getOrCreateTaskStore()
-		populateErr := subStore.PopulateFromTemplates(defaultTasks, parentTasks)
-		if fault := s.subagentPrepareFault("task_populate"); fault != nil {
-			populateErr = fault
-		}
+		populateErr := subStore.MutateAndPublish(func(epoch, revision uint64) error {
+			err := subStore.PopulateFromTemplates(defaultTasks, parentTasks)
+			if fault := s.subagentPrepareFault("task_populate"); fault != nil {
+				err = fault
+			}
+			if err != nil {
+				return err
+			}
+			summary := taskpkg.Summarize(subStore.View())
+			subSess.emit(events.EventTaskUpdated, taskUpdatedData(summary, subSess.taskStoreOwnerSessionID(), epoch, revision))
+			return nil
+		})
 		if err := populateErr; err != nil {
 			// Non-fatal: surface as a warning so the spawn still proceeds but the
 			// failure is observable instead of silently swallowed.
@@ -1518,6 +1526,7 @@ func (a *subagent) run(ctx context.Context, input string, inputProvenance *prove
 	var err error
 	var restoreParentDriveNotify func()
 	var finish delegateFinish
+	var noActionClaim *delegateSettlementClaim
 	iteration := 0
 	for {
 		iteration++
@@ -1544,10 +1553,22 @@ func (a *subagent) run(ctx context.Context, input string, inputProvenance *prove
 				cancelRequested = true
 			}
 		}
+		var needsNudge bool
+		if stableRun && a.sess.delegateController != nil {
+			decision, decisionErr := a.sess.delegateController.completionDecision(lease)
+			if decisionErr != nil {
+				err = errors.Join(err, decisionErr)
+				needsNudge = false
+			} else {
+				needsNudge = decision == delegateCompletionNeedsNudge
+			}
+		} else {
+			needsNudge = !a.sess.Communicated()
+		}
 		shouldNudge := nudgeAvailable && !cancelRequested &&
 			!budgetExhausted &&
 			a.nudgeEnabled &&
-			!a.sess.Communicated() &&
+			needsNudge &&
 			(err == nil || errors.Is(err, errBareTextWithoutResultTool) || errors.Is(err, errEmptyResponseExhausted))
 		if shouldNudge {
 			nudgeAvailable = false
@@ -1560,18 +1581,41 @@ func (a *subagent) run(ctx context.Context, input string, inputProvenance *prove
 		}
 		restoreParentDriveNotify = nil
 		if err == nil {
-			a.sess.mu.Lock()
-			parentDriveNotify := a.sess.notifyFunc
-			a.sess.mu.Unlock()
-			a.mu.Lock()
-			a.finalizing = true
-			a.mu.Unlock()
-			drained, drainErr := a.sess.DrainJobTree(ctx)
-			restoreParentDriveNotify = parentDriveNotify
-			if drainErr != nil {
-				err = drainErr
-			} else if drained != "" {
-				res = drained
+			res, restoreParentDriveNotify, err = a.drainForFinalization(ctx, res)
+		}
+		if stableRun && a.sess.delegateController != nil && nudgeAvailable && !cancelRequested && !budgetExhausted && a.nudgeEnabled &&
+			(err == nil || errors.Is(err, errBareTextWithoutResultTool) || errors.Is(err, errEmptyResponseExhausted)) {
+			decision, decisionErr := a.sess.delegateController.completionDecision(lease)
+			if decisionErr != nil {
+				err = errors.Join(err, decisionErr)
+			} else if decision == delegateCompletionNeedsNudge {
+				nudgeAvailable = false
+				if restoreParentDriveNotify != nil {
+					a.sess.SetNotifyFunc(restoreParentDriveNotify)
+					restoreParentDriveNotify = nil
+				}
+				a.mu.Lock()
+				a.finalizing = false
+				a.mu.Unlock()
+				res, err = a.sess.processInputWithProvenance(ctx, communicateNudge(a.sess.resultToolName()), nil, a.followUpProvenance(inputProvenance))
+				a.mu.Lock()
+				cancelRequested = a.cancelRequested
+				a.mu.Unlock()
+				settlementMode = delegateSettlementModeForRun(err, cancelRequested)
+				boundary, boundaryErr := a.sess.delegateController.SupervisionBoundary(lease, settlementMode)
+				if boundaryErr != nil && !errors.Is(boundaryErr, errDelegateTargetBusy) {
+					err = errors.Join(err, boundaryErr)
+				}
+				switch boundary {
+				case delegateSupervisionContinue:
+					input = "Continue with the newly received steering before settling."
+					kind = EntryContinuation
+					continue
+				case delegateSupervisionSuppress:
+				}
+				if err == nil {
+					res, restoreParentDriveNotify, err = a.drainForFinalization(ctx, res)
+				}
 			}
 		}
 		if observer := a.sess.cfg.testOnly.subagentBeforeSettlement; observer != nil {
@@ -1594,7 +1638,7 @@ func (a *subagent) run(ctx context.Context, input string, inputProvenance *prove
 			finish = a.stableDelegateFinish(res, err)
 			break
 		}
-		settlementClaim, continueRun, settleErr := a.sess.delegateController.BeginFinalization(lease, settlementMode)
+		settlementClaim, continueRun, settleErr := a.sess.delegateController.BeginRunFinalization(lease, settlementMode, err)
 		if settleErr != nil {
 			if !errors.Is(settleErr, errDelegateTargetBusy) {
 				err = errors.Join(err, settleErr)
@@ -1647,6 +1691,18 @@ func (a *subagent) run(ctx context.Context, input string, inputProvenance *prove
 			err = a.gateFatalRunError(err)
 		}
 		finish = a.stableDelegateFinish(res, err)
+		decision, decisionErr := a.sess.delegateController.completionDecision(lease)
+		if decisionErr != nil {
+			err = errors.Join(err, decisionErr)
+		} else if err == nil && decision == delegateCompletionFinishNoAction {
+			prepared, prepareErr := a.sess.delegateController.prepareNoAction(settlementClaim, finish)
+			if prepareErr != nil {
+				err = errors.Join(err, prepareErr)
+			} else if prepared {
+				noActionClaim = settlementClaim
+				break
+			}
+		}
 		plans, settleErr := a.sess.delegateController.CompleteSettlement(settlementClaim, finish.packet)
 		if executeErr := a.sess.executeDelegateMutationPlans(plans); settleErr == nil {
 			settleErr = executeErr
@@ -1703,7 +1759,13 @@ func (a *subagent) run(ctx context.Context, input string, inputProvenance *prove
 	}
 	if stableRun && a.sess.delegateController != nil {
 		finish.endedAt = finalizeTime
-		plans, finishErr := a.sess.delegateController.FinishGeneration(lease, finish)
+		var plans delegateMutationPlans
+		var finishErr error
+		if noActionClaim != nil {
+			plans, finishErr = a.sess.delegateController.FinishNoAction(noActionClaim)
+		} else {
+			plans, finishErr = a.sess.delegateController.FinishGeneration(lease, finish)
+		}
 		if executeErr := a.sess.executeDelegateMutationPlans(plans); finishErr == nil {
 			finishErr = executeErr
 		}
@@ -1738,6 +1800,23 @@ func (a *subagent) run(ctx context.Context, input string, inputProvenance *prove
 			a.sess.emit(events.EventWarning, warningDataFromError("delegate finalization quiescence report failed", reportErr))
 		}
 	}
+}
+
+func (a *subagent) drainForFinalization(ctx context.Context, result string) (string, func(), error) {
+	a.sess.mu.Lock()
+	parentDriveNotify := a.sess.notifyFunc
+	a.sess.mu.Unlock()
+	a.mu.Lock()
+	a.finalizing = true
+	a.mu.Unlock()
+	drained, err := a.sess.DrainJobTree(ctx)
+	if err != nil {
+		return result, parentDriveNotify, err
+	}
+	if drained != "" {
+		result = drained
+	}
+	return result, parentDriveNotify, nil
 }
 
 func delegateSettlementModeForRun(err error, cancelRequested bool) delegateSettlementMode {
@@ -2022,6 +2101,13 @@ func (a *subagent) runSubagentStopHook(ctx context.Context, res string, err erro
 	}
 	for _, m := range stopResult.UserMessages {
 		a.sess.deliverHookUserMessage(m)
+	}
+	if stopResult.Blocked || len(stopResult.ModelContext) != 0 || len(stopResult.UserMessages) != 0 {
+		if lease, stableRun := ctx.Value(delegateRunLeaseContextKey{}).(delegateLease); stableRun && a.sess.delegateController != nil {
+			if escalationErr := a.sess.delegateController.escalateCompletionRequirement(lease); escalationErr != nil {
+				return res, errors.Join(err, escalationErr)
+			}
+		}
 	}
 	if !stopResult.Blocked {
 		return res, err

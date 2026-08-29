@@ -12,6 +12,7 @@ import type {
   PendingMutation,
   QueueState,
   SandboxEscalationRequested,
+  TaskAggregate,
   ThreadCapabilities,
   ThreadStatus,
 } from "./types.gen";
@@ -205,6 +206,10 @@ export interface ThreadDiagnostics {
 export interface ThreadModel {
   ref: string;
   threadId: string;
+  // The current daemon/session instance behind this stable ref. Clear uses
+  // it as the fencing precondition so an intent cannot replace a newer
+  // instance that took the ref after a reconnect or restart.
+  instanceId?: string;
   name: string;
   status: ThreadStatus;
   modelProvider: string;
@@ -222,7 +227,7 @@ export interface ThreadModel {
   activeTurnId?: string;
   queue: QueueState | null;
   pendingMutations?: PendingMutation[];
-  tasks: { total: number; done: number } | null;
+  tasks: TaskAggregate | null;
   // Snapshot-only plugin diagnostics from thread/read. The palette uses this
   // inventory to scope the global command catalog to the active session.
   diagnostics?: ThreadDiagnostics;
@@ -280,9 +285,9 @@ export interface ThreadModel {
   // question about provenance it does not have.
   capabilitySource?: CapabilitySource;
   // Goal is null when no /goal objective is set (wire: EvenerThread.Goal
-  // *GoalState, omitempty). No live push exists (goal/set's response
-  // carries only {started}, and appwire/protocol.go's Notifications catalog
-  // has no goal-changed entry) - a future wave's wire-candidate.
+  // *GoalState, omitempty). Hydration and accepted evener/goal/updated pushes
+  // are authoritative. goal/set's response-derived value is only an immediate
+  // fallback until either authoritative path is accepted.
   goal: GoalState | null;
   contextUsed: number;
   contextWindow: number;

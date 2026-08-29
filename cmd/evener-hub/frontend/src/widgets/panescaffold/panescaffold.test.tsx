@@ -174,6 +174,31 @@ test("the question footer fits short content and caps tall content", () => {
   expect(css).toContain("max-height: 70%");
 });
 
+// The composer's bottom safe-area accommodation lives where it docks - this
+// footer - not on StackHost's container (StackHost.module.css's .host
+// comment): the footer's own chrome fills the home-indicator band while its
+// padding keeps the composer controls above it. env() is 0 on desktop, so
+// the padding resolves to plain --space-3 there.
+test("the footer fills to the screen's bottom edge while keeping its content clear of the home indicator", () => {
+  const here = dirname(fileURLToPath(import.meta.url));
+  // Comments stripped: the rule's own comment names the inset (testing.md's
+  // "a stylesheet assertion that matches its own comment" trap).
+  const css = readFileSync(join(here, "panescaffold.module.css"), "utf8").replace(/\/\*[\s\S]*?\*\//g, "");
+  const footerRule = css.match(/\.footer \{([^}]*)\}/)?.[1] ?? "";
+  expect(footerRule).toContain("padding-bottom: calc(var(--space-3) + env(safe-area-inset-bottom))");
+});
+
+// Footer-less panes (welcome, settings, spawn, doc) had their end-of-scroll
+// content covered by StackHost's blanket host padding; with that gone (the
+// composer owns its own dock), the body's scroll padding carries the inset
+// so the last content still clears the home indicator.
+test("the body keeps end-of-scroll content clear of the home indicator", () => {
+  const here = dirname(fileURLToPath(import.meta.url));
+  const css = readFileSync(join(here, "panescaffold.module.css"), "utf8").replace(/\/\*[\s\S]*?\*\//g, "");
+  const bodyRule = css.match(/\.body \{([^}]*)\}/)?.[1] ?? "";
+  expect(bodyRule).toContain("padding-bottom: calc(var(--space-4) + env(safe-area-inset-bottom))");
+});
+
 // The chrome-store title channel (2026-07-30-mobile-session-layout-design.md,
 // decision 2): PaneScaffold always publishes its title, host-agnostically -
 // StackHost renders it in the mobile top bar, DockHost never reads it.

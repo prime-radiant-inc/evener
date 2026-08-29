@@ -42,8 +42,9 @@ func TestHubRPCStartTurnPreservesImageAttachment(t *testing.T) {
 	}
 
 	resp, err := client.TurnStart(context.Background(), appwire.TurnStartParams{
-		Ref:              "local:" + sessionID,
-		ClientMutationID: "mutation-image",
+		Ref:                "local:" + sessionID,
+		ClientMutationID:   "mutation-image",
+		ExpectedInstanceID: sessionID,
 		Input: []appwire.InputItem{
 			{Type: "text", Text: "inspect this"},
 			{Type: "image", MediaType: "image/png", Data: imageBytes, Name: "attachment.png"},

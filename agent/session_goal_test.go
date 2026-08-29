@@ -2,6 +2,8 @@ package agent
 
 import (
 	"context"
+	"errors"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -13,6 +15,220 @@ import (
 	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/llm"
 )
+
+func nextGoalUpdated(t *testing.T, sess *Session) events.GoalUpdatedData {
+	t.Helper()
+	// TRIPWIRE: mutations emit synchronously; one second only bounds a wedged regression.
+	timer := time.NewTimer(time.Second)
+	defer timer.Stop()
+	for {
+		select {
+		case ev, ok := <-sess.Events():
+			if !ok {
+				t.Fatal("session event stream closed before GOAL_UPDATED")
+			}
+			if ev.Kind != events.EventGoalUpdated {
+				continue
+			}
+			data, ok := ev.Data.(events.GoalUpdatedData)
+			if !ok {
+				t.Fatalf("GOAL_UPDATED payload = %T, want events.GoalUpdatedData", ev.Data)
+			}
+			return data
+		case <-timer.C:
+			t.Fatal("timed out waiting for GOAL_UPDATED")
+		}
+	}
+}
+
+func assertNoGoalUpdated(t *testing.T, sess *Session) {
+	t.Helper()
+	for {
+		select {
+		case ev, ok := <-sess.Events():
+			if !ok {
+				return
+			}
+			if ev.Kind == events.EventGoalUpdated {
+				t.Fatalf("unexpected extra GOAL_UPDATED: %+v", ev.Data)
+			}
+		default:
+			return
+		}
+	}
+}
+
+func assertGoalUpdatedMatchesStore(t *testing.T, sess *Session, data events.GoalUpdatedData) {
+	t.Helper()
+	snap, ok := sess.getOrCreateGoalStore().Snapshot()
+	if !ok {
+		if data.Goal != nil {
+			t.Fatalf("GOAL_UPDATED goal = %+v, want nil clear matching empty store", data.Goal)
+		}
+		return
+	}
+	if data.Goal == nil {
+		t.Fatalf("GOAL_UPDATED goal = nil, want %+v", snap)
+	}
+	if data.Goal.Objective != snap.Objective || data.Goal.Status != string(snap.Status) || data.Goal.Iterations != snap.Iterations {
+		t.Fatalf("GOAL_UPDATED goal = %+v, want store snapshot %+v", data.Goal, snap)
+	}
+}
+
+func TestGoalUpdatedEventSetClearAndContinuation(t *testing.T) {
+	sess := newGoalMethodSession(t)
+	defer sess.Close()
+
+	if _, err := sess.SetGoal(context.Background(), "ship focus sentence"); err != nil {
+		t.Fatalf("SetGoal: %v", err)
+	}
+	assertGoalUpdatedMatchesStore(t, sess, nextGoalUpdated(t, sess))
+	assertNoGoalUpdated(t, sess)
+
+	if _, continued := sess.armGoalContinuation(true, true); !continued {
+		t.Fatal("active progressing goal should continue")
+	}
+	assertGoalUpdatedMatchesStore(t, sess, nextGoalUpdated(t, sess))
+	assertNoGoalUpdated(t, sess)
+
+	sess.ClearGoal()
+	assertGoalUpdatedMatchesStore(t, sess, nextGoalUpdated(t, sess))
+	assertNoGoalUpdated(t, sess)
+}
+
+func TestGoalUpdatedEventErrorBlocking(t *testing.T) {
+	sess := newGoalMethodSession(t)
+	defer sess.Close()
+
+	if _, err := sess.SetGoal(context.Background(), "survive failure"); err != nil {
+		t.Fatalf("SetGoal: %v", err)
+	}
+	_ = nextGoalUpdated(t, sess)
+
+	sess.terminateGoalOnError(context.Background(), errors.New("provider failed"))
+	assertGoalUpdatedMatchesStore(t, sess, nextGoalUpdated(t, sess))
+	assertNoGoalUpdated(t, sess)
+}
+
+func TestGoalUpdatedEmissionDoesNotHoldSessionMutex(t *testing.T) {
+	sess := newGoalMethodSession(t)
+	defer sess.Close()
+
+	checked := make(chan bool, 1)
+	sess.descendantEvent = func(ev events.SessionEvent) {
+		if ev.Kind != events.EventGoalUpdated {
+			return
+		}
+		unlocked := sess.mu.TryLock()
+		if unlocked {
+			sess.mu.Unlock()
+		}
+		checked <- unlocked
+	}
+
+	if _, err := sess.SetGoal(context.Background(), "check lock boundary"); err != nil {
+		t.Fatalf("SetGoal: %v", err)
+	}
+	if unlocked := <-checked; !unlocked {
+		t.Fatal("GOAL_UPDATED was emitted while Session.mu was held")
+	}
+}
+
+func TestConcurrentGoalMutationsEmitInCommittedOrder(t *testing.T) {
+	sess := newGoalMethodSession(t)
+	defer sess.Close()
+
+	type observation struct {
+		objective          string
+		sessionMuUnlocked  bool
+		goalSerializerHeld bool
+	}
+	observed := make(chan observation, 2)
+	releaseFirstEmission := make(chan struct{})
+	var firstEmission sync.Once
+	sess.descendantEvent = func(ev events.SessionEvent) {
+		if ev.Kind != events.EventGoalUpdated {
+			return
+		}
+		data, ok := ev.Data.(events.GoalUpdatedData)
+		if !ok || data.Goal == nil {
+			return
+		}
+
+		sessionMuUnlocked := sess.mu.TryLock()
+		if sessionMuUnlocked {
+			sess.mu.Unlock()
+		}
+		goalSerializerHeld := !sess.goalUpdateMu.TryLock()
+		if !goalSerializerHeld {
+			sess.goalUpdateMu.Unlock()
+		}
+
+		block := false
+		firstEmission.Do(func() { block = true })
+		observed <- observation{
+			objective:          data.Goal.Objective,
+			sessionMuUnlocked:  sessionMuUnlocked,
+			goalSerializerHeld: goalSerializerHeld,
+		}
+		if block {
+			<-releaseFirstEmission
+		}
+	}
+
+	type mutationResult struct {
+		objective string
+		err       error
+	}
+	mutate := func(objective string, started chan<- struct{}) <-chan mutationResult {
+		done := make(chan mutationResult, 1)
+		go func() {
+			if started != nil {
+				started <- struct{}{}
+			}
+			_, err := sess.SetGoal(context.Background(), objective)
+			done <- mutationResult{objective: objective, err: err}
+		}()
+		return done
+	}
+
+	firstDone := mutate("first committed objective", nil)
+	firstObserved := <-observed
+	firstCommitted, ok := sess.getOrCreateGoalStore().Snapshot()
+	if !ok {
+		t.Fatal("first concurrent mutation did not commit a goal")
+	}
+
+	secondStarted := make(chan struct{})
+	secondDone := mutate("second committed objective", secondStarted)
+	<-secondStarted
+	close(releaseFirstEmission)
+
+	firstResult := <-firstDone
+	secondResult := <-secondDone
+	if firstResult.err != nil || secondResult.err != nil {
+		t.Fatalf("concurrent SetGoal results = %q: %v, %q: %v", firstResult.objective, firstResult.err, secondResult.objective, secondResult.err)
+	}
+	secondObserved := <-observed
+	secondCommitted, ok := sess.getOrCreateGoalStore().Snapshot()
+	if !ok {
+		t.Fatal("second concurrent mutation did not commit a goal")
+	}
+
+	committedOrder := []string{firstCommitted.Objective, secondCommitted.Objective}
+	observedOrder := []string{firstObserved.objective, secondObserved.objective}
+	if !slices.Equal(observedOrder, committedOrder) {
+		t.Fatalf("GOAL_UPDATED order = %q, committed mutation order = %q", observedOrder, committedOrder)
+	}
+	for i, got := range []observation{firstObserved, secondObserved} {
+		if !got.sessionMuUnlocked {
+			t.Fatalf("GOAL_UPDATED %d (%q) was emitted while Session.mu was held", i, got.objective)
+		}
+		if !got.goalSerializerHeld {
+			t.Fatalf("GOAL_UPDATED %d (%q) was emitted after goalUpdateMu was released", i, got.objective)
+		}
+	}
+}
 
 // newGoalMethodSession builds an idle session (no events drained) for testing the
 // SetGoal/ClearGoal Session methods directly.
@@ -156,6 +372,22 @@ func TestClearGoalRemovesGoal(t *testing.T) {
 	sess.ClearGoal()
 	if _, ok := sess.getOrCreateGoalStore().Snapshot(); ok {
 		t.Fatal("ClearGoal should remove the goal")
+	}
+}
+
+func TestGoalStatusReturnsStatusAndIterations(t *testing.T) {
+	t.Parallel()
+	sess := newGoalMethodSession(t)
+	defer sess.Close()
+
+	sess.getOrCreateGoalStore().Set("ship the footer", time.Now())
+	status, iterations, ok := sess.GoalStatus()
+	if !ok || status != "active" || iterations != 0 {
+		t.Fatalf("GoalStatus() = %q, %d, %v", status, iterations, ok)
+	}
+	meta := sess.Meta()
+	if meta.Goal == nil || meta.Goal.Objective != "ship the footer" {
+		t.Fatalf("Meta().Goal = %+v, want persisted objective", meta.Goal)
 	}
 }
 

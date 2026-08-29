@@ -1154,7 +1154,7 @@ func TestAskUser_BoundaryDrainPreservesFollowUp(t *testing.T) {
 // always-empty-pending session by construction, not a state transition on the
 // awaiting session itself. The tests below cover Compact's new guard directly
 // and reproduce Clear's actual replace-not-reset mechanism at the session
-// level; real end-to-end proof that the daemon's /clear surface reaches this
+// level; real end-to-end proof that the daemon's thread/clear surface reaches this
 // path belongs to a later, serve-level task.
 
 // compactErrPending is the exact instructive error text spec §5.3 requires
@@ -1276,7 +1276,7 @@ func TestAskUser_CompactProceedsOnPlainAwaitingRestNoPendingAsk(t *testing.T) {
 // SessionStartKind flipped to Clear, constructed WHILE the old session is
 // still open (serve.go closes the old session only after the swap, so this
 // test preserves that ordering). The replacement is what the user talks to
-// after /clear; it is idle with an empty pending set regardless of what the
+// after thread/clear; it is idle with an empty pending set regardless of what the
 // old session was doing, and the old session itself is untouched (a swap, not
 // a mutation) until its own Close.
 func TestAskUser_ClearReplacesAwaitingSessionWithFreshIdleOne(t *testing.T) {

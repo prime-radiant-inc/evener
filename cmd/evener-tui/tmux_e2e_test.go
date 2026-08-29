@@ -2559,7 +2559,7 @@ func (h *tuiE2EHub) handleThreadModelSet(_ context.Context, params appwire.Threa
 	return appwire.EmptyResponse{}, nil
 }
 
-func (h *tuiE2EHub) handleThreadClear(context.Context, appwire.ThreadClearParams) (appwire.ThreadClearResponse, error) {
+func (h *tuiE2EHub) handleThreadClear(_ context.Context, params appwire.ThreadClearParams) (appwire.ThreadClearResponse, error) {
 	defer h.notify()
 	h.recordAction("clear")
 	h.mu.Lock()
@@ -2577,7 +2577,17 @@ func (h *tuiE2EHub) handleThreadClear(context.Context, appwire.ThreadClearParams
 	}
 	h.addSession(s)
 	thread := h.threadFromSessionLocked(s)
-	return appwire.ThreadClearResponse{Thread: thread, Ref: thread.Evener.Ref}, nil
+	return appwire.ThreadClearResponse{
+		Thread: thread,
+		Ref:    thread.Evener.Ref,
+		Receipt: appwire.MutationReceipt{
+			ClientMutationID: params.ClientMutationID,
+			Disposition:      appwire.MutationDispositionApplied,
+			ThreadID:         thread.ID,
+			InstanceID:       thread.Evener.InstanceID,
+			ProjectionState:  appwire.MutationProjectionReflected,
+		},
+	}, nil
 }
 
 func (h *tuiE2EHub) handleThreadFork(_ context.Context, params appwire.ThreadForkParams) (appwire.ThreadForkResponse, error) {
@@ -2633,6 +2643,7 @@ func (h *tuiE2EHub) threadFromSessionLocked(s *tuiE2ESession) appwire.Thread {
 		Turns:         append([]appwire.Turn(nil), s.Turns...),
 		Evener: appwire.EvenerThread{
 			Ref:             appwire.Ref{SourceID: "local", ThreadID: s.ID}.String(),
+			InstanceID:      s.ID,
 			ParentRef:       s.ParentRef,
 			Kind:            s.Kind,
 			Profile:         "default",

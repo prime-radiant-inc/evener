@@ -504,7 +504,7 @@ func TestServerAppWireReplacementClosesTheOldStreamOnce(t *testing.T) {
 	srv.SetAppIdentity("local", "old")
 	srv.SetAppIdentity("local", "new")
 
-	closed := srv.AppNotificationsAfter(0, "old")
+	closed := srv.AppNotificationsAfter(0, "local:old")
 	if len(closed) != 1 || closed[0].Notification.Method != appwire.NotifyThreadClosed {
 		t.Fatalf("old-thread records = %+v, want exactly one thread/closed", closed)
 	}
@@ -518,7 +518,7 @@ func TestServerAppWireReplacementClosesTheOldStreamOnce(t *testing.T) {
 	if turns := srv.appAllTurns("new"); len(turns) != 0 {
 		t.Fatalf("old-thread closure reduced into the new snapshot: %v", turnIDs(turns))
 	}
-	if same := srv.AppNotificationsAfter(0, "new"); len(same) != 0 {
+	if same := srv.AppNotificationsAfter(0, "local:new"); len(same) != 0 {
 		t.Fatalf("new thread received the old thread's closure: %+v", same)
 	}
 }

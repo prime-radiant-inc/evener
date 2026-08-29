@@ -17,8 +17,6 @@ func registerGoalTools(reg *tool.Registry, deps *toolDeps) {
 			_ = ctx
 			_ = env
 
-			store := deps.goalGuard.Store()
-
 			statusStr := fmt.Sprint(args["status"])
 			var st goal.Status
 			switch statusStr {
@@ -30,11 +28,11 @@ func registerGoalTools(reg *tool.Registry, deps *toolDeps) {
 				return nil, fmt.Errorf("update_goal: invalid status %q (must be \"complete\" or \"blocked\")", statusStr)
 			}
 
-			if !store.SetTerminal(st, "", deps.now()) {
+			snap, changed := deps.goalGuard.SetTerminal(st, "", deps.now())
+			if !changed {
 				return tool.StateResult{Output: "No goal is active for this session (none was set at launch); nothing recorded — this tool only updates a goal the harness registered."}, nil
 			}
 
-			snap, _ := store.Snapshot()
 			return tool.StateResult{
 				Output: "Goal marked " + statusStr + ".",
 				State:  goalStateView(snap),

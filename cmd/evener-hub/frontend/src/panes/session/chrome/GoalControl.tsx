@@ -1,23 +1,7 @@
-// GoalControl: displays the session's /goal objective (model.goal) and
-// clears it. goal/set has NO live push on the wire (appwire/protocol.go's
-// Notifications catalog has no goal-changed entry, and GoalSetResponse
-// carries only {started} - protocol/model.ts's own ThreadModel.goal doc
-// comment) - a planning decision made this wave (T5 owns "snapshot +
-// optimistic local update", per the wave plan's own Session-chrome bullet).
-//
-// The optimistic value can't live in component state: dockview unmounts an
-// inactive pane's whole tree on a tab switch (binding constraint, every
-// wave-5 task), and there is no threads-store action to patch
-// ThreadModel.goal locally either (stores/threads.ts is T1's frozen
-// chokepoint, outside this stream's manifest). So it lives in a tiny
-// ref-keyed module cache instead - the same "module-private singleton
-// alongside the store" shape stores/threads.ts itself uses for refCounts/
-// inflightHydrates. Each entry also remembers the model.goal it was set
-// against (`baseline`); resolveDisplayedGoal drops a stale entry the moment
-// the store's own model.goal has independently moved on (a genuine fresh
-// hydrate, e.g. after a reconnect, brought real server truth) - otherwise a
-// stale optimistic value would mask every future update forever, not just
-// bridge the gap until the next one.
+// GoalControl displays and clears the session's /goal state. model.goal is the
+// only UI source of truth: the threads store commits successful local writes,
+// and evener/goal/updated folds remote and engine-driven transitions into the
+// same model.
 //
 // Row presence: with no goal set, this renders nothing at all. SETTING a
 // goal happens through the session's own composer (its inline /goal built-in
@@ -38,13 +22,13 @@
 // never painted (live-verified). Popover portals the panel to document.body
 // at a position: fixed coordinate computed off the trigger's own
 // getBoundingClientRect(), so the clipping ancestor can't cut it off.
-import { useState, useSyncExternalStore } from "react";
+import { useEffect, useState } from "react";
 import { sessionActionError } from "../../../protocol/errors";
 import type { ThreadModel } from "../../../protocol/model";
-import type { GoalState } from "../../../protocol/types.gen";
 import { threadsStore } from "../../../stores/threads";
 import { Button, Chip, Popover, useToasts } from "../../../widgets";
 import { requireClass } from "../../../widgets/internal/requireClass";
+import { GoalGlyph } from "../GoalGlyph";
 import styles from "./goalcontrol.module.css";
 
 export interface GoalControlProps {
@@ -61,112 +45,32 @@ const CLASS = {
   status: requireClass(styles.status, "goalcontrol.module.css", "status"),
 };
 
-// The compact trigger's glyph: evener has no dedicated goal icon (widgets/
-// toolicon is a closed enum of tool-row kinds, not extended here per the
-// approved design). A small flag on a pole reads as "goal"/milestone at
-// 16px and follows widgets/toolicon's own grammar exactly (see that
-// widget's header comment) - stroke currentColor, 1.75 width, round caps/
-// joins, fill none, square 16x16 block box - so it reads as one icon
-// family with the rest of the app even though it isn't drawn through that
-// widget.
-function GoalGlyph() {
-  return (
-    <svg viewBox="0 0 16 16" width={14} height={14} aria-hidden="true" focusable="false" style={{ display: "block" }}>
-      <path
-        d="M4 2 V14 M4 3 L11 5 L4 7"
-        stroke="currentColor"
-        strokeWidth="1.75"
-        strokeLinecap="round"
-        strokeLinejoin="round"
-        fill="none"
-      />
-    </svg>
-  );
-}
-
-function goalEquals(a: GoalState | null, b: GoalState | null): boolean {
-  if (a === null || b === null) return a === b;
-  return a.status === b.status && a.iterations === b.iterations;
-}
-
-interface GoalOverrideEntry {
-  baseline: GoalState | null;
-  override: GoalState | null;
-}
-
-const overrides = new Map<string, GoalOverrideEntry>();
-const listeners = new Set<() => void>();
-
-function notifyGoalOverrideListeners(): void {
-  for (const listener of Array.from(listeners)) listener();
-}
-
-function subscribeGoalOverrides(listener: () => void): () => void {
-  listeners.add(listener);
-  return () => listeners.delete(listener);
-}
-
-// setGoalOverride records `override` as the locally-known truth for `ref`,
-// remembering `baseline` (the model.goal it was computed against) so a
-// later fresh hydrate can be detected and invalidate it - see this file's
-// own header comment.
-function setGoalOverride(ref: string, baseline: GoalState | null, override: GoalState | null): void {
-  overrides.set(ref, { baseline, override });
-  notifyGoalOverrideListeners();
-}
-
-// applyGoalSetOptimistically is the same optimistic bridge for the OTHER
-// goal writer: the /goal built-in (shell/palette/commands.ts, run from the
-// composer's command line). goal/set has no live push, so without this the
-// chip would not appear until some unrelated rehydrate delivered fresh
-// server truth - live-verified: the transcript showed the goal running
-// while the status row still showed nothing.
-export function applyGoalSetOptimistically(ref: string, baseline: GoalState | null, objective: string): void {
-  setGoalOverride(ref, baseline, objective === "" ? null : { status: "active", iterations: 0 });
-}
-
-// resolveDisplayedGoal returns the override for `ref` only while it's still
-// valid (the store's own model.goal hasn't moved since it was set); a
-// stale entry is dropped as a side effect so the next call sees the fresh
-// value directly, with no separate invalidation pass needed.
-function resolveDisplayedGoal(ref: string, actual: GoalState | null): GoalState | null {
-  const entry = overrides.get(ref);
-  if (!entry) return actual;
-  if (!goalEquals(entry.baseline, actual)) {
-    overrides.delete(ref);
-    return actual;
-  }
-  return entry.override;
-}
-
-function useDisplayedGoal(ref: string, actual: GoalState | null): GoalState | null {
-  return useSyncExternalStore(subscribeGoalOverrides, () => resolveDisplayedGoal(ref, actual));
-}
-
-// resetGoalOverridesForTests clears the module-private override cache -
-// this module is a singleton shared by the whole app, so GoalControl.test.tsx
-// must reset it between tests to keep them isolated (mirrors stores/
-// threads.ts's own resetThreadsStoreForTests precedent). No production code
-// should ever call this.
-export function resetGoalOverridesForTests(): void {
-  overrides.clear();
-  listeners.clear();
-}
-
 function iterationsLabel(iterations: number): string {
   return `${iterations} iteration${iterations === 1 ? "" : "s"}`;
 }
 
 export function GoalControl({ sessionRef, model }: GoalControlProps) {
   const toasts = useToasts();
-  const goal = useDisplayedGoal(sessionRef, model.goal);
+  const goal = model.goal;
   const [popoverOpen, setPopoverOpen] = useState(false);
   const canSetGoal = model.capabilities.goal;
+
+  // A different session starts a fresh transient-UI lifetime.
+  // biome-ignore lint/correctness/useExhaustiveDependencies: sessionRef is the deliberate popover reset boundary
+  useEffect(() => {
+    setPopoverOpen(false);
+  }, [sessionRef]);
+
+  // Clearing the model-owned goal closes the popover. Goal appearance does not
+  // reset state, and goal identity/status/iteration updates do not rerun this.
+  // biome-ignore lint/correctness/useExhaustiveDependencies: goal absence is the deliberate popover reset boundary
+  useEffect(() => {
+    if (goal === null) setPopoverOpen(false);
+  }, [goal === null]);
 
   async function handleClear() {
     try {
       await threadsStore.getState().setGoal(sessionRef, "");
-      setGoalOverride(sessionRef, model.goal, null);
       setPopoverOpen(false);
     } catch (err) {
       toasts.push("error", sessionActionError("Couldn't clear goal", err));

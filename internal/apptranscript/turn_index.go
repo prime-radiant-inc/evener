@@ -62,6 +62,7 @@ type ReadStats struct {
 	rebuilt               bool
 	usageScans            int64
 	failureScans          int64
+	derivedScans          int64
 }
 
 var (

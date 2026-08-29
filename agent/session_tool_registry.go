@@ -63,7 +63,7 @@ type toolDeps struct {
 	// Background delegates and terminal delegates are intentionally excluded.
 	blockingDelegateIDs func() []string
 
-	// goalGuard exposes goal-store access. The goal store has its own mutex.
+	// goalGuard exposes goal-store access and the ordered terminal mutation.
 	goalGuard goalGuard
 
 	// worktreeGuard exposes the native worktree lifecycle plumbing (env swap,
@@ -84,9 +84,12 @@ type toolDeps struct {
 	pressure            func() float64
 
 	// setCommunicateResult records a terminal communicate tool result on the
-	// session. Fields stay Session-owned; this is the only writer reachable from
-	// the handler.
+	// session for direct tool dependency constructions that predate lease-aware
+	// stable delegates.
 	setCommunicateResult func(message, reply, output string)
+	// setCommunicateResultContext is the Session-owned writer used by live
+	// sessions. The tool context carries the exact stable generation lease.
+	setCommunicateResultContext func(context.Context, string, string, string)
 
 	// setCommunicateStructured records the raw output object the model emitted,
 	// before communicate canonicalization, for delegate structured_result capture.
@@ -181,10 +184,26 @@ func (g taskGuard) MarkUsed() { g.markUsed() }
 // The goal store carries its own mutex (unlike taskGuard which uses s.mu).
 type goalGuard struct {
 	getOrCreateGoalStore func() *goal.Store
+	setTerminal          func(goal.Status, string) (goal.Snapshot, bool)
 }
 
 // Store returns the session's goal store, initializing it if needed.
 func (g goalGuard) Store() *goal.Store { return g.getOrCreateGoalStore() }
+
+// SetTerminal commits through the owning Session when available, keeping the
+// mutation and its GOAL_UPDATED event ordered. Direct test constructions fall
+// back to the store-only behavior they had before live goal updates.
+func (g goalGuard) SetTerminal(status goal.Status, reason string, now time.Time) (goal.Snapshot, bool) {
+	if g.setTerminal != nil {
+		return g.setTerminal(status, reason)
+	}
+	store := g.Store()
+	if !store.SetTerminal(status, reason, now) {
+		return goal.Snapshot{}, false
+	}
+	snap, _ := store.Snapshot()
+	return snap, true
+}
 
 // webDeps holds the bound web tool functions. The profile and client stay
 // hidden inside the closures captured here.
@@ -230,6 +249,7 @@ func newToolDeps(s *Session) *toolDeps {
 		},
 		goalGuard: goalGuard{
 			getOrCreateGoalStore: s.getOrCreateGoalStore,
+			setTerminal:          s.setGoalTerminal,
 		},
 		worktreeGuard: worktreeGuard{
 			state:         s.worktreeStateSnapshot,
@@ -256,7 +276,7 @@ func newToolDeps(s *Session) *toolDeps {
 		setPinnedNote:       s.setPinnedNote,
 		requestForceCompact: s.requestForceCompact,
 		pressure:            s.ContextPressure,
-		setCommunicateResult: func(message, reply, output string) {
+		setCommunicateResultContext: func(ctx context.Context, message, reply, output string) {
 			s.mu.Lock()
 			if s.comm.called {
 				s.mu.Unlock()
@@ -269,6 +289,10 @@ func newToolDeps(s *Session) *toolDeps {
 				output: output,
 			}
 			s.mu.Unlock()
+			lease, stableRun := ctx.Value(delegateRunLeaseContextKey{}).(delegateLease)
+			if stableRun && s.delegateController != nil {
+				_ = s.delegateController.recordTerminalSeen(lease)
+			}
 		},
 		setCommunicateStructured: func(raw any) {
 			s.mu.Lock()

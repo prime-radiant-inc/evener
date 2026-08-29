@@ -54,7 +54,7 @@ func fuzzScenarioLocalDaemonSourceRPCSurface(t *testing.T) {
 	})
 	server := httptest.NewServer(http.HandlerFunc(app.ServeWebSocket))
 	t.Cleanup(server.Close)
-	entry := rendezvous.Entry{Protocol: appwire.ProtocolVersion, Endpoint: "ws" + strings.TrimPrefix(server.URL, "http"), SourceID: "local", ThreadID: "thread", SessionID: "session"}
+	entry := rendezvous.Entry{Protocol: appwire.ProtocolVersion, Endpoint: "ws" + strings.TrimPrefix(server.URL, "http"), SourceID: "local", ThreadID: "thread", SessionID: "session", WorkspaceRef: "local:thread", InstanceID: "session"}
 	source := NewLocalDaemonSourceWithEntries("", func() []LocalDaemonEntry { return []LocalDaemonEntry{{Entry: entry}} }, server.Client())
 	ctx := context.Background()
 	ref := "local:thread"
@@ -65,22 +65,22 @@ func fuzzScenarioLocalDaemonSourceRPCSurface(t *testing.T) {
 	if _, err := source.ListTurns(ctx, appwire.ThreadTurnsListParams{Ref: ref}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := source.StartTurn(ctx, appwire.TurnStartParams{ClientMutationID: "test-mutation", Ref: ref}); err != nil {
+	if _, err := source.StartTurn(ctx, appwire.TurnStartParams{ClientMutationID: "test-mutation", ExpectedInstanceID: "session", Ref: ref}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := source.SteerTurn(ctx, appwire.TurnSteerParams{ClientMutationID: "test-mutation", Ref: ref}); err != nil {
+	if _, err := source.SteerTurn(ctx, appwire.TurnSteerParams{ClientMutationID: "test-mutation", ExpectedInstanceID: "session", Ref: ref}); err != nil {
 		t.Fatal(err)
 	}
 	if err := source.ResolveSandboxEscalation(ctx, appwire.SandboxEscalationResolveParams{Ref: ref}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := source.InterruptTurn(ctx, appwire.TurnInterruptParams{ClientMutationID: "test-mutation", Ref: ref}); err != nil {
+	if _, err := source.InterruptTurn(ctx, appwire.TurnInterruptParams{ClientMutationID: "test-mutation", ExpectedInstanceID: "session", Ref: ref}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := source.QueueTurn(ctx, appwire.TurnQueueParams{ClientMutationID: "test-mutation", Ref: ref}); err != nil {
+	if _, err := source.QueueTurn(ctx, appwire.TurnQueueParams{ClientMutationID: "test-mutation", ExpectedInstanceID: "session", Ref: ref}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := source.DrainAsSteer(ctx, appwire.TurnDrainAsSteerParams{ClientMutationID: "test-mutation", ExpectedQueueRevision: 0, Ref: ref}); err != nil {
+	if _, err := source.DrainAsSteer(ctx, appwire.TurnDrainAsSteerParams{ClientMutationID: "test-mutation", ExpectedInstanceID: "session", ExpectedQueueRevision: 0, Ref: ref}); err != nil {
 		t.Fatal(err)
 	}
 	if err := source.CompactThread(ctx, appwire.ThreadCompactStartParams{Ref: ref}); err != nil {
@@ -101,7 +101,7 @@ func fuzzScenarioLocalDaemonSourceRPCSurface(t *testing.T) {
 	if _, err := source.GoalSet(ctx, appwire.GoalSetParams{Ref: ref}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := source.ClearThread(ctx, appwire.ThreadClearParams{Ref: ref}); err != nil {
+	if _, err := source.ClearThread(ctx, appwire.ThreadClearParams{Ref: ref, ClientMutationID: "clear-mutation", ExpectedInstanceID: "session"}); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := source.ListModels(ctx, appwire.ModelListParams{}); err != nil {
@@ -199,9 +199,12 @@ func fuzzScenarioLocalDaemonSourceRejectsUnknownReferenceAcrossRPCSurface(t *tes
 		"effort":   func() error { return s.SetThreadReasoningEffort(ctx, appwire.ThreadReasoningEffortSetParams{Ref: ref}) },
 		"name":     func() error { return s.SetThreadName(ctx, appwire.ThreadNameSetParams{Ref: ref}) },
 		"goal":     func() error { _, err := s.GoalSet(ctx, appwire.GoalSetParams{Ref: ref}); return err },
-		"clear":    func() error { _, err := s.ClearThread(ctx, appwire.ThreadClearParams{Ref: ref}); return err },
-		"tasks":    func() error { _, err := s.ListTasks(ctx, appwire.TaskListParams{Ref: ref}); return err },
-		"jobs":     func() error { _, err := s.ListJobs(ctx, appwire.JobsListParams{Ref: ref}); return err },
+		"clear": func() error {
+			_, err := s.ClearThread(ctx, appwire.ThreadClearParams{Ref: ref, ClientMutationID: "clear-mutation", ExpectedInstanceID: "session"})
+			return err
+		},
+		"tasks": func() error { _, err := s.ListTasks(ctx, appwire.TaskListParams{Ref: ref}); return err },
+		"jobs":  func() error { _, err := s.ListJobs(ctx, appwire.JobsListParams{Ref: ref}); return err },
 		"jobOutput": func() error {
 			_, err := s.JobOutput(ctx, appwire.JobsOutputParams{Ref: ref, JobID: "job_1"})
 			return err

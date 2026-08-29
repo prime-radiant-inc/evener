@@ -6,6 +6,174 @@ import (
 	"testing"
 )
 
+func TestTaskUpdatedData_CurrentJSON(t *testing.T) {
+	withCurrentData := TaskUpdatedData{
+		TaskPublicationEpoch:    11,
+		TaskPublicationRevision: 17,
+	}
+	withCurrentData.Total = 3
+	withCurrentData.Done = 1
+	withCurrentData.Current = &TaskSummaryData{ID: 2, Description: "live current task"}
+	withCurrent, err := json.Marshal(withCurrentData)
+	if err != nil {
+		t.Fatalf("marshal TaskUpdatedData with current: %v", err)
+	}
+	if !strings.Contains(string(withCurrent), `"current":{"id":2,"description":"live current task"}`) {
+		t.Fatalf("TaskUpdatedData JSON = %s", withCurrent)
+	}
+	if strings.Contains(string(withCurrent), "revision") || strings.Contains(string(withCurrent), "epoch") {
+		t.Fatalf("TaskUpdatedData JSON leaked internal publication identity: %s", withCurrent)
+	}
+
+	withoutCurrentData := TaskUpdatedData{}
+	withoutCurrentData.Total = 3
+	withoutCurrentData.Done = 1
+	withoutCurrent, err := json.Marshal(withoutCurrentData)
+	if err != nil {
+		t.Fatalf("marshal TaskUpdatedData without current: %v", err)
+	}
+	if strings.Contains(string(withoutCurrent), `"current"`) {
+		t.Fatalf("TaskUpdatedData without current = %s", withoutCurrent)
+	}
+}
+
+func TestSessionStartCurrentWorkSeedTriStateJSON(t *testing.T) {
+	tests := []struct {
+		name string
+		data SessionStartData
+		want string
+	}{
+		{name: "unknown", data: SessionStartData{}, want: `{"profile":"","model":""}`},
+		{
+			name: "explicit clear",
+			data: SessionStartData{CurrentWork: &CurrentWorkSeedData{}},
+			want: `{"profile":"","model":"","current_work":{"goal":null}}`,
+		},
+		{
+			name: "goal",
+			data: SessionStartData{CurrentWork: &CurrentWorkSeedData{Goal: &GoalStateData{
+				Objective:  "ship focus sentence",
+				Status:     "active",
+				Iterations: 2,
+			}}},
+			want: `{"profile":"","model":"","current_work":{"goal":{"objective":"ship focus sentence","status":"active","iterations":2}}}`,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			encoded, err := json.Marshal(tt.data)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got := string(encoded); got != tt.want {
+				t.Fatalf("SessionStartData JSON = %s, want %s", got, tt.want)
+			}
+			var roundTrip SessionStartData
+			if err := json.Unmarshal(encoded, &roundTrip); err != nil {
+				t.Fatal(err)
+			}
+			switch tt.name {
+			case "unknown":
+				if roundTrip.CurrentWork != nil {
+					t.Fatalf("CurrentWork = %+v, want nil unknown seed", roundTrip.CurrentWork)
+				}
+			case "explicit clear":
+				if roundTrip.CurrentWork == nil || roundTrip.CurrentWork.Goal != nil {
+					t.Fatalf("CurrentWork = %+v, want present seed with nil Goal", roundTrip.CurrentWork)
+				}
+			default:
+				if roundTrip.CurrentWork == nil || roundTrip.CurrentWork.Goal == nil || roundTrip.CurrentWork.Goal.Objective != "ship focus sentence" {
+					t.Fatalf("CurrentWork = %+v, want structured goal", roundTrip.CurrentWork)
+				}
+			}
+		})
+	}
+}
+
+func TestSessionStartInternalTaskRevisionDoesNotLeakToJSON(t *testing.T) {
+	encoded, err := json.Marshal(SessionStartData{
+		Profile:                 "openai",
+		Model:                   "gpt-5",
+		TaskPublicationEpoch:    19,
+		TaskPublicationRevision: 23,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(encoded), "revision") || strings.Contains(string(encoded), "epoch") {
+		t.Fatalf("SessionStartData JSON leaked internal publication identity: %s", encoded)
+	}
+}
+
+func TestSessionStartCurrentWorkSeedCarriesAuthoritativeEmptyTasks(t *testing.T) {
+	data := SessionStartData{CurrentWork: &CurrentWorkSeedData{
+		Tasks: &TaskStateData{},
+	}}
+	encoded, err := json.Marshal(data)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, want := string(encoded), `{"profile":"","model":"","current_work":{"tasks":{"total":0,"done":0},"goal":null}}`; got != want {
+		t.Fatalf("SessionStartData JSON = %s, want %s", got, want)
+	}
+	var roundTrip SessionStartData
+	if err := json.Unmarshal(encoded, &roundTrip); err != nil {
+		t.Fatal(err)
+	}
+	if roundTrip.CurrentWork == nil || roundTrip.CurrentWork.Tasks == nil {
+		t.Fatalf("round trip lost authoritative empty task state: %+v", roundTrip.CurrentWork)
+	}
+}
+
+func TestTaskUpdatedDataCarriesTaskStoreOwnerSessionID(t *testing.T) {
+	want := TaskUpdatedData{
+		TaskStoreOwnerSessionID: "root-session",
+	}
+	want.Total = 1
+	want.Current = &TaskSummaryData{ID: 4, Description: "current"}
+	encoded, err := json.Marshal(want)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var typed TaskUpdatedData
+	if err := json.Unmarshal(encoded, &typed); err != nil {
+		t.Fatal(err)
+	}
+	if typed.TaskStoreOwnerSessionID != want.TaskStoreOwnerSessionID {
+		t.Fatalf("typed owner = %q, want %q", typed.TaskStoreOwnerSessionID, want.TaskStoreOwnerSessionID)
+	}
+	var generic map[string]any
+	if err := json.Unmarshal(encoded, &generic); err != nil {
+		t.Fatal(err)
+	}
+	if got := generic["task_store_owner_session_id"]; got != want.TaskStoreOwnerSessionID {
+		t.Fatalf("generic owner = %#v, want %q", got, want.TaskStoreOwnerSessionID)
+	}
+}
+
+func TestGoalUpdatedDataJSONPreservesExplicitClear(t *testing.T) {
+	set, err := json.Marshal(GoalUpdatedData{Goal: &GoalStateData{
+		Objective:  "ship focus sentence",
+		Status:     "active",
+		Iterations: 1,
+	}})
+	if err != nil {
+		t.Fatalf("marshal GoalUpdatedData with goal: %v", err)
+	}
+	if got, want := string(set), `{"goal":{"objective":"ship focus sentence","status":"active","iterations":1}}`; got != want {
+		t.Fatalf("GoalUpdatedData JSON = %s, want %s", got, want)
+	}
+
+	cleared, err := json.Marshal(GoalUpdatedData{Goal: nil})
+	if err != nil {
+		t.Fatalf("marshal GoalUpdatedData clear: %v", err)
+	}
+	if got, want := string(cleared), `{"goal":null}`; got != want {
+		t.Fatalf("GoalUpdatedData clear JSON = %s, want %s", got, want)
+	}
+}
+
 func TestJobFinishedData_ExhaustionMetadata(t *testing.T) {
 	t.Parallel()
 	resumable := false

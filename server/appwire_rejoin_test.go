@@ -104,8 +104,10 @@ func TestAtomicRejoinProjectsDurablePendingMutationsAndQueueRevision(t *testing.
 	sess := newMutationReplaySession(t)
 	acceptMutationReplayActiveTurn(t, sess)
 	queueParams := appwire.TurnQueueParams{
-		ClientMutationID: "queued-for-rejoin",
-		Input:            []appwire.InputItem{{Type: "text", Text: "durable queued input"}},
+		ClientMutationID:   "queued-for-rejoin",
+		ExpectedInstanceID: sess.ID(),
+		Ref:                "local:" + sess.ID(),
+		Input:              []appwire.InputItem{{Type: "text", Text: "durable queued input"}},
 	}
 	if _, err := sess.AcceptClientMutationQueue(queueParams); err != nil {
 		t.Fatalf("AcceptClientMutationQueue: %v", err)
@@ -144,8 +146,9 @@ func TestAtomicRejoinExcludesTranscriptIncorporatedMutationsFromPending(t *testi
 			blockAt: 1,
 			accept: func(t *testing.T, sess *agent.Session) string {
 				params := appwire.TurnStartParams{
-					ClientMutationID: "incorporated-start",
-					Input:            []appwire.InputItem{{Type: "text", Text: "durable start"}},
+					ClientMutationID:   "incorporated-start",
+					ExpectedInstanceID: sess.ID(),
+					Input:              []appwire.InputItem{{Type: "text", Text: "durable start"}},
 				}
 				if _, err := sess.AcceptClientMutationStart(params); err != nil {
 					t.Fatalf("AcceptClientMutationStart: %v", err)
@@ -159,15 +162,17 @@ func TestAtomicRejoinExcludesTranscriptIncorporatedMutationsFromPending(t *testi
 			accept: func(t *testing.T, sess *agent.Session) string {
 				// Started for its side effect: the queue needs a turn to sit behind.
 				_, err := sess.AcceptClientMutationStart(appwire.TurnStartParams{
-					ClientMutationID: "queue-parent-start",
-					Input:            []appwire.InputItem{{Type: "text", Text: "parent start"}},
+					ClientMutationID:   "queue-parent-start",
+					ExpectedInstanceID: sess.ID(),
+					Input:              []appwire.InputItem{{Type: "text", Text: "parent start"}},
 				})
 				if err != nil {
 					t.Fatalf("AcceptClientMutationStart: %v", err)
 				}
 				params := appwire.TurnQueueParams{
-					ClientMutationID: "incorporated-queue",
-					Input:            []appwire.InputItem{{Type: "text", Text: "durable queue"}},
+					ClientMutationID:   "incorporated-queue",
+					ExpectedInstanceID: sess.ID(),
+					Input:              []appwire.InputItem{{Type: "text", Text: "durable queue"}},
 				}
 				if _, err := sess.AcceptClientMutationQueue(params); err != nil {
 					t.Fatalf("AcceptClientMutationQueue: %v", err)
@@ -487,14 +492,14 @@ func TestAtomicProjectionCommitStampsAuthoritativeNotificationTarget(t *testing.
 
 	// Three: the delta opens its own turn and its own agent-message item before
 	// carrying the text. Every record is the commit's, so every one of them must
-	// name the authoritative thread.
+	// use the stable workspace ref as its routing key.
 	records := srv.AppNotificationsAfter(0, "authoritative")
 	if len(records) != 3 {
 		t.Fatalf("authoritative notifications = %d, want 3", len(records))
 	}
 	for _, record := range records {
-		if record.ThreadID != "authoritative" {
-			t.Fatalf("record thread ID = %q, want authoritative", record.ThreadID)
+		if record.ThreadID != "local:authoritative" {
+			t.Fatalf("record routing key = %q, want local:authoritative", record.ThreadID)
 		}
 	}
 	delta := records[len(records)-1]

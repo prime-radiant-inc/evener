@@ -441,3 +441,58 @@ describe("buildFormState (populate) + collectConfig (collect) round-trip", () =>
     expect(collectConfig(options, state).systemPromptText).toBe("be nice");
   });
 });
+
+describe("resolvedDefaultLabel with runtime-resolved effective layers", () => {
+  const integerOpt = opt({
+    field: "max_subagent_depth",
+    wireField: "maxSubagentDepth",
+    kind: "integer",
+  });
+  const maxRoundsOpt = opt({
+    field: "max_rounds",
+    wireField: "maxRounds",
+    kind: "integer",
+  });
+
+  test("an integer field names the resolved number", () => {
+    expect(resolvedDefaultLabel(integerOpt, "global", { maxSubagentDepth: 2 })).toBe("2 (default)");
+    expect(resolvedDefaultLabel(integerOpt, "project", { maxSubagentDepth: 50 })).toBe("50 (use global default)");
+  });
+
+  test("max_rounds -1 names unlimited, matching the flag's own wording", () => {
+    expect(resolvedDefaultLabel(maxRoundsOpt, "global", { maxRounds: -1 })).toBe("unlimited (default)");
+  });
+
+  test("max_rounds 0 also names unlimited, matching applyDefaults' 0→-1 conversion", () => {
+    expect(resolvedDefaultLabel(maxRoundsOpt, "global", { maxRounds: 0 })).toBe("unlimited (default)");
+  });
+
+  test("an integer field with no resolved value stays undefined", () => {
+    expect(resolvedDefaultLabel(integerOpt, "global", {})).toBeUndefined();
+    expect(resolvedDefaultLabel(integerOpt, "global", { maxSubagentDepth: undefined })).toBeUndefined();
+  });
+});
+
+describe("resolvedDefaultLabel with dynamic builtin labels", () => {
+  test("fast_cheap_model names 'primary model' from builtinDefaultLabel when the effective layer is unset", () => {
+    const modelOpt = {
+      ...opt({ field: "fast_cheap_model", wireField: "fastCheapModel", kind: "modelPicker" }),
+      builtinDefaultLabel: "primary model",
+    };
+    // The effective layer leaves fast_cheap_model unset (its default is the
+    // primary model, a runtime ref the resolve can't compute), so the label
+    // falls back to the schema's builtinDefaultLabel.
+    expect(resolvedDefaultLabel(modelOpt, "global", {})).toBe("primary model (default)");
+    expect(resolvedDefaultLabel(modelOpt, "project", {})).toBe("primary model (use global default)");
+  });
+
+  test("fast_cheap_model with an explicit effective value names that value", () => {
+    const modelOpt = {
+      ...opt({ field: "fast_cheap_model", wireField: "fastCheapModel", kind: "modelPicker" }),
+      builtinDefaultLabel: "primary model",
+    };
+    expect(resolvedDefaultLabel(modelOpt, "global", { fastCheapModel: "openai/gpt-4o-mini" })).toBe(
+      "openai/gpt-4o-mini (default)",
+    );
+  });
+});

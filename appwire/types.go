@@ -144,6 +144,7 @@ const (
 	NotifyEvenerThreadModelRetry      = "evener/thread/modelRetry"
 	NotifyEvenerThreadResync          = "evener/thread/resync"
 	NotifyEvenerTaskUpdated           = "evener/task/updated"
+	NotifyEvenerGoalUpdated           = "evener/goal/updated"
 	NotifyEvenerSteeringInjected      = "evener/steering/injected"
 	NotifyEvenerJobStarted            = "evener/job/started"
 	NotifyEvenerJobFinished           = "evener/job/finished"
@@ -510,19 +511,26 @@ type ThreadStatus struct {
 	ActiveFlags []string `json:"activeFlags,omitempty"`
 }
 
+type TaskSummary struct {
+	ID          int    `json:"id"`
+	Description string `json:"description"`
+}
+
 // TaskAggregate carries the authoritative task-list progress for a thread
 // snapshot. A nil *TaskAggregate on EvenerThread means the source cannot know
 // the session's task state; a present zero is an authoritative empty list.
 type TaskAggregate struct {
-	Total int `json:"total"`
-	Done  int `json:"done"`
+	Total   int          `json:"total"`
+	Done    int          `json:"done"`
+	Current *TaskSummary `json:"current,omitempty"`
 }
 
 type EvenerThread struct {
-	Ref       string `json:"ref"`
-	ParentRef string `json:"parentRef,omitempty"`
-	Kind      string `json:"kind,omitempty"`
-	Profile   string `json:"profile,omitempty"`
+	Ref        string `json:"ref"`
+	InstanceID string `json:"instanceId,omitempty"`
+	ParentRef  string `json:"parentRef,omitempty"`
+	Kind       string `json:"kind,omitempty"`
+	Profile    string `json:"profile,omitempty"`
 	// TurnCount is the daemon's total completed model-response count. It stays
 	// independent of Turns so a bounded metadata read never loads the transcript.
 	TurnCount        int                `json:"turnCount,omitempty"`
@@ -635,6 +643,7 @@ type EvenerThread struct {
 // of continuation turns taken. A nil *GoalState on EvenerThread means no goal is
 // set.
 type GoalState struct {
+	Objective  string `json:"objective,omitempty"`
 	Status     string `json:"status"`
 	Iterations int    `json:"iterations"`
 }
@@ -686,10 +695,19 @@ type ThreadQueueChangedParams struct {
 // task-list progress after a change, so a client refreshes the status row
 // event-driven instead of polling evener/tasks/list.
 type TaskUpdatedParams struct {
-	ThreadID string `json:"threadId"`
-	Ref      string `json:"ref"`
-	Total    int    `json:"total"`
-	Done     int    `json:"done"`
+	ThreadID string       `json:"threadId"`
+	Ref      string       `json:"ref"`
+	Total    int          `json:"total"`
+	Done     int          `json:"done"`
+	Current  *TaskSummary `json:"current,omitempty"`
+}
+
+// GoalUpdatedParams is the complete session goal state after a mutation. Goal
+// is deliberately not omitempty: nil explicitly clears a previously known goal.
+type GoalUpdatedParams struct {
+	ThreadID string     `json:"threadId"`
+	Ref      string     `json:"ref"`
+	Goal     *GoalState `json:"goal"`
 }
 
 // TurnCompletedParams is the payload of a turn/completed notification: the
@@ -1320,10 +1338,11 @@ type ThreadForkResponse struct {
 }
 
 type TurnStartParams struct {
-	Ref              string      `json:"ref,omitempty"`
-	ThreadID         string      `json:"threadId,omitempty"`
-	ClientMutationID string      `json:"clientMutationId"`
-	Input            []InputItem `json:"input,omitempty"`
+	Ref                string      `json:"ref,omitempty"`
+	ThreadID           string      `json:"threadId,omitempty"`
+	ClientMutationID   string      `json:"clientMutationId"`
+	ExpectedInstanceID string      `json:"expectedInstanceId"`
+	Input              []InputItem `json:"input,omitempty"`
 }
 
 type TurnStartResponse struct {
@@ -1334,33 +1353,36 @@ type TurnStartResponse struct {
 // Control mutations are session-scoped: they apply to whatever the session is
 // running rather than to a turn the client names. By the time a user's intent
 // reaches the daemon the session may already be on a later turn, and that is
-// fine — the intent should apply as soon as possible instead of bouncing. So
-// none of the types below carries an expected turn id, and the preconditions
-// that remain are the ones naming a real object: the queue revision
-// drainAsSteer swaps against, and the entry promoteQueuedAsSteer moves.
+// fine — the intent should apply as soon as possible instead of bouncing. Each
+// retry-safe mutation still carries ExpectedInstanceID: a stable workspace ref
+// can survive thread/clear while its live session instance changes, and a
+// delayed old-generation intent must not run against the replacement.
 type TurnSteerParams struct {
-	Ref              string      `json:"ref,omitempty"`
-	ThreadID         string      `json:"threadId,omitempty"`
-	ClientMutationID string      `json:"clientMutationId"`
-	Input            []InputItem `json:"input,omitempty"`
+	Ref                string      `json:"ref,omitempty"`
+	ThreadID           string      `json:"threadId,omitempty"`
+	ClientMutationID   string      `json:"clientMutationId"`
+	ExpectedInstanceID string      `json:"expectedInstanceId"`
+	Input              []InputItem `json:"input,omitempty"`
 }
 
 // TurnInterruptParams cancels whatever turn the session is running. The receipt
 // names the turn actually cancelled, which is how a client learns what it
 // stopped without having had to name it first.
 type TurnInterruptParams struct {
-	Ref              string `json:"ref,omitempty"`
-	ThreadID         string `json:"threadId,omitempty"`
-	ClientMutationID string `json:"clientMutationId"`
+	Ref                string `json:"ref,omitempty"`
+	ThreadID           string `json:"threadId,omitempty"`
+	ClientMutationID   string `json:"clientMutationId"`
+	ExpectedInstanceID string `json:"expectedInstanceId"`
 }
 
 // TurnQueueParams queues a user message during a running turn for processing
 // after the active turn completes. The daemon enqueues immediately and returns;
 // no turn id is reserved or returned.
 type TurnQueueParams struct {
-	Ref              string      `json:"ref"`
-	ClientMutationID string      `json:"clientMutationId"`
-	Input            []InputItem `json:"input,omitempty"`
+	Ref                string      `json:"ref"`
+	ClientMutationID   string      `json:"clientMutationId"`
+	ExpectedInstanceID string      `json:"expectedInstanceId"`
+	Input              []InputItem `json:"input,omitempty"`
 }
 
 type MutationProjectionState string
@@ -1382,6 +1404,7 @@ type MutationReceipt struct {
 	ClientMutationID string                  `json:"clientMutationId"`
 	Disposition      MutationDisposition     `json:"disposition"`
 	ThreadID         string                  `json:"threadId"`
+	InstanceID       string                  `json:"instanceId,omitempty"`
 	TurnID           string                  `json:"turnId,omitempty"`
 	QueueEntryIDs    []string                `json:"queueEntryIds,omitempty"`
 	ProjectionState  MutationProjectionState `json:"projectionState"`
@@ -1433,6 +1456,7 @@ type GoalSetResponse struct {
 type TurnDrainAsSteerParams struct {
 	Ref                   string      `json:"ref"`
 	ClientMutationID      string      `json:"clientMutationId"`
+	ExpectedInstanceID    string      `json:"expectedInstanceId"`
 	ExpectedQueueRevision uint64      `json:"expectedQueueRevision"`
 	Input                 []InputItem `json:"input,omitempty"`
 }
@@ -1454,10 +1478,11 @@ type TurnDrainAsSteerResponse struct {
 // Conflict when no turn is in flight, the index is out of range, or the
 // expected id no longer matches.
 type TurnPromoteQueuedAsSteerParams struct {
-	Ref              string `json:"ref"`
-	Index            int    `json:"index"`
-	ClientMutationID string `json:"clientMutationId"`
-	ExpectedEntryID  string `json:"expectedEntryId"`
+	Ref                string `json:"ref"`
+	Index              int    `json:"index"`
+	ClientMutationID   string `json:"clientMutationId"`
+	ExpectedInstanceID string `json:"expectedInstanceId"`
+	ExpectedEntryID    string `json:"expectedEntryId"`
 }
 
 type TurnPromoteQueuedAsSteerResponse struct {
@@ -1477,10 +1502,11 @@ type TurnPromoteQueuedAsSteerResponse struct {
 // the index is out of range (e.g. the entry was already consumed) or the
 // expected id no longer matches.
 type TurnCancelQueuedParams struct {
-	Ref              string `json:"ref"`
-	Index            int    `json:"index"`
-	ClientMutationID string `json:"clientMutationId"`
-	ExpectedEntryID  string `json:"expectedEntryId"`
+	Ref                string `json:"ref"`
+	Index              int    `json:"index"`
+	ClientMutationID   string `json:"clientMutationId"`
+	ExpectedInstanceID string `json:"expectedInstanceId"`
+	ExpectedEntryID    string `json:"expectedEntryId"`
 }
 
 // TurnCancelQueuedResponse echoes what turn/cancelQueued removed.
@@ -1505,12 +1531,15 @@ type ThreadShutdownParams struct {
 }
 
 type ThreadClearParams struct {
-	Ref string `json:"ref"`
+	Ref                string `json:"ref"`
+	ClientMutationID   string `json:"clientMutationId"`
+	ExpectedInstanceID string `json:"expectedInstanceId"`
 }
 
 type ThreadClearResponse struct {
-	Thread Thread `json:"thread"`
-	Ref    string `json:"ref"`
+	Thread  Thread          `json:"thread"`
+	Ref     string          `json:"ref"`
+	Receipt MutationReceipt `json:"receipt"`
 }
 
 type ThreadModelSetParams struct {
@@ -2415,20 +2444,24 @@ type LaunchOptionEnvFallback struct {
 }
 
 type LaunchOption struct {
-	Field             string                   `json:"field"`
-	WireField         string                   `json:"wireField"`
-	Label             string                   `json:"label"`
-	Description       string                   `json:"description,omitempty"`
-	Group             string                   `json:"group"`
-	Kind              string                   `json:"kind"`
-	PathKind          string                   `json:"pathKind,omitempty"`
-	Repeatable        bool                     `json:"repeatable,omitempty"`
-	DefaultableLayers []string                 `json:"defaultableLayers,omitempty"`
-	PerLaunch         bool                     `json:"perLaunch"`
-	DebugOnly         bool                     `json:"debugOnly,omitempty"`
-	EnvFallback       *LaunchOptionEnvFallback `json:"envFallback,omitempty"`
-	Choices           []LaunchOptionChoice     `json:"choices,omitempty"`
-	DriverSupport     map[string]bool          `json:"driverSupport,omitempty"`
+	Field               string                   `json:"field"`
+	WireField           string                   `json:"wireField"`
+	Label               string                   `json:"label"`
+	Description         string                   `json:"description,omitempty"`
+	Group               string                   `json:"group"`
+	Kind                string                   `json:"kind"`
+	PathKind            string                   `json:"pathKind,omitempty"`
+	Repeatable          bool                     `json:"repeatable,omitempty"`
+	DefaultableLayers   []string                 `json:"defaultableLayers,omitempty"`
+	PerLaunch           bool                     `json:"perLaunch"`
+	DebugOnly           bool                     `json:"debugOnly,omitempty"`
+	EnvFallback         *LaunchOptionEnvFallback `json:"envFallback,omitempty"`
+	Choices             []LaunchOptionChoice     `json:"choices,omitempty"`
+	DriverSupport       map[string]bool          `json:"driverSupport,omitempty"`
+	BuiltinDefault      string                   `json:"builtinDefault,omitempty"`
+	BuiltinDefaultInt   *int                     `json:"builtinDefaultInt,omitempty"`
+	BuiltinDefaultBool  *bool                    `json:"builtinDefaultBool,omitempty"`
+	BuiltinDefaultLabel string                   `json:"builtinDefaultLabel,omitempty"`
 }
 
 type LaunchOptionSchemaResponse struct {

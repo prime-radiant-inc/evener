@@ -3,13 +3,14 @@
   flex-direction: column;
   height: 100%;
   background: var(--surface-0);
-  /* Requirement 4 (wave-3 plan, Task 4): keeps the stack's own bottom edge
-   * clear of a device's home-indicator/gesture-bar cutout. The composer a
-   * session pane grows in wave 5 will need its OWN safe-area accommodation
-   * where it actually docks (typically as its own fixed/sticky bottom bar,
-   * not this container's padding) - noted here, not built, since no
-   * composer exists yet this wave. */
-  padding-bottom: env(safe-area-inset-bottom);
+  /* No bottom safe-area padding here (the requirement-4 note that used to
+   * live on this rule): a blanket container inset lifted the whole stack -
+   * the session pane's docked composer footer included - off the screen's
+   * bottom edge, leaving a dead surface-0 band under the input. The
+   * accommodation lives where content actually docks: PaneScaffold's footer
+   * (the composer's own bar, whose chrome fills the home-indicator band
+   * while its padding keeps the controls clear) and body (end-of-scroll
+   * content on footer-less panes). */
 }
 
 .topBar {

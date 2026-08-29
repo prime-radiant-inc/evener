@@ -161,7 +161,7 @@ func newHubAppServerWithNavigation(cfg hubcore.WebConfig, sources *appsource.Reg
 			ThreadTurnsList:           true,
 			TurnStart:                 true,
 			TurnSteer:                 true,
-			ThreadClear:               false,
+			ThreadClear:               true,
 			ThreadShutdown:            true,
 			ForkFromTurn:              true,
 			Tasks:                     true,
@@ -531,8 +531,14 @@ func registerThreadHandlers(
 			return source.CancelQueued(ctx, params)
 		})
 	})
-	appserver.HandleTyped(server.Router(), appwire.MethodThreadClear, func(context.Context, appwire.ThreadClearParams) (appwire.ThreadClearResponse, error) {
-		return appwire.ThreadClearResponse{}, appwire.Unavailable("thread/clear is unavailable in " + appwire.ProtocolVersion)
+	appserver.HandleTyped(server.Router(), appwire.MethodThreadClear, func(ctx context.Context, params appwire.ThreadClearParams) (appwire.ThreadClearResponse, error) {
+		if strings.TrimSpace(params.ClientMutationID) == "" {
+			return appwire.ThreadClearResponse{}, appwire.InvalidParams("clientMutationId is required")
+		}
+		if strings.TrimSpace(params.ExpectedInstanceID) == "" {
+			return appwire.ThreadClearResponse{}, appwire.InvalidParams("expectedInstanceId is required")
+		}
+		return clearThreadWithResume(ctx, cfg, sources, params)
 	})
 	appserver.HandleTyped(server.Router(), appwire.MethodThreadCompactStart, func(ctx context.Context, params appwire.ThreadCompactStartParams) (appwire.EmptyResponse, error) {
 		return appwire.EmptyResponse{}, compactThreadWithResume(ctx, cfg, sources, params)

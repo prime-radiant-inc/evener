@@ -99,7 +99,7 @@ func (s *LocalDaemonSource) AcquireRelaySession(params appwire.ThreadReadParams)
 	if entry.SessionID != "" {
 		threadID = entry.SessionID
 	}
-	key := appwire.Ref{SourceID: s.sourceID, ThreadID: threadID}.String()
+	key := localDaemonWorkspaceRef(s.sourceID, entry, threadID)
 
 	s.relayMu.Lock()
 	session := s.relaySessions[key]
@@ -760,6 +760,7 @@ func (s *LocalDaemonSource) entryForReadRef(rawRef, threadID string) (rendezvous
 }
 
 func (s *LocalDaemonSource) entryForRefMode(rawRef, threadID string, allowReadOnlyAlias bool) (rendezvous.Entry, error) {
+	requestedRef := strings.TrimSpace(rawRef)
 	if rawRef != "" {
 		ref, err := appwire.ParseRef(rawRef)
 		if err != nil {
@@ -775,6 +776,9 @@ func (s *LocalDaemonSource) entryForRefMode(rawRef, threadID string, allowReadOn
 			continue
 		}
 		entry := localDaemonRendezvousEntry(item)
+		if requestedRef != "" && localDaemonWorkspaceRef(s.sourceID, entry, localDaemonThreadID(item)) == requestedRef {
+			return entry, nil
+		}
 		if localDaemonThreadID(item) == threadID || entry.SessionID == threadID {
 			return entry, nil
 		}
@@ -808,7 +812,8 @@ func (s *LocalDaemonSource) liveEntries() []LocalDaemonEntry {
 func (s *LocalDaemonSource) threadFromEntry(item LocalDaemonEntry) appwire.Thread {
 	entry := localDaemonRendezvousEntry(item)
 	threadID := localDaemonThreadID(item)
-	ref := appwire.Ref{SourceID: s.sourceID, ThreadID: threadID}.String()
+	ref := localDaemonWorkspaceRef(s.sourceID, entry, threadID)
+	instanceID := firstLocalNonEmpty(entry.InstanceID, threadID)
 	status := localDaemonThreadStatus(item.Status)
 	startedAt := int64(0)
 	if !entry.StartedAt.IsZero() {
@@ -818,20 +823,21 @@ func (s *LocalDaemonSource) threadFromEntry(item LocalDaemonEntry) appwire.Threa
 		ID:            threadID,
 		SessionID:     entry.SessionID,
 		Preview:       entry.SessionID,
-		ModelProvider: firstLocalDaemonValue(entry.Model, entry.Provider),
+		ModelProvider: firstLocalNonEmpty(entry.Model, entry.Provider),
 		CreatedAt:     startedAt,
 		UpdatedAt:     startedAt,
 		CWD:           entry.WorkingDir,
 		Path:          filepath.Base(entry.WorkingDir),
 		Source:        s.sourceID,
 		Evener: appwire.EvenerThread{
-			Ref: ref,
+			Ref:        ref,
+			InstanceID: instanceID,
 			Capabilities: appwire.ThreadCapabilities{
 				Send:         true,
 				Steer:        true,
 				Interrupt:    true,
 				Compact:      true,
-				Clear:        false,
+				Clear:        !item.ReadOnlyAlias,
 				ForkFromTurn: true,
 				Shutdown:     true,
 				ChangeModel:  true,
@@ -868,6 +874,13 @@ func localDaemonRendezvousEntry(item LocalDaemonEntry) rendezvous.Entry {
 	return entry
 }
 
+func localDaemonWorkspaceRef(sourceID string, entry rendezvous.Entry, threadID string) string {
+	if ref, err := appwire.ParseRef(strings.TrimSpace(entry.WorkspaceRef)); err == nil && ref.SourceID == sourceID {
+		return ref.String()
+	}
+	return appwire.Ref{SourceID: sourceID, ThreadID: threadID}.String()
+}
+
 func localDaemonThreadID(item LocalDaemonEntry) string {
 	if item.SessionID != "" {
 		return item.SessionID
@@ -894,15 +907,6 @@ func localDaemonThreadStatus(status string) string {
 	default:
 		return appwire.ThreadStatusIdle
 	}
-}
-
-func firstLocalDaemonValue(values ...string) string {
-	for _, value := range values {
-		if value != "" {
-			return value
-		}
-	}
-	return ""
 }
 
 func localThreadLess(a, b appwire.Thread) bool {
