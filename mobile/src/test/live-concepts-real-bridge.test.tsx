@@ -7,6 +7,7 @@ import {
   fireEvent,
   render,
   screen,
+  within,
 } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type {
@@ -789,6 +790,23 @@ function chooseConcept(name: "Stillwater" | "Constellation" | "Field Notes") {
   fireEvent.click(screen.getByRole("button", { name: new RegExp(name) }));
 }
 
+function expectExpandedMarkerSurfaces(
+  article: HTMLElement,
+  expectedText: string,
+): void {
+  const descriptionId = article.getAttribute("aria-describedby");
+  expect(descriptionId).not.toBeNull();
+  expect(document.getElementById(descriptionId ?? "")).toHaveTextContent(
+    expectedText,
+  );
+  const detail = within(article).getByRole("region");
+  expect(within(detail).getByText(expectedText)).toBeVisible();
+}
+
+function transcriptKeyForArticle(article: HTMLElement): string {
+  return article.getAttribute("data-transcript-item-id") ?? "";
+}
+
 function expectConversationEvidence(
   expectedKeys: readonly string[],
   expectedThreadKey: string,
@@ -798,16 +816,17 @@ function expectConversationEvidence(
   expectUniqueOpaqueKeys(transcriptKeys());
   expect(activeThreadKey()).toBe(expectedThreadKey);
   expect(screen.getByText(STREAMED_TEXT)).toBeInTheDocument();
-  expect(screen.getByText("Reasoning")).toBeInTheDocument();
-  expect(screen.getByText(REASONING_TEXT)).toBeInTheDocument();
-  expect(screen.getByText("exec_command")).toBeInTheDocument();
-  expect(screen.getByText(TOOL_COMPLETED_TEXT)).toBeInTheDocument();
+  const reasoning = screen.getByRole("article", {
+    name: "Reasoning activity; running",
+  });
+  expectExpandedMarkerSurfaces(reasoning, REASONING_TEXT);
+  const completedTool = screen.getByRole("article", {
+    name: "Tool activity, exec_command; completed",
+  });
+  expectExpandedMarkerSurfaces(completedTool, TOOL_COMPLETED_TEXT);
   expect(
     screen.queryByText(`${TOOL_STARTED_TEXT}${TOOL_DELTA_TEXT}`),
   ).toBeNull();
-  const completedTool = screen
-    .getByText("exec_command")
-    .closest<HTMLElement>("[data-transcript-item-id]");
   expect(completedTool).not.toHaveAttribute("data-streaming", "true");
   expect(screen.getByRole("textbox", { name: "Message" })).toHaveValue(
     expectedDraft,
@@ -836,15 +855,6 @@ function expectWorkEvidence(
   expectRawRefsAbsentFromLiveConcept();
 }
 
-function keyForRenderedText(text: string): string {
-  return (
-    screen
-      .getByText(text)
-      .closest<HTMLElement>("[data-transcript-item-id]")
-      ?.getAttribute("data-transcript-item-id") ?? ""
-  );
-}
-
 function expectAuthoritativeConversationEvidence(
   expectedKeys: readonly string[],
   expectedThreadKey: string,
@@ -854,8 +864,14 @@ function expectAuthoritativeConversationEvidence(
   expect(activeThreadKey()).toBe(expectedThreadKey);
   expect(screen.getByText(AUTHORITATIVE_TEXT)).toBeInTheDocument();
   expect(screen.getByText(AUTHORITATIVE_NEW_TEXT)).toBeInTheDocument();
-  expect(screen.getByText(AUTHORITATIVE_REASONING_SETTLED)).toBeInTheDocument();
-  expect(screen.getByText(AUTHORITATIVE_TOOL_TEXT)).toBeInTheDocument();
+  expect(
+    screen.getByRole("article", { name: "System activity; informational" }),
+  ).not.toHaveAttribute("aria-describedby");
+  expect(screen.queryByText(AUTHORITATIVE_REASONING_SETTLED)).toBeNull();
+  const completedTool = screen.getByRole("article", {
+    name: "Tool activity, exec_command; completed",
+  });
+  expectExpandedMarkerSurfaces(completedTool, AUTHORITATIVE_TOOL_TEXT);
   expect(screen.queryByText(STREAMED_TEXT)).toBeNull();
   expect(screen.queryByText(REASONING_TEXT)).toBeNull();
   expect(screen.queryByText(TOOL_COMPLETED_TEXT)).toBeNull();
@@ -1617,13 +1633,33 @@ describe("production App live concepts over the real native AppWire bridge", () 
         }),
       );
       fireEvent.click(screen.getByRole("button", { name: "exec_command" }));
+      const runningTool = screen.getByRole("article", {
+        name: "Tool activity, exec_command; running",
+      });
+      const runningDescriptionId = runningTool.getAttribute("aria-describedby");
+      expect(runningDescriptionId).toMatch(/^sw-transcript-preview-/);
+      const runningPreview = document.getElementById(
+        runningDescriptionId ?? "",
+      );
+      expect(runningPreview).toHaveClass("sw-visually-hidden");
+      expect(runningPreview).toHaveTextContent(
+        `${TOOL_STARTED_TEXT}${TOOL_DELTA_TEXT}`,
+      );
+      const runningDetail =
+        runningTool.querySelector<HTMLElement>(".sw-tool-detail");
+      expect(runningDetail).not.toBeNull();
       expect(
-        screen.getByText(`${TOOL_STARTED_TEXT}${TOOL_DELTA_TEXT}`),
-      ).toBeInTheDocument();
-      const runningTool = screen
-        .getByText("exec_command")
-        .closest<HTMLElement>("[data-transcript-item-id]");
-      expect(runningTool).toHaveAttribute("data-streaming", "true");
+        within(runningDetail as HTMLElement).getByText(
+          `${TOOL_STARTED_TEXT}${TOOL_DELTA_TEXT}`,
+          { selector: "pre" },
+        ),
+      ).toBeVisible();
+      expect(
+        screen.getByRole("article", {
+          name: "Assistant message; streaming",
+        }),
+      ).toHaveAttribute("data-streaming", "true");
+      expect(runningTool).toHaveAttribute("data-streaming", "false");
       await sendNotification(
         bridge,
         notification("item/completed", {
@@ -1639,13 +1675,26 @@ describe("production App live concepts over the real native AppWire bridge", () 
         }),
       );
       expect(methodCount(bridge, "thread/read")).toBe(1);
-      expect(screen.getByText(TOOL_COMPLETED_TEXT)).toBeInTheDocument();
+      const completedTool = screen.getByRole("article", {
+        name: "Tool activity, exec_command; completed",
+      });
+      const completedDescriptionId =
+        completedTool.getAttribute("aria-describedby");
+      expect(completedDescriptionId).toBe(runningDescriptionId);
+      expect(
+        document.getElementById(completedDescriptionId ?? ""),
+      ).toHaveTextContent(TOOL_COMPLETED_TEXT);
+      const completedDetail =
+        completedTool.querySelector<HTMLElement>(".sw-tool-detail");
+      expect(completedDetail).not.toBeNull();
+      expect(
+        within(completedDetail as HTMLElement).getByText(TOOL_COMPLETED_TEXT, {
+          selector: "pre",
+        }),
+      ).toBeVisible();
       expect(
         screen.queryByText(`${TOOL_STARTED_TEXT}${TOOL_DELTA_TEXT}`),
       ).toBeNull();
-      const completedTool = screen
-        .getByText("exec_command")
-        .closest<HTMLElement>("[data-transcript-item-id]");
       expect(completedTool).toHaveAttribute("data-streaming", "false");
 
       fireEvent.click(screen.getByRole("button", { name: "Reasoning" }));
@@ -1657,7 +1706,11 @@ describe("production App live concepts over the real native AppWire bridge", () 
       expectUniqueOpaqueKeys(stableTranscriptKeys);
       const stableThreadKey = activeThreadKey();
       expectUniqueOpaqueKeys([stableThreadKey]);
-      const notificationReasoningKey = keyForRenderedText(REASONING_TEXT);
+      const notificationReasoningKey = transcriptKeyForArticle(
+        screen.getByRole("article", {
+          name: "Reasoning activity; running",
+        }),
+      );
       expect(notificationReasoningKey).not.toBe("");
       expectConversationEvidence(
         stableTranscriptKeys,

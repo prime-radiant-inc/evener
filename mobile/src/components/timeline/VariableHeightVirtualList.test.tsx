@@ -392,6 +392,18 @@ function rowStart(key: string): number {
   return Number(match[1]);
 }
 
+async function navigateToMountedRow(
+  feed: HTMLElement,
+  key: string,
+  estimatedStart: number,
+): Promise<void> {
+  act(() => {
+    feed.scrollTop = estimatedStart;
+    fireEvent.scroll(feed);
+  });
+  await waitFor(() => expect(screen.getByText(key)).toBeInTheDocument());
+}
+
 async function promiseSettled(promise: Promise<unknown>): Promise<boolean> {
   return Promise.race([promise.then(() => true), Promise.resolve(false)]);
 }
@@ -912,12 +924,16 @@ describe("ConversationScreen authoritative real Timeline boundary", () => {
     );
     await emitMeasurements();
     const feed = screen.getByRole("feed", { name: "Conversation transcript" });
-    act(() => {
-      feed.scrollTop = 0;
-      fireEvent.scroll(feed);
-    });
+    await waitFor(() => expect(rowStart("A-26") - rowStart("A-25")).toBe(72));
+    await waitFor(() =>
+      expect(
+        feed.scrollHeight - (feed.scrollTop + feed.clientHeight),
+      ).toBeLessThanOrEqual(48),
+    );
+    await navigateToMountedRow(feed, "A-5", 5 * 64);
     await emitMeasurements();
-
+    await navigateToMountedRow(feed, "A-5", 5 * 72);
+    expect(rowStart("A-5")).toBe(5 * 72);
     act(() => {
       feed.scrollTop = rowStart("A-5") + 11;
       fireEvent.scroll(feed);
@@ -926,6 +942,7 @@ describe("ConversationScreen authoritative real Timeline boundary", () => {
     fallbackVirtualRowHeight = 131;
     act(() => preferencesStore.getState().setContentSize("extraExtraLarge"));
     await emitMeasurements();
+    expect(rowStart("A-5")).toBe(5 * 131);
     const afterScale = visibleVirtualAnchor();
     expect(afterScale.key).toBe(beforeScale.key);
     expect(
@@ -936,6 +953,7 @@ describe("ConversationScreen authoritative real Timeline boundary", () => {
     act(() => preferencesStore.getState().setContentSize("large"));
     await waitFor(() => expect(rowStart("A-5")).toBe(5 * 64));
     await emitMeasurements();
+    expect(rowStart("A-5")).toBe(5 * 72);
     const afterReturn = visibleVirtualAnchor();
     expect(afterReturn.key).toBe(beforeReturn.key);
     expect(
@@ -956,10 +974,7 @@ describe("ConversationScreen authoritative real Timeline boundary", () => {
     });
     expect(screen.queryByRole("button", { name: "1 new" })).toBeNull();
 
-    act(() => {
-      feed.scrollTop = 0;
-      fireEvent.scroll(feed);
-    });
+    await navigateToMountedRow(feed, "A-5", 5 * 64);
     await emitMeasurements();
     act(() => {
       feed.scrollTop = rowStart("A-5") + 11;
@@ -979,11 +994,9 @@ describe("ConversationScreen authoritative real Timeline boundary", () => {
         feed.scrollHeight - (feed.scrollTop + feed.clientHeight),
       ).toBeLessThanOrEqual(48),
     );
-    act(() => {
-      feed.scrollTop = 0;
-      fireEvent.scroll(feed);
-    });
+    await navigateToMountedRow(feed, "B-5", 5 * 64);
     await emitMeasurements();
+    await navigateToMountedRow(feed, "B-5", 5 * 219);
     expect(rowStart("B-5")).toBe(5 * 219);
   });
 });
