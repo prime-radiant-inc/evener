@@ -13,15 +13,18 @@ export interface ConstellationShellProps {
   children: ReactNode;
 }
 
-const TITLES: Readonly<Record<LiveConceptState["surface"], string>> = {
+type ConstellationOwnedSurface = Exclude<
+  LiveConceptState["surface"],
+  "conversation"
+>;
+
+const TITLES: Readonly<Record<ConstellationOwnedSurface, string>> = {
   sessions: "Orbit",
-  conversation: "Conversation",
   work: "Work constellation",
 };
 
-const SUBTITLES: Readonly<Record<LiveConceptState["surface"], string>> = {
+const SUBTITLES: Readonly<Record<ConstellationOwnedSurface, string>> = {
   sessions: "Attention and active work, connected without clutter.",
-  conversation: "Live thread evidence and steering.",
   work: "Tasks, subagents, and jobs in their canonical hierarchy.",
 };
 
@@ -30,10 +33,11 @@ export function ConstellationShell({
   dispatch,
   children,
 }: ConstellationShellProps) {
+  if (state.surface === "conversation") return null;
   const surface = state.surface;
   const title = TITLES[surface];
   const subtitle = SUBTITLES[surface];
-  const pushed = surface === "conversation" || surface === "work";
+  const pushed = surface === "work";
   const reducedMotion =
     state.reducedMotion ||
     document.documentElement.dataset.reducedMotion === "true";
@@ -64,11 +68,7 @@ export function ConstellationShell({
                 className="co-icon-action"
                 type="button"
                 aria-label="Back"
-                onClick={() =>
-                  dispatch({
-                    type: surface === "work" ? "closeWork" : "goBack",
-                  })
-                }
+                onClick={() => dispatch({ type: "closeWork" })}
               >
                 <Icon name="back" decorative />
               </button>
