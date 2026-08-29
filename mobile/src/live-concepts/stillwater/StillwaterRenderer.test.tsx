@@ -123,6 +123,7 @@ function buildState(
           tone: "idle",
           streaming: false,
           questionKey: null,
+          evidenceKey: null,
           sequence: "1",
         },
         {
@@ -133,6 +134,7 @@ function buildState(
           tone: "running",
           streaming: true,
           questionKey: null,
+          evidenceKey: null,
           sequence: "2",
         },
         {
@@ -158,6 +160,7 @@ function buildState(
           tone: "idle",
           streaming: false,
           questionKey: null,
+          evidenceKey: null,
           sequence: "4",
         },
         {
@@ -168,6 +171,7 @@ function buildState(
           tone: "attention",
           streaming: false,
           questionKey: "q-1",
+          evidenceKey: null,
           sequence: "5",
         },
         {
@@ -178,6 +182,7 @@ function buildState(
           tone: "failed",
           streaming: false,
           questionKey: null,
+          evidenceKey: null,
           sequence: "6",
         },
         {
@@ -507,11 +512,17 @@ describe("StillwaterRenderer conversation surface", () => {
         name: "Assistant message; streaming",
       }),
     ).toBeVisible();
+    const toolArticle = screen.getByRole("article", {
+      name: "Tool activity, read_file; completed",
+    });
+    expect(toolArticle).toBeVisible();
+    expect(toolArticle).toHaveAttribute(
+      "aria-describedby",
+      "sw-transcript-preview-msg-3",
+    );
     expect(
-      screen.getByRole("article", {
-        name: "Tool activity, read_file; completed",
-      }),
-    ).toBeVisible();
+      document.getElementById("sw-transcript-preview-msg-3"),
+    ).toHaveTextContent("Read auth.ts — 240 lines");
     expect(
       screen.getByRole("region", { name: "Session Fix auth flow" }),
     ).toBeVisible();
@@ -520,7 +531,6 @@ describe("StillwaterRenderer conversation surface", () => {
       container.querySelector("[aria-label*='Looking into it']"),
     ).toBeNull();
     expect(container.querySelector("[aria-label*='Read auth.ts']")).toBeNull();
-    expect(screen.queryByText("Read auth.ts — 240 lines")).toBeNull();
     fireEvent.click(screen.getByRole("button", { name: "read_file" }));
     expect(dispatch).toHaveBeenCalledWith({ type: "toggleTool", key: "msg-3" });
     rerender(
@@ -535,7 +545,11 @@ describe("StillwaterRenderer conversation surface", () => {
         dispatch={dispatch}
       />,
     );
-    expect(screen.getByText("Read auth.ts — 240 lines")).toBeVisible();
+    const detail = container.querySelector(".sw-tool-detail");
+    expect(detail).not.toBeNull();
+    expect(
+      within(detail as HTMLElement).getByText("Read auth.ts — 240 lines"),
+    ).toBeVisible();
   });
 
   it("renders transcript items with streaming and truncated markers", () => {
@@ -733,6 +747,7 @@ describe("StillwaterRenderer conversation surface", () => {
             tone: "attention",
             streaming: false,
             questionKey: "q-missing",
+            evidenceKey: null,
             sequence: "5",
           },
         ],
@@ -974,7 +989,7 @@ describe("StillwaterRenderer conversation surface", () => {
       surface: "conversation",
       composer: {
         ...buildState().composer,
-        error: "Send failed — retry",
+        error: bounded("Send failed — retry"),
       },
     });
     renderSurface(state);

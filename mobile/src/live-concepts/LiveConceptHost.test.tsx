@@ -23,6 +23,7 @@ import { createNavigationStore } from "../state/navigation";
 import { createPreferencesStore } from "../state/preferences";
 import { createRosterStore } from "../state/roster";
 import { FakeProfileService } from "../test/fakeProfileService";
+import { DISPLAY_LIMITS, TRUNCATION_MARKER } from "./display-text";
 import {
   LiveConceptHost,
   type LiveConceptHostProps,
@@ -238,6 +239,29 @@ afterEach(() => {
 });
 
 describe("LiveConceptHost ownership", () => {
+  it("redacts and bounds mutation errors before renderer DOM creation", async () => {
+    const harness = makeHarness();
+    await openConversation(
+      harness,
+      conversation([{ kind: "user", id: "error-user", text: "hello" }]),
+    );
+    const secret = "mutation-secret-token";
+    const rawError = `Bearer ${secret} ${"x".repeat(2_000)}`;
+    act(() => {
+      harness.runtime.conversationStore.setState({ error: rawError });
+    });
+
+    render(<LiveConceptHost {...harness.props} surface="conversation" />);
+    const error = screen.getByRole("alert");
+    const text = error.textContent ?? "";
+    expect(text).toContain("[redacted:credential]");
+    expect(text).not.toContain(secret);
+    expect(new TextEncoder().encode(text).length).toBeLessThanOrEqual(
+      DISPLAY_LIMITS.error,
+    );
+    expect(text.split(TRUNCATION_MARKER).length - 1).toBe(1);
+  });
+
   it("renders exactly one selected renderer and one main surface", () => {
     const harness = makeHarness();
     const { container } = render(<LiveConceptHost {...harness.props} />);
@@ -489,7 +513,7 @@ describe("LiveConceptHost ownership", () => {
     expect(assistantRows[0]).toHaveAttribute("data-truncated", "true");
     expect(assistantRows[0]?.textContent).toBe(expectedFrozenBody);
     expect(assistantRows[1]).toHaveAttribute("data-truncated", "false");
-    expect(assistantRows[1]?.textContent).toBe(genuineLiteralMarker);
+    expect(assistantRows[1]?.textContent).toBe("genuine short content ");
     serializedSurfaces.push(document.body.innerHTML);
     sessions.rerender(<LiveConceptHost {...harness.props} surface="work" />);
     expect(screen.getByText("Activity projector sentinel")).toBeInTheDocument();

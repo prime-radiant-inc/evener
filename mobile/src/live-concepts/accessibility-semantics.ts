@@ -89,6 +89,12 @@ export function conversationItemAxLabel(
   }
 }
 
+export function conversationItemAxDescription(
+  item: ConversationDisplayItem,
+): string | null {
+  return "preview" in item ? (item.preview?.text ?? null) : null;
+}
+
 function markerAxLabel(
   item: Extract<ConversationDisplayItem, { semanticKind: string }>,
 ): string {

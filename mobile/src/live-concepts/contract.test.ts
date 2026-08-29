@@ -1,5 +1,6 @@
 import { describe, expect, expectTypeOf, it } from "vitest";
 import type {
+  LiveComposerView,
   LiveConceptHostProps,
   LiveConceptIntent,
   LiveConceptModule,
@@ -73,6 +74,12 @@ describe("live concept contract", () => {
     expectTypeOf<LiveConversationView["tone"]>().toEqualTypeOf<DisplayTone>();
     expectTypeOf<
       LiveConversationView["updatedLabel"]
+    >().toEqualTypeOf<BoundedDisplayText | null>();
+  });
+
+  it("requires mutation errors to use bounded display text", () => {
+    expectTypeOf<
+      LiveComposerView["error"]
     >().toEqualTypeOf<BoundedDisplayText | null>();
   });
 

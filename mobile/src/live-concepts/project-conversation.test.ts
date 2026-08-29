@@ -187,6 +187,39 @@ describe("createLiveConversationProjector", () => {
     expect(item?.body.text).toContain("wrong");
   });
 
+  it("projects safe failure detail as bounded opaque-linked evidence", () => {
+    const detail = "failure detail ".repeat(6_000);
+    const { view, operational } = createLiveConversationProjector().project(
+      makeConversation({
+        items: [
+          {
+            kind: "failure",
+            id: "failure-operational-id",
+            title: "Provider failed",
+            detail,
+          },
+        ],
+      }),
+      OPTS,
+    );
+    const failure = findNarrative(view, "failure");
+    const evidenceKey =
+      failure && "evidenceKey" in failure ? failure.evidenceKey : null;
+    expect(evidenceKey).toEqual(expect.any(String));
+    const evidence = view.evidence.find((item) => item.key === evidenceKey);
+    expect(evidence).toMatchObject({ family: "failure", redacted: true });
+    const evidenceBody = evidence?.sections[0]?.body;
+    expect(evidenceBody?.truncated).toBe(true);
+    expect(utf8Bytes(evidenceBody?.text ?? "")).toBeLessThanOrEqual(
+      DISPLAY_LIMITS.failureDetail,
+    );
+    expect(evidenceBody?.text.endsWith("… truncated")).toBe(true);
+    expect(operational.evidenceKeys.get(evidenceKey ?? "")).toBe(
+      "failure-operational-id",
+    );
+    expect(JSON.stringify(view)).not.toContain("failure-operational-id");
+  });
+
   it("maps an attachment row with metadata only (no src URLs)", () => {
     const p = createLiveConversationProjector();
     const conv = makeConversation({
@@ -1081,7 +1114,7 @@ describe("createLiveConversationProjector", () => {
     expect(item?.body.text).toBe("Hello world ");
   });
 
-  it("store-capped content with ID present => truncated true, body/marker unchanged", () => {
+  it("store-capped content with ID present gets exactly one generated marker", () => {
     const p = createLiveConversationProjector();
     const marker = "… truncated";
     const markerByteLen = utf8Bytes(marker);
@@ -1105,14 +1138,12 @@ describe("createLiveConversationProjector", () => {
     });
     const item = findNarrative(view, "assistant");
     expect(item?.body.truncated).toBe(true);
-    // Exact body must be the capped text unchanged — the projector does not
-    // re-truncate within-cap content, and the marker is already present.
-    expect(item?.body.text).toBe(content);
-    // Exactly one marker in the body.
-    expect((item?.body.text ?? "").split(marker).length - 1).toBe(0);
+    expect(item?.body.text.endsWith(marker)).toBe(true);
+    expect(utf8Bytes(item?.body.text ?? "")).toBeLessThanOrEqual(65536);
+    expect((item?.body.text ?? "").split(marker).length - 1).toBe(1);
   });
 
-  it("within-cap tool/activity with ID in truncatedItemIds => truncated true, exact body unchanged", () => {
+  it("within-cap tool/activity with ID in truncatedItemIds gets one generated marker", () => {
     // A tool/activity item whose output is within the cap but whose ID is in
     // the store's truncatedItemIds set must be marked truncated:true with the
     // exact body unchanged. If the tool membership is deleted from the set,
@@ -1138,8 +1169,8 @@ describe("createLiveConversationProjector", () => {
     const item = findMarker(view, "tool");
     expect(item).toBeDefined();
     expect(item?.preview?.truncated).toBe(true);
-    // Exact preview unchanged — projector does not modify within-cap content.
-    expect(item?.preview?.text).toBe(toolBody);
+    expect(item?.preview?.text).toBe(`${toolBody}… truncated`);
+    expect((item?.preview?.text ?? "").split("… truncated").length - 1).toBe(1);
   });
 
   it("projector-oversized input => truncated true and exactly one marker regardless of set", () => {

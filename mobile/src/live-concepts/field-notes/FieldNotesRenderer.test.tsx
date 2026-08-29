@@ -196,6 +196,7 @@ function transcriptItem(overrides: TranscriptFixture): ConversationDisplayItem {
     tone,
     streaming: overrides.streaming ?? false,
     questionKey: overrides.questionKey ?? null,
+    evidenceKey: null,
     sequence,
   };
 }
@@ -599,17 +600,22 @@ describe("Field Notes conversation surface", () => {
         name: "Assistant message; streaming",
       }),
     ).toBeVisible();
+    const toolArticle = screen.getByRole("article", {
+      name: "Tool activity, read_file; running",
+    });
+    expect(toolArticle).toBeVisible();
+    expect(toolArticle).toHaveAttribute(
+      "aria-describedby",
+      "fn-transcript-preview-item-3",
+    );
     expect(
-      screen.getByRole("article", {
-        name: "Tool activity, read_file; running",
-      }),
-    ).toBeVisible();
+      document.getElementById("fn-transcript-preview-item-3"),
+    ).toHaveTextContent("Read 24 lines from renderer.");
     expect(container.querySelector("[aria-label*='item-2']")).toBeNull();
     expect(
       container.querySelector("[aria-label*='Reading the live']"),
     ).toBeNull();
     expect(container.querySelector("[aria-label*='Read 24 lines']")).toBeNull();
-    expect(screen.queryByText("Read 24 lines from renderer.")).toBeNull();
   });
 
   it("keeps transcript items in stable DOM order using adapter sequenceLabel markers", () => {
@@ -991,7 +997,10 @@ describe("Field Notes conversation surface", () => {
       baseState({
         surface: "conversation",
         conversation: conversationWithItems(),
-        composer: { ...baseComposer(), error: "Send rejected by Hub" },
+        composer: {
+          ...baseComposer(),
+          error: bounded("Send rejected by Hub"),
+        },
       }),
     );
     const main = mainFor("conversation");

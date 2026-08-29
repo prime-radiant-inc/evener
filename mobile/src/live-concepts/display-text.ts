@@ -86,6 +86,10 @@ function redactSensitiveText(source: string): string {
     (_match, prefix: string) => `${prefix}${OPERATIONAL_ID_MARKER}`,
   );
   safe = safe.replace(
+    /\bdlg_[A-Za-z0-9][A-Za-z0-9._:-]*\b/gu,
+    OPERATIONAL_ID_MARKER,
+  );
+  safe = safe.replace(
     /\b(?<!redacted:)(?:profile|thread|job|delegate|call)[_-][A-Za-z0-9][A-Za-z0-9._:-]*\b(?!\s*[:=])/giu,
     (identifier) =>
       identifier.toLowerCase().startsWith("profile")
@@ -165,5 +169,22 @@ export function boundDisplayText(
     text: `${decodeValidPrefix(encoded, budget)}${TRUNCATION_MARKER}`,
     truncated: true,
     originalUtf8Bytes,
+  };
+}
+
+export function markDisplayTextTruncated(
+  value: BoundedDisplayText,
+  maxUtf8Bytes: number,
+): BoundedDisplayText {
+  if (value.truncated) return value;
+  if (maxUtf8Bytes < markerUtf8Bytes) {
+    throw new RangeError("display limit cannot contain truncation marker");
+  }
+  const normalized = stripAllMarkersLinear(value.text, TRUNCATION_MARKER);
+  const budget = maxUtf8Bytes - markerUtf8Bytes;
+  return {
+    text: `${decodeValidPrefix(encoder.encode(normalized), budget)}${TRUNCATION_MARKER}`,
+    truncated: true,
+    originalUtf8Bytes: value.originalUtf8Bytes,
   };
 }

@@ -8,12 +8,17 @@ import type {
   MobileConversation,
   MobileTimelineItem,
 } from "../conversation/model";
-import { boundDisplayText, DISPLAY_LIMITS } from "./display-text";
+import {
+  boundDisplayText,
+  DISPLAY_LIMITS,
+  markDisplayTextTruncated,
+} from "./display-text";
 import type {
   ActivityMarkerDisplayItem,
   BoundedDisplayText,
   ConversationDisplayItem,
   DisplayTone,
+  EvidenceDisplayFamily,
   EvidenceDisplayItem,
   EvidenceSection,
   LiveConversationView,
@@ -46,9 +51,10 @@ function storeTruncation(
   value: BoundedDisplayText,
   itemId: string,
   truncatedItemIds: ReadonlySet<string>,
+  maxUtf8Bytes: number,
 ): BoundedDisplayText {
   if (value.truncated || !truncatedItemIds.has(itemId)) return value;
-  return Object.freeze({ ...value, truncated: true });
+  return Object.freeze(markDisplayTextTruncated(value, maxUtf8Bytes));
 }
 
 function fixed(
@@ -321,8 +327,9 @@ function itemHasEvidence(item: MobileTimelineItem): boolean {
     case "user":
     case "assistant":
     case "question":
-    case "failure":
       return false;
+    case "failure":
+      return item.detail !== "";
   }
 }
 
@@ -522,7 +529,7 @@ export function createLiveConversationProjector(options?: {
 
       const addEvidence = (
         sourceItem: MobileTimelineItem,
-        family: ActivityMarkerDisplayItem["sourceKind"],
+        family: EvidenceDisplayFamily,
         title: BoundedDisplayText,
         sectionInputs: ReadonlyArray<{
           heading: string;
@@ -602,6 +609,7 @@ export function createLiveConversationProjector(options?: {
               bounded(item.text, DISPLAY_LIMITS.userMessage),
               item.id,
               opts.truncatedItemIds,
+              DISPLAY_LIMITS.userMessage,
             );
             addNarrative(
               item,
@@ -612,6 +620,7 @@ export function createLiveConversationProjector(options?: {
                 tone: "idle",
                 streaming: false,
                 questionKey: null,
+                evidenceKey: null,
               },
               [scope, "item", item.id],
             );
@@ -622,6 +631,7 @@ export function createLiveConversationProjector(options?: {
               bounded(item.markdown, DISPLAY_LIMITS.assistantProse),
               item.id,
               opts.truncatedItemIds,
+              DISPLAY_LIMITS.assistantProse,
             );
             addNarrative(
               item,
@@ -632,6 +642,7 @@ export function createLiveConversationProjector(options?: {
                 tone: item.streaming ? "running" : "idle",
                 streaming: item.streaming,
                 questionKey: null,
+                evidenceKey: null,
               },
               [scope, "item", item.id],
             );
@@ -658,13 +669,26 @@ export function createLiveConversationProjector(options?: {
                   tone: "attention",
                   streaming: false,
                   questionKey,
+                  evidenceKey: null,
                 },
                 [scope, "qitem", item.batch.callId, question.key],
               );
             }
             break;
           }
-          case "failure":
+          case "failure": {
+            const evidenceKey = addEvidence(
+              item,
+              "failure",
+              bounded(item.title, DISPLAY_LIMITS.failureTitle),
+              [
+                {
+                  heading: "Details",
+                  body: item.detail,
+                  limit: DISPLAY_LIMITS.failureDetail,
+                },
+              ],
+            );
             addNarrative(
               item,
               {
@@ -674,10 +698,12 @@ export function createLiveConversationProjector(options?: {
                 tone: "failed",
                 streaming: false,
                 questionKey: null,
+                evidenceKey,
               },
               [scope, "item", item.id],
             );
             break;
+          }
           case "activity": {
             if (item.family === "tool") {
               const label = bounded(item.label, DISPLAY_LIMITS.feedLabel);
@@ -722,6 +748,7 @@ export function createLiveConversationProjector(options?: {
                       bounded(previewSource, DISPLAY_LIMITS.toolPreview),
                       item.id,
                       opts.truncatedItemIds,
+                      DISPLAY_LIMITS.toolPreview,
                     );
               addMarker(item, {
                 sourceKind: "tool",
@@ -758,6 +785,7 @@ export function createLiveConversationProjector(options?: {
                         bounded(output, DISPLAY_LIMITS.reasoningPreview),
                         item.id,
                         opts.truncatedItemIds,
+                        DISPLAY_LIMITS.reasoningPreview,
                       ),
                 duration: durationLabel(item.detail.durationMs),
                 tone: activityTone(item.state),

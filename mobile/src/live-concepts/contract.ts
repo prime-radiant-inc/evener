@@ -12,6 +12,7 @@ import type { PreferencesState } from "../state/preferences";
 import type { RosterState } from "../state/roster";
 import type {
   Appearance,
+  BoundedDisplayText,
   ConceptId,
   LiveActivityView,
   LiveConceptSurface,
@@ -40,7 +41,7 @@ export interface LiveComposerView {
     kind: "send" | "steer" | "queue" | "interrupt";
     disposition: "applied" | "replayed";
   } | null;
-  error: string | null;
+  error: BoundedDisplayText | null;
 }
 
 export interface QuestionDraft {
