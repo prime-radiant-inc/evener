@@ -173,8 +173,11 @@ func TestLoad_Errors(t *testing.T) {
 			}
 		})
 	}
-	// Inherited fields from a base on another protocol are ignored, not errors.
+	// Inherited fields from a base on another protocol are ignored, not
+	// errors — even when the instance is named after a registry id in its own
+	// base chain (openai-codex inherits openai's Responses-only fields).
 	fixtureLoad(t, nil, "[providers.work]\nbase = \"openai\"\nprotocol = \"openai-chat\"\nbase_url = \"https://gw/v1\"\n")
+	fixtureLoad(t, nil, "[providers.openai]\nbase = \"openai-codex\"\nprotocol = \"anthropic\"\nbase_url = \"https://gw/v1\"\n")
 }
 
 func TestLoad_OverlayBaseCycleAndCuratedDanglingAlias(t *testing.T) {
@@ -195,6 +198,19 @@ func TestLoad_OverlayBaseCycleAndCuratedDanglingAlias(t *testing.T) {
 	}
 	if !strings.Contains(strings.Join(r.Warnings(), "\n"), "dangling alias") {
 		t.Fatalf("warnings = %v", r.Warnings())
+	}
+	// An instance that inherits the curated dangling alias must still load.
+	path := filepath.Join(t.TempDir(), "providers.toml")
+	if err := os.WriteFile(path, []byte("[providers.myclaude]\nbase = \"anthropic\"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	r, err = Load(WithSnapshot(data), WithEnv(mapEnv(nil)), WithConfigPath(path), WithStateRoot(t.TempDir()),
+		WithOverlay(overlayWith("[providers.anthropic.models.\"gone\"]\nalias_of = \"claude-nope\"\n")))
+	if err != nil {
+		t.Fatalf("an inherited curated dangling alias must not fail the load: %v", err)
+	}
+	if !r.explicit["myclaude"].head.Models["gone"].Hidden {
+		t.Fatal("the inherited dangling row must be hidden on the instance too")
 	}
 }
 
