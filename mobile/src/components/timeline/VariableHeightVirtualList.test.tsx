@@ -124,7 +124,10 @@ beforeEach(() => {
   Object.defineProperty(HTMLElement.prototype, "offsetHeight", {
     configurable: true,
     get() {
-      return this.getAttribute("role") === "feed" ? VIEWPORT_HEIGHT : 0;
+      return this.getAttribute("role") === "feed" ||
+        this.hasAttribute("data-virtual-list-scroll")
+        ? VIEWPORT_HEIGHT
+        : 0;
     },
   });
   Object.defineProperty(HTMLElement.prototype, "offsetWidth", {
@@ -136,13 +139,20 @@ beforeEach(() => {
   Object.defineProperty(HTMLElement.prototype, "clientHeight", {
     configurable: true,
     get() {
-      return this.getAttribute("role") === "feed" ? VIEWPORT_HEIGHT : 0;
+      return this.getAttribute("role") === "feed" ||
+        this.hasAttribute("data-virtual-list-scroll")
+        ? VIEWPORT_HEIGHT
+        : 0;
     },
   });
   Object.defineProperty(HTMLElement.prototype, "scrollHeight", {
     configurable: true,
     get() {
-      if (this.getAttribute("role") !== "feed") return 0;
+      if (
+        this.getAttribute("role") !== "feed" &&
+        !this.hasAttribute("data-virtual-list-scroll")
+      )
+        return 0;
       return Number.parseFloat(
         (this.firstElementChild as HTMLElement | null)?.style.height ?? "0",
       );
@@ -156,7 +166,8 @@ beforeEach(() => {
       ? Number(article.dataset.height)
       : this.matches('[data-testid="virtual-transcript-row"]')
         ? fallbackVirtualRowHeight
-        : this.getAttribute("role") === "feed"
+        : this.getAttribute("role") === "feed" ||
+            this.hasAttribute("data-virtual-list-scroll")
           ? VIEWPORT_HEIGHT
           : 0;
     return {
@@ -421,6 +432,136 @@ async function focusKey(
 }
 
 describe("VariableHeightVirtualList", () => {
+  it("preserves default feed, page owner, scoped cache, and semantic article rows", async () => {
+    renderList({ values: items(3) });
+    await emitMeasurements();
+
+    const feed = screen.getByRole("feed", { name: "Conversation transcript" });
+    expect(feed).toHaveAttribute("data-page-scroll-owner", "true");
+    expect(feed).not.toHaveAttribute("inert");
+    expect(screen.getAllByRole("article")).toHaveLength(3);
+    expect(screen.getAllByRole("article")[2]).toHaveAttribute(
+      "aria-posinset",
+      "3",
+    );
+    expect(screen.getAllByRole("article")[2]).toHaveAttribute(
+      "aria-setsize",
+      "3",
+    );
+  });
+
+  it("supports explicit caller-owned rows and custom locked scroll semantics", async () => {
+    render(
+      <VariableHeightVirtualList
+        items={items(3)}
+        getItemKey={(item) => item.key}
+        estimateSize={(item) => item.height}
+        measurementCache={{ mode: "ephemeral" }}
+        rowSemantics={{ mode: "caller-owned" }}
+        scrollSemantics={{
+          mode: "custom",
+          role: "region",
+          ariaLabel: "Evidence sections",
+          pageScrollOwner: false,
+          locked: true,
+        }}
+        overscan={6}
+        maxMountedRows={48}
+        onScroll={() => {}}
+        renderItem={(item) => (
+          <section aria-label={`Section ${item.key}`} data-height={item.height}>
+            {item.key}
+          </section>
+        )}
+      />,
+    );
+    await emitMeasurements();
+
+    const detail = document.querySelector<HTMLElement>(
+      '[data-virtual-list-scroll="true"]',
+    );
+    expect(detail).not.toBeNull();
+    if (detail === null) throw new Error("custom scroller missing");
+    expect(detail).toHaveAttribute("aria-label", "Evidence sections");
+    expect(detail).not.toHaveAttribute("data-page-scroll-owner");
+    expect(detail).toHaveAttribute("inert");
+    expect(detail).toHaveAttribute("aria-hidden", "true");
+    expect(detail).toHaveAttribute("data-scroll-locked", "true");
+    expect(screen.queryAllByRole("article")).toHaveLength(0);
+    expect(detail.querySelectorAll("section")).toHaveLength(3);
+  });
+
+  it("keeps ephemeral measurements private to each mounted list instance", async () => {
+    const element = (height: number) => (
+      <VariableHeightVirtualList
+        items={items(20, height)}
+        getItemKey={(item) => item.key}
+        estimateSize={() => 40}
+        measurementCache={{ mode: "ephemeral" }}
+        rowSemantics={{ mode: "caller-owned" }}
+        scrollSemantics={{
+          mode: "custom",
+          role: "region",
+          ariaLabel: "Ephemeral evidence",
+          pageScrollOwner: true,
+          locked: false,
+        }}
+        overscan={6}
+        maxMountedRows={48}
+        onScroll={() => {}}
+        renderItem={(item) => <div data-height={item.height}>{item.key}</div>}
+      />
+    );
+    const first = render(element(90));
+    await emitMeasurements();
+    expect(rowStart("item-5")).toBe(5 * 90);
+    first.unmount();
+
+    render(element(130));
+    await waitFor(() => expect(rowStart("item-5")).toBe(5 * 40));
+    await emitMeasurements();
+    expect(rowStart("item-5")).toBe(5 * 130);
+  });
+
+  it("cancels an ephemeral pending restore when its list instance unmounts", async () => {
+    const ref = createRef<VariableHeightVirtualListHandle>();
+    const view = render(
+      <VariableHeightVirtualList
+        ref={ref}
+        items={items(100, 72)}
+        getItemKey={(item) => item.key}
+        estimateSize={() => 40}
+        measurementCache={{ mode: "ephemeral" }}
+        rowSemantics={{ mode: "caller-owned" }}
+        scrollSemantics={{
+          mode: "custom",
+          role: "region",
+          ariaLabel: "Ephemeral cancellation",
+          pageScrollOwner: true,
+          locked: false,
+        }}
+        overscan={6}
+        maxMountedRows={48}
+        onScroll={() => {}}
+        renderItem={(item) => <div data-height={item.height}>{item.key}</div>}
+      />,
+    );
+    await emitMeasurements();
+    const restoration = ref.current?.restoreAnchor({
+      key: "item-50",
+      offsetPx: -7,
+      priorIndex: 50,
+    });
+    if (restoration === undefined) throw new Error("restore handle missing");
+    let settled = false;
+    void restoration.then(() => {
+      settled = true;
+    });
+
+    await act(async () => view.unmount());
+    expect(settled).toBe(true);
+  });
+
   it("mounts at most 48 rows while exposing logical set positions", async () => {
     renderList();
     await emitMeasurements();

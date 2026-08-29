@@ -1,6 +1,5 @@
 import {
   forwardRef,
-  type HTMLAttributes,
   type ReactElement,
   type ReactNode,
   useCallback,
@@ -29,26 +28,43 @@ export interface VirtualTranscriptHandle {
   restoreAnchor(anchor: ConversationAnchor): Promise<void>;
   scrollToTail(): void;
   focusKey(key: string): void;
+  focusFeed(): void;
 }
 
-export interface VirtualTranscriptProps {
+interface VirtualTranscriptBaseProps {
   readonly threadKey: string;
   readonly skinId: ConceptId;
   readonly contentSize: ContentSizeCategory;
   readonly items: readonly ConversationDisplayItem[];
-  readonly skin: ConversationSkin;
   readonly savedAnchor: ConversationAnchor | null;
   /** Frame-owned unseen state; the transcript never keeps a second copy. */
   readonly unseen: number;
   readonly onAnchorChange: (anchor: ConversationAnchor) => void;
   readonly onUnseenChange: (count: number) => void;
   readonly onFocusIntentChange: (key: string | null) => void;
+  readonly locked?: boolean;
 }
 
-interface LegacyVirtualTranscriptProps
-  extends Omit<HTMLAttributes<HTMLElement>, "children"> {
-  readonly children: ReactNode;
-}
+type VirtualTranscriptRenderer =
+  | {
+      /** Task 3/default rendering retained for standalone measured tests/users. */
+      readonly renderMode?: "skin";
+      readonly skin: ConversationSkin;
+      readonly renderItem?: never;
+    }
+  | {
+      /** Frame supplies the sole semantic article and every owned control. */
+      readonly renderMode: "frame-owned";
+      readonly skin?: never;
+      readonly renderItem: (
+        item: ConversationDisplayItem,
+        index: number,
+        focused: boolean,
+      ) => ReactNode;
+    };
+
+export type VirtualTranscriptProps = VirtualTranscriptBaseProps &
+  VirtualTranscriptRenderer;
 
 export function estimateDisplayRow(item: ConversationDisplayItem): number {
   if ("semanticKind" in item) return 56;
@@ -72,29 +88,25 @@ function renderDisplayItem(
   });
 }
 
-function isLegacyProps(
-  props: VirtualTranscriptProps | LegacyVirtualTranscriptProps,
-): props is LegacyVirtualTranscriptProps {
-  return "children" in props;
-}
-
 const ForwardedLiveVirtualTranscriptSession = forwardRef(
   function LiveVirtualTranscriptSession(
-    {
+    props: VirtualTranscriptProps,
+    forwardedRef: React.ForwardedRef<VirtualTranscriptHandle>,
+  ): ReactElement {
+    const {
       threadKey,
       skinId,
       contentSize,
       items,
-      skin,
       savedAnchor,
       unseen,
       onAnchorChange,
       onUnseenChange,
       onFocusIntentChange,
-    }: VirtualTranscriptProps,
-    forwardedRef: React.ForwardedRef<VirtualTranscriptHandle>,
-  ): ReactElement {
+      locked = false,
+    } = props;
     const listRef = useRef<VariableHeightVirtualListHandle>(null);
+    const transcriptRef = useRef<HTMLElement>(null);
     const followingRef = useRef(savedAnchor?.following ?? true);
     const initializedRef = useRef(false);
     const measuredAnchorRef = useRef<MeasuredAnchor | null>(null);
@@ -105,6 +117,7 @@ const ForwardedLiveVirtualTranscriptSession = forwardRef(
     onFocusIntentChangeRef.current = onFocusIntentChange;
     const [focusedKey, setFocusedKey] = useState<string | null>(null);
     const keys = items.map((item) => item.key);
+    const initialItem = items.at(-1);
 
     useEffect(() => {
       const epoch = lifecycleEpochRef.current + 1;
@@ -239,12 +252,18 @@ const ForwardedLiveVirtualTranscriptSession = forwardRef(
           onFocusIntentChange(key);
           listRef.current?.focusKey(key);
         },
+        focusFeed(): void {
+          transcriptRef.current
+            ?.querySelector<HTMLElement>('[data-virtual-list-scroll="true"]')
+            ?.focus({ preventScroll: true });
+        },
       }),
       [keys, onFocusIntentChange, onUnseenChange, publishAnchor, threadKey],
     );
 
     return (
       <section
+        ref={transcriptRef}
         aria-label="Transcript"
         className="live-conversation-frame__virtual-transcript"
       >
@@ -254,12 +273,36 @@ const ForwardedLiveVirtualTranscriptSession = forwardRef(
           getItemKey={(item) => item.key}
           estimateSize={estimateDisplayRow}
           cacheScope={{ threadKey, skinId, contentSize }}
+          rowSemantics={
+            props.renderMode === "frame-owned"
+              ? { mode: "caller-owned" }
+              : undefined
+          }
+          scrollSemantics={
+            props.renderMode === "frame-owned"
+              ? {
+                  mode: "custom",
+                  role: "feed",
+                  ariaLabel: "Conversation transcript",
+                  pageScrollOwner: !locked,
+                  locked,
+                }
+              : undefined
+          }
           overscan={6}
           maxMountedRows={48}
-          onScroll={handleScroll}
-          renderItem={(item) =>
-            renderDisplayItem(item, skin, item.key === focusedKey)
+          initialViewportEstimate={
+            props.renderMode === "frame-owned" && initialItem !== undefined
+              ? estimateDisplayRow(initialItem)
+              : undefined
           }
+          onScroll={handleScroll}
+          renderItem={(item, index) => {
+            const focused = item.key === focusedKey;
+            return props.renderMode === "frame-owned"
+              ? props.renderItem(item, index, focused)
+              : renderDisplayItem(item, props.skin, focused);
+          }}
         />
         {unseen > 0 ? (
           <button
@@ -294,32 +337,4 @@ const ForwardedLiveVirtualTranscript = forwardRef(
   },
 );
 
-const ForwardedVirtualTranscript = forwardRef(
-  function VirtualTranscriptBoundary(
-    props: VirtualTranscriptProps | LegacyVirtualTranscriptProps,
-    ref: React.ForwardedRef<VirtualTranscriptHandle>,
-  ): ReactElement {
-    if (isLegacyProps(props)) {
-      const { children, ...attributes } = props;
-      return (
-        <section
-          {...attributes}
-          aria-label="Transcript"
-          data-page-scroll-owner="true"
-        >
-          {children}
-        </section>
-      );
-    }
-    return <ForwardedLiveVirtualTranscript {...props} ref={ref} />;
-  },
-);
-
-export const VirtualTranscript = ForwardedVirtualTranscript as {
-  (
-    props: VirtualTranscriptProps & {
-      readonly ref?: React.Ref<VirtualTranscriptHandle>;
-    },
-  ): ReactElement;
-  (props: LegacyVirtualTranscriptProps): ReactElement;
-};
+export const VirtualTranscript = ForwardedLiveVirtualTranscript;
