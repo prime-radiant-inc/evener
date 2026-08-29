@@ -224,6 +224,7 @@ var cases = []wireCase{
 	{"azure-claude-prod", "azure/claude-prod", false, toolsRequest("high")},
 	{"bedrock-sonnet-5-stream", "bedrock/anthropic.claude-sonnet-5", true, webSearchRequest()},
 	{"vertex-opus-5", "vertex/claude-opus-5", false, toolsRequest("high")},
+	{"vertex-opus-5-stream", "vertex/claude-opus-5", true, toolsRequest("high")},
 	{"vertex-gemini-stream", "google-vertex/gemini-2.5-flash", true, toolsRequest("")},
 	{"google-flash-lite-web-search", "google/gemini-2.5-flash-lite", false, webSearchRequest()},
 	{"ollama-llama3-optional-bearer", "ollama/llama3:8b", false, toolsRequest("")},
@@ -310,6 +311,9 @@ func (h *harness) protocol(id string, client *http.Client) llm.Protocol {
 
 func (h *harness) run(t *testing.T, c wireCase) capture {
 	t.Helper()
+	h.sink.mu.Lock()
+	h.sink.last = nil
+	h.sink.mu.Unlock()
 	res, err := h.registry.Resolve(c.ref)
 	if err != nil {
 		t.Fatalf("%s: resolve %s: %v", c.name, c.ref, err)
@@ -436,6 +440,8 @@ func TestWireCaptureAssertions(t *testing.T) {
 	check(codex.Headers["Openai-Organization"] == "" && codex.Headers["Openai-Project"] == "", "codex must not send org/project headers: %v", codex.Headers)
 	codexBody := bodyOf(t, codex)
 	check(codexBody["parallel_tool_calls"] == false && codexBody["instructions"] == "" && codexBody["tools"] == nil, "codex lite body: %s", codex.Body)
+	codexFirstInput := codexBody["input"].([]any)[0].(map[string]any)
+	check(codexFirstInput["type"] == "additional_tools" && len(codexFirstInput["tools"].([]any)) == 1, "codex additional_tools item: %s", codex.Body)
 	check(codexBody["client_metadata"] != nil && codexBody["metadata"] == nil, "codex client_metadata rule: %s", codex.Body)
 	check(codexBody["text"].(map[string]any)["verbosity"] == "low" && codexBody["reasoning"].(map[string]any)["context"] == "all_turns", "codex body constants: %s", codex.Body)
 	check(codexBody["model"] == "gpt-5.6-sol", "codex wire id: %v", codexBody["model"])
@@ -474,6 +480,9 @@ func TestWireCaptureAssertions(t *testing.T) {
 	vertex := byName["vertex-opus-5"]
 	check(vertex.URL == "https://aiplatform.googleapis.com/v1/projects/my-project/locations/global/publishers/anthropic/models/claude-opus-5:rawPredict", "vertex url = %s", vertex.URL)
 	check(vertex.Headers["Authorization"] == "<credential>" && bodyOf(t, vertex)["anthropic_version"] == "vertex-2023-10-16" && bodyOf(t, vertex)["model"] == nil, "vertex auth/body: %v %s", vertex.Headers, vertex.Body)
+	vertexStream := byName["vertex-opus-5-stream"]
+	check(strings.HasSuffix(vertexStream.URL, ":streamRawPredict"), "vertex stream url = %s", vertexStream.URL)
+	check(bodyOf(t, vertexStream)["stream"] == true && bodyOf(t, vertexStream)["anthropic_version"] == "vertex-2023-10-16" && bodyOf(t, vertexStream)["model"] == nil, "vertex stream body: %s", vertexStream.Body)
 	vertexGemini := byName["vertex-gemini-stream"]
 	check(strings.HasPrefix(vertexGemini.URL, "https://aiplatform.googleapis.com/v1/projects/my-project/locations/global/publishers/google/models/gemini-2.5-flash:streamGenerateContent") && vertexGemini.Headers["Authorization"] == "<credential>", "vertex gemini: %s %v", vertexGemini.URL, vertexGemini.Headers)
 
