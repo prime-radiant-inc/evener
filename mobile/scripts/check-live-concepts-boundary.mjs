@@ -15,6 +15,8 @@ import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
 const CODE_EXTENSIONS = new Set([".ts", ".tsx", ".css"]);
+const CONCEPT_IDS = ["stillwater", "constellation", "field-notes"];
+const PLATFORM_PRESENTATION = "src/ui/platformPresentation.ts";
 
 // Forbidden symbol patterns that indicate concept-lab fixture/scenario/
 // prototype/synthetic/lab infrastructure. Word boundaries prevent matching
@@ -34,7 +36,10 @@ const FORBIDDEN_SYMBOLS = [
 // through the NativeBridge instead.
 const FORBIDDEN_TRANSPORTS = [
   { pattern: /\bnew\s+WebSocket\s*\(/, detail: "new WebSocket() transport" },
-  { pattern: /\bnew\s+EventSource\s*\(/, detail: "new EventSource() transport" },
+  {
+    pattern: /\bnew\s+EventSource\s*\(/,
+    detail: "new EventSource() transport",
+  },
   {
     pattern: /\bnew\s+XMLHttpRequest\s*\(/,
     detail: "new XMLHttpRequest() transport",
@@ -86,23 +91,70 @@ async function walkCodeFiles(dir, files = []) {
 
 function extractImportSpecifiers(source) {
   const specifiers = new Set();
-  let m;
   // `from "..."` — covers `import { x } from "y"` and `export { x } from "y"`.
   const fromRe = /\bfrom\s+['"]([^'"]+)['"]/g;
-  while ((m = fromRe.exec(source)) !== null) {
+  for (const m of source.matchAll(fromRe)) {
     specifiers.add(m[1]);
   }
   // Side-effect `import "..."`.
   const sideEffectRe = /\bimport\s+['"]([^'"]+)['"]/g;
-  while ((m = sideEffectRe.exec(source)) !== null) {
+  for (const m of source.matchAll(sideEffectRe)) {
     specifiers.add(m[1]);
   }
   // Dynamic `import("...")`.
   const dynamicRe = /\bimport\s*\(\s*['"]([^'"]+)['"]\s*\)/g;
-  while ((m = dynamicRe.exec(source)) !== null) {
+  for (const m of source.matchAll(dynamicRe)) {
     specifiers.add(m[1]);
   }
   return specifiers;
+}
+
+// Remove comments without treating comment markers inside quoted literals as
+// comments. Import/selector parsing runs on this representation so a disabled
+// example cannot trigger a rule while import strings remain available.
+function stripComments(source) {
+  let result = "";
+  let i = 0;
+  let quote = null;
+  while (i < source.length) {
+    const ch = source[i];
+    if (quote !== null) {
+      result += ch;
+      if (ch === "\\") {
+        if (i + 1 < source.length) result += source[i + 1];
+        i += 2;
+        continue;
+      }
+      if (ch === quote) quote = null;
+      i++;
+      continue;
+    }
+    if (ch === '"' || ch === "'" || ch === "`") {
+      quote = ch;
+      result += ch;
+      i++;
+      continue;
+    }
+    if (ch === "/" && source[i + 1] === "/") {
+      while (i < source.length && source[i] !== "\n") i++;
+      continue;
+    }
+    if (ch === "/" && source[i + 1] === "*") {
+      i += 2;
+      while (
+        i < source.length &&
+        !(source[i] === "*" && source[i + 1] === "/")
+      ) {
+        if (source[i] === "\n") result += "\n";
+        i++;
+      }
+      i += 2;
+      continue;
+    }
+    result += ch;
+    i++;
+  }
+  return result;
 }
 
 function isRelative(specifier) {
@@ -126,9 +178,7 @@ function checkImports(specifiers, fileDir, fileRel, violations) {
       }
     } else {
       // Bare or aliased specifier.
-      if (
-        FORBIDDEN_TRANSPORT_PREFIXES.some((p) => specifier.startsWith(p))
-      ) {
+      if (FORBIDDEN_TRANSPORT_PREFIXES.some((p) => specifier.startsWith(p))) {
         violations.push({
           code: "forbidden-transport",
           file: fileRel,
@@ -160,6 +210,119 @@ function checkTransports(source, fileRel, violations) {
     if (pattern.test(source)) {
       violations.push({ code: "forbidden-transport", file: fileRel, detail });
     }
+  }
+}
+
+function checkConversationSkin(source, specifiers, fileRel, violations) {
+  if (path.basename(fileRel) !== "ConversationSkin.tsx") return;
+  const rules = [
+    {
+      matches: specifiers.has("@tanstack/react-virtual"),
+      detail: "ConversationSkin must not import @tanstack/react-virtual",
+    },
+    {
+      matches: /\bMobileTimelineItem\b/.test(source),
+      detail: "ConversationSkin must not reference MobileTimelineItem",
+    },
+    {
+      matches: [...specifiers].some((specifier) =>
+        /(?:^|\/)(?:state|services)\/conversation(?:$|\/)/.test(specifier),
+      ),
+      detail:
+        "ConversationSkin must not import a conversation store or service",
+    },
+    {
+      matches: /\bitems\s*\.\s*map\s*\(/.test(source),
+      detail: "ConversationSkin must not map conversation items",
+    },
+    {
+      matches:
+        /<(?:button|input|textarea|select)\b/i.test(source) ||
+        /<a\b[^>]*\bhref\s*=/i.test(source),
+      detail: "ConversationSkin must not render interactive controls",
+    },
+    {
+      matches:
+        /\bon(?:Click|Change|Submit|Send|Steer|Queue|Interrupt|Open|Close|Back|Voice|Work)\w*\s*(?:\??\s*:|\()/.test(
+          source,
+        ),
+      detail: "ConversationSkin must not declare control callback props",
+    },
+    {
+      matches: /data-live-concept-scroller/.test(source),
+      detail: "ConversationSkin must not declare data-live-concept-scroller",
+    },
+  ];
+  for (const rule of rules) {
+    if (!rule.matches) continue;
+    violations.push({
+      code: "conversation-skin-boundary",
+      file: fileRel,
+      detail: rule.detail,
+    });
+  }
+}
+
+function checkConversationImportDirection(
+  source,
+  specifiers,
+  fileRel,
+  violations,
+) {
+  if (!fileRel.startsWith("src/live-concepts/conversation/")) return;
+  if (/\.(?:test|spec)\.[cm]?[jt]sx?$/.test(fileRel)) return;
+  const rules = [
+    {
+      matches: [...specifiers].some(
+        (specifier) =>
+          specifier === "../contract" || specifier === "../contract.ts",
+      ),
+      detail: "conversation primitive must not import ../contract",
+    },
+    {
+      matches: /\bLiveConceptState\b/.test(source),
+      detail: "conversation primitive must not reference LiveConceptState",
+    },
+    {
+      matches: /\bLiveConceptIntent\b/.test(source),
+      detail: "conversation primitive must not reference LiveConceptIntent",
+    },
+  ];
+  for (const rule of rules) {
+    if (!rule.matches) continue;
+    violations.push({
+      code: "conversation-import-direction",
+      file: fileRel,
+      detail: rule.detail,
+    });
+  }
+}
+
+function checkParentConversationImports(specifiers, fileRel, violations) {
+  if (fileRel !== "src/live-concepts/contract.ts") return;
+  for (const required of [
+    "./conversation/contract",
+    "./conversation/primitives",
+  ]) {
+    if (specifiers.has(required)) continue;
+    violations.push({
+      code: "conversation-import-direction",
+      file: fileRel,
+      detail: `parent contract must import ${required}`,
+    });
+  }
+}
+
+function checkRequiredConversationSkin(source, fileRel, violations) {
+  for (const concept of CONCEPT_IDS) {
+    if (fileRel !== `src/live-concepts/${concept}/index.ts`) continue;
+    if (/\bconversationSkin\s*:/.test(source)) return;
+    violations.push({
+      code: "missing-conversation-skin",
+      file: fileRel,
+      detail: "live concept module must provide conversationSkin",
+    });
+    return;
   }
 }
 
@@ -205,7 +368,11 @@ function findUnscopedCssSelectors(css) {
       if (depth === 0) {
         const selector = current.trim();
         // Skip at-rules (@media, @keyframes, @font-face, …).
-        if (selector && !selector.startsWith("@") && !isScopedSelector(selector)) {
+        if (
+          selector &&
+          !selector.startsWith("@") &&
+          !isScopedSelector(selector)
+        ) {
           unscoped.push(selector);
         }
       }
@@ -227,6 +394,78 @@ function checkCss(source, fileRel, violations) {
       code: "unscoped-css",
       file: fileRel,
       detail: `unscoped selector: ${selector}`,
+    });
+  }
+  if (
+    !/^src\/live-concepts\/(?:stillwater|constellation|field-notes)\//.test(
+      fileRel,
+    )
+  ) {
+    return;
+  }
+  const css = stripComments(source);
+  const emitted = new Set();
+  const rulePattern = /([^{}]+)\{([^{}]*)\}/g;
+  for (const match of css.matchAll(rulePattern)) {
+    const selector = match[1].trim();
+    const declarations = match[2];
+    const conversationOnly =
+      /conversation-skin/.test(selector) ||
+      /data-surface\s*=\s*["']?conversation/.test(selector);
+    if (!conversationOnly) continue;
+    if (
+      /composer/i.test(selector) &&
+      /\bposition\s*:\s*(?:fixed|sticky)\b/i.test(declarations)
+    ) {
+      emitted.add(
+        "conversation composer must not use fixed/sticky positioning",
+      );
+    }
+    if (/\boverflow-y\s*:/i.test(declarations)) {
+      emitted.add("active conversation must not own overflow-y");
+    }
+    if (/data-live-concept-scroller/.test(selector)) {
+      emitted.add(
+        "conversation skin must not declare data-live-concept-scroller",
+      );
+    }
+  }
+  for (const detail of emitted) {
+    violations.push({
+      code: "conversation-css-boundary",
+      file: fileRel,
+      detail,
+    });
+  }
+}
+
+function checkViewportOwnership(source, fileRel, violations) {
+  if (/\.(?:test|spec)\.[cm]?[jt]sx?$/.test(fileRel)) return;
+  if (/--visual-viewport-height/.test(source)) {
+    violations.push({
+      code: "forbidden-viewport-token",
+      file: fileRel,
+      detail: "--visual-viewport-height is forbidden",
+    });
+  }
+  if (fileRel === PLATFORM_PRESENTATION) return;
+  if (
+    /\bvisualViewport\b/.test(source) &&
+    /\baddEventListener\s*\(/.test(source)
+  ) {
+    violations.push({
+      code: "viewport-ownership",
+      file: fileRel,
+      detail:
+        "only src/ui/platformPresentation.ts may listen to visualViewport",
+    });
+  }
+  for (const token of ["--viewport-height", "--keyboard-inset"]) {
+    if (!source.includes(token) || !/\bsetProperty\s*\(/.test(source)) continue;
+    violations.push({
+      code: "viewport-ownership",
+      file: fileRel,
+      detail: `only src/ui/platformPresentation.ts may write ${token}`,
     });
   }
 }
@@ -264,7 +503,8 @@ function stripLiterals(source) {
     }
     if (ch === "/" && source[i + 1] === "*") {
       i += 2;
-      while (i < source.length && !(source[i] === "*" && source[i + 1] === "/")) i++;
+      while (i < source.length && !(source[i] === "*" && source[i + 1] === "/"))
+        i++;
       i += 2;
       continue;
     }
@@ -281,12 +521,18 @@ function stripLiterals(source) {
 export async function checkLiveConceptBoundary(root) {
   const liveConceptsDir = path.join(root, "src", "live-concepts");
   const files = await walkCodeFiles(liveConceptsDir);
+  const sourceFiles = await walkCodeFiles(path.join(root, "src"));
   /** @type {Violation[]} */
   const violations = [];
+  for (const file of sourceFiles) {
+    const fileRel = path.relative(root, file).split(path.sep).join("/");
+    const source = stripComments(await readFile(file, "utf8"));
+    checkViewportOwnership(source, fileRel, violations);
+  }
   for (const file of files) {
     const ext = path.extname(file);
-    const fileRel = path.relative(root, file);
-    const source = await readFile(file, "utf8");
+    const fileRel = path.relative(root, file).split(path.sep).join("/");
+    const source = stripComments(await readFile(file, "utf8"));
     if (ext === ".css") {
       checkCss(source, fileRel, violations);
     } else {
@@ -295,6 +541,10 @@ export async function checkLiveConceptBoundary(root) {
       const code = stripLiterals(source);
       checkSymbols(code, fileRel, violations);
       checkTransports(code, fileRel, violations);
+      checkConversationSkin(code, specifiers, fileRel, violations);
+      checkConversationImportDirection(code, specifiers, fileRel, violations);
+      checkParentConversationImports(specifiers, fileRel, violations);
+      checkRequiredConversationSkin(code, fileRel, violations);
     }
   }
   violations.sort((a, b) => {

@@ -16,20 +16,20 @@ describe("liveConceptRegistry", () => {
     expect(liveConceptRegistry["field-notes"].id).toBe("field-notes");
   });
 
-  it("registers Stillwater through the shared conversation skin seam", () => {
-    expect(liveConceptRegistry.stillwater.conversationSkin?.id).toBe(
+  it("requires Stillwater's shared conversation skin", () => {
+    expect(liveConceptRegistry.stillwater.conversationSkin.id).toBe(
       "stillwater",
     );
   });
 
-  it("registers Constellation through the shared conversation skin seam", () => {
-    expect(liveConceptRegistry.constellation.conversationSkin?.id).toBe(
+  it("requires Constellation's shared conversation skin", () => {
+    expect(liveConceptRegistry.constellation.conversationSkin.id).toBe(
       "constellation",
     );
   });
 
-  it("registers Field Notes through the shared conversation skin seam", () => {
-    expect(liveConceptRegistry["field-notes"].conversationSkin?.id).toBe(
+  it("requires Field Notes' shared conversation skin", () => {
+    expect(liveConceptRegistry["field-notes"].conversationSkin.id).toBe(
       "field-notes",
     );
   });

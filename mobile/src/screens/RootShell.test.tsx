@@ -19,6 +19,7 @@ import type {
   Turn,
 } from "../../../cmd/evener-hub/frontend/src/protocol/types.gen";
 import type { LiveConceptRendererProps } from "../live-concepts/contract";
+import * as liveUiStoreModule from "../live-concepts/live-ui-store";
 import { liveConceptRegistry } from "../live-concepts/registry";
 import type { ProfileRedacted } from "../services/nativeProfiles";
 import { createConnectionStore } from "../state/connection";
@@ -512,6 +513,25 @@ function captureNextConversationStore(): () => ReturnType<
   return () => {
     if (captured === null)
       throw new Error("conversation store was not captured");
+    return captured;
+  };
+}
+
+function captureNextLiveUiStore(): () => ReturnType<
+  typeof liveUiStoreModule.createLiveConceptUiStore
+> {
+  const createRealStore = liveUiStoreModule.createLiveConceptUiStore;
+  let captured: ReturnType<
+    typeof liveUiStoreModule.createLiveConceptUiStore
+  > | null = null;
+  vi.spyOn(liveUiStoreModule, "createLiveConceptUiStore").mockImplementation(
+    (storage) => {
+      captured = createRealStore(storage);
+      return captured;
+    },
+  );
+  return () => {
+    if (captured === null) throw new Error("live UI store was not captured");
     return captured;
   };
 }
@@ -1018,6 +1038,180 @@ describe("RootShell — live concept production composition", () => {
     );
     expect(window.history.length).toBe(historyLength);
     expect(screen.queryAllByRole("tab")).toHaveLength(0);
+  });
+
+  it("switches all three skins without reread, reconnect, resubscribe, or shared-state replacement", async () => {
+    globalThis.ResizeObserver = RootShellResizeObserver;
+    const getConversationStore = captureNextConversationStore();
+    const getUiStore = captureNextLiveUiStore();
+    const thread = {
+      ...makeThread({ id: "thread-a", ref: "ref-a", name: "Alpha" }),
+      turns: [
+        {
+          id: "turn-a",
+          itemsView: "default" as const,
+          status: "completed" as const,
+          items: [
+            {
+              id: "item-a",
+              turnId: "turn-a",
+              type: "userMessage",
+              text: "Stable root transcript",
+            } as ThreadItem,
+            {
+              id: "tool-a",
+              turnId: "turn-a",
+              type: "commandExecution",
+              toolName: "read_file",
+              description: "read stable root evidence",
+              output: "Stable root evidence",
+              status: "completed",
+              exitCode: 0,
+            } as ThreadItem,
+          ],
+        },
+      ],
+    };
+    const harness = renderProductionShell(
+      () => new ProductionClientFake(thread),
+    );
+    fireEvent.click(await screen.findByText("Alpha"));
+    expect(await screen.findByText("Stable root transcript")).toBeVisible();
+    await act(async () => {
+      RootShellResizeObserver.flush();
+      await Promise.resolve();
+    });
+
+    const client = harness.clients[0];
+    const scoped = harness.scopedServices[0];
+    if (client === undefined || scoped === undefined) {
+      throw new Error("missing production client graph");
+    }
+    const conversationStore = getConversationStore();
+    const uiStore = getUiStore();
+    const pendingMutation = {
+      kind: "queue" as const,
+      status: "pending" as const,
+      draftSnapshot: "root production draft",
+      draftRevisionAtSubmit: 13,
+      generation: conversationStore.getState().conversationGeneration,
+      mutationId: 17,
+    };
+    const questionDrafts = {
+      "question-a": {
+        selectedOptionKeys: ["option-a"],
+        note: "first root note",
+        resolution: null,
+      },
+      "question-b": {
+        selectedOptionKeys: ["option-b"],
+        note: "second root note",
+        resolution: "skip" as const,
+      },
+    } as const;
+    const frame = screen.getByRole("main", { name: "Conversation" });
+    const threadKey = frame.getAttribute("data-thread-key");
+    const itemKey = document
+      .querySelector("[data-transcript-item-id]")
+      ?.getAttribute("data-transcript-item-id");
+    if (threadKey === null || itemKey === null || itemKey === undefined) {
+      throw new Error("missing bounded conversation keys");
+    }
+    const anchor = {
+      threadKey,
+      itemKey,
+      offsetPx: 29,
+      following: false,
+    } as const;
+    act(() => {
+      conversationStore.getState().setDraft("root production draft");
+      conversationStore.setState({ pendingMutation });
+      uiStore.getState().setComposerMode("queue");
+      uiStore
+        .getState()
+        .setQuestionDraft("question-a", questionDrafts["question-a"]);
+      uiStore
+        .getState()
+        .setQuestionDraft("question-b", questionDrafts["question-b"]);
+      uiStore.getState().toggleTool("root-disclosure");
+      uiStore.getState().setConversationAnchor("stillwater", threadKey, anchor);
+      uiStore.getState().setConversationUnseen("stillwater", threadKey, 6);
+      uiStore.getState().setConversationFocus("stillwater", threadKey, itemKey);
+    });
+    await act(async () => {
+      RootShellResizeObserver.flush();
+      await Promise.resolve();
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Show activity" }));
+    expect(screen.getByRole("dialog", { name: "read_file" })).toBeVisible();
+    const stillwaterMemoryBefore = uiStore
+      .getState()
+      .conversationUi.get("stillwater")
+      ?.get(threadKey);
+    expect(stillwaterMemoryBefore).toMatchObject({
+      unseen: 6,
+      focusedItemKey: itemKey,
+    });
+    expect(stillwaterMemoryBefore?.evidenceKey).not.toBeNull();
+    expect(stillwaterMemoryBefore?.evidenceTriggerKey).not.toBeNull();
+
+    const conversationStoreIdentity = conversationStore;
+    const conversationServiceIdentity = scoped.conversationService;
+    const canonicalConversation = conversationStore.getState().conversation;
+    const pendingIdentity = conversationStore.getState().pendingMutation;
+    const questionDraftsIdentity = uiStore.getState().questionDrafts;
+    const disclosuresIdentity = uiStore.getState().expandedToolKeys;
+    const initialReadCount = client.requests.filter(
+      (request) => request.method === "thread/read",
+    ).length;
+    const initialSubscriptions = {
+      notifications: client.notificationCallbacks.length,
+      state: client.stateCallbacks.length,
+      handshake: client.handshakeCallbacks.length,
+    };
+
+    for (const [concept, className] of [
+      ["constellation", "co-conversation-skin"],
+      ["field-notes", "fn-conversation-skin"],
+      ["stillwater", "sw-conversation-skin"],
+    ] as const) {
+      act(() => uiStore.getState().setConcept(concept));
+      await vi.waitFor(() =>
+        expect(document.querySelector(".live-conversation-frame")).toHaveClass(
+          className,
+        ),
+      );
+      expect(screen.getByRole("dialog", { name: "read_file" })).toBeVisible();
+    }
+
+    expect(getConversationStore()).toBe(conversationStoreIdentity);
+    expect(harness.scopedServices[0]?.conversationService).toBe(
+      conversationServiceIdentity,
+    );
+    expect(conversationStore.getState().conversation).toBe(
+      canonicalConversation,
+    );
+    expect(conversationStore.getState().draft).toBe("root production draft");
+    expect(conversationStore.getState().pendingMutation).toBe(pendingIdentity);
+    expect(uiStore.getState().composerMode).toBe("queue");
+    expect(uiStore.getState().questionDrafts).toBe(questionDraftsIdentity);
+    expect(uiStore.getState().questionDrafts).toEqual(questionDrafts);
+    expect(uiStore.getState().expandedToolKeys).toBe(disclosuresIdentity);
+    expect(
+      uiStore.getState().conversationUi.get("stillwater")?.get(threadKey),
+    ).toEqual(stillwaterMemoryBefore);
+    expect(client.connect).toHaveBeenCalledTimes(1);
+    expect(harness.createScoped).toHaveBeenCalledTimes(1);
+    expect(
+      client.requests.filter((request) => request.method === "thread/read"),
+    ).toHaveLength(initialReadCount);
+    expect(client.notificationCallbacks).toHaveLength(
+      initialSubscriptions.notifications,
+    );
+    expect(client.stateCallbacks).toHaveLength(initialSubscriptions.state);
+    expect(client.handshakeCallbacks).toHaveLength(
+      initialSubscriptions.handshake,
+    );
   });
 
   it("mounts one concept portal outside the renderer and restores replacement-trigger focus", async () => {

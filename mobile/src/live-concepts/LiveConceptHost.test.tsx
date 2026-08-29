@@ -507,7 +507,10 @@ describe("LiveConceptHost ownership", () => {
     const interrupt = vi.spyOn(store, "interrupt").mockResolvedValue();
 
     render(<LiveConceptHost {...harness.props} surface="conversation" />);
-    act(() => HostMeasuredResizeObserver.flush());
+    await act(async () => {
+      HostMeasuredResizeObserver.flush();
+      await Promise.resolve();
+    });
     fireEvent.click(screen.getByRole("button", { name: "Work" }));
     expect(harness.uiStore.getState().workOpen).toBe(true);
     fireEvent.click(screen.getByRole("button", { name: "Switch concept" }));
@@ -571,6 +574,243 @@ describe("LiveConceptHost ownership", () => {
     fireEvent.click(
       screen.getByRole("button", { name: "Close activity and evidence" }),
     );
+  });
+
+  it("preserves complete shared state and stable logical memory across all concept switches", async () => {
+    globalThis.ResizeObserver = HostMeasuredResizeObserver;
+    const harness = makeHarness();
+    await openConversation(
+      harness,
+      conversation([
+        { kind: "user", id: "stable-user", text: "Stable switch row" },
+        {
+          kind: "activity",
+          id: "stable-tool",
+          label: "read_file",
+          family: "tool",
+          state: "completed",
+          detail: { output: "Stable switch evidence" },
+        },
+      ]),
+    );
+    const pendingMutation = {
+      kind: "queue" as const,
+      status: "pending" as const,
+      draftSnapshot: "stable production draft",
+      draftRevisionAtSubmit: 31,
+      generation:
+        harness.runtime.conversationStore.getState().conversationGeneration,
+      mutationId: 47,
+    };
+    harness.runtime.conversationStore
+      .getState()
+      .setDraft("stable production draft");
+    harness.runtime.conversationStore.setState({ pendingMutation });
+    const firstQuestion = {
+      selectedOptionKeys: ["first-option"],
+      note: "first note",
+      resolution: null,
+    } as const;
+    const secondQuestion = {
+      selectedOptionKeys: ["second-option"],
+      note: "second note",
+      resolution: "skip",
+    } as const;
+    act(() => {
+      harness.uiStore.getState().setComposerMode("queue");
+      harness.uiStore
+        .getState()
+        .setQuestionDraft("first-question", firstQuestion);
+      harness.uiStore
+        .getState()
+        .setQuestionDraft("second-question", secondQuestion);
+      harness.uiStore.getState().toggleTool("shared-disclosure");
+    });
+
+    const { container } = render(
+      <LiveConceptHost {...harness.props} surface="conversation" />,
+    );
+    await act(async () => {
+      HostMeasuredResizeObserver.flush();
+      await Promise.resolve();
+    });
+    const frame = screen.getByRole("main", { name: "Conversation" });
+    const threadKey = frame.getAttribute("data-thread-key");
+    const focusedItemKey = container
+      .querySelector<HTMLElement>("[data-transcript-item-id]")
+      ?.getAttribute("data-transcript-item-id");
+    if (
+      threadKey === null ||
+      focusedItemKey === null ||
+      focusedItemKey === undefined
+    ) {
+      throw new Error("missing projected stable memory keys");
+    }
+    const outgoingAnchor = {
+      threadKey,
+      itemKey: focusedItemKey,
+      offsetPx: 23,
+      following: false,
+    } as const;
+    act(() => {
+      harness.uiStore
+        .getState()
+        .setConversationAnchor("stillwater", threadKey, outgoingAnchor);
+      harness.uiStore
+        .getState()
+        .setConversationUnseen("stillwater", threadKey, 9);
+      harness.uiStore
+        .getState()
+        .setConversationFocus("stillwater", threadKey, focusedItemKey);
+    });
+    await act(async () => {
+      HostMeasuredResizeObserver.flush();
+      await Promise.resolve();
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Show activity" }));
+    expect(screen.getByRole("dialog", { name: "read_file" })).toBeVisible();
+    const stillwaterMemory = harness.uiStore
+      .getState()
+      .conversationUi.get("stillwater")
+      ?.get(threadKey);
+    const capturedAnchor = stillwaterMemory?.anchor;
+    expect(capturedAnchor).not.toBeNull();
+    expect(stillwaterMemory).toMatchObject({
+      anchor: {
+        threadKey,
+        itemKey: focusedItemKey,
+        following: false,
+      },
+      unseen: 9,
+      focusedItemKey,
+    });
+    expect(stillwaterMemory?.evidenceKey).not.toBeNull();
+    expect(stillwaterMemory?.evidenceTriggerKey).not.toBeNull();
+
+    const productionBefore = harness.runtime.conversationStore.getState();
+    const questionDraftsBefore = harness.uiStore.getState().questionDrafts;
+    const disclosuresBefore = harness.uiStore.getState().expandedToolKeys;
+    for (const nextConcept of [
+      "constellation",
+      "field-notes",
+      "stillwater",
+    ] as const) {
+      await act(async () => {
+        harness.uiStore.getState().setConcept(nextConcept);
+        HostMeasuredResizeObserver.flush();
+        await Promise.resolve();
+      });
+      expect(container.querySelector(".live-conversation-frame")).toHaveClass(
+        nextConcept === "stillwater"
+          ? "sw-conversation-skin"
+          : nextConcept === "constellation"
+            ? "co-conversation-skin"
+            : "fn-conversation-skin",
+      );
+      expect(screen.getByText("9 unseen messages")).toBeVisible();
+      expect(
+        container.querySelector(
+          `[data-transcript-item-id="${focusedItemKey}"][data-focused="true"]`,
+        ),
+      ).not.toBeNull();
+      expect(screen.getByRole("dialog", { name: "read_file" })).toBeVisible();
+    }
+
+    const productionAfter = harness.runtime.conversationStore.getState();
+    expect(productionAfter.ref).toBe(productionBefore.ref);
+    expect(productionAfter.conversation).toBe(productionBefore.conversation);
+    expect(productionAfter.draft).toBe("stable production draft");
+    expect(productionAfter.pendingMutation).toBe(pendingMutation);
+    expect(harness.uiStore.getState().composerMode).toBe("queue");
+    expect(harness.uiStore.getState().questionDrafts).toBe(
+      questionDraftsBefore,
+    );
+    expect(harness.uiStore.getState().questionDrafts).toEqual({
+      "first-question": firstQuestion,
+      "second-question": secondQuestion,
+    });
+    expect(harness.uiStore.getState().expandedToolKeys).toBe(disclosuresBefore);
+    expect(
+      harness.uiStore
+        .getState()
+        .conversationUi.get("stillwater")
+        ?.get(threadKey)?.anchor,
+    ).toEqual(capturedAnchor);
+    for (const concept of ["constellation", "field-notes"] as const) {
+      expect(
+        harness.uiStore.getState().conversationUi.get(concept)?.get(threadKey)
+          ?.anchor,
+      ).toMatchObject({
+        threadKey,
+        itemKey: focusedItemKey,
+        offsetPx: capturedAnchor?.offsetPx,
+      });
+    }
+  });
+
+  it("retains only the same-generation last-good bounded snapshot on projection error", async () => {
+    const harness = makeHarness();
+    await openConversation(
+      harness,
+      conversation([
+        { kind: "user", id: "last-good", text: "Last good transcript" },
+      ]),
+    );
+    const { rerender } = render(
+      <LiveConceptHost {...harness.props} surface="conversation" />,
+    );
+    expect(screen.getByText("Last good transcript")).toBeVisible();
+
+    const duplicateQuestion = {
+      kind: "question" as const,
+      id: "duplicate-question",
+      batch: {
+        callId: "duplicate-call",
+        questions: [
+          {
+            key: "same-question",
+            header: "One",
+            question: "First?",
+            options: [],
+            multiSelect: false,
+          },
+          {
+            key: "same-question",
+            header: "Two",
+            question: "Second?",
+            options: [],
+            multiSelect: false,
+          },
+        ],
+      },
+    };
+    const current = harness.runtime.conversationStore.getState().conversation;
+    if (current === null) throw new Error("missing current conversation");
+    act(() => {
+      harness.runtime.conversationStore.setState({
+        conversation: { ...current, items: [duplicateQuestion] },
+      });
+    });
+    expect(screen.getByText("Last good transcript")).toBeVisible();
+    expect(
+      screen.getByRole("button", { name: "Retry conversation" }),
+    ).toBeVisible();
+
+    act(() => {
+      harness.runtime.conversationStore.setState({
+        ref: "new-private-ref",
+        conversation: {
+          ...current,
+          id: "new-private-thread",
+          items: [duplicateQuestion],
+        },
+      });
+    });
+    rerender(<LiveConceptHost {...harness.props} surface="conversation" />);
+    expect(screen.queryByText("Last good transcript")).toBeNull();
+    expect(
+      screen.getByRole("button", { name: "Retry conversation" }),
+    ).toBeVisible();
   });
 
   it("classifies a failed mutation as editable mutation recovery, not a read error", async () => {
@@ -709,9 +949,14 @@ describe("LiveConceptHost ownership", () => {
       harness.uiStore
         .getState()
         .setQuestionDraft("opaque-question", questionDraft);
-      harness.uiStore.getState().setScrollAnchor("anchor-scope", {
-        scrollTop: 19,
-      });
+      harness.uiStore
+        .getState()
+        .setConversationAnchor("stillwater", "anchor-scope", {
+          threadKey: "anchor-scope",
+          itemKey: "item-1",
+          offsetPx: 19,
+          following: false,
+        });
     });
     const conversationBefore = harness.runtime.conversationStore.getState();
     const uiBefore = harness.uiStore.getState();
@@ -730,7 +975,9 @@ describe("LiveConceptHost ownership", () => {
     expect(uiAfter.expandedToolKeys).toEqual(uiBefore.expandedToolKeys);
     expect(uiAfter.expandedWorkKeys).toEqual(uiBefore.expandedWorkKeys);
     expect(uiAfter.questionDrafts).toEqual(uiBefore.questionDrafts);
-    expect(uiAfter.scrollAnchors).toEqual(uiBefore.scrollAnchors);
+    expect(
+      uiAfter.conversationUi.get("stillwater")?.get("anchor-scope"),
+    ).toEqual(uiBefore.conversationUi.get("stillwater")?.get("anchor-scope"));
     expect(harness.runtime.connection.getState()).toBe(connectionBefore);
     expect(harness.runtime.connection.getState().generation).toBe(7);
     expect(health).not.toHaveBeenCalled();
@@ -1025,10 +1272,17 @@ describe("LiveConceptHost ownership", () => {
         note: "note",
         resolution: null,
       });
-      harness.uiStore.getState().setFocusedItemKey("item-key");
-      harness.uiStore.getState().setScrollAnchor("scope", {
-        scrollTop: 8,
-      });
+      harness.uiStore
+        .getState()
+        .setConversationFocus("constellation", "scope", "item-key");
+      harness.uiStore
+        .getState()
+        .setConversationAnchor("constellation", "scope", {
+          threadKey: "scope",
+          itemKey: "item-key",
+          offsetPx: 8,
+          following: false,
+        });
     });
     const resetProfileScope = vi.spyOn(
       harness.uiStore.getState(),
@@ -1134,8 +1388,7 @@ describe("LiveConceptHost ownership", () => {
     expect(state.expandedToolKeys.size).toBe(0);
     expect(state.expandedWorkKeys.size).toBe(0);
     expect(state.questionDrafts).toEqual({});
-    expect(state.focusedItemKey).toBeNull();
-    expect(state.scrollAnchors).toEqual({});
+    expect(state.conversationUi).toEqual(new Map());
     expect(screen.getByText("New profile roster sentinel")).toBeInTheDocument();
     rerender(
       <LiveConceptHost
@@ -1326,7 +1579,13 @@ describe("LiveConceptHost ownership", () => {
     const harness = makeHarness();
     act(() => {
       harness.uiStore.getState().toggleTool("preserved-on-mount");
-      harness.uiStore.getState().setFocusedItemKey("focused-on-mount");
+      harness.uiStore
+        .getState()
+        .setConversationFocus(
+          "stillwater",
+          "focused-on-mount-thread",
+          "focused-on-mount",
+        );
     });
     const resetProfileScope = vi.spyOn(
       harness.uiStore.getState(),
@@ -1338,7 +1597,12 @@ describe("LiveConceptHost ownership", () => {
     expect(harness.uiStore.getState().expandedToolKeys).toContain(
       "preserved-on-mount",
     );
-    expect(harness.uiStore.getState().focusedItemKey).toBe("focused-on-mount");
+    expect(
+      harness.uiStore
+        .getState()
+        .conversationUi.get("stillwater")
+        ?.get("focused-on-mount-thread")?.focusedItemKey,
+    ).toBe("focused-on-mount");
     expect(screen.queryByText(/^Search$/)).not.toBeInTheDocument();
     expect(screen.queryByText(/Lab Controls/i)).not.toBeInTheDocument();
     expect(screen.queryByText(/synthetic/i)).not.toBeInTheDocument();
@@ -1359,7 +1623,7 @@ describe("LiveConceptHost ownership", () => {
     expect(resetProfileScope).toHaveBeenCalledTimes(1);
     expect(harness.uiStore.getState().concept).toBe("field-notes");
     expect(harness.uiStore.getState().expandedToolKeys.size).toBe(0);
-    expect(harness.uiStore.getState().focusedItemKey).toBeNull();
+    expect(harness.uiStore.getState().conversationUi).toEqual(new Map());
     rerender(
       <LiveConceptHost
         {...harness.props}

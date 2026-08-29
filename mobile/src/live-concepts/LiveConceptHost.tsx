@@ -6,7 +6,6 @@ import {
   useMemo,
   useReducer,
   useRef,
-  useState,
   useSyncExternalStore,
 } from "react";
 import type { StoreApi } from "zustand";
@@ -17,7 +16,9 @@ import type { LiveConversationState } from "../state/conversation";
 import { connectionStatusAxLabel } from "./accessibility-semantics";
 import type {
   ConversationAnchor,
+  ConversationFrameAction,
   ConversationFrameState,
+  ConversationUiMemory,
   LiveComposerView,
   LiveConceptModule,
   LiveConceptRuntime,
@@ -98,6 +99,48 @@ const FAILED_ROSTER: LiveRosterView = {
   hasMore: false,
   error: "Unable to display sessions",
 };
+const EMPTY_CONVERSATION_UI: ConversationUiMemory = Object.freeze({
+  anchor: null,
+  unseen: 0,
+  evidenceKey: null,
+  evidenceTriggerKey: null,
+  focusedItemKey: null,
+  expandedEvidenceKeys: new Set<string>(),
+});
+
+interface ActiveConversationUi {
+  readonly concept: LiveConceptState["concept"];
+  readonly threadKey: string;
+  readonly memory: ConversationUiMemory;
+}
+
+function selectConversationUi(
+  memories: LiveConceptUiStore["conversationUi"],
+  concept: LiveConceptState["concept"],
+  threadKey: string | null,
+  outgoing: ActiveConversationUi | null,
+  itemKeys: ReadonlySet<string>,
+): { readonly memory: ConversationUiMemory; readonly inherited: boolean } {
+  if (threadKey === null) {
+    return { memory: EMPTY_CONVERSATION_UI, inherited: false };
+  }
+  const saved = memories.get(concept)?.get(threadKey);
+  if (saved !== undefined) return { memory: saved, inherited: false };
+  if (outgoing === null || outgoing.threadKey !== threadKey) {
+    return { memory: EMPTY_CONVERSATION_UI, inherited: false };
+  }
+  const anchor = outgoing.memory.anchor;
+  return {
+    memory: Object.freeze({
+      ...outgoing.memory,
+      anchor:
+        anchor !== null && itemKeys.has(anchor.itemKey)
+          ? { ...anchor, threadKey }
+          : null,
+    }),
+    inherited: true,
+  };
+}
 
 function useNullableStoreValue<State, Value>(
   store: BoundStore<State> | null,
@@ -184,15 +227,7 @@ export function LiveConceptHost({
   const expandedToolKeys = uiStore((state) => state.expandedToolKeys);
   const expandedWorkKeys = uiStore((state) => state.expandedWorkKeys);
   const questionDrafts = uiStore((state) => state.questionDrafts);
-  const focusedItemKey = uiStore((state) => state.focusedItemKey);
-  const scrollAnchors = uiStore((state) => state.scrollAnchors);
-  const [conversationAnchor, setConversationAnchor] =
-    useState<ConversationAnchor | null>(null);
-  const [unseen, setUnseen] = useState(0);
-  const [openEvidenceKey, setOpenEvidenceKey] = useState<string | null>(null);
-  const [evidenceTriggerKey, setEvidenceTriggerKey] = useState<string | null>(
-    null,
-  );
+  const conversationUi = uiStore((state) => state.conversationUi);
 
   const connectionStatus = runtime.connection((state) => state.status);
   const reachabilityByProfile = runtime.connection(
@@ -246,6 +281,9 @@ export function LiveConceptHost({
   );
   const conversationError = runtime.conversationStore((state) => state.error);
   const conversationStatus = runtime.conversationStore((state) => state.status);
+  const conversationGeneration = runtime.conversationStore(
+    (state) => state.conversationGeneration,
+  );
   const activityView = runtime.activityStore((state) => state.view);
 
   const acceptedProfileScope = useRef<{
@@ -299,6 +337,15 @@ export function LiveConceptHost({
     projectionProfileGate,
   ]);
 
+  const lastGoodConversation = useRef<{
+    readonly profileEpoch: number;
+    readonly ref: string;
+    readonly conversationGeneration: number;
+    readonly projection: {
+      view: LiveConversationView;
+      operational: ConversationOperationalMap;
+    };
+  } | null>(null);
   const conversationResult = useMemo<{
     projection: {
       view: LiveConversationView;
@@ -313,26 +360,54 @@ export function LiveConceptHost({
     ) {
       return { projection: null, failed: false };
     }
+    const lastGood = lastGoodConversation.current;
+    if (
+      lastGood !== null &&
+      lastGood.profileEpoch === profileScopeEpoch &&
+      lastGood.ref === rawRef &&
+      conversationGeneration < lastGood.conversationGeneration
+    ) {
+      return { projection: lastGood.projection, failed: false };
+    }
     try {
       const labels = findRosterLabels(rosterProjector, rosterEntries, rawRef);
+      const projection = conversationProjector.project(mobileConversation, {
+        ref: rawRef,
+        olderCursor,
+        truncatedItemIds: runtime.conversationStore
+          .getState()
+          .getTruncatedItemIds(),
+        ...labels,
+      });
+      lastGoodConversation.current = {
+        profileEpoch: profileScopeEpoch,
+        ref: rawRef,
+        conversationGeneration,
+        projection,
+      };
       return {
-        projection: conversationProjector.project(mobileConversation, {
-          ref: rawRef,
-          olderCursor,
-          truncatedItemIds: runtime.conversationStore
-            .getState()
-            .getTruncatedItemIds(),
-          ...labels,
-        }),
+        projection,
         failed: false,
       };
     } catch {
-      return { projection: null, failed: true };
+      const currentLastGood = lastGoodConversation.current;
+      return {
+        projection:
+          currentLastGood !== null &&
+          currentLastGood.profileEpoch === profileScopeEpoch &&
+          currentLastGood.ref === rawRef &&
+          currentLastGood.conversationGeneration <= conversationGeneration
+            ? currentLastGood.projection
+            : null,
+        failed: true,
+      };
     }
   }, [
+    conversationGeneration,
     conversationProjector,
     mobileConversation,
     olderCursor,
+    profileScopeEpoch,
     rawRef,
     rosterEntries,
     rosterProjector,
@@ -374,6 +449,11 @@ export function LiveConceptHost({
   const currentActivityOperational = useRef<ActivityOperationalMap | null>(
     null,
   );
+  const activeFrameIdentity = useRef<{
+    concept: LiveConceptState["concept"];
+    threadKey: string;
+  } | null>(null);
+  const previousConversationUi = useRef<ActiveConversationUi | null>(null);
   rosterRefs.current = rosterProjection.refsByKey;
   currentConversationProjection.current = conversationResult.projection;
   currentActivityOperational.current = activityResult.operational;
@@ -395,9 +475,12 @@ export function LiveConceptHost({
 
     conversationProjector.reset();
     activityProjector.reset();
+    lastGoodConversation.current = null;
     rosterRefs.current = EMPTY_REFS;
     currentConversationProjection.current = null;
     currentActivityOperational.current = null;
+    activeFrameIdentity.current = null;
+    previousConversationUi.current = null;
     uiStore.getState().resetProfileScope();
     acceptedProfileScope.current = {
       profileId: runtime.profileId,
@@ -416,9 +499,12 @@ export function LiveConceptHost({
     () => () => {
       conversationProjector.dispose();
       activityProjector.dispose();
+      lastGoodConversation.current = null;
       rosterRefs.current = EMPTY_REFS;
       currentConversationProjection.current = null;
       currentActivityOperational.current = null;
+      activeFrameIdentity.current = null;
+      previousConversationUi.current = null;
     },
     [activityProjector, conversationProjector],
   );
@@ -447,11 +533,28 @@ export function LiveConceptHost({
           onOpenSettings,
           onOpenVoice,
           onOpenEvidence: (evidenceKey, triggerKey) => {
-            setOpenEvidenceKey(evidenceKey);
-            setEvidenceTriggerKey(triggerKey);
+            const identity = activeFrameIdentity.current;
+            if (identity === null) return;
+            uiStore
+              .getState()
+              .setEvidenceState(
+                identity.concept,
+                identity.threadKey,
+                evidenceKey,
+                triggerKey,
+              );
           },
           onCloseEvidence: () => {
-            setOpenEvidenceKey(null);
+            const identity = activeFrameIdentity.current;
+            if (identity === null) return;
+            uiStore
+              .getState()
+              .setEvidenceState(
+                identity.concept,
+                identity.threadKey,
+                null,
+                null,
+              );
           },
         },
         uiStore,
@@ -538,38 +641,76 @@ export function LiveConceptHost({
       expandedToolKeys,
       expandedWorkKeys,
       questionDrafts,
-      focusedItemKey,
-      scrollAnchors,
+      focusedItemKey: null,
+      scrollAnchors: {},
     },
   };
   const activeModule: LiveConceptModule = liveConceptRegistry[concept];
   const Renderer = activeModule.Renderer;
   const connectionLabel = connectionStatusAxLabel(state.connection);
-  const scrollIdentity = conversation?.threadKey ?? "roster";
-  const scrollAnchorKey = `${concept}:${surface}:${scrollIdentity}`;
+  const threadKey = conversation?.threadKey ?? null;
+  const conversationItemKeys = useMemo(
+    () => new Set(conversation?.items.map((item) => item.key) ?? []),
+    [conversation],
+  );
+  const selectedConversationUi = selectConversationUi(
+    conversationUi,
+    concept,
+    threadKey,
+    previousConversationUi.current,
+    conversationItemKeys,
+  );
+  activeFrameIdentity.current =
+    threadKey === null ? null : { concept, threadKey };
   useLayoutEffect(() => {
-    const scroller = document.querySelector<HTMLElement>(
-      "[data-live-concept-scroller='true']",
-    );
-    if (scroller === null) return;
-    let restoring = true;
-    let observedScroll = false;
-    const saved = uiStore.getState().scrollAnchors[scrollAnchorKey];
-    scroller.scrollTop = saved?.scrollTop ?? 0;
-    restoring = false;
-    const capture = (): void => {
-      if (restoring) return;
-      observedScroll = true;
+    if (threadKey === null) {
+      previousConversationUi.current = null;
+      return;
+    }
+    const memory = selectedConversationUi.memory;
+    if (selectedConversationUi.inherited) {
+      const store = uiStore.getState();
+      if (memory.anchor !== null) {
+        store.setConversationAnchor(concept, threadKey, memory.anchor);
+      }
+      store.setConversationUnseen(concept, threadKey, memory.unseen);
+      store.setEvidenceState(
+        concept,
+        threadKey,
+        memory.evidenceKey,
+        memory.evidenceTriggerKey,
+      );
+      store.setConversationFocus(concept, threadKey, memory.focusedItemKey);
+    }
+    previousConversationUi.current = { concept, threadKey, memory };
+  }, [concept, selectedConversationUi, threadKey, uiStore]);
+  const onConversationAnchorChange = useCallback(
+    (anchor: ConversationAnchor): void => {
       uiStore
         .getState()
-        .setScrollAnchor(scrollAnchorKey, { scrollTop: scroller.scrollTop });
-    };
-    scroller.addEventListener("scroll", capture, { passive: true });
-    return () => {
-      scroller.removeEventListener("scroll", capture);
-      if (observedScroll || saved !== undefined) capture();
-    };
-  }, [scrollAnchorKey, uiStore]);
+        .setConversationAnchor(concept, anchor.threadKey, anchor);
+    },
+    [concept, uiStore],
+  );
+  const onConversationUnseenChange = useCallback(
+    (count: number): void => {
+      if (threadKey === null) return;
+      uiStore.getState().setConversationUnseen(concept, threadKey, count);
+    },
+    [concept, threadKey, uiStore],
+  );
+  const onConversationFocusChange = useCallback(
+    (key: string | null): void => {
+      if (threadKey === null) return;
+      uiStore.getState().setConversationFocus(concept, threadKey, key);
+    },
+    [concept, threadKey, uiStore],
+  );
+  const dispatchFrameAction = useCallback(
+    (action: ConversationFrameAction): void => dispatch(action),
+    [dispatch],
+  );
+  const frameMemory = selectedConversationUi.memory;
   const frameState: ConversationFrameState = {
     concept,
     platform,
@@ -590,11 +731,11 @@ export function LiveConceptHost({
     composer,
     composerMode,
     questionDrafts,
-    anchor: conversationAnchor,
-    focusedItemKey,
-    unseen,
-    openEvidenceKey,
-    evidenceTriggerKey,
+    anchor: frameMemory.anchor,
+    focusedItemKey: frameMemory.focusedItemKey,
+    unseen: frameMemory.unseen,
+    openEvidenceKey: frameMemory.evidenceKey,
+    evidenceTriggerKey: frameMemory.evidenceTriggerKey,
   };
   return (
     <>
@@ -605,18 +746,15 @@ export function LiveConceptHost({
       >
         {connectionLabel}
       </p>
-      {surface === "conversation" &&
-      activeModule.conversationSkin !== undefined ? (
+      {surface === "conversation" ? (
         <ConversationFrame
           state={frameState}
           skin={activeModule.conversationSkin}
-          dispatch={dispatch}
+          dispatch={dispatchFrameAction}
           onExternalLink={(url) => runtime.native.openExternalUrl(url)}
-          onAnchorChange={setConversationAnchor}
-          onUnseenChange={setUnseen}
-          onFocusIntentChange={(key) =>
-            uiStore.getState().setFocusedItemKey(key)
-          }
+          onAnchorChange={onConversationAnchorChange}
+          onUnseenChange={onConversationUnseenChange}
+          onFocusIntentChange={onConversationFocusChange}
         />
       ) : (
         <Renderer state={state} dispatch={dispatch} />
