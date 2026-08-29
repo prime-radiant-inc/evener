@@ -1,8 +1,17 @@
 package registry
 
-// ParseOverlay parses the curated overlay (spec §6.2): providers.toml's
-// schema plus the curated-only keys implicit, name, doc, default_order, and
-// [transports.*]. The embedded overlay is added in Task 5.
+import _ "embed"
+
+//go:embed data/providers_overlay.toml
+var embeddedOverlay []byte
+
+// EmbeddedOverlay returns the curated overlay compiled into the binary
+// (spec §5 layer 3, §6.2).
+func EmbeddedOverlay() []byte { return embeddedOverlay }
+
+// ParseOverlay parses a curated overlay (spec §6.2): providers.toml's schema
+// plus the curated-only keys implicit, name, doc, default_order, and
+// [transports.*].
 func ParseOverlay(data []byte) (*Layer, error) {
 	return parseLayer(data, LayerOverlay, true)
 }

@@ -1,0 +1,534 @@
+# providers_overlay.toml — evener's curated corrections to models.dev (layer 3).
+# Same schema as providers.toml (spec §10) plus the curated-only keys
+# `implicit`, `name`, `doc`, `default_order`, and `[transports.*]`. Only what
+# models.dev lacks or gets wrong belongs here (spec §6.2). Keys that are not
+# snake_case (ids with dashes, model ids, env var and header names, globs) are
+# quoted for tomlcheck.
+
+default_order = [
+  "anthropic", "openai-codex", "openai", "google", "groq", "zai", "deepseek", "openrouter", "xai", "mistral",
+  "cerebras", "togetherai", "moonshotai", "kimi-for-coding", "minimax", "zai-coding-plan",
+  "google-vertex-anthropic", "google-vertex", "amazon-bedrock", "azure", "ollama",
+]
+
+# ---------------------------------------------------------------------------
+# Transport presets (§4.3, §9.3, §9.4)
+# ---------------------------------------------------------------------------
+
+[transports."vertex-anthropic"]
+auth = "gcp-adc"
+endpoint = "/publishers/anthropic/models/{model}:rawPredict"
+stream_endpoint = "/publishers/anthropic/models/{model}:streamRawPredict"
+models_endpoint = "-"
+count_tokens_endpoint = "-"
+body = { anthropic_version = "vertex-2023-10-16" }
+
+[transports."vertex-gemini"]
+auth = "gcp-adc"
+endpoint = "/publishers/google/models/{model}:generateContent"
+stream_endpoint = "/publishers/google/models/{model}:streamGenerateContent?alt=sse"
+models_endpoint = "-"
+count_tokens_endpoint = "-"
+
+[transports."bedrock-mantle-openai"]
+auth = "bearer"
+models_endpoint = "/models"
+count_tokens_endpoint = "-"
+
+# ---------------------------------------------------------------------------
+# Top-level glob rows, applied to every provider (§6.2, §8.3)
+# ---------------------------------------------------------------------------
+
+# Opus 4.5 takes effort + budget_tokens but not the adaptive body.
+[models."*claude-opus-4-5*"]
+thinking_shape = "budget+effort"
+
+[models."*gemini-3*"]
+multimodal_tool_results = true
+
+# ---------------------------------------------------------------------------
+# Anthropic
+# ---------------------------------------------------------------------------
+
+[providers.anthropic]
+implicit = true
+surface = "anthropic"
+family = "claude"
+base_url = "{BASE_URL}"
+vars = { "BASE_URL" = "https://api.anthropic.com/v1" }
+vars_env = { "BASE_URL" = "ANTHROPIC_BASE_URL" }
+default_model = "claude-opus-5"
+cheap_model = "claude-haiku-4-5"
+web_search = true
+
+# Sonnet 4.5 is 200k; models.dev says 1M (Anthropic's context-window page,
+# 2026-08-28, lists 1M only for Opus 4.6+, Sonnet 4.6+, and Claude 5).
+[providers.anthropic.models."claude-sonnet-4-5"]
+context_window = 200000
+[providers.anthropic.models."claude-sonnet-4-5-20250929"]
+context_window = 200000
+
+# [1m] rows exist only where the 1M window is a beta.
+[providers.anthropic.models."claude-sonnet-4-5[1m]"]
+alias_of = "claude-sonnet-4-5"
+wire_id = "claude-sonnet-4-5"
+context_window = 1000000
+headers = { "anthropic-beta" = "context-1m-2025-08-07" }
+[providers.anthropic.models."claude-sonnet-4-5-20250929[1m]"]
+alias_of = "claude-sonnet-4-5-20250929"
+wire_id = "claude-sonnet-4-5-20250929"
+context_window = 1000000
+headers = { "anthropic-beta" = "context-1m-2025-08-07" }
+[providers.anthropic.models."claude-opus-4-5[1m]"]
+alias_of = "claude-opus-4-5"
+wire_id = "claude-opus-4-5"
+context_window = 1000000
+headers = { "anthropic-beta" = "context-1m-2025-08-07" }
+[providers.anthropic.models."claude-opus-4-5-20251101[1m]"]
+alias_of = "claude-opus-4-5-20251101"
+wire_id = "claude-opus-4-5-20251101"
+context_window = 1000000
+headers = { "anthropic-beta" = "context-1m-2025-08-07" }
+
+# Mythos rows models.dev lacks under anthropic. Facts only; the transport
+# stays anthropic's (§4.2). The refresh report flags both when upstream adds them.
+[providers.anthropic.models."claude-mythos-5"]
+alias_of = "azure/claude-mythos-5"
+[providers.anthropic.models."claude-mythos-preview"]
+family = "claude-mythos"
+context_window = 1000000
+max_output_tokens = 128000
+tools = true
+structured_output = true
+reasoning = true
+sampling = false
+effort_values = ["low", "medium", "high", "xhigh", "max"]
+input_modalities = ["text", "image", "pdf"]
+cost = { input = 10.0, output = 50.0, cache_read = 1.0, cache_write = 12.5 }
+
+# ---------------------------------------------------------------------------
+# OpenAI platform and Codex
+# ---------------------------------------------------------------------------
+
+[providers.openai]
+implicit = true
+surface = "openai"
+base_url = "{BASE_URL}"
+vars = { "BASE_URL" = "https://api.openai.com/v1" }
+vars_env = { "BASE_URL" = "OPENAI_BASE_URL" }
+count_tokens_endpoint = "/responses/input_tokens"
+headers = { "OpenAI-Organization" = "$OPENAI_ORG_ID", "OpenAI-Project" = "$OPENAI_PROJECT_ID" }
+default_model = "gpt-5.6"
+cheap_model = "gpt-4.1-nano"
+max_tokens_field = "max_completion_tokens"
+strict_tools = true
+web_search = true
+reasoning_summary = "auto"
+[providers.openai.fields]
+store = true
+prompt_cache_key = true
+include = true
+truncation = true
+safety_identifier = true
+service_tier = true
+previous_response_id = true
+conversation = true
+max_tool_calls = true
+background = true
+metadata = true
+
+[providers.openai.models."gpt-4.1*"]
+fields = { prompt_cache_retention = true }
+[providers.openai.models."gpt-5*"]
+fields = { prompt_cache_retention = true }
+reasoning_summary = "detailed"
+[providers.openai.models."gpt-6*"]
+reasoning_summary = "detailed"
+image_detail = "original"
+[providers.openai.models."gpt-5.4*"]
+image_detail = "original"
+[providers.openai.models."gpt-5.5*"]
+image_detail = "original"
+# GPT-5.6 moved to prompt_cache_options.ttl; the platform-side lite shape
+# sends the reasoning object on every request and no image detail.
+[providers.openai.models."gpt-5.6*"]
+fields = { prompt_cache_retention = false }
+thinking_always_on = true
+image_detail = "omit"
+
+[providers."openai-codex"]
+implicit = true
+name = "OpenAI (Codex subscription)"
+doc = "https://developers.openai.com/codex"
+base = "openai"
+inherit_models = false
+surface = "openai"
+auth = "oauth-openai-codex"
+api_key_env = []
+base_url = "{BASE_URL}"
+vars = { "BASE_URL" = "https://chatgpt.com/backend-api/codex" }
+vars_env = { "BASE_URL" = "OPENAI_CODEX_BASE_URL" }
+models_endpoint = "/models?client_version=0.0.0"
+count_tokens_endpoint = "-"
+headers = { "OpenAI-Organization" = "", "OpenAI-Project" = "" }
+default_model = "gpt-5.6"
+cheap_model = "gpt-5.6-luna"
+[providers."openai-codex".fields]
+temperature = false
+top_p = false
+max_output_tokens = false
+previous_response_id = false
+conversation = false
+service_tier = false
+safety_identifier = false
+prompt_cache_retention = false
+truncation = false
+max_tool_calls = false
+background = false
+
+[providers."openai-codex".models."gpt-5.6"]
+alias_of = "openai/gpt-5.6"
+wire_id = "gpt-5.6-sol"
+[providers."openai-codex".models."gpt-5.6-sol"]
+alias_of = "openai/gpt-5.6-sol"
+[providers."openai-codex".models."gpt-5.6-terra"]
+alias_of = "openai/gpt-5.6-terra"
+[providers."openai-codex".models."gpt-5.6-luna"]
+alias_of = "openai/gpt-5.6-luna"
+# Codex lite shaping (§9.5). context_window: the effective Codex window is
+# 272000 (codex-cli 0.145.0 models_cache.json; Jesse, 2026-07-28).
+[providers."openai-codex".models."gpt-5.6*"]
+context_window = 272000
+responses_lite = true
+thinking_always_on = true
+image_detail = "omit"
+reasoning_summary = "detailed"
+body = { "reasoning.context" = "all_turns", "text.verbosity" = "low", parallel_tool_calls = false }
+
+# ---------------------------------------------------------------------------
+# Azure (§9.2)
+# ---------------------------------------------------------------------------
+
+[providers.azure]
+implicit = true
+surface = "openai"
+base_url = "https://{AZURE_RESOURCE_NAME}.openai.azure.com/openai/v1"
+[providers.azure.fields]
+store = true
+include = true
+previous_response_id = true
+metadata = true
+
+# AI Services host form; not implicit, verified live in plan 4.
+[providers."azure-cognitive-services"]
+base_url = "https://{AZURE_COGNITIVE_SERVICES_RESOURCE_NAME}.cognitiveservices.azure.com/openai/v1"
+[providers."azure-cognitive-services".fields]
+store = true
+include = true
+previous_response_id = true
+metadata = true
+
+# ---------------------------------------------------------------------------
+# Google, Vertex (§9.4)
+# ---------------------------------------------------------------------------
+
+[providers.google]
+implicit = true
+surface = "google"
+api_key_env = ["GEMINI_API_KEY", "GOOGLE_API_KEY"]
+base_url = "{BASE_URL}"
+vars = { "BASE_URL" = "https://generativelanguage.googleapis.com/v1beta" }
+vars_env = { "BASE_URL" = "GOOGLE_BASE_URL" }
+default_model = "gemini-3.7-flash"
+cheap_model = "gemini-2.5-flash-lite"
+web_search = true
+
+[providers."google-vertex-anthropic"]
+implicit = true
+surface = "anthropic"
+family = "claude"
+transport = "vertex-anthropic"
+api_key_env = []
+base_url = "{GOOGLE_VERTEX_HOST}/v1/projects/{GOOGLE_VERTEX_PROJECT}/locations/{GOOGLE_VERTEX_LOCATION}"
+host_rule = "vertex-location"
+default_model = "claude-opus-5"
+cheap_model = "claude-haiku-4-5@20251001"
+web_search = true
+
+[providers."google-vertex"]
+implicit = true
+surface = "google"
+transport = "vertex-gemini"
+api_key_env = []
+base_url = "{GOOGLE_VERTEX_HOST}/v1/projects/{GOOGLE_VERTEX_PROJECT}/locations/{GOOGLE_VERTEX_LOCATION}"
+host_rule = "vertex-location"
+default_model = "gemini-3.7-flash"
+cheap_model = "gemini-2.5-flash-lite"
+web_search = true
+
+# ---------------------------------------------------------------------------
+# Amazon Bedrock (§9.3): Anthropic's Messages endpoint on bedrock-mantle
+# ---------------------------------------------------------------------------
+
+[providers."amazon-bedrock"]
+implicit = true
+surface = "anthropic"
+family = "claude"
+api_key_env = ["AWS_BEARER_TOKEN_BEDROCK"]
+base_url = "https://bedrock-mantle.{AWS_REGION}.api.aws/anthropic/v1"
+auth = "header"
+auth_header = "x-api-key"
+models_endpoint = "-"
+count_tokens_endpoint = "-"
+default_model = "global.anthropic.claude-opus-5"
+cheap_model = "global.anthropic.claude-haiku-4-5-20251001-v1:0"
+
+# The Messages endpoint lacks structured outputs and web search; the Mantle
+# OpenAI rows keep their own values.
+[providers."amazon-bedrock".models."*anthropic.*"]
+structured_output = false
+web_search = false
+
+# Two ids on Anthropic's Bedrock table that models.dev lacks.
+[providers."amazon-bedrock".models."anthropic.claude-haiku-4-5"]
+alias_of = "anthropic.claude-haiku-4-5-20251001-v1:0"
+[providers."amazon-bedrock".models."anthropic.claude-mythos-preview"]
+alias_of = "anthropic/claude-mythos-preview"
+
+# ---------------------------------------------------------------------------
+# OpenAI-compatible vendors
+# ---------------------------------------------------------------------------
+
+[providers.groq]
+implicit = true
+base_url = "{BASE_URL}"
+vars = { "BASE_URL" = "https://api.groq.com/openai/v1" }
+vars_env = { "BASE_URL" = "GROQ_BASE_URL" }
+default_model = "openai/gpt-oss-120b"
+cheap_model = "llama-3.1-8b-instant"
+
+[providers.xai]
+implicit = true
+base_url = "{BASE_URL}"
+vars = { "BASE_URL" = "https://api.x.ai/v1" }
+vars_env = { "BASE_URL" = "XAI_BASE_URL" }
+default_model = "grok-4.6"
+cheap_model = "grok-4.3"
+fields = { store = true, include = true }
+
+[providers.cerebras]
+implicit = true
+base_url = "{BASE_URL}"
+vars = { "BASE_URL" = "https://api.cerebras.ai/v1" }
+vars_env = { "BASE_URL" = "CEREBRAS_BASE_URL" }
+default_model = "gpt-oss-120b"
+cheap_model = "gpt-oss-120b"
+
+[providers.mistral]
+implicit = true
+base_url = "{BASE_URL}"
+vars = { "BASE_URL" = "https://api.mistral.ai/v1" }
+vars_env = { "BASE_URL" = "MISTRAL_BASE_URL" }
+default_model = "mistral-medium-latest"
+cheap_model = "ministral-3b-latest"
+
+[providers.togetherai]
+implicit = true
+base_url = "{BASE_URL}"
+vars = { "BASE_URL" = "https://api.together.ai/v1" }
+vars_env = { "BASE_URL" = "TOGETHERAI_BASE_URL" }
+default_model = "moonshotai/Kimi-K3"
+cheap_model = "openai/gpt-oss-20b"
+
+[providers.deepseek]
+implicit = true
+base_url = "{BASE_URL}"
+vars = { "BASE_URL" = "https://api.deepseek.com" }
+vars_env = { "BASE_URL" = "DEEPSEEK_BASE_URL" }
+default_model = "deepseek-v4-pro"
+cheap_model = "deepseek-v4-flash"
+thinking_format = "deepseek"
+empty_reasoning_content = true
+
+[providers.openrouter]
+implicit = true
+base_url = "{BASE_URL}"
+vars = { "BASE_URL" = "https://openrouter.ai/api/v1" }
+vars_env = { "BASE_URL" = "OPENROUTER_BASE_URL" }
+default_model = "anthropic/claude-opus-5"
+cheap_model = "google/gemini-2.5-flash-lite"
+thinking_format = "openrouter"
+tool_choice_forcing = false
+session_affinity_headers = true
+[providers.openrouter.models."anthropic/*"]
+cache_control = "anthropic"
+[providers.openrouter.models."minimax/*"]
+reasoning_controls = ["toggle"]
+thinking_always_on = true
+reasoning_field = "reasoning_details"
+
+# ---------------------------------------------------------------------------
+# z.ai / Zhipu (openai-chat with the zai thinking dialect)
+# ---------------------------------------------------------------------------
+
+[providers.zai]
+implicit = true
+base_url = "{BASE_URL}"
+vars = { "BASE_URL" = "https://api.z.ai/api/paas/v4" }
+vars_env = { "BASE_URL" = "ZAI_BASE_URL" }
+default_model = "glm-5.3"
+cheap_model = "glm-4.7-flash"
+thinking_format = "zai"
+strip_empty_content = true
+max_stop_sequences = 1
+finish_reason_map = { sensitive = "content_filter", network_error = "error" }
+structured_output = false
+tool_choice_forcing = false
+fields = { developer_role = false }
+
+[providers."zai-coding-plan"]
+implicit = true
+base_url = "{BASE_URL}"
+vars = { "BASE_URL" = "https://api.z.ai/api/coding/paas/v4" }
+vars_env = { "BASE_URL" = "ZAI_CODING_PLAN_BASE_URL" }
+default_model = "glm-5.3"
+cheap_model = "glm-5.3-flash"
+thinking_format = "zai"
+strip_empty_content = true
+max_stop_sequences = 1
+finish_reason_map = { sensitive = "content_filter", network_error = "error" }
+structured_output = false
+tool_choice_forcing = false
+fields = { developer_role = false }
+
+[providers.zhipuai]
+thinking_format = "zai"
+strip_empty_content = true
+max_stop_sequences = 1
+finish_reason_map = { sensitive = "content_filter", network_error = "error" }
+structured_output = false
+tool_choice_forcing = false
+fields = { developer_role = false }
+
+[providers."zhipuai-coding-plan"]
+thinking_format = "zai"
+strip_empty_content = true
+max_stop_sequences = 1
+finish_reason_map = { sensitive = "content_filter", network_error = "error" }
+structured_output = false
+tool_choice_forcing = false
+fields = { developer_role = false }
+
+# ---------------------------------------------------------------------------
+# Moonshot / Kimi
+# ---------------------------------------------------------------------------
+
+[providers.moonshotai]
+implicit = true
+base_url = "{BASE_URL}"
+vars = { "BASE_URL" = "https://api.moonshot.ai/v1" }
+vars_env = { "BASE_URL" = "MOONSHOTAI_BASE_URL" }
+default_model = "kimi-k3"
+cheap_model = "kimi-k2.5"
+structured_output = false
+tool_choice_forcing = false
+fields = { temperature = false, top_p = false, frequency_penalty = false, presence_penalty = false }
+
+[providers."moonshotai-cn"]
+structured_output = false
+tool_choice_forcing = false
+fields = { temperature = false, top_p = false, frequency_penalty = false, presence_penalty = false }
+
+[providers."kimi-for-coding"]
+implicit = true
+surface = "anthropic"
+base_url = "{BASE_URL}"
+vars = { "BASE_URL" = "https://api.kimi.com/coding/v1" }
+vars_env = { "BASE_URL" = "KIMI_FOR_CODING_BASE_URL" }
+headers = { "User-Agent" = "claude-cli/2.1.177 (external, cli)" }
+default_model = "k3"
+cheap_model = "kimi-for-coding"
+[providers."kimi-for-coding".models."*"]
+surface = "anthropic"
+thinking_shape = "budget"
+[providers."kimi-for-coding".models."k3*"]
+thinking_shape = "budget+effort"
+
+# ---------------------------------------------------------------------------
+# MiniMax (anthropic protocol; Anthropic-style tool calls)
+# ---------------------------------------------------------------------------
+
+[providers.minimax]
+implicit = true
+surface = "anthropic"
+base_url = "{BASE_URL}"
+vars = { "BASE_URL" = "https://api.minimax.io/anthropic/v1" }
+vars_env = { "BASE_URL" = "MINIMAX_BASE_URL" }
+default_model = "MiniMax-M3"
+cheap_model = "MiniMax-M2.7"
+[providers.minimax.models."*"]
+surface = "anthropic"
+thinking_shape = "budget"
+
+[providers."minimax-cn".models."*"]
+surface = "anthropic"
+thinking_shape = "budget"
+
+[providers."minimax-coding-plan".models."*"]
+surface = "anthropic"
+thinking_shape = "budget"
+
+[providers."minimax-cn-coding-plan".models."*"]
+surface = "anthropic"
+thinking_shape = "budget"
+
+# ---------------------------------------------------------------------------
+# Ollama and the protocol-only pseudo-providers (not in models.dev)
+# ---------------------------------------------------------------------------
+
+[providers.ollama]
+implicit = true
+name = "Ollama"
+doc = "https://docs.ollama.com"
+protocol = "openai-chat"
+surface = "generic"
+auth = "optional-bearer"
+api_key_env = ["OLLAMA_API_KEY"]
+base_url = "{OLLAMA_HOST}"
+host_rule = "ollama-host"
+vars = { "OLLAMA_HOST" = "localhost" }
+vars_env = { "OLLAMA_HOST" = "OLLAMA_HOST" }
+context_window = 131072
+
+[providers."openai-compatible"]
+implicit = true
+name = "OpenAI-compatible endpoint"
+protocol = "openai-chat"
+surface = "generic"
+auth = "optional-bearer"
+api_key_env = ["OPENAI_COMPATIBLE_API_KEY"]
+base_url = "{BASE_URL}"
+vars_env = { "BASE_URL" = "OPENAI_COMPATIBLE_BASE_URL" }
+context_window = 131072
+
+[providers."anthropic-compatible"]
+implicit = true
+name = "Anthropic-compatible endpoint"
+protocol = "anthropic"
+surface = "generic"
+auth = "optional-bearer"
+api_key_env = ["ANTHROPIC_COMPATIBLE_API_KEY"]
+base_url = "{BASE_URL}"
+vars_env = { "BASE_URL" = "ANTHROPIC_COMPATIBLE_BASE_URL" }
+context_window = 131072
+
+[providers."google-compatible"]
+implicit = true
+name = "Google-compatible endpoint"
+protocol = "google"
+surface = "generic"
+auth = "optional-bearer"
+api_key_env = ["GOOGLE_COMPATIBLE_API_KEY"]
+base_url = "{BASE_URL}"
+vars_env = { "BASE_URL" = "GOOGLE_COMPATIBLE_BASE_URL" }
+context_window = 131072
