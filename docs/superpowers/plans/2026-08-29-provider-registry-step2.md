@@ -77,8 +77,8 @@ import (
 
 type stubProtocol struct{ id string }
 
-func (s stubProtocol) ID() string                { return s.id }
-func (stubProtocol) PrunablePaths() []string     { return nil }
+func (s stubProtocol) ID() string            { return s.id }
+func (stubProtocol) PrunablePaths() []string { return nil }
 func (stubProtocol) BuildBody(Request, registry.Resolved) (map[string]any, error) {
 	return map[string]any{}, nil
 }
@@ -95,7 +95,7 @@ func (stubProtocol) CountTokens(context.Context, Request, registry.Resolved) (in
 	return 0, ErrInputTokenCountUnsupported
 }
 
-type stubAuth struct{ preparer bool }
+type stubAuth struct{}
 
 func (stubAuth) Apply(context.Context, *http.Request, registry.Resolved) error { return nil }
 
