@@ -4,13 +4,16 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log"
 	"maps"
+	"net/http"
 	"os"
 	"path/filepath"
 	"regexp"
 	"sort"
 	"strings"
 	"sync"
+	"testing"
 	"time"
 )
 
@@ -41,6 +44,7 @@ type options struct {
 	now         func() time.Time
 	snapshot    []byte
 	overlay     []byte
+	logf        func(format string, args ...any)
 }
 
 // WithConfigPath reads providers.toml from path instead of
@@ -84,25 +88,31 @@ func WithSnapshot(raw []byte) Option { return func(o *options) { o.snapshot = ra
 // WithOverlay replaces the embedded curated overlay (tests).
 func WithOverlay(data []byte) Option { return func(o *options) { o.overlay = data } }
 
+// WithLog receives the one-line messages a failed background refresh
+// produces (default: log.Printf).
+func WithLog(logf func(format string, args ...any)) Option { return func(o *options) { o.logf = logf } }
+
 // Registry is the loaded, layered provider registry (spec §5). It is
 // immutable after Load except for the live listings Resolve consults.
 type Registry struct {
-	presets      map[string]Transport
-	defaultOrder []string
-	topGlobs     map[string]map[string]Model // layer tag → glob rows
-	curated      map[string]*record          // registry ids (layers 1–3)
-	explicit     map[string]*record          // user-layer and injected instances
-	userDefault  string
-	userNote     string
-	env          func(string) (string, bool)
-	creds        CredentialSource
-	stateRoot    string
-	catalogTag   string
-	catalogMeta  Meta
-	warnings     []string
-	instances    map[string]*instance
-	liveMu       sync.RWMutex
-	live         map[string]liveListing
+	presets        map[string]Transport
+	defaultOrder   []string
+	topGlobs       map[string]map[string]Model // layer tag → glob rows
+	curated        map[string]*record          // registry ids (layers 1–3)
+	explicit       map[string]*record          // user-layer and injected instances
+	userDefault    string
+	userNote       string
+	env            func(string) (string, bool)
+	creds          CredentialSource
+	stateRoot      string
+	catalogTag     string
+	catalogMeta    Meta
+	warnings       []string
+	instances      map[string]*instance
+	liveMu         sync.RWMutex
+	live           map[string]liveListing
+	refreshStarted bool
+	refreshDone    chan struct{}
 }
 
 // record is one merged provider: its head (scalar fields folded across the
@@ -135,7 +145,7 @@ type capLayer struct {
 }
 
 func defaultOptions() *options {
-	return &options{env: os.LookupEnv, now: time.Now}
+	return &options{env: os.LookupEnv, now: time.Now, logf: log.Printf}
 }
 
 // defaultConfigRoot mirrors cmdutil.DefaultConfigRoot, which the llm module
@@ -188,11 +198,20 @@ func Load(opts ...Option) (*Registry, error) {
 			return nil, err
 		}
 	}
+	r.catalogTag, r.catalogMeta = LayerSnapshot, meta
+	if cachedRaw, cachedMeta, ok := readCache(o.stateRoot); ok && cachedMeta.FetchedAt.After(meta.FetchedAt) {
+		if _, err := FromModelsDev(cachedRaw); err != nil {
+			jsonPath, _ := cachePaths(o.stateRoot)
+			r.warnings = append(r.warnings, fmt.Sprintf("ignoring corrupt catalog cache %s: %v", jsonPath, err))
+		} else {
+			raw, meta = cachedRaw, cachedMeta
+			r.catalogTag, r.catalogMeta = LayerCache, cachedMeta
+		}
+	}
 	upstream, err := FromModelsDev(raw)
 	if err != nil {
 		return nil, err
 	}
-	r.catalogTag, r.catalogMeta = LayerSnapshot, meta
 	upstreamByID := make(map[string]Provider, len(upstream))
 	for _, p := range upstream {
 		upstreamByID[p.ID] = p
@@ -270,6 +289,7 @@ func Load(opts ...Option) (*Registry, error) {
 	if err := r.validateDefault(); err != nil {
 		return nil, err
 	}
+	r.maybeStartRefresh(o)
 	return r, nil
 }
 
@@ -571,6 +591,12 @@ func (r *Registry) validateRecord(rec *record) error {
 		if !layer.own {
 			continue
 		}
+		if rec.head.Protocol == "" {
+			// No protocol (the upstream entry vanished, or an npm the
+			// converter hides): the record is Hidden, and there is no
+			// prunable set to check its fields against.
+			break
+		}
 		if err := ValidateFields(layer.provider.Fields, rec.head.Protocol, layer.tag+" "+where); err != nil {
 			return err
 		}
@@ -768,3 +794,52 @@ func (r *Registry) Warnings() []string { return append([]string(nil), r.warnings
 
 // Catalog reports which upstream layer is in use and its fetch metadata.
 func (r *Registry) Catalog() (string, Meta) { return r.catalogTag, r.catalogMeta }
+
+// RefreshStarted reports whether Load started a background refresh.
+func (r *Registry) RefreshStarted() bool { return r.refreshStarted }
+
+// WaitRefresh blocks until the background refresh (if any) has finished.
+func (r *Registry) WaitRefresh() {
+	if r.refreshDone != nil {
+		<-r.refreshDone
+	}
+}
+
+// maybeStartRefresh starts the background models.dev refresh (spec §6.4)
+// unless offline: EVENER_OFFLINE=1, an explicit WithOffline(true), or —
+// under go test — no injected fetcher.
+func (r *Registry) maybeStartRefresh(o *options) {
+	offline := false
+	switch {
+	case o.offline != nil:
+		offline = *o.offline
+	case testing.Testing():
+		offline = o.fetcher == nil
+	}
+	if v, _ := o.env("EVENER_OFFLINE"); v == "1" {
+		offline = true
+	}
+	if offline {
+		return
+	}
+	if _, meta, ok := readCache(o.stateRoot); ok && o.now().Sub(meta.FetchedAt) < cacheMaxAge {
+		return
+	}
+	fetcher := o.fetcher
+	if fetcher == nil {
+		fetcher = HTTPFetcher(&http.Client{Timeout: 60 * time.Second})
+	}
+	r.refreshStarted = true
+	r.refreshDone = make(chan struct{})
+	// The sanity floors compare against the embedded snapshot (spec §6.4);
+	// o.snapshot is nil in production and the injected snapshot in tests.
+	stateRoot, now, logf, baseline := o.stateRoot, o.now, o.logf, o.snapshot
+	go func() {
+		defer close(r.refreshDone)
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+		defer cancel()
+		if _, err := Refresh(ctx, RefreshOptions{StateRoot: stateRoot, Fetcher: fetcher, Now: now, Baseline: baseline}); err != nil {
+			logf("models.dev refresh: %v (keeping the previous catalog)", err)
+		}
+	}()
+}
