@@ -15,4 +15,10 @@ describe("liveConceptRegistry", () => {
     expect(liveConceptRegistry.constellation.id).toBe("constellation");
     expect(liveConceptRegistry["field-notes"].id).toBe("field-notes");
   });
+
+  it("registers Stillwater through the shared conversation skin seam", () => {
+    expect(liveConceptRegistry.stillwater.conversationSkin?.id).toBe(
+      "stillwater",
+    );
+  });
 });
