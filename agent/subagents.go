@@ -1598,7 +1598,6 @@ func (a *subagent) run(ctx context.Context, input string, inputProvenance *prove
 				a.finalizing = false
 				a.mu.Unlock()
 				res, err = a.sess.processInputWithProvenance(ctx, communicateNudge(a.sess.resultToolName()), nil, a.followUpProvenance(inputProvenance))
-				_, budgetExhausted = budgetExhaustionFromError(err)
 				a.mu.Lock()
 				cancelRequested = a.cancelRequested
 				a.mu.Unlock()
@@ -1613,7 +1612,6 @@ func (a *subagent) run(ctx context.Context, input string, inputProvenance *prove
 					kind = EntryContinuation
 					continue
 				case delegateSupervisionSuppress:
-					cancelRequested = true
 				}
 				if err == nil {
 					res, restoreParentDriveNotify, err = a.drainForFinalization(ctx, res)
