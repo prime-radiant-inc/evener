@@ -32,60 +32,50 @@ import (
 // never deliver a wake — idle delegates awaiting delegate_send, detached
 // processes — must NOT hold, or the goal strands the other way.
 
-// seedSessionRunningDelegate seeds the controller with one delegate owned by
-// sess in PhaseRunning (created + run started), the state whose terminal or
-// report notification is guaranteed to wake the session.
-func seedSessionRunningDelegate(t *testing.T, sess *Session, c *delegateTreeController, id string) {
+// seedSessionDelegate seeds one delegate owned by sess. running=true appends
+// the run-started event (PhaseRunning: a report or terminal notification is
+// guaranteed to wake the session); running=false leaves it created-but-never-
+// started (PhaseIdle: no autonomous wake, must not hold the goal).
+func seedSessionDelegate(t *testing.T, sess *Session, c *delegateTreeController, id string, running bool) {
 	t.Helper()
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	_, err := c.appendLocked(
-		delegatestore.Event{
-			Kind:       delegatestore.EventDelegateCreated,
-			DelegateID: id,
-			Created: &delegatestore.DelegateCreated{Descriptor: delegatestore.Descriptor{
-				ChildSessionID: "child-" + id,
-				TranscriptRef:  "local:child-" + id,
-				OwnerSessionID: sess.ID(),
-				Task:           "wake-pending hold test delegate",
-				AgentType:      "general",
-				ToolNameCeiling: []string{
-					"communicate",
-				},
-				Resumable: true,
-			}},
-		},
-		delegateControllerRunStartedEvent(id, 1, delegatestore.TriggerInitial, time.Unix(10, 0).UTC()),
-	)
-	if err != nil {
-		t.Fatalf("seed running delegate %s: %v", id, err)
-	}
-}
-
-// seedSessionIdleDelegate seeds a delegate that was created but never started:
-// PhaseIdle delivers no autonomous wake, so it must not hold the goal.
-func seedSessionIdleDelegate(t *testing.T, sess *Session, c *delegateTreeController, id string) {
-	t.Helper()
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	_, err := c.appendLocked(delegatestore.Event{
+	evs := []delegatestore.Event{{
 		Kind:       delegatestore.EventDelegateCreated,
 		DelegateID: id,
 		Created: &delegatestore.DelegateCreated{Descriptor: delegatestore.Descriptor{
 			ChildSessionID: "child-" + id,
 			TranscriptRef:  "local:child-" + id,
 			OwnerSessionID: sess.ID(),
-			Task:           "idle hold test delegate",
+			Task:           "wake-pending hold test delegate",
 			AgentType:      "general",
 			ToolNameCeiling: []string{
 				"communicate",
 			},
 			Resumable: true,
 		}},
-	})
-	if err != nil {
-		t.Fatalf("seed idle delegate %s: %v", id, err)
+	}}
+	if running {
+		evs = append(evs, delegateControllerRunStartedEvent(id, 1, delegatestore.TriggerInitial, time.Unix(10, 0).UTC()))
 	}
+	if _, err := c.appendLocked(evs...); err != nil {
+		t.Fatalf("seed delegate %s (running=%v): %v", id, running, err)
+	}
+}
+
+// seedSessionRunningDelegate seeds the controller with one delegate owned by
+// sess in PhaseRunning (created + run started), the state whose terminal or
+// report notification is guaranteed to wake the session.
+func seedSessionRunningDelegate(t *testing.T, sess *Session, c *delegateTreeController, id string) {
+	t.Helper()
+	seedSessionDelegate(t, sess, c, id, true)
+}
+
+// seedSessionIdleDelegate seeds a delegate that was created but never started:
+// PhaseIdle delivers no autonomous wake, so it must not hold the goal.
+func seedSessionIdleDelegate(t *testing.T, sess *Session, c *delegateTreeController, id string) {
+	t.Helper()
+	seedSessionDelegate(t, sess, c, id, false)
 }
 
 func attachDelegateController(t *testing.T, sess *Session) *delegateTreeController {

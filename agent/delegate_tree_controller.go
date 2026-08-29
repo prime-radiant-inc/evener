@@ -445,6 +445,37 @@ func (c *delegateTreeController) stableDelegateOwnedBySessionLocked(owner *Sessi
 	return parentID == owner.owningDelegateID
 }
 
+// hasWakePendingDelegateFor reports whether owner has any direct delegate in a
+// non-terminal phase (running/settling/stopping — a report or terminal
+// notification is guaranteed). It is the goal gate's early-exit existence
+// scan: same base-row filter as stableDelegateRowsForSession (parentID ==
+// owner.owningDelegateID, OwnerSessionID empty or == owner.id) and the same
+// wake-capable phase set as Session.hasWakePendingDependents, kept in sync so
+// the hold keys on exactly the delegates the session can see — but without
+// Snapshot()'s full-tree JSON clones and row sort.
+func (c *delegateTreeController) hasWakePendingDelegateFor(owner *Session) bool {
+	if c == nil || owner == nil || owner.delegateController != c {
+		return false
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	for _, aggregate := range c.durable {
+		switch aggregate.Phase {
+		case delegatestore.PhaseRunning, delegatestore.PhaseSettling, delegatestore.PhaseStopping:
+		default:
+			continue
+		}
+		if aggregate.Descriptor.ParentDelegateID != owner.owningDelegateID {
+			continue
+		}
+		if ownerID := aggregate.Descriptor.OwnerSessionID; ownerID != "" && ownerID != owner.id {
+			continue
+		}
+		return true
+	}
+	return false
+}
+
 // closeStableWorktreeResumability atomically revalidates that a direct-owned
 // subtree is quiescent and fsyncs its permanent worktree-disposal closure.
 // allowControllerClose is used only by the already-fenced root close path.
