@@ -6,7 +6,7 @@
   "url": "https://aiplatform.googleapis.com/v1/projects/my-project/locations/global/publishers/anthropic/models/claude-opus-5:rawPredict",
   "headers": {
     "Anthropic-Version": "2023-06-01",
-    "Authorization": "\u003ccredential\u003e",
+    "Authorization": "Bearer \u003ccredential\u003e",
     "Content-Type": "application/json"
   },
   "body": {

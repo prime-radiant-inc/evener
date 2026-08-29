@@ -5,7 +5,7 @@
   "method": "POST",
   "url": "https://api.groq.com/openai/v1/chat/completions",
   "headers": {
-    "Authorization": "\u003ccredential\u003e",
+    "Authorization": "Bearer \u003ccredential\u003e",
     "Content-Type": "application/json"
   },
   "body": {

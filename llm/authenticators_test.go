@@ -16,6 +16,11 @@ func applyScheme(t *testing.T, scheme string, res registry.Resolved) (*http.Requ
 		t.Fatalf("scheme %q not registered", scheme)
 	}
 	req, _ := http.NewRequest(http.MethodPost, "https://example.test/v1", nil)
+	// protocolhttp.Prepare sets the credential headers before Apply runs;
+	// mirror that so the tests see what the authenticator actually finds.
+	for k, v := range res.CredentialHeaders {
+		req.Header.Set(k, v)
+	}
 	err := a.Apply(context.Background(), req, res)
 	return req, err
 }
@@ -54,5 +59,46 @@ func TestTrivialAuthenticators(t *testing.T) {
 	req, err = applyScheme(t, registry.AuthNone, noKey)
 	if err != nil || len(req.Header) != 0 {
 		t.Fatalf("none: %v %v", err, req.Header)
+	}
+}
+
+// TestCredentialHeaderWinsOverDerivedAuth pins the spec §10 rule: when an
+// instance supplies the auth header through credential_headers, the header
+// wins and the scheme derives nothing from the key, so a "Bearer $KEY"
+// header is not turned into "Bearer Bearer $KEY".
+func TestCredentialHeaderWinsOverDerivedAuth(t *testing.T) {
+	fromHeader := registry.Resolved{
+		Instance:          "work",
+		Credential:        registry.Credential{Value: "Bearer k-1", Source: "credential_headers"},
+		CredentialHeaders: map[string]string{"Authorization": "Bearer k-1"},
+	}
+
+	req, err := applyScheme(t, registry.AuthBearer, fromHeader)
+	if err != nil || req.Header.Get("Authorization") != "Bearer k-1" {
+		t.Fatalf("bearer with credential_headers: %v %q", err, req.Header.Get("Authorization"))
+	}
+
+	req, err = applyScheme(t, registry.AuthOptionalBearer, fromHeader)
+	if err != nil || req.Header.Get("Authorization") != "Bearer k-1" {
+		t.Fatalf("optional-bearer with credential_headers: %v %q", err, req.Header.Get("Authorization"))
+	}
+
+	header := registry.Resolved{
+		Instance:          "work",
+		Credential:        registry.Credential{Value: "k-1", Source: "api_key"},
+		CredentialHeaders: map[string]string{"x-api-key": "header-key"},
+	}
+	header.Transport.AuthHeader = "X-Api-Key"
+	req, err = applyScheme(t, registry.AuthHeader, header)
+	if err != nil || req.Header.Get("x-api-key") != "header-key" {
+		t.Fatalf("header scheme must not overwrite a credential header: %v %q", err, req.Header.Get("x-api-key"))
+	}
+
+	// A credential header carrying the auth header also satisfies the
+	// scheme's credential requirement.
+	noKey := registry.Resolved{Instance: "work", CredentialHeaders: map[string]string{"X-Api-Key": "header-key"}}
+	noKey.Transport.AuthHeader = "X-Api-Key"
+	if req, err := applyScheme(t, registry.AuthHeader, noKey); err != nil || req.Header.Get("X-Api-Key") != "header-key" {
+		t.Fatalf("header scheme with only a credential header: %v %q", err, req.Header.Get("X-Api-Key"))
 	}
 }

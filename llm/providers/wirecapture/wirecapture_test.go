@@ -97,6 +97,8 @@ var env = map[string]string{
 const (
 	adcToken   = "SECRET-adc-token"
 	codexToken = "SECRET-codex-token"
+	// credentialPlaceholder stands in for every secret in a golden file.
+	credentialPlaceholder = "<credential>"
 )
 
 type capture struct {
@@ -349,11 +351,7 @@ func (h *harness) run(t *testing.T, c wireCase) capture {
 	}
 	headers := map[string]string{}
 	for name, values := range rec.last.Header {
-		v := strings.Join(values, ", ")
-		if isCredential(v) {
-			v = "<credential>"
-		}
-		headers[name] = v
+		headers[name] = redact(strings.Join(values, ", "))
 	}
 	var body bytes.Buffer
 	if len(rec.lastBody) > 0 {
@@ -374,13 +372,16 @@ func (h *harness) run(t *testing.T, c wireCase) capture {
 	return capture{Case: c.name, Ref: c.ref, Stream: c.stream, Method: rec.last.Method, URL: rec.last.URL.String(), Headers: headers, Body: bytes.TrimSpace(body.Bytes()), PrunedFields: pruned}
 }
 
-func isCredential(v string) bool {
+// redact replaces each fixture secret where it appears inside a header
+// value rather than blanking the whole value, so the golden still shows the
+// header's shape ("Bearer <credential>" versus a raw "<credential>") and a
+// double-applied bearer prefix cannot hide behind the redaction.
+func redact(v string) string {
 	for _, s := range secrets {
-		if strings.Contains(v, s) {
-			return true
-		}
+		v = strings.ReplaceAll(v, s, credentialPlaceholder)
 	}
-	return strings.Contains(v, adcToken) || strings.Contains(v, codexToken)
+	v = strings.ReplaceAll(v, adcToken, credentialPlaceholder)
+	return strings.ReplaceAll(v, codexToken, credentialPlaceholder)
 }
 
 func TestWireCaptures(t *testing.T) {
@@ -447,7 +448,7 @@ func TestWireCaptureAssertions(t *testing.T) {
 	check(codexBody["model"] == "gpt-5.6-sol", "codex wire id: %v", codexBody["model"])
 
 	openai := byName["openai-gpt-5-5"]
-	check(openai.Headers["Openai-Organization"] == "org-golden" && openai.Headers["Authorization"] == "<credential>", "openai headers: %v", openai.Headers)
+	check(openai.Headers["Openai-Organization"] == "org-golden" && openai.Headers["Authorization"] == "Bearer <credential>", "openai headers: %v", openai.Headers)
 	check(has("openai-gpt-5-5", "store") && has("openai-gpt-5-5", "prompt_cache_key"), "openai control fields: %s", openai.Body)
 
 	groq := bodyOf(t, byName["groq-responses"])
@@ -479,12 +480,12 @@ func TestWireCaptureAssertions(t *testing.T) {
 
 	vertex := byName["vertex-opus-5"]
 	check(vertex.URL == "https://aiplatform.googleapis.com/v1/projects/my-project/locations/global/publishers/anthropic/models/claude-opus-5:rawPredict", "vertex url = %s", vertex.URL)
-	check(vertex.Headers["Authorization"] == "<credential>" && bodyOf(t, vertex)["anthropic_version"] == "vertex-2023-10-16" && bodyOf(t, vertex)["model"] == nil, "vertex auth/body: %v %s", vertex.Headers, vertex.Body)
+	check(vertex.Headers["Authorization"] == "Bearer <credential>" && bodyOf(t, vertex)["anthropic_version"] == "vertex-2023-10-16" && bodyOf(t, vertex)["model"] == nil, "vertex auth/body: %v %s", vertex.Headers, vertex.Body)
 	vertexStream := byName["vertex-opus-5-stream"]
 	check(strings.HasSuffix(vertexStream.URL, ":streamRawPredict"), "vertex stream url = %s", vertexStream.URL)
 	check(bodyOf(t, vertexStream)["stream"] == true && bodyOf(t, vertexStream)["anthropic_version"] == "vertex-2023-10-16" && bodyOf(t, vertexStream)["model"] == nil, "vertex stream body: %s", vertexStream.Body)
 	vertexGemini := byName["vertex-gemini-stream"]
-	check(strings.HasPrefix(vertexGemini.URL, "https://aiplatform.googleapis.com/v1/projects/my-project/locations/global/publishers/google/models/gemini-2.5-flash:streamGenerateContent") && vertexGemini.Headers["Authorization"] == "<credential>", "vertex gemini: %s %v", vertexGemini.URL, vertexGemini.Headers)
+	check(strings.HasPrefix(vertexGemini.URL, "https://aiplatform.googleapis.com/v1/projects/my-project/locations/global/publishers/google/models/gemini-2.5-flash:streamGenerateContent") && vertexGemini.Headers["Authorization"] == "Bearer <credential>", "vertex gemini: %s %v", vertexGemini.URL, vertexGemini.Headers)
 
 	gemini := byName["google-flash-lite-web-search"]
 	check(gemini.URL == "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-lite:generateContent" && gemini.Headers["X-Goog-Api-Key"] == "<credential>", "gemini: %s %v", gemini.URL, gemini.Headers)
@@ -499,7 +500,10 @@ func TestWireCaptureAssertions(t *testing.T) {
 	check(byName["openrouter-opus-5-signed-tool-turn"].Headers["X-Session-Affinity"] == "sess-golden", "openrouter affinity headers: %v", byName["openrouter-opus-5-signed-tool-turn"].Headers)
 
 	work := byName["work-glm-zai-stream"]
-	check(work.Headers["X-Portkey-Provider"] == "openai" && work.Headers["Authorization"] == "<credential>" && bodyOf(t, work)["thinking"] != nil && bodyOf(t, work)["stream_options"] == nil, "work: %v %s", work.Headers, work.Body)
+	// The work gateway authors credential_headers.Authorization = "Bearer
+	// $PORTKEY_KEY"; auth = bearer must leave it alone, so the wire header
+	// is one Bearer prefix, not two (spec §10).
+	check(work.Headers["X-Portkey-Provider"] == "openai" && work.Headers["Authorization"] == "Bearer <credential>" && bodyOf(t, work)["thinking"] != nil && bodyOf(t, work)["stream_options"] == nil, "work: %v %s", work.Headers, work.Body)
 	check(slices.Contains(work.PrunedFields, "stream_options"), "work pruned fields must name stream_options: %v", work.PrunedFields)
 
 	ollama := byName["ollama-llama3-optional-bearer"]

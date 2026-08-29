@@ -23,6 +23,9 @@ func init() {
 type bearerAuth struct{}
 
 func (bearerAuth) Apply(_ context.Context, req *http.Request, res registry.Resolved) error {
+	if credentialHeaderWins(res, "Authorization") {
+		return nil
+	}
 	if res.Credential.Value == "" {
 		return missingCredential(res)
 	}
@@ -33,6 +36,9 @@ func (bearerAuth) Apply(_ context.Context, req *http.Request, res registry.Resol
 type optionalBearerAuth struct{}
 
 func (optionalBearerAuth) Apply(_ context.Context, req *http.Request, res registry.Resolved) error {
+	if credentialHeaderWins(res, "Authorization") {
+		return nil
+	}
 	if res.Credential.Value != "" {
 		req.Header.Set("Authorization", "Bearer "+res.Credential.Value)
 	}
@@ -45,6 +51,9 @@ func (headerAuth) Apply(_ context.Context, req *http.Request, res registry.Resol
 	if res.Transport.AuthHeader == "" {
 		return &ConfigurationError{Message: fmt.Sprintf("instance %q: auth = header needs auth_header", res.Instance)}
 	}
+	if credentialHeaderWins(res, res.Transport.AuthHeader) {
+		return nil
+	}
 	if res.Credential.Value == "" {
 		return missingCredential(res)
 	}
@@ -55,6 +64,21 @@ func (headerAuth) Apply(_ context.Context, req *http.Request, res registry.Resol
 type noneAuth struct{}
 
 func (noneAuth) Apply(context.Context, *http.Request, registry.Resolved) error { return nil }
+
+// credentialHeaderWins reports whether res.CredentialHeaders already carries
+// the auth header, in which case the header the instance authored wins and
+// the scheme derives nothing from the key (spec §10: "when both auth =
+// bearer and a credential_headers.Authorization are present, the header wins
+// and no bearer is derived from the key"). protocolhttp.Prepare has already
+// set it on the request.
+func credentialHeaderWins(res registry.Resolved, name string) bool {
+	for k, v := range res.CredentialHeaders {
+		if v != "" && strings.EqualFold(k, name) {
+			return true
+		}
+	}
+	return false
+}
 
 // missingCredential names the instance and repeats the registry's own
 // "no credential" warning, which says which variable or login is missing.

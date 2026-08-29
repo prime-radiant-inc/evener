@@ -5,7 +5,7 @@
   "method": "POST",
   "url": "https://gw.example.com/v1/chat/completions",
   "headers": {
-    "Authorization": "\u003ccredential\u003e",
+    "Authorization": "Bearer \u003ccredential\u003e",
     "Content-Type": "application/json",
     "Openai-Organization": "org-golden",
     "X-Portkey-Provider": "openai"

@@ -5,7 +5,7 @@
   "method": "POST",
   "url": "https://chatgpt.com/backend-api/codex/responses",
   "headers": {
-    "Authorization": "\u003ccredential\u003e",
+    "Authorization": "Bearer \u003ccredential\u003e",
     "Chatgpt-Account-Id": "acct_golden",
     "Content-Type": "application/json",
     "Originator": "evener",

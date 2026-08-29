@@ -5,7 +5,7 @@
   "method": "POST",
   "url": "https://api.openai.com/v1/responses",
   "headers": {
-    "Authorization": "\u003ccredential\u003e",
+    "Authorization": "Bearer \u003ccredential\u003e",
     "Content-Type": "application/json",
     "Openai-Organization": "org-golden"
   },
