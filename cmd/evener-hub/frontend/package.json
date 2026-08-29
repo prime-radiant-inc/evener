@@ -5,7 +5,7 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
-    "build": "tsc --noEmit --incremental false && vite build",
+    "build": "node scripts/clean-dist.mjs && tsc --noEmit --incremental false && vite build",
     "typecheck": "tsc --noEmit --incremental false",
     "typecheck:fast": "tsc --noEmit",
     "test": "sh -c 'vitest run --maxWorkers=4 --exclude \"scripts/*.test.mjs\" \"$@\" && node --test scripts/*.test.mjs' --",
