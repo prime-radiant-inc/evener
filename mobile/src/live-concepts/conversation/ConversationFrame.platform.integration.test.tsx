@@ -507,6 +507,7 @@ describe("ConversationFrame platform integration", () => {
     const controls = [
       { name: "Back", element: screen.getByRole("button", { name: "Back" }) },
       { name: "Work", element: screen.getByRole("button", { name: "Work" }) },
+      { name: "Voice", element: screen.getByRole("button", { name: "Voice" }) },
       {
         name: "Switch concept",
         element: screen.getByRole("button", { name: "Switch concept" }),
@@ -557,7 +558,7 @@ describe("ConversationFrame platform integration", () => {
       });
       expect(tabKeys).toHaveLength(index + 1);
     }
-    expect(focusOrder).toEqual(["Back", "Work", "Switch concept"]);
+    expect(focusOrder).toEqual(["Back", "Work", "Voice", "Switch concept"]);
     coordinator.stop();
   });
 

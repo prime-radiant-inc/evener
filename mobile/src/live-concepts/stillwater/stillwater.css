@@ -22,7 +22,7 @@
   isolation: isolate;
 }
 
-.concept-stillwater[data-concept-root] {
+.concept-stillwater[data-concept-root]:not(.sw-conversation-skin) {
   position: relative;
   display: grid;
   flex: 1 1 auto;
