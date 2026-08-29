@@ -388,6 +388,58 @@ describe("LiveConceptHost ownership", () => {
     expect(frame).toHaveAttribute("data-route-motion-generation", "1");
   });
 
+  it("routes Field Notes through row-local chronology in the shared frame", async () => {
+    const harness = makeHarness();
+    act(() => harness.uiStore.getState().setConcept("field-notes"));
+    await openConversation(
+      harness,
+      conversation([
+        { kind: "user", id: "field-short", text: "Short note" },
+        {
+          kind: "assistant",
+          id: "field-long",
+          markdown: "A long editorial response. ".repeat(24),
+          streaming: false,
+        },
+        {
+          kind: "activity",
+          id: "field-tool",
+          label: "read_file",
+          family: "tool",
+          state: "completed",
+          detail: { output: "Read the bounded record" },
+        },
+      ]),
+    );
+    const { container } = render(
+      <LiveConceptHost {...harness.props} surface="conversation" />,
+    );
+
+    expect(screen.getByRole("main", { name: "Conversation" })).toHaveClass(
+      "fn-conversation-skin",
+    );
+    const rows = screen.getAllByTestId("virtual-transcript-row");
+    expect(rows).toHaveLength(3);
+    for (const row of rows) {
+      expect(
+        row.querySelector("[data-chronology-segment='row-local']"),
+      ).not.toBeNull();
+    }
+    expect(
+      container.querySelector("[data-chronology-rail='document']"),
+    ).toBeNull();
+    expect(
+      container.querySelectorAll("[data-page-scroll-owner='true']"),
+    ).toHaveLength(1);
+    expect(
+      container.querySelector("[data-live-concept-scroller='true']"),
+    ).toBeNull();
+    expect(screen.getByRole("textbox", { name: "Message" })).toHaveAttribute(
+      "data-live-conversation-message",
+      "true",
+    );
+  });
+
   it("routes frame-owned assistant links to the root native bridge", async () => {
     const harness = makeHarness();
     await openConversation(

@@ -1,21 +1,20 @@
 import type { CSSProperties, ReactNode } from "react";
 import { conceptRootAxLabel } from "../accessibility-semantics";
 import type { LiveConceptIntent, LiveConceptState } from "../contract";
-import type { LiveConceptSurface } from "../model";
 import { Icon } from "../shared/Icon";
 
-// Live adaptation of the Field Notes shell. Carries the live platform,
-// appearance, text-scale, and reduced-motion state; renders the topbar with
-// back/close actions (driven by live intents); and scopes content via the
-// single scroll owner. No prototype root navigation, no Lab controls.
+type FieldNotesOwnedSurface = Exclude<
+  LiveConceptState["surface"],
+  "conversation"
+>;
 
 export interface FieldNotesShellProps {
   state: LiveConceptState;
   dispatch(intent: LiveConceptIntent): void;
-  surface: LiveConceptSurface;
+  surface: FieldNotesOwnedSurface;
   title: string;
   subtitle?: string;
-  pushed?: "back" | "close";
+  pushed?: "close";
   children: ReactNode;
 }
 
@@ -59,6 +58,7 @@ export function FieldNotesShell({
     <section
       className="concept-field-notes"
       data-concept-root
+      data-field-notes-shell="true"
       data-platform={platform}
       data-reading-role={
         platform === "android" ? "editorial-sans" : "editorial-serif"
@@ -66,6 +66,7 @@ export function FieldNotesShell({
       data-appearance={appearance}
       data-text-scale={textScale}
       data-reduced-motion={reducedMotion}
+      data-surface={surface}
       data-thread-key={state.conversation?.threadKey}
       data-motion={
         reducedMotion ||
@@ -95,7 +96,7 @@ export function FieldNotesShell({
               <button
                 className="fn-icon-action"
                 type="button"
-                aria-label={pushed === "close" ? "Close" : "Back"}
+                aria-label="Close"
                 data-icon-target={iconTarget}
                 style={{
                   width: iconTarget,
@@ -103,15 +104,9 @@ export function FieldNotesShell({
                   height: iconTarget,
                   minHeight: iconTarget,
                 }}
-                onClick={() =>
-                  dispatch(
-                    pushed === "close"
-                      ? { type: "closeWork" }
-                      : { type: "goBack" },
-                  )
-                }
+                onClick={() => dispatch({ type: "closeWork" })}
               >
-                <Icon name={pushed === "close" ? "close" : "back"} decorative />
+                <Icon name="close" decorative />
               </button>
             ) : null}
             <div className="fn-title-block">
@@ -137,9 +132,7 @@ export function FieldNotesShell({
           className="fn-route-content"
           style={{
             paddingRight: "max(1rem, var(--fn-edge-right))",
-            paddingBottom: pushed
-              ? "calc(1.5rem + var(--fn-edge-bottom) + var(--keyboard-inset-height, var(--keyboard-inset, 0px)))"
-              : undefined,
+            paddingBottom: "calc(1.5rem + var(--fn-edge-bottom))",
             paddingLeft: "max(1rem, var(--fn-edge-left))",
           }}
         >
