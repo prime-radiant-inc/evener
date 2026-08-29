@@ -1745,10 +1745,12 @@ Ollama host helpers in `envvars` stay.
   the entry, then runs `probe --write` unless `--no-probe`. When the entry
   would resolve no credential under §10's rule (a gateway `--base-url` with
   no store entry under `<name>`, no `--api-key-env` whose variable is set,
-  and no `--credential-header`), `add` writes it, skips the probe, and
-  prints what to set. Secrets never appear on the command line: a
-  `--credential-header` value must be a `$VAR` reference, and keys are
-  entered through the hub's credentials pane or `credentials.toml`.
+  no `<NAME>_API_KEY` for a custom name, and no `--credential-header`),
+  `add` writes it, skips the probe, and prints what to set. Secrets never
+  appear on the command line: a `--credential-header` value must contain a
+  `$VAR` reference and no literal secret (`Authorization=Bearer
+  $PORTKEY_KEY`), and keys are entered through the hub's credentials pane
+  or `credentials.toml`.
 
 ### 11.3 Hub and appwire
 
@@ -2034,7 +2036,13 @@ building the new packages beside the old ones and cutting over last.
    appwire types, generated TS, and frontend dialogs; `providers
    probe|add`; `llmcall` on `LoadClient`; credentials store takes the
    registry table; the old-schema load error with its §14.1 pointer and the
-   stray-record notice wired into the CLI and the hub diagnostics; `envvars`
+   stray-record notice wired into the CLI and the hub diagnostics; the
+   `EVENER_PROVIDERS_CONFIG` tri-state at every reader (`load_client.go:38-41,
+   120-124`, `main.go:233-235`, `agent/internal/liveeval/paths.go:37-44`,
+   `launchconfig.ToEnv`, and the `t.Setenv(…, "")` idiom in
+   `cmdutil/load_client_test.go:185-189`, which now means "no user layer")
+   and `EVENER_CREDENTIALS_CONFIG` as an `envvars.Var` so the test mains
+   scrub it; `envvars`
    roster, `cmdutil/seed.go`, `materialize.go`, `providercfg`,
    `model_catalog*.go`, the LiteLLM data, the wrapper packages,
    `openaicompat`, the old `openai` adapter, and the old
