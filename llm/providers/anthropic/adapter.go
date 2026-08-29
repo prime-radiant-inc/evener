@@ -486,7 +486,7 @@ func decodeMessagesStream(sctx context.Context, cancel context.CancelFunc, resp 
 		},
 		SSEOpts:       llm.StreamReadSSEOptions(req.AdapterTimeout),
 		Finished:      &finished,
-		IncompleteMsg: "anthropic stream ended without completion",
+		IncompleteMsg: provider + " stream ended without completion",
 		OnEvent: func(ev llm.SSEEvent) error {
 			if len(ev.Data) == 0 {
 				return nil

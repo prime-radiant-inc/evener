@@ -479,7 +479,7 @@ func decodeGenerateContentStream(sctx context.Context, cancel context.CancelFunc
 		},
 		SSEOpts:       llm.StreamReadSSEOptions(req.AdapterTimeout),
 		Finished:      &finished,
-		IncompleteMsg: "google stream ended without completion",
+		IncompleteMsg: provider + " stream ended without completion",
 		OnEvent: func(ev llm.SSEEvent) error {
 			if len(ev.Data) == 0 {
 				return nil
@@ -623,7 +623,7 @@ func decodeGenerateContentStream(sctx context.Context, cancel context.CancelFunc
 						}
 						// NormalizeFinishReason always supplies a non-empty canonical reason;
 						// tool calls override it with the provider-neutral continuation reason.
-						invariant.Hold(r.Finish.Reason != "", "google finished response has an empty finish reason")
+						invariant.Hold(r.Finish.Reason != "", "%s finished response has an empty finish reason", provider)
 						rp := r
 						event := llm.StreamEvent{Type: llm.StreamEventFinish, FinishReason: &r.Finish, Usage: &r.Usage, Response: &rp}
 						if attempt.Active() {

@@ -208,3 +208,24 @@ func TestProtocolClassifiesPromptTooLong(t *testing.T) {
 		t.Fatalf("err = %v", err)
 	}
 }
+
+// TestProtocolIncompleteStreamNamesTheInstance pins that a stream that ends
+// before message_stop reports the instance, not the protocol's own name.
+func TestProtocolIncompleteStreamNamesTheInstance(t *testing.T) {
+	truncated := "event: message_start\ndata: {\"type\":\"message_start\",\"message\":{\"id\":\"msg_1\",\"type\":\"message\",\"role\":\"assistant\",\"model\":\"claude-x-wire\",\"content\":[],\"usage\":{\"input_tokens\":7,\"output_tokens\":0}}}\n\n"
+	srv, _ := protoServer(t, func(*http.Request) (int, string) { return 200, truncated })
+	res := protoLive(srv)
+	st, err := (&Protocol{Client: srv.Client()}).Stream(context.Background(), protoReq(""), res)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var streamErr error
+	for ev := range st.Events() {
+		if ev.Type == llm.StreamEventError {
+			streamErr = ev.Err
+		}
+	}
+	if streamErr == nil || !strings.Contains(streamErr.Error(), res.Instance+" stream ended without completion") {
+		t.Fatalf("incomplete stream error = %v, want it to name %q", streamErr, res.Instance)
+	}
+}
