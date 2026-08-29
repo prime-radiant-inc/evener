@@ -1662,7 +1662,7 @@ func (a *subagent) run(ctx context.Context, input string, inputProvenance *prove
 			finish = a.stableDelegateFinish(res, err)
 			break
 		}
-		settlementClaim, continueRun, settleErr := a.sess.delegateController.BeginFinalization(lease, settlementMode)
+		settlementClaim, continueRun, settleErr := a.sess.delegateController.BeginRunFinalization(lease, settlementMode, err)
 		if settleErr != nil {
 			if !errors.Is(settleErr, errDelegateTargetBusy) {
 				err = errors.Join(err, settleErr)

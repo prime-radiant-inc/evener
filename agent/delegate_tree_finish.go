@@ -30,10 +30,12 @@ const (
 )
 
 type delegateSettlementClaim struct {
-	token uint64
-	lease delegateLease
-	mode  delegateSettlementMode
-	ready <-chan struct{}
+	token         uint64
+	lease         delegateLease
+	mode          delegateSettlementMode
+	ready         <-chan struct{}
+	runErrorKnown bool
+	runErr        error
 }
 
 // SupervisionBoundary linearizes pending-steer and stop precedence before
@@ -67,6 +69,18 @@ func (c *delegateTreeController) BeginSettlement(lease delegateLease) (*delegate
 // that was already admitted for the exact generation. Only ordinary
 // finalization arbitrates pending steering.
 func (c *delegateTreeController) BeginFinalization(lease delegateLease, mode delegateSettlementMode) (*delegateSettlementClaim, bool, error) {
+	return c.beginFinalization(lease, mode, false, nil)
+}
+
+// BeginRunFinalization binds the sampled run error to the exact settlement
+// claim. Packetless no-action authority requires this fact to be known and nil;
+// generic controller callers cannot obtain that authority through a claim whose
+// run result was not supplied.
+func (c *delegateTreeController) BeginRunFinalization(lease delegateLease, mode delegateSettlementMode, runErr error) (*delegateSettlementClaim, bool, error) {
+	return c.beginFinalization(lease, mode, true, runErr)
+}
+
+func (c *delegateTreeController) beginFinalization(lease delegateLease, mode delegateSettlementMode, runErrorKnown bool, runErr error) (*delegateSettlementClaim, bool, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	var live *delegateLiveState
@@ -121,7 +135,14 @@ func (c *delegateTreeController) BeginFinalization(lease delegateLease, mode del
 		close(closed)
 		ready = closed
 	}
-	claim := &delegateSettlementClaim{token: c.nextToken, lease: lease, mode: mode, ready: ready}
+	claim := &delegateSettlementClaim{
+		token:         c.nextToken,
+		lease:         lease,
+		mode:          mode,
+		ready:         ready,
+		runErrorKnown: runErrorKnown,
+		runErr:        runErr,
+	}
 	c.settlementClaims[claim.token] = claim
 	if c.stop != nil {
 		if _, active := c.stop.active[lease]; active {
@@ -205,6 +226,9 @@ func (c *delegateTreeController) prepareNoAction(claim *delegateSettlementClaim,
 		return false, errDelegateStaleLease
 	}
 	if claim.mode != delegateSettlementOrdinary {
+		return false, nil
+	}
+	if !claim.runErrorKnown || claim.runErr != nil {
 		return false, nil
 	}
 	if err := c.finalizationReadyLocked(claim); err != nil {
@@ -546,6 +570,9 @@ func (c *delegateTreeController) noActionFinishLocked(claim *delegateSettlementC
 		return delegateLease{}, delegateFinish{}, errDelegateStaleLease
 	}
 	if claim.mode != delegateSettlementOrdinary {
+		return delegateLease{}, delegateFinish{}, errDelegateTargetBusy
+	}
+	if !claim.runErrorKnown || claim.runErr != nil {
 		return delegateLease{}, delegateFinish{}, errDelegateTargetBusy
 	}
 	if err := c.finalizationReadyLocked(claim); err != nil {

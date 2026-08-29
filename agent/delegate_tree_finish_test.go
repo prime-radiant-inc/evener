@@ -615,6 +615,22 @@ func TestDelegateControllerFinishNoActionRejectsMissingStaleMismatchedAndUnready
 }
 
 func TestDelegateControllerFinishNoActionRejectsReportRequiredTerminalAndPreparedState(t *testing.T) {
+	t.Run("non-nil run error", func(t *testing.T) {
+		for name, runErr := range map[string]error{
+			"cancellation": context.Canceled,
+			"failure":      errors.New("run failed"),
+		} {
+			t.Run(name, func(t *testing.T) {
+				c, _ := newDelegateControllerTestHarness(t, 1, 1)
+				claim := eligibleDelegateNoActionClaimForRun(t, c, "dlg_target", runErr)
+				fallback := stableDelegateFinishFromRun(delegateTerminalRunInputs{result: "error fallback", runErr: runErr})
+				if prepared, err := c.prepareNoAction(claim, fallback); err != nil || prepared {
+					t.Fatalf("prepareNoAction(non-nil run error) = %t, %v, want false/nil", prepared, err)
+				}
+			})
+		}
+	})
+
 	t.Run("report required", func(t *testing.T) {
 		c, _ := newDelegateControllerTestHarness(t, 1, 1)
 		seedDelegateControllerRunning(t, c, "dlg_target", "")
@@ -679,12 +695,11 @@ func TestDelegateControllerFinishNoActionStopUsesRetainedFallback(t *testing.T) 
 	activityAt := startedAt.Add(3 * time.Minute)
 	fallback := stableDelegateFinishFromRun(delegateTerminalRunInputs{
 		result:           "retained fallback",
-		runErr:           context.Canceled,
 		descriptor:       delegatestore.Descriptor{Task: "inspect task", Description: "inspect description"},
 		startedAt:        startedAt,
 		endedAt:          endedAt,
 		latestActivityAt: activityAt,
-		usage:            schema.CumulativeUsage{InputTokens: 11, OutputTokens: 7},
+		usage:            schema.CumulativeUsage{InputTokens: 11, OutputTokens: 7, CacheReadTokens: 3, TotalTokens: 21},
 		warnings:         []string{"retained warning"},
 		worktree:         &delegateWorktreeReport{Path: "/tmp/worktree", Branch: "task-3", HeadSHA: "deadbeef", Ahead: 2, Dirty: true},
 		scratchPath:      "/tmp/scratch",
@@ -702,18 +717,81 @@ func TestDelegateControllerFinishNoActionStopUsesRetainedFallback(t *testing.T) 
 		t.Fatalf("FinishNoAction under stop: %v", err)
 	}
 	finished := latestDelegateControllerRunFinished(t, c, "dlg_target")
-	if finished.Packet == nil || finished.DeliveryID == "" || finished.Disposition != delegatestore.DispositionTerminalError || len(plans.deliveries) != 0 {
-		t.Fatalf("stopped no-action finish = plans:%#v finished:%#v", plans, finished)
+	if finished.Outcome.Status != delegatestore.OutcomeStopped {
+		t.Fatalf("stopped outcome = %q, want %q", finished.Outcome.Status, delegatestore.OutcomeStopped)
+	}
+	if finished.Outcome.Reason != "stopped_by_parent" {
+		t.Fatalf("stopped reason = %q, want stopped_by_parent", finished.Outcome.Reason)
+	}
+	if finished.Disposition != delegatestore.DispositionTerminalError {
+		t.Fatalf("stopped disposition = %q, want %q", finished.Disposition, delegatestore.DispositionTerminalError)
+	}
+	if finished.DeliveryID == "" {
+		t.Fatal("stopped delivery ID is empty")
+	}
+	if len(plans.deliveries) != 0 {
+		t.Fatalf("stopped delivery plans = %#v, want none for covered owner", plans.deliveries)
+	}
+	if finished.Packet == nil {
+		t.Fatal("stopped packet is nil")
+	}
+	if finished.Packet.Kind != delegatestore.PacketTerminalError {
+		t.Fatalf("stopped packet kind = %q, want %q", finished.Packet.Kind, delegatestore.PacketTerminalError)
 	}
 	var metadata delegateTerminalPacketMetadata
 	if err := json.Unmarshal(finished.Packet.Metadata, &metadata); err != nil {
 		t.Fatalf("decode retained fallback metadata: %v", err)
 	}
-	if metadata.Task != "inspect task" || metadata.Worktree == nil || metadata.Worktree.Path != "/tmp/worktree" || metadata.ScratchPath != "/tmp/scratch" ||
-		metadata.CumulativeUsage == nil || metadata.CumulativeUsage.InputTokens != 11 || metadata.CumulativeUsage.OutputTokens != 7 ||
-		metadata.RunStartedAt != startedAt.Format(time.RFC3339Nano) || metadata.RunEndedAt != endedAt.Format(time.RFC3339Nano) || metadata.LatestActivityAt != activityAt.Format(time.RFC3339Nano) ||
-		!reflect.DeepEqual(finished.Packet.Warnings, []string{"retained warning"}) {
-		t.Fatalf("retained stop fallback = packet:%#v metadata:%#v", finished.Packet, metadata)
+	if metadata.Task != "inspect task" {
+		t.Fatalf("retained task = %q, want inspect task", metadata.Task)
+	}
+	if metadata.Worktree == nil {
+		t.Fatal("retained worktree is nil")
+	}
+	if metadata.Worktree.Path != "/tmp/worktree" {
+		t.Fatalf("retained worktree path = %q, want /tmp/worktree", metadata.Worktree.Path)
+	}
+	if metadata.Worktree.Branch != "task-3" {
+		t.Fatalf("retained worktree branch = %q, want task-3", metadata.Worktree.Branch)
+	}
+	if metadata.Worktree.HeadSHA != "deadbeef" {
+		t.Fatalf("retained worktree head = %q, want deadbeef", metadata.Worktree.HeadSHA)
+	}
+	if metadata.Worktree.Ahead != 2 {
+		t.Fatalf("retained worktree ahead = %d, want 2", metadata.Worktree.Ahead)
+	}
+	if !metadata.Worktree.Dirty {
+		t.Fatal("retained worktree dirty = false, want true")
+	}
+	if metadata.ScratchPath != "/tmp/scratch" {
+		t.Fatalf("retained scratch path = %q, want /tmp/scratch", metadata.ScratchPath)
+	}
+	if metadata.CumulativeUsage == nil {
+		t.Fatal("retained cumulative usage is nil")
+	}
+	if metadata.CumulativeUsage.InputTokens != 11 {
+		t.Fatalf("retained input tokens = %d, want 11", metadata.CumulativeUsage.InputTokens)
+	}
+	if metadata.CumulativeUsage.OutputTokens != 7 {
+		t.Fatalf("retained output tokens = %d, want 7", metadata.CumulativeUsage.OutputTokens)
+	}
+	if metadata.CumulativeUsage.CacheReadTokens != 3 {
+		t.Fatalf("retained cache-read tokens = %d, want 3", metadata.CumulativeUsage.CacheReadTokens)
+	}
+	if metadata.CumulativeUsage.TotalTokens != 21 {
+		t.Fatalf("retained total tokens = %d, want 21", metadata.CumulativeUsage.TotalTokens)
+	}
+	if metadata.RunStartedAt != startedAt.Format(time.RFC3339Nano) {
+		t.Fatalf("retained start time = %q, want %q", metadata.RunStartedAt, startedAt.Format(time.RFC3339Nano))
+	}
+	if metadata.RunEndedAt != endedAt.Format(time.RFC3339Nano) {
+		t.Fatalf("retained end time = %q, want %q", metadata.RunEndedAt, endedAt.Format(time.RFC3339Nano))
+	}
+	if metadata.LatestActivityAt != activityAt.Format(time.RFC3339Nano) {
+		t.Fatalf("retained latest activity = %q, want %q", metadata.LatestActivityAt, activityAt.Format(time.RFC3339Nano))
+	}
+	if !reflect.DeepEqual(finished.Packet.Warnings, []string{"retained warning"}) {
+		t.Fatalf("retained warnings = %#v, want retained warning", finished.Packet.Warnings)
 	}
 }
 
@@ -755,13 +833,17 @@ func TestDelegateControllerFinishGenerationCannotForgeNoAction(t *testing.T) {
 }
 
 func eligibleDelegateNoActionClaim(t *testing.T, c *delegateTreeController, delegateID string) *delegateSettlementClaim {
+	return eligibleDelegateNoActionClaimForRun(t, c, delegateID, nil)
+}
+
+func eligibleDelegateNoActionClaimForRun(t *testing.T, c *delegateTreeController, delegateID string, runErr error) *delegateSettlementClaim {
 	t.Helper()
 	seedDelegateControllerIdle(t, c, delegateID, "")
 	lease := startDelegateAttentionEvidenceGeneration(t, c, delegateID)
 	if recorded, err := c.recordAttentionNoAction(lease); err != nil || !recorded {
 		t.Fatalf("recordAttentionNoAction = %t, %v", recorded, err)
 	}
-	claim, continued, err := c.BeginSettlement(lease)
+	claim, continued, err := c.BeginRunFinalization(lease, delegateSettlementOrdinary, runErr)
 	if err != nil || continued {
 		t.Fatalf("BeginSettlement = claim:%#v continued:%t err:%v", claim, continued, err)
 	}
