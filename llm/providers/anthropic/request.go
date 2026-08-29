@@ -51,13 +51,13 @@ func (a *Adapter) buildRequestBody(req llm.Request) (map[string]any, error) {
 		"model":         apiModel,
 		"max_tokens":    maxTokens,
 		"messages":      messages,
-		"cache_control": map[string]any{"type": "ephemeral"},
+		"cache_control": cacheMarker(""),
 	}
 	if strings.TrimSpace(system) != "" {
 		body["system"] = []map[string]any{{
 			"type":          "text",
 			"text":          system,
-			"cache_control": map[string]any{"type": "ephemeral"},
+			"cache_control": cacheMarker(""),
 		}}
 	}
 	// Claude 5+ models reject sampling params (Sonnet 5 400s on non-default
@@ -75,58 +75,8 @@ func (a *Adapter) buildRequestBody(req llm.Request) (map[string]any, error) {
 		body["service_tier"] = strings.TrimSpace(req.ServiceTier)
 	}
 
-	includeTools := len(req.Tools) > 0
-	if req.ToolChoice != nil {
-		switch strings.ToLower(strings.TrimSpace(req.ToolChoice.Mode)) {
-		case "", "auto":
-			if includeTools {
-				body["tool_choice"] = map[string]any{"type": "auto"}
-			}
-		case "none":
-			includeTools = false
-		case "required":
-			if includeTools {
-				body["tool_choice"] = map[string]any{"type": "any"}
-			}
-		case "named":
-			if strings.TrimSpace(req.ToolChoice.Name) == "" {
-				return nil, &llm.ConfigurationError{Message: "tool_choice mode=named requires name"}
-			}
-			if includeTools {
-				body["tool_choice"] = map[string]any{"type": "tool", "name": req.ToolChoice.Name}
-			}
-		default:
-			return nil, llm.NewUnsupportedToolChoiceError("anthropic", req.ToolChoice.Mode)
-		}
-	}
-	if includeTools || req.WebSearch {
-		var tools []map[string]any
-		if includeTools {
-			toolDefs := req.Tools
-			if req.WebSearch {
-				// Strip any function-type "web_search" tool to avoid a
-				// duplicate name collision with the server-side web_search
-				// tool injected below.
-				filtered := toolDefs[:0:0]
-				for _, td := range toolDefs {
-					if td.Name != "web_search" {
-						filtered = append(filtered, td)
-					}
-				}
-				toolDefs = filtered
-			}
-			tools = toAnthropicTools(toolDefs)
-		}
-		if req.WebSearch {
-			tools = append(tools, map[string]any{
-				"type": "web_search_20250305",
-				"name": "web_search",
-			})
-		}
-		if len(tools) > 0 {
-			tools[len(tools)-1]["cache_control"] = map[string]any{"type": "ephemeral"}
-		}
-		body["tools"] = tools
+	if err := applyAnthropicTools(body, req, req.WebSearch); err != nil {
+		return nil, err
 	}
 	// Determine model capabilities from catalog.
 	var adaptiveThinking, supportsEffort bool
@@ -185,6 +135,85 @@ func (a *Adapter) buildRequestBody(req llm.Request) (map[string]any, error) {
 			}
 		}
 	}
+	reconcileThinkingContract(body, maxTokens, thinkingBudget, catalogMax)
+	return body, nil
+}
+
+// cacheMarker returns an ephemeral cache_control marker, adding ttl when the
+// caller has one (the extended-cache-ttl beta; the old builder always passes
+// "").
+func cacheMarker(ttl string) map[string]any {
+	m := map[string]any{"type": "ephemeral"}
+	if ttl != "" {
+		m["ttl"] = ttl
+	}
+	return m
+}
+
+// applyAnthropicTools writes tool_choice, tools, and the web-search tool
+// (when webSearch is on), and marks the last tool for caching.
+func applyAnthropicTools(body map[string]any, req llm.Request, webSearch bool) error {
+	includeTools := len(req.Tools) > 0
+	if req.ToolChoice != nil {
+		switch strings.ToLower(strings.TrimSpace(req.ToolChoice.Mode)) {
+		case "", "auto":
+			if includeTools {
+				body["tool_choice"] = map[string]any{"type": "auto"}
+			}
+		case "none":
+			includeTools = false
+		case "required":
+			if includeTools {
+				body["tool_choice"] = map[string]any{"type": "any"}
+			}
+		case "named":
+			if strings.TrimSpace(req.ToolChoice.Name) == "" {
+				return &llm.ConfigurationError{Message: "tool_choice mode=named requires name"}
+			}
+			if includeTools {
+				body["tool_choice"] = map[string]any{"type": "tool", "name": req.ToolChoice.Name}
+			}
+		default:
+			return llm.NewUnsupportedToolChoiceError("anthropic", req.ToolChoice.Mode)
+		}
+	}
+	if includeTools || webSearch {
+		var tools []map[string]any
+		if includeTools {
+			toolDefs := req.Tools
+			if webSearch {
+				// Strip any function-type "web_search" tool to avoid a
+				// duplicate name collision with the server-side web_search
+				// tool injected below.
+				filtered := toolDefs[:0:0]
+				for _, td := range toolDefs {
+					if td.Name != "web_search" {
+						filtered = append(filtered, td)
+					}
+				}
+				toolDefs = filtered
+			}
+			tools = toAnthropicTools(toolDefs)
+		}
+		if webSearch {
+			tools = append(tools, map[string]any{
+				"type": "web_search_20250305",
+				"name": "web_search",
+			})
+		}
+		if len(tools) > 0 {
+			tools[len(tools)-1]["cache_control"] = cacheMarker("")
+		}
+		body["tools"] = tools
+	}
+	return nil
+}
+
+// reconcileThinkingContract enforces the two contracts Anthropic rejects
+// with a 400: no forced tool_choice while thinking is on, and max_tokens
+// strictly above budget_tokens (raised by the budget, clamped to maxCap
+// when that still satisfies the contract).
+func reconcileThinkingContract(body map[string]any, maxTokens, thinkingBudget, maxCap int) {
 	// Anthropic rejects a forced tool_choice ("any"/"tool") when extended thinking
 	// is enabled — "Thinking may not be enabled when tool_choice forces tool use".
 	// When effort turned thinking on, downgrade forcing to "auto" so the request
@@ -214,9 +243,9 @@ func (a *Adapter) buildRequestBody(req llm.Request) (map[string]any, error) {
 			raised := thinkingBudget + out
 			// With max_tokens now defaulting to the model's real maximum,
 			// budget + max can exceed the model ceiling and 400. Clamp to the
-			// catalog cap when that still satisfies max_tokens > budget.
-			if catalogMax > thinkingBudget && raised > catalogMax {
-				raised = catalogMax
+			// cap when that still satisfies max_tokens > budget.
+			if maxCap > thinkingBudget && raised > maxCap {
+				raised = maxCap
 			}
 			body["max_tokens"] = raised
 		}
@@ -240,7 +269,6 @@ func (a *Adapter) buildRequestBody(req llm.Request) (map[string]any, error) {
 				"anthropic request contract: max_tokens %d does not exceed thinking budget %d", mt, thinkingBudget)
 		}
 	}
-	return body, nil
 }
 
 // isClaude5OrNewer reports whether a model belongs to the Claude 5+

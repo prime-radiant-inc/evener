@@ -254,6 +254,7 @@ native:.:./cmd/evener-hub:FuzzAppWireDispatch
 native:.:./cmd/evener-hub:FuzzWebMutatingHandler
 native:agent:.:FuzzToolExecution:./internal/tool,.
 native:llm:./providers/anthropic:FuzzAnthropicRequestBuild
+native:llm:./providers/anthropic:FuzzAnthropicProtocolBuildBody
 native:llm:./providers/anthropic:FuzzAnthropicComplete
 native:llm:./providers/google:FuzzGoogleRequestBuild
 native:llm:./providers/google:FuzzGoogleComplete

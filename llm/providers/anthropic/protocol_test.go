@@ -1,0 +1,164 @@
+package anthropic
+
+import (
+	"encoding/json"
+	"reflect"
+	"testing"
+
+	"primeradiant.com/evener/llm"
+	"primeradiant.com/evener/llm/registry"
+)
+
+func protoRes(mutate func(c *registry.Caps)) registry.Resolved {
+	caps := registry.Caps{Fields: registry.Baseline(registry.ProtocolAnthropic), MaxOutputTokens: new(64000), Reasoning: new(true), ReasoningControls: []string{"effort"}}
+	if mutate != nil {
+		mutate(&caps)
+	}
+	return registry.Resolved{Instance: "anthropic", Protocol: registry.ProtocolAnthropic, ModelID: "claude-x", WireID: "claude-x-wire", Transport: registry.Transport{Endpoint: "/messages"}, Caps: caps}
+}
+
+func protoReq(effort string) llm.Request {
+	req := llm.Request{Model: "claude-x", Messages: []llm.Message{
+		{Role: llm.RoleSystem, Content: []llm.ContentPart{{Kind: llm.ContentText, Text: "sys"}}},
+		{Role: llm.RoleUser, Content: []llm.ContentPart{{Kind: llm.ContentText, Text: "hi"}}},
+	}}
+	if effort != "" {
+		req.ReasoningEffort = &effort
+	}
+	return req
+}
+
+func protoBuild(t *testing.T, req llm.Request, res registry.Resolved) map[string]any {
+	t.Helper()
+	body, err := (&Protocol{}).BuildBody(llm.ShapeRequest(req, res), res)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return body
+}
+
+func TestProtocolPrunablePathsMatchRegistry(t *testing.T) {
+	p, ok := llm.ProtocolFor(registry.ProtocolAnthropic)
+	if !ok {
+		t.Fatal("anthropic not registered")
+	}
+	if got, want := p.PrunablePaths(), registry.PrunablePaths(registry.ProtocolAnthropic); !reflect.DeepEqual(got, want) {
+		t.Fatalf("PrunablePaths = %v, want %v", got, want)
+	}
+}
+
+func TestProtocolBuildBody_ThinkingShapes(t *testing.T) {
+	cases := []struct {
+		name         string
+		shape        string
+		display      string
+		alwaysOn     bool
+		effort       string
+		wantThinking map[string]any
+		wantEffort   any // output_config.effort; nil means absent
+	}{
+		{"unset shape sends nothing", "", "", false, "high", nil, nil},
+		{"adaptive always-on no effort no display", "adaptive", "", true, "", map[string]any{"type": "adaptive"}, nil},
+		{"adaptive with display and effort", "adaptive", "summarized", true, "high", map[string]any{"type": "adaptive", "display": "summarized"}, "high"},
+		{"adaptive not always-on and no effort", "adaptive", "summarized", false, "", nil, nil},
+		{"budget", "budget", "", false, "medium", map[string]any{"type": "enabled", "budget_tokens": float64(llm.ReasoningBudget("medium"))}, nil},
+		{"budget without effort", "budget", "", false, "", nil, nil},
+		{"budget+effort", "budget+effort", "", false, "high", map[string]any{"type": "enabled", "budget_tokens": float64(llm.ReasoningBudget("high"))}, "high"},
+		{"none clears everything", "adaptive", "summarized", true, "none", map[string]any{"type": "adaptive", "display": "summarized"}, nil},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			res := protoRes(func(caps *registry.Caps) {
+				if c.shape != "" {
+					caps.ThinkingShape = new(c.shape)
+				}
+				if c.display != "" {
+					caps.ThinkingDisplay = new(c.display)
+				}
+				if c.alwaysOn {
+					caps.ThinkingAlwaysOn = new(true)
+				}
+			})
+			raw, _ := json.Marshal(protoBuild(t, protoReq(c.effort), res))
+			var body map[string]any
+			_ = json.Unmarshal(raw, &body)
+			if !reflect.DeepEqual(body["thinking"], anyOrNil(c.wantThinking)) {
+				t.Fatalf("thinking = %v, want %v", body["thinking"], c.wantThinking)
+			}
+			var gotEffort any
+			if oc, ok := body["output_config"].(map[string]any); ok {
+				gotEffort = oc["effort"]
+			}
+			if gotEffort != c.wantEffort {
+				t.Fatalf("output_config.effort = %v, want %v", gotEffort, c.wantEffort)
+			}
+		})
+	}
+}
+
+func anyOrNil(m map[string]any) any {
+	if m == nil {
+		return nil
+	}
+	return m
+}
+
+func TestProtocolBuildBody_CapsAndRequestFields(t *testing.T) {
+	req := protoReq("high")
+	req.Tools = []llm.ToolDefinition{{Name: "f", Parameters: map[string]any{"type": "object"}}}
+	req.ToolChoice = &llm.ToolChoice{Mode: "required"}
+	req.WebSearch = true
+	req.Metadata = map[string]string{"user_id": "u1", "trace": "t"}
+	req.ServiceTier = "auto"
+	req.StopSequences = []string{"END"}
+	res := protoRes(func(c *registry.Caps) { c.ThinkingShape = new("budget"); c.CacheTTL = new("1h") })
+	body := protoBuild(t, req, res)
+	if body["model"] != "claude-x-wire" || body["max_tokens"].(int) <= llm.ReasoningBudget("high") {
+		t.Fatalf("model/max_tokens: %v %v", body["model"], body["max_tokens"])
+	}
+	if body["metadata"].(map[string]any)["user_id"] != "u1" || len(body["metadata"].(map[string]any)) != 1 || body["service_tier"] != "auto" {
+		t.Fatalf("metadata/service_tier: %v %v", body["metadata"], body["service_tier"])
+	}
+	tools := body["tools"].([]map[string]any)
+	if len(tools) != 2 || tools[1]["type"] != "web_search_20250305" || tools[1]["cache_control"].(map[string]any)["ttl"] != "1h" {
+		t.Fatalf("tools: %v", tools)
+	}
+	if tc := body["tool_choice"].(map[string]any); tc["type"] != "auto" {
+		t.Fatalf("forcing must downgrade to auto while thinking is on: %v", tc)
+	}
+	if sys := body["system"].([]map[string]any)[0]["cache_control"].(map[string]any); sys["ttl"] != "1h" {
+		t.Fatalf("system marker: %v", sys)
+	}
+	if got := registry.Prune(body, res.Caps); !reflect.DeepEqual(got, []string{"metadata", "service_tier"}) {
+		t.Fatalf("baseline prunes metadata and service_tier: %v", got)
+	}
+
+	noWeb := protoRes(func(c *registry.Caps) { c.WebSearch = new(false) })
+	if tools := protoBuild(t, req, noWeb)["tools"].([]map[string]any); len(tools) != 1 {
+		t.Fatalf("WebSearch=false drops the web search tool: %v", tools)
+	}
+
+	vertex := protoRes(nil)
+	vertex.Transport.Endpoint = "/publishers/anthropic/models/{model}:rawPredict"
+	if b := protoBuild(t, protoReq(""), vertex); b["model"] != nil {
+		t.Fatal("a {model} endpoint sends no model in the body")
+	}
+
+	unknown := protoRes(func(c *registry.Caps) { c.MaxOutputTokens = nil })
+	if b := protoBuild(t, protoReq(""), unknown); b["max_tokens"] != fallbackMaxTokens {
+		t.Fatalf("max_tokens fallback = %v", b["max_tokens"])
+	}
+}
+
+func TestBetaHeaderMergesRowAndCallerBetas(t *testing.T) {
+	res := protoRes(nil)
+	res.Headers = map[string]string{"anthropic-beta": "context-1m-2025-08-07"}
+	req := protoReq("")
+	req.ProviderOptions = map[string]any{"anthropic": map[string]any{"beta_headers": []string{"interleaved-thinking-2025-05-14", "context-1m-2025-08-07"}}}
+	if got := betaHeader(res, req); got != "context-1m-2025-08-07,interleaved-thinking-2025-05-14" {
+		t.Fatalf("beta header = %q", got)
+	}
+	if got := betaHeader(protoRes(nil), protoReq("")); got != "" {
+		t.Fatalf("no betas = %q", got)
+	}
+}

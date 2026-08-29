@@ -400,6 +400,16 @@ func (a *Adapter) Stream(ctx context.Context, req llm.Request) (llm.Stream, erro
 // translates each event into llm stream events and emits the final accumulated
 // Response on message_stop. It owns closing the response body and the ChanStream.
 func (a *Adapter) decodeStream(sctx context.Context, cancel context.CancelFunc, resp *http.Response, s *llm.ChanStream, req llm.Request, _ []byte, attempt *transport.APIAttemptCapture) {
+	decodeMessagesStream(sctx, cancel, resp, s, req, a.Name(), a.BaseURL+"/v1/messages", a.apiLogCredentialMaterial(nil), attempt)
+}
+
+// decodeMessagesStream consumes the messages SSE stream in its own
+// goroutine: it translates each event into llm stream events and emits the
+// final accumulated Response on message_stop. It owns closing the response
+// body and the ChanStream. provider stamps every Response/error the decoder
+// produces; endpointURL and material back llm.StampEndpointURL's fallback
+// and credential-sanitization inputs.
+func decodeMessagesStream(sctx context.Context, cancel context.CancelFunc, resp *http.Response, s *llm.ChanStream, req llm.Request, provider, endpointURL string, material llm.APILogCredentialMaterial, attempt *transport.APIAttemptCapture) {
 	defer func() {
 		_ = resp.Body.Close()
 		s.CloseSend()
@@ -466,7 +476,7 @@ func (a *Adapter) decodeStream(sctx context.Context, cancel context.CancelFunc, 
 	var finalEvent *llm.StreamEvent
 
 	runner := &transport.StreamRunner{
-		Provider:   "anthropic",
+		Provider:   provider,
 		Resp:       resp,
 		Stream:     s,
 		Attempt:    attempt,
@@ -757,7 +767,7 @@ func (a *Adapter) decodeStream(sctx context.Context, cancel context.CancelFunc, 
 				}
 				r := llm.Response{
 					ID:       msgID,
-					Provider: "anthropic",
+					Provider: provider,
 					Model:    model,
 					Message:  msg,
 					Finish:   finish,
@@ -767,7 +777,7 @@ func (a *Adapter) decodeStream(sctx context.Context, cancel context.CancelFunc, 
 				if refusalWarn != nil {
 					r.Warnings = append(r.Warnings, *refusalWarn)
 				}
-				llm.StampEndpointURL(&r, llm.FinalResponseEndpointURL(resp, a.BaseURL+"/v1/messages"), a.apiLogCredentialMaterial(nil))
+				llm.StampEndpointURL(&r, llm.FinalResponseEndpointURL(resp, endpointURL), material)
 				// See the matching comment in fromAnthropicResponse (response.go):
 				// only fall back to "tool_calls" when message_delta's stop_reason
 				// was missing/empty, never when it already reported something more
@@ -803,7 +813,7 @@ func (a *Adapter) decodeStream(sctx context.Context, cancel context.CancelFunc, 
 				// below would drop the payload and degrade the failure to the
 				// generic incomplete-stream error, hiding the
 				// overload/rate-limit/auth cause from retry logic and forensics.
-				return &transport.FatalStreamError{Err: inbandStreamError(payload)}
+				return &transport.FatalStreamError{Err: llm.RewriteErrorProvider(inbandStreamError(payload), provider)}
 			default:
 				s.Send(llm.StreamEvent{Type: llm.StreamEventProviderEvent, Raw: payload})
 			}
