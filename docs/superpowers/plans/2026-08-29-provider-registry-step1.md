@@ -3711,6 +3711,12 @@ func mapEnv(env map[string]string) func(string) (string, bool) {
 	return func(name string) (string, bool) { v, ok := env[name]; return v, ok }
 }
 
+// overlayWith appends extra TOML to the embedded curated overlay: a custom
+// overlay must keep the transport presets the converter's rows reference.
+func overlayWith(extra string) []byte {
+	return []byte(string(EmbeddedOverlay()) + "\n" + extra)
+}
+
 func layerTags(rec *record) []string {
 	out := make([]string, 0, len(rec.layers))
 	for _, l := range rec.layers {
@@ -3846,12 +3852,12 @@ func TestLoad_Errors(t *testing.T) {
 func TestLoad_OverlayBaseCycleAndCuratedDanglingAlias(t *testing.T) {
 	data, _ := os.ReadFile("testdata/models.dev.sample.json")
 	_, err := Load(WithSnapshot(data), WithEnv(mapEnv(nil)), WithNoUserLayer(), WithStateRoot(t.TempDir()),
-		WithOverlay([]byte("[providers.a]\nbase = \"b\"\n[providers.b]\nbase = \"a\"\n")))
+		WithOverlay(overlayWith("[providers.a]\nbase = \"b\"\n[providers.b]\nbase = \"a\"\n")))
 	if err == nil || !strings.Contains(err.Error(), "cycle") {
 		t.Fatalf("want base cycle error, got %v", err)
 	}
 	r, err := Load(WithSnapshot(data), WithEnv(mapEnv(nil)), WithNoUserLayer(), WithStateRoot(t.TempDir()),
-		WithOverlay([]byte("[providers.anthropic.models.\"gone\"]\nalias_of = \"claude-nope\"\n")))
+		WithOverlay(overlayWith("[providers.anthropic.models.\"gone\"]\nalias_of = \"claude-nope\"\n")))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -3941,8 +3947,8 @@ func TestLoad_RowHidden(t *testing.T) {
 		t.Fatal("bedrock row hiding wrong")
 	}
 	data, _ := os.ReadFile("testdata/models.dev.sample.json")
-	ov := string(EmbeddedOverlay()) + "\n[providers.\"amazon-bedrock\".models.\"global.openai.gpt-5.6-sol\"]\ntransport = \"bedrock-mantle-openai\"\nprotocol = \"openai-responses\"\n"
-	r2, err := Load(WithSnapshot(data), WithEnv(mapEnv(nil)), WithNoUserLayer(), WithStateRoot(t.TempDir()), WithOverlay([]byte(ov)))
+	ov := overlayWith("[providers.\"amazon-bedrock\".models.\"global.openai.gpt-5.6-sol\"]\ntransport = \"bedrock-mantle-openai\"\nprotocol = \"openai-responses\"\n")
+	r2, err := Load(WithSnapshot(data), WithEnv(mapEnv(nil)), WithNoUserLayer(), WithStateRoot(t.TempDir()), WithOverlay(ov))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -5025,13 +5031,10 @@ func TestInstances_DefaultKey(t *testing.T) {
 	if _, _, err := r.DefaultInstance(); err == nil || !strings.Contains(err.Error(), "ollama") {
 		t.Fatalf("only ollama, no default model: %v", err)
 	}
-	data2, _ := os.ReadFile("testdata/models.dev.sample.json")
-	r2, err := Load(WithSnapshot(data2), WithEnv(mapEnv(nil)), WithNoUserLayer(), WithStateRoot(t.TempDir()),
-		WithOverlay([]byte("[providers.anthropic]\nimplicit = true\nprotocol = \"anthropic\"\n")))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, _, err := r2.DefaultInstance(); err == nil || !strings.Contains(err.Error(), "no default instance") {
+	// An invalid OLLAMA_HOST hides ollama, the one provider that is an
+	// instance with no credential, leaving no instance at all.
+	r = fixtureLoad(t, map[string]string{"OLLAMA_HOST": "ftp://bad"}, "")
+	if _, _, err := r.DefaultInstance(); err == nil || !strings.Contains(err.Error(), "no default instance") {
 		t.Fatalf("no instance at all: %v", err)
 	}
 }
@@ -5833,7 +5836,7 @@ context_window = 1000
 func orderLoad(t *testing.T, config string) *Registry {
 	t.Helper()
 	data, _ := os.ReadFile("testdata/models.dev.sample.json")
-	opts := []Option{WithSnapshot(data), WithEnv(mapEnv(nil)), WithStateRoot(t.TempDir()), WithOverlay([]byte(orderOverlay))}
+	opts := []Option{WithSnapshot(data), WithEnv(mapEnv(nil)), WithStateRoot(t.TempDir()), WithOverlay(overlayWith(orderOverlay))}
 	if config == "" {
 		opts = append(opts, WithNoUserLayer())
 	} else {
