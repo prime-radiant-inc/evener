@@ -1,4 +1,5 @@
 import {
+  conversationItemAxDescription,
   conversationItemAxLabel,
   mutationAxLabel,
 } from "../accessibility-semantics";
@@ -307,42 +308,55 @@ export function ConversationView({ state, dispatch }: ConversationViewProps) {
             <p>Send the first message to begin this live thread.</p>
           </div>
         ) : (
-          conversation.items.map((item) => (
-            <article
-              className={`co-transcript-item co-transcript-item--${item.sourceKind}`}
-              data-transcript-item-id={item.key}
-              data-testid={`transcript-item-${item.key}`}
-              data-focused={ui.focusedItemKey === item.key ? "true" : "false"}
-              data-streaming={
-                "streaming" in item && item.streaming ? "true" : undefined
-              }
-              data-truncated={
-                ("body" in item ? item.body : item.preview)?.truncated
-                  ? "true"
-                  : undefined
-              }
-              data-current-work={
-                item.sourceKind === "tool" && item.tone === "running"
-                  ? "true"
-                  : undefined
-              }
-              aria-label={conversationItemAxLabel(
-                item,
-                item.sourceKind === "question"
-                  ? (ui.questionDrafts[item.questionKey ?? ""]?.resolution ??
-                      null)
-                  : null,
-              )}
-              tabIndex={ui.focusedItemKey === item.key ? -1 : undefined}
-              key={item.key}
-            >
-              <TranscriptContent
-                item={item}
-                state={state}
-                dispatch={dispatch}
-              />
-            </article>
-          ))
+          conversation.items.map((item) => {
+            const description = conversationItemAxDescription(item);
+            const descriptionId =
+              description === null
+                ? undefined
+                : `co-transcript-preview-${item.key}`;
+            return (
+              <article
+                className={`co-transcript-item co-transcript-item--${item.sourceKind}`}
+                data-transcript-item-id={item.key}
+                data-testid={`transcript-item-${item.key}`}
+                data-focused={ui.focusedItemKey === item.key ? "true" : "false"}
+                data-streaming={
+                  "streaming" in item && item.streaming ? "true" : undefined
+                }
+                data-truncated={
+                  ("body" in item ? item.body : item.preview)?.truncated
+                    ? "true"
+                    : undefined
+                }
+                data-current-work={
+                  item.sourceKind === "tool" && item.tone === "running"
+                    ? "true"
+                    : undefined
+                }
+                aria-label={conversationItemAxLabel(
+                  item,
+                  item.sourceKind === "question"
+                    ? (ui.questionDrafts[item.questionKey ?? ""]?.resolution ??
+                        null)
+                    : null,
+                )}
+                aria-describedby={descriptionId}
+                tabIndex={ui.focusedItemKey === item.key ? -1 : undefined}
+                key={item.key}
+              >
+                {descriptionId ? (
+                  <span className="co-visually-hidden" id={descriptionId}>
+                    {description}
+                  </span>
+                ) : null}
+                <TranscriptContent
+                  item={item}
+                  state={state}
+                  dispatch={dispatch}
+                />
+              </article>
+            );
+          })
         )}
       </section>
 
@@ -370,7 +384,7 @@ export function ConversationView({ state, dispatch }: ConversationViewProps) {
 
       {composer.error ? (
         <section className="co-composer-error" role="alert">
-          <p>{composer.error}</p>
+          <p>{composer.error.text}</p>
         </section>
       ) : null}
 

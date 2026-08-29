@@ -143,6 +143,7 @@ function conversationView(
         tone: "idle",
         streaming: false,
         questionKey: null,
+        evidenceKey: null,
         sequence: "1",
       },
       {
@@ -153,6 +154,7 @@ function conversationView(
         tone: "running",
         streaming: true,
         questionKey: null,
+        evidenceKey: null,
         sequence: "2",
       },
       {
@@ -175,6 +177,7 @@ function conversationView(
         tone: "idle",
         streaming: false,
         questionKey: null,
+        evidenceKey: null,
         sequence: "4",
       },
       {
@@ -185,6 +188,7 @@ function conversationView(
         tone: "attention",
         streaming: false,
         questionKey: "q1",
+        evidenceKey: null,
         sequence: "5",
       },
     ],
@@ -537,11 +541,17 @@ describe("Constellation conversation surface", () => {
         name: "Assistant message; streaming",
       }),
     ).toBeVisible();
+    const toolArticle = screen.getByRole("article", {
+      name: "Tool activity, run_audit; running",
+    });
+    expect(toolArticle).toBeVisible();
+    expect(toolArticle).toHaveAttribute(
+      "aria-describedby",
+      "co-transcript-preview-m3",
+    );
     expect(
-      screen.getByRole("article", {
-        name: "Tool activity, run_audit; running",
-      }),
-    ).toBeVisible();
+      document.getElementById("co-transcript-preview-m3"),
+    ).toHaveTextContent("Audited 12 files.");
     expect(container.querySelector("[aria-label*='m2']")).toBeNull();
     expect(
       container.querySelector("[aria-label*='Investigating the AppWire']"),
@@ -549,7 +559,6 @@ describe("Constellation conversation surface", () => {
     expect(
       container.querySelector("[aria-label*='Audited 12 files']"),
     ).toBeNull();
-    expect(screen.queryByText("Audited 12 files.")).toBeNull();
   });
 
   it("renders transcript items keyed by kind", () => {
@@ -642,8 +651,9 @@ describe("Constellation conversation surface", () => {
     );
     const main = screen.getByRole("main");
     const toolItem = within(main).getByTestId("transcript-item-m3");
-    expect(within(toolItem).getByRole("region")).toBeInTheDocument();
-    expect(within(toolItem).getByText("Audited 12 files.")).toBeVisible();
+    const detail = within(toolItem).getByRole("region");
+    expect(detail).toBeInTheDocument();
+    expect(within(detail).getByText("Audited 12 files.")).toBeVisible();
     fireEvent.click(screen.getByRole("button", { name: /run_audit/i }));
     expect(dispatch).toHaveBeenCalledWith({ type: "toggleTool", key: "m3" });
   });
@@ -1064,7 +1074,7 @@ describe("Constellation composer modes", () => {
           canQueue: true,
           canInterrupt: false,
           pending: null,
-          error: "Network timeout",
+          error: bounded("Network timeout"),
         },
       }),
     );
@@ -1248,6 +1258,7 @@ describe("Constellation question interaction", () => {
               tone: "attention",
               streaming: false,
               questionKey: "missing-q",
+              evidenceKey: null,
               sequence: "1",
             },
           ],
