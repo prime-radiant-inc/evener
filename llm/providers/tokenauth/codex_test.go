@@ -117,7 +117,9 @@ func TestCodexPrepareRequest(t *testing.T) {
 	off := codexRes("openai-codex")
 	off.Caps.Fields["metadata"] = false
 	off.Caps.ResponsesLite = nil
-	body = map[string]any{"metadata": map[string]string{"trace": "t"}}
+	// A ProviderOptions["openai-responses"]["client_metadata"] can reach the
+	// body; with the metadata field off, spec §9.5 says neither is sent.
+	body = map[string]any{"metadata": map[string]string{"trace": "t"}, "client_metadata": map[string]string{"installation_id": "inst-9"}}
 	httpReq, _ = http.NewRequest(http.MethodPost, "https://x", nil)
 	_ = c.PrepareRequest(context.Background(), httpReq, body, req, off)
 	if _, has := body["client_metadata"]; has || body["metadata"] != nil || httpReq.Header.Get("x-openai-internal-codex-responses-lite") != "" {

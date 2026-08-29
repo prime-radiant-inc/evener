@@ -109,6 +109,10 @@ func (c *Codex) PrepareRequest(_ context.Context, httpReq *http.Request, body ma
 		if len(merged) > 0 {
 			body["client_metadata"] = merged
 		}
+	} else {
+		// Off means neither field is sent, including a client_metadata a
+		// provider option put in the body (spec §9.5).
+		delete(body, "client_metadata")
 	}
 	delete(body, "metadata")
 	return nil
