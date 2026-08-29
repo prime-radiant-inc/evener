@@ -16,7 +16,7 @@
 - `RootShell` remains the only owner of profiles, credentials, AppWire, lifecycle, root navigation, New, Settings, Voice, and production store identity.
 - `MobileConversation.items` remains canonical for stores, notifications, paging, mutations, voice, and activity correlation; bounded display objects are never mutation inputs except through opaque private-map lookups.
 - Preserve the current pairing probe bounds/serialization/AppWire validation, AppWire initialize optional-field compatibility, profile lease/generation fencing, exact draft restoration, and capability-before-error publication. Do not modify `mobile/src-tauri/gen/apple/**`.
-- `mobile/src/ui/platformPresentation.ts` remains the sole viewport coordinator and may change in Task 2. It publishes `--viewport-height = min(innerHeight, visualViewport.offsetTop + visualViewport.height)` (the visible bottom in layout coordinates) and `--keyboard-inset = max(0, innerHeight - --viewport-height)`; invalid/absent visual viewport data falls back to `innerHeight` and zero inset. No other module reads `visualViewport`, and `--visual-viewport-height` is forbidden.
+- Preserve the approved production token meanings: `mobile/src/ui/platformPresentation.ts` remains the sole coordinator, `--viewport-height` remains the finite nonnegative layout `innerHeight`, and `--keyboard-inset` remains `max(0, innerHeight - (visualViewport.offsetTop + visualViewport.height))` with the existing invalid/window fallback. `ConversationFrame` consumes those tokens as `calc(var(--viewport-height, 100dvh) - var(--keyboard-inset, 0px))`; no other module reads `visualViewport`, and `--visual-viewport-height` is forbidden.
 - Hidden instructions and system preludes never enter DOM text, attributes, accessible descriptions, logs, screenshots, or serialized display snapshots; redaction happens before truncation.
 - UTF-8 maxima are exact: title/project 256 B; status/updated label 128 B; feed label 128 B; detail label 256 B; user/assistant 64 KiB; question header 128 B, prompt 8 KiB, option label 1 KiB, option detail/`why`/fallback 4 KiB; failure title 256 B, feed body 8 KiB, safe detail 64 KiB; notice preview/detail 512 B/16 KiB; hidden/prelude 0 B/0 B; allowlisted lifecycle detail 16 KiB; reasoning preview/detail 512 B/64 KiB; tool preview and each argument/output detail 512 B/64 KiB; attachment label/metadata 512 B/4 KiB total; diagnostic preview/detail 256 B/16 KiB; unknown preview/detail 0 B/16 KiB after redaction; evidence heading 128 B; connection/read/mutation error 1 KiB after redaction.
 - User-visible truncation emits exactly one `… truncated`, stays within its byte cap, and cuts only at a valid Unicode code-point boundary.
@@ -45,7 +45,8 @@
 | `mobile/src/live-concepts/conversation/VirtualTranscript.tsx` | Create | Feed semantics around the shared variable-height virtual list. |
 | `mobile/src/live-concepts/conversation/ActivityEvidenceSheet.tsx` | Create | Portal, safe detail rendering, independent evidence virtualization, scroll lock, and focus lifecycle. |
 | `mobile/src/live-concepts/conversation/conversation-frame.css` | Create | Shared viewport, safe-area, one-scroll-owner, textarea, responsive, and motion mechanics. |
-| `mobile/src/ui/platformPresentation.ts` and `.test.ts` | Modify lines 193–309 / 1–825 | Authoritative visible-bottom and keyboard-inset token equation, including nonzero visual viewport offset. |
+| `mobile/src/ui/platformPresentation.ts` and `.test.ts` | Verify production lines 193–309 unchanged; modify test lines 1–825 | Preserve authoritative token meanings and add offset-zero/nonzero integration coverage. Production changes are permitted only if a RED proves a defect without changing either token's meaning. |
+| `mobile/src/ui/global.css`, `mobile/src/screens/VoiceScreen.module.css`, `mobile/src/components/voice/VoiceControls.module.css`, `mobile/src/components/composer/Composer.css` | Audit unchanged | Prove existing shell, Voice, old composer, and dock consumers retain their global geometry while the new frame scopes its subtraction locally. |
 | `mobile/src/components/timeline/VariableHeightVirtualList.tsx` | Create | One generic measured `@tanstack/react-virtual` implementation used by both timelines. |
 | `mobile/src/conversation/paging.ts` | Replace lines 16–92 | Stable-key measured anchor capture/reconciliation; remove item-count/average-height inference. |
 | `mobile/src/components/timeline/Timeline.tsx` | Modify lines 1–156 | Consume the shared virtual list and measured anchor algorithm rather than a private approximation. |
@@ -74,7 +75,7 @@
 | `cmd/evener-hub/testfixture/mobile-simulator/main.go` and tests | Create | Protocol-conformant test Hub on production AppWire server plumbing with a deterministic scripted provider and pathological thread; no live credentials. |
 | `mobile/package.json` | Modify scripts lines 6–17 | Canonical focused, browser, and smoke commands. |
 | `make/testing.mk`, `.github/workflows/ci.yml`, `docs/developing-evener/testing.md` | Modify | Required deterministic mobile and Chrome-capable mobile gates with generated documentation. |
-| `.superpowers/sdd/2026-08-26-live-mobile-concepts-3-integration/progress.md` | Deferred physical-only append at lines 75–77 | Durable Task 7/Task55 evidence entry; remains unchanged until the physical manifest passes. |
+| `.superpowers/sdd/2026-08-26-live-mobile-concepts-3-integration/progress.md` | Deferred local durable append at lines 75–77 | Ignored Task 7/Task55 evidence ledger; append only after the physical manifest passes, never stage it, and report its local update separately. |
 
 ## Dependency Graph and Isolation
 
@@ -429,8 +430,12 @@ git commit --only -m "feat(mobile): bound live conversation projection" -- \
 - Modify: `mobile/src/live-concepts/accessibility-semantics.ts:1-9` remove the aggregate parent-contract import
 - Modify: `mobile/src/live-concepts/LiveConceptHost.tsx:288-327,441-544`
 - Modify: `mobile/src/live-concepts/LiveConceptHost.test.tsx:1-966` frame composition/state cases
-- Modify: `mobile/src/ui/platformPresentation.ts:193-221,233-309`
 - Modify: `mobile/src/ui/platformPresentation.test.ts:1-825`
+- Verify unchanged unless a RED proves a same-semantics defect: `mobile/src/ui/platformPresentation.ts:193-221,233-309`
+- Verify unchanged: `mobile/src/ui/global.css:213-230,754-762`
+- Verify unchanged: `mobile/src/screens/VoiceScreen.module.css:3-42`
+- Verify unchanged: `mobile/src/components/voice/VoiceControls.module.css:1-66`
+- Verify unchanged: `mobile/src/components/composer/Composer.css:1-24`
 
 **Interfaces:**
 - Consumes: Task 1 `LiveConversationView`, `ConversationDisplayItem`, and `EvidenceDisplayItem`; neutral primitives from `conversation/primitives.ts`; no aggregate host state or parent intent type.
@@ -455,7 +460,11 @@ Cover loading with disabled composer, empty, offline with editable draft, last-g
 
 Read every production file under `mobile/src/live-concepts/conversation/` and assert none imports `../contract`, `LiveConceptState`, or `LiveConceptIntent`; assert `mobile/src/live-concepts/contract.ts` imports `./conversation/contract` and `./conversation/primitives`. This RED import-direction test is part of `ConversationFrame.test.tsx`, so the initial circular design cannot compile green accidentally.
 
-In `ConversationFrame.platform.integration.test.tsx`, start the real `createViewportCoordinator` against a mutable `VisualViewportLike` with `innerHeight=852`, `offsetTop=47`, `height=500`, and safe bottom `34px`. Assert the root tokens become `--viewport-height: 547px` and `--keyboard-inset: 305px`; assert the exact measured composer target is `[data-frame-part="composer"][data-live-conversation-composer="true"]`; and assert its declared bottom padding resolves to `34px`, not `305px`, `339px`, or a second ancestor inset. Task 9 repeats the same case with real Chrome rectangles and requires both the frame and composer node bottoms to equal `47 + 500 = 547`.
+In `ConversationFrame.platform.integration.test.tsx`, start the real `createViewportCoordinator` against a mutable `VisualViewportLike` and never assign CSS variables directly. The realistic keyboard matrix uses `innerHeight=852`, `offsetTop=0`, `height=532`, and safe bottom `34px`; assert the unchanged production tokens are `--viewport-height: 852px` and `--keyboard-inset: 320px`. Assert the frame's local computed block size is `532px`, the exact composer target is `[data-frame-part="composer"][data-live-conversation-composer="true"]`, its bottom is `532`, and its bottom padding is `34px` exactly once. Check every visible frame control and focused composer element intersects `[0, 532]`.
+
+Add a separate pan case with `innerHeight=852`, `offsetTop=47`, and `height=500`. Keep the unchanged tokens `852px`/`305px`; require frame/composer bottom `547`, and require only the composer plus the active focused element to intersect `[47, 547]`. Do not assert top-control visibility while the visual viewport is panned. First close the keyboard by publishing `offsetTop=0,height=852`, wait for tokens `852px`/`0px`, and only then focus/assert Back, Work, and concept-switch controls. Task 9 repeats both cases with real Chrome rectangles.
+
+The same integration test reads the existing CSS and asserts `.evener-shell { height: var(--viewport-height) }`, Voice `.screen { height: var(--viewport-height) }`, `.evener-dock { padding-bottom: max(var(--keyboard-inset), var(--safe-area-bottom)) }`, old `.evener-composer__dock` still adds its existing safe-area/keyboard values, and `VoiceControls` still owns its existing safe-area padding. These are regression audits, not migration instructions.
 
 - [ ] **Step 2: Run RED**
 
@@ -471,7 +480,7 @@ npx vitest run \
   src/ui/platformPresentation.test.ts
 ```
 
-Expected: FAIL because the neutral primitives/frame modules do not exist, the frame still depends on aggregate host contracts, and current `computeViewportMetrics` publishes `852px` rather than the visible-bottom token `547px`.
+Expected: FAIL because the neutral primitives/frame modules and local frame subtraction do not exist. The coordinator-only assertions already expect and pin the existing `852px` viewport token with `320px`/`305px` keyboard insets; they must not be made RED by redefining token meaning.
 
 - [ ] **Step 3: Define the skin boundary and frame props**
 
@@ -621,7 +630,9 @@ Use these mechanics, not concept overrides:
 
 ```css
 .live-conversation-frame {
-  block-size: var(--viewport-height, 100dvh);
+  block-size: calc(
+    var(--viewport-height, 100dvh) - var(--keyboard-inset, 0px)
+  );
   min-block-size: 0;
   display: grid;
   grid-template-rows: auto minmax(0, 1fr) auto auto;
@@ -638,7 +649,7 @@ Use these mechanics, not concept overrides:
 .live-conversation-frame [data-frame-part="composer"] {
   min-block-size: 0;
   flex-shrink: 0;
-  /* The frame already ends at the visual bottom; keyboard inset is not added again. */
+  /* Keyboard space was subtracted once at frame level; apply safe area once here. */
   padding-block-end: var(--safe-area-bottom, 0px);
 }
 .live-conversation-composer textarea {
@@ -648,25 +659,7 @@ Use these mechanics, not concept overrides:
 }
 ```
 
-Change `computeViewportMetrics` and the coordinator in `platformPresentation.ts` once:
-
-```ts
-const layoutHeight = finiteNonnegative(innerHeight);
-if (!visualViewport || !Number.isFinite(visualViewport.offsetTop) ||
-    !Number.isFinite(visualViewport.height)) {
-  return { viewportHeight: layoutHeight, keyboardInset: 0 };
-}
-const visualBottom = Math.min(
-  layoutHeight,
-  finiteNonnegative(visualViewport.offsetTop + visualViewport.height),
-);
-return {
-  viewportHeight: visualBottom,
-  keyboardInset: layoutHeight - visualBottom,
-};
-```
-
-The root frame begins at layout coordinate zero and has block size `--viewport-height`, so `frame.getBoundingClientRect().bottom === visualViewport.offsetTop + visualViewport.height` for valid in-range values. The composer wrapper ends at the same coordinate and applies the safe-area bottom exactly once. No component reads `window.visualViewport`; only the existing coordinator changes.
+Do not change `computeViewportMetrics` or coordinator semantics to make the frame test pass. With the approved tokens, local frame bottom is `innerHeight - keyboardInset = visualViewport.offsetTop + visualViewport.height`; the composer wrapper ends at that same coordinate and applies safe area once. `platformPresentation.ts` may change only if its new RED cases expose a defect in the existing equation/listener/fallback implementation, and any fix must preserve the same `viewportHeight=innerHeight` and keyboard-inset meanings for every existing consumer. This follows the approved frame/coordinator ownership at spec lines 140 and 144 without a second viewport reader.
 
 - [ ] **Step 5: Implement all composer and question behavior once**
 
@@ -683,7 +676,7 @@ npx biome check --write src/live-concepts/conversation \
   src/live-concepts/LiveConceptHost.test.tsx \
   src/live-concepts/dispatch-live-intent.ts src/live-concepts/dispatch-live-intent.test.ts \
   src/live-concepts/accessibility-semantics.ts \
-  src/ui/platformPresentation.ts src/ui/platformPresentation.test.ts
+  src/ui/platformPresentation.test.ts
 npx vitest run \
   src/live-concepts/conversation/ConversationFrame.test.tsx \
   src/live-concepts/conversation/ConversationFrame.platform.integration.test.tsx \
@@ -691,13 +684,19 @@ npx vitest run \
   src/live-concepts/dispatch-live-intent.test.ts \
   src/live-concepts/accessibility-semantics.test.ts \
   src/live-concepts/LiveConceptHost.test.tsx \
-  src/state/conversation.test.ts src/ui/platformPresentation.test.ts
+  src/state/conversation.test.ts src/ui/platformPresentation.test.ts \
+  src/ui/global.css.test.ts src/components/composer/Composer.test.tsx \
+  src/screens/VoiceScreen.test.tsx src/components/voice/voice-components.test.tsx
 npm run check
 npm run boundary
+git diff --exit-code -- mobile/src/ui/platformPresentation.ts \
+  mobile/src/ui/global.css mobile/src/screens/VoiceScreen.module.css \
+  mobile/src/components/voice/VoiceControls.module.css \
+  mobile/src/components/composer/Composer.css
 git diff --check
 ```
 
-Expected: all exit 0; focused review confirms the one-way import graph, no aggregate frame imports, the 547/305 token equation, safe area exactly once, no second viewport coordinator, no fixture fallback, and unchanged dispatcher/store mutation semantics.
+Expected: all exit 0; focused review confirms the one-way import graph, no aggregate frame imports, unchanged token meanings (`852/320` at offset zero and `852/305` when panned), local frame bottoms `532/547`, safe area exactly once, closed-keyboard top-control focus, no second viewport coordinator, no global shell/Voice/old-composer/dock diff, no fixture fallback, and unchanged dispatcher/store mutation semantics.
 
 - [ ] **Step 7: Commit the shared frame contract**
 
@@ -717,7 +716,7 @@ git add mobile/src/live-concepts/conversation/contract.ts \
   mobile/src/live-concepts/dispatch-live-intent.ts \
   mobile/src/live-concepts/dispatch-live-intent.test.ts \
   mobile/src/live-concepts/accessibility-semantics.ts \
-  mobile/src/ui/platformPresentation.ts mobile/src/ui/platformPresentation.test.ts
+  mobile/src/ui/platformPresentation.test.ts
 git commit --only -m "feat(mobile): compose shared conversation frame" -- \
   mobile/src/live-concepts/conversation/contract.ts \
   mobile/src/live-concepts/conversation/primitives.ts \
@@ -734,7 +733,7 @@ git commit --only -m "feat(mobile): compose shared conversation frame" -- \
   mobile/src/live-concepts/dispatch-live-intent.ts \
   mobile/src/live-concepts/dispatch-live-intent.test.ts \
   mobile/src/live-concepts/accessibility-semantics.ts \
-  mobile/src/ui/platformPresentation.ts mobile/src/ui/platformPresentation.test.ts
+  mobile/src/ui/platformPresentation.test.ts
 ```
 
 ### Task 3: Generalize Timeline into a Variable-Height `VirtualTranscript`
@@ -1518,7 +1517,92 @@ export interface HarnessObservation {
 }
 ```
 
-- [ ] **Step 1: Write fixture and runner contract RED tests**
+- [ ] **Step 1: Create the fixture-Hub Go test before any Node simulator work**
+
+Create `cmd/evener-hub/testfixture/mobile-simulator/main_test.go` from the repository root. Its first test calls `newSimulatorFixtureHub` and requires the exact production method surface, deterministic provider, and pathological data:
+
+```go
+package main
+
+import (
+	"slices"
+	"testing"
+)
+
+func TestSimulatorFixtureHubContract(t *testing.T) {
+	t.Setenv("OPENAI_API_KEY", "must-not-be-read")
+	t.Setenv("ANTHROPIC_API_KEY", "must-not-be-read")
+	hub := newSimulatorFixtureHub(t.TempDir())
+	wantMethods := []string{
+		"initialize", "thread/list", "thread/read", "thread/turns/list",
+		"turn/start", "turn/steer", "turn/queue", "turn/interrupt",
+		"evener/tasks/list", "evener/jobs/list", "evener/mobile/pairing",
+	}
+	if got := hub.RegisteredMethods(); !slices.Equal(wantMethods, got) {
+		t.Fatalf("registered methods = %q, want %q", got, wantMethods)
+	}
+	if got := hub.ProviderName(); got != "simulator-scripted" {
+		t.Fatalf("provider = %q", got)
+	}
+	thread39, thread500 := hub.PathologicalThreads()
+	if len(thread39.Items) != 39 || len(thread500.Items) != 500 {
+		t.Fatalf("item counts = %d,%d", len(thread39.Items), len(thread500.Items))
+	}
+	if got := len([]byte(thread39.SystemPrelude)); got != 44_700 {
+		t.Fatalf("system prelude bytes = %d", got)
+	}
+	if hub.ReadLiveProviderEnvironment() {
+		t.Fatal("fixture Hub read a live provider environment")
+	}
+}
+```
+
+Add separate Go tests for one-time pairing URL consumption, send/steer/queue/interrupt scripted receipts, streaming/reasoning/tool/question notifications, stale generation rejection, mode-0600 ready manifest, and shutdown cleanup. No Node test or simulator command runs yet.
+
+- [ ] **Step 2: Run the fixture-Hub Go RED from repository root**
+
+```bash
+test -f go.mod
+test -d cmd/evener-hub/testfixture/mobile-simulator
+go test ./cmd/evener-hub/testfixture/mobile-simulator
+```
+
+Expected: FAIL to compile because `newSimulatorFixtureHub` and `main.go` do not exist. The `go.mod`/package-directory preflight proves the command is launched from repository root; never prefix it with `cd mobile` and never run `go test ./cmd/...` while the current directory is `mobile/`.
+
+- [ ] **Step 3: Implement, format, and turn the fixture Hub GREEN from repository root**
+
+Create `main.go` with this provider/Hub boundary:
+
+```go
+type SimulatorScriptedProvider interface {
+	ProviderName() string
+	Next(context.Context, ScriptedRequest) (ScriptedResponse, error)
+}
+
+func newSimulatorFixtureHub(stateRoot string) *SimulatorFixtureHub {
+	provider := NewDeterministicSimulatorProvider()
+	server := appserver.NewServer(appserver.ServerConfig{
+		ServerName: "mobile-simulator-fixture",
+		SourceID:   "simulator-scripted",
+	})
+	registerSimulatorMethods(server.Router(), provider, pathologicalThreads())
+	return NewSimulatorFixtureHub(server, provider, stateRoot)
+}
+```
+
+Use production `internal/appserver` WebSocket/router plumbing and current AppWire method constants. The in-memory provider owns the deterministic response sequence and has no credential/config lookup function. Then run, still from repository root:
+
+```bash
+test -f go.mod
+test -d cmd/evener-hub/testfixture/mobile-simulator
+gofmt -w cmd/evener-hub/testfixture/mobile-simulator/main.go \
+  cmd/evener-hub/testfixture/mobile-simulator/main_test.go
+go test ./cmd/evener-hub/testfixture/mobile-simulator
+```
+
+Expected: PASS with all fixture-Hub tests, before any Node simulator contract or simulator lane begins.
+
+- [ ] **Step 4: Write fixture and Node runner contract RED tests**
 
 The fixture test asserts exact counts and byte length:
 
@@ -1579,7 +1663,7 @@ await api.dispatch({ type: "projection/publish", generation: 6, fixture: "variab
 expect(api.snapshot()).toEqual(beforeStale);
 ```
 
-- [ ] **Step 2: Run RED**
+- [ ] **Step 5: Run Node RED after the fixture Hub is GREEN**
 
 ```bash
 cd mobile
@@ -1591,7 +1675,7 @@ node --test scripts/live-conversation-geometry.test.mjs \
 
 Expected: FAIL because the fixtures, typed harness action contract, browser runner, and checked simulator runner do not exist.
 
-- [ ] **Step 3: Build the test-only actual-host entry**
+- [ ] **Step 6: Build the test-only actual-host entry**
 
 `LiveConceptBrowserHarness` constructs the same production store types and actual `LiveConceptHost` used by `RootShell`; only network/native boundaries are scripted. It must not render concept components directly. Query parameters select concept, fixture, type scale, theme, reduced motion, and safe area. Install the real `createViewportCoordinator` against the typed harness visual viewport; never assign CSS viewport tokens directly. Expose only `window.__EVENER_LIVE_CONVERSATION_HARNESS__: LiveConversationHarnessApi`, validate every action before dispatch, and add no DOM test buttons or product controls.
 
@@ -1599,7 +1683,7 @@ This actual-Host lane owns only controls that exist in the frame/host: Back, Wor
 
 `browserguard.vite.config.mjs` serves `live-conversation-harness.html` from `mobile/` on the private port selected by `startBrowserGuard`; it never changes production `index.html` or app routing.
 
-- [ ] **Step 4: Implement the CDP matrix over computed browser geometry**
+- [ ] **Step 7: Implement the CDP matrix over computed browser geometry**
 
 Reuse, do not copy, these repository helpers:
 
@@ -1613,9 +1697,11 @@ import {
 
 Run all three concepts × two fixtures × four viewports × three type scales × two themes × two motion modes × two safe areas × keyboard closed/open: exactly 1,152 matrix points. At every point use `getBoundingClientRect`, computed style, DOM/AX serialization, and typed actions to assert the actual Host/frame criteria: initial composer/action visible at 393×852; document height constant between 39/500; no horizontal overflow; one active scroller; ≤48 transcript/evidence rows; exact mounted semantics; 44×44 controls; six-line textarea; motion limits; raw sentinel absence; ≤2 px anchors; every typed loading/error/offline/reconnect/mutation/malformed/stale state; and reachable Back, Work, concept switch, load older, send, steer, queue, interrupt, questions, evidence, retry, and New activity.
 
-For keyboard geometry, dispatch `{type:"viewport/set", innerHeight:852, offsetTop:47, height:500, safeBottom:34}`. Query exactly `[data-live-conversation-frame="true"]` and `[data-frame-part="composer"][data-live-conversation-composer="true"]`; require both `rect.bottom === 547`, composer overlap `max(0, rect.bottom - (offsetTop + height)) === 0`, computed composer bottom padding `34px`, no ancestor adding bottom safe-area padding, and root tokens `547px`/`305px`. Capture screenshots for one portrait, one AX, one keyboard, one landscape, and every failure per concept/fixture; write all geometry rows to JSON.
+For the full keyboard-open control matrix, dispatch `{type:"viewport/set", innerHeight:852, offsetTop:0, height:532, safeBottom:34}` through the real coordinator. Query exactly `[data-live-conversation-frame="true"]` and `[data-frame-part="composer"][data-live-conversation-composer="true"]`; require unchanged root tokens `852px`/`320px`, both rect bottoms `532`, overlap zero, computed composer bottom padding `34px`, no ancestor adding bottom safe-area padding, and every active frame control/focused element intersecting `[0,532]`.
 
-- [ ] **Step 5: Extend the production AppWire slice without replacing it with fakes**
+Run a separate panned viewport case with `{innerHeight:852, offsetTop:47, height:500, safeBottom:34}`. Require unchanged tokens `852px`/`305px`, frame/composer bottom `547`, and composer plus the active focused element intersecting `[47,547]`; do not require top controls while panned. Dispatch keyboard close `{innerHeight:852, offsetTop:0, height:852, safeBottom:34}`, wait for `852px`/`0px`, then focus and measure Back, Work, and concept switch. Capture screenshots for one portrait, one AX, both keyboard cases, one landscape, and every failure per concept/fixture; write all geometry rows to JSON.
+
+- [ ] **Step 8: Extend the production AppWire slice without replacing it with fakes**
 
 Keep `live-concepts-real-bridge.test.tsx` as the actual-Host AppWire lane: script authoritative read, item lifecycle, reasoning, tools, system prelude, warning, resync, tree refresh, load older, send, steer, queue, interrupt, questions, Work, and concept switches through the existing real `AppwireClient`/stdio harness. Assert bounded display/evidence updates atomically, system messages are never user, safe detail is request-only, Work retains tasks/delegates/jobs/watches/usage/diagnostics, switches create no connection/read, paging retains its cursor, and capability refresh precedes action error.
 
@@ -1632,7 +1718,7 @@ npx vitest run src/test/live-concepts-root-shell-real-bridge.test.tsx
 
 Expected after implementation: both pass; the Host slice has one client connection, while the RootShell slice proves canonical root routes/profile generation without adding controls to any skin.
 
-- [ ] **Step 6: Extend semantic smoke evidence and package scripts**
+- [ ] **Step 9: Extend semantic smoke evidence and package scripts**
 
 Add geometry fields to observations: visual viewport, composer rect, safe-area values, mounted row count, exact user-label count, raw-system sentinel absence, concept anchor before/after, keyboard overlap, and generation IDs. Keep current staged-app hash, bundle identity, Hub version/protocol, IDB positive-marker, receipt, lifecycle, and fixture-absence checks intact. Add scripts:
 
@@ -1647,9 +1733,12 @@ Add geometry fields to observations: visual viewport, composer rect, safe-area v
 }
 ```
 
-- [ ] **Step 7: Run focused GREEN and the real browser gate**
+- [ ] **Step 10: Run focused GREEN and the real browser gate**
 
 ```bash
+test -f go.mod
+test -d cmd/evener-hub/testfixture/mobile-simulator
+go test ./cmd/evener-hub/testfixture/mobile-simulator
 cd mobile
 npx biome check --write src/test src/live-concepts scripts/live-conversation-geometry.mjs \
   scripts/live-conversation-geometry.test.mjs scripts/smoke-live-concepts.mjs \
@@ -1663,7 +1752,6 @@ npx vitest run src/test/live-conversation-pathological.fixture.test.ts \
 node --test scripts/live-conversation-geometry.test.mjs \
   scripts/smoke-live-concepts.test.mjs \
   scripts/smoke-live-conversation-simulator.test.mjs
-go test ./cmd/evener-hub/testfixture/mobile-simulator
 npm run test:live-conversation-browser
 npm run check
 npm run boundary
@@ -1673,9 +1761,9 @@ git diff --check
 
 Expected: every command exits 0; browser output reports exactly 1,152 passed points and an absolute scratch evidence directory.
 
-- [ ] **Step 8: Implement the credential-free fixture Hub and checked simulator runner**
+- [ ] **Step 11: Implement the checked Node simulator runner against the GREEN fixture Hub**
 
-`cmd/evener-hub/testfixture/mobile-simulator` is a test-only protocol-conformant Hub built on production `internal/appserver` WebSocket/router plumbing. It registers the current initialize/list/read/paging/mutation/activity methods, and its in-memory `SimulatorScriptedProvider` emits the deterministic stream/reasoning/tool/question/failure sequence. It pre-creates the exact 39-item/44,700-byte and 500-item threads, issues a one-time authorization URL, and writes raw origin/token/thread refs only to a mode-0600 ready manifest. It never resolves or calls a live provider, and `main_test.go` fails if any provider credential/base URL is read from the environment or any requested method is absent from the production AppWire method set.
+Consume the already-GREEN `cmd/evener-hub/testfixture/mobile-simulator` source from Steps 1–3. The Node runner resolves `repositoryRoot = path.resolve(scriptDirectory, "../..")` and starts the fixture with `go build -o OUTPUT_PATH ./cmd/evener-hub/testfixture/mobile-simulator` using `cwd: repositoryRoot`; it never runs the Go package relative to `mobile/`. It must not add or alter provider/method/thread behavior; any such change requires returning to the Go RED → implementation → `gofmt` → root-level GREEN sequence before resuming this step.
 
 The Node runner exports and tests these exact helpers:
 
@@ -1743,7 +1831,7 @@ The real runner performs this checked sequence:
 9. In `finally`, close keyboard, restore orientation, exact prior content-size and reduced-motion values, clear the simulator clipboard, terminate the app/fixture Hub, uninstall only this newly installed fixture app, and verify its data container/profile is absent. A failed restore or fixture-profile removal forces nonzero/incomplete even when assertions passed.
 10. Atomically write `simulator-evidence.json` last with hashes, commands, observations, screenshots/AX paths, `IOS_SIM_UDID`, `SIM_APP_PATH`, and restoration booleans; never include auth URL/token/raw profile ID.
 
-- [ ] **Step 9: Run the complete iOS Simulator lane**
+- [ ] **Step 12: Run the complete iOS Simulator lane**
 
 ```bash
 cd mobile
@@ -1754,11 +1842,11 @@ node scripts/smoke-live-conversation-simulator.mjs \
 
 Expected: exit 0, exactly one available iPhone 16 Pro assigned as `IOS_SIM_UDID`, exactly one post-timestamp production `.app` assigned as `SIM_APP_PATH`, credential-free scripted Hub/profile/pathological preflight, all semantic/geometry observations, and a final manifest with all four restoration fields plus `fixtureProfileRemoved` true. A missing runtime/tool/capability, ambiguous device/app, setup failure, or restoration failure exits nonzero and remains incomplete.
 
-- [ ] **Step 10: Review browser/simulator artifacts independently**
+- [ ] **Step 13: Review browser/simulator artifacts independently**
 
 Confirm `git status --short mobile/src-tauri/gen/apple` is empty and no scratch artifact is tracked. Review geometry JSON independently from fixture construction: inspect browser-produced body/scroll/rect values, not expected constants copied from fixture code. Independently parse `simulator-evidence.json`, recompute the app/fixture-Hub hashes, confirm `scriptedProvider` and all restoration booleans are true, and match each screenshot/AX/command artifact path to an existing file beneath the output directory.
 
-- [ ] **Step 11: Commit only harness/source files**
+- [ ] **Step 14: Commit only harness/source files**
 
 ```bash
 git add mobile/src/test/live-conversation-pathological.fixture.ts \
@@ -1845,7 +1933,7 @@ Expected: FAIL on the first command because no canonical mobile target exists; t
 ## proves: Production mobile display/behavior, AppWire harness, config, and Rust source pass without a browser or device.
 ## trigger: Local pre-merge and required CI mobile job.
 ## requires: Node/npm dependencies, Go plus mobile Rust 1.98.0 with rustfmt/clippy, and offline scripted external boundaries; no live provider, browser, simulator, or device.
-## fails-when: Any npm, Vitest, boundary, build, Node contract, cargo test/check/fmt, or clippy command is nonzero.
+## fails-when: Any npm, Vitest, boundary, build, Node contract, fixture-Hub Go test, cargo test/check/fmt, or clippy command is nonzero.
 test-mobile:
 	cd mobile && npm run check && npm test && npm run boundary && npm run build && npm run test:geometry && npm run test:live-conversation && node --test scripts/smoke-live-concepts.test.mjs && cargo test --manifest-path src-tauri/Cargo.toml && cargo check --manifest-path src-tauri/Cargo.toml && cargo fmt --manifest-path src-tauri/Cargo.toml --check && cargo clippy --manifest-path src-tauri/Cargo.toml --all-targets -- -D warnings
 	go test ./cmd/evener-hub/testfixture/mobile-simulator
@@ -1939,12 +2027,12 @@ Record criterion-to-evidence mapping in the task review report (not source):
 3. Task 1 warning classification plus all skin rows.
 4. Task 4 disclosure lifecycle and hidden/prelude non-disclosure.
 5. Task 2 narrow sibling frame plus Task 9 actual-Host 393×852/document-height rectangles.
-6. Task 2 real coordinator RED/GREEN at `innerHeight=852, offsetTop=47, height=500` plus Task 9 exact frame/composer bottom `547`, inset `305`, overlap zero, and safe bottom `34` once.
+6. Task 2 preserves coordinator meanings and proves offset-zero `852/320 → frame/composer bottom 532` with all controls visible, plus panned `852/305 → bottom 547` with composer/focused-element intersection and safe bottom `34` once; Task 9 repeats both in Chrome and closes the keyboard before top-control focus checks.
 7. Tasks 2/4 one active scroller plus browser computed styles.
 8. Task 3 500-item/48-row proof plus browser reachability.
 9. Task 3 follow/stream/prepend/replacement/eviction plus three-skin/content-size cache tests with every surviving anchor within 2 px.
 10. Tasks 3/8 exact `{threadKey,skinId,contentSize,itemKey}` caches and all-concept anchor/draft/mode/mutation/question/evidence/focus/unseen preservation without reconnect.
-11. Tasks 5–7 skins plus Task 9 type/target/overflow matrix.
+11. Tasks 5–7 skins plus Task 9 standard/XXL/AX-XXXL target/overflow matrix, offset-zero keyboard-open visibility for every frame control, panned composer/active-focus interval checks, and keyboard-close-before-Back/Work/concept-switch focus checks.
 12. Tasks 6/8 motion generation and browser timing/reduced motion.
 13. Task 1 complete bounds/redaction/Unicode suite, including within-cap and over-cap zero/one/multiple literal marker normalization.
 14. Tasks 2/8 frame action adapter and dispatcher/store regressions, Task 9 actual-Host Back/Work/concept/composer lane, and separate production RootShell profile/New/Settings/Voice vertical slice.
@@ -2029,19 +2117,21 @@ Require before any swipe: composer/visual-viewport coordinates, exact user-messa
 
 - [ ] **Append the durable Task 7/Task55 evidence entry only after manifest acceptance**
 
-Before the physical run passes, require `git diff --exit-code -- .superpowers/sdd/2026-08-26-live-mobile-concepts-3-integration/progress.md`; the durable ledger remains exactly at its current Task 7 in-progress state. Independently inspect the physical evidence manifest/hashes and require the smoke command plus every device assertion to exit zero. Only after that accepted manifest exists, append and commit its concrete identity:
+`.superpowers/sdd/2026-08-26-live-mobile-concepts-3-integration/progress.md` is local durable ignored state, not a source artifact. Before the physical run passes, require the file to exist, require `git check-ignore -q` to confirm `.superpowers/` remains ignored, and require no existing `Task 7/Task55: complete` line. Independently inspect the physical evidence manifest/hashes and require the smoke command plus every device assertion to exit zero. Only after that accepted manifest exists, append its concrete identity locally:
 
 ```bash
 MANIFEST_PATH="$(realpath "$EVENER_SCRATCH_DIR/live-conversation-physical/live-smoke-summary.json")"
 test -s "$MANIFEST_PATH"
 MANIFEST_SHA256="$(shasum -a 256 "$MANIFEST_PATH" | awk '{print $1}')"
 test "${#MANIFEST_SHA256}" -eq 64
+LEDGER_PATH=.superpowers/sdd/2026-08-26-live-mobile-concepts-3-integration/progress.md
+test -f "$LEDGER_PATH"
+git check-ignore -q "$LEDGER_PATH"
+if grep -F 'Task 7/Task55: complete' "$LEDGER_PATH"; then exit 1; fi
 printf 'Task 7/Task55: complete (mobile live conversation frame physical manifest %s; sha256:%s; app/Hub/device identities and all required assertions verified)\n' \
-  "$MANIFEST_PATH" "$MANIFEST_SHA256" >> \
-  .superpowers/sdd/2026-08-26-live-mobile-concepts-3-integration/progress.md
-git add .superpowers/sdd/2026-08-26-live-mobile-concepts-3-integration/progress.md
-git commit --only -m "docs(mobile): record physical conversation frame smoke" -- \
-  .superpowers/sdd/2026-08-26-live-mobile-concepts-3-integration/progress.md
+  "$MANIFEST_PATH" "$MANIFEST_SHA256" >> "$LEDGER_PATH"
+grep -F "Task 7/Task55: complete (mobile live conversation frame physical manifest $MANIFEST_PATH; sha256:$MANIFEST_SHA256;" \
+  "$LEDGER_PATH"
 ```
 
-Never write a success-shaped entry before those concrete values exist. A missing device, signing failure, XCUITest/semantic failure, Hub/profile mismatch, timeout, manifest mismatch, or any failed assertion leaves Task 7/Task55 blocked/incomplete and the ledger success entry absent; simulator evidence cannot satisfy it.
+Never write a success-shaped entry before those concrete values exist. Do not stage or commit the ignored ledger; report the local ledger path, appended line, and manifest digest separately from repository status. A missing device, signing failure, XCUITest/semantic failure, Hub/profile mismatch, timeout, manifest mismatch, or any failed assertion leaves Task 7/Task55 blocked/incomplete and the ledger success entry absent; simulator evidence cannot satisfy it.
