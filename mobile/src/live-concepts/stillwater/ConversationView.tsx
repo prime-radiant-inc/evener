@@ -1,5 +1,6 @@
 import type { ReactNode } from "react";
 import {
+  conversationItemAxDescription,
   conversationItemAxLabel,
   mutationAxLabel,
 } from "../accessibility-semantics";
@@ -300,36 +301,49 @@ export function ConversationView({ state, dispatch }: ConversationViewProps) {
             <p>Send the first message to begin this thread.</p>
           </div>
         ) : (
-          conversation.items.map((item) => (
-            <article
-              className={`sw-transcript-item sw-transcript-item--${item.sourceKind}`}
-              aria-label={conversationItemAxLabel(
-                item,
-                item.sourceKind === "question"
-                  ? (ui.questionDrafts[item.questionKey ?? ""]?.resolution ??
-                      null)
-                  : null,
-              )}
-              data-transcript-item-id={item.key}
-              data-focused={ui.focusedItemKey === item.key ? "true" : "false"}
-              data-streaming={
-                "streaming" in item && item.streaming ? "true" : "false"
-              }
-              data-truncated={
-                ("body" in item ? item.body : item.preview)?.truncated
-                  ? "true"
-                  : "false"
-              }
-              tabIndex={ui.focusedItemKey === item.key ? -1 : undefined}
-              key={item.key}
-            >
-              <TranscriptContent
-                item={item}
-                state={state}
-                dispatch={dispatch}
-              />
-            </article>
-          ))
+          conversation.items.map((item) => {
+            const description = conversationItemAxDescription(item);
+            const descriptionId =
+              description === null
+                ? undefined
+                : `sw-transcript-preview-${item.key}`;
+            return (
+              <article
+                className={`sw-transcript-item sw-transcript-item--${item.sourceKind}`}
+                aria-label={conversationItemAxLabel(
+                  item,
+                  item.sourceKind === "question"
+                    ? (ui.questionDrafts[item.questionKey ?? ""]?.resolution ??
+                        null)
+                    : null,
+                )}
+                aria-describedby={descriptionId}
+                data-transcript-item-id={item.key}
+                data-focused={ui.focusedItemKey === item.key ? "true" : "false"}
+                data-streaming={
+                  "streaming" in item && item.streaming ? "true" : "false"
+                }
+                data-truncated={
+                  ("body" in item ? item.body : item.preview)?.truncated
+                    ? "true"
+                    : "false"
+                }
+                tabIndex={ui.focusedItemKey === item.key ? -1 : undefined}
+                key={item.key}
+              >
+                {descriptionId ? (
+                  <span className="sw-visually-hidden" id={descriptionId}>
+                    {description}
+                  </span>
+                ) : null}
+                <TranscriptContent
+                  item={item}
+                  state={state}
+                  dispatch={dispatch}
+                />
+              </article>
+            );
+          })
         )}
       </section>
 
@@ -376,7 +390,7 @@ export function ConversationView({ state, dispatch }: ConversationViewProps) {
 
       {composer.error ? (
         <div className="sw-banner" role="alert" data-composer-error>
-          {composer.error}
+          {composer.error.text}
         </div>
       ) : null}
 

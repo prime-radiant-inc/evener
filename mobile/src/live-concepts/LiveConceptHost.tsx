@@ -23,6 +23,7 @@ import {
   createLiveIntentDispatcher,
   type LiveIntentDispatcherRuntime,
 } from "./dispatch-live-intent";
+import { boundDisplayText, DISPLAY_LIMITS } from "./display-text";
 import type { LiveConceptUiStore } from "./live-ui-store";
 import type {
   LiveActivityView,
@@ -443,6 +444,13 @@ export function LiveConceptHost({
       ? "unknown"
       : (reachabilityByProfile[runtime.profileId] ?? "unknown");
   const conversation = conversationResult.projection?.view ?? null;
+  const composerErrorSource = profileBlocked
+    ? null
+    : conversationResult.failed
+      ? { text: "Unable to display conversation", policy: "plain" as const }
+      : conversationError === null
+        ? null
+        : { text: conversationError, policy: "redacted" as const };
   const composer: LiveComposerView = {
     // The store clears its mutable draft at submit so failure recovery can use
     // revision ownership. Keep the exact submitted snapshot visible (disabled)
@@ -466,11 +474,16 @@ export function LiveConceptHost({
       profileBlocked || acceptedMutation === null
         ? null
         : projectAcceptedMutation(acceptedMutation),
-    error: profileBlocked
-      ? null
-      : conversationResult.failed
-        ? "Unable to display conversation"
-        : conversationError,
+    error:
+      composerErrorSource === null
+        ? null
+        : Object.freeze(
+            boundDisplayText(
+              composerErrorSource.text,
+              DISPLAY_LIMITS.error,
+              composerErrorSource.policy,
+            ),
+          ),
   };
   const state: LiveConceptState = {
     concept,

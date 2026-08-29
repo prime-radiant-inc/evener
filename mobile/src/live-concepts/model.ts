@@ -61,6 +61,7 @@ export interface NarrativeDisplayItem {
   readonly tone: DisplayTone;
   readonly streaming: boolean;
   readonly questionKey: string | null;
+  readonly evidenceKey: string | null;
   readonly sequence: string;
 }
 
@@ -97,9 +98,13 @@ export interface EvidenceSection {
   readonly body: BoundedDisplayText;
 }
 
+export type EvidenceDisplayFamily =
+  | ActivityMarkerDisplayItem["sourceKind"]
+  | "failure";
+
 export interface EvidenceDisplayItem {
   readonly key: string;
-  readonly family: ActivityMarkerDisplayItem["sourceKind"];
+  readonly family: EvidenceDisplayFamily;
   readonly title: BoundedDisplayText;
   readonly sections: readonly EvidenceSection[];
   readonly redacted: boolean;
