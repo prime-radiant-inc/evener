@@ -1,4 +1,5 @@
 import {
+  conversationItemAxDescription,
   conversationItemAxLabel,
   mutationAxLabel,
 } from "../accessibility-semantics";
@@ -324,6 +325,11 @@ export function ConversationView({ state, dispatch }: ConversationViewProps) {
           items.map((item) => {
             const isCurrent =
               item.sourceKind === "tool" && item.tone === "running";
+            const description = conversationItemAxDescription(item);
+            const descriptionId =
+              description === null
+                ? undefined
+                : `fn-transcript-preview-${item.key}`;
             return (
               <article
                 className={`fn-transcript-item fn-transcript-item--${item.sourceKind}`}
@@ -350,8 +356,14 @@ export function ConversationView({ state, dispatch }: ConversationViewProps) {
                         ?.resolution ?? null)
                     : null,
                 )}
+                aria-describedby={descriptionId}
                 key={item.key}
               >
+                {descriptionId ? (
+                  <span className="fn-visually-hidden" id={descriptionId}>
+                    {description}
+                  </span>
+                ) : null}
                 <div className="fn-chronology-stamp" data-chronology-marker>
                   <span>{stampLabel}</span>
                   <span>{item.sequence}</span>
@@ -396,7 +408,7 @@ export function ConversationView({ state, dispatch }: ConversationViewProps) {
 
       {composer.error ? (
         <section className="fn-composer-error" data-composer-error role="alert">
-          {composer.error}
+          {composer.error.text}
         </section>
       ) : null}
 

@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   connectionStatusAxLabel,
+  conversationItemAxDescription,
   conversationItemAxLabel,
   mutationAxLabel,
   rosterAxLabel,
@@ -31,6 +32,7 @@ const narrativeBase = {
   tone: "running",
   streaming: false,
   questionKey: null,
+  evidenceKey: null,
   sequence: "internal-sequence",
 } as const;
 
@@ -156,8 +158,22 @@ describe("accessible live concept semantics", () => {
       expect(label).toBe(expected);
       expect(label).not.toContain(markerBase.preview.text);
       expect(label).not.toContain(markerBase.key);
+      expect(conversationItemAxDescription(item)).toBe(markerBase.preview.text);
     },
   );
+
+  it("returns no accessible description for narrative or previewless markers", () => {
+    const narrative: ConversationDisplayItem = {
+      ...narrativeBase,
+      sourceKind: "user",
+    };
+    const previewless: ConversationDisplayItem = {
+      ...markerBase,
+      preview: null,
+    };
+    expect(conversationItemAxDescription(narrative)).toBeNull();
+    expect(conversationItemAxDescription(previewless)).toBeNull();
+  });
 
   it("announces streaming only at phrase boundaries or state transitions", () => {
     const previous: ConversationDisplayItem = {
