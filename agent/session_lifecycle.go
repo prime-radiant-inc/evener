@@ -1037,6 +1037,15 @@ func (s *Session) processInputKindWithProvenance(ctx context.Context, input stri
 	}
 }
 
+func delegateEntryRequiresReport(kind EntryKind) bool {
+	switch kind {
+	case EntryUserInput, EntryContinuation, EntrySteeringCarrier:
+		return true
+	default:
+		return false
+	}
+}
+
 func (s *Session) processOneInput(ctx context.Context, input string, images []ImageAttachment, kind EntryKind, inputProvenance *provenance.Causal) (out string, progressed bool, err error) {
 	communicatePreviewCalls := map[string]struct{}{}
 	defer func() {
@@ -1241,6 +1250,13 @@ func (s *Session) processOneInput(ctx context.Context, input string, images []Im
 		}
 	} else if err := s.acceptUserInput(ctx, input, images, inputProvenance, kind == EntryUserInput); err != nil {
 		return "", false, err
+	}
+	if delegateEntryRequiresReport(kind) && s.delegateController != nil {
+		if lease, ok := ctx.Value(delegateRunLeaseContextKey{}).(delegateLease); ok {
+			if err := s.delegateController.escalateCompletionRequirement(lease); err != nil {
+				return "", false, err
+			}
+		}
 	}
 
 	var toolSigs []string

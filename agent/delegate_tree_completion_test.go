@@ -31,6 +31,27 @@ func TestDelegateGenerationEvidenceInitialRequirement(t *testing.T) {
 	}
 }
 
+func TestDelegateEntryRequiresReport(t *testing.T) {
+	tests := []struct {
+		name string
+		kind EntryKind
+		want bool
+	}{
+		{name: "user input", kind: EntryUserInput, want: true},
+		{name: "continuation", kind: EntryContinuation, want: true},
+		{name: "steering carrier", kind: EntrySteeringCarrier, want: true},
+		{name: "notification", kind: EntryNotification, want: false},
+		{name: "delegate attention", kind: EntryDelegateAttention, want: false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := delegateEntryRequiresReport(tt.kind); got != tt.want {
+				t.Fatalf("delegateEntryRequiresReport(%v) = %t, want %t", tt.kind, got, tt.want)
+			}
+		})
+	}
+}
+
 func TestDelegateGenerationEvidenceRejectsStaleLease(t *testing.T) {
 	c, _ := newDelegateControllerTestHarness(t, 1, 1)
 	seedDelegateControllerIdle(t, c, "dlg_target", "")

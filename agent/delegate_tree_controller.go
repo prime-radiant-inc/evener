@@ -531,6 +531,10 @@ func (c *delegateTreeController) completionEvidenceLocked(lease delegateLease) (
 func (c *delegateTreeController) escalateCompletionRequirement(lease delegateLease) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	return c.escalateCompletionRequirementLocked(lease)
+}
+
+func (c *delegateTreeController) escalateCompletionRequirementLocked(lease delegateLease) error {
 	evidence, err := c.completionEvidenceLocked(lease)
 	if err != nil {
 		return err
