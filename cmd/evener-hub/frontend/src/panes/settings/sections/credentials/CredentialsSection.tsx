@@ -1,6 +1,13 @@
 // CredentialsSection (#7 - the dominant piece of the Agents & models
-// cluster): instance list/CRUD, API-key set, OAuth browser+device dual
-// flow, default-instance switch, remove - parity-m7-settings.md §7.
+// cluster), detail-sheet redesign: instance rows are single tappable
+// targets that open an InstanceDetailSheet inspector; every per-instance
+// action (test, set key, sign in, edit, make default, clear, remove)
+// lives in that sheet - the same row→detail-sheet collection-page idiom
+// the marketplacesPlugins redesign introduced (a sibling workstream; the
+// idiom's design-system writeup lands with it) - instead of a per-row
+// button cluster. The editors (add/apiKey/edit/OAuth flows) stay dialogs:
+// opening one from the sheet replaces it (single-mutable-editor invariant
+// below).
 //
 // Single-mutable-editor invariant: `openEditor` is ONE section-level state
 // value (a discriminated union), so opening a second editor always replaces
@@ -15,6 +22,7 @@ import { requireClass } from "../../../../widgets/internal/requireClass";
 import { useConnectedEffect } from "../useConnectedEffect";
 import styles from "./CredentialsSection.module.css";
 import { groupByType, safeCredentialTestResult } from "./credentialLabels";
+import { InstanceDetailSheet } from "./InstanceDetailSheet";
 import { InstanceRow } from "./InstanceRow";
 import { AddInstanceDialog, ApiKeyDialog, EditInstanceDialog } from "./instanceDialogs";
 import { DeviceCodeDialog, OAuthRedirectDialog } from "./oauthDialogs";
@@ -49,6 +57,7 @@ export interface CredentialsSectionProps {
 export function CredentialsSection(_props: CredentialsSectionProps) {
   const { instances, availableTypes, loading, error, fetch } = useCredentialsStore();
   const [openEditor, setOpenEditor] = useState<OpenEditor>(null);
+  const [selectedInstance, setSelectedInstance] = useState<string | null>(null);
   const [pendingConfirm, setPendingConfirm] = useState<PendingConfirm>(null);
   const [confirmBusy, setConfirmBusy] = useState(false);
   const [credentialTests, setCredentialTests] = useState<Record<string, CredentialTestState>>({});
@@ -71,8 +80,8 @@ export function CredentialsSection(_props: CredentialsSectionProps) {
   // client (throws otherwise) - see that hook's own doc comment.
   useConnectedEffect(fetch, [fetch]);
 
-  // handleOAuthStart is shared by a row's own "Sign in…"/"Refresh OAuth"
-  // button and the device editor's "Start again" - always begins with
+  // handleOAuthStart is shared by the sheet's "Sign in…"/"Refresh OAuth"
+  // action and the device editor's "Start again" - always begins with
   // authDeviceStart, then branches on `fallback` exactly like the legacy's
   // startDeviceLogin (templates/partials/credentials.html:58-75).
   async function handleOAuthStart(name: string): Promise<void> {
@@ -161,6 +170,16 @@ export function CredentialsSection(_props: CredentialsSectionProps) {
     return instances.find((i) => i.name === name);
   }
 
+  // Editor-opening sheet actions REPLACE the inspector with the flow's
+  // dialog (one overlay owns the screen during a flow); confirm-gated and
+  // self-contained actions (clear, remove, test, make default) leave it
+  // open - the confirm nests over it, and the store keeps it live.
+  function openEditorFromSheet(editor: (name: string) => void): void {
+    const name = selectedInstance;
+    setSelectedInstance(null);
+    if (name !== null) editor(name);
+  }
+
   const groups = groupByType(instances);
   // useCallback'd (not a plain inline arrow) so its identity stays stable
   // across CredentialsSection re-renders - DeviceCodeDialog's own poll
@@ -191,22 +210,7 @@ export function CredentialsSection(_props: CredentialsSectionProps) {
                     <InstanceRow
                       key={instance.name}
                       instance={instance}
-                      onSetApiKey={() => setOpenEditor({ kind: "apiKey", name: instance.name })}
-                      onOAuthStart={() => void handleOAuthStart(instance.name)}
-                      onEdit={() => setOpenEditor({ kind: "edit", name: instance.name })}
-                      onClear={() => setPendingConfirm({ kind: "clear", name: instance.name })}
-                      onRemove={() => setPendingConfirm({ kind: "remove", name: instance.name })}
-                      onSetDefault={() => void handleSetDefault(instance.name)}
-                      onTestCredentials={() => void handleTestCredentials(instance.name)}
-                      testCredentialsPending={
-                        credentialTests[instance.name]?.version === instanceVersion.current &&
-                        (credentialTests[instance.name]?.pending ?? false)
-                      }
-                      testCredentialsResult={
-                        credentialTests[instance.name]?.version === instanceVersion.current
-                          ? credentialTests[instance.name]?.result
-                          : undefined
-                      }
+                      onSelect={() => setSelectedInstance(instance.name)}
                     />
                   ))}
                 </ul>
@@ -214,6 +218,36 @@ export function CredentialsSection(_props: CredentialsSectionProps) {
             ))}
           </div>
         ))}
+
+      <InstanceDetailSheet
+        name={selectedInstance}
+        onClose={() => setSelectedInstance(null)}
+        onSetApiKey={() => openEditorFromSheet((name) => setOpenEditor({ kind: "apiKey", name }))}
+        onOAuthStart={() => openEditorFromSheet((name) => void handleOAuthStart(name))}
+        onEdit={() => openEditorFromSheet((name) => setOpenEditor({ kind: "edit", name }))}
+        onClear={() => {
+          if (selectedInstance !== null) setPendingConfirm({ kind: "clear", name: selectedInstance });
+        }}
+        onRemove={() => {
+          if (selectedInstance !== null) setPendingConfirm({ kind: "remove", name: selectedInstance });
+        }}
+        onSetDefault={() => {
+          if (selectedInstance !== null) void handleSetDefault(selectedInstance);
+        }}
+        onTestCredentials={() => {
+          if (selectedInstance !== null) void handleTestCredentials(selectedInstance);
+        }}
+        testCredentialsPending={
+          selectedInstance !== null &&
+          credentialTests[selectedInstance]?.version === instanceVersion.current &&
+          (credentialTests[selectedInstance]?.pending ?? false)
+        }
+        testCredentialsResult={
+          selectedInstance !== null && credentialTests[selectedInstance]?.version === instanceVersion.current
+            ? credentialTests[selectedInstance]?.result
+            : undefined
+        }
+      />
 
       {openEditor?.kind === "add" && (
         <AddInstanceDialog availableTypes={availableTypes} onCancel={closeEditor} onSuccess={closeEditor} />
