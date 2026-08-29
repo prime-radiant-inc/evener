@@ -10,10 +10,12 @@ import type { ConversationSkin } from "./conversation/contract";
 import type { ConversationFrameAction } from "./conversation/primitives";
 export type ContractSentinel = ConversationSkin | ConversationFrameAction;
 `;
-const GOOD_MODULE = `
+function goodModule(moduleName, id) {
+  return `
 import { skin } from "./ConversationSkin";
-export const module = { id: "stillwater", conversationSkin: skin };
+export const ${moduleName} = { id: "${id}", conversationSkin: skin };
 `;
+}
 const GOOD_SKIN = `
 export const skin = {
   renderNarrativeItem({ body }) { return <div>{body}</div>; },
@@ -33,11 +35,20 @@ async function createTree(files = {}, { contract = GOOD_CONTRACT } = {}) {
   const root = await mkdtemp(join(tmpdir(), "live-concepts-boundary-"));
   const defaults = {
     "src/live-concepts/contract.ts": contract,
-    "src/live-concepts/stillwater/index.ts": GOOD_MODULE,
+    "src/live-concepts/stillwater/index.ts": goodModule(
+      "stillwaterModule",
+      "stillwater",
+    ),
     "src/live-concepts/stillwater/ConversationSkin.tsx": GOOD_SKIN,
-    "src/live-concepts/constellation/index.ts": GOOD_MODULE,
+    "src/live-concepts/constellation/index.ts": goodModule(
+      "constellationModule",
+      "constellation",
+    ),
     "src/live-concepts/constellation/ConversationSkin.tsx": GOOD_SKIN,
-    "src/live-concepts/field-notes/index.ts": GOOD_MODULE,
+    "src/live-concepts/field-notes/index.ts": goodModule(
+      "fieldNotesModule",
+      "field-notes",
+    ),
     "src/live-concepts/field-notes/ConversationSkin.tsx": GOOD_SKIN,
     "src/ui/platformPresentation.ts": GOOD_PLATFORM,
     ...files,
@@ -72,6 +83,10 @@ function expectViolation(violations, expected) {
 }
 
 describe("checkLiveConceptBoundary", () => {
+  it("accepts the baseline production module structure", async () => {
+    assert.deepEqual(await violationsFor(), []);
+  });
+
   it("rejects every ConversationSkin structural ownership pattern", async () => {
     const cases = [
       {
@@ -210,7 +225,8 @@ describe("checkLiveConceptBoundary", () => {
   it("requires conversationSkin on every registered concept module", async () => {
     const violations = await violationsFor({
       "src/live-concepts/field-notes/index.ts":
-        'export const fieldNotesModule = { id: "field-notes", Renderer: () => null };',
+        'const unrelated = { conversationSkin: "decoy" };\n' +
+        'export const fieldNotesModule = { id: "field-notes", Renderer: () => null, unrelated };',
     });
     expectViolation(violations, {
       code: "missing-conversation-skin",

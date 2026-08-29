@@ -20,7 +20,12 @@ import type {
   LiveConversationState,
 } from "../state/conversation";
 import type { RosterState } from "../state/roster";
-import type { LiveConceptIntent } from "./contract";
+import type {
+  LiveConceptIntent,
+  RootOwnedIntent,
+  RosterIntent,
+  WorkIntent,
+} from "./contract";
 import type {
   ConversationFrameAction,
   QuestionDraft,
@@ -2173,21 +2178,11 @@ describe("createLiveIntentDispatcher — error safety (I1/I2)", () => {
 
 describe("createLiveIntentDispatcher — compile-time exhaustiveness", () => {
   it("LiveConceptIntent has exactly the expected variants", () => {
-    type Mutable<Action> = Action extends object
-      ? { -readonly [Key in keyof Action]: Action[Key] }
-      : Action;
     type Expected =
-      | Mutable<ConversationFrameAction>
-      | { type: "switchConcept"; concept: ConceptId }
-      | { type: "refreshRoster" }
-      | { type: "setRosterQuery"; value: string }
-      | { type: "openConversation"; key: string }
-      | { type: "closeWork" }
-      | { type: "toggleTool"; key: string }
-      | { type: "toggleWork"; key: string }
-      | { type: "openNew" }
-      | { type: "openSettings" }
-      | { type: "openVoice" };
+      | ConversationFrameAction
+      | RootOwnedIntent
+      | RosterIntent
+      | WorkIntent;
     expectTypeOf<LiveConceptIntent>().toEqualTypeOf<Expected>();
   });
 });

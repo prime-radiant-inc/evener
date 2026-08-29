@@ -686,6 +686,9 @@ describe("LiveConceptHost ownership", () => {
     });
     expect(stillwaterMemory?.evidenceKey).not.toBeNull();
     expect(stillwaterMemory?.evidenceTriggerKey).not.toBeNull();
+    expect(stillwaterMemory?.expandedEvidenceKeys).toEqual(
+      new Set([stillwaterMemory?.evidenceKey]),
+    );
 
     const productionBefore = harness.runtime.conversationStore.getState();
     const questionDraftsBefore = harness.uiStore.getState().questionDrafts;
@@ -697,6 +700,9 @@ describe("LiveConceptHost ownership", () => {
     ] as const) {
       await act(async () => {
         harness.uiStore.getState().setConcept(nextConcept);
+        await Promise.resolve();
+      });
+      await act(async () => {
         HostMeasuredResizeObserver.flush();
         await Promise.resolve();
       });
@@ -713,7 +719,16 @@ describe("LiveConceptHost ownership", () => {
           `[data-transcript-item-id="${focusedItemKey}"][data-focused="true"]`,
         ),
       ).not.toBeNull();
-      expect(screen.getByRole("dialog", { name: "read_file" })).toBeVisible();
+      const restoredDialog = await screen.findByRole("dialog", {
+        name: "read_file",
+      });
+      expect(restoredDialog).toBeVisible();
+      expect(
+        harness.uiStore
+          .getState()
+          .conversationUi.get(nextConcept)
+          ?.get(threadKey)?.expandedEvidenceKeys,
+      ).toEqual(new Set([stillwaterMemory?.evidenceKey]));
     }
 
     const productionAfter = harness.runtime.conversationStore.getState();
@@ -811,6 +826,82 @@ describe("LiveConceptHost ownership", () => {
     expect(
       screen.getByRole("button", { name: "Retry conversation" }),
     ).toBeVisible();
+  });
+
+  it("uses the final outgoing cleanup anchor for the incoming shared-key fallback", async () => {
+    globalThis.ResizeObserver = HostMeasuredResizeObserver;
+    const harness = makeHarness();
+    await openConversation(
+      harness,
+      conversation([
+        { kind: "user", id: "final-anchor-row", text: "Final anchor row" },
+        {
+          kind: "activity",
+          id: "final-anchor-tail",
+          label: "read_file",
+          family: "tool",
+          state: "completed",
+          detail: { output: "Final anchor tail" },
+        },
+      ]),
+    );
+    const { container } = render(
+      <LiveConceptHost {...harness.props} surface="conversation" />,
+    );
+    await act(async () => {
+      HostMeasuredResizeObserver.flush();
+      await Promise.resolve();
+    });
+    const frame = container.querySelector<HTMLElement>(
+      ".live-conversation-frame",
+    );
+    const threadKey = frame?.dataset.threadKey;
+    const itemKey = container
+      .querySelector<HTMLElement>("[data-transcript-item-id]")
+      ?.getAttribute("data-transcript-item-id");
+    if (threadKey === undefined || itemKey === null || itemKey === undefined) {
+      throw new Error("missing final-anchor keys");
+    }
+    fireEvent.click(screen.getByRole("button", { name: "Show activity" }));
+    expect(screen.getByRole("dialog", { name: "read_file" })).toBeVisible();
+    const stalePublication = {
+      threadKey,
+      itemKey,
+      offsetPx: 777,
+      following: false,
+    } as const;
+    const setAnchor = vi.spyOn(
+      harness.uiStore.getState(),
+      "setConversationAnchor",
+    );
+    act(() => {
+      harness.uiStore
+        .getState()
+        .setConversationAnchor("stillwater", threadKey, stalePublication);
+    });
+    setAnchor.mockClear();
+
+    await act(async () => {
+      harness.uiStore.getState().setConcept("constellation");
+      await Promise.resolve();
+    });
+
+    const cleanupCall = [...setAnchor.mock.calls]
+      .reverse()
+      .find(
+        ([capturedConcept, capturedThread]) =>
+          capturedConcept === "stillwater" && capturedThread === threadKey,
+      );
+    expect(cleanupCall, JSON.stringify(setAnchor.mock.calls)).toBeDefined();
+    const finalOutgoing = cleanupCall?.[2];
+    expect(finalOutgoing).not.toEqual(stalePublication);
+    expect(finalOutgoing?.following).toBe(true);
+    const incoming = harness.uiStore
+      .getState()
+      .conversationUi.get("constellation")
+      ?.get(threadKey)?.anchor;
+    expect(incoming).toEqual(finalOutgoing);
+    expect(incoming?.following).toBe(true);
   });
 
   it("classifies a failed mutation as editable mutation recovery, not a read error", async () => {

@@ -43,6 +43,7 @@ export type ConversationFrameAction =
   | { readonly type: "setComposerMode"; readonly mode: ComposerMode }
   | { readonly type: "submit"; readonly mode: ComposerMode }
   | { readonly type: "interrupt" }
+  | { readonly type: "toggleTool"; readonly key: string }
   | {
       readonly type: "setQuestionDraft";
       readonly key: string;

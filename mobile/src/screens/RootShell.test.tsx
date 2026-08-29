@@ -1154,6 +1154,9 @@ describe("RootShell — live concept production composition", () => {
     });
     expect(stillwaterMemoryBefore?.evidenceKey).not.toBeNull();
     expect(stillwaterMemoryBefore?.evidenceTriggerKey).not.toBeNull();
+    expect(stillwaterMemoryBefore?.expandedEvidenceKeys).toEqual(
+      new Set([stillwaterMemoryBefore?.evidenceKey]),
+    );
 
     const conversationStoreIdentity = conversationStore;
     const conversationServiceIdentity = scoped.conversationService;
@@ -1175,13 +1178,26 @@ describe("RootShell — live concept production composition", () => {
       ["field-notes", "fn-conversation-skin"],
       ["stillwater", "sw-conversation-skin"],
     ] as const) {
-      act(() => uiStore.getState().setConcept(concept));
+      await act(async () => {
+        uiStore.getState().setConcept(concept);
+        await Promise.resolve();
+      });
+      await act(async () => {
+        RootShellResizeObserver.flush();
+        await Promise.resolve();
+      });
       await vi.waitFor(() =>
         expect(document.querySelector(".live-conversation-frame")).toHaveClass(
           className,
         ),
       );
-      expect(screen.getByRole("dialog", { name: "read_file" })).toBeVisible();
+      expect(
+        await screen.findByRole("dialog", { name: "read_file" }),
+      ).toBeVisible();
+      expect(
+        uiStore.getState().conversationUi.get(concept)?.get(threadKey)
+          ?.expandedEvidenceKeys,
+      ).toEqual(new Set([stillwaterMemoryBefore?.evidenceKey]));
     }
 
     expect(getConversationStore()).toBe(conversationStoreIdentity);
@@ -1231,11 +1247,25 @@ describe("RootShell — live concept production composition", () => {
     const dialog = await screen.findByRole("dialog", {
       name: /switch concept/i,
     });
+    const client = harness.clients[0];
+    if (client === undefined) throw new Error("missing switcher client");
+    const readCount = client.requests.filter(
+      (request) => request.method === "thread/read",
+    ).length;
+    const subscriptions = {
+      notifications: client.notificationCallbacks.length,
+      state: client.stateCallbacks.length,
+      handshake: client.handshakeCallbacks.length,
+    };
     const conceptRoot = document.querySelector("[data-concept-root]");
     expect(document.querySelectorAll('[role="dialog"]')).toHaveLength(1);
     expect(conceptRoot?.contains(dialog)).toBe(false);
 
     fireEvent.click(screen.getByRole("button", { name: /constellation/i }));
+    expect(document.querySelector(".live-concept-switcher")).toHaveAttribute(
+      "data-concept-transition",
+      "crossfade",
+    );
     await vi.waitFor(() =>
       expect(document.querySelector(".concept-constellation")).not.toBeNull(),
     );
@@ -1248,6 +1278,15 @@ describe("RootShell — live concept production composition", () => {
     expect(
       screen.queryByRole("dialog", { name: /switch concept/i }),
     ).toBeNull();
+    expect(client.connect).toHaveBeenCalledTimes(1);
+    expect(
+      client.requests.filter((request) => request.method === "thread/read"),
+    ).toHaveLength(readCount);
+    expect(client.notificationCallbacks).toHaveLength(
+      subscriptions.notifications,
+    );
+    expect(client.stateCallbacks).toHaveLength(subscriptions.state);
+    expect(client.handshakeCallbacks).toHaveLength(subscriptions.handshake);
   });
 
   it("routes the Host Voice callback to the canonical Voice screen", async () => {

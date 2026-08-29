@@ -52,6 +52,11 @@ export interface LiveConceptUiStore extends LiveConceptUiState {
     threadKey: string,
     itemKey: string | null,
   ): void;
+  toggleConversationEvidence(
+    concept: ConceptId,
+    threadKey: string,
+    evidenceKey: string,
+  ): void;
   resetProfileScope(): void;
 }
 
@@ -218,6 +223,21 @@ export function createLiveConceptUiStore(storage: ConceptStorage) {
           ...memory,
           focusedItemKey,
         })),
+      ),
+    toggleConversationEvidence: (concept, threadKey, evidenceKey) =>
+      set((state) =>
+        updateConversationMemory(state, concept, threadKey, (memory) => {
+          const expandedEvidenceKeys = new Set(memory.expandedEvidenceKeys);
+          if (expandedEvidenceKeys.has(evidenceKey)) {
+            expandedEvidenceKeys.delete(evidenceKey);
+          } else {
+            expandedEvidenceKeys.add(evidenceKey);
+          }
+          return {
+            ...memory,
+            expandedEvidenceKeys: immutableSet(expandedEvidenceKeys),
+          };
+        }),
       ),
     resetProfileScope: () =>
       set({

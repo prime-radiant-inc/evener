@@ -89,18 +89,11 @@ export type RosterIntent =
 
 export type WorkIntent = { readonly type: "toggleWork"; readonly key: string };
 
-type DisclosureIntent = { readonly type: "toggleTool"; readonly key: string };
-
-type MutableAction<Action> = Action extends object
-  ? { -readonly [Key in keyof Action]: Action[Key] }
-  : Action;
-
 export type LiveConceptIntent =
-  | MutableAction<ConversationFrameAction>
-  | MutableAction<RootOwnedIntent>
-  | MutableAction<RosterIntent>
-  | MutableAction<WorkIntent>
-  | MutableAction<DisclosureIntent>;
+  | ConversationFrameAction
+  | RootOwnedIntent
+  | RosterIntent
+  | WorkIntent;
 
 export interface LiveConceptRendererProps {
   state: LiveConceptState;

@@ -6,6 +6,7 @@ import {
   useMemo,
   useReducer,
   useRef,
+  useState,
   useSyncExternalStore,
 } from "react";
 import type { StoreApi } from "zustand";
@@ -222,6 +223,14 @@ export function LiveConceptHost({
   const activityProjector = useMemo(createLiveActivityProjector, []);
 
   const concept = uiStore((state) => state.concept);
+  const [presentedConcept, setPresentedConcept] = useState(concept);
+  const switchSourceConcept = useRef<LiveConceptState["concept"] | null>(null);
+  const conceptSwitchPending = presentedConcept !== concept;
+  useLayoutEffect(() => {
+    if (!conceptSwitchPending) return;
+    switchSourceConcept.current = presentedConcept;
+    setPresentedConcept(concept);
+  }, [concept, conceptSwitchPending, presentedConcept]);
   const workOpen = uiStore((state) => state.workOpen);
   const composerMode = uiStore((state) => state.composerMode);
   const expandedToolKeys = uiStore((state) => state.expandedToolKeys);
@@ -481,6 +490,7 @@ export function LiveConceptHost({
     currentActivityOperational.current = null;
     activeFrameIdentity.current = null;
     previousConversationUi.current = null;
+    switchSourceConcept.current = null;
     uiStore.getState().resetProfileScope();
     acceptedProfileScope.current = {
       profileId: runtime.profileId,
@@ -505,6 +515,7 @@ export function LiveConceptHost({
       currentActivityOperational.current = null;
       activeFrameIdentity.current = null;
       previousConversationUi.current = null;
+      switchSourceConcept.current = null;
     },
     [activityProjector, conversationProjector],
   );
@@ -618,7 +629,7 @@ export function LiveConceptHost({
           ),
   };
   const state: LiveConceptState = {
-    concept,
+    concept: presentedConcept,
     platform,
     appearance,
     textScale: contentSize,
@@ -635,7 +646,7 @@ export function LiveConceptHost({
     activity: activityResult.view,
     composer,
     ui: {
-      concept,
+      concept: presentedConcept,
       workOpen,
       composerMode,
       expandedToolKeys,
@@ -645,7 +656,7 @@ export function LiveConceptHost({
       scrollAnchors: {},
     },
   };
-  const activeModule: LiveConceptModule = liveConceptRegistry[concept];
+  const activeModule: LiveConceptModule = liveConceptRegistry[presentedConcept];
   const Renderer = activeModule.Renderer;
   const connectionLabel = connectionStatusAxLabel(state.connection);
   const threadKey = conversation?.threadKey ?? null;
@@ -653,66 +664,120 @@ export function LiveConceptHost({
     () => new Set(conversation?.items.map((item) => item.key) ?? []),
     [conversation],
   );
+  const sourceConcept = switchSourceConcept.current;
+  const sourceMemory =
+    sourceConcept === null || threadKey === null
+      ? null
+      : (conversationUi.get(sourceConcept)?.get(threadKey) ?? null);
+  const outgoingConversationUi =
+    sourceConcept !== null && sourceMemory !== null && threadKey !== null
+      ? { concept: sourceConcept, threadKey, memory: sourceMemory }
+      : previousConversationUi.current;
   const selectedConversationUi = selectConversationUi(
     conversationUi,
-    concept,
+    presentedConcept,
     threadKey,
-    previousConversationUi.current,
+    outgoingConversationUi,
     conversationItemKeys,
   );
   activeFrameIdentity.current =
-    threadKey === null ? null : { concept, threadKey };
+    threadKey === null || conceptSwitchPending
+      ? null
+      : { concept: presentedConcept, threadKey };
   useLayoutEffect(() => {
+    if (conceptSwitchPending) return;
     if (threadKey === null) {
       previousConversationUi.current = null;
+      switchSourceConcept.current = null;
       return;
     }
     const memory = selectedConversationUi.memory;
     if (selectedConversationUi.inherited) {
       const store = uiStore.getState();
       if (memory.anchor !== null) {
-        store.setConversationAnchor(concept, threadKey, memory.anchor);
+        store.setConversationAnchor(presentedConcept, threadKey, memory.anchor);
       }
-      store.setConversationUnseen(concept, threadKey, memory.unseen);
+      store.setConversationUnseen(presentedConcept, threadKey, memory.unseen);
       store.setEvidenceState(
-        concept,
+        presentedConcept,
         threadKey,
         memory.evidenceKey,
         memory.evidenceTriggerKey,
       );
-      store.setConversationFocus(concept, threadKey, memory.focusedItemKey);
+      store.setConversationFocus(
+        presentedConcept,
+        threadKey,
+        memory.focusedItemKey,
+      );
+      for (const evidenceKey of memory.expandedEvidenceKeys) {
+        store.toggleConversationEvidence(
+          presentedConcept,
+          threadKey,
+          evidenceKey,
+        );
+      }
     }
-    previousConversationUi.current = { concept, threadKey, memory };
-  }, [concept, selectedConversationUi, threadKey, uiStore]);
+    previousConversationUi.current = {
+      concept: presentedConcept,
+      threadKey,
+      memory,
+    };
+    switchSourceConcept.current = null;
+  }, [
+    conceptSwitchPending,
+    presentedConcept,
+    selectedConversationUi,
+    threadKey,
+    uiStore,
+  ]);
   const onConversationAnchorChange = useCallback(
     (anchor: ConversationAnchor): void => {
       uiStore
         .getState()
-        .setConversationAnchor(concept, anchor.threadKey, anchor);
+        .setConversationAnchor(presentedConcept, anchor.threadKey, anchor);
     },
-    [concept, uiStore],
+    [presentedConcept, uiStore],
   );
   const onConversationUnseenChange = useCallback(
     (count: number): void => {
       if (threadKey === null) return;
-      uiStore.getState().setConversationUnseen(concept, threadKey, count);
+      uiStore
+        .getState()
+        .setConversationUnseen(presentedConcept, threadKey, count);
     },
-    [concept, threadKey, uiStore],
+    [presentedConcept, threadKey, uiStore],
   );
   const onConversationFocusChange = useCallback(
     (key: string | null): void => {
       if (threadKey === null) return;
-      uiStore.getState().setConversationFocus(concept, threadKey, key);
+      if (key === null && uiStore.getState().concept !== presentedConcept) {
+        return;
+      }
+      uiStore.getState().setConversationFocus(presentedConcept, threadKey, key);
     },
-    [concept, threadKey, uiStore],
+    [presentedConcept, threadKey, uiStore],
   );
   const dispatchFrameAction = useCallback(
-    (action: ConversationFrameAction): void => dispatch(action),
-    [dispatch],
+    (action: ConversationFrameAction): void => {
+      if (action.type === "toggleTool") {
+        const identity = activeFrameIdentity.current;
+        if (identity === null) return;
+        uiStore
+          .getState()
+          .toggleConversationEvidence(
+            identity.concept,
+            identity.threadKey,
+            action.key,
+          );
+        return;
+      }
+      dispatch(action);
+    },
+    [dispatch, uiStore],
   );
   const frameMemory = selectedConversationUi.memory;
   const frameState: ConversationFrameState = {
-    concept,
+    concept: presentedConcept,
     platform,
     appearance,
     contentSize,
@@ -746,7 +811,7 @@ export function LiveConceptHost({
       >
         {connectionLabel}
       </p>
-      {surface === "conversation" ? (
+      {conceptSwitchPending ? null : surface === "conversation" ? (
         <ConversationFrame
           state={frameState}
           skin={activeModule.conversationSkin}

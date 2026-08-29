@@ -663,6 +663,7 @@ export function ConversationFrame({
       pendingTriggerFocusRef.current = null;
       pendingOpenRef.current = { generation, evidenceKey, triggerKey };
       setEvidenceSheet({ evidenceKey, triggerKey, anchor });
+      dispatch({ type: "toggleTool", key: evidenceKey });
       dispatch({ type: "openEvidence", evidenceKey, triggerKey });
     },
     [dispatch],
@@ -696,6 +697,7 @@ export function ConversationFrame({
           triggerKey: closing.triggerKey,
           restored,
         };
+        dispatch({ type: "toggleTool", key: closing.evidenceKey });
         dispatch({ type: "closeEvidence" });
       } finally {
         if (closeOperationRef.current === operation) {
@@ -709,7 +711,7 @@ export function ConversationFrame({
     if (state.openEvidenceKey === null) return;
     if (evidenceSheet === null) {
       const triggerKey = state.evidenceTriggerKey;
-      const anchor = transcriptRef.current?.captureAnchor() ?? null;
+      const anchor = transcriptRef.current?.captureAnchor() ?? state.anchor;
       if (triggerKey === null || anchor === null) return;
       const generation = lifecycleGenerationRef.current + 1;
       lifecycleGenerationRef.current = generation;
@@ -741,6 +743,7 @@ export function ConversationFrame({
     evidenceSheet,
     evidenceStateMatches,
     openEvidence,
+    state.anchor,
     state.evidenceTriggerKey,
     state.openEvidenceKey,
   ]);

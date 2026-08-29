@@ -13,6 +13,8 @@ import type { ConceptId } from "./model";
 import { Icon } from "./shared/Icon";
 import "./ConceptSwitcher.css";
 
+export const CONCEPT_CROSSFADE_MS = 100;
+
 export interface ConceptChoice {
   readonly id: ConceptId;
   readonly label: string;
@@ -58,6 +60,30 @@ export function ConceptSwitcher({
 }: ConceptSwitcherProps): JSX.Element | null {
   const dialogRef = useRef<HTMLDivElement>(null);
   const [wasOpen, setWasOpen] = useState(false);
+  const [transitioning, setTransitioning] = useState(false);
+  const transitionTimerRef = useRef<number | null>(null);
+
+  const cancelTransition = useCallback((): void => {
+    if (transitionTimerRef.current !== null) {
+      window.clearTimeout(transitionTimerRef.current);
+      transitionTimerRef.current = null;
+    }
+    setTransitioning(false);
+  }, []);
+
+  const requestClose = useCallback((): void => {
+    cancelTransition();
+    onClose();
+  }, [cancelTransition, onClose]);
+
+  useEffect(
+    () => () => {
+      if (transitionTimerRef.current !== null) {
+        window.clearTimeout(transitionTimerRef.current);
+      }
+    },
+    [],
+  );
 
   // Move focus into the dialog when it opens.
   useEffect(() => {
@@ -82,7 +108,8 @@ export function ConceptSwitcher({
       document.body.focus();
     }
     setWasOpen(false);
-  }, [open, wasOpen, openerRef]);
+    cancelTransition();
+  }, [cancelTransition, open, wasOpen, openerRef]);
 
   // Escape closes the dialog without selecting.
   useEffect(() => {
@@ -90,12 +117,12 @@ export function ConceptSwitcher({
     const onKey = (e: globalThis.KeyboardEvent) => {
       if (e.key === "Escape") {
         e.stopPropagation();
-        onClose();
+        requestClose();
       }
     };
     document.addEventListener("keydown", onKey, true);
     return () => document.removeEventListener("keydown", onKey, true);
-  }, [open, onClose]);
+  }, [open, requestClose]);
 
   const handleKeyDown = useCallback(
     (event: React.KeyboardEvent<HTMLDivElement>) => {
@@ -108,10 +135,15 @@ export function ConceptSwitcher({
 
   const handleSelect = useCallback(
     (concept: ConceptId) => {
+      if (transitioning) return;
       onSelect(concept);
-      onClose();
+      setTransitioning(true);
+      transitionTimerRef.current = window.setTimeout(() => {
+        transitionTimerRef.current = null;
+        onClose();
+      }, CONCEPT_CROSSFADE_MS);
     },
-    [onSelect, onClose],
+    [onClose, onSelect, transitioning],
   );
 
   if (!open) return null;
@@ -119,10 +151,18 @@ export function ConceptSwitcher({
   const choices = CONCEPT_CHOICES;
 
   return createPortal(
-    <div className="live-concept-switcher">
+    <div
+      className="live-concept-switcher"
+      data-concept-transition={transitioning ? "crossfade" : "idle"}
+      aria-busy={transitioning ? true : undefined}
+      style={{
+        opacity: transitioning ? 0 : 1,
+        transition: `opacity ${CONCEPT_CROSSFADE_MS}ms ease`,
+      }}
+    >
       <div
         className="live-concept-switcher__overlay"
-        onClick={onClose}
+        onClick={requestClose}
         aria-hidden="true"
       />
       <div
@@ -138,7 +178,7 @@ export function ConceptSwitcher({
           <button
             type="button"
             className="live-concept-switcher__back"
-            onClick={onClose}
+            onClick={requestClose}
             aria-label="Back"
           >
             <Icon name="back" decorative />

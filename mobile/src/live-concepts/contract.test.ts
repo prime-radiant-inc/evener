@@ -100,6 +100,6 @@ describe("live concept contract", () => {
     expect(loadOlder.type).not.toBe(open.type);
     expectTypeOf<
       Extract<LiveConceptIntent, { type: "loadOlder" }>
-    >().toEqualTypeOf<{ type: "loadOlder" }>();
+    >().toEqualTypeOf<{ readonly type: "loadOlder" }>();
   });
 });

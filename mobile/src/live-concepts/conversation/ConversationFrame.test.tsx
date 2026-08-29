@@ -860,12 +860,17 @@ describe("ConversationFrame", () => {
     trigger.focus();
     fireEvent.click(trigger);
     expect(frameProps.dispatch).toHaveBeenCalledWith({
+      type: "toggleTool",
+      key: "opaque-evidence-key",
+    });
+    expect(frameProps.dispatch).toHaveBeenCalledWith({
       type: "openEvidence",
       evidenceKey: "opaque-evidence-key",
       triggerKey: "failure-item",
     });
-    expect(transcript.events.slice(0, 2)).toEqual([
+    expect(transcript.events.slice(0, 3)).toEqual([
       "capture",
+      "dispatch:toggleTool",
       "dispatch:openEvidence",
     ]);
     rerender(
@@ -901,6 +906,12 @@ describe("ConversationFrame", () => {
         type: "closeEvidence",
       }),
     );
+    expect(
+      frameProps.dispatch.mock.calls.filter(
+        ([action]) =>
+          action.type === "toggleTool" && action.key === "opaque-evidence-key",
+      ),
+    ).toHaveLength(2);
     expect(transcript.events).toContain("restore");
     rerender(<ConversationFrame {...frameProps} />);
     await waitFor(() =>
