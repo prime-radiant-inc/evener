@@ -81,6 +81,10 @@ export interface AppShellProps {
   // runner - and to know which client this component itself is responsible
   // for closing again on unmount.
   client?: AppwireClientLike;
+  // Test seam: production (main.tsx) omits this, so the banner uses its
+  // built-in 10s reveal delay. Tests pass 0 to drive the banner synchronously
+  // without fake-clock plumbing (see ConnectionBannerProps.delayMs).
+  bannerDelayMs?: number;
 }
 
 interface ClientSlot {
@@ -258,7 +262,7 @@ function reconcileWelcomeRouteWithLocation(location: NavigationSessionLocation |
   openNestedSessionWithOwner(childRef, location.top_level_ref);
 }
 
-export function AppShell({ client: injectedClient }: AppShellProps) {
+export function AppShell({ client: injectedClient, bannerDelayMs }: AppShellProps) {
   const [{ client, owned }] = useState(() => createClientSlot(injectedClient));
 
   useEffect(() => {
@@ -631,7 +635,7 @@ export function AppShell({ client: injectedClient }: AppShellProps) {
   return (
     <ClientProvider client={client}>
       <div className={styles.shell} data-single-pane={singlePane ? "" : undefined}>
-        <ConnectionBanner state={connectionState} />
+        <ConnectionBanner state={connectionState} delayMs={bannerDelayMs} />
         <ToastRegion />
         <CommandPalette />
         <div className={styles.content}>

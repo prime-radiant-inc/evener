@@ -1,4 +1,8 @@
 .shell {
+  /* position: relative anchors the ConnectionBanner's overlay strip
+   * (position: absolute; top:0) to the shell box, so the banner floats over
+   * the rail + workspace instead of pushing them down. */
+  position: relative;
   display: flex;
   flex-direction: column;
   /* 100vh is the fallback; 100dvh follows the mobile browser chrome. */

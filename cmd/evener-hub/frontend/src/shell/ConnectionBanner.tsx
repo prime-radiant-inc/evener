@@ -4,9 +4,7 @@ import { AppwireClient, type ConnectionState } from "../protocol/client";
 import type { AppwireClientLike } from "../protocol/testing/fakeClient";
 import { rpcURLFromLocation } from "../protocol/transport";
 import { connectionStore, useConnectionStore } from "../stores/connection";
-import { Button } from "../widgets";
-import { requireClass } from "../widgets/internal/requireClass";
-import styles from "./ConnectionBanner.module.css";
+import { Banner } from "../widgets/banner";
 import { checkWebNotBuilt, NOT_BUILT_MESSAGE } from "./chrome/webNotBuilt";
 
 export interface ConnectionBannerProps {
@@ -18,11 +16,20 @@ export interface ConnectionBannerProps {
   // socket - mirrors AppShellProps.client's own real-vs-injected split
   // (see AppShell.tsx).
   createClient?: () => AppwireClientLike;
+  // How long to stay hidden after the state first needs a human's attention
+  // (reconnecting/closed) before the banner is revealed. A recovery before
+  // this elapses means the banner never appears at all - the connection
+  // hiccup was too brief to be worth interrupting the chrome for. The
+  // client's own reconnect backoff caps at 5s/attempt (protocol/client.ts),
+  // so the 10s default always exceeds a single wait. Tests pass 0 to reveal
+  // synchronously (no timer) so existing assertions can drive the banner
+  // without fake-clock plumbing.
+  delayMs?: number;
 }
 
-const CLASS = {
-  banner: requireClass(styles.banner, "ConnectionBanner.module.css", "banner"),
-};
+// 10s: long enough that the usual sub-second reconnect never surfaces, short
+// enough that a genuinely stuck connection tells the user promptly.
+const DEFAULT_DELAY_MS = 10_000;
 
 const RECONNECTING_MESSAGE = "Reconnecting to the server…";
 const CLOSED_MESSAGE = "Connection closed.";
@@ -53,26 +60,62 @@ function defaultCreateClient(): AppwireClientLike {
 // with nothing actually wrong).
 type ClosedReason = "auth" | "not-built" | "protocol" | null;
 
+// The states that warrant a banner once the reveal delay has elapsed. Every
+// other state (idle/connecting/ready) is silent - no banner, no timer.
+const ATTENTION_STATES: ReadonlySet<ConnectionState> = new Set(["reconnecting", "closed"]);
+
 /**
- * A quiet inline strip reporting the connection state when it needs a
- * human's attention:
+ * An overlay status strip reporting the connection state when it needs a
+ * human's attention, floating over the top of the shell instead of pushing
+ * the workspace down:
  *   - "reconnecting": informative only - the client is already retrying on
  *     its own (exponential backoff, protocol/client.ts), so a manual action
  *     here would be redundant at best and could race a second attempt at
- *     worst.
+ *     worst. Tone is "attention" (amber, heads-up): the connection is
+ *     self-healing and may need you only if it stalls past the reveal delay.
  *   - "closed": terminal from the client's own perspective (it never
  *     retries past this point) - offers Retry, which constructs and
  *     connects a genuinely fresh client (see handleRetry below) rather than
  *     window.location.reload(). Also probes the hub once (checkAuthStatus +
  *     checkWebNotBuilt) to tell an unauthenticated browser or an
  *     unbuilt frontend apart from an ordinary drop, rather than leaving
- *     either behind a dead spinner / uninformative "closed" loop.
- * Silent the rest of the time (idle/connecting/ready).
+ *     either behind a dead spinner / uninformative "closed" loop. Tone is
+ *     "danger" (red, broken): action is required.
+ *
+ * The banner stays hidden for `delayMs` after the state first needs
+ * attention; a recovery before then means it never appears, so a routine
+ * sub-second reconnect doesn't flash a warning over the chrome. Silent the
+ * rest of the time (idle/connecting/ready).
  */
-export function ConnectionBanner({ state, createClient = defaultCreateClient }: ConnectionBannerProps) {
+export function ConnectionBanner({
+  state,
+  createClient = defaultCreateClient,
+  delayMs = DEFAULT_DELAY_MS,
+}: ConnectionBannerProps) {
   const client = useConnectionStore((s) => s.client);
   const [retrying, setRetrying] = useState(false);
   const [closedReason, setClosedReason] = useState<ClosedReason>(null);
+  const [visible, setVisible] = useState(false);
+
+  // Reveal delay: stay hidden until `delayMs` has elapsed with the state
+  // still needing attention. A transition out of an attention state (recovery
+  // to ready/idle/connecting, or a swap between reconnecting and closed) tears
+  // down the pending timer and hides the banner, so a brief hiccup never
+  // surfaces and a state change resets the clock. delayMs <= 0 reveals
+  // synchronously (the test seam): no timer, setVisible(true) right away.
+  useEffect(() => {
+    if (!ATTENTION_STATES.has(state)) {
+      setVisible(false);
+      return;
+    }
+    if (delayMs <= 0) {
+      setVisible(true);
+      return;
+    }
+    setVisible(false);
+    const timer = setTimeout(() => setVisible(true), delayMs);
+    return () => clearTimeout(timer);
+  }, [state, delayMs]);
 
   // Re-probes whenever `state` transitions into "closed" (from any other
   // state, same client) OR whenever the wired client's own IDENTITY changes
@@ -88,8 +131,6 @@ export function ConnectionBanner({ state, createClient = defaultCreateClient }: 
       setClosedReason(null);
       return;
     }
-    // The client already knows when the close was a protocol rejection, and it
-    // knows it exactly -- no probe can tell that apart from an ordinary drop.
     // The client already knows when the close was a protocol rejection, and it
     // knows it exactly -- no probe can tell that apart from an ordinary drop.
     if (connectionStore.getState().client?.terminalReason === "protocol") {
@@ -141,30 +182,30 @@ export function ConnectionBanner({ state, createClient = defaultCreateClient }: 
     }
   }
 
+  if (!visible) return null;
+
+  // Reads the CURRENTLY-wired client from connectionStore, not useClient()'s
+  // React context: the context value is fixed to whatever AppShell
+  // constructed at mount (Global Constraints: "one AppwireClient per window,
+  // owned by the shell, injected via context"), but this component's OWN
+  // handleRetry below can swap connectionStore's client to a fresh instance -
+  // after which the context client is a dead, permanently-closed orphan
+  // that would never reach the client actually reconnecting. "Retry now"
+  // must reach whichever client the "reconnecting" state this banner is
+  // currently showing actually BELONGS to, which is always
+  // connectionStore's, never necessarily the context's - the same reason the
+  // closedReason re-probe effect above already keys off this exact `client`
+  // value instead of context. retryNow() itself is a no-op unless the client
+  // is actually "reconnecting" (see protocol/client.ts), so a stray click
+  // while the state prop and the store have briefly diverged is harmless
+  // either way.
   if (state === "reconnecting") {
     return (
-      <div className={CLASS.banner}>
-        <span>{RECONNECTING_MESSAGE}</span>
-        {/* Reads the CURRENTLY-wired client from connectionStore, not
-            useClient()'s React context: the context value is fixed to
-            whatever AppShell constructed at mount (Global Constraints:
-            "one AppwireClient per window, owned by the shell, injected via
-            context"), but this component's OWN handleRetry below can swap
-            connectionStore's client to a fresh instance - after which the
-            context client is a dead, permanently-closed orphan that would
-            never reach the client actually reconnecting. "Retry now" must
-            reach whichever client the "reconnecting" state this banner is
-            currently showing actually BELONGS to, which is always
-            connectionStore's, never necessarily the context's - the same
-            reason the closedReason re-probe effect above already keys off
-            this exact `client` value instead of context. retryNow() itself
-            is a no-op unless the client is actually "reconnecting" (see
-            protocol/client.ts), so a stray click while the state prop and
-            the store have briefly diverged is harmless either way. */}
-        <Button variant="quiet" size="sm" onClick={() => client?.retryNow()}>
-          Retry now
-        </Button>
-      </div>
+      <Banner
+        tone="attention"
+        message={RECONNECTING_MESSAGE}
+        action={{ label: "Retry now", onClick: () => client?.retryNow() }}
+      />
     );
   }
 
@@ -179,23 +220,12 @@ export function ConnectionBanner({ state, createClient = defaultCreateClient }: 
           ? PROTOCOL_MESSAGE
           : CLOSED_MESSAGE;
 
-  if (closedReason === "protocol") {
-    return (
-      <div className={CLASS.banner}>
-        <span>{message}</span>
-        <Button variant="quiet" size="sm" onClick={() => window.location.reload()}>
-          Reload
-        </Button>
-      </div>
-    );
-  }
+  // A protocol close can only be fixed by reloading (this bundle is what the
+  // server rejected); every other close can be retried with a fresh client.
+  const action =
+    closedReason === "protocol"
+      ? { label: "Reload", onClick: () => window.location.reload() }
+      : { label: "Retry", onClick: () => void handleRetry(), inFlight: retrying };
 
-  return (
-    <div className={CLASS.banner}>
-      <span>{message}</span>
-      <Button variant="quiet" size="sm" onClick={() => void handleRetry()} disabled={retrying}>
-        {retrying ? "Retrying…" : "Retry"}
-      </Button>
-    </div>
-  );
+  return <Banner tone="danger" message={message} action={action} />;
 }

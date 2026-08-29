@@ -1,0 +1,52 @@
+/* Banner: a full-width overlay status strip pinned to the top of its
+   positioning ancestor. Absolutely positioned so it floats OVER the content
+   (rail + workspace) instead of pushing it down — a connection hiccup is
+   usually transient and should not reserve layout space for its duration.
+   z-sticky-bar sits above pane content but below app-modals (menus,
+   dialogs, toasts), matching a pane-level pinned bar.
+
+   banner is allowlisted (src/styles/token-contract.test.ts) for its tone
+   prop — the whole point of a status banner is to carry a warning hue, the
+   same way badge/toast earn their entries. Tints use the -bg/-edge/-ink
+   companions, never a bare-hue flood. */
+.banner {
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  z-index: var(--z-sticky-bar);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-3);
+  padding: var(--space-2) var(--space-4);
+  box-shadow: var(--shadow-overlay);
+  font-family: var(--font-sans);
+  font-size: var(--font-size-ui);
+  line-height: var(--line-height-body);
+}
+
+.message {
+  /* Truncate so a long closed-reason message never wraps the action off the
+     strip; the action button must stay reachable at every width. */
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* --- tone -> token family --------------------------------------------
+ * attention: "a human is needed" (reconnecting — heads-up, may need you).
+ * danger: "something failed" (closed — truly broken, action required).
+ * Uses -bg fill + -edge bottom border + -ink text: the tinted companions,
+ * so the hue reads as a wash, not a loud flat fill. */
+.attention {
+  background: var(--attention-bg);
+  border-bottom: 1px solid var(--attention-edge);
+  color: var(--attention-ink);
+}
+
+.danger {
+  background: var(--danger-bg);
+  border-bottom: 1px solid var(--danger-edge);
+  color: var(--danger-ink);
+}
