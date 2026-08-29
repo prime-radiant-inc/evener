@@ -1,0 +1,42 @@
+{
+  "case": "ollama-llama3-optional-bearer",
+  "ref": "ollama/llama3:8b",
+  "stream": false,
+  "method": "POST",
+  "url": "http://localhost:11434/v1/chat/completions",
+  "headers": {
+    "Content-Type": "application/json"
+  },
+  "body": {
+    "messages": [
+      {
+        "content": "You are terse.",
+        "role": "system"
+      },
+      {
+        "content": "What is the weather in Oslo?",
+        "role": "user"
+      }
+    ],
+    "model": "llama3:8b",
+    "tool_choice": "required",
+    "tools": [
+      {
+        "function": {
+          "description": "Current weather",
+          "name": "weather",
+          "parameters": {
+            "properties": {
+              "city": {
+                "type": "string"
+              }
+            },
+            "type": "object"
+          }
+        },
+        "type": "function"
+      }
+    ]
+  },
+  "pruned_fields": null
+}

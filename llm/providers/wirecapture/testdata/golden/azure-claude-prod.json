@@ -1,0 +1,67 @@
+{
+  "case": "azure-claude-prod",
+  "ref": "azure/claude-prod",
+  "stream": false,
+  "method": "POST",
+  "url": "https://contoso-prod.services.ai.azure.com/anthropic/v1/messages",
+  "headers": {
+    "Anthropic-Version": "2023-06-01",
+    "Api-Key": "\u003ccredential\u003e",
+    "Content-Type": "application/json"
+  },
+  "body": {
+    "cache_control": {
+      "type": "ephemeral"
+    },
+    "max_tokens": 64000,
+    "messages": [
+      {
+        "content": [
+          {
+            "text": "What is the weather in Oslo?",
+            "type": "text"
+          }
+        ],
+        "role": "user"
+      }
+    ],
+    "model": "claude-prod",
+    "output_config": {
+      "effort": "high"
+    },
+    "system": [
+      {
+        "cache_control": {
+          "type": "ephemeral"
+        },
+        "text": "You are terse.",
+        "type": "text"
+      }
+    ],
+    "thinking": {
+      "budget_tokens": 32768,
+      "type": "enabled"
+    },
+    "tool_choice": {
+      "type": "auto"
+    },
+    "tools": [
+      {
+        "cache_control": {
+          "type": "ephemeral"
+        },
+        "description": "Current weather",
+        "input_schema": {
+          "properties": {
+            "city": {
+              "type": "string"
+            }
+          },
+          "type": "object"
+        },
+        "name": "weather"
+      }
+    ]
+  },
+  "pruned_fields": null
+}

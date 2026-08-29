@@ -1,0 +1,67 @@
+{
+  "case": "vertex-opus-5",
+  "ref": "vertex/claude-opus-5",
+  "stream": false,
+  "method": "POST",
+  "url": "https://aiplatform.googleapis.com/v1/projects/my-project/locations/global/publishers/anthropic/models/claude-opus-5:rawPredict",
+  "headers": {
+    "Anthropic-Version": "2023-06-01",
+    "Authorization": "\u003ccredential\u003e",
+    "Content-Type": "application/json"
+  },
+  "body": {
+    "anthropic_version": "vertex-2023-10-16",
+    "cache_control": {
+      "type": "ephemeral"
+    },
+    "max_tokens": 128000,
+    "messages": [
+      {
+        "content": [
+          {
+            "text": "What is the weather in Oslo?",
+            "type": "text"
+          }
+        ],
+        "role": "user"
+      }
+    ],
+    "output_config": {
+      "effort": "high"
+    },
+    "system": [
+      {
+        "cache_control": {
+          "type": "ephemeral"
+        },
+        "text": "You are terse.",
+        "type": "text"
+      }
+    ],
+    "thinking": {
+      "display": "summarized",
+      "type": "adaptive"
+    },
+    "tool_choice": {
+      "type": "auto"
+    },
+    "tools": [
+      {
+        "cache_control": {
+          "type": "ephemeral"
+        },
+        "description": "Current weather",
+        "input_schema": {
+          "properties": {
+            "city": {
+              "type": "string"
+            }
+          },
+          "type": "object"
+        },
+        "name": "weather"
+      }
+    ]
+  },
+  "pruned_fields": null
+}

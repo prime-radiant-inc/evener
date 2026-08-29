@@ -1,0 +1,59 @@
+{
+  "case": "work-glm-zai-stream",
+  "ref": "work/glm-5.2-nvfp4",
+  "stream": true,
+  "method": "POST",
+  "url": "https://gw.example.com/v1/chat/completions",
+  "headers": {
+    "Authorization": "\u003ccredential\u003e",
+    "Content-Type": "application/json",
+    "Openai-Organization": "org-golden",
+    "X-Portkey-Provider": "openai"
+  },
+  "body": {
+    "max_completion_tokens": 131072,
+    "messages": [
+      {
+        "content": "You are terse.",
+        "role": "system"
+      },
+      {
+        "content": "What is the weather in Oslo?",
+        "role": "user"
+      }
+    ],
+    "model": "glm-5.2-nvfp4",
+    "reasoning_effort": "high",
+    "stream": true,
+    "thinking": {
+      "clear_thinking": false,
+      "type": "enabled"
+    },
+    "tool_choice": "required",
+    "tools": [
+      {
+        "function": {
+          "description": "Current weather",
+          "name": "weather",
+          "parameters": {
+            "additionalProperties": false,
+            "properties": {
+              "city": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "city"
+            ],
+            "type": "object"
+          },
+          "strict": true
+        },
+        "type": "function"
+      }
+    ]
+  },
+  "pruned_fields": [
+    "stream_options"
+  ]
+}
