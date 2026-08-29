@@ -47,7 +47,7 @@ func (c *delegateTreeController) SupervisionBoundary(lease delegateLease, mode d
 	if err != nil {
 		return delegateSupervisionSuppress, err
 	}
-	if c.closing || aggregate.Phase == delegatestore.PhaseStopping || aggregate.PendingStopSeq != 0 || live.recoveryRequired {
+	if c.supervisionSuppressedLocked(aggregate, live) {
 		return delegateSupervisionSuppress, nil
 	}
 	if aggregate.Phase != delegatestore.PhaseRunning || !aggregate.Resumable || live.binding == nil || !live.binding.ready {
@@ -57,6 +57,16 @@ func (c *delegateTreeController) SupervisionBoundary(lease delegateLease, mode d
 		return delegateSupervisionContinue, nil
 	}
 	return delegateSupervisionProceed, nil
+}
+
+// supervisionSuppressedLocked reports whether ordinary supervision must be
+// suppressed because the controller is closing, the generation is stopping or
+// stop-pending, or its live state needs recovery. It is the single
+// suppression predicate behind SupervisionBoundary's suppress-without-cause
+// branch; the not-running/not-ready path (errDelegateTargetBusy) is a
+// different case and deliberately not covered here. Caller holds c.mu.
+func (c *delegateTreeController) supervisionSuppressedLocked(aggregate *delegatestore.Aggregate, live *delegateLiveState) bool {
+	return c.closing || aggregate.Phase == delegatestore.PhaseStopping || aggregate.PendingStopSeq != 0 || live.recoveryRequired
 }
 
 // BeginSettlement makes the final pending-steer decision and fences new work
