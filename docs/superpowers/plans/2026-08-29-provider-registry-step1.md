@@ -1131,9 +1131,12 @@ func templateURL(api string) (string, []string) {
 	return out, vars
 }
 
+// isKeyVar reports whether an env var name is credential-shaped. Substring
+// matches on purpose: AWS_BEARER_TOKEN_BEDROCK and AWS_ACCESS_KEY_ID must
+// never become template variables, whose resolved values Resolve exposes.
 func isKeyVar(name string) bool {
-	return strings.HasSuffix(name, "_API_KEY") || strings.HasSuffix(name, "_KEY") ||
-		strings.HasSuffix(name, "_TOKEN") || strings.HasSuffix(name, "_PAT")
+	return strings.Contains(name, "_KEY") || strings.Contains(name, "_TOKEN") ||
+		strings.Contains(name, "_SECRET") || strings.HasSuffix(name, "_PAT")
 }
 
 // FromModelsDev converts a raw models.dev api.json into registry providers
@@ -6705,11 +6708,23 @@ func (r *Registry) buildTransport(rec *record, row Model, proto string) (Transpo
 	for _, name := range slices.Compact(missing) {
 		warnings = append(warnings, "unresolved variable "+name)
 	}
+	// Expose only the variables the templates reference: URL parts such as a
+	// region, resource, or project. A vars_env name is never a credential by
+	// construction (the converter routes credential-shaped names to
+	// APIKeyEnv), but the templates are the authoritative list, and Resolved
+	// is serialized by `evener models inspect`.
 	resolved := map[string]string{}
-	for _, m := range []map[string]string{t.Vars, t.VarsEnv, rec.userVars} {
-		for name := range m {
-			if v, ok := lookup(name); ok {
-				resolved[name] = v
+	for _, tpl := range []string{rec.head.Transport.BaseURL, t.Endpoint, t.StreamEndpoint, t.ModelsEndpoint, t.CountTokensEndpoint} {
+		for _, m := range placeholderRe.FindAllStringSubmatch(tpl, -1) {
+			if v, ok := lookup(m[1]); ok {
+				resolved[m[1]] = v
+			}
+		}
+	}
+	if row.Transport != nil && row.Transport.BaseURL != "" {
+		for _, m := range placeholderRe.FindAllStringSubmatch(row.Transport.BaseURL, -1) {
+			if v, ok := lookup(m[1]); ok {
+				resolved[m[1]] = v
 			}
 		}
 	}
@@ -7789,11 +7804,17 @@ surface = "anthropic"
 context_window = 40960
 `
 
+// goldenSecrets are the credential values of the golden environment; the
+// test asserts none of them ever appears in a serialized Resolved record.
+var goldenSecrets = map[string]string{
+	"ANTHROPIC_API_KEY": "SECRET-anthropic", "OPENAI_API_KEY": "SECRET-openai", "GROQ_API_KEY": "SECRET-groq",
+	"OPENROUTER_API_KEY": "SECRET-openrouter", "KIMI_API_KEY": "SECRET-kimi", "MINIMAX_API_KEY": "SECRET-minimax",
+	"MOONSHOT_API_KEY": "SECRET-moonshot", "AZURE_API_KEY": "SECRET-azure", "AWS_BEARER_TOKEN_BEDROCK": "SECRET-bedrock",
+	"PORTKEY_KEY": "SECRET-portkey", "XAI_API_KEY": "SECRET-xai",
+}
+
 var goldenEnv = map[string]string{
-	"ANTHROPIC_API_KEY": "sk-ant", "OPENAI_API_KEY": "sk-openai", "OPENAI_ORG_ID": "org-golden", "GROQ_API_KEY": "gsk",
-	"OPENROUTER_API_KEY": "sk-or", "KIMI_API_KEY": "kimi", "MINIMAX_API_KEY": "mm", "MOONSHOT_API_KEY": "moon",
-	"AZURE_API_KEY": "az", "AWS_BEARER_TOKEN_BEDROCK": "bt", "PORTKEY_KEY": "pk", "XAI_API_KEY": "xk",
-	"GOOGLE_VERTEX_PROJECT": "my-project", "GOOGLE_VERTEX_LOCATION": "global", "OLLAMA_HOST": "localhost",
+	"OPENAI_ORG_ID": "org-golden", "GOOGLE_VERTEX_PROJECT": "my-project", "GOOGLE_VERTEX_LOCATION": "global", "OLLAMA_HOST": "localhost",
 }
 
 type goldenView struct {
@@ -7813,6 +7834,9 @@ func goldenRegistry(t *testing.T, extraEnv map[string]string) *Registry {
 	_ = os.WriteFile(oauthRecordPath(state, "openai-codex"), []byte("{}"), 0o600)
 	env := map[string]string{"HOME": home}
 	for k, v := range goldenEnv {
+		env[k] = v
+	}
+	for k, v := range goldenSecrets {
 		env[k] = v
 	}
 	for k, v := range extraEnv {
@@ -7895,7 +7919,7 @@ func TestGoldenResolved(t *testing.T) {
 			}
 		}},
 		{"openai-gpt-5.5-proxy", "openai/gpt-5.5", map[string]string{"OPENAI_BASE_URL": "https://proxy.example/v1"}, func(t *testing.T, res Resolved) {
-			if res.Transport.BaseURL != "https://proxy.example/v1" || res.Credential.Source != "env:OPENAI_API_KEY" {
+			if res.Transport.BaseURL != "https://proxy.example/v1" || res.Credential.Source != "env:OPENAI_API_KEY" || res.Credential.Value != goldenSecrets["OPENAI_API_KEY"] {
 				t.Errorf("override must keep the inherited credential: %+v %+v", res.Transport, res.Credential)
 			}
 		}},
@@ -8117,6 +8141,11 @@ func TestGoldenResolved(t *testing.T) {
 				t.Fatal(err)
 			}
 			got = append(got, '\n')
+			for name, secret := range goldenSecrets {
+				if bytes.Contains(got, []byte(secret)) {
+					t.Fatalf("%s: the serialized record contains the value of %s", c.ref, name)
+				}
+			}
 			path := filepath.Join("testdata", "golden", c.name+".json")
 			if *updateGolden {
 				_ = os.MkdirAll(filepath.Dir(path), 0o755)
@@ -8149,7 +8178,7 @@ func contains(list []string, v string) bool {
 - [ ] **Step 2: Run once to generate the goldens, then run for real**
 
 Run: `go test ./llm/registry/ -run TestGoldenResolved -update && ls llm/registry/testdata/golden | wc -l && go test ./llm/registry/ -run TestGoldenResolved -v`
-Expected: 41 files; PASS. The inline `check` functions run in both modes, so a wrong derivation fails even during `-update`. Spot-check two files by eye: `openai-codex-gpt-5.6.json` (`"wire_id": "gpt-5.6-sol"`, `"pruned_fields"` listing the off-list, no `OpenAI-Organization` header) and `bedrock-sonnet-5.json` (`"structured_output": false` with provenance `overlay/glob:*anthropic.*`).
+Expected: 44 files; PASS. The inline `check` functions run in both modes, so a wrong derivation fails even during `-update`. Spot-check two files by eye: `openai-codex-gpt-5.6.json` (`"wire_id": "gpt-5.6-sol"`, `"pruned_fields"` listing the off-list, no `OpenAI-Organization` header) and `bedrock-sonnet-5.json` (`"structured_output": false` with provenance `overlay/glob:*anthropic.*`).
 
 If a `check` fails because the fixture's facts differ from the 2026-08-28 snapshot (a renamed id, a changed control list), confirm the upstream value and adjust the expectation; never change the resolver to fit a stale expectation.
 
