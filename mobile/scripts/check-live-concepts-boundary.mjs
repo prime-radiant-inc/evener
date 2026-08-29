@@ -13,6 +13,7 @@
 import { readdir, readFile } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
+import ts from "typescript";
 
 const CODE_EXTENSIONS = new Set([".ts", ".tsx", ".css"]);
 const CONCEPT_IDS = ["stillwater", "constellation", "field-notes"];
@@ -313,10 +314,68 @@ function checkParentConversationImports(specifiers, fileRel, violations) {
   }
 }
 
+function unwrapExpression(expression) {
+  let current = expression;
+  while (
+    ts.isSatisfiesExpression(current) ||
+    ts.isAsExpression(current) ||
+    ts.isParenthesizedExpression(current)
+  ) {
+    current = current.expression;
+  }
+  return current;
+}
+
+function propertyNameText(name) {
+  if (name === undefined) return null;
+  if (
+    ts.isIdentifier(name) ||
+    ts.isStringLiteral(name) ||
+    ts.isNumericLiteral(name)
+  ) {
+    return name.text;
+  }
+  return null;
+}
+
+function exportedModuleHasConversationSkin(source, fileRel, moduleName) {
+  const sourceFile = ts.createSourceFile(
+    fileRel,
+    source,
+    ts.ScriptTarget.Latest,
+    true,
+    ts.ScriptKind.TS,
+  );
+  for (const statement of sourceFile.statements) {
+    if (!ts.isVariableStatement(statement)) continue;
+    if (
+      !statement.modifiers?.some(
+        (modifier) => modifier.kind === ts.SyntaxKind.ExportKeyword,
+      )
+    ) {
+      continue;
+    }
+    for (const declaration of statement.declarationList.declarations) {
+      if (!ts.isIdentifier(declaration.name)) continue;
+      if (declaration.name.text !== moduleName) continue;
+      if (declaration.initializer === undefined) return false;
+      const initializer = unwrapExpression(declaration.initializer);
+      if (!ts.isObjectLiteralExpression(initializer)) return false;
+      return initializer.properties.some(
+        (property) => propertyNameText(property.name) === "conversationSkin",
+      );
+    }
+  }
+  return false;
+}
+
 function checkRequiredConversationSkin(source, fileRel, violations) {
   for (const concept of CONCEPT_IDS) {
     if (fileRel !== `src/live-concepts/${concept}/index.ts`) continue;
-    if (/\bconversationSkin\s*:/.test(source)) return;
+    const moduleName = `${concept.replace(/-([a-z])/g, (_, letter) => letter.toUpperCase())}Module`;
+    if (exportedModuleHasConversationSkin(source, fileRel, moduleName)) {
+      return;
+    }
     violations.push({
       code: "missing-conversation-skin",
       file: fileRel,

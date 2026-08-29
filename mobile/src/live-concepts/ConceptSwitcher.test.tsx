@@ -5,16 +5,24 @@
 // background inert, and selected concept announced without color-only
 // meaning.
 
-import { cleanup, fireEvent, render, screen } from "@testing-library/react";
+import {
+  act,
+  cleanup,
+  fireEvent,
+  render,
+  screen,
+} from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   CONCEPT_CHOICES,
+  CONCEPT_CROSSFADE_MS,
   ConceptSwitcher,
   type ConceptSwitcherProps,
 } from "./ConceptSwitcher";
 
 afterEach(() => {
   cleanup();
+  vi.useRealTimers();
 });
 
 function renderSwitcher(
@@ -106,15 +114,19 @@ describe("ConceptSwitcher — close without selection", () => {
 
 describe("ConceptSwitcher — selection dispatch and close", () => {
   it("selecting a concept dispatches onSelect then onClose", () => {
+    vi.useFakeTimers();
     const onSelect = vi.fn();
     const onClose = vi.fn();
     renderSwitcher({ onSelect, onClose });
     fireEvent.click(screen.getByRole("button", { name: /Constellation/ }));
     expect(onSelect).toHaveBeenCalledWith("constellation");
+    expect(onClose).not.toHaveBeenCalled();
+    act(() => vi.advanceTimersByTime(CONCEPT_CROSSFADE_MS));
     expect(onClose).toHaveBeenCalledTimes(1);
   });
 
   it("dispatches the correct concept for each choice", () => {
+    vi.useFakeTimers();
     for (const choice of CONCEPT_CHOICES) {
       const onSelect = vi.fn();
       const onClose = vi.fn();
@@ -123,9 +135,49 @@ describe("ConceptSwitcher — selection dispatch and close", () => {
         screen.getByRole("button", { name: new RegExp(choice.label) }),
       );
       expect(onSelect).toHaveBeenCalledWith(choice.id);
+      act(() => vi.advanceTimersByTime(CONCEPT_CROSSFADE_MS));
       expect(onClose).toHaveBeenCalledTimes(1);
       cleanup();
     }
+  });
+
+  it("crossfades with opacity only for 100ms before close and restores focus", () => {
+    vi.useFakeTimers();
+    const onSelect = vi.fn();
+    const onClose = vi.fn();
+    const { opener, rerender } = renderSwitcher({ onSelect, onClose });
+
+    fireEvent.click(
+      screen.getByRole("button", { name: "Switch to Constellation" }),
+    );
+
+    expect(onSelect).toHaveBeenCalledWith("constellation");
+    expect(onClose).not.toHaveBeenCalled();
+    const transition = document.querySelector<HTMLElement>(
+      ".live-concept-switcher",
+    );
+    expect(transition).toHaveAttribute("data-concept-transition", "crossfade");
+    expect(transition).toHaveStyle({
+      opacity: "0",
+      transition: "opacity 100ms ease",
+    });
+    expect(transition?.style.transform).toBe("");
+
+    act(() => vi.advanceTimersByTime(99));
+    expect(onClose).not.toHaveBeenCalled();
+    act(() => vi.advanceTimersByTime(1));
+    expect(onClose).toHaveBeenCalledTimes(1);
+
+    rerender(
+      <ConceptSwitcher
+        open={false}
+        selectedConcept="constellation"
+        onSelect={onSelect}
+        onClose={onClose}
+        openerRef={{ current: opener }}
+      />,
+    );
+    expect(document.activeElement).toBe(opener);
   });
 });
 
