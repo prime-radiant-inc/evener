@@ -1,6 +1,6 @@
 # Provider Registry and Capability Resolution
 
-**Date:** 2026-08-28 (revision 11, after nine adversarial review rounds)
+**Date:** 2026-08-28 (revision 12, after ten adversarial review rounds)
 **Status:** Draft for review
 **Replaces:** the LiteLLM-vendored model catalog, `providercfg.CompatConfig`,
 `openaicompat.ProviderQuirks` presets, the vendor wrapper adapter packages, the
@@ -13,8 +13,10 @@ anything, and §14.1 lists what a user does once after upgrading.
 ## 1. Goals
 
 1. **Any provider on the curated implicit list works with an API key and
-   nothing else; any other provider models.dev knows about works with a
-   one-line `[providers.X]` header.** Base URL, key variable, wire protocol,
+   nothing else (the three cloud providers also need their resource,
+   region, or project variables); any other provider models.dev knows about
+   works with a one-line `[providers.X]` header.** Base URL, key variable,
+   wire protocol,
    model list, context windows, output caps, pricing, effort ladders, and
    modalities all come from data.
 2. **The request shape is a pure function of one materialized record.** Given
@@ -208,11 +210,14 @@ Ollama, whose `OLLAMA_API_KEY` is optional today
 
 ```go
 type Credential struct {
-    Value       string // the key or token; empty when nothing resolved
-    Source      string // store | env:<VAR> | api_key | oauth | adc | none
-    Fingerprint string // stable hash of Value, for the continuation scope (§7.6); never the value
+    Value  string // the key, token, or canonical serialization of the credential headers; empty when nothing resolved
+    Source string // api_key | credential_headers | store | env:<VAR> | oauth | adc | none (the §10 order)
 }
 ```
+
+The continuation scope (§7.6) never stores `Value`; `llm.Client` HMACs it
+with the state-dir `ContinuationHasher`, as `authScopeForAPIKey` does today
+(`openai/adapter.go:278-290`).
 
 ### 4.1 Caps
 
@@ -396,7 +401,7 @@ with no preset changes the protocol but never the provider's `Auth`.
 ```go
 type Resolved struct {
     Instance   string      // user-facing instance name (routing, logs, errors)
-    ProviderID string      // registry id the instance is based on (Base chain root)
+    ProviderID string      // first registry id reached through Base, else the instance's own name (§4.2)
     Protocol   string
     Surface    string
     Transport  Transport   // vars substituted, $ENV expanded, host rule applied, endpoints filled
@@ -827,7 +832,14 @@ the merge order of §4.1 applies to them.
   `vars = { OLLAMA_HOST = "localhost" }` as the curated default, `HostRule =
   ollama-host` (§9.1, which also honors `OLLAMA_BASE_URL` first, as today's
   `ResolveOllamaBaseURL` does), `Auth = optional-bearer`, `api_key_env =
-  [OLLAMA_API_KEY]`, no models (live only), no `DefaultModel`.
+  [OLLAMA_API_KEY]`, no models (live only), no `DefaultModel`, and a
+  provider-level `context_window = 131072` (today's 128K compat default,
+  `profile.go:1256-1257`) so compaction still fires for a live-only model
+  whose listing reports no window; the LiteLLM `ollama/*` rows (8192 for
+  `llama3.1`, …) are gone, so a user who wants the real window sets it on
+  a row (`[providers.ollama.models."llama3.1*"] context_window = 8192`,
+  disclosed in §14.1). The pseudo-providers carry the same provider-level
+  default.
 - **Pseudo-providers** `openai-compatible`, `anthropic-compatible`,
   `google-compatible`: protocol only, `generic` surface, no models. Each
   has `base_url = {BASE_URL}` with no default and `vars_env = { BASE_URL =
@@ -872,13 +884,17 @@ that upstream now covers.
   running process keeps its already-loaded registry; the refresh takes
   effect on the next load. A failed refresh or validation logs one line and
   keeps the previous cache.
-- `EVENER_OFFLINE=1` sets `opts.Offline`, and `registry.Load` also forces
-  `Offline` when `testing.Testing()` is true (the guard the repo already
-  uses, `agent/session_init.go:55-62`), so a bare `Load()` from any test
-  package never starts the refresh goroutine. `cmdutil` test helpers set the
-  variable too, the registry fetcher is an injected `func(ctx, etag) (…)`,
-  and the default test state root is a temp dir, so default tests cannot
-  reach the network.
+- `EVENER_OFFLINE=1` sets `opts.Offline`, and `registry.Load` defaults
+  `Offline` to true when `testing.Testing()` is true (the guard the repo
+  already uses, `agent/session_init.go:55-62`, with the same opt-out: an
+  injected `WithFetcher(func(ctx, etag) (…))` or an explicit `Offline:
+  false` overrides the default), so a bare `Load()` from any test package
+  never starts the refresh goroutine while the refresh tests of §13 can
+  drive it. The refresh itself is one function, `registry.Refresh(ctx,
+  fetcher, force)`, called by the background goroutine and by `evener
+  models refresh`, so the sanity floors and the ETag round-trip are testable
+  directly. `cmdutil` test helpers set the variable too, and the default
+  test state root is a temp dir, so default tests cannot reach the network.
   Nothing else in `registry.Load` or `Resolve` performs I/O beyond reading
   local files and environment variables.
 - `make refresh-model-catalog` replaces the embedded snapshot (curl → gzip),
@@ -1072,8 +1088,8 @@ anchors on both a request fingerprint and a storage-scope fingerprint
   along with `input`, `previous_response_id`, `conversation`, and `store`,
   `responses_continuation_fingerprint.go`);
 - the **storage-scope fingerprint** hashes the instance name, resolved base
-  URL, endpoint path, the credential fingerprint and source the store
-  already computes, the `OpenAI-Organization`/`OpenAI-Project` header values
+  URL, endpoint path, the `ContinuationHasher` HMAC of `Credential.Value`
+  and its `Source`, the `OpenAI-Organization`/`OpenAI-Project` header values
   when present, the conversation id when set, and the OAuth
   account/workspace claims on the Codex transport; the storage policy label
   comes from the built body's `store` value as today (`adapter.go:425-434`);
@@ -1106,7 +1122,7 @@ type Protocol interface {
 }
 
 type Authenticator interface {
-    Apply(ctx, *http.Request, registry.Credential) error // sets auth headers
+    Apply(ctx, *http.Request, res registry.Resolved) error // sets auth headers from res.Credential, res.Transport.AuthHeader, and per-instance token state keyed by res.Instance
 }
 
 // Optional, implemented only by the Codex transport (§9.5).
@@ -1513,9 +1529,12 @@ in `llm/providers/openai/adapter.go` and `responses.go` that moves behind the
   `auth/<name>.json` whose instance `<name>` is not on the Codex transport
   (or does not exist) produces a one-line startup notice naming the file
   and `evener openai logout --instance <name>` (flag day, §14.1);
-- per-request headers from the request: `session-id`, `thread-id`,
-  `x-client-request-id` (`setRequestHeaders`); `ChatGPT-Account-ID` from the
-  token claims; `originator` and `User-Agent`; the inherited
+- the authenticator's `Apply` sets `Authorization`, `ChatGPT-Account-ID`
+  (from the token claims), `originator`, and `User-Agent` on **every**
+  request, including `ListModels` (today `ListModels` goes through
+  `setHeaders`, `openai/models.go:25`); `PrepareRequest` owns only the
+  per-request work: `session-id`, `thread-id`, `x-client-request-id` from
+  the request (`setRequestHeaders`); the inherited
   `OpenAI-Organization`/`OpenAI-Project` headers are removed by the overlay
   (§6.2), matching today's Codex adapter;
 - `x-openai-internal-codex-responses-lite: true` when `Caps.ResponsesLite`
@@ -1587,8 +1606,11 @@ GOOGLE_VERTEX_LOCATION = "global"
 
 TOML keys map onto the structs in §4 as follows: `base`, `inherit_models`,
 `api_key`, `api_key_env`, `headers`, `credential_headers`, `surface`,
-`family`, `default_model`, `cheap_model` → `Provider`; `transport` (a preset
-name), `base_url`, `host_rule`, `auth`, `auth_header`, `endpoint`,
+`family`, `default_model`, `cheap_model` → `Provider` (the curated overlay
+alone may also set `implicit`, `name`, `doc`, and a top-level
+`default_order` array, which TOML tables could not order; those keys are a
+load error in `providers.toml`); `transport` (a preset name), `base_url`,
+`host_rule`, `auth`, `auth_header`, `endpoint`,
 `stream_endpoint`, `models_endpoint`, `count_tokens_endpoint`, `vars`,
 `vars_env`, `body` → `Provider.Transport`; `protocol` → `Provider.Protocol`;
 every `Caps` field
@@ -1673,11 +1695,20 @@ instance's key into the child (`env.go:56-60`, deleted with the roster).
 The remedy is by hand: edit the file or move it aside; the hub never
 rewrites or deletes it.
 
-Credentials keep the existing `internal/credentials.Store` semantics (file
-entry by instance name → `<NAME>_API_KEY` for the instance name under the
-§6.2 uppercase rule → the provider's `APIKeyEnv`), with one change of
-direction: the store no longer owns a provider roster. It is constructed
-with the registry's `(id → APIKeyEnv)` table, so
+Credential resolution order, for every scheme that takes a key: the
+instance's own `api_key` (a literal or `$VAR`, today's
+`load_client.go:74-77` rule that the file wins); else a
+`credential_headers.Authorization` (which also suppresses any bearer); else
+the credentials-store file entry under the instance name; else the
+environment: the instance's resolved `APIKeyEnv` (which the endpoint stop
+above empties), plus `<NAME>_API_KEY` under the §6.2 uppercase rule **only
+for instance names that are not registry ids** (so `[providers.anthropic]
+base_url = gateway` cannot pick up `ANTHROPIC_API_KEY` through the name
+layer, and `TOGETHERAI_API_KEY` is not an undocumented alias of
+`TOGETHER_API_KEY`); `oauth-openai-codex` and `gcp-adc` ignore all of these
+and use their record. `Credential.Source` records which step won. The
+store keeps its file semantics but no longer owns a provider roster: it is
+constructed with the registry's `(id → APIKeyEnv)` table, so
 `envvars.Providers()`, `envvars.APIKeyVars`, and `envvars.AuthModes` are
 deleted along with the seven-provider list; the generic env helpers and the
 Ollama host helpers in `envvars` stay.
@@ -1740,7 +1771,16 @@ ids with display names and `VarsEnv`, so the add form can render the right
 variable inputs). The credentials pane lists every curated implicit
 provider whether or not it currently has a credential (§5.2 resolves them
 regardless), which is where a fresh install signs in to `openai-codex` or
-enters its first key. `protocol/types.gen.ts` is regenerated and the frontend
+enters its first key. That pane is fed by the `evener/auth/*` RPCs, which
+change with it: `auth/list` returns one `AuthStatusResponse` per curated
+implicit provider plus every explicit instance (today it iterates the
+`envvars` roster, `app_auth.go:336-358`, `store.go:175-177`);
+`AuthStatusResponse.AuthModes` derives from `Transport.Auth`; the OAuth
+`status`/`login`/`logout` default name and `normalizeAuthProvider`'s empty
+default (`app_auth.go:512-518`) become `openai-codex`, matching §9.5;
+`Store.List()` is fed the implicit list, not the full 207-id table.
+`AuthListResponse`/`AuthStatusResponse` (`appwire/types.go:1897,2439`) join
+the regenerated-TS list. `protocol/types.gen.ts` is regenerated and the frontend
 instance dialogs and row (`panes/settings/sections/credentials/`,
 `InstanceRow.tsx`, `credentialLabels.ts`) are updated; `make test-web`
 covers them. The spawn credential gate (`spawn.go:649-684`) keys on
@@ -1827,8 +1867,8 @@ error types is removed; `Provider()` returns the instance name and a new
   (only `implicit = true` providers; gcp-adc from the env var and the
   well-known file, never the metadata server: the test asserts no HTTP
   client is constructed); default selection in all four branches including
-  `XAI_API_KEY` alone, `OPENAI_API_KEY` alone (instances `{openai}`, no
-  `openai-codex`), `OPENAI_COMPATIBLE_BASE_URL` alone (an instance, never
+  `XAI_API_KEY` alone, `OPENAI_API_KEY` alone (instances `{openai, ollama}`,
+  no `openai-codex`), `OPENAI_COMPATIBLE_BASE_URL` alone (an instance, never
   the default) and unset (no pseudo-provider instance at all), the ADC file
   alone (no Vertex instance: `Hidden` for the unset project and location)
   and with `GOOGLE_VERTEX_PROJECT` + `GOOGLE_VERTEX_LOCATION`
@@ -2003,9 +2043,11 @@ building the new packages beside the old ones and cutting over last.
    `lcfg_config_surface_fuzz_test.go`, `client_config_edges_fuzz_test.go`,
    `core_contracts_fuzz_test.go`, `cmdutil/coverage_program_fuzz_test.go`,
    rewritten against the registry where they still have a subject);
-   `docs/llm-providers.md`, `docs/llm-provider-config-and-launch.md`, and
-   `docs/ollama.md` rewritten around §3–§10. (~net −4,000 lines including
-   tests.)
+   `docs/llm-providers.md`, `docs/llm-provider-config-and-launch.md`,
+   `docs/ollama.md`, and the variable and sibling-file mentions in
+   `README.md`, `docs/getting-started.md`, `docs/evener-hub.md`, and
+   `docs/developing-evener/environment.md` rewritten around §3–§10. (~net
+   −4,000 lines including tests.)
 4. **Cloud providers** (later phase): the live-verified coverage of §13
    for Azure, Bedrock, and Vertex against the overlay entries of §9.
    Nothing in steps 1–3 is provisional for them: the transport fields
@@ -2080,6 +2122,18 @@ once, and the release notes and the load-error pointer say so:
   suffix (§6.2); `claude-opus-4-6[1m]` and later are unknown ids.
 - **Sessions on Fable 5 with no `--reasoning-effort`** move from the
   injected `medium` to Anthropic's default `high` (§7.4).
+- **Context windows for Ollama and local models**: the LiteLLM `ollama/*`
+  rows (8192 for `llama3.1`, `:tag` stripping) are gone; every live-only
+  model on `ollama` or a pseudo-provider now budgets against the
+  provider-level 131072 default (§6.2). Set the real window on a row
+  (`[providers.ollama.models."llama3.1*"] context_window = 8192`) or
+  compaction fires late.
+- **Tri-state `EVENER_PROVIDERS_CONFIG`**: `export EVENER_PROVIDERS_CONFIG=`
+  (present, empty) now means "no user layer" (§10); today it meant the
+  default path. `evener providers list` and the hub diagnostics print
+  "user layer: none (EVENER_PROVIDERS_CONFIG is empty)" so the state is
+  visible. `gemini` is no longer accepted as an alias of `google` in model
+  references.
 
 None of this is detected or translated at runtime, and none of the old
 files are renamed or deleted.
@@ -2399,3 +2453,25 @@ ranking for mixed explicit and implicit servers (§7.5); the sorted-name
 attribution corrected (§5.1); `registry.Load` offline under
 `testing.Testing()` (§6.4); and the credentials pane listing every curated
 implicit provider (§11.3).
+
+Revision 12 incorporated the tenth adversarial review (two reviewers, 6
+scored findings, all accepted; both reported the data model, resolution,
+protocols, transports, errors, and implementation order converged): the
+credential order defined end to end, with `<NAME>_API_KEY` only for
+non-registry names so the endpoint stop cannot be bypassed through the
+store's name layer (§4, §10, §11.2); the Ollama and pseudo-provider
+provider-level context-window default with the §14.1 disclosure (§6.2,
+§14.1); `Authenticator.Apply` taking `Resolved`, with the Codex
+authenticator owning the constant headers on every request including
+listing (§8.1, §9.5); the `testing.Testing()` offline default with the
+`WithFetcher`/`Offline: false` opt-out and a named `registry.Refresh`
+(§6.4); the `evener/auth/*` RPC family added to the hub change list
+(§11.3); plus the minor items: `Credential` without a registry-side
+fingerprint and with a `credential_headers` source, the client HMAC in the
+continuation scope (§4, §7.6); the `ProviderID` comment (§4.4); the
+`{openai, ollama}` fixture (§13); curated-only overlay keys and the
+`default_order` array (§10); goal 1 qualified for the cloud providers
+(§1); the tri-state variable's reader sites, the test idiom, and
+`EVENER_CREDENTIALS_CONFIG` as an `envvars.Var` (§14); the `gemini` alias
+and the tri-state in the checklist (§14.1); the wider docs list (§14); and
+the `--credential-header` wording (§11.2).
