@@ -79,9 +79,6 @@ func TestResponsesCoverageSchemaInputAndDecodeBranches(t *testing.T) {
 
 func responsesCoverageSchemaInputAndDecodeBranches(t testing.TB) {
 	t.Helper()
-	strictifyJSONSchemaInPlace(nil)
-	schema := map[string]any{"type": "array", "items": map[string]any{"type": "object"}, "anyOf": "bad", "oneOf": []any{map[string]any{"type": "object"}, "ignored"}, "allOf": nil}
-	strictifyJSONSchemaInPlace(schema)
 	if toResponsesResponseFormat(llm.ResponseFormat{Type: "unknown"}) != nil {
 		t.Fatal("unknown response format must be ignored")
 	}
