@@ -44,13 +44,23 @@ done
 native_targets() { bash "$runner" --list | awk -F: '$1=="native"{print $2":"$4}'; }
 mutated_targets() { [ -f "$manifest" ] && awk -F'\t' '$1!~/^#/ && NF>=2{print $2}' "$manifest" | sort -u; }
 
+# in_list <needle> <newline-delimited-list> — whole-line membership, pipe-free
+# on purpose: `printf | grep -qxF` exits grep at the hit while printf is still
+# writing, and pipefail then reports the producer's SIGPIPE (141) — a covered
+# target read as UNAUDITED (#277). A quoted case pattern is the same literal
+# whole-line test with no pipe to break. (Twin copy: fuzz-triage.sh.)
+in_list() { case "$2" in *$'\n'"$1"$'\n'*) return 0 ;; *) return 1 ;; esac; }
+
 report_gaps() {
-	local t covered=0 gap=0 muts
-	muts="$(mutated_targets)"
+	local t covered=0 gap=0 muts_nl
+	# Frame the mutated-target list with \n (command substitution strips the
+	# trailing newline) so whole-line matching below sees the first and last
+	# lines too.
+	muts_nl=$'\n'"$(mutated_targets)"$'\n'
 	echo "fuzz-oracle-audit: oracle coverage"
 	while read -r t; do
 		[ -n "$t" ] || continue
-		if printf '%s\n' "$muts" | grep -qxF "$t"; then
+		if in_list "$t" "$muts_nl"; then
 			covered=$((covered + 1))
 		else
 			echo "    UNAUDITED: $t"; gap=$((gap + 1))
@@ -97,14 +107,21 @@ run_seeds() {
 	REPRO_OUT="$(cd "$wt/$1" && EVENER_FUZZ_TESTS=1 "$go_bin" test ${tags:+-tags "$tags"} -run "^$3\$" -count=1 "$2" 2>&1)"
 	REPRO_RC=$?
 }
-build_failed() { printf '%s' "$REPRO_OUT" | grep -qE '\[build failed\]|\[setup failed\]'; }
+# build_failed matches POSIX ERE, pipe-free on purpose: `printf | grep -qE`
+# exits grep at the hit while printf is still writing, and pipefail then reports
+# the producer's SIGPIPE (141) — a build failure could read as a clean build
+# (#277). `[[ =~ ]]` applies the same ERE with no pipe to break; the regex
+# rides in a variable because that is the one spelling every bash (3.2 on up,
+# the stock macOS shell included) treats literally instead of re-parsing.
+build_failed() {
+	local re='\[build failed\]|\[setup failed\]'
+	[[ "$REPRO_OUT" =~ $re ]]
+}
 
 # Per-target clean-tree memo as two newline-delimited lists (ok / bad):
 # bash 3.2 — the stock macOS bash — has no associative arrays.
 clean_ok_list=$'\n'
 clean_bad_list=$'\n'
-# in_list <needle> <newline-delimited-list>
-in_list() { case "$2" in *$'\n'"$1"$'\n'*) return 0 ;; *) return 1 ;; esac; }
 pass=0 blind=0 rot=0 err=0 audited=0
 
 while IFS=$'\t' read -r id target patchfile desc; do

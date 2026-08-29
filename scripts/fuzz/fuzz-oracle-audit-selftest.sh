@@ -19,7 +19,11 @@ scratch_dir work fuzz-oracle-audit-selftest
 # assert_str_has STRING NEEDLE DESC — DESC passes if STRING contains NEEDLE.
 # Distinct from the lib's file-based assert_has: every call site here already
 # has its candidate output in hand as a string, not as a file on disk.
-assert_str_has() { if printf '%s' "$1" | grep -qF -- "$2"; then ok "$3"; else bad "$3 (missing: $2)"; printf '%s\n' "$1" | sed 's/^/    | /'; fi; }
+# Pipe-free on purpose: `printf | grep -qF` exits grep at the first hit while
+# printf is still writing a >pipe-buffer string, so pipefail reported the
+# producer's SIGPIPE (141) and a true match read as "missing" (#277). A quoted
+# `[[ == *"$2"* ]]` is the same literal-substring test with no pipe to break.
+assert_str_has() { if [[ "$1" == *"$2"* ]]; then ok "$3"; else bad "$3 (missing: $2)"; printf '%s\n' "$1" | sed 's/^/    | /'; fi; }
 
 repo="$work/repo"
 mkdir -p "$repo/fuzz/mutations"
@@ -142,5 +146,13 @@ out2="$(run_audit --gap-only)"; rc2=$?
 set -e
 assert_str_has "$out2" "UNAUDITED: .:FuzzUnaudited" "gap-only: lists the unaudited target"
 assert_eq "$rc2" "0" "gap-only: exits zero (report, not a gate)"
+
+# --- SIGPIPE regression (#277) -----------------------------------------------
+# A needle in the FIRST line of a >pipe-buffer multi-line string must not read
+# as "missing" (mechanism documented on assert_str_has above). Multi-line is
+# load-bearing: grep buffers whole lines, so a single-line probe cannot fill
+# the pipe.
+big="NEEDLE-FIRST-LINE"$'\n'"$(printf 'filler line %d, long enough and repeated enough to overflow any pipe buffer\n' {1..20000})"
+assert_str_has "$big" "NEEDLE-FIRST-LINE" "containment holds on >pipe-buffer output (no SIGPIPE false negative)"
 
 selftest_summary
