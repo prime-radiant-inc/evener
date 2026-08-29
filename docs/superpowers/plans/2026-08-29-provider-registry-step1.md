@@ -4718,6 +4718,12 @@ func (r *Registry) validateRecord(rec *record) error {
 		if !layer.own {
 			continue
 		}
+		if rec.head.Protocol == "" {
+			// No protocol (the upstream entry vanished, or an npm the
+			// converter hides): the record is Hidden, and there is no
+			// prunable set to check its fields against.
+			break
+		}
 		if err := ValidateFields(layer.provider.Fields, rec.head.Protocol, layer.tag+" "+where); err != nil {
 			return err
 		}
@@ -6772,7 +6778,7 @@ git commit -m "feat(registry): Resolve with lookup order, alias seeding, glob or
 **Files:**
 - Create: `llm/registry/refresh.go`
 - Create: `llm/registry/internal/snapshotreport/main.go`
-- Modify: `llm/registry/load.go` (`Load` prefers a newer cache; starts the background refresh unless offline; new fields `refreshStarted bool`, `refreshDone chan struct{}`; new option `WithLog`)
+- Modify: `llm/registry/load.go` (`Load` prefers a newer cache; starts the background refresh unless offline; new fields `refreshStarted bool`, `refreshDone chan struct{}`; new option `WithLog`; `validateRecord` skips the `fields` check for a record with no protocol — such a record is hidden and has no prunable set — so an overlay stanza for a provider that vanished upstream cannot fail a load or a refresh validation)
 - Test: `llm/registry/refresh_test.go`
 
 **Interfaces:**
@@ -6793,6 +6799,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"sort"
 	"testing"
 	"time"
 )
@@ -6806,22 +6813,37 @@ func fixtureBytes(t *testing.T) []byte {
 	return data
 }
 
-// subsetFixture drops n providers from the fixture.
+// subsetFixture drops the first n providers (by sorted id) from the fixture,
+// so the subset is the same on every run.
 func subsetFixture(t *testing.T, n int) []byte {
 	t.Helper()
 	var all map[string]json.RawMessage
 	if err := json.Unmarshal(fixtureBytes(t), &all); err != nil {
 		t.Fatal(err)
 	}
+	ids := make([]string, 0, len(all))
 	for id := range all {
-		if n == 0 {
-			break
-		}
-		delete(all, id)
-		n--
+		ids = append(ids, id)
 	}
-	out, _ := json.Marshal(all)
+	sort.Strings(ids)
+	for _, id := range ids[:n] {
+		delete(all, id)
+	}
+	out, err := json.Marshal(all)
+	if err != nil {
+		t.Fatal(err)
+	}
 	return out
+}
+
+// An overlay stanza for a provider that vanished upstream must not fail the
+// load: the record has no protocol, is hidden, and its fields go unchecked.
+func TestLoad_OverlayProviderMissingUpstreamIsHidden(t *testing.T) {
+	r := fixtureLoad(t, nil, "", WithOverlay(overlayWith("[providers.vanished]\nfields = { store = true }\nbase_url = \"https://x/v1\"\n")))
+	p, ok := r.Provider("vanished")
+	if !ok || !p.Hidden {
+		t.Fatalf("vanished provider: ok=%v hidden=%v", ok, p.Hidden)
+	}
 }
 
 type fakeFetch struct {
