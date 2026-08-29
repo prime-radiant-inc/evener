@@ -78,6 +78,8 @@ native:llm:./providers/google:FuzzGeminiStreamMetamorphic
 native:llm:./providers/google:FuzzGeminiStreamStructured
 native:llm:./providers/openaicompat:FuzzOpenAICompatStreamMetamorphic
 native:llm:./providers/openaicompat:FuzzOpenAICompatStreamStructured
+native:llm:./providers/chatcompletions:FuzzChatCompletionsBuildBody
+native:llm:./providers/chatcompletions:FuzzChatCompletionsStreamMetamorphic
 native:.:./cmd/evener-hub:FuzzWebHandler
 native:.:./appwire:FuzzCodexItemDecode
 native:llm:./providercfg:FuzzProvidersTOMLLoad

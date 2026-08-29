@@ -7,8 +7,6 @@
 package chatcompletions
 
 import (
-	"context"
-	"errors"
 	"net/http"
 	"slices"
 
@@ -46,31 +44,4 @@ func (*Protocol) PrunablePaths() []string {
 // BuildBody implements llm.Protocol for a non-streaming request.
 func (*Protocol) BuildBody(req llm.Request, res registry.Resolved) (map[string]any, error) {
 	return buildBody(req, res, false)
-}
-
-// errUnimplemented is returned by the transport methods below, which Task 7
-// replaces with the real HTTP call, stream decoder, and model listing. Task
-// 6 only builds request bodies, but llm.Protocol's method set — and the
-// init() registration TestPrunablePathsMatchRegistry depends on — requires
-// all seven methods to exist, so these four are temporary stand-ins.
-var errUnimplemented = errors.New("chatcompletions: not implemented until Task 7")
-
-// Complete implements llm.Protocol; Task 7 replaces this stub.
-func (*Protocol) Complete(context.Context, llm.Request, registry.Resolved) (llm.Response, error) {
-	return llm.Response{}, errUnimplemented
-}
-
-// Stream implements llm.Protocol; Task 7 replaces this stub.
-func (*Protocol) Stream(context.Context, llm.Request, registry.Resolved) (llm.Stream, error) {
-	return nil, errUnimplemented
-}
-
-// ListModels implements llm.Protocol; Task 7 replaces this stub.
-func (*Protocol) ListModels(context.Context, registry.Resolved) ([]registry.Model, error) {
-	return nil, errUnimplemented
-}
-
-// CountTokens implements llm.Protocol; Task 7 replaces this stub.
-func (*Protocol) CountTokens(context.Context, llm.Request, registry.Resolved) (int, error) {
-	return 0, errUnimplemented
 }
