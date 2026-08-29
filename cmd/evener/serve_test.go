@@ -587,9 +587,10 @@ func TestRunServeShutdownWaitsForInFlightInput(t *testing.T) {
 
 	ref := appwire.Ref{SourceID: "local", ThreadID: entry.SessionID}.String()
 	if _, err := client.TurnStart(ctx, appwire.TurnStartParams{
-		ClientMutationID: "shutdown-in-flight",
-		Ref:              ref,
-		Input:            []appwire.InputItem{{Type: "text", Text: "stay busy until shutdown"}},
+		ClientMutationID:   "shutdown-in-flight",
+		ExpectedInstanceID: entry.SessionID,
+		Ref:                ref,
+		Input:              []appwire.InputItem{{Type: "text", Text: "stay busy until shutdown"}},
 	}); err != nil {
 		t.Fatalf("TurnStart: %v", err)
 	}
@@ -747,87 +748,6 @@ func TestServeClient_APILogWritesJSONL(t *testing.T) {
 	case <-called:
 	default:
 		t.Fatal("fake adapter was not called")
-	}
-}
-
-func TestRunServeClearReleasesOldSessionAPILogRoute(t *testing.T) {
-	stateDir := t.TempDir()
-	deps := defaultServeDeps()
-	deps.ensureConfigDirs = func() error { return nil }
-	deps.seedMarketplaces = func() error { return nil }
-	deps.newClient = func(string, io.Writer) (*llm.Client, providercfg.Config, bool, func() error, error) {
-		client := llm.NewClient()
-		client.Register(serveLoggingAdapter{})
-		cfg := providercfg.Config{
-			Default: "openai",
-			Instances: []providercfg.InstanceConfig{
-				{Name: "openai", Type: "openai"},
-			},
-		}
-		return client, cfg, true, func() error { return nil }, nil
-	}
-	var logger *llm.APILogger
-	deps.attachAPILogger = func(client *llm.Client, stateDir string, _ io.Writer) (func(string) error, func() error, error) {
-		var err error
-		logger, err = llm.NewSessionAPILogger(stateDir)
-		if err != nil {
-			return nil, nil, err
-		}
-		client.Use(logger)
-		return logger.ReserveSession, logger.Close, nil
-	}
-
-	runDir := t.TempDir()
-	workDir := t.TempDir()
-	done := make(chan error, 1)
-	go func() {
-		done <- runServeWithDeps([]string{
-			"--model", "openai/gpt-test",
-			"--addr", "127.0.0.1:0",
-			"--dir", workDir,
-			"--state-dir", stateDir,
-			"--run-dir", runDir,
-			"--no-project-prompts",
-		}, deps)
-	}()
-
-	entry := waitForServeTestRendezvous(t, runDir)
-	t.Cleanup(func() {
-		if err := shutdownServeTestDaemon(context.Background(), entry.Address, entry.SessionID); err != nil {
-			return
-		}
-	})
-	if err := logger.ReserveSession(entry.SessionID); err != nil {
-		t.Fatalf("ReserveSession old route: %v", err)
-	}
-	resp, err := http.Post("http://"+entry.Address+"/clear", "", nil)
-	if err != nil {
-		t.Fatalf("POST /clear: %v", err)
-	}
-	resp.Body.Close()
-	if resp.StatusCode != http.StatusNoContent {
-		t.Fatalf("POST /clear status = %d, want %d", resp.StatusCode, http.StatusNoContent)
-	}
-
-	reopened, err := llm.NewSessionAPILogger(stateDir)
-	if err != nil {
-		t.Fatalf("NewSessionAPILogger after clear: %v", err)
-	}
-	defer reopened.Close() //nolint:errcheck
-	if err := reopened.ReserveSession(entry.SessionID); err != nil {
-		t.Fatalf("old session API-log route remained owned after /clear: %v", err)
-	}
-
-	if err := shutdownServeTestDaemon(context.Background(), entry.Address, entry.SessionID); err != nil {
-		t.Fatalf("thread/shutdown: %v", err)
-	}
-	select {
-	case err := <-done:
-		if err != nil {
-			t.Fatalf("runServeWithDeps: %v", err)
-		}
-	case <-time.After(5 * time.Second):
-		t.Fatal("runServeWithDeps did not exit after shutdown")
 	}
 }
 

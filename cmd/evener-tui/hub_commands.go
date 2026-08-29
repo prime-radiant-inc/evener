@@ -594,11 +594,12 @@ func modelDiagnosticDisabledReason(diagnostic appwire.ModelListDiagnostic) strin
 	return reason
 }
 
-func sendHubInput(client *appwire.Client, ref appwire.Ref, text string, draft string, attachments []*clipboard.PastedImage) tea.Cmd {
+func sendHubInput(client *appwire.Client, ref appwire.Ref, text string, draft string, attachments []*clipboard.PastedImage, expectedInstanceIDs ...string) tea.Cmd {
 	trackedAttachmentSubmit := len(attachments) > 0
 	// Minted here rather than inside the closure: one user action is one
 	// mutation, whatever happens to the command afterwards.
 	mutationID, idErr := newClientMutationID()
+	expectedInstanceID := mutationInstanceID(ref, expectedInstanceIDs...)
 	return func() tea.Msg {
 		if idErr != nil {
 			return hubSendMsg{ref: ref.String(), text: text, draft: draft, trackedAttachmentSubmit: trackedAttachmentSubmit, submittedAttachments: attachments, err: idErr}
@@ -608,9 +609,10 @@ func sendHubInput(client *appwire.Client, ref appwire.Ref, text string, draft st
 			return hubSendMsg{ref: ref.String(), text: text, draft: draft, trackedAttachmentSubmit: trackedAttachmentSubmit, submittedAttachments: attachments, err: err}
 		}
 		resp, err := client.TurnStart(context.Background(), appwire.TurnStartParams{
-			Ref:              ref.String(),
-			ClientMutationID: mutationID,
-			Input:            appendTextInput(text, items),
+			Ref:                ref.String(),
+			ClientMutationID:   mutationID,
+			ExpectedInstanceID: expectedInstanceID,
+			Input:              appendTextInput(text, items),
 		})
 		return hubSendMsg{ref: ref.String(), text: text, draft: draft, turnID: resp.Turn.ID, trackedAttachmentSubmit: trackedAttachmentSubmit, submittedAttachments: attachments, err: err}
 	}
@@ -639,11 +641,12 @@ func fetchHubTasksSync(ctx context.Context, client *appwire.Client, ref appwire.
 	return tasks, nil
 }
 
-func sendHubAction(client *appwire.Client, ref appwire.Ref, action string) tea.Cmd {
+func sendHubAction(client *appwire.Client, ref appwire.Ref, action string, expectedInstanceIDs ...string) tea.Cmd {
 	// Only the interrupt branch is a retry-safe turn mutation; the rest are
 	// thread-level calls the guard does not cover. Minted unconditionally so the
 	// identity is fixed to the action, not to the branch taken at run time.
 	mutationID, idErr := newClientMutationID()
+	expectedInstanceID := mutationInstanceID(ref, expectedInstanceIDs...)
 	return func() tea.Msg {
 		var err error
 		switch action {
@@ -652,8 +655,9 @@ func sendHubAction(client *appwire.Client, ref appwire.Ref, action string) tea.C
 				return hubActionMsg{action: action, err: idErr}
 			}
 			err = client.TurnInterrupt(context.Background(), appwire.TurnInterruptParams{
-				Ref:              ref.String(),
-				ClientMutationID: mutationID,
+				Ref:                ref.String(),
+				ClientMutationID:   mutationID,
+				ExpectedInstanceID: expectedInstanceID,
 			})
 		case "compact":
 			err = client.ThreadCompactStart(context.Background(), appwire.ThreadCompactStartParams{Ref: ref.String()})
@@ -750,9 +754,17 @@ func textInput(text string) []appwire.InputItem {
 	return []appwire.InputItem{{Type: "text", Text: text}}
 }
 
-func sendHubClear(client *appwire.Client, ref appwire.Ref) tea.Cmd {
+func sendHubClear(client *appwire.Client, ref appwire.Ref, expectedInstanceID string) tea.Cmd {
+	mutationID, idErr := newClientMutationID()
 	return func() tea.Msg {
-		resp, err := client.ThreadClear(context.Background(), appwire.ThreadClearParams{Ref: ref.String()})
+		if idErr != nil {
+			return hubClearMsg{resp: hubRefResponse{Ref: ref.String()}, err: idErr}
+		}
+		resp, err := client.ThreadClear(context.Background(), appwire.ThreadClearParams{
+			Ref:                ref.String(),
+			ClientMutationID:   mutationID,
+			ExpectedInstanceID: expectedInstanceID,
+		})
 		return hubClearMsg{resp: hubRefResponse{Ref: resp.Ref}, err: err}
 	}
 }

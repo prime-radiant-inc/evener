@@ -191,9 +191,10 @@ func TestRunServeStopParksTheQueuedMessageUntilTheUserActs(t *testing.T) {
 	daemon := startStopParkDaemon(t)
 
 	if _, err := daemon.client.TurnStart(daemon.ctx, appwire.TurnStartParams{
-		ClientMutationID: "turn-one",
-		Ref:              daemon.ref,
-		Input:            []appwire.InputItem{{Type: "text", Text: "first message"}},
+		ClientMutationID:   "turn-one",
+		ExpectedInstanceID: strings.TrimPrefix(daemon.ref, "local:"),
+		Ref:                daemon.ref,
+		Input:              []appwire.InputItem{{Type: "text", Text: "first message"}},
 	}); err != nil {
 		t.Fatalf("TurnStart: %v", err)
 	}
@@ -204,16 +205,18 @@ func TestRunServeStopParksTheQueuedMessageUntilTheUserActs(t *testing.T) {
 	// The collision: a second message queued while turn one is mid-model-call.
 	// Accepting it is what arms the daemon's queued-input wake.
 	if err := daemon.client.TurnQueue(daemon.ctx, appwire.TurnQueueParams{
-		ClientMutationID: "queued-behind-stop",
-		Ref:              daemon.ref,
-		Input:            []appwire.InputItem{{Type: "text", Text: "run me later"}},
+		ClientMutationID:   "queued-behind-stop",
+		ExpectedInstanceID: strings.TrimPrefix(daemon.ref, "local:"),
+		Ref:                daemon.ref,
+		Input:              []appwire.InputItem{{Type: "text", Text: "run me later"}},
 	}); err != nil {
 		t.Fatalf("TurnQueue: %v", err)
 	}
 
 	if err := daemon.client.TurnInterrupt(daemon.ctx, appwire.TurnInterruptParams{
-		ClientMutationID: "stop-mid-turn",
-		Ref:              daemon.ref,
+		ClientMutationID:   "stop-mid-turn",
+		ExpectedInstanceID: strings.TrimPrefix(daemon.ref, "local:"),
+		Ref:                daemon.ref,
 	}); err != nil {
 		t.Fatalf("TurnInterrupt: %v", err)
 	}
@@ -234,9 +237,10 @@ func TestRunServeStopParksTheQueuedMessageUntilTheUserActs(t *testing.T) {
 	// The park ends when the user acts. Queueing another message is one of the
 	// ordinary ways to say "carry on": the parked head runs first, FIFO.
 	if err := daemon.client.TurnQueue(daemon.ctx, appwire.TurnQueueParams{
-		ClientMutationID: "queued-after-stop",
-		Ref:              daemon.ref,
-		Input:            []appwire.InputItem{{Type: "text", Text: "and me too"}},
+		ClientMutationID:   "queued-after-stop",
+		ExpectedInstanceID: strings.TrimPrefix(daemon.ref, "local:"),
+		Ref:                daemon.ref,
+		Input:              []appwire.InputItem{{Type: "text", Text: "and me too"}},
 	}); err != nil {
 		t.Fatalf("TurnQueue after the stop: %v", err)
 	}

@@ -2806,7 +2806,17 @@ func TestHubModelActionsAndClearUseAppWire(t *testing.T) {
 		appserver.HandleTyped(app.Router(), appwire.MethodThreadClear, func(context.Context, appwire.ThreadClearParams) (appwire.ThreadClearResponse, error) {
 			methods = append(methods, appwire.MethodThreadClear)
 			thread := appwireThread(hubTreeNode{Ref: "local:02NEW", SessionID: "02NEW", Title: "new session", State: "idle", Project: "evener", Live: true}, "/tmp/evener")
-			return appwire.ThreadClearResponse{Thread: thread, Ref: thread.Evener.Ref}, nil
+			return appwire.ThreadClearResponse{
+				Thread: thread,
+				Ref:    thread.Evener.Ref,
+				Receipt: appwire.MutationReceipt{
+					ClientMutationID: "clear-test",
+					Disposition:      appwire.MutationDispositionApplied,
+					ThreadID:         thread.ID,
+					InstanceID:       thread.Evener.InstanceID,
+					ProjectionState:  appwire.MutationProjectionReflected,
+				},
+			}, nil
 		})
 		appserver.HandleTyped(app.Router(), appwire.MethodThreadRead, func(context.Context, appwire.ThreadReadParams) (appwire.ThreadReadResponse, error) {
 			methods = append(methods, appwire.MethodThreadRead)
@@ -4321,7 +4331,8 @@ func appwireThread(node hubTreeNode, cwd string) appwire.Thread {
 		Source:        ref.SourceID,
 		Status:        appwire.ThreadStatus{Type: status},
 		Evener: appwire.EvenerThread{
-			Ref: node.Ref,
+			Ref:        node.Ref,
+			InstanceID: threadID,
 			Capabilities: appwire.ThreadCapabilities{
 				Send:         true,
 				Steer:        true,

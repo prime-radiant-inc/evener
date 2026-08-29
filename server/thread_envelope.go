@@ -307,6 +307,7 @@ func (s *Server) refreshFacets(facets envelopeFacet) {
 	sourceID := s.appSourceID
 	taskCarrierGeneration := s.appEnvelope.taskCarrierGeneration
 	goalCarrierGeneration := s.appEnvelope.goalCarrierGeneration
+	ref := s.appRef
 	s.mu.RUnlock()
 	if src == nil {
 		return
@@ -315,7 +316,9 @@ func (s *Server) refreshFacets(facets envelopeFacet) {
 	if stampSourceID == "" {
 		stampSourceID = "local"
 	}
-	ref := appwire.Ref{SourceID: stampSourceID, ThreadID: threadID}.String()
+	if ref == "" {
+		ref = appwire.Ref{SourceID: stampSourceID, ThreadID: threadID}.String()
+	}
 
 	var next threadEnvelope
 	if facets&facetContext != 0 {
@@ -383,7 +386,7 @@ func (s *Server) refreshFacets(facets envelopeFacet) {
 	// Sampling above ran outside s.mu and took no projection lock, so unlike the
 	// read-time pull this replaced it is NOT mutually excluded from
 	// ReplaceAppIdentity's commit -- and in production it genuinely interleaves,
-	// because /clear runs that commit while the outgoing session's bridge is
+	// because thread/clear runs that commit while the outgoing session's bridge is
 	// still draining and only closes it afterwards. Storing a sample taken
 	// before the replacement would publish the retired session's title, queue,
 	// failure count and escalation cards under its successor's identity, with

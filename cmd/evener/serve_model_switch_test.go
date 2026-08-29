@@ -289,9 +289,10 @@ func TestServeModelSwitch_ProviderFailureRestoresCapability(t *testing.T) {
 	}()
 
 	_, err = client.TurnStart(ctx, appwire.TurnStartParams{
-		ClientMutationID: "provider-failure-turn",
-		Ref:              ref,
-		Input:            []appwire.InputItem{{Type: "text", Text: "make the first request"}},
+		ClientMutationID:   "provider-failure-turn",
+		ExpectedInstanceID: entry.SessionID,
+		Ref:                ref,
+		Input:              []appwire.InputItem{{Type: "text", Text: "make the first request"}},
 	})
 	if err != nil {
 		t.Fatalf("TurnStart (failed provider): %v", err)
@@ -321,9 +322,10 @@ func TestServeModelSwitch_ProviderFailureRestoresCapability(t *testing.T) {
 		t.Fatalf("ThreadModelSet after provider failure: %v", err)
 	}
 	recovery, err := client.TurnStart(ctx, appwire.TurnStartParams{
-		ClientMutationID: "provider-recovery-turn",
-		Ref:              ref,
-		Input:            []appwire.InputItem{{Type: "text", Text: "recover on the selected provider"}},
+		ClientMutationID:   "provider-recovery-turn",
+		ExpectedInstanceID: entry.SessionID,
+		Ref:                ref,
+		Input:              []appwire.InputItem{{Type: "text", Text: "recover on the selected provider"}},
 	})
 	if err != nil {
 		t.Fatalf("TurnStart (recovered provider): %v", err)

@@ -94,7 +94,7 @@ no router (reserved).
 | `thread/start` | hub | `ThreadStartParams` | `ThreadStartResponse` | Starts a new thread and attaches a live-update relay. |
 | `thread/resume` | hub | `ThreadResumeParams` | `ThreadResumeResponse` | Resumes an existing session and attaches its relay. |
 | `thread/fork` | hub | `ThreadForkParams` | `ThreadForkResponse` | Forks a thread from a source turn, either replacing the turn with edited input or deferring the original input back to the client for editing (deferInput, mutually exclusive with editedInput). With `aside: true` (local evener threads only; mutually exclusive with sourceTurnId/editedInput/deferInput/label), forks the session at its tip into a side thread that inherits the parent's permissions and config. |
-| `thread/clear` | both | `ThreadClearParams` | `ThreadClearResponse` | Clears the thread's conversation (rejected while a turn is processing). |
+| `thread/clear` | both | `ThreadClearParams` | `ThreadClearResponse` | Clears the thread's conversation when no turn, queued, or approval work is unresolved. |
 | `thread/model/set` | both | `ThreadModelSetParams` | `EmptyResponse` | Changes the session's model/provider. |
 | `evener/thread/name/set` | both | `ThreadNameSetParams` | `EmptyResponse` | Sets a user-chosen session title (rename). |
 | `thread/reasoning-effort/set` | both | `ThreadReasoningEffortSetParams` | `EmptyResponse` | Sets reasoning effort, normalizing and validating the value. |
@@ -1383,6 +1383,8 @@ _(no fields)_
 | Field | Go type | Omitempty | Embedded |
 |-------|---------|-----------|----------|
 | `ref` | `string` |  |  |
+| `clientMutationId` | `string` |  |  |
+| `expectedInstanceId` | `string` |  |  |
 
 
 ### `ThreadClearResponse`
@@ -1391,6 +1393,7 @@ _(no fields)_
 |-------|---------|-----------|----------|
 | `thread` | `appwire.Thread` |  |  |
 | `ref` | `string` |  |  |
+| `receipt` | `appwire.MutationReceipt` |  |  |
 
 
 ### `ThreadClosedParams`
@@ -1754,6 +1757,7 @@ _(no fields)_
 | `ref` | `string` |  |  |
 | `index` | `int` |  |  |
 | `clientMutationId` | `string` |  |  |
+| `expectedInstanceId` | `string` |  |  |
 | `expectedEntryId` | `string` |  |  |
 
 
@@ -1782,6 +1786,7 @@ _(no fields)_
 |-------|---------|-----------|----------|
 | `ref` | `string` |  |  |
 | `clientMutationId` | `string` |  |  |
+| `expectedInstanceId` | `string` |  |  |
 | `expectedQueueRevision` | `uint64` |  |  |
 | `input` | `[]appwire.InputItem` | yes |  |
 
@@ -1800,6 +1805,7 @@ _(no fields)_
 | `ref` | `string` | yes |  |
 | `threadId` | `string` | yes |  |
 | `clientMutationId` | `string` |  |  |
+| `expectedInstanceId` | `string` |  |  |
 
 
 ### `TurnInterruptResponse`
@@ -1816,6 +1822,7 @@ _(no fields)_
 | `ref` | `string` |  |  |
 | `index` | `int` |  |  |
 | `clientMutationId` | `string` |  |  |
+| `expectedInstanceId` | `string` |  |  |
 | `expectedEntryId` | `string` |  |  |
 
 
@@ -1832,6 +1839,7 @@ _(no fields)_
 |-------|---------|-----------|----------|
 | `ref` | `string` |  |  |
 | `clientMutationId` | `string` |  |  |
+| `expectedInstanceId` | `string` |  |  |
 | `input` | `[]appwire.InputItem` | yes |  |
 
 
@@ -1849,6 +1857,7 @@ _(no fields)_
 | `ref` | `string` | yes |  |
 | `threadId` | `string` | yes |  |
 | `clientMutationId` | `string` |  |  |
+| `expectedInstanceId` | `string` |  |  |
 | `input` | `[]appwire.InputItem` | yes |  |
 
 
@@ -1876,6 +1885,7 @@ _(no fields)_
 | `ref` | `string` | yes |  |
 | `threadId` | `string` | yes |  |
 | `clientMutationId` | `string` |  |  |
+| `expectedInstanceId` | `string` |  |  |
 | `input` | `[]appwire.InputItem` | yes |  |
 
 

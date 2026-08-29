@@ -108,6 +108,33 @@ func Conflict(message string) WireError {
 	}
 }
 
+func MutationNotAccepted(clientMutationID, message string) WireError {
+	return WireError{
+		Code:    CodeConflict,
+		Message: message,
+		Data: ErrorData{
+			EvenerErrorInfo:  ErrorConflict,
+			ClientMutationID: clientMutationID,
+			MutationOutcome:  MutationOutcomeNotAccepted,
+			RetryDisposition: RetryDispositionNone,
+		},
+	}
+}
+
+func MutationUnknown(clientMutationID, message string) WireError {
+	return WireError{
+		Code:    CodeInternalError,
+		Message: message,
+		Data: ErrorData{
+			EvenerErrorInfo:  ErrorMutationOutcomeUnknown,
+			ClientMutationID: clientMutationID,
+			MutationOutcome:  MutationOutcomeUnknown,
+			RetryDisposition: RetryDispositionBlocked,
+			Cause:            "persistenceUnavailable",
+		},
+	}
+}
+
 func Unavailable(message string) WireError {
 	return WireError{
 		Code:    CodeUnavailable,

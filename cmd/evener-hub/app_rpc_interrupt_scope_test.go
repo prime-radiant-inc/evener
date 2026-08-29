@@ -66,8 +66,9 @@ func TestHubRPCRelaysSessionScopedInterrupt(t *testing.T) {
 
 	var stopped appwire.TurnInterruptResponse
 	if err := client.Request(context.Background(), appwire.MethodTurnInterrupt, appwire.TurnInterruptParams{
-		Ref:              "local:th_1",
-		ClientMutationID: "interrupt-session-scoped",
+		Ref:                "local:th_1",
+		ClientMutationID:   "interrupt-session-scoped",
+		ExpectedInstanceID: "sess_1",
 	}, &stopped); err != nil {
 		t.Fatalf("interrupt naming no turn: %v", err)
 	}

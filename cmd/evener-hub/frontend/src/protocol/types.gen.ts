@@ -347,6 +347,7 @@ export interface EvenerSubagentPreviewResponse {
 
 export interface EvenerThread {
   ref: string;
+  instanceId?: string;
   parentRef?: string;
   kind?: string;
   profile?: string;
@@ -896,6 +897,7 @@ export interface MutationReceipt {
   clientMutationId: string;
   disposition: string;
   threadId: string;
+  instanceId?: string;
   turnId?: string;
   queueEntryIds?: string[];
   projectionState: string;
@@ -1490,11 +1492,14 @@ export interface ThreadCapabilities {
 
 export interface ThreadClearParams {
   ref: string;
+  clientMutationId: string;
+  expectedInstanceId: string;
 }
 
 export interface ThreadClearResponse {
   thread: Thread;
   ref: string;
+  receipt: MutationReceipt;
 }
 
 export interface ThreadClosedParams {
@@ -1833,6 +1838,7 @@ export interface TurnCancelQueuedParams {
   ref: string;
   index: number;
   clientMutationId: string;
+  expectedInstanceId: string;
   expectedEntryId: string;
 }
 
@@ -1852,6 +1858,7 @@ export interface TurnCompletedParams {
 export interface TurnDrainAsSteerParams {
   ref: string;
   clientMutationId: string;
+  expectedInstanceId: string;
   expectedQueueRevision: number;
   input?: InputItem[];
 }
@@ -1874,6 +1881,7 @@ export interface TurnInterruptParams {
   ref?: string;
   threadId?: string;
   clientMutationId: string;
+  expectedInstanceId: string;
 }
 
 export interface TurnInterruptResponse {
@@ -1884,6 +1892,7 @@ export interface TurnPromoteQueuedAsSteerParams {
   ref: string;
   index: number;
   clientMutationId: string;
+  expectedInstanceId: string;
   expectedEntryId: string;
 }
 
@@ -1894,6 +1903,7 @@ export interface TurnPromoteQueuedAsSteerResponse {
 export interface TurnQueueParams {
   ref: string;
   clientMutationId: string;
+  expectedInstanceId: string;
   input?: InputItem[];
 }
 
@@ -1905,6 +1915,7 @@ export interface TurnStartParams {
   ref?: string;
   threadId?: string;
   clientMutationId: string;
+  expectedInstanceId: string;
   input?: InputItem[];
 }
 
@@ -1923,6 +1934,7 @@ export interface TurnSteerParams {
   ref?: string;
   threadId?: string;
   clientMutationId: string;
+  expectedInstanceId: string;
   input?: InputItem[];
 }
 

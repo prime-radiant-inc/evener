@@ -48,6 +48,13 @@ func TestSendHubInputSendsFreshClientMutationID(t *testing.T) {
 	}
 }
 
+func TestMutationInstanceIDUsesTheFirstAvailableIdentity(t *testing.T) {
+	ref := appwire.Ref{SourceID: "local", ThreadID: "workspace"}
+	if got := mutationInstanceID(ref, "", "live-instance"); got != "live-instance" {
+		t.Fatalf("mutationInstanceID = %q, want live-instance", got)
+	}
+}
+
 func TestSendHubActionInterruptSendsIdentityAndExpectedTurn(t *testing.T) {
 	app := appserver.NewServer(appserver.ServerConfig{ServerName: "hub", SourceID: "local"})
 	var got appwire.TurnInterruptParams

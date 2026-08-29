@@ -410,9 +410,10 @@ func TestRunServeInterruptSettlesClaimedPositiveWaitDelegateSend(t *testing.T) {
 	daemon := startWaiterInterruptDaemon(t)
 	defer daemon.releaseInterruptedSessionEnd()
 	started, err := daemon.client.TurnStart(daemon.ctx, appwire.TurnStartParams{
-		ClientMutationID: "waiter-interrupt-turn",
-		Ref:              daemon.ref,
-		Input:            []appwire.InputItem{{Type: "text", Text: waiterInterruptRootPrompt}},
+		ClientMutationID:   "waiter-interrupt-turn",
+		ExpectedInstanceID: strings.TrimPrefix(daemon.ref, "local:"),
+		Ref:                daemon.ref,
+		Input:              []appwire.InputItem{{Type: "text", Text: waiterInterruptRootPrompt}},
 	})
 	if err != nil {
 		t.Fatalf("TurnStart: %v", err)
@@ -435,7 +436,7 @@ func TestRunServeInterruptSettlesClaimedPositiveWaitDelegateSend(t *testing.T) {
 	// not the completion mechanism.
 	interruptCtx, cancelInterrupt := context.WithTimeout(daemon.ctx, 3*time.Second)
 	defer cancelInterrupt()
-	interrupt := appwire.TurnInterruptParams{ClientMutationID: "stop-claimed-waiter", Ref: daemon.ref}
+	interrupt := appwire.TurnInterruptParams{ClientMutationID: "stop-claimed-waiter", ExpectedInstanceID: strings.TrimPrefix(daemon.ref, "local:"), Ref: daemon.ref}
 	daemon.server.armProcessingBarrier()
 	defer daemon.server.releaseProcessingBarrier()
 	interruptResult := make(chan error, 1)
@@ -536,9 +537,10 @@ func TestRunServeInterruptSettlesClaimedPositiveWaitDelegateSend(t *testing.T) {
 	// same accepted mutation. Reading the snapshot again proves later client
 	// mutations are no longer trapped behind the completed interrupt.
 	if err := daemon.client.TurnQueue(daemon.ctx, appwire.TurnQueueParams{
-		ClientMutationID: "reengage-after-stop",
-		Ref:              daemon.ref,
-		Input:            []appwire.InputItem{{Type: "text", Text: "resume after stop"}},
+		ClientMutationID:   "reengage-after-stop",
+		ExpectedInstanceID: strings.TrimPrefix(daemon.ref, "local:"),
+		Ref:                daemon.ref,
+		Input:              []appwire.InputItem{{Type: "text", Text: "resume after stop"}},
 	}); err != nil {
 		t.Fatalf("TurnQueue after interrupt: %v", err)
 	}

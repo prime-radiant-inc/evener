@@ -642,12 +642,23 @@ func TestCovSendHubClear(t *testing.T) {
 			if params.Ref != "local:01TEST" {
 				t.Errorf("ref = %q", params.Ref)
 			}
-			return appwire.ThreadClearResponse{Ref: "local:01CLEARED"}, nil
+			if params.ClientMutationID == "" || params.ExpectedInstanceID == "" {
+				t.Errorf("clear params = %+v, want mutation and instance identities", params)
+			}
+			return appwire.ThreadClearResponse{
+				Ref: "local:01CLEARED",
+				Receipt: appwire.MutationReceipt{
+					ClientMutationID: params.ClientMutationID,
+					Disposition:      appwire.MutationDispositionApplied,
+					ThreadID:         "01CLEARED",
+					ProjectionState:  appwire.MutationProjectionReflected,
+				},
+			}, nil
 		})
 	})
 	defer cleanup()
 	ref := appwire.Ref{SourceID: "local", ThreadID: "01TEST"}
-	msg, ok := sendHubClear(client, ref)().(hubClearMsg)
+	msg, ok := sendHubClear(client, ref, "01TEST")().(hubClearMsg)
 	if !ok || msg.err != nil || msg.resp.Ref != "local:01CLEARED" {
 		t.Fatalf("clear result = %#v", msg)
 	}

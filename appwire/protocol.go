@@ -98,7 +98,7 @@ var Methods = []MethodSpec{
 	{MethodThreadStart, ThreadStartParams{}, ThreadStartResponse{}, ScopeHub, "Starts a new thread and attaches a live-update relay."},
 	{MethodThreadResume, ThreadResumeParams{}, ThreadResumeResponse{}, ScopeHub, "Resumes an existing session and attaches its relay."},
 	{MethodThreadFork, ThreadForkParams{}, ThreadForkResponse{}, ScopeHub, "Forks a thread from a source turn, either replacing the turn with edited input or deferring the original input back to the client for editing (deferInput, mutually exclusive with editedInput). With `aside: true` (local evener threads only; mutually exclusive with sourceTurnId/editedInput/deferInput/label), forks the session at its tip into a side thread that inherits the parent's permissions and config."},
-	{MethodThreadClear, ThreadClearParams{}, ThreadClearResponse{}, ScopeBoth, "Clears the thread's conversation (rejected while a turn is processing)."},
+	{MethodThreadClear, ThreadClearParams{}, ThreadClearResponse{}, ScopeBoth, "Clears the thread's conversation when no turn, queued, or approval work is unresolved."},
 	{MethodThreadModelSet, ThreadModelSetParams{}, EmptyResponse{}, ScopeBoth, "Changes the session's model/provider."},
 	{MethodEvenerThreadNameSet, ThreadNameSetParams{}, EmptyResponse{}, ScopeBoth, "Sets a user-chosen session title (rename)."},
 	{MethodThreadReasoningEffortSet, ThreadReasoningEffortSetParams{}, EmptyResponse{}, ScopeBoth, "Sets reasoning effort, normalizing and validating the value."},
@@ -185,13 +185,14 @@ func ValidateMutationParams(method string, raw json.RawMessage) error {
 	// identity every retry-safe mutation needs, plus the preconditions that name
 	// a real object rather than a moment in time.
 	required := map[string][]string{
-		MethodTurnStart:                {"clientMutationId"},
-		MethodTurnSteer:                {"clientMutationId"},
-		MethodTurnInterrupt:            {"clientMutationId"},
-		MethodTurnQueue:                {"clientMutationId"},
-		MethodTurnDrainAsSteer:         {"clientMutationId", "expectedQueueRevision"},
-		MethodTurnPromoteQueuedAsSteer: {"clientMutationId", "expectedEntryId"},
-		MethodTurnCancelQueued:         {"clientMutationId", "expectedEntryId"},
+		MethodTurnStart:                {"clientMutationId", "expectedInstanceId"},
+		MethodTurnSteer:                {"clientMutationId", "expectedInstanceId"},
+		MethodTurnInterrupt:            {"clientMutationId", "expectedInstanceId"},
+		MethodTurnQueue:                {"clientMutationId", "expectedInstanceId"},
+		MethodTurnDrainAsSteer:         {"clientMutationId", "expectedInstanceId", "expectedQueueRevision"},
+		MethodTurnPromoteQueuedAsSteer: {"clientMutationId", "expectedInstanceId", "expectedEntryId"},
+		MethodTurnCancelQueued:         {"clientMutationId", "expectedInstanceId", "expectedEntryId"},
+		MethodThreadClear:              {"clientMutationId", "expectedInstanceId"},
 	}[method]
 	if len(required) == 0 {
 		return nil

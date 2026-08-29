@@ -148,8 +148,9 @@ func TestQueuedInputRunsAfterItsWakeIsDropped(t *testing.T) {
 	srv.SubmitContinuation("keep the slot busy")
 
 	if _, err := sess.AcceptClientMutationQueue(appwire.TurnQueueParams{
-		ClientMutationID: "cm-queued-under-full-slot",
-		Input:            []appwire.InputItem{{Type: "text", Text: queuedText}},
+		ClientMutationID:   "cm-queued-under-full-slot",
+		ExpectedInstanceID: sess.ID(),
+		Input:              []appwire.InputItem{{Type: "text", Text: queuedText}},
 	}); err != nil {
 		t.Fatalf("AcceptClientMutationQueue: %v", err)
 	}

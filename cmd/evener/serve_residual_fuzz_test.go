@@ -50,7 +50,7 @@ type residualServeServer struct {
 	tasks          func() any
 	jobs           func(appwire.JobsListParams) (any, error)
 	jobOutput      func(string, int64, int64) (any, bool, error)
-	clear          func(context.Context) error
+	clear          func(context.Context, appwire.ThreadClearParams) error
 	shutdown       func()
 }
 
@@ -97,8 +97,10 @@ func (s *residualServeServer) SetJobsFunc(f func(appwire.JobsListParams) (any, e
 func (s *residualServeServer) SetJobOutputFunc(f func(string, int64, int64) (any, bool, error)) {
 	s.jobOutput = f
 }
-func (s *residualServeServer) SetClearFunc(f func(context.Context) error) { s.clear = f }
-func (s *residualServeServer) SetShutdownFunc(f func())                   { s.shutdown = f }
+func (s *residualServeServer) SetClearFunc(f func(context.Context, appwire.ThreadClearParams) error) {
+	s.clear = f
+}
+func (s *residualServeServer) SetShutdownFunc(f func()) { s.shutdown = f }
 
 func exerciseResidualCallbacks(s *residualServeServer, sessionID string) {
 	ctx := context.Background()
@@ -298,7 +300,7 @@ func TestRunServeResidualCoverage(t *testing.T) {
 			captured.input <- server.InputMessage{Text: "hello", Kind: agent.EntryUserInput}
 			close(captured.input)
 			time.Sleep(20 * time.Millisecond)
-			_ = captured.clear(context.Background())
+			_ = captured.clear(context.Background(), appwire.ThreadClearParams{Ref: "local:" + sessionID, ClientMutationID: "clear", ExpectedInstanceID: sessionID})
 			captured.shutdown()
 			return http.ErrServerClosed
 		}
@@ -338,12 +340,12 @@ func TestRunServeResidualCoverage(t *testing.T) {
 		{"clear prepare error", func(d *serveDeps) {
 			prepare := d.prepareAppIdentity
 			calls := 0
-			d.prepareAppIdentity = func(sourceID, threadID, transcriptPath string) (server.PreparedAppIdentity, error) {
+			d.prepareAppIdentity = func(sourceID, threadID, ref, transcriptPath string) (server.PreparedAppIdentity, error) {
 				calls++
 				if calls > 1 {
 					return server.PreparedAppIdentity{}, boom
 				}
-				return prepare(sourceID, threadID, transcriptPath)
+				return prepare(sourceID, threadID, ref, transcriptPath)
 			}
 		}},
 		{"clear rendezvous error", func(d *serveDeps) { d.updateSessionID = func(*rvreg.Registration, string) error { return boom } }},
@@ -357,7 +359,7 @@ func TestRunServeResidualCoverage(t *testing.T) {
 			}
 			clearCase.mutate(&d)
 			d.serveHTTP = func(*http.Server, net.Listener) error {
-				_ = captured.clear(context.Background())
+				_ = captured.clear(context.Background(), appwire.ThreadClearParams{Ref: "local:" + sessionID, ClientMutationID: "clear", ExpectedInstanceID: sessionID})
 				captured.shutdown()
 				return http.ErrServerClosed
 			}

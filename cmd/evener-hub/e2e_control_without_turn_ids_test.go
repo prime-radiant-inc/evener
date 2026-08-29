@@ -16,6 +16,14 @@ import (
 	"primeradiant.com/evener/test/e2e/fakellm"
 )
 
+func localInstanceIDForTestRef(ref string) string {
+	parsed, err := appwire.ParseRef(ref)
+	if err == nil && parsed.SourceID == "local" {
+		return parsed.ThreadID
+	}
+	return strings.TrimPrefix(ref, "local:")
+}
+
 // The rule under test: control mutations do not name turns. Steer, queue, stop,
 // drain and promote carry no expectedTurnId at any layer, because what such a
 // field asserts -- "the session is still in the state I saw" -- is not what any
@@ -73,8 +81,9 @@ func TestE2E_StopCancelsWhateverIsRunningAndNamesIt(t *testing.T) {
 	running := awaitActiveTurn(ctx, t, client, ref, "")
 
 	receipt, err := clientRequest[appwire.TurnInterruptResponse](ctx, client, appwire.MethodTurnInterrupt, appwire.TurnInterruptParams{
-		Ref:              ref,
-		ClientMutationID: newMutationID(t),
+		Ref:                ref,
+		ClientMutationID:   newMutationID(t),
+		ExpectedInstanceID: localInstanceIDForTestRef(ref),
 	})
 	if err != nil {
 		t.Fatalf("turn/interrupt carrying no turn id was refused against running turn %q: %v", running, err)
@@ -148,8 +157,9 @@ func TestE2E_ASendThatRacedAStopStillRuns(t *testing.T) {
 	stopped := awaitActiveTurn(ctx, t, client, ref, "")
 
 	if _, err := clientRequest[appwire.TurnInterruptResponse](ctx, client, appwire.MethodTurnInterrupt, appwire.TurnInterruptParams{
-		Ref:              ref,
-		ClientMutationID: newMutationID(t),
+		Ref:                ref,
+		ClientMutationID:   newMutationID(t),
+		ExpectedInstanceID: localInstanceIDForTestRef(ref),
 	}); err != nil {
 		t.Fatalf("turn/interrupt against running turn %q: %v", stopped, err)
 	}
@@ -161,9 +171,10 @@ func TestE2E_ASendThatRacedAStopStillRuns(t *testing.T) {
 	// composer routes it to turn/queue because it believed a turn was running,
 	// and the daemon no longer refuses that just because the turn has ended.
 	receipt, err := clientRequest[appwire.TurnQueueResponse](ctx, client, appwire.MethodTurnQueue, appwire.TurnQueueParams{
-		Ref:              ref,
-		ClientMutationID: newMutationID(t),
-		Input:            []appwire.InputItem{{Type: "text", Text: followUpText}},
+		Ref:                ref,
+		ClientMutationID:   newMutationID(t),
+		ExpectedInstanceID: localInstanceIDForTestRef(ref),
+		Input:              []appwire.InputItem{{Type: "text", Text: followUpText}},
 	})
 	if err != nil {
 		t.Fatalf("turn/queue against a session whose turn had just been stopped: %v", err)
@@ -188,8 +199,9 @@ func TestE2E_ASendThatRacedAStopStillRuns(t *testing.T) {
 	// And Stop still reaches the turn the queued message woke.
 	wokenTurn := awaitActiveTurn(ctx, t, client, ref, stopped)
 	stopReceipt, err := clientRequest[appwire.TurnInterruptResponse](ctx, client, appwire.MethodTurnInterrupt, appwire.TurnInterruptParams{
-		Ref:              ref,
-		ClientMutationID: newMutationID(t),
+		Ref:                ref,
+		ClientMutationID:   newMutationID(t),
+		ExpectedInstanceID: localInstanceIDForTestRef(ref),
 	})
 	if err != nil {
 		t.Fatalf("turn/interrupt against the woken turn %q: %v", wokenTurn, err)
@@ -236,9 +248,10 @@ func TestE2E_SteerWithNoTurnIDReachesTheModelAndTheTranscript(t *testing.T) {
 	running := awaitActiveTurn(ctx, t, client, ref, "")
 
 	receipt, err := clientRequest[appwire.TurnSteerResponse](ctx, client, appwire.MethodTurnSteer, appwire.TurnSteerParams{
-		Ref:              ref,
-		ClientMutationID: newMutationID(t),
-		Input:            []appwire.InputItem{{Type: "text", Text: steerText}},
+		Ref:                ref,
+		ClientMutationID:   newMutationID(t),
+		ExpectedInstanceID: localInstanceIDForTestRef(ref),
+		Input:              []appwire.InputItem{{Type: "text", Text: steerText}},
 	})
 	if err != nil {
 		t.Fatalf("turn/steer carrying no turn id was refused against running turn %q: %v", running, err)
@@ -311,9 +324,10 @@ func TestE2E_SteerLandsInTheNextTurnWhenItsTurnEnded(t *testing.T) {
 	})
 
 	receipt, err := clientRequest[appwire.TurnSteerResponse](ctx, client, appwire.MethodTurnSteer, appwire.TurnSteerParams{
-		Ref:              ref,
-		ClientMutationID: newMutationID(t),
-		Input:            []appwire.InputItem{{Type: "text", Text: steerText}},
+		Ref:                ref,
+		ClientMutationID:   newMutationID(t),
+		ExpectedInstanceID: localInstanceIDForTestRef(ref),
+		Input:              []appwire.InputItem{{Type: "text", Text: steerText}},
 	})
 	if err != nil {
 		t.Fatalf("A STEER BOUNCED BECAUSE ITS TURN ENDED: turn/steer after turn %q settled: %v", endedTurn, err)
@@ -382,9 +396,10 @@ func TestE2E_QueuePreconditionsStillRefuseAStaleClient(t *testing.T) {
 	awaitActiveTurn(ctx, t, client, ref, "")
 
 	first, err := clientRequest[appwire.TurnQueueResponse](ctx, client, appwire.MethodTurnQueue, appwire.TurnQueueParams{
-		Ref:              ref,
-		ClientMutationID: newMutationID(t),
-		Input:            []appwire.InputItem{{Type: "text", Text: "EVENER-E2E-QUEUED-FIRST"}},
+		Ref:                ref,
+		ClientMutationID:   newMutationID(t),
+		ExpectedInstanceID: localInstanceIDForTestRef(ref),
+		Input:              []appwire.InputItem{{Type: "text", Text: "EVENER-E2E-QUEUED-FIRST"}},
 	})
 	if err != nil {
 		t.Fatalf("turn/queue (first): %v", err)
@@ -396,9 +411,10 @@ func TestE2E_QueuePreconditionsStillRefuseAStaleClient(t *testing.T) {
 	staleEntryID := first.Receipt.QueueEntryIDs[0]
 
 	if _, err := clientRequest[appwire.TurnQueueResponse](ctx, client, appwire.MethodTurnQueue, appwire.TurnQueueParams{
-		Ref:              ref,
-		ClientMutationID: newMutationID(t),
-		Input:            []appwire.InputItem{{Type: "text", Text: "EVENER-E2E-QUEUED-SECOND"}},
+		Ref:                ref,
+		ClientMutationID:   newMutationID(t),
+		ExpectedInstanceID: localInstanceIDForTestRef(ref),
+		Input:              []appwire.InputItem{{Type: "text", Text: "EVENER-E2E-QUEUED-SECOND"}},
 	}); err != nil {
 		t.Fatalf("turn/queue (second): %v", err)
 	}
@@ -412,6 +428,7 @@ func TestE2E_QueuePreconditionsStillRefuseAStaleClient(t *testing.T) {
 	_, err = clientRequest[appwire.TurnDrainAsSteerResponse](ctx, client, appwire.MethodTurnDrainAsSteer, appwire.TurnDrainAsSteerParams{
 		Ref:                   ref,
 		ClientMutationID:      newMutationID(t),
+		ExpectedInstanceID:    localInstanceIDForTestRef(ref),
 		ExpectedQueueRevision: staleSnapshot.Revision,
 	})
 	requireConflict(t, err, "revision",
@@ -422,10 +439,11 @@ func TestE2E_QueuePreconditionsStillRefuseAStaleClient(t *testing.T) {
 	// Cancelling the head is how a real client's snapshot goes stale without the
 	// depth changing under it: index 0 now names a different message.
 	if _, err := clientRequest[appwire.TurnCancelQueuedResponse](ctx, client, appwire.MethodTurnCancelQueued, appwire.TurnCancelQueuedParams{
-		Ref:              ref,
-		ClientMutationID: newMutationID(t),
-		Index:            0,
-		ExpectedEntryID:  staleEntryID,
+		Ref:                ref,
+		ClientMutationID:   newMutationID(t),
+		ExpectedInstanceID: localInstanceIDForTestRef(ref),
+		Index:              0,
+		ExpectedEntryID:    staleEntryID,
 	}); err != nil {
 		t.Fatalf("turn/cancelQueued of the head: %v", err)
 	}
@@ -439,10 +457,11 @@ func TestE2E_QueuePreconditionsStillRefuseAStaleClient(t *testing.T) {
 	}
 
 	_, err = clientRequest[appwire.TurnPromoteQueuedAsSteerResponse](ctx, client, appwire.MethodTurnPromoteQueuedAsSteer, appwire.TurnPromoteQueuedAsSteerParams{
-		Ref:              ref,
-		ClientMutationID: newMutationID(t),
-		Index:            0,
-		ExpectedEntryID:  staleEntryID,
+		Ref:                ref,
+		ClientMutationID:   newMutationID(t),
+		ExpectedInstanceID: localInstanceIDForTestRef(ref),
+		Index:              0,
+		ExpectedEntryID:    staleEntryID,
 	})
 	requireConflict(t, err, "no longer matches",
 		"turn/promoteQueuedAsSteer accepted expectedEntryId %q while index 0 holds %q: the wrong message just went to the model",
@@ -450,10 +469,11 @@ func TestE2E_QueuePreconditionsStillRefuseAStaleClient(t *testing.T) {
 
 	// --- the same two calls, made honestly, must still work -------------------
 	if _, err := clientRequest[appwire.TurnPromoteQueuedAsSteerResponse](ctx, client, appwire.MethodTurnPromoteQueuedAsSteer, appwire.TurnPromoteQueuedAsSteerParams{
-		Ref:              ref,
-		ClientMutationID: newMutationID(t),
-		Index:            0,
-		ExpectedEntryID:  liveEntryID,
+		Ref:                ref,
+		ClientMutationID:   newMutationID(t),
+		ExpectedInstanceID: localInstanceIDForTestRef(ref),
+		Index:              0,
+		ExpectedEntryID:    liveEntryID,
 	}); err != nil {
 		t.Fatalf("turn/promoteQueuedAsSteer with the live entry id %q was refused, so the refusals above prove nothing: %v", liveEntryID, err)
 	}
@@ -461,6 +481,7 @@ func TestE2E_QueuePreconditionsStillRefuseAStaleClient(t *testing.T) {
 	if _, err := clientRequest[appwire.TurnDrainAsSteerResponse](ctx, client, appwire.MethodTurnDrainAsSteer, appwire.TurnDrainAsSteerParams{
 		Ref:                   ref,
 		ClientMutationID:      newMutationID(t),
+		ExpectedInstanceID:    localInstanceIDForTestRef(ref),
 		ExpectedQueueRevision: drained.Revision,
 		Input:                 []appwire.InputItem{{Type: "text", Text: "EVENER-E2E-DRAIN-WITH-CURRENT-REVISION"}},
 	}); err != nil {
@@ -523,8 +544,9 @@ type = %q
 	t.Logf("live turn in flight with model output: %s", running)
 
 	receipt, err := clientRequest[appwire.TurnInterruptResponse](ctx, client, appwire.MethodTurnInterrupt, appwire.TurnInterruptParams{
-		Ref:              ref,
-		ClientMutationID: newMutationID(t),
+		Ref:                ref,
+		ClientMutationID:   newMutationID(t),
+		ExpectedInstanceID: localInstanceIDForTestRef(ref),
 	})
 	if err != nil {
 		t.Fatalf("turn/interrupt carrying no turn id was refused against live turn %q: %v", running, err)
@@ -543,9 +565,10 @@ type = %q
 	// And a steer aimed at a turn that is already over lands in the next one.
 	const steerText = "EVENER-E2E-LIVE-STEER-TEXT"
 	steerReceipt, err := clientRequest[appwire.TurnSteerResponse](ctx, client, appwire.MethodTurnSteer, appwire.TurnSteerParams{
-		Ref:              ref,
-		ClientMutationID: newMutationID(t),
-		Input:            []appwire.InputItem{{Type: "text", Text: "Reply with exactly: " + steerText}},
+		Ref:                ref,
+		ClientMutationID:   newMutationID(t),
+		ExpectedInstanceID: localInstanceIDForTestRef(ref),
+		Input:              []appwire.InputItem{{Type: "text", Text: "Reply with exactly: " + steerText}},
 	})
 	if err != nil {
 		t.Fatalf("turn/steer after the live turn was stopped: %v", err)

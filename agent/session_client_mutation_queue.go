@@ -889,6 +889,7 @@ func mutationReceipt(
 		ClientMutationID: record.ClientMutationID,
 		Disposition:      disposition,
 		ThreadID:         threadID,
+		InstanceID:       threadID,
 		TurnID:           record.StableTurnID,
 		QueueEntryIDs:    append([]string(nil), record.StableQueueEntryIDs...),
 		ProjectionState:  projectionState,
