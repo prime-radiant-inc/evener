@@ -390,6 +390,8 @@ describe("LiveConceptHost ownership", () => {
     expect(harness.uiStore.getState().workOpen).toBe(true);
     fireEvent.click(screen.getByRole("button", { name: "Switch concept" }));
     expect(harness.callbacks.onOpenConceptSwitcher).toHaveBeenCalledTimes(1);
+    fireEvent.click(screen.getByRole("button", { name: "Voice" }));
+    expect(harness.callbacks.onOpenVoice).toHaveBeenCalledTimes(1);
 
     const message = screen.getByRole("textbox", { name: "Message" });
     for (const [mode, action] of [
