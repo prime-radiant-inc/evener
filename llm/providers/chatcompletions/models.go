@@ -39,6 +39,21 @@ type modelEntry struct {
 	} `json:"top_provider"`
 }
 
+// advertises reports whether the supported_parameters list names any of the
+// given parameters, matching them case- and whitespace-insensitively as
+// OpenRouter's listing is not normalized.
+func advertises(params []string, names ...string) bool {
+	for _, p := range params {
+		p = strings.TrimSpace(p)
+		for _, name := range names {
+			if strings.EqualFold(p, name) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
 // row keeps only advertised facts (registry.ApplyLive keeps only those).
 func (m modelEntry) row() registry.Model {
 	caps := registry.Caps{}
@@ -49,8 +64,8 @@ func (m modelEntry) row() registry.Model {
 		caps.MaxOutputTokens = new(*m.TopProvider.MaxCompletionTokens)
 	}
 	if len(m.SupportedParameters) > 0 {
-		caps.Tools = new(slices.Contains(m.SupportedParameters, "tools"))
-		caps.Reasoning = new(slices.Contains(m.SupportedParameters, "reasoning") || slices.Contains(m.SupportedParameters, "reasoning_effort"))
+		caps.Tools = new(advertises(m.SupportedParameters, "tools"))
+		caps.Reasoning = new(advertises(m.SupportedParameters, "reasoning", "reasoning_effort"))
 	}
 	if m.Reasoning.Mandatory != nil || m.Reasoning.DefaultEnabled != nil || len(m.Reasoning.SupportedEfforts) > 0 {
 		caps.Reasoning = new(true)

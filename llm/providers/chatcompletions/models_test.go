@@ -74,3 +74,25 @@ func TestListModelsRejectsNonFiniteCost(t *testing.T) {
 		t.Fatalf("inf-completion row caps = %+v, want Cost=nil ContextWindow=8192", infRow.Caps)
 	}
 }
+
+// TestListModelsNormalizesSupportedParameters pins the case- and
+// whitespace-insensitive match openaicompat used: OpenRouter's
+// supported_parameters are matched with strings.EqualFold on the trimmed
+// value, so " Tools " still advertises tool support.
+func TestListModelsNormalizesSupportedParameters(t *testing.T) {
+	body := `{"data":[
+ {"id":"padded/tools","supported_parameters":["Tools ","  Reasoning_Effort"]}
+]}`
+	srv, _ := server(t, 200, body)
+	rows, err := (&Protocol{Client: srv.Client()}).ListModels(context.Background(), liveRes(srv, nil))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rows) != 1 {
+		t.Fatalf("rows = %+v", rows)
+	}
+	c := rows[0].Caps
+	if c.Tools == nil || !*c.Tools || c.Reasoning == nil || !*c.Reasoning {
+		t.Fatalf("caps = %+v, want Tools and Reasoning true", c)
+	}
+}
