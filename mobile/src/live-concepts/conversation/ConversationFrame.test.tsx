@@ -1,6 +1,7 @@
 import { readdirSync, readFileSync } from "node:fs";
 import path from "node:path";
 import {
+  act,
   cleanup,
   fireEvent,
   render,
@@ -182,6 +183,65 @@ function props(overrides: Partial<ConversationFrameState> = {}) {
     onUnseenChange: vi.fn(),
     onFocusIntentChange: vi.fn(),
   } satisfies ConversationFrameProps;
+}
+
+function evidenceConversation(
+  definitions: ReadonlyArray<{
+    readonly itemKey: string;
+    readonly evidenceKey: string;
+    readonly title: string;
+    readonly body: string;
+  }>,
+) {
+  const conversation = readyState().conversation;
+  if (conversation === null) throw new Error("fixture");
+  return {
+    ...conversation,
+    items: definitions.map((definition, index) => ({
+      key: definition.itemKey,
+      sourceKind: "failure" as const,
+      body: bounded(`Failure ${index + 1}`),
+      label: bounded("Failure"),
+      tone: "failed" as const,
+      streaming: false,
+      questionKey: null,
+      evidenceKey: definition.evidenceKey,
+      sequence: `evidence-${index + 1}`,
+    })),
+    evidence: definitions.map((definition) => ({
+      key: definition.evidenceKey,
+      family: "failure" as const,
+      title: bounded(definition.title),
+      sections: [
+        { heading: bounded("Detail"), body: bounded(definition.body) },
+      ],
+      redacted: true,
+    })),
+  };
+}
+
+function deferredRestore(): {
+  readonly promise: Promise<void>;
+  readonly resolve: () => void;
+} {
+  let resolvePromise: (() => void) | null = null;
+  const promise = new Promise<void>((resolve) => {
+    resolvePromise = resolve;
+  });
+  return {
+    promise,
+    resolve() {
+      resolvePromise?.();
+    },
+  };
+}
+
+function evidenceTrigger(itemKey: string): HTMLButtonElement {
+  const trigger = document.querySelector<HTMLButtonElement>(
+    `button[data-evidence-trigger-key="${itemKey}"]`,
+  );
+  if (trigger === null) throw new Error(`missing trigger ${itemKey}`);
+  return trigger;
 }
 
 afterEach(async () => {
@@ -785,14 +845,284 @@ describe("ConversationFrame", () => {
     ).not.toHaveAccessibleDescription(hidden);
   });
 
-  it("closes stale evidence keys without title or source fallback", () => {
+  it("routes an initially stale evidence key through measured restoration before close", async () => {
+    const restoration = deferredRestore();
+    transcript.restoreAnchor.mockReturnValueOnce(restoration.promise);
     const frameProps = props({
       openEvidenceKey: "stale-evidence-key",
       evidenceTriggerKey: "user-1",
     });
     render(<ConversationFrame {...frameProps} />);
     expect(screen.queryByRole("dialog")).toBeNull();
-    expect(frameProps.dispatch).toHaveBeenCalledWith({ type: "closeEvidence" });
+    await waitFor(() =>
+      expect(transcript.restoreAnchor).toHaveBeenCalledTimes(1),
+    );
+    expect(frameProps.dispatch).not.toHaveBeenCalledWith({
+      type: "closeEvidence",
+    });
+    restoration.resolve();
+    await waitFor(() =>
+      expect(frameProps.dispatch).toHaveBeenCalledWith({
+        type: "closeEvidence",
+      }),
+    );
+  });
+
+  it.each([
+    {
+      name: "evidence eviction",
+      mutate: (state: ConversationFrameState) => ({
+        ...state,
+        conversation:
+          state.conversation === null
+            ? null
+            : { ...state.conversation, evidence: [] },
+      }),
+    },
+    {
+      name: "trigger mismatch",
+      mutate: (state: ConversationFrameState) => ({
+        ...state,
+        evidenceTriggerKey: "different-trigger",
+      }),
+    },
+    {
+      name: "stale key",
+      mutate: (state: ConversationFrameState) => ({
+        ...state,
+        openEvidenceKey: "stale-key-while-open",
+      }),
+    },
+    {
+      name: "replacement while open",
+      mutate: (state: ConversationFrameState) => ({
+        ...state,
+        conversation:
+          state.conversation === null
+            ? null
+            : {
+                ...state.conversation,
+                evidence: [
+                  {
+                    key: "replacement-key",
+                    family: "failure" as const,
+                    title: bounded("Replacement must not flash"),
+                    sections: [
+                      {
+                        heading: bounded("Replacement"),
+                        body: bounded("Replacement detail must not flash"),
+                      },
+                    ],
+                    redacted: true,
+                  },
+                ],
+              },
+      }),
+    },
+  ])(
+    "restores before publishing close for $name and never flashes fallback detail",
+    async ({ mutate }) => {
+      const conversation = evidenceConversation([
+        {
+          itemKey: "invalidated-item",
+          evidenceKey: "invalidated-evidence",
+          title: "Current bounded evidence",
+          body: "Current bounded detail",
+        },
+      ]);
+      const frameProps = props({ conversation });
+      frameProps.dispatch.mockImplementation((action) => {
+        transcript.events.push(`dispatch:${action.type}`);
+      });
+      const view = render(<ConversationFrame {...frameProps} />);
+      fireEvent.click(evidenceTrigger("invalidated-item"));
+      const openState: ConversationFrameState = {
+        ...frameProps.state,
+        openEvidenceKey: "invalidated-evidence",
+        evidenceTriggerKey: "invalidated-item",
+      };
+      view.rerender(<ConversationFrame {...frameProps} state={openState} />);
+      expect(screen.getByText("Current bounded detail")).toBeVisible();
+
+      const restoration = deferredRestore();
+      transcript.restoreAnchor.mockReturnValueOnce(restoration.promise);
+      view.rerender(
+        <ConversationFrame {...frameProps} state={mutate(openState)} />,
+      );
+      await waitFor(() =>
+        expect(transcript.restoreAnchor).toHaveBeenCalledTimes(1),
+      );
+      expect(screen.queryByText("Current bounded detail")).toBeNull();
+      expect(
+        screen.queryByText("Replacement detail must not flash"),
+      ).toBeNull();
+      expect(frameProps.dispatch).not.toHaveBeenCalledWith({
+        type: "closeEvidence",
+      });
+      expect(transcript.focusFeed).not.toHaveBeenCalled();
+      expect(screen.getByRole("main", { hidden: true })).toHaveAttribute(
+        "inert",
+      );
+
+      restoration.resolve();
+      await waitFor(() =>
+        expect(frameProps.dispatch).toHaveBeenCalledWith({
+          type: "closeEvidence",
+        }),
+      );
+      expect(transcript.events.indexOf("restore")).toBeLessThan(
+        transcript.events.indexOf("dispatch:closeEvidence"),
+      );
+    },
+  );
+
+  it("closes safely after a rejected restore, clears the gate, and never focuses the stale trigger", async () => {
+    const conversation = evidenceConversation([
+      {
+        itemKey: "rejected-item",
+        evidenceKey: "rejected-evidence",
+        title: "Rejected restore evidence",
+        body: "Rejected restore detail",
+      },
+    ]);
+    const frameProps = props({ conversation });
+    frameProps.dispatch.mockImplementation((action) => {
+      transcript.events.push(`dispatch:${action.type}`);
+    });
+    const view = render(<ConversationFrame {...frameProps} />);
+    const trigger = evidenceTrigger("rejected-item");
+    fireEvent.click(trigger);
+    const openState: ConversationFrameState = {
+      ...frameProps.state,
+      openEvidenceKey: "rejected-evidence",
+      evidenceTriggerKey: "rejected-item",
+    };
+    view.rerender(<ConversationFrame {...frameProps} state={openState} />);
+    transcript.restoreAnchor.mockRejectedValueOnce(new Error("restore failed"));
+
+    fireEvent.click(
+      screen.getByRole("button", { name: "Close activity and evidence" }),
+    );
+    await waitFor(() =>
+      expect(frameProps.dispatch).toHaveBeenCalledWith({
+        type: "closeEvidence",
+      }),
+    );
+    expect(transcript.events.indexOf("restore")).toBeLessThan(
+      transcript.events.indexOf("dispatch:closeEvidence"),
+    );
+    view.rerender(<ConversationFrame {...frameProps} />);
+    await waitFor(() => expect(transcript.focusFeed).toHaveBeenCalledTimes(1));
+    expect(trigger).not.toHaveFocus();
+    await __sheetHistorySettled();
+
+    transcript.restoreAnchor.mockResolvedValueOnce();
+    fireEvent.click(evidenceTrigger("rejected-item"));
+    view.rerender(<ConversationFrame {...frameProps} state={openState} />);
+    fireEvent.click(
+      screen.getByRole("button", { name: "Close activity and evidence" }),
+    );
+    await waitFor(() =>
+      expect(transcript.restoreAnchor).toHaveBeenCalledTimes(2),
+    );
+  });
+
+  it("ignores a late close restore after a newer evidence item opens", async () => {
+    const conversation = evidenceConversation([
+      {
+        itemKey: "older-item",
+        evidenceKey: "older-evidence",
+        title: "Older evidence",
+        body: "Older detail",
+      },
+      {
+        itemKey: "newer-item",
+        evidenceKey: "newer-evidence",
+        title: "Newer evidence",
+        body: "Newer detail",
+      },
+    ]);
+    const frameProps = props({ conversation });
+    const view = render(<ConversationFrame {...frameProps} />);
+    fireEvent.click(evidenceTrigger("older-item"));
+    view.rerender(
+      <ConversationFrame
+        {...frameProps}
+        state={{
+          ...frameProps.state,
+          openEvidenceKey: "older-evidence",
+          evidenceTriggerKey: "older-item",
+        }}
+      />,
+    );
+    const olderRestore = deferredRestore();
+    transcript.restoreAnchor.mockReturnValueOnce(olderRestore.promise);
+    fireEvent.click(
+      screen.getByRole("button", { name: "Close activity and evidence" }),
+    );
+    await waitFor(() =>
+      expect(transcript.restoreAnchor).toHaveBeenCalledTimes(1),
+    );
+
+    fireEvent.click(evidenceTrigger("newer-item"));
+    view.rerender(
+      <ConversationFrame
+        {...frameProps}
+        state={{
+          ...frameProps.state,
+          openEvidenceKey: "newer-evidence",
+          evidenceTriggerKey: "newer-item",
+        }}
+      />,
+    );
+    await __sheetHistorySettled();
+    expect(await screen.findByText("Newer detail")).toBeVisible();
+    frameProps.dispatch.mockClear();
+    olderRestore.resolve();
+    await act(async () => {});
+    expect(frameProps.dispatch).not.toHaveBeenCalledWith({
+      type: "closeEvidence",
+    });
+    expect(screen.getByText("Newer detail")).toBeVisible();
+  });
+
+  it("does not dispatch or focus after unmount while restoration is pending", async () => {
+    const conversation = evidenceConversation([
+      {
+        itemKey: "unmounted-item",
+        evidenceKey: "unmounted-evidence",
+        title: "Unmounted evidence",
+        body: "Unmounted detail",
+      },
+    ]);
+    const frameProps = props({ conversation });
+    const view = render(<ConversationFrame {...frameProps} />);
+    fireEvent.click(evidenceTrigger("unmounted-item"));
+    view.rerender(
+      <ConversationFrame
+        {...frameProps}
+        state={{
+          ...frameProps.state,
+          openEvidenceKey: "unmounted-evidence",
+          evidenceTriggerKey: "unmounted-item",
+        }}
+      />,
+    );
+    const restoration = deferredRestore();
+    transcript.restoreAnchor.mockReturnValueOnce(restoration.promise);
+    fireEvent.click(
+      screen.getByRole("button", { name: "Close activity and evidence" }),
+    );
+    await waitFor(() =>
+      expect(transcript.restoreAnchor).toHaveBeenCalledTimes(1),
+    );
+    frameProps.dispatch.mockClear();
+    view.unmount();
+
+    restoration.resolve();
+    await act(async () => {});
+    expect(frameProps.dispatch).not.toHaveBeenCalled();
+    expect(transcript.focusFeed).not.toHaveBeenCalled();
   });
 
   it("restores the measured anchor then focuses the feed when the trigger is evicted", async () => {
