@@ -498,10 +498,11 @@ page so it survives the round trip.
 **Rows are single tappable targets; actions live in a detail sheet.** A collection row carries
 identity and status only — `StatusDot`, name, state chips, one mono meta line
 (`@ marketplace · v1.2.0`) — and a trailing chevron; it is one full-width `<button>`, so the
-whole row is the target on desktop and touch alike. A row NEVER grows a trailing cluster of
-small action buttons (the pre-redesign installed row had four): every action on the item moves
-into the item's **detail sheet**, a `Sheet` with `side="right"` on desktop and `side="bottom"`
-at the mobile breakpoint (chosen via `useIsMobile`, the same source the shell uses). The sheet
+whole row is the target on desktop and touch alike. A row of an item the user *manages* never
+grows a trailing cluster of small action buttons (the pre-redesign installed row had four):
+every action on a managed item moves into the item's **detail sheet**, a `Sheet` with
+`side="right"` on desktop and `side="bottom"` at the mobile breakpoint (chosen via
+`useIsMobile`, the same source the shell uses). The sheet
 is the item's inspector: state chips, its catalog description (pulled lazily through the browse
 cache — re-open is free), a meta table, and its actions. Binary state (Enabled, Auto-upgrade)
 is a `Switch` row inside the sheet, disabled while its RPC is in flight; the primary mutation
@@ -509,6 +510,13 @@ is a footer `Button`; the destructive action keeps its `ConfirmDialog` even thou
 second modal over the sheet — `OverlayPanel` instances stack in DOM order, each traps and
 restores focus down the stack, and its `preventDefault` on Escape is what keeps the settings
 pane's own document-level Escape handler from closing the pane out from under an open overlay.
+
+**Acquisition rows are the exception.** Rows whose primary job is acquiring or maintaining the
+collection itself — the browse tree's plugin rows (a single `Install`), the marketplaces list's
+rows (`Refresh`, `Remove`) — keep their small action buttons inline. Those buttons ARE the
+row's purpose: there is nothing to inspect before install, and no per-row detail the
+marketplace entry has beyond its name and source. The rule above scopes to items the user
+*manages* — things with state, settings, and per-item detail worth an inspector.
 
 **The meta table idiom.** Inside an inspector, facts render as label/value rows: a fixed-width
 (96px) caption-color label column, values in the UI font, and `var(--font-mono)` for anything
