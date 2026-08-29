@@ -306,6 +306,37 @@ describe("ScalarField: integer renders a numeric Input", () => {
     );
     expect(screen.getByLabelText("Max rounds").getAttribute("type")).toBe("number");
   });
+
+  test("the input placeholder names the resolved default once it lands", () => {
+    render(
+      <ScalarField
+        option={textOption({
+          field: "max_subagent_depth",
+          wireField: "maxSubagentDepth",
+          label: "Max subagent depth",
+          kind: "integer",
+        })}
+        layer="global"
+        value=""
+        onChange={() => {}}
+        resolvedDefaults={{ maxSubagentDepth: 2 }}
+      />,
+    );
+    expect(screen.getByLabelText("Max subagent depth").getAttribute("placeholder")).toBe("2 (default)");
+  });
+
+  test("max_rounds -1 renders as unlimited in the placeholder", () => {
+    render(
+      <ScalarField
+        option={textOption({ field: "max_rounds", wireField: "maxRounds", label: "Max rounds", kind: "integer" })}
+        layer="global"
+        value=""
+        onChange={() => {}}
+        resolvedDefaults={{ maxRounds: -1 }}
+      />,
+    );
+    expect(screen.getByLabelText("Max rounds").getAttribute("placeholder")).toBe("unlimited (default)");
+  });
 });
 
 describe("ScalarField: select dedups the schema's own empty choice against the generic placeholder", () => {

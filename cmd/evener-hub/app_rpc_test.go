@@ -9986,3 +9986,54 @@ func TestHubRPCRegistersExpectedHandlerSet(t *testing.T) {
 		t.Fatalf("expected methodNotFound for unknown method, got %T: %v", err, err)
 	}
 }
+
+func TestHubRPCThreadStartEnvModelSatisfiesRequiredGate(t *testing.T) {
+	// A spawn with no model in any launch layer still launches when
+	// EVENER_MODEL is set for the hub process: the agent's own fallback
+	// chain (flag > env > none) would use it. The "model is required"
+	// gate must not reject what the child would have run with anyway —
+	// and the resolve RPC's "(default)" label already names that model,
+	// so the gate and the label must agree.
+	runDir := t.TempDir()
+	launchRoot := t.TempDir()
+	t.Setenv("EVENER_MODEL", "openai/gpt-5")
+	var got hubcore.SpawnRequest
+	spawner := &fakeRPCModelContractSpawner{
+		spawn: func(_ context.Context, req hubcore.SpawnRequest) (rendezvous.Entry, error) {
+			got = req
+			return rendezvous.Entry{
+				PID:       202,
+				Protocol:  appwire.ProtocolVersion,
+				SourceID:  "local",
+				ThreadID:  "th_env_model",
+				SessionID: "sess_env_model",
+			}, nil
+		},
+		contract: appwire.ModelListResponse{Data: []appwire.ModelDescriptor{{
+			Provider: "openai",
+			Model:    "gpt-5",
+		}}},
+	}
+	hub := newHubRPCTestServer(t, hubcore.WebConfig{
+		RunDir:           runDir,
+		HubStateRoot:     t.TempDir(),
+		LaunchConfigRoot: launchRoot,
+		Spawner:          spawner,
+		Past:             hubcore.NewPastIndex(""),
+	})
+	defer hub.Close()
+	client := dialHubRPC(t, hub)
+	defer client.Close()
+
+	if _, err := client.Initialize(context.Background(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
+		t.Fatalf("Initialize: %v", err)
+	}
+	if _, err := client.ThreadStart(context.Background(), appwire.ThreadStartParams{
+		CWD: t.TempDir(),
+	}); err != nil {
+		t.Fatalf("ThreadStart should accept env-model spawn: %v", err)
+	}
+	if got.Resolved.Effective.Model != "openai/gpt-5" {
+		t.Errorf("Model = %q, want env model threaded into spawn", got.Resolved.Effective.Model)
+	}
+}

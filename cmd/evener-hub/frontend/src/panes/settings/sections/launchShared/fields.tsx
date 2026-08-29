@@ -245,7 +245,9 @@ export function ScalarField({
   }
 
   // text, integer, and a non-browsable path (a command, or an unkinded one) -
-  // all a plain (possibly numeric) input.
+  // all a plain (possibly numeric) input. The placeholder names the resolved
+  // default once it lands (same rule as the select/radio empty options);
+  // plain layer marker otherwise.
   return (
     <FormRow label={option.label} htmlFor={fieldId} help={option.description} error={error}>
       <Input
@@ -253,7 +255,7 @@ export function ScalarField({
         type={option.kind === "integer" ? "number" : "text"}
         value={value}
         onChange={(e) => onChange(e.target.value)}
-        placeholder={emptyChoiceLabel(layer)}
+        placeholder={resolvedLabel ?? emptyChoiceLabel(layer)}
       />
       <DefaultHint text={globalDefaultHint} />
     </FormRow>

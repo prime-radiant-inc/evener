@@ -220,14 +220,25 @@ test("an integer control's placeholder names the resolved default", async () => 
       option({ wireField: "maxRounds", kind: "integer", label: "Max rounds" }),
       option({ wireField: "maxSubagentDepth", kind: "integer", label: "Max subagent depth" }),
     ],
-    { resolvedDefaults: { maxRounds: 250 } },
+    { resolvedDefaults: { maxRounds: 250, maxSubagentDepth: 2 } },
   );
 
   await user.click(screen.getByRole("button", { name: "Advanced options" }));
 
   expect((screen.getByLabelText("Max rounds") as HTMLInputElement).placeholder).toBe("250 (default)");
-  // No layer sets this one: the input stays bare, exactly as before.
-  expect((screen.getByLabelText("Max subagent depth") as HTMLInputElement).placeholder).toBe("");
+  // A resolved builtin fills the empty control too - the label names it.
+  expect((screen.getByLabelText("Max subagent depth") as HTMLInputElement).placeholder).toBe("2 (default)");
+});
+
+test("max_rounds -1 renders as unlimited in the placeholder, matching the flag wording", async () => {
+  const user = userEvent.setup();
+  renderPanel([option({ wireField: "maxRounds", kind: "integer", label: "Max rounds" })], {
+    resolvedDefaults: { maxRounds: -1 },
+  });
+
+  await user.click(screen.getByRole("button", { name: "Advanced options" }));
+
+  expect((screen.getByLabelText("Max rounds") as HTMLInputElement).placeholder).toBe("unlimited (default)");
 });
 
 test("a text control's placeholder names the resolved default, clipped when long", async () => {
