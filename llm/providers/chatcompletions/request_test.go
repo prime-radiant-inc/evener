@@ -234,3 +234,46 @@ func TestBuildBody_AnthropicCacheControl(t *testing.T) {
 		t.Fatal("no ttl without CacheTTL")
 	}
 }
+
+// TestBuildBody_ReasoningDetailsRowKeepsTheDialectControl covers the review
+// finding on ReasoningField's double duty: a row that declares
+// ReasoningField = "reasoning_details" for the assistant-replay shape must
+// still get its dialect's enable control written by applyThinkingFormat —
+// useReasoningDetails alone must not silently suppress it. Only an actual
+// ProviderOptions "reasoning" object (optionCarriesReasoning) means
+// applyThinkingFormat is redundant, because that object itself reaches the
+// wire through the passthrough loop.
+func TestBuildBody_ReasoningDetailsRowKeepsTheDialectControl(t *testing.T) {
+	res := resolved(func(c *registry.Caps) {
+		c.Reasoning = new(true)
+		c.ReasoningControls = []string{"toggle"}
+		c.ThinkingFormat = new("openrouter")
+		c.ThinkingAlwaysOn = new(true)
+		c.ReasoningField = new("reasoning_details")
+	})
+	req := llm.Request{Model: "m", Messages: []llm.Message{
+		llm.User("q"),
+		assistantTurn("prior thought", "", "prior answer"),
+		llm.User("q2"),
+	}}
+
+	body := build(t, req, res)
+	if reasoning, ok := body["reasoning"].(map[string]any); !ok || reasoning["enabled"] != true {
+		t.Fatalf("row declaring reasoning_details must still get its dialect control: %v", body["reasoning"])
+	}
+	msgs := body["messages"].([]map[string]any)
+	if _, ok := msgs[1]["reasoning_details"]; !ok {
+		t.Fatalf("assistant turn must replay through reasoning_details: %v", msgs[1])
+	}
+
+	// A request-level "reasoning" provider option is the other trigger for
+	// useReasoningDetails, but it means the OPTION's object is what reaches
+	// the wire — applyThinkingFormat must be skipped rather than writing a
+	// second, conflicting control (the behavior the old
+	// TestBuildBody_ReasoningGates guarded before it was rewritten).
+	req.ProviderOptions = map[string]any{registry.ProtocolOpenAIChat: map[string]any{"reasoning": map[string]any{"effort": "high"}}}
+	body = build(t, req, res)
+	if got := body["reasoning"]; !reflect.DeepEqual(got, map[string]any{"effort": "high"}) {
+		t.Fatalf("provider option's reasoning object must reach the wire unchanged: %v", got)
+	}
+}

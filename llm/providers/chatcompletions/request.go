@@ -25,9 +25,19 @@ func buildBody(req llm.Request, res registry.Resolved, stream bool) (map[string]
 	}
 	reasoningOff := caps.Reasoning != nil && !*caps.Reasoning
 	options, _ := req.ProviderOptions[registry.ProtocolOpenAIChat].(map[string]any)
+	// useReasoningDetails picks the assistant-replay shape (spec §8.4
+	// Replay): a row can declare it (ReasoningField == "reasoning_details")
+	// or a request can trigger it via a "reasoning" provider option. Only
+	// the latter also means applyThinkingFormat's dialect control is
+	// redundant — the option's own "reasoning" object reaches the wire
+	// through the passthrough loop below, standing in for it. A row that
+	// merely declares the replay shape still needs its dialect control
+	// written, so optionCarriesReasoning tracks that narrower condition
+	// separately from useReasoningDetails.
 	useReasoningDetails := registry.StringValue(caps.ReasoningField) == "reasoning_details"
+	optionCarriesReasoning := false
 	if _, ok := options["reasoning"]; ok && !reasoningOff {
-		useReasoningDetails = true
+		optionCarriesReasoning, useReasoningDetails = true, true
 	}
 	msgs, err := toChatMessages(req.Messages, caps, useReasoningDetails)
 	if err != nil {
@@ -80,7 +90,7 @@ func buildBody(req llm.Request, res registry.Resolved, stream bool) (map[string]
 		}
 		body["response_format"] = format
 	}
-	if !useReasoningDetails {
+	if !optionCarriesReasoning {
 		applyThinkingFormat(body, req, caps)
 	}
 	if caps.Fields["store"] {
