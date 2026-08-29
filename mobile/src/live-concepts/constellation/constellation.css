@@ -20,12 +20,8 @@
   --co-danger: #ff9c9c;
   --co-user: #193e3a;
   --co-focus: #a99cff;
-  position: relative;
-  display: grid;
   width: 100%;
-  height: 100%;
-  grid-template-rows: minmax(0, 1fr);
-  overflow: hidden;
+  min-height: 0;
   background:
     radial-gradient(circle at 12% -10%, #243664 0, transparent 36rem),
     radial-gradient(circle at 92% 12%, #211d47 0, transparent 30rem),
@@ -35,6 +31,14 @@
     -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial,
     sans-serif;
   isolation: isolate;
+}
+
+.concept-constellation[data-concept-root]:not(.co-conversation-skin) {
+  position: relative;
+  display: grid;
+  height: 100%;
+  grid-template-rows: minmax(0, 1fr);
+  overflow: hidden;
 }
 
 .concept-constellation[data-appearance="light"] {
@@ -160,9 +164,7 @@
 
 .concept-constellation .co-topbar__leading,
 .concept-constellation .co-topbar__actions,
-.concept-constellation .co-topbar__actions button,
-.concept-constellation .co-session-actions,
-.concept-constellation .co-session-actions button {
+.concept-constellation .co-topbar__actions button {
   display: flex;
   align-items: center;
 }
@@ -216,7 +218,6 @@
 
 .concept-constellation .co-topbar__actions button,
 .concept-constellation .co-icon-action,
-.concept-constellation .co-session-actions button,
 .concept-constellation .co-filter-row > button {
   border: 1px solid var(--co-control-line);
   border-radius: 999px;
@@ -296,7 +297,6 @@
 }
 
 .concept-constellation .co-sessions,
-.concept-constellation .co-conversation,
 .concept-constellation .co-work-panel {
   display: grid;
   gap: 1.2rem;
@@ -320,9 +320,7 @@
 }
 
 .concept-constellation .co-inset-list,
-.concept-constellation .co-usage,
-.concept-constellation .co-session-summary,
-.concept-constellation .co-composer {
+.concept-constellation .co-usage {
   border: 1px solid var(--co-line);
   border-radius: 0.9rem;
   background: var(--co-surface);
@@ -476,119 +474,339 @@
   text-align: center;
 }
 
-/* ----------------------------- conversation ------------------------------- */
+/* ConversationFrame owns structure and controls; Constellation adds only visual skin. */
+.concept-constellation.co-conversation-skin {
+  background:
+    radial-gradient(circle at 12% -10%, #243664 0, transparent 36rem),
+    radial-gradient(circle at 92% 12%, #211d47 0, transparent 30rem),
+    var(--co-bg);
+}
 
-.concept-constellation .co-session-summary {
+.concept-constellation.co-conversation-skin .live-conversation-frame__chrome {
+  padding-inline: max(0.7rem, var(--safe-area-left))
+    max(0.7rem, var(--safe-area-right));
+  padding-block-end: 0.65rem;
+  border-bottom: 1px solid var(--co-line);
+  align-items: flex-start;
+  background: color-mix(in srgb, var(--co-bg) 94%, transparent);
+}
+
+.concept-constellation.co-conversation-skin
+  :is(
+    .live-conversation-frame__chrome > button,
+    .live-conversation-frame__chrome-controls button,
+    .live-conversation-frame__status button,
+    .live-conversation-composer button
+  ) {
+  border: 1px solid var(--co-control-line);
+  border-radius: 999px;
+  background: transparent;
+  cursor: pointer;
+}
+
+.concept-constellation.co-conversation-skin
+  .live-conversation-frame__chrome-controls {
+  align-items: flex-start;
+}
+
+.concept-constellation.co-conversation-skin .co-conversation-chrome {
+  position: relative;
   display: flex;
-  padding: 1rem;
+  min-width: 0;
+  isolation: isolate;
   align-items: flex-start;
   justify-content: space-between;
-  gap: 1rem;
+  gap: 0.75rem;
 }
 
-.concept-constellation .co-work-heading h2,
-.concept-constellation .co-session-summary h2 {
-  margin-top: 0.25rem;
-  font-size: clamp(1.35rem, 4vw, 1.85rem);
-  letter-spacing: -0.025em;
-}
-
-.concept-constellation .co-work-heading p,
-.concept-constellation .co-session-summary p {
-  margin-top: 0.45rem;
-  color: var(--co-muted);
-  line-height: 1.6;
-}
-
-.concept-constellation .co-session-actions {
-  padding: 0;
-  border: 0;
-  margin: 0;
-  justify-content: flex-end;
-  gap: 0.5rem;
-}
-
-.concept-constellation .co-session-actions button {
-  padding-inline: 0.9rem;
-  gap: 0.4rem;
-}
-
-.concept-constellation .co-transcript {
-  display: grid;
-  width: min(100%, 46rem);
-  margin-inline: auto;
-  gap: 1.15rem;
-}
-
-.concept-constellation .co-transcript-item {
+.concept-constellation.co-conversation-skin .co-conversation-chrome__title {
+  position: relative;
+  z-index: 1;
   min-width: 0;
-  scroll-margin: 8rem;
 }
 
-.concept-constellation .co-transcript-item[data-focused="true"] {
-  border-radius: 0.7rem;
-  outline: 3px solid color-mix(in srgb, var(--co-focus) 55%, transparent);
-  outline-offset: 0.35rem;
+.concept-constellation.co-conversation-skin .co-conversation-chrome__project {
+  color: var(--co-accent);
+  font-size: 0.66rem;
+  font-weight: 780;
+  letter-spacing: 0.11em;
+  text-transform: uppercase;
 }
 
-.concept-constellation .co-transcript-item--assistant {
-  padding: 0.9rem 1rem;
+.concept-constellation.co-conversation-skin .co-conversation-chrome h1 {
+  margin-top: 0.12rem;
+  font-size: 1.3rem;
+  letter-spacing: -0.025em;
+  line-height: 1.12;
+  overflow-wrap: anywhere;
+}
+
+.concept-constellation.co-conversation-skin .co-conversation-telemetry {
+  position: relative;
+  z-index: 1;
+  min-width: 0;
+  color: var(--co-muted);
+  font-size: 0.68rem;
+  letter-spacing: 0.025em;
+  line-height: 1.35;
+  text-align: right;
+}
+
+.concept-constellation.co-conversation-skin .co-conversation-telemetry__status {
+  color: var(--co-accent);
+  font-weight: 760;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.concept-constellation.co-conversation-skin
+  .live-conversation-frame__virtual-transcript
+  > [role="feed"] {
+  padding-block: 0.55rem 0.9rem;
+}
+
+.concept-constellation.co-conversation-skin
+  [data-testid="virtual-transcript-row"]
+  > article {
+  min-width: 0;
+  padding: 0.4rem max(0.7rem, var(--safe-area-right)) 0.4rem
+    max(0.7rem, var(--safe-area-left));
+}
+
+.concept-constellation.co-conversation-skin
+  [data-testid="virtual-transcript-row"]
+  > article[data-focused="true"] {
+  outline: 3px solid color-mix(in srgb, var(--co-focus) 58%, transparent);
+  outline-offset: -3px;
+}
+
+.concept-constellation.co-conversation-skin
+  :is(
+    .co-conversation-assistant,
+    .co-conversation-user,
+    .co-conversation-surface,
+    .co-conversation-marker
+  ) {
+  position: relative;
+  min-width: 0;
+  isolation: isolate;
+  overflow: hidden;
+}
+
+.concept-constellation.co-conversation-skin .co-conversation-star-field {
+  position: absolute;
+  z-index: 0;
+  inset: 0;
+  overflow: hidden;
+  pointer-events: none;
+}
+
+.concept-constellation.co-conversation-skin .co-conversation-star-field > span {
+  position: absolute;
+  width: 2px;
+  height: 2px;
+  border-radius: 50%;
+  background: var(--co-accent);
+  box-shadow: 0 0 0.45rem color-mix(in srgb, var(--co-accent) 65%, transparent);
+}
+
+.concept-constellation.co-conversation-skin
+  .co-conversation-star-field
+  > span:nth-child(1) {
+  inset-block-start: 22%;
+  inset-inline-start: 8%;
+}
+
+.concept-constellation.co-conversation-skin
+  .co-conversation-star-field
+  > span:nth-child(2) {
+  inset-block-start: 68%;
+  inset-inline-start: 28%;
+}
+
+.concept-constellation.co-conversation-skin
+  .co-conversation-star-field
+  > span:nth-child(3) {
+  inset-block-start: 34%;
+  inset-inline-end: 12%;
+}
+
+.concept-constellation.co-conversation-skin .co-conversation-connection {
+  position: absolute;
+  z-index: 0;
+  inset-block: 0.4rem;
+  inset-inline-start: 0.65rem;
+  width: 2.4rem;
+  border-block-start: 1px solid
+    color-mix(in srgb, var(--co-violet) 42%, transparent);
+  border-inline-start: 1px solid
+    color-mix(in srgb, var(--co-accent) 38%, transparent);
+  pointer-events: none;
+  transform: skewY(-12deg);
+  transform-origin: left top;
+}
+
+.concept-constellation.co-conversation-skin .co-conversation-narrative__body,
+.concept-constellation.co-conversation-skin .co-conversation-marker__copy,
+.concept-constellation.co-conversation-skin .co-conversation-marker__duration {
+  position: relative;
+  z-index: 1;
+}
+
+.concept-constellation.co-conversation-skin .co-conversation-assistant {
+  width: 100%;
+  padding: 0.75rem 0.85rem;
+  border: 1px solid var(--co-line);
+  border-radius: 0.8rem;
+  background: color-mix(in srgb, var(--co-surface) 94%, transparent);
+  font-size: 1rem;
+  line-height: 1.7;
+  overflow-wrap: anywhere;
+}
+
+.concept-constellation.co-conversation-skin
+  .co-conversation-assistant[data-tone="running"] {
+  border-color: color-mix(in srgb, var(--co-accent) 52%, var(--co-line));
+  box-shadow: 0 0 1.25rem color-mix(in srgb, var(--co-violet) 12%, transparent);
+}
+
+.concept-constellation.co-conversation-skin .co-conversation-user {
+  width: fit-content;
+  max-width: min(84%, 34rem);
+  margin-inline-start: auto;
+  padding: 0.65rem 0.85rem;
+  border: 1px solid color-mix(in srgb, var(--co-accent) 38%, var(--co-line));
+  border-radius: 1rem 1rem 0.3rem;
+  background: var(--co-user);
+  line-height: 1.5;
+  overflow-wrap: anywhere;
+}
+
+.concept-constellation.co-conversation-skin .co-conversation-surface {
+  padding: 0.75rem 0.85rem;
+  border-block: 1px solid var(--co-line);
+  background: color-mix(in srgb, var(--co-surface) 70%, transparent);
+  line-height: 1.55;
+  overflow-wrap: anywhere;
+}
+
+.concept-constellation.co-conversation-skin .co-conversation-failure {
+  border-color: color-mix(in srgb, var(--co-danger) 48%, var(--co-line));
+}
+
+.concept-constellation.co-conversation-skin .co-conversation-marker {
+  display: grid;
+  padding: 0.5rem 0.75rem;
+  border-block: 1px solid var(--co-line);
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 0.75rem;
+  background: color-mix(in srgb, var(--co-surface) 58%, transparent);
+  color: var(--co-muted);
+  font-size: 0.74rem;
+  line-height: 1.35;
+  overflow-wrap: anywhere;
+}
+
+.concept-constellation.co-conversation-skin
+  .co-conversation-marker[data-tone="running"],
+.concept-constellation.co-conversation-skin
+  .co-conversation-marker[data-tone="success"] {
+  border-color: color-mix(in srgb, var(--co-accent) 52%, var(--co-line));
+}
+
+.concept-constellation.co-conversation-skin .co-conversation-marker__copy {
+  display: grid;
+  min-width: 0;
+  gap: 0.1rem;
+}
+
+.concept-constellation.co-conversation-skin
+  .co-conversation-marker__copy
+  small {
+  color: var(--co-accent);
+  font-size: 0.62rem;
+  font-weight: 780;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+}
+
+.concept-constellation.co-conversation-skin .co-conversation-marker strong {
+  color: var(--co-ink);
+  font-size: 0.78rem;
+}
+
+.concept-constellation.co-conversation-skin .co-conversation-marker__duration {
+  white-space: nowrap;
+}
+
+.concept-constellation.co-conversation-skin
+  .live-conversation-frame__activity-state {
+  padding-inline: max(0.7rem, var(--safe-area-left));
+  color: var(--co-muted);
+  font-size: 0.68rem;
+}
+
+.concept-constellation.co-conversation-skin [data-frame-part="status"] {
+  padding-inline: max(0.7rem, var(--safe-area-left))
+    max(0.7rem, var(--safe-area-right));
+  border-top: 1px solid var(--co-line);
+  background: var(--co-surface);
+  color: var(--co-muted);
+  font-size: 0.76rem;
+}
+
+.concept-constellation.co-conversation-skin [data-frame-part="composer"] {
+  padding-block-start: 0.5rem;
+  padding-inline: max(0.7rem, var(--safe-area-left))
+    max(0.7rem, var(--safe-area-right));
+  border-top: 1px solid var(--co-line);
+  background: var(--co-bg);
+}
+
+.concept-constellation.co-conversation-skin .live-conversation-composer {
+  padding: 0.5rem;
   border: 1px solid var(--co-line);
   border-radius: 0.85rem;
   background: var(--co-surface);
 }
 
-.concept-constellation .co-transcript-item--tool,
-.concept-constellation .co-attachment,
-.concept-constellation .co-transcript-error,
-.concept-constellation .co-transcript-question {
-  border-block: 1px solid var(--co-line);
+.concept-constellation.co-conversation-skin
+  .live-conversation-composer
+  textarea {
+  padding: 0.6rem 0.65rem;
+  border: 1px solid var(--co-control-line);
+  border-radius: 0.6rem;
+  outline: 0;
+  background: var(--co-bg);
+  color: var(--co-ink);
+  line-height: 1.45;
 }
 
-.concept-constellation .co-transcript-item--tool {
-  padding-inline: 0.8rem;
-  border: 1px solid var(--co-line);
-  border-radius: 0.8rem;
-  background: var(--co-surface);
+.concept-constellation.co-conversation-skin
+  .live-conversation-composer__mode
+  button[aria-pressed="true"],
+.concept-constellation.co-conversation-skin
+  .live-conversation-composer__submit {
+  border-color: var(--co-accent);
+  background: var(--co-accent);
+  color: var(--co-accent-ink);
 }
 
-.concept-constellation .co-user-message {
-  width: fit-content;
-  max-width: min(85%, 34rem);
-  margin-left: auto;
-  padding: 0.7rem 0.9rem;
-  border-radius: 1rem 1rem 0.3rem 1rem;
-  background: var(--co-user);
-  line-height: 1.55;
+/* --------------------------------- work ---------------------------------- */
+
+.concept-constellation .co-work-heading h2 {
+  margin-top: 0.25rem;
+  font-size: 1.55rem;
+  letter-spacing: -0.025em;
 }
 
-.concept-constellation .co-assistant-message {
-  max-width: 68ch;
-  font-size: clamp(1rem, 2.2vw, 1.08rem);
-  line-height: 1.78;
-  white-space: pre-wrap;
-}
-
-.concept-constellation .co-transcript-item[data-streaming="true"] {
-  border-color: color-mix(in srgb, var(--co-accent) 48%, var(--co-line));
-}
-
-.concept-constellation .co-transcript-item[data-truncated="true"]::after {
-  content: " [truncated]";
+.concept-constellation .co-work-heading p {
+  margin-top: 0.45rem;
   color: var(--co-muted);
-  font-size: 0.72rem;
+  line-height: 1.6;
 }
 
-.concept-constellation [data-current-work="true"] {
-  position: relative;
-  border-color: color-mix(in srgb, var(--co-accent) 58%, var(--co-line));
-  box-shadow:
-    0 0 0 1px color-mix(in srgb, var(--co-accent) 14%, transparent),
-    0 0 1.5rem color-mix(in srgb, var(--co-violet) 13%, transparent);
-  animation: co-current-pulse 2.8s ease-in-out infinite;
-}
-
-.concept-constellation .co-tool-disclosure [data-disclosure-state] > button,
 .concept-constellation .co-work-node [data-disclosure-state] > button {
   display: flex;
   width: 100%;
@@ -608,20 +826,17 @@
   transform: rotate(90deg);
 }
 
-.concept-constellation .co-tool-detail,
 .concept-constellation .co-work-node__detail {
   padding: 0.2rem 0.2rem 1rem;
   color: var(--co-muted);
 }
 
-.concept-constellation .co-tool-detail dl,
 .concept-constellation .co-work-node__detail dl {
   display: grid;
   margin-top: 0.75rem;
   gap: 0.75rem;
 }
 
-.concept-constellation .co-tool-detail dt,
 .concept-constellation .co-work-node__detail dt,
 .concept-constellation .co-usage dt {
   color: var(--co-muted);
@@ -631,241 +846,11 @@
   text-transform: uppercase;
 }
 
-.concept-constellation .co-tool-detail dd,
 .concept-constellation .co-work-node__detail dd {
   margin-top: 0.2rem;
   color: var(--co-ink);
   line-height: 1.5;
 }
-
-.concept-constellation .co-pending-mutation {
-  display: flex;
-  width: min(100%, 46rem);
-  margin-inline: auto;
-  padding: 0.65rem 0.8rem;
-  border-left: 3px solid var(--co-accent);
-  align-items: center;
-  gap: 0.7rem;
-  background: var(--co-surface);
-  font-size: 0.82rem;
-}
-
-.concept-constellation .co-composer-error {
-  padding: 0.5rem 0.8rem;
-  border: 1px solid color-mix(in srgb, var(--co-danger) 50%, var(--co-line));
-  border-radius: 0.65rem;
-  background: color-mix(in srgb, var(--co-danger) 8%, transparent);
-  color: var(--co-danger);
-  font-size: 0.8rem;
-}
-
-/* ----------------------------- question card ------------------------------ */
-
-.concept-constellation .co-question-card {
-  padding: 1rem;
-  border: 1px solid var(--co-line);
-  border-radius: 0.9rem;
-  background: var(--co-surface);
-}
-
-.concept-constellation .co-question-card--missing {
-  border-color: color-mix(in srgb, var(--co-danger) 50%, var(--co-line));
-  background: color-mix(in srgb, var(--co-danger) 6%, transparent);
-}
-
-.concept-constellation .co-question-card__error {
-  color: var(--co-danger);
-  font-weight: 720;
-}
-
-.concept-constellation .co-question-card fieldset {
-  padding: 0;
-  border: 0;
-  margin: 0;
-}
-
-.concept-constellation .co-question-card legend {
-  display: grid;
-  width: 100%;
-  margin-bottom: 0.75rem;
-  gap: 0.25rem;
-  font-size: 1.12rem;
-  font-weight: 720;
-  line-height: 1.35;
-}
-
-.concept-constellation .co-question-options {
-  border-block: 1px solid var(--co-line);
-}
-
-.concept-constellation .co-question-option {
-  display: grid;
-  padding: 0.7rem 0;
-  grid-template-columns: auto minmax(0, 1fr);
-  align-items: center;
-  gap: 0.7rem;
-  cursor: pointer;
-}
-
-.concept-constellation .co-question-option + .co-question-option {
-  border-top: 1px solid var(--co-line);
-}
-
-.concept-constellation .co-question-option input {
-  width: 1.2rem;
-  height: 1.2rem;
-  accent-color: var(--co-accent);
-}
-
-.concept-constellation .co-question-option > span {
-  display: grid;
-  gap: 0.12rem;
-}
-
-.concept-constellation .co-question-option small {
-  color: var(--co-muted);
-  font-size: 0.72rem;
-}
-
-.concept-constellation .co-question-actions {
-  display: flex;
-  margin-top: 0.8rem;
-  flex-wrap: wrap;
-  gap: 0.45rem;
-}
-
-.concept-constellation .co-question-actions button {
-  padding-inline: 0.85rem;
-}
-
-/* --------------------------- older available ------------------------------ */
-
-.concept-constellation .co-older-available {
-  display: flex;
-  width: min(100%, 46rem);
-  margin-inline: auto;
-  justify-content: center;
-}
-
-.concept-constellation .co-older-available button {
-  padding: 0.4rem 1rem;
-  border: 1px solid var(--co-control-line);
-  border-radius: 999px;
-  background: transparent;
-  color: var(--co-muted);
-  cursor: pointer;
-  font-size: 0.78rem;
-}
-
-/* ----------------------- conversation updated label ----------------------- */
-
-.concept-constellation .co-session-summary__updated {
-  color: var(--co-muted);
-  font-size: 0.75rem;
-}
-
-/* ------------------------------- note field ------------------------------- */
-
-.concept-constellation .co-field {
-  display: grid;
-  margin-top: 0.75rem;
-  gap: 0.35rem;
-  color: var(--co-muted);
-  font-size: 0.78rem;
-  font-weight: 690;
-}
-
-.concept-constellation .co-field textarea {
-  width: 100%;
-  min-height: 3rem;
-  padding: 0.65rem 0.75rem;
-  border: 1px solid var(--co-control-line);
-  border-radius: 0.65rem;
-  outline: 0;
-  background: var(--co-bg);
-  color: var(--co-ink);
-  resize: vertical;
-  line-height: 1.5;
-}
-
-.concept-constellation .co-primary-action {
-  border: 0;
-  border-radius: 0.75rem;
-  background: var(--co-accent);
-  color: var(--co-accent-ink);
-  cursor: pointer;
-  font-weight: 760;
-}
-
-.concept-constellation .co-primary-action:disabled,
-.concept-constellation button:disabled {
-  cursor: not-allowed;
-  opacity: 0.48;
-}
-
-.concept-constellation .co-composer {
-  position: relative;
-  display: grid;
-  width: min(100%, 46rem);
-  margin-inline: auto;
-  padding: 0.65rem;
-  grid-template-columns: minmax(0, 1fr) auto;
-  gap: 0.45rem;
-}
-
-.concept-constellation .co-composer__modes {
-  display: flex;
-  padding: 0;
-  border: 0;
-  margin: 0;
-  grid-column: 1 / -1;
-  gap: 0.3rem;
-}
-
-.concept-constellation .co-composer__modes button {
-  padding: 0.3rem 0.75rem;
-  border: 1px solid var(--co-control-line);
-  border-radius: 999px;
-  background: transparent;
-}
-
-.concept-constellation .co-composer__modes button[aria-pressed="true"] {
-  border-color: var(--co-accent);
-  background: color-mix(in srgb, var(--co-accent) 12%, var(--co-surface));
-  color: var(--co-accent);
-}
-
-.concept-constellation .co-composer label {
-  min-width: 0;
-}
-
-.concept-constellation .co-composer textarea {
-  width: 100%;
-  min-height: 3rem;
-  padding: 0.65rem;
-  border: 0;
-  outline: 0;
-  background: transparent;
-  color: inherit;
-  resize: vertical;
-}
-
-.concept-constellation .co-composer__submit {
-  display: grid;
-  width: 3rem;
-  padding: 0;
-  place-items: center;
-}
-
-.concept-constellation .co-composer__submit span {
-  position: absolute;
-  width: 1px;
-  height: 1px;
-  clip-path: inset(50%);
-  overflow: hidden;
-}
-
-/* --------------------------------- work ---------------------------------- */
 
 .concept-constellation .co-work-panel {
   padding-bottom: 1rem;
@@ -975,6 +960,16 @@
 
 /* --------------------------- reduced motion ------------------------------ */
 
+.concept-constellation[data-concept-root]:not(.co-conversation-skin)
+[data-current-work="true"] {
+  position: relative;
+  border-color: color-mix(in srgb, var(--co-accent) 58%, var(--co-line));
+  box-shadow:
+    0 0 0 1px color-mix(in srgb, var(--co-accent) 14%, transparent),
+    0 0 1.5rem color-mix(in srgb, var(--co-violet) 13%, transparent);
+  animation: co-current-pulse 2.8s ease-in-out infinite;
+}
+
 @keyframes co-current-pulse {
   0%,
   100% {
@@ -993,6 +988,19 @@
   animation: co-route-in 180ms ease-out both;
 }
 
+.concept-constellation.co-conversation-skin[data-surface="conversation"] {
+  animation: co-concept-crossfade 120ms ease-out both;
+}
+
+@keyframes co-concept-crossfade {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
 .concept-constellation [data-disclosure-state] > button svg {
   transition: transform 150ms ease;
 }
@@ -1006,6 +1014,12 @@
     opacity: 1;
     transform: none;
   }
+}
+
+.concept-constellation.co-conversation-skin[data-surface="conversation"][data-reduced-motion="true"],
+:root[data-reduced-motion="true"]
+  .concept-constellation.co-conversation-skin[data-surface="conversation"] {
+  animation-duration: 0s;
 }
 
 .concept-constellation[data-reduced-motion="true"] *,
@@ -1050,7 +1064,8 @@
 
   .concept-constellation .co-connection-marker,
   .concept-constellation .co-attention-marker,
-  .concept-constellation [data-current-work="true"] {
+  .concept-constellation[data-concept-root]:not(.co-conversation-skin)
+    [data-current-work="true"] {
     border-color: currentColor;
     box-shadow: none;
     forced-color-adjust: none;
@@ -1110,8 +1125,7 @@
     font-size: 1.45rem;
   }
 
-  .concept-constellation .co-session-row button,
-  .concept-constellation .co-session-summary {
+  .concept-constellation .co-session-row button {
     align-items: flex-start;
     grid-template-columns: 1fr;
   }
@@ -1121,10 +1135,6 @@
     flex-direction: row;
     align-items: center;
     justify-content: space-between;
-  }
-
-  .concept-constellation .co-session-summary {
-    flex-direction: column;
   }
 
   .concept-constellation .co-work-node__detail dl,

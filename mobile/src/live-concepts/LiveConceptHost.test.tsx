@@ -319,6 +319,75 @@ describe("LiveConceptHost ownership", () => {
     expect(harness.callbacks.onBack).toHaveBeenCalledTimes(1);
   });
 
+  it("keeps Constellation frame motion stable across streaming updates", async () => {
+    const harness = makeHarness();
+    act(() => harness.uiStore.getState().setConcept("constellation"));
+    await openConversation(
+      harness,
+      conversation([
+        {
+          kind: "assistant",
+          id: "constellation-stream",
+          markdown: "Signal 0",
+          streaming: true,
+        },
+      ]),
+    );
+    const { container } = render(
+      <LiveConceptHost {...harness.props} surface="conversation" />,
+    );
+    const frame = screen.getByRole("main", { name: "Conversation" });
+    expect(frame).toHaveClass("co-conversation-skin");
+    expect(
+      container.querySelectorAll("[data-page-scroll-owner='true']"),
+    ).toHaveLength(1);
+    expect(
+      container.querySelector("[data-live-concept-scroller='true']"),
+    ).toBeNull();
+    for (const name of ["Back", "Work", "Switch concept"]) {
+      expect(screen.getByRole("button", { name })).toBeVisible();
+    }
+
+    frame.dataset.routeMotionGeneration = "1";
+    const mutations: MutationRecord[] = [];
+    const observer = new MutationObserver((records) =>
+      mutations.push(...records),
+    );
+    observer.observe(frame, {
+      childList: true,
+      characterData: true,
+      subtree: true,
+    });
+    const initialConversation =
+      harness.runtime.conversationStore.getState().conversation;
+    expect(initialConversation).not.toBeNull();
+    if (initialConversation === null) return;
+    for (const update of ["Signal 1", "Signal 2", "Signal 3"]) {
+      act(() => {
+        harness.runtime.conversationStore.setState({
+          conversation: {
+            ...initialConversation,
+            items: [
+              {
+                kind: "assistant",
+                id: "constellation-stream",
+                markdown: update,
+                streaming: true,
+              },
+            ],
+          },
+        });
+      });
+    }
+    await act(async () => Promise.resolve());
+    observer.disconnect();
+
+    expect(screen.getByText("Signal 3")).toBeVisible();
+    expect(mutations.length).toBeGreaterThan(0);
+    expect(screen.getByRole("main", { name: "Conversation" })).toBe(frame);
+    expect(frame).toHaveAttribute("data-route-motion-generation", "1");
+  });
+
   it("routes frame-owned assistant links to the root native bridge", async () => {
     const harness = makeHarness();
     await openConversation(

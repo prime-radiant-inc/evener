@@ -1,25 +1,32 @@
+import type { ReactNode } from "react";
 import type { LiveConceptRendererProps, LiveConceptState } from "../contract";
 import { ConstellationShell } from "./ConstellationShell";
-import { ConversationView } from "./ConversationView";
 import { SessionsView } from "./SessionsView";
 import { WorkView } from "./WorkView";
+
+function assertNever(value: never): never {
+  throw new Error(`Unhandled surface: ${JSON.stringify(value)}`);
+}
 
 export function ConstellationRenderer({
   state,
   dispatch,
 }: LiveConceptRendererProps) {
-  const surface = state.surface;
+  if (state.surface === "conversation") return null;
+  let content: ReactNode;
+  switch (state.surface) {
+    case "sessions":
+      content = <SessionsView state={state} dispatch={dispatch} />;
+      break;
+    case "work":
+      content = <WorkView state={state} dispatch={dispatch} />;
+      break;
+    default:
+      return assertNever(state.surface);
+  }
   return (
     <ConstellationShell state={state} dispatch={dispatch}>
-      {surface === "sessions" ? (
-        <SessionsView state={state} dispatch={dispatch} />
-      ) : surface === "conversation" ? (
-        <ConversationView state={state} dispatch={dispatch} />
-      ) : surface === "work" ? (
-        <WorkView state={state} dispatch={dispatch} />
-      ) : (
-        <SessionsView state={state} dispatch={dispatch} />
-      )}
+      {content}
     </ConstellationShell>
   );
 }
