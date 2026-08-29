@@ -83,17 +83,20 @@ type toolDeps struct {
 	requestForceCompact func(instructions string) error
 	pressure            func() float64
 
-	// setCommunicateResult records a terminal communicate tool result on the
-	// session for direct tool dependency constructions that predate lease-aware
-	// stable delegates.
-	setCommunicateResult func(message, reply, output string)
-	// setCommunicateResultContext is the Session-owned writer used by live
-	// sessions. The tool context carries the exact stable generation lease.
-	setCommunicateResultContext func(context.Context, string, string, string)
-
-	// setCommunicateStructured records the raw output object the model emitted,
-	// before communicate canonicalization, for delegate structured_result capture.
-	setCommunicateStructured func(raw any)
+	// setCommunicateTerminal is the terminal communicate result writer (issue
+	// #570). Live sessions get the Session-owned atomic capture
+	// (Session.acceptCommunicateTerminal): a call's message/reply/output and its
+	// raw structured value are accepted together under one lock — the first
+	// completed terminal call wins BOTH slots, so one call's structured value can
+	// never fill another call's capture. It returns whether this call won.
+	// Direct tool dependency constructions that predate lease-aware stable
+	// delegates may inject simpler writers.
+	//
+	// structured is the raw output value the model emitted, before communicate
+	// canonicalization, for delegate structured_result capture. Nil means the
+	// call carried no explicit structured output; an explicit JSON null is
+	// passed as json.RawMessage("null"), which is non-nil and therefore present.
+	setCommunicateTerminal func(ctx context.Context, message, reply, output string, structured any) bool
 
 	// runningJobIDs lists this session's own running (session-launched,
 	// non-nested) job ids. The communicate handler uses it to warn when
@@ -273,38 +276,12 @@ func newToolDeps(s *Session) *toolDeps {
 			fetch:  s.webFetch,
 			search: s.webSearch,
 		},
-		setPinnedNote:       s.setPinnedNote,
-		requestForceCompact: s.requestForceCompact,
-		pressure:            s.ContextPressure,
-		setCommunicateResultContext: func(ctx context.Context, message, reply, output string) {
-			s.mu.Lock()
-			if s.comm.called {
-				s.mu.Unlock()
-				return
-			}
-			s.comm = communicateResult{
-				called: true,
-				text:   message,
-				reply:  reply,
-				output: output,
-			}
-			s.mu.Unlock()
-			lease, stableRun := ctx.Value(delegateRunLeaseContextKey{}).(delegateLease)
-			if stableRun && s.delegateController != nil {
-				_ = s.delegateController.recordTerminalSeen(lease)
-			}
-		},
-		setCommunicateStructured: func(raw any) {
-			s.mu.Lock()
-			if !s.comm.called || s.comm.structured != nil {
-				s.mu.Unlock()
-				return
-			}
-			s.comm.structured = raw
-			s.mu.Unlock()
-		},
-		runningJobIDs:   func() []string { return sessionRunningWorkIDs(s) },
-		turnEndsProcess: s.cfg.TurnEndsProcess,
+		setPinnedNote:          s.setPinnedNote,
+		requestForceCompact:    s.requestForceCompact,
+		pressure:               s.ContextPressure,
+		setCommunicateTerminal: s.acceptCommunicateTerminal,
+		runningJobIDs:          func() []string { return sessionRunningWorkIDs(s) },
+		turnEndsProcess:        s.cfg.TurnEndsProcess,
 		skill: func(name string) (skill.SkillMeta, bool) {
 			meta, ok := s.skills[name]
 			return meta, ok

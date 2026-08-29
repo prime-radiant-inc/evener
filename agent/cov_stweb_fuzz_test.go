@@ -82,7 +82,10 @@ func stoolCommunicateRun(t *testing.T, data []byte) stoolCommunicateTrace {
 
 	deps := stoolCommunicateDeps()
 	committed := false
-	deps.setCommunicateResult = func(string, string, string) { committed = true }
+	deps.setCommunicateTerminal = func(context.Context, string, string, string, any) bool {
+		committed = true
+		return true
+	}
 	reg := tool.NewRegistry()
 	registerCommunicateTool(reg, deps)
 	handler := reg.Get("communicate").Exec
@@ -123,10 +126,11 @@ func stoolCommunicateRun(t *testing.T, data []byte) stoolCommunicateTrace {
 		}
 	}
 	deps.prependSteering = func(entries []steeringMessage) { deferred = append(deferred, entries...) }
-	deps.setCommunicateResult = func(message, reply, output string) {
+	deps.setCommunicateTerminal = func(_ context.Context, message, reply, output string, raw any) bool {
 		resultMessage, resultReply, resultOutput = message, reply, output
+		structured = raw
+		return true
 	}
-	deps.setCommunicateStructured = func(raw any) { structured = raw }
 
 	args := map[string]any{
 		"message":  " done " + token + " ",
@@ -217,13 +221,12 @@ func stoolCommunicateRun(t *testing.T, data []byte) stoolCommunicateTrace {
 
 func stoolCommunicateDeps() *toolDeps {
 	return &toolDeps{
-		emit:                     func(events.EventKind, events.EventData) {},
-		abort:                    func(context.Context) error { return nil },
-		drainSteering:            func() []steeringMessage { return nil },
-		prependSteering:          func([]steeringMessage) {},
-		resultToolName:           func() string { return "communicate" },
-		setCommunicateResult:     func(string, string, string) {},
-		setCommunicateStructured: func(any) {},
+		emit:                   func(events.EventKind, events.EventData) {},
+		abort:                  func(context.Context) error { return nil },
+		drainSteering:          func() []steeringMessage { return nil },
+		prependSteering:        func([]steeringMessage) {},
+		resultToolName:         func() string { return "communicate" },
+		setCommunicateTerminal: func(context.Context, string, string, string, any) bool { return true },
 	}
 }
 

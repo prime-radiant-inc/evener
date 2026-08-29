@@ -1405,6 +1405,35 @@ func (s *Session) communicateStructuredResult() (any, bool) {
 	return s.comm.structured, s.comm.structured != nil
 }
 
+// acceptCommunicateTerminal is the atomic terminal-result writer for the
+// communicate tool (issue #570). A call's message, reply, canonical output,
+// and raw structured value are accepted together under s.mu — the first
+// completed terminal call wins BOTH slots, so a later competing call can never
+// pair its structured value with another call's message or fill the winner's
+// still-empty structured slot. It returns whether this call won; losers report
+// accepted:false. The stable-delegate lease, when the context carries one, is
+// recorded after the lock is released.
+func (s *Session) acceptCommunicateTerminal(ctx context.Context, message, reply, output string, structured any) bool {
+	s.mu.Lock()
+	if s.comm.called {
+		s.mu.Unlock()
+		return false
+	}
+	s.comm = communicateResult{
+		called:     true,
+		text:       message,
+		reply:      reply,
+		output:     output,
+		structured: structured,
+	}
+	s.mu.Unlock()
+	lease, stableRun := ctx.Value(delegateRunLeaseContextKey{}).(delegateLease)
+	if stableRun && s.delegateController != nil {
+		_ = s.delegateController.recordTerminalSeen(lease)
+	}
+	return true
+}
+
 // extractOriginalPrompt returns the text of the first user input in the session history.
 // If compaction removed it, falls back to the SubagentTask from config.
 func (s *Session) extractOriginalPrompt() string {
