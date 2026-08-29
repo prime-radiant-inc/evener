@@ -1,4 +1,11 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, expectTypeOf, it } from "vitest";
+import type {
+  ConversationFrameAction,
+  LiveConceptIntent,
+  RootOwnedIntent,
+  RosterIntent,
+  WorkIntent,
+} from "./contract";
 import { liveConceptRegistry } from "./registry";
 
 describe("liveConceptRegistry", () => {
@@ -32,5 +39,19 @@ describe("liveConceptRegistry", () => {
     expect(liveConceptRegistry["field-notes"].conversationSkin.id).toBe(
       "field-notes",
     );
+  });
+});
+
+describe("live concept intent boundary", () => {
+  it("is exactly the readonly neutral-frame and parent-owned unions", () => {
+    type Expected =
+      | ConversationFrameAction
+      | RootOwnedIntent
+      | RosterIntent
+      | WorkIntent;
+    expectTypeOf<LiveConceptIntent>().toEqualTypeOf<Expected>();
+    expectTypeOf<
+      Extract<ConversationFrameAction, { type: "toggleTool" }>
+    >().toEqualTypeOf<{ readonly type: "toggleTool"; readonly key: string }>();
   });
 });

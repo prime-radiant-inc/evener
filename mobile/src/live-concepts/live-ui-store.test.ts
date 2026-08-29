@@ -213,6 +213,48 @@ describe("live concept UI store — exact nested conversation memory", () => {
       );
     }
   });
+
+  it("round-trips non-empty evidence disclosures per concept and thread", () => {
+    const store = createLiveConceptUiStore(createMemoryStorage("stillwater"));
+
+    store
+      .getState()
+      .toggleConversationEvidence("stillwater", "shared-thread", "evidence-a");
+    store
+      .getState()
+      .toggleConversationEvidence("stillwater", "shared-thread", "evidence-b");
+    const stillwaterSnapshot = memoryFor(store, "stillwater", "shared-thread");
+    expect(stillwaterSnapshot?.expandedEvidenceKeys).toEqual(
+      new Set(["evidence-a", "evidence-b"]),
+    );
+
+    store.getState().setConcept("constellation");
+    store
+      .getState()
+      .toggleConversationEvidence(
+        "constellation",
+        "shared-thread",
+        "evidence-c",
+      );
+    expect(
+      memoryFor(store, "constellation", "shared-thread")?.expandedEvidenceKeys,
+    ).toEqual(new Set(["evidence-c"]));
+    expect(memoryFor(store, "stillwater", "shared-thread")).toBe(
+      stillwaterSnapshot,
+    );
+
+    store.getState().setConcept("stillwater");
+    store
+      .getState()
+      .toggleConversationEvidence("stillwater", "shared-thread", "evidence-a");
+    expect(
+      memoryFor(store, "stillwater", "shared-thread")?.expandedEvidenceKeys,
+    ).toEqual(new Set(["evidence-b"]));
+
+    store.getState().resetProfileScope();
+    expect(store.getState().concept).toBe("stillwater");
+    expect(store.getState().conversationUi).toEqual(new Map());
+  });
 });
 
 describe("live concept UI store — shared production UI", () => {
