@@ -62,10 +62,11 @@ func buildProtocolBody(req llm.Request, res registry.Resolved) (out map[string]a
 	if err := applyAnthropicTools(body, req, webSearch); err != nil {
 		return nil, err
 	}
-	if len(req.Tools) > 0 || webSearch {
-		if tools, ok := body["tools"].([]map[string]any); ok && len(tools) > 0 && ttl != "" {
-			tools[len(tools)-1]["cache_control"] = cacheMarker(ttl)
-		}
+	// applyAnthropicTools already marked the last tool for caching, but with
+	// no ttl; re-mark it so the row's CacheTTL rides along. It writes tools
+	// only when there are some, so the assertion is the whole guard.
+	if tools, ok := body["tools"].([]map[string]any); ok && len(tools) > 0 && ttl != "" {
+		tools[len(tools)-1]["cache_control"] = cacheMarker(ttl)
 	}
 	thinkingBudget := applyThinkingShape(body, req, caps)
 	if ov, ok := req.ProviderOptions[registry.ProtocolAnthropic].(map[string]any); ok {
