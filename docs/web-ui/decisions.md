@@ -727,3 +727,31 @@ glyph is retired in favour of the standard box-arrow. **The affordance's
 rendering is planned to change**; routing every site through one component
 is what makes that a one-place change, and the gallery section is where the
 new rendering gets reviewed.
+
+## 2026-08-29 plugins settings: segmented workspace
+
+Settings → Marketplaces & Plugins was redesigned from a six-mockup
+exploration (decluttered sections, segmented workspace, master–detail,
+catalog storefront, mobile-first sheets, power table — mockups and
+desktop/mobile screenshots of all six in
+`docs/web-ui/specs/assets/2026-08-29-plugins-segmented-workspace/`). The
+winner is the **segmented workspace**, and its two idioms are now the
+design system's collection-page language, written up in design-system.md
+§10: same-weight sibling collections go behind one page-level
+SegmentedControl with counts in the segment labels instead of stacking
+titled sections, and per-item actions leave the list rows (which become
+single tappable targets) for a detail Sheet — right side on desktop,
+bottom on mobile — that owns state chips, a lazily-browsed description, a
+meta table, Switch rows for binary state, and the ConfirmDialog-gated
+destructive action nested safely over it.
+
+One deliberate departure from the approved mockup, discovered against the
+wire: the mockup's "Update available" chip and "Upgrade to vX.Y.Z" label
+imply an update-detection field the plugin data model does not have
+(`PluginEntry` carries version, enabled, autoUpgrade, broken — nothing
+about a newer upstream). The shipped sheet offers a plain "Upgrade" action
+(the RPC's actual "check and pull if newer" semantics) instead of faking
+the field; real update detection is a backend feature, not a presentation
+choice, and was not smuggled into this redesign. The implementation
+screenshots beside the mockups in the assets directory record what
+actually shipped, in the app's default theme.
