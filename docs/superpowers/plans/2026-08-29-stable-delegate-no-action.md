@@ -410,52 +410,44 @@ In `CompleteModelRequest`, after `bound` is known and before returning history, 
 
 Run the Step 1 tests. Expected: PASS.
 
-- [ ] **Step 3: Write RED route tests for bare attention**
+- [ ] **Step 3: Write RED process-boundary coverage for bare attention**
 
-Update `FuzzLfRouteNoToolCalls` seeds/oracle and add a table unit test around `routeNoToolCalls`:
+Add `TestDelegateResourceSupervision_AttentionBareTextRecordsExplicitNoAction`.
+Drive a real stable attention generation with a non-empty bare model response and
+assert its exact completion snapshot records attention no-action without terminal
+evidence. This is the process/supervision assertion for delegate eligibility.
 
-```go
-func TestRouteNoToolCallsDelegateAttention(t *testing.T) {
-	tests := []struct {
-		name       string
-		noContent  bool
-		allowNoAct bool
-		want       noCallsRoute
-	}{
-		{"bare eligible attention", false, true, finishDelegateAttentionNoAction},
-		{"bare report-required attention", false, false, runNoToolCalls},
-		{"empty eligible attention", true, true, runNoToolCalls},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			if got := routeNoToolCalls(EntryDelegateAttention, tt.noContent, false, tt.allowNoAct); got != tt.want {
-				t.Fatalf("routeNoToolCalls() = %v, want %v", got, tt.want)
-			}
-		})
-	}
+Table-drive every generic `routeNoToolCalls(kind, noContent,
+afterTerminalCommunicate)` case in `TestRouteNoToolCalls`. Keep this router
+notification-only: notification acknowledgement and post-terminal silence finish
+idle (#329); all other cases use `runNoToolCalls`.
 
-	if got := routeNoToolCalls(EntryNotification, false, false, false); got != finishIdle {
-		t.Fatalf("non-empty notification route = %v, want finishIdle", got)
-	}
-	if got := routeNoToolCalls(EntryNotification, true, true, false); got != finishIdle {
-		t.Fatalf("post-terminal empty notification route = %v, want finishIdle", got)
-	}
-}
-```
+Update `FuzzLfRouteNoToolCalls` to the same two-route oracle. Retain its existing
+four-field fuzz input and seeds, but ignore the legacy eligibility boolean so the
+checked-in corpus wire shape stays compatible.
 
 Run:
 
 ```bash
-go test ./agent -run '^(TestRouteNoToolCallsDelegateAttention|FuzzLfRouteNoToolCalls)$' -count=1
+go test ./agent -run '^(TestRouteNoToolCalls|TestDelegateResourceSupervision_AttentionBareTextRecordsExplicitNoAction)$' -count=1
+go test -tags evenerfuzz ./agent -run '^FuzzLfRouteNoToolCalls$' -count=1
 ```
 
-Expected: FAIL because the route enum/signature lacks delegate no-action.
+Expected: FAIL because the process boundary does not yet record exact-lease
+delegate no-action; the generic router and fuzz oracle remain notification-only.
 
-- [ ] **Step 4: Add the explicit route and outcome recording**
+- [ ] **Step 4: Record no-action at the process boundary**
 
-Add `finishDelegateAttentionNoAction` to `noCallsRoute` and extend `routeNoToolCalls` with an `allowDelegateNoAction bool` argument. In `processOneInput`, for a non-empty `EntryDelegateAttention`, extract the exact lease from `ctx`, ask the controller to `recordAttentionNoAction`, and pass the returned eligibility into the pure router.
+In `processOneInput`, before generic no-tool routing, handle a non-empty
+`EntryDelegateAttention`: extract the exact lease from `ctx`, call
+`recordAttentionNoAction`, return its error, and when accepted take the existing
+idle boundary directly. If it is ineligible, continue through the generic route
+and retry budget.
 
-On `finishDelegateAttentionNoAction`, end the input idle and return without `handleNoToolCalls`. Empty attention still uses the retry budget. Root `EntryNotification` routing remains byte-for-byte equivalent.
+Keep `routeNoToolCalls` three-argument and notification-only; do not add a
+delegate-specific enum. Empty attention still uses the retry budget. Root
+`EntryNotification` behavior and #329 ordering remain unchanged. Run the Step 3
+commands. Expected: PASS.
 
 - [ ] **Step 5: Mark terminal communicate with the exact lease**
 
