@@ -311,11 +311,9 @@ func (jm *jobManager) hasSupervisedRunningJobs() bool {
 	}
 	jm.mu.Lock()
 	defer jm.mu.Unlock()
-	for jobID := range jm.running {
-		for _, cfg := range jm.watches {
-			if cfg.target == jobID && cfg.progressIntervalMS > 0 {
-				return true
-			}
+	for _, cfg := range jm.watches {
+		if cfg.progressIntervalMS > 0 && jm.running[cfg.target] != nil {
+			return true
 		}
 	}
 	return false

@@ -7,7 +7,6 @@ import (
 	"strings"
 
 	"primeradiant.com/evener/agent/events"
-	"primeradiant.com/evener/agent/internal/delegatestore"
 	"primeradiant.com/evener/agent/internal/goal"
 	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/llm"
@@ -211,13 +210,7 @@ func (s *Session) hasWakePendingDependents() bool {
 	if s.jobManager.hasSupervisedRunningJobs() {
 		return true
 	}
-	for _, row := range stableDelegateRowsForSession(s, false) {
-		switch row.snapshot.phase {
-		case delegatestore.PhaseRunning, delegatestore.PhaseSettling, delegatestore.PhaseStopping:
-			return true
-		}
-	}
-	return false
+	return s.delegateController.hasWakePendingDelegateFor(s)
 }
 
 // armGoalContinuation runs in the drain-loop gate (on the turn goroutine) after a
@@ -225,21 +218,27 @@ func (s *Session) hasWakePendingDependents() bool {
 // turn made a mutating tool call. It folds that signal into the goal under the
 // goal lock and decides whether to issue another continuation.
 //
-// It returns (renderedPrompt, true) to continue, or ("", false) to stop. The gate
+// It returns (renderedPrompt, true) to continue, or ("", false) when there is
+// nothing to drive right now: no goal is set, the goal is terminal (the gate
 // owns two stop paths — a model-declared terminal status and the no-progress
-// breaker — and emits exactly one EventGoalEnded on each so the user is told why
-// the loop stopped. There is no iteration cap: a goal that keeps making progress
-// runs until it is completed or the no-progress breaker fires. With no goal set
-// it is a no-op returning ("", false).
+// breaker — and emits exactly one EventGoalEnded on each so the user is told
+// why the loop stopped), or the wake-pending hold parked the goal until a
+// dependent's notification lands. There is no iteration cap: a goal that keeps
+// making progress runs until it is completed or the no-progress breaker fires.
 func (s *Session) armGoalContinuation(progressed, wasContinuation bool) (string, bool) {
 	// Lazy, and computed before goalUpdateMu: the query takes delegate-controller
-	// and job-manager locks, which must never be held under the goal serializer,
-	// and a full delegate-tree snapshot must not be paid by turns that cannot use
-	// the answer (non-continuation turns, progressed continuations, goal-less
-	// sessions — none of which can hold).
+	// and job-manager locks, which must never be held under the goal serializer.
+	// Two short-circuits keep hot paths free of it: only a non-progressed
+	// continuation can hold at all, and the hold can only fire when both
+	// serve-loop callbacks are wired (bridgeSession installs them together) — an
+	// unwired session (e.g. one-shot `evener run`, where the drain's defer chain
+	// is the only driver) never pays for the dependent scan it cannot use.
 	var wakePending bool
 	if wasContinuation && !progressed {
-		wakePending = s.hasWakePendingDependents()
+		s.mu.Lock()
+		wired := s.kickFunc != nil && s.notifyFunc != nil
+		s.mu.Unlock()
+		wakePending = wired && s.hasWakePendingDependents()
 	}
 	s.goalUpdateMu.Lock()
 	store := s.getOrCreateGoalStore()
@@ -269,31 +268,21 @@ func (s *Session) armGoalContinuation(progressed, wasContinuation bool) (string,
 	if !progressed && wakePending {
 		// Wake-pending hold: the turn made no mutating call, but owned work is
 		// guaranteed to wake the session (a running delegate's report/terminal
-		// notification, a background job's terminal notification). Waiting on a
-		// guaranteed wake is not stalling, so the no-progress fold is skipped —
-		// three polling turns must not block a goal whose next phase starts when
-		// the last dependent reports — and no further continuation is armed: the
-		// notification machinery drives the session, and that turn's settle
-		// re-arms the goal. The settle flag makes the held decision visible to
-		// settleGoalOnIdle so it does not immediately re-kick past the same wait.
-		//
-		// The hold requires BOTH serve-loop callbacks: kickFunc to re-arm the
-		// goal after a notification turn, and notifyFunc for the dependent's
-		// wake to reach an idle session at all (serve.go wires the two
-		// together in bridgeSession; requiring both keeps an unwired session —
-		// e.g. one-shot `evener run`, where the drain's defer chain is the
-		// only driver — folding exactly as before rather than parking on a
-		// wake that cannot arrive).
+		// notification, a supervised background job's progress tick or terminal
+		// notification). Waiting on a guaranteed wake is not stalling, so the
+		// no-progress fold is skipped — three polling turns must not block a
+		// goal whose next phase starts when the last dependent reports — and no
+		// further continuation is armed: the notification machinery drives the
+		// session, and that turn's settle re-arms the goal. The settle flag
+		// makes the held decision visible to settleGoalOnIdle so it does not
+		// immediately re-kick past the same wait. wakePending implies the
+		// kick+notify pair is wired (the gate's short-circuit), so the held
+		// decision always has a live resume path.
 		s.mu.Lock()
-		hold := s.kickFunc != nil && s.notifyFunc != nil
-		if hold {
-			s.goalDependentsHeld = true
-		}
+		s.goalDependentsHeld = true
 		s.mu.Unlock()
-		if hold {
-			s.goalUpdateMu.Unlock()
-			return "", false
-		}
+		s.goalUpdateMu.Unlock()
+		return "", false
 	}
 	snap, stillActive := store.RecordContinuation(progressed, s.sclock().Now())
 	s.emitGoalUpdated(snap)
