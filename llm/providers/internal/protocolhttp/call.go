@@ -31,7 +31,11 @@ type Call struct {
 	EndpointFamily string
 	Method         string
 	URL            string
-	// Body is the built body; nil for GET.
+	// Body is the built body; nil for GET. Prepare mutates it in place —
+	// the prune deletes the fields the row turns off, the transport's body
+	// constants are written into it, and a RequestPreparer may rename or
+	// drop keys — so callers must not reuse a Body across calls or read it
+	// back expecting the shape their builder produced.
 	Body map[string]any
 	// Headers are the protocol's fixed headers (anthropic-version, session
 	// affinity); they are set after res.Headers so the protocol wins.
@@ -57,7 +61,8 @@ type Prepared struct {
 // Prepare assembles the wire request without sending it (spec §8.2 steps
 // 2–4): prune by Fields, apply Transport.Body constants, set the layered
 // headers, run the authenticator, then the request preparer, and marshal
-// the final body.
+// the final body. Steps 2–4 all edit c.Body in place, so c.Body is the
+// wire body afterwards, not the body the protocol built.
 func Prepare(ctx context.Context, c *Call) (*Prepared, error) {
 	var pruned []string
 	if c.Body != nil {
