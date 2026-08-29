@@ -1,9 +1,8 @@
 package launchconfig
 
 import (
+	"maps"
 	"strings"
-
-	"primeradiant.com/evener/envvars"
 )
 
 // Runtime-default sources for provenance: a value the layered files did not
@@ -16,7 +15,7 @@ const (
 	LayerBuiltin LayerName = "builtin"
 )
 
-// ApplyEnvDefaults returns a copy of resolved with the effective layer's
+// ApplyEnvDefaults returns resolved with the effective layer's
 // still-unset fields filled from the environment floor only: the schema's
 // non-secret EnvFallback set (EVENER_MODEL, EVENER_REASONING_EFFORT,
 // EVENER_OPENAI_RESPONSES_CONTINUATION). A field any file layer already set
@@ -31,7 +30,13 @@ const (
 // and never read the ambient environment; production callers pass os.Getenv.
 func ApplyEnvDefaults(resolved Resolved, getenv func(string) string, schema []LaunchOption) Resolved {
 	out := resolved
-	out.Effective = cloneLayer(resolved.Effective)
+	// Only Provenance is deep-copied: this function writes new entries into it
+	// (set/LayerEnv), so the caller's map must not be aliased. The Effective
+	// layer is not mutated — only its scalar fields are assigned, which copies
+	// the value, not the slice/map headers — so sharing the input's slice and
+	// map headers (SkillsDirs, MCPs, Env, etc.) is safe as long as nothing
+	// appends to or rekeys them. Callers do not mutate the returned Resolved's
+	// Effective slices after this returns.
 	if out.Provenance == nil {
 		out.Provenance = map[string]LayerName{}
 	} else {
@@ -47,24 +52,23 @@ func ApplyEnvDefaults(resolved Resolved, getenv func(string) string, schema []La
 		if opt.EnvFallback == nil || opt.EnvFallback.Secret {
 			continue
 		}
-		switch opt.WireField {
-		case "model":
-			if strings.TrimSpace(out.Effective.Model) == "" {
-				if v := envvars.EVENERModel.FromTrimmed(getenv); v != "" {
+		// All env-fallback fields are string scalars, so a single read of the
+		// env var (keyed by opt.EnvFallback.Name) covers every case. The switch
+		// only selects which effective field to check-and-set.
+		if v := strings.TrimSpace(getenv(opt.EnvFallback.Name)); v != "" {
+			switch opt.WireField {
+			case "model":
+				if strings.TrimSpace(out.Effective.Model) == "" {
 					out.Effective.Model = v
 					set(opt.Field, LayerEnv)
 				}
-			}
-		case "reasoningEffort":
-			if strings.TrimSpace(out.Effective.ReasoningEffort) == "" {
-				if v := envvars.EVENERReasoningEffort.FromTrimmed(getenv); v != "" {
+			case "reasoningEffort":
+				if strings.TrimSpace(out.Effective.ReasoningEffort) == "" {
 					out.Effective.ReasoningEffort = v
 					set(opt.Field, LayerEnv)
 				}
-			}
-		case "openAIResponsesContinuation":
-			if strings.TrimSpace(out.Effective.OpenAIResponsesContinuation) == "" {
-				if v := envvars.EVENEROpenAIResponsesContinuation.FromTrimmed(getenv); v != "" {
+			case "openAIResponsesContinuation":
+				if strings.TrimSpace(out.Effective.OpenAIResponsesContinuation) == "" {
 					out.Effective.OpenAIResponsesContinuation = v
 					set(opt.Field, LayerEnv)
 				}
@@ -157,12 +161,6 @@ func ApplyRuntimeDefaults(resolved Resolved, getenv func(string) string, schema 
 				out.Effective.NoProjectPrompts = &v
 				set(opt.Field)
 			}
-		case "nonInteractive":
-			if out.Effective.NonInteractive == nil && opt.BuiltinDefaultBool != nil {
-				v := *opt.BuiltinDefaultBool
-				out.Effective.NonInteractive = &v
-				set(opt.Field)
-			}
 		case "appReplaySize":
 			if out.Effective.AppReplaySize == nil && opt.BuiltinDefaultInt != nil {
 				v := *opt.BuiltinDefaultInt
@@ -185,39 +183,8 @@ func ApplyRuntimeDefaults(resolved Resolved, getenv func(string) string, schema 
 	return out
 }
 
-func cloneLayer(l Layer) Layer {
-	out := l
-	out.SkillsDirs = cloneStringSlice(l.SkillsDirs)
-	out.PluginDirs = cloneStringSlice(l.PluginDirs)
-	out.MCPConfigs = cloneStringSlice(l.MCPConfigs)
-	out.ModelFallbacks = cloneStringSlicePtr(l.ModelFallbacks)
-	out.EnabledPlugins = cloneStringSlicePtr(l.EnabledPlugins)
-	if l.Env != nil {
-		out.Env = make(map[string]string, len(l.Env))
-		for k, v := range l.Env {
-			out.Env[k] = v
-		}
-	}
-	if l.MCPs != nil {
-		out.MCPs = make([]MCPServerSpec, len(l.MCPs))
-		copy(out.MCPs, l.MCPs)
-	}
-	return out
-}
-
-func cloneStringSlice(s []string) []string {
-	if s == nil {
-		return nil
-	}
-	out := make([]string, len(s))
-	copy(out, s)
-	return out
-}
-
 func cloneProvenance(p map[string]LayerName) map[string]LayerName {
 	out := make(map[string]LayerName, len(p))
-	for k, v := range p {
-		out[k] = v
-	}
+	maps.Copy(out, p)
 	return out
 }

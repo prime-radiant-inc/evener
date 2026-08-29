@@ -10037,3 +10037,42 @@ func TestHubRPCThreadStartEnvModelSatisfiesRequiredGate(t *testing.T) {
 		t.Errorf("Model = %q, want env model threaded into spawn", got.Resolved.Effective.Model)
 	}
 }
+
+func TestHubRPCThreadStartEmptyModelRejected(t *testing.T) {
+	// The counterpart to TestHubRPCThreadStartEnvModelSatisfiesRequiredGate:
+	// with no model in any layer, no EVENER_MODEL env, and no per-launch
+	// override, the spawn gate rejects with "model is required". This guards
+	// the branch the env path exists to satisfy.
+	t.Setenv("EVENER_MODEL", "") // ensure ambient env cannot leak a model in
+	runDir := t.TempDir()
+	launchRoot := t.TempDir()
+	spawner := &fakeRPCModelContractSpawner{
+		spawn: func(_ context.Context, _ hubcore.SpawnRequest) (rendezvous.Entry, error) {
+			t.Fatal("spawner should not be called when model is empty")
+			return rendezvous.Entry{}, nil
+		},
+	}
+	hub := newHubRPCTestServer(t, hubcore.WebConfig{
+		RunDir:           runDir,
+		HubStateRoot:     t.TempDir(),
+		LaunchConfigRoot: launchRoot,
+		Spawner:          spawner,
+		Past:             hubcore.NewPastIndex(""),
+	})
+	defer hub.Close()
+	client := dialHubRPC(t, hub)
+	defer client.Close()
+
+	if _, err := client.Initialize(context.Background(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
+		t.Fatalf("Initialize: %v", err)
+	}
+	_, err := client.ThreadStart(context.Background(), appwire.ThreadStartParams{
+		CWD: t.TempDir(),
+	})
+	if err == nil {
+		t.Fatal("ThreadStart should fail when model resolves to empty")
+	}
+	if !strings.Contains(err.Error(), "model is required") {
+		t.Fatalf("error = %v, want error containing \"model is required\"", err)
+	}
+}

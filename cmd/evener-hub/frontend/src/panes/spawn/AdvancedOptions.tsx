@@ -219,11 +219,11 @@ const DEFAULT_PLACEHOLDER_MAX = 60;
 function inputDefaultPlaceholder(option: LaunchOption, resolvedDefaults: LaunchConfigLayer | undefined): string {
   const value = resolvedValue(option, resolvedDefaults);
   if (typeof value === "number" && Number.isFinite(value)) {
-    // max_rounds -1 is the flag's own "unlimited" sentinel
-    // (fs.Int("max-rounds", -1, "... 0=unlimited")), so the placeholder
-    // uses that wording rather than the opaque number. Keyed on the wire
-    // field: the spawn panel's option objects carry it verbatim.
-    if (option.wireField === "maxRounds" && value === -1) return "unlimited (default)";
+    // max_rounds -1 and 0 both mean unlimited: the flag's own "unlimited"
+    // sentinel (fs.Int("max-rounds", -1, "... 0=unlimited")), and the agent's
+    // applyDefaults converts 0→-1. Keyed on the wire field: the spawn panel's
+    // option objects carry it verbatim.
+    if (option.wireField === "maxRounds" && (value === -1 || value === 0)) return "unlimited (default)";
     return `${value} (default)`;
   }
   if (typeof value === "string" && value.trim() !== "") {
