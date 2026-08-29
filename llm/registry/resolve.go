@@ -465,6 +465,14 @@ func (r *Registry) buildTransport(rec *record, row Model, proto string) (Transpo
 	setIfEmpty(&t.StreamEndpoint, d.StreamEndpoint)
 	setIfEmpty(&t.ModelsEndpoint, d.ModelsEndpoint)
 	setIfEmpty(&t.CountTokensEndpoint, d.CountTokensEndpoint)
+	// The templates, captured before substitution, are the authoritative list
+	// of variables Resolved may expose (URL parts such as a region, resource,
+	// or project). Resolved is serialized by `evener models inspect`, so no
+	// vars_env value that a template does not reference is ever exposed.
+	templates := []string{rec.head.Transport.BaseURL, t.Endpoint, t.StreamEndpoint, t.ModelsEndpoint, t.CountTokensEndpoint}
+	if row.Transport != nil && row.Transport.BaseURL != "" {
+		templates = append(templates, row.Transport.BaseURL)
+	}
 
 	var warnings []string
 	url, missing, hostWarnings := r.resolveBaseURL(rec, t)
@@ -480,21 +488,9 @@ func (r *Registry) buildTransport(rec *record, row Model, proto string) (Transpo
 	for _, name := range slices.Compact(missing) {
 		warnings = append(warnings, "unresolved variable "+name)
 	}
-	// Expose only the variables the templates reference: URL parts such as a
-	// region, resource, or project. A vars_env name is never a credential by
-	// construction (the converter routes credential-shaped names to
-	// APIKeyEnv), but the templates are the authoritative list, and Resolved
-	// is serialized by `evener models inspect`.
 	resolved := map[string]string{}
-	for _, tpl := range []string{rec.head.Transport.BaseURL, t.Endpoint, t.StreamEndpoint, t.ModelsEndpoint, t.CountTokensEndpoint} {
+	for _, tpl := range templates {
 		for _, m := range placeholderRe.FindAllStringSubmatch(tpl, -1) {
-			if v, ok := lookup(m[1]); ok {
-				resolved[m[1]] = v
-			}
-		}
-	}
-	if row.Transport != nil && row.Transport.BaseURL != "" {
-		for _, m := range placeholderRe.FindAllStringSubmatch(row.Transport.BaseURL, -1) {
 			if v, ok := lookup(m[1]); ok {
 				resolved[m[1]] = v
 			}

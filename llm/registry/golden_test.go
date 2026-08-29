@@ -372,7 +372,7 @@ func TestGoldenResolved(t *testing.T) {
 				t.Errorf("%+v", res)
 			}
 		}},
-		{"ollama-llama3-ipv6", "ollama/llama3:8b", map[string]string{"OLLAMA_HOST": "::1", "OLLAMA_API_KEY": "ok"}, func(t *testing.T, res Resolved) {
+		{"ollama-llama3-ipv6", "ollama/llama3:8b", map[string]string{"OLLAMA_HOST": "::1", "OLLAMA_API_KEY": "SECRET-ollama"}, func(t *testing.T, res Resolved) {
 			if res.Transport.BaseURL != "http://[::1]:11434/v1" || res.Credential.Source != "env:OLLAMA_API_KEY" {
 				t.Errorf("%+v", res)
 			}
@@ -404,6 +404,11 @@ func TestGoldenResolved(t *testing.T) {
 			got = append(got, '\n')
 			for name, secret := range goldenSecrets {
 				if bytes.Contains(got, []byte(secret)) {
+					t.Fatalf("%s: the serialized record contains the value of %s", c.ref, name)
+				}
+			}
+			for name, value := range c.env {
+				if isKeyVar(name) && bytes.Contains(got, []byte(value)) {
 					t.Fatalf("%s: the serialized record contains the value of %s", c.ref, name)
 				}
 			}
