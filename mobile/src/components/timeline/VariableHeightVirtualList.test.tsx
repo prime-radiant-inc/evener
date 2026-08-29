@@ -6,9 +6,26 @@ import {
   screen,
   waitFor,
 } from "@testing-library/react";
-import { createRef, type ReactElement, type RefObject } from "react";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import type { ConceptId } from "../../live-concepts/model";
+import {
+  createRef,
+  type ReactElement,
+  type ReactNode,
+  type RefObject,
+} from "react";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import type {
+  ConversationAnchor,
+  ConversationSkin,
+} from "../../live-concepts/conversation/contract";
+import {
+  VirtualTranscript,
+  type VirtualTranscriptHandle,
+} from "../../live-concepts/conversation/VirtualTranscript";
+import type {
+  ConceptId,
+  ConversationDisplayItem,
+  NarrativeDisplayItem,
+} from "../../live-concepts/model";
 import type { ContentSizeCategory } from "../../native/contract";
 import {
   VariableHeightVirtualList,
@@ -46,8 +63,12 @@ class DeterministicResizeObserver implements ResizeObserver {
   }
 
   static emitAll(): void {
+    DeterministicResizeObserver.emitWhere(() => true);
+  }
+
+  static emitWhere(predicate: (target: Element) => boolean): void {
     for (const observer of DeterministicResizeObserver.instances) {
-      const entries = [...observer.targets].map((target) => {
+      const entries = [...observer.targets].filter(predicate).map((target) => {
         const rect = target.getBoundingClientRect();
         return {
           target,
@@ -198,18 +219,88 @@ function items(count: number, height = 72): Item[] {
   }));
 }
 
+function bounded(text: string) {
+  return { text, truncated: false, originalUtf8Bytes: text.length };
+}
+
+function displayNarrative(
+  key: string,
+  sourceKind: NarrativeDisplayItem["sourceKind"] = "assistant",
+  body = key,
+  streaming = false,
+): NarrativeDisplayItem {
+  return {
+    key,
+    sourceKind,
+    body: bounded(body),
+    label: null,
+    tone: "idle",
+    streaming,
+    questionKey: null,
+    evidenceKey: null,
+    sequence: key,
+  };
+}
+
+function displayMarker(
+  key: string,
+  state: "running" | "completed" = "running",
+): ConversationDisplayItem {
+  return {
+    key,
+    sourceKind: "tool",
+    semanticKind: "tool",
+    label: bounded(key),
+    preview: null,
+    duration: null,
+    tone: state === "running" ? "running" : "success",
+    state,
+    evidenceKey: null,
+    sequence: key,
+  };
+}
+
+const measuredSkin: ConversationSkin = {
+  id: "stillwater",
+  className: "measured-skin",
+  composerAppearance: { density: "compact", accent: "forest" },
+  renderNarrativeItem: ({ item, body }) => (
+    <div
+      data-height={
+        item.sourceKind === "user"
+          ? 72
+          : item.body.text.includes("grown")
+            ? 178
+            : 131
+      }
+    >
+      {body}
+    </div>
+  ),
+  renderActivityMarker: ({ item }) => (
+    <div data-height={item.state === "completed" ? 252 : 219}>
+      {item.label.text}
+    </div>
+  ),
+  renderConversationChrome: () => null,
+};
+
 function renderList({
   values = items(500),
   threadKey = "thread-variable-list",
   skinId = "stillwater",
   contentSize = "large",
   ref = createRef<VariableHeightVirtualListHandle>(),
+  estimate = 40,
+  renderRow = (item: Item) => <div data-height={item.height}>{item.key}</div>,
 }: {
   values?: readonly Item[];
   threadKey?: string;
   skinId?: ConceptId;
   contentSize?: ContentSizeCategory;
   ref?: RefObject<VariableHeightVirtualListHandle | null>;
+  estimate?: number | ((item: Item) => number);
+  renderRow?: (item: Item) => ReactNode;
 } = {}): {
   readonly ref: RefObject<VariableHeightVirtualListHandle | null>;
   readonly rerenderList: (
@@ -225,12 +316,14 @@ function renderList({
       ref={ref}
       items={next}
       getItemKey={(item) => item.key}
-      estimateSize={(item) => item.height}
+      estimateSize={(item) =>
+        typeof estimate === "number" ? estimate : estimate(item)
+      }
       cacheScope={{ threadKey, skinId: activeSkin, contentSize: activeSize }}
       overscan={6}
       maxMountedRows={48}
       onScroll={() => {}}
-      renderItem={(item) => <div data-height={item.height}>{item.key}</div>}
+      renderItem={renderRow}
     />
   );
   const view = render(element(values));
@@ -251,6 +344,24 @@ async function emitMeasurements(): Promise<void> {
       screen.getAllByTestId("virtual-transcript-row").length,
     ).toBeGreaterThan(0),
   );
+}
+
+function emitMeasurementWhere(predicate: (target: Element) => boolean): void {
+  act(() => DeterministicResizeObserver.emitWhere(predicate));
+}
+
+function rowStart(key: string): number {
+  const row = screen
+    .getByText(key)
+    .closest<HTMLElement>('[data-testid="virtual-transcript-row"]');
+  if (row === null) throw new Error(`missing row ${key}`);
+  const match = row.style.transform.match(/translateY\(([-\d.]+)px\)/);
+  if (match?.[1] === undefined) throw new Error(`missing transform for ${key}`);
+  return Number(match[1]);
+}
+
+async function promiseSettled(promise: Promise<unknown>): Promise<boolean> {
+  return Promise.race([promise.then(() => true), Promise.resolve(false)]);
 }
 
 async function focusKey(
@@ -301,7 +412,7 @@ describe("VariableHeightVirtualList", () => {
     await emitMeasurements();
     await focusKey(ref, "item-217");
     const feed = screen.getByRole("feed");
-    feed.scrollTop = 217 * 72 + 11;
+    feed.scrollTop = rowStart("item-217") + 11;
     fireEvent.scroll(feed);
     const before = ref.current?.captureAnchor();
 
@@ -309,7 +420,11 @@ describe("VariableHeightVirtualList", () => {
     expect(before).not.toBeNull();
     if (before === null || before === undefined)
       throw new Error("anchor missing");
-    await act(() => ref.current?.restoreAnchor(before));
+    const restoration = ref.current?.restoreAnchor(before);
+    emitMeasurementWhere(
+      (target) => (target as HTMLElement).dataset.itemKey === "item-217",
+    );
+    await act(async () => restoration);
     const after = ref.current?.captureAnchor();
     expect(after?.key).toBe("item-217");
     expect(
@@ -317,33 +432,92 @@ describe("VariableHeightVirtualList", () => {
     ).toBeLessThanOrEqual(2);
   });
 
+  it("waits through estimated scroll changes for the target measurement and adjusted offset", async () => {
+    const { ref, rerenderList } = renderList({
+      values: items(500, 72),
+      threadKey: "thread-target-handshake",
+      estimate: 40,
+    });
+    await emitMeasurements();
+    const restoration = ref.current?.restoreAnchor({
+      key: "item-217",
+      offsetPx: -9,
+      priorIndex: 217,
+    });
+    if (restoration === undefined) throw new Error("restore handle missing");
+    let restored = false;
+    void restoration.then(() => {
+      restored = true;
+    });
+
+    await act(async () => {
+      rerenderList(
+        items(500, 72).map((item) =>
+          item.key === "item-216" ? { ...item, height: 73 } : item,
+        ),
+      );
+      DeterministicResizeObserver.emitWhere(
+        (target) => (target as HTMLElement).dataset.itemKey === "item-216",
+      );
+    });
+    expect(restored).toBe(false);
+    emitMeasurementWhere((target) => target.getAttribute("role") === "feed");
+    expect(await promiseSettled(restoration)).toBe(false);
+
+    emitMeasurementWhere(
+      (target) => (target as HTMLElement).dataset.itemKey === "item-217",
+    );
+    await act(async () => restoration);
+    const restoredAnchor = ref.current?.captureAnchor();
+    expect(restoredAnchor?.key).toBe("item-217");
+    expect(
+      Math.abs((restoredAnchor?.offsetPx ?? 999) - -9),
+    ).toBeLessThanOrEqual(2);
+  });
+
+  it("completes no-op restoration immediately for an already measured target", async () => {
+    const { ref } = renderList({ values: items(40, 72), estimate: 40 });
+    await emitMeasurements();
+    const anchor = ref.current?.captureAnchor();
+    if (anchor === null || anchor === undefined)
+      throw new Error("anchor missing");
+    const restoration = ref.current?.restoreAnchor(anchor);
+    if (restoration === undefined) throw new Error("restore handle missing");
+    await expect(restoration).resolves.toBeUndefined();
+    expect(ref.current?.captureAnchor()).toEqual(anchor);
+  });
+
   it("keeps exact nested thread, skin, content-size measurement scopes isolated", async () => {
     const base = items(40, 72);
     const { ref, rerenderList } = renderList({
       values: base,
       threadKey: "thread-three-skins",
+      estimate: 40,
     });
     await emitMeasurements();
-    await focusKey(ref, "item-10");
+    expect(rowStart("item-5")).toBe(5 * 72);
+    await focusKey(ref, "item-5");
     const before = ref.current?.captureAnchor();
     expect(before).not.toBeNull();
 
     for (const [skinId, height] of [
       ["constellation", 131],
       ["field-notes", 219],
-      ["stillwater", 72],
     ] as const) {
       rerenderList(items(40, height), skinId, "large");
       await emitMeasurements();
-      if (before !== null && before !== undefined) {
-        await act(() => ref.current?.restoreAnchor(before));
-      }
+      expect(rowStart("item-5")).toBe(5 * height);
       const anchor = ref.current?.captureAnchor();
       expect(anchor?.key).toBe(before?.key);
       expect(
         Math.abs((anchor?.offsetPx ?? 999) - (before?.offsetPx ?? 0)),
       ).toBeLessThanOrEqual(2);
     }
+
+    // Revisit Stillwater without another ResizeObserver delivery. Only the
+    // retained nested leaf can recover 72px geometry instead of the 40px estimate.
+    rerenderList(items(40, 72), "stillwater", "large");
+    await waitFor(() => expect(rowStart("item-5")).toBe(5 * 72));
   });
 
   it("preserves the measured anchor through streaming and marker growth in every skin", async () => {
@@ -388,35 +562,41 @@ describe("VariableHeightVirtualList", () => {
       values: items(40, 131),
       threadKey: "thread-dynamic-type",
       skinId: "constellation",
+      estimate: 40,
     });
     await emitMeasurements();
-    await focusKey(ref, "item-10");
+    expect(rowStart("item-5")).toBe(5 * 131);
 
-    for (const [contentSize, height] of [
-      ["extraExtraLarge", 171],
-      ["accessibilityExtraExtraExtraLarge", 241],
-    ] as const) {
-      const before = ref.current?.captureAnchor();
-      expect(before).not.toBeNull();
-      rerenderList(items(40, height), "constellation", contentSize);
-      await emitMeasurements();
-      await waitFor(() => {
-        const after = ref.current?.captureAnchor();
-        expect(after?.key).toBe(before?.key);
-        expect(
-          Math.abs((after?.offsetPx ?? 999) - (before?.offsetPx ?? 0)),
-        ).toBeLessThanOrEqual(2);
-      });
-    }
-
-    const beforeReturn = ref.current?.captureAnchor();
-    rerenderList(items(40, 131), "constellation", "large");
+    // Seed two unrelated exact leaves with geometry unlike the estimate.
+    rerenderList(items(40, 82), "stillwater", "extraExtraLarge");
     await emitMeasurements();
-    const afterReturn = ref.current?.captureAnchor();
-    expect(afterReturn?.key).toBe(beforeReturn?.key);
-    expect(
-      Math.abs((afterReturn?.offsetPx ?? 999) - (beforeReturn?.offsetPx ?? 0)),
-    ).toBeLessThanOrEqual(2);
+    expect(rowStart("item-5")).toBe(5 * 82);
+    rerenderList(items(40, 171), "constellation", "extraExtraLarge");
+    await emitMeasurements();
+    expect(rowStart("item-5")).toBe(5 * 171);
+
+    // Revisit large first, then make a same-skin Dynamic Type transition into
+    // the pre-seeded XXL leaf. That active target alone must be invalidated.
+    rerenderList(items(40, 90), "field-notes", "large");
+    await emitMeasurements();
+    rerenderList(items(40, 131), "constellation", "large");
+    await waitFor(() => expect(rowStart("item-5")).toBe(5 * 131));
+    await focusKey(ref, "item-5");
+    const before = ref.current?.captureAnchor();
+    rerenderList(items(40, 171), "constellation", "extraExtraLarge");
+    await waitFor(() => expect(rowStart("item-5")).toBe(5 * 40));
+    await emitMeasurements();
+    await waitFor(() => {
+      const after = ref.current?.captureAnchor();
+      expect(after?.key).toBe(before?.key);
+      expect(
+        Math.abs((after?.offsetPx ?? 999) - (before?.offsetPx ?? 0)),
+      ).toBeLessThanOrEqual(2);
+    });
+
+    // The unrelated Stillwater/XXL leaf remains intact without remeasurement.
+    rerenderList(items(40, 82), "stillwater", "extraExtraLarge");
+    await waitFor(() => expect(rowStart("item-5")).toBe(5 * 82));
   });
 
   it("moves focus to the feed before eviction and restores only on intentional revisit", async () => {
@@ -443,5 +623,176 @@ describe("VariableHeightVirtualList", () => {
         .getByText("item-12")
         .closest('[data-testid="virtual-transcript-row"]'),
     ).toHaveFocus();
+  });
+
+  it("preserves descendant focus for retained rows and moves it before same-count removal", async () => {
+    const values = items(20, 72);
+    const { rerenderList } = renderList({
+      values,
+      estimate: 40,
+      renderRow: (item) => (
+        <button type="button" data-height={item.height}>
+          Action {item.key}
+        </button>
+      ),
+    });
+    await emitMeasurements();
+    const action = screen.getByRole("button", { name: "Action item-5" });
+    action.focus();
+    const feed = screen.getByRole("feed");
+
+    act(() => {
+      feed.scrollTop += 1;
+      fireEvent.scroll(feed);
+    });
+    expect(action).toHaveFocus();
+    emitMeasurementWhere(
+      (target) => (target as HTMLElement).dataset.itemKey === "item-4",
+    );
+    expect(action).toHaveFocus();
+
+    rerenderList(
+      values.map((item) =>
+        item.key === "item-5" ? { ...item, key: "replacement-5" } : item,
+      ),
+    );
+    expect(feed).toHaveFocus();
+    expect(screen.queryByRole("button", { name: "Action item-5" })).toBeNull();
+  });
+});
+
+describe("VirtualTranscript real measured boundary", () => {
+  it("does not lose initial tail initialization when layout notifies before the handle is installed", async () => {
+    const ref = { current: null as VirtualTranscriptHandle | null };
+    const values = Array.from({ length: 80 }, (_, index) =>
+      displayNarrative(`live-${index}`),
+    );
+    render(
+      <VirtualTranscript
+        ref={ref}
+        threadKey="real-initial-race"
+        skinId="stillwater"
+        contentSize="large"
+        items={values}
+        skin={measuredSkin}
+        savedAnchor={null}
+        unseen={0}
+        onAnchorChange={() => {}}
+        onUnseenChange={() => {}}
+        onFocusIntentChange={() => {}}
+      />,
+    );
+
+    await emitMeasurements();
+    await waitFor(() => {
+      const key = ref.current?.captureAnchor()?.itemKey;
+      expect(Number(key?.replace("live-", ""))).toBeGreaterThanOrEqual(70);
+    });
+  });
+
+  it("waits for the real saved-anchor target measurement during initial ordering", async () => {
+    const ref = { current: null as VirtualTranscriptHandle | null };
+    const values = Array.from({ length: 80 }, (_, index) =>
+      displayNarrative(`saved-${index}`),
+    );
+    const saved: ConversationAnchor = {
+      threadKey: "real-saved-race",
+      itemKey: "saved-40",
+      offsetPx: -7,
+      following: false,
+    };
+    render(
+      <VirtualTranscript
+        ref={ref}
+        threadKey="real-saved-race"
+        skinId="stillwater"
+        contentSize="large"
+        items={values}
+        skin={measuredSkin}
+        savedAnchor={saved}
+        unseen={0}
+        onAnchorChange={() => {}}
+        onUnseenChange={() => {}}
+        onFocusIntentChange={() => {}}
+      />,
+    );
+    await emitMeasurements();
+    emitMeasurementWhere(
+      (target) => (target as HTMLElement).dataset.itemKey === "saved-40",
+    );
+    await waitFor(() => {
+      const restored = ref.current?.captureAnchor();
+      expect(restored?.itemKey).toBe("saved-40");
+      expect(Math.abs((restored?.offsetPx ?? 999) - -7)).toBeLessThanOrEqual(2);
+    });
+  });
+
+  it("uses the real family estimates but restores measured user, streaming, and marker growth", async () => {
+    const ref = { current: null as VirtualTranscriptHandle | null };
+    const base: ConversationDisplayItem[] = Array.from(
+      { length: 20 },
+      (_, index) =>
+        index === 7
+          ? displayNarrative("family-7", "assistant", "streaming", true)
+          : index === 9
+            ? displayMarker("family-9")
+            : displayNarrative(
+                `family-${index}`,
+                index % 3 === 0 ? "user" : "assistant",
+              ),
+    );
+    const callbacks = {
+      onAnchorChange: vi.fn(),
+      onUnseenChange: vi.fn(),
+      onFocusIntentChange: vi.fn(),
+    };
+    const element = (values: readonly ConversationDisplayItem[]) => (
+      <VirtualTranscript
+        ref={ref}
+        threadKey="real-display-families"
+        skinId="stillwater"
+        contentSize="large"
+        items={values}
+        skin={measuredSkin}
+        savedAnchor={null}
+        unseen={0}
+        {...callbacks}
+      />
+    );
+    const view = render(element(base));
+    await emitMeasurements();
+    act(() => ref.current?.focusKey("family-12"));
+    await emitMeasurements();
+    const feed = screen.getByRole("feed", { name: "Conversation transcript" });
+    act(() => {
+      feed.scrollTop = rowStart("family-12") + 11;
+      fireEvent.scroll(feed);
+    });
+    const before = ref.current?.captureAnchor();
+    expect(before).not.toBeNull();
+
+    view.rerender(
+      element(
+        base.map((item) =>
+          item.key === "family-7" && "body" in item
+            ? { ...item, body: bounded("grown streaming") }
+            : item.key === "family-9" && "semanticKind" in item
+              ? { ...item, state: "completed", tone: "success" }
+              : item,
+        ),
+      ),
+    );
+    emitMeasurementWhere((target) =>
+      ["family-7", "family-9"].includes(
+        (target as HTMLElement).dataset.itemKey ?? "",
+      ),
+    );
+    await waitFor(() => {
+      const after = ref.current?.captureAnchor();
+      expect(after?.itemKey).toBe(before?.itemKey);
+      expect(
+        Math.abs((after?.offsetPx ?? 999) - (before?.offsetPx ?? 0)),
+      ).toBeLessThanOrEqual(2);
+    });
   });
 });

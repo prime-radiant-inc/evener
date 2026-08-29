@@ -225,7 +225,7 @@ export function createLiveIntentDispatcher(
       }
       case "loadOlder": {
         observeConversation(runtime, (store, service) =>
-          store.loadOlder(service),
+          store.loadOlder(service).then(() => undefined),
         );
         return;
       }

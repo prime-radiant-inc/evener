@@ -3,6 +3,8 @@ import {
   type HTMLAttributes,
   type ReactElement,
   type ReactNode,
+  useCallback,
+  useEffect,
   useImperativeHandle,
   useLayoutEffect,
   useRef,
@@ -36,6 +38,11 @@ export interface VirtualTranscriptProps {
   readonly items: readonly ConversationDisplayItem[];
   readonly skin: ConversationSkin;
   readonly savedAnchor: ConversationAnchor | null;
+  /** Frame-owned unseen state; the transcript never keeps a second copy. */
+  readonly unseen: number;
+  readonly onAnchorChange: (anchor: ConversationAnchor) => void;
+  readonly onUnseenChange: (count: number) => void;
+  readonly onFocusIntentChange: (key: string | null) => void;
 }
 
 interface LegacyVirtualTranscriptProps
@@ -71,8 +78,8 @@ function isLegacyProps(
   return "children" in props;
 }
 
-const ForwardedLiveVirtualTranscript = forwardRef(
-  function LiveVirtualTranscript(
+const ForwardedLiveVirtualTranscriptSession = forwardRef(
+  function LiveVirtualTranscriptSession(
     {
       threadKey,
       skinId,
@@ -80,45 +87,84 @@ const ForwardedLiveVirtualTranscript = forwardRef(
       items,
       skin,
       savedAnchor,
+      unseen,
+      onAnchorChange,
+      onUnseenChange,
+      onFocusIntentChange,
     }: VirtualTranscriptProps,
     forwardedRef: React.ForwardedRef<VirtualTranscriptHandle>,
   ): ReactElement {
     const listRef = useRef<VariableHeightVirtualListHandle>(null);
-    const followingRef = useRef(true);
+    const followingRef = useRef(savedAnchor?.following ?? true);
     const initializedRef = useRef(false);
     const measuredAnchorRef = useRef<MeasuredAnchor | null>(null);
     const previousItemsRef = useRef(items);
-    const [unseen, setUnseen] = useState(0);
+    const activeRef = useRef(true);
+    const onFocusIntentChangeRef = useRef(onFocusIntentChange);
+    onFocusIntentChangeRef.current = onFocusIntentChange;
     const [focusedKey, setFocusedKey] = useState<string | null>(null);
     const keys = items.map((item) => item.key);
+
+    useEffect(
+      () => () => {
+        activeRef.current = false;
+        onFocusIntentChangeRef.current(null);
+      },
+      [],
+    );
+
+    const publishAnchor = useCallback(
+      (following: boolean): void => {
+        if (!activeRef.current) return;
+        const anchor = listRef.current?.captureAnchor() ?? null;
+        measuredAnchorRef.current = anchor;
+        if (anchor === null) return;
+        onAnchorChange({
+          threadKey,
+          itemKey: anchor.key,
+          offsetPx: anchor.offsetPx,
+          following,
+        });
+      },
+      [onAnchorChange, threadKey],
+    );
 
     const handleScroll = (metrics: {
       offset: number;
       viewport: number;
       total: number;
+      measured: boolean;
     }): void => {
-      followingRef.current =
+      const nextFollowing =
         metrics.total - (metrics.offset + metrics.viewport) <=
         FOLLOW_BOUNDARY_PX;
-      measuredAnchorRef.current = listRef.current?.captureAnchor() ?? null;
-      if (initializedRef.current) return;
-
-      initializedRef.current = true;
-      if (
-        savedAnchor !== null &&
-        savedAnchor.threadKey === threadKey &&
-        keys.includes(savedAnchor.itemKey)
-      ) {
-        followingRef.current = savedAnchor.following;
-        void listRef.current?.restoreAnchor({
-          key: savedAnchor.itemKey,
-          offsetPx: savedAnchor.offsetPx,
-          priorIndex: keys.indexOf(savedAnchor.itemKey),
-        });
-      } else {
-        followingRef.current = true;
-        listRef.current?.scrollToEnd("auto");
+      if (!initializedRef.current) {
+        const handle = listRef.current;
+        if (!metrics.measured || handle === null) return;
+        initializedRef.current = true;
+        if (
+          savedAnchor !== null &&
+          savedAnchor.threadKey === threadKey &&
+          keys.includes(savedAnchor.itemKey)
+        ) {
+          followingRef.current = savedAnchor.following;
+          void handle
+            .restoreAnchor({
+              key: savedAnchor.itemKey,
+              offsetPx: savedAnchor.offsetPx,
+              priorIndex: keys.indexOf(savedAnchor.itemKey),
+            })
+            .then(() => publishAnchor(savedAnchor.following));
+        } else {
+          followingRef.current = true;
+          handle.scrollToEnd("auto");
+        }
+        return;
       }
+
+      if (nextFollowing && !followingRef.current) onUnseenChange(0);
+      followingRef.current = nextFollowing;
+      publishAnchor(nextFollowing);
     };
 
     useLayoutEffect(() => {
@@ -130,28 +176,23 @@ const ForwardedLiveVirtualTranscript = forwardRef(
         previousKeys.some((key, index) => key !== keys[index]) ||
         previousItems.some((item, index) => item !== items[index]);
       previousItemsRef.current = items;
-      if (!changed) return;
+      if (!changed || !initializedRef.current) return;
 
       if (followingRef.current) {
         listRef.current?.scrollToEnd("auto");
-        setUnseen(0);
         return;
       }
 
       const anchor =
         measuredAnchorRef.current ?? listRef.current?.captureAnchor();
-      if (anchor !== null && anchor !== undefined) {
-        const key = resolveReconciledAnchor(previousKeys, keys, anchor);
-        if (key !== null) {
-          void listRef.current?.restoreAnchor({
-            key,
-            offsetPx: anchor.offsetPx,
-            priorIndex: Math.max(0, keys.indexOf(key)),
-          });
-        }
-      }
-      const added = keys.filter((key) => !previousKeys.includes(key)).length;
-      if (added > 0) setUnseen((count) => count + added);
+      if (anchor === null || anchor === undefined) return;
+      const key = resolveReconciledAnchor(previousKeys, keys, anchor);
+      if (key === null) return;
+      void listRef.current?.restoreAnchor({
+        key,
+        offsetPx: anchor.offsetPx,
+        priorIndex: Math.max(0, keys.indexOf(key)),
+      });
     }, [items, keys]);
 
     useImperativeHandle(
@@ -178,19 +219,21 @@ const ForwardedLiveVirtualTranscript = forwardRef(
             offsetPx: anchor.offsetPx,
             priorIndex,
           });
+          publishAnchor(anchor.following);
         },
         scrollToTail(): void {
           followingRef.current = true;
-          setUnseen(0);
+          onUnseenChange(0);
           listRef.current?.scrollToEnd("auto");
         },
         focusKey(key): void {
           if (!keys.includes(key)) return;
           setFocusedKey(key);
+          onFocusIntentChange(key);
           listRef.current?.focusKey(key);
         },
       }),
-      [keys, threadKey],
+      [keys, onFocusIntentChange, onUnseenChange, publishAnchor, threadKey],
     );
 
     return (
@@ -217,7 +260,7 @@ const ForwardedLiveVirtualTranscript = forwardRef(
             aria-label={`${unseen} new activity`}
             onClick={() => {
               followingRef.current = true;
-              setUnseen(0);
+              onUnseenChange(0);
               listRef.current?.scrollToEnd("smooth");
             }}
           >
@@ -225,6 +268,21 @@ const ForwardedLiveVirtualTranscript = forwardRef(
           </button>
         ) : null}
       </section>
+    );
+  },
+);
+
+const ForwardedLiveVirtualTranscript = forwardRef(
+  function LiveVirtualTranscript(
+    props: VirtualTranscriptProps,
+    ref: React.ForwardedRef<VirtualTranscriptHandle>,
+  ): ReactElement {
+    return (
+      <ForwardedLiveVirtualTranscriptSession
+        key={props.threadKey}
+        {...props}
+        ref={ref}
+      />
     );
   },
 );

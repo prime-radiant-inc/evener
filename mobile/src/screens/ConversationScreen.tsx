@@ -11,10 +11,11 @@ import {
   onTapNewActivity,
 } from "../conversation/follow";
 import type { MobileTimelineItem } from "../conversation/model";
+import type { ContentSizeCategory } from "../native/contract";
 import type { ActivityView } from "../services/activity";
 import type { ConversationService } from "../services/conversation";
 import type { AttachmentState } from "../state/attachments";
-import type { ConversationState } from "../state/conversation";
+import type { ConversationState, LoadOlderResult } from "../state/conversation";
 import type { NavigationState } from "../state/navigation";
 
 export interface ConversationScreenProps {
@@ -30,6 +31,8 @@ export interface ConversationScreenProps {
   readonly activityView?: ActivityView | null;
   /** Called when the user taps the voice button in the composer. */
   readonly onShowVoice?: () => void;
+  /** Exact native Dynamic Type category owned by the platform preference store. */
+  readonly contentSize: ContentSizeCategory;
 }
 
 /**
@@ -50,12 +53,16 @@ export function ConversationScreen({
   attachmentStore,
   activityView: activityViewProp,
   onShowVoice,
+  contentSize,
 }: ConversationScreenProps): JSX.Element {
   const conversation = conversationStore((s) => s.conversation);
   const status = conversationStore((s) => s.status);
   const error = conversationStore((s) => s.error);
   const navTitle =
     navigationStore((s) => s.activeConversation?.title) ?? "Conversation";
+  const navigationConversationId =
+    navigationStore((s) => s.activeConversation?.sessionId) ??
+    "no-conversation";
 
   const [follow, setFollow] = useState<FollowState>(createFollowState);
   const [activityOpen, setActivityOpen] = useState(false);
@@ -86,10 +93,19 @@ export function ConversationScreen({
     setFollow((f) => onTapNewActivity(f));
   }
 
-  function handleLoadOlder(): void {
-    if (conversationService !== undefined) {
-      void conversationStore.getState().loadOlder(conversationService);
-    }
+  async function handleLoadOlder(): Promise<LoadOlderResult> {
+    if (conversationService === undefined) return { status: "ignored" };
+    return conversationStore.getState().loadOlder(conversationService);
+  }
+
+  function handleFollowingChange(following: boolean): void {
+    setFollow((state) =>
+      following
+        ? { following: true, unseen: 0 }
+        : state.following
+          ? { following: false, unseen: state.unseen }
+          : state,
+    );
   }
 
   // Loading state.
@@ -150,8 +166,11 @@ export function ConversationScreen({
         onActivity={() => setActivityOpen(true)}
       />
       <Timeline
+        threadKey={conversation?.id ?? navigationConversationId}
+        contentSize={contentSize}
         items={items}
         following={follow.following}
+        onFollowingChange={handleFollowingChange}
         unseen={follow.unseen}
         onTapNewActivity={handleTapNewActivity}
         loadOlder={handleLoadOlder}
