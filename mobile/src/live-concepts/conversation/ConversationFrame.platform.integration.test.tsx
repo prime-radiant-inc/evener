@@ -227,6 +227,17 @@ describe("ConversationFrame platform integration", () => {
     composer.getBoundingClientRect = () => elementRect(490, 534);
     composer.focus();
     expect(document.activeElement).toBe(composer);
+    const currentComposerViewport = {
+      top: viewport.offsetTop,
+      bottom: viewport.offsetTop + viewport.height,
+    };
+    const initialComposerRect = composer.getBoundingClientRect();
+    expect(initialComposerRect.bottom).toBeGreaterThan(
+      currentComposerViewport.top,
+    );
+    expect(initialComposerRect.top).toBeLessThan(
+      currentComposerViewport.bottom,
+    );
 
     const controls = [
       { name: "Back", element: screen.getByRole("button", { name: "Back" }) },
