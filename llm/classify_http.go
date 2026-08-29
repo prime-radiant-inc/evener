@@ -139,9 +139,9 @@ func fieldHint(name string, res registry.Resolved) string {
 		return genericFieldHint(ref)
 	}
 	if res.Protocol == registry.ProtocolOpenAIChat {
-		current := "max_tokens"
-		if res.Caps.MaxTokensField != nil && *res.Caps.MaxTokensField != "" {
-			current = *res.Caps.MaxTokensField
+		current := registry.StringValue(res.Caps.MaxTokensField)
+		if current == "" {
+			current = "max_tokens"
 		}
 		if name == current {
 			other := "max_completion_tokens"

@@ -90,7 +90,7 @@ func notSignedIn(instance string) error {
 // client_metadata = merge(body.metadata, req.ClientMetadata) when the row's
 // metadata field is on, with metadata itself never sent (spec §9.5).
 func (c *Codex) PrepareRequest(_ context.Context, httpReq *http.Request, body map[string]any, req llm.Request, res registry.Resolved) error {
-	if res.Caps.ResponsesLite != nil && *res.Caps.ResponsesLite {
+	if registry.BoolValue(res.Caps.ResponsesLite) {
 		httpReq.Header.Set(codexLiteHeader, "true")
 	}
 	if sid := strings.TrimSpace(req.SessionID); sid != "" {
