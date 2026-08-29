@@ -1,11 +1,13 @@
 #!/usr/bin/env bash
-# test-timing-budget-selftest.sh — exercises scripts/test-timing-budget.sh's
+# test-timing-budget-selftest.sh — exercises scripts/gate/test-timing-budget.sh's
 # comparison contract against fixture "already-measured" duration rows and
 # fixture testing-budget.json files, via --measured (test-timing-budget.sh's
 # own reuse-shaped seam — see coverage-floor.sh's web row for the same
-# idea). No go test, no vitest, no network: every check here is about the
-# ratio/ceiling/missing-entry/no-baseline arithmetic and the strict-vs-warn-only
-# exit policy, not about running a real suite. Run via
+# idea), plus its measurement contract against a stub `go` binary (the
+# web-preflight selftest's stub pattern). No real go test, no vitest, no
+# network: every check here is about the ratio/ceiling/missing-entry/
+# no-baseline arithmetic, the strict-vs-warn-only exit policy, and the
+# producer's own failure handling, not about running a real suite. Run via
 # `make test-timing-budget-selftest` or the dev-tooling wave.
 set -uo pipefail
 
@@ -163,5 +165,95 @@ missing_usage_help_out=$'test-timing-budget.sh [options]\n'
 missing_usage_help_status=0
 help_header_ok "$missing_usage_help_out" || missing_usage_help_status=$?
 assert_eq "$missing_usage_help_status" "1" "help without a Usage header is rejected"
+
+# ---- measurement contract, against a real toolchain on fixture modules. ----
+#      The producer side (exit status capture + the package-completeness
+#      oracle) needs a real `go` to build and run, so the runner is pointed
+#      at a tiny fixture repo via --repo-root: one healthy module and, per
+#      scenario, a module that breaks in exactly the way under test. Real
+#      `go test -json` streams, real exit statuses, no faked binaries on
+#      PATH (fake-toolchain selftests are banned by
+#      docs/developing-evener/testing.md).
+fixture_repo="$work/repo"
+mkdir -p "$fixture_repo/healthymod/pkgwithtests" "$fixture_repo/healthymod/pkgnotests"
+
+# The healthy module: one package with a trivial passing test, one package
+# with no test files at all — the terminal-event shapes the oracle relies on.
+printf 'module fixture.test/healthy\n\ngo 1.27\n' >"$fixture_repo/healthymod/go.mod"
+printf 'package pkgwithtests\n\nimport "testing"\n\nfunc TestFixture(t *testing.T) {}\n' \
+	>"$fixture_repo/healthymod/pkgwithtests/a_test.go"
+printf 'package pkgnotests\n\nfunc Helper() {}\n' >"$fixture_repo/healthymod/pkgnotests/n.go"
+
+# make_broken_mod SHAPE — install a second module under $fixture_repo that
+# breaks in exactly the way under test:
+#   nobuild — a test file that does not compile: `go test` exits nonzero and
+#             its package contributes no rows (issue #172's silent-drop:
+#             absent the fix, --bless writes a budget without the package and
+#             exits 0).
+#   failing — a test that fails at runtime: complete stream, `go test` exits
+#             nonzero, and the runner must refuse the measurement rather
+#             than read plausible rows as one.
+make_broken_mod() {
+	rm -rf "$fixture_repo/brokenmod"
+	mkdir -p "$fixture_repo/brokenmod/pkgbroken"
+	printf 'module fixture.test/broken\n\ngo 1.27\n' >"$fixture_repo/brokenmod/go.mod"
+	case "$1" in
+		nobuild)
+			printf 'package pkgbroken\n\nthis does not compile\n' \
+				>"$fixture_repo/brokenmod/pkgbroken/b_test.go"
+			;;
+		failing)
+			printf 'package pkgbroken\n\nimport "testing"\n\nfunc TestFixture(t *testing.T) { t.Fatal("boom") }\n' \
+				>"$fixture_repo/brokenmod/pkgbroken/b_test.go"
+			;;
+		*) bad "make_broken_mod: unknown shape $1" ;;
+	esac
+}
+
+# run_measure ARGS... — invoke the runner against the fixture repo's modules.
+# --repo-root points its module discovery at the fixture; --budget keeps the
+# budget file in the selftest's scratch.
+run_measure() {
+	TMPDIR="$work/tmp" bash "$script" \
+		--no-web --repo-root "$fixture_repo" --budget "$budget" \
+		--modules 'healthymod brokenmod' "$@" \
+		>"$out" 2>&1
+}
+
+# ---- 7. the healthy shape still measures and blesses every listed package. ----
+rm -rf "$fixture_repo/brokenmod"
+printf '{"perTestCeilingSeconds": 2, "packages": {}}\n' >"$budget"
+run_measure --bless
+assert_eq "$?" "0" "a healthy go test stream blesses cleanly (no silent package loss)"
+assert_has "$budget" '"fixture.test/healthy/pkgwithtests"' "the package with tests lands in the blessed budget"
+assert_has "$budget" '"fixture.test/healthy/pkgnotests"' "a package with no test files still lands in the blessed budget"
+
+# ---- 8. a package go list reported that the stream never mentions is a ----
+#         hard measurement failure, never a silent drop (#172): a module whose
+#         test file does not compile makes go test exit nonzero AND its
+#         packages contribute no rows — the run must fail, and --bless must
+#         leave the budget untouched rather than quietly delete the module.
+make_broken_mod nobuild
+printf '{"perTestCeilingSeconds": 2, "packages": {"fixture.test/healthy/pkgwithtests": 9.0}}\n' >"$budget"
+run_measure --bless
+assert_eq "$?" "1" "a package that failed to build fails the run, not blesses around it"
+assert_has "$out" "brokenmod" "the failing module is named in the diagnostic"
+assert_has "$budget" '"fixture.test/healthy/pkgwithtests": 9.0' "a refused bless leaves the budget file untouched"
+
+# ---- 9. a nonzero go test exit status is a failure, not an empty measurement ----
+#         — even after rows were parsed and look plausible (#172).
+make_broken_mod failing
+printf '{"perTestCeilingSeconds": 2, "packages": {"fixture.test/healthy/pkgwithtests": 9.0}}\n' >"$budget"
+run_measure --bless
+assert_eq "$?" "1" "a nonzero go test exit fails the run even when the healthy module's rows were parsed"
+assert_has "$out" "go test in brokenmod" "the failed producer's module is named in the diagnostic"
+assert_has "$budget" '"fixture.test/healthy/pkgwithtests": 9.0' "a refused bless leaves the budget file untouched after a failed producer"
+
+# A failed producer must not read as a clean report: --check exits nonzero
+# even in the warn-only policy, because there is nothing trustworthy to
+# compare against a failed measurement.
+make_broken_mod failing
+run_measure --check --local
+assert_eq "$?" "1" "a failed producer fails --check even in warn-only mode: no verdict is better than a wrong one"
 
 selftest_summary

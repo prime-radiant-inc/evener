@@ -158,18 +158,20 @@ test-timing-budget:
 
 # test-timing-budget-selftest exercises the comparison contract (ratio bands,
 # the per-test ceiling, a missing budget entry, an absent/empty budget file,
-# strict-vs-warn-only policy, and --bless) against fixture duration rows — no
-# go test or vitest run.
-## Exercise the timing-budget comparison contract against fixture duration
-## rows — no go test or vitest run.
+# strict-vs-warn-only policy, and --bless) against fixture duration rows, and
+# the measurement contract (producer exit status, package completeness, bless
+# refusal) against real go test runs on tiny fixture modules via --repo-root.
+## Exercise the timing-budget comparison and measurement contracts.
 ## proves: The ratio bands, the per-test ceiling, a missing budget entry, an
-##   absent/empty budget file, strict-vs-warn-only policy, and --bless all
-##   compare correctly.
+##   absent/empty budget file, strict-vs-warn-only policy, and --bless compare
+##   correctly; a failing go test producer or a package missing from the
+##   stream fails the run and refuses --bless.
 ## trigger: make test-dev-tooling wave; on demand.
-## requires: Offline and deterministic; fixture rows only, no real suite run.
-## fails-when: Any comparison diverges from its fixture's expected verdict.
-##   Leftover files fail only under the test-dev-tooling wave, which owns
-##   that check.
+## requires: Offline and deterministic; comparison checks use fixture rows
+##   only, measurement checks run real go test on tiny fixture modules.
+## fails-when: Any comparison diverges from its fixture's expected verdict,
+##   or a broken producer is not refused. Leftover files fail only under the
+##   test-dev-tooling wave, which owns that check.
 test-timing-budget-selftest:
 	@scripts/gate/test-timing-budget-selftest.sh
 
