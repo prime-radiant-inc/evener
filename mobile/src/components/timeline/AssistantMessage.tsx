@@ -31,27 +31,21 @@ export function AssistantMessage({
   const trusted: TrustedHTMLString = renderSafeMarkdown(source);
 
   function handleClick(event: MouseEvent<HTMLDivElement>): void {
-    if (!onExternalLink) {
-      return;
-    }
     const target = event.target as HTMLElement | null;
     const anchor = target?.closest("a") as HTMLAnchorElement | null;
-    if (!anchor) {
-      return;
-    }
+    if (!anchor || !event.currentTarget.contains(anchor)) return;
     event.preventDefault();
-    onExternalLink(anchor.href);
+    const href = anchor.getAttribute("href");
+    if (href !== null) onExternalLink?.(href);
   }
 
   return (
-    // biome-ignore lint/a11y/noStaticElementInteractions: click is event-delegated to nested <a> elements; links remain keyboard-accessible natively
-    // biome-ignore lint/a11y/useKeyWithClickEvents: the handler delegates to focusable anchors that already support keyboard activation
     <div
       className="evener-assistant-message"
       data-streaming={streaming || undefined}
       // biome-ignore lint/security/noDangerouslySetInnerHtml: HTML is produced by renderSafeMarkdown (DOMPurify-sanitized, raw-HTML-stripped). This is the sole sanctioned injection point.
       dangerouslySetInnerHTML={{ __html: trusted.html }}
-      onClick={handleClick}
+      onClickCapture={handleClick}
     />
   );
 }

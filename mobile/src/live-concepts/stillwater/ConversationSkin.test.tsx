@@ -45,7 +45,7 @@ const assistantProps: NarrativeItemRenderProps = {
   item: {
     key: "assistant-key",
     sourceKind: "assistant",
-    body: bounded("**Safe** prose\n\n<script>unsafe()</script>"),
+    body: bounded("[Skin must not render this](https://example.com)"),
     label: null,
     tone: "running",
     streaming: true,
@@ -53,7 +53,9 @@ const assistantProps: NarrativeItemRenderProps = {
     evidenceKey: null,
     sequence: "2",
   },
-  body: <p>frame-owned fallback</p>,
+  body: (
+    <p data-frame-owned-assistant-body="true">Frame-owned assistant body</p>
+  ),
   focused: true,
 };
 
@@ -99,6 +101,7 @@ describe("stillwaterConversationSkin", () => {
     const skinOnlyRenders = [
       render(stillwaterConversationSkin.renderConversationChrome(chromeProps)),
       render(stillwaterConversationSkin.renderNarrativeItem(userProps)),
+      render(stillwaterConversationSkin.renderNarrativeItem(assistantProps)),
       render(stillwaterConversationSkin.renderActivityMarker(markerProps)),
     ];
     for (const skinOnly of skinOnlyRenders) {
@@ -138,9 +141,13 @@ describe("stillwaterConversationSkin", () => {
     expect(
       assistant.container.querySelector(".sw-conversation-assistant"),
     ).not.toBeNull();
-    expect(assistant.getByText("Safe").tagName).toBe("STRONG");
-    expect(assistant.container.querySelector("script")).toBeNull();
-    expect(assistant.container).not.toHaveTextContent("unsafe()");
+    expect(
+      assistant.container.querySelector("[data-frame-owned-assistant-body]"),
+    ).toHaveTextContent("Frame-owned assistant body");
+    expect(assistant.container.querySelector("a[href]")).toBeNull();
+    expect(assistant.container).not.toHaveTextContent(
+      "Skin must not render this",
+    );
 
     const marker = render(
       stillwaterConversationSkin.renderActivityMarker(markerProps),
@@ -166,5 +173,9 @@ describe("stillwaterConversationSkin", () => {
     expect(stillwaterCss).not.toContain("--visual-viewport-height");
     expect(stillwaterCss).not.toMatch(/\.sw-transcript(?:[\s.{:#>])/);
     expect(stillwaterCss).not.toMatch(/\.sw-composer(?:[\s.{:#>])/);
+    expect(stillwaterCss).not.toMatch(/font-size\s*:[^;]*(?:vw|vh|vmin|vmax)/);
+    expect(stillwaterSource).not.toMatch(
+      /AssistantMessage|renderSafeMarkdown|onExternalLink/,
+    );
   });
 });

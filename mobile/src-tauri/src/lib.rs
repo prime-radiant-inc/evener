@@ -19,6 +19,7 @@ pub fn run() {
     // so a QR scan preview can be confirmed later through the same store.
     tauri::Builder::default()
         .plugin(tauri_plugin_evener_native::init())
+        .plugin(tauri_plugin_opener::init())
         .setup(|app| {
             // Get the app-data directory for atomic file preferences.
             let app_data = app.path().app_data_dir().expect("app-data dir unavailable");

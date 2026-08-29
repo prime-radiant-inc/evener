@@ -37,7 +37,7 @@ describe("AssistantMessage — external link handling", () => {
     const link = screen.getByRole("link");
     expect(link.getAttribute("href")).toBe("https://example.com");
     fireEvent.click(link);
-    expect(onExternalLink).toHaveBeenCalledWith("https://example.com/");
+    expect(onExternalLink).toHaveBeenCalledWith("https://example.com");
   });
 
   it("prevents default navigation when onExternalLink is provided", () => {
@@ -67,9 +67,32 @@ describe("AssistantMessage — external link handling", () => {
     expect(onExternalLink).not.toHaveBeenCalled();
   });
 
-  it("does not throw when onExternalLink is absent", () => {
+  it("prevents default navigation when onExternalLink is absent", () => {
     render(<AssistantMessage source="[docs](https://example.com)" />);
-    expect(() => fireEvent.click(screen.getByRole("link"))).not.toThrow();
+    const event = new MouseEvent("click", {
+      bubbles: true,
+      cancelable: true,
+      composed: true,
+    });
+    fireEvent(screen.getByRole("link"), event);
+    expect(event.defaultPrevented).toBe(true);
+  });
+
+  it("forwards the literal sanitized href during capture, not the resolved DOM URL", () => {
+    const onExternalLink = vi.fn();
+    let preventedAtOuterBubble = false;
+    const view = render(
+      <AssistantMessage
+        source="[relative](./docs?q=1#part)"
+        onExternalLink={onExternalLink}
+      />,
+    );
+    view.container.addEventListener("click", (event) => {
+      preventedAtOuterBubble = event.defaultPrevented;
+    });
+    fireEvent.click(screen.getByRole("link"));
+    expect(onExternalLink).toHaveBeenCalledWith("./docs?q=1#part");
+    expect(preventedAtOuterBubble).toBe(true);
   });
 
   it("rejects javascript: links so onExternalLink never receives them", () => {

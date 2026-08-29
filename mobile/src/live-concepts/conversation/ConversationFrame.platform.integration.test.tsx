@@ -89,6 +89,7 @@ function frameProps(
     },
     skin,
     dispatch: () => undefined,
+    onExternalLink: async () => undefined,
     onAnchorChange: () => undefined,
     onUnseenChange: () => undefined,
     onFocusIntentChange: () => undefined,

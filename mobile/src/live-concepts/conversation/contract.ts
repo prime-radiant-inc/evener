@@ -79,6 +79,7 @@ export interface ConversationFrameProps {
   readonly state: ConversationFrameState;
   readonly skin: ConversationSkin;
   readonly dispatch: (action: ConversationFrameAction) => void;
+  readonly onExternalLink: (url: string) => Promise<void>;
   readonly onAnchorChange: (anchor: ConversationAnchor) => void;
   readonly onUnseenChange: (count: number) => void;
   readonly onFocusIntentChange: (key: string | null) => void;

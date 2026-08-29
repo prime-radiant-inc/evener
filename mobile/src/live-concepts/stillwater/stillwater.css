@@ -166,7 +166,7 @@
 
 .concept-stillwater .sw-title-block h1 {
   max-width: 21ch;
-  font-size: clamp(1.8rem, 7vw, 2.65rem);
+  font-size: 2.25rem;
   font-weight: 720;
   letter-spacing: -0.045em;
   line-height: 1.02;
@@ -406,7 +406,7 @@
 
 .concept-stillwater .sw-work-heading h2 {
   margin-top: 0.25rem;
-  font-size: clamp(1.35rem, 4vw, 1.85rem);
+  font-size: 1.6rem;
   letter-spacing: -0.025em;
 }
 
@@ -593,7 +593,7 @@
 
 .concept-stillwater.sw-conversation-skin .sw-conversation-chrome h1 {
   margin-top: 0.15rem;
-  font-size: clamp(1.15rem, 4vw, 1.55rem);
+  font-size: 1.35rem;
   line-height: 1.12;
   overflow-wrap: anywhere;
 }

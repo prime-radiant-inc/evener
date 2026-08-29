@@ -151,6 +151,7 @@ function makeHarness(profileId = "profile-a") {
     write: (value) => writes.push(value),
     remove: vi.fn(),
   });
+  const nativeOpenExternalUrl = vi.fn(async (_url: string) => {});
   const runtime: LiveConceptHostRuntime = {
     connection,
     navigation,
@@ -160,7 +161,9 @@ function makeHarness(profileId = "profile-a") {
     conversationStore,
     conversationService: null,
     activityStore,
-    native: {} as NativeBridge,
+    native: {
+      openExternalUrl: nativeOpenExternalUrl,
+    } as unknown as NativeBridge,
     profileId,
   };
   const callbacks = {
@@ -185,6 +188,7 @@ function makeHarness(profileId = "profile-a") {
     uiStore,
     writes,
     callbacks,
+    nativeOpenExternalUrl,
     profileService,
   };
 }
@@ -313,6 +317,26 @@ describe("LiveConceptHost ownership", () => {
     expect(screen.getByText("Frame item")).toBeVisible();
     fireEvent.click(screen.getByRole("button", { name: "Back" }));
     expect(harness.callbacks.onBack).toHaveBeenCalledTimes(1);
+  });
+
+  it("routes frame-owned assistant links to the root native bridge", async () => {
+    const harness = makeHarness();
+    await openConversation(
+      harness,
+      conversation([
+        {
+          kind: "assistant",
+          id: "assistant-link",
+          markdown: "[Open docs](https://EXAMPLE.com:443/docs)",
+          streaming: false,
+        },
+      ]),
+    );
+    render(<LiveConceptHost {...harness.props} surface="conversation" />);
+    fireEvent.click(screen.getByRole("link", { name: "Open docs" }));
+    expect(harness.nativeOpenExternalUrl).toHaveBeenCalledWith(
+      "https://EXAMPLE.com:443/docs",
+    );
   });
 
   it("routes shared composer, question, evidence, and chrome actions for Stillwater", async () => {

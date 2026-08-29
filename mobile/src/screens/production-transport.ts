@@ -24,6 +24,7 @@
  * `tauri://suspended`→background and `tauri://resumed`→foreground, returns
  * race-safe/idempotent unsubscribe, and never delivers after unsubscribe.
  */
+import { openUrl } from "@tauri-apps/plugin-opener";
 import type { NativeTransport } from "../native/client";
 import type {
   LifecycleState,
@@ -45,6 +46,7 @@ const PLUGIN = "plugin:evener-native|";
  */
 export function createTauriNativeTransport(
   bridge: TauriBridge,
+  openExternalUrl: (url: string) => Promise<void> = openUrl,
 ): NativeTransport {
   return {
     async send(command: NativeCommand): Promise<NativeResponse> {
@@ -52,6 +54,10 @@ export function createTauriNativeTransport(
       const payload = commandToPayload(command);
       const raw = await bridge.invoke<unknown>(route, { payload });
       return decodeRawResponse(command, raw);
+    },
+
+    openExternalUrl(url) {
+      return openExternalUrl(url);
     },
 
     subscribe(type, handler) {

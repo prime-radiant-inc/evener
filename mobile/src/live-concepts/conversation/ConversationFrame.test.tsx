@@ -179,10 +179,29 @@ function props(overrides: Partial<ConversationFrameState> = {}) {
     state: readyState(overrides),
     skin,
     dispatch: vi.fn<(action: ConversationFrameAction) => void>(),
+    onExternalLink: vi.fn<(url: string) => Promise<void>>(async () => {}),
     onAnchorChange: vi.fn(),
     onUnseenChange: vi.fn(),
     onFocusIntentChange: vi.fn(),
   } satisfies ConversationFrameProps;
+}
+
+function deferredOperation(): {
+  readonly promise: Promise<void>;
+  readonly resolve: () => void;
+  readonly reject: (reason: unknown) => void;
+} {
+  let resolvePromise: (() => void) | null = null;
+  let rejectPromise: ((reason: unknown) => void) | null = null;
+  const promise = new Promise<void>((resolve, reject) => {
+    resolvePromise = resolve;
+    rejectPromise = reject;
+  });
+  return {
+    promise,
+    resolve: () => resolvePromise?.(),
+    reject: (reason) => rejectPromise?.(reason),
+  };
 }
 
 function evidenceConversation(
@@ -271,6 +290,115 @@ describe("ConversationFrame", () => {
     expect(frame.getByRole("button", { name: "Back" })).toBeVisible();
     expect(frame.getByRole("button", { name: "Work" })).toBeVisible();
     expect(frame.getByRole("button", { name: "Switch concept" })).toBeVisible();
+  });
+
+  it("owns assistant Markdown and link routing while keeping other narrative plain", () => {
+    const conversation = readyState().conversation;
+    if (conversation === null) throw new Error("fixture");
+    const frameProps = props({
+      conversation: {
+        ...conversation,
+        items: [
+          {
+            key: "assistant-link",
+            sourceKind: "assistant",
+            body: bounded(
+              "**Safe** [docs](https://example.com/path) ![image](https://example.com/x.png)",
+            ),
+            label: null,
+            tone: "idle",
+            streaming: false,
+            questionKey: null,
+            evidenceKey: null,
+            sequence: "1",
+          },
+          {
+            key: "user-plain",
+            sourceKind: "user",
+            body: bounded("[not a link](https://example.com/private)"),
+            label: null,
+            tone: "idle",
+            streaming: false,
+            questionKey: null,
+            evidenceKey: null,
+            sequence: "2",
+          },
+        ],
+      },
+    });
+    render(<ConversationFrame {...frameProps} />);
+    expect(screen.getByText("Safe").tagName).toBe("STRONG");
+    expect(document.querySelector("img")).toBeNull();
+    expect(screen.getAllByRole("link")).toHaveLength(1);
+    expect(
+      screen.getByText("[not a link](https://example.com/private)"),
+    ).toBeVisible();
+    fireEvent.click(screen.getByRole("link", { name: "docs" }));
+    expect(frameProps.onExternalLink).toHaveBeenCalledWith(
+      "https://example.com/path",
+    );
+  });
+
+  it("shows only a fixed current link failure and clears it on the next attempt", async () => {
+    const conversation = readyState().conversation;
+    if (conversation === null) throw new Error("fixture");
+    const stale = deferredOperation();
+    const current = deferredOperation();
+    const failed = deferredOperation();
+    const onExternalLink = vi
+      .fn<(url: string) => Promise<void>>()
+      .mockReturnValueOnce(stale.promise)
+      .mockReturnValueOnce(current.promise)
+      .mockReturnValueOnce(failed.promise)
+      .mockResolvedValueOnce();
+    const frameProps = {
+      ...props({
+        conversation: {
+          ...conversation,
+          items: [
+            {
+              key: "assistant-races",
+              sourceKind: "assistant" as const,
+              body: bounded(
+                "[first](https://example.com/private?token=first) [second](https://example.com/second)",
+              ),
+              label: null,
+              tone: "idle" as const,
+              streaming: false,
+              questionKey: null,
+              evidenceKey: null,
+              sequence: "1",
+            },
+          ],
+        },
+      }),
+      onExternalLink,
+    };
+    render(<ConversationFrame {...frameProps} />);
+    fireEvent.click(screen.getByRole("link", { name: "first" }));
+    fireEvent.click(screen.getByRole("link", { name: "second" }));
+    await act(async () => current.resolve());
+    await act(async () =>
+      stale.reject(
+        new Error("https://example.com/private?token=must-not-render"),
+      ),
+    );
+    expect(screen.queryByText("Unable to open link")).toBeNull();
+
+    fireEvent.click(screen.getByRole("link", { name: "first" }));
+    await act(async () =>
+      failed.reject(
+        new Error("https://example.com/private?token=must-not-render"),
+      ),
+    );
+    await waitFor(() =>
+      expect(screen.getByRole("alert")).toHaveTextContent(
+        "Unable to open link",
+      ),
+    );
+    expect(screen.getByRole("alert")).not.toHaveTextContent("example.com");
+    fireEvent.click(screen.getByRole("link", { name: "second" }));
+    expect(screen.queryByText("Unable to open link")).toBeNull();
   });
 
   it.each([

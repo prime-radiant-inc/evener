@@ -7,6 +7,17 @@
   ],
   "permissions": [
     "core:default",
-    "evener-native:default"
+    "evener-native:default",
+    {
+      "identifier": "opener:allow-open-url",
+      "allow": [
+        {
+          "url": "http://*"
+        },
+        {
+          "url": "https://*"
+        }
+      ]
+    }
   ]
 }
