@@ -75,6 +75,22 @@ func TestCodexApplyRequiresLogin(t *testing.T) {
 	if !errors.As(err, &cfg) || !errors.Is(err, authopenai.ErrLoginRequired) {
 		t.Fatalf("expired login must be a configuration error wrapping ErrLoginRequired: %v", err)
 	}
+
+	// The registry's own gate (res.Credential.Source == "oauth") is a
+	// file-existence check under a state root that need not match c's; Apply
+	// must re-check what c.credentials actually resolved and refuse an
+	// env-sourced key rather than send it to the Codex backend.
+	c.Credentials = func(context.Context, string, string) (authopenai.RuntimeCredentials, error) {
+		return authopenai.RuntimeCredentials{BearerToken: "env-key", Source: authopenai.AuthSourceEnv}, nil
+	}
+	req3, _ := http.NewRequest(http.MethodPost, "https://x", nil)
+	err = c.Apply(context.Background(), req3, codexRes("openai-codex"))
+	if !errors.As(err, &cfg) || !strings.Contains(err.Error(), "evener openai login --instance openai-codex") {
+		t.Fatalf("env-sourced credential must be rejected: %v", err)
+	}
+	if req3.Header.Get("Authorization") != "" {
+		t.Fatal("no Authorization header when the resolved credential is not oauth-sourced")
+	}
 }
 
 func TestCodexPrepareRequest(t *testing.T) {

@@ -31,6 +31,9 @@ const (
 // per-request headers and the client_metadata rule.
 type Codex struct {
 	// StateDir is the evener state directory; "" means authopenai.DefaultStateDir().
+	// It must be the same state root the registry was loaded with: the registry's
+	// oauth gate is a file-existence check under its own state root, so a mismatch
+	// here would let Apply resolve credentials the registry never saw.
 	StateDir string
 	// Credentials is the token seam; nil means a shared authopenai.Service.
 	Credentials func(ctx context.Context, stateDir, instance string) (authopenai.RuntimeCredentials, error)
@@ -43,7 +46,7 @@ type Codex struct {
 // Apply implements llm.Authenticator.
 func (c *Codex) Apply(ctx context.Context, req *http.Request, res registry.Resolved) error {
 	if res.Credential.Source != "oauth" {
-		return &llm.ConfigurationError{Message: fmt.Sprintf("instance %q is not signed in (run `evener openai login --instance %s`)", res.Instance, res.Instance)}
+		return notSignedIn(res.Instance)
 	}
 	creds, err := c.credentials(ctx, res.Instance)
 	if err != nil {
@@ -51,6 +54,16 @@ func (c *Codex) Apply(ctx context.Context, req *http.Request, res registry.Resol
 			return &llm.ConfigurationError{Message: fmt.Sprintf("instance %q: %v (run `evener openai login --instance %s`)", res.Instance, err, res.Instance), Cause: err}
 		}
 		return fmt.Errorf("instance %q: codex credentials: %w", res.Instance, err)
+	}
+	if creds.Source != authopenai.AuthSourceOAuth {
+		// res.Credential.Source above is the registry's own gate: a file-existence
+		// check under ITS state root. It can disagree with what c.credentials just
+		// resolved (a different StateDir, or a logout in between), and
+		// ResolveRuntimeCredentials falls back to OPENAI_API_KEY whenever it finds
+		// no stored record. The flag day rule is absolute: an env-sourced key must
+		// never reach the Codex backend, even transitively, so re-check the source
+		// actually returned rather than trusting the registry's gate alone.
+		return notSignedIn(res.Instance)
 	}
 	req.Header.Set("Authorization", "Bearer "+creds.BearerToken)
 	if id := c.accountID(res.Instance); id != "" {
@@ -63,6 +76,13 @@ func (c *Codex) Apply(ctx context.Context, req *http.Request, res registry.Resol
 		req.Header.Set("User-Agent", userAgent())
 	}
 	return nil
+}
+
+// notSignedIn reports that Apply has no oauth-sourced credential to send,
+// whether because the registry's own gate failed or because c.credentials
+// resolved something else (spec §9.5's flag day: never OPENAI_API_KEY).
+func notSignedIn(instance string) error {
+	return &llm.ConfigurationError{Message: fmt.Sprintf("instance %q is not signed in (run `evener openai login --instance %s`)", instance, instance)}
 }
 
 // PrepareRequest implements llm.RequestPreparer: the lite routing header
