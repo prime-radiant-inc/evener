@@ -1552,10 +1552,20 @@ func (a *subagent) run(ctx context.Context, input string, inputProvenance *prove
 				cancelRequested = true
 			}
 		}
+		needsNudge := !a.sess.Communicated()
+		if stableRun && a.sess.delegateController != nil {
+			decision, decisionErr := a.sess.delegateController.completionDecision(lease)
+			if decisionErr != nil {
+				err = errors.Join(err, decisionErr)
+				needsNudge = false
+			} else {
+				needsNudge = decision == delegateCompletionNeedsNudge
+			}
+		}
 		shouldNudge := nudgeAvailable && !cancelRequested &&
 			!budgetExhausted &&
 			a.nudgeEnabled &&
-			!a.sess.Communicated() &&
+			needsNudge &&
 			(err == nil || errors.Is(err, errBareTextWithoutResultTool) || errors.Is(err, errEmptyResponseExhausted))
 		if shouldNudge {
 			nudgeAvailable = false
@@ -1580,6 +1590,55 @@ func (a *subagent) run(ctx context.Context, input string, inputProvenance *prove
 				err = drainErr
 			} else if drained != "" {
 				res = drained
+			}
+		}
+		if stableRun && a.sess.delegateController != nil && nudgeAvailable && !cancelRequested && !budgetExhausted && a.nudgeEnabled &&
+			(err == nil || errors.Is(err, errBareTextWithoutResultTool) || errors.Is(err, errEmptyResponseExhausted)) {
+			decision, decisionErr := a.sess.delegateController.completionDecision(lease)
+			if decisionErr != nil {
+				err = errors.Join(err, decisionErr)
+			} else if decision == delegateCompletionNeedsNudge {
+				nudgeAvailable = false
+				if restoreParentDriveNotify != nil {
+					a.sess.SetNotifyFunc(restoreParentDriveNotify)
+					restoreParentDriveNotify = nil
+				}
+				a.mu.Lock()
+				a.finalizing = false
+				a.mu.Unlock()
+				res, err = a.sess.processInputWithProvenance(ctx, communicateNudge(a.sess.resultToolName()), nil, a.followUpProvenance(inputProvenance))
+				_, budgetExhausted = budgetExhaustionFromError(err)
+				a.mu.Lock()
+				cancelRequested = a.cancelRequested
+				a.mu.Unlock()
+				settlementMode = delegateSettlementModeForRun(err, cancelRequested)
+				boundary, boundaryErr := a.sess.delegateController.SupervisionBoundary(lease, settlementMode)
+				if boundaryErr != nil && !errors.Is(boundaryErr, errDelegateTargetBusy) {
+					err = errors.Join(err, boundaryErr)
+				}
+				switch boundary {
+				case delegateSupervisionContinue:
+					input = "Continue with the newly received steering before settling."
+					kind = EntryContinuation
+					continue
+				case delegateSupervisionSuppress:
+					cancelRequested = true
+				}
+				if err == nil {
+					a.sess.mu.Lock()
+					parentDriveNotify := a.sess.notifyFunc
+					a.sess.mu.Unlock()
+					a.mu.Lock()
+					a.finalizing = true
+					a.mu.Unlock()
+					drained, drainErr := a.sess.DrainJobTree(ctx)
+					restoreParentDriveNotify = parentDriveNotify
+					if drainErr != nil {
+						err = drainErr
+					} else if drained != "" {
+						res = drained
+					}
+				}
 			}
 		}
 		if observer := a.sess.cfg.testOnly.subagentBeforeSettlement; observer != nil {
@@ -2030,6 +2089,13 @@ func (a *subagent) runSubagentStopHook(ctx context.Context, res string, err erro
 	}
 	for _, m := range stopResult.UserMessages {
 		a.sess.deliverHookUserMessage(m)
+	}
+	if stopResult.Blocked || len(stopResult.ModelContext) != 0 || len(stopResult.UserMessages) != 0 {
+		if lease, stableRun := ctx.Value(delegateRunLeaseContextKey{}).(delegateLease); stableRun && a.sess.delegateController != nil {
+			if escalationErr := a.sess.delegateController.escalateCompletionRequirement(lease); escalationErr != nil {
+				return res, errors.Join(err, escalationErr)
+			}
+		}
 	}
 	if !stopResult.Blocked {
 		return res, err

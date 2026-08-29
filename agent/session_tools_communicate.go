@@ -101,7 +101,11 @@ func registerCommunicateTool(reg *tool.Registry, deps *toolDeps) {
 			}
 
 			if endTurn {
-				deps.setCommunicateResult(message, resultText, structuredText)
+				if deps.setCommunicateResultContext != nil {
+					deps.setCommunicateResultContext(ctx, message, resultText, structuredText)
+				} else {
+					deps.setCommunicateResult(message, resultText, structuredText)
+				}
 				if explicitStructuredOutput {
 					capturedOutput := rawOutput
 					if capturedOutput == nil && outputPresent {
