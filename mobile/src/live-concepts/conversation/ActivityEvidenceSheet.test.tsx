@@ -4,101 +4,141 @@ import {
   fireEvent,
   render,
   screen,
+  waitFor,
   within,
 } from "@testing-library/react";
-import {
-  forwardRef,
-  type KeyboardEventHandler,
-  type ReactNode,
-  useImperativeHandle,
-  useLayoutEffect,
-  useState,
-} from "react";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { __resetSheetHistory, __sheetHistorySettled } from "../../ui/Sheet";
-import type { EvidenceDisplayItem } from "../model";
+import type { EvidenceDisplayItem, EvidenceSection } from "../model";
 import { ActivityEvidenceSheet } from "./ActivityEvidenceSheet";
 
-const virtualList = vi.hoisted(() => ({
-  calls: [] as Array<{
-    readonly items: readonly { readonly key: string }[];
-    readonly measurementCache: unknown;
-    readonly rowSemantics: unknown;
-    readonly scrollSemantics: {
-      readonly role: string;
-      readonly ariaLabel: string;
-      readonly pageScrollOwner: boolean;
-      readonly locked: boolean;
-    };
-  }>,
-}));
+const VIEWPORT_HEIGHT = 360;
+const ROW_HEIGHT = 72;
 
-vi.mock("../../components/timeline/VariableHeightVirtualList", () => ({
-  VariableHeightVirtualList: forwardRef(function MockVariableHeightVirtualList(
-    props: {
-      readonly items: readonly { readonly key: string }[];
-      readonly getItemKey: (item: { readonly key: string }) => string;
-      readonly renderItem: (
-        item: { readonly key: string },
-        index: number,
-      ) => ReactNode;
-      readonly measurementCache: unknown;
-      readonly rowSemantics: unknown;
-      readonly scrollSemantics: {
-        readonly role: string;
-        readonly ariaLabel: string;
-        readonly pageScrollOwner: boolean;
-        readonly locked: boolean;
-      };
-      readonly onKeyDown?: KeyboardEventHandler<HTMLElement>;
+class DeterministicResizeObserver implements ResizeObserver {
+  static readonly instances = new Set<DeterministicResizeObserver>();
+  readonly targets = new Set<Element>();
+  private readonly callback: ResizeObserverCallback;
+
+  constructor(callback: ResizeObserverCallback) {
+    this.callback = callback;
+    DeterministicResizeObserver.instances.add(this);
+  }
+
+  observe(target: Element): void {
+    this.targets.add(target);
+  }
+
+  unobserve(target: Element): void {
+    this.targets.delete(target);
+  }
+
+  disconnect(): void {
+    this.targets.clear();
+    DeterministicResizeObserver.instances.delete(this);
+  }
+
+  static emitAll(): void {
+    for (const observer of DeterministicResizeObserver.instances) {
+      const entries = [...observer.targets].map((target) => {
+        const rect = target.getBoundingClientRect();
+        return {
+          target,
+          contentRect: rect,
+          borderBoxSize: [{ inlineSize: rect.width, blockSize: rect.height }],
+          contentBoxSize: [{ inlineSize: rect.width, blockSize: rect.height }],
+          devicePixelContentBoxSize: [
+            { inlineSize: rect.width, blockSize: rect.height },
+          ],
+        } as unknown as ResizeObserverEntry;
+      });
+      if (entries.length > 0) observer.callback(entries, observer);
+    }
+  }
+}
+
+const originalResizeObserver = globalThis.ResizeObserver;
+const originalRect = HTMLElement.prototype.getBoundingClientRect;
+const originalScrollTo = HTMLElement.prototype.scrollTo;
+const originalOffsetHeight = Object.getOwnPropertyDescriptor(
+  HTMLElement.prototype,
+  "offsetHeight",
+);
+const originalOffsetWidth = Object.getOwnPropertyDescriptor(
+  HTMLElement.prototype,
+  "offsetWidth",
+);
+const originalClientHeight = Object.getOwnPropertyDescriptor(
+  HTMLElement.prototype,
+  "clientHeight",
+);
+const originalScrollHeight = Object.getOwnPropertyDescriptor(
+  HTMLElement.prototype,
+  "scrollHeight",
+);
+
+beforeEach(() => {
+  globalThis.ResizeObserver = DeterministicResizeObserver;
+  Object.defineProperty(HTMLElement.prototype, "offsetHeight", {
+    configurable: true,
+    get() {
+      return this.hasAttribute("data-virtual-list-scroll")
+        ? VIEWPORT_HEIGHT
+        : 0;
     },
-    ref,
-  ) {
-    virtualList.calls.push(props);
-    const [start, setStart] = useState(0);
-    const [pendingFocus, setPendingFocus] = useState<string | null>(null);
-    useImperativeHandle(ref, () => ({
-      captureAnchor: () => null,
-      restoreAnchor: async () => {},
-      scrollToEnd: () => {},
-      focusKey(key: string) {
-        const index = props.items.findIndex(
-          (item) => props.getItemKey(item) === key,
-        );
-        setStart(Math.max(0, index - 47));
-        setPendingFocus(key);
-      },
-    }));
-    useLayoutEffect(() => {
-      if (pendingFocus === null) return;
-      document
-        .querySelector<HTMLElement>(`[data-mock-section-key="${pendingFocus}"]`)
-        ?.focus();
-      setPendingFocus(null);
-    }, [pendingFocus]);
-    const visible = props.items.slice(start, start + 48);
-    return (
-      <section
-        aria-label={props.scrollSemantics.ariaLabel}
-        data-page-scroll-owner={
-          props.scrollSemantics.pageScrollOwner ? "true" : undefined
-        }
-        data-scroll-locked={props.scrollSemantics.locked ? "true" : undefined}
-        onKeyDown={props.onKeyDown}
-      >
-        {visible.map((item) => (
-          <div
-            key={props.getItemKey(item)}
-            data-mock-section-key={props.getItemKey(item)}
-            tabIndex={-1}
-          >
-            {props.renderItem(item, props.items.indexOf(item))}
-          </div>
-        ))}
-      </section>
-    );
-  }),
-}));
+  });
+  Object.defineProperty(HTMLElement.prototype, "offsetWidth", {
+    configurable: true,
+    get() {
+      return 390;
+    },
+  });
+  Object.defineProperty(HTMLElement.prototype, "clientHeight", {
+    configurable: true,
+    get() {
+      return this.hasAttribute("data-virtual-list-scroll")
+        ? VIEWPORT_HEIGHT
+        : 0;
+    },
+  });
+  Object.defineProperty(HTMLElement.prototype, "scrollHeight", {
+    configurable: true,
+    get() {
+      if (!this.hasAttribute("data-virtual-list-scroll")) return 0;
+      return Number.parseFloat(
+        (this.firstElementChild as HTMLElement | null)?.style.height ?? "0",
+      );
+    },
+  });
+  HTMLElement.prototype.getBoundingClientRect = function () {
+    const height = this.matches('[data-testid="virtual-transcript-row"]')
+      ? ROW_HEIGHT
+      : this.hasAttribute("data-virtual-list-scroll")
+        ? VIEWPORT_HEIGHT
+        : 0;
+    return {
+      x: 0,
+      y: 0,
+      top: 0,
+      left: 0,
+      right: 390,
+      bottom: height,
+      width: 390,
+      height,
+      toJSON: () => ({}),
+    };
+  };
+  HTMLElement.prototype.scrollTo = function (
+    optionsOrX?: ScrollToOptions | number,
+    y?: number,
+  ): void {
+    this.scrollTop =
+      typeof optionsOrX === "number"
+        ? (y ?? 0)
+        : (optionsOrX?.top ?? this.scrollTop);
+    this.dispatchEvent(new Event("scroll"));
+  };
+});
 
 const bounded = (text: string) => ({
   text,
@@ -122,12 +162,63 @@ function evidence(
   };
 }
 
+function repeatedEvidence(
+  sectionCount: number,
+  section: EvidenceSection,
+): EvidenceDisplayItem {
+  return {
+    key: `repeated-evidence-${sectionCount}`,
+    family: "tool",
+    title: bounded("Repeated evidence"),
+    sections: Array.from({ length: sectionCount }, () => section),
+    redacted: false,
+  };
+}
+
+async function emitMeasurements(): Promise<void> {
+  act(() => DeterministicResizeObserver.emitAll());
+  await waitFor(() =>
+    expect(
+      screen.getAllByTestId("virtual-transcript-row").length,
+    ).toBeGreaterThan(0),
+  );
+}
+
+async function focusFinalFromClose(): Promise<void> {
+  await waitFor(() =>
+    expect(screen.getByRole("button", { name: "Done" })).toHaveFocus(),
+  );
+  const close = screen.getByRole("button", {
+    name: "Close activity and evidence",
+  });
+  close.focus();
+  expect(close).toHaveFocus();
+  fireEvent.keyDown(close, { key: "End" });
+}
+
+function restoreDescriptor(
+  name: "offsetHeight" | "offsetWidth" | "clientHeight" | "scrollHeight",
+  descriptor: PropertyDescriptor | undefined,
+): void {
+  if (descriptor === undefined)
+    Reflect.deleteProperty(HTMLElement.prototype, name);
+  else Object.defineProperty(HTMLElement.prototype, name, descriptor);
+}
+
 afterEach(async () => {
   cleanup();
   await __sheetHistorySettled();
   __resetSheetHistory();
   history.replaceState(null, "");
-  virtualList.calls = [];
+  DeterministicResizeObserver.instances.clear();
+  globalThis.ResizeObserver = originalResizeObserver;
+  HTMLElement.prototype.getBoundingClientRect = originalRect;
+  HTMLElement.prototype.scrollTo = originalScrollTo;
+  restoreDescriptor("offsetHeight", originalOffsetHeight);
+  restoreDescriptor("offsetWidth", originalOffsetWidth);
+  restoreDescriptor("clientHeight", originalClientHeight);
+  restoreDescriptor("scrollHeight", originalScrollHeight);
+  vi.restoreAllMocks();
 });
 
 describe("ActivityEvidenceSheet", () => {
@@ -164,7 +255,7 @@ describe("ActivityEvidenceSheet", () => {
     expect(dialog).toHaveTextContent("State: Redacted");
   });
 
-  it("uses a plain bounded list for exactly 48 sections", () => {
+  it("keeps exactly 48 sections plain and focuses its final semantic section from a close action", async () => {
     render(
       <ActivityEvidenceSheet
         open
@@ -175,16 +266,19 @@ describe("ActivityEvidenceSheet", () => {
       />,
     );
 
-    expect(virtualList.calls).toHaveLength(0);
+    expect(screen.queryAllByTestId("virtual-transcript-row")).toHaveLength(0);
     expect(
       screen.getAllByRole("region", { name: /Evidence section / }),
     ).toHaveLength(48);
-    expect(screen.getByText("Final Bounded detail")).toBeVisible();
+    await focusFinalFromClose();
+    expect(
+      screen.getByRole("region", { name: "Evidence section 48" }),
+    ).toHaveFocus();
   });
 
   it.each([49, 50, 51, 80])(
-    "virtualizes %i sections within 48 mounts and reaches the final logical section",
-    (sectionCount) => {
+    "uses the real measured list for %i sections and focuses the final semantic section",
+    async (sectionCount) => {
       render(
         <ActivityEvidenceSheet
           open
@@ -194,29 +288,105 @@ describe("ActivityEvidenceSheet", () => {
           onTriggerUnavailable={() => {}}
         />,
       );
+      await emitMeasurements();
+      expect(
+        screen.getAllByTestId("virtual-transcript-row").length,
+      ).toBeLessThanOrEqual(48);
 
-      expect(virtualList.calls.length).toBeGreaterThan(0);
-      const call = virtualList.calls.at(-1);
-      expect(call?.measurementCache).toEqual({ mode: "ephemeral" });
-      expect(call?.rowSemantics).toEqual({ mode: "caller-owned" });
-      expect(call?.scrollSemantics).toEqual({
-        mode: "custom",
-        role: "region",
-        ariaLabel: "Activity and evidence details",
-        pageScrollOwner: true,
-        locked: false,
+      await focusFinalFromClose();
+      const finalSection = await screen.findByRole("region", {
+        name: `Evidence section ${sectionCount}`,
       });
+      await waitFor(() => expect(finalSection).toHaveFocus());
       expect(
-        screen.getAllByRole("region", { name: /Evidence section / }).length,
+        screen.getAllByTestId("virtual-transcript-row").length,
       ).toBeLessThanOrEqual(48);
-      const scroller = screen.getByRole("region", {
-        name: "Activity and evidence details",
+      expect(
+        screen.getByRole("region", { name: "Activity and evidence details" }),
+      ).not.toHaveFocus();
+    },
+  );
+
+  it("keeps 48 repeated identical section references distinct and focuses the final occurrence", async () => {
+    const duplicateWarning = vi
+      .spyOn(console, "error")
+      .mockImplementation(() => {});
+    const shared = {
+      heading: bounded("Repeated heading"),
+      body: bounded("Repeated body"),
+    };
+    render(
+      <ActivityEvidenceSheet
+        open
+        evidence={repeatedEvidence(48, shared)}
+        triggerKey="marker-repeated-48"
+        onClose={() => {}}
+        onTriggerUnavailable={() => {}}
+      />,
+    );
+
+    expect(
+      screen.getAllByRole("region", { name: /Evidence section / }),
+    ).toHaveLength(48);
+    await focusFinalFromClose();
+    expect(
+      screen.getByRole("region", { name: "Evidence section 48" }),
+    ).toHaveFocus();
+    expect(duplicateWarning.mock.calls.flat().join("\n")).not.toContain(
+      "same key",
+    );
+  });
+
+  it.each([49, 80])(
+    "keeps %i repeated identical references distinct through real virtualization",
+    async (sectionCount) => {
+      const duplicateWarning = vi
+        .spyOn(console, "error")
+        .mockImplementation(() => {});
+      const shared = {
+        heading: bounded("Repeated heading"),
+        body: bounded("Repeated body"),
+      };
+      const repeated = repeatedEvidence(sectionCount, shared);
+      const view = render(
+        <ActivityEvidenceSheet
+          open
+          evidence={repeated}
+          triggerKey={`marker-repeated-${sectionCount}`}
+          onClose={() => {}}
+          onTriggerUnavailable={() => {}}
+        />,
+      );
+      await emitMeasurements();
+      const keysBefore = screen
+        .getAllByTestId("virtual-transcript-row")
+        .map((row) => row.getAttribute("data-item-key"));
+      view.rerender(
+        <ActivityEvidenceSheet
+          open
+          evidence={repeated}
+          triggerKey={`marker-repeated-${sectionCount}`}
+          onClose={() => {}}
+          onTriggerUnavailable={() => {}}
+        />,
+      );
+      expect(
+        screen
+          .getAllByTestId("virtual-transcript-row")
+          .map((row) => row.getAttribute("data-item-key")),
+      ).toEqual(keysBefore);
+
+      await focusFinalFromClose();
+      const finalSection = await screen.findByRole("region", {
+        name: `Evidence section ${sectionCount}`,
       });
-      fireEvent.keyDown(scroller, { key: "End" });
-      expect(screen.getByText("Final Bounded detail")).toBeVisible();
+      await waitFor(() => expect(finalSection).toHaveFocus());
       expect(
-        screen.getAllByRole("region", { name: /Evidence section / }).length,
+        screen.getAllByTestId("virtual-transcript-row").length,
       ).toBeLessThanOrEqual(48);
+      expect(duplicateWarning.mock.calls.flat().join("\n")).not.toContain(
+        "same key",
+      );
     },
   );
 
