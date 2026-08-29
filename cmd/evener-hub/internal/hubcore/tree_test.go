@@ -13,6 +13,7 @@ import (
 	"primeradiant.com/evener/appwire"
 	"primeradiant.com/evener/hubapi"
 	"primeradiant.com/evener/identifier"
+	"primeradiant.com/evener/rendezvous"
 )
 
 func TestBuildTreeCanonicalProjectAggregation(t *testing.T) {
@@ -50,6 +51,86 @@ func TestBuildTreeCanonicalProjectAggregation(t *testing.T) {
 		if project.WorkingDir == main && len(allSessions(project)) != 3 {
 			t.Fatalf("shared project sessions=%d, want 3: %+v", len(allSessions(project)), project)
 		}
+	}
+}
+
+func TestBuildTreeClearReplacementUsesStableWorkspaceRef(t *testing.T) {
+	now := time.Date(2026, 8, 28, 12, 0, 0, 0, time.UTC)
+	metas := []schema.SessionMeta{{
+		ID:             "old-instance",
+		CreatedAt:      now,
+		UpdatedAt:      now,
+		OriginalPrompt: "old prompt",
+		EnvInfo:        schema.EnvironmentInfo{WorkingDir: "/workspace"},
+	}}
+	live := []LiveEntry{{
+		Entry: rendezvous.Entry{
+			SourceID:     "local",
+			SessionID:    "new-instance",
+			WorkspaceRef: "local:old-instance",
+			WorkingDir:   "/workspace",
+		},
+		SessionID: "new-instance",
+		Status:    appwire.ThreadStatusIdle,
+	}}
+	projects := map[string]identifier.Project{
+		"/workspace": {ID: "project", CanonicalPath: "/workspace"},
+	}
+
+	tree := BuildTreeAtWithProjects(metas, live, nil, now, projects)
+	if len(tree.Live) != 1 || tree.Live[0].ID != "new-instance" || tree.Live[0].Ref != "local:old-instance" {
+		t.Fatalf("live replacement = %#v, want new instance with stable ref", tree.Live)
+	}
+	if len(tree.Projects) != 1 {
+		t.Fatalf("projects = %#v, want one project", tree.Projects)
+	}
+	sessions := allSessions(tree.Projects[0])
+	if len(sessions) != 1 || sessions[0].ID != "new-instance" || sessions[0].Ref != "local:old-instance" {
+		t.Fatalf("project replacement = %#v, want only new instance with stable ref", sessions)
+	}
+	if sessions[0].Title == "old prompt" {
+		t.Fatalf("project replacement inherited retired title: %#v", sessions[0])
+	}
+
+	tree = BuildTreeAtWithProjects(metas, live, nil, now, nil)
+	if len(tree.Projects) != 1 {
+		t.Fatalf("unresolved replacement projects = %#v, want the live replacement to retain its project row", tree.Projects)
+	}
+	sessions = allSessions(tree.Projects[0])
+	if len(sessions) != 1 || sessions[0].ID != "new-instance" {
+		t.Fatalf("unresolved project replacement = %#v, want only new instance", sessions)
+	}
+}
+
+func TestBuildTreeDoesNotUseCrossSourceWorkspaceRef(t *testing.T) {
+	now := time.Date(2026, 8, 28, 12, 0, 0, 0, time.UTC)
+	metas := []schema.SessionMeta{{
+		ID:        "old-instance",
+		CreatedAt: now,
+		UpdatedAt: now,
+		EnvInfo:   schema.EnvironmentInfo{WorkingDir: "/workspace"},
+	}}
+	live := []LiveEntry{{
+		Entry: rendezvous.Entry{
+			SourceID:     "local",
+			SessionID:    "new-instance",
+			WorkspaceRef: "other:old-instance",
+			WorkingDir:   "/workspace",
+		},
+		SessionID: "new-instance",
+		Status:    appwire.ThreadStatusIdle,
+	}}
+	projects := map[string]identifier.Project{
+		"/workspace": {ID: "project", CanonicalPath: "/workspace"},
+	}
+
+	tree := BuildTreeAtWithProjects(metas, live, nil, now, projects)
+	if len(tree.Live) != 1 || tree.Live[0].Ref != "" {
+		t.Fatalf("cross-source live ref = %#v, want the instance ID fallback", tree.Live)
+	}
+	sessions := allSessions(tree.Projects[0])
+	if len(sessions) != 2 {
+		t.Fatalf("cross-source metadata = %#v, want both independent sessions", sessions)
 	}
 }
 

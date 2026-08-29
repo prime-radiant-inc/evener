@@ -23,19 +23,20 @@ func withSessionResume[R any](
 	cfg hubcore.WebConfig,
 	sources *appsource.Registry,
 	ref string,
+	clientMutationID string,
 	once func() (R, error),
 ) (R, error) {
 	attempt := func() (R, error) {
-		return withDeletionTargetOwnership(cfg, ref, "", "", once)
+		return withDeletionTargetOwnership(cfg, ref, "", clientMutationID, once)
 	}
 	resp, err := attempt()
 	if err == nil {
 		return resp, nil
 	}
-	if ref != "" && !hubKnowsRef(cfg, ref) {
+	if !shouldResumeAfterSessionUnavailable(err) {
 		return resp, err
 	}
-	if !shouldResumeAfterSessionUnavailable(err) {
+	if ref != "" && !hubKnowsRef(cfg, ref) {
 		return resp, err
 	}
 	if _, resumeErr := hubThreadResume(ctx, cfg, sources, appwire.ThreadResumeParams{Ref: ref}); resumeErr != nil {
@@ -68,7 +69,7 @@ func shutdownThreadTolerateExited(ctx context.Context, cfg hubcore.WebConfig, so
 }
 
 func setGoalWithResume(ctx context.Context, cfg hubcore.WebConfig, sources *appsource.Registry, params appwire.GoalSetParams) (appwire.GoalSetResponse, error) {
-	return withSessionResume(ctx, cfg, sources, params.Ref, func() (appwire.GoalSetResponse, error) {
+	return withSessionResume(ctx, cfg, sources, params.Ref, "", func() (appwire.GoalSetResponse, error) {
 		source, err := sourceForThreadWithManagedLaunchUnlocked(ctx, cfg, sources, params.Ref, "")
 		if err != nil {
 			return appwire.GoalSetResponse{}, err
