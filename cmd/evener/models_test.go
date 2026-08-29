@@ -25,6 +25,20 @@ func modelsTestEnv(t *testing.T) {
 	}
 }
 
+// modelsFixture points every `evener models` load at the 40-provider
+// registry fixture, so the CLI tests are cheap and independent of whatever
+// catalog is embedded.
+func modelsFixture(t *testing.T) {
+	t.Helper()
+	data, err := os.ReadFile(filepath.Join("..", "..", "llm", "registry", "testdata", "models.dev.sample.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	old := modelsLoadOptions
+	t.Cleanup(func() { modelsLoadOptions = old })
+	modelsLoadOptions = []registry.Option{registry.WithSnapshot(data)}
+}
+
 func TestModelsInspect(t *testing.T) {
 	modelsTestEnv(t)
 	var stdout, stderr bytes.Buffer
@@ -83,6 +97,75 @@ func TestModelsList(t *testing.T) {
 	}
 	if !strings.Contains(stdout.String(), "needs base_url") {
 		t.Fatalf("--all must flag a hidden provider:\n%s", stdout.String())
+	}
+}
+
+func TestModelsListAllCoversCuratedProviders(t *testing.T) {
+	modelsTestEnv(t)
+	modelsFixture(t)
+	var stdout, stderr bytes.Buffer
+	if err := runModels([]string{"list", "--all"}, strings.NewReader(""), &stdout, &stderr); err != nil {
+		t.Fatalf("list --all: %v (%s)", err, stderr.String())
+	}
+	out := stdout.String()
+	if !strings.Contains(out, "huggingface/") {
+		t.Fatal("--all must list a curated provider that is not an instance")
+	}
+	if !strings.Contains(out, "needs base_url (hidden)") {
+		t.Fatal("--all must flag a hidden provider")
+	}
+	stdout.Reset()
+	if err := runModels([]string{"list", "--provider", "huggingface"}, strings.NewReader(""), &stdout, &stderr); err != nil {
+		t.Fatalf("list --provider huggingface: %v (%s)", err, stderr.String())
+	}
+	out = stdout.String()
+	if !strings.Contains(out, "huggingface/") || !strings.Contains(out, "not an instance: add a [providers.huggingface] entry or export its key") {
+		t.Fatalf("a curated id lists with the 'not an instance' warning:\n%s", out)
+	}
+	stdout.Reset()
+	if err := runModels([]string{"list", "--provider", "nope"}, strings.NewReader(""), &stdout, &stderr); err == nil {
+		t.Fatal("an unknown provider must error")
+	}
+}
+
+func TestModelsListExplicitInstanceKeepsItsOwnHiddenFlag(t *testing.T) {
+	modelsTestEnv(t)
+	modelsFixture(t)
+	t.Setenv("AZURE_RESOURCE_NAME", "")
+	os.Unsetenv("AZURE_RESOURCE_NAME")
+	path := filepath.Join(t.TempDir(), "providers.toml")
+	cfg := "[providers.azure]\n[providers.azure.vars]\n\"AZURE_RESOURCE_NAME\" = \"contoso-prod\"\n"
+	if err := os.WriteFile(path, []byte(cfg), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("EVENER_PROVIDERS_CONFIG", path)
+	var stdout, stderr bytes.Buffer
+	if err := runModels([]string{"list", "--provider", "azure"}, strings.NewReader(""), &stdout, &stderr); err != nil {
+		t.Fatalf("list --provider azure: %v (%s)", err, stderr.String())
+	}
+	if !strings.Contains(stdout.String(), "azure/gpt-5.5") {
+		t.Fatalf("an instance whose own vars resolve its base URL is not hidden:\n%s", stdout.String())
+	}
+}
+
+func TestModelsInspectMasksLiteralAuthHeaders(t *testing.T) {
+	modelsTestEnv(t)
+	modelsFixture(t)
+	path := filepath.Join(t.TempDir(), "providers.toml")
+	cfg := "[providers.gw]\nbase = \"openai\"\nbase_url = \"https://gw.example/v1\"\nheaders = { \"Authorization\" = \"Bearer literal\", \"x-api-key\" = \"literal2\" }\n"
+	if err := os.WriteFile(path, []byte(cfg), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("EVENER_PROVIDERS_CONFIG", path)
+	var stdout, stderr bytes.Buffer
+	if err := runModels([]string{"inspect", "gw/gpt-5.5"}, strings.NewReader(""), &stdout, &stderr); err != nil {
+		t.Fatalf("inspect: %v (%s)", err, stderr.String())
+	}
+	if strings.Contains(stdout.String(), "literal") {
+		t.Fatalf("a literal credential header must be masked:\n%s", stdout.String())
+	}
+	if !strings.Contains(stdout.String(), `"***"`) {
+		t.Fatalf("inspect must show the masked header:\n%s", stdout.String())
 	}
 }
 

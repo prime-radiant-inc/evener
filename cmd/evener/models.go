@@ -72,14 +72,24 @@ func (s storeCredentialSource) Lookup(name string) (string, bool) {
 	return v, v != ""
 }
 
-// credentialsPath is credentials.toml's location: the sibling of the
-// providers.toml in use, else <config-root>/credentials.toml.
-func credentialsPath() string {
+// providersPath is the providers.toml the registry reads:
+// EVENER_PROVIDERS_CONFIG when it names one, else <config-root>/providers.toml.
+func providersPath() string {
 	if p, ok := envvars.EVENERProvidersConfig.LookupEnv(); ok && strings.TrimSpace(p) != "" {
-		return filepath.Join(filepath.Dir(p), "credentials.toml")
+		return p
 	}
-	return filepath.Join(cmdutil.DefaultConfigRoot(), "credentials.toml")
+	return filepath.Join(cmdutil.DefaultConfigRoot(), "providers.toml")
 }
+
+// credentialsPath is credentials.toml's location: the sibling of the
+// providers.toml in use.
+func credentialsPath() string {
+	return filepath.Join(filepath.Dir(providersPath()), "credentials.toml")
+}
+
+// modelsLoadOptions are extra registry options every `evener models` load
+// appends; tests set it to inject a catalog fixture.
+var modelsLoadOptions []registry.Option
 
 // loadRegistryForCLI loads the registry with the credentials store. During
 // steps 1–2 an old-schema providers.toml is ignored with a note (spec §14).
@@ -88,10 +98,13 @@ func loadRegistryForCLI(stderr io.Writer) (*registry.Registry, error) {
 	if err != nil {
 		return nil, fmt.Errorf("credentials: %w", err)
 	}
-	opts := []registry.Option{registry.WithCredentials(storeCredentialSource{store}), registry.WithStateRoot(cmdutil.DefaultStateRoot())}
+	// list and inspect never fetch: `evener models refresh` is the explicit
+	// path to the network (spec §6.4, §11.1).
+	opts := []registry.Option{registry.WithCredentials(storeCredentialSource{store}), registry.WithStateRoot(cmdutil.DefaultStateRoot()), registry.WithOffline(true)}
+	opts = append(opts, modelsLoadOptions...)
 	r, err := registry.Load(opts...)
 	if errors.Is(err, registry.ErrOldSchema) {
-		_, _ = fmt.Fprintf(stderr, "note: %v; ignored until the cut-over\n", err)
+		_, _ = fmt.Fprintf(stderr, "note: %s uses the pre-registry providers.toml schema; ignored until the cut-over\n", providersPath())
 		r, err = registry.Load(append(opts, registry.WithNoUserLayer())...)
 	}
 	if err != nil {
@@ -118,6 +131,11 @@ func runModelsList(args []string, stdout, stderr io.Writer) error {
 	if err != nil {
 		return err
 	}
+	ranked := r.Instances()
+	instances := make(map[string]registry.Instance, len(ranked))
+	for _, inst := range ranked {
+		instances[inst.Name] = inst
+	}
 	var names []string
 	switch {
 	case *provider != "":
@@ -128,32 +146,45 @@ func runModelsList(args []string, stdout, stderr io.Writer) error {
 		for _, id := range names {
 			seen[id] = true
 		}
-		for _, inst := range r.Instances() {
+		for _, inst := range ranked {
 			if !seen[inst.Name] {
 				names = append(names, inst.Name)
 			}
 		}
 		sort.Strings(names)
 	default:
-		for _, inst := range r.Instances() {
+		for _, inst := range ranked {
 			names = append(names, inst.Name)
 		}
 	}
 	tw := tabwriter.NewWriter(stdout, 0, 0, 2, ' ', 0)
 	_, _ = fmt.Fprintln(tw, "REF\tPROTOCOL\tSURFACE\tCONTEXT\tOUTPUT\tCOST $/M\tEFFORT\tNOTES")
 	for _, name := range names {
-		if p, ok := r.Provider(name); ok && p.Hidden {
+		// An instance carries its own hidden flag: its vars may resolve a base
+		// URL the curated record of the same name cannot. Names that are not
+		// instances list off the curated record instead, which needs no
+		// credential and no [providers.<id>] entry (spec §11.1).
+		inst, isInstance := instances[name]
+		hidden, protocol := inst.Hidden, inst.Protocol
+		listIDs, resolve := r.ModelIDs, func(id string) (registry.Resolved, error) { return r.Resolve(name + "/" + id) }
+		if !isInstance {
+			p, ok := r.Provider(name)
+			hidden, protocol = ok && p.Hidden, p.Protocol
+			listIDs, resolve = r.CatalogModelIDs, func(id string) (registry.Resolved, error) { return r.ResolveCatalog(name, id) }
+		}
+		if hidden {
 			if *all {
-				_, _ = fmt.Fprintf(tw, "%s/\t%s\t\t\t\t\t\tneeds base_url (hidden)\n", name, p.Protocol)
+				_, _ = fmt.Fprintf(tw, "%s/\t%s\t\t\t\t\t\tneeds base_url (hidden)\n", name, protocol)
 			}
 			continue
 		}
-		ids, err := r.ModelIDs(name)
+		ids, err := listIDs(name)
 		if err != nil {
+			_ = tw.Flush() // keep the rows already buffered
 			return err
 		}
 		for _, id := range ids {
-			res, err := r.Resolve(name + "/" + id)
+			res, err := resolve(id)
 			if err != nil {
 				_, _ = fmt.Fprintf(tw, "%s/%s\t\t\t\t\t\t\terror: %v\n", name, id, err)
 				continue
@@ -190,6 +221,10 @@ type inspectView struct {
 	Request          inspectRequest `json:"request"`
 }
 
+// maskedHeaders are the plain `headers` entries inspect masks: a literal
+// credential is a credential wherever providers.toml wrote it.
+var maskedHeaders = map[string]bool{"Authorization": true, "X-Api-Key": true, "Api-Key": true}
+
 type inspectRequest struct {
 	Method  string            `json:"method"`
 	URL     string            `json:"url"`
@@ -221,10 +256,21 @@ func runModelsInspect(args []string, stdout, stderr io.Writer) error {
 		}
 	}
 	sort.Strings(pruned)
+	// A literal Authorization or x-api-key in `headers` is a credential
+	// wherever providers.toml wrote it, so the record and the request
+	// skeleton both carry it masked.
 	headers := map[string]string{}
-	maps.Copy(headers, res.Headers)
+	for k, v := range res.Headers {
+		if maskedHeaders[http.CanonicalHeaderKey(k)] {
+			v = "***"
+		}
+		headers[k] = v
+	}
+	res.Headers = headers
+	reqHeaders := map[string]string{}
+	maps.Copy(reqHeaders, headers)
 	for k := range res.CredentialHeaders {
-		headers[k] = "***"
+		reqHeaders[k] = "***"
 	}
 	view := inspectView{
 		Resolved: res, CredentialSource: res.Credential.Source, PrunedFields: pruned,
@@ -232,7 +278,7 @@ func runModelsInspect(args []string, stdout, stderr io.Writer) error {
 			Method:  "POST",
 			URL:     res.Transport.BaseURL + strings.ReplaceAll(res.Transport.Endpoint, "{model}", res.WireID),
 			Auth:    res.Transport.Auth,
-			Headers: headers,
+			Headers: reqHeaders,
 		},
 	}
 	enc := json.NewEncoder(stdout)
