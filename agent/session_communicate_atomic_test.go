@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"strconv"
+	"strings"
 	"sync"
 	"testing"
 
@@ -39,7 +40,7 @@ var communicateOutputShapes = []struct {
 	valueFor func(call string) any
 }{
 	{name: "absent"},
-	{name: "object", valueFor: func(call string) any { return map[string]any{"source": call} }},
+	{name: "object", custom: map[string]any{"type": "object"}, valueFor: func(call string) any { return map[string]any{"source": call} }},
 	{name: "array", custom: map[string]any{"type": "array"}, valueFor: func(call string) any { return []any{call} }},
 	{name: "scalar", custom: map[string]any{"type": "string"}, valueFor: func(call string) any { return call }},
 	{name: "explicit null", custom: map[string]any{"type": "null"}, valueFor: func(call string) any { return json.RawMessage(`null`) }},
@@ -155,26 +156,32 @@ func TestCommunicate_CompetingCallsNeverMixCapture(t *testing.T) {
 				if !sess.Communicated() {
 					t.Fatal("Communicated() = false, want true after a terminal communicate")
 				}
-				if got := sess.CommunicateOutput(); got == "" {
-					t.Fatal("CommunicateOutput() empty, want the first call's output")
-				}
-				// The captured message must be the FIRST call's, and the
-				// structured slot must hold the first call's value (absent when
-				// it carried none) — never the loser's.
+				// The captured message must be the FIRST call's, the canonical
+				// output the FIRST call's canonicalization, and the structured
+				// slot the FIRST call's value (absent when it carried none) —
+				// never the loser's.
 				sess.mu.Lock()
 				capturedText := sess.comm.text
+				capturedOutput := sess.comm.output
 				capturedStructured, capturedPresent := sess.comm.structured, sess.comm.structured != nil
 				sess.mu.Unlock()
 				if capturedText != firstMsg {
 					t.Fatalf("captured message = %q, want %q (first call wins the message slot)", capturedText, firstMsg)
 				}
-				if shape.custom == nil && firstVal == nil {
+				if wantOutput := canonicalNodeOutputText(communicateEffectiveOutput(firstMsg, firstVal)); capturedOutput != wantOutput {
+					t.Fatalf("captured canonical output = %q, want %q (first call's canonicalization)", capturedOutput, wantOutput)
+				}
+				if got := sess.CommunicateOutput(); got != capturedOutput {
+					t.Fatalf("CommunicateOutput() = %q, want the first call's canonical output %q", got, capturedOutput)
+				}
+				if firstVal == nil {
+					// absent row: the first call carried no explicit structured
+					// output (default envelope), so the slot must stay empty —
+					// the loser's value must not fill it.
 					if capturedPresent {
 						t.Fatalf("captured structured = %#v, want absent (first call carried no explicit structured output; the loser's value must not fill its slot)", capturedStructured)
 					}
-					return
-				}
-				if !capturedPresent || !communicateJSONEqual(capturedStructured, firstVal) {
+				} else if !capturedPresent || !communicateJSONEqual(capturedStructured, firstVal) {
 					t.Fatalf("captured structured = %#v (present=%v), want first call's value %#v", capturedStructured, capturedPresent, firstVal)
 				}
 			})
@@ -193,12 +200,17 @@ func TestCommunicate_SingleCallSemanticsPreserved(t *testing.T) {
 		message     string
 		output      any
 		wantPresent bool
+		// wantReply is the handler's reply: the canonical output text when the
+		// node output is meaningful, else the message.
+		wantReply string
 	}{
 		{
 			name:        "default envelope with data",
 			message:     "with data",
 			output:      communicateDefaultEnvelope("with data", map[string]any{"k": 1}),
 			wantPresent: true, // meaningful node output → raw output captured
+			// meaningful node output → reply is the canonical output text
+			wantReply: canonicalNodeOutputText(communicateDefaultEnvelope("with data", map[string]any{"k": 1})),
 		},
 		{
 			name:    "default envelope empty",
@@ -206,6 +218,8 @@ func TestCommunicate_SingleCallSemanticsPreserved(t *testing.T) {
 			output:  communicateDefaultEnvelope("", nil),
 			// all envelope fields empty → not meaningful → structured not captured
 			wantPresent: false,
+			// node output not meaningful → reply falls back to the message
+			wantReply: "plain",
 		},
 		{
 			name:        "custom schema object",
@@ -213,6 +227,11 @@ func TestCommunicate_SingleCallSemanticsPreserved(t *testing.T) {
 			message:     "obj",
 			output:      map[string]any{"source": "single"},
 			wantPresent: true,
+			// non-envelope object under a custom schema: message is not
+			// defaulted into the node output (no message field present), and
+			// hasMeaningfulNodeOutput is false for a map without
+			// decision/message/data/artifacts keys → reply stays the message
+			wantReply: "obj",
 		},
 		{
 			name:        "custom schema explicit null",
@@ -220,6 +239,7 @@ func TestCommunicate_SingleCallSemanticsPreserved(t *testing.T) {
 			message:     "null",
 			output:      json.RawMessage(`null`),
 			wantPresent: true,
+			wantReply:   "null",
 		},
 	}
 
@@ -230,6 +250,23 @@ func TestCommunicate_SingleCallSemanticsPreserved(t *testing.T) {
 			execCommunicateCall(t, sess, "c1", communicateArgsFor(tc.custom, tc.message, tc.output))
 			if !sess.Communicated() {
 				t.Fatal("Communicated() = false, want true")
+			}
+			// Pin the exact captured text, reply, and canonical output — the
+			// single-call contract the atomic setter must preserve exactly.
+			sess.mu.Lock()
+			text, reply, output := sess.comm.text, sess.comm.reply, sess.comm.output
+			sess.mu.Unlock()
+			if text != tc.message {
+				t.Fatalf("captured text = %q, want %q", text, tc.message)
+			}
+			if wantReply := tc.wantReply; reply != wantReply {
+				t.Fatalf("captured reply = %q, want %q", reply, wantReply)
+			}
+			if wantOutput := canonicalNodeOutputText(communicateEffectiveOutput(tc.message, tc.output)); output != wantOutput {
+				t.Fatalf("captured canonical output = %q, want %q", output, wantOutput)
+			}
+			if got := sess.CommunicateOutput(); got != output {
+				t.Fatalf("CommunicateOutput() = %q, want %q", got, output)
 			}
 			structured, present := sess.communicateStructuredResult()
 			if present != tc.wantPresent {
@@ -244,11 +281,74 @@ func TestCommunicate_SingleCallSemanticsPreserved(t *testing.T) {
 	}
 }
 
+// TestCommunicate_CrossShapeCompetingCallsNeverMix drives the two shapes that
+// are otherwise indistinguishable in a same-shape pair — explicit null and an
+// object value — against each other in BOTH orderings, asserting the winner's
+// exact captured value. A same-shape explicit-null pair cannot detect a mix
+// (both values are the identical null); pairing it with a distinguishable value
+// makes any cross-call leak observable. A session carries one communicate
+// definition, so the schema accepts both shapes (object|null union).
+func TestCommunicate_CrossShapeCompetingCallsNeverMix(t *testing.T) {
+	t.Parallel()
+	schema := map[string]any{"type": []any{"object", "null"}}
+	nullValue := json.RawMessage(`null`)
+	objectValue := map[string]any{"source": "O"}
+
+	for _, reverse := range []bool{false, true} {
+		name := "null first"
+		if reverse {
+			name = "object first"
+		}
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			sess := newCompetingCommunicateSession(t, schema)
+
+			nullArgs := map[string]any{"message": "N", "end_turn": true, "output": nullValue}
+			objectArgs := map[string]any{"message": "O", "end_turn": true, "output": objectValue}
+
+			firstID, firstArgs, firstMsg := "callN", nullArgs, "N"
+			secondID, secondArgs := "callO", objectArgs
+			if reverse {
+				firstID, firstArgs, firstMsg = "callO", objectArgs, "O"
+				secondID, secondArgs = "callN", nullArgs
+			}
+
+			respFirst := execCommunicateCall(t, sess, firstID, firstArgs)
+			if accepted, _ := respFirst["accepted"].(bool); !accepted {
+				t.Fatalf("first call %s reported accepted=false, want true: %v", firstID, respFirst)
+			}
+			respSecond := execCommunicateCall(t, sess, secondID, secondArgs)
+			if accepted, _ := respSecond["accepted"].(bool); accepted {
+				t.Fatalf("second call %s reported accepted=true, want false: %v", secondID, respSecond)
+			}
+
+			sess.mu.Lock()
+			capturedText := sess.comm.text
+			capturedStructured := sess.comm.structured
+			sess.mu.Unlock()
+			if capturedText != firstMsg {
+				t.Fatalf("captured message = %q, want %q (first call wins the message slot)", capturedText, firstMsg)
+			}
+			if firstMsg == "N" {
+				// the null call won: explicit null must be captured verbatim,
+				// not the loser's object value and not "absent"
+				if !communicateJSONEqual(capturedStructured, nullValue) {
+					t.Fatalf("captured structured = %#v, want the winner's explicit null", capturedStructured)
+				}
+			} else if !communicateJSONEqual(capturedStructured, objectValue) {
+				t.Fatalf("captured structured = %#v, want the winner's object value %#v", capturedStructured, objectValue)
+			}
+		})
+	}
+}
+
 // TestCommunicate_ConcurrentTerminalCaptureIsAtomic exercises concurrent
 // handler completion against one session (race-enabled runs stress the same
 // lock): many goroutines drive terminal communicate handlers whose structured
 // values embed their call identity; afterwards the captured result must pair
-// a message with that same call's structured value (or with none), never a mix.
+// a message with that same call's structured value, never a mix. Every call
+// carries a structured value (the custom object schema requires output), so
+// the winner's capture is always present and identity-checkable.
 func TestCommunicate_ConcurrentTerminalCaptureIsAtomic(t *testing.T) {
 	t.Parallel()
 	const rounds = 32
@@ -285,9 +385,9 @@ func TestCommunicate_ConcurrentTerminalCaptureIsAtomic(t *testing.T) {
 	if text == "" {
 		t.Fatal("no terminal communicate result captured")
 	}
-	if structured == nil {
-		return // message-only winner: no structured value, no mix possible
-	}
+	// Every call carries a structured value (the object schema requires
+	// output), so the winner's capture is present and must carry the same
+	// call identity as the message.
 	m, ok := structured.(map[string]any)
 	if !ok {
 		t.Fatalf("structured = %#v, want map with call identity", structured)
@@ -298,6 +398,17 @@ func TestCommunicate_ConcurrentTerminalCaptureIsAtomic(t *testing.T) {
 }
 
 // --- helpers ---
+
+// communicateEffectiveOutput mirrors the handler's effective-output
+// computation (session_tools_communicate.go): the normalized node output with
+// an empty message defaulted from the top-level message.
+func communicateEffectiveOutput(message string, output any) any {
+	effective := normalizeNodeOutput(output)
+	if strings.TrimSpace(effective.Message) == "" {
+		effective.Message = message
+	}
+	return effective
+}
 
 // mustMarshalJSON marshals v or fails the test. (The same package's mustJSON
 // returns string; this returns the json.RawMessage ExecuteCall takes.)
