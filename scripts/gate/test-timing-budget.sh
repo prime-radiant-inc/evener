@@ -29,11 +29,15 @@
 # (`make test-rebaseline`), never fail on a budget nobody has measured yet.
 #
 # The one thing that fails in EVERY mode, --check or not, is a broken
-# measurement: `go list`, `go test`, or vitest exiting nonzero, or a package
-# go list reported that the go test -json stream never mentions (issue #172 —
-# a package that fails to build used to contribute no rows, so --bless quietly
+# measurement: `go list` or `go test` exiting nonzero, or a package go list
+# reported that the go test -json stream never mentions (issue #172 — a
+# package that fails to build used to contribute no rows, so --bless quietly
 # wrote a budget without it). A failed measurement also refuses --bless:
 # there is no honest baseline to write from a stream nobody vouches for.
+# The vitest producer's exit status is captured by the same mechanism, but
+# it is the one producer path the selftest does not drive — the suite is
+# offline by contract and a real vitest run needs a deterministic
+# node_modules install — so its refusal is code, not a tested claim.
 #
 # Usage:
 #   scripts/gate/test-timing-budget.sh                # measure + print (fails
@@ -231,7 +235,14 @@ else
 		pkglist="$base.packages"
 		short="$(module_short_flag "$m")"
 		pkgs=()
-		if ! ( cd "$repo_root/$m" && go list ./... ) >"$pkglist.raw" 2>"$base.go-list.stderr"; then
+		# Status captured BEFORE any negation: under bash 3.2 (macOS stock) an
+		# `if ! ( ... ) >file` whose OUTER redirection fails (unwritable scratch,
+		# ENOSPC) has the failure eaten by the negation and the guard silently
+		# skipped. Capturing $? first attributes every nonzero — producer exit
+		# or redirection failure — to this branch.
+		( cd "$repo_root/$m" && go list ./... ) >"$pkglist.raw" 2>"$base.go-list.stderr"
+		gl_status=$?
+		if [ "$gl_status" -ne 0 ]; then
 			echo "test-timing-budget: go list ./... in $m exited nonzero (see $base.go-list.stderr)" >&2
 			go_measure_failed=1; continue
 		fi
@@ -246,8 +257,13 @@ else
 			go_measure_failed=1; continue
 		fi
 		printf '%s\n' "${pkgs[@]}" >"$pkglist"
-		if ! ( cd "$repo_root/$m" && go test -json -count=1 $short \
-			-run "$GATE_TEST_RUN" -skip "$GATE_FUZZ_TEST_SKIP" "${pkgs[@]}" ) >"$log" 2>"$log.stderr"; then
+		# Same capture-before-negation shape as the go list block above, for
+		# the same bash 3.2 reason: a failed outer redirection must land here,
+		# not be eaten by `!`.
+		( cd "$repo_root/$m" && go test -json -count=1 $short \
+			-run "$GATE_TEST_RUN" -skip "$GATE_FUZZ_TEST_SKIP" "${pkgs[@]}" ) >"$log" 2>"$log.stderr"
+		gt_status=$?
+		if [ "$gt_status" -ne 0 ]; then
 			echo "test-timing-budget: go test in $m exited nonzero (see $log.stderr)" >&2
 			go_measure_failed=1; continue
 		fi
@@ -262,9 +278,12 @@ else
 	if $web; then
 		if [ -d "$web_dir" ]; then
 			report="$work/vitest-report.json"
-			if ! ( cd "$web_dir" && PATH="$PWD/node_modules/.bin:$PATH" \
+			# Same capture-before-negation shape as the go blocks above.
+			( cd "$web_dir" && PATH="$PWD/node_modules/.bin:$PATH" \
 				vitest run --reporter=json --outputFile="$report" \
-				--exclude scripts/browserGuardProcess.test.mjs ) >"$work/vitest.log" 2>&1; then
+				--exclude scripts/browserGuardProcess.test.mjs ) >"$work/vitest.log" 2>&1
+			vt_status=$?
+			if [ "$vt_status" -ne 0 ]; then
 				echo "test-timing-budget: vitest in $web_dir exited nonzero (see $work/vitest.log)" >&2
 				go_measure_failed=1
 			fi
