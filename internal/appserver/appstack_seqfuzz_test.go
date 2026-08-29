@@ -143,6 +143,27 @@ func (s *stackTransport) Recv(context.Context) (appwire.Message, error) {
 	return msg, nil
 }
 
+// ctxTransport adapts stackTransport to the receive loop's termination
+// contract: Recv must fail once the dispatch policy cancels the connection
+// context, the way the real websocket transport's read does. A transport whose
+// Recv keeps returning (Message{}, nil) after cancellation would spin the
+// receive loop forever — the loop only exits via a Recv error.
+type ctxTransport struct {
+	stackTransport
+	ctx context.Context
+}
+
+func (s *ctxTransport) Recv(ctx context.Context) (appwire.Message, error) {
+	if len(s.messages) == 0 {
+		<-s.ctx.Done()
+		if s.err != nil {
+			return appwire.Message{}, s.err
+		}
+		return appwire.Message{}, context.Canceled
+	}
+	return s.stackTransport.Recv(ctx)
+}
+
 type stackCloser struct{ closes int }
 
 func (s *stackCloser) Close(websocket.StatusCode, string) error { s.closes++; return nil }
@@ -164,8 +185,13 @@ func exerciseReceiveLoops(t rapidTB) {
 		t.Fatalf("abnormal receive close count = %d", closer.closes)
 	}
 	c.closeSend()
-	runWebSocketReceiveLoop(context.Background(), closer, &stackTransport{
-		messages: []appwire.Message{appwire.RequestMessage(appwire.NewIntID(1), appwire.MethodPing, nil)},
+	ctx, cancel := context.WithCancel(context.Background())
+	c.setCancel(cancel)
+	runWebSocketReceiveLoop(ctx, closer, &ctxTransport{
+		stackTransport: stackTransport{
+			messages: []appwire.Message{appwire.RequestMessage(appwire.NewIntID(1), appwire.MethodPing, nil)},
+		},
+		ctx: ctx,
 	}, c, newWebSocketReadGate())
 }
 
