@@ -99,7 +99,7 @@ type Registry struct {
 	catalogTag   string
 	catalogMeta  Meta
 	warnings     []string
-	instances    map[string]*instance   //nolint:unused // filled by Task 10
+	instances    map[string]*instance
 	live         map[string]liveListing //nolint:unused // filled by Task 8
 }
 
@@ -115,6 +115,9 @@ type record struct {
 	userVars   map[string]string
 	layers     []capLayer
 	notes      []string
+
+	ownBaseURL   string   // a literal base_url set by the config layer (endpoint stop, spec §10)
+	ownAPIKeyEnv []string // api_key_env set by the config layer (survives the endpoint stop)
 }
 
 // capLayer is one layer's contribution to a record. own is true for the
@@ -260,6 +263,10 @@ func Load(opts ...Option) (*Registry, error) {
 	}
 	for _, rec := range r.allRecords() {
 		r.computeHidden(rec)
+	}
+	r.computeInstances()
+	if err := r.validateDefault(); err != nil {
+		return nil, err
 	}
 	return r, nil
 }
@@ -481,6 +488,10 @@ func (rec *record) fold(src Provider, tag string, presets map[string]Transport) 
 	if tag == LayerConfig {
 		rec.userVars = mergeStringMap(rec.userVars, t.Vars)
 		t.Vars = nil
+		rec.ownBaseURL = t.BaseURL
+		if src.APIKeyEnv != nil {
+			rec.ownAPIKeyEnv = append([]string{}, src.APIKeyEnv...)
+		}
 	}
 	mergeTransport(&h.Transport, t)
 	setIfNonEmpty(&h.Name, src.Name)
@@ -665,11 +676,10 @@ func (r *Registry) varLookup(rec *record) func(string) (string, bool) {
 	}
 }
 
-// resolveBaseURL substitutes t.BaseURL for rec, applying the transport's
-// host rule (spec §9.1). missing lists unresolved variables; warnings carry
-// host-rule failures.
-func (r *Registry) resolveBaseURL(rec *record, t Transport) (string, []string, []string) {
-	lookup := r.varLookup(rec)
+// resolveBaseURLWith substitutes t.BaseURL for rec using lookup, applying
+// the transport's host rule (spec §9.1). missing lists unresolved
+// variables; warnings carry host-rule failures.
+func (r *Registry) resolveBaseURLWith(rec *record, t Transport, lookup func(string) (string, bool)) (string, []string, []string) {
 	var warnings []string
 	switch t.HostRule {
 	case HostRuleOllamaHost:
@@ -707,6 +717,21 @@ func (r *Registry) resolveBaseURL(rec *record, t Transport) (string, []string, [
 	return url, missing, warnings
 }
 
+// resolveBaseURL substitutes t.BaseURL for rec with the spec §9.1 variable
+// order (user vars, environment, curated defaults).
+func (r *Registry) resolveBaseURL(rec *record, t Transport) (string, []string, []string) {
+	return r.resolveBaseURLWith(rec, t, r.varLookup(rec))
+}
+
+// defaultVarLookup consults only the curated and upstream defaults — no user
+// vars, no environment (spec §10's "after substituting the curated defaults").
+func (r *Registry) defaultVarLookup(rec *record) func(string) (string, bool) {
+	return func(name string) (string, bool) {
+		v, ok := rec.head.Transport.Vars[name]
+		return v, ok && v != ""
+	}
+}
+
 // computeHidden applies spec §4's rule after the merge, against the
 // environment: no registered protocol or no resolvable base URL hides a
 // provider; rows keep the flag foldModel computed.
@@ -742,7 +767,5 @@ func (r *Registry) Warnings() []string { return append([]string(nil), r.warnings
 // Catalog reports which upstream layer is in use and its fetch metadata.
 func (r *Registry) Catalog() (string, Meta) { return r.catalogTag, r.catalogMeta }
 
-// instance and liveListing are filled in by the instances (Task 10) and
-// resolve (Task 8) files.
-type instance struct{ rec *record }              //nolint:unused
+// liveListing is filled in by Task 10.
 type liveListing struct{ rows map[string]Model } //nolint:unused
