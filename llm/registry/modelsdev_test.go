@@ -268,6 +268,18 @@ func TestNPMProtocol_Table(t *testing.T) {
 	}
 }
 
+func TestIsKeyVar(t *testing.T) {
+	for name, want := range map[string]bool{
+		"OPENAI_API_KEY": true, "AWS_BEARER_TOKEN_BEDROCK": true, "AWS_SECRET_ACCESS_KEY": true,
+		"GITHUB_PAT": true, "WATSONX_AI_APIKEY": true,
+		"AWS_REGION": false, "AZURE_RESOURCE_NAME": false, "WATSONX_AI_PROJECT_ID": false,
+	} {
+		if got := isKeyVar(name); got != want {
+			t.Errorf("isKeyVar(%q) = %v, want %v", name, got, want)
+		}
+	}
+}
+
 func TestFromModelsDev_UnknownNPMFallsBackWithNote(t *testing.T) {
 	data := []byte(`{"acme":{"id":"acme","npm":"some-unknown-sdk","models":{"m":{"id":"m","modalities":{"output":["text"]}}}}}`)
 	provs, err := FromModelsDev(data)

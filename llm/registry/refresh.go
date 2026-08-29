@@ -141,6 +141,9 @@ func Refresh(ctx context.Context, opts RefreshOptions) (RefreshResult, error) {
 	if opts.Fetcher == nil {
 		return RefreshResult{}, errors.New("refresh: no fetcher")
 	}
+	if opts.StateRoot == "" {
+		return RefreshResult{}, errors.New("refresh: StateRoot is required")
+	}
 	jsonPath, metaPath := cachePaths(opts.StateRoot)
 	res := RefreshResult{Path: jsonPath}
 	_, meta, cached := readCache(opts.StateRoot)

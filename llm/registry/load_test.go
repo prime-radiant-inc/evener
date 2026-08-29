@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"slices"
 	"strings"
 	"testing"
 )
@@ -154,6 +155,7 @@ func TestLoad_Errors(t *testing.T) {
 		"dangling alias":            "[providers.anthropic.models.\"mine\"]\nalias_of = \"claude-nope\"\n",
 		"alias of alias":            "[providers.anthropic.models.\"mine\"]\nalias_of = \"claude-sonnet-4-5[1m]\"\n",
 		"cross-provider unknown":    "[providers.anthropic.models.\"mine\"]\nalias_of = \"nope/claude-opus-5\"\n",
+		"cross-provider glob alias": "[providers.anthropic.models.\"mine\"]\nalias_of = \"openai/gpt-5*\"\n",
 		"fields key wrong protocol": "[providers.groq.fields]\ninclude = true\n",
 		"row fields wrong protocol": "[providers.groq.models.\"llama-3.3-70b-versatile\"]\nfields = { include = true }\n",
 	}
@@ -259,6 +261,26 @@ func TestLoad_UserVarsBeatEnvBeatCurated(t *testing.T) {
 	url, _, _ = r.resolveBaseURL(r.curated["anthropic"], r.curated["anthropic"].head.Transport)
 	if url != "https://api.anthropic.com/v1" {
 		t.Fatalf("curated default: %q", url)
+	}
+}
+
+func TestLoad_UnresolvedUserVarWarnsAndStops(t *testing.T) {
+	cfg := "[providers.bedrock]\nbase = \"amazon-bedrock\"\n[providers.bedrock.vars]\n\"AWS_REGION\" = \"$AWS_REGION_PROD\"\n"
+	r := fixtureLoad(t, map[string]string{"AWS_REGION": "us-east-1", "AWS_BEARER_TOKEN_BEDROCK": "bt"}, cfg)
+	rec := r.explicit["bedrock"]
+	url, missing, warns := r.resolveBaseURL(rec, rec.head.Transport)
+	if !strings.Contains(url, "{AWS_REGION}") || !slices.Contains(missing, "AWS_REGION") {
+		t.Fatalf("an unset user var must not fall through to the environment: %q %v", url, missing)
+	}
+	if !slices.Contains(warns, "unresolved variable AWS_REGION_PROD") {
+		t.Fatalf("resolveBaseURL warnings = %v", warns)
+	}
+	res, err := r.Resolve("bedrock/anthropic.claude-sonnet-5")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Contains(res.Warnings, "unresolved variable AWS_REGION_PROD") {
+		t.Fatalf("Resolve warnings = %v", res.Warnings)
 	}
 }
 

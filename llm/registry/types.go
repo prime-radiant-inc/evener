@@ -164,13 +164,19 @@ type CostTier struct {
 }
 
 // Credential is what resolution found for an instance (spec §4, §10). Value
-// is never logged; the continuation scope HMACs it (§7.6).
+// never serializes and is never logged; the continuation scope HMACs it
+// (§7.6). Source is safe to print and to store.
 type Credential struct {
-	Value  string `json:"value,omitempty"`
+	Value  string `json:"-"`
 	Source string `json:"source,omitempty"` // api_key | credential_headers | store | env:<VAR> | oauth | adc | none
 }
 
 // Resolved is the fully materialized record adapters consume (spec §4.4).
+// Its pointer, slice, and map fields alias registry-internal layer data:
+// read them, never mutate them, and copy before changing anything.
+// Model.Caps is empty because a row's capabilities live in Resolved.Caps,
+// merged across every layer. A prunable field absent from Provenance was
+// never set by a layer; it came from the protocol baseline (spec §8.2).
 type Resolved struct {
 	Instance          string            `json:"instance,omitempty"`
 	ProviderID        string            `json:"provider_id,omitempty"`

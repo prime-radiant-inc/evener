@@ -326,7 +326,7 @@ func (r *Registry) resolveAliasTarget(rec *record, aliasOf string) (Resolved, bo
 	}
 	if i := strings.Index(aliasOf, "/"); i > 0 {
 		if prov, ok := r.curated[aliasOf[:i]]; ok {
-			if m, ok := prov.head.Models[aliasOf[i+1:]]; ok && m.AliasOf == "" {
+			if m, ok := prov.head.Models[aliasOf[i+1:]]; ok && !isGlob(aliasOf[i+1:]) && m.AliasOf == "" {
 				res, err := r.resolveOn(prov, Ref{Instance: prov.name, Model: aliasOf[i+1:]}, nil)
 				return res, false, err
 			}
@@ -474,11 +474,14 @@ func (r *Registry) buildTransport(rec *record, row Model, proto string) (Transpo
 		templates = append(templates, row.Transport.BaseURL)
 	}
 
-	var warnings []string
-	url, missing, hostWarnings := r.resolveBaseURL(rec, t)
+	var warnings, varWarnings []string
+	// One lookup serves the base URL, the endpoint templates, and the Vars
+	// scan, so a user `vars` entry with an unset $ENV reference is reported
+	// once however many templates read it (spec §10).
+	lookup := r.varLookupWith(rec, func(w string) { varWarnings = append(varWarnings, w) })
+	url, missing, hostWarnings := r.resolveBaseURLWith(rec, t, lookup)
 	t.BaseURL = url
 	warnings = append(warnings, hostWarnings...)
-	lookup := r.varLookup(rec)
 	for _, field := range []*string{&t.Endpoint, &t.StreamEndpoint, &t.ModelsEndpoint, &t.CountTokensEndpoint} {
 		expanded, m := expandTemplate(*field, lookup)
 		*field = expanded
@@ -486,8 +489,10 @@ func (r *Registry) buildTransport(rec *record, row Model, proto string) (Transpo
 	}
 	slices.Sort(missing)
 	for _, name := range slices.Compact(missing) {
-		warnings = append(warnings, "unresolved variable "+name)
+		varWarnings = append(varWarnings, "unresolved variable "+name)
 	}
+	slices.Sort(varWarnings)
+	warnings = append(warnings, slices.Compact(varWarnings)...)
 	resolved := map[string]string{}
 	for _, tpl := range templates {
 		for _, m := range placeholderRe.FindAllStringSubmatch(tpl, -1) {
@@ -540,12 +545,43 @@ func (r *Registry) ModelIDs(instance string) ([]string, error) {
 	if !ok {
 		return nil, fmt.Errorf("unknown instance %q", instance)
 	}
+	return modelIDs(rec, r.LiveModels(instance)), nil
+}
+
+// CatalogModelIDs lists a curated provider's exact catalog rows plus its
+// cached live ids, sorted. It needs no instance, so `evener models list`
+// can show a provider nobody has configured (spec §11.1's --all).
+func (r *Registry) CatalogModelIDs(id string) ([]string, error) {
+	rec, ok := r.curated[id]
+	if !ok {
+		return nil, fmt.Errorf("unknown provider %q", id)
+	}
+	return modelIDs(rec, r.LiveModels(id)), nil
+}
+
+func modelIDs(rec *record, live []Model) []string {
 	seen := map[string]bool{}
 	for _, id := range exactRowIDs(rec) {
 		seen[id] = true
 	}
-	for _, m := range r.LiveModels(instance) {
+	for _, m := range live {
 		seen[m.ID] = true
 	}
-	return sortedKeys(seen), nil
+	return sortedKeys(seen)
+}
+
+// ResolveCatalog resolves a model against a curated provider record
+// directly, for listings that browse the catalog rather than name an
+// instance. An id that is not an instance still resolves, with a warning
+// saying so; Resolve stays strict (spec §5.2).
+func (r *Registry) ResolveCatalog(id, model string) (Resolved, error) {
+	rec, ok := r.curated[id]
+	if !ok {
+		return Resolved{}, fmt.Errorf("unknown provider %q", id)
+	}
+	var warnings []string
+	if _, ok := r.instances[id]; !ok {
+		warnings = append(warnings, "not an instance: add a [providers."+id+"] entry or export its key")
+	}
+	return r.resolveOn(rec, Ref{Instance: id, Model: model}, warnings)
 }

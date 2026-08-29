@@ -1,6 +1,7 @@
 package registry
 
 import (
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -185,6 +186,9 @@ base = "openai"
 base = "amazon-bedrock"
 [providers.bedrock.vars]
 "AWS_REGION" = "us-east-1"
+[providers.viaproxy]
+base = "openai"
+base_url = "https://proxy/v1"
 `
 	env := map[string]string{"OPENAI_API_KEY": "sk-openai", "PORTKEY_KEY": "pk", "GW_KEY": "gw", "GW_API_KEY": "gw2", "ANTHROPIC_API_KEY": "sk-ant", "AWS_BEARER_TOKEN_BEDROCK": "bt", "OPENAI_BASE_URL": "https://proxy/v1"}
 	r := fixtureLoad(t, env, cfg, WithCredentials(fakeCreds{"stored": "from-store"}))
@@ -200,6 +204,7 @@ base = "amazon-bedrock"
 		"same":      {Value: "sk-openai", Source: "env:OPENAI_API_KEY"},
 		"mine":      {Value: "sk-openai", Source: "env:OPENAI_API_KEY"},
 		"bedrock":   {Value: "bt", Source: "env:AWS_BEARER_TOKEN_BEDROCK"},
+		"viaproxy":  {Value: "sk-openai", Source: "env:OPENAI_API_KEY"},
 	}
 	for name, w := range want {
 		got, warns := r.credential(r.explicit[name])
@@ -222,6 +227,13 @@ base = "amazon-bedrock"
 	r = fixtureLoad(t, map[string]string{"OLLAMA_API_KEY": "ok"}, "")
 	if got, _ := r.credential(r.curated["ollama"]); got.Source != "env:OLLAMA_API_KEY" {
 		t.Fatalf("optional-bearer with a key: %+v", got)
+	}
+}
+
+func TestCredential_ValueNeverSerializes(t *testing.T) {
+	raw, err := json.Marshal(Credential{Value: "x", Source: "store"})
+	if err != nil || strings.Contains(string(raw), "x") {
+		t.Fatalf("a serialized credential must carry the source only: %s %v", raw, err)
 	}
 }
 

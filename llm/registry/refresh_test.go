@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strings"
 	"testing"
 	"time"
 )
@@ -127,6 +128,17 @@ func TestRefresh_SanityFloorsAndFailuresKeepCache(t *testing.T) {
 		if !bytes.Equal(after, before) {
 			t.Errorf("%s: a failed refresh must keep the previous cache", name)
 		}
+	}
+}
+
+func TestRefresh_RequiresStateRoot(t *testing.T) {
+	f := &fakeFetch{body: fixtureBytes(t), etag: "a"}
+	_, err := Refresh(context.Background(), RefreshOptions{Fetcher: f.fetcher(), Force: true, Baseline: fixtureBytes(t)})
+	if err == nil || !strings.Contains(err.Error(), "StateRoot is required") {
+		t.Fatalf("an empty StateRoot must be refused: %v", err)
+	}
+	if f.calls != 0 {
+		t.Fatalf("nothing must be fetched: calls=%d", f.calls)
 	}
 }
 

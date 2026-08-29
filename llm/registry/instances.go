@@ -194,7 +194,7 @@ func (r *Registry) rankedInstances() []*instance {
 // recordFor finds what a reference's instance half names: an explicit
 // instance, an implicit instance, or any curated implicit provider id
 // (resolvable without a credential, spec §5.2).
-func (r *Registry) recordFor(name string) (*record, bool) { //nolint:unused // used by Resolve, Task 10
+func (r *Registry) recordFor(name string) (*record, bool) {
 	if inst, ok := r.instances[name]; ok {
 		return inst.rec, true
 	}

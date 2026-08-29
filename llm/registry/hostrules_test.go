@@ -1,6 +1,9 @@
 package registry
 
-import "testing"
+import (
+	"strings"
+	"testing"
+)
 
 func TestResolveOllamaHost(t *testing.T) {
 	cases := []struct{ baseURL, host, want string }{
@@ -26,6 +29,16 @@ func TestResolveOllamaHost(t *testing.T) {
 	}
 	if _, err := resolveOllamaHost("ftp://x", "localhost"); err == nil {
 		t.Error("invalid OLLAMA_BASE_URL must be rejected")
+	}
+	for _, bad := range []string{"http://user:pw@host", "http://user:pw@host/v1"} {
+		_, err := resolveOllamaHost("", bad)
+		if err == nil || strings.Contains(err.Error(), "pw") {
+			t.Errorf("userinfo must never be echoed: %v", err)
+		}
+		_, err = resolveOllamaHost(bad, "localhost")
+		if err == nil || strings.Contains(err.Error(), "pw") {
+			t.Errorf("userinfo in OLLAMA_BASE_URL must never be echoed: %v", err)
+		}
 	}
 }
 

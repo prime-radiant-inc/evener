@@ -181,8 +181,9 @@ func defaultStateRoot(env func(string) (string, bool)) string {
 }
 
 // Load assembles the registry from the embedded snapshot, the curated
-// overlay, and the user layer (spec §5). The runtime cache and refresh are
-// wired in by Task 11.
+// overlay, and the user layer (spec §5). A newer runtime cache replaces the
+// embedded snapshot, and a stale cache starts the background refresh unless
+// the load is offline (spec §6.4).
 func Load(opts ...Option) (*Registry, error) {
 	o := defaultOptions()
 	for _, opt := range opts {
@@ -542,7 +543,8 @@ func (rec *record) fold(src Provider, tag string, presets map[string]Transport) 
 	h.Headers = mergeStringMap(h.Headers, src.Headers)
 	h.CredentialHeaders = mergeStringMap(h.CredentialHeaders, src.CredentialHeaders)
 	rec.notes = append(rec.notes, src.notes...)
-	for id, m := range src.Models {
+	for _, id := range sortedKeys(src.Models) {
+		m := src.Models[id]
 		merged, err := foldModel(h.Models[id], m, presets, fmt.Sprintf("%s.models.%q", where, id))
 		if err != nil {
 			return err
@@ -606,7 +608,8 @@ func (r *Registry) validateRecord(rec *record) error {
 				return err
 			}
 		}
-		for id, row := range layer.rows {
+		for _, id := range sortedKeys(layer.rows) {
+			row := layer.rows[id]
 			if isGlob(id) {
 				continue
 			}
@@ -659,14 +662,15 @@ func (rec *record) aliasFromConfig(id string) bool {
 }
 
 // aliasTarget resolves an alias_of reference: an exact row of the same
-// record first, else "provider-id/id" against the curated registry.
+// record first, else "provider-id/id" against the curated registry. A glob
+// pattern never names a target, on either side of the slash.
 func (r *Registry) aliasTarget(rec *record, ref string) (Model, error) {
 	if m, ok := rec.head.Models[ref]; ok && !isGlob(ref) {
 		return m, nil
 	}
 	if i := strings.Index(ref, "/"); i > 0 {
 		if prov, ok := r.curated[ref[:i]]; ok {
-			if m, ok := prov.head.Models[ref[i+1:]]; ok {
+			if m, ok := prov.head.Models[ref[i+1:]]; ok && !isGlob(ref[i+1:]) {
 				return m, nil
 			}
 			return Model{}, fmt.Errorf("alias_of %q: no row %q on %s", ref, ref[i+1:], ref[:i])
@@ -692,12 +696,23 @@ func expandTemplate(tpl string, lookup func(string) (string, bool)) (string, []s
 	return out, missing
 }
 
-// varLookup is the spec §9.1 order: the user layer's vars, then the
-// environment through vars_env, then the curated and upstream defaults.
-func (r *Registry) varLookup(rec *record) func(string) (string, bool) {
+// varLookupWith is the spec §9.1 variable order with a warnings sink: the
+// user layer's vars, then the environment through vars_env, then the curated
+// and upstream defaults. A user `vars` entry whose $ENV reference is unset
+// warns and resolves to nothing instead of falling through to vars_env or
+// the curated default, so the URL never silently uses the value the user
+// meant to replace (spec §10).
+func (r *Registry) varLookupWith(rec *record, warn func(string)) func(string) (string, bool) {
 	return func(name string) (string, bool) {
 		if v, ok := rec.userVars[name]; ok {
-			if expanded, missing := expandEnv(v, r.env); len(missing) == 0 && expanded != "" {
+			expanded, missing := expandEnv(v, r.env)
+			for _, m := range missing {
+				warn("unresolved variable " + m)
+			}
+			switch {
+			case len(missing) > 0:
+				return "", false
+			case expanded != "":
 				return expanded, true
 			}
 		}
@@ -711,6 +726,12 @@ func (r *Registry) varLookup(rec *record) func(string) (string, bool) {
 		}
 		return "", false
 	}
+}
+
+// varLookup is varLookupWith for the callers that have no warnings channel
+// (the hidden computation and the endpoint stop).
+func (r *Registry) varLookup(rec *record) func(string) (string, bool) {
+	return r.varLookupWith(rec, func(string) {})
 }
 
 // resolveBaseURLWith substitutes t.BaseURL for rec using lookup, applying
@@ -755,9 +776,12 @@ func (r *Registry) resolveBaseURLWith(rec *record, t Transport, lookup func(stri
 }
 
 // resolveBaseURL substitutes t.BaseURL for rec with the spec §9.1 variable
-// order (user vars, environment, curated defaults).
+// order (user vars, environment, curated defaults). Its warnings carry the
+// host-rule failures and the unresolved $ENV references of user `vars`.
 func (r *Registry) resolveBaseURL(rec *record, t Transport) (string, []string, []string) {
-	return r.resolveBaseURLWith(rec, t, r.varLookup(rec))
+	var varWarnings []string
+	url, missing, warnings := r.resolveBaseURLWith(rec, t, r.varLookupWith(rec, func(w string) { varWarnings = append(varWarnings, w) }))
+	return url, missing, append(warnings, varWarnings...)
 }
 
 // defaultVarLookup consults only the curated and upstream defaults — no user
@@ -785,7 +809,8 @@ func (r *Registry) computeHidden(rec *record) {
 func (r *Registry) ProviderIDs() []string { return sortedKeys(r.curated) }
 
 // Provider returns the merged curated record for a registry id, with Hidden
-// computed against the environment.
+// computed against the environment. The head carries no capabilities: those
+// live in the record's layers, which only Resolve replays.
 func (r *Registry) Provider(id string) (Provider, bool) {
 	rec, ok := r.curated[id]
 	if !ok {
