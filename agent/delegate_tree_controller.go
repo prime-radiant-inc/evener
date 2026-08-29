@@ -112,12 +112,34 @@ type delegateLease struct {
 	generation uint64
 }
 
+type delegateCompletionRequirement uint8
+
+const (
+	delegateCompletionAttentionOnly delegateCompletionRequirement = iota
+	delegateCompletionReportRequired
+)
+
+type delegateCompletionOutcome uint8
+
+const (
+	delegateCompletionOutcomeNone delegateCompletionOutcome = iota
+	delegateCompletionOutcomeAttentionNoAction
+)
+
+type delegateGenerationEvidence struct {
+	requirement  delegateCompletionRequirement
+	outcome      delegateCompletionOutcome
+	terminalSeen bool
+	fallback     *delegateFinish
+}
+
 type delegateRuntimeBinding struct {
 	lease      delegateLease
 	runtime    *Session
 	cancel     context.CancelFunc
 	ready      bool
 	inputClaim uint64
+	evidence   *delegateGenerationEvidence
 }
 
 type delegateLiveState struct {
@@ -486,6 +508,90 @@ func (c *delegateTreeController) exactLeaseLocked(lease delegateLease) (*delegat
 		return nil, nil, fmt.Errorf("%w: %s generation %d has no exact binding", errDelegateStaleLease, lease.delegateID, lease.generation)
 	}
 	return aggregate, live, nil
+}
+
+type delegateCompletionSnapshot struct {
+	requirement  delegateCompletionRequirement
+	outcome      delegateCompletionOutcome
+	terminalSeen bool
+	fallback     *delegateFinish
+}
+
+func (c *delegateTreeController) completionEvidenceLocked(lease delegateLease) (*delegateGenerationEvidence, error) {
+	_, live, err := c.exactLeaseLocked(lease)
+	if err != nil {
+		return nil, err
+	}
+	if live.binding == nil || live.binding.lease != lease || live.binding.evidence == nil {
+		return nil, fmt.Errorf("%w: %s generation %d has no exact evidence", errDelegateStaleLease, lease.delegateID, lease.generation)
+	}
+	return live.binding.evidence, nil
+}
+
+func (c *delegateTreeController) escalateCompletionRequirement(lease delegateLease) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	evidence, err := c.completionEvidenceLocked(lease)
+	if err != nil {
+		return err
+	}
+	if evidence.requirement == delegateCompletionAttentionOnly {
+		evidence.requirement = delegateCompletionReportRequired
+		c.evidenceVersion++
+	}
+	return nil
+}
+
+func (c *delegateTreeController) recordAttentionNoAction(lease delegateLease) (bool, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	evidence, err := c.completionEvidenceLocked(lease)
+	if err != nil {
+		return false, err
+	}
+	if evidence.requirement != delegateCompletionAttentionOnly || evidence.terminalSeen {
+		return false, nil
+	}
+	evidence.outcome = delegateCompletionOutcomeAttentionNoAction
+	c.evidenceVersion++
+	return true, nil
+}
+
+func (c *delegateTreeController) recordTerminalSeen(lease delegateLease) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	evidence, err := c.completionEvidenceLocked(lease)
+	if err != nil {
+		return err
+	}
+	if !evidence.terminalSeen {
+		evidence.terminalSeen = true
+		c.evidenceVersion++
+	}
+	return nil
+}
+
+func (c *delegateTreeController) completionSnapshot(lease delegateLease) (delegateCompletionSnapshot, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	evidence, err := c.completionEvidenceLocked(lease)
+	if err != nil {
+		return delegateCompletionSnapshot{}, err
+	}
+	snapshot := delegateCompletionSnapshot{
+		requirement:  evidence.requirement,
+		outcome:      evidence.outcome,
+		terminalSeen: evidence.terminalSeen,
+	}
+	if evidence.fallback != nil {
+		fallback := *evidence.fallback
+		if evidence.fallback.packet != nil {
+			packet := cloneDelegateTerminalPacket(*evidence.fallback.packet)
+			fallback.packet = &packet
+		}
+		snapshot.fallback = &fallback
+	}
+	return snapshot, nil
 }
 
 func (c *delegateTreeController) admitLeaseLocked(lease delegateLease, phases ...delegatestore.Phase) (*delegatestore.Aggregate, *delegateLiveState, error) {

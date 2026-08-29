@@ -791,11 +791,16 @@ func (c *delegateTreeController) CommitStart(reservation *delegateStartReservati
 		c.live[record.delegateID] = live
 	}
 	lease := delegateLease{delegateID: record.delegateID, generation: record.generation}
+	requirement := delegateCompletionReportRequired
+	if record.trigger == delegatestore.TriggerAttention {
+		requirement = delegateCompletionAttentionOnly
+	}
 	live.binding = &delegateRuntimeBinding{
-		lease:   lease,
-		runtime: record.runtime,
-		cancel:  record.cancel,
-		ready:   record.trigger == delegatestore.TriggerAttention,
+		lease:    lease,
+		runtime:  record.runtime,
+		cancel:   record.cancel,
+		ready:    record.trigger == delegatestore.TriggerAttention,
+		evidence: &delegateGenerationEvidence{requirement: requirement},
 	}
 	if record.trigger == delegatestore.TriggerAttention {
 		c.replaceDelegateAttentionLocked(record.delegateID, record.attentionPendingIDs)
