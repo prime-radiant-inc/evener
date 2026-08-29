@@ -160,15 +160,14 @@ New component, replacing the `TreeDrawer`-as-welcome role on mobile. It composes
 
 **Auto-close on navigation:** unchanged from today's `TreeDrawer` — selecting a
 session row calls `openPane("session", {ref})`, which changes `focusedPaneId`,
-and the panel closes (or collapses, depending on geometry; see State machine).
+and the panel closes (see State machine: selecting a session always closes the
+panel, regardless of geometry).
 
 ### 4. `TreeDrawer` becomes the trigger only (`src/shell/mobile/TreeDrawer.tsx`)
 
 `TreeDrawer` keeps its top-bar `IconButton` + needs-you `Badge` trigger but
-delegates the panel to `MobilePanel` (passes `children` through, or
-`MobilePanel` owns the `Sheet` outright — see Decision: ownership below).
-The bottom `Sheet` and its `EmptyState` placeholder are removed from
-`TreeDrawer`; `MobilePanel` is the single panel.
+no longer owns a `Sheet`. The bottom `Sheet` and its `EmptyState` placeholder
+are removed; `MobilePanel` is the single panel (see Decision: Sheet ownership).
 
 ### Decision: Sheet ownership
 
