@@ -241,18 +241,27 @@ func (c *delegateTreeController) prepareNoAction(claim *delegateSettlementClaim,
 	if err != nil {
 		return false, err
 	}
-	if aggregate.Phase != delegatestore.PhaseRunning || aggregate.Trigger != delegatestore.TriggerAttention || aggregate.PreparedTerminal != nil ||
-		live.recoveryRequired || live.binding == nil || !live.binding.ready || len(live.attentionIDs) != 0 {
+	if aggregate.Phase != delegatestore.PhaseRunning || !c.noActionBaseEligibleLocked(aggregate, live) {
 		return false, nil
 	}
 	evidence := live.binding.evidence
-	if evidence == nil || evidence.requirement != delegateCompletionAttentionOnly || evidence.outcome != delegateCompletionOutcomeAttentionNoAction || evidence.terminalSeen {
+	if !noActionEvidenceEligible(evidence) {
 		return false, nil
 	}
 	retained := cloneDelegateFinish(fallback)
 	evidence.fallback = &retained
 	c.evidenceVersion++
 	return true, nil
+}
+
+func (c *delegateTreeController) noActionBaseEligibleLocked(aggregate *delegatestore.Aggregate, live *delegateLiveState) bool {
+	return aggregate.Trigger == delegatestore.TriggerAttention && aggregate.PreparedTerminal == nil &&
+		!live.recoveryRequired && live.binding.ready && len(live.attentionIDs) == 0
+}
+
+func noActionEvidenceEligible(evidence *delegateGenerationEvidence) bool {
+	return evidence != nil && evidence.requirement == delegateCompletionAttentionOnly &&
+		evidence.outcome == delegateCompletionOutcomeAttentionNoAction && !evidence.terminalSeen
 }
 
 // RequireFinalizationRecovery latches an exact finalization whose external
@@ -401,58 +410,55 @@ func (c *delegateTreeController) hasSteeringClaimLocked(lease delegateLease) boo
 }
 
 func (c *delegateTreeController) FinishGeneration(lease delegateLease, finish delegateFinish) (delegateMutationPlans, error) {
-	return c.finishGeneration(lease, finish, nil)
+	c.mu.Lock()
+	aggregate, live, err := c.exactLeaseLocked(lease)
+	if err != nil {
+		c.mu.Unlock()
+		if errors.Is(err, errDelegateStaleLease) {
+			return delegateMutationPlans{}, nil
+		}
+		return delegateMutationPlans{}, err
+	}
+	plans, cancel, err := c.finishGenerationLocked(lease, finish, aggregate, live, false)
+	c.mu.Unlock()
+	if cancel != nil {
+		cancel()
+	}
+	return plans, err
 }
 
 // FinishNoAction is the sole authority for a packetless completed attention
 // generation. Its exact ordinary claim and retained fallback were fenced by
 // prepareNoAction before process-local terminal state publication.
 func (c *delegateTreeController) FinishNoAction(claim *delegateSettlementClaim) (delegateMutationPlans, error) {
-	if claim == nil {
-		return delegateMutationPlans{}, errDelegateStaleLease
-	}
-	return c.finishGeneration(delegateLease{}, delegateFinish{}, claim)
-}
-
-func (c *delegateTreeController) finishGeneration(lease delegateLease, finish delegateFinish, noActionClaim *delegateSettlementClaim) (delegateMutationPlans, error) {
 	c.mu.Lock()
-	var cancel context.CancelFunc
-	defer func() {
-		c.mu.Unlock()
-		if cancel != nil {
-			cancel()
-		}
-	}()
-	if noActionClaim != nil {
-		var err error
-		lease, finish, err = c.noActionFinishLocked(noActionClaim)
-		if err != nil {
-			return delegateMutationPlans{}, err
-		}
-	}
-	aggregate, live, err := c.exactLeaseLocked(lease)
+	aggregate, live, finish, err := c.noActionFinishLocked(claim)
 	if err != nil {
-		if errors.Is(err, errDelegateStaleLease) {
-			if noActionClaim == nil {
-				return delegateMutationPlans{}, nil
-			}
-			return delegateMutationPlans{}, err
-		}
+		c.mu.Unlock()
 		return delegateMutationPlans{}, err
 	}
-	if noActionClaim == nil && aggregate.Phase == delegatestore.PhaseRunning && finish.disposition == delegatestore.DispositionCompletedNoAction {
-		return delegateMutationPlans{}, errDelegateTargetBusy
+	plans, cancel, err := c.finishGenerationLocked(claim.lease, finish, aggregate, live, true)
+	c.mu.Unlock()
+	if cancel != nil {
+		cancel()
+	}
+	return plans, err
+}
+
+func (c *delegateTreeController) finishGenerationLocked(lease delegateLease, finish delegateFinish, aggregate *delegatestore.Aggregate, live *delegateLiveState, authorizedNoAction bool) (delegateMutationPlans, context.CancelFunc, error) {
+	if !authorizedNoAction && aggregate.Phase == delegatestore.PhaseRunning && finish.disposition == delegatestore.DispositionCompletedNoAction {
+		return delegateMutationPlans{}, nil, errDelegateTargetBusy
 	}
 	if live.finalizationRecoveryRequired {
-		return delegateMutationPlans{}, errDelegateTargetBusy
+		return delegateMutationPlans{}, nil, errDelegateTargetBusy
 	}
 	if aggregate.Phase == delegatestore.PhaseRunning || aggregate.Phase == delegatestore.PhaseStopping {
 		if err := c.finalizationReadyForLeaseLocked(lease, live); err != nil {
-			return delegateMutationPlans{}, err
+			return delegateMutationPlans{}, nil, err
 		}
 	}
 	if aggregate.Phase != delegatestore.PhaseStopping && aggregate.Trigger == delegatestore.TriggerAttention && len(live.attentionIDs) != 0 {
-		return delegateMutationPlans{}, errDelegateTargetBusy
+		return delegateMutationPlans{}, nil, errDelegateTargetBusy
 	}
 
 	endedAt := finish.endedAt
@@ -468,7 +474,7 @@ func (c *delegateTreeController) finishGeneration(lease delegateLease, finish de
 	switch aggregate.Phase {
 	case delegatestore.PhaseSettling:
 		if aggregate.PreparedTerminal == nil {
-			return delegateMutationPlans{}, fmt.Errorf("delegate %q settling without prepared terminal", lease.delegateID)
+			return delegateMutationPlans{}, nil, fmt.Errorf("delegate %q settling without prepared terminal", lease.delegateID)
 		}
 		preparedFinish := delegatePreparedFinish(*aggregate.PreparedTerminal)
 		outcome, disposition, reason = preparedFinish.outcome, preparedFinish.disposition, preparedFinish.reason
@@ -539,7 +545,7 @@ func (c *delegateTreeController) finishGeneration(lease delegateLease, finish de
 		}
 
 	default:
-		return delegateMutationPlans{}, errDelegateTargetBusy
+		return delegateMutationPlans{}, nil, errDelegateTargetBusy
 	}
 	events = delegateFinishMetadataEvents(events, lease, finish, outcome, reason)
 
@@ -555,46 +561,44 @@ func (c *delegateTreeController) finishGeneration(lease delegateLease, finish de
 		live.recoveryRequired = true
 		live.finalizationRecoveryRequired = true
 		live.recoveryRunnerPending = true
-		return delegateMutationPlans{}, appendErr
+		return delegateMutationPlans{}, nil, appendErr
 	}
 	plans, generationCancel := c.generationFinishedPlansLocked(lease, deliveryID)
 	if closure {
 		plans.updates[0] = closurePlan
 	}
-	cancel = generationCancel
-	return plans, nil
+	return plans, generationCancel, nil
 }
 
-func (c *delegateTreeController) noActionFinishLocked(claim *delegateSettlementClaim) (delegateLease, delegateFinish, error) {
+func (c *delegateTreeController) noActionFinishLocked(claim *delegateSettlementClaim) (*delegatestore.Aggregate, *delegateLiveState, delegateFinish, error) {
 	if claim == nil || c.settlementClaims[claim.token] != claim {
-		return delegateLease{}, delegateFinish{}, errDelegateStaleLease
+		return nil, nil, delegateFinish{}, errDelegateStaleLease
 	}
 	if claim.mode != delegateSettlementOrdinary {
-		return delegateLease{}, delegateFinish{}, errDelegateTargetBusy
+		return nil, nil, delegateFinish{}, errDelegateTargetBusy
 	}
 	if !claim.runErrorKnown || claim.runErr != nil {
-		return delegateLease{}, delegateFinish{}, errDelegateTargetBusy
+		return nil, nil, delegateFinish{}, errDelegateTargetBusy
 	}
 	if err := c.finalizationReadyLocked(claim); err != nil {
-		return delegateLease{}, delegateFinish{}, err
+		return nil, nil, delegateFinish{}, err
 	}
 	aggregate, live, err := c.exactLeaseLocked(claim.lease)
 	if err != nil {
-		return delegateLease{}, delegateFinish{}, err
+		return nil, nil, delegateFinish{}, err
 	}
 	if (aggregate.Phase != delegatestore.PhaseRunning && aggregate.Phase != delegatestore.PhaseStopping) ||
-		aggregate.Trigger != delegatestore.TriggerAttention || aggregate.PreparedTerminal != nil || live.recoveryRequired || live.binding == nil || !live.binding.ready || len(live.attentionIDs) != 0 {
-		return delegateLease{}, delegateFinish{}, errDelegateTargetBusy
+		!c.noActionBaseEligibleLocked(aggregate, live) {
+		return nil, nil, delegateFinish{}, errDelegateTargetBusy
 	}
 	evidence := live.binding.evidence
-	if evidence == nil || evidence.requirement != delegateCompletionAttentionOnly || evidence.outcome != delegateCompletionOutcomeAttentionNoAction ||
-		evidence.terminalSeen || evidence.fallback == nil {
-		return delegateLease{}, delegateFinish{}, errDelegateTargetBusy
+	if !noActionEvidenceEligible(evidence) || evidence.fallback == nil {
+		return nil, nil, delegateFinish{}, errDelegateTargetBusy
 	}
 	if aggregate.Phase == delegatestore.PhaseStopping {
-		return claim.lease, cloneDelegateFinish(*evidence.fallback), nil
+		return aggregate, live, cloneDelegateFinish(*evidence.fallback), nil
 	}
-	return claim.lease, delegateFinish{
+	return aggregate, live, delegateFinish{
 		outcome:     delegatestore.OutcomeCompleted,
 		disposition: delegatestore.DispositionCompletedNoAction,
 		reason:      "attention_consumed_without_report",
