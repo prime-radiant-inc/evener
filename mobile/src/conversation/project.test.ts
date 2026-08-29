@@ -312,6 +312,25 @@ describe("projectThread", () => {
       const a = c.items[0];
       if (a?.kind === "activity") expect(a.label).toBe("search files");
     });
+
+    it("classifies a hostile tool label from authoritative wire type", () => {
+      const t = thread([
+        turn("t1", [
+          item({
+            id: "tool-hostile",
+            type: "commandExecution",
+            toolName: "Your message",
+            status: "completed",
+          }),
+        ]),
+      ]);
+      const a = projectThread(t).items[0];
+      expect(a).toMatchObject({
+        kind: "activity",
+        family: "tool",
+        label: "Your message",
+      });
+    });
   });
 
   describe("consecutive tool clustering", () => {
@@ -472,6 +491,28 @@ describe("projectThread", () => {
       const n = c.items[0];
       if (n?.kind === "notice") expect(n.tone).toBe("info");
     });
+
+    it.each([
+      ["loop-detected", "warning"],
+      ["ordinary-steering", "informational"],
+      [undefined, "informational"],
+    ] as const)("classifies %s steering as %s", (steeringKind, family) => {
+      const t = thread([
+        turn("t1", [
+          item({
+            id: "s-family",
+            type: "steering",
+            steeringKind,
+            text: "steering text",
+          }),
+        ]),
+      ]);
+      expect(projectThread(t).items[0]).toMatchObject({
+        kind: "notice",
+        origin: "steering",
+        family,
+      });
+    });
   });
 
   describe("system notices", () => {
@@ -509,6 +550,41 @@ describe("projectThread", () => {
       const c = projectThread(t);
       const n = c.items[0];
       if (n?.kind === "notice") expect(n.tone).toBe("warning");
+    });
+
+    it.each([
+      ["error", "warning"],
+      ["system_prompt", "hidden-instruction"],
+      ["prompt_loaded", "hidden-instruction"],
+      ["environment", "system-prelude"],
+      ["round_timings", "diagnostic"],
+      ["plugin_loaded", "lifecycle"],
+      ["skill_activated", "lifecycle"],
+      ["hook_completed", "lifecycle"],
+      ["context_compaction", "lifecycle"],
+      ["compaction", "lifecycle"],
+      ["goal_ended", "lifecycle"],
+      ["fork_summary", "lifecycle"],
+      ["tool_repair", "lifecycle"],
+      ["model_switch", "lifecycle"],
+      ["future-event", "unknown-system"],
+      [undefined, "unknown-system"],
+    ] as const)("classifies eventKind %s as %s", (eventKind, family) => {
+      const t = thread([
+        turn("t1", [
+          item({
+            id: "sys-family",
+            type: "systemMessage",
+            eventKind: eventKind as ThreadItem["eventKind"],
+            text: "source body",
+          }),
+        ]),
+      ]);
+      expect(projectThread(t).items[0]).toMatchObject({
+        kind: "notice",
+        origin: "system",
+        family,
+      });
     });
   });
 

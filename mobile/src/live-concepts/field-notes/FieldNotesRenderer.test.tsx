@@ -24,6 +24,8 @@ import type {
   QuestionDraft,
 } from "../contract";
 import type {
+  BoundedDisplayText,
+  ConversationDisplayItem,
   DisplayTone,
   LiveActivityView,
   LiveConceptSurface,
@@ -31,7 +33,6 @@ import type {
   LiveConversationView,
   LiveQuestionView,
   LiveRosterView,
-  LiveTranscriptItem,
   LiveWorkItem,
 } from "../model";
 import { fieldNotesModule } from "./index";
@@ -148,28 +149,61 @@ function rosterWithRows(): LiveRosterView {
   };
 }
 
-function transcriptItem(
-  overrides: Partial<LiveTranscriptItem> & {
-    key: string;
-    kind: LiveTranscriptItem["kind"];
-  },
-): LiveTranscriptItem {
+function bounded(text: string, truncated = false): BoundedDisplayText {
   return {
-    label: "Item",
-    body: "Body text.",
-    tone: "idle",
-    streaming: false,
-    truncated: false,
-    questionKey: null,
-    sequenceLabel: "seq-1",
-    ...overrides,
+    text,
+    truncated,
+    originalUtf8Bytes: new TextEncoder().encode(text).length,
+  };
+}
+
+interface TranscriptFixture {
+  key: string;
+  kind: "user" | "assistant" | "tool" | "question";
+  label?: string;
+  body?: string;
+  tone?: DisplayTone;
+  streaming?: boolean;
+  truncated?: boolean;
+  questionKey?: string | null;
+  sequenceLabel?: string;
+}
+
+function transcriptItem(overrides: TranscriptFixture): ConversationDisplayItem {
+  const label = overrides.label ?? "Item";
+  const body = overrides.body ?? "Body text.";
+  const tone = overrides.tone ?? "idle";
+  const sequence = overrides.sequenceLabel ?? "seq-1";
+  if (overrides.kind === "tool") {
+    return {
+      key: overrides.key,
+      sourceKind: "tool",
+      semanticKind: "tool",
+      label: bounded(label),
+      preview: bounded(body, overrides.truncated),
+      duration: null,
+      tone,
+      state: tone === "running" ? "running" : "completed",
+      evidenceKey: null,
+      sequence,
+    };
+  }
+  return {
+    key: overrides.key,
+    sourceKind: overrides.kind,
+    label: bounded(label),
+    body: bounded(body, overrides.truncated),
+    tone,
+    streaming: overrides.streaming ?? false,
+    questionKey: overrides.questionKey ?? null,
+    sequence,
   };
 }
 
 function conversationWithItems(
   overrides: Partial<LiveConversationView> = {},
 ): LiveConversationView {
-  const items: readonly LiveTranscriptItem[] = [
+  const items: readonly ConversationDisplayItem[] = [
     transcriptItem({
       key: "item-1",
       kind: "user",
@@ -198,14 +232,15 @@ function conversationWithItems(
   ];
   return {
     threadKey: "session-b",
-    title: "Compile typed modules",
-    project: "evener-core",
-    status: "Running",
+    title: bounded("Compile typed modules"),
+    project: bounded("evener-core"),
+    status: bounded("Running"),
     items,
+    evidence: [],
     questions: [],
     olderAvailable: false,
     tone: "running" satisfies DisplayTone,
-    updatedLabel: "12 minutes ago",
+    updatedLabel: bounded("12 minutes ago"),
     ...overrides,
   };
 }
@@ -213,15 +248,25 @@ function conversationWithItems(
 function conversationWithQuestion(): LiveConversationView {
   const question: LiveQuestionView = {
     key: "q-1",
-    header: "Permission",
-    prompt: "Run the build now?",
+    header: bounded("Permission"),
+    prompt: bounded("Run the build now?"),
     options: [
-      { key: "opt-yes", label: "Yes", detail: "Build immediately" },
-      { key: "opt-no", label: "No", detail: "Wait for review" },
+      {
+        key: "opt-yes",
+        label: bounded("Yes"),
+        detail: bounded("Build immediately"),
+      },
+      {
+        key: "opt-no",
+        label: bounded("No"),
+        detail: bounded("Wait for review"),
+      },
     ],
     multiple: false,
+    why: null,
+    ifUnanswered: null,
   };
-  const items: readonly LiveTranscriptItem[] = [
+  const items: readonly ConversationDisplayItem[] = [
     transcriptItem({
       key: "q-item-1",
       kind: "question",
@@ -234,13 +279,13 @@ function conversationWithQuestion(): LiveConversationView {
   ];
   return conversationWithItems({
     threadKey: "session-q",
-    title: "Awaiting permission",
-    project: "evener-core",
-    status: "Needs answer",
+    title: bounded("Awaiting permission"),
+    project: bounded("evener-core"),
+    status: bounded("Needs answer"),
     items,
     questions: [question],
     tone: "attention",
-    updatedLabel: "just now",
+    updatedLabel: bounded("just now"),
   });
 }
 
@@ -551,11 +596,13 @@ describe("Field Notes conversation surface", () => {
     ).toBeVisible();
     expect(
       screen.getByRole("article", {
-        name: "Assistant response; streaming",
+        name: "Assistant message; streaming",
       }),
     ).toBeVisible();
     expect(
-      screen.getByRole("article", { name: "Tool read_file; completed" }),
+      screen.getByRole("article", {
+        name: "Tool activity, read_file; running",
+      }),
     ).toBeVisible();
     expect(container.querySelector("[aria-label*='item-2']")).toBeNull();
     expect(
@@ -594,7 +641,9 @@ describe("Field Notes conversation surface", () => {
     renderState(
       baseState({
         surface: "conversation",
-        conversation: conversationWithItems({ updatedLabel: "12 minutes ago" }),
+        conversation: conversationWithItems({
+          updatedLabel: bounded("12 minutes ago"),
+        }),
       }),
     );
     const main = mainFor("conversation");

@@ -588,7 +588,14 @@ describe("coordinator — only active assistant prose", () => {
     coord.consumeConversation(
       makeConversation({
         items: [
-          { kind: "notice", id: "n1", tone: "info", text: "System notice." },
+          {
+            kind: "notice",
+            id: "n1",
+            origin: "steering",
+            family: "informational",
+            tone: "info",
+            text: "System notice.",
+          },
           {
             kind: "activity",
             id: "act1",

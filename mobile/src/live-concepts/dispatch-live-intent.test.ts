@@ -1120,7 +1120,7 @@ describe("createLiveIntentDispatcher — submitQuestion canonical payload", () =
     const { view, operational } = buildProjection(conv);
     const qDisplay = [...operational.questionKeys.keys()][0] ?? "";
     const optKeys = view.questions[0]?.options ?? [];
-    const shipKey = optKeys.find((o) => o.label === "Ship it")?.key ?? "";
+    const shipKey = optKeys.find((o) => o.label.text === "Ship it")?.key ?? "";
     conversationStore.__set({ conversation: conv });
     const { callbacks } = createFakeCallbacks(
       () => null,
@@ -1561,6 +1561,7 @@ describe("createLiveIntentDispatcher — submitQuestion all-or-nothing (C1)", ()
       itemKeys: operational.itemKeys,
       questionKeys: staleQuestionKeys,
       optionKeys: operational.optionKeys,
+      evidenceKeys: operational.evidenceKeys,
     };
 
     conversationStore.__set({ conversation: conv });

@@ -53,15 +53,15 @@ export function StillwaterRenderer({
       break;
     case "conversation": {
       if (conversation) {
-        title = conversation.title;
-        subtitle = conversation.project;
+        title = conversation.title.text;
+        subtitle = conversation.project.text;
       }
       content = <ConversationView state={state} dispatch={dispatch} />;
       break;
     }
     case "work": {
       if (conversation) {
-        subtitle = conversation.title;
+        subtitle = conversation.title.text;
       }
       content = <WorkView state={state} dispatch={dispatch} />;
       break;

@@ -29,8 +29,8 @@ export function FieldNotesRenderer(props: LiveConceptRendererProps) {
       break;
     case "conversation": {
       const conversation = state.conversation;
-      title = conversation?.title ?? "Conversation";
-      subtitle = conversation?.project;
+      title = conversation?.title.text ?? "Conversation";
+      subtitle = conversation?.project.text;
       pushed = "back";
       content = <ConversationView state={state} dispatch={dispatch} />;
       break;
@@ -38,7 +38,7 @@ export function FieldNotesRenderer(props: LiveConceptRendererProps) {
     case "work": {
       const conversation = state.conversation;
       title = "Work ledger";
-      subtitle = conversation?.title;
+      subtitle = conversation?.title.text;
       pushed = "close";
       content = <WorkView state={state} dispatch={dispatch} />;
       break;

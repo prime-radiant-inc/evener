@@ -1,13 +1,17 @@
 import {
+  conversationItemAxLabel,
   mutationAxLabel,
-  transcriptItemAxLabel,
 } from "../accessibility-semantics";
 import type {
   LiveConceptIntent,
   LiveConceptState,
   QuestionDraft,
 } from "../contract";
-import type { LiveQuestionView, LiveTranscriptItem } from "../model";
+import type {
+  BoundedDisplayText,
+  ConversationDisplayItem,
+  LiveQuestionView,
+} from "../model";
 import { Icon } from "../shared/Icon";
 import { StatusLabel } from "../shared/StatusLabel";
 import { StatusDisclosure } from "./StatusDisclosure";
@@ -34,9 +38,9 @@ const MODE_CAPABILITY: Readonly<
 };
 
 function chronologyStampLabel(conversation: {
-  updatedLabel: string | null;
+  updatedLabel: BoundedDisplayText | null;
 }): string {
-  return conversation.updatedLabel ?? "Live record";
+  return conversation.updatedLabel?.text ?? "Live record";
 }
 
 function TranscriptContent({
@@ -45,12 +49,12 @@ function TranscriptContent({
   dispatch,
   question,
 }: {
-  item: LiveTranscriptItem;
+  item: ConversationDisplayItem;
   state: LiveConceptState;
   dispatch(intent: LiveConceptIntent): void;
   question: LiveQuestionView | undefined;
 }) {
-  switch (item.kind) {
+  switch (item.sourceKind) {
     case "user":
       return (
         <div className="fn-entry-copy">
@@ -58,7 +62,7 @@ function TranscriptContent({
             Your note
           </p>
           <p className="fn-user-message fn-editorial" data-editorial-reading>
-            {item.body}
+            {item.body.text}
           </p>
         </div>
       );
@@ -72,15 +76,20 @@ function TranscriptContent({
             className="fn-assistant-message fn-editorial"
             data-editorial-reading
           >
-            {item.body}
+            {item.body.text}
           </p>
         </div>
       );
+    case "notice":
+    case "system":
+    case "reasoning":
     case "tool":
+    case "diagnostic":
+    case "unknown":
       return (
         <div className="fn-tool-disclosure">
           <StatusDisclosure
-            label={item.label}
+            label={item.label.text}
             status={item.tone}
             expanded={state.ui.expandedToolKeys.has(item.key)}
             onToggle={() => dispatch({ type: "toggleTool", key: item.key })}
@@ -89,7 +98,7 @@ function TranscriptContent({
               <dl>
                 <div>
                   <dt>Body</dt>
-                  <dd>{item.body}</dd>
+                  <dd>{item.preview?.text}</dd>
                 </div>
               </dl>
             </div>
@@ -116,23 +125,17 @@ function TranscriptContent({
       return (
         <section className="fn-transcript-error" role="alert">
           <StatusLabel state="failed" />
-          <h3>{item.label}</h3>
-          <p>{item.body}</p>
+          <h3>{item.label?.text}</h3>
+          <p>{item.body.text}</p>
         </section>
       );
     case "attachment":
       return (
         <section className="fn-attachment">
-          <p className="fn-eyebrow">Attachment · {item.label}</p>
-          <h3>{item.label}</h3>
-          <p>{item.body}</p>
+          <p className="fn-eyebrow">Attachment · {item.label.text}</p>
+          <h3>{item.label.text}</h3>
         </section>
       );
-    default: {
-      // Exhaustive guard: the live transcript kind union is closed.
-      const _exhaustive: never = item.kind;
-      return <p>{_exhaustive}</p>;
-    }
   }
 }
 
@@ -184,7 +187,7 @@ function QuestionCard({
           <span className="fn-eyebrow">
             {question.multiple ? "Choose one or more" : "Choose one"}
           </span>
-          <span>{question.prompt}</span>
+          <span>{question.prompt.text}</span>
         </legend>
         <div className="fn-question-options">
           {question.options.map((option) => {
@@ -194,7 +197,7 @@ function QuestionCard({
                 <input
                   type={inputType}
                   name={name}
-                  aria-label={option.label}
+                  aria-label={option.label.text}
                   aria-describedby={detailId}
                   checked={selected.has(option.key)}
                   onChange={(event) =>
@@ -202,8 +205,8 @@ function QuestionCard({
                   }
                 />
                 <span>
-                  <strong>{option.label}</strong>
-                  <small id={detailId}>{option.detail}</small>
+                  <strong>{option.label.text}</strong>
+                  <small id={detailId}>{option.detail.text}</small>
                 </span>
               </label>
             );
@@ -276,13 +279,13 @@ export function ConversationView({ state, dispatch }: ConversationViewProps) {
 
       <section
         className="fn-session-summary"
-        aria-label={`Session ${conversation.title}`}
+        aria-label={`Session ${conversation.title.text}`}
         data-conversation-tone={conversation.tone}
       >
         <div>
-          <p className="fn-eyebrow">{conversation.project}</p>
-          <h2>{conversation.title}</h2>
-          <p>{conversation.status}</p>
+          <p className="fn-eyebrow">{conversation.project.text}</p>
+          <h2>{conversation.title.text}</h2>
+          <p>{conversation.status.text}</p>
         </div>
         <StatusLabel state={conversation.tone} />
       </section>
@@ -319,33 +322,46 @@ export function ConversationView({ state, dispatch }: ConversationViewProps) {
           </div>
         ) : (
           items.map((item) => {
-            const isCurrent = item.kind === "tool" && item.tone === "running";
+            const isCurrent =
+              item.sourceKind === "tool" && item.tone === "running";
             return (
               <article
-                className={`fn-transcript-item fn-transcript-item--${item.kind}`}
+                className={`fn-transcript-item fn-transcript-item--${item.sourceKind}`}
                 data-transcript-item-id={item.key}
                 data-focused={
                   state.ui.focusedItemKey === item.key ? "true" : "false"
                 }
                 data-spatial-presentation={
-                  item.kind === "tool" ? "reading-flow" : undefined
+                  item.sourceKind === "tool" ? "reading-flow" : undefined
                 }
                 data-current-record={isCurrent ? "true" : undefined}
-                data-streaming={item.streaming ? "true" : undefined}
-                data-truncated={item.truncated ? "true" : undefined}
-                aria-label={transcriptItemAxLabel(item)}
+                data-streaming={
+                  "streaming" in item && item.streaming ? "true" : undefined
+                }
+                data-truncated={
+                  ("body" in item ? item.body : item.preview)?.truncated
+                    ? "true"
+                    : undefined
+                }
+                aria-label={conversationItemAxLabel(
+                  item,
+                  item.sourceKind === "question"
+                    ? (state.ui.questionDrafts[item.questionKey ?? ""]
+                        ?.resolution ?? null)
+                    : null,
+                )}
                 key={item.key}
               >
                 <div className="fn-chronology-stamp" data-chronology-marker>
                   <span>{stampLabel}</span>
-                  <span>{item.sequenceLabel}</span>
+                  <span>{item.sequence}</span>
                 </div>
                 <TranscriptContent
                   item={item}
                   state={state}
                   dispatch={dispatch}
                   question={
-                    item.questionKey
+                    item.sourceKind === "question" && item.questionKey
                       ? questionsByKey.get(item.questionKey)
                       : undefined
                   }

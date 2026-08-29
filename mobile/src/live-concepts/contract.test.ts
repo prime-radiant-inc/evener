@@ -6,9 +6,10 @@ import type {
   LiveConceptState,
 } from "./contract";
 import type {
+  BoundedDisplayText,
   DisplayTone,
   LiveConversationView,
-  LiveTranscriptItem,
+  NarrativeDisplayItem,
 } from "./model";
 
 const concepts = ["stillwater", "constellation", "field-notes"] as const;
@@ -70,18 +71,18 @@ describe("live concept contract", () => {
     expectTypeOf<LiveConversationView>().toHaveProperty("tone");
     expectTypeOf<LiveConversationView>().toHaveProperty("updatedLabel");
     expectTypeOf<LiveConversationView["tone"]>().toEqualTypeOf<DisplayTone>();
-    expectTypeOf<LiveConversationView["updatedLabel"]>().toEqualTypeOf<
-      string | null
-    >();
+    expectTypeOf<
+      LiveConversationView["updatedLabel"]
+    >().toEqualTypeOf<BoundedDisplayText | null>();
   });
 
   it("annotates transcript items with a question link and stable sequence label", () => {
-    expectTypeOf<LiveTranscriptItem>().toHaveProperty("questionKey");
-    expectTypeOf<LiveTranscriptItem>().toHaveProperty("sequenceLabel");
-    expectTypeOf<LiveTranscriptItem["questionKey"]>().toEqualTypeOf<
+    expectTypeOf<NarrativeDisplayItem>().toHaveProperty("questionKey");
+    expectTypeOf<NarrativeDisplayItem>().toHaveProperty("sequence");
+    expectTypeOf<NarrativeDisplayItem["questionKey"]>().toEqualTypeOf<
       string | null
     >();
-    expectTypeOf<LiveTranscriptItem["sequenceLabel"]>().toEqualTypeOf<string>();
+    expectTypeOf<NarrativeDisplayItem["sequence"]>().toEqualTypeOf<string>();
   });
 
   it("defines a loadOlder intent distinct from openConversation", () => {

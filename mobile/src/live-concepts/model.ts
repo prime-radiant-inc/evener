@@ -43,36 +43,93 @@ export interface LiveRosterView {
   error: string | null;
 }
 
-export interface LiveTranscriptItem {
-  key: string;
-  kind: "user" | "assistant" | "tool" | "question" | "failure" | "attachment";
-  label: string;
-  body: string;
-  tone: DisplayTone;
-  streaming: boolean;
-  truncated: boolean;
-  questionKey: string | null;
-  sequenceLabel: string;
+export interface BoundedDisplayText {
+  readonly text: string;
+  readonly truncated: boolean;
+  readonly originalUtf8Bytes: number;
+}
+
+export type ConversationDisplayItem =
+  | NarrativeDisplayItem
+  | ActivityMarkerDisplayItem;
+
+export interface NarrativeDisplayItem {
+  readonly key: string;
+  readonly sourceKind: "user" | "assistant" | "question" | "failure";
+  readonly body: BoundedDisplayText;
+  readonly label: BoundedDisplayText | null;
+  readonly tone: DisplayTone;
+  readonly streaming: boolean;
+  readonly questionKey: string | null;
+  readonly sequence: string;
+}
+
+export interface ActivityMarkerDisplayItem {
+  readonly key: string;
+  readonly sourceKind:
+    | "notice"
+    | "system"
+    | "reasoning"
+    | "tool"
+    | "attachment"
+    | "diagnostic"
+    | "unknown";
+  readonly semanticKind:
+    | "notice"
+    | "warning-notice"
+    | "system-context"
+    | "system-activity"
+    | "reasoning"
+    | "tool"
+    | "attachment"
+    | "activity";
+  readonly label: BoundedDisplayText;
+  readonly preview: BoundedDisplayText | null;
+  readonly duration: BoundedDisplayText | null;
+  readonly tone: DisplayTone;
+  readonly state: "running" | "completed" | "failed" | "unavailable";
+  readonly evidenceKey: string | null;
+  readonly sequence: string;
+}
+
+export interface EvidenceSection {
+  readonly heading: BoundedDisplayText;
+  readonly body: BoundedDisplayText;
+}
+
+export interface EvidenceDisplayItem {
+  readonly key: string;
+  readonly family: ActivityMarkerDisplayItem["sourceKind"];
+  readonly title: BoundedDisplayText;
+  readonly sections: readonly EvidenceSection[];
+  readonly redacted: boolean;
 }
 
 export interface LiveQuestionView {
-  key: string;
-  header: string;
-  prompt: string;
-  options: ReadonlyArray<{ key: string; label: string; detail: string }>;
-  multiple: boolean;
+  readonly key: string;
+  readonly header: BoundedDisplayText;
+  readonly prompt: BoundedDisplayText;
+  readonly options: ReadonlyArray<{
+    readonly key: string;
+    readonly label: BoundedDisplayText;
+    readonly detail: BoundedDisplayText;
+  }>;
+  readonly multiple: boolean;
+  readonly why: BoundedDisplayText | null;
+  readonly ifUnanswered: BoundedDisplayText | null;
 }
 
 export interface LiveConversationView {
-  threadKey: string;
-  title: string;
-  project: string;
-  status: string;
-  items: readonly LiveTranscriptItem[];
-  questions: readonly LiveQuestionView[];
-  olderAvailable: boolean;
-  tone: DisplayTone;
-  updatedLabel: string | null;
+  readonly threadKey: string;
+  readonly title: BoundedDisplayText;
+  readonly project: BoundedDisplayText;
+  readonly status: BoundedDisplayText;
+  readonly items: readonly ConversationDisplayItem[];
+  readonly evidence: readonly EvidenceDisplayItem[];
+  readonly questions: readonly LiveQuestionView[];
+  readonly olderAvailable: boolean;
+  readonly tone: DisplayTone;
+  readonly updatedLabel: BoundedDisplayText | null;
 }
 
 export interface LiveWorkItem {

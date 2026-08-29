@@ -439,7 +439,9 @@ function LifecycleObservationRenderer({
         </button>
       ))}
       {state.conversation?.items.map((item) => (
-        <p key={item.key}>{item.body}</p>
+        <p key={item.key}>
+          {"body" in item ? item.body.text : item.preview?.text}
+        </p>
       ))}
       {state.conversation?.olderAvailable === true ? (
         <button type="button" onClick={() => dispatch({ type: "loadOlder" })}>

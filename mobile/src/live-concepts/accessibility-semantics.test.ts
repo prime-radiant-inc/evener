@@ -1,32 +1,51 @@
 import { describe, expect, it } from "vitest";
 import {
   connectionStatusAxLabel,
+  conversationItemAxLabel,
   mutationAxLabel,
   rosterAxLabel,
   rosterRowAxLabel,
-  transcriptItemAxLabel,
+  streamingAnnouncement,
   usageAxLabel,
   workItemAxLabel,
 } from "./accessibility-semantics";
 import type { LiveComposerView } from "./contract";
 import type {
+  ConversationDisplayItem,
   LiveConnectionView,
   LiveRosterRow,
   LiveRosterView,
-  LiveTranscriptItem,
   LiveWorkItem,
 } from "./model";
 
-const transcriptBase: Omit<LiveTranscriptItem, "kind"> = {
+const bounded = (text: string) => ({
+  text,
+  truncated: false,
+  originalUtf8Bytes: new TextEncoder().encode(text).length,
+});
+
+const narrativeBase = {
   key: "internal-item-key",
-  label: "read_file",
-  body: "private transcript body",
+  body: bounded("private transcript body"),
+  label: null,
   tone: "running",
   streaming: false,
-  truncated: false,
   questionKey: null,
-  sequenceLabel: "internal-sequence",
-};
+  sequence: "internal-sequence",
+} as const;
+
+const markerBase = {
+  key: "internal-marker-key",
+  sourceKind: "tool",
+  semanticKind: "tool",
+  label: bounded("read_file"),
+  preview: bounded("private preview"),
+  duration: null,
+  tone: "running",
+  state: "completed",
+  evidenceKey: "internal-evidence-key",
+  sequence: "internal-sequence",
+} as const;
 
 const composerBase: LiveComposerView = {
   draft: "",
@@ -84,30 +103,89 @@ describe("accessible live concept semantics", () => {
   });
 
   it.each([
-    ["user", "Your message; completed"],
-    ["assistant", "Assistant response; completed"],
-    ["question", "Question; completed"],
-    ["failure", "Error; completed"],
-    ["attachment", "Attachment; completed"],
-  ] as const)("names %s transcript items by role only", (kind, expected) => {
-    const label = transcriptItemAxLabel({ ...transcriptBase, kind });
-    expect(label).toBe(expected);
-    expect(label).not.toContain(transcriptBase.key);
-    expect(label).not.toContain(transcriptBase.body);
-  });
+    ["user", false, null, "Your message; completed"],
+    ["assistant", false, null, "Assistant message; completed"],
+    ["assistant", true, null, "Assistant message; streaming"],
+    ["question", false, null, "Question; response required"],
+    ["question", false, "answer", "Question; resolved"],
+    ["failure", false, null, "Failure; action required"],
+  ] as const)(
+    "names %s narrative items with exact shared semantics",
+    (sourceKind, streaming, resolution, expected) => {
+      const item: ConversationDisplayItem = {
+        ...narrativeBase,
+        sourceKind,
+        streaming,
+      };
+      const label = conversationItemAxLabel(item, resolution);
+      expect(label).toBe(expected);
+      expect(label).not.toContain(narrativeBase.key);
+      expect(label).not.toContain(narrativeBase.body.text);
+    },
+  );
 
-  it("distinguishes tool and reasoning disclosures without exposing content", () => {
-    expect(transcriptItemAxLabel({ ...transcriptBase, kind: "tool" })).toBe(
-      "Tool read_file; completed",
+  it.each([
+    ["notice", "notice", "completed", "Notice; informational"],
+    ["notice", "warning-notice", "completed", "Notice; attention required"],
+    [
+      "system",
+      "system-context",
+      "unavailable",
+      "System context; details hidden",
+    ],
+    [
+      "system",
+      "system-activity",
+      "completed",
+      "System activity; informational",
+    ],
+    ["reasoning", "reasoning", "running", "Reasoning activity; running"],
+    ["tool", "tool", "failed", "Tool activity, read_file; failed"],
+    ["attachment", "attachment", "completed", "Attachment; completed"],
+    ["unknown", "activity", "unavailable", "Activity; unavailable"],
+  ] as const)(
+    "names %s/%s markers without preview content",
+    (sourceKind, semanticKind, state, expected) => {
+      const item: ConversationDisplayItem = {
+        ...markerBase,
+        sourceKind,
+        semanticKind,
+        state,
+      };
+      const label = conversationItemAxLabel(item, null);
+      expect(label).toBe(expected);
+      expect(label).not.toContain(markerBase.preview.text);
+      expect(label).not.toContain(markerBase.key);
+    },
+  );
+
+  it("announces streaming only at phrase boundaries or state transitions", () => {
+    const previous: ConversationDisplayItem = {
+      ...narrativeBase,
+      sourceKind: "assistant",
+      body: bounded("Hello"),
+      streaming: true,
+    };
+    const rawDelta: ConversationDisplayItem = {
+      ...previous,
+      body: bounded("Hello world"),
+    };
+    const phrase: ConversationDisplayItem = {
+      ...previous,
+      body: bounded("Hello world."),
+    };
+    const completed: ConversationDisplayItem = {
+      ...phrase,
+      streaming: false,
+    };
+    expect(streamingAnnouncement(completed, rawDelta)).toBe(
+      "Assistant message streaming",
     );
-    expect(
-      transcriptItemAxLabel({
-        ...transcriptBase,
-        kind: "tool",
-        label: "Reasoning",
-        streaming: true,
-      }),
-    ).toBe("Reasoning; streaming");
+    expect(streamingAnnouncement(previous, rawDelta)).toBeNull();
+    expect(streamingAnnouncement(rawDelta, phrase)).toBe("Hello world.");
+    expect(streamingAnnouncement(phrase, completed)).toBe(
+      "Assistant message completed",
+    );
   });
 
   it("uses local mutation sequence and user-meaningful work labels", () => {

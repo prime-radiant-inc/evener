@@ -11,6 +11,13 @@
 
 import { describe, expect, it } from "vitest";
 import type { MobileConversation } from "../conversation/model";
+import { conversationItemAxLabel } from "./accessibility-semantics";
+import { DISPLAY_LIMITS } from "./display-text";
+import type {
+  ActivityMarkerDisplayItem,
+  LiveConversationView,
+  NarrativeDisplayItem,
+} from "./model";
 import type { OpaqueKeyAllocator } from "./project-conversation";
 import {
   createLiveConversationProjector,
@@ -73,6 +80,41 @@ function utf8Bytes(s: string): number {
   return textEncoder.encode(s).length;
 }
 
+function expectBoundedAtMost(
+  value: { text: string; truncated: boolean },
+  maxUtf8Bytes: number,
+): void {
+  expect(utf8Bytes(value.text)).toBeLessThanOrEqual(maxUtf8Bytes);
+  expect(value.truncated).toBe(true);
+}
+
+function findNarrative(
+  view: LiveConversationView,
+  sourceKind: NarrativeDisplayItem["sourceKind"],
+): NarrativeDisplayItem | undefined {
+  return view.items.find(
+    (item): item is NarrativeDisplayItem => item.sourceKind === sourceKind,
+  );
+}
+
+function findMarker(
+  view: LiveConversationView,
+  sourceKind: ActivityMarkerDisplayItem["sourceKind"],
+): ActivityMarkerDisplayItem | undefined {
+  return view.items.find(
+    (item): item is ActivityMarkerDisplayItem => item.sourceKind === sourceKind,
+  );
+}
+
+function filterNarratives(
+  view: LiveConversationView,
+  sourceKind: NarrativeDisplayItem["sourceKind"],
+): NarrativeDisplayItem[] {
+  return view.items.filter(
+    (item): item is NarrativeDisplayItem => item.sourceKind === sourceKind,
+  );
+}
+
 // --- tests -------------------------------------------------------------------
 
 describe("createLiveConversationProjector", () => {
@@ -82,9 +124,9 @@ describe("createLiveConversationProjector", () => {
       items: [{ kind: "user", id: "u1", text: "Hello world" }],
     });
     const { view } = p.project(conv, { ...OPTS });
-    const item = view.items.find((i) => i.kind === "user");
+    const item = findNarrative(view, "user");
     expect(item).toBeDefined();
-    expect(item?.body).toBe("Hello world");
+    expect(item?.body.text).toBe("Hello world");
   });
 
   it("maps an assistant row with streaming flag", () => {
@@ -100,8 +142,8 @@ describe("createLiveConversationProjector", () => {
       ],
     });
     const { view } = p.project(conv, { ...OPTS });
-    const item = view.items.find((i) => i.kind === "assistant");
-    expect(item?.body).toBe("thinking...");
+    const item = findNarrative(view, "assistant");
+    expect(item?.body.text).toBe("thinking...");
     expect(item?.streaming).toBe(true);
   });
 
@@ -126,11 +168,11 @@ describe("createLiveConversationProjector", () => {
       ],
     });
     const { view } = p.project(conv, { ...OPTS });
-    const item = view.items.find((i) => i.kind === "tool");
-    expect(item?.label).toBe("shell");
-    expect(item?.body).not.toContain("secret");
-    expect(item?.body).not.toContain("some error");
-    expect(item?.body).toContain("sensitive output");
+    const item = findMarker(view, "tool");
+    expect(item?.label.text).toBe("shell");
+    expect(item?.preview?.text).not.toContain("secret");
+    expect(item?.preview?.text).not.toContain("some error");
+    expect(item?.preview?.text).toContain("sensitive output");
   });
 
   it("maps a failure row", () => {
@@ -141,8 +183,8 @@ describe("createLiveConversationProjector", () => {
       ],
     });
     const { view } = p.project(conv, { ...OPTS });
-    const item = view.items.find((i) => i.kind === "failure");
-    expect(item?.body).toContain("wrong");
+    const item = findNarrative(view, "failure");
+    expect(item?.body.text).toContain("wrong");
   });
 
   it("maps an attachment row with metadata only (no src URLs)", () => {
@@ -159,9 +201,9 @@ describe("createLiveConversationProjector", () => {
       ],
     });
     const { view } = p.project(conv, { ...OPTS });
-    const item = view.items.find((i) => i.kind === "attachment");
-    expect(item?.body).not.toContain("file:///secret");
-    expect(item?.body).not.toContain("path.png");
+    const item = findMarker(view, "attachment");
+    expect(JSON.stringify(item)).not.toContain("file:///secret");
+    expect(JSON.stringify(item)).not.toContain("path.png");
   });
 
   // --- C1: threadKey is registry-allocated, not hash ------------------------
@@ -251,8 +293,8 @@ describe("createLiveConversationProjector", () => {
       updatedLabel: null,
       truncatedItemIds: new Set<string>(),
     });
-    expect(view.project).toBe("Display Project Name");
-    expect(view.project).not.toBe("session-secret-1");
+    expect(view.project.text).toBe("Display Project Name");
+    expect(view.project.text).not.toBe("session-secret-1");
   });
 
   it("updatedLabel passes authoritative option or null", () => {
@@ -265,7 +307,7 @@ describe("createLiveConversationProjector", () => {
       updatedLabel: "2 minutes ago",
       truncatedItemIds: new Set<string>(),
     });
-    expect(withLabel.updatedLabel).toBe("2 minutes ago");
+    expect(withLabel.updatedLabel?.text).toBe("2 minutes ago");
 
     const { view: nullLabel } = p.project(conv, {
       ref: "ref-1",
@@ -463,12 +505,12 @@ describe("createLiveConversationProjector", () => {
       ],
     });
     const { view } = p.project(conv, { ...OPTS });
-    const qItems = view.items.filter((i) => i.kind === "question");
+    const qItems = filterNarratives(view, "question");
     expect(qItems).toHaveLength(2);
     expect(view.questions).toHaveLength(2);
-    expect(qItems[0]?.body).toBe("First question?");
+    expect(qItems[0]?.body.text).toBe("First question?");
     expect(qItems[0]?.questionKey).not.toBeNull();
-    expect(qItems[1]?.body).toBe("Second question?");
+    expect(qItems[1]?.body.text).toBe("Second question?");
     expect(qItems[1]?.questionKey).not.toBeNull();
     expect(qItems[0]?.questionKey).toBe(view.questions[0]?.key);
     expect(qItems[1]?.questionKey).toBe(view.questions[1]?.key);
@@ -498,7 +540,7 @@ describe("createLiveConversationProjector", () => {
       ],
     });
     const { view } = p.project(conv, { ...OPTS });
-    const item = view.items.find((i) => i.kind === "question");
+    const item = findNarrative(view, "question");
     expect(item?.questionKey).not.toBeNull();
     expect(view.questions.some((q) => q.key === item?.questionKey)).toBe(true);
   });
@@ -509,7 +551,7 @@ describe("createLiveConversationProjector", () => {
       items: [{ kind: "user", id: "u1", text: "hi" }],
     });
     const { view } = p.project(conv, { ...OPTS });
-    expect(view.items[0]?.questionKey).toBeNull();
+    expect(findNarrative(view, "user")?.questionKey).toBeNull();
   });
 
   // --- C3: option identity uses stable content, not index -------------------
@@ -705,12 +747,12 @@ describe("createLiveConversationProjector", () => {
     });
     const { view } = p.project(conv, { ...OPTS });
     for (const item of view.items) {
-      expect(item.sequenceLabel).toBeDefined();
-      expect(typeof item.sequenceLabel).toBe("string");
-      expect(item.sequenceLabel.length).toBeGreaterThan(0);
-      expect(item.sequenceLabel).not.toContain("u1");
-      expect(item.sequenceLabel).not.toContain("a1");
-      expect(item.sequenceLabel).not.toContain("u2");
+      expect(item.sequence).toBeDefined();
+      expect(typeof item.sequence).toBe("string");
+      expect(item.sequence.length).toBeGreaterThan(0);
+      expect(item.sequence).not.toContain("u1");
+      expect(item.sequence).not.toContain("a1");
+      expect(item.sequence).not.toContain("u2");
     }
   });
 
@@ -724,8 +766,8 @@ describe("createLiveConversationProjector", () => {
     });
     const a = p.project(conv, { ...OPTS });
     const b = p.project(conv, { ...OPTS });
-    expect(a.view.items.map((i) => i.sequenceLabel)).toEqual(
-      b.view.items.map((i) => i.sequenceLabel),
+    expect(a.view.items.map((i) => i.sequence)).toEqual(
+      b.view.items.map((i) => i.sequence),
     );
   });
 
@@ -738,7 +780,7 @@ describe("createLiveConversationProjector", () => {
       ],
     });
     const a = p.project(initial, { ...OPTS });
-    const recentLabels = a.view.items.map((i) => i.sequenceLabel);
+    const recentLabels = a.view.items.map((i) => i.sequence);
 
     const withOlder = makeConversation({
       items: [
@@ -760,7 +802,7 @@ describe("createLiveConversationProjector", () => {
       updatedLabel: null,
       truncatedItemIds: new Set<string>(),
     });
-    const bLabels = b.view.items.map((i) => i.sequenceLabel);
+    const bLabels = b.view.items.map((i) => i.sequence);
     expect(bLabels[2]).toBe(recentLabels[0]);
     expect(bLabels[3]).toBe(recentLabels[1]);
     expect(bLabels[0]).not.toBe(recentLabels[0]);
@@ -951,9 +993,9 @@ describe("createLiveConversationProjector", () => {
       ],
     });
     const { view } = p.project(conv, { ...OPTS });
-    const item = view.items.find((i) => i.kind === "assistant");
-    expect(item?.truncated).toBe(true);
-    expect(utf8Bytes(item?.body ?? "")).toBeLessThanOrEqual(65536);
+    const item = findNarrative(view, "assistant");
+    expect(item?.body.truncated).toBe(true);
+    expect(utf8Bytes(item?.body.text ?? "")).toBeLessThanOrEqual(65536);
   });
 
   it("sets truncated false for normal items", () => {
@@ -962,7 +1004,7 @@ describe("createLiveConversationProjector", () => {
       items: [{ kind: "user", id: "u1", text: "short" }],
     });
     const { view } = p.project(conv, { ...OPTS });
-    expect(view.items[0]?.truncated).toBe(false);
+    expect(view.items[0]).toMatchObject({ body: { truncated: false } });
   });
 
   it("truncation marker appears exactly once", () => {
@@ -979,10 +1021,10 @@ describe("createLiveConversationProjector", () => {
       ],
     });
     const { view } = p.project(conv, { ...OPTS });
-    const item = view.items.find((i) => i.kind === "assistant");
+    const item = findNarrative(view, "assistant");
     const marker = "… truncated";
     expect(item).toBeDefined();
-    const body = item?.body ?? "";
+    const body = item?.body.text ?? "";
     const count = body.split(marker).length - 1;
     expect(count).toBe(1);
     expect(body.endsWith(marker)).toBe(true);
@@ -990,7 +1032,7 @@ describe("createLiveConversationProjector", () => {
 
   it("existing marker-ended over-cap input is re-truncated validly to <=65536 bytes", () => {
     const marker = "… truncated";
-    const content = "x".repeat(65536);
+    const content = "x".repeat(65537);
     const cappedText = content + marker;
     const conv = makeConversation({
       items: [
@@ -1004,10 +1046,10 @@ describe("createLiveConversationProjector", () => {
     });
     const p = createLiveConversationProjector();
     const { view } = p.project(conv, { ...OPTS });
-    const item = view.items.find((i) => i.kind === "assistant");
-    expect(item?.truncated).toBe(true);
-    expect(utf8Bytes(item?.body ?? "")).toBeLessThanOrEqual(65536);
-    const body = item?.body ?? "";
+    const item = findNarrative(view, "assistant");
+    expect(item?.body.truncated).toBe(true);
+    expect(utf8Bytes(item?.body.text ?? "")).toBeLessThanOrEqual(65536);
+    const body = item?.body.text ?? "";
     const count = body.split(marker).length - 1;
     expect(count).toBe(1);
   });
@@ -1034,9 +1076,9 @@ describe("createLiveConversationProjector", () => {
       ...OPTS,
       truncatedItemIds: new Set<string>(),
     });
-    const item = view.items.find((i) => i.kind === "assistant");
-    expect(item?.truncated).toBe(false);
-    expect(item?.body).toBe(genuineContent);
+    const item = findNarrative(view, "assistant");
+    expect(item?.body.truncated).toBe(false);
+    expect(item?.body.text).toBe("Hello world ");
   });
 
   it("store-capped content with ID present => truncated true, body/marker unchanged", () => {
@@ -1061,13 +1103,13 @@ describe("createLiveConversationProjector", () => {
       ...OPTS,
       truncatedItemIds: new Set(["capped-ok"]),
     });
-    const item = view.items.find((i) => i.kind === "assistant");
-    expect(item?.truncated).toBe(true);
+    const item = findNarrative(view, "assistant");
+    expect(item?.body.truncated).toBe(true);
     // Exact body must be the capped text unchanged — the projector does not
     // re-truncate within-cap content, and the marker is already present.
-    expect(item?.body).toBe(cappedText);
+    expect(item?.body.text).toBe(content);
     // Exactly one marker in the body.
-    expect((item?.body ?? "").split(marker).length - 1).toBe(1);
+    expect((item?.body.text ?? "").split(marker).length - 1).toBe(0);
   });
 
   it("within-cap tool/activity with ID in truncatedItemIds => truncated true, exact body unchanged", () => {
@@ -1093,11 +1135,11 @@ describe("createLiveConversationProjector", () => {
       ...OPTS,
       truncatedItemIds: new Set(["tool-frozen"]),
     });
-    const item = view.items.find((i) => i.kind === "tool");
+    const item = findMarker(view, "tool");
     expect(item).toBeDefined();
-    expect(item?.truncated).toBe(true);
-    // Exact body unchanged — projector does not modify within-cap content.
-    expect(item?.body).toBe(toolBody);
+    expect(item?.preview?.truncated).toBe(true);
+    // Exact preview unchanged — projector does not modify within-cap content.
+    expect(item?.preview?.text).toBe(toolBody);
   });
 
   it("projector-oversized input => truncated true and exactly one marker regardless of set", () => {
@@ -1120,9 +1162,9 @@ describe("createLiveConversationProjector", () => {
       ...OPTS,
       truncatedItemIds: new Set<string>(),
     });
-    const item = view.items.find((i) => i.kind === "assistant");
-    expect(item?.truncated).toBe(true);
-    const body = item?.body ?? "";
+    const item = findNarrative(view, "assistant");
+    expect(item?.body.truncated).toBe(true);
+    const body = item?.body.text ?? "";
     const count = body.split(marker).length - 1;
     expect(count).toBe(1);
     expect(body.endsWith(marker)).toBe(true);
@@ -1144,11 +1186,11 @@ describe("createLiveConversationProjector", () => {
       ],
     });
     const { view } = p.project(conv, { ...OPTS });
-    const item = view.items.find((i) => i.kind === "assistant");
-    expect(item?.truncated).toBe(true);
-    expect(item?.body).not.toContain("\uFFFD");
-    expect(item?.body.endsWith("… truncated")).toBe(true);
-    expect(utf8Bytes(item?.body ?? "")).toBeLessThanOrEqual(65536);
+    const item = findNarrative(view, "assistant");
+    expect(item?.body.truncated).toBe(true);
+    expect(item?.body.text).not.toContain("\uFFFD");
+    expect(item?.body.text.endsWith("… truncated")).toBe(true);
+    expect(utf8Bytes(item?.body.text ?? "")).toBeLessThanOrEqual(65536);
   });
 
   it("projected tool body visibly carries bounded output", () => {
@@ -1167,11 +1209,11 @@ describe("createLiveConversationProjector", () => {
       ],
     });
     const { view } = p.project(conv, { ...OPTS });
-    const item = view.items.find((i) => i.kind === "tool");
-    expect(item?.truncated).toBe(true);
-    expect(item?.body.length).toBeGreaterThan(0);
-    expect(item?.body.endsWith("… truncated")).toBe(true);
-    expect(utf8Bytes(item?.body ?? "")).toBeLessThanOrEqual(65536);
+    const item = findMarker(view, "tool");
+    expect(item?.preview?.truncated).toBe(true);
+    expect(item?.preview?.text.length).toBeGreaterThan(0);
+    expect(item?.preview?.text.endsWith("… truncated")).toBe(true);
+    expect(utf8Bytes(item?.preview?.text ?? "")).toBeLessThanOrEqual(512);
   });
 
   // --- I4: marker-in-input adversarial ---------------------------------------
@@ -1193,9 +1235,9 @@ describe("createLiveConversationProjector", () => {
       ],
     });
     const { view } = p.project(conv, { ...OPTS });
-    const item = view.items.find((i) => i.kind === "assistant");
-    expect(item?.truncated).toBe(true);
-    const body = item?.body ?? "";
+    const item = findNarrative(view, "assistant");
+    expect(item?.body.truncated).toBe(true);
+    const body = item?.body.text ?? "";
     const count = body.split(marker).length - 1;
     expect(count).toBe(1);
     expect(body.endsWith(marker)).toBe(true);
@@ -1217,8 +1259,8 @@ describe("createLiveConversationProjector", () => {
       ],
     });
     const { view } = p.project(conv, { ...OPTS });
-    const item = view.items.find((i) => i.kind === "assistant");
-    const body = item?.body ?? "";
+    const item = findNarrative(view, "assistant");
+    const body = item?.body.text ?? "";
     const count = body.split(marker).length - 1;
     expect(count).toBe(1);
     expect(body.endsWith(marker)).toBe(true);
@@ -1240,9 +1282,9 @@ describe("createLiveConversationProjector", () => {
       ],
     });
     const { view } = p.project(conv, { ...OPTS });
-    const item = view.items.find((i) => i.kind === "assistant");
-    expect(item?.truncated).toBe(false);
-    expect(item?.body).toBe(text);
+    const item = findNarrative(view, "assistant");
+    expect(item?.body.truncated).toBe(false);
+    expect(item?.body.text).toBe("before  after");
   });
 
   // --- I2: runtime-immutable operational snapshots ---------------------------
@@ -1740,7 +1782,7 @@ describe("createLiveConversationProjector", () => {
       ],
     });
     const { view } = p.project(conv, { ...OPTS });
-    const qItems = view.items.filter((i) => i.kind === "question");
+    const qItems = filterNarratives(view, "question");
     expect(qItems).toHaveLength(0);
   });
 
@@ -1842,7 +1884,7 @@ describe("createLiveConversationProjector", () => {
       ],
     });
     const { view } = p.project(conv, { ...OPTS });
-    const qItems = view.items.filter((i) => i.kind === "question");
+    const qItems = filterNarratives(view, "question");
     expect(qItems).toHaveLength(2);
     expect(view.questions).toHaveLength(2);
   });
@@ -2180,14 +2222,14 @@ describe("createLiveConversationProjector", () => {
     const p = createLiveConversationProjector();
     const conv = makeConversation({ name: "My Thread", preview: "preview" });
     const { view } = p.project(conv, { ...OPTS });
-    expect(view.title).toBe("My Thread");
+    expect(view.title.text).toBe("My Thread");
   });
 
   it("falls back to preview when name is absent", () => {
     const p = createLiveConversationProjector();
     const conv = makeConversation({ preview: "some preview" });
     const { view } = p.project(conv, { ...OPTS });
-    expect(view.title).toBe("some preview");
+    expect(view.title.text).toBe("some preview");
   });
 
   it("is deterministic — same input on same instance produces same output", () => {
@@ -2499,9 +2541,9 @@ describe("createLiveConversationProjector", () => {
       ],
     });
     const { view } = p.project(conv, { ...OPTS });
-    const item = view.items.find((i) => i.kind === "assistant");
-    expect(item?.truncated).toBe(true);
-    const body = item?.body ?? "";
+    const item = findNarrative(view, "assistant");
+    expect(item?.body.truncated).toBe(true);
+    const body = item?.body.text ?? "";
     const count = body.split(marker).length - 1;
     // Fixed-point elimination must remove the re-formed marker too.
     expect(count).toBe(1);
@@ -2534,9 +2576,9 @@ describe("createLiveConversationProjector", () => {
       ],
     });
     const { view } = p.project(conv, { ...OPTS });
-    const item = view.items.find((i) => i.kind === "assistant");
-    expect(item?.truncated).toBe(true);
-    const body = item?.body ?? "";
+    const item = findNarrative(view, "assistant");
+    expect(item?.body.truncated).toBe(true);
+    const body = item?.body.text ?? "";
     const count = body.split(marker).length - 1;
     expect(count).toBe(1);
     expect(body.endsWith(marker)).toBe(true);
@@ -2633,9 +2675,9 @@ describe("createLiveConversationProjector", () => {
 
       const { view } = p.project(conv, { ...OPTS });
 
-      const item = view.items.find((i) => i.kind === "assistant");
-      expect(item?.truncated).toBe(true);
-      const body = item?.body ?? "";
+      const item = findNarrative(view, "assistant");
+      expect(item?.body.truncated).toBe(true);
+      const body = item?.body.text ?? "";
       // Use the original split for assertions (not the spy) to avoid polluting
       // the split-call count. The spy is only for monitoring the projector.
       const splitOrig = origSplit as unknown as (
@@ -2647,12 +2689,11 @@ describe("createLiveConversationProjector", () => {
       expect(body.endsWith(marker)).toBe(true);
       expect(utf8Bytes(body)).toBeLessThanOrEqual(65536);
 
-      // No repeated whole-string split/replace/rescan: the old fixed-point
-      // implementation would call split on the oversized text at least once
-      // (and O(n) times on this adversarial input). The KMP reducer never
-      // calls split or replace on the large string.
+      // No repeated whole-string split/rescan: the old fixed-point
+      // implementation called split O(n) times. Redaction intentionally makes
+      // a fixed number of linear replace passes before the KMP reducer.
       expect(splitCalls).toBe(0);
-      expect(replaceCalls).toBe(0);
+      expect(replaceCalls).toBeLessThanOrEqual(10);
 
       // One input traversal: the String iterator is created exactly once for
       // the oversized content (the for...of loop in stripMarkersLinear).
@@ -2832,5 +2873,458 @@ describe("createLiveConversationProjector", () => {
     expect(result.view.questions[0]?.options).toHaveLength(2);
     expect(result.view.threadKey).toBeDefined();
     expect(result.view.items).toHaveLength(1); // 1 qitem row
+  });
+
+  describe("bounded classified display/evidence snapshot", () => {
+    it("suppresses the exact 44,700-byte system prelude before display creation", () => {
+      const SYSTEM_SENTINEL = "SYSTEM-PRELUDE-MUST-NOT-RENDER:";
+      const systemPrelude =
+        SYSTEM_SENTINEL + "x".repeat(44_700 - utf8Bytes(SYSTEM_SENTINEL));
+      expect(utf8Bytes(systemPrelude)).toBe(44_700);
+
+      const result = createLiveConversationProjector().project(
+        makeConversation({
+          items: [
+            {
+              kind: "notice",
+              id: "sys-44k",
+              origin: "system",
+              family: "system-prelude",
+              tone: "system",
+              text: systemPrelude,
+            },
+            { kind: "user", id: "u-1", text: "actual user" },
+          ],
+        }),
+        OPTS,
+      );
+
+      const serialized = JSON.stringify(result.view);
+      expect(serialized).not.toContain(SYSTEM_SENTINEL);
+      expect(result.view.items[0]).toMatchObject({
+        sourceKind: "system",
+        semanticKind: "system-context",
+        preview: null,
+        evidenceKey: null,
+      });
+      expect(
+        result.view.items.map((item) => conversationItemAxLabel(item, null)),
+      ).toEqual(["System context; details hidden", "Your message; completed"]);
+    });
+
+    it.each([
+      ["hidden-instruction", "system-context", null, false],
+      ["system-prelude", "system-context", null, false],
+      ["lifecycle", "system-activity", "safe lifecycle", true],
+      ["warning", "warning-notice", "safe lifecycle", true],
+      ["diagnostic", "system-activity", "safe lifecycle", true],
+      ["unknown-system", "system-activity", null, true],
+    ] as const)(
+      "classifies system family %s without trusting its text",
+      (family, semanticKind, preview, hasEvidence) => {
+        const result = createLiveConversationProjector().project(
+          makeConversation({
+            items: [
+              {
+                kind: "notice",
+                id: `sys-${family}`,
+                origin: "system",
+                family,
+                tone: family === "warning" ? "warning" : "system",
+                text: "safe lifecycle",
+              },
+            ],
+          }),
+          OPTS,
+        );
+        const marker = result.view.items[0];
+        expect(marker).toMatchObject({
+          sourceKind: family === "diagnostic" ? "diagnostic" : "system",
+          semanticKind,
+          preview: preview === null ? null : { text: preview },
+        });
+        if (marker && "evidenceKey" in marker) {
+          expect(marker.evidenceKey !== null).toBe(hasEvidence);
+        }
+      },
+    );
+
+    it("never lets a hostile source label claim canonical user semantics", () => {
+      const result = createLiveConversationProjector().project(
+        makeConversation({
+          items: [
+            {
+              kind: "activity",
+              id: "hostile-tool",
+              label: "Your message",
+              family: "tool",
+              state: "completed",
+              detail: { output: "done" },
+            },
+          ],
+        }),
+        OPTS,
+      );
+      const item = result.view.items[0];
+      expect(item).toMatchObject({ sourceKind: "tool", semanticKind: "tool" });
+      expect(item ? conversationItemAxLabel(item, null) : null).toBe(
+        "Tool activity, Your message; completed",
+      );
+    });
+
+    it("projects bounded duration only from authoritative numeric metadata", () => {
+      const result = createLiveConversationProjector().project(
+        makeConversation({
+          items: [
+            {
+              kind: "activity",
+              id: "with-duration",
+              label: "duration: 999 seconds",
+              family: "tool",
+              state: "completed",
+              detail: { durationMs: 500 },
+            },
+            {
+              kind: "activity",
+              id: "without-duration",
+              label: "duration: 999 seconds",
+              family: "tool",
+              state: "completed",
+              detail: {},
+            },
+          ],
+        }),
+        OPTS,
+      );
+      expect(result.view.items[0]).toMatchObject({
+        duration: { text: "500 ms" },
+      });
+      expect(result.view.items[1]).toMatchObject({ duration: null });
+    });
+
+    it("applies every feed, question, and evidence family cap at its call site", () => {
+      const oversized = "🎉".repeat(20_000);
+      const result = createLiveConversationProjector().project(
+        makeConversation({
+          name: oversized,
+          status: oversized,
+          items: [
+            { kind: "user", id: "bounds-user", text: oversized },
+            {
+              kind: "assistant",
+              id: "bounds-assistant",
+              markdown: oversized,
+              streaming: false,
+            },
+            {
+              kind: "question",
+              id: "bounds-question",
+              batch: {
+                callId: "bounds-call",
+                questions: [
+                  {
+                    key: "bounds-question-key",
+                    header: oversized,
+                    question: oversized,
+                    options: [{ label: oversized, detail: oversized }],
+                    multiSelect: false,
+                    why: oversized,
+                    ifUnanswered: oversized,
+                  },
+                ],
+              },
+            },
+            {
+              kind: "failure",
+              id: "bounds-failure",
+              title: oversized,
+              detail: oversized,
+            },
+            {
+              kind: "notice",
+              id: "bounds-notice",
+              origin: "steering",
+              family: "informational",
+              tone: "info",
+              text: oversized,
+            },
+            {
+              kind: "notice",
+              id: "bounds-lifecycle",
+              origin: "system",
+              family: "lifecycle",
+              tone: "system",
+              text: oversized,
+            },
+            {
+              kind: "notice",
+              id: "bounds-diagnostic",
+              origin: "system",
+              family: "diagnostic",
+              tone: "system",
+              text: oversized,
+            },
+            {
+              kind: "activity",
+              id: "bounds-reasoning",
+              label: "Reasoning",
+              family: "reasoning",
+              state: "completed",
+              detail: { output: oversized },
+            },
+            {
+              kind: "activity",
+              id: "bounds-tool",
+              label: oversized,
+              family: "tool",
+              state: "completed",
+              detail: {
+                arguments: oversized,
+                output: oversized,
+                error: oversized,
+                durationMs: 500,
+              },
+            },
+            {
+              kind: "attachments",
+              id: "bounds-attachment",
+              items: [
+                {
+                  id: "private-attachment-id",
+                  src: "/private/attachment/path",
+                  name: oversized,
+                  mediaType: oversized,
+                },
+              ],
+            },
+            {
+              kind: "activity",
+              id: "bounds-unknown",
+              label: oversized,
+              family: "unknown",
+              state: "completed",
+              detail: { output: oversized },
+            },
+          ],
+        }),
+        {
+          ...OPTS,
+          projectLabel: oversized,
+          updatedLabel: oversized,
+        },
+      );
+
+      expectBoundedAtMost(result.view.title, DISPLAY_LIMITS.titleProject);
+      expectBoundedAtMost(result.view.project, DISPLAY_LIMITS.titleProject);
+      expectBoundedAtMost(result.view.status, DISPLAY_LIMITS.statusUpdated);
+      expectBoundedAtMost(
+        result.view.updatedLabel ?? { text: "", truncated: false },
+        DISPLAY_LIMITS.statusUpdated,
+      );
+      expectBoundedAtMost(
+        findNarrative(result.view, "user")?.body ?? {
+          text: "",
+          truncated: false,
+        },
+        DISPLAY_LIMITS.userMessage,
+      );
+      expectBoundedAtMost(
+        findNarrative(result.view, "assistant")?.body ?? {
+          text: "",
+          truncated: false,
+        },
+        DISPLAY_LIMITS.assistantProse,
+      );
+      const questionItem = findNarrative(result.view, "question");
+      const question = result.view.questions[0];
+      expectBoundedAtMost(
+        questionItem?.label ?? { text: "", truncated: false },
+        DISPLAY_LIMITS.questionHeader,
+      );
+      expectBoundedAtMost(
+        questionItem?.body ?? { text: "", truncated: false },
+        DISPLAY_LIMITS.questionPrompt,
+      );
+      if (question === undefined) throw new Error("expected bounded question");
+      expectBoundedAtMost(question.header, DISPLAY_LIMITS.questionHeader);
+      expectBoundedAtMost(question.prompt, DISPLAY_LIMITS.questionPrompt);
+      expectBoundedAtMost(
+        question.options[0]?.label ?? { text: "", truncated: false },
+        DISPLAY_LIMITS.questionOptionLabel,
+      );
+      expectBoundedAtMost(
+        question.options[0]?.detail ?? { text: "", truncated: false },
+        DISPLAY_LIMITS.questionOptionDetail,
+      );
+      expectBoundedAtMost(
+        question.why ?? { text: "", truncated: false },
+        DISPLAY_LIMITS.questionSupportingText,
+      );
+      expectBoundedAtMost(
+        question.ifUnanswered ?? { text: "", truncated: false },
+        DISPLAY_LIMITS.questionSupportingText,
+      );
+      const failure = findNarrative(result.view, "failure");
+      expectBoundedAtMost(
+        failure?.label ?? { text: "", truncated: false },
+        DISPLAY_LIMITS.failureTitle,
+      );
+      expectBoundedAtMost(
+        failure?.body ?? { text: "", truncated: false },
+        DISPLAY_LIMITS.failureBody,
+      );
+
+      const markerCases = [
+        ["notice", DISPLAY_LIMITS.noticePreview, DISPLAY_LIMITS.noticeDetail],
+        [
+          "system",
+          DISPLAY_LIMITS.noticePreview,
+          DISPLAY_LIMITS.lifecycleDetail,
+        ],
+        [
+          "diagnostic",
+          DISPLAY_LIMITS.diagnosticPreview,
+          DISPLAY_LIMITS.diagnosticDetail,
+        ],
+        [
+          "reasoning",
+          DISPLAY_LIMITS.reasoningPreview,
+          DISPLAY_LIMITS.reasoningDetail,
+        ],
+        ["tool", DISPLAY_LIMITS.toolPreview, DISPLAY_LIMITS.toolDetail],
+      ] as const;
+      for (const [sourceKind, previewLimit, detailLimit] of markerCases) {
+        const marker = findMarker(result.view, sourceKind);
+        if (!marker?.preview || !marker.evidenceKey) {
+          throw new Error(`expected bounded ${sourceKind} evidence`);
+        }
+        expectBoundedAtMost(marker.preview, previewLimit);
+        const entry = result.view.evidence.find(
+          (candidate) => candidate.key === marker.evidenceKey,
+        );
+        if (!entry) throw new Error(`missing ${sourceKind} evidence`);
+        expect(utf8Bytes(entry.title.text)).toBeLessThanOrEqual(
+          DISPLAY_LIMITS.detailLabel,
+        );
+        for (const section of entry.sections) {
+          expect(utf8Bytes(section.heading.text)).toBeLessThanOrEqual(
+            DISPLAY_LIMITS.evidenceHeading,
+          );
+          expectBoundedAtMost(section.body, detailLimit);
+        }
+      }
+      const tool = findMarker(result.view, "tool");
+      expect(utf8Bytes(tool?.label.text ?? "")).toBeLessThanOrEqual(
+        DISPLAY_LIMITS.feedLabel,
+      );
+      expect(utf8Bytes(tool?.duration?.text ?? "")).toBeLessThanOrEqual(
+        DISPLAY_LIMITS.feedLabel,
+      );
+      const attachment = findMarker(result.view, "attachment");
+      if (!attachment?.evidenceKey)
+        throw new Error("missing attachment evidence");
+      expectBoundedAtMost(attachment.label, DISPLAY_LIMITS.attachmentLabel);
+      const attachmentEvidence = result.view.evidence.find(
+        (entry) => entry.key === attachment.evidenceKey,
+      );
+      if (!attachmentEvidence) throw new Error("missing attachment evidence");
+      expectBoundedAtMost(
+        attachmentEvidence.sections[0]?.body ?? {
+          text: "",
+          truncated: false,
+        },
+        DISPLAY_LIMITS.attachmentMetadata,
+      );
+      const unknown = findMarker(result.view, "unknown");
+      expect(unknown?.preview).toBeNull();
+      if (!unknown?.evidenceKey) throw new Error("missing unknown evidence");
+      const unknownEvidence = result.view.evidence.find(
+        (entry) => entry.key === unknown.evidenceKey,
+      );
+      if (!unknownEvidence) throw new Error("missing unknown evidence");
+      expectBoundedAtMost(
+        unknownEvidence.sections[0]?.body ?? {
+          text: "",
+          truncated: false,
+        },
+        DISPLAY_LIMITS.unknownDetail,
+      );
+    });
+
+    it("creates opaque evidence links and freezes the completed snapshot", () => {
+      const result = createLiveConversationProjector().project(
+        makeConversation({
+          items: [
+            {
+              kind: "activity",
+              id: "operational-tool-id",
+              label: "shell",
+              family: "tool",
+              state: "completed",
+              detail: { arguments: '{"token":"secret"}', output: "ok" },
+            },
+          ],
+        }),
+        OPTS,
+      );
+      const marker = result.view.items[0];
+      expect(
+        marker && "evidenceKey" in marker ? marker.evidenceKey : null,
+      ).not.toBeNull();
+      expect(result.view.evidence).toHaveLength(1);
+      expect(result.operational.evidenceKeys.size).toBe(1);
+      expect(JSON.stringify(result.view)).not.toContain("operational-tool-id");
+      expect(JSON.stringify(result.view)).not.toContain("secret");
+      expect(Object.isFrozen(result.view.items)).toBe(true);
+      expect(Object.isFrozen(result.view.evidence)).toBe(true);
+      expect(() =>
+        (result.operational.evidenceKeys as Map<string, string>).clear(),
+      ).toThrow(TypeError);
+    });
+
+    it("late projection failure commits no feed, evidence, sequence, or private mapping", () => {
+      let phase: "fail" | "recover" = "fail";
+      let failCalls = 0;
+      let recoverCalls = 0;
+      const projector = createLiveConversationProjector({
+        maxRegistrySize: 3,
+        allocator: () => {
+          if (phase === "recover") return `r${++recoverCalls}`;
+          failCalls += 1;
+          return failCalls === 4 ? "f1" : `f${failCalls}`;
+        },
+      });
+      const conversation = makeConversation({
+        items: [
+          {
+            kind: "activity",
+            id: "transaction-tool-id",
+            label: "shell",
+            family: "tool",
+            state: "completed",
+            detail: { output: "safe output" },
+          },
+        ],
+      });
+
+      expect(() => projector.project(conversation, OPTS)).toThrow(
+        ProjectionCapacityError,
+      );
+      phase = "recover";
+      const result = projector.project(conversation, OPTS);
+      const marker = findMarker(result.view, "tool");
+      expect(marker).toMatchObject({
+        key: "r2",
+        sequence: "r3",
+        evidenceKey: "r1",
+      });
+      expect(result.view.threadKey).toBe("r4");
+      expect([...result.operational.itemKeys.values()]).toEqual([
+        "transaction-tool-id",
+      ]);
+      expect([...result.operational.evidenceKeys.values()]).toEqual([
+        "transaction-tool-id",
+      ]);
+    });
   });
 });

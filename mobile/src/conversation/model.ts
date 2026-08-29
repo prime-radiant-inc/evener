@@ -50,6 +50,17 @@ export interface ActivityDetail {
 // "system" for environment / prelude scaffold that is purely informational.
 export type NoticeTone = "info" | "warning" | "system";
 
+export type NoticeOrigin = "steering" | "system";
+
+export type NoticeFamily =
+  | "informational"
+  | "warning"
+  | "hidden-instruction"
+  | "system-prelude"
+  | "lifecycle"
+  | "diagnostic"
+  | "unknown-system";
+
 // One option in a structured ask_user question. Plain text only.
 export interface MobileAskOption {
   label: string;
@@ -95,7 +106,14 @@ export type MobileTimelineItem =
       state: ActivityState;
       detail: ActivityDetail;
     }
-  | { kind: "notice"; id: string; tone: NoticeTone; text: string }
+  | {
+      kind: "notice";
+      id: string;
+      origin: NoticeOrigin;
+      family: NoticeFamily;
+      tone: NoticeTone;
+      text: string;
+    }
   | { kind: "question"; id: string; batch: AskBatch }
   | { kind: "failure"; id: string; title: string; detail: string }
   | { kind: "attachments"; id: string; items: AttachmentRef[] };

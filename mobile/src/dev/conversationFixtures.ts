@@ -223,6 +223,8 @@ function buildConversationItems(): MobileTimelineItem[] {
   items.push({
     kind: "notice",
     id: "n-1",
+    origin: "steering",
+    family: "informational",
     tone: "info",
     text: "Steered to focus on the token refresh path",
   });

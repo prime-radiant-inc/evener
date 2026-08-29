@@ -18,6 +18,7 @@ import {
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { LiveConceptState, QuestionDraft } from "../contract";
 import type {
+  BoundedDisplayText,
   LiveActivityView,
   LiveConversationView,
   LiveQuestionView,
@@ -94,15 +95,33 @@ function rosterView(overrides: Partial<LiveRosterView> = {}): LiveRosterView {
   };
 }
 
+function bounded(text: string, truncated = false): BoundedDisplayText {
+  return {
+    text,
+    truncated,
+    originalUtf8Bytes: new TextEncoder().encode(text).length,
+  };
+}
+
 const questionView: LiveQuestionView = {
   key: "q1",
-  header: "Permission required",
-  prompt: "Which transport should the audit use?",
+  header: bounded("Permission required"),
+  prompt: bounded("Which transport should the audit use?"),
   options: [
-    { key: "opt-a", label: "WebSocket", detail: "Real-time bidirectional" },
-    { key: "opt-b", label: "HTTP polling", detail: "Simpler but slower" },
+    {
+      key: "opt-a",
+      label: bounded("WebSocket"),
+      detail: bounded("Real-time bidirectional"),
+    },
+    {
+      key: "opt-b",
+      label: bounded("HTTP polling"),
+      detail: bounded("Simpler but slower"),
+    },
   ],
   multiple: false,
+  why: null,
+  ifUnanswered: null,
 };
 
 function conversationView(
@@ -110,68 +129,66 @@ function conversationView(
 ): LiveConversationView {
   return {
     threadKey: "session-a",
-    title: "Wire handshake",
-    project: "evener-hub",
-    status: "running",
+    title: bounded("Wire handshake"),
+    project: bounded("evener-hub"),
+    status: bounded("running"),
     tone: "running",
-    updatedLabel: "2 minutes ago",
+    updatedLabel: bounded("2 minutes ago"),
     items: [
       {
         key: "m1",
-        kind: "user",
-        label: "You",
-        body: "Why is the handshake failing?",
+        sourceKind: "user",
+        label: bounded("You"),
+        body: bounded("Why is the handshake failing?"),
         tone: "idle",
         streaming: false,
-        truncated: false,
         questionKey: null,
-        sequenceLabel: "1",
+        sequence: "1",
       },
       {
         key: "m2",
-        kind: "assistant",
-        label: "Assistant",
-        body: "Investigating the AppWire transport.",
+        sourceKind: "assistant",
+        label: bounded("Assistant"),
+        body: bounded("Investigating the AppWire transport."),
         tone: "running",
         streaming: true,
-        truncated: false,
         questionKey: null,
-        sequenceLabel: "2",
+        sequence: "2",
       },
       {
         key: "m3",
-        kind: "tool",
-        label: "run_audit",
-        body: "Audited 12 files.",
+        sourceKind: "tool",
+        semanticKind: "tool",
+        label: bounded("run_audit"),
+        preview: bounded("Audited 12 files."),
+        duration: null,
         tone: "running",
-        streaming: false,
-        truncated: false,
-        questionKey: null,
-        sequenceLabel: "3",
+        state: "running",
+        evidenceKey: null,
+        sequence: "3",
       },
       {
         key: "m4",
-        kind: "assistant",
-        label: "Assistant",
-        body: "Found a race in the handshake.",
+        sourceKind: "assistant",
+        label: bounded("Assistant"),
+        body: bounded("Found a race in the handshake.", true),
         tone: "idle",
         streaming: false,
-        truncated: true,
         questionKey: null,
-        sequenceLabel: "4",
+        sequence: "4",
       },
       {
         key: "m5",
-        kind: "question",
-        label: "Permission",
-        body: "Which transport should the audit use?",
+        sourceKind: "question",
+        label: bounded("Permission"),
+        body: bounded("Which transport should the audit use?"),
         tone: "attention",
         streaming: false,
-        truncated: false,
         questionKey: "q1",
-        sequenceLabel: "5",
+        sequence: "5",
       },
     ],
+    evidence: [],
     questions: [questionView],
     olderAvailable: true,
     ...overrides,
@@ -517,11 +534,13 @@ describe("Constellation conversation surface", () => {
     ).toBeVisible();
     expect(
       screen.getByRole("article", {
-        name: "Assistant response; streaming",
+        name: "Assistant message; streaming",
       }),
     ).toBeVisible();
     expect(
-      screen.getByRole("article", { name: "Tool run_audit; completed" }),
+      screen.getByRole("article", {
+        name: "Tool activity, run_audit; running",
+      }),
     ).toBeVisible();
     expect(container.querySelector("[aria-label*='m2']")).toBeNull();
     expect(
@@ -552,7 +571,7 @@ describe("Constellation conversation surface", () => {
         surface: "conversation",
         conversation: conversationView({
           tone: "attention",
-          status: "needs-answer",
+          status: bounded("needs-answer"),
         }),
       }),
     );
@@ -566,7 +585,9 @@ describe("Constellation conversation surface", () => {
     renderConstellation(
       buildState({
         surface: "conversation",
-        conversation: conversationView({ updatedLabel: "3 hours ago" }),
+        conversation: conversationView({
+          updatedLabel: bounded("3 hours ago"),
+        }),
       }),
     );
     expect(screen.getByText("3 hours ago")).toBeInTheDocument();
@@ -1067,7 +1088,7 @@ describe("Constellation question interaction", () => {
     const main = screen.getByRole("main");
     const questionItem = within(main).getByTestId("transcript-item-m5");
     expect(
-      within(questionItem).getByText(questionView.prompt),
+      within(questionItem).getByText(questionView.prompt.text),
     ).toBeInTheDocument();
   });
 
@@ -1221,14 +1242,13 @@ describe("Constellation question interaction", () => {
           items: [
             {
               key: "m-q",
-              kind: "question",
-              label: "Permission",
-              body: "Unknown question",
+              sourceKind: "question",
+              label: bounded("Permission"),
+              body: bounded("Unknown question"),
               tone: "attention",
               streaming: false,
-              truncated: false,
               questionKey: "missing-q",
-              sequenceLabel: "1",
+              sequence: "1",
             },
           ],
           questions: [],
