@@ -3,8 +3,11 @@ import {
   type KeyboardEvent as ReactKeyboardEvent,
   type ReactNode,
   type Ref,
+  useCallback,
+  useEffect,
   useLayoutEffect,
   useRef,
+  useState,
 } from "react";
 import { settleFocusedControlInVisualViewport } from "../../ui/platformPresentation";
 import {
@@ -18,14 +21,19 @@ import type {
   LiveQuestionView,
   NarrativeDisplayItem,
 } from "../model";
+import { ActivityEvidenceSheet } from "./ActivityEvidenceSheet";
 import type {
+  ConversationAnchor,
   ConversationFrameProps,
   ConversationFrameState,
   ConversationSkin,
 } from "./contract";
 import { DockedComposer } from "./DockedComposer";
 import type { ConversationFrameAction, QuestionDraft } from "./primitives";
-import { VirtualTranscript } from "./VirtualTranscript";
+import {
+  VirtualTranscript,
+  type VirtualTranscriptHandle,
+} from "./VirtualTranscript";
 import "./conversation-frame.css";
 
 const EMPTY_TEXT = Object.freeze({
@@ -331,6 +339,7 @@ function TranscriptItem({
   state,
   skin,
   dispatch,
+  onOpenEvidence,
   onFocusIntentChange,
 }: {
   readonly item: ConversationDisplayItem;
@@ -339,6 +348,7 @@ function TranscriptItem({
   readonly state: ConversationFrameState;
   readonly skin: ConversationSkin;
   readonly dispatch: (action: ConversationFrameAction) => void;
+  readonly onOpenEvidence: (evidenceKey: string, triggerKey: string) => void;
   readonly onFocusIntentChange: (key: string | null) => void;
 }): ReactElement {
   const description = conversationItemAxDescription(item);
@@ -376,22 +386,40 @@ function TranscriptItem({
         </span>
       ) : null}
       {rendered}
+      {"semanticKind" in item ? (
+        <span className="live-conversation-frame__activity-state">
+          {item.state}
+        </span>
+      ) : null}
       {item.evidenceKey !== null ? (
         <button
           type="button"
-          aria-label="Open evidence"
-          onClick={() =>
-            dispatch({
-              type: "openEvidence",
-              evidenceKey: item.evidenceKey as string,
-              triggerKey: item.key,
-            })
+          aria-label={
+            "semanticKind" in item ? "Show activity" : "Show evidence"
           }
+          data-evidence-trigger-key={item.key}
+          onClick={() => onOpenEvidence(item.evidenceKey as string, item.key)}
         >
-          Evidence
+          {"semanticKind" in item ? "Show activity" : "Show evidence"}
         </button>
       ) : null}
     </article>
+  );
+}
+
+export interface EvidenceSheetState {
+  readonly evidenceKey: string;
+  readonly triggerKey: string;
+  readonly anchor: ConversationAnchor;
+}
+
+function evidenceTrigger(key: string): HTMLButtonElement | null {
+  return (
+    [
+      ...document.querySelectorAll<HTMLButtonElement>(
+        "button[data-evidence-trigger-key]",
+      ),
+    ].find((candidate) => candidate.dataset.evidenceTriggerKey === key) ?? null
   );
 }
 
@@ -474,11 +502,17 @@ export function ConversationFrame({
   state,
   skin,
   dispatch,
-  onAnchorChange: _onAnchorChange,
-  onUnseenChange: _onUnseenChange,
+  onAnchorChange,
+  onUnseenChange,
   onFocusIntentChange,
 }: ConversationFrameProps): ReactElement {
   const backRef = useRef<HTMLButtonElement>(null);
+  const transcriptRef = useRef<VirtualTranscriptHandle>(null);
+  const closingEvidenceRef = useRef(false);
+  const pendingTriggerFocusRef = useRef<string | null>(null);
+  const [evidenceSheet, setEvidenceSheet] = useState<EvidenceSheetState | null>(
+    null,
+  );
   const items = state.conversation?.items ?? [];
   const previousItems = useRef<ReadonlyMap<string, ConversationDisplayItem>>(
     new Map(),
@@ -504,93 +538,164 @@ export function ConversationFrame({
           canInterrupt: false,
         }
       : state.composer;
-  const openEvidence = state.conversation?.evidence.find(
-    (evidence) => evidence.key === state.openEvidenceKey,
+  const openEvidence =
+    evidenceSheet !== null &&
+    state.openEvidenceKey === evidenceSheet.evidenceKey
+      ? (state.conversation?.evidence.find(
+          (evidence) => evidence.key === evidenceSheet.evidenceKey,
+        ) ?? null)
+      : null;
+  const evidenceOpen = openEvidence !== null;
+
+  const openEvidenceSheet = useCallback(
+    (evidenceKey: string, triggerKey: string): void => {
+      const anchor = transcriptRef.current?.captureAnchor() ?? null;
+      if (anchor === null) return;
+      setEvidenceSheet({ evidenceKey, triggerKey, anchor });
+      dispatch({ type: "openEvidence", evidenceKey, triggerKey });
+    },
+    [dispatch],
   );
+
+  const closeEvidenceSheet = useCallback((): void => {
+    const closing = evidenceSheet;
+    if (closing === null || closingEvidenceRef.current) return;
+    closingEvidenceRef.current = true;
+    void (async () => {
+      await transcriptRef.current?.restoreAnchor(closing.anchor);
+      pendingTriggerFocusRef.current = closing.triggerKey;
+      dispatch({ type: "closeEvidence" });
+      closingEvidenceRef.current = false;
+    })();
+  }, [dispatch, evidenceSheet]);
+
+  useEffect(() => {
+    if (state.openEvidenceKey === null) return;
+    const currentEvidence = state.conversation?.evidence.some(
+      (evidence) => evidence.key === state.openEvidenceKey,
+    );
+    if (
+      currentEvidence !== true ||
+      evidenceSheet === null ||
+      evidenceSheet.evidenceKey !== state.openEvidenceKey ||
+      evidenceSheet.triggerKey !== state.evidenceTriggerKey
+    ) {
+      dispatch({ type: "closeEvidence" });
+    }
+  }, [
+    dispatch,
+    evidenceSheet,
+    state.conversation,
+    state.evidenceTriggerKey,
+    state.openEvidenceKey,
+  ]);
+
+  useLayoutEffect(() => {
+    const triggerKey = pendingTriggerFocusRef.current;
+    if (triggerKey === null || state.openEvidenceKey !== null) return;
+    pendingTriggerFocusRef.current = null;
+    setEvidenceSheet(null);
+    const trigger = evidenceTrigger(triggerKey);
+    if (trigger === null) {
+      transcriptRef.current?.focusFeed();
+      return;
+    }
+    trigger.focus({ preventScroll: true });
+  }, [state.openEvidenceKey]);
+
   return (
-    <main
-      className={`live-conversation-frame ${skin.className}`}
-      data-live-conversation-frame="true"
-      aria-label="Conversation"
-      onKeyDown={(event) => wrapTerminalComposerTab(event, backRef.current)}
-    >
-      <ConversationChrome
-        skin={skin}
-        state={state}
-        dispatch={dispatch}
-        backRef={backRef}
-      />
-      <VirtualTranscript data-frame-part="transcript">
-        <div
-          className="live-conversation-frame__feed"
-          role="feed"
-          aria-label="Conversation transcript"
+    <>
+      <main
+        className={`live-conversation-frame ${skin.className}`}
+        data-live-conversation-frame="true"
+        aria-label="Conversation"
+        aria-hidden={evidenceOpen ? true : undefined}
+        inert={evidenceOpen ? true : undefined}
+        onKeyDown={(event) => wrapTerminalComposerTab(event, backRef.current)}
+      >
+        <ConversationChrome
+          skin={skin}
+          state={state}
+          dispatch={dispatch}
+          backRef={backRef}
+        />
+        <section
+          className="live-conversation-frame__transcript"
+          data-frame-part="transcript"
         >
           {items.length === 0 && state.phase === "ready" ? (
             <p>No transcript yet</p>
           ) : null}
-          {items.map((item, index) => (
-            <TranscriptItem
-              key={item.key}
-              item={item}
-              index={index}
-              total={items.length}
-              state={state}
-              skin={skin}
-              dispatch={dispatch}
+          {state.conversation !== null ? (
+            <VirtualTranscript
+              ref={transcriptRef}
+              threadKey={state.conversation.threadKey}
+              skinId={skin.id}
+              contentSize={state.contentSize}
+              items={items}
+              renderMode="frame-owned"
+              renderItem={(item, index) => (
+                <TranscriptItem
+                  item={item}
+                  index={index}
+                  total={items.length}
+                  state={state}
+                  skin={skin}
+                  dispatch={dispatch}
+                  onOpenEvidence={openEvidenceSheet}
+                  onFocusIntentChange={onFocusIntentChange}
+                />
+              )}
+              savedAnchor={state.anchor}
+              unseen={state.unseen}
+              locked={evidenceOpen}
+              onAnchorChange={onAnchorChange}
+              onUnseenChange={onUnseenChange}
               onFocusIntentChange={onFocusIntentChange}
             />
-          ))}
-        </div>
-        {state.conversation?.olderAvailable ? (
-          <button
-            type="button"
-            aria-label="Load older messages"
-            disabled={state.composer.pending?.status === "pending"}
-            onClick={() => dispatch({ type: "loadOlder" })}
-          >
-            Load older messages
-          </button>
-        ) : null}
-        {openEvidence !== undefined ? (
-          <section
-            role="dialog"
-            aria-modal="true"
-            aria-label={openEvidence.title.text}
-          >
-            <h2>{openEvidence.title.text}</h2>
-            {openEvidence.sections.map((section) => (
-              <section key={`${section.heading.text}:${section.body.text}`}>
-                <h3>{section.heading.text}</h3>
-                <p>{section.body.text}</p>
-              </section>
-            ))}
+          ) : (
+            <div
+              role="feed"
+              aria-label="Conversation transcript"
+              data-page-scroll-owner="true"
+              tabIndex={-1}
+            />
+          )}
+          {state.conversation?.olderAvailable ? (
             <button
               type="button"
-              aria-label="Close evidence"
-              onClick={() => dispatch({ type: "closeEvidence" })}
+              aria-label="Load older messages"
+              disabled={state.composer.pending?.status === "pending"}
+              onClick={() => dispatch({ type: "loadOlder" })}
             >
-              Close
+              Load older messages
             </button>
-          </section>
-        ) : null}
-      </VirtualTranscript>
-      <ConversationStatus
-        state={state}
-        dispatch={dispatch}
-        streamingMessage={streamingMessage}
-      />
-      <section
-        data-frame-part="composer"
-        data-live-conversation-composer="true"
-      >
-        <DockedComposer
-          composer={composer}
-          mode={state.composerMode}
-          appearance={skin.composerAppearance}
+          ) : null}
+        </section>
+        <ConversationStatus
+          state={state}
           dispatch={dispatch}
+          streamingMessage={streamingMessage}
         />
-      </section>
-    </main>
+        <section
+          data-frame-part="composer"
+          data-live-conversation-composer="true"
+        >
+          <DockedComposer
+            composer={composer}
+            mode={state.composerMode}
+            appearance={skin.composerAppearance}
+            dispatch={dispatch}
+          />
+        </section>
+      </main>
+      <ActivityEvidenceSheet
+        open={evidenceOpen}
+        evidence={openEvidence}
+        triggerKey={evidenceSheet?.triggerKey ?? null}
+        onClose={closeEvidenceSheet}
+        onTriggerUnavailable={() => transcriptRef.current?.focusFeed()}
+      />
+    </>
   );
 }
