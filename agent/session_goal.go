@@ -3,10 +3,13 @@ package agent
 import (
 	"context"
 	"errors"
+	"fmt"
 	"strings"
 
 	"primeradiant.com/evener/agent/events"
+	"primeradiant.com/evener/agent/internal/delegatestore"
 	"primeradiant.com/evener/agent/internal/goal"
+	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/llm"
 )
 
@@ -60,6 +63,9 @@ func (s *Session) SetGoal(ctx context.Context, objective string) (started bool, 
 	inTurn := s.goalInTurn
 	kick := s.kickFunc
 	pendingAsk := len(s.askPending) > 0
+	// A fresh objective never waited on the old goal's dependents: void any
+	// pending hold so the settle cannot suppress this goal's kick with it.
+	s.goalDependentsHeld = false
 	s.mu.Unlock()
 	s.emitCurrentGoalState()
 	s.goalUpdateMu.Unlock()
@@ -82,6 +88,7 @@ func (s *Session) ClearGoal() {
 	s.goalUpdateMu.Lock()
 	s.mu.Lock()
 	s.getOrCreateGoalStore().Clear()
+	s.goalDependentsHeld = false
 	s.mu.Unlock()
 	s.emitCurrentGoalState()
 	s.goalUpdateMu.Unlock()
@@ -168,6 +175,36 @@ func (s *Session) callsMadeProgress(calls []llm.ToolCallData) bool {
 	return false
 }
 
+// hasWakePendingDependents reports whether the session owns work that is
+// guaranteed to deliver a future wake: a delegate in a non-terminal phase
+// (running/settling/stopping — a report or terminal notification is coming,
+// and the quiet watchdog covers a silent runner) or a live job-manager entry
+// (non-detached by construction, terminal notification automatic). Dependents
+// that can never wake the session on their own do NOT count: idle delegates
+// awaiting delegate_send, closed delegates, and detached processes (kept out
+// of the job manager). The goal gate's no-progress hold keys on this: waiting
+// on a guaranteed wake is not stalling, but holding on a dependent that will
+// never deliver would strand the goal the other way.
+//
+// It takes delegate-controller and job-manager locks and must never be called
+// with goalUpdateMu or s.mu held (see the askPending lock-discipline comment
+// in SetGoal): callers compute it before taking either.
+func (s *Session) hasWakePendingDependents() bool {
+	if s == nil {
+		return false
+	}
+	if s.jobManager.hasRunningJobs() {
+		return true
+	}
+	for _, row := range stableDelegateRowsForSession(s, false) {
+		switch row.snapshot.phase {
+		case delegatestore.PhaseRunning, delegatestore.PhaseSettling, delegatestore.PhaseStopping:
+			return true
+		}
+	}
+	return false
+}
+
 // armGoalContinuation runs in the drain-loop gate (on the turn goroutine) after a
 // goal continuation turn completes. progressed reports whether the just-finished
 // turn made a mutating tool call. It folds that signal into the goal under the
@@ -180,6 +217,9 @@ func (s *Session) callsMadeProgress(calls []llm.ToolCallData) bool {
 // runs until it is completed or the no-progress breaker fires. With no goal set
 // it is a no-op returning ("", false).
 func (s *Session) armGoalContinuation(progressed, wasContinuation bool) (string, bool) {
+	// Computed before goalUpdateMu: the query takes delegate-controller and
+	// job-manager locks, which must never be held under the goal serializer.
+	wakePending := s.hasWakePendingDependents()
 	s.goalUpdateMu.Lock()
 	store := s.getOrCreateGoalStore()
 	snap, ok := store.Snapshot()
@@ -205,6 +245,32 @@ func (s *Session) armGoalContinuation(progressed, wasContinuation bool) (string,
 		// count toward those (/par #4).
 		return goal.Render(snap.Objective), true
 	}
+	if !progressed && wakePending {
+		// Wake-pending hold: the turn made no mutating call, but owned work is
+		// guaranteed to wake the session (a running delegate's report/terminal
+		// notification, a background job's terminal notification). Waiting on a
+		// guaranteed wake is not stalling, so the no-progress fold is skipped —
+		// three polling turns must not block a goal whose next phase starts when
+		// the last dependent reports — and no further continuation is armed: the
+		// notification machinery drives the session, and that turn's settle
+		// re-arms the goal. The settle flag makes the held decision visible to
+		// settleGoalOnIdle so it does not immediately re-kick past the same wait.
+		//
+		// The hold requires kickFunc: with no kick wired (e.g. one-shot
+		// `evener run`), the goal advances only through the drain's defer chain,
+		// so the gate keeps folding and re-arming exactly as before rather than
+		// stranding the goal after the first notification.
+		s.mu.Lock()
+		hold := s.kickFunc != nil
+		if hold {
+			s.goalDependentsHeld = true
+		}
+		s.mu.Unlock()
+		if hold {
+			s.goalUpdateMu.Unlock()
+			return "", false
+		}
+	}
 	snap, stillActive := store.RecordContinuation(progressed, s.sclock().Now())
 	s.emitGoalUpdated(snap)
 	s.goalUpdateMu.Unlock()
@@ -212,6 +278,9 @@ func (s *Session) armGoalContinuation(progressed, wasContinuation bool) (string,
 		// The no-progress breaker fired this turn. Persist the terminal transition:
 		// it happens after processOneInput's defer-save, so without this a blocked
 		// goal would be saved as still-active and resume on restart (/par A4).
+		s.appendTurn(schema.TurnSystem, llm.System(fmt.Sprintf(
+			"Goal blocked: no mutating progress in %d consecutive goal-continuation turns. The goal engine has stopped driving the objective; it resumes only via /goal clear, a new /goal, or an update_goal verdict.",
+			snap.NoProgressStreak)))
 		s.reportGoalEnded()
 		s.maybeAutoSave()
 		return "", false
@@ -255,12 +324,21 @@ func (s *Session) reportGoalEnded() {
 // in flight (attention-status-model v5: a kicked goal suppresses awaiting —
 // suppressor condition 3 of the idle→awaiting upgrade).
 func (s *Session) settleGoalOnIdle() bool {
+	// Computed before s.mu: the query takes delegate-controller and job-manager
+	// locks, which must never be acquired under s.mu.
+	wakePending := s.hasWakePendingDependents()
 	s.mu.Lock()
 	s.goalInTurn = false
 	kick := s.kickFunc
 	pendingAsk := len(s.askPending) > 0
+	// Consume a pending dependents hold: suppress the kick only while the
+	// dependents the gate waited on still pend. Recomputed now (not trusted
+	// from the gate's read) so a stale hold — the last delegate terminated and
+	// its notification is already queued — cannot strand the goal.
+	held := s.goalDependentsHeld
+	s.goalDependentsHeld = false
 	var prompt string
-	if kick != nil && !pendingAsk {
+	if kick != nil && !pendingAsk && (!held || !wakePending) {
 		if snap, ok := s.getOrCreateGoalStore().Snapshot(); ok && snap.Status == goal.StatusActive {
 			prompt = goal.Render(snap.Objective)
 		}

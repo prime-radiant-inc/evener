@@ -294,6 +294,20 @@ func (jm *jobManager) currentCausalProvenance() *provenance.Causal {
 	return provenance.Clone(jm.currentProvenance())
 }
 
+// hasRunningJobs reports whether any job is live in the manager. Every entry
+// in jm.running notifies its session on terminal, and detached processes are
+// deliberately kept out of the manager (session_tools_jobs.go), so a live
+// entry is exactly "a non-detached job whose completion wake is guaranteed" —
+// the job half of the goal gate's wake-pending-dependents hold.
+func (jm *jobManager) hasRunningJobs() bool {
+	if jm == nil {
+		return false
+	}
+	jm.mu.Lock()
+	defer jm.mu.Unlock()
+	return len(jm.running) > 0
+}
+
 type runningJob struct {
 	rec                     *jobstore.JobRecord
 	output                  *jobstore.OutputStore

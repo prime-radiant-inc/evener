@@ -602,6 +602,15 @@ type Session struct {
 	// sets it at entry and clears it as its last act before going idle, so
 	// "set goal + read flag" and "clear flag + go idle" are mutually exclusive.
 	goalInTurn bool
+	// goalDependentsHeld records that the goal gate just held its continuation
+	// because wake-pending dependents (running delegates or non-detached
+	// background jobs) guarantee a future wake: the no-progress fold was
+	// skipped, so the idle-settle must not immediately re-kick the same goal
+	// past the same wait. Set at the gate, consumed (read-and-cleared) by
+	// settleGoalOnIdle — which recomputes the predicate so a stale hold whose
+	// dependents already drained still kicks — and cleared by SetGoal/ClearGoal
+	// (a retarget voids a pending hold). Guarded by s.mu.
+	goalDependentsHeld bool
 	// kickFunc, when set via SetKickFunc, lets an idle SetGoal start the goal
 	// loop immediately by feeding the first continuation prompt back into the
 	// serve loop's input channel. It is a callback because the agent module must
