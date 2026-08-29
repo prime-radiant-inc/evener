@@ -19,12 +19,21 @@ import type {
   LiveConceptState,
   QuestionDraft,
 } from "../contract";
+import type { BoundedDisplayText } from "../model";
 import { stillwaterModule } from "./index";
 import { StillwaterRenderer } from "./StillwaterRenderer";
 
 afterEach(() => {
   cleanup();
 });
+
+function bounded(text: string, truncated = false): BoundedDisplayText {
+  return {
+    text,
+    truncated,
+    originalUtf8Bytes: new TextEncoder().encode(text).length,
+  };
+}
 
 function buildState(
   overrides: Partial<LiveConceptState> = {},
@@ -100,108 +109,111 @@ function buildState(
     },
     conversation: {
       threadKey: "sess-1",
-      title: "Fix auth flow",
-      project: "evener/mobile",
-      status: "running",
+      title: bounded("Fix auth flow"),
+      project: bounded("evener/mobile"),
+      status: bounded("running"),
       tone: "running",
-      updatedLabel: "2 minutes ago",
+      updatedLabel: bounded("2 minutes ago"),
       items: [
         {
           key: "msg-1",
-          kind: "user",
-          label: "1",
-          body: "Check the refresh loop",
+          sourceKind: "user",
+          label: bounded("1"),
+          body: bounded("Check the refresh loop"),
           tone: "idle",
           streaming: false,
-          truncated: false,
           questionKey: null,
-          sequenceLabel: "1",
+          sequence: "1",
         },
         {
           key: "msg-2",
-          kind: "assistant",
-          label: "2",
-          body: "Looking into it...",
+          sourceKind: "assistant",
+          label: bounded("2"),
+          body: bounded("Looking into it..."),
           tone: "running",
           streaming: true,
-          truncated: false,
           questionKey: null,
-          sequenceLabel: "2",
+          sequence: "2",
         },
         {
           key: "msg-3",
-          kind: "tool",
-          label: "read_file",
-          body: "Read auth.ts — 240 lines",
+          sourceKind: "tool",
+          semanticKind: "tool",
+          label: bounded("read_file"),
+          preview: bounded("Read auth.ts — 240 lines"),
+          duration: null,
           tone: "success",
-          streaming: false,
-          truncated: false,
-          questionKey: null,
-          sequenceLabel: "3",
+          state: "completed",
+          evidenceKey: null,
+          sequence: "3",
         },
         {
           key: "msg-4",
-          kind: "assistant",
-          label: "4",
-          body: "The token refresh logic has a race condition...",
+          sourceKind: "assistant",
+          label: bounded("4"),
+          body: bounded(
+            "The token refresh logic has a race condition...",
+            true,
+          ),
           tone: "idle",
           streaming: false,
-          truncated: true,
           questionKey: null,
-          sequenceLabel: "4",
+          sequence: "4",
         },
         {
           key: "msg-5",
-          kind: "question",
-          label: "5",
-          body: "Which approach do you prefer?",
+          sourceKind: "question",
+          label: bounded("5"),
+          body: bounded("Which approach do you prefer?"),
           tone: "attention",
           streaming: false,
-          truncated: false,
           questionKey: "q-1",
-          sequenceLabel: "5",
+          sequence: "5",
         },
         {
           key: "msg-6",
-          kind: "failure",
-          label: "6",
-          body: "Connection lost during generation",
+          sourceKind: "failure",
+          label: bounded("6"),
+          body: bounded("Connection lost during generation"),
           tone: "failed",
           streaming: false,
-          truncated: false,
           questionKey: null,
-          sequenceLabel: "6",
+          sequence: "6",
         },
         {
           key: "msg-7",
-          kind: "attachment",
-          label: "screenshot.png",
-          body: "Screenshot of the error dialog",
+          sourceKind: "attachment",
+          semanticKind: "attachment",
+          label: bounded("screenshot.png"),
+          preview: bounded("Screenshot of the error dialog"),
+          duration: null,
           tone: "idle",
-          streaming: false,
-          truncated: false,
-          questionKey: null,
-          sequenceLabel: "7",
+          state: "completed",
+          evidenceKey: null,
+          sequence: "7",
         },
       ],
+      evidence: [],
       questions: [
         {
           key: "q-1",
-          header: "Choose one",
-          prompt: "Which approach do you prefer?",
+          header: bounded("Choose one"),
+          prompt: bounded("Which approach do you prefer?"),
           options: [
             {
               key: "opt-a",
-              label: "Retry with backoff",
-              detail: "Exponential backoff before retry",
+              label: bounded("Retry with backoff"),
+              detail: bounded("Exponential backoff before retry"),
             },
             {
               key: "opt-b",
-              label: "Fail fast",
-              detail: "Surface the error immediately",
+              label: bounded("Fail fast"),
+              detail: bounded("Surface the error immediately"),
             },
           ],
           multiple: false,
+          why: null,
+          ifUnanswered: null,
         },
       ],
       olderAvailable: true,
@@ -492,12 +504,12 @@ describe("StillwaterRenderer conversation surface", () => {
     ).toBeVisible();
     expect(
       screen.getByRole("article", {
-        name: "Assistant response; streaming",
+        name: "Assistant message; streaming",
       }),
     ).toBeVisible();
     expect(
       screen.getByRole("article", {
-        name: "Tool read_file; completed",
+        name: "Tool activity, read_file; completed",
       }),
     ).toBeVisible();
     expect(
@@ -568,7 +580,7 @@ describe("StillwaterRenderer conversation surface", () => {
       surface: "conversation",
       conversation: {
         ...baseConversation,
-        updatedLabel: "3 minutes ago",
+        updatedLabel: bounded("3 minutes ago"),
       },
     });
     renderSurface(state);
@@ -594,7 +606,7 @@ describe("StillwaterRenderer conversation surface", () => {
   it("discloses a tool and dispatches toggleTool", () => {
     const state = buildState({ surface: "conversation" });
     const toolItem = state.conversation?.items.find(
-      (item) => item.kind === "tool",
+      (item) => item.sourceKind === "tool",
     );
     if (!toolItem) throw new Error("Test state needs a tool item");
     const { dispatch, container } = renderSurface(state);
@@ -652,7 +664,9 @@ describe("StillwaterRenderer conversation surface", () => {
     expect(form).not.toBeNull();
     const option = question.options[1];
     if (!option) throw new Error("Question needs a second option");
-    fireEvent.click(within(form as HTMLElement).getByLabelText(option.label));
+    fireEvent.click(
+      within(form as HTMLElement).getByLabelText(option.label.text),
+    );
     expect(dispatch).toHaveBeenCalledWith(
       expect.objectContaining({
         type: "setQuestionDraft",
@@ -713,14 +727,13 @@ describe("StillwaterRenderer conversation surface", () => {
         items: [
           {
             key: "msg-orphan",
-            kind: "question",
-            label: "5",
-            body: "Orphan question",
+            sourceKind: "question",
+            label: bounded("5"),
+            body: bounded("Orphan question"),
             tone: "attention",
             streaming: false,
-            truncated: false,
             questionKey: "q-missing",
-            sequenceLabel: "5",
+            sequence: "5",
           },
         ],
         questions: [],
