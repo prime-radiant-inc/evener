@@ -159,6 +159,32 @@ func TestDoDecodesStampsAndLogs(t *testing.T) {
 	}
 }
 
+// assertOneAttemptCompleted waits for ctx's group to finish appending, then
+// asserts sink recorded exactly one attempt whose response status (0 means
+// no response reached the wire, e.g. a transport failure) and error message
+// match what the call actually observed and returned. This proves the
+// attempt was completed with real evidence rather than left as a
+// nil-receiver no-op (transport.DoWithAPIAttempts hands back a nil capture,
+// and Complete on nil is a silent no-op, whenever no group/sink is attached).
+func assertOneAttemptCompleted(ctx context.Context, t *testing.T, sink *captureSink, wantStatus int, wantErr error) {
+	t.Helper()
+	llm.WaitForPriorAPIAttempts(ctx)
+	if len(sink.attempts) != 1 {
+		t.Fatalf("attempts = %d, want 1", len(sink.attempts))
+	}
+	rec := sink.attempts[0]
+	if wantStatus == 0 {
+		if rec.Response != nil {
+			t.Fatalf("record response = %+v, want none", rec.Response)
+		}
+	} else if rec.Response == nil || rec.Response.StatusCode == nil || *rec.Response.StatusCode != wantStatus {
+		t.Fatalf("record response = %+v, want status %d", rec.Response, wantStatus)
+	}
+	if wantErr == nil || rec.ErrorMessage != wantErr.Error() {
+		t.Fatalf("record error = %q, want %q", rec.ErrorMessage, wantErr)
+	}
+}
+
 func TestDoClassifiesFailuresAndReclassifies(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusBadRequest)
@@ -167,10 +193,15 @@ func TestDoClassifiesFailuresAndReclassifies(t *testing.T) {
 	defer srv.Close()
 	res := testRes(srv.URL, registry.AuthBearer)
 	call := &Call{Operation: "responses.create", Method: http.MethodPost, URL: URL(res, res.Transport.Endpoint), Body: map[string]any{}, Res: res, Client: srv.Client()}
-	err := Do(context.Background(), call, func(*Result) (*llm.Response, error) { t.Fatal("finish must not run on 4xx"); return nil, nil })
+
+	sink1 := &captureSink{}
+	ctx1 := llm.WithAPIAttemptSink(llm.WithAPIAttemptGroup(context.Background(), llm.NewAPIAttemptGroup("ag_classify")), sink1)
+	err := Do(ctx1, call, func(*Result) (*llm.Response, error) { t.Fatal("finish must not run on 4xx"); return nil, nil })
 	if llm.Kind(err) != llm.KindInvalidRequest || !strings.Contains(llm.ErrorHint(err), "fields.store = false") {
 		t.Fatalf("err = %v", err)
 	}
+	assertOneAttemptCompleted(ctx1, t, sink1, http.StatusBadRequest, err)
+
 	marker := errors.New("reclassified")
 	call.Reclassify = func(status int, body []byte, err error) error {
 		if status != 400 || !strings.Contains(string(body), "unknown_parameter") || err == nil {
@@ -178,13 +209,22 @@ func TestDoClassifiesFailuresAndReclassifies(t *testing.T) {
 		}
 		return marker
 	}
-	if err := Do(context.Background(), call, nil); !errors.Is(err, marker) {
+	sink2 := &captureSink{}
+	ctx2 := llm.WithAPIAttemptSink(llm.WithAPIAttemptGroup(context.Background(), llm.NewAPIAttemptGroup("ag_reclassify")), sink2)
+	err = Do(ctx2, call, nil)
+	if !errors.Is(err, marker) {
 		t.Fatalf("reclassify not applied: %v", err)
 	}
+	assertOneAttemptCompleted(ctx2, t, sink2, http.StatusBadRequest, err)
+
 	srv.Close()
-	if err := Do(context.Background(), call, nil); err == nil {
+	sink3 := &captureSink{}
+	ctx3 := llm.WithAPIAttemptSink(llm.WithAPIAttemptGroup(context.Background(), llm.NewAPIAttemptGroup("ag_transport_fail")), sink3)
+	err = Do(ctx3, call, nil)
+	if err == nil {
 		t.Fatal("transport failure must surface")
 	}
+	assertOneAttemptCompleted(ctx3, t, sink3, 0, err)
 }
 
 func TestStreamPublishesStartThenHandsOff(t *testing.T) {
@@ -203,11 +243,15 @@ func TestStreamPublishesStartThenHandsOff(t *testing.T) {
 	// retries of one logical call: transport.DoWithAPIAttempts only ever hands
 	// back a non-nil attempt (asserted by the decoder below) when a group and
 	// sink are attached; without one it takes its no-op client.Do fast path.
-	ctx := llm.WithAPIAttemptSink(llm.WithAPIAttemptGroup(context.Background(), llm.NewAPIAttemptGroup("ag_stream")), &captureSink{})
+	sink := &captureSink{}
+	ctx := llm.WithAPIAttemptSink(llm.WithAPIAttemptGroup(context.Background(), llm.NewAPIAttemptGroup("ag_stream")), sink)
 	call := &Call{Operation: "responses.create(stream)", Method: http.MethodPost, URL: srv.URL + "/fail", Body: map[string]any{"stream": true}, Res: res, Client: srv.Client()}
-	if _, err := Stream(ctx, call, nil); llm.Kind(err) != llm.KindRateLimit {
+	_, err := Stream(ctx, call, nil)
+	if llm.Kind(err) != llm.KindRateLimit {
 		t.Fatalf("err = %v", err)
 	}
+	assertOneAttemptCompleted(ctx, t, sink, http.StatusTooManyRequests, err)
+
 	call.URL = srv.URL + "/ok"
 	s, err := Stream(ctx, call, func(_ context.Context, cancel context.CancelFunc, resp *http.Response, s *llm.ChanStream, r *Result, attempt *transport.APIAttemptCapture) {
 		defer cancel()
@@ -233,6 +277,17 @@ func TestStreamPublishesStartThenHandsOff(t *testing.T) {
 	if len(types) < 2 || types[0] != llm.StreamEventStreamStart || types[len(types)-1] != llm.StreamEventFinish {
 		t.Fatalf("events = %v", types)
 	}
+
+	// Transport-error path: server closed, dial fails before any response
+	// reaches the wire.
+	srv.Close()
+	transportSink := &captureSink{}
+	transportCtx := llm.WithAPIAttemptSink(llm.WithAPIAttemptGroup(context.Background(), llm.NewAPIAttemptGroup("ag_stream_transport_fail")), transportSink)
+	_, err = Stream(transportCtx, call, nil)
+	if err == nil {
+		t.Fatal("closed server must surface a transport error")
+	}
+	assertOneAttemptCompleted(transportCtx, t, transportSink, 0, err)
 }
 
 func TestCompleteViaStreamAccumulates(t *testing.T) {
