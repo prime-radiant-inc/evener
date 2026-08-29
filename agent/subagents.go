@@ -1526,6 +1526,7 @@ func (a *subagent) run(ctx context.Context, input string, inputProvenance *prove
 	var err error
 	var restoreParentDriveNotify func()
 	var finish delegateFinish
+	var noActionClaim *delegateSettlementClaim
 	iteration := 0
 	for {
 		iteration++
@@ -1714,6 +1715,18 @@ func (a *subagent) run(ctx context.Context, input string, inputProvenance *prove
 			err = a.gateFatalRunError(err)
 		}
 		finish = a.stableDelegateFinish(res, err)
+		decision, decisionErr := a.sess.delegateController.completionDecision(lease)
+		if decisionErr != nil {
+			err = errors.Join(err, decisionErr)
+		} else if err == nil && decision == delegateCompletionFinishNoAction {
+			prepared, prepareErr := a.sess.delegateController.prepareNoAction(settlementClaim, finish)
+			if prepareErr != nil {
+				err = errors.Join(err, prepareErr)
+			} else if prepared {
+				noActionClaim = settlementClaim
+				break
+			}
+		}
 		plans, settleErr := a.sess.delegateController.CompleteSettlement(settlementClaim, finish.packet)
 		if executeErr := a.sess.executeDelegateMutationPlans(plans); settleErr == nil {
 			settleErr = executeErr
@@ -1770,7 +1783,13 @@ func (a *subagent) run(ctx context.Context, input string, inputProvenance *prove
 	}
 	if stableRun && a.sess.delegateController != nil {
 		finish.endedAt = finalizeTime
-		plans, finishErr := a.sess.delegateController.FinishGeneration(lease, finish)
+		var plans delegateMutationPlans
+		var finishErr error
+		if noActionClaim != nil {
+			plans, finishErr = a.sess.delegateController.FinishNoAction(noActionClaim)
+		} else {
+			plans, finishErr = a.sess.delegateController.FinishGeneration(lease, finish)
+		}
 		if executeErr := a.sess.executeDelegateMutationPlans(plans); finishErr == nil {
 			finishErr = executeErr
 		}

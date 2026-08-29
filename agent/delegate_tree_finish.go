@@ -195,6 +195,42 @@ func (c *delegateTreeController) AttentionResolutionsForFinalization(claim *dele
 	}, nil
 }
 
+// prepareNoAction binds the run's ordinary terminal fallback to the exact
+// eligible attention claim before process-local terminal state is published.
+// The claim stays live so only FinishNoAction can consume this authority.
+func (c *delegateTreeController) prepareNoAction(claim *delegateSettlementClaim, fallback delegateFinish) (bool, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if claim == nil || c.settlementClaims[claim.token] != claim {
+		return false, errDelegateStaleLease
+	}
+	if claim.mode != delegateSettlementOrdinary {
+		return false, nil
+	}
+	if err := c.finalizationReadyLocked(claim); err != nil {
+		if errors.Is(err, errDelegateTargetBusy) {
+			return false, nil
+		}
+		return false, err
+	}
+	aggregate, live, err := c.exactLeaseLocked(claim.lease)
+	if err != nil {
+		return false, err
+	}
+	if aggregate.Phase != delegatestore.PhaseRunning || aggregate.Trigger != delegatestore.TriggerAttention || aggregate.PreparedTerminal != nil ||
+		live.recoveryRequired || live.binding == nil || !live.binding.ready || len(live.attentionIDs) != 0 {
+		return false, nil
+	}
+	evidence := live.binding.evidence
+	if evidence == nil || evidence.requirement != delegateCompletionAttentionOnly || evidence.outcome != delegateCompletionOutcomeAttentionNoAction || evidence.terminalSeen {
+		return false, nil
+	}
+	retained := cloneDelegateFinish(fallback)
+	evidence.fallback = &retained
+	c.evidenceVersion++
+	return true, nil
+}
+
 // RequireFinalizationRecovery latches an exact finalization whose external
 // attention persistence failed. The claim remains fenced until a durable stop
 // can atomically close the open generation and then discard pending attention.
@@ -341,6 +377,20 @@ func (c *delegateTreeController) hasSteeringClaimLocked(lease delegateLease) boo
 }
 
 func (c *delegateTreeController) FinishGeneration(lease delegateLease, finish delegateFinish) (delegateMutationPlans, error) {
+	return c.finishGeneration(lease, finish, nil)
+}
+
+// FinishNoAction is the sole authority for a packetless completed attention
+// generation. Its exact ordinary claim and retained fallback were fenced by
+// prepareNoAction before process-local terminal state publication.
+func (c *delegateTreeController) FinishNoAction(claim *delegateSettlementClaim) (delegateMutationPlans, error) {
+	if claim == nil {
+		return delegateMutationPlans{}, errDelegateStaleLease
+	}
+	return c.finishGeneration(delegateLease{}, delegateFinish{}, claim)
+}
+
+func (c *delegateTreeController) finishGeneration(lease delegateLease, finish delegateFinish, noActionClaim *delegateSettlementClaim) (delegateMutationPlans, error) {
 	c.mu.Lock()
 	var cancel context.CancelFunc
 	defer func() {
@@ -349,12 +399,25 @@ func (c *delegateTreeController) FinishGeneration(lease delegateLease, finish de
 			cancel()
 		}
 	}()
+	if noActionClaim != nil {
+		var err error
+		lease, finish, err = c.noActionFinishLocked(noActionClaim)
+		if err != nil {
+			return delegateMutationPlans{}, err
+		}
+	}
 	aggregate, live, err := c.exactLeaseLocked(lease)
 	if err != nil {
 		if errors.Is(err, errDelegateStaleLease) {
-			return delegateMutationPlans{}, nil
+			if noActionClaim == nil {
+				return delegateMutationPlans{}, nil
+			}
+			return delegateMutationPlans{}, err
 		}
 		return delegateMutationPlans{}, err
+	}
+	if noActionClaim == nil && aggregate.Phase == delegatestore.PhaseRunning && finish.disposition == delegatestore.DispositionCompletedNoAction {
+		return delegateMutationPlans{}, errDelegateTargetBusy
 	}
 	if live.finalizationRecoveryRequired {
 		return delegateMutationPlans{}, errDelegateTargetBusy
@@ -476,6 +539,53 @@ func (c *delegateTreeController) FinishGeneration(lease delegateLease, finish de
 	}
 	cancel = generationCancel
 	return plans, nil
+}
+
+func (c *delegateTreeController) noActionFinishLocked(claim *delegateSettlementClaim) (delegateLease, delegateFinish, error) {
+	if claim == nil || c.settlementClaims[claim.token] != claim {
+		return delegateLease{}, delegateFinish{}, errDelegateStaleLease
+	}
+	if claim.mode != delegateSettlementOrdinary {
+		return delegateLease{}, delegateFinish{}, errDelegateTargetBusy
+	}
+	if err := c.finalizationReadyLocked(claim); err != nil {
+		return delegateLease{}, delegateFinish{}, err
+	}
+	aggregate, live, err := c.exactLeaseLocked(claim.lease)
+	if err != nil {
+		return delegateLease{}, delegateFinish{}, err
+	}
+	if (aggregate.Phase != delegatestore.PhaseRunning && aggregate.Phase != delegatestore.PhaseStopping) ||
+		aggregate.Trigger != delegatestore.TriggerAttention || aggregate.PreparedTerminal != nil || live.recoveryRequired || live.binding == nil || !live.binding.ready || len(live.attentionIDs) != 0 {
+		return delegateLease{}, delegateFinish{}, errDelegateTargetBusy
+	}
+	evidence := live.binding.evidence
+	if evidence == nil || evidence.requirement != delegateCompletionAttentionOnly || evidence.outcome != delegateCompletionOutcomeAttentionNoAction ||
+		evidence.terminalSeen || evidence.fallback == nil {
+		return delegateLease{}, delegateFinish{}, errDelegateTargetBusy
+	}
+	if aggregate.Phase == delegatestore.PhaseStopping {
+		return claim.lease, cloneDelegateFinish(*evidence.fallback), nil
+	}
+	return claim.lease, delegateFinish{
+		outcome:     delegatestore.OutcomeCompleted,
+		disposition: delegatestore.DispositionCompletedNoAction,
+		reason:      "attention_consumed_without_report",
+		endedAt:     evidence.fallback.endedAt,
+	}, nil
+}
+
+func cloneDelegateFinish(finish delegateFinish) delegateFinish {
+	cloned := finish
+	if finish.exhaustionResumable != nil {
+		resumable := *finish.exhaustionResumable
+		cloned.exhaustionResumable = &resumable
+	}
+	if finish.packet != nil {
+		packet := cloneDelegateTerminalPacket(*finish.packet)
+		cloned.packet = &packet
+	}
+	return cloned
 }
 
 func delegateFinishMetadataEvents(events []delegatestore.Event, lease delegateLease, finish delegateFinish, outcome delegatestore.OutcomeStatus, reason string) []delegatestore.Event {

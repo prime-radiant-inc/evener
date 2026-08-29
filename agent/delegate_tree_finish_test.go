@@ -13,6 +13,7 @@ import (
 	"github.com/spf13/afero"
 
 	"primeradiant.com/evener/agent/internal/delegatestore"
+	"primeradiant.com/evener/agent/schema"
 )
 
 func (c *delegateTreeController) prepareSettlementForTest(lease delegateLease, packet *delegatestore.TerminalPacket) (bool, delegateMutationPlans, error) {
@@ -544,38 +545,231 @@ func TestDelegateControllerStopCompletedClearsPreparedDiagnostic(t *testing.T) {
 	}
 }
 
-func TestDelegateControllerAttentionCompletedNoActionStaysPrivate(t *testing.T) {
+func TestDelegateControllerFinishNoActionRequiresExactEligibleClaim(t *testing.T) {
 	c, _ := newDelegateControllerTestHarness(t, 1, 1)
-	c.mu.Lock()
-	_, err := c.appendLocked(
-		delegateControllerCreatedEvent("dlg_target", ""),
-		delegateControllerRunStartedEvent("dlg_target", 1, delegatestore.TriggerAttention, c.now()),
-	)
-	if err == nil {
-		c.live["dlg_target"] = &delegateLiveState{binding: &delegateRuntimeBinding{
-			lease:  delegateLease{delegateID: "dlg_target", generation: 1},
-			cancel: func() {},
-			ready:  true,
-		}}
-		c.drivesInUse = 1
-	}
-	c.mu.Unlock()
+	claim := eligibleDelegateNoActionClaim(t, c, "dlg_target")
+	fallback := stableDelegateFinishFromRun(delegateTerminalRunInputs{result: "bare attention response"})
+	prepared, err := c.prepareNoAction(claim, fallback)
 	if err != nil {
-		t.Fatalf("seed attention run: %v", err)
+		t.Fatalf("prepareNoAction: %v", err)
 	}
-
-	plans, err := c.FinishGeneration(delegateLease{delegateID: "dlg_target", generation: 1}, delegateFinish{
-		outcome:     delegatestore.OutcomeCompleted,
-		disposition: delegatestore.DispositionCompletedNoAction,
-		reason:      "attention_consumed_without_report",
-	})
+	if !prepared {
+		t.Fatal("prepareNoAction rejected exact eligible claim")
+	}
+	plans, err := c.FinishNoAction(claim)
 	if err != nil {
-		t.Fatalf("FinishGeneration: %v", err)
+		t.Fatalf("FinishNoAction: %v", err)
 	}
 	aggregate := c.durable["dlg_target"]
-	if len(plans.deliveries) != 0 || len(aggregate.PendingDeliveries) != 0 || aggregate.LatestOutcome == nil || aggregate.LatestOutcome.Status != delegatestore.OutcomeCompleted || string(aggregate.LatestOutcome.Status) == string(delegatestore.DispositionCompletedNoAction) {
+	finished := latestDelegateControllerRunFinished(t, c, "dlg_target")
+	if len(plans.deliveries) != 0 || len(aggregate.PendingDeliveries) != 0 || aggregate.LatestOutcome == nil || aggregate.LatestOutcome.Status != delegatestore.OutcomeCompleted ||
+		finished.Disposition != delegatestore.DispositionCompletedNoAction || finished.DeliveryID != "" || finished.Packet != nil {
 		t.Fatalf("completed-no-action leaked publicly: plans=%#v aggregate=%#v", plans, aggregate)
 	}
+	c.mu.Lock()
+	_, claimLive := c.settlementClaims[claim.token]
+	live := c.live["dlg_target"]
+	drives := c.drivesInUse
+	c.mu.Unlock()
+	if claimLive || (live != nil && live.binding != nil) || drives != 0 {
+		t.Fatalf("no-action finish retained authority/capacity: claim=%t live=%#v drives=%d", claimLive, live, drives)
+	}
+}
+
+func TestDelegateControllerFinishNoActionRejectsMissingStaleMismatchedAndUnreadyClaims(t *testing.T) {
+	t.Run("missing preparation", func(t *testing.T) {
+		c, _ := newDelegateControllerTestHarness(t, 1, 1)
+		claim := eligibleDelegateNoActionClaim(t, c, "dlg_target")
+		if _, err := c.FinishNoAction(claim); !errors.Is(err, errDelegateTargetBusy) {
+			t.Fatalf("FinishNoAction without preparation error = %v, want busy", err)
+		}
+	})
+
+	t.Run("stale and mismatched", func(t *testing.T) {
+		c, _ := newDelegateControllerTestHarness(t, 1, 1)
+		claim := eligibleDelegateNoActionClaim(t, c, "dlg_target")
+		if prepared, err := c.prepareNoAction(claim, delegateFinish{}); err != nil || !prepared {
+			t.Fatalf("prepareNoAction = %t, %v", prepared, err)
+		}
+		if _, err := c.FinishNoAction(nil); !errors.Is(err, errDelegateStaleLease) {
+			t.Fatalf("FinishNoAction(nil) error = %v, want stale lease", err)
+		}
+		forged := *claim
+		forged.lease.generation++
+		if _, err := c.FinishNoAction(&forged); !errors.Is(err, errDelegateStaleLease) {
+			t.Fatalf("FinishNoAction(mismatched) error = %v, want stale lease", err)
+		}
+	})
+
+	t.Run("unready", func(t *testing.T) {
+		c, _ := newDelegateControllerTestHarness(t, 1, 1)
+		claim := eligibleDelegateNoActionClaim(t, c, "dlg_target")
+		if prepared, err := c.prepareNoAction(claim, delegateFinish{}); err != nil || !prepared {
+			t.Fatalf("prepareNoAction = %t, %v", prepared, err)
+		}
+		claim.ready = make(chan struct{})
+		if _, err := c.FinishNoAction(claim); !errors.Is(err, errDelegateTargetBusy) {
+			t.Fatalf("FinishNoAction(unready) error = %v, want busy", err)
+		}
+	})
+}
+
+func TestDelegateControllerFinishNoActionRejectsReportRequiredTerminalAndPreparedState(t *testing.T) {
+	t.Run("report required", func(t *testing.T) {
+		c, _ := newDelegateControllerTestHarness(t, 1, 1)
+		seedDelegateControllerRunning(t, c, "dlg_target", "")
+		claim, continued, err := c.BeginSettlement(delegateLease{delegateID: "dlg_target", generation: 1})
+		if err != nil || continued {
+			t.Fatalf("BeginSettlement = claim:%#v continued:%t err:%v", claim, continued, err)
+		}
+		if prepared, err := c.prepareNoAction(claim, delegateFinish{}); err != nil || prepared {
+			t.Fatalf("prepareNoAction(report required) = %t, %v, want false/nil", prepared, err)
+		}
+		if _, err := c.FinishNoAction(claim); !errors.Is(err, errDelegateTargetBusy) {
+			t.Fatalf("FinishNoAction(report required) error = %v, want busy", err)
+		}
+	})
+
+	t.Run("terminal claim", func(t *testing.T) {
+		c, _ := newDelegateControllerTestHarness(t, 1, 1)
+		seedDelegateControllerRunning(t, c, "dlg_target", "")
+		lease := delegateLease{delegateID: "dlg_target", generation: 1}
+		claim, continued, err := c.BeginFinalization(lease, delegateSettlementTerminal)
+		if err != nil || continued {
+			t.Fatalf("BeginFinalization(terminal) = claim:%#v continued:%t err:%v", claim, continued, err)
+		}
+		if prepared, err := c.prepareNoAction(claim, delegateFinish{}); err != nil || prepared {
+			t.Fatalf("prepareNoAction(terminal) = %t, %v, want false/nil", prepared, err)
+		}
+		if _, err := c.FinishNoAction(claim); !errors.Is(err, errDelegateTargetBusy) {
+			t.Fatalf("FinishNoAction(terminal) error = %v, want busy", err)
+		}
+	})
+
+	t.Run("prepared terminal", func(t *testing.T) {
+		c, _ := newDelegateControllerTestHarness(t, 1, 1)
+		claim := eligibleDelegateNoActionClaim(t, c, "dlg_target")
+		c.mu.Lock()
+		_, appendErr := c.appendLocked(delegatestore.Event{
+			Kind:       delegatestore.EventDelegateTerminalPrepared,
+			DelegateID: "dlg_target",
+			TerminalPrepared: &delegatestore.TerminalPrepared{
+				Generation: 1,
+				Packet:     delegateMissingTerminalPacket(),
+			},
+		})
+		c.mu.Unlock()
+		if appendErr != nil {
+			t.Fatalf("append prepared terminal: %v", appendErr)
+		}
+		if prepared, err := c.prepareNoAction(claim, delegateFinish{}); err != nil || prepared {
+			t.Fatalf("prepareNoAction(prepared terminal) = %t, %v, want false/nil", prepared, err)
+		}
+		if _, err := c.FinishNoAction(claim); !errors.Is(err, errDelegateTargetBusy) {
+			t.Fatalf("FinishNoAction(prepared terminal) error = %v, want busy", err)
+		}
+	})
+}
+
+func TestDelegateControllerFinishNoActionStopUsesRetainedFallback(t *testing.T) {
+	c, _ := newDelegateControllerTestHarness(t, 1, 1)
+	claim := eligibleDelegateNoActionClaim(t, c, "dlg_target")
+	startedAt := time.Date(2026, 8, 29, 1, 2, 3, 0, time.UTC)
+	endedAt := startedAt.Add(4 * time.Minute)
+	activityAt := startedAt.Add(3 * time.Minute)
+	fallback := stableDelegateFinishFromRun(delegateTerminalRunInputs{
+		result:           "retained fallback",
+		runErr:           context.Canceled,
+		descriptor:       delegatestore.Descriptor{Task: "inspect task", Description: "inspect description"},
+		startedAt:        startedAt,
+		endedAt:          endedAt,
+		latestActivityAt: activityAt,
+		usage:            schema.CumulativeUsage{InputTokens: 11, OutputTokens: 7},
+		warnings:         []string{"retained warning"},
+		worktree:         &delegateWorktreeReport{Path: "/tmp/worktree", Branch: "task-3", HeadSHA: "deadbeef", Ahead: 2, Dirty: true},
+		scratchPath:      "/tmp/scratch",
+	})
+	if prepared, err := c.prepareNoAction(claim, fallback); err != nil || !prepared {
+		t.Fatalf("prepareNoAction = %t, %v", prepared, err)
+	}
+	// The stopping finish must use the controller-retained clone, not this caller value.
+	fallback.packet.Warnings[0] = "mutated warning"
+	fallback.packet.Metadata[0] = 'X'
+	appendDelegateControllerStopRequest(t, c, "dlg_target")
+
+	plans, err := c.FinishNoAction(claim)
+	if err != nil {
+		t.Fatalf("FinishNoAction under stop: %v", err)
+	}
+	finished := latestDelegateControllerRunFinished(t, c, "dlg_target")
+	if finished.Packet == nil || finished.DeliveryID == "" || finished.Disposition != delegatestore.DispositionTerminalError || len(plans.deliveries) != 0 {
+		t.Fatalf("stopped no-action finish = plans:%#v finished:%#v", plans, finished)
+	}
+	var metadata delegateTerminalPacketMetadata
+	if err := json.Unmarshal(finished.Packet.Metadata, &metadata); err != nil {
+		t.Fatalf("decode retained fallback metadata: %v", err)
+	}
+	if metadata.Task != "inspect task" || metadata.Worktree == nil || metadata.Worktree.Path != "/tmp/worktree" || metadata.ScratchPath != "/tmp/scratch" ||
+		metadata.CumulativeUsage == nil || metadata.CumulativeUsage.InputTokens != 11 || metadata.CumulativeUsage.OutputTokens != 7 ||
+		metadata.RunStartedAt != startedAt.Format(time.RFC3339Nano) || metadata.RunEndedAt != endedAt.Format(time.RFC3339Nano) || metadata.LatestActivityAt != activityAt.Format(time.RFC3339Nano) ||
+		!reflect.DeepEqual(finished.Packet.Warnings, []string{"retained warning"}) {
+		t.Fatalf("retained stop fallback = packet:%#v metadata:%#v", finished.Packet, metadata)
+	}
+}
+
+func TestDelegateControllerFinishNoActionAppendFailureRetainsRecoveryState(t *testing.T) {
+	c, _ := newDelegateControllerTestHarness(t, 1, 1)
+	claim := eligibleDelegateNoActionClaim(t, c, "dlg_target")
+	if prepared, err := c.prepareNoAction(claim, stableDelegateFinishFromRun(delegateTerminalRunInputs{result: "fallback"})); err != nil || !prepared {
+		t.Fatalf("prepareNoAction = %t, %v", prepared, err)
+	}
+	if err := c.store.Close(); err != nil {
+		t.Fatalf("close store: %v", err)
+	}
+	if _, err := c.FinishNoAction(claim); err == nil {
+		t.Fatal("FinishNoAction succeeded after store close")
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	live := c.live["dlg_target"]
+	if c.settlementClaims[claim.token] != claim || live == nil || live.binding == nil || live.binding.evidence == nil || live.binding.evidence.fallback == nil ||
+		!live.recoveryRequired || !live.finalizationRecoveryRequired || !live.recoveryRunnerPending || c.drivesInUse != 1 || !c.durable["dlg_target"].CurrentRunOpen {
+		t.Fatalf("append failure recovery state = claim:%#v live:%#v drives:%d aggregate:%#v", c.settlementClaims[claim.token], live, c.drivesInUse, c.durable["dlg_target"])
+	}
+}
+
+func TestDelegateControllerFinishGenerationCannotForgeNoAction(t *testing.T) {
+	c, _ := newDelegateControllerTestHarness(t, 1, 1)
+	seedDelegateControllerRunning(t, c, "dlg_target", "")
+	lease := delegateLease{delegateID: "dlg_target", generation: 1}
+	plans, err := c.FinishGeneration(lease, delegateFinish{
+		outcome:     delegatestore.OutcomeCompleted,
+		disposition: delegatestore.DispositionCompletedNoAction,
+	})
+	if !errors.Is(err, errDelegateTargetBusy) {
+		t.Fatalf("FinishGeneration forged no-action error = %v, want busy", err)
+	}
+	if len(plans.deliveries) != 0 || !c.durable["dlg_target"].CurrentRunOpen || c.live["dlg_target"].binding == nil {
+		t.Fatalf("forged no-action mutated controller: plans=%#v aggregate=%#v live=%#v", plans, c.durable["dlg_target"], c.live["dlg_target"])
+	}
+}
+
+func eligibleDelegateNoActionClaim(t *testing.T, c *delegateTreeController, delegateID string) *delegateSettlementClaim {
+	t.Helper()
+	seedDelegateControllerIdle(t, c, delegateID, "")
+	lease := startDelegateAttentionEvidenceGeneration(t, c, delegateID)
+	if recorded, err := c.recordAttentionNoAction(lease); err != nil || !recorded {
+		t.Fatalf("recordAttentionNoAction = %t, %v", recorded, err)
+	}
+	claim, continued, err := c.BeginSettlement(lease)
+	if err != nil || continued {
+		t.Fatalf("BeginSettlement = claim:%#v continued:%t err:%v", claim, continued, err)
+	}
+	<-claim.ready
+	c.mu.Lock()
+	c.live[delegateID].attentionIDs = nil
+	c.mu.Unlock()
+	return claim
 }
 
 func TestDelegateControllerOwnerInputWithoutCommunicateFailsMissingTerminal(t *testing.T) {

@@ -106,6 +106,48 @@ func TestDelegateResourceSupervision_AttentionBareTextRecordsExplicitNoAction(t 
 	}
 }
 
+func TestDelegateResourceSupervision_BareShellAttentionCompletesNoActionWithoutSecondReport(t *testing.T) {
+	fixture := newColdStableDelegateFixture(t, "")
+	fixture.adapter.steps = []func(llm.Request) llm.Response{
+		func(llm.Request) llm.Response { return finalResponse("warm result") },
+		func(llm.Request) llm.Response { return llm.Response{Message: llm.Assistant("nothing to do")} },
+	}
+	root := restoreSupervisionRoot(t, fixture, nil)
+	sub := warmStableSupervisionDelegate(t, root, fixture)
+
+	shell := createStableDelegateShell(t, sub.sess.jobManager, "bare attention incident")
+	finishStableDelegateShell(t, sub.sess.jobManager, shell.JobID)
+	waitForStableSupervisionRun(t, root, fixture.childID)
+
+	if got := supervisionRequestCount(fixture.adapter); got != 2 {
+		t.Fatalf("provider requests = %d, want warm report plus one bare shell-attention response", got)
+	}
+	stored := loadStableShellRecord(t, sub.sess.jobManager, shell.JobID)
+	attentionID := stableShellAttentionID(shell.JobID, stored.TerminalGen)
+	fold, err := readDelegateAttentionFold(transcriptPath(root.stateDir, sub.sess.ID()), sub.sess.ID())
+	if err != nil {
+		t.Fatalf("read shell attention: %v", err)
+	}
+	if got := fold.resolutions[attentionID]; got != delegateAttentionConsumed {
+		t.Fatalf("shell attention %q resolution = %q, want consumed", attentionID, got)
+	}
+
+	finished := latestDelegateControllerRunFinished(t, root.delegateController, fixture.delegateID)
+	aggregate := delegateAggregateSnapshot(t, root.delegateController, fixture.delegateID)
+	if aggregate.LatestOutcome == nil || aggregate.LatestOutcome.Status != delegatestore.OutcomeCompleted ||
+		finished.Disposition != delegatestore.DispositionCompletedNoAction || finished.Packet != nil || finished.DeliveryID != "" ||
+		len(aggregate.PendingDeliveries) != 0 {
+		t.Fatalf("private no-action completion = finished:%#v aggregate:%#v", finished, aggregate)
+	}
+	parentPending, err := readPendingDelegateAttention(transcriptPath(root.stateDir, root.ID()), root.ID())
+	if err != nil {
+		t.Fatalf("read parent attention: %v", err)
+	}
+	if len(parentPending) != 0 {
+		t.Fatalf("parent pending attention = %#v, want no second result notification", parentPending)
+	}
+}
+
 func TestDelegateResourceSupervision_ExplicitAttentionCommunicateRemainsReported(t *testing.T) {
 	fixture := newColdStableDelegateFixture(t, "")
 	fixture.adapter.steps = []func(llm.Request) llm.Response{
