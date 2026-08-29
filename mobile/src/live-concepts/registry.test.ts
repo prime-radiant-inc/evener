@@ -21,4 +21,10 @@ describe("liveConceptRegistry", () => {
       "stillwater",
     );
   });
+
+  it("registers Constellation through the shared conversation skin seam", () => {
+    expect(liveConceptRegistry.constellation.conversationSkin?.id).toBe(
+      "constellation",
+    );
+  });
 });
