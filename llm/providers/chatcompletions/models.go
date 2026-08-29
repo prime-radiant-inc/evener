@@ -4,10 +4,12 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"math"
 	"net/http"
 	"slices"
 	"sort"
 	"strconv"
+	"strings"
 
 	"primeradiant.com/evener/llm"
 	"primeradiant.com/evener/llm/providers/internal/protocolhttp"
@@ -105,12 +107,17 @@ func dedupStrings(in []string) []string {
 
 // perTokenCostToPerMillion converts OpenRouter's per-token price strings
 // to the registry's per-million unit; "0" is a valid free price.
+// strconv.ParseFloat accepts "NaN"/"Inf"/"infinity" (case-insensitive)
+// without error, and neither is < 0, so a non-finite result must be
+// rejected explicitly — json.Marshal fails outright on NaN/Inf, and one
+// bad row would otherwise break serialization of the whole listing.
 func perTokenCostToPerMillion(s string) (float64, bool) {
+	s = strings.TrimSpace(s)
 	if s == "" {
 		return 0, false
 	}
 	v, err := strconv.ParseFloat(s, 64)
-	if err != nil || v < 0 {
+	if err != nil || v < 0 || math.IsNaN(v) || math.IsInf(v, 0) {
 		return 0, false
 	}
 	return v * 1e6, true

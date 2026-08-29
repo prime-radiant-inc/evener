@@ -397,6 +397,6 @@ func toChatToolChoice(tc llm.ToolChoice) (any, error) {
 			"function": map[string]any{"name": tc.Name},
 		}, nil
 	default:
-		return nil, llm.NewUnsupportedToolChoiceError("openai-compatible", tc.Mode)
+		return nil, llm.NewUnsupportedToolChoiceError(registry.ProtocolOpenAIChat, tc.Mode)
 	}
 }

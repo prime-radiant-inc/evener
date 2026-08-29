@@ -43,3 +43,34 @@ func TestListModelsMapsAdvertisedFacts(t *testing.T) {
 		t.Fatalf("err = %v", err)
 	}
 }
+
+// TestListModelsRejectsNonFiniteCost covers the review finding on
+// perTokenCostToPerMillion: strconv.ParseFloat accepts "NaN"/"Inf" without
+// error, and neither is < 0, so a non-finite advertised price must be
+// rejected explicitly or Caps.Cost ends up NaN/Inf, which then fails
+// json.Marshal for the whole listing. Non-finite prompt or completion
+// pricing must drop Cost to nil while every other advertised fact on that
+// row still maps.
+func TestListModelsRejectsNonFiniteCost(t *testing.T) {
+	body := `{"data":[
+ {"id":"nan-prompt","context_length":4096,"pricing":{"prompt":"NaN","completion":"0.000002"}},
+ {"id":"inf-completion","context_length":8192,"pricing":{"prompt":"0.000001","completion":"Inf"}}
+]}`
+	srv, _ := server(t, 200, body)
+	rows, err := (&Protocol{Client: srv.Client()}).ListModels(context.Background(), liveRes(srv, nil))
+	if err != nil {
+		t.Fatal(err)
+	}
+	byID := map[string]registry.Model{}
+	for _, r := range rows {
+		byID[r.ID] = r
+	}
+	nanRow, ok := byID["nan-prompt"]
+	if !ok || nanRow.Caps.Cost != nil || nanRow.Caps.ContextWindow == nil || *nanRow.Caps.ContextWindow != 4096 {
+		t.Fatalf("nan-prompt row caps = %+v, want Cost=nil ContextWindow=4096", nanRow.Caps)
+	}
+	infRow, ok := byID["inf-completion"]
+	if !ok || infRow.Caps.Cost != nil || infRow.Caps.ContextWindow == nil || *infRow.Caps.ContextWindow != 8192 {
+		t.Fatalf("inf-completion row caps = %+v, want Cost=nil ContextWindow=8192", infRow.Caps)
+	}
+}
