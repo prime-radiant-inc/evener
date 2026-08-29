@@ -1,7 +1,6 @@
 import {
   type ReactElement,
   type ReactNode,
-  type RefObject,
   useLayoutEffect,
   useRef,
 } from "react";
@@ -37,12 +36,10 @@ function ConversationChrome({
   skin,
   state,
   dispatch,
-  backButtonRef,
 }: {
   readonly skin: ConversationSkin;
   readonly state: ConversationFrameState;
   readonly dispatch: (action: ConversationFrameAction) => void;
-  readonly backButtonRef: RefObject<HTMLButtonElement | null>;
 }): ReactElement {
   const conversation = state.conversation;
   return (
@@ -51,7 +48,6 @@ function ConversationChrome({
       data-frame-part="chrome"
     >
       <button
-        ref={backButtonRef}
         type="button"
         aria-label="Back"
         onFocus={(event) => {
@@ -435,7 +431,6 @@ export function ConversationFrame({
   onUnseenChange: _onUnseenChange,
   onFocusIntentChange,
 }: ConversationFrameProps): ReactElement {
-  const backButtonRef = useRef<HTMLButtonElement>(null);
   const items = state.conversation?.items ?? [];
   const previousItems = useRef<ReadonlyMap<string, ConversationDisplayItem>>(
     new Map(),
@@ -469,24 +464,8 @@ export function ConversationFrame({
       className={`live-conversation-frame ${skin.className}`}
       data-live-conversation-frame="true"
       aria-label="Conversation"
-      onKeyDown={(event) => {
-        if (
-          event.key === "Tab" &&
-          !event.shiftKey &&
-          event.target instanceof HTMLTextAreaElement &&
-          event.target.matches('[data-live-conversation-message="true"]')
-        ) {
-          event.preventDefault();
-          backButtonRef.current?.focus();
-        }
-      }}
     >
-      <ConversationChrome
-        skin={skin}
-        state={state}
-        dispatch={dispatch}
-        backButtonRef={backButtonRef}
-      />
+      <ConversationChrome skin={skin} state={state} dispatch={dispatch} />
       <VirtualTranscript data-frame-part="transcript">
         <div
           className="live-conversation-frame__feed"

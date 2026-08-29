@@ -103,6 +103,19 @@ export function DockedComposer({
           );
         })}
       </fieldset>
+      <label className="live-conversation-composer__field">
+        <span className="live-conversation-visually-hidden">Message</span>
+        <textarea
+          ref={textareaRef}
+          aria-label="Message"
+          placeholder="Message or steer…"
+          value={composer.draft}
+          disabled={!hasTextCapability || pending}
+          onChange={(event) =>
+            dispatch({ type: "setDraft", value: event.currentTarget.value })
+          }
+        />
+      </label>
       <button
         className="live-conversation-composer__submit"
         type="button"
@@ -122,20 +135,6 @@ export function DockedComposer({
           Interrupt
         </button>
       ) : null}
-      <label className="live-conversation-composer__field">
-        <span className="live-conversation-visually-hidden">Message</span>
-        <textarea
-          ref={textareaRef}
-          aria-label="Message"
-          data-live-conversation-message="true"
-          placeholder="Message or steer…"
-          value={composer.draft}
-          disabled={!hasTextCapability || pending}
-          onChange={(event) =>
-            dispatch({ type: "setDraft", value: event.currentTarget.value })
-          }
-        />
-      </label>
     </div>
   );
 }

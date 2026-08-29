@@ -53,21 +53,6 @@
   inline-size: 100%;
 }
 
-.live-conversation-frame .live-conversation-composer__field {
-  grid-column: 1;
-  grid-row: 2;
-}
-
-.live-conversation-frame .live-conversation-composer__submit {
-  grid-column: 2;
-  grid-row: 2;
-}
-
-.live-conversation-frame .live-conversation-composer__interrupt {
-  grid-column: 3;
-  grid-row: 2;
-}
-
 .live-conversation-frame .live-conversation-composer textarea {
   max-block-size: calc(6 * 1.5em + 1rem);
   overflow-y: auto;

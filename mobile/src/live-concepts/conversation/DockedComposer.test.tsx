@@ -1,6 +1,7 @@
 import { readFileSync } from "node:fs";
 import path from "node:path";
 import { cleanup, fireEvent, render, screen } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { DockedComposer } from "./DockedComposer";
 import type { ConversationFrameAction, LiveComposerView } from "./primitives";
@@ -25,6 +26,41 @@ afterEach(() => {
 });
 
 describe("DockedComposer", () => {
+  it("keeps enabled field actions in matching textarea, Submit, Interrupt DOM and focus order", async () => {
+    const user = userEvent.setup();
+    const { container } = render(
+      <DockedComposer
+        composer={composer({ draft: "ready" })}
+        mode="send"
+        appearance={{ density: "comfortable", accent: "forest" }}
+        dispatch={vi.fn()}
+      />,
+    );
+    const textbox = screen.getByRole("textbox", { name: "Message" });
+    const submit = screen.getByRole("button", { name: "Submit message" });
+    const interrupt = screen.getByRole("button", { name: "Interrupt" });
+    const semanticControls = [
+      ...container.querySelectorAll<HTMLTextAreaElement | HTMLButtonElement>(
+        'textarea[aria-label="Message"], button[aria-label="Submit message"], button[aria-label="Interrupt"]',
+      ),
+    ];
+    expect(semanticControls).toEqual([textbox, submit, interrupt]);
+
+    textbox.focus();
+    await user.tab();
+    expect(document.activeElement).toBe(submit);
+    await user.tab();
+    expect(document.activeElement).toBe(interrupt);
+
+    const css = readFileSync(
+      path.join(__dirname, "conversation-frame.css"),
+      "utf8",
+    ).replace(/\/\*[\s\S]*?\*\//gu, "");
+    expect(css).not.toMatch(
+      /live-conversation-composer__(?:field|submit|interrupt)[^{]*\{[^}]*(?:\border\s*:|grid-(?:column|row|area)\s*:)/su,
+    );
+  });
+
   it.each(["send", "steer", "queue"] as const)(
     "dispatches %s mode and submit exactly",
     (mode) => {

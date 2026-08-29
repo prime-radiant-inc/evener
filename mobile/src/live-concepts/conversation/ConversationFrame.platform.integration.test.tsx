@@ -2,6 +2,7 @@ import { readFileSync } from "node:fs";
 import path from "node:path";
 import { cleanup, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
+import { focusElement } from "@testing-library/user-event/dist/esm/event/focus.js";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { createViewportCoordinator } from "../../ui/platformPresentation";
 import { ConversationFrame } from "./ConversationFrame";
@@ -36,7 +37,9 @@ const skin: ConversationSkin = {
   renderConversationChrome: ({ title }) => title.text,
 };
 
-function frameProps(): ConversationFrameProps {
+function frameProps(
+  composerOverrides: Partial<ConversationFrameProps["state"]["composer"]> = {},
+): ConversationFrameProps {
   return {
     state: {
       concept: "stillwater",
@@ -67,6 +70,7 @@ function frameProps(): ConversationFrameProps {
         pending: null,
         accepted: null,
         error: null,
+        ...composerOverrides,
       },
       composerMode: "send",
       questionDrafts: {},
@@ -109,6 +113,20 @@ function elementRect(top: number, bottom: number): DOMRect {
     y: top,
     toJSON: () => ({}),
   } as DOMRect;
+}
+
+function installFixtureFocusScope(
+  root: HTMLElement,
+  first: HTMLElement,
+  last: HTMLElement,
+): () => void {
+  const wrapAtEnd = (event: KeyboardEvent): void => {
+    if (event.key !== "Tab" || event.shiftKey || event.target !== last) return;
+    event.preventDefault();
+    focusElement(first);
+  };
+  root.addEventListener("keydown", wrapAtEnd);
+  return () => root.removeEventListener("keydown", wrapAtEnd);
 }
 
 afterEach(() => {
@@ -192,7 +210,9 @@ describe("ConversationFrame platform integration", () => {
       document,
     });
     coordinator.start();
-    const view = render(<ConversationFrame {...frameProps()} />);
+    const view = render(
+      <ConversationFrame {...frameProps({ draft: "", canInterrupt: false })} />,
+    );
 
     expect(
       document.documentElement.style.getPropertyValue("--viewport-height"),
@@ -215,6 +235,10 @@ describe("ConversationFrame platform integration", () => {
     expect(composerWrapper.getBoundingClientRect().bottom).toBe(547);
 
     const composer = screen.getByRole("textbox", { name: "Message" });
+    expect(
+      screen.getByRole("button", { name: "Submit message" }),
+    ).toBeDisabled();
+    expect(screen.queryByRole("button", { name: "Interrupt" })).toBeNull();
     composer.getBoundingClientRect = () => elementRect(490, 534);
     composer.focus();
     expect(document.activeElement).toBe(composer);
@@ -253,6 +277,13 @@ describe("ConversationFrame platform integration", () => {
       element.scrollIntoView = scrollIntoView;
       element.addEventListener("focus", () => focusOrder.push(name));
     }
+    const firstControl = controls[0]?.element;
+    if (firstControl === undefined) throw new Error("Back control missing");
+    const releaseFocusScope = installFixtureFocusScope(
+      frame,
+      firstControl,
+      composer,
+    );
 
     for (const [index, { name, element }] of controls.entries()) {
       await user.tab();
@@ -274,6 +305,7 @@ describe("ConversationFrame platform integration", () => {
       expect(tabKeys).toHaveLength(index + 1);
     }
     expect(focusOrder).toEqual(["Back", "Work", "Switch concept"]);
+    releaseFocusScope();
     coordinator.stop();
   });
 
