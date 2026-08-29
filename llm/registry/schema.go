@@ -196,6 +196,9 @@ func parseLayer(data []byte, tag string, curated bool) (*Layer, error) {
 		if ms.Protocol != "" {
 			return nil, fmt.Errorf("%s: models.%q: protocol is not allowed on a glob row", tag, key)
 		}
+		if ms.Preset != "" {
+			return nil, fmt.Errorf("%s: models.%q: transport presets are not allowed on a glob row", tag, key)
+		}
 		if err := validateModel(ms, fmt.Sprintf("models.%q", key)); err != nil {
 			return nil, fmt.Errorf("%s: %w", tag, err)
 		}
@@ -224,6 +227,9 @@ func parseLayer(data []byte, tag string, curated bool) (*Layer, error) {
 		for key, ms := range ps.Models {
 			if isGlob(key) && ms.Protocol != "" {
 				return nil, fmt.Errorf("%s: %s.models.%q: protocol is not allowed on a glob row", tag, where, key)
+			}
+			if isGlob(key) && ms.Preset != "" {
+				return nil, fmt.Errorf("%s: %s.models.%q: transport presets are not allowed on a glob row", tag, where, key)
 			}
 			if err := validateModel(ms, fmt.Sprintf("%s.models.%q", where, key)); err != nil {
 				return nil, fmt.Errorf("%s: %w", tag, err)

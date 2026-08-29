@@ -403,10 +403,12 @@ func (r *Registry) applyGlobs(c *Caps, row *Model, rows map[string]Model, tag, r
 }
 
 // applyRowScalars overlays a layer row's or glob row's scalars onto the
-// resolved row. A glob row's transport (the Codex `gpt-5.6*` row's `body`
-// constants, spec §6.2) merges field-wise onto the row transport, which the
-// load already folded from every layer's exact row, so on a conflicting key
-// the glob wins. Protocol is never taken from a glob (the parser rejects it).
+// resolved row. Replay order per layer is globs then the exact row, so within
+// a layer the exact row wins and across layers the later layer wins (spec
+// §4.1). A glob row's transport (the Codex `gpt-5.6*` row's `body` constants,
+// spec §6.2) merges field-wise onto the row transport; glob rows carry
+// neither a protocol nor a preset (the parser rejects both), so nothing here
+// needs preset expansion.
 func applyRowScalars(row *Model, src Model, tag string, prov map[string]string) {
 	if src.Surface != "" {
 		row.Surface = src.Surface

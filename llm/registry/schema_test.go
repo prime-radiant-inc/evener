@@ -145,6 +145,7 @@ func TestParseConfig_Rejects(t *testing.T) {
 		"bad env name in header":   "[providers.x]\ncredential_headers = { \"Authorization\" = \"Bearer ${1X}\" }\n",
 		"preset inside transports": "[transports.t]\ntransport = \"other\"\n",
 		"protocol on glob row":     "[providers.x.models.\"g*\"]\nprotocol = \"anthropic\"\n",
+		"preset on glob row":       "[providers.x.models.\"g*\"]\ntransport = \"vertex-anthropic\"\n",
 	}
 	for name, src := range cases {
 		t.Run(name, func(t *testing.T) {
