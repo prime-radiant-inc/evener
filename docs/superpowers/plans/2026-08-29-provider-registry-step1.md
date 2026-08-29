@@ -4198,6 +4198,7 @@ type options struct {
 	now         func() time.Time
 	snapshot    []byte
 	overlay     []byte
+	noCache     bool
 }
 
 // WithConfigPath reads providers.toml from path instead of
@@ -4237,6 +4238,11 @@ func WithNow(now func() time.Time) Option { return func(o *options) { o.now = no
 
 // WithSnapshot replaces the embedded models.dev JSON (tests).
 func WithSnapshot(raw []byte) Option { return func(o *options) { o.snapshot = raw } }
+
+// WithoutCache ignores the runtime catalog cache so the load reflects the
+// snapshot alone: the refresh validation checks the candidate body, and the
+// snapshot report reads what ships in the binary.
+func WithoutCache() Option { return func(o *options) { o.noCache = true } }
 
 // WithOverlay replaces the embedded curated overlay (tests).
 func WithOverlay(data []byte) Option { return func(o *options) { o.overlay = data } }
@@ -4718,14 +4724,14 @@ func (r *Registry) validateRecord(rec *record) error {
 		if !layer.own {
 			continue
 		}
-		if rec.head.Protocol == "" {
-			// No protocol (the upstream entry vanished, or an npm the
-			// converter hides): the record is Hidden, and there is no
-			// prunable set to check its fields against.
-			break
-		}
-		if err := ValidateFields(layer.provider.Fields, rec.head.Protocol, layer.tag+" "+where); err != nil {
-			return err
+		// A record with no protocol (the upstream entry vanished, or an npm
+		// the converter hides) is Hidden and has no prunable set to check
+		// provider-level fields against; rows that declare their own
+		// protocol are still checked.
+		if rec.head.Protocol != "" {
+			if err := ValidateFields(layer.provider.Fields, rec.head.Protocol, layer.tag+" "+where); err != nil {
+				return err
+			}
 		}
 		for id, row := range layer.rows {
 			if isGlob(id) {
@@ -4734,6 +4740,9 @@ func (r *Registry) validateRecord(rec *record) error {
 			proto := rec.head.Models[id].Protocol
 			if proto == "" {
 				proto = rec.head.Protocol
+			}
+			if proto == "" {
+				continue
 			}
 			if err := ValidateFields(row.Caps.Fields, proto, fmt.Sprintf("%s %s.models.%q", layer.tag, where, id)); err != nil {
 				return err
@@ -6783,7 +6792,7 @@ git commit -m "feat(registry): Resolve with lookup order, alias seeding, glob or
 
 **Interfaces:**
 - Consumes: `EmbeddedSnapshot`, `FromModelsDev`, `ParseMeta`, `Meta`, `Fetcher`, `Load` options.
-- Produces: `type RefreshOptions struct { StateRoot string; Fetcher Fetcher; Force bool; Now func() time.Time; Baseline []byte }`, `type RefreshResult struct { Skipped, NotModified, Updated bool; Path string; Etag string; ProvidersBefore, ProvidersAfter, ModelsBefore, ModelsAfter int }`, `Refresh(ctx context.Context, opts RefreshOptions) (RefreshResult, error)`, `readCache(stateRoot string) (raw []byte, meta Meta, ok bool)`, `cachePaths(stateRoot string) (jsonPath, metaPath string)`, `HTTPFetcher(client *http.Client) Fetcher`, `WithLog(func(format string, args ...any)) Option`, `(*Registry).RefreshStarted() bool`, `(*Registry).WaitRefresh()` (blocks until the background refresh finishes; returns at once when none started), `UpstreamURL`.
+- Produces: `WithoutCache() Option`, `type RefreshOptions struct { StateRoot string; Fetcher Fetcher; Force bool; Now func() time.Time; Baseline []byte }`, `type RefreshResult struct { Skipped, NotModified, Updated bool; Path string; Etag string; ProvidersBefore, ProvidersAfter, ModelsBefore, ModelsAfter int }`, `Refresh(ctx context.Context, opts RefreshOptions) (RefreshResult, error)`, `readCache(stateRoot string) (raw []byte, meta Meta, ok bool)`, `cachePaths(stateRoot string) (jsonPath, metaPath string)`, `HTTPFetcher(client *http.Client) Fetcher`, `WithLog(func(format string, args ...any)) Option`, `(*Registry).RefreshStarted() bool`, `(*Registry).WaitRefresh()` (blocks until the background refresh finishes; returns at once when none started), `UpstreamURL`.
 
 - [ ] **Step 1: Write the failing tests**
 
@@ -6960,6 +6969,28 @@ func TestLoad_PrefersNewerCacheAndOfflineDefault(t *testing.T) {
 	r, err = Load(WithSnapshot(data), WithEnv(mapEnv(map[string]string{"EVENER_OFFLINE": "1"})), WithNoUserLayer(), WithStateRoot(t.TempDir()), WithFetcher(f.fetcher()))
 	if err != nil || r.RefreshStarted() {
 		t.Fatalf("EVENER_OFFLINE=1 must win over an injected fetcher: %v", err)
+	}
+}
+
+func TestLoad_WithoutCacheIgnoresANewerCache(t *testing.T) {
+	state := t.TempDir()
+	f := &fakeFetch{body: subsetFixture(t, 1), etag: "n"}
+	if _, err := Refresh(context.Background(), RefreshOptions{StateRoot: state, Fetcher: f.fetcher(), Force: true, Baseline: fixtureBytes(t)}); err != nil {
+		t.Fatal(err)
+	}
+	r, err := Load(WithSnapshot(fixtureBytes(t)), WithEnv(mapEnv(nil)), WithNoUserLayer(), WithStateRoot(state))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if tag, _ := r.Catalog(); tag != LayerCache {
+		t.Fatalf("without the option the newer cache wins: %q", tag)
+	}
+	r, err = Load(WithSnapshot(fixtureBytes(t)), WithoutCache(), WithEnv(mapEnv(nil)), WithNoUserLayer(), WithStateRoot(state))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if tag, _ := r.Catalog(); tag != LayerSnapshot || len(r.ProviderIDs()) != 40 {
+		t.Fatalf("WithoutCache must load the snapshot alone: %q, %d providers", tag, len(r.ProviderIDs()))
 	}
 }
 
@@ -7172,7 +7203,7 @@ func Refresh(ctx context.Context, opts RefreshOptions) (RefreshResult, error) {
 	if float64(res.ProvidersAfter) < float64(res.ProvidersBefore)*minKeepRatio || float64(res.ModelsAfter) < float64(res.ModelsBefore)*minKeepRatio {
 		return res, fmt.Errorf("refresh: rejected: upstream shrank to %d providers / %d models (baseline %d / %d)", res.ProvidersAfter, res.ModelsAfter, res.ProvidersBefore, res.ModelsBefore)
 	}
-	if _, err := Load(WithSnapshot(body), WithNoUserLayer(), WithOffline(true), WithEnv(func(string) (string, bool) { return "", false }), WithStateRoot(opts.StateRoot)); err != nil {
+	if _, err := Load(WithSnapshot(body), WithoutCache(), WithNoUserLayer(), WithOffline(true), WithEnv(func(string) (string, bool) { return "", false }), WithStateRoot(opts.StateRoot)); err != nil {
 		return res, fmt.Errorf("refresh: rejected: overlay does not load on the new snapshot: %w", err)
 	}
 	newMeta := Meta{FetchedAt: now(), Etag: newEtag, Source: UpstreamURL}
@@ -7231,7 +7262,7 @@ Replace the snapshot block at the top of `Load` (from `raw, meta := o.snapshot, 
 		}
 	}
 	r.catalogTag, r.catalogMeta = LayerSnapshot, meta
-	if cachedRaw, cachedMeta, ok := readCache(o.stateRoot); ok && cachedMeta.FetchedAt.After(meta.FetchedAt) {
+	if cachedRaw, cachedMeta, ok := readCache(o.stateRoot); !o.noCache && ok && cachedMeta.FetchedAt.After(meta.FetchedAt) {
 		if _, err := FromModelsDev(cachedRaw); err != nil {
 			jsonPath, _ := cachePaths(o.stateRoot)
 			r.warnings = append(r.warnings, fmt.Sprintf("ignoring corrupt catalog cache %s: %v", jsonPath, err))
@@ -7352,7 +7383,7 @@ func main() {
 	}
 
 	fmt.Println("\n== dangling overlay aliases")
-	r, err := registry.Load(registry.WithNoUserLayer(), registry.WithOffline(true), registry.WithEnv(func(string) (string, bool) { return "", false }), registry.WithStateRoot(os.TempDir()))
+	r, err := registry.Load(registry.WithoutCache(), registry.WithNoUserLayer(), registry.WithOffline(true), registry.WithEnv(func(string) (string, bool) { return "", false }))
 	if err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)
