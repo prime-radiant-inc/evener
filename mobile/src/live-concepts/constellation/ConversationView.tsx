@@ -1,13 +1,13 @@
 import {
+  conversationItemAxLabel,
   mutationAxLabel,
-  transcriptItemAxLabel,
 } from "../accessibility-semantics";
 import type {
   LiveConceptIntent,
   LiveConceptState,
   QuestionDraft,
 } from "../contract";
-import type { LiveTranscriptItem } from "../model";
+import type { ConversationDisplayItem } from "../model";
 import { Disclosure } from "../shared/Disclosure";
 import { Icon } from "../shared/Icon";
 import { StatusLabel } from "../shared/StatusLabel";
@@ -96,7 +96,7 @@ function QuestionCard({
           <span className="co-eyebrow">
             {question.multiple ? "Choose one or more" : "Choose one"}
           </span>
-          <span>{question.prompt}</span>
+          <span>{question.prompt.text}</span>
         </legend>
         <div className="co-question-options">
           {question.options.map((option) => {
@@ -107,7 +107,7 @@ function QuestionCard({
                 <input
                   type={question.multiple ? "checkbox" : "radio"}
                   name={`co-question-${question.key}`}
-                  aria-label={option.label}
+                  aria-label={option.label.text}
                   aria-describedby={detailId}
                   checked={checked}
                   disabled={pending}
@@ -129,8 +129,8 @@ function QuestionCard({
                   }}
                 />
                 <span>
-                  <strong>{option.label}</strong>
-                  <small id={detailId}>{option.detail}</small>
+                  <strong>{option.label.text}</strong>
+                  <small id={detailId}>{option.detail.text}</small>
                 </span>
               </label>
             );
@@ -174,26 +174,31 @@ function TranscriptContent({
   state,
   dispatch,
 }: {
-  item: LiveTranscriptItem;
+  item: ConversationDisplayItem;
   state: LiveConceptState;
   dispatch(intent: LiveConceptIntent): void;
 }) {
-  switch (item.kind) {
+  switch (item.sourceKind) {
     case "user":
-      return <p className="co-user-message">{item.body}</p>;
+      return <p className="co-user-message">{item.body.text}</p>;
     case "assistant":
-      return <p className="co-assistant-message">{item.body}</p>;
+      return <p className="co-assistant-message">{item.body.text}</p>;
+    case "notice":
+    case "system":
+    case "reasoning":
     case "tool":
+    case "diagnostic":
+    case "unknown":
       return (
         <div className="co-tool-disclosure">
           <Disclosure
-            summary={<span>{item.label}</span>}
+            summary={<span>{item.label.text}</span>}
             expanded={state.ui.expandedToolKeys.has(item.key)}
             onToggle={() => dispatch({ type: "toggleTool", key: item.key })}
           >
             <div className="co-tool-detail">
               <StatusLabel state={item.tone} />
-              <p>{item.body}</p>
+              {item.preview ? <p>{item.preview.text}</p> : null}
             </div>
           </Disclosure>
         </div>
@@ -222,14 +227,14 @@ function TranscriptContent({
       return (
         <section className="co-transcript-error" role="alert">
           <StatusLabel state="failed" />
-          <p>{item.body}</p>
+          <p>{item.body.text}</p>
         </section>
       );
     case "attachment":
       return (
         <section className="co-attachment">
           <p className="co-eyebrow">Attachment</p>
-          <p>{item.body}</p>
+          <p>{item.label.text}</p>
         </section>
       );
   }
@@ -261,14 +266,14 @@ export function ConversationView({ state, dispatch }: ConversationViewProps) {
     <div className="co-conversation co-route-enter">
       <section
         className="co-session-summary"
-        aria-label={`Session ${conversation.title}`}
+        aria-label={`Session ${conversation.title.text}`}
       >
         <div>
-          <p className="co-eyebrow">{conversation.project}</p>
-          <h2>{conversation.title}</h2>
+          <p className="co-eyebrow">{conversation.project.text}</p>
+          <h2>{conversation.title.text}</h2>
           {conversation.updatedLabel ? (
             <p className="co-session-summary__updated">
-              {conversation.updatedLabel}
+              {conversation.updatedLabel.text}
             </p>
           ) : null}
         </div>
@@ -304,18 +309,30 @@ export function ConversationView({ state, dispatch }: ConversationViewProps) {
         ) : (
           conversation.items.map((item) => (
             <article
-              className={`co-transcript-item co-transcript-item--${item.kind}`}
+              className={`co-transcript-item co-transcript-item--${item.sourceKind}`}
               data-transcript-item-id={item.key}
               data-testid={`transcript-item-${item.key}`}
               data-focused={ui.focusedItemKey === item.key ? "true" : "false"}
-              data-streaming={item.streaming ? "true" : undefined}
-              data-truncated={item.truncated ? "true" : undefined}
-              data-current-work={
-                item.kind === "tool" && item.tone === "running"
+              data-streaming={
+                "streaming" in item && item.streaming ? "true" : undefined
+              }
+              data-truncated={
+                ("body" in item ? item.body : item.preview)?.truncated
                   ? "true"
                   : undefined
               }
-              aria-label={transcriptItemAxLabel(item)}
+              data-current-work={
+                item.sourceKind === "tool" && item.tone === "running"
+                  ? "true"
+                  : undefined
+              }
+              aria-label={conversationItemAxLabel(
+                item,
+                item.sourceKind === "question"
+                  ? (ui.questionDrafts[item.questionKey ?? ""]?.resolution ??
+                      null)
+                  : null,
+              )}
               tabIndex={ui.focusedItemKey === item.key ? -1 : undefined}
               key={item.key}
             >

@@ -116,9 +116,9 @@ export function WorkView({ state, dispatch }: WorkViewProps) {
 
       <section className="fn-work-heading">
         <p className="fn-eyebrow">
-          {conversation?.project ?? "Live record"} · One layer down
+          {conversation?.project.text ?? "Live record"} · One layer down
         </p>
-        <h2>{conversation?.title ?? "Work ledger"}</h2>
+        <h2>{conversation?.title.text ?? "Work ledger"}</h2>
         <p>Tasks, delegates, and jobs retain their canonical hierarchy.</p>
       </section>
 
@@ -144,7 +144,7 @@ export function WorkView({ state, dispatch }: WorkViewProps) {
           <WorkTree
             items={workItems}
             parentKey={null}
-            parentTitle={conversation?.title ?? null}
+            parentTitle={conversation?.title.text ?? null}
             depth={0}
             state={state}
             dispatch={dispatch}

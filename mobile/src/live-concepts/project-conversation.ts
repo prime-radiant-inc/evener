@@ -1,157 +1,25 @@
-// createLiveConversationProjector — pure projection from a MobileConversation
-// into a LiveConversationView for live-concept renderers. No DOM, no network,
-// no clock. Same input on the same projector instance → same output.
-//
-// The projector INSTANCE owns a private scoped registry. Same source item/
-// question/option gets the same opaque non-derivable display key and
-// sequenceLabel across prepend, insert, reorder, delta, and re-projection.
-// Different IDs/namespaces do not collide. Raw ref/session/item/call/
-// question/option IDs appear only in the private operational map returned
-// alongside the view — never in the serialized view, display key,
-// sequenceLabel, threadKey, project, body, or DOM-bound fields.
-//
-// C1: All identities use exact nested Maps (TupleRegistry) keyed by string
-// tuples — no delimiter/NUL composites anywhere. Question identity includes
-// batch callId + question key; option identity includes callId + question key
-// + label + detail. Hostile `:` / NUL in any component cannot alias.
-//
-// I1: Every projection is transactional. All allocations stage in temporary
-// registries; only on successful build are they committed. Allocator
-// collision, duplicate option/question, capacity overflow, or any validation
-// error commits ZERO identities/counters/scopes — the prior registry is
-// unchanged and retry works.
-//
-// I2: Operational map snapshots are genuinely runtime-immutable (FrozenMap).
-// Cast/set/delete/clear throw without mutation. No registry refs escape.
-//
-// I3: Zero-question batch emits NO transcript row and NO question card; no
-// private mappings are created.
-//
-// I4: Oversized UTF-8 content yields exactly one truncation marker even if
-// the input already contains the marker one or many times. Byte cap and
-// code-point boundary are preserved. A literal trailing marker is ambiguous
-// (genuine content may end with it) — the projector does NOT infer
-// truncated from the suffix. Set membership in the store's
-// truncatedItemIds identifies store truncation; the projector combines
-// that with its own oversized-content truncation.
+// Transactional projection from canonical MobileConversation into a bounded,
+// immutable display/evidence snapshot. Canonical values remain available only
+// through opaque operational lookups; source-derived display text is redacted
+// before UTF-8 truncation.
 
 import type {
   ActivityState,
   MobileConversation,
   MobileTimelineItem,
 } from "../conversation/model";
+import { boundDisplayText, DISPLAY_LIMITS } from "./display-text";
 import type {
+  ActivityMarkerDisplayItem,
+  BoundedDisplayText,
+  ConversationDisplayItem,
   DisplayTone,
+  EvidenceDisplayItem,
+  EvidenceSection,
   LiveConversationView,
   LiveQuestionView,
-  LiveTranscriptItem,
+  NarrativeDisplayItem,
 } from "./model";
-
-// --- truncation (I4) ---------------------------------------------------------
-
-const MAX_LIVE_BYTES = 64 * 1024;
-const TRUNCATION_MARKER = "… truncated";
-
-const textEncoder = new TextEncoder();
-const markerBytes = textEncoder.encode(TRUNCATION_MARKER);
-
-function truncateToValidUtf8(encoded: Uint8Array, targetBytes: number): string {
-  if (targetBytes <= 0) return "";
-  const decoder = new TextDecoder("utf-8", { fatal: true });
-  let cut = Math.min(targetBytes, encoded.length);
-  while (cut > 0) {
-    try {
-      return decoder.decode(encoded.subarray(0, cut));
-    } catch {
-      cut -= 1;
-    }
-  }
-  return "";
-}
-
-// If content fits within cap, preserve as-is — the projector returns
-// truncated:false. A literal trailing marker is ambiguous: genuine content
-// may legitimately end with "… truncated", so the suffix alone does not
-// identify store truncation. The caller combines this with the store's
-// truncatedItemIds set (authoritative: has(sourceItem.id)). If content
-// exceeds cap, strip ALL existing markers so the output has exactly one,
-// then truncate and add a single marker, and return truncated:true.
-
-// Build the KMP failure (partial match) table for the marker. failure[i] is
-// the length of the longest proper prefix of marker[0..i) that is also a
-// suffix of marker[0..i).
-function buildKmpFailure(marker: string): number[] {
-  const fail = new Array<number>(marker.length).fill(0);
-  let k = 0;
-  for (let i = 1; i < marker.length; i++) {
-    while (k > 0 && marker[i] !== marker[k]) k = fail[k - 1] ?? 0;
-    if (marker[i] === marker[k]) k++;
-    fail[i] = k;
-  }
-  return fail;
-}
-
-// Linear-time removal of all occurrences of `marker` from `text`, including
-// occurrences formed by joining text across a removed marker. Uses a stack
-// of (char, kmpState) pairs: each character is pushed once and popped at most
-// once, giving O(n) total work. When a full marker match completes, the
-// matched characters are popped, and the KMP state of the new stack top
-// restores the prior match state so join-created markers are detected
-// immediately without rescanning.
-function stripMarkersLinear(text: string, marker: string): string {
-  if (marker.length === 0) return text;
-  const fail = buildKmpFailure(marker);
-  // Stack entries: [character, kmpState]. kmpState is the length of the
-  // longest prefix of marker that matches ending at this stack position.
-  const stack: Array<[string, number]> = [];
-
-  for (const ch of text) {
-    // Compute the KMP state for this character based on the current stack top.
-    const top = stack.length > 0 ? stack[stack.length - 1] : undefined;
-    let state = top ? top[1] : 0;
-    while (state > 0 && ch !== marker[state]) state = fail[state - 1] ?? 0;
-    if (ch === marker[state]) state++;
-
-    if (state === marker.length) {
-      // Full marker matched — pop the marker-length characters off the stack.
-      // The marker itself was never fully pushed (we detect at the last char),
-      // so we need to pop (marker.length - 1) characters that were pushed as
-      // partial matches, plus we don't push this character.
-      const popCount = marker.length - 1;
-      stack.length -= popCount;
-      // After popping, restore the match state from the new stack top (if any).
-      // This is the key to detecting join-created markers in O(1) per char.
-    } else {
-      stack.push([ch, state]);
-    }
-  }
-
-  return stack.map((entry) => entry[0]).join("");
-}
-
-function truncate(text: string): { body: string; truncated: boolean } {
-  const encoded = textEncoder.encode(text);
-
-  if (encoded.length <= MAX_LIVE_BYTES) {
-    // Within cap: body unchanged, projector did not truncate. The store's
-    // truncatedItemIds set (passed via options) is the authoritative source
-    // for whether this item was truncated — no suffix inference here.
-    return { body: text, truncated: false };
-  }
-
-  // Oversized: strip ALL existing markers in O(n), then truncate + add
-  // exactly one. The linear strip uses a KMP stack-based reducer that
-  // removes markers immediately and restores prior match state so
-  // join-created markers are detected without rescanning.
-  const stripped = stripMarkersLinear(text, TRUNCATION_MARKER);
-  const strippedEncoded = textEncoder.encode(stripped);
-
-  const targetBytes = MAX_LIVE_BYTES - markerBytes.length;
-  const truncatedContent = truncateToValidUtf8(strippedEncoded, targetBytes);
-  return { body: truncatedContent + TRUNCATION_MARKER, truncated: true };
-}
-
-// --- tone --------------------------------------------------------------------
 
 function conversationTone(status: string): DisplayTone {
   if (status === "running") return "running";
@@ -166,7 +34,42 @@ function activityTone(state: ActivityState): DisplayTone {
   return "success";
 }
 
-// --- error -------------------------------------------------------------------
+function bounded(
+  source: string,
+  limit: number,
+  policy: "plain" | "redacted" = "redacted",
+): BoundedDisplayText {
+  return Object.freeze(boundDisplayText(source, limit, policy));
+}
+
+function storeTruncation(
+  value: BoundedDisplayText,
+  itemId: string,
+  truncatedItemIds: ReadonlySet<string>,
+): BoundedDisplayText {
+  if (value.truncated || !truncatedItemIds.has(itemId)) return value;
+  return Object.freeze({ ...value, truncated: true });
+}
+
+function fixed(
+  source: string,
+  limit: number = DISPLAY_LIMITS.feedLabel,
+): BoundedDisplayText {
+  return bounded(source, limit, "plain");
+}
+
+function durationLabel(
+  durationMs: number | undefined,
+): BoundedDisplayText | null {
+  if (
+    durationMs === undefined ||
+    !Number.isFinite(durationMs) ||
+    durationMs < 0
+  ) {
+    return null;
+  }
+  return fixed(`${Math.round(durationMs)} ms`);
+}
 
 export class ProjectionCapacityError extends Error {
   constructor() {
@@ -342,7 +245,7 @@ class TupleRegistry<V> {
   }
 }
 
-// --- operational map (snapshot) ----------------------------------------------
+// --- operational map ---------------------------------------------------------
 
 export interface QuestionLink {
   readonly callId: string;
@@ -360,34 +263,30 @@ export interface ConversationOperationalMap {
   readonly itemKeys: ReadonlyMap<string, string>;
   readonly questionKeys: ReadonlyMap<string, QuestionLink>;
   readonly optionKeys: ReadonlyMap<string, OptionLink>;
+  readonly evidenceKeys: ReadonlyMap<string, string>;
 }
 
-// --- projector options -------------------------------------------------------
+export interface ConversationDisplaySnapshot {
+  readonly view: LiveConversationView;
+  readonly operational: ConversationOperationalMap;
+}
 
 export interface ConversationProjectOptions {
   ref: string;
   olderCursor: string | null;
   projectLabel: string;
   updatedLabel: string | null;
-  // Plan3 host projection: authoritative set of item IDs the store has
-  // truncated (frozen). The projector marks an item truncated:true when
-  // the projector itself truncates oversized content OR the store set
-  // marks the item's ID as truncated. This replaces suffix inference.
   truncatedItemIds: ReadonlySet<string>;
 }
-
-// --- projector instance ------------------------------------------------------
 
 export interface LiveConversationProjector {
   project(
     conv: MobileConversation,
     options: ConversationProjectOptions,
-  ): { view: LiveConversationView; operational: ConversationOperationalMap };
+  ): ConversationDisplaySnapshot;
   reset(scope?: string): void;
   dispose(): void;
 }
-
-// --- key allocator -----------------------------------------------------------
 
 export type OpaqueKeyAllocator = () => string;
 
@@ -399,7 +298,33 @@ function defaultAllocator(): OpaqueKeyAllocator {
   return () => `${prefix}-${++n}`;
 }
 
-// --- projector factory -------------------------------------------------------
+function itemHasEvidence(item: MobileTimelineItem): boolean {
+  switch (item.kind) {
+    case "activity":
+      return Boolean(
+        item.detail.arguments ||
+          item.detail.output ||
+          item.detail.error ||
+          item.detail.exitCode !== undefined,
+      );
+    case "notice":
+      return (
+        item.text !== "" &&
+        !(
+          item.origin === "system" &&
+          (item.family === "hidden-instruction" ||
+            item.family === "system-prelude")
+        )
+      );
+    case "attachments":
+      return item.items.length > 0;
+    case "user":
+    case "assistant":
+    case "question":
+    case "failure":
+      return false;
+  }
+}
 
 const DEFAULT_MAX_REGISTRY = 10_000;
 
@@ -408,370 +333,700 @@ export function createLiveConversationProjector(options?: {
   maxRegistrySize?: number;
 }): LiveConversationProjector {
   const alloc = options?.allocator ?? defaultAllocator();
-  const maxReg = options?.maxRegistrySize ?? DEFAULT_MAX_REGISTRY;
-
-  // C1: Exact nested Maps keyed by string tuples. No delimiter concatenation.
+  const maxRegistrySize = options?.maxRegistrySize ?? DEFAULT_MAX_REGISTRY;
   const keyRegistry = new TupleRegistry<string>();
-  const seqRegistry = new TupleRegistry<string>();
-
-  // All allocator-returned strings currently in use (for collision detection).
+  const sequenceRegistry = new TupleRegistry<string>();
   const allocatedKeys = new Set<string>();
-
-  // Total identity count (entries in keyRegistry only; seqRegistry tracks
-  // the same identity tuples for items but is not double-counted).
   let totalIdentities = 0;
-
-  // --- preflight: count new identities using exact tuple paths (C1) --------
 
   function countNewIdentities(
     items: readonly MobileTimelineItem[],
     scope: string,
   ): number {
     const seen = new TupleRegistry<true>();
-    let newCount = 0;
-
-    function check(path: string[]): void {
+    let count = 0;
+    const check = (path: string[]): void => {
       if (seen.has(path)) return;
       seen.set(path, true);
-      if (!keyRegistry.has(path)) newCount += 1;
-    }
-
+      if (!keyRegistry.has(path)) count += 1;
+    };
     check([scope, "thread"]);
     for (const item of items) {
       if (item.kind === "question") {
-        // I3: empty batch → no identities.
         if (item.batch.questions.length === 0) continue;
-        const callId = item.batch.callId;
-        for (const q of item.batch.questions) {
-          if (q === undefined) continue;
-          check([scope, "qitem", callId, q.key]);
-          check([scope, "question", callId, q.key]);
-          for (const o of q.options) {
-            check([scope, "option", callId, q.key, o.label, o.detail]);
+        for (const question of item.batch.questions) {
+          check([scope, "qitem", item.batch.callId, question.key]);
+          check([scope, "question", item.batch.callId, question.key]);
+          for (const option of question.options) {
+            check([
+              scope,
+              "option",
+              item.batch.callId,
+              question.key,
+              option.label,
+              option.detail,
+            ]);
           }
         }
       } else {
         check([scope, "item", item.id]);
+        if (itemHasEvidence(item)) check([scope, "evidence", item.id]);
       }
     }
-    return newCount;
+    return count;
   }
 
   return {
     project(
       conv: MobileConversation,
       opts: ConversationProjectOptions,
-    ): { view: LiveConversationView; operational: ConversationOperationalMap } {
-      const { ref, olderCursor, projectLabel, updatedLabel } = opts;
-      const truncatedItemIds = opts.truncatedItemIds;
-      const scope = ref;
-
-      // --- I1: Preflight capacity check (before any allocation) -------------
+    ): ConversationDisplaySnapshot {
+      const scope = opts.ref;
       const newCount = countNewIdentities(conv.items, scope);
-      if (totalIdentities + newCount > maxReg) {
+      if (totalIdentities + newCount > maxRegistrySize) {
         throw new ProjectionCapacityError();
       }
 
-      // --- I1: Build phase — stage all allocations transactionally ----------
-      // Staging registries are local; only committed on success. If any error
-      // occurs, staging is discarded and zero identities are committed.
       const stagedKeys = new TupleRegistry<string>();
-      const stagedSeqs = new TupleRegistry<string>();
+      const stagedSequences = new TupleRegistry<string>();
       const stagedAllocated = new Set<string>();
 
-      function stageKey(path: string[]): string {
-        let k = keyRegistry.get(path);
-        if (k !== undefined) return k;
-
-        k = stagedKeys.get(path);
-        if (k !== undefined) return k;
-
-        k = alloc();
-        if (allocatedKeys.has(k) || stagedAllocated.has(k)) {
+      const stageKey = (path: string[]): string => {
+        const committed = keyRegistry.get(path);
+        if (committed !== undefined) return committed;
+        const staged = stagedKeys.get(path);
+        if (staged !== undefined) return staged;
+        const key = alloc();
+        if (allocatedKeys.has(key) || stagedAllocated.has(key)) {
           throw new ProjectionCapacityError();
         }
-        stagedAllocated.add(k);
-        stagedKeys.set(path, k);
-        return k;
-      }
+        stagedAllocated.add(key);
+        stagedKeys.set(path, key);
+        return key;
+      };
 
-      function stageSeq(path: string[]): string {
-        let s = seqRegistry.get(path);
-        if (s !== undefined) return s;
-
-        s = stagedSeqs.get(path);
-        if (s !== undefined) return s;
-
-        s = alloc();
-        if (allocatedKeys.has(s) || stagedAllocated.has(s)) {
+      const stageSequence = (path: string[]): string => {
+        const committed = sequenceRegistry.get(path);
+        if (committed !== undefined) return committed;
+        const staged = stagedSequences.get(path);
+        if (staged !== undefined) return staged;
+        const sequence = alloc();
+        if (allocatedKeys.has(sequence) || stagedAllocated.has(sequence)) {
           throw new ProjectionCapacityError();
         }
-        stagedAllocated.add(s);
-        stagedSeqs.set(path, s);
-        return s;
-      }
+        stagedAllocated.add(sequence);
+        stagedSequences.set(path, sequence);
+        return sequence;
+      };
 
-      // --- Build question views and key mappings (C1: callId in identity) ---
       const questions: LiveQuestionView[] = [];
-      const keyMap = new Map<string, Map<string, string>>(); // callId → q.key → qKey
-      const opQuestionKeys = new Map<string, QuestionLink>();
-      const opOptionKeys = new Map<string, OptionLink>();
+      const questionDisplayKeys = new Map<string, Map<string, string>>();
+      const operationalQuestions = new Map<string, QuestionLink>();
+      const operationalOptions = new Map<string, OptionLink>();
       const seenQuestions = new Set<string>();
 
       for (const item of conv.items) {
-        if (item.kind !== "question") continue;
-        // I3: zero-question batch → no card, no mappings.
-        if (item.batch.questions.length === 0) continue;
+        if (item.kind !== "question" || item.batch.questions.length === 0) {
+          continue;
+        }
         const callId = item.batch.callId;
-
-        for (const q of item.batch.questions) {
-          if (q === undefined) continue;
-
-          // Detect duplicate question (same callId + q.key).
-          const qId = JSON.stringify([callId, q.key]);
-          if (seenQuestions.has(qId)) {
+        for (const question of item.batch.questions) {
+          const questionIdentity = JSON.stringify([callId, question.key]);
+          if (seenQuestions.has(questionIdentity)) {
             throw new Error("Indistinguishable duplicate question");
           }
-          seenQuestions.add(qId);
-
-          const qKey = stageKey([scope, "question", callId, q.key]);
-          if (!keyMap.has(callId)) keyMap.set(callId, new Map());
-          keyMap.get(callId)?.set(q.key, qKey);
-          opQuestionKeys.set(
-            qKey,
-            Object.freeze({ callId, questionKey: q.key }),
+          seenQuestions.add(questionIdentity);
+          const questionKey = stageKey([
+            scope,
+            "question",
+            callId,
+            question.key,
+          ]);
+          let batchKeys = questionDisplayKeys.get(callId);
+          if (batchKeys === undefined) {
+            batchKeys = new Map();
+            questionDisplayKeys.set(callId, batchKeys);
+          }
+          batchKeys.set(question.key, questionKey);
+          operationalQuestions.set(
+            questionKey,
+            Object.freeze({ callId, questionKey: question.key }),
           );
 
-          // Detect duplicate options within this question (exact label+detail).
           const seenOptions = new Set<string>();
-          const options = q.options.map((o) => {
-            const optId = JSON.stringify([o.label, o.detail]);
-            if (seenOptions.has(optId)) {
+          const displayOptions = question.options.map((option) => {
+            const optionIdentity = JSON.stringify([
+              option.label,
+              option.detail,
+            ]);
+            if (seenOptions.has(optionIdentity)) {
               throw new Error("Indistinguishable duplicate option");
             }
-            seenOptions.add(optId);
-            const optKey = stageKey([
+            seenOptions.add(optionIdentity);
+            const optionKey = stageKey([
               scope,
               "option",
               callId,
-              q.key,
-              o.label,
-              o.detail,
+              question.key,
+              option.label,
+              option.detail,
             ]);
-            opOptionKeys.set(
-              optKey,
+            operationalOptions.set(
+              optionKey,
               Object.freeze({
                 callId,
-                questionKey: q.key,
-                label: o.label,
-                detail: o.detail,
+                questionKey: question.key,
+                label: option.label,
+                detail: option.detail,
               }),
             );
-            return { key: optKey, label: o.label, detail: o.detail };
+            return Object.freeze({
+              key: optionKey,
+              label: bounded(option.label, DISPLAY_LIMITS.questionOptionLabel),
+              detail: bounded(
+                option.detail,
+                DISPLAY_LIMITS.questionOptionDetail,
+              ),
+            });
           });
-
-          questions.push({
-            key: qKey,
-            header: q.header,
-            prompt: q.question,
-            options,
-            multiple: q.multiSelect,
-          });
+          questions.push(
+            Object.freeze({
+              key: questionKey,
+              header: bounded(question.header, DISPLAY_LIMITS.questionHeader),
+              prompt: bounded(question.question, DISPLAY_LIMITS.questionPrompt),
+              options: Object.freeze(displayOptions),
+              multiple: question.multiSelect,
+              why:
+                question.why === undefined
+                  ? null
+                  : bounded(
+                      question.why,
+                      DISPLAY_LIMITS.questionSupportingText,
+                    ),
+              ifUnanswered:
+                question.ifUnanswered === undefined
+                  ? null
+                  : bounded(
+                      question.ifUnanswered,
+                      DISPLAY_LIMITS.questionSupportingText,
+                    ),
+            }),
+          );
         }
       }
 
-      // --- Build transcript items (C1: exact paths, I3: empty batch) --------
-      const opItemKeys = new Map<string, string>();
-      const items: LiveTranscriptItem[] = [];
+      const items: ConversationDisplayItem[] = [];
+      const evidence: EvidenceDisplayItem[] = [];
+      const operationalItems = new Map<string, string>();
+      const operationalEvidence = new Map<string, string>();
+
+      const addEvidence = (
+        sourceItem: MobileTimelineItem,
+        family: ActivityMarkerDisplayItem["sourceKind"],
+        title: BoundedDisplayText,
+        sectionInputs: ReadonlyArray<{
+          heading: string;
+          body: string | undefined;
+          limit: number;
+        }>,
+      ): string | null => {
+        const populated = sectionInputs.filter(
+          (
+            section,
+          ): section is { heading: string; body: string; limit: number } =>
+            section.body !== undefined && section.body !== "",
+        );
+        if (populated.length === 0) return null;
+        const evidenceKey = stageKey([scope, "evidence", sourceItem.id]);
+        const sections: EvidenceSection[] = populated.map((section) =>
+          Object.freeze({
+            heading: fixed(section.heading, DISPLAY_LIMITS.evidenceHeading),
+            body: bounded(section.body, section.limit),
+          }),
+        );
+        evidence.push(
+          Object.freeze({
+            key: evidenceKey,
+            family,
+            title,
+            sections: Object.freeze(sections),
+            redacted: true,
+          }),
+        );
+        operationalEvidence.set(evidenceKey, sourceItem.id);
+        return evidenceKey;
+      };
+
+      const addNarrative = (
+        sourceItem: Exclude<
+          MobileTimelineItem,
+          { kind: "activity" | "notice" | "attachments" }
+        >,
+        row: Omit<NarrativeDisplayItem, "key" | "sequence">,
+        path: string[],
+      ): void => {
+        const key = stageKey(path);
+        items.push(
+          Object.freeze({
+            ...row,
+            key,
+            sequence: stageSequence(path),
+          }),
+        );
+        operationalItems.set(key, sourceItem.id);
+      };
+
+      const addMarker = (
+        sourceItem: Extract<
+          MobileTimelineItem,
+          { kind: "activity" | "notice" | "attachments" }
+        >,
+        row: Omit<ActivityMarkerDisplayItem, "key" | "sequence">,
+      ): void => {
+        const path = [scope, "item", sourceItem.id];
+        const key = stageKey(path);
+        items.push(
+          Object.freeze({
+            ...row,
+            key,
+            sequence: stageSequence(path),
+          }),
+        );
+        operationalItems.set(key, sourceItem.id);
+      };
 
       for (const item of conv.items) {
-        const rows: LiveTranscriptItem[] = [];
-
         switch (item.kind) {
-          case "user":
-            rows.push({
-              key: stageKey([scope, "item", item.id]),
-              kind: "user",
-              label: "You",
-              body: item.text,
-              tone: "idle",
-              streaming: false,
-              truncated: false,
-              questionKey: null,
-              sequenceLabel: stageSeq([scope, "item", item.id]),
-            });
-            break;
-
-          case "assistant": {
-            const { body, truncated } = truncate(item.markdown);
-            // Plan3: truncated is projector-actually-truncated OR the store
-            // marked this item's ID as truncated (authoritative freeze set).
-            const isTruncated = truncated || truncatedItemIds.has(item.id);
-            rows.push({
-              key: stageKey([scope, "item", item.id]),
-              kind: "assistant",
-              label: "Assistant",
-              body,
-              tone: item.streaming ? "running" : "idle",
-              streaming: item.streaming,
-              truncated: isTruncated,
-              questionKey: null,
-              sequenceLabel: stageSeq([scope, "item", item.id]),
-            });
-            break;
-          }
-
-          case "activity": {
-            const outputText = item.detail.output ?? "";
-            const { body, truncated } = truncate(outputText);
-            // Plan3: truncated is projector-actually-truncated OR the store
-            // marked this item's ID as truncated (authoritative freeze set).
-            const isTruncated = truncated || truncatedItemIds.has(item.id);
-            rows.push({
-              key: stageKey([scope, "item", item.id]),
-              kind: "tool",
-              label: item.label,
-              body,
-              tone: activityTone(item.state),
-              streaming: item.state === "running",
-              truncated: isTruncated,
-              questionKey: null,
-              sequenceLabel: stageSeq([scope, "item", item.id]),
-            });
-            break;
-          }
-
-          case "notice":
-            rows.push({
-              key: stageKey([scope, "item", item.id]),
-              kind: "user",
-              label: "Notice",
-              body: item.text,
-              tone: item.tone === "warning" ? "attention" : "idle",
-              streaming: false,
-              truncated: false,
-              questionKey: null,
-              sequenceLabel: stageSeq([scope, "item", item.id]),
-            });
-            break;
-
-          case "question": {
-            // I3: zero-question batch → no transcript rows.
-            if (item.batch.questions.length === 0) break;
-            const callId = item.batch.callId;
-            for (const q of item.batch.questions) {
-              if (q === undefined) continue;
-              const qKey = keyMap.get(callId)?.get(q.key) ?? null;
-              rows.push({
-                key: stageKey([scope, "qitem", callId, q.key]),
-                kind: "question",
-                label: q.header,
-                body: q.question,
-                tone: "attention",
+          case "user": {
+            const body = storeTruncation(
+              bounded(item.text, DISPLAY_LIMITS.userMessage),
+              item.id,
+              opts.truncatedItemIds,
+            );
+            addNarrative(
+              item,
+              {
+                sourceKind: "user",
+                body,
+                label: fixed("You"),
+                tone: "idle",
                 streaming: false,
-                truncated: false,
-                questionKey: qKey,
-                sequenceLabel: stageSeq([scope, "qitem", callId, q.key]),
+                questionKey: null,
+              },
+              [scope, "item", item.id],
+            );
+            break;
+          }
+          case "assistant": {
+            const body = storeTruncation(
+              bounded(item.markdown, DISPLAY_LIMITS.assistantProse),
+              item.id,
+              opts.truncatedItemIds,
+            );
+            addNarrative(
+              item,
+              {
+                sourceKind: "assistant",
+                body,
+                label: fixed("Assistant"),
+                tone: item.streaming ? "running" : "idle",
+                streaming: item.streaming,
+                questionKey: null,
+              },
+              [scope, "item", item.id],
+            );
+            break;
+          }
+          case "question": {
+            if (item.batch.questions.length === 0) break;
+            for (const question of item.batch.questions) {
+              const questionKey =
+                questionDisplayKeys.get(item.batch.callId)?.get(question.key) ??
+                null;
+              addNarrative(
+                item,
+                {
+                  sourceKind: "question",
+                  body: bounded(
+                    question.question,
+                    DISPLAY_LIMITS.questionPrompt,
+                  ),
+                  label: bounded(
+                    question.header,
+                    DISPLAY_LIMITS.questionHeader,
+                  ),
+                  tone: "attention",
+                  streaming: false,
+                  questionKey,
+                },
+                [scope, "qitem", item.batch.callId, question.key],
+              );
+            }
+            break;
+          }
+          case "failure":
+            addNarrative(
+              item,
+              {
+                sourceKind: "failure",
+                body: bounded(item.detail, DISPLAY_LIMITS.failureBody),
+                label: bounded(item.title, DISPLAY_LIMITS.failureTitle),
+                tone: "failed",
+                streaming: false,
+                questionKey: null,
+              },
+              [scope, "item", item.id],
+            );
+            break;
+          case "activity": {
+            if (item.family === "tool") {
+              const label = bounded(item.label, DISPLAY_LIMITS.feedLabel);
+              const previewSource =
+                item.state === "failed"
+                  ? item.detail.error
+                  : item.detail.output;
+              const evidenceKey = addEvidence(
+                item,
+                "tool",
+                bounded(item.label, DISPLAY_LIMITS.detailLabel),
+                [
+                  {
+                    heading: "Arguments",
+                    body: item.detail.arguments,
+                    limit: DISPLAY_LIMITS.toolDetail,
+                  },
+                  {
+                    heading: "Output",
+                    body: item.detail.output,
+                    limit: DISPLAY_LIMITS.toolDetail,
+                  },
+                  {
+                    heading: "Error",
+                    body: item.detail.error,
+                    limit: DISPLAY_LIMITS.toolDetail,
+                  },
+                  {
+                    heading: "Exit code",
+                    body:
+                      item.detail.exitCode === undefined
+                        ? undefined
+                        : String(item.detail.exitCode),
+                    limit: DISPLAY_LIMITS.toolDetail,
+                  },
+                ],
+              );
+              const preview =
+                previewSource === undefined || previewSource === ""
+                  ? null
+                  : storeTruncation(
+                      bounded(previewSource, DISPLAY_LIMITS.toolPreview),
+                      item.id,
+                      opts.truncatedItemIds,
+                    );
+              addMarker(item, {
+                sourceKind: "tool",
+                semanticKind: "tool",
+                label,
+                preview,
+                duration: durationLabel(item.detail.durationMs),
+                tone: activityTone(item.state),
+                state: item.state,
+                evidenceKey,
+              });
+            } else if (item.family === "reasoning") {
+              const output = item.detail.output;
+              const evidenceKey = addEvidence(
+                item,
+                "reasoning",
+                fixed("Reasoning", DISPLAY_LIMITS.detailLabel),
+                [
+                  {
+                    heading: "Details",
+                    body: output,
+                    limit: DISPLAY_LIMITS.reasoningDetail,
+                  },
+                ],
+              );
+              addMarker(item, {
+                sourceKind: "reasoning",
+                semanticKind: "reasoning",
+                label: fixed("Reasoning"),
+                preview:
+                  output === undefined || output === ""
+                    ? null
+                    : storeTruncation(
+                        bounded(output, DISPLAY_LIMITS.reasoningPreview),
+                        item.id,
+                        opts.truncatedItemIds,
+                      ),
+                duration: durationLabel(item.detail.durationMs),
+                tone: activityTone(item.state),
+                state: item.state,
+                evidenceKey,
+              });
+            } else {
+              const evidenceKey = addEvidence(
+                item,
+                "unknown",
+                fixed("Activity", DISPLAY_LIMITS.detailLabel),
+                [
+                  {
+                    heading: "Details",
+                    body: item.detail.output,
+                    limit: DISPLAY_LIMITS.unknownDetail,
+                  },
+                ],
+              );
+              addMarker(item, {
+                sourceKind: "unknown",
+                semanticKind: "activity",
+                label: fixed("Activity"),
+                preview: null,
+                duration: durationLabel(item.detail.durationMs),
+                tone: activityTone(item.state),
+                state: item.state,
+                evidenceKey,
               });
             }
             break;
           }
-
-          case "failure":
-            rows.push({
-              key: stageKey([scope, "item", item.id]),
-              kind: "failure",
-              label: item.title,
-              body: item.detail,
-              tone: "failed",
-              streaming: false,
-              truncated: false,
-              questionKey: null,
-              sequenceLabel: stageSeq([scope, "item", item.id]),
+          case "notice": {
+            if (item.origin === "system") {
+              if (
+                item.family === "hidden-instruction" ||
+                item.family === "system-prelude"
+              ) {
+                addMarker(item, {
+                  sourceKind: "system",
+                  semanticKind: "system-context",
+                  label: fixed("System context"),
+                  preview: null,
+                  duration: null,
+                  tone: "idle",
+                  state: "unavailable",
+                  evidenceKey: null,
+                });
+                break;
+              }
+              if (item.family === "diagnostic") {
+                const evidenceKey = addEvidence(
+                  item,
+                  "diagnostic",
+                  fixed("Diagnostic", DISPLAY_LIMITS.detailLabel),
+                  [
+                    {
+                      heading: "Details",
+                      body: item.text,
+                      limit: DISPLAY_LIMITS.diagnosticDetail,
+                    },
+                  ],
+                );
+                addMarker(item, {
+                  sourceKind: "diagnostic",
+                  semanticKind: "system-activity",
+                  label: fixed("Diagnostic"),
+                  preview: bounded(item.text, DISPLAY_LIMITS.diagnosticPreview),
+                  duration: null,
+                  tone: "idle",
+                  state: "completed",
+                  evidenceKey,
+                });
+                break;
+              }
+              if (item.family === "unknown-system") {
+                const evidenceKey = addEvidence(
+                  item,
+                  "system",
+                  fixed("System activity", DISPLAY_LIMITS.detailLabel),
+                  [
+                    {
+                      heading: "Details",
+                      body: item.text,
+                      limit: DISPLAY_LIMITS.unknownDetail,
+                    },
+                  ],
+                );
+                addMarker(item, {
+                  sourceKind: "system",
+                  semanticKind: "system-activity",
+                  label: fixed("System activity"),
+                  preview: null,
+                  duration: null,
+                  tone: "idle",
+                  state: "unavailable",
+                  evidenceKey,
+                });
+                break;
+              }
+              const lifecycle = item.family === "lifecycle";
+              const evidenceKey = addEvidence(
+                item,
+                "system",
+                fixed(
+                  lifecycle ? "System activity" : "Notice",
+                  DISPLAY_LIMITS.detailLabel,
+                ),
+                [
+                  {
+                    heading: "Details",
+                    body: item.text,
+                    limit: lifecycle
+                      ? DISPLAY_LIMITS.lifecycleDetail
+                      : DISPLAY_LIMITS.noticeDetail,
+                  },
+                ],
+              );
+              addMarker(item, {
+                sourceKind: "system",
+                semanticKind: lifecycle ? "system-activity" : "warning-notice",
+                label: fixed(lifecycle ? "System activity" : "Notice"),
+                preview: bounded(item.text, DISPLAY_LIMITS.noticePreview),
+                duration: null,
+                tone: item.tone === "warning" ? "attention" : "idle",
+                state: "completed",
+                evidenceKey,
+              });
+              break;
+            }
+            const warning = item.family === "warning";
+            const evidenceKey = addEvidence(
+              item,
+              "notice",
+              fixed("Notice", DISPLAY_LIMITS.detailLabel),
+              [
+                {
+                  heading: "Details",
+                  body: item.text,
+                  limit: DISPLAY_LIMITS.noticeDetail,
+                },
+              ],
+            );
+            addMarker(item, {
+              sourceKind: "notice",
+              semanticKind: warning ? "warning-notice" : "notice",
+              label: fixed("Notice"),
+              preview: bounded(item.text, DISPLAY_LIMITS.noticePreview),
+              duration: null,
+              tone: warning ? "attention" : "idle",
+              state: "completed",
+              evidenceKey,
             });
             break;
-
+          }
           case "attachments": {
-            const names = item.items
-              .map((a) => a.name ?? "attachment")
+            const metadata = item.items
+              .map((attachment) =>
+                [attachment.name ?? "attachment", attachment.mediaType]
+                  .filter((value): value is string => Boolean(value))
+                  .join(" — "),
+              )
+              .join("\n");
+            const labelSource = item.items
+              .map((attachment) => attachment.name ?? "attachment")
               .join(", ");
-            rows.push({
-              key: stageKey([scope, "item", item.id]),
-              kind: "attachment",
-              label: "Attachments",
-              body: names,
+            const evidenceKey = addEvidence(
+              item,
+              "attachment",
+              bounded(labelSource, DISPLAY_LIMITS.detailLabel),
+              [
+                {
+                  heading: "Metadata",
+                  body: metadata,
+                  limit: DISPLAY_LIMITS.attachmentMetadata,
+                },
+              ],
+            );
+            addMarker(item, {
+              sourceKind: "attachment",
+              semanticKind: "attachment",
+              label: bounded(labelSource, DISPLAY_LIMITS.attachmentLabel),
+              preview: null,
+              duration: null,
               tone: "idle",
-              streaming: false,
-              truncated: false,
-              questionKey: null,
-              sequenceLabel: stageSeq([scope, "item", item.id]),
+              state: "completed",
+              evidenceKey,
             });
             break;
           }
         }
+      }
 
-        for (const row of rows) {
-          opItemKeys.set(row.key, item.id);
-          items.push(row);
+      const evidenceCounts = new Map<string, number>();
+      for (const entry of evidence) {
+        evidenceCounts.set(entry.key, (evidenceCounts.get(entry.key) ?? 0) + 1);
+      }
+      for (const item of items) {
+        if (!("evidenceKey" in item) || item.evidenceKey === null) continue;
+        if (
+          evidenceCounts.get(item.evidenceKey) !== 1 ||
+          !operationalEvidence.has(item.evidenceKey)
+        ) {
+          throw new Error("Invalid evidence projection");
         }
       }
 
-      // Thread key (C1: exact path [scope, "thread"]).
       const threadKey = stageKey([scope, "thread"]);
+      const title = conv.name ?? conv.preview;
+      const view: LiveConversationView = Object.freeze({
+        threadKey,
+        title: bounded(title, DISPLAY_LIMITS.titleProject),
+        project: bounded(opts.projectLabel, DISPLAY_LIMITS.titleProject),
+        status: bounded(conv.status, DISPLAY_LIMITS.statusUpdated),
+        items: Object.freeze(items),
+        evidence: Object.freeze(evidence),
+        questions: Object.freeze(questions),
+        olderAvailable: opts.olderCursor !== null,
+        tone: conversationTone(conv.status),
+        updatedLabel:
+          opts.updatedLabel === null
+            ? null
+            : bounded(opts.updatedLabel, DISPLAY_LIMITS.statusUpdated),
+      });
 
-      // --- I1: Commit — write staging to main registries (atomic) -----------
+      const snapshot: ConversationDisplaySnapshot = Object.freeze({
+        view,
+        operational: Object.freeze({
+          itemKeys: new FrozenMap(operationalItems),
+          questionKeys: new FrozenMap(operationalQuestions),
+          optionKeys: new FrozenMap(operationalOptions),
+          evidenceKeys: new FrozenMap(operationalEvidence),
+        }),
+      });
+
+      // Commit only after the complete immutable feed/evidence/operational
+      // snapshot has been built and validated successfully.
       for (const [path, key] of stagedKeys.entries()) {
         keyRegistry.set(path, key);
         allocatedKeys.add(key);
       }
-      for (const [path, seq] of stagedSeqs.entries()) {
-        seqRegistry.set(path, seq);
-        allocatedKeys.add(seq);
+      for (const [path, sequence] of stagedSequences.entries()) {
+        sequenceRegistry.set(path, sequence);
+        allocatedKeys.add(sequence);
       }
       totalIdentities += stagedKeys.size;
-
-      const title = conv.name ?? conv.preview;
-
-      return {
-        view: {
-          threadKey,
-          title,
-          project: projectLabel,
-          status: conv.status,
-          items,
-          questions,
-          olderAvailable: olderCursor !== null,
-          tone: conversationTone(conv.status),
-          updatedLabel,
-        },
-        operational: {
-          itemKeys: new FrozenMap(opItemKeys),
-          questionKeys: new FrozenMap(opQuestionKeys),
-          optionKeys: new FrozenMap(opOptionKeys),
-        },
-      };
+      return snapshot;
     },
 
     reset(scope?: string): void {
       if (scope === undefined) {
         keyRegistry.clear();
-        seqRegistry.clear();
+        sequenceRegistry.clear();
         allocatedKeys.clear();
         totalIdentities = 0;
-      } else {
-        for (const k of keyRegistry.deleteScope(scope)) {
-          allocatedKeys.delete(k);
-        }
-        for (const s of seqRegistry.deleteScope(scope)) {
-          allocatedKeys.delete(s);
-        }
-        totalIdentities = keyRegistry.size;
+        return;
       }
+      for (const key of keyRegistry.deleteScope(scope)) {
+        allocatedKeys.delete(key);
+      }
+      for (const sequence of sequenceRegistry.deleteScope(scope)) {
+        allocatedKeys.delete(sequence);
+      }
+      totalIdentities = keyRegistry.size;
     },
 
     dispose(): void {
       keyRegistry.clear();
-      seqRegistry.clear();
+      sequenceRegistry.clear();
       allocatedKeys.clear();
       totalIdentities = 0;
     },

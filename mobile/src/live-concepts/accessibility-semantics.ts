@@ -1,12 +1,18 @@
-import type { LiveComposerView, LiveConceptState } from "./contract";
+import type { LiveComposerView, QuestionDraft } from "./contract";
 import type {
   ConceptId,
+  ConversationDisplayItem,
+  LiveConceptSurface,
   LiveConnectionView,
   LiveRosterRow,
   LiveRosterView,
-  LiveTranscriptItem,
   LiveWorkItem,
 } from "./model";
+
+export interface ConceptRootSemanticState {
+  readonly concept: ConceptId;
+  readonly surface: LiveConceptSurface;
+}
 
 export const CONCEPT_DISPLAY_NAME: Readonly<Record<ConceptId, string>> = {
   stillwater: "Stillwater",
@@ -14,7 +20,7 @@ export const CONCEPT_DISPLAY_NAME: Readonly<Record<ConceptId, string>> = {
   "field-notes": "Field Notes",
 };
 
-export function conceptRootAxLabel(state: LiveConceptState): string {
+export function conceptRootAxLabel(state: ConceptRootSemanticState): string {
   return `${CONCEPT_DISPLAY_NAME[state.concept]} ${state.surface}`;
 }
 
@@ -55,33 +61,73 @@ export function rosterRowAxLabel(row: LiveRosterRow): string {
   return `Open ${row.title}; status ${row.tone}`;
 }
 
-export function transcriptItemAxLabel(item: LiveTranscriptItem): string {
-  const status = item.streaming ? "streaming" : "completed";
-  let description: string;
-  switch (item.kind) {
+export function conversationItemAxLabel(
+  item: ConversationDisplayItem,
+  questionResolution: QuestionDraft["resolution"],
+): string {
+  switch (item.sourceKind) {
     case "user":
-      description = "Your message";
-      break;
+      return "Your message; completed";
     case "assistant":
-      description = "Assistant response";
-      break;
-    case "tool":
-      description =
-        item.label.trim().toLowerCase() === "reasoning"
-          ? "Reasoning"
-          : `Tool ${item.label}`;
-      break;
+      return item.streaming
+        ? "Assistant message; streaming"
+        : "Assistant message; completed";
     case "question":
-      description = "Question";
-      break;
+      return questionResolution === null
+        ? "Question; response required"
+        : "Question; resolved";
     case "failure":
-      description = "Error";
-      break;
+      return "Failure; action required";
+    case "notice":
+    case "system":
+    case "reasoning":
+    case "tool":
     case "attachment":
-      description = "Attachment";
-      break;
+    case "diagnostic":
+    case "unknown":
+      return markerAxLabel(item);
   }
-  return `${description}; ${status}`;
+}
+
+function markerAxLabel(
+  item: Extract<ConversationDisplayItem, { semanticKind: string }>,
+): string {
+  switch (item.semanticKind) {
+    case "notice":
+      return "Notice; informational";
+    case "warning-notice":
+      return "Notice; attention required";
+    case "system-context":
+      return "System context; details hidden";
+    case "system-activity":
+      return "System activity; informational";
+    case "reasoning":
+      return `Reasoning activity; ${item.state}`;
+    case "tool":
+      return `Tool activity, ${item.label.text}; ${item.state}`;
+    case "attachment":
+      return `Attachment; ${item.state}`;
+    case "activity":
+      return `Activity; ${item.state}`;
+  }
+}
+
+export function streamingAnnouncement(
+  previous: ConversationDisplayItem | null,
+  next: ConversationDisplayItem,
+): string | null {
+  if (next.sourceKind !== "assistant") return null;
+  if (
+    previous?.sourceKind === "assistant" &&
+    previous.streaming !== next.streaming
+  ) {
+    return next.streaming
+      ? "Assistant message streaming"
+      : "Assistant message completed";
+  }
+  if (!next.streaming || previous?.sourceKind !== "assistant") return null;
+  if (previous.body.text === next.body.text) return null;
+  return /[.!?\n]$/u.test(next.body.text) ? next.body.text : null;
 }
 
 export function mutationAxLabel(composer: LiveComposerView): string | null {
