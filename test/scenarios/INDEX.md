@@ -109,6 +109,9 @@ the area they exercise.
   single-tab happy path: an `awaiting` session drives its own rail row,
   the tab title, and the favicon live, plus the interrupt guard-rail.
   Notifications must be opted into before the first load.
+- `web-thread-clear-replaces-session.md` — web command-palette clear replaces
+  the live instance while preserving the stable session ref and keeping the
+  pane usable for a new turn (issue `#139`).
 - `status-vocabulary-roundtrip.md` — the attainable your-move and
   question-waiting states read the same across the web rail, the TUI
   dashboard row, and the TUI session header; a deterministic gate pins
