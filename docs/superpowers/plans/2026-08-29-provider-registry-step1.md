@@ -3845,8 +3845,11 @@ func TestLoad_Errors(t *testing.T) {
 			}
 		})
 	}
-	// Inherited fields from a base on another protocol are ignored, not errors.
+	// Inherited fields from a base on another protocol are ignored, not
+	// errors — even when the instance is named after a registry id in its own
+	// base chain (openai-codex inherits openai's Responses-only fields).
 	fixtureLoad(t, nil, "[providers.work]\nbase = \"openai\"\nprotocol = \"openai-chat\"\nbase_url = \"https://gw/v1\"\n")
+	fixtureLoad(t, nil, "[providers.openai]\nbase = \"openai-codex\"\nprotocol = \"anthropic\"\nbase_url = \"https://gw/v1\"\n")
 }
 
 func TestLoad_OverlayBaseCycleAndCuratedDanglingAlias(t *testing.T) {
@@ -3867,6 +3870,19 @@ func TestLoad_OverlayBaseCycleAndCuratedDanglingAlias(t *testing.T) {
 	}
 	if !strings.Contains(strings.Join(r.Warnings(), "\n"), "dangling alias") {
 		t.Fatalf("warnings = %v", r.Warnings())
+	}
+	// An instance that inherits the curated dangling alias must still load.
+	path := filepath.Join(t.TempDir(), "providers.toml")
+	if err := os.WriteFile(path, []byte("[providers.myclaude]\nbase = \"anthropic\"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	r, err = Load(WithSnapshot(data), WithEnv(mapEnv(nil)), WithConfigPath(path), WithStateRoot(t.TempDir()),
+		WithOverlay(overlayWith("[providers.anthropic.models.\"gone\"]\nalias_of = \"claude-nope\"\n")))
+	if err != nil {
+		t.Fatalf("an inherited curated dangling alias must not fail the load: %v", err)
+	}
+	if !r.explicit["myclaude"].head.Models["gone"].Hidden {
+		t.Fatal("the inherited dangling row must be hidden on the instance too")
 	}
 }
 
@@ -4245,10 +4261,13 @@ type record struct {
 	notes      []string
 }
 
-// capLayer is one layer's contribution to a record.
+// capLayer is one layer's contribution to a record. own is true for the
+// layers the record itself contributed (false for layers copied from its
+// base chain), which is what "own layers" means in spec §10.
 type capLayer struct {
 	tag         string
 	owner       string
+	own         bool
 	provider    Caps
 	rows        map[string]Model
 	resetFields bool
@@ -4525,6 +4544,9 @@ func (rec *record) inherit(base *record) {
 	h.APIKeyEnv = append([]string(nil), base.head.APIKeyEnv...)
 	rec.head = h
 	rec.layers = append([]capLayer(nil), base.layers...)
+	for i := range rec.layers {
+		rec.layers[i].own = false
+	}
 	rec.userVars = mergeStringMap(nil, base.userVars)
 	rec.notes = append([]string(nil), base.notes...)
 }
@@ -4587,7 +4609,7 @@ func setIfNonEmpty(dst *string, src string) {
 func (rec *record) fold(src Provider, tag string, presets map[string]Transport) error {
 	h := &rec.head
 	where := "providers." + src.ID
-	layer := capLayer{tag: tag, owner: src.ID, provider: src.Caps, rows: map[string]Model{}}
+	layer := capLayer{tag: tag, owner: src.ID, own: true, provider: src.Caps, rows: map[string]Model{}}
 	if src.Protocol != "" && h.Protocol != "" && src.Protocol != h.Protocol {
 		clearProtocolTransport(&h.Transport)
 		layer.resetFields = true
@@ -4679,7 +4701,7 @@ func foldModel(prev, src Model, presets map[string]Transport, where string) (Mod
 func (r *Registry) validateRecord(rec *record) error {
 	where := "providers." + rec.name
 	for _, layer := range rec.layers {
-		if layer.owner != rec.name {
+		if !layer.own {
 			continue
 		}
 		if err := ValidateFields(layer.provider.Fields, rec.head.Protocol, layer.tag+" "+where); err != nil {
@@ -4707,15 +4729,31 @@ func (r *Registry) validateRecord(rec *record) error {
 		switch {
 		case err == nil && target.AliasOf != "":
 			return fmt.Errorf("%s.models.%q: alias_of %q is itself an alias (aliases are one hop)", where, id, row.AliasOf)
-		case err != nil && rec.curated:
+		case err != nil && rec.aliasFromConfig(id):
+			return fmt.Errorf("%s.models.%q: %w", where, id, err)
+		case err != nil:
+			// A dangling alias contributed by a curated layer (upstream dropped
+			// the target) degrades to a hidden row, on the curated record and
+			// on every instance that inherits it (spec §4.2).
 			row.Hidden = true
 			rec.head.Models[id] = row
 			r.warnings = append(r.warnings, fmt.Sprintf("%s.models.%q: dangling alias %q (row hidden)", where, id, row.AliasOf))
-		case err != nil:
-			return fmt.Errorf("%s.models.%q: %w", where, id, err)
 		}
 	}
 	return nil
+}
+
+// aliasFromConfig reports whether the user layer set this row's alias_of.
+func (rec *record) aliasFromConfig(id string) bool {
+	for _, l := range rec.layers {
+		if l.tag != LayerConfig {
+			continue
+		}
+		if m, ok := l.rows[id]; ok && m.AliasOf != "" {
+			return true
+		}
+	}
+	return false
 }
 
 // aliasTarget resolves an alias_of reference: an exact row of the same
