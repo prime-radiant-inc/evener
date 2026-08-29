@@ -56,6 +56,10 @@ type Provider struct {
 	DefaultModel      string            `json:"default_model,omitempty"`
 	CheapModel        string            `json:"cheap_model,omitempty"`
 	Hidden            bool              `json:"hidden,omitempty"`
+
+	// notes are converter warnings that ride through to Resolved.Warnings
+	// ("protocol unverified"). Unexported: not part of the data schema.
+	notes []string
 }
 
 // Model is one row under a provider (spec §4).

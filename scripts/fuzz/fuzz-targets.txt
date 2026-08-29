@@ -648,6 +648,7 @@ native:.:./cmd/evener-hub:FuzzMainListenerLifecycle
 native:.:./cmd/evener-hub:FuzzRPCRelayPass3
 native:.:./cmd/evener-hub:FuzzSessionTreePass3
 native:llm:./providers/openaicompat:FuzzOpenAICompatDeterministicUnion
+native:llm:./registry:FuzzFromModelsDev
 native:agent:.:FuzzAgentMiscProgram
 native:agent:.:FuzzAgentClonesShareNoMutableState
 native:agent:.:FuzzSessionToolsAuxExact
