@@ -11,7 +11,7 @@
  * - content_size_get          → `{category: string}`                   (NOT versioned)
  * The adapter must decode each to the typed NativeResponse the client expects.
  */
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import type { TauriBridge } from "../services/tauri";
 
 // ---------------------------------------------------------------------------
@@ -69,6 +69,18 @@ import { createTauriNativeTransport } from "./production-transport";
 // ---------------------------------------------------------------------------
 // Routes and envelopes
 // ---------------------------------------------------------------------------
+
+describe("official opener transport", () => {
+  it("calls openUrl with the canonical URL and no openWith argument", async () => {
+    const bridge = fakeTauriBridge([]);
+    const openUrl = vi.fn(async () => {});
+    const transport = createTauriNativeTransport(bridge, openUrl);
+    await transport.openExternalUrl("https://example.com/docs");
+    expect(openUrl).toHaveBeenCalledWith("https://example.com/docs");
+    expect(openUrl.mock.calls[0]).toHaveLength(1);
+    expect(bridge.invocations).toHaveLength(0);
+  });
+});
 
 describe("7A transport: scanAndPreviewPairing route and response", () => {
   it("invokes plugin:evener-native|scan_and_preview_pairing with {payload:{}}", async () => {

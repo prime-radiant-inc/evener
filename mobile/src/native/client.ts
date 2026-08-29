@@ -29,6 +29,7 @@ export interface NativeBridge {
   secureDelete(profileId: string): Promise<SecureDeleted>;
   scanAndPreviewPairing(): Promise<PairingPreview>;
   clipboardPaste(): Promise<string>;
+  openExternalUrl(url: string): Promise<void>;
   requestPermission(kind: PermissionKind): Promise<PermissionStatus>;
   speechStart(): Promise<void>;
   speechStop(): Promise<void>;
@@ -116,6 +117,7 @@ export class NativeBridgeError extends Error {
 
 export interface NativeTransport {
   send(command: NativeCommand): Promise<NativeResponse>;
+  openExternalUrl(url: string): Promise<void>;
   subscribe(
     type: "lifecycle.changed",
     handler: (event: { state: LifecycleState }) => void,
@@ -214,6 +216,18 @@ export function createNativeBridge(transport: NativeTransport): NativeBridge {
         });
       }
       return res.text ?? "";
+    },
+
+    async openExternalUrl(rawUrl) {
+      try {
+        const parsed = new URL(rawUrl);
+        if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
+          throw new Error("unsupported protocol");
+        }
+        await transport.openExternalUrl(parsed.href);
+      } catch {
+        throw new Error("External link unavailable");
+      }
     },
 
     async requestPermission(kind) {

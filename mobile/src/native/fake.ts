@@ -48,6 +48,7 @@ export class FakeNativeBridge implements NativeTransport {
     (event: VoiceBridgeEvent) => void
   >();
   readonly commands: NativeCommand[] = [];
+  readonly externalUrls: string[] = [];
 
   constructor(options: FakeNativeBridgeOptions = {}) {
     this.contentSize = options.contentSize ?? "large";
@@ -60,6 +61,10 @@ export class FakeNativeBridge implements NativeTransport {
   async send(command: NativeCommand): Promise<NativeResponse> {
     this.commands.push(command);
     return this.handle(command);
+  }
+
+  async openExternalUrl(url: string): Promise<void> {
+    this.externalUrls.push(url);
   }
 
   subscribe(
