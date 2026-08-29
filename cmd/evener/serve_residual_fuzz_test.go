@@ -359,6 +359,7 @@ func TestRunServeResidualCoverage(t *testing.T) {
 			}
 			clearCase.mutate(&d)
 			d.serveHTTP = func(*http.Server, net.Listener) error {
+				sessionID := captured.GetStatus().SessionID
 				_ = captured.clear(context.Background(), appwire.ThreadClearParams{Ref: "local:" + sessionID, ClientMutationID: "clear", ExpectedInstanceID: sessionID})
 				captured.shutdown()
 				return http.ErrServerClosed
