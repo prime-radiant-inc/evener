@@ -934,27 +934,44 @@ releases capacity again and proceeds only with remaining stop cleanup.
 
 ### One exact finalizer
 
-Every runtime completion calls FinishGeneration with its delegate lease. Under
-the controller mutex, runtime completion first passes BeginFinalization. That
-one process claim orders both ordinary and terminal completion against quiet
-attention; only the ordinary mode also arbitrates pending steering. Normal
-completion then passes CompleteSettlement, which
-must durably prepare either the accepted communicate packet or the canonical
-missing-terminal packet before it folds settling. There is no durable settling
-state without a prepared packet. Fatal, exhausted, cancelled, and stop-forced
-completion does not expose such an intermediate state: if it needs a packet
-while still running, FinishGeneration appends terminal_prepared and
-run_finished in one crash-atomic store batch. Attention completed_no_action has
-no outward packet and appends only run_finished without entering settling.
+Every stable runtime completion enters controller finalization with its exact
+delegate lease. The runtime uses BeginRunFinalization to bind the sampled run
+error and settlement mode to one process claim. That claim orders ordinary and
+terminal completion against quiet attention; only the ordinary mode also
+arbitrates pending steering. Normal completion then passes
+CompleteSettlement, which must durably prepare either the accepted
+communicate packet or the canonical missing-terminal packet before it folds
+settling. There is no durable settling state without a prepared packet. Fatal,
+exhausted, cancelled, and stop-forced completion does not expose such an
+intermediate state: if it needs a packet while still running, FinishGeneration
+appends terminal_prepared and run_finished in one crash-atomic store batch.
+
+Attention-only completion has a separate, evidence- and claim-bound path. Each
+active generation has process-local delegateGenerationEvidence: an attention
+generation starts with an attention-only completion requirement, and common
+admission of owner or other report-requiring work monotonically escalates that
+requirement to report-required. The model loop must record the explicit
+attention no-action outcome; terminalSeen records terminal communicate and is
+monotonic. A bare acknowledgement is therefore not enough by itself.
+
+After attention resolution, prepareNoAction validates the exact ordinary claim,
+the explicit outcome, the unchanged attention-only requirement, terminalSeen,
+the nil run error, and the absence of a prepared packet or pending attention.
+It retains the ordinary delegateFinish as a claim-bound fallback. Only
+FinishNoAction may consume that claim. For a running generation it appends one
+packetless delegate_run_finished with public outcome completed and private
+disposition completed_no_action, then folds the claim-bound running -> idle
+transition without entering settling or creating a delivery ID. A live stop
+race uses the retained fallback through the existing stopped path; an append
+failure keeps finalization recovery state live.
+
 FinishGeneration then:
 
 1. rejects a stale generation as a no-op;
 2. resolves stop precedence from current controller state;
 3. uses the required prepared packet when settling; for a non-settling
-   terminal path, records the private disposition completed_no_action with
-   public outcome completed and no outward packet when an attention generation
-   legitimately had nothing to report, otherwise creates a bounded canonical
-   terminal_error packet for the atomic prepare+finish batch;
+   terminal path, creates a bounded canonical terminal_error packet for the
+   atomic prepare+finish batch;
 4. appends delegate_run_finished with outcome, reason, timing, and a private
    delivery ID when owner delivery is required; a non-settling terminal path
    that needs a packet appends prepare+finish as one batch;
@@ -981,12 +998,15 @@ packet exists only because the owner must be told what happened and restart
 must not invent a different result.
 
 completed_no_action is a private disposition on delegate_run_finished, not
-another record type and not a public outcome status. It is allowed only for an
-attention-triggered generation whose bound durable attention entries were
-successfully consumed without communicate. Its public latest outcome is
-completed. A user-input
+another record type and not a public outcome status. It is allowed only when
+the evidence- and claim-bound FinishNoAction path proves that an
+attention-triggered generation consumed its bound durable attention entries
+without communicate. Its public latest outcome is completed. A user-input
 generation that ends without an accepted communicate result receives the
-ordinary missing-terminal terminal_error.
+ordinary missing-terminal terminal_error. An accepted terminal communicate
+remains on its existing prepared-packet and reported-result path; terminalSeen
+does not replace that path. A caller-supplied completed_no_action passed to
+general FinishGeneration is invalid.
 
 The full child conversation remains in the transcript. The aggregate stores
 only the bounded canonical terminal packet needed for stable owner delivery,
