@@ -1806,6 +1806,7 @@ _(no fields)_
 | `threadId` | `string` | yes |  |
 | `clientMutationId` | `string` |  |  |
 | `expectedInstanceId` | `string` |  |  |
+| `sinceTurnId` | `string` | yes |  |
 
 
 ### `TurnInterruptResponse`

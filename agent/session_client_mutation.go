@@ -528,6 +528,20 @@ func (s *Session) InterruptClientMutation(
 			rejectClientMutation(record, appwire.Conflict("session is not processing"))
 			return nil
 		}
+		// The click-time binding (issue #178): a Stop carrying the turn that
+		// was active when it was clicked, delivered only after a DIFFERENT
+		// turn is already running, refers to a turn the user saw end. Applying
+		// it would cancel a later turn they never saw, so it is rejected as
+		// expired instead -- surfaced, not silent. Inequality with a non-empty
+		// current id is the whole test: every ActiveTurnID is minted from one
+		// monotonic counter and never reused, so a different id IS a later
+		// generation. An equal id (late delivery still inside the clicked
+		// turn, the #176 window) and an absent one (old client, old durable
+		// outbox record) both fall through to today's session-scoped rule.
+		if params.SinceTurnID != "" && snapshot.ActiveTurnID != "" && snapshot.ActiveTurnID != params.SinceTurnID {
+			rejectClientMutation(record, appwire.Conflict("stop expired: a later turn is already running"))
+			return nil
+		}
 		// The fence records the turn this interrupt is actually cancelling,
 		// which is the durable name of whatever was running -- and the empty
 		// name when that turn had none. An interrupt that matches no pending

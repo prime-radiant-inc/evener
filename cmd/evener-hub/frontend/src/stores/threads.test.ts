@@ -3895,11 +3895,12 @@ describe("useThreadsStore.steer / queue / interrupt", () => {
     });
   });
 
-  // Stop never names a turn, even here, where this client is tracking one.
-  // Naming it could only ever make Stop fail -- the id goes stale when a turn
-  // rolls over between the click and the request -- and a refused Stop is the
-  // failure the button exists to prevent.
-  test("interrupt asks for whatever is running even when this client knows the turn id", async () => {
+  // Stop never TARGETS a turn, even here, where this client is tracking one:
+  // sinceTurnId is not a target but the click-time binding (issue #178). The
+  // daemon rejects a Stop only when a DIFFERENT, later turn is already running
+  // at delivery -- never for naming the "wrong" turn -- so carrying the id can
+  // never make Stop fail the way a target would.
+  test("interrupt carries the click-time turn id, without targeting", async () => {
     const fake = connectMutationClient();
     await ensureActiveTurn(fake, "ref_a");
     expect(threadsStore.getState().threads.get("ref_a")?.activeTurnId).toBe("turn_1");
@@ -3913,6 +3914,37 @@ describe("useThreadsStore.steer / queue / interrupt", () => {
       ref: "ref_a",
       clientMutationId: expect.any(String),
       expectedInstanceId: "thr_ref_a",
+      sinceTurnId: "turn_1",
+    });
+  });
+
+  // The frontend half of issue #178: the generation must be captured at
+  // ENQUEUE time (inside interrupt), not re-read when the dispatcher actually
+  // sends. A dispatch delayed behind an earlier outbox mutation for the same
+  // ref -- or until a reconnect -- is exactly the case where the two differ,
+  // and reading the id lazily at send time would silently defeat the daemon's
+  // stale-Stop rejection.
+  test("interrupt records the click-time sinceTurnId in the durable outbox payload", async () => {
+    const fake = connectMutationClient();
+    await ensureActiveTurn(fake, "ref_a");
+    // The queued mutation ahead of the Stop in the per-ref FIFO never gets an
+    // answer, so the interrupt is still sitting in the outbox when the active
+    // turn rolls over to a later one the user never saw. What matters is the
+    // durable record's own payload: it was written at enqueue (click) time and
+    // must carry the id the client held THEN, not whatever the model says now.
+    fake.on("turn/queue", () => new Promise<TurnQueueResponse>(() => {}));
+    await threadsStore.getState().queue("ref_a", "queued ahead of the stop");
+    await flushIndexedDBUntil(() => fake.calls.some((call) => call.method === "turn/queue"));
+    await threadsStore.getState().interrupt("ref_a");
+    const rolledOver = threadsStore.getState().threads.get("ref_a");
+    if (rolledOver) rolledOver.activeTurnId = "turn_2";
+
+    const persistence = await readMutationPersistence("ref_a");
+    const interrupt = persistence.outbox.find((record) => record.method === "turn/interrupt");
+    expect(interrupt?.payload).toMatchObject({
+      ref: "ref_a",
+      expectedInstanceId: "thr_ref_a",
+      sinceTurnId: "turn_1",
     });
   });
 

@@ -1368,11 +1368,23 @@ type TurnSteerParams struct {
 // TurnInterruptParams cancels whatever turn the session is running. The receipt
 // names the turn actually cancelled, which is how a client learns what it
 // stopped without having had to name it first.
+//
+// SinceTurnID is not a target. Stop stays session-scoped: this is the turn
+// that was active when the user clicked Stop, captured client-side at click
+// time and carried in the durable outbox record, so a dispatch delayed across
+// a turn boundary can be recognized as stale (issue #178). At delivery, a
+// non-empty SinceTurnID that differs from the session's current active turn
+// means the Stop refers to a turn the user already saw end, and applying it
+// would cancel a later turn they never saw -- so it is rejected instead. An
+// equal (or empty) SinceTurnID never rejects: a same-generation Stop still
+// lands however late it arrives (the #176 window), and an old client or an
+// old durable outbox record without the field gets today's behavior unchanged.
 type TurnInterruptParams struct {
 	Ref                string `json:"ref,omitempty"`
 	ThreadID           string `json:"threadId,omitempty"`
 	ClientMutationID   string `json:"clientMutationId"`
 	ExpectedInstanceID string `json:"expectedInstanceId"`
+	SinceTurnID        string `json:"sinceTurnId,omitempty"`
 }
 
 // TurnQueueParams queues a user message during a running turn for processing

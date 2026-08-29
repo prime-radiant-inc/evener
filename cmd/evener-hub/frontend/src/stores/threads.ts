@@ -2285,10 +2285,18 @@ export const threadsStore = createStore<ThreadsStoreState>(() => ({
     // drain, a cold client -- and stale in the race where a turn rolls over
     // between the click and the request. Neither refusal is what the button
     // means. "Stop" means stop what you are doing.
+    //
+    // sinceTurnId is not that naming (issue #178). It is the click-time
+    // binding: the turn that was active when Stop was pressed, captured HERE
+    // so the durable outbox record carries it verbatim and a dispatch delayed
+    // across a turn boundary can be recognized as stale by the daemon. It
+    // never targets -- the daemon rejects only a DIFFERENT non-empty active
+    // turn at delivery -- and it is omitted (today's behavior) whenever the
+    // client holds no turn id, e.g. a cold client that never saw one.
     await enqueueMutation(
       ref,
       "turn/interrupt",
-      { ref, expectedInstanceId: expectedInstanceID(ref) },
+      { ref, expectedInstanceId: expectedInstanceID(ref), sinceTurnId: trackedThreadModel(ref)?.activeTurnId },
       { method: "turn/interrupt" },
     );
   },

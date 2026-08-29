@@ -1886,6 +1886,7 @@ export interface TurnInterruptParams {
   threadId?: string;
   clientMutationId: string;
   expectedInstanceId: string;
+  sinceTurnId?: string;
 }
 
 export interface TurnInterruptResponse {

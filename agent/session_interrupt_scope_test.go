@@ -37,6 +37,17 @@ func runningStartTurn(t *testing.T, sess *Session, clientMutationID, text string
 	return started.Turn.ID
 }
 
+// completedStartTurn runs a turn to completion and returns its id, leaving the
+// session settled after it: the state a stale Stop's SinceTurnID refers to.
+func completedStartTurn(t *testing.T, sess *Session, clientMutationID, text string) string {
+	t.Helper()
+	turnID := runningStartTurn(t, sess, clientMutationID, text)
+	if err := sess.completeClientMutationTurn(clientMutationID); err != nil {
+		t.Fatalf("completeClientMutationTurn(%q): %v", clientMutationID, err)
+	}
+	return turnID
+}
+
 // TestInterruptStopsATurnItCannotName is Task 1's between-turn gap: the drain
 // loop settled turn 1 (clearing the durable name) while a queued message keeps
 // the session running, so no id any client holds names the turn that is over.
@@ -256,5 +267,174 @@ func TestInterruptRetryStopsNothingTwice(t *testing.T) {
 	survivor := snapshot.Journal["start-idempotence-two"]
 	if survivor.OperationState == clientMutationOperationTerminal {
 		t.Fatalf("retry terminalized the second turn: %#v", survivor)
+	}
+}
+
+// TestInterruptSinceTurnID rejects a Stop whose delivery crossed a turn
+// boundary the user never saw. The click-time binding is SinceTurnID -- the
+// active turn id the client held when Stop was pressed -- and issue #178 is
+// the delayed dispatch that lands only after a LATER turn is already running.
+// The guard must reject that delivery outright (surfaced as a rejection, the
+// same shape as "session is not processing"), never cancel the later turn.
+//
+// The same-generation case is the #176 win preserved: a Stop pressed during
+// turn N's pre-turn work, delivered late but still inside turn N, must still
+// land. And the absent field is backward compatibility -- an old client (or an
+// old durable outbox record) that sends no sinceTurnId gets today's
+// session-scoped behavior, unchanged.
+func TestInterruptSinceTurnID(t *testing.T) {
+	tests := []struct {
+		name string
+		run  func(t *testing.T, sess *Session)
+	}{
+		{
+			// The issue #178 repro: turn 1 is clicked-then-missed, turn 2 is
+			// running at delivery. Modelled on TestInterruptRetryStopsNothingTwice
+			// but WITHOUT reusing the clientMutationId -- this is the FIRST
+			// delivery arriving late, not a replayed one.
+			name: "delayed stop must not cancel a later turn",
+			run: func(t *testing.T, sess *Session) {
+				firstTurn := completedStartTurn(t, sess, "start-since-one", "first message")
+				secondTurn := runningStartTurn(t, sess, "start-since-two", "second message")
+
+				cancels := 0
+				_, err := sess.InterruptClientMutation(context.Background(), appwire.TurnInterruptParams{
+					ClientMutationID: "interrupt-since-stale",
+					SinceTurnID:      firstTurn,
+				}, func() { cancels++ })
+				if err == nil || !strings.Contains(err.Error(), "stop expired") {
+					t.Fatalf("stale-SinceTurnID interrupt = %v, want a stop expired rejection", err)
+				}
+				if cancels != 0 {
+					t.Fatalf("stale-SinceTurnID interrupt cancelled %d times, want 0", cancels)
+				}
+				snapshot := sess.clientMutations.snapshot()
+				if snapshot.ActiveTurnID != secondTurn {
+					t.Fatalf("ActiveTurnID after the stale interrupt = %q, want the untouched second turn %q", snapshot.ActiveTurnID, secondTurn)
+				}
+				if snapshot.InterruptFence != nil {
+					t.Fatalf("stale interrupt left a fence: %#v", snapshot.InterruptFence)
+				}
+				if snapshot.QueueHeld {
+					t.Fatal("stale interrupt held the queue")
+				}
+				survivor := snapshot.Journal["start-since-two"]
+				if survivor.OperationState == clientMutationOperationTerminal {
+					t.Fatalf("stale interrupt terminalized the second turn: %#v", survivor)
+				}
+				rejected := snapshot.Journal["interrupt-since-stale"]
+				if rejected.OperationState != clientMutationOperationRejected {
+					t.Fatalf("stale interrupt record = %#v, want rejected", rejected)
+				}
+			},
+		},
+		{
+			// A genuine retry of an expired Stop must replay the terminal
+			// rejection, not re-evaluate against a now-current ActiveTurnID --
+			// the property TestInterruptRetryStopsNothingTwice pins for the
+			// applied case, pinned here for the expired one.
+			name: "retry of an expired stop replays the rejection",
+			run: func(t *testing.T, sess *Session) {
+				firstTurn := completedStartTurn(t, sess, "start-retry-expired-one", "first message")
+				secondTurn := runningStartTurn(t, sess, "start-retry-expired-two", "second message")
+
+				interrupt := appwire.TurnInterruptParams{
+					ClientMutationID: "interrupt-retry-expired",
+					SinceTurnID:      firstTurn,
+				}
+				cancels := 0
+				_, firstErr := sess.InterruptClientMutation(context.Background(), interrupt, func() { cancels++ })
+				if firstErr == nil || !strings.Contains(firstErr.Error(), "stop expired") {
+					t.Fatalf("first expired interrupt = %v, want a stop expired rejection", firstErr)
+				}
+				_, retryErr := sess.InterruptClientMutation(context.Background(), interrupt, func() { cancels++ })
+				if retryErr == nil || !strings.Contains(retryErr.Error(), "stop expired") {
+					t.Fatalf("retried expired interrupt = %v, want the same stop expired rejection", retryErr)
+				}
+				if cancels != 0 {
+					t.Fatalf("retried expired interrupt cancelled %d times, want 0", cancels)
+				}
+				// The retry replays the durable rejection itself (a retry of
+				// a rejected mutation returns that rejection), so the journal
+				// record must still be the same terminal rejection and the
+				// second turn must remain untouched.
+				snapshot := sess.clientMutations.snapshot()
+				if snapshot.ActiveTurnID != secondTurn {
+					t.Fatalf("ActiveTurnID after the retry = %q, want the untouched second turn %q", snapshot.ActiveTurnID, secondTurn)
+				}
+				if rejected := snapshot.Journal["interrupt-retry-expired"]; rejected.OperationState != clientMutationOperationRejected {
+					t.Fatalf("retried expired interrupt record = %#v, want rejected", rejected)
+				}
+			},
+		},
+		{
+			// The #176 regression guard: SinceTurnID equal to the claimed turn's
+			// own id -- a same-generation Stop delivered during pre-turn work --
+			// must still apply.
+			name: "same-generation stop during pre-turn work still applies",
+			run: func(t *testing.T, sess *Session) {
+				if _, err := sess.AcceptClientMutationStart(appwire.TurnStartParams{
+					ClientMutationID: "start-since-claimed",
+					Input:            []appwire.InputItem{{Type: "text", Text: "/park"}},
+				}); err != nil {
+					t.Fatalf("AcceptClientMutationStart: %v", err)
+				}
+				claimed, ok, err := sess.claimClientMutationStart()
+				if err != nil || !ok {
+					t.Fatalf("claimClientMutationStart: claimed=%#v ok=%v err=%v", claimed, ok, err)
+				}
+				claimedTurn := sess.clientMutations.snapshot().ActiveTurnID
+				if claimedTurn == "" {
+					t.Fatal("no durable turn was claimed")
+				}
+
+				cancels := 0
+				response, err := sess.InterruptClientMutation(context.Background(), appwire.TurnInterruptParams{
+					ClientMutationID: "interrupt-since-claimed",
+					SinceTurnID:      claimedTurn,
+				}, func() { cancels++ })
+				if err != nil {
+					t.Fatalf("same-generation Stop on claimed turn %s: %v", claimedTurn, err)
+				}
+				if cancels != 1 {
+					t.Fatalf("same-generation Stop cancelled %d times, want 1", cancels)
+				}
+				if response.Receipt.TurnID != claimedTurn {
+					t.Fatalf("Stop receipt turn = %q, want the claimed turn %q", response.Receipt.TurnID, claimedTurn)
+				}
+			},
+		},
+		{
+			// Backward compatibility: absent SinceTurnID is today's
+			// session-scoped behavior, deliberately -- an old client or an old
+			// durable outbox record without the field must never trip the new
+			// rejection branch.
+			name: "no sinceTurnId keeps session-scoped behavior",
+			run: func(t *testing.T, sess *Session) {
+				completedStartTurn(t, sess, "start-since-absent-one", "first message")
+				secondTurn := runningStartTurn(t, sess, "start-since-absent-two", "second message")
+
+				cancels := 0
+				response, err := sess.InterruptClientMutation(context.Background(), appwire.TurnInterruptParams{
+					ClientMutationID: "interrupt-since-absent",
+				}, func() { cancels++ })
+				if err != nil {
+					t.Fatalf("absent-SinceTurnID interrupt across a turn boundary: %v", err)
+				}
+				if cancels != 1 {
+					t.Fatalf("absent-SinceTurnID interrupt cancelled %d times, want 1", cancels)
+				}
+				if response.Receipt.TurnID != secondTurn {
+					t.Fatalf("interrupt receipt turn = %q, want the second turn %q (session-scoped behavior is unchanged)", response.Receipt.TurnID, secondTurn)
+				}
+			},
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			sess := newQueuePersistTestSession(t, t.TempDir())
+			defer sess.Close()
+			tc.run(t, sess)
+		})
 	}
 }
