@@ -1799,6 +1799,7 @@ func TestParseConfig_Rejects(t *testing.T) {
 		"bad host rule":            "[providers.x]\nhost_rule = \"magic\"\n",
 		"bad thinking_format":      "[providers.x]\nthinking_format = \"claude\"\n",
 		"bad thinking_shape":       "[providers.x.models.m]\nthinking_shape = \"effort\"\n",
+		"bad thinking_display":     "[providers.x.models.m]\nthinking_display = \"verbose\"\n",
 		"bad max_tokens_field":     "[providers.x]\nmax_tokens_field = \"max_len\"\n",
 		"bad cache_control":        "[providers.x]\ncache_control = \"openai\"\n",
 		"bad reasoning_field":      "[providers.x]\nreasoning_field = \"thoughts\"\n",
@@ -2095,7 +2096,7 @@ var (
 
 	thinkingFormats       = map[string]bool{"openai": true, "openrouter": true, "zai": true, "deepseek": true, "together": true, "qwen": true, "qwen-chat-template": true, "chat-template": true, "string-thinking": true}
 	thinkingShapes        = map[string]bool{"adaptive": true, "budget": true, "budget+effort": true}
-	thinkingDisplays      = map[string]bool{"summarized": true}
+	thinkingDisplays      = map[string]bool{"": true, "summarized": true}
 	maxTokensFields       = map[string]bool{"max_tokens": true, "max_completion_tokens": true}
 	cacheControls         = map[string]bool{"anthropic": true}
 	reasoningFields       = map[string]bool{"reasoning_content": true, "reasoning": true, "reasoning_text": true, "reasoning_details": true}
