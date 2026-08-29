@@ -27,4 +27,10 @@ describe("liveConceptRegistry", () => {
       "constellation",
     );
   });
+
+  it("registers Field Notes through the shared conversation skin seam", () => {
+    expect(liveConceptRegistry["field-notes"].conversationSkin?.id).toBe(
+      "field-notes",
+    );
+  });
 });
