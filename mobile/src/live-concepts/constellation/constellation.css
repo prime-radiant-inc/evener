@@ -1046,6 +1046,8 @@
 }
 
 @media (prefers-reduced-motion: reduce) {
+  :root
+    .concept-constellation.co-conversation-skin[data-surface="conversation"],
   :root .concept-constellation *,
   :root .concept-constellation *::before,
   :root .concept-constellation *::after {
