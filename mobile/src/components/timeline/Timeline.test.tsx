@@ -9,6 +9,7 @@
 // "no raw protocol JSON by default" rule.
 
 import { cleanup, fireEvent, render, screen } from "@testing-library/react";
+import { forwardRef, type ReactNode, useImperativeHandle } from "react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type {
   ActivityDetail,
@@ -22,56 +23,67 @@ import type {
 import { Timeline } from "./Timeline";
 import { TimelineItem } from "./TimelineItem";
 
-// --- virtualizer mock: render every item, key by stable id ----------------
-vi.mock("@tanstack/react-virtual", () => {
-  interface VizOptions {
-    readonly count: number;
-    readonly estimateSize: () => number;
-    readonly getItemKey?: (index: number) => string | number;
-  }
+const virtualList = vi.hoisted(() => ({
+  props: null as null | {
+    items: readonly MobileTimelineItem[];
+    onScroll(metrics: {
+      offset: number;
+      viewport: number;
+      total: number;
+    }): void;
+    renderItem(item: MobileTimelineItem, index: number): ReactNode;
+  },
+  captureAnchor: vi.fn(() => ({ key: "u1", offsetPx: -9, priorIndex: 0 })),
+  restoreAnchor: vi.fn(async () => {}),
+  scrollToEnd: vi.fn(),
+  focusKey: vi.fn(),
+}));
 
-  interface MockVirtualItem {
-    readonly index: number;
-    readonly key: string | number;
-    readonly start: number;
-    readonly size: number;
-    readonly lane: number;
-  }
-
-  return {
-    useVirtualizer: (options: VizOptions) => {
-      const size = options.estimateSize();
-      const items: MockVirtualItem[] = Array.from(
-        { length: options.count },
-        (_, i) => ({
-          index: i,
-          key: options.getItemKey ? options.getItemKey(i) : i,
-          start: i * size,
-          size,
-          lane: 0,
-        }),
-      );
-      return {
-        getTotalSize: () => options.count * size,
-        getVirtualItems: () => items,
-        scrollToIndex: () => {},
-        scrollToOffset: () => {},
-        measureElement: () => undefined,
-        range: {
-          start: 0,
-          end: options.count - 1,
-          overscan: 0,
-          overscanMain: 0,
-          overscanReverse: 0,
-          size: options.count,
-        },
-      };
+// TimelineItem has separate renderer coverage above. Timeline's tests mock only
+// the shared virtualization boundary so they prove its coordinator contract.
+vi.mock("./VariableHeightVirtualList", () => ({
+  VariableHeightVirtualList: forwardRef(function MockVariableHeightVirtualList(
+    props: {
+      items: readonly MobileTimelineItem[];
+      onScroll(metrics: {
+        offset: number;
+        viewport: number;
+        total: number;
+      }): void;
+      renderItem(item: MobileTimelineItem, index: number): ReactNode;
     },
-  };
-});
+    ref,
+  ) {
+    virtualList.props = props;
+    useImperativeHandle(ref, () => ({
+      captureAnchor: virtualList.captureAnchor,
+      restoreAnchor: virtualList.restoreAnchor,
+      scrollToEnd: virtualList.scrollToEnd,
+      focusKey: virtualList.focusKey,
+    }));
+    return (
+      <div
+        className="evener-timeline__scroll"
+        role="feed"
+        onScroll={() =>
+          props.onScroll({ offset: 0, viewport: 360, total: 1_000 })
+        }
+      >
+        {props.items.map((item, index) => (
+          <div key={item.id}>{props.renderItem(item, index)}</div>
+        ))}
+      </div>
+    );
+  }),
+}));
 
 afterEach(() => {
   cleanup();
+  virtualList.props = null;
+  virtualList.captureAnchor.mockClear();
+  virtualList.restoreAnchor.mockClear();
+  virtualList.scrollToEnd.mockClear();
+  virtualList.focusKey.mockClear();
 });
 
 // --- item factories --------------------------------------------------------
@@ -362,6 +374,70 @@ describe("Timeline — load-older row", () => {
     render(<Timeline items={[userItem("u1", "hi")]} following unseen={0} />);
     const scroller = document.querySelector(".evener-timeline__scroll");
     expect(() => fireEvent.scroll(scroller as Element)).not.toThrow();
+  });
+
+  it("restores a measured anchor only for an explicit load-older generation", () => {
+    const loadOlder = vi.fn();
+    const initial = [userItem("u1", "one"), assistantItem("a1", "two")];
+    const view = render(
+      <Timeline
+        items={initial}
+        following={false}
+        unseen={0}
+        loadOlder={loadOlder}
+      />,
+    );
+    fireEvent.scroll(screen.getByRole("feed"));
+    expect(loadOlder).toHaveBeenCalledOnce();
+    expect(virtualList.captureAnchor).toHaveBeenCalledOnce();
+
+    // Same-count authoritative replacement still completes the explicit load;
+    // array-length inference could not distinguish this transition.
+    view.rerender(
+      <Timeline
+        items={[userItem("older", "older"), userItem("u1", "one")]}
+        following={false}
+        unseen={0}
+        loadOlder={loadOlder}
+      />,
+    );
+    expect(virtualList.restoreAnchor).toHaveBeenCalledWith({
+      key: "u1",
+      offsetPx: -9,
+      priorIndex: 1,
+    });
+
+    virtualList.restoreAnchor.mockClear();
+    // Count growth without a pending load generation is an append, not prepend.
+    view.rerender(
+      <Timeline
+        items={[
+          userItem("older", "older"),
+          userItem("u1", "one"),
+          assistantItem("new", "new"),
+        ]}
+        following={false}
+        unseen={0}
+        loadOlder={loadOlder}
+      />,
+    );
+    expect(virtualList.restoreAnchor).not.toHaveBeenCalled();
+  });
+});
+
+describe("Timeline — shared measured anchor boundary", () => {
+  it("supplies stable item identity and the exact shared virtualization limits", () => {
+    render(
+      <Timeline
+        items={[userItem("stable-user", "hi")]}
+        following={false}
+        unseen={0}
+      />,
+    );
+    expect(virtualList.props).toEqual(
+      expect.objectContaining({ overscan: 6, maxMountedRows: 48 }),
+    );
+    expect(virtualList.props?.items[0]?.id).toBe("stable-user");
   });
 });
 
