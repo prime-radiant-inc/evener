@@ -51,9 +51,13 @@ import type {
 } from "../conversation/model";
 import type { LiveConversationService } from "../services/conversation";
 import type { RosterService } from "../services/roster";
-import type { LiveConversationState } from "../state/conversation";
+import type {
+  LiveActivitySink,
+  LiveConversationState,
+} from "../state/conversation";
 import type { RosterState } from "../state/roster";
-import type { LiveConceptIntent, QuestionDraft } from "./contract";
+import type { LiveConceptIntent } from "./contract";
+import type { QuestionDraft } from "./conversation/primitives";
 import type { ConceptId, LiveConversationView } from "./model";
 import type {
   ConversationOperationalMap,
@@ -97,6 +101,7 @@ export interface LiveIntentDispatcherRuntime {
     }
   >;
   readonly conversationService: LiveConversationService | null;
+  readonly activitySink: LiveActivitySink;
 }
 
 // ---------------------------------------------------------------------------
@@ -138,6 +143,10 @@ export interface LiveConceptDispatcherCallbacks {
   onOpenSettings(): void;
   /** RootShell voice action. */
   onOpenVoice(): void;
+  /** Open bounded evidence by its opaque display key. */
+  onOpenEvidence(evidenceKey: string, triggerKey: string): void;
+  /** Close the bounded evidence presentation. */
+  onCloseEvidence(): void;
 }
 
 /**
@@ -220,6 +229,12 @@ export function createLiveIntentDispatcher(
         );
         return;
       }
+      case "retryRead": {
+        observeConversation(runtime, (store, service) =>
+          store.rehydrate(service, runtime.activitySink),
+        );
+        return;
+      }
       case "openWork": {
         uiStore.getState().setWorkOpen(true);
         return;
@@ -271,6 +286,14 @@ export function createLiveIntentDispatcher(
       }
       case "submitQuestion": {
         submitQuestion(runtime, callbacks, uiStore, intent.key);
+        return;
+      }
+      case "openEvidence": {
+        callbacks.onOpenEvidence(intent.evidenceKey, intent.triggerKey);
+        return;
+      }
+      case "closeEvidence": {
+        callbacks.onCloseEvidence();
         return;
       }
       case "goBack": {

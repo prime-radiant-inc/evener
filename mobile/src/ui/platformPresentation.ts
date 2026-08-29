@@ -170,6 +170,11 @@ export interface ViewportCoordinator {
   start(): void;
   /** Remove listeners and restore prior CSS declarations. Idempotent. */
   stop(): void;
+  /**
+   * After native textarea blur processing, keep the still-focused control in
+   * the coordinator's latest visual interval without changing token meaning.
+   */
+  settleFocusedControlInVisualViewport(target: HTMLElement): Promise<void>;
 }
 
 interface CoordinatorOptions {
@@ -228,7 +233,19 @@ function pxDecl(value: number): string {
 
 /** Per-document ownership token: the latest owner; stale owners skip restore. */
 const owners = new WeakMap<Document, unknown>();
+const activeCoordinators = new WeakMap<Document, ViewportCoordinator>();
 let nextToken = 1;
+
+/** Delegate focus settlement to the active coordinator for the target's document. */
+export function settleFocusedControlInVisualViewport(
+  target: HTMLElement,
+): Promise<void> {
+  return (
+    activeCoordinators
+      .get(target.ownerDocument)
+      ?.settleFocusedControlInVisualViewport(target) ?? Promise.resolve()
+  );
+}
 
 /** Create a testable visualViewport coordinator. */
 export function createViewportCoordinator(
@@ -247,6 +264,8 @@ export function createViewportCoordinator(
   let started = false;
   let stopped = false;
   let token: unknown = null;
+  let visualTop = 0;
+  let visualHeight = finiteNonnegative(win.innerHeight);
 
   const priorViewportHeight = snapshotCssDecl(el, VIEWPORT_HEIGHT);
   const priorKeyboardInset = snapshotCssDecl(el, KEYBOARD_INSET);
@@ -259,6 +278,31 @@ export function createViewportCoordinator(
     });
     el.style.setProperty(VIEWPORT_HEIGHT, pxDecl(metrics.viewportHeight));
     el.style.setProperty(KEYBOARD_INSET, pxDecl(metrics.keyboardInset));
+    visualTop = vv !== null && Number.isFinite(vv.offsetTop) ? vv.offsetTop : 0;
+    visualHeight =
+      vv !== null && Number.isFinite(vv.height)
+        ? finiteNonnegative(vv.height)
+        : metrics.viewportHeight;
+  };
+
+  const afterNativeFocusProcessing = (): Promise<void> =>
+    new Promise((resolve) => {
+      const requestFrame = (
+        win as Window &
+          typeof globalThis & {
+            requestAnimationFrame?: (callback: FrameRequestCallback) => number;
+          }
+      ).requestAnimationFrame;
+      if (typeof requestFrame === "function") {
+        requestFrame.call(win, () => resolve());
+      } else {
+        queueMicrotask(resolve);
+      }
+    });
+
+  const intersectsCurrentVisualInterval = (target: HTMLElement): boolean => {
+    const rect = target.getBoundingClientRect();
+    return rect.bottom > visualTop && rect.top < visualTop + visualHeight;
   };
 
   const listeners: Array<{
@@ -276,12 +320,13 @@ export function createViewportCoordinator(
     listeners.push({ target, type, handler });
   }
 
-  return {
+  const coordinator: ViewportCoordinator = {
     start() {
       if (started || stopped) return;
       started = true;
       token = nextToken++;
       owners.set(doc, token);
+      activeCoordinators.set(doc, coordinator);
       if (vv) {
         add(vv, "resize", onViewportEvent);
         add(vv, "scroll", onViewportEvent);
@@ -301,12 +346,24 @@ export function createViewportCoordinator(
       // the newer owner's values in place to avoid clobbering.
       if (owners.get(doc) === token) {
         owners.delete(doc);
+        if (activeCoordinators.get(doc) === coordinator) {
+          activeCoordinators.delete(doc);
+        }
         restoreCssDecl(el, VIEWPORT_HEIGHT, priorViewportHeight);
         restoreCssDecl(el, KEYBOARD_INSET, priorKeyboardInset);
         dropEmptyStyleIfAbsent(el, hadStyle);
       }
     },
+    async settleFocusedControlInVisualViewport(target) {
+      if (!started || stopped) return;
+      await afterNativeFocusProcessing();
+      if (doc.activeElement !== target) return;
+      if (intersectsCurrentVisualInterval(target)) return;
+      target.scrollIntoView?.({ block: "nearest", inline: "nearest" });
+      await afterNativeFocusProcessing();
+    },
   };
+  return coordinator;
 }
 
 // ---------------------------------------------------------------------------

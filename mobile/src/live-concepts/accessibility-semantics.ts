@@ -1,4 +1,7 @@
-import type { LiveComposerView, QuestionDraft } from "./contract";
+import type {
+  LiveComposerView,
+  QuestionDraft,
+} from "./conversation/primitives";
 import type {
   ConceptId,
   ConversationDisplayItem,
@@ -136,7 +139,10 @@ export function streamingAnnouncement(
   return /[.!?\n]$/u.test(next.body.text) ? next.body.text : null;
 }
 
-export function mutationAxLabel(composer: LiveComposerView): string | null {
+export function mutationAxLabel(
+  composer: Pick<LiveComposerView, "pending"> &
+    Partial<Pick<LiveComposerView, "accepted">>,
+): string | null {
   if (composer.pending !== null) {
     return `${titleCase(composer.pending.kind)} ${composer.pending.status}`;
   }

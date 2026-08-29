@@ -10,9 +10,15 @@ import type { ConversationState } from "../state/conversation";
 import type { NavigationState } from "../state/navigation";
 import type { PreferencesState } from "../state/preferences";
 import type { RosterState } from "../state/roster";
+import type { ConversationSkin } from "./conversation/contract";
+import type {
+  ConversationFrameAction,
+  LiveComposerView as ConversationLiveComposerView,
+  ConversationMutationView,
+  QuestionDraft,
+} from "./conversation/primitives";
 import type {
   Appearance,
-  BoundedDisplayText,
   ConceptId,
   LiveActivityView,
   LiveConceptSurface,
@@ -23,32 +29,10 @@ import type {
   TextScale,
 } from "./model";
 
-export interface ConversationMutationState {
-  kind: "send" | "steer" | "queue" | "interrupt";
-  status: "pending" | "failed";
-  draftSnapshot: string | null;
-  generation: number;
-}
-
-export interface LiveComposerView {
-  draft: string;
-  canSend: boolean;
-  canSteer: boolean;
-  canQueue: boolean;
-  canInterrupt: boolean;
-  pending: ConversationMutationState | null;
-  accepted?: {
-    kind: "send" | "steer" | "queue" | "interrupt";
-    disposition: "applied" | "replayed";
-  } | null;
-  error: BoundedDisplayText | null;
-}
-
-export interface QuestionDraft {
-  selectedOptionKeys: readonly string[];
-  note: string;
-  resolution: "answer" | "fallback" | "decide" | "skip" | null;
-}
+export type ConversationMutationState = ConversationMutationView;
+export type * from "./conversation/contract";
+export type * from "./conversation/primitives";
+export type { ConversationLiveComposerView as LiveComposerView, QuestionDraft };
 
 export interface ScrollAnchor {
   scrollTop: number;
@@ -76,28 +60,25 @@ export interface LiveConceptState {
   roster: LiveRosterView;
   conversation: LiveConversationView | null;
   activity: LiveActivityView | null;
-  composer: LiveComposerView;
+  composer: Omit<ConversationLiveComposerView, "accepted"> & {
+    readonly accepted?: ConversationLiveComposerView["accepted"];
+  };
   ui: LiveConceptUiState;
 }
 
+type MutableAction<Action> = Action extends object
+  ? { -readonly [Key in keyof Action]: Action[Key] }
+  : Action;
+
 export type LiveConceptIntent =
+  | MutableAction<ConversationFrameAction>
   | { type: "switchConcept"; concept: ConceptId }
-  | { type: "openConceptSwitcher" }
   | { type: "refreshRoster" }
   | { type: "setRosterQuery"; value: string }
   | { type: "openConversation"; key: string }
-  | { type: "loadOlder" }
-  | { type: "openWork" }
   | { type: "closeWork" }
-  | { type: "setDraft"; value: string }
-  | { type: "setComposerMode"; mode: "send" | "steer" | "queue" }
-  | { type: "submit"; mode: "send" | "steer" | "queue" }
-  | { type: "interrupt" }
   | { type: "toggleTool"; key: string }
   | { type: "toggleWork"; key: string }
-  | { type: "setQuestionDraft"; key: string; value: QuestionDraft }
-  | { type: "submitQuestion"; key: string }
-  | { type: "goBack" }
   | { type: "openNew" }
   | { type: "openSettings" }
   | { type: "openVoice" };
@@ -111,6 +92,7 @@ export interface LiveConceptModule {
   id: ConceptId;
   label: string;
   Renderer: ComponentType<LiveConceptRendererProps>;
+  conversationSkin?: ConversationSkin;
 }
 
 type BoundStore<State> = UseBoundStore<StoreApi<State>>;
