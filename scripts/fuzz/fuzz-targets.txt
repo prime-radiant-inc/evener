@@ -411,8 +411,8 @@ native:agent:./mcpconfig:FuzzMCPInlineMerge
 native:agent:./provider:FuzzProfileOverrides
 native:agent:./plugin:FuzzParsePluginHooks
 native:agent:./plugin:FuzzParseAgent
-native:llm:./providers/difftest:FuzzCrossProviderDifferential:./providers/anthropic,./providers/google,./providers/openai,./providers/openaicompat
-native:llm:./providers/difftest:FuzzStreamVsNonStreamDifferential:./providers/anthropic,./providers/google,./providers/openai,./providers/openaicompat
+native:llm:./providers/difftest:FuzzCrossProviderDifferential:./providers/anthropic,./providers/google,./providers/responses,./providers/chatcompletions
+native:llm:./providers/difftest:FuzzStreamVsNonStreamDifferential:./providers/anthropic,./providers/google,./providers/responses,./providers/chatcompletions
 test:.:./appwire:TestStructuredFrameReachesDecoder
 test:agent:.:TestTranscriptGenReachesDeeper
 test:llm:./providers/anthropic:TestStructuredAnthropicReachesDeeper

@@ -9,9 +9,10 @@ import (
 
 	"primeradiant.com/evener/llm"
 	"primeradiant.com/evener/llm/providers/anthropic"
+	"primeradiant.com/evener/llm/providers/chatcompletions"
 	"primeradiant.com/evener/llm/providers/google"
-	"primeradiant.com/evener/llm/providers/openai"
-	"primeradiant.com/evener/llm/providers/openaicompat"
+	"primeradiant.com/evener/llm/providers/responses"
+	"primeradiant.com/evener/llm/registry"
 )
 
 // This file holds evener's per-provider STREAM-vs-NON-STREAM differential oracle.
@@ -76,22 +77,22 @@ func (p jsonProvider) driveComplete(lr logicalResponse) (*llm.Response, error) {
 func jsonProviders() ([]jsonProvider, func()) {
 	anthSrv := newSSEServer("anthropic")
 	googSrv := newSSEServer("google")
-	oaiSrv := newSSEServer("openai")
-	compatSrv := newSSEServer("openaicompat")
+	oaiSrv := newSSEServer("responses")
+	compatSrv := newSSEServer("chatcompletions")
 
-	anth := &anthropic.Adapter{BaseURL: anthSrv.srv.URL}
-	goog := &google.Adapter{BaseURL: googSrv.srv.URL}
-	oai := &openai.Adapter{BaseURL: oaiSrv.srv.URL}
-	compat := &openaicompat.Adapter{BaseURL: compatSrv.srv.URL}
+	anthRes, googRes, respRes, chatRes := resolvedFor(registry.ProtocolAnthropic, anthSrv.srv.URL), resolvedFor(registry.ProtocolGoogle, googSrv.srv.URL), resolvedFor(registry.ProtocolOpenAIResponses, oaiSrv.srv.URL), resolvedFor(registry.ProtocolOpenAIChat, compatSrv.srv.URL)
+	anth, goog, resp, chat := &anthropic.Protocol{}, &google.Protocol{}, &responses.Protocol{}, &chatcompletions.Protocol{}
 
 	ps := []jsonProvider{
 		{
 			name:       "anthropic",
 			encodeSSE:  encodeAnthropic,
 			encodeJSON: encodeAnthropicJSON,
-			stream:     anth.Stream,
-			complete:   anth.Complete,
-			srv:        anthSrv,
+			stream:     func(ctx context.Context, req llm.Request) (llm.Stream, error) { return anth.Stream(ctx, req, anthRes) },
+			complete: func(ctx context.Context, req llm.Request) (llm.Response, error) {
+				return anth.Complete(ctx, req, anthRes)
+			},
+			srv: anthSrv,
 		},
 		{
 			// Use the finish-chunk-usage SSE shape (not the separate-chunk
@@ -101,25 +102,31 @@ func jsonProviders() ([]jsonProvider, func()) {
 			name:       "google",
 			encodeSSE:  encodeGoogleStreamFinishUsage,
 			encodeJSON: encodeGoogleJSON,
-			stream:     goog.Stream,
-			complete:   goog.Complete,
-			srv:        googSrv,
+			stream:     func(ctx context.Context, req llm.Request) (llm.Stream, error) { return goog.Stream(ctx, req, googRes) },
+			complete: func(ctx context.Context, req llm.Request) (llm.Response, error) {
+				return goog.Complete(ctx, req, googRes)
+			},
+			srv: googSrv,
 		},
 		{
-			name:       "openaicompat",
+			name:       "chatcompletions",
 			encodeSSE:  encodeOpenAICompat,
 			encodeJSON: encodeOpenAICompatJSON,
-			stream:     compat.Stream,
-			complete:   compat.Complete,
-			srv:        compatSrv,
+			stream:     func(ctx context.Context, req llm.Request) (llm.Stream, error) { return chat.Stream(ctx, req, chatRes) },
+			complete: func(ctx context.Context, req llm.Request) (llm.Response, error) {
+				return chat.Complete(ctx, req, chatRes)
+			},
+			srv: compatSrv,
 		},
 		{
-			name:       "openai",
+			name:       "responses",
 			encodeSSE:  encodeOpenAIResponses,
 			encodeJSON: encodeOpenAIResponsesJSON,
-			stream:     oai.Stream,
-			complete:   oai.Complete,
-			srv:        oaiSrv,
+			stream:     func(ctx context.Context, req llm.Request) (llm.Stream, error) { return resp.Stream(ctx, req, respRes) },
+			complete: func(ctx context.Context, req llm.Request) (llm.Response, error) {
+				return resp.Complete(ctx, req, respRes)
+			},
+			srv: oaiSrv,
 		},
 	}
 	cleanup := func() {

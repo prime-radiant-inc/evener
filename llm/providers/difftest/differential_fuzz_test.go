@@ -13,9 +13,10 @@ import (
 
 	"primeradiant.com/evener/llm"
 	"primeradiant.com/evener/llm/providers/anthropic"
+	"primeradiant.com/evener/llm/providers/chatcompletions"
 	"primeradiant.com/evener/llm/providers/google"
-	"primeradiant.com/evener/llm/providers/openai"
-	"primeradiant.com/evener/llm/providers/openaicompat"
+	"primeradiant.com/evener/llm/providers/responses"
+	"primeradiant.com/evener/llm/registry"
 )
 
 // provider couples a real adapter with the encoder that produces wire bytes its
@@ -83,35 +84,25 @@ func (s *sseServer) close() { s.srv.Close() }
 func providers() ([]provider, func()) {
 	anthSrv := newSSEServer("anthropic")
 	googSrv := newSSEServer("google")
-	oaiSrv := newSSEServer("openai")
-	compatSrv := newSSEServer("openaicompat")
+	oaiSrv := newSSEServer("responses")
+	compatSrv := newSSEServer("chatcompletions")
 
-	anth := &anthropic.Adapter{BaseURL: anthSrv.srv.URL}
-	goog := &google.Adapter{BaseURL: googSrv.srv.URL}
-	oai := &openai.Adapter{BaseURL: oaiSrv.srv.URL}
-	compat := &openaicompat.Adapter{BaseURL: compatSrv.srv.URL}
+	anthRes, googRes, respRes, chatRes := resolvedFor(registry.ProtocolAnthropic, anthSrv.srv.URL), resolvedFor(registry.ProtocolGoogle, googSrv.srv.URL), resolvedFor(registry.ProtocolOpenAIResponses, oaiSrv.srv.URL), resolvedFor(registry.ProtocolOpenAIChat, compatSrv.srv.URL)
+	anth, goog, resp, chat := &anthropic.Protocol{}, &google.Protocol{}, &responses.Protocol{}, &chatcompletions.Protocol{}
 
 	ps := []provider{
-		{
-			name:   "anthropic",
-			encode: encodeAnthropic,
-			drive:  func(sse []byte) (*llm.Response, error) { return driveStream(anth.Stream, sse, anthSrv) },
-		},
-		{
-			name:   "google",
-			encode: encodeGoogle,
-			drive:  func(sse []byte) (*llm.Response, error) { return driveStream(goog.Stream, sse, googSrv) },
-		},
-		{
-			name:   "openai",
-			encode: encodeOpenAIResponses,
-			drive:  func(sse []byte) (*llm.Response, error) { return driveStream(oai.Stream, sse, oaiSrv) },
-		},
-		{
-			name:   "openaicompat",
-			encode: encodeOpenAICompat,
-			drive:  func(sse []byte) (*llm.Response, error) { return driveStream(compat.Stream, sse, compatSrv) },
-		},
+		{name: "anthropic", encode: encodeAnthropic, drive: func(sse []byte) (*llm.Response, error) {
+			return driveStream(func(ctx context.Context, req llm.Request) (llm.Stream, error) { return anth.Stream(ctx, req, anthRes) }, sse, anthSrv)
+		}},
+		{name: "google", encode: encodeGoogle, drive: func(sse []byte) (*llm.Response, error) {
+			return driveStream(func(ctx context.Context, req llm.Request) (llm.Stream, error) { return goog.Stream(ctx, req, googRes) }, sse, googSrv)
+		}},
+		{name: "responses", encode: encodeOpenAIResponses, drive: func(sse []byte) (*llm.Response, error) {
+			return driveStream(func(ctx context.Context, req llm.Request) (llm.Stream, error) { return resp.Stream(ctx, req, respRes) }, sse, oaiSrv)
+		}},
+		{name: "chatcompletions", encode: encodeOpenAICompat, drive: func(sse []byte) (*llm.Response, error) {
+			return driveStream(func(ctx context.Context, req llm.Request) (llm.Stream, error) { return chat.Stream(ctx, req, chatRes) }, sse, compatSrv)
+		}},
 	}
 	cleanup := func() {
 		anthSrv.close()
