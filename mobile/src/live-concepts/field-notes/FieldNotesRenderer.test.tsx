@@ -55,7 +55,7 @@ function baseState(
     concept: "field-notes",
     platform: "ios",
     appearance: "system",
-    textScale: "standard",
+    textScale: "large",
     reducedMotion: false,
     surface: "sessions",
     connection: {
