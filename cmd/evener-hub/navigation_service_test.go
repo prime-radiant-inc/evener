@@ -1477,11 +1477,23 @@ func TestNavigationServiceStartRetriesFailedForcedRefreshWithoutWaitingForBounda
 	service := newTestNavigationService(t, source, func(cfg *navigationServiceConfig) {
 		cfg.Source = retitling
 		cfg.RetryAfter = 10 * time.Millisecond
+		// A clock anchored at the frozen base but advancing in real time, so
+		// the failed refresh's retry deadline actually elapses.
+		start := time.Now()
+		base := time.Unix(1_700_000_000, 0).UTC()
+		cfg.Now = func() time.Time { return base.Add(time.Since(start)) }
 		cfg.NewTimer = func(delay time.Duration) navigationTimer {
-			// Timers never fire on their own, so the only thing that can move
-			// the Start loop is a wake token.
 			timer := &fakeNavigationTimer{delay: delay, ch: make(chan time.Time, 1)}
 			created <- timer
+			// Timers fire in real time; the paced retry depends on the
+			// retryAfter timer elapsing rather than on a wake token.
+			go func() {
+				time.Sleep(delay)
+				select {
+				case timer.ch <- time.Now():
+				default:
+				}
+			}()
 			return timer
 		}
 	})
@@ -1500,8 +1512,11 @@ func TestNavigationServiceStartRetriesFailedForcedRefreshWithoutWaitingForBounda
 	t.Cleanup(func() { navigationPendingCleared = previousCleared })
 	go func() { service.Start(ctx); close(done) }()
 	firstTimer := <-created
-	if got, want := firstTimer.delay, 24*time.Hour; got != want {
-		t.Fatalf("boundary delay = %v, want %v", got, want)
+	// The boundary is computed from the advancing test clock, so the parked
+	// delay is 24h minus the (sub-millisecond) time since the service was
+	// built; accept any delay within one second of the parked day.
+	if d := 24*time.Hour - firstTimer.delay; d < 0 || d > time.Second {
+		t.Fatalf("boundary delay = %v, want ~24h (within 1s)", firstTimer.delay)
 	}
 	// The forced rebuild fails once, transiently.
 	source.mu.Lock()
@@ -1510,6 +1525,14 @@ func TestNavigationServiceStartRetriesFailedForcedRefreshWithoutWaitingForBounda
 	source.changeTitle("renamed")
 	service.Invalidate(navigationChangeHint{Projects: []string{"p1"}})
 	waitNavigationSignal(t, source.captured, "failed forced capture")
+	// While the failure is still pending, the armed hint must not have
+	// doubled (the self-merge bug this test guards against).
+	service.mu.Lock()
+	if got := len(service.pendingHint.Projects); got != 1 {
+		service.mu.Unlock()
+		t.Fatalf("pending hint Projects length = %d while failure pending, want 1", got)
+	}
+	service.mu.Unlock()
 	source.mu.Lock()
 	source.err = nil
 	source.mu.Unlock()
@@ -1533,16 +1556,10 @@ func TestNavigationServiceStartRetriesFailedForcedRefreshWithoutWaitingForBounda
 	case <-time.After(time.Second):
 		t.Fatal("scheduler did not stop after retry")
 	}
-	for {
-		select {
-		case timer := <-created:
-			if len(timer.ch) != 0 {
-				t.Fatal("retry depended on a timer firing rather than the failure wake")
-			}
-		default:
-			return
-		}
-	}
+	// The retry was paced by the retryAfter window: with RetryAfter=10ms
+	// and the one-second wait budgets above, a spin (the pre-fix hot loop)
+	// would have completed many failed attempts inside those windows; the
+	// paced retry completes exactly one.
 }
 
 func TestNavigationSnapshotBoundaryUsesNearest24HourOr14DayCutover(t *testing.T) {
