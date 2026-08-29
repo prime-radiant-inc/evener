@@ -178,6 +178,39 @@ checks above execute the changed boundaries and pass. The parent reported that
 its unrestricted full-package run had reached the nil-evidence failure and then
 hung the sibling stop-binding test; both exact tests now pass under the fix.
 
+## Final independent review correction
+
+The final independent review passed spec compliance and found one minor
+executable-plan drift: Task 2 Steps 3-4 still described the removed four-argument
+router, delegate-specific route enum, and old test name. Commit
+`aa3e410f08c89136911f1097c536ebaf45b22da3` updates only
+`docs/superpowers/plans/2026-08-29-stable-delegate-no-action.md`.
+
+The corrected historical sequence now says:
+
+- Step 3 adds the process/supervision RED for non-empty attention, table-drives
+  the three-argument notification-only router, and retains the four-field fuzz
+  input while ignoring its legacy eligibility boolean.
+- Step 4 records exact-lease no-action directly in `processOneInput` and takes
+  the idle boundary there, without adding a delegate route enum.
+
+The exact focused commands named by the revised plan were run with the existing
+offline module cache exported:
+
+```sh
+go test ./agent -run '^(TestRouteNoToolCalls|TestDelegateResourceSupervision_AttentionBareTextRecordsExplicitNoAction)$' -count=1
+go test -tags evenerfuzz ./agent -run '^FuzzLfRouteNoToolCalls$' -count=1
+```
+
+Results: both passed, respectively
+`ok primeradiant.com/evener/agent 0.628s` and
+`ok primeradiant.com/evener/agent 0.461s`.
+
+A search scoped to Task 2 Steps 3-4 for
+`finishDelegateAttentionNoAction`, `TestRouteNoToolCallsDelegateAttention`,
+`allowDelegateNoAction`, and a four-argument `routeNoToolCalls` call returned no
+matches. No production, test, spec, or evergreen file changed in this correction.
+
 ## Concerns
 
 No implementation concern remains. The only incomplete verification is the full-package gate blocked by the sandbox's loopback-bind denial; it should be rerun in a host environment that permits local listeners.
