@@ -1,6 +1,8 @@
 import {
   type ReactElement,
+  type KeyboardEvent as ReactKeyboardEvent,
   type ReactNode,
+  type Ref,
   useLayoutEffect,
   useRef,
 } from "react";
@@ -36,10 +38,12 @@ function ConversationChrome({
   skin,
   state,
   dispatch,
+  backRef,
 }: {
   readonly skin: ConversationSkin;
   readonly state: ConversationFrameState;
   readonly dispatch: (action: ConversationFrameAction) => void;
+  readonly backRef: Ref<HTMLButtonElement>;
 }): ReactElement {
   const conversation = state.conversation;
   return (
@@ -48,6 +52,7 @@ function ConversationChrome({
       data-frame-part="chrome"
     >
       <button
+        ref={backRef}
         type="button"
         aria-label="Back"
         onFocus={(event) => {
@@ -92,6 +97,48 @@ function ConversationChrome({
       </nav>
     </header>
   );
+}
+
+function wrapTerminalComposerTab(
+  event: ReactKeyboardEvent<HTMLElement>,
+  backControl: HTMLButtonElement | null,
+): void {
+  if (
+    event.defaultPrevented ||
+    event.key !== "Tab" ||
+    event.shiftKey ||
+    event.altKey ||
+    event.ctrlKey ||
+    event.metaKey ||
+    backControl === null
+  ) {
+    return;
+  }
+  const target = event.target;
+  if (
+    !(target instanceof HTMLTextAreaElement) ||
+    target.dataset.liveConversationMessage !== "true"
+  ) {
+    return;
+  }
+  const composer = target.closest<HTMLElement>(
+    '[data-frame-part="composer"][data-live-conversation-composer="true"]',
+  );
+  if (composer === null || !event.currentTarget.contains(composer)) return;
+  const hasFollowingAction = [
+    ...composer.querySelectorAll<HTMLButtonElement>("button"),
+  ].some(
+    (action) =>
+      !action.disabled &&
+      action.tabIndex >= 0 &&
+      (target.compareDocumentPosition(action) &
+        Node.DOCUMENT_POSITION_FOLLOWING) !==
+        0,
+  );
+  if (hasFollowingAction) return;
+
+  event.preventDefault();
+  backControl.focus();
 }
 
 function nextSelection(
@@ -431,6 +478,7 @@ export function ConversationFrame({
   onUnseenChange: _onUnseenChange,
   onFocusIntentChange,
 }: ConversationFrameProps): ReactElement {
+  const backRef = useRef<HTMLButtonElement>(null);
   const items = state.conversation?.items ?? [];
   const previousItems = useRef<ReadonlyMap<string, ConversationDisplayItem>>(
     new Map(),
@@ -464,8 +512,14 @@ export function ConversationFrame({
       className={`live-conversation-frame ${skin.className}`}
       data-live-conversation-frame="true"
       aria-label="Conversation"
+      onKeyDown={(event) => wrapTerminalComposerTab(event, backRef.current)}
     >
-      <ConversationChrome skin={skin} state={state} dispatch={dispatch} />
+      <ConversationChrome
+        skin={skin}
+        state={state}
+        dispatch={dispatch}
+        backRef={backRef}
+      />
       <VirtualTranscript data-frame-part="transcript">
         <div
           className="live-conversation-frame__feed"
