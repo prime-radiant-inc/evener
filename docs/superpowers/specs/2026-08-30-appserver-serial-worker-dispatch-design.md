@@ -42,10 +42,13 @@ not handlers waiting on each other.
   requests than the queue holds — that is flow control, analyzed in the queue
   section, not handler starvation — and dead-peer detection pauses in exactly the
   windows it pauses today (see Queue semantics).
-- The per-connection ordering contract PR #667 restored is preserved bit-for-bit for
-  every handler, with no audit of the ~104 hub and daemon handler registrations. The
-  contract is a partial order, stated precisely in "The ordering contract" below —
-  not total FIFO, because the three concurrent slow reads participate on both sides.
+- The per-connection ordering contract PR #667 restored is preserved unchanged for
+  every queued frame — requests and notifications alike — with no ordering audit of
+  the ~104 hub and daemon handler registrations. The contract is a partial order,
+  stated precisely in "The ordering contract" below — not total FIFO, because the
+  three concurrent slow reads participate on both sides — and the single
+  deliberate exception is ping, whose scheduling this design changes on purpose
+  (it bypasses the queue; see the table's ping cells).
 - One panic barrier in one place (`handleAndEnqueue`), covering every execution path
   identically, exactly as PR #667 left it.
 - Every transport property PR #667's tests pin — response/id pairing, hydration
@@ -129,6 +132,11 @@ pipelined `thread/read`s run concurrently — and a serial request issued after 
 read runs without waiting for it (that overtaking is the point of the concurrent
 set). Responses always pair by request id, and only the sequence-cut discipline
 governs how notifications interleave with a hydration response.
+
+Inbound notification frames (today only the `initialized` no-op reaches
+`handleNotification`) ride the queue like serial requests and keep their arrival
+order relative to them; nothing about this design is request-specific, so a future
+order-sensitive client notification inherits the same contract automatically.
 
 The table describes frames the receive loop has read. Its ping cells carry the one
 qualification the queue section derives: ping bypass applies from the moment the
@@ -378,7 +386,50 @@ threads it through both queue states:
   does. Promoting interrupt to the out-of-order set would reopen precisely the audit
   this design exists to avoid.
 
-### Shutdown, abandonment, teardown
+### Admitted-request semantics on disconnect
+
+The worker changes one execution-time property that deserves its own contract
+statement: under PR #667 the receive loop cannot *observe* a peer close while an
+inline serial handler runs (it is not in `Recv`), so the common disconnect —
+client closes the tab — could not cancel an executing serial mutation's context.
+Under the worker, the loop observes the close immediately and cancels while the
+mutation executes.
+
+The contract this design adopts: **an admitted request may observe connection
+cancellation at any await point, and its side effects are whatever it completed
+before observing it.** This is a promptness change, not a new category, and the
+system is already built for it on all three sides:
+
+- *It already happens.* Mid-handler cancellation on disconnect exists under PR
+  #667 through the send path — a send-loop write to the dead peer fails or times
+  out (`webSocketWriteTimeout`) and cancels the shared context while the inline
+  handler runs — and through server shutdown; and every concurrent slow read
+  experiences prompt disconnect cancellation today. No handler may assume its
+  context outlives its await points now.
+- *The wire already answers the client-side ambiguity.* A client disconnected
+  mid-mutation has never been able to know whether the mutation applied — under
+  PR #667 the handler runs to completion but its response is undeliverable. That
+  is why the retry-safe mutation machinery exists: `ClientMutationID` rides 13
+  mutation param types (validated in `HandleMessage` via
+  `ValidateMutationParams`), and the queue-mutation fences
+  (`ExpectedQueueRevision`, `ExpectedEntryID`, `ExpectedInstanceID`) make retries
+  safe across reconnects. "Did my mutation land?" is a question the protocol
+  already refuses to answer with ordering and answers with idempotent retry
+  instead.
+- *Post-cancellation access to connection-owned state is fenced at the seam, not
+  per handler.* Handler code can reach connection-owned state only through five
+  entry points, each already fenced for exactly this race because PR #667's
+  concurrent slow reads need it: `appserver.Subscribe` and
+  `appserver.ReplaceSubscriptions` verify `server.conns[conn.id] == conn` under
+  the projection gate (verified: they are the only subscription paths handlers
+  use — `cmd/evener-hub/app_relay.go` — the `Connection` methods have no
+  production callers); `CaptureSubscription` carries the same registration check
+  under the same gate; `Notify` and response enqueue land on the
+  `sendClosed`-fenced channel. Everything else a handler touches is server-global
+  state (stores, projectors) that must already tolerate concurrent mutation from
+  *other* connections. A per-handler audit would re-verify ~104 handlers against
+  a race the seams already close; this design instead pins the seam behavior in
+  the test plan (test 9).
 
 Worker lifecycle is owned by `ServeWebSocket`, symmetric with the send loop:
 
@@ -525,7 +576,16 @@ without modification:
    state repeatedly on one connection; assert exactly one advisory line reached
    `Logf` (matching on the connection id, not exact wording), so an implementation
    can neither flood the log under sustained backpressure nor skip the advisory.
-8. **Keepalive live during a slow mutation** — using the `keepaliveDecision` seam:
+8. **Executing serial mutation across disconnect** — the admitted-request contract
+   above, pinned from both sides. A context-aware serial mutation parks at an await
+   point; the client disconnects; assert the handler's context cancels promptly
+   (the new promptness this design introduces) and the handler unwinds. Then a
+   context-*ignoring* serial handler parks, the client disconnects and teardown
+   completes, and the handler resumes to call `appserver.Subscribe`,
+   `CaptureSubscription`, and `Notify`: assert each is refused by its fence
+   (subscription/capture rejected on the unregistered connection, notification
+   dropped on the closed send channel) and nothing leaks into `Subscriptions`.
+9. **Keepalive live during a slow mutation** — using the `keepaliveDecision` seam:
    with a serial handler parked, keepalive ping decisions report the reader
    available. Fails against PR #667; pins the incidental improvement so it cannot
    silently regress.
@@ -577,19 +637,25 @@ Assumes PR #667 is merged; this change is a delta on its end state, touching onl
   the queue/worker contract — it is the authoritative statement of the ordering
   contract and must move with the policy.
 
-Landing order, sized for review rather than ceremony (the whole production delta is
-one channel and one goroutine; a four-way stage split would be more process than
-mechanism):
+Landing order — three slices, each landing its behavior *with* the tests that pin
+it (test-driven, and each slice independently green), rather than a
+mechanism-then-tests split whose intermediate commit nothing verifies:
 
-1. **Worker + queue, behavior-preserving where possible** — the receive-loop split,
-   the worker with its classification, the inline ping bypass, the cancellation
-   re-check, the teardown purge, the saturation advisory, and the rewritten policy
-   comment, landing with every carried test green unmodified. This commit is where
-   the contract moves; it must not also invent test machinery.
-2. **The new test plan** — the seams (injectable capacity, blocked-enqueue signal,
-   after-dequeue hook, worker-exit signal, queue-length check) and the eight new
-   tests. Seams land with the tests that need them so no production field exists
-   without its consumer.
+1. **Worker, queue, ordering, ping** — the receive-loop split, the worker with its
+   classification, the inline ping bypass, and the rewritten policy comment;
+   carried tests green unmodified, plus new tests 1–3 (ping under slow mutation,
+   pairwise ordering, panic in the worker) and 9 (keepalive live during a slow
+   mutation).
+2. **Cancellation and teardown** — the post-dequeue re-check, the teardown purge
+   with its ownership rule, and the worker-exit/after-dequeue/purge seams, plus
+   tests 5, 6, and 8 (abandonment on close, deterministic dequeue cancellation,
+   executing mutation across disconnect).
+3. **Saturation** — the blocked-enqueue path, the one-shot advisory, the
+   injectable capacity and blocked-enqueue seams, plus tests 4 and 7. Before this
+   slice freezes `requestQueueCap`, characterize real client burst depth (count
+   frames per UI action in the web client's request layer, or log queue high-water
+   marks during an e2e scenario run) so the constant encodes evidence, not the
+   guess recorded here.
 
 Estimated size: roughly 120–160 lines of production delta (most of it comments and
 the worker loop) and 450–550 lines of new tests per the plan above. No wire-format
