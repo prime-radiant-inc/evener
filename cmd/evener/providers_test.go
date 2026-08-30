@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -109,6 +110,22 @@ func TestProvidersListReportsAnEmptyProvidersConfigAsNoUserLayer(t *testing.T) {
 	}
 	if !strings.Contains(stdout.String(), "user layer: none (EVENER_PROVIDERS_CONFIG is empty)") {
 		t.Fatalf("the empty tri-state must be named in the output:\n%s", stdout.String())
+	}
+}
+
+// Flag day (spec §14.1): the CLI exits with the pointer rather than starting
+// against an implicit-only registry the user did not ask for.
+func TestProvidersListOnAnOldSchemaFileIsTheFlagDayError(t *testing.T) {
+	root := providersTestEnv(t, nil)
+	path := writeProvidersToml(t, root, "[instances.openai]\ntype = \"openai\"\n")
+
+	var stdout, stderr bytes.Buffer
+	err := runProviders([]string{"list"}, nil, &stdout, &stderr)
+	if err == nil {
+		t.Fatalf("an old-schema providers.toml must fail the command; stdout:\n%s", stdout.String())
+	}
+	if !errors.Is(err, registry.ErrOldSchema) || !strings.Contains(err.Error(), "§14.1") || !strings.Contains(err.Error(), path) {
+		t.Fatalf("error must be the §14.1 pointer naming the file: %v", err)
 	}
 }
 

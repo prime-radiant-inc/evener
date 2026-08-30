@@ -192,6 +192,13 @@ func runProvidersProbe(args []string, stdout, stderr io.Writer) error {
 	if err != nil {
 		return err
 	}
+	return probeInstance(r, name, *write, stdout)
+}
+
+// probeInstance is `providers probe` against a registry the caller already
+// loaded: `providers add` probes what its own write reloaded, so the notices
+// are announced once and the entry is read once.
+func probeInstance(r *registry.Registry, name string, write bool, stdout io.Writer) error {
 	res, err := r.ResolveInstance(name)
 	if err != nil {
 		return err
@@ -216,7 +223,7 @@ func runProvidersProbe(args []string, stdout, stderr io.Writer) error {
 		results[proto] = probeProtocol(name, proto, entry, model)
 		_, _ = fmt.Fprintf(stdout, "%s: %s\n", proto, results[proto])
 	}
-	if !*write {
+	if !write {
 		return nil
 	}
 	return writeProbedProtocol(name, res.Protocol, protocols, results, stdout)
@@ -355,7 +362,7 @@ func writeProbedProtocol(name, current string, protocols []string, results map[s
 	}
 	path, noUserLayer := cmdutil.ProvidersConfigPath()
 	if noUserLayer {
-		return fmt.Errorf("cannot record protocol = %s: %s is empty, so there is no user layer to write", worked[0], "EVENER_PROVIDERS_CONFIG")
+		return fmt.Errorf("cannot record protocol = %s: EVENER_PROVIDERS_CONFIG is empty, so there is no user layer to write", worked[0])
 	}
 	l, _, err := registry.ReadConfigFile(path)
 	if err != nil {
@@ -456,7 +463,7 @@ func runProvidersAdd(args []string, stdout, stderr io.Writer) error {
 	if *noProbe {
 		return nil
 	}
-	return runProvidersProbe([]string{name, "--write"}, stdout, stderr)
+	return probeInstance(reloaded, name, true, stdout)
 }
 
 // instanceKeyVar is the environment variable a custom-named instance falls
