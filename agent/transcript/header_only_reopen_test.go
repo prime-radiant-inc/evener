@@ -7,12 +7,9 @@ import (
 
 // TestOpenWriterForSessionHeaderOnlyReturnsNonNilEntries pins the resume
 // contract at the transcript layer: a successful open over a header-only
-// file returns a NON-NIL empty entry slice. Session.RestoredTranscript
-// (whose ok flag means "a transcript was opened") and the delegate
-// attention fold (whose nil gate means "caller holds no decoded list")
-// both key on the slice's nilness, so this must not regress to var-style
-// nil initialization even though the two are equivalent to range and
-// append.
+// file returns a NON-NIL empty entry slice: the delegate-attention fold
+// keys on that nilness to skip re-reading the file, so this must not
+// regress to var-style nil initialization.
 func TestOpenWriterForSessionHeaderOnlyReturnsNonNilEntries(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "header-only.transcript.jsonl")

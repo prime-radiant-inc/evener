@@ -688,10 +688,8 @@ func RestoreSessionFromMetaWithConfig(client *llm.Client, profile *provider.Prof
 	var resumeTranscript *transcript.Writer
 	var transcriptEntries []transcript.Entry
 	var restoredTranscriptHeader transcript.Header
-	// restoredTranscriptOpened is the ok flag RestoredTranscript reports:
-	// captured at the open, not inferred from the entry slice, so the
-	// delegate-delivery refresh below (whose re-read of a header-only file
-	// produces an empty entry list) cannot silently flip it back to false.
+	// ok flag for RestoredTranscript; captured at the open so the refresh
+	// below can't flip it.
 	restoredTranscriptOpened := false
 	if cfg.StateDir != "" {
 		tpath := filepath.Join(cfg.StateDir, sessionsSubdir, meta.ID+".transcript.jsonl")

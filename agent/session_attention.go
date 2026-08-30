@@ -925,11 +925,9 @@ func (s *Session) resetStableDelegateAttentionRetry() {
 // entries is the final in-memory entry list restore produced (refreshed from
 // disk when delegate delivery replay appended to the transcript): folding it
 // instead of re-opening the file is what keeps resume from strict-decoding
-// the whole transcript a second time. The list is non-nil whenever a
-// transcript was opened — including a header-only one, where folding zero
-// entries matches reading that file — so a nil list means the caller holds no
-// decoded list at all (the fresh-session construction path) and the fold
-// re-reads the file.
+// the whole transcript a second time. A nil list means the caller has no
+// decoded list to fold (a fresh session, or a refresh that produced none);
+// the fold then re-reads the file.
 func (s *Session) rearmRootDelegateAttentionFromTranscript(entries []transcript.Entry) error {
 	if !s.isRootDelegateAttentionReceiver() {
 		return nil
