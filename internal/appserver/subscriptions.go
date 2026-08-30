@@ -194,11 +194,14 @@ func (s *Subscriptions) Release(connID, threadID string, generation uint64) ([]S
 	return release, true
 }
 
+// IsSubscribed reports whether the connection holds a live interest in the
+// thread; a withdrawn mid-capture entry does not count (see
+// subscription.withdrawn).
 func (s *Subscriptions) IsSubscribed(connID, threadID string) bool {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
-	_, ok := s.byConn[connID][threadID]
-	return ok
+	sub, ok := s.byConn[connID][threadID]
+	return ok && !sub.withdrawn
 }
 
 func (s *Subscriptions) Threads(connID string) []string {

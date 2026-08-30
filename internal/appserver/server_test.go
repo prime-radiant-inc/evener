@@ -1521,7 +1521,10 @@ func TestUnsubscribeBetweenCaptureAndCommitEndsUnsubscribed(t *testing.T) {
 	}
 	// The commit resolved the withdrawn entry by removing it — not by
 	// leaving it behind, filtered out of the count.
-	if server.subs.IsSubscribed(conn.ID(), "th_live") {
+	server.subs.mu.RLock()
+	_, present := server.subs.byConn[conn.id]["th_live"]
+	server.subs.mu.RUnlock()
+	if present {
 		t.Fatal("committed capture left the withdrawn entry in the registry")
 	}
 	if got := server.SubscriberCount("th_live"); got != 0 {
