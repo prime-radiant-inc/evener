@@ -940,7 +940,7 @@ func (s *Session) callModelWithFallback(ctx context.Context, profile *provider.P
 	// Nothing burned a budget there, so "handled by the retry loop" is false for
 	// that error alone. See modelFallbackEligible.
 	if err != nil && len(s.cfg.ModelFallbacks) > 0 && modelFallbackEligible(err, policy) {
-		// requestedEffort is the snapshot taken under lock in prepareModelRequest,
+		// requestedEffort is the snapshot taken under lock in prepareModelRequestWithError,
 		// before it was clamped to the primary model. Using the snapshot (rather
 		// than re-reading live session config) keeps a concurrent runtime effort
 		// change from racing/leaking into this request's fallback, and lets a
@@ -962,10 +962,9 @@ func (s *Session) callModelWithFallback(ctx context.Context, profile *provider.P
 			fbReq.Model = fbProfile.Model()
 			fbReq.Provider = fbProfile.ID()
 			if origEffort != "" && fbProfile.SupportsReasoning() {
-				// Clamp to the FALLBACK model's own levels. The resolver
-				// rebuilds the profile through its constructor for every
-				// behavior tag whose ladder is model-derived, so fbProfile's
-				// levels are the fallback model's, not the primary's.
+				// Clamp to the FALLBACK model's own levels: fbProfile is
+				// resolved from the fallback reference, so its effort ladder
+				// is the fallback model's, not the primary's.
 				//
 				// Gated on SupportsReasoning so a fallback explicitly declared
 				// non-reasoning never gets reasoning_effort on the wire (see the

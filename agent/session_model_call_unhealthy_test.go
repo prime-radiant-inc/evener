@@ -339,11 +339,6 @@ func TestShouldRetryResponsesContinuationAsFullHistory_UnhealthyVerdict(t *testi
 	}
 }
 
-// TestModelFallbackEligible_ProviderUnhealthy pins the dedicated
-// non-eligibility arm. The verdict wraps its last attempt error, so deriving
-// the class through llm.Classify would walk into that wrapped error: a
-// permanent-class one reports the chain eligible (the case that fails without
-// the arm), and a retryable-class one only happens to report non-eligible.
 // TestContinuationRecovery_SkippedWithoutRetainedHistory pins the retry's own
 // precondition: the rebuilt request sends the history the round retained, so a
 // delta paired with none must decline rather than dispatch a message-less
@@ -385,6 +380,11 @@ func TestModelFallbackEligible_ResponsesEmptyStream(t *testing.T) {
 	}
 }
 
+// TestModelFallbackEligible_ProviderUnhealthy pins the dedicated
+// non-eligibility arm. The verdict wraps its last attempt error, so deriving
+// the class through llm.Classify would walk into that wrapped error: a
+// permanent-class one reports the chain eligible (the case that fails without
+// the arm), and a retryable-class one only happens to report non-eligible.
 func TestModelFallbackEligible_ProviderUnhealthy(t *testing.T) {
 	cases := []struct {
 		name    string

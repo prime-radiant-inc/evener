@@ -58,10 +58,12 @@ func normalizeOllamaHost(h string) (string, error) {
 	return u.String(), nil
 }
 
-// redactURL renders a URL for an error message without echoing userinfo:
-// OLLAMA_HOST and OLLAMA_BASE_URL may carry a password, and these errors
-// reach warnings, listings, and logs.
-func redactURL(raw string) string {
+// RedactURL renders a URL for display without echoing userinfo: a base_url
+// may carry a password (OLLAMA_HOST and OLLAMA_BASE_URL routinely do), and
+// the strings it reaches — warnings, listings, `evener models inspect` output
+// pasted into a bug report — are all places a credential must not appear.
+// A URL with no userinfo comes back unchanged.
+func RedactURL(raw string) string {
 	if !strings.Contains(raw, "@") {
 		return raw
 	}
@@ -78,28 +80,28 @@ func validateOllamaURL(raw string, normalizePath bool) (string, error) {
 		if ue, ok := errors.AsType[*url.Error](err); ok {
 			err = ue.Err
 		}
-		return "", fmt.Errorf("invalid Ollama URL %q: %w", redactURL(raw), err)
+		return "", fmt.Errorf("invalid Ollama URL %q: %w", RedactURL(raw), err)
 	}
 	if u.Scheme != "http" && u.Scheme != "https" {
-		return "", fmt.Errorf("invalid Ollama URL %q: scheme must be http or https", redactURL(raw))
+		return "", fmt.Errorf("invalid Ollama URL %q: scheme must be http or https", RedactURL(raw))
 	}
 	if u.Opaque != "" || u.Host == "" || u.User != nil {
-		return "", fmt.Errorf("invalid Ollama URL %q: URL must have an authority without userinfo", redactURL(raw))
+		return "", fmt.Errorf("invalid Ollama URL %q: URL must have an authority without userinfo", RedactURL(raw))
 	}
 	if u.RawQuery != "" || u.ForceQuery || u.Fragment != "" || strings.Contains(raw, "#") {
-		return "", fmt.Errorf("invalid Ollama URL %q: query and fragment are not supported", redactURL(raw))
+		return "", fmt.Errorf("invalid Ollama URL %q: query and fragment are not supported", RedactURL(raw))
 	}
 	host := u.Hostname()
 	if host == "" || strings.TrimSpace(host) != host {
-		return "", fmt.Errorf("invalid Ollama URL %q: host is empty or contains whitespace", redactURL(raw))
+		return "", fmt.Errorf("invalid Ollama URL %q: host is empty or contains whitespace", RedactURL(raw))
 	}
 	if strings.HasSuffix(u.Host, ":") {
-		return "", fmt.Errorf("invalid Ollama URL %q: port is empty", redactURL(raw))
+		return "", fmt.Errorf("invalid Ollama URL %q: port is empty", RedactURL(raw))
 	}
 	if port := u.Port(); port != "" {
 		n, err := strconv.Atoi(port)
 		if err != nil || n < 1 || n > 65535 {
-			return "", fmt.Errorf("invalid Ollama URL %q: port must be between 1 and 65535", redactURL(raw))
+			return "", fmt.Errorf("invalid Ollama URL %q: port must be between 1 and 65535", RedactURL(raw))
 		}
 	}
 	if normalizePath {
@@ -109,7 +111,7 @@ func validateOllamaURL(raw string, normalizePath bool) (string, error) {
 		}
 		path, err := url.PathUnescape(escapedPath)
 		if err != nil {
-			return "", fmt.Errorf("invalid Ollama URL %q: invalid escaped path: %w", redactURL(raw), err)
+			return "", fmt.Errorf("invalid Ollama URL %q: invalid escaped path: %w", RedactURL(raw), err)
 		}
 		u.Path = path
 		if u.RawPath != "" || escapedPath != path {

@@ -112,8 +112,10 @@ func runProvidersList(args []string, stdout, stderr io.Writer) error {
 			notes = append(append([]string(nil), notes...), "default")
 		}
 		// The credential SOURCE is what a listing may show; the value it names
-		// never crosses this boundary (spec §11.2).
-		row := fmt.Sprintf("%s\t%s\t%s\t%s\t%s\t%s", inst.Name, base, inst.Protocol, inst.BaseURL, inst.CredentialSource, strings.Join(notes, "; "))
+		// never crosses this boundary (spec §11.2) — and neither does the
+		// userinfo an endpoint URL may carry, which is credential material
+		// too.
+		row := fmt.Sprintf("%s\t%s\t%s\t%s\t%s\t%s", inst.Name, base, inst.Protocol, registry.RedactURL(inst.BaseURL), inst.CredentialSource, strings.Join(notes, "; "))
 		if *check {
 			row += "\t" + liveColumn(client, inst.Name)
 		}

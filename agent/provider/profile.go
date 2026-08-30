@@ -300,7 +300,10 @@ func (p *Profile) SupportsWebSearch() bool { return registry.BoolValue(p.res.Cap
 // or "" when the row carries none.
 func (p *Profile) KnowledgeCutoff() string { return registry.StringValue(p.res.Caps.KnowledgeCutoff) }
 
-// Cost is the row's price per million tokens, or nil when unpriced.
+// Cost is the row's price per million tokens, or nil when unpriced. The
+// pointer aliases the resolved record's own Cost (registry.Resolved's
+// alias-don't-mutate rule, llm/registry/types.go), so callers must treat it
+// as read-only.
 func (p *Profile) Cost() *registry.Cost { return p.res.Caps.Cost }
 
 // InputModalities lists what the model accepts ("text", "image", "pdf", …).

@@ -49,9 +49,9 @@ func renderAvailableAgentsSectionWithAllowanceAndTools(t *testing.T, agents map[
 	maps.Copy(sess.pluginAgents, agents)
 
 	resolver := &sectionResolver{
-		provider: sess.profile.ID(),
-		agent:    defaultAgentName,
-		agentFS:  bundled.Agents(),
+		surface: sess.profile.ID(),
+		agent:   defaultAgentName,
+		agentFS: bundled.Agents(),
 		sources: []sectionSource{
 			embedSource{fs: embeddedPrompts, prefix: "prompts/sections/"},
 		},

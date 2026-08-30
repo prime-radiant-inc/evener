@@ -303,11 +303,11 @@ func TestCredentialsPanel_CreateFormCapturesType(t *testing.T) {
 		p = panel.(CredentialsPanel)
 	}
 
-	// Advance to field 2 (apiStyle) — skip it.
+	// Advance to field 2 (protocol) — skip it.
 	panel, _ = p.Update(tea.KeyMsg{Type: tea.KeyEnter})
 	p = panel.(CredentialsPanel)
 	if p.formActiveField() != "protocol" {
-		t.Fatalf("after second Enter, active field = %q, want apiStyle", p.formActiveField())
+		t.Fatalf("after second Enter, active field = %q, want protocol", p.formActiveField())
 	}
 
 	// Advance to field 3 (baseURL) — leave empty.

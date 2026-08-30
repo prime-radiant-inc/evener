@@ -248,8 +248,9 @@ func DiscoverWorkspace(root string) ([]Target, error) {
 	return targets, nil
 }
 
-// CheckTargets validates only coverage targets. Support-only test rows remain in
-// the manifest for their existing consumers and are deliberately not compared.
+// CheckTargets validates only coverage targets. Support-only test rows are
+// checked separately by CheckSupportTargets, which compares their packages —
+// their function names are not discoverable, and its doc explains why.
 func CheckTargets(registered, discovered []Target) error {
 	registeredSet, issues := targetSet("registered", registered)
 	discoveredSet, discoveredIssues := targetSet("discovered", discovered)

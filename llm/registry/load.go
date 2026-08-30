@@ -80,9 +80,6 @@ func WithInstances(instances map[string]Provider) Option {
 	return func(o *options) { o.instances = instances }
 }
 
-// WithNow replaces time.Now for cache-age decisions.
-func WithNow(now func() time.Time) Option { return func(o *options) { o.now = now } }
-
 // WithSnapshot replaces the embedded models.dev JSON (tests).
 func WithSnapshot(raw []byte) Option { return func(o *options) { o.snapshot = raw } }
 

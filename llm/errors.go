@@ -196,9 +196,10 @@ func extractErrorCode(raw any) string {
 }
 
 // providerSetter is implemented by errors whose provider name can be
-// rewritten in place. Used by thin provider wrappers (e.g. the ollama
-// adapter, which delegates to openaicompat) so errors carry the wrapper's
-// own provider stamp instead of the inner adapter's.
+// rewritten in place. The protocol packages use it so an error carries the
+// INSTANCE that produced it rather than the wire vocabulary its classifier
+// happened to stamp — an in-band Responses failure classified as "openai"
+// becomes the caller's own instance name (spec §7.5).
 type providerSetter interface {
 	setProvider(string)
 }

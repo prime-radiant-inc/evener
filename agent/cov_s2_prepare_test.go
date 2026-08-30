@@ -12,7 +12,7 @@ import (
 )
 
 // TestS2Cov_PrepareModelRequest_RepairsOrphan seeds history with an assistant
-// tool call that has no following tool result, then drives prepareModelRequest
+// tool call that has no following tool result, then drives prepareModelRequestWithError
 // and asserts the orphan is repaired (a synthetic tool-result turn is spliced in)
 // and the recovery warning is emitted.
 func TestS2Cov_PrepareModelRequest_RepairsOrphan(t *testing.T) {

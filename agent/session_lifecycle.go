@@ -1761,7 +1761,7 @@ func (s *Session) acceptDelegateAttentionInput() {
 // start of an input turn. It mirrors acceptContinuationInput's framing — the
 // drained queue is delivered to the model as a schema.TurnSteering reminder (a
 // user-role message that expandHistory passes through without rendering a user
-// bubble), so prepareModelRequest rebuilds the request from s.history and the
+// bubble), so prepareModelRequestWithError rebuilds the request from s.history and the
 // reminder reaches the model THIS turn. Unlike acceptUserInput it skips the
 // namer, the UserPromptSubmit hooks, the MaxTurns check, and the s.turns++
 // accounting (a notification is not a user turn).

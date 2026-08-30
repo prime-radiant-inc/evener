@@ -196,7 +196,9 @@ func runModelsInspect(args []string, stdout, stderr io.Writer) error {
 	sort.Strings(pruned)
 	// A literal Authorization or x-api-key in `headers` is a credential
 	// wherever providers.toml wrote it, so the record and the request
-	// skeleton both carry it masked.
+	// skeleton both carry it masked. So is the userinfo an endpoint URL may
+	// carry: this output is what gets pasted into a bug report.
+	res.Transport.BaseURL = registry.RedactURL(res.Transport.BaseURL)
 	headers := map[string]string{}
 	for k, v := range res.Headers {
 		if maskedHeaders[http.CanonicalHeaderKey(k)] {

@@ -635,3 +635,35 @@ func TestProvidersDispatchesFromTopLevel(t *testing.T) {
 		t.Fatalf("list ran through the dispatcher:\n%s", stdout.String())
 	}
 }
+
+// TestProvidersListAndModelsInspectRedactBaseURLUserinfo: a base_url may carry
+// userinfo, and commit 0c027c23a already classified that as credential
+// material for the API log. `models inspect` output is what gets pasted into a
+// bug report, so neither the record nor the request skeleton may echo it.
+func TestProvidersListAndModelsInspectRedactBaseURLUserinfo(t *testing.T) {
+	root := providersTestEnv(t, nil)
+	writeProvidersToml(t, root, "[providers.gw]\nbase = \"openai-compatible\"\nbase_url = \"https://user:hunter2@gw.example.com/v1\"\nauth = \"none\"\n")
+
+	var stdout, stderr bytes.Buffer
+	if err := runProviders([]string{"list"}, nil, &stdout, &stderr); err != nil {
+		t.Fatalf("providers list: %v\n%s", err, stderr.String())
+	}
+	if strings.Contains(stdout.String(), "hunter2") {
+		t.Fatalf("providers list echoed base_url userinfo:\n%s", stdout.String())
+	}
+	if !strings.Contains(stdout.String(), "gw.example.com") {
+		t.Fatalf("providers list dropped the endpoint host entirely:\n%s", stdout.String())
+	}
+
+	stdout.Reset()
+	stderr.Reset()
+	if err := runModels([]string{"inspect", "gw/anything"}, strings.NewReader(""), &stdout, &stderr); err != nil {
+		t.Fatalf("models inspect: %v\n%s", err, stderr.String())
+	}
+	if strings.Contains(stdout.String(), "hunter2") {
+		t.Fatalf("models inspect echoed base_url userinfo:\n%s", stdout.String())
+	}
+	if !strings.Contains(stdout.String(), "gw.example.com") {
+		t.Fatalf("models inspect dropped the endpoint host entirely:\n%s", stdout.String())
+	}
+}

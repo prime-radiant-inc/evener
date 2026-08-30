@@ -22,6 +22,7 @@ package hub
 //	go test ./cmd/evener-hub -run TestAuthWireFixtures -update-authwire
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"flag"
@@ -355,7 +356,7 @@ func TestAuthWireFixturesMatchTheHubHandler(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read %s: %v (regenerate with -update-authwire)", authWireFixturePath, err)
 	}
-	if string(want) != string(encoded) {
+	if !bytes.Equal(want, encoded) {
 		t.Fatalf("the credential wire drifted from %s.\n got: %s\nwant: %s\nRegenerate with `go test ./cmd/evener-hub -run TestAuthWireFixtures -update-authwire`, then re-run the TUI and frontend tests that decode it.",
 			authWireFixturePath, encoded, want)
 	}

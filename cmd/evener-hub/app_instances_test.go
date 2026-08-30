@@ -610,3 +610,71 @@ func TestInstances_EditRefusesAnUnreadableCredentialHeader(t *testing.T) {
 		t.Fatalf("the pane refused a valid edit after rejecting an invalid one: %v", err)
 	}
 }
+
+// TestInstances_RefusesAVarsKeyThePlaceholderGrammarCannotName: a transport's
+// {VAR} placeholders are uppercase names (llm/registry/load.go's
+// placeholderRe), so a vars key in any other shape is one nothing will ever
+// substitute. WriteConfigFile's dry parse checks the $ENV syntax in the
+// values, not the shape of the keys, so a lowercase key was written and then
+// silently ignored with no diagnostic anywhere.
+func TestInstances_RefusesAVarsKeyThePlaceholderGrammarCannotName(t *testing.T) {
+	for _, key := range []string{"region", "Region", "1REGION", "MY-REGION", ""} {
+		t.Run("key="+key, func(t *testing.T) {
+			f := newInstancesFixture(t, map[string]string{"GROQ_API_KEY": "gk"})
+			err := f.ctl.Create(appwire.InstanceCreateParams{
+				Name: "work", Base: "openai", Vars: map[string]string{key: "value"},
+			})
+			if err == nil {
+				t.Fatalf("Create accepted the vars key %q, which no placeholder can name", key)
+			}
+			if !strings.Contains(err.Error(), "invalid variable name") {
+				t.Fatalf("Create = %v, want the refusal to name the offending key", err)
+			}
+			if _, ok := readConfigProviders(t, f.tomlPath)["work"]; ok {
+				t.Fatal("the refused instance was written anyway")
+			}
+
+			if err := f.ctl.Create(appwire.InstanceCreateParams{Name: "ok", Base: "openai"}); err != nil {
+				t.Fatalf("Create(ok): %v", err)
+			}
+			err = f.ctl.Edit(appwire.InstanceEditParams{Name: "ok", Vars: map[string]string{key: "value"}})
+			if err == nil {
+				t.Fatalf("Edit accepted the vars key %q", key)
+			}
+			if !strings.Contains(err.Error(), "invalid variable name") {
+				t.Fatalf("Edit = %v, want the refusal to name the offending key", err)
+			}
+			if got := readConfigProviders(t, f.tomlPath)["ok"].Transport.Vars; len(got) != 0 {
+				t.Fatalf("the refused edit wrote vars %v", got)
+			}
+		})
+	}
+}
+
+// TestInstances_AcceptsAPlaceholderShapedVarsKey is the other half: the shape
+// the grammar does name goes through, on both mutators.
+func TestInstances_AcceptsAPlaceholderShapedVarsKey(t *testing.T) {
+	f := newInstancesFixture(t, map[string]string{"GROQ_API_KEY": "gk"})
+	if err := f.ctl.Create(appwire.InstanceCreateParams{
+		Name: "work", Base: "openai", Vars: map[string]string{"REGION": "us-east-1"},
+	}); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	if err := f.ctl.Edit(appwire.InstanceEditParams{Name: "work", Vars: map[string]string{"REGION_2": "eu-west-1"}}); err != nil {
+		t.Fatalf("Edit: %v", err)
+	}
+	got := readConfigProviders(t, f.tomlPath)["work"].Transport.Vars
+	if got["REGION"] != "us-east-1" || got["REGION_2"] != "eu-west-1" {
+		t.Fatalf("vars = %v", got)
+	}
+}
+
+// readConfigProviders re-reads the authored providers.toml.
+func readConfigProviders(t *testing.T, path string) map[string]registry.Provider {
+	t.Helper()
+	l, _, err := registry.ReadConfigFile(path)
+	if err != nil {
+		t.Fatalf("read %s: %v", path, err)
+	}
+	return l.Providers
+}

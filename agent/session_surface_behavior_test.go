@@ -68,11 +68,12 @@ func webSearchExecIsReal(t *testing.T, reg *tool.Registry) (isReal bool) {
 }
 
 // webSearchIsWired reports whether registerCoreTools registers the web_search
-// function tool for the given session's behavior tag. It uses a fresh empty
-// registry — not newProfileToolRegistry — so the result reflects only what
-// registerCoreTools itself adds: a non-nil entry means the BehaviorTag=="google"
-// branch was taken; absence means it was not. This avoids relying on executor
-// nil-deref behavior to distinguish real from placeholder.
+// function tool for the given session. It uses a fresh empty registry — not
+// newProfileToolRegistry — so the result reflects only what registerCoreTools
+// itself adds: a non-nil entry means the google-protocol branch was taken
+// (session_tool_registry.go's webSearchEnabled); absence means it was not.
+// This avoids relying on executor nil-deref behavior to distinguish real from
+// placeholder.
 func webSearchIsWired(t *testing.T, sess *Session) bool {
 	t.Helper()
 	reg := tool.NewRegistry()
@@ -196,7 +197,7 @@ func TestWebSearchToolAbsentOnTheOpenAISurface(t *testing.T) {
 	}
 }
 
-// ── Site 3: renderSystemPrompt sectionResolver provider ───────────────────
+// ── Site 3: renderSystemPrompt sectionResolver surface ────────────────────
 
 // TestSystemPromptLoadsTheOpenAISectionForANamedInstance verifies that a
 // session on an openai instance under a user-assigned name (id "work") still
@@ -222,13 +223,13 @@ func TestSystemPromptLoadsTheOpenAISectionForANamedInstance(t *testing.T) {
 	defer sess.Close()
 
 	// The embedded tools.provider-openai_append.md content is present verbatim
-	// in the rendered system prompt only when sectionResolver.provider="openai".
+	// in the rendered system prompt only when sectionResolver.surface="openai".
 	// We compare against the actual file content so the test tracks prose
 	// changes automatically rather than coupling to a specific phrase.
 	openAISection := openAISectionLiteral()
 	prompt, _ := sess.renderSystemPrompt(sess.env)
 	if !strings.Contains(prompt, openAISection) {
-		t.Fatalf("system prompt missing openai section — SectionResolver provider must be %q (surface), not %q (ID)",
+		t.Fatalf("system prompt missing openai section — sectionResolver.surface must be %q, not %q (the instance ID)",
 			renamedProfile.Surface(), renamedProfile.ID())
 	}
 }

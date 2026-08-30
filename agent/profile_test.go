@@ -41,9 +41,9 @@ func renderPromptForTest(t *testing.T, p *provider.Profile, data promptData) str
 	}
 
 	resolver := &sectionResolver{
-		provider: p.ID(),
-		agent:    data.Agent,
-		agentFS:  bundled.Agents(),
+		surface: p.ID(),
+		agent:   data.Agent,
+		agentFS: bundled.Agents(),
 		sources: []sectionSource{
 			embedSource{fs: embeddedPrompts, prefix: "prompts/sections/"},
 		},
@@ -279,10 +279,10 @@ func TestBuildSystemPrompt_PinsAntiPollGuidance(t *testing.T) {
 func TestSubagentPrompt_DoesNotIncludeBackgroundJobsSection(t *testing.T) {
 	t.Parallel()
 	resolver := &sectionResolver{
-		provider: "openai",
-		agent:    "implementer",
-		agentFS:  bundled.Agents(),
-		sources:  []sectionSource{embedSource{fs: embeddedPrompts, prefix: "prompts/sections/"}},
+		surface: "openai",
+		agent:   "implementer",
+		agentFS: bundled.Agents(),
+		sources: []sectionSource{embedSource{fs: embeddedPrompts, prefix: "prompts/sections/"}},
 	}
 	data := promptData{
 		Provider:           "openai",

@@ -362,7 +362,7 @@ func NewSession(client *llm.Client, profile *provider.Profile, env execenv.Execu
 			store := s.getOrCreateTaskStore()
 			if err := store.PopulateFromTemplates(agent.Tasks, nil); err == nil {
 				// Inject the first task prompt. Its reasoning_effort applies
-				// per-round via prepareModelRequest while it is in progress; it
+				// per-round via prepareModelRequestWithError while it is in progress; it
 				// must not overwrite the session's configured effort.
 				if current, ok := store.CurrentInProgress(); ok {
 					s.SteerKind(formatCurrentTaskSteering(current, s.canInstructTool("task_list")), events.SteeringKindCurrentTask)

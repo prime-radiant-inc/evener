@@ -517,14 +517,14 @@ func TestCovCredentialsFormFieldLine(t *testing.T) {
 
 // --- protocolDisplay ---
 
-func TestCovCredentialsAPIStyleDisplay(t *testing.T) {
+func TestCovCredentialsProtocolDisplay(t *testing.T) {
 	p := CredentialsPanel{formProtocol: ""}
 	if got := p.protocolDisplay(); got != "(default)" {
-		t.Fatalf("empty apiStyle display = %q, want (default)", got)
+		t.Fatalf("empty protocol display = %q, want (default)", got)
 	}
 	p2 := CredentialsPanel{formProtocol: "responses"}
 	if got := p2.protocolDisplay(); got != "responses" {
-		t.Fatalf("responses apiStyle display = %q, want responses", got)
+		t.Fatalf("responses protocol display = %q, want responses", got)
 	}
 }
 

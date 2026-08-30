@@ -712,7 +712,9 @@ func (s *Server) SetCostLookupFunc(fn func(ref string) *registry.Cost) {
 }
 
 // costFor is the cost of ref under the installed lookup; nil when none is
-// installed or the row carries no cost.
+// installed or the row carries no cost. The pointer aliases the registry's
+// own Cost (registry.Resolved's alias-don't-mutate rule,
+// llm/registry/types.go), so every caller treats it as read-only.
 func (s *Server) costFor(ref string) *registry.Cost {
 	s.costLookupMu.RLock()
 	fn := s.costLookup

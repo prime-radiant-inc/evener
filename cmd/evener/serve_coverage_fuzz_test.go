@@ -41,7 +41,7 @@ func FuzzServeSeedCoverage(f *testing.F) {
 			{"profile config", TestBuildInitialProfile_ConfigPath},
 			{"profile schema", TestBuildInitialProfile_ConfigPathInvalidOutputSchema},
 			{"profile unknown", TestBuildInitialProfile_UnknownInstanceError},
-			{"profile materialized", TestBuildInitialProfile_CuratedInstance},
+			{"profile curated instance", TestBuildInitialProfile_CuratedInstance},
 			{"bare model", TestRunServe_BareModelRejected},
 			{"missing model", TestRunServe_MissingModel},
 			{"env help", TestPrintServeEnvVars_IncludesOpenAIResponsesContinuation},

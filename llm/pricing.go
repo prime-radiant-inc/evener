@@ -21,6 +21,9 @@ type Price struct {
 // carries one cache-write rate, reported as the 5-minute tier. A nil cost is
 // a row the registry has no price for, which is reported as (Price{}, false)
 // so callers render nothing rather than a misleading zero (spec §7.5).
+// registry.Cost.Tiers is deliberately not priced: a tiered row is charged at
+// its base rate at every context size, which the plan chose over carrying a
+// second rate table nothing else in the tree reads.
 func PriceFromCost(c *registry.Cost) (Price, bool) {
 	if c == nil {
 		return Price{}, false

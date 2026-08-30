@@ -482,7 +482,7 @@ func wppSectionResolver(t *testing.T, token string) {
 	wppWrite(t, dir, "role.agent-reviewer.md", "disk role\n")
 	wppWrite(t, dir, "page.md.tmpl", "{{ section \"identity\" }}\n\n\n{{ section \"tools\" }}\n")
 
-	r := &sectionResolver{provider: "openai", agent: "reviewer", sources: []sectionSource{diskSource{dir: dir}}}
+	r := &sectionResolver{surface: "openai", agent: "reviewer", sources: []sectionSource{diskSource{dir: dir}}}
 	if got := r.Section("tools", promptData{}); got != "agent before\n\nagent body "+token+"\n\nagent after" {
 		t.Fatalf("agent section = %q", got)
 	}
@@ -517,7 +517,7 @@ func wppSectionResolver(t *testing.T, token string) {
 		t.Fatalf("collapsed blank lines = %q", got)
 	}
 
-	providerOnly := &sectionResolver{provider: "openai", sources: []sectionSource{diskSource{dir: dir}}}
+	providerOnly := &sectionResolver{surface: "openai", sources: []sectionSource{diskSource{dir: dir}}}
 	if got := providerOnly.Section("tools", promptData{}); got != "provider before\n\nbase\n\nprovider after" {
 		t.Fatalf("provider layering = %q", got)
 	}
@@ -573,7 +573,7 @@ func wppSectionResolver(t *testing.T, token string) {
 	if len(memResolver.tracked) != 1 || memResolver.tracked[0].Label != "unknown:x.md" {
 		t.Fatalf("memory source tracking = %#v", memResolver.tracked)
 	}
-	embeddedResolver := &sectionResolver{provider: "openai", agent: defaultAgentName, agentFS: bundled.Agents(), sources: []sectionSource{embedded}}
+	embeddedResolver := &sectionResolver{surface: "openai", agent: defaultAgentName, agentFS: bundled.Agents(), sources: []sectionSource{embedded}}
 	if out, sources, err := embeddedResolver.RenderEmbedded(embeddedPrompts, "prompts/templates/", "system", promptData{Provider: "openai", Agent: defaultAgentName}); err != nil || out == "" || len(sources) == 0 {
 		t.Fatalf("embedded render = %q sources:%#v err:%v", out, sources, err)
 	}

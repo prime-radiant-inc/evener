@@ -6,6 +6,7 @@ import (
 	"maps"
 	"net/url"
 	"os"
+	"regexp"
 	"sort"
 	"strings"
 	"sync"
@@ -158,6 +159,24 @@ func (c *hubInstancesController) writeLoadable(l *registry.Layer) error {
 	return err
 }
 
+// varNameRe is the placeholder grammar a transport template can name
+// (llm/registry's placeholderRe: "{VAR}", uppercase only). A vars key in any
+// other shape is one no substitution will ever reach, and the config writer's
+// dry parse checks the $ENV syntax in the values, not the shape of the keys —
+// so without this the entry lands in providers.toml and is silently ignored.
+var varNameRe = regexp.MustCompile(`^[A-Z][A-Z0-9_]*$`)
+
+// validVarNames refuses a vars map carrying a key the placeholder grammar
+// cannot name.
+func validVarNames(vars map[string]string) error {
+	for name := range vars {
+		if !varNameRe.MatchString(name) {
+			return fmt.Errorf("invalid variable name %q: a transport placeholder is {UPPERCASE_NAME}, so nothing would substitute it", name)
+		}
+	}
+	return nil
+}
+
 // refuseWhenBroken stops every write while there is no registry to write
 // against: a providers.toml that does not load (the hub has no way to rewrite
 // a file it could not read without destroying what the user wrote — spec §10,
@@ -190,6 +209,9 @@ func (c *hubInstancesController) Create(params appwire.InstanceCreateParams) err
 	}
 	if params.CredentialHeader != "" && !strings.Contains(params.CredentialHeader, "$") {
 		return errors.New("credential header must reference a $VARIABLE, never a literal secret")
+	}
+	if err := validVarNames(params.Vars); err != nil {
+		return err
 	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -233,6 +255,9 @@ func (c *hubInstancesController) Edit(params appwire.InstanceEditParams) error {
 		return err
 	}
 	name := strings.TrimSpace(params.Name)
+	if err := validVarNames(params.Vars); err != nil {
+		return err
+	}
 
 	c.mu.Lock()
 	defer c.mu.Unlock()

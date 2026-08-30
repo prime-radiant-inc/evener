@@ -14,6 +14,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 
@@ -276,9 +277,9 @@ func TestAuthProviderArgDefersToTheHub(t *testing.T) {
 
 func lastSessionSystemLine(t *testing.T, m hubModel) string {
 	t.Helper()
-	for i := len(m.session.messages) - 1; i >= 0; i-- {
-		if m.session.messages[i].Kind == transcript.MsgSystem {
-			return strings.TrimSpace(m.session.messages[i].Text)
+	for _, msg := range slices.Backward(m.session.messages) {
+		if msg.Kind == transcript.MsgSystem {
+			return strings.TrimSpace(msg.Text)
 		}
 	}
 	t.Fatal("no system message was added")

@@ -342,10 +342,10 @@ func TestProbeCapabilitiesGitTimeoutIsIndependent(t *testing.T) {
 // the rendered prompt's <environment> block, each on its own line.
 func TestCapabilityPreambleRendersInEnvironmentSection(t *testing.T) {
 	resolver := &sectionResolver{
-		provider: "anthropic",
-		agent:    defaultAgentName,
-		agentFS:  bundled.Agents(),
-		sources:  []sectionSource{embedSource{fs: embeddedPrompts, prefix: "prompts/sections/"}},
+		surface: "anthropic",
+		agent:   defaultAgentName,
+		agentFS: bundled.Agents(),
+		sources: []sectionSource{embedSource{fs: embeddedPrompts, prefix: "prompts/sections/"}},
 	}
 	data := promptData{
 		WorkingDir:   "/w",
