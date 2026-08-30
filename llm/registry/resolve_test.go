@@ -362,3 +362,21 @@ func TestResolve_DefaultInstanceAndErrors(t *testing.T) {
 		t.Fatal("a non-implicit registry id is not an instance without a [providers.huggingface] entry")
 	}
 }
+
+func TestStripDatedSuffix(t *testing.T) {
+	cases := map[string]string{
+		"claude-sonnet-4-5-20250929":      "claude-sonnet-4-5",
+		"claude-3-5-sonnet-20241022-v2:0": "claude-3-5-sonnet",
+		"claude-opus-4-5@20251101":        "claude-opus-4-5",
+		"claude-sonnet-4-5":               "claude-sonnet-4-5",
+		"gpt-5.5":                         "gpt-5.5",
+		"":                                "",
+		"20250929":                        "20250929",
+		"-20250929":                       "-20250929",
+	}
+	for id, want := range cases {
+		if got := StripDatedSuffix(id); got != want {
+			t.Errorf("StripDatedSuffix(%q) = %q, want %q", id, got, want)
+		}
+	}
+}

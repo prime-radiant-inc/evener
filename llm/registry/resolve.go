@@ -43,6 +43,19 @@ var vertexGlobalOnly = []string{"claude-opus-4-7", "claude-opus-4-8", "claude-op
 
 var datedSuffixRe = regexp.MustCompile(`(-\d{8}(-v\d+(:\d+)?)?|@\d{8})$`)
 
+// StripDatedSuffix removes a provider's dated-snapshot suffix from a model id
+// ("claude-sonnet-4-5-20250929" → "claude-sonnet-4-5"), covering the trailing
+// "-YYYYMMDD", its Bedrock "-vN:N" variant, and Vertex's "@YYYYMMDD". It is
+// the rule lookupRow's dated step applies, exported for callers that compare
+// a requested id against a provider-reported snapshot. An id carrying no such
+// suffix — or one that is nothing but a suffix — comes back unchanged.
+func StripDatedSuffix(id string) string {
+	if s := datedSuffixRe.ReplaceAllString(id, ""); s != "" {
+		return s
+	}
+	return id
+}
+
 const provAlias = "alias"
 
 // ParseRef splits "instance/model" on the first slash (spec §7.1); a bare
@@ -135,7 +148,7 @@ func (r *Registry) lookupRow(rec *record, model string) lookupHit {
 			return lookupHit{rowID: s, wireID: model, step: "region"}
 		}
 	}
-	if s := datedSuffixRe.ReplaceAllString(model, ""); s != model && s != "" {
+	if s := StripDatedSuffix(model); s != model {
 		if _, ok := rows[s]; ok {
 			return lookupHit{rowID: s, wireID: model, step: "dated"}
 		}
