@@ -1,6 +1,7 @@
 package plugins
 
 import (
+	"context"
 	"errors"
 	"io/fs"
 	"time"
@@ -25,7 +26,7 @@ func (m *Manager) SeedDefaultMarketplaces() (bool, error) {
 	} else if !errors.Is(err, fs.ErrNotExist) {
 		return false, err
 	}
-	release, err := marketplaceAcquireLock(m.lockPath(), 30*time.Second)
+	release, err := marketplaceAcquireLock(context.Background(), m.lockPath(), 30*time.Second)
 	if err != nil {
 		return false, err
 	}
