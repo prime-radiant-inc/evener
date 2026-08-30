@@ -2842,7 +2842,7 @@ func TestSession_ToolNameMapping_EventsUseCanonicalName(t *testing.T) {
 	}
 }
 
-func TestSession_ToolPurpose_IncludedInToolCallStartEvent(t *testing.T) {
+func TestSession_ToolIntent_IncludedInToolCallStartEvent(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
 	c := llm.NewClient()
@@ -2854,7 +2854,7 @@ func TestSession_ToolPurpose_IncludedInToolCallStartEvent(t *testing.T) {
 				call := llm.ToolCallData{
 					ID:        "call-sh",
 					Name:      "exec_command",
-					Arguments: json.RawMessage(`{"command":"ls","purpose":"List project files"}`),
+					Arguments: json.RawMessage(`{"command":"ls","intent":"List project files"}`),
 					Type:      "function",
 				}
 				return llm.Response{
@@ -2907,7 +2907,7 @@ func TestSession_ToolPurpose_IncludedInToolCallStartEvent(t *testing.T) {
 			}
 		}
 	}
-	t.Fatal("TOOL_CALL_START event should include description field from tool purpose")
+	t.Fatal("TOOL_CALL_START event should include description field from tool intent")
 }
 
 func TestSession_ReadBeforeWrite_WarnsOnUnreadFile(t *testing.T) {

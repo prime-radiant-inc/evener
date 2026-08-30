@@ -53,7 +53,7 @@ func registerToolRoundTailTool(t *testing.T, s *Session, name string, readOnly b
 			Name: name, Description: "deterministic coverage tool",
 			Parameters: map[string]any{"type": "object", "additionalProperties": false},
 		}, ReadOnly: readOnly},
-		OmitPurpose: true,
+		OmitIntent: true,
 		Exec: func(ctx context.Context, _ execenv.ExecutionEnvironment, _ map[string]any) (any, error) {
 			return exec(ctx)
 		},

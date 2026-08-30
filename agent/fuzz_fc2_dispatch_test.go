@@ -82,30 +82,24 @@ func FuzzFc2OutputWindowStatus(f *testing.F) {
 }
 
 // FuzzFc2ToolStartDescription drives toolStartDescription — the pure description
-// promotion lifted out of execTool: an explicit "purpose" wins over the legacy
-// "description", else empty. Oracles (beyond never-panic):
+// promotion lifted out of execTool: an explicit "intent" wins over the legacy
+// promotion lifted out of execTool: an explicit "intent" is returned verbatim,
+// else empty. Oracles (beyond never-panic):
 //   - determinism;
-//   - a non-empty string "purpose" is always returned verbatim;
-//   - otherwise a non-empty string "description" is returned;
+//   - a non-empty string "intent" is always returned verbatim;
 //   - otherwise the result is empty.
 func FuzzFc2ToolStartDescription(f *testing.F) {
-	f.Add("do the thing", "shell desc", true, true)
-	f.Add("", "shell desc", false, true)
-	f.Add("", "", false, false)
-	f.Add("purpose only", "", true, false)
+	f.Add("do the thing", true)
+	f.Add("", false)
+	f.Add("intent only", true)
 
-	f.Fuzz(func(t *testing.T, purpose, desc string, hasPurpose, hasDesc bool) {
+	f.Fuzz(func(t *testing.T, intent string, hasIntent bool) {
 		args := map[string]any{}
-		// Vary the value TYPES too: only a string value should be honored.
-		if hasPurpose {
-			args["purpose"] = purpose
+		// Vary the value TYPE too: only a string value should be honored.
+		if hasIntent {
+			args["intent"] = intent
 		} else {
-			args["purpose"] = 42 // non-string: ignored
-		}
-		if hasDesc {
-			args["description"] = desc
-		} else {
-			args["description"] = []any{"x"} // non-string: ignored
+			args["intent"] = 42 // non-string: ignored
 		}
 
 		got := toolStartDescription(args)
@@ -113,20 +107,13 @@ func FuzzFc2ToolStartDescription(f *testing.F) {
 			t.Fatalf("non-deterministic: %q vs %q", got, got2)
 		}
 
-		wantPurpose := hasPurpose && purpose != ""
-		wantDesc := hasDesc && desc != ""
-		switch {
-		case wantPurpose:
-			if got != purpose {
-				t.Fatalf("purpose set but got %q, want %q", got, purpose)
+		if hasIntent && intent != "" {
+			if got != intent {
+				t.Fatalf("intent set but got %q, want %q", got, intent)
 			}
-		case wantDesc:
-			if got != desc {
-				t.Fatalf("description fallback but got %q, want %q", got, desc)
-			}
-		default:
+		} else {
 			if got != "" {
-				t.Fatalf("no usable field but got %q", got)
+				t.Fatalf("no usable intent but got %q", got)
 			}
 		}
 	})

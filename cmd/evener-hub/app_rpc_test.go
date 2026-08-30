@@ -1046,7 +1046,7 @@ func TestAppItemsFromReplayTurnAcceptsCurrentToolCallKind(t *testing.T) {
 			ToolCall: &llm.ToolCallData{
 				ID:        "call_read",
 				Name:      "read_file",
-				Arguments: []byte(`{"file_path":"/tmp/example.txt","purpose":"Inspect example output."}`),
+				Arguments: []byte(`{"file_path":"/tmp/example.txt","intent":"Inspect example output."}`),
 			},
 		}}},
 	}, toolNames)

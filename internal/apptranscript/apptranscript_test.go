@@ -320,7 +320,7 @@ func TestProjectTurnMapsToolCallsAndResults(t *testing.T) {
 			ToolCall: &llm.ToolCallData{
 				ID:        "call_read",
 				Name:      "read_file",
-				Arguments: []byte(`{"path":"README.md","purpose":"inspect docs"}`),
+				Arguments: []byte(`{"path":"README.md","intent":"inspect docs"}`),
 			},
 		}}},
 	}, toolNames, nil, nil)
@@ -823,8 +823,6 @@ func TestToolIntentFromArguments(t *testing.T) {
 		want string
 	}{
 		{"intent", `{"intent":"do it"}`, "do it"},
-		{"purpose", `{"purpose":"inspect"}`, "inspect"},
-		{"description", `{"description":"read file"}`, "read file"},
 		{"intent priority", `{"intent":"a","purpose":"b"}`, "a"},
 		{"non-string ignored", `{"intent":123}`, ""},
 		{"empty object", `{}`, ""},

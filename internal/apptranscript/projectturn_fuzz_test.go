@@ -86,7 +86,7 @@ func exerciseTranscriptSurface(t testing.TB) {
 	CommunicateMessageFromArguments([]byte(`{`))
 	CommunicateMessageFromArguments([]byte(`{}`))
 	ToolIntentFromArguments(nil)
-	ToolIntentFromArguments([]byte(`{"intent":1,"purpose":" ","description":"desc"}`))
+	ToolIntentFromArguments([]byte(`{"intent":1}`))
 	StringifyToolContent(nil)
 	StringifyToolContent("text")
 	StringifyToolContent(make(chan int))

@@ -170,7 +170,7 @@ func stmRunRoundContracts(t *testing.T, program []byte) {
 	}
 
 	calls := []llm.ToolCallData{
-		stmCall(t, "read", "read_file", map[string]any{"file_path": value + ".txt", "purpose": "inspect " + value}),
+		stmCall(t, "read", "read_file", map[string]any{"file_path": value + ".txt", "intent": "inspect " + value}),
 		stmCall(t, "list", "list_dir", map[string]any{"path": ".", "depth": float64(r.next()%3 + 1), "offset": float64(r.next() % 3), "limit": float64(r.next()%4 + 1)}),
 		stmCall(t, "grep", "grep", map[string]any{"pattern": value, "path": ".", "output_mode": []string{"content", "count", "files_with_matches"}[int(r.next())%3]}),
 		stmCall(t, "glob", "glob", map[string]any{"pattern": "*." + value, "path": "."}),
@@ -297,7 +297,7 @@ func stmRunRoundContracts(t *testing.T, program []byte) {
 		mediaType = "application/pdf"
 		wantKind = llm.ContentDocument
 	}
-	if description := s.describeImage(ctx, tool.ExecResult{ImageData: []byte("fixture-" + value), ImageMediaType: mediaType, ImagePurpose: "describe " + value}); description != "scripted vision" {
+	if description := s.describeImage(ctx, tool.ExecResult{ImageData: []byte("fixture-" + value), ImageMediaType: mediaType, ImageIntent: "describe " + value}); description != "scripted vision" {
 		t.Fatalf("scripted image description = %q", description)
 	}
 	requests := adapter.Requests()

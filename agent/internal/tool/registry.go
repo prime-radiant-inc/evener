@@ -23,7 +23,7 @@ import (
 	"primeradiant.com/evener/llm"
 )
 
-const toolPurposeDescription = "A short verb-first gerund phrase naming what this call is doing, e.g. \"Reading the config file\" or \"Searching for the handler\". Keep it to a few words so it renders nicely as an inline activity label."
+const toolIntentDescription = "A short verb-first gerund phrase naming what this call is doing and why, e.g. \"Reading the config file\" or \"Searching for the handler\". Keep it to a few words so it renders nicely as an inline activity label."
 
 // maxToolArgumentBytes caps the size of a tool call's raw argument payload
 // before it is parsed, so a runaway generation can't push a multi-hundred-KB
@@ -37,7 +37,7 @@ const toolPurposeDescription = "A short verb-first gerund phrase naming what thi
 // keep the two values in sync by comment.)
 const maxToolArgumentBytes = 2 * 1024 * 1024
 
-func WithPurposeParameter(td llm.ToolDefinition) llm.ToolDefinition {
+func WithIntentParameter(td llm.ToolDefinition) llm.ToolDefinition {
 	params := CloneSchemaMap(td.Parameters)
 	if params == nil {
 		params = map[string]any{"type": "object"}
@@ -52,27 +52,27 @@ func WithPurposeParameter(td llm.ToolDefinition) llm.ToolDefinition {
 		props = map[string]any{}
 		params["properties"] = props
 	}
-	if _, exists := props["purpose"]; !exists {
-		props["purpose"] = map[string]any{
+	if _, exists := props["intent"]; !exists {
+		props["intent"] = map[string]any{
 			"type":        "string",
-			"description": toolPurposeDescription,
+			"description": toolIntentDescription,
 		}
 	}
 	td.Parameters = params
 	return td
 }
 
-func WithoutPurposeParameter(td llm.ToolDefinition) llm.ToolDefinition {
+func WithoutIntentParameter(td llm.ToolDefinition) llm.ToolDefinition {
 	params := CloneSchemaMap(td.Parameters)
 	props, _ := params["properties"].(map[string]any)
 	if props != nil {
-		delete(props, "purpose")
+		delete(props, "intent")
 	}
 	switch required := params["required"].(type) {
 	case []string:
-		params["required"] = removeRequiredField(required, "purpose")
+		params["required"] = removeRequiredField(required, "intent")
 	case []any:
-		params["required"] = removeRequiredFieldAny(required, "purpose")
+		params["required"] = removeRequiredFieldAny(required, "intent")
 	}
 	td.Parameters = params
 	return td
@@ -243,7 +243,7 @@ type ExecResult struct {
 	// alongside the text output so the model can "see" the image.
 	ImageData      []byte
 	ImageMediaType string
-	ImagePurpose   string // from the caller: what they hope to learn
+	ImageIntent    string // from the caller: what they hope to learn
 
 	// ToolState is an optional JSON-encoded snapshot emitted alongside
 	// Output via the TOOL_CALL_END event. The LLM never sees this — it's a
@@ -282,7 +282,7 @@ type ImageResult struct {
 	Text      string
 	Data      []byte
 	MediaType string
-	Purpose   string // what the caller hopes to learn from this image
+	Intent    string // what the caller hopes to learn from this image
 }
 
 // ParseImageResult checks if ReadFile output is an image response (the [image: ...]
@@ -339,10 +339,10 @@ func ParseDocumentResult(_ string, readFileOutput string) *ImageResult {
 // Execute), its compiled validation schema, output limit, and the agent-layer
 // executor that receives the execenv.ExecutionEnvironment.
 type RegisteredTool struct {
-	llm.Tool    // embeds Definition + Execute
-	Schema      *jsonschema.Schema
-	Limit       schema.ToolOutputLimit
-	OmitPurpose bool
+	llm.Tool   // embeds Definition + Execute
+	Schema     *jsonschema.Schema
+	Limit      schema.ToolOutputLimit
+	OmitIntent bool
 	// Agent-layer executor with environment context.
 	Exec func(ctx context.Context, env execenv.ExecutionEnvironment, args map[string]any) (any, error)
 }
@@ -399,17 +399,17 @@ func (r *Registry) Use(mw toolMiddleware) {
 }
 
 // Register validates and stores a tool in the registry. It rejects an invalid
-// tool name or a missing executor, injects the purpose parameter into work-tool
+// tool name or a missing executor, injects the intent parameter into work-tool
 // definitions, applies a default output limit when none is set, compiles (or
 // reuses) the argument schema, and bridges llm.Tool.Execute from Exec when unset.
 func (r *Registry) Register(t RegisteredTool) error {
 	if err := llm.ValidateToolName(t.Definition.Name); err != nil {
 		return err
 	}
-	if t.OmitPurpose {
-		t.Definition = WithoutPurposeParameter(t.Definition)
+	if t.OmitIntent {
+		t.Definition = WithoutIntentParameter(t.Definition)
 	} else {
-		t.Definition = WithPurposeParameter(t.Definition)
+		t.Definition = WithIntentParameter(t.Definition)
 	}
 	if strings.TrimSpace(t.Definition.Description) == "" {
 		log.Printf("WARNING: tool %q registered with empty description", t.Definition.Name)
@@ -675,7 +675,7 @@ func (r *Registry) ExecuteCall(ctx context.Context, env execenv.ExecutionEnviron
 	}
 
 	if name != "read_file" {
-		delete(args, "purpose")
+		delete(args, "intent")
 	}
 	v, err := t.Exec(ctx, env, args)
 	res := dispatchedResult(name, callID, t.Limit, v, err)
@@ -734,7 +734,7 @@ func dispatchedResult(name, callID string, lim schema.ToolOutputLimit, v any, er
 		res := truncateResult(name, callID, img.Text, false, lim)
 		res.ImageData = img.Data
 		res.ImageMediaType = img.MediaType
-		res.ImagePurpose = img.Purpose
+		res.ImageIntent = img.Intent
 		return res
 	}
 

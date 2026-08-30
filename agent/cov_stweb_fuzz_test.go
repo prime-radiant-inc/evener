@@ -347,7 +347,7 @@ func stweb_run(t *testing.T, data []byte) stweb_trace {
 	fetch := stweb_execute(t, reg, env, "stweb-fetch", "web_fetch", map[string]any{
 		"url":      fetchURL,
 		"question": question,
-		"purpose":  "inspect " + token,
+		"intent":   "inspect " + token,
 	})
 	stweb_assertResult(t, fetch, "web_fetch", "stweb-fetch", denied, "fetched:"+fetchURL+":"+question)
 	if got, want := fetchCalls, stweb_callCount(denied); got != want {
@@ -366,8 +366,8 @@ func stweb_run(t *testing.T, data []byte) stweb_trace {
 	}
 
 	search := stweb_execute(t, reg, env, "stweb-search", "web_search", map[string]any{
-		"query":   query,
-		"purpose": "search " + token,
+		"query":  query,
+		"intent": "search " + token,
 	})
 	stweb_assertResult(t, search, "web_search", "stweb-search", denied, "searched:"+query)
 	if got, want := searchCalls, stweb_callCount(denied); got != want {

@@ -964,7 +964,7 @@ func TestCommunicate_SchemaRejectsMalformedOutput(t *testing.T) {
 	}
 }
 
-func TestCommunicate_SchemaRejectsPurposeInsideOutput(t *testing.T) {
+func TestCommunicate_SchemaRejectsIntentInsideOutput(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
 	c := llm.NewClient()
@@ -983,7 +983,7 @@ func TestCommunicate_SchemaRejectsPurposeInsideOutput(t *testing.T) {
 			"message":   "RESULT_LIST_DIR visible-item.txt",
 			"data":      map[string]any{},
 			"artifacts": []any{},
-			"purpose":   "final_result",
+			"intent":    "final_result",
 		},
 	})
 	res := sess.reg.ExecuteCall(context.Background(), sess.env, llm.ToolCallData{
@@ -995,12 +995,12 @@ func TestCommunicate_SchemaRejectsPurposeInsideOutput(t *testing.T) {
 	if !res.IsError {
 		t.Fatalf("expected schema error, got success: %s", res.Output)
 	}
-	if !strings.Contains(res.Output, "additionalProperties") || !strings.Contains(res.Output, "purpose") {
-		t.Fatalf("expected output.purpose schema error, got: %s", res.Output)
+	if !strings.Contains(res.Output, "additionalProperties") || !strings.Contains(res.Output, "intent") {
+		t.Fatalf("expected output.intent schema error, got: %s", res.Output)
 	}
 }
 
-func TestCommunicate_SchemaRejectsTopLevelPurpose(t *testing.T) {
+func TestCommunicate_SchemaRejectsTopLevelIntent(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
 	c := llm.NewClient()
@@ -1015,7 +1015,7 @@ func TestCommunicate_SchemaRejectsTopLevelPurpose(t *testing.T) {
 	rawArgs, _ := json.Marshal(map[string]any{
 		"message":  "RESULT_LIST_DIR visible-item.txt",
 		"end_turn": true,
-		"purpose":  "final_result",
+		"intent":   "final_result",
 		"output": map[string]any{
 			"message":   "",
 			"data":      map[string]any{},
@@ -1031,12 +1031,12 @@ func TestCommunicate_SchemaRejectsTopLevelPurpose(t *testing.T) {
 	if !res.IsError {
 		t.Fatalf("expected schema error, got success: %s", res.Output)
 	}
-	if !strings.Contains(res.Output, "additionalProperties") || !strings.Contains(res.Output, "purpose") {
-		t.Fatalf("expected top-level purpose schema error, got: %s", res.Output)
+	if !strings.Contains(res.Output, "additionalProperties") || !strings.Contains(res.Output, "intent") {
+		t.Fatalf("expected top-level intent schema error, got: %s", res.Output)
 	}
 }
 
-func TestCommunicate_ModelFacingSchemaOmitsPurpose(t *testing.T) {
+func TestCommunicate_ModelFacingSchemaOmitsIntent(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
 	c := llm.NewClient()
@@ -1062,24 +1062,24 @@ func TestCommunicate_ModelFacingSchemaOmitsPurpose(t *testing.T) {
 		t.Fatal("communicate tool not advertised")
 	}
 	props, _ := communicate.Parameters["properties"].(map[string]any)
-	if _, ok := props["purpose"]; ok {
-		t.Fatalf("communicate should not advertise purpose: %#v", props["purpose"])
+	if _, ok := props["intent"]; ok {
+		t.Fatalf("communicate should not advertise intent: %#v", props["intent"])
 	}
 	output, _ := props["output"].(map[string]any)
 	outProps, _ := output["properties"].(map[string]any)
-	if _, ok := outProps["purpose"]; ok {
-		t.Fatalf("communicate.output should not advertise purpose: %#v", outProps["purpose"])
+	if _, ok := outProps["intent"]; ok {
+		t.Fatalf("communicate.output should not advertise intent: %#v", outProps["intent"])
 	}
 	if readFile == nil {
 		t.Fatal("read_file tool not advertised")
 	}
 	readProps, _ := readFile.Parameters["properties"].(map[string]any)
-	if _, ok := readProps["purpose"]; !ok {
-		t.Fatal("read_file should still advertise purpose")
+	if _, ok := readProps["intent"]; !ok {
+		t.Fatal("read_file should still advertise intent")
 	}
 }
 
-func TestCommunicate_ModelFacingSchemaOmitsPurposeForResultAlias(t *testing.T) {
+func TestCommunicate_ModelFacingSchemaOmitsIntentForResultAlias(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
 	c := llm.NewClient()
@@ -1104,8 +1104,8 @@ func TestCommunicate_ModelFacingSchemaOmitsPurposeForResultAlias(t *testing.T) {
 		t.Fatal("result alias not advertised")
 	}
 	props, _ := respond.Parameters["properties"].(map[string]any)
-	if _, ok := props["purpose"]; ok {
-		t.Fatalf("result alias should not advertise purpose: %#v", props["purpose"])
+	if _, ok := props["intent"]; ok {
+		t.Fatalf("result alias should not advertise intent: %#v", props["intent"])
 	}
 }
 
