@@ -432,6 +432,59 @@ func TestServerAppWireThreadClearJournalKeepsOneRecordPerRef(t *testing.T) {
 	}
 }
 
+// TestServerAppWireThreadClearFailedClearRestoresSupersededReceipt pins that
+// superseding is tied to actually replacing the instance: a newer clear's
+// reservation evicts the older receipt, but when its callback fails and
+// installs nothing, the older receipt is live again and must still replay.
+func TestServerAppWireThreadClearFailedClearRestoresSupersededReceipt(t *testing.T) {
+	stateDir := t.TempDir()
+	srv := NewServer(ServerConfig{StateDir: stateDir})
+	srv.SetAppIdentity("local", "gen-0")
+	srv.SetClearFunc(func(_ context.Context, params appwire.ThreadClearParams) error {
+		prepared, err := PrepareAppIdentityForRef("local", "gen-1", params.Ref, "")
+		if err != nil {
+			return err
+		}
+		srv.ReplaceAppIdentity(prepared, nil)
+		return nil
+	})
+	if _, err := srv.handleAppThreadClear(context.Background(), appwire.ThreadClearParams{
+		Ref: "local:gen-0", ClientMutationID: "clear-1", ExpectedInstanceID: "gen-0",
+	}); err != nil {
+		t.Fatalf("first clear: %v", err)
+	}
+
+	srv.SetClearFunc(func(context.Context, appwire.ThreadClearParams) error {
+		return errors.New("replacement provisioning failed")
+	})
+	if _, err := srv.handleAppThreadClear(context.Background(), appwire.ThreadClearParams{
+		Ref: "local:gen-0", ClientMutationID: "clear-2", ExpectedInstanceID: "gen-1",
+	}); err == nil {
+		t.Fatal("failed newer clear reported success")
+	}
+
+	replayed, err := srv.handleAppThreadClear(context.Background(), appwire.ThreadClearParams{
+		Ref: "local:gen-0", ClientMutationID: "clear-1", ExpectedInstanceID: "gen-0",
+	})
+	if err != nil {
+		t.Fatalf("replay of the older clear after a failed newer clear: %v", err)
+	}
+	if replayed.Thread.ID != "gen-1" || replayed.Receipt.Disposition != appwire.MutationDispositionReplayed {
+		t.Fatalf("older clear replay = (%q, %q), want (gen-1, replayed)", replayed.Thread.ID, replayed.Receipt.Disposition)
+	}
+
+	loaded, err := loadThreadClearJournal(threadClearJournalPath(stateDir))
+	if err != nil {
+		t.Fatalf("reload journal: %v", err)
+	}
+	if len(loaded) != 1 {
+		t.Fatalf("journal records on disk = %d, want 1", len(loaded))
+	}
+	if _, ok := loaded["clear-1"]; !ok {
+		t.Fatal("journal on disk lost the restored receipt")
+	}
+}
+
 // TestServerAppWireThreadClearFailureReleasesGateAndReservation covers the half
 // of the clear fence a success path cannot: a clear whose replacement callback
 // fails must hand back both the mutation gate and its journal reservation, or
