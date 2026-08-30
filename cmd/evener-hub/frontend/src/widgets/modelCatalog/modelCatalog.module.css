@@ -165,3 +165,82 @@
   color: var(--ink-low);
   font-size: var(--font-size-caption);
 }
+
+/* --- sheet variant (mobile bottom Sheet) ---------------------------------
+ * The design system's mobile-forms rule (docs/web-ui/design-system.md §11):
+ * sheet options are at least 48px tall, use the existing tokens, and reuse
+ * the shared catalog rows rather than a second picker implementation. Same
+ * recipe as the spawn pane's own option rows (MobileSettingRows.module.css
+ * .option), so the two mobile pickers read as one object. */
+
+.panelSheet {
+  gap: 0;
+}
+
+/* The list is the sheet's whole body: no internal max-height - the Sheet's
+ * own body already scrolls and caps the panel at min(480px, 100vh). */
+.listSheet {
+  max-height: none;
+  overflow-y: visible;
+}
+
+.sheetRowItem {
+  border-bottom: 1px solid var(--edge);
+}
+
+.sheetRowItem:last-child {
+  border-bottom: none;
+}
+
+.sheetRow {
+  display: flex;
+  min-height: 48px;
+  flex-direction: column;
+  justify-content: center;
+  gap: var(--space-1);
+  width: 100%;
+  padding: var(--space-3) 0;
+  border: 0;
+  background: transparent;
+  color: var(--ink-hi);
+  font-family: var(--font-sans);
+  font-size: var(--font-size-body);
+  text-align: left;
+  cursor: pointer;
+  transition: background-color var(--motion-duration-hover) var(--motion-easing-standard);
+}
+
+.sheetRow:hover {
+  background: var(--hover-1);
+}
+
+.sheetRow:focus-visible {
+  outline: var(--focus-ring);
+  outline-offset: -2px;
+}
+
+.sheetRowSelected {
+  background: var(--hover-2);
+}
+
+.sheetRowMain {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-3);
+}
+
+.sheetRowName {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.sheetRowMeta {
+  overflow: hidden;
+  color: var(--ink-mid);
+  font-size: var(--font-size-caption);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}

@@ -41,6 +41,14 @@ const CLASS = {
   check: requireClass(styles.check, "modelCatalog.module.css", "check"),
   meta: requireClass(styles.meta, "modelCatalog.module.css", "meta"),
   unavailable: requireClass(styles.unavailable, "modelCatalog.module.css", "unavailable"),
+  panelSheet: requireClass(styles.panelSheet, "modelCatalog.module.css", "panelSheet"),
+  listSheet: requireClass(styles.listSheet, "modelCatalog.module.css", "listSheet"),
+  sheetRowItem: requireClass(styles.sheetRowItem, "modelCatalog.module.css", "sheetRowItem"),
+  sheetRow: requireClass(styles.sheetRow, "modelCatalog.module.css", "sheetRow"),
+  sheetRowSelected: requireClass(styles.sheetRowSelected, "modelCatalog.module.css", "sheetRowSelected"),
+  sheetRowMain: requireClass(styles.sheetRowMain, "modelCatalog.module.css", "sheetRowMain"),
+  sheetRowName: requireClass(styles.sheetRowName, "modelCatalog.module.css", "sheetRowName"),
+  sheetRowMeta: requireClass(styles.sheetRowMeta, "modelCatalog.module.css", "sheetRowMeta"),
 };
 
 const SKELETON_LINES = 4;
@@ -85,6 +93,12 @@ export interface ModelCatalogPanelProps {
    * pre-fills the input, marks the current row, and scrolls it into view. */
   value: string;
   onPick: (entry: ModelCatalogEntry) => void;
+  /** "sheet" renders the mobile variant used inside a bottom Sheet: no search
+   * input (a phone picker is scrolled, not autocompleted - the design system's
+   * mobile-forms rule that a feature reuses its existing catalog panel rather
+   * than a second picker implementation), rows sized to the 48px tap floor,
+   * and the same grouped list/roles as the default combobox variant. */
+  variant?: "default" | "sheet";
 }
 
 function rowDomId(listboxId: string, key: string): string {
@@ -110,7 +124,14 @@ function rowDomId(listboxId: string, key: string): string {
  * button, and no blur handler: focus staying in the input is the whole point
  * of the activedescendant pattern.
  */
-export function ModelCatalogPanel({ loading, error, catalog, value, onPick }: ModelCatalogPanelProps): JSX.Element {
+export function ModelCatalogPanel({
+  loading,
+  error,
+  catalog,
+  value,
+  onPick,
+  variant = "default",
+}: ModelCatalogPanelProps): JSX.Element {
   // null means "the user hasn't typed yet": the input SHOWS the current value
   // (selected, so the first keystroke replaces it) while the list stays
   // unfiltered. Once typing starts, the typed text is both the input's value
@@ -119,9 +140,12 @@ export function ModelCatalogPanel({ loading, error, catalog, value, onPick }: Mo
   const [activeIndex, setActiveIndex] = useState(-1);
   const inputRef = useRef<HTMLInputElement>(null);
   const listboxId = useId();
+  const isSheet = variant === "sheet";
 
-  const text = typed ?? value;
-  const query = typed ?? "";
+  // The sheet variant has no input to own focus or drive a query: the list is
+  // the whole unfiltered catalog, and focus stays with the enclosing Sheet's
+  // FocusScope (the first tabbable option).
+  const query = isSheet ? "" : (typed ?? "");
   const rows = useMemo(() => buildPickerRows(catalog, query), [catalog, query]);
   const picks = useMemo(() => pickableRows(rows), [rows]);
   const activeKey = activeIndex >= 0 && activeIndex < picks.length ? picks[activeIndex]?.key : undefined;
@@ -130,33 +154,50 @@ export function ModelCatalogPanel({ loading, error, catalog, value, onPick }: Mo
   // aria-selected option - so the marker goes on the first occurrence only.
   const currentKey = useMemo(() => picks.find((row) => row.option.qualified === value)?.key, [picks, value]);
   const listShown = !loading && error === null;
+  const text = typed ?? value;
+
+  // The sheet variant opens already scrolled to the current value, matching
+  // what the combobox variant's activedescendant effect does for its list.
+  // Mount-only: the panel stays mounted across loading -> loaded, and
+  // re-scrolling then would fight a user already scrolling.
+  useEffect(() => {
+    if (!isSheet || currentKey === undefined) return;
+    document.getElementById(rowDomId(listboxId, currentKey))?.scrollIntoView?.({ block: "center" });
+  }, [isSheet, currentKey, listboxId]);
 
   // Focus the input and select all of it, so the first keystroke replaces the
   // pre-filled value wholesale. Mount-only: the panel stays mounted across
   // loading -> loaded, and re-selecting then would fight a user already typing.
+  // Sheet variant: no input, so this is a no-op (guarded to avoid a null focus).
   useEffect(() => {
+    if (isSheet) return;
     const input = inputRef.current;
     if (!input) return;
     input.focus();
     input.select();
-  }, []);
+  }, [isSheet]);
 
   // Until the user types, the highlight follows the CURRENT value (so the
   // list opens showing where you already are, and ArrowDown continues from
   // there). This only re-runs when the rows or the value change - arrow keys
   // move the highlight without fighting it, since they change neither.
+  // Sheet variant: the activedescendant model is unused (rows are real focusable
+  // buttons, no input owns virtual focus), so this effect would do a redundant
+  // state update + re-render whose output the sheet markup never reads.
   useEffect(() => {
-    if (typed !== null) return;
+    if (isSheet || typed !== null) return;
     setActiveIndex(picks.findIndex((row) => row.option.qualified === value));
-  }, [picks, value, typed]);
+  }, [isSheet, picks, value, typed]);
 
   // Keep the highlighted row visible inside the list's own scroll container -
   // both for the current value on open and for keyboard walks past the fold.
   // scrollIntoView is called optionally: jsdom implements none at all.
+  // Sheet variant: the sheet's own mount-only effect above (block: "center")
+  // handles scroll-into-view, so this activedescendant-driven scroll is skipped.
   useEffect(() => {
-    if (activeKey === undefined) return;
+    if (isSheet || activeKey === undefined) return;
     document.getElementById(rowDomId(listboxId, activeKey))?.scrollIntoView?.({ block: "nearest" });
-  }, [activeKey, listboxId]);
+  }, [isSheet, activeKey, listboxId]);
 
   function pickAt(index: number): boolean {
     const row = picks[index];
@@ -208,25 +249,27 @@ export function ModelCatalogPanel({ loading, error, catalog, value, onPick }: Mo
   }
 
   return (
-    <div className={CLASS.panel}>
-      <input
-        ref={inputRef}
-        role="combobox"
-        className={CLASS.input}
-        value={text}
-        onChange={(event) => {
-          setTyped(event.target.value);
-          // The first match is the answer the user is narrowing toward, so
-          // Enter right after typing picks it.
-          setActiveIndex(0);
-        }}
-        onKeyDown={handleKeyDown}
-        aria-expanded={listShown}
-        aria-autocomplete="list"
-        aria-controls={listShown ? listboxId : undefined}
-        aria-activedescendant={activeKey !== undefined ? rowDomId(listboxId, activeKey) : undefined}
-        aria-label="Model"
-      />
+    <div className={`${CLASS.panel} ${isSheet ? CLASS.panelSheet : ""}`}>
+      {!isSheet && (
+        <input
+          ref={inputRef}
+          role="combobox"
+          className={CLASS.input}
+          value={text}
+          onChange={(event) => {
+            setTyped(event.target.value);
+            // The first match is the answer the user is narrowing toward, so
+            // Enter right after typing picks it.
+            setActiveIndex(0);
+          }}
+          onKeyDown={handleKeyDown}
+          aria-expanded={listShown}
+          aria-autocomplete="list"
+          aria-controls={listShown ? listboxId : undefined}
+          aria-activedescendant={activeKey !== undefined ? rowDomId(listboxId, activeKey) : undefined}
+          aria-label="Model"
+        />
+      )}
       {loading && <Skeleton lines={SKELETON_LINES} />}
       {error !== null && (
         <p className={CLASS.error} role="alert">
@@ -244,7 +287,7 @@ export function ModelCatalogPanel({ loading, error, catalog, value, onPick }: Mo
           role="listbox"
           id={listboxId}
           aria-label="Model"
-          className={CLASS.list}
+          className={`${CLASS.list} ${isSheet ? CLASS.listSheet : ""}`}
         >
           {rows.map((row) => {
             if (row.kind === "group") {
@@ -262,6 +305,34 @@ export function ModelCatalogPanel({ loading, error, catalog, value, onPick }: Mo
               );
             }
             const current = row.key === currentKey;
+            if (isSheet) {
+              // A real button per option: with no input to own focus, each
+              // row must be independently focusable for the Sheet's FocusScope
+              // trap and keyboard activation. Same listbox semantics
+              // (role=option, aria-selected) as the combobox variant.
+              return (
+                <li key={row.key} role="presentation" className={CLASS.sheetRowItem}>
+                  <button
+                    type="button"
+                    id={rowDomId(listboxId, row.key)}
+                    role="option"
+                    aria-selected={current}
+                    className={`${CLASS.sheetRow} ${current ? CLASS.sheetRowSelected : ""}`}
+                    onClick={() => onPick(row.option.entry)}
+                  >
+                    <span className={CLASS.sheetRowMain}>
+                      <span className={CLASS.sheetRowName}>{row.option.label}</span>
+                      {current && (
+                        <span className={CLASS.check} aria-hidden="true">
+                          ✓
+                        </span>
+                      )}
+                    </span>
+                    {row.meta !== "" && <span className={CLASS.sheetRowMeta}>{row.meta}</span>}
+                  </button>
+                </li>
+              );
+            }
             return (
               // Real focus never leaves the input (ARIA 1.2 activedescendant
               // pattern): aria-activedescendant above tracks the "virtual"

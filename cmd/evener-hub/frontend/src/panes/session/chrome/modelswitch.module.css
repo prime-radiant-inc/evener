@@ -1,5 +1,9 @@
 /* Quiet trigger: no border/background until hover, so the model label itself
  * reads as the interactive element rather than a separate button beside it. */
+.triggerWrapper {
+  composes: trigger from "../../../widgets/popover/popover.module.css";
+}
+
 .trigger {
   display: inline-flex;
   align-items: center;
@@ -87,4 +91,12 @@
   width: 400px;
   /* Reserves both of computePosition's EDGE_MARGINs (8px a side). */
   max-width: calc(100dvw - var(--space-4));
+}
+
+/* The mobile bottom Sheet's body wrapper: same safe-area reservation as the
+ * spawn pane's own sheet bodies (MobileSettingRows.module.css .sheetBody), so
+ * a home-indicator never covers the last option. The Sheet's own .body
+ * padding carries the sides. */
+.sheetBody {
+  padding-bottom: env(safe-area-inset-bottom);
 }
