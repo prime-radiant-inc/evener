@@ -1414,8 +1414,9 @@ func responseContentFromOutputItems(out []any) []llm.ContentPart {
 			// gateways that expose the raw thinking put reasoning_text parts
 			// in content instead. The raw text is kept for display and the
 			// transcript only; replay (toResponsesInput) still needs
-			// encrypted_content.
-			text := strings.Join(parseReasoningSummary(item["content"]), "")
+			// encrypted_content. Parts join with the blank line the stream
+			// emits between them so settled text matches the live view.
+			text := strings.Join(parseReasoningSummary(item["content"]), "\n\n")
 			if encryptedContent != "" || text != "" {
 				content = append(content, llm.ContentPart{
 					Kind: llm.ContentThinking,
