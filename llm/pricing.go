@@ -2,6 +2,8 @@ package llm
 
 import (
 	"strings"
+
+	"primeradiant.com/evener/llm/registry"
 )
 
 // Price captures a model's per-million-token rates in USD.
@@ -76,6 +78,24 @@ func priceFromModelInfo(mi *ModelInfo) (Price, bool) {
 		CacheCreation5mPerM: mi.CacheCreation5mCostPerMillion,
 		CacheCreation1hPerM: mi.CacheCreation1hCostPerMillion,
 	}, true
+}
+
+// PriceFromCost is the registry's cost as per-million rates; models.dev
+// carries one cache-write rate, reported as the 5-minute tier. A nil cost is
+// a row the registry has no price for, which is reported as (Price{}, false)
+// so callers render nothing rather than a misleading zero (spec §7.5).
+func PriceFromCost(c *registry.Cost) (Price, bool) {
+	if c == nil {
+		return Price{}, false
+	}
+	p := Price{InputPerM: c.Input, OutputPerM: c.Output}
+	if c.CacheRead > 0 {
+		p.CacheReadPerM = new(c.CacheRead)
+	}
+	if c.CacheWrite > 0 {
+		p.CacheCreation5mPerM = new(c.CacheWrite)
+	}
+	return p, true
 }
 
 // EstimateCost returns the blended dollar cost of the given token counts at
