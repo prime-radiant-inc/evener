@@ -1487,7 +1487,10 @@ func (s *Server) handleAppThreadClear(ctx context.Context, params appwire.Thread
 	if parsedRef.SourceID != "local" {
 		return appwire.ThreadClearResponse{}, appwire.SessionUnavailable("thread is unavailable")
 	}
-	requestHash := threadClearRequestHash(params)
+	requestHash, err := threadClearRequestHash(params)
+	if err != nil {
+		return appwire.ThreadClearResponse{}, appwire.InternalError(err.Error())
+	}
 	if !s.appMutationGate.TryLock() {
 		return appwire.ThreadClearResponse{}, appwire.MutationNotAccepted(params.ClientMutationID, "a retry-safe mutation is already in progress")
 	}
