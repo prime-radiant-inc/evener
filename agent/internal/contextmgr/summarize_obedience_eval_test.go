@@ -324,7 +324,7 @@ func newRealSummarizerManager(t *testing.T) *Manager {
 	}
 
 	// Gate on any known provider key. The providers are registered via the
-	// blank imports at the top of the file; llm.NewFromEnv will find them.
+	// blank imports at the top of the file; the registry names the instances.
 	knownKeys := []string{
 		"OPENAI_API_KEY",
 		"ANTHROPIC_API_KEY",

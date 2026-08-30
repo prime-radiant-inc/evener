@@ -74,7 +74,7 @@ broken — that is the failure this card now catches.
   scheme needs no credential
   (`cmd/evener-hub/spawn.go#validateProviderCredentials`, on
   `registry.AuthNone` / `registry.AuthOptionalBearer`; the curated ollama row
-  carries `auth = "none"`). If an ollama spawn 503s with "provider
+  carries `auth = "optional-bearer"`). If an ollama spawn 503s with "provider
   credentials missing", that regression is back and is worth its own kata.
 
 ## Steps

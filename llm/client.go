@@ -334,7 +334,10 @@ func (c *Client) Stream(ctx context.Context, req Request) (Stream, error) {
 // live listing from its transport was applied to the registry.
 type ModelListing struct {
 	// Live is true when a live listing was fetched; false means registry-only
-	// (spec §8.1: an unsupported models endpoint is not a failure).
+	// (spec §8.1: an unsupported models endpoint is not a failure). A client
+	// with no registry of its own reports Live over snapshot rows: it
+	// fetches the listing but does not write it into the registry it shares
+	// with every other such client, so the rows below are the snapshot's.
 	Live bool
 	// Models are the visible rows — hidden rows and rows whose live layer
 	// says Tools = false are dropped (spec §5) — sorted by model id.

@@ -163,7 +163,7 @@ Recent — spawn real sessions.
   needs no credential
   (`cmd/evener-hub/spawn.go#validateProviderCredentials`, on
   `registry.AuthNone` / `registry.AuthOptionalBearer`; the curated ollama
-  row carries `auth = "none"`), pinned by
+  row carries `auth = "optional-bearer"`), pinned by
   `TestValidateProviderCredentials_ConfigInstanceAuthModeNone`
   (`cmd/evener-hub/spawn_test.go:1243`). Step 1 spawns ollama with no
   credential at all and must succeed. If it doesn't, that is a fresh

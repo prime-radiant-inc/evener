@@ -12,9 +12,9 @@ import (
 	"primeradiant.com/evener/llm"
 )
 
-// fallbackMaxTokens is the output cap requested for models the catalog does
-// not cover. Liberal on purpose: a model that can't honor it fails loudly
-// with a 400 (a catalog gap to fix) instead of silently truncating output.
+// fallbackMaxTokens is the output cap requested when the caller names none.
+// Liberal on purpose: a model that can't honor it fails loudly with a 400
+// (a registry row to fix) instead of silently truncating output.
 const fallbackMaxTokens = 32000
 
 // cacheMarker returns an ephemeral cache_control marker, adding ttl when the
