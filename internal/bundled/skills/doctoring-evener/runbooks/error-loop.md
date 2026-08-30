@@ -6,8 +6,8 @@ instead of recognizing the failure and changing approach?
 ## HEALTHY
 
 - `longest_identical_run` is either short, or wasn't all errors —
-  `evener doctor transcript --health` reports a run below the threshold, or one
-  whose results weren't all failures.
+  `doctor_evener` `transcript` with `health: true` reports a run below the
+  threshold, or one whose results weren't all failures.
 - Note: a repeated call that keeps SUCCEEDING (e.g. two identical greps that
   both return the same empty match) is not a problem — length alone never
   trips this runbook, only length **and** all-errors together.
@@ -17,7 +17,8 @@ instead of recognizing the failure and changing approach?
 Take the target session id from the runbook invocation — never hardcode one.
 
 ```
-evener doctor transcript <selector> --health --json
+doctor_evener transcript, selector: <selector>, health: true
+# (human reproduction: evener doctor transcript <selector> --health --json)
 ```
 
 ## CLASSIFY
@@ -43,11 +44,11 @@ audit:
 ```
 
 - Read the flagged session's transcript around the identical run
-  (`evener doctor transcript <sel> --format outline` or `--range last:N`) to
+  (`doctor_evener` `transcript` with `range: last:N`) to
   confirm the calls really are identical retries of a failing operation, not
   a legitimate scripted retry with backoff — and check whether the runtime's
   own loop-detector steering (`steering.loop-detected` in the same
-  `--health` output) already fired, and whether the session heeded it. The
+  health output) already fired, and whether the session heeded it. The
   2026-08-05 session study found this pattern reach ~300 consecutive
   failures in one session (`034163AU8MmLapfXKT7nMu`, a `set_viewport` loop
   that survived two loop-warnings and three user interventions), so absence
@@ -80,10 +81,10 @@ check exists to cover them:**
   detector operates on live signatures as calls happen, independent of
   argument-field content or which channel a tool used to report failure.
   Treat an identical-run miss as inconclusive, not as evidence of health;
-  use `evener doctor transcript <sid> --count <tool>` to get the tool's real
-  call count and `evener doctor transcript <sid> --format outline` to read
-  the run and judge it manually when the mechanical checks disagree or
-  both stay silent.
+  use `doctor_evener` `transcript` with `count: <tool>` to get the tool's
+  real call count and `doctor_evener` `transcript` with `range` narrowed to
+  the run to read it and judge it manually when the mechanical checks
+  disagree or both stay silent.
 
 A healthy run emits zero findings.
 

@@ -74,8 +74,8 @@ gotchas" are seeded from this. Cite Go **symbols**, never `file:line`.
 - **What it is:** the parser guessed the JSONL shape (looked for top-level keys; a
   tool call is nested at `entry.Turn.Message.Content[].ToolCall.Name`; a steering
   turn is `schema.TurnSteering`).
-- **Confirm:** `doctor_evener` `transcript <sel>` with `format: outline` (turn map) and
-  `--count <tool>`. The result tool resolves via `effectiveResultToolName`
+- **Confirm:** `doctor_evener` `transcript <sel>` (turn map) and
+  `count: <tool>`. The result tool resolves via `effectiveResultToolName`
   (`meta.Config.ResultToolName` else `communicate`).
 - **Mechanics:** `transcript.Entry{Kind, Seq, Turn}` wraps a `schema.Turn`; the
   turn kinds are `USER_INPUT`/`STEERING`/`ASSISTANT`/`TOOL_RESULTS` (current,
