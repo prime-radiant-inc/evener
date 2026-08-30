@@ -30,6 +30,7 @@
     "reasoning_controls": [
       "effort"
     ],
+    "default_effort": "high",
     "fields": {
       "container": false,
       "fallbacks": false,
@@ -46,6 +47,7 @@
     "web_search": true
   },
   "provenance": {
+    "DefaultEffort": "overlay/glob:*claude-opus-4-6*",
     "ReasoningControls": "derived",
     "Surface": "derived",
     "ThinkingAlwaysOn": "derived",

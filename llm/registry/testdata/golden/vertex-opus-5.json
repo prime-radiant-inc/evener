@@ -50,6 +50,7 @@
       "xhigh",
       "max"
     ],
+    "default_effort": "high",
     "input_modalities": [
       "text",
       "image",
@@ -80,6 +81,7 @@
   "provenance": {
     "ContextWindow": "snapshot/row",
     "Cost": "snapshot/row",
+    "DefaultEffort": "overlay/glob:*claude-opus-5*",
     "EffortValues": "snapshot/row",
     "Family": "snapshot/row",
     "InputModalities": "snapshot/row",

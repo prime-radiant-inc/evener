@@ -106,9 +106,13 @@ type Caps struct {
 	Reasoning         *bool    `toml:"reasoning" json:"reasoning,omitempty"`
 	ReasoningControls []string `toml:"reasoning_controls" json:"reasoning_controls,omitempty"`
 	EffortValues      []string `toml:"effort_values" json:"effort_values,omitempty"`
-	InputModalities   []string `toml:"input_modalities" json:"input_modalities,omitempty"`
-	KnowledgeCutoff   *string  `toml:"knowledge_cutoff" json:"knowledge_cutoff,omitempty"`
-	Cost              *Cost    `toml:"cost" json:"cost,omitempty"`
+	// DefaultEffort is the effort the model runs at when nothing configured
+	// one — the model's own stated default, not a policy (spec §7.4). Unset
+	// means no source states one and the caller applies its own fallback.
+	DefaultEffort   *string  `toml:"default_effort" json:"default_effort,omitempty"`
+	InputModalities []string `toml:"input_modalities" json:"input_modalities,omitempty"`
+	KnowledgeCutoff *string  `toml:"knowledge_cutoff" json:"knowledge_cutoff,omitempty"`
+	Cost            *Cost    `toml:"cost" json:"cost,omitempty"`
 
 	// Optional wire fields: JSON path → send (spec §8.2). Key-wise merge.
 	Fields map[string]bool `toml:"fields" json:"fields,omitempty"`

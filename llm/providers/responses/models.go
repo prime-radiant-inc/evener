@@ -57,6 +57,7 @@ type codexModelListEntry struct {
 	MaxOutputTokens          int                   `json:"max_output_tokens"`
 	OutputTokenLimit         int                   `json:"output_token_limit"`
 	SupportedReasoningLevels []codexReasoningLevel `json:"supported_reasoning_levels"`
+	DefaultReasoningLevel    string                `json:"default_reasoning_level"`
 	InputModalities          []string              `json:"input_modalities"`
 }
 
@@ -84,6 +85,11 @@ func (m codexModelListEntry) row() registry.Model {
 	if efforts := codexReasoningEfforts(m.SupportedReasoningLevels); len(efforts) > 0 {
 		caps.EffortValues = efforts
 		caps.Reasoning = new(true)
+	}
+	// The Codex backend is the only listing that states the effort a model
+	// runs at when the request omits one (spec §7.4).
+	if d := strings.TrimSpace(m.DefaultReasoningLevel); d != "" {
+		caps.DefaultEffort = new(d)
 	}
 	if len(m.InputModalities) > 0 {
 		caps.InputModalities = m.InputModalities

@@ -46,6 +46,42 @@ thinking_shape = "budget+effort"
 [models."*gemini-3*"]
 multimodal_tool_results = true
 
+# Adaptive Claude states high as its own default: that is what Anthropic runs
+# when output_config.effort is omitted, so without it here a session with
+# nothing configured would take the request rule's medium fallback and quietly
+# think less than it does today (§7.4). models.dev states no default for any
+# row, so every one of these is curated. Each generation is listed once per
+# spelling its serving instances use — Anthropic and Bedrock write the version
+# with dashes, OpenRouter with dots — and the substring globs pick up the
+# region prefixes, the @date and @default suffixes, and the -fast variants.
+# The 4.5 generation is budget-shaped rather than adaptive and is left out.
+[models."*claude-opus-4-6*"]
+default_effort = "high"
+[models."*claude-opus-4.6*"]
+default_effort = "high"
+[models."*claude-sonnet-4-6*"]
+default_effort = "high"
+[models."*claude-sonnet-4.6*"]
+default_effort = "high"
+[models."*claude-opus-4-7*"]
+default_effort = "high"
+[models."*claude-opus-4.7*"]
+default_effort = "high"
+[models."*claude-opus-4-8*"]
+default_effort = "high"
+[models."*claude-opus-4.8*"]
+default_effort = "high"
+[models."*claude-opus-5*"]
+default_effort = "high"
+[models."*claude-sonnet-5*"]
+default_effort = "high"
+[models."*claude-fable-5*"]
+default_effort = "high"
+[models."*claude-mythos-5*"]
+default_effort = "high"
+[models."*claude-mythos-preview*"]
+default_effort = "high"
+
 # ---------------------------------------------------------------------------
 # Anthropic
 # ---------------------------------------------------------------------------

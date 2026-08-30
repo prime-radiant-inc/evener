@@ -45,6 +45,7 @@
       "xhigh",
       "max"
     ],
+    "default_effort": "high",
     "input_modalities": [
       "text",
       "image",
@@ -75,6 +76,7 @@
   "provenance": {
     "ContextWindow": "alias",
     "Cost": "alias",
+    "DefaultEffort": "overlay/glob:*claude-mythos-5*",
     "EffortValues": "alias",
     "Family": "alias",
     "InputModalities": "alias",

@@ -75,6 +75,7 @@ func liveFacts(m Model) Model {
 	out := Model{ID: m.ID, WireID: m.ID, Caps: Caps{
 		Tools: m.Caps.Tools, InputModalities: m.Caps.InputModalities, ContextWindow: m.Caps.ContextWindow,
 		MaxOutputTokens: m.Caps.MaxOutputTokens, EffortValues: m.Caps.EffortValues, Cost: m.Caps.Cost, Reasoning: m.Caps.Reasoning,
+		DefaultEffort: m.Caps.DefaultEffort,
 	}}
 	if m.Caps.ThinkingAlwaysOn != nil && *m.Caps.ThinkingAlwaysOn {
 		out.Caps.ThinkingAlwaysOn = new(true)
@@ -414,6 +415,7 @@ func seedFromAlias(c *Caps, row *Model, target Resolved, prov map[string]string)
 		ContextWindow: target.Caps.ContextWindow, MaxOutputTokens: target.Caps.MaxOutputTokens, Tools: target.Caps.Tools,
 		StructuredOutput: target.Caps.StructuredOutput, Sampling: target.Caps.Sampling, Reasoning: target.Caps.Reasoning,
 		ReasoningControls: target.Caps.ReasoningControls, EffortValues: target.Caps.EffortValues,
+		DefaultEffort:   target.Caps.DefaultEffort,
 		InputModalities: target.Caps.InputModalities, KnowledgeCutoff: target.Caps.KnowledgeCutoff, Cost: target.Caps.Cost,
 	}
 	mergeCaps(c, facts, provAlias, prov)
