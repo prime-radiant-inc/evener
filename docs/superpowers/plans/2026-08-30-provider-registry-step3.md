@@ -746,7 +746,7 @@ git commit -m "feat(registry): providers.toml writer for the hub and the provide
 **Interfaces:**
 - Consumes: Task 1's `ResolveInstance`, `Resolved.DefaultModel`; `llm.ProtocolFor`, `llm.ShapeRequest`, `registry.Registry.{Resolve,DefaultInstance,Instances,ModelIDs,ApplyLive}`.
 - Produces:
-  - `type ClientOption func(*Client)`; `func WithRegistry(r *registry.Registry) ClientOption`; `func WithStateDir(dir string) ClientOption`; `func NewClient(opts ...ClientOption) *Client`.
+  - `type ClientOption func(*Client)`; `func WithRegistry(r *registry.Registry) ClientOption`; `func WithClientStateDir(dir string) ClientOption` (named to avoid the old `EnvOption` `WithStateDir`, which Task 13 deletes); `func NewClient(opts ...ClientOption) *Client`.
   - `func (c *Client) Registry() *registry.Registry` (lazy embedded, offline, no user layer, no cache, empty environment when none was given); `func (c *Client) Resolve(ref string) (registry.Resolved, error)`.
   - `type ModelListing struct { Live bool; Models []registry.Resolved }`; `func (c *Client) Models(ctx context.Context, instance string) (ModelListing, error)`; `type LiveModelLister interface { LiveModels(ctx context.Context) ([]registry.Model, error) }` (override seam).
   - `func (c *Client) ContinuationHasher() (*ContinuationHasher, error)`; `func ContextWithContinuationHasher(ctx context.Context, h *ContinuationHasher) context.Context`; `func ContinuationHasherFromContext(ctx context.Context) *ContinuationHasher`.
@@ -1122,10 +1122,10 @@ func WithRegistry(r *registry.Registry) ClientOption {
 	return func(c *Client) { c.registry = r }
 }
 
-// WithStateDir names the session state directory that holds the
+// WithClientStateDir names the session state directory that holds the
 // continuation secret (spec §7.6: "the ContinuationHasher stays on the
 // client, keyed by state dir").
-func WithStateDir(dir string) ClientOption {
+func WithClientStateDir(dir string) ClientOption {
 	return func(c *Client) { c.stateDir = dir }
 }
 
@@ -1759,7 +1759,7 @@ func (c *Client) PlanResponsesContinuation(ctx context.Context, req Request) (Re
 ```go
 func continuationClient(t *testing.T, r *registry.Registry) *llm.Client {
 	t.Helper()
-	return llm.NewClient(llm.WithRegistry(r), llm.WithStateDir(t.TempDir()))
+	return llm.NewClient(llm.WithRegistry(r), llm.WithClientStateDir(t.TempDir()))
 }
 
 func TestPlanContinuationFromResolved(t *testing.T) {
@@ -2351,7 +2351,7 @@ git commit -m "refactor(agent): list, verify, and canonicalize models through th
   - `func ProvidersConfigPath() (path string, noUserLayer bool)`; `func CredentialsPath() string`.
   - `type StoreCredentialSource struct{ Store *credentials.Store }` implementing `registry.CredentialSource`.
   - `func LoadRegistry(opts ...registry.Option) (*registry.Registry, *credentials.Store, error)` — credentials store from `CredentialsPath()`, state root `DefaultStateRoot()`, then the caller's options (tests pass `registry.WithOffline(true)`, `registry.WithoutCache()`; the CLI passes `WithOffline(true)`; sessions pass nothing so a stale cache refreshes in the background per §6.4). An old-schema file is returned as `registry.ErrOldSchema` (wrapped) for the caller to decide.
-  - `func NewRegistryClient(r *registry.Registry, stateDir string) *llm.Client` — sets `tokenauth.DefaultCodex.StateDir = r.StateRoot()` and `tokenauth.ClientVersion = buildinfo.Version()`, imports `llm/providers/all` for its side effect, returns `llm.NewClient(llm.WithRegistry(r), llm.WithStateDir(stateDir))`.
+  - `func NewRegistryClient(r *registry.Registry, stateDir string) *llm.Client` — sets `tokenauth.DefaultCodex.StateDir = r.StateRoot()` and `tokenauth.ClientVersion = buildinfo.Version()`, imports `llm/providers/all` for its side effect, returns `llm.NewClient(llm.WithRegistry(r), llm.WithClientStateDir(stateDir))`.
 
 The old `LoadClient`/`LoadProviderConfig*` stay untouched until Task 7 replaces them.
 
@@ -2585,7 +2585,7 @@ func LoadRegistry(opts ...registry.Option) (*registry.Registry, *credentials.Sto
 func NewRegistryClient(r *registry.Registry, stateDir string) *llm.Client {
 	tokenauth.DefaultCodex.StateDir = r.StateRoot()
 	tokenauth.ClientVersion = buildinfo.Version()
-	return llm.NewClient(llm.WithRegistry(r), llm.WithStateDir(stateDir))
+	return llm.NewClient(llm.WithRegistry(r), llm.WithClientStateDir(stateDir))
 }
 ```
 
@@ -2614,7 +2614,7 @@ git commit -m "feat(cmdutil): registry loader, credentials path, and EVENER_CRED
 **Interfaces:**
 - Consumes: Tasks 1–6.
 - Produces:
-  - `func Resolve(r *registry.Registry, ref string) (*Profile, error)`; `func FromResolved(res registry.Resolved, r *registry.Registry) *Profile` (nil `r` → `EmbeddedRegistry()`); `func EmbeddedRegistry() *registry.Registry`; `func NewOpenAIProfile(model string) *Profile` (`openai/<model>` on the embedded registry; panics only on a registry load failure).
+  - `func Resolve(r *registry.Registry, ref string) (*Profile, error)`; `func FromResolved(res registry.Resolved, r *registry.Registry) *Profile` (nil `r` → `EmbeddedRegistry()`); `func EmbeddedRegistry() *registry.Registry` (returns `llm.EmbeddedRegistry()`, the process-wide one Task 2 introduced); `func NewOpenAIProfile(model string) *Profile` (`openai/<model>` on the embedded registry; panics only on a registry load failure).
   - `Profile` methods (final): `ID`, `Model`, `Resolved`, `Surface`, `Protocol`, `ProviderID`, `ToolDefinitions`, `ToolNameMap`, `SupportsParallelToolCalls` (true), `ContextWindowSize` (override, else `Caps.ContextWindow`, else 0 = unknown), `MaxOutputTokens` (`Caps.MaxOutputTokens` or 0), `ProjectDocFiles`, `ProviderOptions` (protocol-keyed extras), `SupportsReasoning` (`!Caps.ReasoningDisabled()`), `ReasoningEffortLevels` (`Caps.EffortValues`, nil when disabled), `SupportsStreaming` (true), `SupportsWebSearch` (`Caps.WebSearch`), `DefaultCommandTimeoutMS` (120000), `KnowledgeCutoff` (`Caps.KnowledgeCutoff`), `Cost() *registry.Cost`, `InputModalities`, `Warnings`, `CheapModel` (configured, else `Resolved.CheapModel`, else the model), `ConfiguredCheapModel`, `CheapProvider`, `CheapModelRef`, `CheapModelRefString`, `WithModel`, `WithResolved`, `CrossProviderRef`, `WithCommunicateOverridesFrom`. Deleted: `BehaviorTag`, `ThinkingAlwaysOn`, `WithLiveModelInfo`, `WithAdvertisedModelInfo`, `CatalogEffortFallbackEligible`, `EffortLevelsConfigured`, `ResolveProfileFromConfig`, `WithProviderID`.
   - `cmdutil.LoadClient(stateDir string) (*llm.Client, error)`; `cmdutil.LoadClientAt(path, stateDir string) (*llm.Client, error)` (`registry.WithConfigPath(path)`); `cmdutil.ResolveProfile(client *llm.Client, ref string) (*provider.Profile, error)`; `cmdutil.BuildResolveProfile(client *llm.Client) func(string) (*provider.Profile, error)`; `cmdutil.ModelDescriptorFromResolved(res registry.Resolved) appwire.ModelDescriptor`; `cmdutil.ListModelsFunc(client, instance)`.
   - `agent/profile_testhelpers_test.go`: `testRegistry(t)` (injected instances `anthropic`, `google`, `minimax`, `kimi-for-coding`, `openrouter`, `ollama`, `work` (base openai, chat, generic), `orclaude` (the §14.1 recipe) plus any name a test registers an adapter under), `testProfile(instance, model string, contextWindow int)`, `testOpenAICompatProfile(id, model string, contextWindow int)`, `newAnthropicProfile`, `newGeminiProfile`, `newMiniMaxProfile`, `newKimiAnthropicProfile` (→ `kimi-for-coding`), `newOpenRouterAnthropicProfile` (→ `orclaude`), `newOpenAICompatProfile(id, model, _)`.
@@ -2824,31 +2824,17 @@ Run: `cd agent && go test ./provider/ 2>&1 | head` → compile errors.
 package provider
 
 import (
-	"sync"
-
+	"primeradiant.com/evener/llm"
 	"primeradiant.com/evener/llm/registry"
 )
 
-var embedded struct {
-	once sync.Once
-	r    *registry.Registry
-	err  error
-}
-
-// EmbeddedRegistry is the curated catalog loaded offline with no user
-// layer, no cache, and no environment: the resolver behind profiles built
-// without a registry (NewOpenAIProfile in tests, CoreToolNames). It
-// resolves every curated implicit id without a credential (spec §5.2).
-func EmbeddedRegistry() *registry.Registry {
-	embedded.once.Do(func() {
-		embedded.r, embedded.err = registry.Load(registry.WithOffline(true), registry.WithoutCache(), registry.WithNoUserLayer(),
-			registry.WithEnv(func(string) (string, bool) { return "", false }))
-	})
-	if embedded.err != nil {
-		panic("provider: embedded registry: " + embedded.err.Error())
-	}
-	return embedded.r
-}
+// EmbeddedRegistry is the process-wide embedded registry llm loads once
+// (offline, no user layer, no cache, no environment; Task 2): the resolver
+// behind profiles built without a registry (NewOpenAIProfile in tests,
+// CoreToolNames). It resolves every curated implicit id without a
+// credential (spec §5.2) and is never mutated by a live listing, so sharing
+// it is safe.
+func EmbeddedRegistry() *registry.Registry { return llm.EmbeddedRegistry() }
 ```
 
 `agent/provider/profile.go` (the struct, constructors, and accessors; `toolCapability`, the three capability sets, `toolDefinitionsForCapabilities`, the clone helpers, and `WithCommunicateOverridesFrom` stay as they are):
@@ -3244,7 +3230,7 @@ func newRegistryClient(t *testing.T, stateDir string, instances map[string]regis
 	if err != nil {
 		t.Fatalf("registry: %v", err)
 	}
-	return llm.NewClient(llm.WithRegistry(r), llm.WithStateDir(stateDir))
+	return llm.NewClient(llm.WithRegistry(r), llm.WithClientStateDir(stateDir))
 }
 ```
 
