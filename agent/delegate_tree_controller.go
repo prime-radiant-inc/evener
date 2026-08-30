@@ -570,54 +570,27 @@ func (c *delegateTreeController) completionEvidenceLocked(lease delegateLease) (
 func (c *delegateTreeController) escalateCompletionRequirement(lease delegateLease) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	return c.escalateCompletionRequirementLocked(lease)
+	decision := c.reduceFinishIntent(finishIntent{site: finishSiteWorkAdmitted, lease: lease})
+	return decision.err
 }
 
 func (c *delegateTreeController) escalateCompletionRequirementLocked(lease delegateLease) error {
-	_, live, err := c.exactLeaseLocked(lease)
-	if err != nil {
-		return err
-	}
-	evidence := live.binding.evidence
-	// Production start commits always attach evidence, but exact legacy/manual
-	// bindings may omit it and must still consume admitted steering.
-	if evidence == nil {
-		return nil
-	}
-	if evidence.requirement == delegateCompletionAttentionOnly {
-		evidence.requirement = delegateCompletionReportRequired
-		c.evidenceVersion++
-	}
-	return nil
+	decision := c.reduceFinishIntent(finishIntent{site: finishSiteWorkAdmitted, lease: lease})
+	return decision.err
 }
 
 func (c *delegateTreeController) recordAttentionNoAction(lease delegateLease) (bool, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	evidence, err := c.completionEvidenceLocked(lease)
-	if err != nil {
-		return false, err
-	}
-	if evidence.requirement != delegateCompletionAttentionOnly || evidence.terminalSeen {
-		return false, nil
-	}
-	evidence.outcome = delegateCompletionOutcomeAttentionNoAction
-	c.evidenceVersion++
-	return true, nil
+	decision := c.reduceFinishIntent(finishIntent{site: finishSiteAttentionNoAction, lease: lease})
+	return decision.recorded, decision.err
 }
 
 func (c *delegateTreeController) recordTerminalSeen(lease delegateLease) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	evidence, err := c.completionEvidenceLocked(lease)
-	if err != nil {
-		return err
-	}
-	if !evidence.terminalSeen {
-		evidence.terminalSeen = true
-		c.evidenceVersion++
-	}
-	return nil
+	decision := c.reduceFinishIntent(finishIntent{site: finishSiteTerminalSeen, lease: lease})
+	return decision.err
 }
 
 func (c *delegateTreeController) completionSnapshot(lease delegateLease) (delegateCompletionSnapshot, error) {

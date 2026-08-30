@@ -26,17 +26,8 @@ const (
 func (c *delegateTreeController) completionDecision(lease delegateLease) (delegateCompletionDecision, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	evidence, err := c.completionEvidenceLocked(lease)
-	if err != nil {
-		return delegateCompletionNeedsNudge, err
-	}
-	if evidence.terminalSeen {
-		return delegateCompletionUseExistingTerminal, nil
-	}
-	if evidence.requirement == delegateCompletionAttentionOnly && evidence.outcome == delegateCompletionOutcomeAttentionNoAction {
-		return delegateCompletionFinishNoAction, nil
-	}
-	return delegateCompletionNeedsNudge, nil
+	decision := c.reduceFinishIntent(finishIntent{site: finishSiteCompletionDecision, lease: lease})
+	return decision.completion, decision.err
 }
 
 type delegateSteeringAdmission struct {
