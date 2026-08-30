@@ -808,14 +808,16 @@ func (s *Session) buildModelRequest(profile *provider.Profile, sys string, histo
 		// effort straight through and 400.
 		v := llm.ClampReasoningEffort(reasoningEffort, profile.ReasoningEffortLevels())
 		req.ReasoningEffort = &v
-	} else if profile.ThinkingAlwaysOn() {
-		// A mandatory-reasoning model (OpenRouter reasoning.mandatory=true)
-		// rejects a reasoning-less request. When the session has no
-		// --reasoning-effort configured, emit a default ("medium", clamped to
-		// the model's supported levels) so the adapter always has an effort to
-		// put on the wire. Without this, mandatory-reasoning models like
-		// stealth/ox-alpha get a request with no reasoning field and the
-		// provider 400s or produces no output.
+	} else if profile.SupportsReasoning() || profile.ThinkingAlwaysOn() {
+		// No --reasoning-effort configured: emit a default ("medium", clamped
+		// to the model's supported levels) rather than leaving the thinking
+		// budget to the provider. A reasoning-less request is an error for
+		// mandatory-reasoning models (OpenRouter reasoning.mandatory=true,
+		// e.g. stealth/ox-alpha), and for other models the provider's own
+		// default can be unbounded: a gateway-fronted glm-5.3 spent 25k
+		// reasoning tokens on one turn. SupportsReasoning is false for a
+		// model declared reasoning=false in providers.toml, so those still
+		// get no effort on the wire.
 		v := llm.ClampReasoningEffort("medium", profile.ReasoningEffortLevels())
 		req.ReasoningEffort = &v
 	}

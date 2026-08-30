@@ -157,26 +157,18 @@ func TestGPT56_ReasoningAlwaysRequested(t *testing.T) {
 	}
 }
 
-// Reasoning models outside gpt-5.6 get the bounded default effort when none
-// is requested, with encrypted reasoning included so it replays across turns.
-func TestGPT55_DefaultsMediumEffortWithoutEffort(t *testing.T) {
+// Regression guard: models outside gpt-5.6 keep the existing contract — no
+// reasoning object and no include unless an effort is requested.
+func TestGPT55_NoReasoningWithoutEffort(t *testing.T) {
 	body := buildBodyForTest(t, llm.Request{
 		Model:    "gpt-5.5",
 		Messages: []llm.Message{llm.User("hi")},
 	})
-	reasoning, _ := body["reasoning"].(map[string]any)
-	if reasoning == nil || reasoning["effort"] != "medium" {
-		t.Errorf("reasoning = %#v, want effort medium without effort on gpt-5.5", body["reasoning"])
+	if r, ok := body["reasoning"]; ok {
+		t.Errorf("reasoning = %#v, want omitted without effort on gpt-5.5", r)
 	}
-	include, _ := body["include"].([]any)
-	found := false
-	for _, v := range include {
-		if v == "reasoning.encrypted_content" {
-			found = true
-		}
-	}
-	if !found {
-		t.Errorf("include = %#v, want reasoning.encrypted_content without effort on gpt-5.5", body["include"])
+	if inc, ok := body["include"]; ok {
+		t.Errorf("include = %#v, want omitted without effort on gpt-5.5", inc)
 	}
 }
 

@@ -137,19 +137,9 @@ func (a *Adapter) buildRequestBody(req llm.Request) (map[string]any, error) {
 	} else if len(req.Metadata) > 0 {
 		body["metadata"] = req.Metadata
 	}
-	effort := req.ReasoningEffort
-	if effort == nil && !responsesLiteModel(req.Model) {
-		// Without an effort the provider picks its own thinking budget, and a
-		// gateway-fronted model was observed spending 25k reasoning tokens on
-		// a single turn. Send a bounded default instead. Responses-lite keeps
-		// the codex client's contract of letting the API choose.
-		if def, ok := defaultReasoningEffortFor(req.Model); ok {
-			effort = &def
-		}
-	}
-	if effort != nil {
+	if req.ReasoningEffort != nil {
 		body["reasoning"] = map[string]any{
-			"effort":  *effort,
+			"effort":  *req.ReasoningEffort,
 			"summary": reasoningSummaryLevel(req.Model),
 		}
 	} else if responsesLiteModel(req.Model) {
@@ -168,7 +158,7 @@ func (a *Adapter) buildRequestBody(req llm.Request) (map[string]any, error) {
 		body["reasoning"] = reasoning
 	}
 	include := append([]string{}, req.Include...)
-	if effort != nil || responsesLiteModel(req.Model) {
+	if req.ReasoningEffort != nil || responsesLiteModel(req.Model) {
 		include = appendUniqueString(include, encryptedReasoning)
 	}
 	if len(include) > 0 {
@@ -1022,27 +1012,6 @@ func responsesLiteModel(model string) bool {
 	return strings.HasPrefix(model, "gpt-5.6")
 }
 
-// defaultReasoningEffort is sent when the caller requests no effort for a
-// model that may reason.
-const defaultReasoningEffort = "medium"
-
-// defaultReasoningEffortFor returns the effort to send when the caller set
-// none. A model the catalog knows cannot reason gets nothing, because the API
-// rejects a reasoning object for those. A cataloged reasoning model gets the
-// default clamped to its declared levels (glm-5.2 accepts only high/max). A
-// model the catalog has never heard of, such as one behind a gateway, gets
-// the default as-is.
-func defaultReasoningEffortFor(model string) (string, bool) {
-	info := llm.EmbeddedModelCatalog().LookupModelInfo(model)
-	if info == nil {
-		return defaultReasoningEffort, true
-	}
-	if !info.SupportsReasoning {
-		return "", false
-	}
-	return llm.ClampReasoningEffort(defaultReasoningEffort, info.ReasoningEffortLevels), true
-}
-
 // codexModelVariants maps a caller-facing gpt-5.6 slug to the wire slug the
 // Codex backend accepts. Grounded in llm/data/litellm_model_catalog.json's
 // exhaustive gpt-5.6* entries (exactly gpt-5.6, gpt-5.6-sol, gpt-5.6-terra,
@@ -1443,7 +1412,9 @@ func responseContentFromOutputItems(out []any) []llm.ContentPart {
 			encryptedContent, _ := item["encrypted_content"].(string)
 			// OpenAI returns reasoning as encrypted_content plus summaries;
 			// gateways that expose the raw thinking put reasoning_text parts
-			// in content instead. Keep whichever the provider sent.
+			// in content instead. The raw text is kept for display and the
+			// transcript only; replay (toResponsesInput) still needs
+			// encrypted_content.
 			text := strings.Join(parseReasoningSummary(item["content"]), "")
 			if encryptedContent != "" || text != "" {
 				content = append(content, llm.ContentPart{

@@ -339,9 +339,14 @@ similar). Leave them off for a bare model server that would reject the fields.
 
 `applyThinkingFormat` (`llm/providers/openaicompat/request.go:141-179`) runs
 after the session's clamp and the `thinking_levels` translation. **When no
-reasoning effort is set on the request, nothing is emitted for any format** —
-evener's `none` clears the setting to the provider default rather than forcing
-an explicit disable (`request.go:147-149`). The table below is what's sent
+reasoning effort is set on the request, nothing is emitted for any format**
+(`request.go:147-149`). The session only leaves the effort unset for a profile
+that does not support reasoning (`reasoning = false`); for every other profile
+it fills in a default of `medium`, clamped to the model's levels, when no
+`--reasoning-effort` is configured (`agent/session_model_call.go`,
+`buildModelRequest`). evener's `none` clears the configured override and so
+falls back to that default rather than forcing an explicit disable. The table
+below is what's sent
 once an effort **is** set (`wire` = the post-clamp, post-`thinking_levels`
 value):
 

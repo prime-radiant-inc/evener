@@ -3343,7 +3343,7 @@ func TestSession_TaskList_AppendAndUpdate_EmitToolStateSnapshots(t *testing.T) {
 	}
 }
 
-func TestSession_ReasoningEffort_EmptyMeansNoOverride(t *testing.T) {
+func TestSession_ReasoningEffort_EmptyGetsDefaultEffort(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
 	c := llm.NewClient()
@@ -3377,8 +3377,8 @@ func TestSession_ReasoningEffort_EmptyMeansNoOverride(t *testing.T) {
 	if len(reqs) == 0 {
 		t.Fatal("no requests recorded")
 	}
-	if reqs[0].ReasoningEffort != nil {
-		t.Fatalf("expected nil ReasoningEffort (no override), got %#v", reqs[0].ReasoningEffort)
+	if reqs[0].ReasoningEffort == nil || *reqs[0].ReasoningEffort != "medium" {
+		t.Fatalf("expected the default medium ReasoningEffort (no override), got %#v", reqs[0].ReasoningEffort)
 	}
 }
 
