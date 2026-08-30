@@ -1,11 +1,10 @@
 package agent
 
-// Tests that session.go provider-conditional behavior sites key on the
-// profile's registry identity rather than s.profile.ID() or req.Provider.
-// This ensures a provider instance under a user-assigned name keeps the right
-// behavior, and that chat-completions instances (surface "generic")
-// correctly do NOT get the real-openai behavior. The prompt-cache site moved
-// off this axis entirely — see session_openai_prompt_cache_test.go.
+// Tests that session.go's provider-conditional sites key on the profile's
+// surface and protocol rather than on s.profile.ID() or req.Provider: an
+// instance under a user-assigned name keeps its vendor behavior, and a
+// generic-surface instance does not get the OpenAI one. The prompt-cache site
+// moved off this axis entirely — see session_openai_prompt_cache_test.go.
 
 import (
 	_ "embed"
@@ -83,15 +82,14 @@ func webSearchIsWired(t *testing.T, sess *Session) bool {
 	return reg.Get("web_search") != nil
 }
 
-// TestBehaviorTag_Gemini_RenamedGoogleRegistersWebSearch verifies that a
-// renamed Google instance (id="myai", tag="google") gets the web_search tool
-// wired by registerCoreTools.
-// Before the fix, the check was s.profile.ID() == "gemini", so a renamed
-// instance (id="myai") would not get web_search registered.
-func TestBehaviorTag_Gemini_RenamedGoogleRegistersWebSearch(t *testing.T) {
+// TestWebSearchToolWiredForANamedGoogleInstance verifies that a google
+// instance under a user-assigned name (id "myai") still gets the web_search
+// tool wired by registerCoreTools: the site keys on the protocol, not on a
+// hard-coded instance name.
+func TestWebSearchToolWiredForANamedGoogleInstance(t *testing.T) {
 	t.Parallel()
-	// A google instance under a user-assigned name: id="myai",
-	// surface/protocol still google.
+	// A google instance under a user-assigned name; its surface and protocol
+	// are still google.
 	renamedGemini := namedInstanceProfile("myai", "google", "gemini-2.5-pro")
 	if renamedGemini.ID() != "myai" {
 		t.Fatalf("pre-condition: ID() = %q, want myai", renamedGemini.ID())
@@ -112,10 +110,9 @@ func TestBehaviorTag_Gemini_RenamedGoogleRegistersWebSearch(t *testing.T) {
 	}
 }
 
-// TestBehaviorTag_Gemini_OriginalGeminiRegistersWebSearch verifies the
-// existing baseline: an unmodified gemini profile (id="gemini", tag="google")
-// still gets web_search wired by registerCoreTools.
-func TestBehaviorTag_Gemini_OriginalGeminiRegistersWebSearch(t *testing.T) {
+// TestWebSearchToolWiredForTheGoogleInstance is the baseline: an instance
+// named for its own provider gets web_search wired the same way.
+func TestWebSearchToolWiredForTheGoogleInstance(t *testing.T) {
 	t.Parallel()
 	geminiProfile := newGeminiProfile("gemini-2.5-pro")
 
@@ -131,11 +128,11 @@ func TestBehaviorTag_Gemini_OriginalGeminiRegistersWebSearch(t *testing.T) {
 	}
 }
 
-// TestBehaviorTag_Gemini_WithoutWebSearchDoesNotRegisterWebSearch pins the
+// TestWebSearchToolAbsentWhenTheRowServesNone pins the
 // second half of the §7.5 rule: the function tool is registered for
 // Protocol == google AND a row that serves web search. A google model whose
 // live /models entry says it does not gets no web_search.
-func TestBehaviorTag_Gemini_WithoutWebSearchDoesNotRegisterWebSearch(t *testing.T) {
+func TestWebSearchToolAbsentWhenTheRowServesNone(t *testing.T) {
 	t.Parallel()
 	profile := withWebSearch(newGeminiProfile("gemini-2.5-pro"), false)
 	if profile.SupportsWebSearch() {
@@ -180,10 +177,10 @@ func TestReapplyProviderTools_GoogleWithoutWebSearch(t *testing.T) {
 	}
 }
 
-// TestBehaviorTag_Gemini_OpenAIDoesNotRegisterWebSearch verifies that
-// registerCoreTools does NOT wire web_search for OpenAI
-// (it uses native web search via req.WebSearch instead).
-func TestBehaviorTag_Gemini_OpenAIDoesNotRegisterWebSearch(t *testing.T) {
+// TestWebSearchToolAbsentOnTheOpenAISurface verifies that registerCoreTools
+// does NOT wire the web_search function tool on the OpenAI surface, which uses
+// native web search via req.WebSearch instead.
+func TestWebSearchToolAbsentOnTheOpenAISurface(t *testing.T) {
 	t.Parallel()
 	openaiProfile := NewOpenAIProfile("gpt-5.5")
 
@@ -201,12 +198,11 @@ func TestBehaviorTag_Gemini_OpenAIDoesNotRegisterWebSearch(t *testing.T) {
 
 // ── Site 3: renderSystemPrompt sectionResolver provider ───────────────────
 
-// TestBehaviorTag_SectionResolver_RenamedOpenAILoadsOpenAISection verifies
-// that a session with a renamed OpenAI profile (id="work", tag="openai")
-// renders the tools.provider-openai_append.md section in the system prompt.
-// Before the fix, sectionResolver.provider = s.profile.ID() = "work", so no
-// openai-specific section would be loaded.
-func TestBehaviorTag_SectionResolver_RenamedOpenAILoadsOpenAISection(t *testing.T) {
+// TestSystemPromptLoadsTheOpenAISectionForANamedInstance verifies that a
+// session on an openai instance under a user-assigned name (id "work") still
+// renders the tools.provider-openai_append.md section: sectionResolver keys on
+// the surface, so the section follows the vendor rather than the name.
+func TestSystemPromptLoadsTheOpenAISectionForANamedInstance(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
 	c := llm.NewClient()
@@ -237,10 +233,10 @@ func TestBehaviorTag_SectionResolver_RenamedOpenAILoadsOpenAISection(t *testing.
 	}
 }
 
-// TestBehaviorTag_SectionResolver_OpenAICompatibleDoesNotLoadOpenAISection
-// verifies that a chat-completions instance (surface "generic") does NOT
-// render the tools.provider-openai_append.md section.
-func TestBehaviorTag_SectionResolver_OpenAICompatibleDoesNotLoadOpenAISection(t *testing.T) {
+// TestSystemPromptOmitsTheOpenAISectionOnTheGenericSurface verifies that a
+// chat-completions instance does NOT render the
+// tools.provider-openai_append.md section.
+func TestSystemPromptOmitsTheOpenAISectionOnTheGenericSurface(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
 	c := llm.NewClient()

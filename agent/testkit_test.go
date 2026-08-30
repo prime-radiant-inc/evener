@@ -158,11 +158,12 @@ func registryClient(t *testing.T, instances map[string]registry.Provider, adapte
 
 // adapterInstance is the registry entry a test adapter's name needs when it is
 // not a curated id: an unreachable openai-compatible gateway, so a profile for
-// it resolves and only the override ever serves it.
+// it resolves and only the override ever serves it. The name rides in the host
+// so a stray request names the adapter it escaped from.
 func adapterInstance(name string) registry.Provider {
 	return registry.Provider{
 		Base: "openai-compatible", APIKey: "test",
-		Transport: registry.Transport{BaseURL: "http://test.invalid/v1"},
+		Transport: registry.Transport{BaseURL: "http://" + name + ".test.invalid/v1"},
 	}
 }
 

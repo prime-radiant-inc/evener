@@ -451,7 +451,6 @@ func (p *Profile) WithModel(model string) *Profile {
 		return p.withModelID(model)
 	}
 	next := FromResolved(res, p.registry)
-	next.contextWindow = p.contextWindow
 	return next.WithCommunicateOverridesFrom(p).withCheapModelFrom(p)
 }
 

@@ -45,6 +45,23 @@ func mustResolve(t *testing.T, r *registry.Registry, ref string) *Profile {
 	return p
 }
 
+// assertTaskListEffortEnum requires the task_list tool to be advertised and
+// its effort enum to match levels. Its absence is a failure in its own right:
+// the workflow surface losing the tool would otherwise slip past a comparison
+// that only runs when the tool is there.
+func assertTaskListEffortEnum(t *testing.T, p *Profile, levels []string) {
+	t.Helper()
+	got := findToolDef(p, "task_list")
+	if got == nil {
+		t.Fatalf("%s/%s advertises no task_list tool", p.ID(), p.Model())
+	}
+	gb, _ := json.Marshal(got)
+	wb, _ := json.Marshal(tool.DefTaskList(levels))
+	if !bytes.Equal(gb, wb) {
+		t.Fatalf("task_list effort enum does not match the ladder %v\n got=%s\nwant=%s", levels, gb, wb)
+	}
+}
+
 func findToolDef(p *Profile, name string) *llm.ToolDefinition {
 	for _, td := range p.ToolDefinitions() {
 		if td.Name == name {
@@ -84,8 +101,8 @@ func TestResolveProfileSurfaceConventions(t *testing.T) {
 			if got := p.ToolNameMap()["shell"]; got != tc.shellTool {
 				t.Fatalf("shell tool name: %q", got)
 			}
-			if (findToolDef(p, "web_search") != nil) != tc.webSearchTool {
-				t.Fatalf("web_search function tool advertised: %v (google protocol + WebSearch only)", !tc.webSearchTool)
+			if got := findToolDef(p, "web_search") != nil; got != tc.webSearchTool {
+				t.Fatalf("web_search function tool advertised: %v, want %v (google protocol + WebSearch only)", got, tc.webSearchTool)
 			}
 		})
 	}
@@ -132,14 +149,7 @@ func TestProfileReasoningDisabledClearsTheLadder(t *testing.T) {
 	if q.SupportsReasoning() || len(q.ReasoningEffortLevels()) != 0 {
 		t.Fatalf("reasoning = false: %v %v", q.SupportsReasoning(), q.ReasoningEffortLevels())
 	}
-	if got := findToolDef(q, "task_list"); got != nil {
-		want := tool.DefTaskList(nil)
-		gb, _ := json.Marshal(got)
-		wb, _ := json.Marshal(want)
-		if !bytes.Equal(gb, wb) {
-			t.Fatalf("task_list effort enum not cleared with the ladder\n got=%s\nwant=%s", gb, wb)
-		}
-	}
+	assertTaskListEffortEnum(t, q, nil)
 }
 
 // TestProfileProviderOptionsByProtocol pins the protocol-keyed extras: the
@@ -191,6 +201,13 @@ func TestWithModelAndCrossProviderRef(t *testing.T) {
 	if same := ant.WithModel("  "); same.Model() != ant.Model() {
 		t.Fatalf("an empty model keeps the active one: %q", same.Model())
 	}
+	// A WithContextWindow override describes one model, so it does not follow
+	// the session to the next one — the new model's row does.
+	pinned := WithContextWindow(mustResolve(t, r, "anthropic/claude-opus-5"), 4096)
+	switchedAway := pinned.WithModel("claude-sonnet-4-5")
+	if switchedAway.ContextWindowSize() != mustResolve(t, r, "anthropic/claude-sonnet-4-5").ContextWindowSize() {
+		t.Fatalf("WithModel carried the window override: %d", switchedAway.ContextWindowSize())
+	}
 }
 
 // TestWithModelCarriesCommunicateOverrides pins that the re-resolve keeps the
@@ -221,14 +238,7 @@ func TestWithResolvedReplacesFacts(t *testing.T) {
 	if WithContextWindow(q, 4096).ContextWindowSize() != 4096 {
 		t.Fatal("WithContextWindow still overrides")
 	}
-	if got := findToolDef(q, "task_list"); got != nil {
-		want := tool.DefTaskList([]string{"low", "high"})
-		gb, _ := json.Marshal(got)
-		wb, _ := json.Marshal(want)
-		if !bytes.Equal(gb, wb) {
-			t.Fatalf("task_list effort enum not resynced to the ladder\n got=%s\nwant=%s", gb, wb)
-		}
-	}
+	assertTaskListEffortEnum(t, q, []string{"low", "high"})
 	cheap := WithCheapModel(WithContextWindow(p, 4096), "gw/tiny")
 	kept := cheap.WithResolved(res)
 	if kept.ContextWindowSize() != 4096 || kept.CheapModelRefString() != "gw/tiny" {
