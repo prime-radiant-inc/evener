@@ -905,7 +905,10 @@ func (s *Session) callModelWithFallback(ctx context.Context, profile *provider.P
 	modelResp, err := s.callModel(callCtx, policy, profile, req, &primaryRecord)
 	rememberPreviews(modelResp)
 	recorder.Groups = append(recorder.Groups, primaryRecord)
-	if err != nil && shouldRetryResponsesContinuationAsFullHistory(req, err) {
+	// len(fullHistory) > 0 keeps the retry's precondition next to the retry:
+	// the rebuilt request sends fullHistory, so a delta paired with an empty
+	// one would dispatch a message-less round instead of declining.
+	if err != nil && len(fullHistory) > 0 && shouldRetryResponsesContinuationAsFullHistory(req, err) {
 		s.disableResponsesContinuationForRequest(req, profile.SupportsStreaming())
 		retryReq := responsesContinuationFullHistoryFallbackRequest(req, fullHistory)
 		// Group-transition reset: the primary group's error usually arrives

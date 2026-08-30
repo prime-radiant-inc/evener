@@ -344,6 +344,36 @@ func TestShouldRetryResponsesContinuationAsFullHistory_UnhealthyVerdict(t *testi
 // the class through llm.Classify would walk into that wrapped error: a
 // permanent-class one reports the chain eligible (the case that fails without
 // the arm), and a retryable-class one only happens to report non-eligible.
+// TestContinuationRecovery_SkippedWithoutRetainedHistory pins the retry's own
+// precondition: the rebuilt request sends the history the round retained, so a
+// delta paired with none must decline rather than dispatch a message-less
+// round.
+func TestContinuationRecovery_SkippedWithoutRetainedHistory(t *testing.T) {
+	anchorMissing := llm.ErrorFromHTTPStatus("openai", 404, "previous_response resp_anchor not found", nil, nil)
+	a := &scriptedStreamAdapter{
+		provider: "openai",
+		openErr:  map[string]error{"primary": anchorMissing},
+	}
+	policy := llm.RetryPolicy{MaxRetries: 0}
+	sess := newSession(t,
+		withAdapter(a),
+		withProfile(NewOpenAIProfile("primary")),
+		withConfig(SessionConfig{LLMRetryPolicy: &policy}),
+	)
+	drainSessionEvents(sess)
+
+	_, _, _, err := sess.callModelWithFallback(context.Background(), NewOpenAIProfile("primary"), continuationRecoveryRequest(), nil, "", 1)
+
+	if !errors.Is(err, anchorMissing) {
+		t.Fatalf("terminal error = %v, want the anchor rejection itself — a message-less recovery round would replace it", err)
+	}
+	for _, req := range a.Requests() {
+		if req.HistoryMode == llm.HistoryModeFullHistoryFallback {
+			t.Fatalf("recovery re-call issued with no retained history: %+v", req)
+		}
+	}
+}
+
 // TestModelFallbackEligible_ResponsesEmptyStream pins that a Responses
 // endpoint answering 200 OK with no events routes the round to the configured
 // model fallbacks. The model does not speak the protocol, so no amount of
