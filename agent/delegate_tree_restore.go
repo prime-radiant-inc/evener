@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"maps"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strings"
 
@@ -270,6 +271,17 @@ func (c *delegateTreeController) Reconcile(evidence delegateReconcileEvidence) (
 	sort.Strings(ids)
 	for _, id := range ids {
 		attention := append([]string(nil), evidence.attention[id]...)
+		// A wake noted after the evidence snapshot was taken is bound to this
+		// stop member exactly the same way: its transcript open is already
+		// durable (the arm paths append before they note), so the same discard
+		// machinery resolves it. The controller mutex is held across this
+		// check and the completion append below, so a wake cannot slip into
+		// that window twice and leak past the completed stop.
+		for attentionID := range c.attentionWakeIDs[id] {
+			if !slices.Contains(attention, attentionID) {
+				attention = append(attention, attentionID)
+			}
+		}
 		sort.Strings(attention)
 		for _, attentionID := range attention {
 			if attentionID == "" {
