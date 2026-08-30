@@ -8,6 +8,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"reflect"
 	"testing"
 	"time"
 
@@ -315,5 +316,83 @@ func TestAuth_EmptyProviderMeansCodex(t *testing.T) {
 	}
 	if got.Email != "codex@example.com" {
 		t.Fatalf("Email = %q, want the Codex record's", got.Email)
+	}
+}
+
+// TestAuth_NonCodexLogout_ClearsTheStoredKeyAndReloads is the property the
+// deleted behavior-tag file carried: logging out a key-authenticated instance
+// clears its stored key, and the registry is reloaded so every surface stops
+// reporting a credential that is gone. Nothing else walks this branch with an
+// assertion.
+//
+// The two cases are what make both halves observable. An authored entry is an
+// instance whether or not a credential resolves, so it shows the cleared key;
+// a curated implicit provider exists only while its credential does, so it is
+// the one that shows the reload — its instance-set membership is cached until
+// the registry is loaded again (spec §5.1).
+func TestAuth_NonCodexLogout_ClearsTheStoredKeyAndReloads(t *testing.T) {
+	for _, tt := range []struct {
+		name     string
+		toml     string
+		instance string
+		// implicit instances vanish from the set once their credential does.
+		staysAnInstance bool
+	}{
+		{name: "authored instance", toml: bearerInstanceToml, instance: "work-ant", staysAnInstance: true},
+		{name: "curated implicit provider", toml: "", instance: "anthropic"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			oaitest.IsolateOpenAIAuth(t)
+			clearProviderKeysFromEnvironment(t)
+			dir := t.TempDir()
+			path := ""
+			if tt.toml != "" {
+				path = writeProvidersToml(t, dir, tt.toml)
+			}
+			ctrl := newTestAuthController(t, dir, t.TempDir(), path)
+
+			if err := ctrl.creds.Set(tt.instance, "sk-ant-stored"); err != nil {
+				t.Fatalf("Set: %v", err)
+			}
+			if err := ctrl.reg.Reload(); err != nil {
+				t.Fatalf("Reload: %v", err)
+			}
+			before, ok := ctrl.reg.Get().Instance(tt.instance)
+			if !ok || before.CredentialSource != "store" {
+				t.Fatalf("credential source before logout = %q (present %v), want store", before.CredentialSource, ok)
+			}
+
+			resp, err := ctrl.Logout(appwire.AuthLogoutParams{Provider: tt.instance})
+			if err != nil {
+				t.Fatalf("Logout: %v", err)
+			}
+			if !resp.Removed {
+				t.Error("Removed = false, want true")
+			}
+			if resp.Status.SignedIn || resp.Status.ActiveSource != "none" {
+				t.Errorf("status = %+v, want signed out with source none", resp.Status)
+			}
+			if !reflect.DeepEqual(resp.Status.AuthModes, []string{"apiKey"}) {
+				t.Errorf("AuthModes = %v, want [apiKey]", resp.Status.AuthModes)
+			}
+			if resp.Status.HasStoredFile {
+				t.Error("HasStoredFile = true, want the stored key gone")
+			}
+			if v, _ := ctrl.creds.Get(tt.instance); v != "" {
+				t.Errorf("credentials.toml still holds %q", v)
+			}
+			// The registry was reloaded, so every other surface agrees the
+			// credential is gone.
+			after, stillAnInstance := ctrl.reg.Get().Instance(tt.instance)
+			switch {
+			case tt.staysAnInstance && (!stillAnInstance || after.CredentialSource != "none"):
+				t.Fatalf("credential source after logout = %q (present %v), want none", after.CredentialSource, stillAnInstance)
+			case !tt.staysAnInstance && stillAnInstance:
+				t.Fatalf("%s is still an instance after its only credential was cleared — the registry was not reloaded", tt.instance)
+			}
+			if err := validateProviderCredentials(tt.instance, ctrl.reg); err == nil {
+				t.Error("the spawn gate still accepts an instance whose key was just cleared")
+			}
+		})
 	}
 }
