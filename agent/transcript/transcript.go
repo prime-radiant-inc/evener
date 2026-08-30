@@ -592,9 +592,9 @@ func resumeWriter(fs afero.Fs, f afero.File, expectedSessionID string) (*Writer,
 	// boundary before any crash tail. The shared framer drains an arbitrarily
 	// large unterminated tail without retaining the file in memory.
 	maxSeq := -1
-	// entries is non-nil even for a header-only transcript: a successful open
-	// means "this transcript exists and was validated," and callers (notably
-	// Session.RestoredTranscript's ok flag) use non-nil as exactly that.
+	// entries is non-nil even for a header-only transcript: the
+	// delegate-attention fold keys on nilness to decide whether it can fold
+	// in memory or must re-read the file.
 	entries := make([]Entry, 0)
 	reader := bufio.NewReaderSize(f, 64*1024)
 	var validLen int64

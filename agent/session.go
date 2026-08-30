@@ -716,17 +716,18 @@ type Session struct {
 
 	// restoredTranscript holds the decoded transcript a RESUME read while
 	// validating the session it was asked to restore: the header (with its
-	// SessionID already checked against this session's id), the retained
-	// entries, and whether a transcript was opened at all — the ok flag, kept
-	// as an explicit bool rather than inferred from the entries slice, so a
-	// header-only refresh (whose entry list is empty) cannot silently flip
-	// ok back to false. It exists so serve's app-identity projection can
-	// reuse that one strict decode instead of re-reading and re-decoding the
-	// whole append-only file; it is populated only on the restore path,
-	// after any delegate-delivery refresh, and is never updated after
-	// construction. Guarded by s.mu.
+	// SessionID already checked against this session's id) and the retained
+	// entries. It exists so serve's app-identity projection can reuse that
+	// one strict decode instead of re-reading and re-decoding the whole
+	// append-only file; it is populated only on the restore path, after any
+	// delegate-delivery refresh, and is never updated after construction.
+	// Guarded by s.mu.
 	restoredTranscriptHeader transcript.Header
 	restoredTranscript       []transcript.Entry
+
+	// restoredTranscriptOpened is the ok flag RestoredTranscript reports:
+	// whether restore opened a transcript, captured at the open so a later
+	// refresh cannot flip it. Guarded by s.mu.
 	restoredTranscriptOpened bool
 
 	// Cached tool definitions.
