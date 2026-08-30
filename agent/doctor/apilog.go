@@ -790,14 +790,17 @@ func rowFromAttempt(attempt apilog.APIAttemptRecord) APICallRow {
 //   - openai_public / openai_codex: the Responses API, whichever transport
 //     recorded it.
 //   - openai_chat_completions: the Chat Completions API, JSON or stream.
+//   - openai_compatible_chat_completions: the same wire shape under the
+//     family name a log written before the registry carries. No new record
+//     uses it; reading old ones is what --recompute is for.
 //
 // Other protocols' bodies are a different wire shape entirely and are left
-// alone; so is a family no longer emitted, whose old records simply do not
-// match a key here.
+// alone.
 var recomputeExtractors = map[string]func(body []byte, requestedModel string) (llm.Response, error){
-	"openai_public":           responses.ExtractRecordedResponse,
-	"openai_codex":            responses.ExtractRecordedResponse,
-	"openai_chat_completions": chatcompletions.ExtractRecordedResponse,
+	"openai_public":                      responses.ExtractRecordedResponse,
+	"openai_codex":                       responses.ExtractRecordedResponse,
+	"openai_chat_completions":            chatcompletions.ExtractRecordedResponse,
+	"openai_compatible_chat_completions": chatcompletions.ExtractRecordedResponse,
 }
 
 // recomputeRow re-extracts TextLength/ToolCalls from record's stored
