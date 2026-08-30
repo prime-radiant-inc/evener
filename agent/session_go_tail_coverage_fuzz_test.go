@@ -23,6 +23,7 @@ import (
 	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/agent/transcript"
 	"primeradiant.com/evener/llm"
+	"primeradiant.com/evener/llm/registry"
 )
 
 type tailCoverageClock struct {
@@ -79,7 +80,7 @@ type tailCoverageBlockingLister struct {
 }
 
 func (a *tailCoverageBlockingLister) Name() string { return "openai" }
-func (a *tailCoverageBlockingLister) ListModels(context.Context) ([]llm.ModelInfo, error) {
+func (a *tailCoverageBlockingLister) LiveModels(context.Context) ([]registry.Model, error) {
 	close(a.entered)
 	<-a.release
 	return nil, nil

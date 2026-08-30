@@ -17,17 +17,18 @@ import (
 	"primeradiant.com/evener/agent/provider"
 	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/llm"
+	"primeradiant.com/evener/llm/registry"
 )
 
 type modelAvailabilityAdapter struct {
 	fakeAdapter
-	models  []llm.ModelInfo
+	models  []registry.Model
 	calls   atomic.Int32
 	observe func(context.Context)
 	listErr error
 }
 
-func (a *modelAvailabilityAdapter) ListModels(ctx context.Context) ([]llm.ModelInfo, error) {
+func (a *modelAvailabilityAdapter) LiveModels(ctx context.Context) ([]registry.Model, error) {
 	a.calls.Add(1)
 	if a.observe != nil {
 		a.observe(ctx)
@@ -35,11 +36,11 @@ func (a *modelAvailabilityAdapter) ListModels(ctx context.Context) ([]llm.ModelI
 	if a.listErr != nil {
 		return nil, a.listErr
 	}
-	return append([]llm.ModelInfo(nil), a.models...), nil
+	return append([]registry.Model(nil), a.models...), nil
 }
 
 func TestNewSessionReusesValidatedModelsAndBoundsDelegateSchema(t *testing.T) {
-	models := make([]llm.ModelInfo, modelavailability.DefaultInlineMaxCount)
+	models := make([]registry.Model, modelavailability.DefaultInlineMaxCount)
 	for i := range models {
 		models[i].ID = fmt.Sprintf("model-%03d-%s", i, strings.Repeat("x", 12))
 	}
@@ -55,7 +56,7 @@ func TestNewSessionReusesValidatedModelsAndBoundsDelegateSchema(t *testing.T) {
 	defer sess.Close()
 
 	if got := adapter.calls.Load(); got != 1 {
-		t.Fatalf("selected provider ListModels calls = %d, want one validation fetch reused by startup snapshot", got)
+		t.Fatalf("selected provider listing calls = %d, want one validation fetch reused by startup snapshot", got)
 	}
 	props := sess.delegateToolDefinition().Parameters["properties"].(map[string]any)
 	modelDescription := props["model"].(map[string]any)["description"].(string)
@@ -71,11 +72,11 @@ func TestNewSessionEnumeratesOtherProvidersUnderLifetimeContext(t *testing.T) {
 	type ownerContextKey struct{}
 	const ownerMarker = "one-shot-run"
 
-	selected := &modelAvailabilityAdapter{models: []llm.ModelInfo{{ID: "gpt-5.5"}}}
+	selected := &modelAvailabilityAdapter{models: []registry.Model{{ID: "gpt-5.5"}}}
 	selected.name = "openai"
 	var inheritedOwner atomic.Bool
 	other := &modelAvailabilityAdapter{
-		models: []llm.ModelInfo{{ID: "claude-opus-4-6"}},
+		models: []registry.Model{{ID: "claude-opus-4-6"}},
 		observe: func(ctx context.Context) {
 			inheritedOwner.Store(ctx.Value(ownerContextKey{}) == ownerMarker)
 		},
@@ -101,11 +102,11 @@ func TestRestoreSessionReusesSelectedModelsAndAdvertisesSnapshot(t *testing.T) {
 	type ownerContextKey struct{}
 	const ownerMarker = "restored-run"
 
-	selected := &modelAvailabilityAdapter{models: []llm.ModelInfo{{ID: "gpt-5.5"}}}
+	selected := &modelAvailabilityAdapter{models: []registry.Model{{ID: "gpt-5.5"}}}
 	selected.name = "openai"
 	var inheritedOwner atomic.Bool
 	other := &modelAvailabilityAdapter{
-		models: []llm.ModelInfo{{ID: "claude-opus-4-6"}},
+		models: []registry.Model{{ID: "claude-opus-4-6"}},
 		observe: func(ctx context.Context) {
 			inheritedOwner.Store(ctx.Value(ownerContextKey{}) == ownerMarker)
 		},
@@ -144,10 +145,10 @@ func TestRestoreSessionReusesSelectedModelsAndAdvertisesSnapshot(t *testing.T) {
 	defer sess.Close()
 
 	if got := selected.calls.Load(); got != 1 {
-		t.Fatalf("selected provider ListModels calls = %d, want one metadata fetch reused by restored snapshot", got)
+		t.Fatalf("selected provider listing calls = %d, want one metadata fetch reused by restored snapshot", got)
 	}
 	if got := other.calls.Load(); got != 1 {
-		t.Fatalf("other provider ListModels calls = %d, want one restored snapshot fetch", got)
+		t.Fatalf("other provider listing calls = %d, want one restored snapshot fetch", got)
 	}
 	if !inheritedOwner.Load() {
 		t.Fatal("other-provider model enumeration did not inherit the restored session lifetime context")
@@ -165,9 +166,9 @@ func TestRestoreSessionReusesSelectedModelsAndAdvertisesSnapshot(t *testing.T) {
 
 func TestSessionsWithoutDelegateCapabilitySkipModelAvailabilityCapture(t *testing.T) {
 	newClient := func() (*llm.Client, *modelAvailabilityAdapter, *modelAvailabilityAdapter) {
-		selected := &modelAvailabilityAdapter{models: []llm.ModelInfo{{ID: "gpt-5.5"}}}
+		selected := &modelAvailabilityAdapter{models: []registry.Model{{ID: "gpt-5.5"}}}
 		selected.name = "openai"
-		other := &modelAvailabilityAdapter{models: []llm.ModelInfo{{ID: "claude-opus-4-6"}}}
+		other := &modelAvailabilityAdapter{models: []registry.Model{{ID: "claude-opus-4-6"}}}
 		other.name = "anthropic"
 		client := llm.NewClient()
 		client.Register(selected)
@@ -177,10 +178,10 @@ func TestSessionsWithoutDelegateCapabilitySkipModelAvailabilityCapture(t *testin
 	assertLeaf := func(t *testing.T, sess *Session, selected, other *modelAvailabilityAdapter) {
 		t.Helper()
 		if got := selected.calls.Load(); got != 1 {
-			t.Fatalf("selected provider ListModels calls = %d, want one live metadata fetch", got)
+			t.Fatalf("selected provider listing calls = %d, want one live metadata fetch", got)
 		}
 		if got := other.calls.Load(); got != 0 {
-			t.Fatalf("other provider ListModels calls = %d, want none for a leaf session", got)
+			t.Fatalf("other provider listing calls = %d, want none for a leaf session", got)
 		}
 		if sess.modelSnapshot != nil {
 			t.Fatalf("leaf model snapshot = %#v, want nil", sess.modelSnapshot)
@@ -294,44 +295,16 @@ func TestSessionsWithoutDelegateCapabilitySkipModelAvailabilityCapture(t *testin
 	})
 }
 
-func TestNewSessionSnapshotUsesSharedModelVisibility(t *testing.T) {
-	selected := &modelAvailabilityAdapter{models: []llm.ModelInfo{
-		{ID: "gpt-5.5"},
-		{ID: "text-embedding-3-small"},
-	}}
-	selected.name = "openai"
-	other := &modelAvailabilityAdapter{models: []llm.ModelInfo{
-		{ID: "tool-model", CapabilitiesAdvertised: true, SupportsTools: true},
-		{ID: "tool-less-model", CapabilitiesAdvertised: true, SupportsTools: false},
-	}}
-	other.name = "router"
-	client := llm.NewClient()
-	client.Register(selected)
-	client.Register(other)
-	client.SetNameToTag(map[string]string{"router": "openrouter"})
-
-	sess, err := NewSession(client, NewOpenAIProfile("gpt-5.5"), execenv.NewLocalExecutionEnvironment(t.TempDir()), SessionConfig{})
-	if err != nil {
-		t.Fatalf("NewSession: %v", err)
-	}
-	defer sess.Close()
-
-	want := []string{"openai/gpt-5.5", "router/tool-model"}
-	if sess.modelSnapshot == nil || !slices.Equal(sess.modelSnapshot.Choices, want) {
-		t.Fatalf("visible startup choices = %#v, want %q", sess.modelSnapshot, want)
-	}
-}
-
 func TestNewSessionBoundedSnapshotRetainsSelectedProvider(t *testing.T) {
 	const selectedName = "zz-selected-provider"
-	selected := &modelAvailabilityAdapter{models: []llm.ModelInfo{{ID: "gpt-5.5"}}}
+	selected := &modelAvailabilityAdapter{models: []registry.Model{{ID: "gpt-5.5"}}}
 	selected.name = selectedName
 	client := llm.NewClient()
 	client.Register(selected)
 	nameToTag := map[string]string{selectedName: "openai"}
 	for i := range 16 {
 		name := fmt.Sprintf("provider-%02d", i)
-		adapter := &modelAvailabilityAdapter{models: []llm.ModelInfo{{ID: "model"}}}
+		adapter := &modelAvailabilityAdapter{models: []registry.Model{{ID: "model"}}}
 		adapter.name = name
 		client.Register(adapter)
 		nameToTag[name] = "openai"
@@ -355,7 +328,7 @@ func TestNewSessionBoundedSnapshotRetainsSelectedProvider(t *testing.T) {
 }
 
 func TestModelListToolReturnsEveryChoiceExactlyOnceWithinPageBound(t *testing.T) {
-	models := make([]llm.ModelInfo, modelavailability.DefaultInlineMaxCount)
+	models := make([]registry.Model, modelavailability.DefaultInlineMaxCount)
 	for i := range models {
 		models[i].ID = fmt.Sprintf("model-%03d-%s", i, strings.Repeat("x", 12))
 	}
@@ -406,7 +379,7 @@ func TestModelListToolReturnsEveryChoiceExactlyOnceWithinPageBound(t *testing.T)
 }
 
 func TestModelListToolPreservesJSONUnderConfiguredOutputLimit(t *testing.T) {
-	models := make([]llm.ModelInfo, modelavailability.DefaultInlineMaxCount)
+	models := make([]registry.Model, modelavailability.DefaultInlineMaxCount)
 	for i := range models {
 		models[i].ID = fmt.Sprintf("model-%02d-%s", i, strings.Repeat("x", 12))
 	}

@@ -10,6 +10,7 @@ import (
 	"primeradiant.com/evener/agent/internal/jobstore"
 	"primeradiant.com/evener/agent/provider"
 	"primeradiant.com/evener/llm"
+	"primeradiant.com/evener/llm/registry"
 )
 
 // Shared test fixtures for the agent package.
@@ -105,6 +106,43 @@ func newSession(t *testing.T, opts ...sessionOpt) *Session {
 	}
 	t.Cleanup(func() { sess.Close() })
 	return sess
+}
+
+// registryClient builds a client whose resolutions come from a hermetic
+// registry carrying instances, with no user layer, no cache, and no
+// environment. Supplied adapters are registered as overrides; every remaining
+// instance the registry knows (the credential-less implicit ones included)
+// gets a mute fake, so no test client can reach a real transport.
+//
+// An instance the caller declares with no models endpoint is left uncovered:
+// it lists from the registry alone, which needs no transport. Such an
+// instance must never be completed against.
+func registryClient(t *testing.T, instances map[string]registry.Provider, adapters ...llm.ProviderAdapter) *llm.Client {
+	t.Helper()
+	r, err := registry.Load(
+		registry.WithOffline(true), registry.WithoutCache(), registry.WithNoUserLayer(),
+		registry.WithStateRoot(t.TempDir()),
+		registry.WithEnv(func(string) (string, bool) { return "", false }),
+		registry.WithInstances(instances),
+	)
+	if err != nil {
+		t.Fatalf("registryClient: %v", err)
+	}
+	c := llm.NewClient(llm.WithRegistry(r))
+	covered := map[string]bool{}
+	for _, a := range adapters {
+		c.Register(a)
+		covered[a.Name()] = true
+	}
+	for _, inst := range r.Instances() {
+		if declared, ok := instances[inst.Name]; ok && declared.Transport.ModelsEndpoint == registry.EndpointUnsupported {
+			continue
+		}
+		if !covered[inst.Name] {
+			c.Register(&fakeAdapter{name: inst.Name})
+		}
+	}
+	return c
 }
 
 // --- deterministic clock ---

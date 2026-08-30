@@ -73,62 +73,53 @@ func formatContentKinds(kinds []llm.ContentKind) string {
 // for the analogous membership check SetModel performs.
 const modelSwitchEnumerationTimeout = 8 * time.Second
 
-// resolveModelSwitchTarget fetches the target instance's live model list ONCE
-// and reuses it for both metadata fill (WithLiveModelInfo) and membership
-// validation (validateModelSwitchMembership), rather than issuing two
-// independent ListModels calls to the same instance for the same switch. A
-// second call would double the network latency/timeout budget per switch and
-// open a TOCTOU window where the provider's model list could change between
-// the metadata-fill call and the membership-check call, letting the two
-// disagree about availability.
+// resolveModelSwitchTarget lists the target instance ONCE and reuses the
+// listing for both metadata fill (WithResolved) and membership validation
+// (validateModelSwitchMembership), rather than issuing two independent listing
+// calls to the same instance for the same switch. A second call would double
+// the network latency/timeout budget per switch and open a TOCTOU window where
+// the provider's model list could change between the metadata-fill call and
+// the membership-check call, letting the two disagree about availability.
 func resolveModelSwitchTarget(client *llm.Client, profile *provider.Profile) (*provider.Profile, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), modelSwitchEnumerationTimeout)
 	defer cancel()
 	filled, enumeration := fillLiveModelMetadata(ctx, client, profile)
 	if enumeration.err != nil {
-		// Fail open unconditionally: a non-enumerable instance (adapter
-		// doesn't implement ModelLister) and any enumeration failure
-		// (timeout, auth error, etc.) both accept the switch, with no live
-		// metadata to fill.
+		// Fail open unconditionally: an instance that cannot be listed at all
+		// and any listing failure (timeout, auth error, etc.) both accept the
+		// switch, with no live metadata to fill.
 		return filled, nil
 	}
-	if err := validateModelSwitchMembership(client, filled, enumeration.models); err != nil {
+	if err := validateModelSwitchMembership(client, filled, enumeration.listing); err != nil {
 		return filled, err
 	}
 	return filled, nil
 }
 
-// validateModelSwitchMembership mirrors the launch policy's live-enumeration +
-// catalog-visibility model membership check
-// (cmd/evener/internal/launchcheck/launchcheck.go's validateLaunchCheckModel,
-// cmd/evener-hub/app_models.go's launchProviderAllowsUnreportedModels), with one
-// amendment per spec: a switch fails open (accepts) on ANY enumeration error
-// class — not just launchcheck's message allowlist — so dead credentials
-// never block a switch (those two files are cmd-internal and not importable
-// from agent, so the policy is mirrored here rather than shared). The model
-// list is supplied by the caller (resolveModelSwitchTarget), which has
-// already fetched it once for metadata fill; fail-open-on-enumeration-error
-// is handled there, before this is called.
-func validateModelSwitchMembership(client *llm.Client, profile *provider.Profile, models []llm.ModelInfo) error {
+// validateModelSwitchMembership is the switch-time membership policy. The
+// client settles servability first: a reference the registry refuses outright
+// (spec §7.3 — an id off the Codex allowlist is the only such case) reports
+// the resolver's own error. Everything else is checked against the listing the
+// caller already fetched (resolveModelSwitchTarget), and only when that listing
+// is live: a registry-only listing is not evidence of absence. The listing's
+// rows are already filtered by the §5 visibility rule, so no second visibility
+// pass runs here; fail-open-on-listing-error is handled by the caller, before
+// this is called.
+func validateModelSwitchMembership(client *llm.Client, profile *provider.Profile, listing llm.ModelListing) error {
 	if client == nil || profile == nil {
 		return nil
 	}
-	if err := client.ValidateModelCompatibility(profile.ID(), profile.Model()); err != nil {
+	if !client.CanServe(profile.ID(), profile.Model()) {
+		_, err := client.Resolve(profile.ID() + "/" + profile.Model())
 		return err
 	}
-	tag := client.BehaviorTagOf(profile.ID())
-	cat := llm.EmbeddedModelCatalog()
-	for _, m := range models {
-		if m.ID == profile.Model() && modelSwitchVisible(tag, m, cat) {
-			return nil
-		}
+	if !listing.Live {
+		return nil // registry-only listing: every id resolves (spec §7.3, §8.1)
 	}
-	if strings.EqualFold(strings.TrimSpace(tag), "openrouter-anthropic") {
-		// Behavior-tag unreported-models allowance: openrouter-anthropic's
-		// enumerated set is not the source of truth for what it can serve.
+	if _, ok := liveModelFor(listing.Models, profile.Model()); ok {
 		return nil
 	}
-	return fmt.Errorf("model %s is not available from instance %s (available: %s)", profile.Model(), profile.ID(), formatModelAlternatives(models, tag, cat))
+	return fmt.Errorf("model %s is not available from instance %s (available: %s)", profile.Model(), profile.ID(), formatModelAlternatives(listing.Models))
 }
 
 // maxModelAlternatives caps how many live-list alternatives
@@ -136,19 +127,18 @@ func validateModelSwitchMembership(client *llm.Client, profile *provider.Profile
 // catalog doesn't blow up an error message.
 const maxModelAlternatives = 20
 
-// formatModelAlternatives renders the visible (modelSwitchVisible), sorted,
-// deduplicated model IDs from models as a comma-separated list for a
-// not-a-member error, capped at maxModelAlternatives with a "+N more" suffix
-// when there are more.
-func formatModelAlternatives(models []llm.ModelInfo, tag string, cat *llm.ModelCatalog) string {
+// formatModelAlternatives renders the sorted, deduplicated model IDs from a
+// listing as a comma-separated list for a not-a-member error, capped at
+// maxModelAlternatives with a "+N more" suffix when there are more.
+func formatModelAlternatives(models []registry.Resolved) string {
 	seen := make(map[string]bool, len(models))
 	var ids []string
-	for _, m := range models {
-		if !modelSwitchVisible(tag, m, cat) || seen[m.ID] {
+	for _, row := range models {
+		if seen[row.ModelID] {
 			continue
 		}
-		seen[m.ID] = true
-		ids = append(ids, m.ID)
+		seen[row.ModelID] = true
+		ids = append(ids, row.ModelID)
 	}
 	sort.Strings(ids)
 	if len(ids) == 0 {
@@ -159,13 +149,4 @@ func formatModelAlternatives(models []llm.ModelInfo, tag string, cat *llm.ModelC
 		return fmt.Sprintf("%s, +%d more", strings.Join(ids[:maxModelAlternatives], ", "), extra)
 	}
 	return strings.Join(ids, ", ")
-}
-
-// modelSwitchVisible delegates to the shared llm.ModelCatalog.VisibleLiveModel
-// rule so the in-session model-switch path, the launch-check path, and the hub
-// model-list path share one visibility rule and cannot drift. See
-// VisibleLiveModel for the live-API-first tool-support resolution this
-// implements.
-func modelSwitchVisible(behaviorTag string, live llm.ModelInfo, cat *llm.ModelCatalog) bool {
-	return cat.VisibleLiveModel(behaviorTag, live)
 }

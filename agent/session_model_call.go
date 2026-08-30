@@ -968,30 +968,13 @@ func (s *Session) callModelWithFallback(ctx context.Context, profile *provider.P
 			fbReq.Model = fbProfile.Model()
 			fbReq.Provider = fbProfile.ID()
 			if origEffort != "" && fbProfile.SupportsReasoning() {
-				// Clamp to the FALLBACK model's levels. WithModel keeps the primary
-				// profile's effort levels for some providers (openai/anthropic), so
-				// consult the catalog for the fallback model rather than trusting
-				// fbProfile's possibly-stale set. LookupModelInfo canonicalizes the
-				// "[1m]" suffix, a provider namespace ("anthropic/…" from
-				// openrouter-anthropic), and dated snapshots, so a qualified or
-				// dated fallback still resolves real levels.
+				// Clamp to the FALLBACK model's own levels: the resolver hands
+				// back a profile carrying the registry's ladder for that model.
 				//
 				// Gated on SupportsReasoning so a fallback explicitly declared
 				// non-reasoning never gets reasoning_effort on the wire (see the
 				// same guard on the primary path above).
 				fbLevels := fbProfile.ReasoningEffortLevels()
-				// Explicit providers.toml thinking_levels / reasoning config is
-				// authoritative, and ollama's local model names never resolve
-				// against the upstream catalog — only consult it when the
-				// profile's levels were derived (and might be stale
-				// primary-model state).
-				if fbProfile.CatalogEffortFallbackEligible() {
-					if cat := llm.EmbeddedModelCatalog(); cat != nil {
-						if mi := cat.LookupModelInfo(fbProfile.Model()); mi != nil && len(mi.ReasoningEffortLevels) > 0 {
-							fbLevels = mi.ReasoningEffortLevels
-						}
-					}
-				}
 				clamped := llm.ClampReasoningEffort(origEffort, fbLevels)
 				fbReq.ReasoningEffort = &clamped
 			} else {

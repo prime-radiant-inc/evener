@@ -16,6 +16,7 @@ import (
 	"primeradiant.com/evener/agent/plugin"
 	"primeradiant.com/evener/agent/skill"
 	"primeradiant.com/evener/llm"
+	"primeradiant.com/evener/llm/registry"
 )
 
 func TestToolRegistry_Restrict(t *testing.T) {
@@ -221,13 +222,13 @@ func TestSpawnAgent_PluginAgentType_Model(t *testing.T) {
 				},
 			}
 			if tc.name == "override" {
-				c.Register(&fakeEnumerableAdapter{
-					name: "openai", steps: steps,
-					models: []llm.ModelInfo{
-						{ID: "gpt-5.2"},
-						{ID: "gpt-4.1-nano"},
-					},
-				})
+				lister := newFakeEnumerableAdapter("openai", "gpt-5.2", "gpt-4.1-nano")
+				lister.steps = steps
+				// gpt-4.1-nano is a catalog row of the openai provider, so the
+				// registry can name an instance that serves it.
+				c = registryClient(t, map[string]registry.Provider{
+					"openai": {Base: "openai", APIKey: "k"},
+				}, lister)
 			} else {
 				c.Register(&fakeAdapter{name: "openai", steps: steps})
 			}
@@ -275,10 +276,7 @@ func TestSpawnAgent_UnavailablePluginModelUsesExplicitFallback(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
 	c := llm.NewClient()
-	adapter := &fakeEnumerableAdapter{
-		name:   "kimi-anthropic-api",
-		models: []llm.ModelInfo{{ID: "k3"}},
-	}
+	adapter := newFakeEnumerableAdapter("kimi-anthropic-api", "k3")
 	c.Register(adapter)
 
 	sess, err := NewSession(
@@ -348,25 +346,23 @@ drained:
 	if len(warnings) != 1 {
 		t.Fatalf("buffered warnings = %d, want 1: %+v", len(warnings), warnings)
 	}
-	for _, text := range []string{"my-plugin", agentType, "sonnet", "cross-provider", "kimi-anthropic-api"} {
+	for _, text := range []string{"my-plugin", agentType, "sonnet", "unavailable", "kimi-anthropic-api"} {
 		if !strings.Contains(warnings[0].Message, text) {
 			t.Errorf("warning %q does not contain %q", warnings[0].Message, text)
 		}
 	}
 }
 
-func TestSpawnAgent_AvailablePluginAliasWins(t *testing.T) {
+func TestSpawnAgent_AvailablePluginModelWins(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
-	c := llm.NewClient()
-	adapter := &fakeEnumerableAdapter{
-		name: "anthropic",
-		models: []llm.ModelInfo{
-			{ID: "claude-opus-4-6"},
-			{ID: "claude-sonnet-4-6"},
-		},
-	}
-	c.Register(adapter)
+	adapter := newFakeEnumerableAdapter("anthropic", "claude-opus-4-6", "claude-sonnet-4-6")
+	c := registryClient(t, map[string]registry.Provider{
+		"anthropic": {Base: "anthropic", APIKey: "k", Models: map[string]registry.Model{
+			"claude-opus-4-6":   {},
+			"claude-sonnet-4-6": {},
+		}},
+	}, adapter)
 
 	sess, err := NewSession(
 		c,
@@ -383,7 +379,7 @@ func TestSpawnAgent_AvailablePluginAliasWins(t *testing.T) {
 	sess.pluginAgents = map[string]plugin.Agent{
 		agentType: {
 			Name:         "reviewer",
-			Model:        "sonnet",
+			Model:        "claude-sonnet-4-6",
 			SystemPrompt: "Review the code.",
 			PluginName:   "my-plugin",
 		},

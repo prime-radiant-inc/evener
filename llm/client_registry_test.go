@@ -266,7 +266,10 @@ func TestClientModelsAppliesLiveListingAndHidesToolLessRows(t *testing.T) {
 		// layer's verdict hides a row (spec §5, §7.5), so this one stays.
 		"work": {Base: "openai", Protocol: registry.ProtocolOpenAIChat, Surface: registry.SurfaceGeneric, APIKey: "work-key",
 			Transport: registry.Transport{BaseURL: srv.URL},
-			Models:    map[string]registry.Model{"catalog-no-tools": {Caps: registry.Caps{Tools: new(false)}}}},
+			Models: map[string]registry.Model{
+				"catalog-no-tools": {Caps: registry.Caps{Tools: new(false)}},
+				"hidden-row":       {Hidden: true},
+			}},
 	})
 	c := llm.NewClient(llm.WithRegistry(r))
 	listing, err := c.Models(context.Background(), "work")
@@ -288,6 +291,9 @@ func TestClientModelsAppliesLiveListingAndHidesToolLessRows(t *testing.T) {
 	}
 	if !ids["catalog-no-tools"] {
 		t.Fatalf("a catalog row's tools = false is not the live verdict and must not hide it: %v", ids)
+	}
+	if ids["hidden-row"] {
+		t.Fatalf("a hidden row is never listed (spec §5): %v", ids)
 	}
 	res, err := c.Resolve("work/tools-ok")
 	if err != nil || res.Provenance["model"] != "live" {

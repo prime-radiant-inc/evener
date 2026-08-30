@@ -16,6 +16,7 @@ import (
 	"primeradiant.com/evener/agent/schema"
 	taskpkg "primeradiant.com/evener/agent/task"
 	"primeradiant.com/evener/llm"
+	"primeradiant.com/evener/llm/registry"
 )
 
 func FuzzResponsesContinuationEligibility(f *testing.F) {
@@ -147,17 +148,17 @@ func FuzzSessionMetadataHelpers(f *testing.F) {
 			t.Fatal("session namer accepted a nil client")
 		}
 
-		models := []llm.ModelInfo{{ID: alternate, DisplayName: "alternate"}, {ID: model, DisplayName: "exact"}}
-		info, ok := liveModelInfoFor(models, model)
+		rows := []registry.Resolved{{ModelID: alternate, WireID: "alternate"}, {ModelID: model, WireID: "exact"}}
+		row, ok := liveModelFor(rows, model)
 		if strings.TrimSpace(model) == "" {
 			if ok {
-				t.Fatalf("empty model unexpectedly matched %+v", info)
+				t.Fatalf("empty model unexpectedly matched %+v", row)
 			}
-		} else if !ok || info.ID != model {
-			t.Fatalf("exact model match lost: got=(%+v,%v), model=%q", info, ok, model)
+		} else if !ok || row.ModelID != model {
+			t.Fatalf("exact model match lost: got=(%+v,%v), model=%q", row, ok, model)
 		}
-		if info, ok := liveModelInfoFor([]llm.ModelInfo{{ID: " normalized "}}, "normalized"); !ok || info.ID != " normalized " {
-			t.Fatalf("trimmed exact model match lost: (%+v,%v)", info, ok)
+		if row, ok := liveModelFor([]registry.Resolved{{ModelID: " normalized "}}, "normalized"); !ok || row.ModelID != " normalized " {
+			t.Fatalf("trimmed exact model match lost: (%+v,%v)", row, ok)
 		}
 		if resolveLiveModelProfile(context.Background(), nil, nil) != nil {
 			t.Fatal("nil live-model profile must remain nil")

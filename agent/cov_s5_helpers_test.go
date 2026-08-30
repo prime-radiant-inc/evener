@@ -7,6 +7,7 @@ import (
 
 	"primeradiant.com/evener/agent/events"
 	"primeradiant.com/evener/llm"
+	"primeradiant.com/evener/llm/registry"
 )
 
 func TestS5Cov_SummarizeTaskPrompt(t *testing.T) {
@@ -53,31 +54,31 @@ func TestS5Cov_ToolDefinitionHelpers(t *testing.T) {
 	}
 }
 
-func TestS5Cov_LiveModelInfoFor(t *testing.T) {
-	models := []llm.ModelInfo{{ID: "gpt-5"}, {ID: "Claude-X"}}
-	if _, ok := liveModelInfoFor(models, ""); ok {
+func TestS5Cov_LiveModelFor(t *testing.T) {
+	models := []registry.Resolved{{ModelID: "gpt-5"}, {ModelID: "Claude-X"}}
+	if _, ok := liveModelFor(models, ""); ok {
 		t.Error("empty model should not match")
 	}
-	if info, ok := liveModelInfoFor(models, "gpt-5"); !ok || info.ID != "gpt-5" {
-		t.Errorf("exact match failed: %+v %v", info, ok)
+	if row, ok := liveModelFor(models, "gpt-5"); !ok || row.ModelID != "gpt-5" {
+		t.Errorf("exact match failed: %+v %v", row, ok)
 	}
-	if info, ok := liveModelInfoFor(models, "claude-x"); !ok || info.ID != "Claude-X" {
-		t.Errorf("case-insensitive match failed: %+v %v", info, ok)
+	if row, ok := liveModelFor(models, "claude-x"); !ok || row.ModelID != "Claude-X" {
+		t.Errorf("case-insensitive match failed: %+v %v", row, ok)
 	}
-	if _, ok := liveModelInfoFor(models, "unknown"); ok {
+	if _, ok := liveModelFor(models, "unknown"); ok {
 		t.Error("unknown model should not match")
 	}
 }
 
-func TestLiveModelInfoFor_PrefersExactIDBeforeWhitespaceNormalization(t *testing.T) {
-	models := []llm.ModelInfo{
-		{ID: "gpt-5", DisplayName: "normalized"},
-		{ID: "gpt-5 ", DisplayName: "exact"},
+func TestLiveModelFor_PrefersExactIDBeforeWhitespaceNormalization(t *testing.T) {
+	models := []registry.Resolved{
+		{ModelID: "gpt-5", WireID: "normalized"},
+		{ModelID: "gpt-5 ", WireID: "exact"},
 	}
 
-	info, ok := liveModelInfoFor(models, "gpt-5 ")
-	if !ok || info.DisplayName != "exact" {
-		t.Fatalf("liveModelInfoFor exact match = (%+v, %v), want exact raw ID", info, ok)
+	row, ok := liveModelFor(models, "gpt-5 ")
+	if !ok || row.WireID != "exact" {
+		t.Fatalf("liveModelFor exact match = (%+v, %v), want exact raw ID", row, ok)
 	}
 }
 

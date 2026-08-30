@@ -410,20 +410,20 @@ func resolveVisionRoute(profile *provider.Profile, setting string) (providerName
 	return profile.ID(), setting, false
 }
 
-// visionRouteSupportsReasoning gates reasoning_effort for the vision request:
-// the session route uses the profile's own answer (which may carry live
-// provider metadata); any other route answers from the embedded catalog, and
-// an uncatalogued model gets no effort knob rather than one it may reject.
-func visionRouteSupportsReasoning(profile *provider.Profile, providerName, modelID string) bool {
+// visionRouteReasoning gates reasoning_effort for the vision request and names
+// the levels the fixed vision cap clamps against: the session route uses the
+// profile's own answers (which already carry the registry's facts); any other
+// route resolves through the registry, and a route that does not resolve gets
+// no effort knob rather than one it may reject.
+func (s *Session) visionRouteReasoning(profile *provider.Profile, providerName, modelID string) (bool, []string) {
 	if providerName == profile.ID() && modelID == profile.Model() {
-		return profile.SupportsReasoning()
+		return profile.SupportsReasoning(), profile.ReasoningEffortLevels()
 	}
-	if cat := llm.EmbeddedModelCatalog(); cat != nil {
-		if mi := cat.LookupModelInfo(modelID); mi != nil {
-			return mi.SupportsReasoning
-		}
+	res, err := s.client.Resolve(providerName + "/" + modelID)
+	if err != nil {
+		return false, nil
 	}
-	return false
+	return !res.Caps.ReasoningDisabled(), res.Caps.EffortValues
 }
 
 func (s *Session) describeImageCall(ctx context.Context, r tool.ExecResult) visionSideChannelResult {
@@ -503,15 +503,7 @@ func (s *Session) describeImageCall(ctx context.Context, r tool.ExecResult) visi
 	// cheapest level is above the cap gets that level rather than a value it
 	// would reject. Gate on SupportsReasoning so non-reasoning models never get
 	// reasoning_effort on the wire.
-	if visionRouteSupportsReasoning(profile, routeProvider, routeModel) {
-		levels := profile.ReasoningEffortLevels()
-		if routeProvider != profile.ID() || routeModel != profile.Model() {
-			if cat := llm.EmbeddedModelCatalog(); cat != nil {
-				if mi := cat.LookupModelInfo(routeModel); mi != nil && len(mi.ReasoningEffortLevels) > 0 {
-					levels = mi.ReasoningEffortLevels
-				}
-			}
-		}
+	if supportsReasoning, levels := s.visionRouteReasoning(profile, routeProvider, routeModel); supportsReasoning {
 		effort := llm.ClampReasoningEffort(visionReasoningEffort, levels)
 		req.ReasoningEffort = &effort
 	}

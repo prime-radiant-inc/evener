@@ -13,18 +13,16 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
-
-	"primeradiant.com/evener/llm"
 )
 
 func TestCaptureKeepsSuccessfulChoicesWhenAnotherProviderFails(t *testing.T) {
-	fetch := func(_ context.Context, name string) ([]llm.ModelInfo, error) {
+	fetch := func(_ context.Context, name string) ([]string, error) {
 		if name == "failed" {
 			return nil, errors.New("unavailable")
 		}
-		return []llm.ModelInfo{{ID: "z"}, {ID: "a"}, {ID: "a"}}, nil
+		return []string{"z", "a", "a"}, nil
 	}
-	s := Capture(context.Background(), []string{"failed", "good"}, "", fetch, nil, time.Hour)
+	s := Capture(context.Background(), []string{"failed", "good"}, "", fetch, time.Hour)
 	if s.Complete || len(s.Choices) != 2 || s.Choices[0] != "good/a" || s.Choices[1] != "good/z" {
 		t.Fatalf("snapshot = %#v", s)
 	}
@@ -38,11 +36,11 @@ func TestCaptureStopsAtOneDeterministicDeadline(t *testing.T) {
 	started := make(chan struct{}, 2)
 	done := make(chan Snapshot, 1)
 	go func() {
-		done <- Capture(parent, []string{"first", "second"}, "", func(ctx context.Context, _ string) ([]llm.ModelInfo, error) {
+		done <- Capture(parent, []string{"first", "second"}, "", func(ctx context.Context, _ string) ([]string, error) {
 			started <- struct{}{}
 			<-ctx.Done()
 			return nil, ctx.Err()
-		}, nil, time.Hour)
+		}, time.Hour)
 	}()
 	<-started
 	<-started
@@ -55,18 +53,18 @@ func TestCaptureStopsAtOneDeterministicDeadline(t *testing.T) {
 }
 
 func TestCaptureRejectsUnsafeModelIdentifiers(t *testing.T) {
-	models := []llm.ModelInfo{
-		{ID: "safe"},
-		{ID: " padded "},
-		{ID: "space inside"},
-		{ID: "line\nbreak"},
-		{ID: "bidi\u202eoverride"},
-		{ID: strings.Repeat("x", 257)},
-		{ID: string([]byte{0xff})},
+	models := []string{
+		"safe",
+		" padded ",
+		"space inside",
+		"line\nbreak",
+		"bidi\u202eoverride",
+		strings.Repeat("x", 257),
+		string([]byte{0xff}),
 	}
-	snapshot := Capture(context.Background(), []string{"provider"}, "", func(context.Context, string) ([]llm.ModelInfo, error) {
+	snapshot := Capture(context.Background(), []string{"provider"}, "", func(context.Context, string) ([]string, error) {
 		return models, nil
-	}, nil, time.Second)
+	}, time.Second)
 
 	want := []string{"provider/padded", "provider/safe"}
 	if !slices.Equal(snapshot.Choices, want) {
@@ -80,10 +78,10 @@ func TestCaptureRejectsUnsafeModelIdentifiers(t *testing.T) {
 func TestCaptureRejectsProviderNamesThatCouldExpandThePageEnvelope(t *testing.T) {
 	providers := []string{"safe", "bad&name", `bad"name`, strings.Repeat("x", 65)}
 	var calls atomic.Int32
-	snapshot := Capture(context.Background(), providers, "", func(context.Context, string) ([]llm.ModelInfo, error) {
+	snapshot := Capture(context.Background(), providers, "", func(context.Context, string) ([]string, error) {
 		calls.Add(1)
-		return []llm.ModelInfo{{ID: "model"}}, nil
-	}, nil, time.Second)
+		return []string{"model"}, nil
+	}, time.Second)
 
 	if got := calls.Load(); got != 1 {
 		t.Fatalf("provider fetches = %d, want only the safe provider", got)
@@ -100,10 +98,10 @@ func TestCaptureEnforcesProviderModelAndByteBounds(t *testing.T) {
 			providers[i] = fmt.Sprintf("provider-%02d", len(providers)-1-i)
 		}
 		var calls atomic.Int32
-		snapshot := Capture(context.Background(), providers, "", func(_ context.Context, name string) ([]llm.ModelInfo, error) {
+		snapshot := Capture(context.Background(), providers, "", func(_ context.Context, name string) ([]string, error) {
 			calls.Add(1)
-			return []llm.ModelInfo{{ID: "model"}}, nil
-		}, nil, time.Second)
+			return []string{"model"}, nil
+		}, time.Second)
 		if got := calls.Load(); got != 16 {
 			t.Fatalf("provider fetches = %d, want bounded at 16", got)
 		}
@@ -116,26 +114,26 @@ func TestCaptureEnforcesProviderModelAndByteBounds(t *testing.T) {
 	})
 
 	t.Run("models", func(t *testing.T) {
-		models := make([]llm.ModelInfo, 4097)
+		models := make([]string, 4097)
 		for i := range models {
-			models[i].ID = fmt.Sprintf("model-%04d", i)
+			models[i] = fmt.Sprintf("model-%04d", i)
 		}
-		snapshot := Capture(context.Background(), []string{"provider"}, "", func(context.Context, string) ([]llm.ModelInfo, error) {
+		snapshot := Capture(context.Background(), []string{"provider"}, "", func(context.Context, string) ([]string, error) {
 			return models, nil
-		}, nil, time.Second)
+		}, time.Second)
 		if len(snapshot.Choices) != 4096 || snapshot.Complete || snapshot.Status["provider"].Kind != StatusLimited {
 			t.Fatalf("model-bounded snapshot: choices=%d complete=%v status=%#v", len(snapshot.Choices), snapshot.Complete, snapshot.Status)
 		}
 	})
 
 	t.Run("bytes", func(t *testing.T) {
-		models := make([]llm.ModelInfo, 4096)
+		models := make([]string, 4096)
 		for i := range models {
-			models[i].ID = fmt.Sprintf("%04d-%s", i, strings.Repeat("x", 195))
+			models[i] = fmt.Sprintf("%04d-%s", i, strings.Repeat("x", 195))
 		}
-		snapshot := Capture(context.Background(), []string{"provider"}, "", func(context.Context, string) ([]llm.ModelInfo, error) {
+		snapshot := Capture(context.Background(), []string{"provider"}, "", func(context.Context, string) ([]string, error) {
 			return models, nil
-		}, nil, time.Second)
+		}, time.Second)
 		var capturedBytes int
 		for _, choice := range snapshot.Choices {
 			capturedBytes += len([]byte(choice))
@@ -149,54 +147,62 @@ func TestCaptureEnforcesProviderModelAndByteBounds(t *testing.T) {
 	})
 }
 
-func TestCaptureStopsFilteringAtTheFirstHardBound(t *testing.T) {
-	models := make([]llm.ModelInfo, captureMaxModels+100)
+func TestCaptureStopsAtTheFirstHardBound(t *testing.T) {
+	models := make([]string, captureMaxModels+100)
 	for i := range models {
-		models[i].ID = fmt.Sprintf("model-%04d", i)
+		models[i] = fmt.Sprintf("model-%04d", i)
 	}
-	var visibilityCalls atomic.Int32
-	snapshot := Capture(context.Background(), []string{"provider"}, "", func(context.Context, string) ([]llm.ModelInfo, error) {
+	snapshot := Capture(context.Background(), []string{"provider"}, "", func(context.Context, string) ([]string, error) {
 		return models, nil
-	}, func(string, llm.ModelInfo) bool {
-		visibilityCalls.Add(1)
-		return true
 	}, time.Hour)
 
-	if got := visibilityCalls.Load(); got != captureMaxModels {
-		t.Fatalf("visibility checks = %d, want hard stop at %d", got, captureMaxModels)
-	}
 	if snapshot.Complete || len(snapshot.Choices) != captureMaxModels || snapshot.Status["provider"].Kind != StatusLimited {
 		t.Fatalf("hard-bounded snapshot: choices=%d complete=%v status=%#v", len(snapshot.Choices), snapshot.Complete, snapshot.Status)
+	}
+	if snapshot.Choices[captureMaxModels-1] != "provider/model-4095" {
+		t.Fatalf("hard bound was not deterministic: last=%q", snapshot.Choices[captureMaxModels-1])
 	}
 }
 
 func TestBoundedModelIDsRejectsCanceledResults(t *testing.T) {
-	models := []llm.ModelInfo{{ID: "first"}, {ID: "second"}}
-	t.Run("before filtering", func(t *testing.T) {
+	models := []string{"first", "second"}
+	t.Run("before the first id", func(t *testing.T) {
 		ctx, cancel := context.WithCancel(context.Background())
 		cancel()
-		var visibilityCalls int
-		ids, limited, err := boundedModelIDs(ctx, "provider", models, func(string, llm.ModelInfo) bool {
-			visibilityCalls++
-			return true
-		})
-		if !errors.Is(err, context.Canceled) || ids != nil || limited || visibilityCalls != 0 {
-			t.Fatalf("canceled result = ids:%q limited:%v calls:%d err:%v", ids, limited, visibilityCalls, err)
+		ids, limited, err := boundedModelIDs(ctx, "provider", models)
+		if !errors.Is(err, context.Canceled) || ids != nil || limited {
+			t.Fatalf("canceled result = ids:%q limited:%v err:%v", ids, limited, err)
 		}
 	})
 
-	t.Run("during filtering", func(t *testing.T) {
-		ctx, cancel := context.WithCancel(context.Background())
-		var visibilityCalls int
-		ids, limited, err := boundedModelIDs(ctx, "provider", models, func(string, llm.ModelInfo) bool {
-			visibilityCalls++
-			cancel()
-			return true
-		})
-		if !errors.Is(err, context.Canceled) || ids != nil || limited || visibilityCalls != 1 {
-			t.Fatalf("mid-filter cancellation = ids:%q limited:%v calls:%d err:%v", ids, limited, visibilityCalls, err)
+	t.Run("between ids", func(t *testing.T) {
+		// Cancellation observed after the first id was accepted: the loop
+		// re-checks the context on every iteration and discards the partial
+		// result rather than reporting a truncated list as complete.
+		ctx := &cancelAfterFirstCheckContext{}
+		ids, limited, err := boundedModelIDs(ctx, "provider", models)
+		if !errors.Is(err, context.Canceled) || ids != nil || limited || ctx.checks != 2 {
+			t.Fatalf("mid-loop cancellation = ids:%q limited:%v checks:%d err:%v", ids, limited, ctx.checks, err)
 		}
 	})
+}
+
+// cancelAfterFirstCheckContext reports no error on its first Err call and
+// context.Canceled on every later one, standing in for a context canceled
+// while boundedModelIDs walks its ids.
+type cancelAfterFirstCheckContext struct {
+	checks int
+}
+
+func (c *cancelAfterFirstCheckContext) Deadline() (time.Time, bool) { return time.Time{}, false }
+func (c *cancelAfterFirstCheckContext) Done() <-chan struct{}       { return nil }
+func (c *cancelAfterFirstCheckContext) Value(any) any               { return nil }
+func (c *cancelAfterFirstCheckContext) Err() error {
+	c.checks++
+	if c.checks == 1 {
+		return nil
+	}
+	return context.Canceled
 }
 
 func TestCaptureProviderBoundKeepsPublicPageEnvelopeUsable(t *testing.T) {
@@ -204,9 +210,9 @@ func TestCaptureProviderBoundKeepsPublicPageEnvelopeUsable(t *testing.T) {
 	for i := range providers {
 		providers[i] = fmt.Sprintf("provider-%02d-%s", i, strings.Repeat("x", 52))
 	}
-	snapshot := Capture(context.Background(), providers, "", func(context.Context, string) ([]llm.ModelInfo, error) {
-		return []llm.ModelInfo{{ID: "model"}}, nil
-	}, nil, time.Second)
+	snapshot := Capture(context.Background(), providers, "", func(context.Context, string) ([]string, error) {
+		return []string{"model"}, nil
+	}, time.Second)
 
 	page, err := snapshot.Page("", DefaultPageMaxCount, DefaultPageMaxBytes)
 	if err != nil {

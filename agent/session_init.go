@@ -483,14 +483,21 @@ func (s *Session) captureModelAvailability(selectedModels liveModelEnumeration) 
 	if len(names) == 0 {
 		return
 	}
-	catalog := llm.EmbeddedModelCatalog()
-	snapshot := modelavailability.Capture(s.sessionCtx, names, s.profile.ID(), func(ctx context.Context, name string) ([]llm.ModelInfo, error) {
-		if name == s.profile.ID() {
-			return selectedModels.models, selectedModels.err
+	snapshot := modelavailability.Capture(s.sessionCtx, names, s.profile.ID(), func(ctx context.Context, name string) ([]string, error) {
+		// The session's own instance was listed during startup; reuse that
+		// result rather than asking the provider a second time.
+		listing, err := selectedModels.listing, selectedModels.err
+		if name != s.profile.ID() {
+			listing, err = s.client.Models(ctx, name)
 		}
-		return s.client.ListModels(ctx, name)
-	}, func(name string, model llm.ModelInfo) bool {
-		return modelSwitchVisible(s.client.BehaviorTagOf(name), model, catalog)
+		if err != nil {
+			return nil, err
+		}
+		ids := make([]string, 0, len(listing.Models))
+		for _, m := range listing.Models {
+			ids = append(ids, m.ModelID)
+		}
+		return ids, nil
 	}, liveModelMetadataTimeout)
 	s.modelSnapshot = &snapshot
 	if text, ok := inlineModelSnapshot(snapshot); ok {

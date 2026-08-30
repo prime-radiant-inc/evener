@@ -160,29 +160,30 @@ func TestSetModel_CrashRestore_SwitchedModelSurvives(t *testing.T) {
 	}
 }
 
-// fakeEnumerableAdapter is a fakeAdapter that implements llm.ModelLister with
-// a fixed model set, standing in for a provider instance whose models can be
-// live-enumerated (mirrors an API-key-backed instance in production).
+// fakeEnumerableAdapter is a fakeAdapter that serves a fixed live listing,
+// standing in for a provider instance whose models can be live-enumerated
+// (mirrors an API-key-backed instance in production).
 type fakeEnumerableAdapter struct {
 	fakeAdapter
-	models []llm.ModelInfo
+	models []registry.Model
 }
 
-func (a *fakeEnumerableAdapter) ListModels(ctx context.Context) ([]llm.ModelInfo, error) {
+func (a *fakeEnumerableAdapter) LiveModels(ctx context.Context) ([]registry.Model, error) {
+	_ = ctx
 	return a.models, nil
 }
 
-// fakeUnenumerableAdapter is a fakeAdapter that fails model enumeration with
-// an arbitrary error, standing in for a non-enumerable (e.g. OAuth-backed)
-// instance whose ListModels either isn't implemented or fails for any reason.
-// Per spec, the switch path fails open unconditionally on any enumeration
-// error class.
+// fakeUnenumerableAdapter is a fakeAdapter whose listing fails with an
+// arbitrary error, standing in for an instance (e.g. OAuth-backed) that
+// cannot be listed for any reason. Per spec, the switch path fails open
+// unconditionally on any listing error class.
 type fakeUnenumerableAdapter struct {
 	fakeAdapter
 	err error
 }
 
-func (a *fakeUnenumerableAdapter) ListModels(ctx context.Context) ([]llm.ModelInfo, error) {
+func (a *fakeUnenumerableAdapter) LiveModels(ctx context.Context) ([]registry.Model, error) {
+	_ = ctx
 	if a.err != nil {
 		return nil, a.err
 	}
@@ -198,10 +199,7 @@ func TestSetModel_UnknownModelOnEnumerableInstance_Rejected(t *testing.T) {
 	sess := newSession(t,
 		withProfile(NewOpenAIProfile("gpt-5.4")),
 		withAdapter(&fakeAdapter{name: "openai"}),
-		withAdapter(&fakeEnumerableAdapter{
-			name:   "anthropic",
-			models: []llm.ModelInfo{{ID: "claude-opus-4-6", Provider: "anthropic"}},
-		}),
+		withAdapter(newFakeEnumerableAdapter("anthropic", "claude-opus-4-6")),
 		withConfig(SessionConfig{
 			NoProjectPrompts: true,
 			ResolveProfile:   testResolver,
@@ -221,15 +219,15 @@ func TestSetModel_UnknownModelOnEnumerableInstance_Rejected(t *testing.T) {
 	}
 }
 
-// TestSetModel_NonEnumerableInstance_AcceptsUnlistedModel verifies (b): a
-// non-enumerable instance (ListModels unimplemented) accepts a model the
-// session has never seen enumerated.
+// TestSetModel_NonEnumerableInstance_AcceptsUnlistedModel verifies (b): an
+// instance that serves no listing accepts a model the session has never seen
+// enumerated.
 func TestSetModel_NonEnumerableInstance_AcceptsUnlistedModel(t *testing.T) {
 	t.Parallel()
 	sess := newSession(t,
 		withProfile(NewOpenAIProfile("gpt-5.4")),
 		withAdapter(&fakeAdapter{name: "openai"}),
-		withAdapter(&fakeAdapter{name: "anthropic"}), // no ListModels: non-enumerable
+		withAdapter(&fakeAdapter{name: "anthropic"}), // no scripted listing: non-enumerable
 		withConfig(SessionConfig{
 			NoProjectPrompts: true,
 			ResolveProfile:   testResolver,
@@ -245,10 +243,9 @@ func TestSetModel_NonEnumerableInstance_AcceptsUnlistedModel(t *testing.T) {
 	}
 }
 
-// TestSetModel_EnumerationFailure_FailsOpenUnconditionally verifies (b): an
-// enumeration failure of any error class (not just launchcheck's allowlisted
-// messages) fails open and accepts the switch. This keeps the dead-credentials
-// failure mode from blocking a switch.
+// TestSetModel_EnumerationFailure_FailsOpenUnconditionally verifies (b): a
+// listing failure of any error class fails open and accepts the switch. This
+// keeps the dead-credentials failure mode from blocking a switch.
 func TestSetModel_EnumerationFailure_FailsOpenUnconditionally(t *testing.T) {
 	t.Parallel()
 	sess := newSession(t,
@@ -270,62 +267,59 @@ func TestSetModel_EnumerationFailure_FailsOpenUnconditionally(t *testing.T) {
 	}
 }
 
-// fakeCompatValidatingAdapter is a fakeEnumerableAdapter that also
-// implements llm.ModelCompatibilityValidator, standing in for a
-// Codex-backend-flavored instance whose static model-support table rejects
-// a model independent of what its (scripted, for test purposes) live list
-// reports.
-type fakeCompatValidatingAdapter struct {
-	fakeEnumerableAdapter
-	rejectModel string
-	err         error
-}
-
-func (a *fakeCompatValidatingAdapter) ValidateModel(model string) error {
-	if model == a.rejectModel {
-		return a.err
+// newFakeEnumerableAdapter serves a live listing of the given ids under name.
+func newFakeEnumerableAdapter(name string, ids ...string) *fakeEnumerableAdapter {
+	models := make([]registry.Model, len(ids))
+	for i, id := range ids {
+		models[i] = registry.Model{ID: id}
 	}
-	return nil
+	a := &fakeEnumerableAdapter{models: models}
+	a.name = name
+	return a
 }
 
-// TestSetModel_StaticCompatibilityRejection_RunsBeforeLiveEnumeration
-// verifies that validateModelSwitchMembership's ModelCompatibilityValidator
-// check runs first and independently of live-list enumeration: even when
-// the scripted live list (incorrectly, for test purposes) includes the
-// requested model, a static rejection still blocks the switch and names the
-// supported slugs.
-func TestSetModel_StaticCompatibilityRejection_RunsBeforeLiveEnumeration(t *testing.T) {
+// TestValidateModelSwitchMembership_ServabilityRunsBeforeMembership pins spec
+// §7.3: a reference the registry refuses outright — the Codex transport is the
+// only place an id can fail to resolve — is refused with the resolver's own
+// error naming the allowlist, even when the listing (incorrectly, for test
+// purposes) carries the requested model. An allowlisted id on the same
+// instance still passes.
+func TestValidateModelSwitchMembership_ServabilityRunsBeforeMembership(t *testing.T) {
 	t.Parallel()
-	sess := newSession(t,
-		withProfile(NewOpenAIProfile("gpt-5.4")),
-		withAdapter(&fakeAdapter{name: "openai"}),
-		withAdapter(&fakeCompatValidatingAdapter{
-			name: "anthropic",
-			// The live list includes the model that will be statically
-			// rejected below, proving the static check isn't merely
-			// redundant with a correctly-scripted live list.
-			models:      []llm.ModelInfo{{ID: "gpt-5.6-mini", Provider: "anthropic"}},
-			rejectModel: "gpt-5.6-mini",
-			err:         errors.New("model gpt-5.6-mini is not supported (supported: gpt-5.6-luna, gpt-5.6-sol, gpt-5.6-terra)"),
-		}),
-		withConfig(SessionConfig{
-			NoProjectPrompts: true,
-			ResolveProfile:   testResolver,
-			testOnly:         testConfig{skipGitSnapshot: true},
-		}),
-	)
+	client := llm.NewClient()
+	listing := llm.ModelListing{Live: true, Models: []registry.Resolved{
+		{ModelID: "gpt-5.6-mini"},
+		{ModelID: "gpt-5.6"},
+	}}
 
-	err := sess.SetModel("anthropic/gpt-5.6-mini")
+	err := validateModelSwitchMembership(client, WithProviderID(NewOpenAIProfile("gpt-5.6-mini"), "openai-codex"), listing)
 	if err == nil {
-		t.Fatal("SetModel with statically-rejected model = nil error, want non-nil")
+		t.Fatal("a model off the Codex allowlist = nil error, want non-nil")
 	}
 	if !strings.Contains(err.Error(), "gpt-5.6-mini") {
 		t.Fatalf("error = %q, want it to name gpt-5.6-mini", err.Error())
 	}
 	for _, want := range []string{"gpt-5.6-luna", "gpt-5.6-sol", "gpt-5.6-terra"} {
 		if !strings.Contains(err.Error(), want) {
-			t.Fatalf("error = %q, want it to name supported slug %q", err.Error(), want)
+			t.Fatalf("error = %q, want it to name allowlisted slug %q", err.Error(), want)
 		}
+	}
+
+	if err := validateModelSwitchMembership(client, WithProviderID(NewOpenAIProfile("gpt-5.6"), "openai-codex"), listing); err != nil {
+		t.Fatalf("an allowlisted Codex model must pass: %v", err)
+	}
+}
+
+// TestValidateModelSwitchMembership_RegistryOnlyListingAcceptsEveryID pins
+// spec §8.1: a listing the instance could not fetch live is not evidence of
+// absence, so membership is not enforced against it.
+func TestValidateModelSwitchMembership_RegistryOnlyListingAcceptsEveryID(t *testing.T) {
+	t.Parallel()
+	client := llm.NewClient()
+	client.Register(&fakeAdapter{name: "openai"})
+	listing := llm.ModelListing{Models: []registry.Resolved{{ModelID: "gpt-5.5"}}}
+	if err := validateModelSwitchMembership(client, NewOpenAIProfile("gpt-9.9-unlisted"), listing); err != nil {
+		t.Fatalf("registry-only listing must accept any resolvable id: %v", err)
 	}
 }
 
@@ -603,10 +597,7 @@ func TestSetModel_RejectionLeavesProfileMetaAndHistoryUnchanged(t *testing.T) {
 		c := llm.NewClient()
 		c.Register(&fakeAdapter{name: "openai"})
 		c.Register(&fakeAdapter{name: "anthropic"})
-		c.Register(&fakeEnumerableAdapter{
-			name:   "google",
-			models: []llm.ModelInfo{{ID: "gemini-3-pro", Provider: "google"}},
-		})
+		c.Register(newFakeEnumerableAdapter("google", "gemini-3-pro"))
 		sess, err := NewSession(c, NewOpenAIProfile("gpt-5.4"), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{
 			NoProjectPrompts: true,
 			StateDir:         dir,

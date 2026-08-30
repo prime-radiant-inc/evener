@@ -9,7 +9,7 @@ import (
 	"primeradiant.com/evener/agent/events"
 	"primeradiant.com/evener/agent/plugin"
 	"primeradiant.com/evener/agent/provider"
-	"primeradiant.com/evener/llm"
+	"primeradiant.com/evener/llm/registry"
 )
 
 type subagentModelSelection struct {
@@ -128,65 +128,57 @@ func (s *Session) resolvePluginAgentModel(
 	base *provider.Profile,
 	requested string,
 ) pluginAgentModelResolution {
-	candidateRef, reason := resolvePluginAgentCatalogRef(
-		base,
-		llm.EmbeddedModelCatalog(),
-		requested,
-	)
+	ref, reason := resolvePluginAgentRef(s.client.Registry(), base, requested)
 	if reason != "" {
 		return pluginAgentModelResolution{reason: reason}
 	}
-
-	candidate := base.WithModel(candidateRef)
+	candidate, crossInstance, err := s.resolveProfileForRef(base, ref)
+	if err != nil {
+		return pluginAgentModelResolution{reason: "unresolvable"}
+	}
+	if crossInstance {
+		candidate = candidate.WithCommunicateOverridesFrom(base)
+	}
 	if candidate.ID() == base.ID() && candidate.Model() == base.Model() {
 		return pluginAgentModelResolution{profile: base}
 	}
 
 	listCtx, cancel := context.WithTimeout(ctx, liveModelMetadataTimeout)
 	defer cancel()
-	models, err := s.client.ListModels(listCtx, candidate.ID())
+	listing, err := s.client.Models(listCtx, candidate.ID())
 	if err != nil {
 		return pluginAgentModelResolution{reason: "unverified"}
 	}
-	advertisedInfo, ok := liveModelInfoFor(models, candidate.Model())
-	if !ok {
-		return pluginAgentModelResolution{reason: "unavailable"}
+	if listing.Live {
+		if _, ok := liveModelFor(listing.Models, candidate.Model()); !ok {
+			return pluginAgentModelResolution{reason: "unavailable"}
+		}
 	}
-	return pluginAgentModelResolution{profile: candidate.WithAdvertisedModelInfo(advertisedInfo)}
+	if res, err := s.client.Resolve(candidate.ID() + "/" + candidate.Model()); err == nil {
+		candidate = candidate.WithResolved(res)
+	}
+	return pluginAgentModelResolution{profile: candidate}
 }
 
-func resolvePluginAgentCatalogRef(
-	base *provider.Profile,
-	catalog *llm.ModelCatalog,
-	requested string,
-) (candidate string, reason string) {
+// resolvePluginAgentRef is spec §7.5's plugin-agent rule: instance/model
+// resolves directly; a bare id resolves to the session's instance when it
+// serves the id, else to the highest-ranked serving instance (Registry.FindModel),
+// else it is unavailable.
+func resolvePluginAgentRef(r *registry.Registry, base *provider.Profile, requested string) (ref, reason string) {
 	requested = strings.TrimSpace(requested)
-	if base.CrossProviderRef(requested) {
-		return "", "cross-provider"
-	}
-	if catalog == nil {
-		return requested, ""
-	}
-	for _, model := range catalog.Models {
-		if model.ID == requested {
+	if inst, _, ok := strings.Cut(requested, "/"); ok {
+		if _, known := r.Instance(inst); known {
 			return requested, ""
 		}
 	}
-
-	target, ambiguous := catalog.ResolveAlias(requested)
-	if ambiguous {
-		return "", "ambiguous"
+	refs := r.FindModel(requested)
+	for _, candidate := range refs {
+		if candidate.Instance == base.ID() {
+			return requested, ""
+		}
 	}
-	if target == nil {
-		return requested, ""
+	if len(refs) > 0 {
+		return refs[0].String(), ""
 	}
-	if strings.EqualFold(target.Provider, base.BehaviorTag()) {
-		return target.ID, ""
-	}
-
-	candidate = target.Provider + "/" + target.ID
-	if base.CrossProviderRef(candidate) {
-		return "", "cross-provider"
-	}
-	return candidate, ""
+	return "", "unavailable"
 }
