@@ -1567,9 +1567,23 @@ func (s *Server) handleAppThreadClear(ctx context.Context, params appwire.Thread
 		ExpectedInstanceID: params.ExpectedInstanceID,
 		State:              threadClearReserved,
 	}
+	// A new reservation supersedes every older record for the same stable ref:
+	// the instance those records expected (or installed) is being replaced, so
+	// none of them can be a live client's retry anymore. This bounds the
+	// journal at one record per ref instead of one per clear, forever.
+	superseded := make(map[string]threadClearRecord)
+	for id, existing := range s.clearRecords {
+		if existing.Ref == params.Ref {
+			superseded[id] = existing
+			delete(s.clearRecords, id)
+		}
+	}
 	s.clearRecords[params.ClientMutationID] = record
 	if err := persistThreadClearJournal(s.clearJournalPath, s.clearRecords); err != nil {
 		delete(s.clearRecords, params.ClientMutationID)
+		for id, existing := range superseded {
+			s.clearRecords[id] = existing
+		}
 		s.mu.Unlock()
 		return appwire.ThreadClearResponse{}, appwire.MutationUnknown(params.ClientMutationID, "thread clear reservation could not be persisted")
 	}

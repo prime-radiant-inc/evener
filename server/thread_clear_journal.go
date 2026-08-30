@@ -26,7 +26,9 @@ const (
 // threadClearRecord is the durable identity fence for one clear request. A
 // reserved record survives a daemon restart so the same request can resume (or
 // recover the already-installed replacement) without accepting a second clear
-// against the same stable workspace ref.
+// against the same stable workspace ref. The journal holds at most one record
+// per stable ref: a newer clear's reservation supersedes any older record for
+// the same ref, whose expected instance no such retry can name anymore.
 type threadClearRecord struct {
 	ClientMutationID   string                       `json:"client_mutation_id"`
 	RequestHash        string                       `json:"request_hash"`
