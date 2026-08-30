@@ -413,6 +413,12 @@ func TestThreadNotificationsRequireAuthoritativeRoutingIdentity(t *testing.T) {
 				t.Errorf("%s payload %s.%s json tag = %q, want %q", notification.Name, payloadType.Name(), fieldName, got, want)
 			}
 		}
+		// The daemon restamps threadId/ref at its notification egress
+		// (stampAppNotificationTarget); a payload without the method would
+		// silently ship the projector's own view of the target instead.
+		if _, ok := notification.Payload.(NotificationTargeted); !ok {
+			t.Errorf("%s payload %s does not implement NotificationTargeted", notification.Name, payloadType.Name())
+		}
 	}
 }
 

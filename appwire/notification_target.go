@@ -2,9 +2,11 @@ package appwire
 
 // NotificationTargeted lets the daemon re-address a notification's params to
 // the fanout target it is committing them under (threadId/ref) without a JSON
-// round trip. Every params struct the app-event projector emits implements it;
-// the value receiver mutates a copy and returns it, so callers holding the
-// params as `any` get the restamped value back. Params the projector builds as
+// round trip. Every thread-scoped params struct in the Notifications catalog
+// implements it (TestThreadNotificationsRequireAuthoritativeRoutingIdentity
+// pins that, so a new payload type cannot land without the method); the value
+// receiver mutates a copy and returns it, so callers holding the params as
+// `any` get the restamped value back. Params the projector builds as
 // map[string]any carry threadId/ref keys instead and are restamped on a copy.
 type NotificationTargeted interface {
 	WithNotificationTarget(threadID, ref string) NotificationTargeted
@@ -111,6 +113,31 @@ func (p JobsTreeUpdatedParams) WithNotificationTarget(threadID, ref string) Noti
 }
 
 func (p EvenerDelegateParams) WithNotificationTarget(threadID, ref string) NotificationTargeted {
+	p.ThreadID, p.Ref = threadID, ref
+	return p
+}
+
+func (p ThreadClosedParams) WithNotificationTarget(threadID, ref string) NotificationTargeted {
+	p.ThreadID, p.Ref = threadID, ref
+	return p
+}
+
+func (p TurnCompletedParams) WithNotificationTarget(threadID, ref string) NotificationTargeted {
+	p.ThreadID, p.Ref = threadID, ref
+	return p
+}
+
+func (p WarningParams) WithNotificationTarget(threadID, ref string) NotificationTargeted {
+	p.ThreadID, p.Ref = threadID, ref
+	return p
+}
+
+func (p EvenerSteeringInjectedParams) WithNotificationTarget(threadID, ref string) NotificationTargeted {
+	p.ThreadID, p.Ref = threadID, ref
+	return p
+}
+
+func (p ThreadResyncParams) WithNotificationTarget(threadID, ref string) NotificationTargeted {
 	p.ThreadID, p.Ref = threadID, ref
 	return p
 }
