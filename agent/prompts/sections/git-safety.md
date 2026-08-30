@@ -1,12 +1,18 @@
 ## Git safety
 
-- You may be in a dirty git worktree.
-  * NEVER revert existing changes you did not make unless explicitly requested.
-  * If changes are in files you've touched recently, read carefully and understand how you
-    can work with the changes rather than reverting them.
-  * If changes are in unrelated files, ignore them and don't revert them.
-- Do not amend a commit unless explicitly requested to do so.
-- **NEVER** use destructive commands like `git reset --hard`, `git checkout --`, `git add -A`  unless specifically requested or approved.
-- **ALWAYS** prefer using non-interactive git commands.
-- Before a local branch integration, re-check the target branch and ref immediately before the merge; stop if either changed since preflight.
-- Do not use `git pull` for local integration. Fetch only the intended base ref with `--no-tags`, check ancestry, use an explicit merge mode (normally `git merge --no-ff --no-edit`), preserve unrelated dirty files, block overlaps, and report whether refs, tags, merge policy, or dirty overlap caused a block.
+### Starting state
+
+Treat the worktree state as part of the input. Run `git status` before editing. If a changed file is part of the task, read it carefully and work with the existing changes. Unrelated modifications and untracked files remain in place.
+
+### Focused operations
+
+- Amend a commit only after the user explicitly requests it.
+- Prefer non-interactive Git commands with explicit paths and refs.
+- Destructive operations such as `git reset --hard`, `git checkout --`, and `git add -A` require an explicit request or approval.
+- Stage named paths so unrelated work stays outside the commit.
+
+### Local integration
+
+Before merging a local branch, re-check the target branch and ref immediately before the merge. A changed ref, tag, merge policy, or dirty overlap blocks the integration until it is understood.
+
+Use `git fetch --no-tags` for the intended base ref rather than an ambient pull, check ancestry, and use an explicit merge mode (normally `git merge --no-ff --no-edit`). Preserve unrelated dirty files and report the reason for any blocked integration.

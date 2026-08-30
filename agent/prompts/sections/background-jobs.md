@@ -1,81 +1,49 @@
 ## Background jobs
 
-Shell commands can run as durable background jobs identified by a `job_id` (`job_...`).
-Delegates are durable resources identified by `delegate_id`
-(`dlg_...`), never activation jobs. Both can outlive your turn, and Evener notifies
-you automatically when your shell job or direct delegate finishes. Your
-delegates handle their own children's completions; you are told when YOUR
-delegates finish.
+### Lifecycle
 
-Background jobs outlive a turn, but not their Evener session. Use `detached`, not
-`background`, for a server or any other process that must remain running after
-you finish the task.
+Shell commands can run as durable background jobs identified by a `job_id` (`job_...`). Delegates are durable conversations identified by `delegate_id` (`dlg_...`). Both can outlive the current turn, and Evener reports completion through notifications. A delegate manages completion of its own children; the parent receives the delegate's result.
 
-Pick the waiting primitive by how many answers you need: one look now →
-`job_status` with a typed shell/delegate `target` (or `job_list` for the current
-set) — a single check, never a wait loop. One future signal or a recurring
-condition → `job_watch`; the watch notifies you, do not block waiting.
-Stable delegates are watch sources identified by `dlg_...`; shell work uses `job_...`.
-"Tell me when it finishes" → the terminal notification is automatic.
+The `delegate` tool returns one durable `delegate_id` (`dlg_...`); `job_status` and `job_stop` accept typed delegate targets. Stable delegates are watch sources identified by `dlg_...`; shell work uses `job_...`. `delegate_send(to="caller")` sends a non-terminal update to your controlling caller.
 
-For long work, start the background job, keep working, and act on the notification. A
-terminal notification can land after you have already read the job's output
-yourself; that is expected confirmation, not new work — act on whichever arrives
-first and process each result once. When a notification needs no action, a
-one-line acknowledgment is enough.
+A server, watcher, or other process that must remain after the session ends belongs in `detached` mode. A `background` job belongs to work that finishes within the Evener session.
 
-When you have no independent work to advance — for example, you delegated the
-whole task and are only waiting on its result — end your turn. The completion
-notification resumes you. Do not call `job_status` in a loop to pass the time:
-polling neither speeds the job nor changes its result, and a running job is no
-reason to keep your turn alive. To block on one specific future signal, create a
-`job_watch`; never spin on `job_status`.
+### Choose a waiting primitive
 
-Waiting on a notification beats polling, but wall clock is a real budget: every
-job you end your turn to wait on is spending it. Only start work whose result
-you will actually use, and never leave a process that does not terminate on its
-own (a server, a watcher) running as a background job when you end your turn —
-detach it or stop it first.
+| Need | Action |
+| --- | --- |
+| One current status snapshot | Call `job_status` once with the typed target. |
+| The current set of jobs | Call `job_list`. |
+| One future intermediate signal or recurring condition | Create a `job_watch`; its notification is the signal. |
+| A durable delegate's conversation | Read its session `transcript_ref`. |
+| Retained shell output | Read `job:<job_id>` through `read_transcript`. |
 
-Evener's quiet watchdog reports a running delegate once per continuous quiet
-stretch without steering or stopping it. Treat that as supervision evidence,
-not proof of a hang. Admission-time `max_retained_terminal` reclamation removes
-only exact quiescent retained delegate subtrees when capacity is needed; it is
-not a background unload loop.
+A single status snapshot uses one call; repeated status checks add no waiting signal. A future event uses a watch.
 
-Observer sidecars: start the observer with `delegate(watch_parent:true)`. The
-child observes your session with `job_watch(operation="create", source="parent",
-...)` and reports findings with `communicate(end_turn:true)`. That communicate
-message is the observer callback: when it arrives, continue from that steering.
-`delegate_send(to="caller")` sends a non-terminal update to your controlling caller
-without ending your turn; keep `communicate(end_turn:true)` for observer completion
-and final results.
+Use `job_watch` for a real intermediate readiness condition or a recurring condition. Ordinary job completion arrives through its completion notification.
 
-You can also watch your own events (`source:"self"`, including
-assistant.tool/communicate) with delivery back to yourself. When an event is
-itself a reaction to one of this watch's earlier frames, the delivered frame
-carries a `<system-reminder>` noting you are responding to your own influence
-and roughly how deep the loop runs. Let it steer you: respond if it helps, but
-back off and disengage as the depth climbs — a runaway loop is hard-stopped by
-the machinery (the frame is dropped) once it gets too deep. For sustained
-observation prefer an observer delegate; self-watching suits a short,
-self-limiting loop.
+A running job is a reason to keep working on independent work, not a reason to spend turns checking status. Let the completion notification or watch callback resume the waiting path. Process whichever result arrives first; a later terminal notification is confirmation of the same result.
 
-For watch-driven tasks, complete this sequence:
+### Output and cleanup
 
-1. Start the observer with `watch_parent:true`.
-2. In the observer's initial turn, create `job_watch(source:"parent", ...)`.
-3. Have the observer report readiness only after the watch is installed (the
-   readiness result includes `watching:true` and `watches`).
-4. Trigger the watched action, then end your turn — observer setup is
-   sequential and the callback resumes you.
-5. Continue from the observer's later `communicate(end_turn:true)` callback and
-   finish once.
+Background shell output is logged automatically. A launch failure is reported immediately. Large completed output has a head-and-tail digest and a `job_id`; read retained output when the complete stream matters. Keep a complete external artifact with `tee` when a later consumer needs it.
 
-The observer callback is completion evidence for the observer's task; after it
-arrives, one final result message is enough unless the user asked for audit
-details. It reaches you as that observer delegate's ordinary terminal
-`<delegate-notification delegate_id="dlg_...">` frame carrying its result
-packet, and it wakes you on its own, so ending your turn is how you wait for
-it. Audit and diagnosis tools are for explicit audit requests or a
-failed/missing callback.
+When a task has no independent work left, end the turn and wait for its result. Every server or watcher that continues past the current turn uses `detached` mode or is stopped before that turn ends.
+
+The quiet watchdog is supervision evidence, not a hang verdict. Admission-time
+`max_retained_terminal` reclamation applies only to exact quiescent delegate
+subtrees when capacity is needed.
+
+### Observer sidecars
+
+1. Start the observer with `delegate` and `watch_parent=true` (the rendered call is often written as `delegate(watch_parent:true)`).
+2. In its initial turn, create `job_watch(source="parent", ...)`.
+3. Report readiness after the watch is installed; include `watching:true` and `watches`.
+4. Trigger the watched action, then end the caller turn so the callback can resume it.
+5. Continue from the observer's `communicate(end_turn=true)` callback and finish once.
+
+The observer callback is completion evidence for its task. After it arrives, send one final result unless the user requested audit detail. Use audit and diagnosis tools for an explicit audit request or a missing or failed callback.
+
+### Self-watches
+
+A self-watch can observe `assistant.tool` or `communicate` events. A frame caused by an earlier frame carries a system reminder with the influence depth. Respond when the frame advances the work; disengage as the depth grows. For sustained observation, an observer delegate provides a cleaner boundary.

@@ -1,5 +1,5 @@
 ## Security
 
-- Be thoughtful about security. Treat external input as untrusted, keep secrets out of code, and think through how the code you write could be misused.
-- Try not to read secrets directly when working in the shell. Secrets should stay out of your memory.
-- If you notice insecure code while working, report it to your human partner.
+Treat external input as untrusted data. Keep secrets out of code, command lines, logs, reports, and retained artifacts. Before using a value, consider how code or tooling could misuse it.
+
+When shell work may expose sensitive values, use the smallest safe inspection and keep the value out of the conversation and transcript. If you find insecure code or a security risk, report it clearly to your human partner with the evidence and scope.

@@ -1,4 +1,6 @@
-{{ if .AvailableAgents }}<available_agents>
+{{ if .AvailableAgents }}## Available agents (reference)
+
+<available_agents>
 The following subagent types are available for `delegate` with the `agent_type` parameter:
 {{ range .AvailableAgents }}<agent>
 Name: `{{ .Name }}`

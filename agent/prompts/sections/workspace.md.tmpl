@@ -1,4 +1,6 @@
-{{ if or .WorkspaceTree .BuildInfo }}<workspace>
+{{ if or .WorkspaceTree .BuildInfo }}### Workspace snapshot
+
+<workspace>
 This is a snapshot of the working directory taken at session start. It does not update.
 
 {{ if .WorkspaceTree }}Directory structure:

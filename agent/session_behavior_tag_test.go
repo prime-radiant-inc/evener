@@ -7,7 +7,6 @@ package agent
 // correctly do NOT get the real-openai behavior.
 
 import (
-	_ "embed"
 	"strings"
 	"testing"
 
@@ -15,26 +14,6 @@ import (
 	"primeradiant.com/evener/agent/internal/tool"
 	"primeradiant.com/evener/llm"
 )
-
-// openAISectionContent holds the raw content of the embedded OpenAI-specific
-// tools prompt section. The section resolver loads this file when
-// provider="openai"; tests verify its presence or absence in rendered system
-// prompts by comparing against the actual file content rather than a
-// hardcoded phrase, so they track prose changes automatically.
-//
-//go:embed prompts/sections/tools.provider-openai_append.md.tmpl
-var openAISectionContent string
-
-// openAISectionLiteral is the leading literal run of that section — everything
-// before its first template action. The tail is gated on the session's tool
-// surface, so only the prefix is comparable verbatim against a render.
-func openAISectionLiteral() string {
-	body := openAISectionContent
-	if i := strings.Index(body, "{{"); i >= 0 {
-		body = body[:i]
-	}
-	return strings.TrimRight(body, "\n")
-}
 
 // ── Site 1: applyModelRequestMetadata (prompt-cache) ──────────────────────
 
@@ -235,15 +214,10 @@ func TestBehaviorTag_SectionResolver_RenamedOpenAILoadsOpenAISection(t *testing.
 	}
 	defer sess.Close()
 
-	// The embedded tools.provider-openai_append.md content is present verbatim
-	// in the rendered system prompt only when sectionResolver.provider="openai".
-	// We compare against the actual file content so the test tracks prose
-	// changes automatically rather than coupling to a specific phrase.
-	openAISection := openAISectionLiteral()
-	prompt, _ := sess.renderSystemPrompt(sess.env)
-	if !strings.Contains(prompt, openAISection) {
-		t.Fatalf("system prompt missing openai section — SectionResolver provider must be %q (behaviorTag), not %q (ID)",
-			renamedProfile.BehaviorTag(), renamedProfile.ID())
+	sess.renderSystemPrompt(sess.env)
+	if !hasPromptSource(sess.promptSourceLog, "embedded:prompts/sections/tools.provider-openai_append.md.tmpl") {
+		t.Fatalf("system prompt source log lacks the OpenAI section — provider must be %q (behaviorTag), not %q (ID): %+v",
+			renamedProfile.BehaviorTag(), renamedProfile.ID(), sess.promptSourceLog)
 	}
 }
 
@@ -269,9 +243,8 @@ func TestBehaviorTag_SectionResolver_OpenAICompatibleDoesNotLoadOpenAISection(t 
 	}
 	defer sess.Close()
 
-	openAISection := openAISectionLiteral()
-	prompt, _ := sess.renderSystemPrompt(sess.env)
-	if strings.Contains(prompt, openAISection) {
-		t.Fatalf("system prompt contains openai section — openai-compatible must NOT load the openai section")
+	sess.renderSystemPrompt(sess.env)
+	if hasPromptSource(sess.promptSourceLog, "embedded:prompts/sections/tools.provider-openai_append.md.tmpl") {
+		t.Fatalf("system prompt source log contains the OpenAI section for an openai-compatible profile: %+v", sess.promptSourceLog)
 	}
 }

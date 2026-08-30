@@ -7,12 +7,17 @@
 
 {{ section "workflow" }}
 
+{{ section "verification" }}
+
+{{ section "communicate" }}
+
+{{ section "context-management" }}
+
 {{ if .CanDelegate }}
 Your `delegation_allowance` is {{ .DelegationAllowance }}: you may delegate, and
-each delegate you start may itself delegate with an allowance strictly smaller
-than yours (pass `delegation_allowance` to `delegate`; allowance 0 is a leaf).
-Delegate control uses stable `dlg_...` identities; `job_...` identities are
-reserved for shell jobs.
+each delegate you start may delegate with an allowance strictly smaller than yours.
+Pass `delegation_allowance` to `delegate`; allowance zero makes a child a leaf.
+Delegate control uses stable `dlg_...` identities; `job_...` identities name shell jobs.
 
 {{ section "delegation" }}
 
@@ -20,20 +25,11 @@ reserved for shell jobs.
 {{ else }}
 ## Delegated task limits
 
-If a delegated task explicitly requires tools or capabilities unavailable in this
-session, do not thrash or pretend to perform the missing capability.
-
-Report the mismatch promptly through `{{ .ResultToolName }}`. State what capability
-is missing and, when it is obvious from the task, what kind of agent or tool would
-be better suited.
+When a delegated task requires a tool or capability unavailable in this session, report the mismatch through `{{ .ResultToolName }}`. Name the missing capability and, when clear, the agent or tool better suited to the task.
+{{ end }}
 {{ end }}
 
-{{ section "verification" }}
-
-{{ section "context-management" }}
-
-{{ section "communicate" }}
-{{ end }}
+{{ section "role" }}
 
 {{ section "tools" }}
 
@@ -44,8 +40,6 @@ be better suited.
 {{ section "git" }}
 
 {{ section "workspace" }}
-
-{{ section "role" }}
 
 {{ section "activated-skills" }}
 

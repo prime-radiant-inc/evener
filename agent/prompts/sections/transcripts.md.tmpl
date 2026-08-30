@@ -1,32 +1,13 @@
 {{ if or (.HasTool "read_transcript") (.HasTool "find_session_transcripts") }}## Session transcripts
 
-The transcript tools inspect archived sessions and jobs (your own and other
-sessions on this machine). Use them for audit, forensics, prior-session search,
-or recovering compacted turns. During active delegate/watch work, use the current
-tool result, job output, notification, or observer callback as your working
-evidence; read a transcript when you specifically need the full child
-conversation history. Do not access raw transcript files directly; use these
-tools instead.
-{{ if .HasTool "find_session_transcripts" }}
-- **`find_session_transcripts`** — find sessions. No arguments lists recent sessions
-  newest-first; `query` searches their content; `children_of:"<transcript_ref>"` lists
-  the sessions a ref spawned (its subagents/forks); `scope:"all_projects"` widens beyond
-  this project. It returns `transcript_ref`s and never reads a session.
-{{- end }}
-{{- if .HasTool "read_transcript" }}
-- **`read_transcript`** — view a session or `job:<job_id>` by `transcript_ref`
-  (omit the ref for the current session). `format:"outline"` is a
-  one-line-per-turn map; `format:"markdown"` (default) is readable conversation
-  or job evidence; `format:"jsonl"` is semantic session records for
-  replay/debugging only. Session `range` (e.g. `"18-31"`, `"last:40"`,
-  `"start:40"`) selects a turn window; `expand_turn:<N>` renders one turn's
-  tool results in fixed 16 KiB pages.
+Transcript tools provide the authoritative view of archived sessions and jobs on this machine. Use them for audit, forensics, prior-session search, and recovery after compaction.
 
-The Turn numbers shown in the outline and in markdown are exactly what `range` and
-`expand_turn` accept. To audit a subagent, pass its `transcript_ref` to
-`read_transcript`; to follow what it did from the start, read its outline first.
+During active delegate or watch work, use the current tool result, job output, notification, or observer callback as working evidence. Read a transcript when the full child conversation history is needed. Raw transcript files are outside this interface; use the transcript tools instead.
 
-After compaction the checkpoint records this session's id; read it back with
-`read_transcript` to recover turns compaction removed. There is no `recall` tool.
-{{- end }}
-{{ end -}}
+{{ if .HasTool "find_session_transcripts" }}- **`find_session_transcripts`** locates sessions. With no arguments it lists recent sessions newest-first. `query` searches content; `children_of:"<transcript_ref>"` lists sessions spawned by a ref; `scope:"all_projects"` widens the search. It returns `transcript_ref` values without reading a session.
+{{ end }}{{ if .HasTool "read_transcript" }}- **`read_transcript`** reads a session or `job:<job_id>` by `transcript_ref`. `format:"outline"` gives one line per turn; `format:"markdown"` gives readable conversation or job evidence; `format:"jsonl"` gives semantic session records for replay or debugging. Session `range` values such as `"18-31"`, `"last:40"`, and `"start:40"` select turn windows. `expand_turn:<N>` exposes tool results in fixed 16 KiB pages.
+
+Turn numbers in the outline and Markdown view are the numbers accepted by `range` and `expand_turn`. To audit a subagent, pass its `transcript_ref`; read its outline first when you need to follow the work from the beginning.
+
+After compaction, the checkpoint records this session's id. Read it with `read_transcript` to recover turns omitted from the active context. There is no `recall` tool.
+{{ end }}{{ end }}

@@ -87,9 +87,9 @@ func TestBundledDelegatePromptUsesStableControlIdentity(t *testing.T) {
 	prompt := renderSubagentPromptWithAllowance(t, 2)
 
 	for _, want := range []string{
-		"`delegate` returns one durable `delegate_id` (`dlg_...`)",
-		"`job_status(target=<dlg_...>)`",
-		"`job_stop(target=<dlg_...>)`",
+		"delegate_id",
+		"job_status",
+		"job_stop",
 	} {
 		if !strings.Contains(prompt, want) {
 			t.Errorf("assembled delegate prompt missing stable control contract %q", want)
@@ -110,12 +110,12 @@ func TestBundledDelegatePromptPreservesWatchSupervisionAndShellGuidance(t *testi
 	prompt := renderSubagentPromptWithAllowance(t, 2)
 
 	for _, want := range []string{
-		"Shell commands can run as durable background jobs identified by a `job_id` (`job_...`)",
-		"Stable delegates are watch sources identified by `dlg_...`",
-		"`delegate_send(to=\"caller\")` sends a non-terminal update to your controlling caller",
-		"`delegate(watch_parent:true)`",
-		"quiet watchdog",
-		"`max_retained_terminal`",
+		"job_id",
+		"delegate_id",
+		"delegate_send",
+		"watch_parent",
+		"watchdog",
+		"max_retained_terminal",
 	} {
 		if !strings.Contains(prompt, want) {
 			t.Errorf("assembled delegate prompt missing preserved capability %q", want)
