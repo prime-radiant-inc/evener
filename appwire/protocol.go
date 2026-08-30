@@ -245,7 +245,7 @@ var Notifications = []NotificationSpec{
 	{NotifyItemStarted, ItemLifecycleParams{}, "A thread item began streaming."},
 	{NotifyItemCompleted, ItemLifecycleParams{}, "A thread item finished."},
 	{NotifyAgentMessageDelta, AgentMessageDeltaParams{}, "Incremental assistant-message text chunk for an item."},
-	{NotifyAgentMessageReset, AgentMessageResetParams{}, "Discard the in-progress assistant item (a retry replaces it)."},
+	{NotifyAgentMessageReset, AgentMessageResetParams{}, "Discard the in-progress streamed item (assistant or reasoning — a retry replaces it)."},
 	{NotifyReasoningSummaryDelta, ReasoningSummaryDeltaParams{}, "Incremental reasoning-summary text chunk for a reasoning item."},
 	{NotifyToolOutputDelta, ToolOutputDeltaParams{}, "Incremental tool-output chunk for a tool-call item."},
 	{NotifyWarning, WarningParams{}, "Non-fatal diagnostic. Also used for cancelled turns and relay-attach failures."},
