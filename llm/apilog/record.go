@@ -35,6 +35,7 @@ type APIAttemptRequest struct {
 	Model          string        `json:"model,omitempty"`
 	HistoryMode    string        `json:"history_mode,omitempty"`
 	EndpointFamily string        `json:"endpoint_family,omitempty"`
+	Protocol       string        `json:"protocol,omitempty"`
 	PrunedFields   []string      `json:"pruned_fields,omitempty"`
 }
 
@@ -247,6 +248,7 @@ func (r APIAttemptRecord) validateProviderEvidence() error {
 		{name: "request body model", value: r.Request.Model},
 		{name: "request history mode", value: r.Request.HistoryMode},
 		{name: "request endpoint family", value: r.Request.EndpointFamily},
+		{name: "request protocol", value: r.Request.Protocol},
 		{name: "request pruned fields", value: strings.Join(r.Request.PrunedFields, ",")},
 		{name: "error class", value: r.ErrorClass},
 		{name: "error message", value: r.ErrorMessage},

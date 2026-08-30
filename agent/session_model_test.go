@@ -1867,6 +1867,11 @@ func TestSession_SingleAttemptMetadataRecorded(t *testing.T) {
 		assistant.ResponseStorageScopeFingerprint != "" {
 		t.Fatalf("anchor eligibility metadata should stay empty in Phase 1A: %+v", assistant)
 	}
+	// An override serves this session, so no API attempt is begun and the
+	// turn records no wire protocol.
+	if assistant.ResponseProtocol != "" {
+		t.Fatalf("ResponseProtocol = %q, want empty for an override-served turn", assistant.ResponseProtocol)
+	}
 }
 
 func TestSession_SanitizesCustomAdapterEndpointMetadata(t *testing.T) {

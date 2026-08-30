@@ -175,6 +175,7 @@ func (c *Call) metaBuilder(p *Prepared) transport.APIAttemptMetaBuilder {
 			RequestModel:       c.Req.Model,
 			HistoryMode:        c.Req.HistoryMode,
 			EndpointFamily:     c.EndpointFamily,
+			Protocol:           c.Res.Protocol,
 			RequestBody:        requestBody,
 			PrunedFields:       p.PrunedFields,
 			CredentialMaterial: credentialMaterial(c.Res, wireRequest),

@@ -21,8 +21,12 @@ import (
 // details captured across one model call (including any fallback retries) for
 // the successful semantic assistant turn.
 type ModelAttemptMetadata struct {
-	HistoryMode             llm.HistoryMode
-	EndpointFamily          string
+	HistoryMode    llm.HistoryMode
+	EndpointFamily string
+	// Protocol is the wire protocol of the attempt that answered, read back
+	// from the round's attempt group. It is empty when an override served the
+	// call, because an override makes no transport attempt.
+	Protocol                string
 	EndpointURL             string
 	RequestModel            string
 	RequestFingerprint      string
@@ -992,6 +996,7 @@ func (s *Session) callModelWithFallback(ctx context.Context, profile *provider.P
 		return withPreviews(modelResp), req, attempt, err
 	}
 	attempt = completeAttemptMetadata(attempt, modelResp.Response)
+	attempt.Protocol = group.Protocol()
 	group.SettleResult(callCtx, nil)
 	return withPreviews(modelResp), req, attempt, nil
 }

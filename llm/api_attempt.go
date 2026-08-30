@@ -41,10 +41,13 @@ type APILogCredentialMaterial struct {
 // APIAttemptMeta carries provider provenance and observed request evidence for
 // one transport attempt.
 type APIAttemptMeta struct {
-	ProviderInstance   string
-	RequestModel       string
-	HistoryMode        HistoryMode
-	EndpointFamily     string
+	ProviderInstance string
+	RequestModel     string
+	HistoryMode      HistoryMode
+	EndpointFamily   string
+	// Protocol is the wire protocol id of the resolved row; recorded as
+	// protocol on the attempt.
+	Protocol           string
 	Method             string
 	Endpoint           string
 	Headers            http.Header
@@ -119,6 +122,7 @@ type APIAttemptGroup struct {
 
 	mu                 sync.Mutex
 	nextAttemptIndex   int
+	finalProtocol      string
 	finalAttemptID     string
 	finalAttemptCount  int
 	finalOutcome       apilog.AttemptOutcomeClass
@@ -134,6 +138,19 @@ type APIAttemptGroup struct {
 // stable identifier.
 func NewAPIAttemptGroup(id string) *APIAttemptGroup {
 	return &APIAttemptGroup{ID: id}
+}
+
+// Protocol is the wire protocol of the attempt begun most recently in the
+// group: the one that answered, for a call whose fallback chain crossed
+// instances. It is empty when the call made no transport attempt at all,
+// which is what an override serving the request looks like.
+func (g *APIAttemptGroup) Protocol() string {
+	if g == nil {
+		return ""
+	}
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	return g.finalProtocol
 }
 
 // APIAttempt owns the canonical record for one actual provider transport call.
@@ -227,6 +244,9 @@ func BeginAPIAttempt(ctx context.Context, meta APIAttemptMeta) *APIAttempt {
 		group.mu.Unlock()
 		return &APIAttempt{}
 	}
+	// Recorded before the sink check so the protocol is observable whether or
+	// not the call is being logged: the agent reads it back to stamp the turn.
+	group.finalProtocol = meta.Protocol
 	group.bindSinkLocked(state)
 	group.credentialMaterial = mergeAPILogCredentialMaterial(group.credentialMaterial, meta.CredentialMaterial)
 	meta.CredentialMaterial = group.credentialMaterial
@@ -508,6 +528,7 @@ func buildAPIAttemptRecord(groupID, attemptID string, index int, meta APIAttempt
 			Model:          omitCredentialString(meta.RequestModel, patterns, secretNames),
 			HistoryMode:    omitCredentialString(string(meta.HistoryMode), patterns, secretNames),
 			EndpointFamily: omitCredentialString(meta.EndpointFamily, patterns, secretNames),
+			Protocol:       omitCredentialString(meta.Protocol, patterns, secretNames),
 			PrunedFields:   append([]string(nil), meta.PrunedFields...),
 		},
 		Outcome:    canonicalAPIAttemptOutcome(result),

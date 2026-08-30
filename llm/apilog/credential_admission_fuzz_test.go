@@ -38,7 +38,7 @@ func FuzzAPILogCredentialAdmission(f *testing.F) {
 		}
 
 		place := func(r APIAttemptRecord) (APIAttemptRecord, string) {
-			switch field % 9 {
+			switch field % 10 {
 			case 0:
 				r.ProviderInstance = secret
 				return r, "provider instance"
@@ -61,6 +61,9 @@ func FuzzAPILogCredentialAdmission(f *testing.F) {
 				r.Request.PrunedFields = []string{secret}
 				return r, "request pruned fields"
 			case 7:
+				r.Request.Protocol = secret
+				return r, "request protocol"
+			case 8:
 				r.ErrorClass = secret
 				return r, "error class"
 			default:

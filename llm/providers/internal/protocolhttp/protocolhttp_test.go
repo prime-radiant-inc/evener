@@ -151,7 +151,7 @@ func TestDoDecodesStampsAndLogs(t *testing.T) {
 		t.Fatalf("attempts = %d", len(sink.attempts))
 	}
 	rec := sink.attempts[0]
-	if rec.ProviderInstance != "inst" || strings.Join(rec.Request.PrunedFields, ",") != "metadata" || *rec.Response.StatusCode != 200 {
+	if rec.ProviderInstance != "inst" || rec.Request.Protocol != res.Protocol || strings.Join(rec.Request.PrunedFields, ",") != "metadata" || *rec.Response.StatusCode != 200 {
 		t.Fatalf("record = %+v", rec)
 	}
 	raw, _ := json.Marshal(rec)
