@@ -24,6 +24,12 @@ type ModelInfo struct {
 	SupportsVision           bool     `json:"supports_vision"`
 	SupportsReasoning        bool     `json:"supports_reasoning"`
 	ReasoningEffortLevels    []string `json:"reasoning_effort_levels,omitempty"`
+	// DefaultReasoningEffort is the effort a model runs at when the session
+	// has none configured, where a source states it: the overrides layer
+	// (adaptive Claude runs at high server-side) or a live /models entry
+	// (the codex backend's default_reasoning_level). Empty means unknown, and
+	// the session falls back to its own default.
+	DefaultReasoningEffort string `json:"default_reasoning_effort,omitempty"`
 	SupportsAdaptiveThinking bool     `json:"supports_adaptive_thinking,omitempty"`
 	SupportsEffortParameter  bool     `json:"supports_effort_parameter,omitempty"`
 	// ThinkingAlwaysOn marks models whose thinking cannot be disabled: sending

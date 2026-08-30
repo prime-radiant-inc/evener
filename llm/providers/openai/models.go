@@ -130,8 +130,9 @@ func (m codexModelListEntry) modelInfo() llm.ModelInfo {
 		Provider:              "openai",
 		DisplayName:           envvars.FirstNonEmpty(m.DisplayName, id),
 		ContextWindow:         firstPositiveInt(m.MaxContextWindow, m.ContextWindow, m.MaxInputTokens, m.InputTokenLimit),
-		SupportsReasoning:     m.DefaultReasoningLevel != "" || len(m.SupportedReasoningLevels) > 0,
-		ReasoningEffortLevels: codexReasoningEfforts(m.SupportedReasoningLevels),
+		SupportsReasoning:      m.DefaultReasoningLevel != "" || len(m.SupportedReasoningLevels) > 0,
+		ReasoningEffortLevels:  codexReasoningEfforts(m.SupportedReasoningLevels),
+		DefaultReasoningEffort: llm.NormalizeReasoningEffort(m.DefaultReasoningLevel),
 		SupportsTools:         m.SupportsParallelTools || len(m.ExperimentalTools) > 0,
 		SupportsVision:        codexSupportsVision(m.InputModalities),
 	}
