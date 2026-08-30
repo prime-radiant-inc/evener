@@ -383,9 +383,9 @@ func TestAuth_ApiKeySet_WritesAndReports(t *testing.T) {
 	}
 	// Reload from disk; value should persist.
 	store2, _ := credentials.LoadStore(credsPath)
-	v, src := store2.Get("anthropic")
-	if v != "sk-ant-XXX" || src != credentials.SourceFile {
-		t.Errorf("after ApiKeySet: v=%q src=%q", v, src)
+	v, ok := store2.Get("anthropic")
+	if v != "sk-ant-XXX" || !ok {
+		t.Errorf("after ApiKeySet: v=%q ok=%v", v, ok)
 	}
 }
 
@@ -655,8 +655,8 @@ func TestAuth_NewControllerWithNilStore_PersistsWritesToDefaultPath(t *testing.T
 	if err != nil {
 		t.Fatalf("LoadStore(%s): %v", credsPath, err)
 	}
-	if v, src := reloaded.Get("anthropic"); v != "sk-ant-PERSIST" || src != credentials.SourceFile {
-		t.Errorf("nil-store fallback did not persist to %s: v=%q src=%q", credsPath, v, src)
+	if v, ok := reloaded.Get("anthropic"); v != "sk-ant-PERSIST" || !ok {
+		t.Errorf("nil-store fallback did not persist to %s: v=%q ok=%v", credsPath, v, ok)
 	}
 }
 

@@ -45,21 +45,15 @@ func CredentialsPath() string {
 // registry: entries are looked up by instance name only (spec §10).
 type StoreCredentialSource struct{ Store *credentials.Store }
 
-// Lookup implements registry.CredentialSource. It reports only the file
-// layer of the store: Store.Get also falls back to environment variables,
-// but environment lookups are the registry's own job (see
-// registry.CredentialSource), so a hit there must not be reported as
-// "store".
+// Lookup implements registry.CredentialSource: the store is credentials.toml
+// and nothing else, so a hit is a file entry keyed by instance name.
+// Environment lookups are the registry's own job (see
+// registry.CredentialSource) and never reach here.
 func (s StoreCredentialSource) Lookup(name string) (string, bool) {
 	if s.Store == nil {
 		return "", false
 	}
-	hasFile, _ := s.Store.Layers(name)
-	if !hasFile {
-		return "", false
-	}
-	v, _ := s.Store.Get(name)
-	return v, v != ""
+	return s.Store.Get(name)
 }
 
 // LoadRegistry loads the registry the way every binary does: the

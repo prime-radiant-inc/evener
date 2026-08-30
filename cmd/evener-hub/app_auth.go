@@ -332,7 +332,7 @@ func (c *hubAuthController) Logout(params appwire.AuthLogoutParams) (appwire.Aut
 		}
 		removed = r
 	} else {
-		hasFile, _ := c.creds.Layers(name)
+		_, hasFile := c.creds.Get(name)
 		if hasFile {
 			if clrErr := c.clearCredential(name); clrErr != nil {
 				return appwire.AuthLogoutResponse{}, clrErr
@@ -613,7 +613,7 @@ func (c *hubAuthController) instanceStatus(inst registry.Instance) appwire.AuthS
 		resp, _ := c.openAIInstanceStatus(inst.Name)
 		return resp
 	}
-	hasFile, _ := c.creds.Layers(inst.Name)
+	_, hasFile := c.creds.Get(inst.Name)
 	// The registry names an environment credential "env:<VAR>", and that
 	// variable is the one the pane shows.
 	envVar := ""
@@ -657,7 +657,7 @@ func (c *hubAuthController) openAIInstanceStatus(name string) (appwire.AuthStatu
 	// "none" when one does not. A stored key under this name is reported as a
 	// diagnostic only — calling it a sign-in would claim a credential the
 	// spawn gate refuses (kata z1gm).
-	hasFile, _ := c.creds.Layers(name)
+	_, hasFile := c.creds.Get(name)
 
 	source := "none"
 	var active authopenai.AuthStatus

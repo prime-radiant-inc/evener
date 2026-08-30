@@ -139,9 +139,9 @@ func TestAuth_InstanceApiKeySet_WritesNamedKey(t *testing.T) {
 	if err != nil {
 		t.Fatalf("LoadStore: %v", err)
 	}
-	v, src := store2.Get("work-ant")
-	if v != "sk-work-key" || src != credentials.SourceFile {
-		t.Errorf("credentials.toml[work-ant] = %q/%q, want sk-work-key/file", v, src)
+	v, ok := store2.Get("work-ant")
+	if v != "sk-work-key" || !ok {
+		t.Errorf("credentials.toml[work-ant] = %q/%v, want sk-work-key/true", v, ok)
 	}
 	if v2, _ := store2.Get("anthropic"); v2 != "" {
 		t.Errorf("credentials.toml[anthropic] should be empty, got %q", v2)

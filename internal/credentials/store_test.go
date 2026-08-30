@@ -3,55 +3,140 @@ package credentials
 import (
 	"os"
 	"path/filepath"
+	"reflect"
 	"testing"
 )
 
 func TestStore_LoadMissingFile(t *testing.T) {
-	t.Setenv("ANTHROPIC_API_KEY", "")
 	s, err := LoadStore(filepath.Join(t.TempDir(), "nope.toml"))
 	if err != nil {
 		t.Fatalf("LoadStore missing: %v", err)
 	}
-	if v, src := s.Get("anthropic"); v != "" || src != SourceAbsent {
-		t.Errorf("Get on empty store returned %q/%v, want \"\"/absent", v, src)
+	if v, ok := s.Get("anthropic"); v != "" || ok {
+		t.Errorf("Get on empty store returned %q/%v, want \"\"/false", v, ok)
+	}
+	if names := s.Names(); len(names) != 0 {
+		t.Errorf("Names on empty store = %v, want none", names)
+	}
+}
+
+// The store is the file layer and nothing else (spec §10): a key in the
+// environment is the registry's business, so Get must not report one.
+func TestStore_GetNeverReadsTheEnvironment(t *testing.T) {
+	t.Setenv("OPENAI_API_KEY", "env-key")
+	s, err := LoadStore(filepath.Join(t.TempDir(), "credentials.toml"))
+	if err != nil {
+		t.Fatalf("LoadStore: %v", err)
+	}
+	if v, ok := s.Get("openai"); v != "" || ok {
+		t.Errorf("Get(openai) = %q/%v with OPENAI_API_KEY set, want \"\"/false", v, ok)
 	}
 }
 
 func TestStore_SetGetClear(t *testing.T) {
-	t.Setenv("ANTHROPIC_API_KEY", "")
 	path := filepath.Join(t.TempDir(), "credentials.toml")
-	s, _ := LoadStore(path)
+	s, err := LoadStore(path)
+	if err != nil {
+		t.Fatalf("LoadStore: %v", err)
+	}
 	if err := s.Set("anthropic", "sk-ant-1"); err != nil {
 		t.Fatalf("Set: %v", err)
 	}
-	v, src := s.Get("anthropic")
-	if v != "sk-ant-1" {
-		t.Errorf("Get value = %q, want sk-ant-1", v)
-	}
-	if src != SourceFile {
-		t.Errorf("Get source = %q, want file", src)
+	if v, ok := s.Get("anthropic"); v != "sk-ant-1" || !ok {
+		t.Errorf("Get = %q/%v, want sk-ant-1/true", v, ok)
 	}
 	// Reload from disk; persistence works.
 	s2, err := LoadStore(path)
 	if err != nil {
 		t.Fatalf("LoadStore reload: %v", err)
 	}
-	if v, _ := s2.Get("anthropic"); v != "sk-ant-1" {
-		t.Errorf("reloaded value = %q", v)
+	if v, ok := s2.Get("anthropic"); v != "sk-ant-1" || !ok {
+		t.Errorf("reloaded = %q/%v", v, ok)
 	}
 	if err := s2.Clear("anthropic"); err != nil {
 		t.Fatalf("Clear: %v", err)
 	}
-	if v, _ := s2.Get("anthropic"); v != "" {
-		t.Errorf("after Clear, value = %q", v)
+	if v, ok := s2.Get("anthropic"); v != "" || ok {
+		t.Errorf("after Clear = %q/%v", v, ok)
 	}
 	// Verify Clear persists to disk: a fresh LoadStore must not see the key.
 	s3, err := LoadStore(path)
 	if err != nil {
 		t.Fatalf("LoadStore after Clear: %v", err)
 	}
-	if v, src := s3.Get("anthropic"); v != "" || src != SourceAbsent {
-		t.Errorf("after Clear+reload, value = %q src = %q, want \"\"/absent", v, src)
+	if v, ok := s3.Get("anthropic"); v != "" || ok {
+		t.Errorf("after Clear+reload = %q/%v, want \"\"/false", v, ok)
+	}
+}
+
+// An entry whose api_key is blank is not a credential: Get must report it
+// missing rather than hand a caller an empty key.
+func TestStore_GetIgnoresABlankEntry(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "credentials.toml")
+	if err := os.WriteFile(path, []byte("schema = 1\n[providers.work]\napi_key = \"   \"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	s, err := LoadStore(path)
+	if err != nil {
+		t.Fatalf("LoadStore: %v", err)
+	}
+	if v, ok := s.Get("work"); v != "" || ok {
+		t.Errorf("Get(work) = %q/%v for a blank api_key, want \"\"/false", v, ok)
+	}
+}
+
+// Set writes through a temp file and renames, so a reader never sees a
+// half-written credentials.toml and the result is never group/world readable.
+func TestStore_SetWritesMode0600AndLeavesNoTempFile(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "sub", "credentials.toml")
+	s, err := LoadStore(path)
+	if err != nil {
+		t.Fatalf("LoadStore: %v", err)
+	}
+	if err := s.Set("work", "sk-work"); err != nil {
+		t.Fatalf("Set: %v", err)
+	}
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatalf("stat: %v", err)
+	}
+	if info.Mode().Perm() != 0o600 {
+		t.Errorf("credentials.toml mode = %o, want 600", info.Mode().Perm())
+	}
+	if _, err := os.Stat(path + ".tmp"); !os.IsNotExist(err) {
+		t.Errorf("the temp file survived the rename (stat err = %v)", err)
+	}
+	// The store must be reloadable through its own mode gate.
+	if _, err := LoadStore(path); err != nil {
+		t.Fatalf("LoadStore after Set: %v", err)
+	}
+}
+
+// Names lists every entry, sorted, so a caller can report entries that name
+// no instance (spec §14.1).
+func TestStore_NamesAreSorted(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "credentials.toml")
+	content := "schema = 1\n[providers.work]\napi_key = \"w\"\n[providers.anthropic]\napi_key = \"a\"\n[providers.kimi]\napi_key = \"k\"\n"
+	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	s, err := LoadStore(path)
+	if err != nil {
+		t.Fatalf("LoadStore: %v", err)
+	}
+	if got, want := s.Names(), []string{"anthropic", "kimi", "work"}; !reflect.DeepEqual(got, want) {
+		t.Errorf("Names = %v, want %v", got, want)
+	}
+}
+
+func TestStore_PathIsTheFileItReadsAndWrites(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "credentials.toml")
+	s, err := LoadStore(path)
+	if err != nil {
+		t.Fatalf("LoadStore: %v", err)
+	}
+	if got := s.Path(); got != path {
+		t.Errorf("Path = %q, want %q", got, path)
 	}
 }
 
@@ -65,101 +150,5 @@ func TestStore_PermissionsEnforced(t *testing.T) {
 	}
 	if _, err := LoadStore(path); err == nil {
 		t.Errorf("LoadStore should reject 0644-mode file")
-	}
-}
-
-func TestStore_GetFallsBackToEnv(t *testing.T) {
-	t.Setenv("ANTHROPIC_API_KEY", "env-key")
-	s, _ := LoadStore(filepath.Join(t.TempDir(), "credentials.toml"))
-	v, src := s.Get("anthropic")
-	if v != "env-key" || src != SourceEnv {
-		t.Errorf("env fallback: v=%q src=%q", v, src)
-	}
-}
-
-func TestStore_OpenAICompatibleUsesAPIKeyEnv(t *testing.T) {
-	t.Setenv("OPENAI_COMPATIBLE_API_KEY", "compat-key")
-	t.Setenv("OPENAI_COMPATIBLE_BASE_URL", "https://compat.example.test/v1")
-	s, _ := LoadStore(filepath.Join(t.TempDir(), "credentials.toml"))
-	v, src := s.Get("openai-compatible")
-	if v != "compat-key" || src != SourceEnv {
-		t.Errorf("openai-compatible env fallback: v=%q src=%q", v, src)
-	}
-	if got := EnvVars("openai-compatible"); len(got) != 1 || got[0] != "OPENAI_COMPATIBLE_API_KEY" {
-		t.Errorf("EnvVars(openai-compatible) = %v", got)
-	}
-}
-
-func TestResolveKeyNameThenTypeEnv(t *testing.T) {
-	// Create a credentials.toml with [providers.work] api_key="file-work"
-	path := filepath.Join(t.TempDir(), "credentials.toml")
-	content := "schema = 1\n[providers.work]\napi_key = \"file-work\"\n"
-	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	s, err := LoadStore(path)
-	if err != nil {
-		t.Fatalf("LoadStore: %v", err)
-	}
-
-	// 1) file entry under the instance name wins
-	if v, src := s.ResolveKey("work", "openai"); v != "file-work" || src != SourceFile {
-		t.Fatalf("name lookup = %q/%v, want file-work/file", v, src)
-	}
-	// 2) a custom instance with no file entry → env by TYPE
-	t.Setenv("OPENAI_API_KEY", "env-openai")
-	if v, src := s.ResolveKey("work2", "openai"); v != "env-openai" || src != SourceEnv {
-		t.Fatalf("type-env fallback = %q/%v, want env-openai/env", v, src)
-	}
-	// 3) nothing anywhere → absent; isolate from any ambient KIMI_API_KEY
-	t.Setenv("KIMI_API_KEY", "")
-	if v, src := s.ResolveKey("nope", "kimi"); v != "" || src != SourceAbsent {
-		t.Fatalf("absent = %q/%v", v, src)
-	}
-}
-
-func TestResolveKeyOpenAICompatibleUsesCompatEnv(t *testing.T) {
-	// A seeded openai-compatible instance has name="openai-compatible", type="openai".
-	// Its key env var is OPENAI_COMPATIBLE_API_KEY, NOT the type's OPENAI_API_KEY.
-	path := filepath.Join(t.TempDir(), "credentials.toml")
-	if err := os.WriteFile(path, []byte("schema = 1\n"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	s, err := LoadStore(path)
-	if err != nil {
-		t.Fatalf("LoadStore: %v", err)
-	}
-
-	t.Setenv("OPENAI_API_KEY", "")
-	t.Setenv("OPENAI_COMPATIBLE_API_KEY", "compat-key")
-	if v, src := s.ResolveKey("openai-compatible", "openai"); v != "compat-key" || src != SourceEnv {
-		t.Fatalf("openai-compatible env = %q/%v, want compat-key/env", v, src)
-	}
-	// the name's env var wins over the type's when both are set
-	t.Setenv("OPENAI_API_KEY", "type-key")
-	if v, _ := s.ResolveKey("openai-compatible", "openai"); v != "compat-key" {
-		t.Fatalf("name env must win over type env: got %q, want compat-key", v)
-	}
-}
-
-func TestStore_List(t *testing.T) {
-	t.Setenv("ANTHROPIC_API_KEY", "env-key")
-	t.Setenv("GEMINI_API_KEY", "")
-	path := filepath.Join(t.TempDir(), "credentials.toml")
-	s, _ := LoadStore(path)
-	_ = s.Set("openrouter", "or-key")
-	list := s.List()
-	bySource := map[string]Source{}
-	for _, p := range list {
-		bySource[p.Name] = p.Source
-	}
-	if bySource["anthropic"] != SourceEnv {
-		t.Errorf("anthropic source = %q", bySource["anthropic"])
-	}
-	if bySource["openrouter"] != SourceFile {
-		t.Errorf("openrouter source = %q", bySource["openrouter"])
-	}
-	if bySource["ollama"] != SourceNone {
-		t.Errorf("ollama source = %q, want none", bySource["ollama"])
 	}
 }
