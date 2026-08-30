@@ -431,6 +431,39 @@ func TestProvidersAddPrintsTheCredentialPointerWhenItHelps(t *testing.T) {
 	}
 }
 
+// The pointer names the store, --api-key-env, and the hub's credentials pane:
+// the layers a key-based scheme resolves from. An instance that signs in some
+// other way resolves from none of them, and its own warning already names the
+// real fix, so the pointer must stay out of its way (spec §5.1, §9.5).
+func TestProvidersAddSkipsTheCredentialPointerForSchemesItCannotHelp(t *testing.T) {
+	for _, tt := range []struct {
+		name string
+		base string
+		fix  string
+	}{
+		{name: "oauth-openai-codex", base: "openai-codex", fix: "evener openai login --instance work"},
+		{name: "gcp-adc", base: "google-vertex", fix: "gcloud auth application-default login"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			providersTestEnv(t, nil)
+			var stdout, stderr bytes.Buffer
+			if err := runProviders([]string{"add", "work", "--base", tt.base}, nil, &stdout, &stderr); err != nil {
+				t.Fatalf("add: %v\n%s", err, stderr.String())
+			}
+			out := stdout.String()
+			if !strings.Contains(out, "no credential resolves for work") {
+				t.Fatalf("add must still say the instance has no credential:\n%s", out)
+			}
+			if !strings.Contains(out, tt.fix) {
+				t.Fatalf("the warning must name the real fix %q:\n%s", tt.fix, out)
+			}
+			if strings.Contains(out, "WORK_API_KEY") || strings.Contains(out, "--api-key-env") || strings.Contains(out, "credentials pane") {
+				t.Fatalf("the pointer must not suggest layers this scheme can never reach:\n%s", out)
+			}
+		})
+	}
+}
+
 // A probe that cannot run is a report, not a failed add: providers.toml
 // changed, so a script must not see the command fail.
 func TestProvidersAddExitsZeroWhenTheProbeCannotRun(t *testing.T) {
