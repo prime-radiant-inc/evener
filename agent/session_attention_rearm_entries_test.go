@@ -113,9 +113,9 @@ func TestRootDelegateAttention_RestoreRearmFoldsTheRetainedEntries(t *testing.T)
 // TestRestoreSession_RestoredTranscriptOKBoundary pins the ok flag's
 // boundary: a session restored with NO transcript on disk reports ok=false,
 // one restored over a transcript with at least one entry reports ok=true
-// with that entry, and — since the header-only fix — one restored over a
-// header-only transcript reports ok=true with a non-nil empty slice: ok
-// means "a transcript was opened and validated," not "entries exist."
+// with that entry, and one restored over a header-only transcript reports
+// ok=true with a non-nil empty slice: ok means "a transcript was opened and
+// validated," not "entries exist."
 func TestRestoreSession_RestoredTranscriptOKBoundary(t *testing.T) {
 	t.Run("no transcript on disk", func(t *testing.T) {
 		stateDir := t.TempDir()
@@ -147,9 +147,6 @@ func TestRestoreSession_RestoredTranscriptOKBoundary(t *testing.T) {
 	t.Run("header-only transcript", func(t *testing.T) {
 		stateDir := t.TempDir()
 		rootID := identifier.MustNewSessionID()
-		if err := os.MkdirAll(filepath.Join(stateDir, sessionsSubdir), 0o755); err != nil {
-			t.Fatalf("mkdir sessions: %v", err)
-		}
 		meta := schema.SessionMeta{ID: rootID, ProfileID: "openai", Model: "gpt-5.2"}
 		if err := schema.SaveSessionMeta(stateDir, meta); err != nil {
 			t.Fatalf("save root metadata: %v", err)
