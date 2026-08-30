@@ -1601,10 +1601,12 @@ func (s *Server) handleAppThreadClear(ctx context.Context, params appwire.Thread
 		maps.Copy(s.clearRecords, superseded)
 		persistErr := persistThreadClearJournal(s.clearJournalPath, s.clearRecords)
 		if persistErr != nil {
-			// Keep memory matching the journal on disk, which still holds the
-			// reservation and not the superseded records. A retry must not
-			// invoke the replacement callback a second time while the journal
-			// still records this request.
+			// Roll memory back to the journal the reservation persisted. Disk
+			// may already hold the rollback if only the post-rename directory
+			// sync failed, but either state is safe: every persist rewrites
+			// the whole file from memory, so the next successful one resyncs
+			// disk, and a retry that re-invokes the callback re-runs work that
+			// failed without installing anything.
 			for id := range superseded {
 				delete(s.clearRecords, id)
 			}
