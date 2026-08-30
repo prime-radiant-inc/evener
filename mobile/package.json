@@ -8,12 +8,17 @@
     "check:ios": "node scripts/check-ios-config.mjs",
     "pretest": "node --test scripts/check-ios-config.test.mjs && node scripts/build-appwire-harness.mjs",
     "test": "vitest run --maxWorkers=4",
+    "pretest:live-conversation": "node scripts/build-appwire-harness.mjs",
+    "test:live-conversation-browser": "node scripts/live-conversation-geometry.mjs",
+    "test:live-conversation-root-shell": "node scripts/build-appwire-harness.mjs && vitest run src/test/live-concepts-root-shell-real-bridge.test.tsx",
+    "test:live-conversation": "vitest run src/live-concepts/conversation src/test/live-conversation-harness-actions.test.ts src/test/live-concepts-real-bridge.test.tsx src/test/live-concepts-root-shell-real-bridge.test.tsx && node --test scripts/live-conversation-geometry.test.mjs scripts/smoke-live-conversation-simulator.test.mjs",
     "test:geometry": "node --experimental-strip-types scripts/mobile-geometry.mjs",
     "test:ios": "node --test scripts/check-ios-config.test.mjs",
     "build": "tsc --noEmit --incremental false && vite build",
     "boundary:live-concepts": "node scripts/check-live-concepts-boundary.mjs",
     "boundary": "node scripts/check-boundary.mjs && node scripts/check-live-concepts-boundary.mjs",
     "smoke:live-concepts": "node scripts/smoke-live-concepts.mjs",
+    "smoke:live-conversation-simulator": "node scripts/smoke-live-conversation-simulator.mjs",
     "tauri": "tauri"
   },
   "dependencies": {

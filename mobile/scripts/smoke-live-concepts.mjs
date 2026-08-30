@@ -1265,6 +1265,7 @@ function safeObservationSummary(observation) {
     semanticTreeDigest: observation.source.semanticTreeDigest,
     markerDigest: observation.positiveMarker.markerDigest,
     evidenceDigest: digest(JSON.stringify(observation.evidence)),
+    geometry: observation.geometry ?? null,
   };
 }
 
@@ -1286,7 +1287,7 @@ function safeDigestOrNull(value) {
   return typeof value === "string" && SHA256.test(value) ? value : null;
 }
 
-function buildSafeSummary(input, linkDigest) {
+export function buildSafeSummary(input, linkDigest) {
   const status = ["passed", "failed", "blocked"].includes(input.status)
     ? input.status
     : "failed";
@@ -1490,6 +1491,49 @@ function commandSource(snapshot) {
   };
 }
 
+function extractGeometry(snapshot) {
+  const nodes = snapshot.nodes ?? [];
+  // Mounted row count: transcript items in the AX tree.
+  const mountedRowCount = nodes.filter((node) =>
+    /^\s*(Your message|Assistant response|Reasoning|Tool |Question|Error|Attachment);/.test(
+      node.label ?? "",
+    ),
+  ).length;
+  // User-label count: AX nodes whose label starts with "Your message".
+  const userLabelCount = nodes.filter((node) =>
+    (node.label ?? "").startsWith("Your message"),
+  ).length;
+  // Raw-system sentinel absence: no node contains the sentinel text.
+  const rawSystemSentinelAbsent = nodes.every(
+    (node) => !(node.label ?? "").includes("SYSTEM-PRELUDE-MUST-NOT-RENDER:"),
+  );
+  // Concept anchor: the concept root node's frame attribute (if present).
+  const conceptNode = nodes.find(
+    (node) =>
+      (node.label ?? "").startsWith("Stillwater ") ||
+      (node.label ?? "").startsWith("Constellation ") ||
+      (node.label ?? "").startsWith("Field Notes "),
+  );
+  const conceptAnchor = conceptNode?.frame ?? null;
+  // Generation IDs: the connection status node's generation (if present).
+  const connectionNode = nodes.find((node) =>
+    (node.label ?? "").startsWith("Connected to "),
+  );
+  const generationId = connectionNode?.generation ?? null;
+  return {
+    visualViewport: null,
+    composerRect: null,
+    safeArea: null,
+    mountedRowCount,
+    userLabelCount,
+    rawSystemSentinelAbsent,
+    conceptAnchorBefore: null,
+    conceptAnchorAfter: conceptAnchor,
+    keyboardOverlap: null,
+    generationId,
+  };
+}
+
 function makeObservation({
   milestone,
   snapshot,
@@ -1505,6 +1549,7 @@ function makeObservation({
     source: commandSource(snapshot),
     action,
     evidence,
+    geometry: extractGeometry(snapshot),
   };
   return {
     ...observation,

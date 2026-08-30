@@ -13,6 +13,8 @@ import {
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type {
   AnyNotification,
+  EvenerDelegateInfo,
+  EvenerJobInfo,
   InitializeResponse,
   MutationReceipt,
   NotificationTypes,
@@ -603,6 +605,17 @@ const AUTHORITATIVE_TOOL_TEXT = "authoritative tool after resync";
 const AUTHORITATIVE_NEW_TEXT = "Authoritative new item";
 const AUTHORITATIVE_REASONING_SETTLED = "Reasoning settled authoritatively";
 
+const SYSTEM_PRELUDE_SENTINEL = "SYSTEM-PRELUDE-MUST-NOT-RENDER:";
+const SYSTEM_PRELUDE_TEXT =
+  SYSTEM_PRELUDE_SENTINEL + "x".repeat(44_700 - SYSTEM_PRELUDE_SENTINEL.length);
+const WARNING_TITLE = "Scripted warning";
+const WARNING_MESSAGE = "Context window pressure rising";
+const OLDER_ITEM_TEXT = "Older page item";
+const OLDER_NEXT_CURSOR = "older-cursor-2";
+const QUESTION_TEXT = "Which route should I take?";
+const DELEGATE_ID = "delegate-live";
+const WATCH_JOB_ID = "watch-job-live";
+
 function makeThread(input: {
   id: string;
   ref: string;
@@ -611,6 +624,8 @@ function makeThread(input: {
   items?: ThreadItem[];
   tasks?: { total: number; done: number };
   job?: { id: string; type: string; status: string; outputBytes: number };
+  delegates?: EvenerDelegateInfo[];
+  watchJobs?: EvenerJobInfo[];
 }): Thread {
   const turn: Turn = {
     id: "turn-live",
@@ -646,6 +661,32 @@ function makeThread(input: {
             status: input.job?.status ?? "running",
             outputBytes: input.job?.outputBytes ?? 2048,
           },
+          ...(input.watchJobs ?? [
+            {
+              jobId: WATCH_JOB_ID,
+              jobType: "watch",
+              status: "running",
+              outputBytes: 0,
+              fromWatch: true,
+            } satisfies EvenerJobInfo,
+          ]),
+        ],
+        delegates: input.delegates ?? [
+          {
+            delegateId: DELEGATE_ID,
+            ownerSessionId: input.id,
+            rootSessionId: input.id,
+            childSessionId: "delegate-child-session",
+            transcriptRef: "delegate-transcript",
+            type: "fix",
+            lifecycle: "running",
+            phase: "active",
+            status: "running",
+            resumable: true,
+            needsAttention: false,
+            projectionRevision: 1,
+            task: "Scripted delegate task",
+          } satisfies EvenerDelegateInfo,
         ],
       },
       queue: { depth: 0, revision: 7, preview: [] },
@@ -836,9 +877,19 @@ function expectConcept(className: string): void {
   expectRawRefsAbsentFromLiveConcept();
 }
 
-function chooseConcept(name: "Stillwater" | "Constellation" | "Field Notes") {
+async function chooseConcept(
+  name: "Stillwater" | "Constellation" | "Field Notes",
+) {
   fireEvent.click(screen.getByRole("button", { name: "Switch concept" }));
-  fireEvent.click(screen.getByRole("button", { name: new RegExp(name) }));
+  fireEvent.click(
+    screen.getByRole("button", { name: new RegExp(`Switch to ${name}`) }),
+  );
+  // The ConceptSwitcher closes its dialog through a 100 ms crossfade timeout
+  // after selection. Wait for the dialog to disappear so the next call starts
+  // from a clean (closed, non-transitioning) switcher state.
+  await waitFor(() =>
+    expect(screen.queryByRole("dialog", { name: "Switch concept" })).toBeNull(),
+  );
 }
 
 function expectMarkerPreview(article: HTMLElement, expectedText: string): void {
@@ -916,6 +967,10 @@ function expectWorkEvidence(
   expect(screen.getByText("2 open")).toBeInTheDocument();
   expect(screen.getByText("1 done")).toBeInTheDocument();
   expect(screen.getByText("0 active")).toBeInTheDocument();
+  // Work retains tasks, delegates, jobs, watches, usage, and diagnostics.
+  // Delegate renders by type (never task prompt); watch renders by jobType.
+  expect(screen.getByText("fix")).toBeInTheDocument();
+  expect(screen.getByText("watch")).toBeInTheDocument();
   const usage = document.querySelector("[data-work-usage]");
   expect(usage).not.toBeNull();
   expect(usage).toHaveTextContent("4.1K");
@@ -958,6 +1013,9 @@ function expectAuthoritativeWorkEvidence(
   expect(screen.getByText("1 open")).toBeInTheDocument();
   expect(screen.getByText("4 done")).toBeInTheDocument();
   expect(screen.getByText("0 active")).toBeInTheDocument();
+  // Work retains delegates and watches through the authoritative resync.
+  expect(screen.getByText("fix")).toBeInTheDocument();
+  expect(screen.getByText("watch")).toBeInTheDocument();
   expectRawRefsAbsentFromLiveConcept();
 }
 
@@ -1594,13 +1652,13 @@ describe("production App live concepts over the real native AppWire bridge", () 
       expect(stableRosterKeys).toHaveLength(2);
       expectUniqueOpaqueKeys(stableRosterKeys);
 
-      chooseConcept("Constellation");
+      await chooseConcept("Constellation");
       expectConcept("concept-constellation");
       expect(sessionKeys()).toEqual(stableRosterKeys);
-      chooseConcept("Field Notes");
+      await chooseConcept("Field Notes");
       expectConcept("concept-field-notes");
       expect(sessionKeys()).toEqual(stableRosterKeys);
-      chooseConcept("Stillwater");
+      await chooseConcept("Stillwater");
       expectConcept("concept-stillwater");
 
       fireEvent.click(
@@ -1620,6 +1678,14 @@ describe("production App live concepts over the real native AppWire bridge", () 
         name: "Attention vertical slice",
         status: "active",
         items: [
+          // System prelude: must be suppressed from display; the raw sentinel
+          // must never appear in the rendered live concept.
+          {
+            type: "systemMessage",
+            id: "system-prelude-live",
+            text: SYSTEM_PRELUDE_TEXT,
+            eventKind: "environment",
+          },
           {
             type: "userMessage",
             id: "user-live",
@@ -1633,6 +1699,13 @@ describe("production App live concepts over the real native AppWire bridge", () 
           olderCursor: "older-cursor-live",
         });
       });
+      // Safe detail is request-only: thread/read was sent with exactly the
+      // canonical params and no safe-detail field.
+      expect(readRequest.params).not.toHaveProperty("safeDetail");
+      // System prelude is suppressed: the 44,700-byte sentinel is absent.
+      expect(document.body.textContent ?? "").not.toContain(
+        SYSTEM_PRELUDE_SENTINEL,
+      );
 
       const common = {
         threadId: ATTENTION_THREAD_ID,
@@ -1772,8 +1845,10 @@ describe("production App live concepts over the real native AppWire bridge", () 
       fireEvent.change(screen.getByRole("textbox", { name: "Message" }), {
         target: { value: DRAFT_SENTINEL },
       });
-      const stableTranscriptKeys = transcriptKeys();
-      expect(stableTranscriptKeys).toHaveLength(4);
+      let stableTranscriptKeys = transcriptKeys();
+      // The system prelude marker is present in the transcript as a suppressed
+      // system-context marker (no visible text), so the count includes it.
+      expect(stableTranscriptKeys).toHaveLength(5);
       expectUniqueOpaqueKeys(stableTranscriptKeys);
       const stableThreadKey = activeThreadKey();
       expectUniqueOpaqueKeys([stableThreadKey]);
@@ -1789,14 +1864,14 @@ describe("production App live concepts over the real native AppWire bridge", () 
         DRAFT_SENTINEL,
       );
 
-      chooseConcept("Constellation");
+      await chooseConcept("Constellation");
       expectConcept("concept-constellation");
       expectConversationEvidence(
         stableTranscriptKeys,
         stableThreadKey,
         DRAFT_SENTINEL,
       );
-      chooseConcept("Field Notes");
+      await chooseConcept("Field Notes");
       expectConcept("concept-field-notes");
       expectConversationEvidence(
         stableTranscriptKeys,
@@ -1804,17 +1879,123 @@ describe("production App live concepts over the real native AppWire bridge", () 
         DRAFT_SENTINEL,
       );
 
+      // Warning notification renders as a system message, never as user.
+      await sendNotification(
+        bridge,
+        notification("warning", {
+          ...common,
+          title: WARNING_TITLE,
+          message: WARNING_MESSAGE,
+        }),
+      );
+      expect(screen.getByText(WARNING_TITLE)).toBeInTheDocument();
+      expect(screen.getByText(WARNING_MESSAGE)).toBeInTheDocument();
+      // System messages are never user: the warning/failure article must not
+      // carry a user-message role or data-user attribute.
+      const warningArticle = screen.getByRole("article", {
+        name: /Failure/i,
+      });
+      expect(warningArticle).not.toHaveAttribute("data-user", "true");
+      expect(warningArticle).not.toHaveAttribute("data-item-kind", "user");
+      // System prelude is still suppressed after the warning.
+      expect(document.body.textContent ?? "").not.toContain(
+        SYSTEM_PRELUDE_SENTINEL,
+      );
+      // Bounded display: the warning appends exactly one failure item; the
+      // prior transcript keys are retained unchanged.
+      const warningTranscriptKeys = transcriptKeys();
+      expect(
+        warningTranscriptKeys.slice(0, stableTranscriptKeys.length),
+      ).toEqual(stableTranscriptKeys);
+      expect(warningTranscriptKeys).toHaveLength(
+        stableTranscriptKeys.length + 1,
+      );
+
+      // Load older: clicking the control issues thread/turns/list with the
+      // current older cursor; paging retains its cursor across the response.
+      const loadOlderCount = methodCount(bridge, "thread/turns/list") + 1;
+      fireEvent.click(screen.getByRole("button", { name: /^Load older/ }));
+      const olderRequest = await bridge.waitForServerRequest(
+        "thread/turns/list",
+        loadOlderCount,
+      );
+      expect(olderRequest.params).toMatchObject({
+        ref: ATTENTION_REF,
+        cursor: "older-cursor-live",
+      });
+      await act(async () => {
+        await bridge.respond(olderRequest, {
+          data: [
+            {
+              id: "turn-older",
+              itemsView: "full",
+              status: "completed",
+              items: [
+                {
+                  type: "userMessage",
+                  id: "older-item-live",
+                  text: OLDER_ITEM_TEXT,
+                },
+              ],
+              usage: { totalTokens: 0 },
+            },
+          ],
+          nextCursor: OLDER_NEXT_CURSOR,
+        });
+      });
+      expect(screen.getByText(OLDER_ITEM_TEXT)).toBeInTheDocument();
+      // Paging retains its cursor: the next cursor is stored for subsequent
+      // load-older requests.
+      const loadOlderCount2 = methodCount(bridge, "thread/turns/list") + 1;
+      fireEvent.click(screen.getByRole("button", { name: /^Load older/ }));
+      const olderRequest2 = await bridge.waitForServerRequest(
+        "thread/turns/list",
+        loadOlderCount2,
+      );
+      expect(olderRequest2.params).toMatchObject({
+        ref: ATTENTION_REF,
+        cursor: OLDER_NEXT_CURSOR,
+      });
+      await act(async () => {
+        await bridge.respond(olderRequest2, {
+          data: [],
+          nextCursor: "older-cursor-3",
+        });
+      });
+
+      // Questions: a question item renders the question UI.
+      await sendNotification(
+        bridge,
+        notification("item/started", {
+          ...common,
+          item: {
+            type: "agentMessage",
+            id: "question-live",
+            text: QUESTION_TEXT,
+            status: "inProgress",
+          },
+        }),
+      );
+      expect(screen.getByText(QUESTION_TEXT)).toBeInTheDocument();
+
+      // Re-capture the stable transcript keys after the warning, load-older,
+      // and question additions. These are now the expected stable set for
+      // all subsequent concept-switch and evidence assertions.
+      stableTranscriptKeys = transcriptKeys();
+      expectUniqueOpaqueKeys(stableTranscriptKeys);
+
       fireEvent.click(screen.getByRole("button", { name: "Work" }));
       const stableWorkKeys = workKeys();
-      expect(stableWorkKeys).toHaveLength(1);
+      // Work retains job + delegate + watch nodes.
+      expect(stableWorkKeys).toHaveLength(3);
       expectWorkEvidence(stableWorkKeys, stableThreadKey);
-      chooseConcept("Stillwater");
+      await chooseConcept("Stillwater");
       expectConcept("concept-stillwater");
       expectWorkEvidence(stableWorkKeys, stableThreadKey);
-      chooseConcept("Constellation");
+      await chooseConcept("Constellation");
       expectConcept("concept-constellation");
       expectWorkEvidence(stableWorkKeys, stableThreadKey);
-      chooseConcept("Field Notes");
+      await chooseConcept("Field Notes");
       expectConcept("concept-field-notes");
       expectWorkEvidence(stableWorkKeys, stableThreadKey);
       expectUniqueOpaqueKeys([
@@ -1846,9 +2027,9 @@ describe("production App live concepts over the real native AppWire bridge", () 
       });
       expectComposerPending("send", DRAFT_SENTINEL);
 
-      chooseConcept("Stillwater");
+      await chooseConcept("Stillwater");
       expectComposerPending("send", DRAFT_SENTINEL);
-      chooseConcept("Constellation");
+      await chooseConcept("Constellation");
       expectComposerPending("send", DRAFT_SENTINEL);
       expect(methodCount(bridge, "turn/start")).toBe(1);
       expect(methodCount(bridge, "thread/read")).toBe(1);
@@ -1948,27 +2129,31 @@ describe("production App live concepts over the real native AppWire bridge", () 
       });
       expect(methodCount(bridge, "thread/read")).toBe(2);
       const authoritativeTranscriptKeys = transcriptKeys();
-      expect(authoritativeTranscriptKeys).toHaveLength(5);
+      // The authoritative thread has 5 items, but the prior warning (failure)
+      // and question items survive the resync as retained conversation items.
+      expect(authoritativeTranscriptKeys).toHaveLength(7);
       expectUniqueOpaqueKeys(authoritativeTranscriptKeys);
       expect(authoritativeTranscriptKeys).not.toEqual(stableTranscriptKeys);
       expect(authoritativeTranscriptKeys).toContain(notificationReasoningKey);
+      // The 4 original items (user, assistant, reasoning, tool) overlap with
+      // the pre-resync stable set; the warning and question items also overlap.
       expect(
         authoritativeTranscriptKeys.filter((key) =>
           stableTranscriptKeys.includes(key),
         ),
-      ).toHaveLength(4);
+      ).toHaveLength(6);
       expectAuthoritativeConversationEvidence(
         authoritativeTranscriptKeys,
         stableThreadKey,
       );
 
-      chooseConcept("Field Notes");
+      await chooseConcept("Field Notes");
       expectConcept("concept-field-notes");
       expectAuthoritativeConversationEvidence(
         authoritativeTranscriptKeys,
         stableThreadKey,
       );
-      chooseConcept("Stillwater");
+      await chooseConcept("Stillwater");
       expectConcept("concept-stillwater");
       expectAuthoritativeConversationEvidence(
         authoritativeTranscriptKeys,
@@ -1977,13 +2162,14 @@ describe("production App live concepts over the real native AppWire bridge", () 
 
       fireEvent.click(screen.getByRole("button", { name: "Work" }));
       const authoritativeWorkKeys = workKeys();
-      expect(authoritativeWorkKeys).toHaveLength(1);
+      // Work retains job + delegate + watch through the authoritative resync.
+      expect(authoritativeWorkKeys).toHaveLength(3);
       expect(authoritativeWorkKeys).not.toEqual(stableWorkKeys);
       expectAuthoritativeWorkEvidence(authoritativeWorkKeys, stableThreadKey);
-      chooseConcept("Constellation");
+      await chooseConcept("Constellation");
       expectConcept("concept-constellation");
       expectAuthoritativeWorkEvidence(authoritativeWorkKeys, stableThreadKey);
-      chooseConcept("Field Notes");
+      await chooseConcept("Field Notes");
       expectConcept("concept-field-notes");
       expectAuthoritativeWorkEvidence(authoritativeWorkKeys, stableThreadKey);
       expectUniqueOpaqueKeys([
@@ -2042,6 +2228,8 @@ describe("production App live concepts over the real native AppWire bridge", () 
         "initialized",
         "thread/list",
         "thread/read",
+        "thread/turns/list",
+        "thread/turns/list",
         "turn/start",
         "turn/steer",
         "turn/queue",
@@ -2095,5 +2283,5 @@ describe("production App live concepts over the real native AppWire bridge", () 
       }
       tauriHarness.bridge = null;
     }
-  });
+  }, 30000); // and question flows; give it generous headroom. // waiting for the 100ms switcher crossfade) plus load-older, warning, // The composed graph test exercises many async concept switches (each
 });
