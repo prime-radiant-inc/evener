@@ -54,8 +54,9 @@ func (s *Subscriptions) Subscribe(connID, threadID string) {
 // previous subscriptions into its rollback snapshot, and removing the
 // buffering entry here would strand that snapshot (withdrawBuffered matches
 // on the live generation and would bail without restoring). The generation's
-// own commit/abort resolves the entry — commit keeps it live, abort restores
-// the snapshot minus this thread.
+// own commit/abort resolves the entry, either way honoring the drop: commit
+// (Release) removes the entry, abort restores the snapshot minus this
+// thread.
 func (s *Subscriptions) Unsubscribe(connID, threadID string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -187,6 +188,16 @@ func (s *Subscriptions) Release(connID, threadID string, generation uint64) ([]S
 	if sub == nil || !sub.buffering || sub.generation != generation {
 		return nil, false
 	}
+	if s.withdrawnLocked(connID, threadID) {
+		// The client unsubscribed this thread while the capture buffered it.
+		// Its unsubscribe already succeeded on the wire, so committing the
+		// entry live would resurrect a subscription the client dropped:
+		// honor the drop instead — remove the entry, release none of the
+		// buffered records, and consume the withdrawal record.
+		s.removeThreadLocked(connID, threadID)
+		s.clearWithdrawnLocked(connID, threadID)
+		return nil, true
+	}
 	release := make([]SequencedNotification, 0, len(sub.buffer))
 	for _, record := range sub.buffer {
 		if record.Seq > sub.cut {
@@ -195,10 +206,6 @@ func (s *Subscriptions) Release(connID, threadID string, generation uint64) ([]S
 	}
 	sub.buffering = false
 	sub.buffer = nil
-	// The generation committed: the entry is live, so any mid-capture
-	// unsubscribe record for it is spent — clear it, or a later capture's
-	// abort would wrongly skip restoring this thread.
-	s.clearWithdrawnLocked(connID, threadID)
 	return release, true
 }
 
@@ -240,10 +247,22 @@ func (s *Subscriptions) Connections(threadID string) []string {
 	return conns
 }
 
+// ConnectionCount reports how many connections hold a live interest in the
+// thread. An entry whose connection unsubscribed mid-capture does not count:
+// that client's unsubscribe already succeeded, and the entry only lingers as
+// bookkeeping until the capture's commit/abort resolves it — counting it
+// would let a subscription the client dropped hold the relay open.
 func (s *Subscriptions) ConnectionCount(threadID string) int {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
-	return len(s.byThread[threadID])
+	count := 0
+	for connID := range s.byThread[threadID] {
+		if s.withdrawnLocked(connID, threadID) {
+			continue
+		}
+		count++
+	}
+	return count
 }
 
 func (s *Subscriptions) RemoveConnection(connID string) {
