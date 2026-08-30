@@ -74,6 +74,16 @@ func ExplainSchemaError(toolName string, params, args map[string]any, instanceLo
 		return fmt.Sprintf("%s: argument %q has the wrong type or value.\nExample: %s", toolName, fullPath, minimalExample(params))
 	}
 
+	// A branch-combinator failure names no property: the deepest cause is the
+	// combinator (e.g. #/oneOf/0/not), so there is no field to walk and the
+	// missing-field fallback below would misreport a present, valid argument
+	// as missing (issue #618). Explain the constraint itself instead.
+	if isBranchKeyword(constraintKeyword) {
+		if msg := oneOfConstraintMessage(toolName, params, constraintKeyword); msg != "" {
+			return msg
+		}
+	}
+
 	switch {
 	case !haveField:
 		fmt.Fprintf(&b, "%s: arguments did not match the schema.", toolName)
@@ -322,6 +332,109 @@ func formatPath(segs []string) string {
 		b.WriteString(seg)
 	}
 	return b.String()
+}
+
+// isBranchKeyword reports whether a failing JSON-Schema keyword is one of the
+// combinators whose branches oneOfConstraintMessage can describe ("oneOf",
+// and the "not" that lives inside a oneOf branch — the delegate shape). A
+// keyword outside this set has no describable branch list; widening to
+// anyOf/allOf needs per-keyword branch phrasing (issues #621-625).
+func isBranchKeyword(keyword string) bool {
+	switch keyword {
+	case "oneOf", "not":
+		return true
+	}
+	return false
+}
+
+// oneOfConstraintMessage renders an honest explanation for a validation
+// failure caused by a branch-combinator constraint (today: the delegate
+// schema's oneOf sandbox/sandbox_net pairing rule) rather than by any single
+// argument's type or value. It describes each branch's requirements in terms
+// of the properties it constrains, so the model can see which argument
+// combination to change or omit. Returns "" when params carries no usable
+// branch list for the failing keyword or no branch can be described, letting
+// the caller fall back to the generic message.
+func oneOfConstraintMessage(toolName string, params map[string]any, keyword string) string {
+	branches, source := branchList(params, keyword)
+	if len(branches) == 0 {
+		return ""
+	}
+	var b strings.Builder
+	fmt.Fprintf(&b, "%s: arguments violate a conditional rule on the combination of arguments (the schema's %s constraint), not any single argument's type or value.", toolName, source)
+	rendered := false
+	for i, br := range branches {
+		desc := branchRequirement(br)
+		if desc == "" {
+			continue
+		}
+		rendered = true
+		fmt.Fprintf(&b, "\nBranch %d requires: %s.", i, desc)
+	}
+	if !rendered {
+		return ""
+	}
+	fmt.Fprintf(&b, "\nExample: %s", minimalExample(params))
+	return b.String()
+}
+
+// branchList returns the schema's branch list for the failing combinator
+// keyword and the keyword that names it in the message. A "not" failure
+// inside a oneOf branch (the delegate shape) has no top-level "not" list —
+// the failing not's KeywordLocation path was reduced to its last segment by
+// offendingKeyword — so it falls back to the enclosing oneOf and reports
+// that as the source keyword (keyword-path walking is issues #621-625).
+func branchList(params map[string]any, keyword string) (branches []any, source string) {
+	list, _ := params[keyword].([]any)
+	if list != nil {
+		return list, keyword
+	}
+	list, _ = params["oneOf"].([]any)
+	return list, "oneOf"
+}
+
+// branchRequirement renders one branch's requirement in prose: the
+// properties it requires, and for a "not" branch, the properties it forbids
+// being present.
+func branchRequirement(branch any) string {
+	schema, _ := branch.(map[string]any)
+	if schema == nil {
+		return ""
+	}
+	if forbidden := schemaMap(schema, "not"); forbidden != nil {
+		names := requiredNames(forbidden)
+		if len(names) == 0 {
+			return ""
+		}
+		return "do not send " + joinQuoted(names)
+	}
+	req := requiredNames(schema)
+	if len(req) == 0 {
+		return ""
+	}
+	parts := []string{"send all of " + joinQuoted(req)}
+	props := schemaProps(schema)
+	for _, name := range req {
+		prop := schemaMap(props, name)
+		if allowed := asStringSlice(prop["enum"]); len(allowed) > 0 {
+			parts = append(parts, fmt.Sprintf("%q must be one of %s", name, joinQuoted(allowed)))
+		}
+	}
+	return strings.Join(parts, ", ")
+}
+
+func joinQuoted(names []string) string {
+	quoted := make([]string, 0, len(names))
+	for _, n := range names {
+		quoted = append(quoted, strconv.Quote(n))
+	}
+	return strings.Join(quoted, ", ")
+}
+
+// schemaMap returns the named key's value as a non-nil object schema, or nil.
+func schemaMap(schema map[string]any, key string) map[string]any {
+	m, _ := schema[key].(map[string]any)
+	return m
 }
 
 // ExplainJSONError renders coaching for arguments still unparseable after
