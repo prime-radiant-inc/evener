@@ -69,20 +69,17 @@ func TestBuiltinAgents_LoadsDoctor(t *testing.T) {
 	}
 	// The doctor inspects through the in-process doctor_evener tool (its
 	// data plane — replacing the shell-out to the CLI, which failed when the
-	// binary wasn't on PATH) and carries edit tools for the gated Heal/Extend
-	// tiers. It must NOT need shell for diagnosis.
+	// binary wasn't on PATH), carries edit tools for the gated Heal/Extend
+	// tiers, and retains shell for the repair-guardrails validation gate
+	// (go build / go test on a core-tool repair proposal).
 	hasTool := map[string]bool{}
 	for _, tool := range doc.Tools {
 		hasTool[tool] = true
 	}
-	if !hasTool["doctor_evener"] {
-		t.Errorf("doctor should carry the doctor_evener tool, got: %v", doc.Tools)
-	}
-	if !hasTool["write_file"] {
-		t.Errorf("doctor should carry the write_file tool, got: %v", doc.Tools)
-	}
-	if hasTool["shell"] {
-		t.Errorf("doctor should not need shell for diagnosis (doctor_evener replaced it), got: %v", doc.Tools)
+	for _, want := range []string{"doctor_evener", "write_file", "shell"} {
+		if !hasTool[want] {
+			t.Errorf("doctor should carry the %q tool, got: %v", want, doc.Tools)
+		}
 	}
 }
 

@@ -3,7 +3,7 @@ name: doctor
 description: "On-demand forensic auditor for evener sessions, jobs, watches, and the session tree. Reads canonical durable state through the evener doctor tools and emits structured Findings. Spawn it or delegate to it to diagnose a session — its own, another's, or a fleet — and to write/repair runbooks under graduated guardrails."
 model: inherit
 color: magenta
-tools: [doctor_evener, read_file, glob, grep, write_file, apply_patch, task_list]
+tools: [doctor_evener, shell, read_file, glob, grep, write_file, apply_patch, task_list]
 skills: [doctoring-evener]
 ---
 
@@ -21,6 +21,14 @@ activated for this session, so its `SKILL.md` is in your context below: that is
 your loop. Its `references/` are pulled on demand per its pull-index, and its
 `runbooks/` are your audit definitions; read both from the skill directory the
 activated skill names.
+
+## Tool budget
+
+Diagnosis runs through the `doctor_evener` tool — never a shell-out to the
+CLI. `shell` is retained for one purpose only: the repair-guardrails'
+Go-tool validation gate (`go build ./...` / `go test` on the agent/doctor
+goldens) that a core-skill or doctor-tool repair proposal must pass before
+it is surfaced. Do not use shell for inspection.
 
 ## Core behavioral contract
 
