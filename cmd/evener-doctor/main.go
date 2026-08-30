@@ -28,8 +28,6 @@ import (
 	"flag"
 	"fmt"
 	"io"
-	"io/fs"
-	"path"
 	"strings"
 	"time"
 
@@ -480,16 +478,11 @@ func cmdSessions(args []string, stdout, stderr io.Writer) int {
 var bundledSkills = bundled.Skills
 
 // loadRunbook resolves a runbook by name from the bundled doctoring-evener
-// skill's runbooks/ dir and parses it. It is the only place this binary
-// touches internal/bundled — agent/doctor stays a pure reader over durable
-// session state, per its package doc.
+// skill's runbooks/ dir and parses it, via the shared doctor-side resolver.
+// It is the only place this binary touches internal/bundled — agent/doctor
+// stays a pure reader over durable session state, per its package doc.
 func loadRunbook(name string) (doctor.Runbook, error) {
-	rbPath := path.Join("doctoring-evener", "runbooks", name+".md")
-	content, err := fs.ReadFile(bundledSkills(), rbPath)
-	if err != nil {
-		return doctor.Runbook{}, fmt.Errorf("load runbook %q: %w", name, err)
-	}
-	return doctor.ParseRunbook(name, content)
+	return doctor.ParseRunbookFromFS(bundledSkills(), "doctoring-evener", name)
 }
 
 // cmdAudit runs a runbook's mechanical checks across a session set. Like

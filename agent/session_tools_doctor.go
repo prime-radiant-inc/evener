@@ -4,8 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"io/fs"
-	"path"
 	"slices"
 	"strings"
 	"time"
@@ -43,12 +41,10 @@ func doctorTools(deps *toolDeps) []tool.RegisteredTool {
 	}
 }
 
-// doctorEvenerCommandNames is the command enum shared by the definition and
-// the dispatcher — one source so the tool surface and dispatch cannot drift.
-var doctorEvenerCommandNames = []string{
-	"locate", "transcript", "apilog", "jobs", "mutations", "watches", "tree",
-	"turnids", "sessions", "audit", "plugins",
-}
+// doctorEvenerCommandNames is the single source for the command enum: the
+// definition's schema and this dispatcher both derive from it, so the tool
+// surface and dispatch cannot drift.
+var doctorEvenerCommandNames = tool.DoctorEvenerCommands()
 
 // doctorStateBase resolves the state root for one invocation: an explicit
 // state_dir argument wins; otherwise the session's own state root (the
@@ -88,32 +84,30 @@ func execDoctorEvener(deps *toolDeps, args map[string]any) (any, error) {
 	stateBase := doctorStateBase(deps, stringArg(args, "state_dir"))
 	selector := stringArg(args, "selector")
 
-	// Selector-less commands must reject a stray selector, not silently
-	// ignore it — the CLI's own usage error. An agent passing a selector to a
-	// sweep command believing it scopes to one session would otherwise get a
-	// state-root-wide result with no signal.
+	// Selector validation mirrors the CLI's own usage errors: an agent
+	// passing a selector to a sweep command believing it scopes to one
+	// session would otherwise get a state-root-wide result with no signal,
+	// and selector-taking commands must not run with an empty selector.
 	switch command {
 	case "turnids", "sessions", "audit", "plugins":
 		if strings.TrimSpace(selector) != "" {
 			return nil, fmt.Errorf("doctor command %q takes no selector (it is a state-root-wide sweep)", command)
 		}
+	default:
+		if err := doctorRequireSelector(command, selector); err != nil {
+			return nil, err
+		}
 	}
 
 	switch command {
 	case "locate":
-		if err := doctorRequireSelector(command, selector); err != nil {
-			return nil, err
-		}
 		return doctor.Locate(stateBase, selector)
 
 	case "transcript":
-		if err := doctorRequireSelector(command, selector); err != nil {
-			return nil, err
-		}
 		if v := stringArg(args, "count"); v != "" {
 			return doctor.Count(stateBase, selector, v)
 		}
-		if b, ok := doctorBoolArg(args, "health"); ok && b {
+		if shellBoolArg(args, "health") {
 			return doctor.TranscriptHealth(stateBase, selector)
 		}
 		opts := doctor.TranscriptOpts{Format: "markdown", TextMax: doctor.DefaultTextMax}
@@ -123,9 +117,9 @@ func execDoctorEvener(deps *toolDeps, args map[string]any) (any, error) {
 		if v := stringArg(args, "range"); v != "" {
 			opts.Range = v
 		}
-		if b, ok := doctorBoolArg(args, "full_text"); ok && b {
+		if shellBoolArg(args, "full_text") {
 			opts.TextMax = doctor.TextMaxFull
-		} else if n, ok := doctorIntArg(args, "text_max"); ok {
+		} else if n, ok := shellIntArg(args, "text_max"); ok {
 			if n <= 0 {
 				return nil, errors.New("text_max must be positive; use full_text to render turns with no cap")
 			}
@@ -134,40 +128,24 @@ func execDoctorEvener(deps *toolDeps, args map[string]any) (any, error) {
 		return doctor.Transcript(stateBase, selector, opts)
 
 	case "apilog":
-		if err := doctorRequireSelector(command, selector); err != nil {
-			return nil, err
-		}
-		if b, ok := doctorBoolArg(args, "validate"); ok && b {
+		if shellBoolArg(args, "validate") {
 			return doctor.ValidateAPILog(stateBase, selector)
 		}
-		if b, ok := doctorBoolArg(args, "health"); ok && b {
+		if shellBoolArg(args, "health") {
 			return doctor.APIHealth(stateBase, selector)
 		}
 		opts := doctor.APILogOpts{}
-		if b, ok := doctorBoolArg(args, "empty"); ok {
-			opts.EmptyOnly = b
-		}
-		if b, ok := doctorBoolArg(args, "errors"); ok {
-			opts.ErrorsOnly = b
-		}
-		if b, ok := doctorBoolArg(args, "cache_spikes"); ok {
-			opts.CacheSpikes = b
-		}
-		if n, ok := doctorIntArg(args, "threshold"); ok {
+		opts.EmptyOnly = shellBoolArg(args, "empty")
+		opts.ErrorsOnly = shellBoolArg(args, "errors")
+		opts.CacheSpikes = shellBoolArg(args, "cache_spikes")
+		if n, ok := shellIntArg(args, "threshold"); ok {
 			opts.SpikeThreshold = n
 		}
-		if b, ok := doctorBoolArg(args, "summary"); ok {
-			opts.SummaryOnly = b
-		}
-		if b, ok := doctorBoolArg(args, "recompute"); ok {
-			opts.Recompute = b
-		}
+		opts.SummaryOnly = shellBoolArg(args, "summary")
+		opts.Recompute = shellBoolArg(args, "recompute")
 		return doctor.APILog(stateBase, selector, opts)
 
 	case "jobs":
-		if err := doctorRequireSelector(command, selector); err != nil {
-			return nil, err
-		}
 		opts := doctor.JobOpts{}
 		if v := stringArg(args, "job_id"); v != "" {
 			opts.JobID = v
@@ -175,33 +153,24 @@ func execDoctorEvener(deps *toolDeps, args map[string]any) (any, error) {
 		return doctor.Jobs(stateBase, selector, opts)
 
 	case "mutations":
-		if err := doctorRequireSelector(command, selector); err != nil {
-			return nil, err
-		}
 		return doctor.Mutations(stateBase, selector)
 
 	case "watches":
-		if err := doctorRequireSelector(command, selector); err != nil {
-			return nil, err
-		}
 		opts := doctor.WatchOpts{}
 		if v := stringArg(args, "watch_id"); v != "" {
 			opts.WatchID = v
 		}
-		if b, ok := doctorBoolArg(args, "self_loops"); ok && b {
+		if shellBoolArg(args, "self_loops") {
 			opts.SelfLoopsOnly = true
 		}
 		return doctor.Watches(stateBase, selector, opts)
 
 	case "tree":
-		if err := doctorRequireSelector(command, selector); err != nil {
-			return nil, err
-		}
 		opts := doctor.TreeOpts{}
-		if n, ok := doctorIntArg(args, "depth"); ok {
+		if n, ok := shellIntArg(args, "depth"); ok {
 			opts.Depth = n
 		}
-		if b, ok := doctorBoolArg(args, "observers"); ok && b {
+		if shellBoolArg(args, "observers") {
 			opts.Observers = true
 		}
 		return doctor.Tree(stateBase, selector, opts)
@@ -212,7 +181,7 @@ func execDoctorEvener(deps *toolDeps, args map[string]any) (any, error) {
 	case "sessions":
 		opts := doctor.SessionsOpts{}
 		if v := stringArg(args, "since"); v != "" {
-			d, err := doctorParseDuration(v)
+			d, err := time.ParseDuration(v)
 			if err != nil {
 				return nil, fmt.Errorf("sessions since: %w", err)
 			}
@@ -244,17 +213,14 @@ func execDoctorEvener(deps *toolDeps, args map[string]any) (any, error) {
 			if len(opts.Sessions) > 0 {
 				return nil, errors.New("audit sessions and since are mutually exclusive")
 			}
-			d, err := doctorParseDuration(v)
+			d, err := time.ParseDuration(v)
 			if err != nil {
 				return nil, fmt.Errorf("audit since: %w", err)
 			}
 			opts.Since = d
 		}
 		res, err := doctor.RunAudit(stateBase, runbook, opts)
-		if err != nil {
-			return nil, err
-		}
-		return doctorCapAuditResult(res), nil
+		return res, err
 
 	case "plugins":
 		// Manager.Doctor includes a store-writability probe (create + remove one
@@ -272,39 +238,41 @@ func execDoctorEvener(deps *toolDeps, args map[string]any) (any, error) {
 	return nil, fmt.Errorf("unknown doctor command %q", command)
 }
 
-// doctorRowCap is the structural row cap for the two unbounded result shapes
-// (sessions enumeration and audit evidence). Capping rows inside the result
-// keeps the envelope valid JSON under the char limit — the mid-JSON truncation
-// the default strategy would otherwise produce. 500 rows is far under the
-// 600k-char limit at the row sizes ListSessions emits.
+// doctorRowCap is the structural row cap for the sessions enumeration. Capping
+// rows inside the result keeps the envelope valid JSON under the char limit —
+// the mid-JSON truncation the default strategy would otherwise produce. 500
+// rows is far under the 600k-char limit at the row sizes ListSessions emits.
 const doctorRowCap = 500
+
+// doctorSessionsEnvelope is the tool-layer result for the sessions command:
+// the library enumeration plus the cap disclosure. Embedding (rather than
+// putting these fields on the library type) follows the findSessionsEnvelope
+// convention in session_tools_find.go — capping is a presentation concern, so
+// the disclosure lives with the renderer, and agent/doctor's type stays clean.
+type doctorSessionsEnvelope struct {
+	doctor.SessionsResult
+	// Truncated reports that the sessions list was structurally capped at
+	// doctorRowCap rows.
+	Truncated bool `json:"truncated,omitempty"`
+	// TotalRows is the full row count before a structural cap.
+	TotalRows int `json:"total_rows,omitempty"`
+}
 
 // doctorCapSessionsRows structurally caps a sessions enumeration and discloses
 // the cut, mirroring find_session_transcripts' scan_truncated convention.
-func doctorCapSessionsRows(res doctor.SessionsResult) doctor.SessionsResult {
+// (audit evidence prose is capped at the producer — see joinSessionRefs in
+// agent/doctor/audit.go — so audit needs no tool-layer cap.)
+func doctorCapSessionsRows(res doctor.SessionsResult) doctorSessionsEnvelope {
 	if len(res.Sessions) <= doctorRowCap {
-		return res
+		return doctorSessionsEnvelope{SessionsResult: res}
 	}
-	kept := res.Sessions[:doctorRowCap]
-	return doctor.SessionsResult{
-		Sessions:   kept,
-		Unreadable: res.Unreadable,
-		Truncated:  true,
-		TotalRows:  len(res.Sessions),
+	total := len(res.Sessions)
+	res.Sessions = res.Sessions[:doctorRowCap]
+	return doctorSessionsEnvelope{
+		SessionsResult: res,
+		Truncated:      true,
+		TotalRows:      total,
 	}
-}
-
-// doctorCapAuditResult caps each finding's evidence session-ref list so a
-// fleet-wide trip (the 1,927-session case) cannot overflow the envelope; the
-// summary counts stay true.
-func doctorCapAuditResult(res doctor.AuditResult) doctor.AuditResult {
-	capped := res
-	for i := range capped.Findings {
-		if len(capped.Findings[i].Evidence.SessionRefs) > doctorRowCap {
-			capped.Findings[i].Evidence.SessionRefs = capped.Findings[i].Evidence.SessionRefs[:doctorRowCap]
-		}
-	}
-	return capped
 }
 
 // doctorRequireSelector rejects selector-less invocation of a
@@ -317,44 +285,9 @@ func doctorRequireSelector(command, selector string) error {
 	return nil
 }
 
-// doctorParseDuration accepts a Go duration string (h/m/s suffixes),
-// matching the CLI flag package's parsing of --since.
-func doctorParseDuration(v string) (time.Duration, error) {
-	return time.ParseDuration(v)
-}
-
 // doctorLoadRunbook resolves a runbook by name from the bundled
 // doctoring-evener skill's runbooks/ — the same resolution the CLI's
-// loadRunbook performs. Name sanitization rejects path traversal before the
-// FS join.
+// loadRunbook performs, shared through doctor.ParseRunbookFromFS.
 func doctorLoadRunbook(name string) (doctor.Runbook, error) {
-	if name == "" || strings.ContainsAny(name, "/\\") || strings.Contains(name, "..") {
-		return doctor.Runbook{}, fmt.Errorf("invalid runbook name %q", name)
-	}
-	rbPath := path.Join("doctoring-evener", "runbooks", name+".md")
-	content, err := fs.ReadFile(doctorBundledSkills(), rbPath)
-	if err != nil {
-		return doctor.Runbook{}, fmt.Errorf("load runbook %q: %w", name, err)
-	}
-	return doctor.ParseRunbook(name, content)
-}
-
-// doctorBoolArg reads a boolean argument; ok is false when absent or not a
-// bool.
-func doctorBoolArg(args map[string]any, key string) (bool, bool) {
-	v, ok := args[key].(bool)
-	return v, ok
-}
-
-// doctorIntArg reads an integer argument (JSON numbers decode as float64);
-// ok is false when absent or not numeric.
-func doctorIntArg(args map[string]any, key string) (int, bool) {
-	switch v := args[key].(type) {
-	case float64:
-		return int(v), true
-	case int:
-		return v, true
-	default:
-		return 0, false
-	}
+	return doctor.ParseRunbookFromFS(doctorBundledSkills(), "doctoring-evener", name)
 }

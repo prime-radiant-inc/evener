@@ -717,6 +717,14 @@ func DefFindSessionTranscripts() llm.ToolDefinition {
 // same commands and result shapes as the `evener doctor` CLI, executed against
 // the session's own state root by default so inspection never depends on a
 // shell, PATH, or cwd. Mirrors the doctoring-evener skill's command table.
+//
+// The command enum lives here as the single source: the definition's schema
+// and the agent-layer dispatcher both derive from DoctorEvenerCommands, so
+// the tool surface and dispatch cannot drift.
+func DoctorEvenerCommands() []string {
+	return []string{"locate", "transcript", "apilog", "jobs", "mutations", "watches", "tree", "turnids", "sessions", "audit", "plugins"}
+}
+
 func DefDoctorEvener() llm.ToolDefinition {
 	strictFalse := false
 	return llm.ToolDefinition{
@@ -729,7 +737,7 @@ func DefDoctorEvener() llm.ToolDefinition {
 			"properties": map[string]any{
 				"command": map[string]any{
 					"type":        "string",
-					"enum":        []string{"locate", "transcript", "apilog", "jobs", "mutations", "watches", "tree", "turnids", "sessions", "audit", "plugins"},
+					"enum":        DoctorEvenerCommands(),
 					"description": "Doctor subcommand, matching `evener doctor <cmd>`.",
 				},
 				"selector":  map[string]any{"type": "string", "description": "Session selector: local:<id>, proj:<hash>:<id>, or bare <id>. Required by selector-taking commands; rejected by sessions/audit/turnids/plugins."},

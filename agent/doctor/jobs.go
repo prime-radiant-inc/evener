@@ -169,19 +169,21 @@ type delegateCacheKey struct {
 // root, matching the uncached behavior where each session sees the error.
 // The root is resolved once here (not again inside stableDoctorDelegates for
 // the miss path): the miss path calls stableDoctorDelegatesForRoot directly.
+// Callers holding the session's meta already (ListSessions does) can skip the
+// per-session meta read with getForRoot.
 func (c delegateCache) get(paths Paths) (string, delegatestore.State, []string, error) {
-	if c == nil {
-		return stableDoctorDelegates(paths)
-	}
-	rootSessionID, err := resolveDelegateRoot(paths)
-	if err != nil {
-		return "", nil, nil, err
-	}
-	key := delegateCacheKey{bucketDir: paths.BucketDir, rootSessionID: rootSessionID}
+	return c.getForRoot(paths.BucketDir, resolveDelegateRoot(paths))
+}
+
+// getForRoot is get with a pre-resolved root — the caller already read the
+// session's meta and knows its job-tree root, so the cache lookup needs no
+// further I/O.
+func (c delegateCache) getForRoot(bucketDir, rootSessionID string) (string, delegatestore.State, []string, error) {
+	key := delegateCacheKey{bucketDir: bucketDir, rootSessionID: rootSessionID}
 	if entry, ok := c[key]; ok {
-		return delegateJournalPath(paths.BucketDir, rootSessionID), entry.state, entry.diagnostics, nil
+		return delegateJournalPath(bucketDir, rootSessionID), entry.state, entry.diagnostics, nil
 	}
-	path, state, diagnostics, err := stableDoctorDelegatesForRoot(paths.BucketDir, rootSessionID)
+	path, state, diagnostics, err := stableDoctorDelegatesForRoot(bucketDir, rootSessionID)
 	if err != nil {
 		return path, nil, nil, err
 	}
@@ -191,14 +193,14 @@ func (c delegateCache) get(paths Paths) (string, delegatestore.State, []string, 
 
 // resolveDelegateRoot returns the session id whose delegates.jsonl is the
 // lifecycle authority for this session: the meta's JobTreeRootSessionID when
-// set, else the session itself. It is also stableDoctorDelegates' cache key,
-// so both must resolve identically.
-func resolveDelegateRoot(paths Paths) (string, error) {
-	rootSessionID := paths.SessionID
+// set, else the session itself. It reads the session's meta from disk; callers
+// that already hold the meta (e.g. ListSessions' sweep) should trim
+// JobTreeRootSessionID themselves and call getForRoot instead.
+func resolveDelegateRoot(paths Paths) string {
 	if meta, err := schema.LoadSessionMeta(paths.BucketDir, paths.SessionID); err == nil && strings.TrimSpace(meta.JobTreeRootSessionID) != "" {
-		rootSessionID = strings.TrimSpace(meta.JobTreeRootSessionID)
+		return strings.TrimSpace(meta.JobTreeRootSessionID)
 	}
-	return rootSessionID, nil
+	return paths.SessionID
 }
 
 func delegateJournalPath(bucketDir, rootSessionID string) string {
@@ -208,11 +210,7 @@ func delegateJournalPath(bucketDir, rootSessionID string) string {
 // stableDoctorDelegates resolves the root session (meta.JobTreeRootSessionID
 // override, else the session itself) and reads that root's delegates.jsonl.
 func stableDoctorDelegates(paths Paths) (string, delegatestore.State, []string, error) {
-	rootSessionID, err := resolveDelegateRoot(paths)
-	if err != nil {
-		return "", nil, nil, err
-	}
-	return stableDoctorDelegatesForRoot(paths.BucketDir, rootSessionID)
+	return stableDoctorDelegatesForRoot(paths.BucketDir, resolveDelegateRoot(paths))
 }
 
 // stableDoctorDelegatesForRoot reads one resolved root's delegates.jsonl

@@ -49,17 +49,11 @@ func doctorToolForTest(t *testing.T, stateHome string) tool.RegisteredTool {
 	t.Cleanup(func() { sess.Close() })
 	drainSessionEvents(sess)
 
-	var registered tool.RegisteredTool
-	for _, rt := range doctorTools(newToolDeps(sess)) {
-		if rt.Definition.Name == "doctor_evener" {
-			registered = rt
-			break
-		}
+	tools := doctorTools(newToolDeps(sess))
+	if len(tools) != 1 || tools[0].Definition.Name != "doctor_evener" {
+		t.Fatalf("doctorTools = %d tools, want exactly one named doctor_evener", len(tools))
 	}
-	if registered.Definition.Name == "" {
-		t.Fatal("doctor_evener tool not registered")
-	}
-	return registered
+	return tools[0]
 }
 
 // TestDoctorEvener_LocateResolvesSelector proves the tool executes a locate
@@ -178,9 +172,9 @@ func TestDoctorEvener_SessionsAndAudit(t *testing.T) {
 	if err != nil {
 		t.Fatalf("doctor_evener sessions: %v", err)
 	}
-	sres, ok := out.(doctor.SessionsResult)
+	sres, ok := out.(doctorSessionsEnvelope)
 	if !ok {
-		t.Fatalf("sessions result = %T, want doctor.SessionsResult", out)
+		t.Fatalf("sessions result = %T, want doctorSessionsEnvelope", out)
 	}
 	if len(sres.Sessions) != 1 {
 		t.Errorf("sessions = %d, want 1 (fixture session is recent)", len(sres.Sessions))
@@ -346,9 +340,9 @@ func TestDoctorEvener_SessionsRowCapDisclosed(t *testing.T) {
 	if err != nil {
 		t.Fatalf("sessions: %v", err)
 	}
-	res, ok := out.(doctor.SessionsResult)
+	res, ok := out.(doctorSessionsEnvelope)
 	if !ok {
-		t.Fatalf("result = %T, want doctor.SessionsResult", out)
+		t.Fatalf("result = %T, want doctorSessionsEnvelope", out)
 	}
 	if len(res.Sessions) != doctorRowCap {
 		t.Errorf("rows = %d, want capped at %d", len(res.Sessions), doctorRowCap)
@@ -361,10 +355,10 @@ func TestDoctorEvener_SessionsRowCapDisclosed(t *testing.T) {
 	}
 }
 
-// TestDoctorEvener_EnumMatchesDefinition pins the definition's command enum
-// to the dispatcher's doctorEvenerCommandNames — two literal lists that would
-// otherwise drift silently (both reviewers flagged this gap).
-func TestDoctorEvener_EnumMatchesDefinition(t *testing.T) {
+// TestDoctorEvener_EnumSinglesource pins the definition's command enum to
+// the single-source list both the schema and the dispatcher derive from —
+// the definition must carry exactly that list in its schema.
+func TestDoctorEvener_EnumSinglesource(t *testing.T) {
 	def := tool.DefDoctorEvener()
 	props, ok := def.Parameters["properties"].(map[string]any)
 	if !ok {
@@ -374,26 +368,24 @@ func TestDoctorEvener_EnumMatchesDefinition(t *testing.T) {
 	if !ok {
 		t.Fatal("definition has no command property")
 	}
-	enum, ok := cmd["enum"].([]string)
+	want := tool.DoctorEvenerCommands()
+	raw, ok := cmd["enum"].([]any)
 	if !ok {
-		// JSON round-trip normalizes []string to []any
-		raw, ok2 := cmd["enum"].([]any)
-		if !ok2 {
+		if enum, ok2 := cmd["enum"].([]string); ok2 {
+			raw = make([]any, len(enum))
+			for i, v := range enum {
+				raw[i] = v
+			}
+		} else {
 			t.Fatalf("command enum = %T, want slice", cmd["enum"])
 		}
-		enum = make([]string, 0, len(raw))
-		for _, v := range raw {
-			if s, ok3 := v.(string); ok3 {
-				enum = append(enum, s)
-			}
-		}
 	}
-	if len(enum) != len(doctorEvenerCommandNames) {
-		t.Fatalf("enum has %d commands, dispatcher has %d", len(enum), len(doctorEvenerCommandNames))
+	if len(raw) != len(want) {
+		t.Fatalf("enum has %d commands, want %d", len(raw), len(want))
 	}
-	for i := range enum {
-		if enum[i] != doctorEvenerCommandNames[i] {
-			t.Errorf("enum[%d] = %q, dispatcher = %q — the lists drifted", i, enum[i], doctorEvenerCommandNames[i])
+	for i := range want {
+		if raw[i] != want[i] {
+			t.Errorf("enum[%d] = %v, want %q", i, raw[i], want[i])
 		}
 	}
 }
