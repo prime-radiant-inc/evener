@@ -570,8 +570,7 @@ func (c *delegateTreeController) completionEvidenceLocked(lease delegateLease) (
 func (c *delegateTreeController) escalateCompletionRequirement(lease delegateLease) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	decision := c.reduceFinishIntent(finishIntent{site: finishSiteWorkAdmitted, lease: lease})
-	return decision.err
+	return c.escalateCompletionRequirementLocked(lease)
 }
 
 func (c *delegateTreeController) escalateCompletionRequirementLocked(lease delegateLease) error {

@@ -122,11 +122,11 @@ type finishDecision struct {
 	// applies it.
 	latch finishLatchPlan
 	// effects are the abstract post-append effect descriptors, applied by
-	// finishEffectsLocked against post-append durable state.
+	// finishEffectsLocked against post-append durable state. Two idioms:
+	// append-carrying sites express evidence bumps as finishEffectBumpEvidence
+	// so they are skipped when the append fails; no-batch sites bump inline in
+	// the reducer.
 	effects []finishEffect
-	// live is the exact live state the reducer authenticated (pre-append,
-	// same lock scope), used by the latch shapes that target it.
-	live *delegateLiveState
 	// Outputs carried back through the unchanged wrapper signatures.
 	claim          *delegateSettlementClaim
 	continued      bool
@@ -345,9 +345,7 @@ func (c *delegateTreeController) stopTracksFinalizationLocked(lease delegateLeas
 	return covered
 }
 
-// reduceSupervisionBoundaryIntent is the supervision boundary: pending-steer
-// arbitration and stop precedence before ordinary nudge and hook work begins
-// outside the controller mutex.
+// reduceSupervisionBoundaryIntent is the supervision boundary.
 func (c *delegateTreeController) reduceSupervisionBoundaryIntent(intent finishIntent) finishDecision {
 	aggregate, live, err := c.exactLeaseLocked(intent.lease)
 	if err != nil {
@@ -384,10 +382,8 @@ func (c *delegateTreeController) reduceBeginFinalizationIntent(intent finishInte
 			if c.stop == nil {
 				return finishDecision{err: err}
 			}
-			_, active := c.stop.active[lease]
-			_, covered := c.stop.members[lease.delegateID]
 			if exactAggregate.Phase != delegatestore.PhaseStopping || exactAggregate.PendingStopSeq != c.stop.requestSeq ||
-				!active || !covered || exact.recoveryRequired || exact.binding == nil || !exact.binding.ready {
+				!c.stopTracksFinalizationLocked(lease) || exact.recoveryRequired || exact.binding == nil || !exact.binding.ready {
 				return finishDecision{err: err}
 			}
 			admitted = exact
@@ -441,14 +437,29 @@ func (c *delegateTreeController) reduceBeginFinalizationIntent(intent finishInte
 	return finishDecision{claim: claim}
 }
 
-// reduceCompleteSettlementIntent completes an ordinary settlement claim:
-// claim token/ready validation, running-phase admission, attention-claim
-// fencing, and the terminal-prepared journal batch.
+// authenticateSettlementClaimLocked is the shared claim-taking prefix:
+// exact-claim validation, the ready fence, and exact-lease authentication.
+// Callers that dereference claim fields before authenticating keep their own
+// claim-nil check first.
+func (c *delegateTreeController) authenticateSettlementClaimLocked(claim *delegateSettlementClaim) (*delegatestore.Aggregate, *delegateLiveState, error) {
+	if claim == nil || c.settlementClaims[claim.token] != claim {
+		return nil, nil, errDelegateStaleLease
+	}
+	if err := c.finalizationReadyLocked(claim); err != nil {
+		return nil, nil, err
+	}
+	return c.exactLeaseLocked(claim.lease)
+}
+
+// reduceCompleteSettlementIntent completes an ordinary settlement claim.
 func (c *delegateTreeController) reduceCompleteSettlementIntent(intent finishIntent) finishDecision {
 	claim, supplied := intent.claim, intent.packet
 	if claim == nil || claim.mode != delegateSettlementOrdinary || c.settlementClaims[claim.token] != claim {
 		return finishDecision{err: errDelegateStaleLease}
 	}
+	// Third step is admitLeaseLocked (phase admission with closing/reclamation/
+	// ancestor fences), not exactLeaseLocked — this site keeps its own chain so
+	// guard order (and therefore error identity) is unchanged.
 	if err := c.finalizationReadyLocked(claim); err != nil {
 		return finishDecision{err: err}
 	}
@@ -485,18 +496,53 @@ func (c *delegateTreeController) reduceCompleteSettlementIntent(intent finishInt
 // ordinary or terminal finalization must execute before the run's terminal
 // state is published.
 func (c *delegateTreeController) reduceAttentionResolutionsIntent(intent finishIntent) finishDecision {
-	claim := intent.claim
-	if claim == nil || c.settlementClaims[claim.token] != claim {
-		return finishDecision{err: errDelegateStaleLease}
-	}
-	if err := c.finalizationReadyLocked(claim); err != nil {
-		return finishDecision{err: err}
-	}
-	aggregate, live, err := c.exactLeaseLocked(claim.lease)
+	aggregate, live, err := c.authenticateSettlementClaimLocked(intent.claim)
 	if err != nil {
 		return finishDecision{err: err}
 	}
-	return finishDecision{attentionPlans: c.attentionResolutionPlansLocked(claim.lease, aggregate, live)}
+	return finishDecision{attentionPlans: c.attentionResolutionPlansLocked(intent.claim.lease, aggregate, live)}
+}
+
+// noActionClaimState is the outcome of the shared no-action eligibility prefix:
+// whether the claim is an ordinary claim with a known nil run error, and the
+// authenticated aggregate/live pair behind it.
+type noActionClaimState struct {
+	ordinaryEligible bool
+	aggregate        *delegatestore.Aggregate
+	live             *delegateLiveState
+}
+
+// authenticateNoActionClaimLocked is the shared no-action eligibility prefix
+// (claim identity, ordinary mode, known nil run error, ready fence, exact
+// lease, phase, base eligibility, evidence eligibility). Sites differ only in
+// the busy-vs-ineligible handling of the same outcomes, which readyErr carries
+// back: errDelegateStaleLease and exactLease/finalization errors are hard
+// failures for both; every other rejection is targetBusy-shaped and each
+// caller decides whether it means "not eligible" (prepare) or "refuse"
+// (finish). The phase check is caller-supplied because prepare admits only
+// PhaseRunning while finish also admits PhaseStopping.
+func (c *delegateTreeController) authenticateNoActionClaimLocked(claim *delegateSettlementClaim, allowStopping bool, readyErr error) (noActionClaimState, error) {
+	if claim == nil || c.settlementClaims[claim.token] != claim {
+		return noActionClaimState{}, errDelegateStaleLease
+	}
+	if claim.mode != delegateSettlementOrdinary || !claim.runErrorKnown || claim.runErr != nil {
+		return noActionClaimState{}, errDelegateTargetBusy
+	}
+	if readyErr != nil {
+		return noActionClaimState{}, readyErr
+	}
+	aggregate, live, err := c.exactLeaseLocked(claim.lease)
+	if err != nil {
+		return noActionClaimState{}, err
+	}
+	phaseOK := aggregate.Phase == delegatestore.PhaseRunning || (allowStopping && aggregate.Phase == delegatestore.PhaseStopping)
+	if !phaseOK || !c.noActionBaseEligibleLocked(aggregate, live) {
+		return noActionClaimState{}, errDelegateTargetBusy
+	}
+	if !noActionEvidenceEligible(live.binding.evidence) {
+		return noActionClaimState{}, errDelegateTargetBusy
+	}
+	return noActionClaimState{ordinaryEligible: true, aggregate: aggregate, live: live}, nil
 }
 
 // reducePrepareNoActionIntent binds the run's ordinary terminal fallback to
@@ -508,29 +554,20 @@ func (c *delegateTreeController) reducePrepareNoActionIntent(intent finishIntent
 	if claim == nil || c.settlementClaims[claim.token] != claim {
 		return finishDecision{err: errDelegateStaleLease}
 	}
-	if claim.mode != delegateSettlementOrdinary {
-		return finishDecision{}
-	}
-	if !claim.runErrorKnown || claim.runErr != nil {
-		return finishDecision{}
-	}
 	if err := c.finalizationReadyLocked(claim); err != nil {
 		if errors.Is(err, errDelegateTargetBusy) {
 			return finishDecision{}
 		}
 		return finishDecision{err: err}
 	}
-	aggregate, live, err := c.exactLeaseLocked(claim.lease)
+	state, err := c.authenticateNoActionClaimLocked(claim, false, nil)
+	if errors.Is(err, errDelegateTargetBusy) {
+		return finishDecision{}
+	}
 	if err != nil {
 		return finishDecision{err: err}
 	}
-	if aggregate.Phase != delegatestore.PhaseRunning || !c.noActionBaseEligibleLocked(aggregate, live) {
-		return finishDecision{}
-	}
-	evidence := live.binding.evidence
-	if !noActionEvidenceEligible(evidence) {
-		return finishDecision{}
-	}
+	evidence := state.live.binding.evidence
 	retained := cloneDelegateFinish(intent.finish)
 	evidence.fallback = &retained
 	c.evidenceVersion++
@@ -545,28 +582,16 @@ func (c *delegateTreeController) reduceNoActionFinishIntent(intent finishIntent)
 	if claim == nil || c.settlementClaims[claim.token] != claim {
 		return finishDecision{err: errDelegateStaleLease}
 	}
-	if claim.mode != delegateSettlementOrdinary {
-		return finishDecision{err: errDelegateTargetBusy}
-	}
-	if !claim.runErrorKnown || claim.runErr != nil {
-		return finishDecision{err: errDelegateTargetBusy}
-	}
-	if err := c.finalizationReadyLocked(claim); err != nil {
-		return finishDecision{err: err}
-	}
-	aggregate, live, err := c.exactLeaseLocked(claim.lease)
+	readyErr := c.finalizationReadyLocked(claim)
+	state, err := c.authenticateNoActionClaimLocked(claim, true, readyErr)
 	if err != nil {
 		return finishDecision{err: err}
 	}
-	if (aggregate.Phase != delegatestore.PhaseRunning && aggregate.Phase != delegatestore.PhaseStopping) ||
-		!c.noActionBaseEligibleLocked(aggregate, live) {
+	evidence := state.live.binding.evidence
+	if evidence.fallback == nil {
 		return finishDecision{err: errDelegateTargetBusy}
 	}
-	evidence := live.binding.evidence
-	if !noActionEvidenceEligible(evidence) || evidence.fallback == nil {
-		return finishDecision{err: errDelegateTargetBusy}
-	}
-	if aggregate.Phase == delegatestore.PhaseStopping {
+	if state.aggregate.Phase == delegatestore.PhaseStopping {
 		return finishDecision{finish: cloneDelegateFinish(*evidence.fallback)}
 	}
 	return finishDecision{finish: delegateFinish{
@@ -719,7 +744,6 @@ func (c *delegateTreeController) reduceRequireFinalizationRecoveryIntent(intent 
 		effects = append(effects, finishEffect{kind: finishEffectSignalStop})
 	}
 	return finishDecision{
-		live:    live,
 		latch:   finishLatchPlan{kind: finishLatchRecoveryConditional, live: live},
 		effects: effects,
 	}
