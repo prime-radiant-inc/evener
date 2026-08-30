@@ -103,19 +103,33 @@ func TestServeWebSocketPingsIdleReaderWhileBusyRPCHandlerRuns(t *testing.T) {
 	// Drive the actual ServeWebSocket keepalive goroutine while HandleMessage is
 	// held busy in a handler goroutine. Concurrent dispatch keeps the receive
 	// loop reading, so the gate observes an available reader and the keepalive
-	// pings even while the RPC handler is still held. The decision is emitted
-	// only after the gate has been consulted, so release is not time-based.
-	ticker.Tick()
-	select {
-	case attempted := <-decision:
-		if !attempted {
-			t.Fatal("keepalive did not attempt a ping while the receive loop was free and the RPC handler was busy")
+	// pings even while the RPC handler is still held.
+	//
+	// The receive loop's transition back to an available reader is not ordered
+	// against the handler goroutine reaching handlerStarted: dispatchMessage
+	// runs the handler on its own goroutine, so a tick can land while the loop
+	// is still between readerUnavailable() and its next readerAvailable(). Each
+	// tick reports one gate decision, so the condition under test is the first
+	// attempted decision, not the decision from the first tick. The receive
+	// loop deterministically parks in Recv with the reader available while the
+	// handler is held, so this wait terminates rather than polling a window.
+	busyPingDeadline := time.NewTimer(time.Minute)
+	defer busyPingDeadline.Stop()
+	released := false
+	for !released {
+		ticker.Tick()
+		select {
+		case attempted := <-decision:
+			if attempted {
+				release()
+				released = true
+			}
+		case <-idlePingSeen:
+			release()
+			released = true
+		case <-busyPingDeadline.C:
+			t.Fatal("keepalive never attempted a ping while the receive loop was free and the RPC handler was busy")
 		}
-		release()
-	case <-idlePingSeen:
-		release()
-	case <-time.After(time.Second):
-		t.Fatal("keepalive did not report the available-reader decision")
 	}
 
 	select {
