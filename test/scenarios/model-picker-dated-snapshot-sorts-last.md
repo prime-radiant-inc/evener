@@ -39,10 +39,13 @@ list.
 
 1. Send `model/list` over the authenticated AppWire connection and read the
    provider's group in `result.data` order.
-   Within each provider run, every id matching `-\d{8}(-v\d+)?$`
-   (`datedSnapshotSuffix`, `app_models.go#datedSnapshotSuffix`) must come after every id
-   in that run that doesn't. Providers themselves sort ascending
-   (`sortModelDescriptors`, `app_models.go`).
+   Within each provider run, every dated-snapshot id — a trailing
+   `-YYYYMMDD` with its optional `-vN`/`-vN:N` revision, or Vertex's
+   `@YYYYMMDD` (`isDatedSnapshotModelID`,
+   `app_models.go#isDatedSnapshotModelID`, which applies the registry's own
+   `registry.StripDatedSuffix`) — must come after every id in that run that
+   doesn't. Providers themselves sort ascending (`sortModelDescriptors`,
+   `app_models.go`).
 2. Same check through the TUI's own path: `modelPickerItems` applies the
    identical predicate over `buildModelPickerItems`'s unordered output
    (`cmd/evener-tui/hub_commands.go#modelPickerItems`).
