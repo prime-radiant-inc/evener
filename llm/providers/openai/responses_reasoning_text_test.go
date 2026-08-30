@@ -52,11 +52,13 @@ func TestAdapter_Stream_EmitsReasoningTextDeltas(t *testing.T) {
 
 // A reasoning item that carries plain reasoning_text content (no
 // encrypted_content) must still land in the settled message as a thinking
-// part, or the transcript loses everything the model thought.
+// part, or the transcript loses everything the model thought. Parts are
+// joined with the same blank line the stream emits between them, so the
+// settled text reads like the live view.
 func TestResponseContentFromOutputItems_KeepsReasoningTextContent(t *testing.T) {
 	var out []any
 	if err := json.Unmarshal([]byte(`[
-		{"id":"rs_1","type":"reasoning","content":[{"type":"reasoning_text","text":"Let me "},{"type":"reasoning_text","text":"think."}],"summary":[]},
+		{"id":"rs_1","type":"reasoning","content":[{"type":"reasoning_text","text":"Let me think."},{"type":"reasoning_text","text":"Then verify."}],"summary":[]},
 		{"type":"message","content":[{"type":"output_text","text":"Answer"}]}
 	]`), &out); err != nil {
 		t.Fatalf("unmarshal fixture: %v", err)
@@ -70,8 +72,8 @@ func TestResponseContentFromOutputItems_KeepsReasoningTextContent(t *testing.T) 
 	if th.Kind != llm.ContentThinking || th.Thinking == nil {
 		t.Fatalf("content[0] = %#v, want thinking part", th)
 	}
-	if th.Thinking.Text != "Let me think." {
-		t.Fatalf("thinking text = %q, want %q", th.Thinking.Text, "Let me think.")
+	if th.Thinking.Text != "Let me think.\n\nThen verify." {
+		t.Fatalf("thinking text = %q, want %q", th.Thinking.Text, "Let me think.\n\nThen verify.")
 	}
 	if th.Thinking.ID != "rs_1" {
 		t.Fatalf("thinking id = %q, want rs_1", th.Thinking.ID)
