@@ -621,16 +621,14 @@
   padding-block: 0.65rem 1rem;
 }
 
-.concept-stillwater.sw-conversation-skin
-  [data-testid="virtual-transcript-row"]
-  > article {
+.concept-stillwater.sw-conversation-skin [data-virtual-row] > article {
   min-width: 0;
   padding: 0.45rem max(0.8rem, var(--safe-area-right)) 0.45rem
     max(0.8rem, var(--safe-area-left));
 }
 
 .concept-stillwater.sw-conversation-skin
-  [data-testid="virtual-transcript-row"]
+  [data-virtual-row]
   > article[data-focused="true"] {
   outline: 3px solid color-mix(in srgb, var(--sw-focus) 55%, transparent);
   outline-offset: -3px;

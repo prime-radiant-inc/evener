@@ -108,7 +108,7 @@
   display: none;
 }
 
-.live-conversation-frame [data-testid="virtual-transcript-row"] {
+.live-conversation-frame [data-virtual-row] {
   contain: layout style;
 }
 
