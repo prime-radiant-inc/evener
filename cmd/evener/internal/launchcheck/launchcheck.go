@@ -278,9 +278,10 @@ func launchCheckModelVisible(behaviorTag string, live llm.ModelInfo, cat *llm.Mo
 
 // launchCheckCatalogModelInfo resolves catalog metadata for a live model ID,
 // delegating to the shared llm.ModelCatalog.ResolveLiveModelInfo so OpenRouter
-// bare live IDs (e.g. "anthropic/claude-sonnet-4.5") resolve against the
-// openrouter/-prefixed catalog entry. behaviorTag defaults to "openrouter" for
-// the launch-check path, which only calls this for openrouter instances.
+// bare live IDs (e.g. "anthropic/claude-3.7-sonnet") resolve against the
+// openrouter/-prefixed catalog entry when nothing else matches. behaviorTag
+// defaults to "openrouter" for the launch-check path, which only calls this
+// for openrouter instances.
 func launchCheckCatalogModelInfo(cat *llm.ModelCatalog, modelID string) *llm.ModelInfo {
 	return cat.ResolveLiveModelInfo("openrouter", modelID)
 }

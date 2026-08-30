@@ -68,6 +68,8 @@ func claudeCatalogFamilyID(modelID string) (string, bool) {
 	}
 	// OpenRouter and some mirrors spell versions with dots
 	// (claude-opus-4.6); the overrides file keys on the dashed convention.
+	// LookupModelInfo applies the same claude-scoped bridge at runtime; keep
+	// the two in step.
 	id = strings.ReplaceAll(id, ".", "-")
 	return familyModelID(id), true
 }

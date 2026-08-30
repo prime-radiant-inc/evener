@@ -366,25 +366,28 @@ func (launchCheckTimeoutError) Temporary() bool { return true }
 // TestLaunchCheckModelVisible_OpenRouterBareLiveID is the regression test for the
 // bug where the launch-check model list showed only ~10 OpenRouter models.
 // OpenRouter's /v1/models endpoint returns bare IDs like
-// "anthropic/claude-sonnet-4.5", but the catalog keys them as
-// "openrouter/anthropic/claude-sonnet-4.5". Before the shared
+// "anthropic/claude-3.7-sonnet", but the catalog keys them as
+// "openrouter/anthropic/claude-3.7-sonnet". Before the shared
 // llm.VisibleLiveModel rule, launchCheckCatalogModelInfo did an exact
 // GetModelInfo(bareID) that returned nil, so the tools filter dropped the model.
-// Now the shared ResolveLiveModelInfo applies the "openrouter/<id>" fallback.
+// The shared ResolveLiveModelInfo applies the "openrouter/<id>" fallback.
+// (The fixture is a model LookupModelInfo itself cannot resolve — newer
+// dotted Claude refs resolve to their dashed direct entries there, so this
+// pins the fallback with an id that still depends on it.)
 func TestLaunchCheckModelVisible_OpenRouterBareLiveID(t *testing.T) {
 	cat := llm.EmbeddedModelCatalog()
 
-	// Premise: only the prefixed key exists.
-	if cat.GetModelInfo("anthropic/claude-sonnet-4.5") != nil {
-		t.Fatal("test premise broken: bare anthropic/claude-sonnet-4.5 now exists as a key")
+	// Premise: only the prefixed key resolves the model.
+	if cat.LookupModelInfo("anthropic/claude-3.7-sonnet") != nil {
+		t.Fatal("test premise broken: anthropic/claude-3.7-sonnet now resolves without the tag-qualified fallback")
 	}
-	if cat.GetModelInfo("openrouter/anthropic/claude-sonnet-4.5") == nil {
-		t.Fatal("test premise broken: openrouter/anthropic/claude-sonnet-4.5 missing from catalog")
+	if cat.GetModelInfo("openrouter/anthropic/claude-3.7-sonnet") == nil {
+		t.Fatal("test premise broken: openrouter/anthropic/claude-3.7-sonnet missing from catalog")
 	}
 
-	// The bare live ID must now survive the launch-check visibility filter.
-	if !launchCheckModelVisible("openrouter", llm.ModelInfo{ID: "anthropic/claude-sonnet-4.5"}, cat) {
-		t.Error("bare OpenRouter live ID should be visible after the shared-helper fix")
+	// The bare live ID must survive the launch-check visibility filter.
+	if !launchCheckModelVisible("openrouter", llm.ModelInfo{ID: "anthropic/claude-3.7-sonnet"}, cat) {
+		t.Error("bare OpenRouter live ID should be visible via the tag-qualified fallback")
 	}
 }
 
