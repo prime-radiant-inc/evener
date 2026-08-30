@@ -71,7 +71,7 @@ Results are the CLI's `--json` struct shapes. The same commands also run as
 | `tree <sel>` | parent ↔ delegate/observer tree across buckets | `depth`, `observers` |
 | `turnids` | sweep every session under the state root for reserved turn ids minted inside the transcript's entry-index namespace — duplicate/overflow collisions | — |
 | `audit` | run a runbook's mechanical `audit:` checks across a whole session set, deduped into contract-valid Findings, plus a pattern × session-count summary and every non-mechanical CLASSIFY step surfaced as `manual` (never silently skipped) | `runbook NAME`, `sessions <sel,...>` \| `since DUR` |
-| `plugins` | plugin-store health — registry/disk drift, marketplace health, component validity, auto-upgrade sanity | — |
+| `plugins` | plugin-store health — registry/disk drift, marketplace health, component validity, auto-upgrade sanity. Note: its store-writability probe creates and removes one temp file in the plugin store (not session state), and it reads the default plugin store root, not the session's state root. | — |
 
 Flag-level detail lives in the CLI's per-subcommand `--help` and in the
 `doctor_evener` tool's argument descriptions, not here.
@@ -80,11 +80,11 @@ Flag-level detail lives in the CLI's per-subcommand `--help` and in the
 `errors_by_class`) reflect the compact fields recorded at call time, not a
 re-decode of the response body. Logs written before the
 Responses-API-decoder fix (WS1, merged to main 2026-08-06 as `812eb5c15`)
-can under-record non-empty responses as empty; run `evener doctor apilog <sel>
---recompute` to re-extract text/tool-call counts from the stored body for
-those rows (adds `recomputed_txt`/`recomputed_tools` columns and a
-`recomputed_nonempty` total) before trusting an empty-response verdict on
-pre-fix logs.
+can under-record non-empty responses as empty; call `doctor_evener` with
+command `apilog` and `recompute: true` to re-extract text/tool-call counts
+from the stored body for those rows (adds `recomputed_txt`/`recomputed_tools`
+columns and a `recomputed_nonempty` total) before trusting an empty-response
+verdict on pre-fix logs.
 
 ## The Finding contract (in brief)
 
@@ -109,11 +109,11 @@ FYI/PASS noise. **Healthy ⇒ zero findings.** Full schema:
 |---|---|
 | Hand-parse JSONL with grep/jq/python | Call `doctor_evener` |
 | Read an artifact before reading `data-model.md` | Consult the data model first |
-| Count `watch_send_pending` lines as deliveries | Read distinct deliveries from `evener doctor watches` |
+| Count `watch_send_pending` lines as deliveries | Read distinct deliveries from `doctor_evener` `watches` |
 | Read a watch with zero deliveries as broken delivery machinery | Read the `target job:` line on the same row — a target already terminal, or one that produced zero output bytes, could never match the condition |
-| `jq` the client-mutation store to see whether a message arrived | `evener doctor mutations <sel>` — absence from the journal is the "it never arrived" verdict |
+| `jq` the client-mutation store to see whether a message arrived | `doctor_evener` `mutations` — absence from the journal is the "it never arrived" verdict |
 | Treat a `delegate_send` text mention as a call | `doctor_evener` transcript with `count: delegate_send` |
-| Read a turn that ends in `…` as the whole response, or conclude "no loop" from `longest_identical_run: length=0` | Both are blind to repetition *inside* one response: a salvaged partial response's repeated calls are text, not tool calls. Re-read the turn with `evener doctor transcript --range <that turn> --full-text` before ruling a loop out |
-| Treat any self-influenced delivery as a bug, or re-derive a loop from the `Chain` | Self-influence is normal; flag only a runaway — read the recorded breaker telemetry (`max_self_influence_depth`, `runaway_drops`) via `evener doctor watches --self-loops` |
+| Read a turn that ends in `…` as the whole response, or conclude "no loop" from `longest_identical_run: length=0` | Both are blind to repetition *inside* one response: a salvaged partial response's repeated calls are text, not tool calls. Re-read the turn with `doctor_evener` `transcript`, `range` set to that turn and `full_text: true`, before ruling a loop out |
+| Treat any self-influenced delivery as a bug, or re-derive a loop from the `Chain` | Self-influence is normal; flag only a runaway — read the recorded breaker telemetry (`max_self_influence_depth`, `runaway_drops`) via `doctor_evener` `watches` with `self_loops: true` |
 | Emit a PASS / FYI / "looks fine" finding | Emit only confirmed, actionable problems; healthy ⇒ zero |
 | Silently apply a core-skill or doctor-tool repair | Propose only, behind review + the validation gate (`repair-guardrails.md`) |

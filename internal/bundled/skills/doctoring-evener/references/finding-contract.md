@@ -25,7 +25,7 @@ missed note costs nothing; a spurious finding makes a human triage noise.
 | `suggestedFix` | object | yes | the **routing** directive (below). |
 
 `evidence` sub-fields: `sessionRefs[]`, `watchIds[]`, `deliveryIds[]`,
-`transcriptTurns[]`, `doctorCommand` (the exact `evener doctor <cmd> …` that
+`transcriptTurns[]`, `doctorCommand` (the reproduction command — an `evener doctor <cmd> …` line that
 surfaces it — so a human can reproduce), `logSnippets[]`. Redact secrets from
 evidence.
 

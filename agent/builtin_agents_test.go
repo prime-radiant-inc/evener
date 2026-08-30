@@ -76,10 +76,13 @@ func TestBuiltinAgents_LoadsDoctor(t *testing.T) {
 	for _, tool := range doc.Tools {
 		hasTool[tool] = true
 	}
-	for _, want := range []string{"doctor_evener", "write_file", "shell"} {
+	for _, want := range []string{"doctor_evener", "read_file", "glob", "grep", "write_file", "apply_patch", "shell", "task_list"} {
 		if !hasTool[want] {
 			t.Errorf("doctor should carry the %q tool, got: %v", want, doc.Tools)
 		}
+	}
+	if len(doc.Tools) != 8 {
+		t.Errorf("doctor tool list = %v (%d), want exactly the 8 intended tools — an addition here needs a deliberate decision", doc.Tools, len(doc.Tools))
 	}
 }
 
