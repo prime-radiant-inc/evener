@@ -128,7 +128,8 @@ func TestDoDecodesStampsAndLogs(t *testing.T) {
 	defer srv.Close()
 	res := testRes(srv.URL, registry.AuthBearer)
 	sink := &captureSink{}
-	ctx := llm.WithAPIAttemptSink(llm.WithAPIAttemptGroup(context.Background(), llm.NewAPIAttemptGroup("ag_do")), sink)
+	group := llm.NewAPIAttemptGroup("ag_do")
+	ctx := llm.WithAPIAttemptSink(llm.WithAPIAttemptGroup(context.Background(), group), sink)
 	var out llm.Response
 	err := Do(ctx, &Call{Operation: "responses.create", EndpointFamily: "test", Method: http.MethodPost, URL: URL(res, res.Transport.Endpoint), Body: map[string]any{"metadata": map[string]string{"k": "v"}, "input": "hi"}, Req: llm.Request{Model: "m"}, Res: res, Client: srv.Client()}, func(r *Result) (*llm.Response, error) {
 		if r.Raw["id"] != "r1" || r.StatusCode != http.StatusOK || r.Header.Get("x-ratelimit-remaining-requests") != "7" || !strings.HasSuffix(r.EndpointURL, "/responses") {
@@ -153,6 +154,11 @@ func TestDoDecodesStampsAndLogs(t *testing.T) {
 	rec := sink.attempts[0]
 	if rec.ProviderInstance != "inst" || rec.Request.Protocol != res.Protocol || strings.Join(rec.Request.PrunedFields, ",") != "metadata" || *rec.Response.StatusCode != 200 {
 		t.Fatalf("record = %+v", rec)
+	}
+	// The same protocol is readable back off the group, which is how the
+	// agent stamps the wire protocol onto the assistant turn.
+	if got := group.Protocol(); got != res.Protocol {
+		t.Fatalf("group protocol = %q, want %q", got, res.Protocol)
 	}
 	raw, _ := json.Marshal(rec)
 	if strings.Contains(string(raw), "key-secret") || strings.Contains(string(raw), "gw-secret") {
