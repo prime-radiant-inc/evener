@@ -97,7 +97,7 @@ func TestValidateTaskEffortNormalizesCanonicalValues(t *testing.T) {
 	}{
 		{name: "canonical", input: " HIGH ", want: "high"},
 		{name: "inherit", input: " InHerIt ", want: ""},
-		{name: "disable alias", input: " none ", want: ""},
+		{name: "explicit off", input: " none ", want: "none"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			got, err := validateTaskEffort(tc.input)
