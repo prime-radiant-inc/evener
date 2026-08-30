@@ -346,7 +346,7 @@ func TestFallbackChain_RetryableSkipsFallback(t *testing.T) {
 	}
 }
 
-func TestFallbackChain_RejectsCrossProviderFallbacks(t *testing.T) {
+func TestFallbackChain_RejectsCrossSurfaceFallbacks(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
 	c := llm.NewClient()
@@ -354,7 +354,7 @@ func TestFallbackChain_RejectsCrossProviderFallbacks(t *testing.T) {
 	openaiAdapter := &agenttest.ModelTrackingAdapter{
 		Provider: "openai",
 		Respond: func(req llm.Request) (llm.Response, error) {
-			t.Errorf("adapter should not be called for invalid cross-provider fallback config")
+			t.Errorf("adapter should not be called for invalid cross-surface fallback config")
 			return llm.Response{}, nil
 		},
 	}
@@ -366,10 +366,10 @@ func TestFallbackChain_RejectsCrossProviderFallbacks(t *testing.T) {
 		ModelFallbacks: []string{"anthropic/claude-test", "fallback-b"},
 	})
 	if err == nil {
-		t.Fatal("NewSession succeeded with cross-provider fallback, want error")
+		t.Fatal("NewSession succeeded with cross-surface fallback, want error")
 	}
-	if !strings.Contains(err.Error(), "cross-provider fallbacks are not supported") {
-		t.Fatalf("error=%v, want cross-provider rejection", err)
+	if !strings.Contains(err.Error(), "cross-surface fallbacks are not supported") {
+		t.Fatalf("error=%v, want cross-surface rejection", err)
 	}
 }
 

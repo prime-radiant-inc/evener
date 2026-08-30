@@ -1375,36 +1375,40 @@ func (s *Session) validateModelFallbacks() error {
 // s.profile. It backs both validateModelFallbacks (all-or-nothing, run at
 // session init) and revalidateModelFallbacksLocked (per-entry, run after a
 // mid-session model switch commits).
+//
+// A slashed ref naming another instance is allowed when the two instances
+// share a surface (spec §7.5): the refusal exists because prompt and tool
+// surfaces differ, so a same-surface hop across instances is fine.
 func (s *Session) validateModelFallbackEntry(fbModel string) error {
-	// Always check whether the ref is a cross-provider switch, regardless of
-	// whether a resolver is present. Cross-provider fallbacks are unsupported
-	// because the prompt/tool surfaces differ between providers.
-	if parts := strings.SplitN(fbModel, "/", 2); len(parts) == 2 {
-		if s.profile.CrossProviderRef(fbModel) {
-			// Resolve to get the target provider name for the error message.
-			targetTag := strings.ToLower(parts[0]) // best-effort for the error message
-			fbProfile, crossProvider, err := s.resolveProfileForRef(s.profile, fbModel)
-			if err != nil {
-				return fmt.Errorf("model_fallbacks entry %q: %w", fbModel, err)
-			}
-			if crossProvider {
-				targetTag = fbProfile.BehaviorTag()
-			}
-			return fmt.Errorf("model_fallbacks entry %q switches provider from %q to %q; cross-provider fallbacks are not supported because provider prompt/tool surfaces differ", fbModel, s.profile.BehaviorTag(), targetTag)
-		}
+	parts := strings.SplitN(fbModel, "/", 2)
+	if len(parts) != 2 || !s.profile.CrossProviderRef(fbModel) {
+		// A ref reaching this point is same-instance. resolveProfileForRef only
+		// invokes the injected resolver for cross-instance refs, so a
+		// same-instance ref is a direct WithModel projection.
+		return nil
 	}
-	// A ref reaching this point is same-provider. resolveProfileForRef only
-	// invokes the injected resolver for cross-provider refs, which returned
-	// above; same-provider refs are a direct WithModel projection.
+	fbProfile, crossProvider, err := s.resolveProfileForRef(s.profile, fbModel)
+	if err != nil {
+		return fmt.Errorf("model_fallbacks entry %q: %w", fbModel, err)
+	}
+	if !crossProvider {
+		// Without a resolver the target instance never materializes as a
+		// profile, so its surface is unknowable and the entry cannot be shown
+		// compatible.
+		return fmt.Errorf("model_fallbacks entry %q switches from surface %q to instance %q, whose surface cannot be resolved; cross-surface fallbacks are not supported because prompt/tool surfaces differ", fbModel, s.profile.Surface(), strings.ToLower(parts[0]))
+	}
+	if fbProfile.Surface() != s.profile.Surface() {
+		return fmt.Errorf("model_fallbacks entry %q switches surface from %q to %q; cross-surface fallbacks are not supported because prompt/tool surfaces differ", fbModel, s.profile.Surface(), fbProfile.Surface())
+	}
 	return nil
 }
 
 // revalidateModelFallbacksLocked re-checks cfg.ModelFallbacks against the
 // session's current profile after a mid-session model switch commits,
-// dropping entries that no longer validate (cross-tag, or otherwise
+// dropping entries that no longer validate (cross-surface, or otherwise
 // unresolvable against the new profile) and returning their names in order.
-// A same-tag switch leaves every still-valid entry in place. Must be called
-// with s.mu held.
+// A same-surface switch leaves every still-valid entry in place. Must be
+// called with s.mu held.
 func (s *Session) revalidateModelFallbacksLocked() []string {
 	if len(s.cfg.ModelFallbacks) == 0 {
 		return nil
