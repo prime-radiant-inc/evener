@@ -350,21 +350,36 @@ func decodeDelegateArgs(args map[string]any) (delegateArgs, error) {
 		ReasoningEffort: stringArg(args, "reasoning_effort"),
 		WatchParent:     shellBoolArg(args, "watch_parent"),
 		Isolation:       stringArg(args, "isolation"),
-		Sandbox:         stringArg(args, "sandbox"),
+		Sandbox:         stringArg(args, "sandbox"), // may carry "+nonet" suffix or be "nonet" alone
 	}
-	// sandbox_net is a tri-state: absent stays nil so the delegate INHERITS the
-	// parent's network; present carries the explicit choice. A missing key must not
-	// read as false — that would silently force network off. A present-but-non-boolean
-	// value (e.g. the string "false" from a non-strict provider) is refused rather
-	// than silently decoded as inherit — the same silent no-op this surface refuses
-	// elsewhere (net-without-mode, net-with-off).
-	switch v := args["sandbox_net"].(type) {
-	case nil:
-		// omitted → inherit
-	case bool:
-		a.SandboxNet = &v
-	default:
-		return delegateArgs{}, errors.New("invalid_request: sandbox_net must be a JSON boolean (true or false, not a quoted string)")
+	// The sandbox field now encodes both mode and an optional network override
+	// in a single enum value. Values like "read-only+nonet" split into mode=
+	// "read-only" and sandbox_net=false. "nonet" alone means inherit the
+	// parent's mode and disable network. The legacy separate sandbox_net
+	// boolean field is no longer part of the schema, but we still accept it
+	// from in-process callers that build args directly (tests, scripted
+	// providers) so existing test fixtures don't break.
+	sandboxVal := strings.TrimSpace(a.Sandbox)
+	if sandboxVal == "nonet" || strings.HasSuffix(sandboxVal, "+nonet") {
+		// "nonet" alone (inherit parent mode, disable network) and any
+		// "<mode>+nonet" suffix both decode to a net-off request. The bare
+		// "nonet" value is advertised by the combined enum for non-off
+		// parents, so it must split here exactly like "+nonet".
+		mode := strings.TrimSuffix(sandboxVal, "+nonet")
+		if mode == "nonet" {
+			mode = ""
+		}
+		a.Sandbox = mode
+		netFalse := false
+		a.SandboxNet = &netFalse
+	}
+	if rawNet, exists := args["sandbox_net"]; exists {
+		switch v := rawNet.(type) {
+		case bool:
+			a.SandboxNet = &v
+		default:
+			return delegateArgs{}, errors.New("invalid_request: sandbox_net must be a JSON boolean (true or false, not a quoted string)")
+		}
 	}
 	// delegation_allowance: 0/absent = leaf delegate (cannot delegate); positive
 	// = grant; negative = invalid_request. Zero reads as unset (strict-zero rule).

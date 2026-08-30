@@ -8,7 +8,6 @@ import (
 	"maps"
 	"os"
 	"reflect"
-	"slices"
 	"testing"
 
 	"github.com/santhosh-tekuri/jsonschema/v5"
@@ -119,14 +118,9 @@ func TestExecTool_UnsupportedHostRejectsExplicitSandboxControlsBeforeRepair(t *t
 			invalidParameters: []string{"sandbox"},
 		},
 		{
-			name:              "sandbox_net",
-			args:              map[string]any{"sandbox_net": true},
-			invalidParameters: []string{"sandbox_net"},
-		},
-		{
-			name:              "sandbox and sandbox_net",
-			args:              map[string]any{"sandbox": "read-only", "sandbox_net": true},
-			invalidParameters: []string{"sandbox", "sandbox_net"},
+			name:              "sandbox with nonet suffix",
+			args:              map[string]any{"sandbox": "read-only+nonet"},
+			invalidParameters: []string{"sandbox"},
 		},
 	}
 	for _, tc := range tests {
@@ -175,7 +169,7 @@ func TestExecTool_SupportedHostPreservesExplicitSandboxControls(t *testing.T) {
 		wantNetwork bool
 	}{
 		{
-			name:        "sandbox",
+			name:        "sandbox base mode",
 			parentMode:  sandbox.ModeOff,
 			parentNet:   true,
 			args:        map[string]any{"sandbox": "read-only"},
@@ -183,18 +177,18 @@ func TestExecTool_SupportedHostPreservesExplicitSandboxControls(t *testing.T) {
 			wantNetwork: true,
 		},
 		{
-			name:        "sandbox_net",
+			name:        "nonet suffix disables network",
 			parentMode:  sandbox.ModeReadOnly,
 			parentNet:   true,
-			args:        map[string]any{"sandbox_net": false},
+			args:        map[string]any{"sandbox": "read-only+nonet"},
 			wantMode:    sandbox.ModeReadOnly,
 			wantNetwork: false,
 		},
 		{
-			name:        "sandbox and sandbox_net",
+			name:        "nonet suffix on write-capable mode",
 			parentMode:  sandbox.ModeOff,
 			parentNet:   true,
-			args:        map[string]any{"sandbox": "workspace-write", "sandbox_net": false},
+			args:        map[string]any{"sandbox": "workspace-write+nonet"},
 			wantMode:    sandbox.ModeWorkspaceWrite,
 			wantNetwork: false,
 		},
@@ -332,10 +326,8 @@ func TestDelegateSchemaOmitsUnsupportedSandboxControls(t *testing.T) {
 	s := sbxDelegateSession(t, sandbox.HostFacts{OS: "linux", Home: home})
 	params := delegateDefinitionParameters(t, s)
 	props := delegateDefinitionProperties(t, s)
-	for _, name := range []string{"sandbox", "sandbox_net"} {
-		if _, ok := props[name]; ok {
-			t.Errorf("unsupported-host schema exposes %q", name)
-		}
+	if _, ok := props["sandbox"]; ok {
+		t.Errorf("unsupported-host schema exposes %q", "sandbox")
 	}
 	compiled := compileDelegateParameters(t, params)
 	requireDelegateSchemaValidation(t, compiled, map[string]any{"task": "do work"}, true)
@@ -349,17 +341,16 @@ func TestDelegateSchemaHonorsParentConfinementAndNetwork(t *testing.T) {
 		parentMode         sandbox.Mode
 		parentNetwork      bool
 		parentWriteBlocked bool
-		wantModes          []string
-		wantNetworks       []bool
+		wantSandboxEnum    []string
 	}{
-		{name: "off parent", parentMode: sandbox.ModeOff, parentNetwork: true, wantModes: []string{"off", "read-only", "workspace-write", "restricted"}},
-		{name: "read-only parent", parentMode: sandbox.ModeReadOnly, parentNetwork: true, wantModes: []string{"read-only"}},
-		{name: "workspace-write parent", parentMode: sandbox.ModeWorkspaceWrite, parentNetwork: true, wantModes: []string{"read-only", "workspace-write", "restricted"}},
-		{name: "restricted parent", parentMode: sandbox.ModeRestricted, parentNetwork: true, wantModes: []string{"restricted"}},
-		{name: "write-blocked read-only parent", parentMode: sandbox.ModeReadOnly, parentNetwork: true, parentWriteBlocked: true, wantModes: []string{"read-only"}},
-		{name: "write-blocked restricted parent", parentMode: sandbox.ModeRestricted, parentNetwork: true, parentWriteBlocked: true},
-		{name: "write-blocked workspace-write parent", parentMode: sandbox.ModeWorkspaceWrite, parentNetwork: true, parentWriteBlocked: true, wantModes: []string{"read-only"}},
-		{name: "network-off parent", parentMode: sandbox.ModeWorkspaceWrite, parentNetwork: false, wantModes: []string{"read-only", "workspace-write", "restricted"}, wantNetworks: []bool{false}},
+		{name: "off parent", parentMode: sandbox.ModeOff, parentNetwork: true, wantSandboxEnum: []string{"off", "read-only", "read-only+nonet", "workspace-write", "workspace-write+nonet", "restricted", "restricted+nonet"}},
+		{name: "read-only parent", parentMode: sandbox.ModeReadOnly, parentNetwork: true, wantSandboxEnum: []string{"read-only", "read-only+nonet", "nonet"}},
+		{name: "workspace-write parent", parentMode: sandbox.ModeWorkspaceWrite, parentNetwork: true, wantSandboxEnum: []string{"read-only", "read-only+nonet", "workspace-write", "workspace-write+nonet", "restricted", "restricted+nonet", "nonet"}},
+		{name: "restricted parent", parentMode: sandbox.ModeRestricted, parentNetwork: true, wantSandboxEnum: []string{"restricted", "restricted+nonet", "nonet"}},
+		{name: "write-blocked read-only parent", parentMode: sandbox.ModeReadOnly, parentNetwork: true, parentWriteBlocked: true, wantSandboxEnum: []string{"read-only", "read-only+nonet", "nonet"}},
+		{name: "write-blocked restricted parent", parentMode: sandbox.ModeRestricted, parentNetwork: true, parentWriteBlocked: true, wantSandboxEnum: []string{"nonet"}},
+		{name: "write-blocked workspace-write parent", parentMode: sandbox.ModeWorkspaceWrite, parentNetwork: true, parentWriteBlocked: true, wantSandboxEnum: []string{"read-only", "read-only+nonet", "nonet"}},
+		{name: "network-off parent", parentMode: sandbox.ModeWorkspaceWrite, parentNetwork: false, wantSandboxEnum: []string{"read-only+nonet", "workspace-write+nonet", "restricted+nonet"}},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
@@ -368,45 +359,35 @@ func TestDelegateSchemaHonorsParentConfinementAndNetwork(t *testing.T) {
 			setParentSandboxForContractWithWriteBlocked(t, s, sbxBwrapFacts(home), lane, tc.parentMode, tc.parentNetwork, tc.parentWriteBlocked)
 			params := delegateDefinitionParameters(t, s)
 			props := delegateDefinitionProperties(t, s)
-			if len(tc.wantModes) == 0 {
+			if len(tc.wantSandboxEnum) == 0 {
 				if _, ok := props["sandbox"]; ok {
 					t.Fatalf("sandbox property exposed for parent with no accepted explicit modes: %#v", props["sandbox"])
 				}
 				compiled := compileDelegateParameters(t, params)
 				requireDelegateSchemaValidation(t, compiled, map[string]any{"task": "do work", "sandbox": "restricted"}, false)
-				requireDelegateSchemaValidation(t, compiled, map[string]any{"task": "do work", "sandbox_net": false}, true)
+				requireDelegateSchemaValidation(t, compiled, map[string]any{"task": "do work", "sandbox_net": false}, false)
 				return
 			}
+			if _, ok := props["sandbox_net"]; ok {
+				t.Fatalf("schema exposes a sandbox_net property; the combined enum replaced it: %#v", props["sandbox_net"])
+			}
+			if _, hasOneOf := params["oneOf"]; hasOneOf {
+				t.Fatalf("schema carries a oneOf constraint; the combined enum replaced it: %#v", params["oneOf"])
+			}
 			sandboxSchema := props["sandbox"].(map[string]any)
-			if got := sandboxSchema["enum"]; !reflect.DeepEqual(got, tc.wantModes) {
-				t.Fatalf("sandbox enum = %#v, want %#v", got, tc.wantModes)
-			}
-			netSchema := props["sandbox_net"].(map[string]any)
-			if len(tc.wantNetworks) == 0 {
-				if _, ok := netSchema["enum"]; ok {
-					t.Fatalf("sandbox_net unexpectedly constrained: %#v", netSchema["enum"])
-				}
-			} else if got := netSchema["enum"]; !reflect.DeepEqual(got, tc.wantNetworks) {
-				t.Fatalf("sandbox_net enum = %#v, want %#v", got, tc.wantNetworks)
-			}
-			_, hasConditionalNetworkRule := params["oneOf"]
-			if got, want := hasConditionalNetworkRule, tc.parentMode == sandbox.ModeOff; got != want {
-				t.Fatalf("off-parent network condition present = %v, want %v", got, want)
+			if got := sandboxSchema["enum"]; !reflect.DeepEqual(got, tc.wantSandboxEnum) {
+				t.Fatalf("sandbox enum = %#v, want %#v", got, tc.wantSandboxEnum)
 			}
 
 			compiled := compileDelegateParameters(t, params)
-			for _, mode := range []string{"off", "read-only", "workspace-write", "restricted"} {
-				requireDelegateSchemaValidation(t, compiled, map[string]any{"task": "do work", "sandbox": mode}, slices.Contains(tc.wantModes, mode))
+			// Every advertised combined value is schema-valid; an off+nonet combo
+			// (which the combined enum never lists) is schema-invalid, and a legacy
+			// sandbox_net property is rejected by additionalProperties:false.
+			for _, value := range tc.wantSandboxEnum {
+				requireDelegateSchemaValidation(t, compiled, map[string]any{"task": "do work", "sandbox": value}, true)
 			}
-			nonOffMode := tc.wantModes[len(tc.wantModes)-1]
-			for _, network := range []bool{false, true} {
-				wantValid := len(tc.wantNetworks) == 0 || slices.Contains(tc.wantNetworks, network)
-				requireDelegateSchemaValidation(t, compiled, map[string]any{"task": "do work", "sandbox": nonOffMode, "sandbox_net": network}, wantValid)
-			}
-			if tc.parentMode == sandbox.ModeOff {
-				requireDelegateSchemaValidation(t, compiled, map[string]any{"task": "do work", "sandbox": "off", "sandbox_net": false}, false)
-				requireDelegateSchemaValidation(t, compiled, map[string]any{"task": "do work", "sandbox_net": false}, false)
-			}
+			requireDelegateSchemaValidation(t, compiled, map[string]any{"task": "do work", "sandbox": "off+nonet"}, false)
+			requireDelegateSchemaValidation(t, compiled, map[string]any{"task": "do work", "sandbox_net": false}, false)
 		})
 	}
 }
@@ -422,11 +403,15 @@ func TestExecTool_WriteBlockedParentSchemaAndRuntimeContract(t *testing.T) {
 
 	params := delegateDefinitionParameters(t, s)
 	props := delegateDefinitionProperties(t, s)
-	if _, ok := props["sandbox"]; ok {
-		t.Fatal("write-blocked restricted parent schema advertises an unusable sandbox mode control")
+	sandboxSchema, ok := props["sandbox"].(map[string]any)
+	if !ok {
+		t.Fatal("write-blocked restricted parent schema omitted the sandbox property that carries the net-only control")
 	}
-	if _, ok := props["sandbox_net"]; !ok {
-		t.Fatal("write-blocked restricted parent schema removed the valid sandbox_net control")
+	if got := sandboxSchema["enum"]; !reflect.DeepEqual(got, []string{"nonet"}) {
+		t.Fatalf("write-blocked restricted parent sandbox enum = %#v, want [\"nonet\"] (net-only tightening only)", got)
+	}
+	if _, ok := props["sandbox_net"]; ok {
+		t.Fatal("write-blocked restricted parent schema exposes a sandbox_net property; the combined enum replaced it")
 	}
 	var wiredProps map[string]any
 	for _, def := range s.profileWireToolDefs() {
@@ -439,21 +424,26 @@ func TestExecTool_WriteBlockedParentSchemaAndRuntimeContract(t *testing.T) {
 	if wiredProps == nil {
 		t.Fatal("provider wire definitions omitted delegate")
 	}
-	if _, ok := wiredProps["sandbox"]; ok {
-		t.Fatal("provider wire schema advertises an unusable sandbox mode control")
+	if _, ok := wiredProps["sandbox"]; !ok {
+		t.Fatal("provider wire schema omitted the sandbox property that carries the net-only control")
 	}
-	if _, ok := wiredProps["sandbox_net"]; !ok {
-		t.Fatal("provider wire schema removed the valid sandbox_net control")
+	if _, ok := wiredProps["sandbox_net"]; ok {
+		t.Fatal("provider wire schema exposes a sandbox_net property; the combined enum replaced it")
 	}
 	compiled := compileDelegateParameters(t, params)
 	requireDelegateSchemaValidation(t, compiled, map[string]any{"task": "do work", "sandbox": "restricted"}, false)
-	requireDelegateSchemaValidation(t, compiled, map[string]any{"task": "do work", "sandbox_net": false}, true)
+	requireDelegateSchemaValidation(t, compiled, map[string]any{"task": "do work", "sandbox_net": false}, false)
+	requireDelegateSchemaValidation(t, compiled, map[string]any{"task": "do work", "sandbox": "nonet"}, true)
 
+	// "restricted" is not in the advertised enum, so schema prevalidation rejects
+	// it before the handler ever sees it: a PrevalOnly error with no delegate launch.
 	restricted := execDelegateForContract(t, s, map[string]any{"task": "do work", "sandbox": "restricted"})
-	requireDelegateSandboxExecError(t, restricted, []string{"sandbox"})
+	if !restricted.IsError || !restricted.PrevalOnly {
+		t.Fatalf("restricted exec result = %#v, want a prevalidation rejection (IsError=true, PrevalOnly=true)", restricted)
+	}
 	requireNoDelegatePreRepairState(t, s)
 
-	netOnly := execDelegateForContract(t, s, map[string]any{"task": "do work", "sandbox_net": false})
+	netOnly := execDelegateForContract(t, s, map[string]any{"task": "do work", "sandbox": "nonet"})
 	if netOnly.IsError {
 		t.Fatalf("write-blocked parent net-only tightening failed: %#v", netOnly)
 	}
@@ -543,9 +533,9 @@ func TestStableDelegateCreateTool_UnsupportedHostRejectsNetworkOnly(t *testing.T
 	_, home := sbxLane(t)
 	s := sbxDelegateSession(t, sandbox.HostFacts{OS: "linux", Home: home})
 	_, err := stableDelegateCreateTool(context.Background(), s, map[string]any{
-		"task":        "do work",
-		"sandbox_net": false,
+		"task":    "do work",
+		"sandbox": "nonet",
 	}, 8192)
-	requireDelegateSandboxRequestError(t, err, []string{"sandbox_net"})
+	requireDelegateSandboxRequestError(t, err, []string{"sandbox"})
 	requireNoDelegateLaunch(t, s)
 }

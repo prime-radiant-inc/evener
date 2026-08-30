@@ -153,7 +153,7 @@ func taskListParamsForExplain() map[string]any {
 						"status": map[string]any{"type": "string", "enum": []string{"open", "in_progress", "done", "cancelled"}},
 						"notes":  map[string]any{"type": "string"},
 					},
-					"required": []string{"id", "status"},
+					"required": []string{"id"},
 				},
 			},
 		},
@@ -207,11 +207,11 @@ func TestExplainSchemaError_ArrayItemMissingRequiredField(t *testing.T) {
 	params := taskListParamsForExplain()
 	args := map[string]any{
 		"action":  "update",
-		"updates": []any{map[string]any{"id": float64(1), "notes": "x"}},
+		"updates": []any{map[string]any{"status": "done", "notes": "x"}},
 	}
 	got := ExplainSchemaError("task_list", params, args, "updates/0", "")
-	want := "task_list: missing required argument \"status\" in updates[0].\n" +
-		"Required arguments in updates[0]: id (integer), status (string).\n" +
+	want := "task_list: missing required argument \"id\" in updates[0].\n" +
+		"Required arguments in updates[0]: id (integer).\n" +
 		"Example: {\"action\": \"...\"}"
 	if got != want {
 		t.Fatalf("got:\n%s\nwant:\n%s", got, want)

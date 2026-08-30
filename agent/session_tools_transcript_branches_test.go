@@ -181,9 +181,21 @@ func TestValidateJobReadArgs(t *testing.T) {
 		}
 	})
 	t.Run("format with offset rejected", func(t *testing.T) {
-		err := validateJobReadArgs(map[string]any{"format": "markdown", "offset_bytes": float64(1)}, retainedReadPage)
+		err := validateJobReadArgs(map[string]any{"format": "jsonl", "offset_bytes": float64(1)}, retainedReadPage)
 		if err == nil || !strings.Contains(err.Error(), "format cannot be combined") {
 			t.Fatalf("expected format+offset error, got %v", err)
+		}
+	})
+	t.Run("format markdown with offset accepted", func(t *testing.T) {
+		err := validateJobReadArgs(map[string]any{"format": "markdown", "offset_bytes": float64(1)}, retainedReadPage)
+		if err != nil {
+			t.Fatalf("expected markdown+offset to be accepted, got %v", err)
+		}
+	})
+	t.Run("format markdown with output_match accepted", func(t *testing.T) {
+		err := validateJobReadArgs(map[string]any{"format": "markdown", "output_match": "READY"}, retainedReadSearch)
+		if err != nil {
+			t.Fatalf("expected markdown+output_match to be accepted, got %v", err)
 		}
 	})
 	t.Run("format non-markdown", func(t *testing.T) {

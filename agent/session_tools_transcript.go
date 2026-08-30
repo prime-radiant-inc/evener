@@ -381,13 +381,15 @@ func validateJobReadArgs(args map[string]any, operation retainedReadOperation) e
 	if !formatSet {
 		return nil
 	}
+	if strings.TrimSpace(fmt.Sprint(format)) == formatMarkdown {
+		// markdown is the default view; it is always compatible with offset_bytes
+		// and output_match on job: refs, so accept it as a no-op format hint.
+		return nil
+	}
 	if operation != retainedReadDefault {
 		return errors.New("invalid_request: format cannot be combined with offset_bytes or output_match on job: refs")
 	}
-	if strings.TrimSpace(fmt.Sprint(format)) != formatMarkdown {
-		return errors.New("invalid_request: job: refs support only format=markdown")
-	}
-	return nil
+	return errors.New("invalid_request: job: refs support only format=markdown")
 }
 
 func compileOutputMatch(expression string) (*regexp.Regexp, error) {

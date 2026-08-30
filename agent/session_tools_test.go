@@ -198,14 +198,17 @@ func TestDelegateSurfaceUsesAgentRegistryCapabilities(t *testing.T) {
 	wantSandboxEnum := []string{
 		sandbox.ModeOff.String(),
 		sandbox.ModeReadOnly.String(),
+		sandbox.ModeReadOnly.String() + "+nonet",
 		sandbox.ModeWorkspaceWrite.String(),
+		sandbox.ModeWorkspaceWrite.String() + "+nonet",
 		sandbox.ModeRestricted.String(),
+		sandbox.ModeRestricted.String() + "+nonet",
 	}
 	if !slices.Equal(sandboxEnum, wantSandboxEnum) {
 		t.Fatalf("sandbox enum = %v, want %v", sandboxEnum, wantSandboxEnum)
 	}
-	if got := props["sandbox_net"].(map[string]any)["type"]; got != "boolean" {
-		t.Fatalf("sandbox_net type = %v, want boolean", got)
+	if _, hasNet := props["sandbox_net"]; hasNet {
+		t.Fatal("sandbox_net property should not exist in the combined-enum schema")
 	}
 
 	data := sess.buildPromptData(sess.currentEnv())
