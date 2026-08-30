@@ -238,7 +238,11 @@ export function CredentialsSection(_props: CredentialsSectionProps) {
           <div className={CLASS.groups}>
             {groups.map((group) => (
               <div key={group.providerId} className={CLASS.group}>
-                <div className={CLASS.groupHeader}>{group.providerId}</div>
+                {/* `name || id`, the same label the Add dialog gives a
+                    provider - one pane must not name a provider two ways. */}
+                <div className={CLASS.groupHeader}>
+                  {availableProviders.find((p) => p.id === group.providerId)?.name || group.providerId}
+                </div>
                 <ul className={CLASS.list}>
                   {group.instances.map((instance) => (
                     <InstanceRow

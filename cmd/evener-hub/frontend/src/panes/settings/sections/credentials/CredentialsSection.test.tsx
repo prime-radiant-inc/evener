@@ -89,6 +89,30 @@ describe("initial load", () => {
     expect(screen.getByText("personal")).toBeTruthy();
   });
 
+  // The Add dialog labels a provider `name || id`; the list has to call it
+  // the same thing, or ProviderDescriptor.name only ever appears in the form.
+  test("a group header prints the provider's display name when the registry supplies one", async () => {
+    const fake = connectFakeClient();
+    fake.on("evener/instance/list", () => ({
+      instances: [WORK],
+      availableProviders: [
+        { id: "anthropic", name: "Anthropic", protocol: "anthropic", auth: "bearer", implicit: true },
+      ],
+    }));
+    render(<CredentialsSection sectionId="credentials" />);
+    await screen.findByText("work");
+    expect(screen.getByText("Anthropic")).toBeTruthy();
+    expect(screen.queryByText("anthropic")).toBeNull();
+  });
+
+  test("a group header falls back to the raw providerId when no descriptor names it", async () => {
+    const fake = connectFakeClient();
+    fake.on("evener/instance/list", () => ({ instances: [WORK], availableProviders: [] }));
+    render(<CredentialsSection sectionId="credentials" />);
+    await screen.findByText("work");
+    expect(screen.getByText("anthropic")).toBeTruthy();
+  });
+
   test("empty state", async () => {
     const fake = connectFakeClient();
     fake.on("evener/instance/list", () => ({ instances: [], availableProviders: [] }));
