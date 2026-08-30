@@ -130,10 +130,10 @@ func registryClient(t *testing.T, instances map[string]registry.Provider, adapte
 	return registryClientAt(t, "", instances, nil, adapters...)
 }
 
-// registryClientAt is registryClient with two additions the wire tests need:
-// stateDir holds the continuation scope secret the plan is keyed from, and
-// the instances named in live keep their own transport instead of the mute
-// fake, so a session can dispatch at an httptest server for real.
+// registryClientAt is registryClient with the two additions a session test that
+// dispatches for real needs: stateDir holds the continuation scope secret the
+// plan is keyed from, and the instances named in live keep their own transport
+// instead of the mute fake, so the session reaches its httptest server.
 func registryClientAt(t *testing.T, stateDir string, instances map[string]registry.Provider, live []string, adapters ...llm.ProviderAdapter) *llm.Client {
 	t.Helper()
 	merged := map[string]registry.Provider{}
