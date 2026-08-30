@@ -148,9 +148,7 @@ func newForInstance(params InstanceParams) *adapter {
 		Headers:           params.Headers,
 		CredentialHeaders: params.CredentialHeaders,
 		// Local ollama models are unrelated to any upstream catalog entry
-		// that happens to share the bare name (see profile.go's
-		// suppressBareCatalogLookup, which applies the same rule on the
-		// session-config side).
+		// that happens to share the bare name.
 		SuppressCatalogDefaults: true,
 	}))
 }

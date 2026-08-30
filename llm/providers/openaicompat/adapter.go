@@ -40,8 +40,7 @@ type Adapter struct {
 	Adaptive bool
 	// CatalogTag is the provider behavior tag used for provider-qualified
 	// catalog lookups (e.g. "openrouter" so "minimax/minimax-m2" resolves the
-	// bundled "openrouter/minimax/minimax-m2" entry), mirroring
-	// newOpenAICompatProfile's lookup precedence. Empty means bare-only.
+	// bundled "openrouter/minimax/minimax-m2" entry). Empty means bare-only.
 	CatalogTag string
 	// SuppressCatalogDefaults skips the embedded-catalog fallback fill
 	// (fillFromCatalog) for models undeclared in Models. Set by providers

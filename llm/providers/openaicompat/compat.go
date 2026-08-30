@@ -279,16 +279,13 @@ func uniqueNormalizedModelCompat(
 // A declared non-reasoning model gets no effort gate.
 //
 // lookup is injected (production passes the embedded catalog's GetModelInfo)
-// so precedence is unit-testable with a fake catalog — the same seam
-// resolveOpenAICompatCatalogModel uses on the profile side.
+// so precedence is unit-testable with a fake catalog.
 func fillFromCatalog(mc *ModelCompat, lookup func(string) *llm.ModelInfo, catalogTag, model string) {
 	// Provider-qualified entry first (openrouter models are keyed
-	// "openrouter/<model>" in the bundled catalog), then the bare id —
-	// mirroring newOpenAICompatProfile's lookup precedence. EXACT lookups
-	// only: LookupModelInfo's last-segment canonicalization would let a
-	// namespaced gateway model like "local/gpt-4o" inherit the bundled
-	// gpt-4o defaults, which is exactly the cross-contamination the profile
-	// side avoids by using GetModelInfo.
+	// "openrouter/<model>" in the bundled catalog), then the bare id. EXACT
+	// lookups only: LookupModelInfo's last-segment canonicalization would let
+	// a namespaced gateway model like "local/gpt-4o" inherit the bundled
+	// gpt-4o defaults, which is cross-contamination between providers.
 	var mi *llm.ModelInfo
 	if catalogTag != "" {
 		mi = lookup(catalogTag + "/" + model)

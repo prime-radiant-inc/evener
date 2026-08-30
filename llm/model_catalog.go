@@ -329,9 +329,9 @@ func (c *ModelCatalog) ResolveLiveModelInfo(behaviorTag, modelID string) *ModelI
 // (ResolveLiveModelInfo). Other behavior tags do not gate on the catalog: a
 // live /models entry is visible as long as it is a chat model.
 //
-// This consolidates the visibility rule previously duplicated (and drifted)
-// between cmd/evener/internal/launchcheck.launchCheckModelVisible and
-// cmd/evener-hub/app_models.go's fetchLiveModels.
+// This consolidated the visibility rule the launch check and the hub's
+// fetchLiveModels had each grown their own copy of; both now list through
+// llm.Client.Models, which applies the spec §5 rule instead.
 //
 // live is the ModelInfo returned by the provider's ListModels call. It carries
 // capability data parsed from the live /models response (SupportsTools,
