@@ -57,10 +57,10 @@ func TestServeWebSocketPingsIdleReaderWhileBusyRPCHandlerRuns(t *testing.T) {
 	var releaseOnce sync.Once
 	release := func() { releaseOnce.Do(func() { close(releaseHandler) }) }
 	defer release()
-	HandleTyped(server.Router(), appwire.MethodThreadList, func(ctx context.Context, _ appwire.ThreadListParams) (appwire.ThreadListResponse, error) {
+	HandleTyped(server.Router(), appwire.MethodThreadRead, func(ctx context.Context, _ appwire.ThreadReadParams) (appwire.ThreadReadResponse, error) {
 		close(handlerStarted)
 		<-releaseHandler
-		return appwire.ThreadListResponse{Data: []appwire.Thread{{ID: "th_held"}}}, nil
+		return appwire.ThreadReadResponse{Thread: appwire.Thread{ID: "th_held"}}, nil
 	})
 	httpServer := httptest.NewServer(http.HandlerFunc(server.ServeWebSocket))
 	defer httpServer.Close()
@@ -91,7 +91,7 @@ func TestServeWebSocketPingsIdleReaderWhileBusyRPCHandlerRuns(t *testing.T) {
 
 	result := make(chan error, 1)
 	go func() {
-		_, err := client.ThreadList(ctx, appwire.ThreadListParams{})
+		_, err := client.ThreadRead(ctx, appwire.ThreadReadParams{Ref: "local:th_held"})
 		result <- err
 	}()
 	select {
@@ -101,18 +101,20 @@ func TestServeWebSocketPingsIdleReaderWhileBusyRPCHandlerRuns(t *testing.T) {
 	}
 
 	// Drive the actual ServeWebSocket keepalive goroutine while HandleMessage is
-	// held busy in a handler goroutine. Concurrent dispatch keeps the receive
-	// loop reading, so the gate observes an available reader and the keepalive
-	// pings even while the RPC handler is still held.
+	// held busy in a handler goroutine. A slow read dispatches on its own
+	// goroutine, which keeps the receive loop reading, so the gate observes an
+	// available reader and the keepalive pings even while the RPC handler is
+	// still held.
 	//
 	// The receive loop's transition back to an available reader is not ordered
 	// against the handler goroutine reaching handlerStarted: dispatchMessage
-	// runs the handler on its own goroutine, so a tick can land while the loop
-	// is still between readerUnavailable() and its next readerAvailable(). Each
-	// tick reports one gate decision, so the condition under test is the first
-	// attempted decision, not the decision from the first tick. The receive
-	// loop deterministically parks in Recv with the reader available while the
-	// handler is held, so this wait terminates rather than polling a window.
+	// runs a slow-read handler on its own goroutine, so a tick can land while
+	// the loop is still between readerUnavailable() and its next
+	// readerAvailable(). Each tick reports one gate decision, so the condition
+	// under test is the first attempted decision, not the decision from the
+	// first tick. The receive loop deterministically parks in Recv with the
+	// reader available while the handler is held, so this wait terminates
+	// rather than polling a window.
 	busyPingDeadline := time.NewTimer(time.Minute)
 	defer busyPingDeadline.Stop()
 	released := false
