@@ -2,7 +2,6 @@ package hub
 
 import (
 	"context"
-	"regexp"
 	"sort"
 	"strings"
 	"time"
@@ -12,6 +11,7 @@ import (
 	"primeradiant.com/evener/cmd/evener-hub/internal/appsource"
 	"primeradiant.com/evener/cmd/evener-hub/internal/hubcore"
 	"primeradiant.com/evener/cmdutil"
+	"primeradiant.com/evener/llm/registry"
 )
 
 var liveModelLoadClient = cmdutil.LoadClient
@@ -234,21 +234,19 @@ func normalizeModelDescriptor(model *appwire.ModelDescriptor) bool {
 	return model.Provider != "" && model.Model != ""
 }
 
-// datedSnapshotSuffix matches a trailing dated-snapshot suffix on a bare
-// model id (e.g. "-20251101"), plus an optional trailing LiteLLM version tag
-// ("-v1"). It mirrors llm/model_catalog_embedded.go's datedModelSuffix while
-// keeping this display-order rule local to the hub response.
-var datedSnapshotSuffix = regexp.MustCompile(`-\d{8}(-v\d+)?$`)
-
+// isDatedSnapshotModelID reports whether a model id names a dated snapshot
+// rather than a family. The rule is the registry's own — one implementation
+// covering "-YYYYMMDD", Bedrock's "-vN:N" revision and Vertex's "@YYYYMMDD"
+// — so the picker cannot disagree with resolution about what is dated.
 func isDatedSnapshotModelID(ref string) bool {
 	if i := strings.LastIndex(ref, "/"); i >= 0 {
 		ref = ref[i+1:]
 	}
-	return datedSnapshotSuffix.MatchString(ref)
+	return registry.StripDatedSuffix(ref) != ref
 }
 
 func prettifyModelDisplayName(id string) string {
-	base := datedSnapshotSuffix.ReplaceAllString(id, "")
+	base := registry.StripDatedSuffix(id)
 	segments := strings.Split(base, "-")
 	for idx, segment := range segments {
 		if segment == "" {

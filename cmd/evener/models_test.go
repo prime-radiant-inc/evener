@@ -5,11 +5,14 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
+	"primeradiant.com/evener/cmdutil"
 	"primeradiant.com/evener/llm/registry"
 )
 
@@ -28,16 +31,30 @@ func modelsTestEnv(t *testing.T) {
 
 // modelsFixture points every `evener models` load at the 40-provider
 // registry fixture, so the CLI tests are cheap and independent of whatever
-// catalog is embedded.
+// catalog is embedded. It goes in as the runtime catalog cache under the
+// test's own state root, which is the same file a real `evener models
+// refresh` writes and the same path Load prefers over the embedded snapshot
+// (spec §6.4) — no seam in the CLI for a test to reach through.
 func modelsFixture(t *testing.T) {
 	t.Helper()
 	data, err := os.ReadFile(filepath.Join("..", "..", "llm", "registry", "testdata", "models.dev.sample.json"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	old := cliRegistryOptions
-	t.Cleanup(func() { cliRegistryOptions = old })
-	cliRegistryOptions = []registry.Option{registry.WithSnapshot(data)}
+	dir := filepath.Join(cmdutil.DefaultStateRoot(), "catalog")
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "models.dev.json"), data, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	// The cache replaces the embedded snapshot only when it is newer, so the
+	// meta has to be dated after whatever ships in this build.
+	meta := fmt.Sprintf("{\"fetched_at\":%q,\"etag\":\"fixture\",\"source\":\"testdata/models.dev.sample.json\"}\n",
+		time.Now().Add(time.Hour).UTC().Format(time.RFC3339))
+	if err := os.WriteFile(filepath.Join(dir, "models.dev.meta.json"), []byte(meta), 0o600); err != nil {
+		t.Fatal(err)
+	}
 }
 
 func TestModelsInspect(t *testing.T) {

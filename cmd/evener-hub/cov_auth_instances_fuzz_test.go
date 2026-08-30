@@ -361,27 +361,36 @@ func FuzzAuthInstancesFactories(f *testing.F) {
 			t.Fatal(err)
 		}
 
-		// Inject filesystem failures after successful reads to cover each
-		// mutation's error contract independently of host permissions.
-		baseLayer := func() *registry.Layer {
-			return &registry.Layer{Tag: "config", Default: "base", Providers: map[string]registry.Provider{
-				"base":   {ID: "base", Base: "anthropic", APIKey: "sk-base"},
-				"second": {ID: "second", Base: "google", APIKey: "sk-second"},
-			}}
+		// Real filesystem failures, each after a successful registry load, so
+		// every mutation's error contract is covered on the path production
+		// takes: a sealed directory leaves providers.toml readable and its
+		// atomic temp file uncreatable, and a directory where the file should
+		// be fails the read itself.
+		sealedDir := filepath.Join(root, "sealed")
+		if err := os.MkdirAll(sealedDir, 0o700); err != nil {
+			t.Fatal(err)
 		}
-		failReg := newTestRegistry(t, istate, "", icreds, nil)
-		failWrite := &hubInstancesController{reg: failReg, auth: iauth,
-			readConfig:  func(string) (*registry.Layer, bool, error) { return baseLayer(), true, nil },
-			writeConfig: func(string, *registry.Layer) error { return errors.New("write") },
+		sealedPath := filepath.Join(sealedDir, "providers.toml")
+		if err := os.WriteFile(sealedPath, []byte("default = \"base\"\n[providers.base]\nbase = \"anthropic\"\napi_key = \"$BASE_KEY\"\n[providers.second]\nbase = \"google\"\napi_key = \"$SECOND_KEY\"\n"), 0o600); err != nil {
+			t.Fatal(err)
 		}
+		sealedReg := newTestRegistry(t, istate, sealedPath, icreds, map[string]string{"BASE_KEY": "sk-base", "SECOND_KEY": "sk-second"})
+		if err := os.Chmod(sealedDir, 0o555); err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { _ = os.Chmod(sealedDir, 0o755) })
+		failWrite := &hubInstancesController{reg: sealedReg, providersConfigPath: sealedPath, auth: iauth}
 		_ = failWrite.List()
 		_ = failWrite.Create(appwire.InstanceCreateParams{Name: "third", Base: "anthropic"})
 		_ = failWrite.Edit(appwire.InstanceEditParams{Name: "base"})
 		_ = failWrite.Remove(appwire.InstanceRemoveParams{Name: "second"})
 		_ = failWrite.SetDefault(appwire.InstanceSetDefaultParams{Name: "second"})
-		failRead := &hubInstancesController{reg: failReg, auth: iauth,
-			readConfig: func(string) (*registry.Layer, bool, error) { return nil, false, errors.New("read") },
+
+		unreadablePath := filepath.Join(root, "unreadable", "providers.toml")
+		if err := os.MkdirAll(unreadablePath, 0o700); err != nil {
+			t.Fatal(err)
 		}
+		failRead := &hubInstancesController{reg: sealedReg, providersConfigPath: unreadablePath, auth: iauth}
 		_ = failRead.Create(appwire.InstanceCreateParams{Name: "third", Base: "anthropic"})
 		_ = failRead.Edit(appwire.InstanceEditParams{Name: "base"})
 		_ = failRead.SetDefault(appwire.InstanceSetDefaultParams{Name: "base"})

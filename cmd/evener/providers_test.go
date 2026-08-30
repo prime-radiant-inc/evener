@@ -22,23 +22,62 @@ func providersTestEnv(t *testing.T, env map[string]string) string {
 	home := t.TempDir()
 	t.Setenv("XDG_CONFIG_HOME", home)
 	t.Setenv("XDG_STATE_HOME", t.TempDir())
-	lookup := func(name string) (string, bool) {
-		if v, ok := env[name]; ok {
-			return v, true
-		}
-		if name == "XDG_CONFIG_HOME" {
-			return home, true
-		}
-		return "", false
+	for _, name := range curatedProviderEnvVars(t) {
+		t.Setenv(name, "")
+		os.Unsetenv(name)
 	}
-	old := cliRegistryOptions
-	t.Cleanup(func() { cliRegistryOptions = old })
-	cliRegistryOptions = []registry.Option{registry.WithoutCache(), registry.WithEnv(lookup)}
+	for name, value := range env {
+		t.Setenv(name, value)
+	}
 	root := filepath.Join(home, "evener")
 	if err := os.MkdirAll(root, 0o700); err != nil {
 		t.Fatal(err)
 	}
 	return root
+}
+
+// curatedProviderEnvVars is every environment variable the curated registry
+// reads for a provider: each provider's api_key_env list and the {VAR}
+// placeholders its transport substitutes. The list is enumerated from the
+// registry itself rather than hand-written, so a provider added to the
+// overlay is isolated here with no edit — and the isolation is the real
+// process environment the CLI reads, not a lookup function injected past it.
+func curatedProviderEnvVars(t *testing.T) []string {
+	t.Helper()
+	r, err := registry.Load(
+		registry.WithOffline(true),
+		registry.WithoutCache(),
+		registry.WithNoUserLayer(),
+		registry.WithEnv(func(string) (string, bool) { return "", false }),
+	)
+	if err != nil {
+		t.Fatalf("enumerate curated provider variables: %v", err)
+	}
+	seen := map[string]bool{}
+	var names []string
+	add := func(name string) {
+		if name == "" || seen[name] {
+			return
+		}
+		seen[name] = true
+		names = append(names, name)
+	}
+	for _, id := range r.ProviderIDs() {
+		p, ok := r.Provider(id)
+		if !ok {
+			continue
+		}
+		for _, name := range p.APIKeyEnv {
+			add(name)
+		}
+		for _, name := range p.Transport.VarsEnv {
+			add(name)
+		}
+	}
+	if len(names) == 0 {
+		t.Fatal("the curated registry declares no provider variables; the isolation below would be vacuous")
+	}
+	return names
 }
 
 func writeProvidersToml(t *testing.T, root, body string) string {

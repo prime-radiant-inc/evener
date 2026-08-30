@@ -156,11 +156,15 @@ func TestPrettifyModelDisplayName(t *testing.T) {
 	cases := map[string]string{
 		"claude-opus-4-6":             "Claude Opus 4 6",
 		"claude-opus-4-6-20251101":    "Claude Opus 4 6", // dated snapshot suffix stripped first
-		"claude-opus-4-6-20251101-v1": "Claude Opus 4 6", // dated snapshot + LiteLLM version tag both stripped
-		"gpt-5.1":                     "Gpt 5.1",
-		"o3-deep-research":            "O3 Deep Research",
-		"glm-5.2":                     "Glm 5.2",
-		"bare":                        "Bare",
+		"claude-opus-4-6-20251101-v1": "Claude Opus 4 6", // dated snapshot + version tag both stripped
+		// Vertex dates with "@YYYYMMDD" and Bedrock adds a ":N" revision to
+		// its "-vN" tag; both are first-class catalog ids (spec §9.4).
+		"claude-sonnet-4-5@20250929":      "Claude Sonnet 4 5",
+		"claude-sonnet-4-5-20250929-v1:0": "Claude Sonnet 4 5",
+		"gpt-5.1":                         "Gpt 5.1",
+		"o3-deep-research":                "O3 Deep Research",
+		"glm-5.2":                         "Glm 5.2",
+		"bare":                            "Bare",
 	}
 	for id, want := range cases {
 		if got := prettifyModelDisplayName(id); got != want {
@@ -177,7 +181,13 @@ func TestIsDatedSnapshotModelID(t *testing.T) {
 		t.Error("dated snapshot suffix should be detected through a provider-qualified ref")
 	}
 	if !isDatedSnapshotModelID("claude-opus-4-6-20251101-v1") {
-		t.Error("dated snapshot suffix should still be detected with a trailing LiteLLM -v1 version tag")
+		t.Error("dated snapshot suffix should still be detected with a trailing -v1 version tag")
+	}
+	if !isDatedSnapshotModelID("claude-sonnet-4-5@20250929") {
+		t.Error("Vertex dates with @YYYYMMDD, which is a dated snapshot too")
+	}
+	if !isDatedSnapshotModelID("claude-sonnet-4-5-20250929-v1:0") {
+		t.Error("Bedrock's -vN:N revision follows the date, and the id is still dated")
 	}
 	if isDatedSnapshotModelID("claude-opus-4-6") {
 		t.Error("bare family id must not be treated as dated")

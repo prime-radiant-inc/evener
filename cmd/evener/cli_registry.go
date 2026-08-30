@@ -8,20 +8,14 @@ import (
 	"primeradiant.com/evener/llm/registry"
 )
 
-// cliRegistryOptions are extra registry options every read-only CLI load
-// appends; tests set it to inject a catalog fixture or a controlled
-// environment.
-var cliRegistryOptions []registry.Option
-
 // loadCLIRegistry loads the registry and the credentials store the way
 // `evener models` and `evener providers` do: offline, because `evener models
 // refresh` is the one explicit path to the network (spec §6.4, §11.1), plus
 // the caller's own options. An old-schema providers.toml comes back as
 // registry.ErrOldSchema and the command exits with it (spec §14.1).
 func loadCLIRegistry(extra ...registry.Option) (*registry.Registry, *credentials.Store, error) {
-	opts := make([]registry.Option, 0, len(cliRegistryOptions)+len(extra)+1)
+	opts := make([]registry.Option, 0, len(extra)+1)
 	opts = append(opts, registry.WithOffline(true))
-	opts = append(opts, cliRegistryOptions...)
 	opts = append(opts, extra...)
 	return cmdutil.LoadRegistry(opts...)
 }

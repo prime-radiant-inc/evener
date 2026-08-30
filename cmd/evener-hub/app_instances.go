@@ -25,22 +25,14 @@ type hubInstancesController struct {
 	reg                 *hubcore.ProviderRegistry
 	providersConfigPath string
 	auth                *hubAuthController
-	readConfig          func(string) (*registry.Layer, bool, error)
-	writeConfig         func(string, *registry.Layer) error
 	mu                  sync.Mutex
 }
 
 func (c *hubInstancesController) read() (*registry.Layer, bool, error) {
-	if c.readConfig != nil {
-		return c.readConfig(c.providersConfigPath)
-	}
 	return registry.ReadConfigFile(c.providersConfigPath)
 }
 
 func (c *hubInstancesController) write(l *registry.Layer) error {
-	if c.writeConfig != nil {
-		return c.writeConfig(c.providersConfigPath, l)
-	}
 	return registry.WriteConfigFile(c.providersConfigPath, l)
 }
 

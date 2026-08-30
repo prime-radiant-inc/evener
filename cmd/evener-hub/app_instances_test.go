@@ -561,12 +561,16 @@ func TestInstances_RefusalKindsAreDistinguishable(t *testing.T) {
 
 	t.Run("a write failure is not invalid params", func(t *testing.T) {
 		f := newInstancesFixture(t, map[string]string{"GROQ_API_KEY": "gk"})
-		// The filesystem stands in through the controller's own writer seam:
-		// a real unwritable path would also stop the registry loading, and
-		// then the refusal under test is never reached.
-		f.ctl.writeConfig = func(string, *registry.Layer) error {
-			return errors.New("providers.toml: write: no space left on device")
+		// A real unwritable directory, sealed after the registry has loaded
+		// the file inside it: the read Create makes still succeeds (0555 is
+		// readable), and the atomic write's temp file is what cannot be
+		// created. Sealing it before the load would refuse the write for the
+		// other reason — no registry — and never reach the refusal under test.
+		dir := filepath.Dir(f.tomlPath)
+		if err := os.Chmod(dir, 0o555); err != nil {
+			t.Fatalf("seal %s: %v", dir, err)
 		}
+		t.Cleanup(func() { _ = os.Chmod(dir, 0o755) })
 		err := f.ctl.Create(appwire.InstanceCreateParams{Name: "work", Base: "openai"})
 		if err == nil {
 			t.Fatal("a failed write must be reported")
@@ -575,7 +579,7 @@ func TestInstances_RefusalKindsAreDistinguishable(t *testing.T) {
 		if errors.As(err, &wire) && wire.Code == appwire.CodeInvalidParams {
 			t.Fatalf("err = %v, want the write error; InvalidParams blames the caller for the hub's failed write", err)
 		}
-		if !strings.Contains(err.Error(), "no space left on device") {
+		if !strings.Contains(err.Error(), "providers.toml: write:") {
 			t.Fatalf("err = %v, want the write failure verbatim", err)
 		}
 	})
