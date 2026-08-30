@@ -823,7 +823,7 @@ func TestToolIntentFromArguments(t *testing.T) {
 		want string
 	}{
 		{"intent", `{"intent":"do it"}`, "do it"},
-		{"intent priority", `{"intent":"a","purpose":"b"}`, "a"},
+		{"purpose ignored", `{"intent":"a","purpose":"b"}`, "a"},
 		{"non-string ignored", `{"intent":123}`, ""},
 		{"empty object", `{}`, ""},
 		{"invalid json", `not json`, ""},

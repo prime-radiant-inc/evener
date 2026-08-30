@@ -950,8 +950,8 @@ func writeToolCard(b *strings.Builder, callOwnerSeq int, tc *llm.ToolCallData, i
 	}
 }
 
-// writeToolCardLine emits the "- [status] `name` — purpose: <X> — input: <summary>"
-// header line for a tool card. The purpose segment is omitted when absent.
+// writeToolCardLine emits the "- [status] `name` — intent: <X> — input: <summary>"
+// header line for a tool card. The intent segment is omitted when absent.
 func writeToolCardLine(b *strings.Builder, status, name string, args json.RawMessage) {
 	fmt.Fprintf(b, "- [%s] `%s`", status, name)
 	if intent := toolIntent(args); intent != "" {
