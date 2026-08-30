@@ -47,3 +47,6 @@ docs/experiments/dashboard-session24.html
 
 # goreleaser output
 /dist/
+# roborev snapshots and per-machine reviewer config
+/.roborev/
+/.roborev.toml
