@@ -1,8 +1,12 @@
 # Using Evener with Ollama
 
-[Ollama](https://ollama.com/) lets you run open-weight LLMs locally. Evener
-ships with a built-in `ollama` provider that talks to Ollama's
-OpenAI-compatible Chat Completions endpoint at `/v1/chat/completions`.
+[Ollama](https://ollama.com/) lets you run open-weight LLMs locally. Evener's
+`ollama` provider speaks the `openai-chat` protocol (the same Chat
+Completions wire format every OpenAI-compatible vendor uses) with
+`auth = "optional-bearer"` and a host-normalizing rule, `host_rule =
+"ollama-host"`, that turns `OLLAMA_HOST`/`OLLAMA_BASE_URL` into a base URL.
+Functionally this is the same wire behavior as before; only the plumbing
+description changed.
 
 ## Quick start
 
@@ -28,45 +32,52 @@ OpenAI-compatible Chat Completions endpoint at `/v1/chat/completions`.
    default `http://localhost:11434`. Set `OLLAMA_HOST` or `OLLAMA_BASE_URL`
    to point at a non-default endpoint (see below).
 
-   Ollama is always registered as an addressable provider, but it never
-   becomes Evener's silent default — you must address it explicitly with a
-   provider-qualified model such as `--model ollama/llama3.1:8b` or
-   `EVENER_MODEL=ollama/llama3.1:8b`.
+   `ollama` carries **no curated `default_model`** — unlike every other
+   implicit provider except `azure` — so it's excluded from the automatic
+   default-instance ranking unless you add one, either
+   `[providers.ollama] default_model = "..."` in `providers.toml` (which
+   makes it eligible like any other instance, ranked at its `default_order`
+   position — last) or `default = "ollama"` explicitly. In practice, that
+   means `ollama` only becomes the live default when nothing else in the
+   environment resolves to a credentialed, default-model-bearing instance,
+   or when you name it yourself. **Being the only instance configured isn't
+   by itself enough:** if `ollama` is the sole instance and has no
+   `default_model`, resolving a bare model id fails with a "no default
+   model" error (the same pattern as `azure`), not a silent fallback to
+   `ollama` — you still have to address it as `ollama/<model>`, or add a
+   `default_model`.
 
 ## How it works
 
-The `ollama` provider is a thin wrapper around Evener's `openai-compatible`
-adapter. It posts standard OpenAI Chat Completions requests to
-`<base-url>/chat/completions` and parses the streaming SSE response.
-
-Models, tool calls, multimodal images (for models that support them), and
-`/v1/models` listing all flow through the existing OpenAI-compatible code
-path.
+`protocol = "openai-chat"` — the same Chat Completions protocol other
+implicit providers use. `auth = "optional-bearer"` sends a bearer token when
+a key resolves, and nothing otherwise. `host_rule = "ollama-host"` is the
+one normalizer described below. Models, tool calls, multimodal images (for
+models that support them), and `/v1/models` listing all flow through that
+protocol's normal code path.
 
 ## Environment variables
 
 | Variable | Purpose | Default |
 |---|---|---|
 | `OLLAMA_BASE_URL` | Full URL including `/v1` | `http://localhost:11434/v1` |
-| `OLLAMA_HOST` | Ollama's canonical env var (`host`, `host:port`, or full URL) | unset |
+| `OLLAMA_HOST` | Ollama's canonical env var (`host`, `host:port`, or full URL); used when `OLLAMA_BASE_URL` is unset | unset |
 | `OLLAMA_API_KEY` | API key for authenticated proxies or Ollama Cloud | unset |
 
-**Always registered:** the `ollama` provider is always available through
-provider-qualified model names such as `ollama/llama3.1:8b`. It is never
-auto-elected as Evener's default provider — that role goes to whichever
-conventional API-key provider you have configured (OpenAI, Anthropic,
-etc.). So leaving all OLLAMA_* env vars unset is fine; it just means
-Ollama answers on `http://localhost:11434/v1`.
+These three variables and their resolution order are unchanged. Resolution
+order for the base URL:
 
-Resolution order for the base URL:
-
-1. If `OLLAMA_BASE_URL` is set, it wins (used as-is, trailing slash stripped).
+1. If `OLLAMA_BASE_URL` is set, it wins (used as-is, trailing slash
+   stripped).
 2. Otherwise, if `OLLAMA_HOST` is set, it's normalized:
    - bare host (`ollama.local`) → `http://ollama.local:11434/v1`
    - host:port (`192.168.1.5:11434`) → `http://192.168.1.5:11434/v1`
+   - `localhost` → `http://localhost:11434/v1`
+   - a bare IPv6 literal (`::1`) → `http://[::1]:11434/v1`
    - full URL (`https://ollama.example.com`) → `https://ollama.example.com/v1`
-   - URL whose path already ends in `/v1` (e.g. `https://proxy/ollama/v1`) is preserved verbatim
-3. Otherwise (only `OLLAMA_API_KEY` set), the default `http://localhost:11434/v1` is used.
+   - a URL whose path already ends in `/v1` (e.g.
+     `https://proxy/ollama/v1`) is preserved verbatim
+3. Otherwise the default `http://localhost:11434/v1` is used.
 
 ## Examples
 
@@ -121,40 +132,30 @@ re-emitting the same call. For real coding-agent workloads, larger models
 
 ## Context length
 
-Ollama's `/v1/models` endpoint does not report `context_length`, so Evener
-cannot auto-detect the model's window from the API. Resolution order:
+Ollama's `/v1/models` still doesn't report `context_length`, so Evener still
+can't auto-detect a live model's real window from the API.
 
-1. The embedded model catalog. Many common Ollama models are catalogued
-   under `ollama/<name>` (e.g. `ollama/llama3.1` → 8192). Tagged variants
-   like `llama3.1:8b` fall back to the untagged base entry.
-2. **128K** generic default for unknown models.
+Every live-only model on `ollama` (or a pseudo-provider) now budgets against
+a **provider-level default of `context_window = 131072`**, so compaction
+still fires for a live-only model whose listing reports no window. The
+per-model catalog that used to ship a table like `8192` for `llama3.1` (with
+tag-stripping lookup) is gone entirely — there's no bundled per-model table
+anymore.
 
-So, for example, `--model ollama/llama3.1` or `--model
-ollama/llama3.1:8b` picks up the catalog's 8192 token window, while a
-model Evener has never heard of gets the 128K fallback. The catalog is
-conservative — it reflects each model family's typical default, not
-whatever you may have configured locally with `num_ctx`.
+The override the old catalog-based approach couldn't offer now exists: pin
+the real window on a model row in `providers.toml`:
 
-**Limitation:** Evener has no way to detect your actual configured
-`num_ctx`. The catalog is static. So if you bump `num_ctx` in a custom
-Modelfile, Evener will not know — and there is currently no override
-flag. Two failure modes:
+```toml
+[providers.ollama.models."llama3.1*"]
+context_window = 8192
+```
 
-- **Catalog says 8K, you have 32K configured:** Evener compacts too
-  aggressively and you lose useful context that Ollama would have
-  happily kept.
-- **Catalog says 128K (unknown model), you have 8K configured:** Evener
-  doesn't compact; Ollama silently truncates older messages and the
-  agent loses earlier turns without noticing.
-
-There's no clean workaround today. If you build a custom variant with
-a larger window, naming it under the same family
-(`llama3.1:8b-32k`) won't help — the tag-stripping catalog lookup
-will still resolve to `ollama/llama3.1` and pin you at 8192. Naming it
-something the catalog has never heard of (`my-llama-32k`) gets you the
-128K fallback, which over-shoots your real 32K window and exposes you
-to the silent-truncation failure mode above. For now, prefer Ollama
-models whose stock context window already matches your needs.
+This is a **flag-day narrowing**: anyone who relied on the bundled
+`llama3.1` → 8192 default being picked up automatically needs to add this
+pin themselves now, or compaction won't fire until 131072 tokens instead of
+8192 (see
+["Upgrading from the old schema"](llm-provider-config-and-launch.md#upgrading-from-the-old-schema)
+for the full list of flag-day changes).
 
 ## Troubleshooting
 
@@ -168,7 +169,9 @@ schemas. Try a larger or instruction-tuned model. Evener retries up to 3
 times before giving up.
 
 **Truncated long conversations** — the model's `num_ctx` is smaller than
-its advertised context window. See the **Context length** section above.
+the window Evener is budgeting against. Pin the real window with
+`[providers.ollama.models."<glob>"] context_window = ...`; see
+[Context length](#context-length) above.
 
 **Slow responses** — local inference is bound by your hardware. Use a
 quantized model (`:q4_K_M` etc.), a smaller model, or run Ollama on a
@@ -176,9 +179,8 @@ machine with a GPU and point Evener at it via `OLLAMA_HOST`.
 
 ## See also
 
-- [`llm-providers.md`](llm-providers.md) — how the `ollama` provider fits the
-  overall LLM provider architecture (it's a thin wrapper over the
-  OpenAI-compatible Chat Completions adapter).
+- [`llm-providers.md`](llm-providers.md) — the registry: layers, instances,
+  and how `ollama` fits the implicit-provider table.
 - [`llm-provider-config-and-launch.md`](llm-provider-config-and-launch.md) —
-  the `OLLAMA_HOST`/`OLLAMA_BASE_URL` env vars and how credentials/config reach
-  spawned sessions.
+  the `OLLAMA_HOST`/`OLLAMA_BASE_URL` env vars in context, and how config
+  reaches spawned sessions.
