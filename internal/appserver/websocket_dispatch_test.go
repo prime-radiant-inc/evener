@@ -57,23 +57,23 @@ func waitFor[T any](t *testing.T, what string, ch <-chan T) T {
 	}
 }
 
-// dispatchSlowFastServer builds a server whose thread/list handler blocks
-// until released, plus an http server speaking AppWire over WebSocket. The
-// release channel is closed by test cleanup so a parked handler can never
-// outlive the test.
+// dispatchSlowFastServer builds a server whose thread/read handler — a
+// slow-read method that dispatches concurrently — blocks until released, plus
+// an http server speaking AppWire over WebSocket. The release channel is
+// closed by test cleanup so a parked handler can never outlive the test.
 func dispatchSlowFastServer(t *testing.T) (*Server, *httptest.Server, chan struct{}) {
 	t.Helper()
 	server := NewServer(ServerConfig{ServerName: "test-server", Version: "test", SourceID: "local"})
 	handlerStarted := make(chan struct{})
 	releaseHandler := make(chan struct{})
-	HandleTyped(server.Router(), appwire.MethodThreadList, func(_ context.Context, _ appwire.ThreadListParams) (appwire.ThreadListResponse, error) {
+	HandleTyped(server.Router(), appwire.MethodThreadRead, func(_ context.Context, _ appwire.ThreadReadParams) (appwire.ThreadReadResponse, error) {
 		select {
 		case <-handlerStarted:
 		default:
 			close(handlerStarted)
 		}
 		<-releaseHandler
-		return appwire.ThreadListResponse{Data: []appwire.Thread{{ID: "th_held"}}}, nil
+		return appwire.ThreadReadResponse{Thread: appwire.Thread{ID: "th_held"}}, nil
 	})
 	httpServer := serveWebSocketHTTP(t, server)
 	t.Cleanup(func() {
@@ -87,8 +87,8 @@ func dispatchSlowFastServer(t *testing.T) (*Server, *httptest.Server, chan struc
 }
 
 // TestServeWebSocketSlowHandlerDoesNotDelayPing pins the fix itself: with one
-// handler parked mid-turn, the browser's app-level ping heartbeat completes
-// on the same connection while the slow handler is still running.
+// slow-read handler parked mid-turn, the browser's app-level ping heartbeat
+// completes on the same connection while the slow handler is still running.
 func TestServeWebSocketSlowHandlerDoesNotDelayPing(t *testing.T) {
 	_, httpServer, handlerStarted := dispatchSlowFastServer(t)
 	client := dialAppWireClient(t, httpServer)
@@ -96,7 +96,7 @@ func TestServeWebSocketSlowHandlerDoesNotDelayPing(t *testing.T) {
 
 	slowDone := make(chan error, 1)
 	go func() {
-		_, err := client.ThreadList(ctx, appwire.ThreadListParams{})
+		_, err := client.ThreadRead(ctx, appwire.ThreadReadParams{Ref: "local:th_held"})
 		slowDone <- err
 	}()
 	waitFor(t, "slow handler to start", handlerStarted)
@@ -123,44 +123,37 @@ func TestServeWebSocketSlowHandlerDoesNotDelayPing(t *testing.T) {
 }
 
 // TestServeWebSocketFastRequestCompletesWhileSlowHandlerRuns pins the other
-// half of the fix: a fast request issued after a slow one returns its own
-// response, correctly paired to its id, without waiting for the slow one.
+// half of the fix: a request issued after a parked slow read returns its own
+// response, correctly paired to its id, without waiting for the slow one —
+// the slow read dispatched on its own goroutine, so the receive loop stayed
+// free to handle the later request inline.
 func TestServeWebSocketFastRequestCompletesWhileSlowHandlerRuns(t *testing.T) {
 	server, httpServer, handlerStarted := dispatchSlowFastServer(t)
-	fastStarted := make(chan struct{})
-	fastRelease := make(chan struct{})
-	HandleTyped(server.Router(), appwire.MethodThreadRead, func(_ context.Context, _ appwire.ThreadReadParams) (appwire.ThreadReadResponse, error) {
-		close(fastStarted)
-		<-fastRelease
-		return appwire.ThreadReadResponse{Thread: appwire.Thread{ID: "th_fast"}}, nil
+	HandleTyped(server.Router(), appwire.MethodThreadList, func(_ context.Context, _ appwire.ThreadListParams) (appwire.ThreadListResponse, error) {
+		return appwire.ThreadListResponse{Data: []appwire.Thread{{ID: "th_fast"}}}, nil
 	})
 	client := dialAppWireClient(t, httpServer)
 	ctx := context.Background()
 
 	slowDone := make(chan error, 1)
 	go func() {
-		_, err := client.ThreadList(ctx, appwire.ThreadListParams{})
+		_, err := client.ThreadRead(ctx, appwire.ThreadReadParams{Ref: "local:th_held"})
 		slowDone <- err
 	}()
 	waitFor(t, "slow handler to start", handlerStarted)
 
 	fastDone := make(chan error, 1)
 	go func() {
-		_, err := client.ThreadRead(ctx, appwire.ThreadReadParams{Ref: "local:th_fast"})
+		_, err := client.ThreadList(ctx, appwire.ThreadListParams{})
 		fastDone <- err
 	}()
-	waitFor(t, "fast handler to start while the slow handler was busy", fastStarted)
-
-	// Release only the fast handler; the slow one stays parked. If dispatch
-	// were still serial, the fast response could never arrive.
-	close(fastRelease)
 	select {
 	case err := <-fastDone:
 		if err != nil {
 			t.Fatalf("fast request failed while slow handler was busy: %v", err)
 		}
 	case <-time.After(time.Second):
-		t.Fatal("fast request was head-of-line blocked behind a slow handler")
+		t.Fatal("fast request was head-of-line blocked behind a slow read")
 	}
 
 	select {
@@ -212,38 +205,38 @@ func TestServeWebSocketRejectsRequestsBeforeInitialize(t *testing.T) {
 // other's.
 func TestServeWebSocketResponsesPairToIDsWhenHandlersCompleteOutOfOrder(t *testing.T) {
 	server := NewServer(ServerConfig{ServerName: "test-server", Version: "test", SourceID: "local"})
+	slowStarted := make(chan struct{})
 	releaseSlow := make(chan struct{})
-	slowResult := appwire.ThreadListResponse{Data: []appwire.Thread{{ID: "th_slow"}}}
-	fastResult := appwire.ThreadReadResponse{Thread: appwire.Thread{ID: "th_fast"}}
-	HandleTyped(server.Router(), appwire.MethodThreadList, func(_ context.Context, _ appwire.ThreadListParams) (appwire.ThreadListResponse, error) {
+	slowResult := appwire.ThreadReadResponse{Thread: appwire.Thread{ID: "th_slow"}}
+	fastResult := appwire.ThreadListResponse{Data: []appwire.Thread{{ID: "th_fast"}}}
+	HandleTyped(server.Router(), appwire.MethodThreadRead, func(_ context.Context, _ appwire.ThreadReadParams) (appwire.ThreadReadResponse, error) {
+		close(slowStarted)
 		<-releaseSlow
 		return slowResult, nil
 	})
-	fastStarted := make(chan struct{})
-	HandleTyped(server.Router(), appwire.MethodThreadRead, func(_ context.Context, _ appwire.ThreadReadParams) (appwire.ThreadReadResponse, error) {
-		close(fastStarted)
+	HandleTyped(server.Router(), appwire.MethodThreadList, func(_ context.Context, _ appwire.ThreadListParams) (appwire.ThreadListResponse, error) {
 		return fastResult, nil
 	})
 	httpServer := serveWebSocketHTTP(t, server)
 	client := dialAppWireClient(t, httpServer)
 	ctx := context.Background()
 
-	slowDone := make(chan appwire.ThreadListResponse, 1)
+	slowDone := make(chan appwire.ThreadReadResponse, 1)
 	slowErr := make(chan error, 1)
 	go func() {
-		resp, err := client.ThreadList(ctx, appwire.ThreadListParams{})
+		resp, err := client.ThreadRead(ctx, appwire.ThreadReadParams{Ref: "local:th_slow"})
 		slowDone <- resp
 		slowErr <- err
 	}()
-	fastDone := make(chan appwire.ThreadReadResponse, 1)
+	waitFor(t, "slow handler to start", slowStarted)
+	fastDone := make(chan appwire.ThreadListResponse, 1)
 	fastErr := make(chan error, 1)
 	go func() {
-		resp, err := client.ThreadRead(ctx, appwire.ThreadReadParams{Ref: "local:th_fast"})
+		resp, err := client.ThreadList(ctx, appwire.ThreadListParams{})
 		fastDone <- resp
 		fastErr <- err
 	}()
 
-	waitFor(t, "fast handler to start while the slow handler was pending", fastStarted)
 	select {
 	case err := <-fastErr:
 		if err != nil {
@@ -253,8 +246,8 @@ func TestServeWebSocketResponsesPairToIDsWhenHandlersCompleteOutOfOrder(t *testi
 		t.Fatal("fast response was blocked behind the slow request")
 	}
 	resp := waitFor(t, "fast response payload", fastDone)
-	if resp.Thread.ID != "th_fast" {
-		t.Fatalf("fast response paired to wrong result: %+v", resp.Thread)
+	if len(resp.Data) != 1 || resp.Data[0].ID != "th_fast" {
+		t.Fatalf("fast response paired to wrong result: %+v", resp.Data)
 	}
 
 	close(releaseSlow)
@@ -262,8 +255,8 @@ func TestServeWebSocketResponsesPairToIDsWhenHandlersCompleteOutOfOrder(t *testi
 		t.Fatalf("slow request failed after release: %v", err)
 	}
 	slowResp := waitFor(t, "slow response payload", slowDone)
-	if len(slowResp.Data) != 1 || slowResp.Data[0].ID != "th_slow" {
-		t.Fatalf("slow response paired to wrong result: %+v", slowResp.Data)
+	if slowResp.Thread.ID != "th_slow" {
+		t.Fatalf("slow response paired to wrong result: %+v", slowResp.Thread)
 	}
 }
 
@@ -310,70 +303,88 @@ func TestServeWebSocketBurstOfConcurrentRequestsAllPairCorrectly(t *testing.T) {
 	}
 }
 
-// TestServeWebSocketInFlightOverflowAnswersUnavailableAndPingStillAnswered
-// pins the in-flight limiter: with every slot held by a blocking handler, the
-// next request is answered promptly with a retryable Unavailable wire error —
-// not parked, not disconnected — and ping still answers on the same
-// connection, because the limiter never blocks the receive loop.
-func TestServeWebSocketInFlightOverflowAnswersUnavailableAndPingStillAnswered(t *testing.T) {
+// TestConcurrentDispatchMethodsAreExactlyTheSlowReads pins the dispatch
+// policy's method set: only the known-slow read methods leave the receive
+// loop; every mutation — and every other read — stays serial per connection.
+func TestConcurrentDispatchMethodsAreExactlyTheSlowReads(t *testing.T) {
+	for _, method := range []string{
+		appwire.MethodThreadRead,
+		appwire.MethodThreadTurnsList,
+		appwire.MethodEvenerSubagentPreview,
+	} {
+		if !concurrentDispatchMethod(method) {
+			t.Errorf("%s should dispatch concurrently", method)
+		}
+	}
+	for _, method := range []string{
+		appwire.MethodThreadList,
+		appwire.MethodTurnStart,
+		appwire.MethodTurnSteer,
+		appwire.MethodThreadClear,
+		appwire.MethodThreadModelSet,
+		appwire.MethodPing,
+		appwire.MethodInitialize,
+	} {
+		if concurrentDispatchMethod(method) {
+			t.Errorf("%s should dispatch inline", method)
+		}
+	}
+}
+
+// TestServeWebSocketMutationsDispatchSeriallyPerConnection pins the serial
+// half of the dispatch contract: a later request on the same connection does
+// not begin until an earlier non-slow-read request completes, so handlers
+// outside the slow-read set keep the per-connection ordering they were
+// written against.
+func TestServeWebSocketMutationsDispatchSeriallyPerConnection(t *testing.T) {
 	server := NewServer(ServerConfig{ServerName: "test-server", Version: "test", SourceID: "local"})
-	release := make(chan struct{})
-	var started sync.WaitGroup
-	started.Add(maxConcurrentRequestsPerConnection)
-	HandleTyped(server.Router(), appwire.MethodThreadRead, func(_ context.Context, _ appwire.ThreadReadParams) (appwire.ThreadReadResponse, error) {
-		started.Done()
-		<-release
-		return appwire.ThreadReadResponse{Thread: appwire.Thread{ID: "th_held"}}, nil
+	firstStarted := make(chan struct{})
+	releaseFirst := make(chan struct{})
+	HandleTyped(server.Router(), appwire.MethodThreadModelSet, func(_ context.Context, _ appwire.ThreadModelSetParams) (appwire.EmptyResponse, error) {
+		close(firstStarted)
+		<-releaseFirst
+		return appwire.EmptyResponse{}, nil
 	})
+	secondStarted := make(chan struct{})
 	HandleTyped(server.Router(), appwire.MethodThreadList, func(_ context.Context, _ appwire.ThreadListParams) (appwire.ThreadListResponse, error) {
-		return appwire.ThreadListResponse{Data: []appwire.Thread{{ID: "th_list"}}}, nil
+		close(secondStarted)
+		return appwire.ThreadListResponse{Data: []appwire.Thread{{ID: "th_1"}}}, nil
 	})
 	httpServer := serveWebSocketHTTP(t, server)
 	client := dialAppWireClient(t, httpServer)
 	ctx := context.Background()
-	t.Cleanup(func() { close(release) })
+	t.Cleanup(func() {
+		select {
+		case <-releaseFirst:
+		default:
+			close(releaseFirst)
+		}
+	})
 
-	// Park one request per limiter slot; each takes its own dispatch
-	// goroutine and its own slot.
-	for range maxConcurrentRequestsPerConnection {
-		go func() {
-			_, _ = client.ThreadRead(ctx, appwire.ThreadReadParams{ThreadID: "th_held"})
-		}()
-	}
-	startedDone := make(chan struct{})
+	firstDone := make(chan error, 1)
 	go func() {
-		started.Wait()
-		close(startedDone)
+		firstDone <- client.ThreadModelSet(ctx, appwire.ThreadModelSetParams{Ref: "local:th_1", ModelProvider: "p", Model: "m"})
 	}()
-	waitFor(t, "all in-flight slots to be held", startedDone)
+	waitFor(t, "first request to start", firstStarted)
 
-	overflowDone := make(chan error, 1)
+	secondDone := make(chan error, 1)
 	go func() {
 		_, err := client.ThreadList(ctx, appwire.ThreadListParams{})
-		overflowDone <- err
+		secondDone <- err
 	}()
 	select {
-	case err := <-overflowDone:
-		var wire appwire.WireError
-		if !errors.As(err, &wire) || wire.Code != appwire.CodeUnavailable {
-			t.Fatalf("overflow request error=%v, want Unavailable wire error", err)
-		}
-	case <-time.After(time.Second):
-		t.Fatal("overflow request was parked instead of answered with Unavailable")
+	case <-secondStarted:
+		t.Fatal("a later request began while an earlier one was still in flight on the same connection")
+	case <-time.After(100 * time.Millisecond):
 	}
 
-	pingDone := make(chan error, 1)
-	go func() {
-		var out appwire.EmptyResponse
-		pingDone <- client.Request(ctx, appwire.MethodPing, appwire.EmptyParams{}, &out)
-	}()
-	select {
-	case err := <-pingDone:
-		if err != nil {
-			t.Fatalf("ping failed while all in-flight slots were held: %v", err)
-		}
-	case <-time.After(time.Second):
-		t.Fatal("ping was starved while all in-flight slots were held")
+	close(releaseFirst)
+	if err := waitFor(t, "first request to complete", firstDone); err != nil {
+		t.Fatalf("first request failed: %v", err)
+	}
+	waitFor(t, "second handler to start after the first completed", secondStarted)
+	if err := waitFor(t, "second request to complete", secondDone); err != nil {
+		t.Fatalf("second request failed: %v", err)
 	}
 }
 
@@ -388,9 +399,10 @@ type hydrationMarkerParams struct {
 
 // TestServeWebSocketHydrationThenMutationDeliversEveryNotificationExactlyOnce
 // pins the record accounting when one connection issues a hydrating read
-// immediately followed by mutations: under concurrent dispatch the mutation
-// can run (and commit notifications) while the hydration read is still in
-// flight, so the sequence-cut discipline — not dispatch order — decides which
+// immediately followed by mutations: the read dispatches on its own
+// goroutine, so the mutation can run (and commit notifications) while the
+// hydration read is still in flight, and only the sequence-cut discipline
+// — not dispatch order — decides which
 // set each record lands in. Whatever the interleaving, every notification
 // must reach the client exactly once, in whichever set (the hydration's
 // buffered replay or the live stream), and none may be lost or duplicated.
