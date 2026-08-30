@@ -4,11 +4,18 @@
 // (CredentialsSection) only needs to close the single open editor via
 // `onSuccess`/`onCancel` - it never has to distinguish success from failure
 // itself.
+//
+// Updated for the provider registry's instance shape (spec §11.3): Type
+// becomes Base provider over availableProviders, the openai-only API-style
+// radio is gone (Protocol is no longer openai-specific data the form
+// special-cases), and the Add form gains a dynamic Input per the selected
+// provider's VarsEnv name plus api-key-env/credential-header fields
+// mirroring the CLI's --api-key-env/--credential-header flags (§11.2).
 import { type FormEvent, useState } from "react";
 import { errorText } from "../../../../protocol/errors";
-import type { InstanceEntry } from "../../../../protocol/types.gen";
+import type { InstanceEntry, ProviderDescriptor } from "../../../../protocol/types.gen";
 import { credentialsStore } from "../../../../stores/credentials";
-import { Button, Dialog, FormRow, Input, RadioGroup, Select, type SelectOption, useToasts } from "../../../../widgets";
+import { Button, Dialog, FormRow, Input, Select, type SelectOption, useToasts } from "../../../../widgets";
 import { requireClass } from "../../../../widgets/internal/requireClass";
 import styles from "./instanceDialogs.module.css";
 
@@ -18,36 +25,54 @@ const CLASS = {
   error: requireClass(styles.error, "instanceDialogs.module.css", "error"),
 };
 
-const API_STYLE_OPTIONS = [
-  { value: "responses", label: "responses" },
-  { value: "chat-completions", label: "chat-completions" },
-];
+// nonEmptyVars trims and drops blank entries before they reach the wire -
+// InstanceCreateParams.Vars only carries variables the user actually set
+// (spec §11.3); a blank templated field means "leave it to the
+// environment," not "set it to the empty string."
+function nonEmptyVars(vars: Record<string, string>): Record<string, string> | undefined {
+  const entries = Object.entries(vars)
+    .map(([key, value]) => [key, value.trim()] as const)
+    .filter(([, value]) => value !== "");
+  return entries.length > 0 ? Object.fromEntries(entries) : undefined;
+}
 
 export interface AddInstanceDialogProps {
-  availableTypes: string[];
+  availableProviders: ProviderDescriptor[];
   onCancel: () => void;
   onSuccess: () => void;
 }
 
 /** The global "+ Add provider instance" form (parity-m7-settings.md §7f). */
-export function AddInstanceDialog({ availableTypes, onCancel, onSuccess }: AddInstanceDialogProps) {
-  const [type, setType] = useState("");
+export function AddInstanceDialog({ availableProviders, onCancel, onSuccess }: AddInstanceDialogProps) {
+  const [base, setBase] = useState("");
   const [name, setName] = useState("");
-  const [apiStyle, setApiStyle] = useState("responses");
   const [baseUrl, setBaseUrl] = useState("");
+  const [vars, setVars] = useState<Record<string, string>>({});
+  const [apiKeyEnv, setApiKeyEnv] = useState("");
+  const [credentialHeader, setCredentialHeader] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const toast = useToasts();
 
-  const typeOptions: SelectOption[] = [
+  const baseOptions: SelectOption[] = [
     { value: "", label: "" },
-    ...availableTypes.map((t) => ({ value: t, label: t })),
+    ...availableProviders.map((p) => ({ value: p.id, label: p.name || p.id })),
   ];
+  const varsEnv = availableProviders.find((p) => p.id === base)?.varsEnv ?? [];
+
+  function handleBaseChange(nextBase: string): void {
+    setBase(nextBase);
+    setVars({}); // a var input from the previous base must not leak into the new one
+  }
+
+  function updateVar(varName: string, value: string): void {
+    setVars((current) => ({ ...current, [varName]: value }));
+  }
 
   async function handleSubmit(event: FormEvent<HTMLFormElement>): Promise<void> {
     event.preventDefault();
-    if (!type) {
-      setError("Type is required.");
+    if (!base) {
+      setError("Base provider is required.");
       return;
     }
     const trimmedName = name.trim();
@@ -55,17 +80,21 @@ export function AddInstanceDialog({ availableTypes, onCancel, onSuccess }: AddIn
       setError("Name is required.");
       return;
     }
+    const trimmedCredentialHeader = credentialHeader.trim();
+    if (trimmedCredentialHeader && !trimmedCredentialHeader.includes("$")) {
+      setError("Credential header must reference a $VARIABLE, never a literal secret.");
+      return;
+    }
     setError(null);
     setBusy(true);
     try {
-      // apiStyle only applies to type openai; forced to "" for every other
-      // type even if a stale radio selection exists from a previous Type
-      // choice - the backend rejects apiStyle on non-openai types.
       await credentialsStore.getState().create({
-        type,
         name: trimmedName,
-        apiStyle: type === "openai" ? apiStyle : "",
+        base,
         baseUrl: baseUrl.trim(),
+        vars: nonEmptyVars(vars),
+        apiKeyEnv: apiKeyEnv.trim() || undefined,
+        credentialHeader: trimmedCredentialHeader || undefined,
       });
       toast.push("success", `Created instance ${trimmedName}`);
       onSuccess();
@@ -81,12 +110,12 @@ export function AddInstanceDialog({ availableTypes, onCancel, onSuccess }: AddIn
   return (
     <Dialog open onClose={onCancel} title="Add provider instance">
       <form className={CLASS.body} onSubmit={(event) => void handleSubmit(event)}>
-        <FormRow label="Type" htmlFor="add-instance-type">
+        <FormRow label="Base provider" htmlFor="add-instance-base">
           <Select
-            id="add-instance-type"
-            value={type}
-            onChange={(event) => setType(event.target.value)}
-            options={typeOptions}
+            id="add-instance-base"
+            value={base}
+            onChange={(event) => handleBaseChange(event.target.value)}
+            options={baseOptions}
           />
         </FormRow>
         <FormRow label="Name" htmlFor="add-instance-name">
@@ -98,15 +127,40 @@ export function AddInstanceDialog({ availableTypes, onCancel, onSuccess }: AddIn
             disabled={busy}
           />
         </FormRow>
-        {type === "openai" && (
-          <RadioGroup label="API style" value={apiStyle} onChange={setApiStyle} options={API_STYLE_OPTIONS} />
-        )}
         <FormRow label="Base URL (optional)" htmlFor="add-instance-baseurl">
           <Input
             id="add-instance-baseurl"
             value={baseUrl}
             onChange={(event) => setBaseUrl(event.target.value)}
             placeholder="https://…"
+            disabled={busy}
+          />
+        </FormRow>
+        {varsEnv.map((varName) => (
+          <FormRow key={varName} label={varName} htmlFor={`add-instance-var-${varName}`}>
+            <Input
+              id={`add-instance-var-${varName}`}
+              value={vars[varName] ?? ""}
+              onChange={(event) => updateVar(varName, event.target.value)}
+              disabled={busy}
+            />
+          </FormRow>
+        ))}
+        <FormRow label="API key environment variable (optional)" htmlFor="add-instance-apikeyenv">
+          <Input
+            id="add-instance-apikeyenv"
+            value={apiKeyEnv}
+            onChange={(event) => setApiKeyEnv(event.target.value)}
+            placeholder="e.g. PORTKEY_KEY"
+            disabled={busy}
+          />
+        </FormRow>
+        <FormRow label="Credential header (optional)" htmlFor="add-instance-credentialheader">
+          <Input
+            id="add-instance-credentialheader"
+            value={credentialHeader}
+            onChange={(event) => setCredentialHeader(event.target.value)}
+            placeholder="Authorization=Bearer $VAR"
             disabled={busy}
           />
         </FormRow>
@@ -134,11 +188,15 @@ export interface EditInstanceDialogProps {
   onSuccess: () => void;
 }
 
-/** The per-row Edit form (parity-m7-settings.md §7e): API-style only for
- * openai instances, Base URL always. */
+/** The Edit form (parity-m7-settings.md §7e, updated for the registry's
+ * instance shape): Base URL only, sent only when it actually changed.
+ * InstanceEditParams also carries protocol/surface/vars overrides, but the
+ * pane's only spec-mandated way to set those is the Add form's
+ * provider-driven fields (spec §11.3 only calls out VarsEnv driving the add
+ * form) - Edit's job is nudging an existing instance's endpoint, not
+ * re-deriving its whole shape, and editing an implicit instance already
+ * writes a shadow that carries only what changed here. */
 export function EditInstanceDialog({ instance, onCancel, onSuccess }: EditInstanceDialogProps) {
-  const showApiStyle = instance.type === "openai";
-  const [apiStyle, setApiStyle] = useState(instance.apiStyle || "");
   const [baseUrl, setBaseUrl] = useState(instance.baseUrl || "");
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
@@ -149,10 +207,10 @@ export function EditInstanceDialog({ instance, onCancel, onSuccess }: EditInstan
     setError(null);
     setBusy(true);
     try {
+      const trimmedBaseUrl = baseUrl.trim();
       await credentialsStore.getState().edit({
         name: instance.name,
-        apiStyle: showApiStyle ? apiStyle : "",
-        baseUrl: baseUrl.trim(),
+        baseUrl: trimmedBaseUrl !== (instance.baseUrl || "") ? trimmedBaseUrl : undefined,
       });
       toast.push("success", `Saved ${instance.name}`);
       onSuccess();
@@ -168,9 +226,6 @@ export function EditInstanceDialog({ instance, onCancel, onSuccess }: EditInstan
   return (
     <Dialog open onClose={onCancel} title={`Edit ${instance.name}`}>
       <form className={CLASS.body} onSubmit={(event) => void handleSubmit(event)}>
-        {showApiStyle && (
-          <RadioGroup label="API style" value={apiStyle} onChange={setApiStyle} options={API_STYLE_OPTIONS} />
-        )}
         <FormRow label="Base URL (optional)" htmlFor="edit-instance-baseurl">
           <Input
             id="edit-instance-baseurl"
@@ -205,7 +260,8 @@ export interface ApiKeyDialogProps {
 }
 
 /** Set/Replace API key (parity-m7-settings.md §7d) - never echoes any
- * stored value; the field is write-only. */
+ * stored value; the field is write-only. Unaffected by the registry
+ * cut-over: it only ever reads instance.name. */
 export function ApiKeyDialog({ instance, onCancel, onSuccess }: ApiKeyDialogProps) {
   const [value, setValue] = useState("");
   const [error, setError] = useState<string | null>(null);

@@ -2,7 +2,7 @@ import { cleanup, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { FakeClient } from "../../../../protocol/testing/fakeClient";
-import type { InstanceEntry } from "../../../../protocol/types.gen";
+import type { InstanceEntry, ProviderDescriptor } from "../../../../protocol/types.gen";
 import { connectionStore } from "../../../../stores/connection";
 import { resetCredentialsStoreForTests } from "../../../../stores/credentials";
 import { Toast } from "../../../../widgets";
@@ -14,17 +14,36 @@ function connectFakeClient(): FakeClient {
   return fake;
 }
 
-function instance(overrides: Partial<InstanceEntry> & Pick<InstanceEntry, "name" | "type">): InstanceEntry {
+function instance(overrides: Partial<InstanceEntry> & Pick<InstanceEntry, "name" | "providerId">): InstanceEntry {
   return {
-    apiStyle: "",
-    baseUrl: "",
+    protocol: "openai-chat",
+    auth: "bearer",
+    implicit: false,
     isDefault: false,
-    activeSource: "absent",
+    activeSource: "none",
     hasStoredOAuth: false,
     credentialRequired: true,
     ...overrides,
   };
 }
+
+function provider(overrides: Partial<ProviderDescriptor> & Pick<ProviderDescriptor, "id">): ProviderDescriptor {
+  return {
+    protocol: "openai-chat",
+    auth: "bearer",
+    implicit: true,
+    ...overrides,
+  };
+}
+
+const ANTHROPIC = provider({ id: "anthropic", protocol: "anthropic" });
+const VERTEX = provider({
+  id: "google-vertex-anthropic",
+  protocol: "anthropic",
+  auth: "gcp-adc",
+  varsEnv: ["GOOGLE_VERTEX_PROJECT", "GOOGLE_VERTEX_LOCATION"],
+});
+const BEDROCK = provider({ id: "amazon-bedrock", protocol: "anthropic", auth: "gcp-adc", varsEnv: ["AWS_REGION"] });
 
 beforeEach(() => {
   connectionStore.setState({ state: "idle", serverInfo: undefined, client: null });
@@ -37,47 +56,126 @@ afterEach(() => {
 });
 
 describe("AddInstanceDialog", () => {
-  test("Type select is populated from availableTypes", () => {
+  test("Base provider select is populated from availableProviders", () => {
     connectFakeClient();
-    render(<AddInstanceDialog availableTypes={["anthropic", "openai"]} onCancel={() => {}} onSuccess={() => {}} />);
-    const select = screen.getByLabelText("Type") as HTMLSelectElement;
-    expect(Array.from(select.options).map((o) => o.value)).toEqual(["", "anthropic", "openai"]);
+    render(<AddInstanceDialog availableProviders={[ANTHROPIC, VERTEX]} onCancel={() => {}} onSuccess={() => {}} />);
+    const select = screen.getByLabelText("Base provider") as HTMLSelectElement;
+    expect(Array.from(select.options).map((o) => o.value)).toEqual(["", "anthropic", "google-vertex-anthropic"]);
   });
 
-  test("the API-style radio block is hidden until Type is openai, live on change", async () => {
+  test("a provider's display name is used as its option label when present", () => {
     connectFakeClient();
-    render(<AddInstanceDialog availableTypes={["anthropic", "openai"]} onCancel={() => {}} onSuccess={() => {}} />);
-    expect(screen.queryByRole("radiogroup", { name: /api style/i })).toBeNull();
-    const user = userEvent.setup();
-    await user.selectOptions(screen.getByLabelText("Type"), "openai");
-    expect(screen.getByRole("radiogroup", { name: /api style/i })).toBeTruthy();
+    render(
+      <AddInstanceDialog
+        availableProviders={[provider({ id: "anthropic", name: "Anthropic" })]}
+        onCancel={() => {}}
+        onSuccess={() => {}}
+      />,
+    );
+    expect(screen.getByRole("option", { name: "Anthropic" })).toBeTruthy();
   });
 
-  test("client-side validation: Type required, then Name required", async () => {
+  test("no variable inputs until a base with varsEnv is selected", () => {
+    connectFakeClient();
+    render(<AddInstanceDialog availableProviders={[ANTHROPIC, VERTEX]} onCancel={() => {}} onSuccess={() => {}} />);
+    expect(screen.queryByLabelText("GOOGLE_VERTEX_PROJECT")).toBeNull();
+  });
+
+  test("selecting a base renders one input per varsEnv entry, labeled by name", async () => {
+    connectFakeClient();
+    render(<AddInstanceDialog availableProviders={[ANTHROPIC, VERTEX]} onCancel={() => {}} onSuccess={() => {}} />);
+    await userEvent.setup().selectOptions(screen.getByLabelText("Base provider"), "google-vertex-anthropic");
+    expect(screen.getByLabelText("GOOGLE_VERTEX_PROJECT")).toBeTruthy();
+    expect(screen.getByLabelText("GOOGLE_VERTEX_LOCATION")).toBeTruthy();
+  });
+
+  test("switching base providers clears the previous base's variable inputs and values", async () => {
     connectFakeClient();
     const user = userEvent.setup();
-    render(<AddInstanceDialog availableTypes={["anthropic"]} onCancel={() => {}} onSuccess={() => {}} />);
+    render(<AddInstanceDialog availableProviders={[BEDROCK, VERTEX]} onCancel={() => {}} onSuccess={() => {}} />);
+    await user.selectOptions(screen.getByLabelText("Base provider"), "amazon-bedrock");
+    await user.type(screen.getByLabelText("AWS_REGION"), "us-east-1");
+    await user.selectOptions(screen.getByLabelText("Base provider"), "google-vertex-anthropic");
+    expect(screen.queryByLabelText("AWS_REGION")).toBeNull();
+    expect((screen.getByLabelText("GOOGLE_VERTEX_PROJECT") as HTMLInputElement).value).toBe("");
+  });
+
+  test("client-side validation: Base provider required, then Name required", async () => {
+    connectFakeClient();
+    const user = userEvent.setup();
+    render(<AddInstanceDialog availableProviders={[ANTHROPIC]} onCancel={() => {}} onSuccess={() => {}} />);
     await user.click(screen.getByRole("button", { name: "Create" }));
-    expect(screen.getByText("Type is required.")).toBeTruthy();
-    await user.selectOptions(screen.getByLabelText("Type"), "anthropic");
+    expect(screen.getByText("Base provider is required.")).toBeTruthy();
+    await user.selectOptions(screen.getByLabelText("Base provider"), "anthropic");
     await user.click(screen.getByRole("button", { name: "Create" }));
     expect(screen.getByText("Name is required.")).toBeTruthy();
   });
 
-  test("apiStyle is sent only for type openai, forced to '' otherwise even with a stale radio selection", async () => {
+  test("a credential header without $ is rejected client-side, with no RPC", async () => {
+    const fake = connectFakeClient();
+    const create = vi.fn();
+    fake.on("evener/instance/create", create);
+    const user = userEvent.setup();
+    render(<AddInstanceDialog availableProviders={[ANTHROPIC]} onCancel={() => {}} onSuccess={() => {}} />);
+    await user.selectOptions(screen.getByLabelText("Base provider"), "anthropic");
+    await user.type(screen.getByLabelText("Name"), "work");
+    await user.type(screen.getByLabelText(/credential header/i), "Authorization=Bearer secret");
+    await user.click(screen.getByRole("button", { name: "Create" }));
+    expect(screen.getByText("Credential header must reference a $VARIABLE, never a literal secret.")).toBeTruthy();
+    expect(create).not.toHaveBeenCalled();
+  });
+
+  test("a credential header with $ is accepted and sent verbatim", async () => {
     const fake = connectFakeClient();
     fake.on("evener/instance/create", (params) => {
-      expect(params).toEqual({ type: "anthropic", name: "work", apiStyle: "", baseUrl: "" });
-      return { instances: [], availableTypes: ["anthropic"] };
+      expect(params).toEqual({
+        name: "work",
+        base: "anthropic",
+        baseUrl: "",
+        credentialHeader: "Authorization=Bearer $PORTKEY_KEY",
+      });
+      return { instances: [], availableProviders: [] };
     });
     const user = userEvent.setup();
-    render(<AddInstanceDialog availableTypes={["anthropic", "openai"]} onCancel={() => {}} onSuccess={() => {}} />);
-    // Select openai first (revealing + implicitly defaulting the apiStyle
-    // radio to "responses"), then switch back to anthropic - the stale
-    // radio selection must not leak into the payload.
-    await user.selectOptions(screen.getByLabelText("Type"), "openai");
-    await user.selectOptions(screen.getByLabelText("Type"), "anthropic");
+    render(<AddInstanceDialog availableProviders={[ANTHROPIC]} onCancel={() => {}} onSuccess={() => {}} />);
+    await user.selectOptions(screen.getByLabelText("Base provider"), "anthropic");
     await user.type(screen.getByLabelText("Name"), "work");
+    await user.type(screen.getByLabelText(/credential header/i), "Authorization=Bearer $PORTKEY_KEY");
+    await user.click(screen.getByRole("button", { name: "Create" }));
+    await waitFor(() => expect(fake.calls.some((c) => c.method === "evener/instance/create")).toBe(true));
+  });
+
+  test("api-key-env sends the bare variable name", async () => {
+    const fake = connectFakeClient();
+    fake.on("evener/instance/create", (params) => {
+      expect(params).toEqual({ name: "work", base: "anthropic", baseUrl: "", apiKeyEnv: "PORTKEY_KEY" });
+      return { instances: [], availableProviders: [] };
+    });
+    const user = userEvent.setup();
+    render(<AddInstanceDialog availableProviders={[ANTHROPIC]} onCancel={() => {}} onSuccess={() => {}} />);
+    await user.selectOptions(screen.getByLabelText("Base provider"), "anthropic");
+    await user.type(screen.getByLabelText("Name"), "work");
+    await user.type(screen.getByLabelText(/api key environment variable/i), "PORTKEY_KEY");
+    await user.click(screen.getByRole("button", { name: "Create" }));
+    await waitFor(() => expect(fake.calls.some((c) => c.method === "evener/instance/create")).toBe(true));
+  });
+
+  test("variable inputs are sent trimmed, with blank ones omitted", async () => {
+    const fake = connectFakeClient();
+    fake.on("evener/instance/create", (params) => {
+      expect(params).toEqual({
+        name: "vertex",
+        base: "google-vertex-anthropic",
+        baseUrl: "",
+        vars: { GOOGLE_VERTEX_PROJECT: "my-proj" },
+      });
+      return { instances: [], availableProviders: [] };
+    });
+    const user = userEvent.setup();
+    render(<AddInstanceDialog availableProviders={[VERTEX]} onCancel={() => {}} onSuccess={() => {}} />);
+    await user.selectOptions(screen.getByLabelText("Base provider"), "google-vertex-anthropic");
+    await user.type(screen.getByLabelText("Name"), "vertex");
+    await user.type(screen.getByLabelText("GOOGLE_VERTEX_PROJECT"), "  my-proj  ");
     await user.click(screen.getByRole("button", { name: "Create" }));
     await waitFor(() => expect(fake.calls.some((c) => c.method === "evener/instance/create")).toBe(true));
   });
@@ -85,18 +183,18 @@ describe("AddInstanceDialog", () => {
   test("submit calls instanceCreate and, on success, toasts + calls onSuccess", async () => {
     const fake = connectFakeClient();
     fake.on("evener/instance/create", (params) => {
-      expect(params).toEqual({ type: "anthropic", name: "work", apiStyle: "", baseUrl: "https://x" });
-      return { instances: [], availableTypes: ["anthropic"] };
+      expect(params).toEqual({ name: "work", base: "anthropic", baseUrl: "https://x" });
+      return { instances: [], availableProviders: [] };
     });
     const onSuccess = vi.fn();
     const user = userEvent.setup();
     render(
       <>
-        <AddInstanceDialog availableTypes={["anthropic"]} onCancel={() => {}} onSuccess={onSuccess} />
+        <AddInstanceDialog availableProviders={[ANTHROPIC]} onCancel={() => {}} onSuccess={onSuccess} />
         <Toast />
       </>,
     );
-    await user.selectOptions(screen.getByLabelText("Type"), "anthropic");
+    await user.selectOptions(screen.getByLabelText("Base provider"), "anthropic");
     await user.type(screen.getByLabelText("Name"), "work");
     await user.type(screen.getByLabelText(/base url/i), "https://x");
     await user.click(screen.getByRole("button", { name: "Create" }));
@@ -113,11 +211,11 @@ describe("AddInstanceDialog", () => {
     const user = userEvent.setup();
     render(
       <>
-        <AddInstanceDialog availableTypes={["anthropic"]} onCancel={() => {}} onSuccess={onSuccess} />
+        <AddInstanceDialog availableProviders={[ANTHROPIC]} onCancel={() => {}} onSuccess={onSuccess} />
         <Toast />
       </>,
     );
-    await user.selectOptions(screen.getByLabelText("Type"), "anthropic");
+    await user.selectOptions(screen.getByLabelText("Base provider"), "anthropic");
     await user.type(screen.getByLabelText("Name"), "work");
     await user.click(screen.getByRole("button", { name: "Create" }));
     await screen.findByText("name already exists");
@@ -127,32 +225,11 @@ describe("AddInstanceDialog", () => {
 });
 
 describe("EditInstanceDialog", () => {
-  test("shows the API-style radio, pre-checked, only when the instance type is openai", () => {
-    connectFakeClient();
-    const { rerender } = render(
-      <EditInstanceDialog
-        instance={instance({ name: "work", type: "openai", apiStyle: "chat-completions" })}
-        onCancel={() => {}}
-        onSuccess={() => {}}
-      />,
-    );
-    expect(screen.getByRole("radio", { name: "chat-completions" }).getAttribute("aria-checked")).toBe("true");
-
-    rerender(
-      <EditInstanceDialog
-        instance={instance({ name: "work", type: "anthropic" })}
-        onCancel={() => {}}
-        onSuccess={() => {}}
-      />,
-    );
-    expect(screen.queryByRole("radiogroup", { name: /api style/i })).toBeNull();
-  });
-
   test("Base URL is pre-filled from the instance", () => {
     connectFakeClient();
     render(
       <EditInstanceDialog
-        instance={instance({ name: "work", type: "anthropic", baseUrl: "https://existing" })}
+        instance={instance({ name: "work", providerId: "anthropic", baseUrl: "https://existing" })}
         onCancel={() => {}}
         onSuccess={() => {}}
       />,
@@ -160,18 +237,40 @@ describe("EditInstanceDialog", () => {
     expect(screen.getByLabelText(/base url/i)).toHaveProperty("value", "https://existing");
   });
 
-  test("submit calls instanceEdit with apiStyle '' when the instance isn't openai", async () => {
+  test("submit with an unchanged Base URL sends only { name }", async () => {
     const fake = connectFakeClient();
     fake.on("evener/instance/edit", (params) => {
-      expect(params).toEqual({ name: "work", apiStyle: "", baseUrl: "https://x" });
-      return { instances: [], availableTypes: [] };
+      expect(params).toEqual({ name: "work" });
+      return { instances: [], availableProviders: [] };
     });
     const onSuccess = vi.fn();
     const user = userEvent.setup();
     render(
       <>
         <EditInstanceDialog
-          instance={instance({ name: "work", type: "anthropic" })}
+          instance={instance({ name: "work", providerId: "anthropic", baseUrl: "https://existing" })}
+          onCancel={() => {}}
+          onSuccess={onSuccess}
+        />
+        <Toast />
+      </>,
+    );
+    await user.click(screen.getByRole("button", { name: "Save" }));
+    await vi.waitFor(() => expect(onSuccess).toHaveBeenCalled());
+  });
+
+  test("submit with a changed Base URL sends { name, baseUrl }", async () => {
+    const fake = connectFakeClient();
+    fake.on("evener/instance/edit", (params) => {
+      expect(params).toEqual({ name: "work", baseUrl: "https://x" });
+      return { instances: [], availableProviders: [] };
+    });
+    const onSuccess = vi.fn();
+    const user = userEvent.setup();
+    render(
+      <>
+        <EditInstanceDialog
+          instance={instance({ name: "work", providerId: "anthropic" })}
           onCancel={() => {}}
           onSuccess={onSuccess}
         />
@@ -194,7 +293,7 @@ describe("EditInstanceDialog", () => {
     render(
       <>
         <EditInstanceDialog
-          instance={instance({ name: "work", type: "anthropic" })}
+          instance={instance({ name: "work", providerId: "anthropic" })}
           onCancel={() => {}}
           onSuccess={() => {}}
         />
@@ -216,7 +315,7 @@ describe("ApiKeyDialog", () => {
     const user = userEvent.setup();
     render(
       <ApiKeyDialog
-        instance={instance({ name: "work", type: "anthropic" })}
+        instance={instance({ name: "work", providerId: "anthropic" })}
         onCancel={onCancel}
         onSuccess={() => {}}
       />,
@@ -231,15 +330,15 @@ describe("ApiKeyDialog", () => {
     const fake = connectFakeClient();
     fake.on("evener/auth/apiKey/set", (params) => {
       expect(params).toEqual({ provider: "work", value: "sk-secret" });
-      return { provider: "work", supported: true, signedIn: true, activeSource: "file", hasStoredOAuth: false };
+      return { provider: "work", supported: true, signedIn: true, activeSource: "store", hasStoredOAuth: false };
     });
-    fake.on("evener/instance/list", () => ({ instances: [], availableTypes: [] }));
+    fake.on("evener/instance/list", () => ({ instances: [], availableProviders: [] }));
     const onSuccess = vi.fn();
     const user = userEvent.setup();
     render(
       <>
         <ApiKeyDialog
-          instance={instance({ name: "work", type: "anthropic" })}
+          instance={instance({ name: "work", providerId: "anthropic" })}
           onCancel={() => {}}
           onSuccess={onSuccess}
         />
@@ -261,7 +360,7 @@ describe("ApiKeyDialog", () => {
     render(
       <>
         <ApiKeyDialog
-          instance={instance({ name: "work", type: "anthropic" })}
+          instance={instance({ name: "work", providerId: "anthropic" })}
           onCancel={() => {}}
           onSuccess={() => {}}
         />
@@ -278,7 +377,7 @@ describe("ApiKeyDialog", () => {
     connectFakeClient();
     render(
       <ApiKeyDialog
-        instance={instance({ name: "work", type: "anthropic" })}
+        instance={instance({ name: "work", providerId: "anthropic" })}
         onCancel={() => {}}
         onSuccess={() => {}}
       />,
