@@ -11,8 +11,8 @@ import (
 )
 
 // syntheticZeroedResponsesSSE mirrors the affected Responses-API wire shape
-// pinned by llm/providers/openai/responses_recording_test.go and
-// responses_recompute_test.go: a function_call and a text message item
+// pinned by llm/providers/responses/recompute_test.go: a function_call and
+// a text message item
 // arrive via response.output_item.done events, but the terminal
 // response.completed payload's "output" is empty. Pre-fix, this is exactly
 // the stored body shape whose TextLength/ToolCalls were recorded as zero.
