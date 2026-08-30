@@ -154,14 +154,16 @@ func sanitizeEndpointURL(raw string) string {
 // refuseWhenBroken flips, and the corrective edit is refused too: the pane
 // locked out of its own recovery.
 //
-// A refusal is about the fields the caller sent, so it comes back as invalid
-// params; the parser never echoes a value it rejects, so its error is safe to
-// return.
+// Only that refusal is about the fields the caller sent, so only it comes
+// back as invalid params; the parser never echoes a value it rejects, so its
+// error is safe to return. A filesystem failure is the hub's problem, not the
+// caller's, and is returned as it came.
 func (c *hubInstancesController) writeLoadable(l *registry.Layer) error {
-	if err := c.write(l); err != nil {
+	err := c.write(l)
+	if errors.Is(err, registry.ErrConfigUnloadable) {
 		return appwire.InvalidParams(err.Error())
 	}
-	return nil
+	return err
 }
 
 // refuseWhenBroken stops every write while there is no registry to write

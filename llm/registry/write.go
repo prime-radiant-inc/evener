@@ -12,6 +12,14 @@ import (
 	"github.com/BurntSushi/toml"
 )
 
+// ErrConfigUnloadable marks the refusal WriteConfigFile gives when the
+// providers.toml it was about to write would not parse back (spec §10,
+// §11.3). It is what tells a caller "the entry you proposed is invalid"
+// apart from "the filesystem failed", which stays a plain error: only the
+// first is the caller's to fix. The wrapped parse error never echoes a value
+// it rejected, so it is safe to show whoever proposed the entry.
+var ErrConfigUnloadable = errors.New("providers.toml would not load back")
+
 // MarshalConfig renders a user layer as providers.toml (spec §10). Only the
 // keys the Layer sets are written — nil pointers, empty maps, empty
 // strings, and nil slices are absent — so ParseConfig(MarshalConfig(l))
@@ -183,17 +191,16 @@ func ReadConfigFile(path string) (*Layer, bool, error) {
 // anything reaches disk, so a providers.toml this writes is always one the
 // registry can read back. Every rule the parser enforces — the protocol and
 // surface vocabularies, the $VAR syntax in credential headers and api_key,
-// unknown keys — refuses the write instead of landing a file whose reload
-// fails and whose author is then locked out of the corrective edit (spec
-// §10, §11.3). The parser never echoes a value it rejects, so its error is
-// safe to hand back to whoever proposed the entry.
+// unknown keys — refuses the write, wrapped in ErrConfigUnloadable, instead
+// of landing a file whose reload fails and whose author is then locked out of
+// the corrective edit (spec §10, §11.3).
 func WriteConfigFile(path string, l *Layer) error {
 	data, err := MarshalConfig(l)
 	if err != nil {
 		return err
 	}
 	if _, err := ParseConfig(data); err != nil {
-		return err
+		return fmt.Errorf("%w: %w", ErrConfigUnloadable, err)
 	}
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		return fmt.Errorf("providers.toml: mkdir: %w", err)

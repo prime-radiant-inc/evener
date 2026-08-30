@@ -134,10 +134,33 @@ func TestWriteConfigFileRefusesALayerTheReaderWouldRefuse(t *testing.T) {
 			if err == nil || !strings.Contains(err.Error(), tt.want) {
 				t.Fatalf("WriteConfigFile = %v, want an error mentioning %q", err, tt.want)
 			}
+			// The refusal is about the candidate config, which is what lets a
+			// caller answer "your entry is invalid" rather than "the disk
+			// failed" (spec §11.3).
+			if !errors.Is(err, ErrConfigUnloadable) {
+				t.Fatalf("WriteConfigFile = %v, want it to wrap ErrConfigUnloadable", err)
+			}
 			if _, statErr := os.Stat(path); !errors.Is(statErr, os.ErrNotExist) {
 				t.Fatalf("a refused write reached disk (stat err = %v)", statErr)
 			}
 		})
+	}
+}
+
+// A filesystem failure is not a refusal of the caller's entry: it must not
+// wrap ErrConfigUnloadable, or every caller reports a full disk as bad input.
+func TestWriteConfigFileDiskFailureIsNotAConfigRefusal(t *testing.T) {
+	blocker := filepath.Join(t.TempDir(), "blocker")
+	if err := os.WriteFile(blocker, []byte("not a directory"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	l := &Layer{Tag: LayerConfig, Providers: map[string]Provider{"work": {ID: "work", Base: "openai"}}}
+	err := WriteConfigFile(filepath.Join(blocker, "providers.toml"), l)
+	if err == nil {
+		t.Fatal("writing under a regular file must fail")
+	}
+	if errors.Is(err, ErrConfigUnloadable) {
+		t.Fatalf("a disk failure must not read as a config refusal: %v", err)
 	}
 }
 

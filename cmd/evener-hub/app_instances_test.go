@@ -7,6 +7,7 @@ package hub
 // and environment, so nothing here reads the developer's machine.
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -540,6 +541,44 @@ func TestInstances_RefusesAnyWriteTheRegistryCouldNotReadBack(t *testing.T) {
 			}
 		})
 	}
+}
+
+// TestInstances_RefusalKindsAreDistinguishable pins the two error classes a
+// write can produce. A candidate providers.toml the registry could not read
+// back is the caller's entry being wrong — InvalidParams, so the pane says
+// which field to fix. A filesystem failure is the hub's problem, not the
+// caller's, and must not come back as "the fields you sent are bad" or the
+// pane sends the user to correct an entry that is fine.
+func TestInstances_RefusalKindsAreDistinguishable(t *testing.T) {
+	t.Run("unreadable candidate config is invalid params", func(t *testing.T) {
+		f := newInstancesFixture(t, map[string]string{"GROQ_API_KEY": "gk"})
+		err := f.ctl.Create(appwire.InstanceCreateParams{Name: "work", Base: "openai", Protocol: "chat-completions"})
+		var wire appwire.WireError
+		if !errors.As(err, &wire) || wire.Code != appwire.CodeInvalidParams {
+			t.Fatalf("Create = %v, want an InvalidParams wire error", err)
+		}
+	})
+
+	t.Run("a write failure is not invalid params", func(t *testing.T) {
+		f := newInstancesFixture(t, map[string]string{"GROQ_API_KEY": "gk"})
+		// The filesystem stands in through the controller's own writer seam:
+		// a real unwritable path would also stop the registry loading, and
+		// then the refusal under test is never reached.
+		f.ctl.writeConfig = func(string, *registry.Layer) error {
+			return errors.New("providers.toml: write: no space left on device")
+		}
+		err := f.ctl.Create(appwire.InstanceCreateParams{Name: "work", Base: "openai"})
+		if err == nil {
+			t.Fatal("a failed write must be reported")
+		}
+		var wire appwire.WireError
+		if errors.As(err, &wire) && wire.Code == appwire.CodeInvalidParams {
+			t.Fatalf("err = %v, want the write error; InvalidParams blames the caller for the hub's failed write", err)
+		}
+		if !strings.Contains(err.Error(), "no space left on device") {
+			t.Fatalf("err = %v, want the write failure verbatim", err)
+		}
+	})
 }
 
 // TestInstances_EditRefusesAnUnreadableCredentialHeader: Edit holds the same
