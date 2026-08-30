@@ -491,9 +491,10 @@ func parseLiteLLMCatalog(data []byte) (*ModelCatalog, error) {
 		// source states supports_reasoning: false explicitly (perplexity
 		// mirrors do). gpt-5-search-api carries effort flags with no
 		// supports_reasoning key.
-		reasoningExplicit := v["supports_reasoning"] != nil
-		supportsReasoning := parseBool(v["supports_reasoning"])
-		if !reasoningExplicit && len(effortLevels) > 0 {
+		reasoningDeclared := parseBoolPtr(v["supports_reasoning"])
+		hasLadder := len(effortLevels) > 0
+		supportsReasoning := reasoningDeclared != nil && *reasoningDeclared
+		if reasoningDeclared == nil && hasLadder {
 			supportsReasoning = true
 		}
 
@@ -506,7 +507,7 @@ func parseLiteLLMCatalog(data []byte) (*ModelCatalog, error) {
 			SupportsTools:                 parseBool(v["supports_function_calling"]),
 			SupportsVision:                parseBool(v["supports_vision"]),
 			SupportsReasoning:             supportsReasoning,
-			ReasoningAuthoritative:        reasoningExplicit || len(effortLevels) > 0 || !strings.Contains(id, "/"),
+			ReasoningAuthoritative:        reasoningDeclared != nil || hasLadder || !strings.Contains(id, "/"),
 			ReasoningEffortLevels:         effortLevels,
 			SupportsAdaptiveThinking:      parseBool(v["supports_adaptive_thinking"]),
 			SupportsEffortParameter:       parseBool(v["supports_effort_parameter"]),

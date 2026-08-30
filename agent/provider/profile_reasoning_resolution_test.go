@@ -1,9 +1,7 @@
 package provider
 
 import (
-	"encoding/json"
 	"slices"
-	"strings"
 	"testing"
 
 	"primeradiant.com/evener/llm"
@@ -122,7 +120,7 @@ func TestProfile_WithModel_RebuildRederivesReasoningFacts(t *testing.T) {
 // and a switch away from a non-reasoning model gets a usable ladder — a stale
 // one would defeat the clamp (max → an unclamped 131072-token Gemini thinking
 // budget).
-func TestProfile_WithModel_ShallowCloneRederivesReasoningFacts(t *testing.T) {
+func TestProfile_WithModel_GoogleRebuildRederivesReasoningFacts(t *testing.T) {
 	toNonReasoning := newGeminiProfile("gemini-2.5-pro").WithModel("gemini-2.0-flash")
 	if toNonReasoning.SupportsReasoning() {
 		t.Fatal("gemini-2.0-flash after WithModel: SupportsReasoning() = true, want false")
@@ -152,22 +150,38 @@ func TestProfile_WithModel_UncatalogedModelGetsProviderVocabulary(t *testing.T) 
 }
 
 // taskListHasEffortEnum reports whether the profile's task_list schema offers
-// the per-task reasoning_effort enum ("inherit" rides along only when the
-// gated ladder is non-empty).
+// the per-task reasoning_effort enum. Unlike effortEnumFromTaskList it does
+// not fatal on absence — absence is the asserted state for a non-reasoning
+// model.
 func taskListHasEffortEnum(t *testing.T, p *Profile) bool {
 	t.Helper()
-	for _, def := range p.ToolDefinitions() {
-		if def.Name != "task_list" {
-			continue
-		}
-		raw, err := json.Marshal(def.Parameters)
-		if err != nil {
-			t.Fatalf("marshal task_list schema: %v", err)
-		}
-		return strings.Contains(string(raw), `"inherit"`)
+	def := findToolDef(p, "task_list")
+	if def == nil {
+		t.Fatal("no task_list definition on the profile")
 	}
-	t.Fatal("no task_list definition on the profile")
-	return false
+	var found bool
+	var walk func(v any)
+	walk = func(v any) {
+		switch node := v.(type) {
+		case map[string]any:
+			for k, child := range node {
+				if k == "reasoning_effort" {
+					if m, ok := child.(map[string]any); ok {
+						if _, hasEnum := m["enum"]; hasEnum {
+							found = true
+						}
+					}
+				}
+				walk(child)
+			}
+		case []any:
+			for _, child := range node {
+				walk(child)
+			}
+		}
+	}
+	walk(def.Parameters)
+	return found
 }
 
 // The task_list effort enum follows the gated ladder: absent for a

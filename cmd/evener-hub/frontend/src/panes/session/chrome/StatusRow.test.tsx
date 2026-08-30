@@ -385,6 +385,28 @@ test("shows a current 'none' effort as its own selected 'none (off)' option, dis
   expect(screen.getByTestId("status-row-effort-value").textContent).toBe("none (off)");
 });
 
+// A model whose ladder has no "none" level cannot actually turn thinking off:
+// an explicit none omits the field and the provider default applies, so the
+// label must not claim "off".
+test("a current 'none' on a model without an off level reads 'none (provider default)'", () => {
+  render(
+    <StatusRow
+      sessionRef="ref_a"
+      model={testModel({
+        supportsReasoning: true,
+        reasoningEffortLevels: ["low", "medium", "high"],
+        reasoningEffort: "none",
+      })}
+      now={1000}
+    />,
+  );
+  const select = screen.getByRole("combobox", { name: /reasoning effort/i }) as HTMLSelectElement;
+  expect(select.value).toBe("none");
+  expect(select.options[select.selectedIndex]?.textContent).toBe("none (provider default)");
+  expect(Array.from(select.options).map((o) => o.value)).toEqual(["", "low", "medium", "high", "none"]);
+  expect(screen.getByTestId("status-row-effort-value").textContent).toBe("none (provider default)");
+});
+
 test("changing the reasoning-effort select calls setReasoningEffort with the new level", async () => {
   const user = userEvent.setup();
   const fake = connectFakeClient();

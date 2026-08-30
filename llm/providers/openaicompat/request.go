@@ -238,9 +238,19 @@ func applyThinkingFormat(body map[string]any, req llm.Request, mc ModelCompat) {
 		return
 	}
 	quirks := mc.Quirks
-	wire := ""
+	configured := ""
 	if req.ReasoningEffort != nil {
-		wire = mc.wireEffort(*req.ReasoningEffort)
+		configured = *req.ReasoningEffort
+	}
+	// Keyed on the configured effort, not the post-translation wire string:
+	// a thinking_levels entry may legitimately spell a real thinking-on tier
+	// as the provider's literal "none".
+	if configured == llm.ReasoningEffortNone && !formatsWithOffLevel[quirks.ThinkingFormat] {
+		return
+	}
+	wire := ""
+	if configured != "" {
+		wire = mc.wireEffort(configured)
 	}
 	if wire == "" {
 		if !mc.ThinkingAlwaysOn {
@@ -251,12 +261,6 @@ func applyThinkingFormat(body map[string]any, req llm.Request, mc ModelCompat) {
 		// default — wireEffort clamps it to the model's declared levels and
 		// translates it to the provider's wire value.
 		wire = mc.wireEffort("medium")
-	}
-	if req.ReasoningEffort != nil && *req.ReasoningEffort == llm.ReasoningEffortNone && !formatsWithOffLevel[quirks.ThinkingFormat] {
-		// The guard keys on the configured effort, not the post-translation
-		// wire string: a thinking_levels entry may legitimately spell a real
-		// thinking-on tier as the provider's literal "none".
-		return
 	}
 	switch quirks.ThinkingFormat {
 	case "", "openai":
