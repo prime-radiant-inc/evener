@@ -44,7 +44,7 @@ not handlers waiting on each other.
   windows it pauses today (see Queue semantics).
 - The per-connection ordering contract PR #667 restored is preserved unchanged for
   every queued frame — requests and notifications alike — with no ordering audit of
-  the ~104 hub and daemon handler registrations. The contract is a partial order,
+  the 105 hub and daemon handler registrations. The contract is a partial order,
   stated precisely in "The ordering contract" below — not total FIFO, because the
   three concurrent slow reads participate on both sides — and the single
   deliberate exception is ping, whose scheduling this design changes on purpose
@@ -264,8 +264,12 @@ requests chan appwire.Message // cap appserver.requestQueueCap = 64
 **Bound.** 64 slots, and the number is explicitly **provisional**: slice 0 of the
 landing order characterizes real client burst depth (named UI scenarios in the web
 client and TUI, or queue high-water logging during an e2e run) and the final
-constant is the worst measured legitimate burst with at least 4× headroom. 64 is
-the ceiling this design commits to, not a measured value. The number needs to hold
+constant is the worst measured legitimate burst with at least 4× headroom, capped
+at 64 — the ceiling this design's memory analysis covers. The decision branch is
+explicit: measured burst ≤ 16 freezes `min(burst × 4, 64)`; a measured burst
+above 16 means a real client legitimately pipelines deeper than this design
+assumed, and the capacity **and** the memory analysis come back to this spec for
+revision together rather than the ceiling being quietly raised. The number needs to hold
 any legitimate pipelined burst from one client tab while staying small enough that
 the memory multiplier below stays boring. It is deliberately
 not `appwire.NotificationBufferCap` (4096): that constant sizes the *outbound*
@@ -305,7 +309,12 @@ This is the natural pressure valve, and it is worth analyzing rather than hiding
   one; delaying its heartbeat until the queue admits the next frame is flow control
   doing its job, and the alternative — an overload policy that times out the
   enqueue and closes the connection — would turn a self-inflicted wait into a
-  server-inflicted disconnect. Rejected.
+  server-inflicted disconnect. Rejected. One consequence to accept knowingly: if
+  the saturated client's own heartbeat timeout is shorter than the parked
+  handler's remaining runtime, that client will conclude the connection is dead
+  and reconnect — the correct outcome for a connection it buried, and no worse
+  than PR #667, where the same heartbeat stalls behind *any* slow inline handler
+  with no saturation required.
 - Disconnect detection while blocked: the loop cannot observe a peer close frame or
   a dead TCP peer until it next parks in `Recv`, and the read gate suspends
   keepalive for the same window. This is not new — PR #667 has the identical window
@@ -411,8 +420,9 @@ system is already built for it on all three sides:
   experiences prompt disconnect cancellation today. No handler may assume its
   context outlives its await points now.
 - *The core mutations cannot be canceled mid-flight at all, because they never
-  observe the context.* Measured on the #667 branch: 16 of the daemon's 22
-  handlers bind `_ context.Context` — they ignore it entirely. `turn/start` and
+  observe the context.* Measured on the #667 branch: 18 of the daemon's 24
+  handlers ignore their context entirely (16 bind it as `_`, two leave the
+  parameter unnamed). `turn/start` and
   `turn/steer` are the archetype (`server/appwire_runtime.go`): under
   `lockRetrySafeMutation` — the durable per-`ClientMutationID` dedup — they
   accept a durable mutation intent and return a receipt; the turn itself runs
@@ -439,17 +449,23 @@ system is already built for it on all three sides:
   twice. An abandoned (never-started) mutation retries as a fresh application.
   This design adds no new state to that contract; it only makes the
   abandoned-vs-canceled cases more common relative to ran-to-completion.
-- *The remaining class is small and gets a bounded pre-implementation audit.*
-  The only handlers prompt cancellation can touch are those that bind ctx *and*
-  await between durable side effects. Slice 0 of the landing order inventories
-  them mechanically (grep the serial mutation registrations for ctx-binding
-  signatures — 6 of 22 in the daemon as measured above; the same sweep over the
-  hub's 81 — then read the ctx-binding bodies for awaits between durable
-  writes). Each member either already tolerates mid-flight cancellation (the
-  gate-release/retry shape `thread/clear` has), or gets an explicit decision —
-  fix the handler, or run it under a context detached from connection cancel —
-  and a test. This is a bounded audit of a grep-able class, not the ~104-handler
-  ordering audit this design exists to avoid.
+- *The remaining class is small and gets a bounded pre-implementation audit,
+  gating the worker.* The only handlers prompt cancellation can touch are those
+  that bind their context *and* await between durable side effects. Slice 0 of
+  the landing order inventories every registration mechanically — all 105, hub
+  and daemon, classified serial/concurrent, read/mutation, ctx-ignoring/
+  ctx-binding (18 of 24 daemon handlers already classified above; the hub's 81
+  get the same sweep) — then reads each ctx-binding *serial mutation* body for
+  awaits between durable writes. The acceptance artifact is a disposition table
+  appended to this spec, one row per registration, and it must be complete
+  before slice 1 lands: any member that does not already tolerate mid-flight
+  cancellation (the gate-release/retry shape `thread/clear` has) gets its fix —
+  or its detachment from connection cancel — landed *before or with* the worker,
+  with a test, so the prompt-cancellation behavior never deploys ahead of a
+  handler that cannot take it. This is a bounded audit of a grep-able class with
+  a hard gate, not the 105-handler ordering audit this design exists to avoid —
+  the ordering audit would re-derive every handler's cross-request assumptions;
+  this one reads six named daemon bodies and whatever the hub sweep names.
 - *Post-cancellation access to connection-owned state is fenced at the seam, not
   per handler.* Handler code can reach connection-owned state only through five
   entry points, each already fenced for exactly this race because PR #667's
@@ -461,9 +477,9 @@ system is already built for it on all three sides:
   under the same gate; `Notify` and response enqueue land on the
   `sendClosed`-fenced channel. Everything else a handler touches is server-global
   state (stores, projectors) that must already tolerate concurrent mutation from
-  *other* connections. A per-handler audit would re-verify ~104 handlers against
+  *other* connections. A per-handler audit would re-verify 105 handlers against
   a race the seams already close; this design instead pins the seam behavior in
-  the test plan (test 9).
+  the test plan (test 8).
 
 Worker lifecycle is owned by `ServeWebSocket`, symmetric with the send loop:
 
@@ -498,9 +514,13 @@ Worker lifecycle is owned by `ServeWebSocket`, symmetric with the send loop:
   handler retains exactly one frame — the one it is executing — not sixty-four (a
   frame the receive loop held while blocked enqueuing is released when that loop
   returns). When the purge discards a non-empty queue it reports the count and the
-  abandoned methods through `Server.logf`, so a "did my mutation run?" report can
-  be answered from the log: abandoned means never started; a mid-flight
-  cancellation surfaces as the handler's own error path.
+  abandoned method names — never params, which can carry user content — through
+  `Server.logf`. This is an aggregate teardown advisory, not request-level
+  attribution: repeated methods are indistinguishable, and a frame discarded by
+  the worker's post-dequeue check or released with a dying receive loop bypasses
+  it. Request-level "did my mutation run?" diagnosis belongs to the retry
+  contract above (`ClientMutationID` dedup answers it authoritatively on
+  reconnect), not to this log line.
 - **Teardown does not join the worker.** `unregisterConnection` proceeds while a
   parked handler may still be executing, exactly as it does for PR #667's concurrent
   slow reads: `closeSend` flips `sendClosed`, the parked handler's eventual
@@ -636,8 +656,8 @@ explicitly.
 `0291be074` was that design: every request on its own goroutine. The audit's C1 and I3
 findings are what it cost, and the deeper problem is the contract change:
 
-- **Per-connection ordering is load-bearing.** Every handler among the ~104 hub and
-  daemon registrations (81 in `cmd/evener-hub`, 23 in `server/appwire_runtime.go`,
+- **Per-connection ordering is load-bearing.** Every handler among the 105 hub and
+  daemon registrations (81 in `cmd/evener-hub`, 24 in `server/appwire_runtime.go`,
   counted on the #667 branch) was written against serial-per-connection dispatch. A
   client that pipelines `turn/start` then `turn/steer` relies on the start being
   applied first; under full-async the steer can win the race and target the previous
@@ -655,13 +675,16 @@ findings are what it cost, and the deeper problem is the contract change:
   the worst kind of contract to retire implicitly.
 
 The serial worker gets full-async's actual benefit — the transport never blocks on a
-handler — while keeping the contract all ~104 handlers were written against, at the
+handler — while keeping the contract all 105 handlers were written against, at the
 cost every ordering contract carries: queued requests wait their turn.
 
 ## Migration and implementation shape
 
-Assumes PR #667 is merged; this change is a delta on its end state, touching only
-`internal/appserver/server.go` and `internal/appserver/websocket.go`.
+Assumes PR #667 is merged; this change is a delta on its end state. The worker
+mechanism itself touches only `internal/appserver/server.go` and
+`internal/appserver/websocket.go`; slice 0's audit may additionally name handler
+remediation, which lands with its own per-handler estimate before the worker (see
+the landing order) and is deliberately outside the mechanism estimate below.
 
 - `Connection` gains the `requests` channel (created in `NewConnection`) and a worker
   entry point; `ServeWebSocket` starts the worker beside the send loop.
@@ -674,37 +697,45 @@ Assumes PR #667 is merged; this change is a delta on its end state, touching onl
   the queue/worker contract — it is the authoritative statement of the ordering
   contract and must move with the policy.
 
-Landing order — a pre-implementation slice and three code slices, each code slice
-landing its behavior *with* the tests that pin it (test-driven, each independently
-green and safe to deploy alone — no slice ships the worker without the semantics
-the final design requires):
+Landing order — a gating pre-implementation slice and two code slices, each code
+slice landing its behavior *with* the tests that pin it (test-driven, each
+independently green and safe to deploy alone — no slice ships the worker without
+the semantics the final design requires):
 
-0. **Audit and measurement, no code.** (a) The ctx-binding mutation audit from
-   "Admitted-request semantics on disconnect": grep the serial mutation
-   registrations for ctx-binding signatures, read those bodies for awaits between
-   durable side effects, and record the per-handler disposition (tolerates
-   cancellation / fix / detach from connection cancel), each non-tolerating member
-   getting a test in slice 2. (b) Burst-depth characterization for
-   `requestQueueCap` (named UI/TUI scenarios or e2e high-water logging; final
-   constant = worst legitimate burst with ≥4× headroom).
-1. **Worker, queue, ordering, ping — with its lifecycle floor.** The receive-loop
-   split, the worker with its classification, the inline ping bypass, the
-   post-dequeue cancellation re-check, the teardown purge, and the rewritten
-   policy comment. The re-check and purge are ten lines and belong to the
-   worker's minimum correct form — a slice that can execute queued work after
-   cancellation or strand sixty-four frames must not exist, even briefly.
-   Carried tests green unmodified, plus tests 1–3 and 9.
-2. **Cancellation and teardown, pinned** — the worker-exit, after-dequeue, and
-   purge-complete seams, plus tests 5, 6, and 8, plus whatever per-handler tests
-   slice 0's audit demanded.
-3. **Saturation** — the one-shot advisory, the injectable capacity and
-   blocked-enqueue seams, the measured `requestQueueCap`, plus tests 4 and 7.
+0. **Audit and measurement — a hard gate, remediation included.** (a) The
+   ctx-binding mutation audit from "Admitted-request semantics on disconnect",
+   producing the complete 105-row disposition table appended to this spec; any
+   handler the audit finds intolerant of mid-flight cancellation gets its fix (or
+   its detachment from connection cancel) and its test landed *here*, before the
+   worker exists, so slice 1 can never deploy prompt cancellation ahead of a
+   handler that cannot take it. (b) Burst-depth measurement for
+   `requestQueueCap`. It cannot come from the not-yet-built queue, so measure at
+   the existing edges: count requests per named UI action in the web client's
+   request layer and the TUI's client (static reading plus a browser-devtools
+   frame count on the real UI), and apply the min(burst × 4, 64) rule from
+   "Bound". No production code beyond audit remediation.
+1. **Worker, queue, ordering, ping — with its lifecycle floor and its tests.**
+   The receive-loop split, the worker with its classification, the inline ping
+   bypass, the post-dequeue cancellation re-check, the teardown purge, and the
+   rewritten policy comment — the re-check and purge belong to the worker's
+   minimum correct form, and so do the tests that pin them: a slice that could
+   execute queued work after cancellation or strand sixty-four frames must not
+   exist even briefly, and a slice whose lifecycle floor is untested has not
+   landed its behavior with its tests. Carried tests green unmodified, plus
+   tests 1–3, 5, 6, 8, and 9 with the seams they need (worker-exit,
+   after-dequeue, purge-complete).
+2. **Saturation** — the blocked-enqueue path's one-shot advisory, the injectable
+   capacity and blocked-enqueue seams, the measured `requestQueueCap`, plus
+   tests 4 and 7.
 
-Estimated size: roughly 120–160 lines of production delta (most of it comments and
-the worker loop) and 450–550 lines of new tests per the plan above. No wire-format
-or API change and no handler or client change; the one wire-observable behavior
-change is scheduling — a ping response may now overtake earlier responses, which
-the ordering-contract section shows is meaningless to id-correlating clients.
+Estimated size for the worker mechanism: roughly 120–160 lines of production delta
+(most of it comments and the worker loop) and 450–550 lines of new tests per the
+plan above; handler remediation, if slice 0 names any, is additional and estimated
+per finding. No wire-format or API change and no client change; handler changes
+are exactly the slice-0 remediation set (expected small, possibly empty); the one
+wire-observable behavior change is scheduling — a ping response may now overtake
+earlier responses, which the ordering-contract section shows is meaningless to
+id-correlating clients.
 
 ## Open questions
 
