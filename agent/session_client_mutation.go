@@ -550,9 +550,10 @@ func (s *Session) InterruptClientMutation(
 		// two non-empty, unequal ids with no staleness between them, and
 		// comparing them would reject an on-time Stop as expired. A projector id
 		// has no durable alias to compare against, so it falls through to the
-		// session-scoped rule exactly as an absent field does -- and that costs
-		// nothing, because the projector namespace is only ever the click-time
-		// view of the CURRENT turn, never of a past one.
+		// session-scoped rule exactly as an absent field does -- staleness in
+		// that namespace cannot be detected (a projector id has no durable
+		// alias), so falling through restores the pre-#178 session-scoped
+		// behavior for projector-held ids rather than guessing.
 		if strings.HasPrefix(params.SinceTurnID, "turn_m") &&
 			snapshot.ActiveTurnID != "" && snapshot.ActiveTurnID != params.SinceTurnID {
 			rejectClientMutation(record, appwire.Conflict("stop expired: a later turn is already running"))
