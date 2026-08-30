@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"errors"
 	"fmt"
+	"maps"
 	"os"
 	"reflect"
 	"slices"
@@ -616,9 +617,25 @@ func (s *Session) beginRootDelegateAttentionTurn() []string {
 }
 
 // finishRootDelegateAttentionTurn consumes the exact selected IDs only after a
-// successful model turn and durable resolution markers. Failures keep the
-// transcript-owned IDs pending and arrange a paced retry wake.
+// successful model turn and durable resolution markers — plus any still-pending
+// attention this turn's built requests already presented to the model, which
+// needs no wake of its own. Failures keep the transcript-owned IDs pending and
+// arrange a paced retry wake.
 func (s *Session) finishRootDelegateAttentionTurn(ids []string, turnErr error) error {
+	// A failed turn never resolves, and a non-empty snapshot already passes the
+	// emptiness gate the union serves on that path; unioning would read the
+	// durable fold only to discard the result. An empty snapshot still
+	// consults the union — which reads the fold only when this turn covered
+	// something — because a covered-but-pending item on a failed turn needs
+	// the paced-retry backstop only that gate can arm. When the union finds
+	// nothing at all, the early return below leaves a set wake flag
+	// deliberately untouched: the flag coalesces, and the mid-turn arm's own
+	// guaranteed notify kick (armRootDelegateAttention → notify → the serve
+	// loop's parked EntryNotification) is what refires, not the retry
+	// scheduler this flag suppresses.
+	if turnErr == nil || len(ids) == 0 {
+		ids = s.unionCoveredRootDelegateAttention(ids)
+	}
 	if len(ids) == 0 {
 		return nil
 	}
@@ -640,9 +657,106 @@ func (s *Session) finishRootDelegateAttentionTurn(ids []string, turnErr error) e
 		resolutionErr = err
 	}
 	s.attentionMu.Lock()
+	// Force the paced retry even while a wake is flagged: this turn could have
+	// honored that wake and declined (its resolution failed), and the drain
+	// deliberately skips the notification rung immediately after a
+	// notification turn, so the flagged wake alone can leave the item without
+	// a paced refire. Clearing the flag lets the retry own the next wake.
+	s.rootAttentionWake = false
 	s.scheduleRootAttentionRetryLocked()
 	s.attentionMu.Unlock()
 	return resolutionErr
+}
+
+// stageRootDelegateAttentionCoverage records one built request's candidate
+// coverage: attention IDs the request presents that were NOT armed when this
+// turn began. Staging is not credit — the round loop promotes the staged set
+// into rootAttentionCoveredIDs only when the round's call settles, because a
+// request that never settled (a failed attempt, a content-filter retry whose
+// compaction then folds the steering turn away) presented nothing the design
+// may consume. Only the root receiver stages: a child's attention settles
+// through the controller's generation protocol, and a generation-less
+// consumption marker would conflict with it.
+func (s *Session) stageRootDelegateAttentionCoverage(historyTurns []schema.Turn) {
+	if !s.isRootDelegateAttentionReceiver() {
+		return
+	}
+	s.attentionMu.Lock()
+	defer s.attentionMu.Unlock()
+	var staged map[string]struct{}
+	for _, turn := range historyTurns {
+		if turn.AttentionID == "" {
+			continue
+		}
+		if _, preTurn := s.rootAttentionPreTurnArmIDs[turn.AttentionID]; preTurn {
+			continue
+		}
+		if staged == nil {
+			staged = make(map[string]struct{})
+		}
+		staged[turn.AttentionID] = struct{}{}
+	}
+	s.rootAttentionStagedIDs = staged
+}
+
+// promoteStagedRootDelegateAttention credits the staged set of a round whose
+// call settled. Called by the round loop on the success path only.
+func (s *Session) promoteStagedRootDelegateAttention() {
+	s.attentionMu.Lock()
+	defer s.attentionMu.Unlock()
+	if len(s.rootAttentionStagedIDs) == 0 {
+		return
+	}
+	if s.rootAttentionCoveredIDs == nil {
+		s.rootAttentionCoveredIDs = make(map[string]struct{}, len(s.rootAttentionStagedIDs))
+	}
+	maps.Copy(s.rootAttentionCoveredIDs, s.rootAttentionStagedIDs)
+	s.rootAttentionStagedIDs = nil
+}
+
+// resetRootDelegateAttentionCoverage clears the per-turn coverage at turn
+// start and snapshots the armed set marking excludes, so consumption credits
+// only deliveries armed after this turn began. maps.Clone(nil) is nil, and the
+// field is lookup-only, so an empty armed set needs no special case.
+func (s *Session) resetRootDelegateAttentionCoverage() {
+	s.attentionMu.Lock()
+	s.rootAttentionCoveredIDs = nil
+	s.rootAttentionStagedIDs = nil
+	s.rootAttentionPreTurnArmIDs = maps.Clone(s.rootAttentionWakeIDs)
+	s.attentionMu.Unlock()
+}
+
+// unionCoveredRootDelegateAttention adds to the selected IDs the covered
+// deliveries still pending in the durable fold. A successful turn settles only
+// when every round's call settled, so each marked item reached the model in a
+// settled call of this very turn; an item appended after the final request was
+// built is never marked and keeps the wake it armed. The pending filter is
+// load-bearing, not a pre-validation: a presented steering turn whose item is
+// already resolved with another disposition (a stop-drain discard, a
+// conflicting cold resolution) would otherwise poison the batch — validation
+// rejects the whole resolve atomically and the wake would retry it forever.
+// A fold read failure degrades to the selected IDs alone; the wake path
+// retries.
+func (s *Session) unionCoveredRootDelegateAttention(ids []string) []string {
+	s.attentionMu.Lock()
+	defer s.attentionMu.Unlock()
+	if len(s.rootAttentionCoveredIDs) == 0 {
+		return ids
+	}
+	pending, err := s.pendingDelegateAttentionIDsLocked()
+	if err != nil {
+		return ids
+	}
+	out := slices.Clone(ids)
+	for _, id := range pending {
+		if _, ok := s.rootAttentionCoveredIDs[id]; !ok {
+			continue
+		}
+		if !slices.Contains(out, id) {
+			out = append(out, id)
+		}
+	}
+	return out
 }
 
 func (s *Session) scheduleRootAttentionRetryLocked() {

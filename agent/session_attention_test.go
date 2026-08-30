@@ -2615,6 +2615,778 @@ func TestRootDelegateAttention_SuccessfulNotificationConsumesExactIDs(t *testing
 	}
 }
 
+// A delivery appended and armed while a root turn is already running is
+// presented to the model by that turn's later rounds. Resolving only the IDs
+// snapshotted at turn begin leaves it pending, and the wake it armed then runs
+// a whole notification turn whose request carries nothing new — the model
+// answers an already-answered context and the user sees the closing message
+// twice. The turn that already presented the item must consume it at finish.
+func TestRootDelegateAttention_MidTurnArmedAttentionConsumedWithoutRedundantWake(t *testing.T) {
+	stateDir := t.TempDir()
+	const (
+		firstID       = "delegate:dlg_midturn/delivery/1"
+		firstContent  = `<delegate-notification delegate_id="dlg_midturn">first</delegate-notification>`
+		secondID      = "delegate:dlg_midturn/delivery/2"
+		secondContent = `<delegate-notification delegate_id="dlg_midturn">second lands mid-turn</delegate-notification>`
+	)
+	var root *Session
+	var (
+		calls            int
+		roundTwoSawBoth  bool
+		midTurnAppendErr error
+		midTurnArmErr    error
+	)
+	root = newSession(t,
+		withDir(stateDir),
+		withConfig(SessionConfig{StateDir: stateDir, MaxSubagentDepth: 1, NoProjectPrompts: true}),
+		withSteps(
+			func(llm.Request) llm.Response {
+				calls++
+				// A second delivery lands while this turn is in flight — the
+				// delegate-notification path appends and arms it against the
+				// running turn, and the next round's request already carries it.
+				if midTurnAppendErr == nil {
+					var appended bool
+					appended, midTurnAppendErr = root.appendDelegateNotificationDurably(secondID, secondContent)
+					if midTurnAppendErr == nil && !appended {
+						midTurnAppendErr = errors.New("mid-turn attention append was a no-op")
+					}
+				}
+				if midTurnAppendErr == nil {
+					midTurnArmErr = root.armDelegateAttention(secondID)
+				}
+				return toolCallResponse(llm.ToolCallData{ID: "round-one", Name: "task_list", Arguments: json.RawMessage(`{"action":"view"}`), Type: "function"})
+			},
+			func(req llm.Request) llm.Response {
+				calls++
+				roundTwoSawBoth = requestContainsText(req, firstContent) && requestContainsText(req, secondContent)
+				return toolCallResponse(communicateCall("mid-turn-complete", "both deliveries handled"))
+			},
+		),
+	)
+	if _, err := root.appendDelegateNotificationDurably(firstID, firstContent); err != nil {
+		t.Fatalf("append first root attention: %v", err)
+	}
+	if err := root.armDelegateAttention(firstID); err != nil {
+		t.Fatalf("arm first root attention: %v", err)
+	}
+	if _, err := root.ProcessInputKind(context.Background(), "", nil, EntryNotification); err != nil {
+		t.Fatalf("process root attention: %v", err)
+	}
+	if midTurnAppendErr != nil {
+		t.Fatalf("mid-turn append: %v", midTurnAppendErr)
+	}
+	if midTurnArmErr != nil {
+		t.Fatalf("mid-turn arm: %v", midTurnArmErr)
+	}
+	if !roundTwoSawBoth {
+		t.Fatal("the in-flight turn's later round did not present both deliveries to the model")
+	}
+	fold, err := readDelegateAttentionFold(transcriptPath(stateDir, root.ID()), root.ID())
+	if err != nil {
+		t.Fatalf("read root attention fold: %v", err)
+	}
+	for _, id := range []string{firstID, secondID} {
+		if got := fold.resolutions[id]; got != delegateAttentionConsumed {
+			t.Fatalf("attention %q disposition = %q, want consumed", id, got)
+		}
+	}
+	if pending := fold.pendingIDs(); len(pending) != 0 {
+		t.Fatalf("mid-turn-covered attention remains pending after the turn that saw it: %#v", pending)
+	}
+	if root.hasPendingRootDelegateAttention() {
+		t.Fatal("covered attention still arms a wake: a redundant notification turn would re-ask the model with nothing new")
+	}
+	if calls != 2 {
+		t.Fatalf("provider calls = %d, want exactly the in-flight turn's two rounds", calls)
+	}
+}
+
+// The mirror boundary: a delivery appended after the turn's final request was
+// built is durable and resident in history, but no model call this turn
+// presented it. Finishing the turn must NOT consume it — its armed wake fires
+// and a real notification turn presents it before resolution.
+func TestRootDelegateAttention_PostBuildArmedAttentionStaysPendingForWake(t *testing.T) {
+	stateDir := t.TempDir()
+	const (
+		firstID      = "delegate:dlg_unseen/delivery/1"
+		firstContent = `<delegate-notification delegate_id="dlg_unseen">first</delegate-notification>`
+		lateID       = "delegate:dlg_unseen/delivery/2"
+		lateContent  = `<delegate-notification delegate_id="dlg_unseen">late lands after the final request was built</delegate-notification>`
+	)
+	var root *Session
+	var (
+		calls         int
+		wakeSawLate   bool
+		lateAppendErr error
+		lateArmErr    error
+	)
+	root = newSession(t,
+		withDir(stateDir),
+		withConfig(SessionConfig{StateDir: stateDir, MaxSubagentDepth: 1, NoProjectPrompts: true}),
+		withSteps(
+			func(llm.Request) llm.Response {
+				calls++
+				// Lands DURING the turn's final model call: the steering turn is
+				// durable and retained in history, but no request this turn
+				// presented it to the model.
+				if lateAppendErr == nil {
+					_, lateAppendErr = root.appendDelegateNotificationDurably(lateID, lateContent)
+				}
+				if lateAppendErr == nil {
+					lateArmErr = root.armDelegateAttention(lateID)
+				}
+				return toolCallResponse(communicateCall("unseen-turn-complete", "first handled"))
+			},
+			func(req llm.Request) llm.Response {
+				calls++
+				wakeSawLate = requestContainsText(req, lateContent)
+				return toolCallResponse(communicateCall("unseen-wake-complete", "late handled"))
+			},
+		),
+	)
+	if _, err := root.appendDelegateNotificationDurably(firstID, firstContent); err != nil {
+		t.Fatalf("append first root attention: %v", err)
+	}
+	if err := root.armDelegateAttention(firstID); err != nil {
+		t.Fatalf("arm first root attention: %v", err)
+	}
+	if _, err := root.ProcessInputKind(context.Background(), "", nil, EntryNotification); err != nil {
+		t.Fatalf("process first root attention turn: %v", err)
+	}
+	if lateAppendErr != nil {
+		t.Fatalf("late append: %v", lateAppendErr)
+	}
+	if lateArmErr != nil {
+		t.Fatalf("late arm: %v", lateArmErr)
+	}
+	fold, err := readDelegateAttentionFold(transcriptPath(stateDir, root.ID()), root.ID())
+	if err != nil {
+		t.Fatalf("read root attention fold: %v", err)
+	}
+	if got := fold.resolutions[firstID]; got != delegateAttentionConsumed {
+		t.Fatalf("first attention disposition = %q, want consumed", got)
+	}
+	if pending := fold.pendingIDs(); !reflect.DeepEqual(pending, []string{lateID}) {
+		t.Fatalf("pending after the turn that never saw the late delivery = %#v, want exactly that delivery", pending)
+	}
+	if !root.hasPendingRootDelegateAttention() {
+		t.Fatal("unseen attention lost its wake: its content would never reach the model")
+	}
+	if _, err := root.ProcessInputKind(context.Background(), "", nil, EntryNotification); err != nil {
+		t.Fatalf("process wake turn for the late delivery: %v", err)
+	}
+	if !wakeSawLate {
+		t.Fatal("the wake turn did not present the late delivery to the model before consuming it")
+	}
+	fold, err = readDelegateAttentionFold(transcriptPath(stateDir, root.ID()), root.ID())
+	if err != nil {
+		t.Fatalf("read root attention fold after wake: %v", err)
+	}
+	if pending := fold.pendingIDs(); len(pending) != 0 {
+		t.Fatalf("late delivery remains pending after its wake turn: %#v", pending)
+	}
+}
+
+// A notification wake accepted on pending steering (or a job notification)
+// begins with an EMPTY attention snapshot. A delivery armed while that turn
+// runs is presented by the turn's later rounds exactly like the notification
+// case, so the turn must consume it at finish; a guard that skips finish when
+// the snapshot is empty leaves it for a redundant wake with nothing new to say.
+func TestRootDelegateAttention_EmptySnapshotNotificationTurnConsumesCoveredDelivery(t *testing.T) {
+	stateDir := t.TempDir()
+	const (
+		attentionID = "delegate:dlg_emptysnap/delivery/1"
+		content     = `<delegate-notification delegate_id="dlg_emptysnap">lands during a steering wake</delegate-notification>`
+	)
+	var root *Session
+	var (
+		calls       int
+		roundTwoSaw bool
+		appendErr   error
+		armErr      error
+	)
+	root = newSession(t,
+		withDir(stateDir),
+		withConfig(SessionConfig{StateDir: stateDir, MaxSubagentDepth: 1, NoProjectPrompts: true}),
+		withSteps(
+			func(llm.Request) llm.Response {
+				calls++
+				if appendErr == nil {
+					_, appendErr = root.appendDelegateNotificationDurably(attentionID, content)
+				}
+				if appendErr == nil {
+					armErr = root.armDelegateAttention(attentionID)
+				}
+				return toolCallResponse(llm.ToolCallData{ID: "round-one", Name: "task_list", Arguments: json.RawMessage(`{"action":"view"}`), Type: "function"})
+			},
+			func(req llm.Request) llm.Response {
+				calls++
+				roundTwoSaw = requestContainsText(req, content)
+				return toolCallResponse(communicateCall("empty-snap-complete", "steering and delivery handled"))
+			},
+		),
+	)
+	// A pending steering item is what accepts this notification turn; no root
+	// attention is armed, so the begin snapshot is empty.
+	root.SteerKind("unrelated steering wake", events.SteeringKindNotification)
+	if _, err := root.ProcessInputKind(context.Background(), "", nil, EntryNotification); err != nil {
+		t.Fatalf("process steering-wake notification turn: %v", err)
+	}
+	if appendErr != nil {
+		t.Fatalf("mid-turn append: %v", appendErr)
+	}
+	if armErr != nil {
+		t.Fatalf("mid-turn arm: %v", armErr)
+	}
+	if calls != 2 {
+		t.Fatalf("provider calls = %d, want the accepted turn's two rounds", calls)
+	}
+	if !roundTwoSaw {
+		t.Fatal("the accepted turn's later round did not present the mid-turn delivery")
+	}
+	fold, err := readDelegateAttentionFold(transcriptPath(stateDir, root.ID()), root.ID())
+	if err != nil {
+		t.Fatalf("read root attention fold: %v", err)
+	}
+	if got := fold.resolutions[attentionID]; got != delegateAttentionConsumed {
+		t.Fatalf("attention disposition = %q, want consumed by the covering turn", got)
+	}
+	if root.hasPendingRootDelegateAttention() {
+		t.Fatal("covered attention still arms a wake after the turn that presented it")
+	}
+}
+
+// A user turn that incorporates a mid-turn delivery consumes it at finish,
+// exactly like a notification turn: the delivery's content rode the turn's
+// later requests, and its armed wake would carry nothing new.
+func TestRootDelegateAttention_UserTurnConsumesCoveredMidTurnDelivery(t *testing.T) {
+	stateDir := t.TempDir()
+	const (
+		attentionID = "delegate:dlg_userturn/delivery/1"
+		content     = `<delegate-notification delegate_id="dlg_userturn">lands during a user turn</delegate-notification>`
+	)
+	var root *Session
+	var (
+		calls       int
+		roundTwoSaw bool
+		appendErr   error
+		armErr      error
+	)
+	root = newSession(t,
+		withDir(stateDir),
+		withConfig(SessionConfig{StateDir: stateDir, MaxSubagentDepth: 1, NoProjectPrompts: true}),
+		withSteps(
+			func(llm.Request) llm.Response {
+				calls++
+				if appendErr == nil {
+					_, appendErr = root.appendDelegateNotificationDurably(attentionID, content)
+				}
+				if appendErr == nil {
+					armErr = root.armDelegateAttention(attentionID)
+				}
+				return toolCallResponse(llm.ToolCallData{ID: "round-one", Name: "task_list", Arguments: json.RawMessage(`{"action":"view"}`), Type: "function"})
+			},
+			func(req llm.Request) llm.Response {
+				calls++
+				roundTwoSaw = requestContainsText(req, content)
+				return toolCallResponse(communicateCall("user-turn-complete", "question answered and delivery handled"))
+			},
+		),
+	)
+	if _, err := root.ProcessInput(context.Background(), "status update please", nil); err != nil {
+		t.Fatalf("process user turn: %v", err)
+	}
+	if appendErr != nil {
+		t.Fatalf("mid-turn append: %v", appendErr)
+	}
+	if armErr != nil {
+		t.Fatalf("mid-turn arm: %v", armErr)
+	}
+	if !roundTwoSaw {
+		t.Fatal("the user turn's later round did not present the mid-turn delivery")
+	}
+	fold, err := readDelegateAttentionFold(transcriptPath(stateDir, root.ID()), root.ID())
+	if err != nil {
+		t.Fatalf("read root attention fold: %v", err)
+	}
+	if got := fold.resolutions[attentionID]; got != delegateAttentionConsumed {
+		t.Fatalf("attention disposition = %q, want consumed by the covering user turn", got)
+	}
+	if root.hasPendingRootDelegateAttention() {
+		t.Fatal("covered attention still arms a wake after the user turn that presented it")
+	}
+}
+
+// Coverage credits only deliveries armed after the turn began. The per-turn
+// reset snapshots the armed set; attention armed before it (whatever its
+// steering turn's position in history) keeps its dedicated notification turn,
+// while attention armed after it counts the moment a built request presents
+// the steering turn.
+func TestRootDelegateAttention_CoverageExcludesAttentionArmedBeforeTurnBegin(t *testing.T) {
+	stateDir := t.TempDir()
+	const (
+		preTurnID  = "delegate:dlg_boundary/delivery/1"
+		midTurnID  = "delegate:dlg_boundary/delivery/2"
+		unarmedID  = "delegate:dlg_boundary/delivery/3"
+		preContent = `<delegate-notification delegate_id="dlg_boundary">armed before the turn</delegate-notification>`
+		midContent = `<delegate-notification delegate_id="dlg_boundary">armed mid-turn</delegate-notification>`
+	)
+	root := newSession(t,
+		withDir(stateDir),
+		withConfig(SessionConfig{StateDir: stateDir, MaxSubagentDepth: 1, NoProjectPrompts: true}),
+	)
+	if _, err := root.appendDelegateNotificationDurably(preTurnID, preContent); err != nil {
+		t.Fatalf("append pre-turn attention: %v", err)
+	}
+	if err := root.armDelegateAttention(preTurnID); err != nil {
+		t.Fatalf("arm pre-turn attention: %v", err)
+	}
+	// Turn start: the reset snapshots {preTurnID} as armed before this turn.
+	root.resetRootDelegateAttentionCoverage()
+	if _, err := root.appendDelegateNotificationDurably(midTurnID, midContent); err != nil {
+		t.Fatalf("append mid-turn attention: %v", err)
+	}
+	if err := root.armDelegateAttention(midTurnID); err != nil {
+		t.Fatalf("arm mid-turn attention: %v", err)
+	}
+	// Appended but deliberately NOT armed: the arm can lag the append past the
+	// mark, and coverage must not depend on it.
+	if _, err := root.appendDelegateNotificationDurably(unarmedID, midContent); err != nil {
+		t.Fatalf("append unarmed attention: %v", err)
+	}
+	steeringFor := func(id, text string) schema.Turn {
+		turn := schema.NewTurn(schema.TurnSteering, llm.User(text))
+		turn.AttentionID = id
+		return turn
+	}
+	// All three steering turns sit anywhere in the presented history; position
+	// is not the boundary.
+	historyTurns := []schema.Turn{
+		schema.NewTurn(schema.TurnUserInput, llm.User("earlier context")),
+		steeringFor(preTurnID, preContent),
+		schema.NewTurn(schema.TurnAssistant, llm.Assistant("earlier answer")),
+		steeringFor(midTurnID, midContent),
+		steeringFor(unarmedID, midContent),
+	}
+	root.stageRootDelegateAttentionCoverage(historyTurns)
+	root.attentionMu.Lock()
+	staged := maps.Clone(root.rootAttentionStagedIDs)
+	root.attentionMu.Unlock()
+	if _, ok := staged[preTurnID]; ok {
+		t.Fatal("attention armed before the turn was staged")
+	}
+	for _, id := range []string{midTurnID, unarmedID} {
+		if _, ok := staged[id]; !ok {
+			t.Fatalf("attention %q armed (or appended) after turn begin was not staged", id)
+		}
+	}
+	// Staging is candidacy, not credit: only a settled round promotes.
+	root.promoteStagedRootDelegateAttention()
+	root.attentionMu.Lock()
+	covered := root.rootAttentionCoveredIDs
+	root.attentionMu.Unlock()
+	if _, ok := covered[preTurnID]; ok {
+		t.Fatal("attention armed before the turn was marked covered")
+	}
+	for _, id := range []string{midTurnID, unarmedID} {
+		if _, ok := covered[id]; !ok {
+			t.Fatalf("attention %q armed (or appended) after turn begin was not marked covered", id)
+		}
+	}
+}
+
+// Coverage is credit for presentation in a SETTLED call, not for being in a
+// built request. A round whose call fails — after which a retry's compaction
+// may fold the steering turn away — must leave the item unconsumed: staged
+// but never promoted, so finish skips it and its wake survives.
+func TestRootDelegateAttention_CoverageCreditsOnlySettledRounds(t *testing.T) {
+	stateDir := t.TempDir()
+	const (
+		attentionID = "delegate:dlg_settled/delivery/1"
+		content     = `<delegate-notification delegate_id="dlg_settled">must be settled to count</delegate-notification>`
+	)
+	root := newSession(t,
+		withDir(stateDir),
+		withConfig(SessionConfig{StateDir: stateDir, MaxSubagentDepth: 1, NoProjectPrompts: true}),
+	)
+	root.resetRootDelegateAttentionCoverage()
+	if _, err := root.appendDelegateNotificationDurably(attentionID, content); err != nil {
+		t.Fatalf("append attention: %v", err)
+	}
+	if err := root.armDelegateAttention(attentionID); err != nil {
+		t.Fatalf("arm attention: %v", err)
+	}
+	steering := schema.NewTurn(schema.TurnSteering, llm.User(content))
+	steering.AttentionID = attentionID
+	historyTurns := []schema.Turn{
+		schema.NewTurn(schema.TurnUserInput, llm.User("context")),
+		steering,
+	}
+
+	// The request build stages the item; the round's call then FAILS (a
+	// content-filter retry whose compaction folds the steering turn away is
+	// the production shape). No promotion happens, and finish must not
+	// consume: the model never saw it in a settled call.
+	root.stageRootDelegateAttentionCoverage(historyTurns)
+	root.attentionMu.Lock()
+	if _, ok := root.rootAttentionStagedIDs[attentionID]; !ok {
+		root.attentionMu.Unlock()
+		t.Fatal("built request did not stage the presented attention")
+	}
+	if len(root.rootAttentionCoveredIDs) != 0 {
+		root.attentionMu.Unlock()
+		t.Fatal("staging alone credited coverage before any call settled")
+	}
+	root.attentionMu.Unlock()
+	if err := root.finishRootDelegateAttentionTurn(nil, nil); err != nil {
+		t.Fatalf("finish with no settled coverage: %v", err)
+	}
+	fold, err := readDelegateAttentionFold(transcriptPath(stateDir, root.ID()), root.ID())
+	if err != nil {
+		t.Fatalf("read fold after unsettled finish: %v", err)
+	}
+	if pending := fold.pendingIDs(); !reflect.DeepEqual(pending, []string{attentionID}) {
+		t.Fatalf("unsettled coverage was consumed: pending = %#v, want the delivery kept", pending)
+	}
+
+	// The retry's round settles with the item presented: promotion credits
+	// it, and finish consumes.
+	root.stageRootDelegateAttentionCoverage(historyTurns)
+	root.promoteStagedRootDelegateAttention()
+	if err := root.finishRootDelegateAttentionTurn(nil, nil); err != nil {
+		t.Fatalf("finish with settled coverage: %v", err)
+	}
+	fold, err = readDelegateAttentionFold(transcriptPath(stateDir, root.ID()), root.ID())
+	if err != nil {
+		t.Fatalf("read fold after settled finish: %v", err)
+	}
+	if got := fold.resolutions[attentionID]; got != delegateAttentionConsumed {
+		t.Fatalf("settled coverage disposition = %q, want consumed", got)
+	}
+}
+
+// An accepted notification turn with an EMPTY begin snapshot can only fail on
+// coverage — and coverage failures warn instead of failing the turn. The item
+// stays pending, and because the turn declined to honor the wake it was
+// flagged for, finish arranges a paced retry even while the flag is set (the
+// drain skips the notification rung right after a notification turn).
+func TestRootDelegateAttention_EmptySnapshotCoverageFailureWarnsAndRetries(t *testing.T) {
+	stateDir := t.TempDir()
+	clock := agenttest.NewFakeClock()
+	const (
+		attentionID = "delegate:dlg_emptyfail/delivery/1"
+		content     = `<delegate-notification delegate_id="dlg_emptyfail">coverage resolution will fail</delegate-notification>`
+	)
+	var root *Session
+	root = newSession(t,
+		withDir(stateDir),
+		withConfig(SessionConfig{StateDir: stateDir, MaxSubagentDepth: 1, NoProjectPrompts: true, clock: clock}),
+		withSteps(
+			func(llm.Request) llm.Response {
+				if _, err := root.appendDelegateNotificationDurably(attentionID, content); err != nil {
+					t.Errorf("mid-turn append: %v", err)
+				}
+				if err := root.armDelegateAttention(attentionID); err != nil {
+					t.Errorf("mid-turn arm: %v", err)
+				}
+				return toolCallResponse(llm.ToolCallData{ID: "round-one", Name: "task_list", Arguments: json.RawMessage(`{"action":"view"}`), Type: "function"})
+			},
+			func(llm.Request) llm.Response {
+				return toolCallResponse(communicateCall("empty-fail-turn", "steering handled"))
+			},
+			func(llm.Request) llm.Response {
+				return toolCallResponse(communicateCall("empty-fail-retry", "delivery consumed by the paced retry wake"))
+			},
+		),
+	)
+	installResolutionSyncFailureWriter(t, root)
+	wakes := make(chan struct{}, 2)
+	root.SetNotifyFunc(func() { wakes <- struct{}{} })
+
+	root.SteerKind("unrelated steering wake", events.SteeringKindNotification)
+	if _, err := root.ProcessInputKind(context.Background(), "", nil, EntryNotification); err != nil {
+		t.Fatalf("empty-snapshot turn failed with the coverage-only resolution error: %v", err)
+	}
+	fold, err := readDelegateAttentionFold(transcriptPath(stateDir, root.ID()), root.ID())
+	if err != nil {
+		t.Fatalf("read fold after failed coverage resolution: %v", err)
+	}
+	if pending := fold.pendingIDs(); !reflect.DeepEqual(pending, []string{attentionID}) {
+		t.Fatalf("pending after failed coverage resolution = %#v, want the delivery kept", pending)
+	}
+	if !root.sessionWorkPending() {
+		t.Fatal("failed coverage resolution left no autonomous work to recover consumption")
+	}
+	clock.Advance(jobNotificationRetryInitialDelay)
+	select {
+	case <-wakes:
+	// TRIPWIRE: in-process notify channel with a fake clock already advanced
+	// past the retry delay; only fires on a genuine hang.
+	case <-time.After(30 * time.Second):
+		t.Fatal("declined wake arranged no paced retry")
+	}
+	if _, err := root.ProcessInputKind(context.Background(), "", nil, EntryNotification); err != nil {
+		t.Fatalf("paced-retry wake turn: %v", err)
+	}
+	fold, err = readDelegateAttentionFold(transcriptPath(stateDir, root.ID()), root.ID())
+	if err != nil {
+		t.Fatalf("read fold after paced retry: %v", err)
+	}
+	if got := fold.resolutions[attentionID]; got != delegateAttentionConsumed {
+		t.Fatalf("attention disposition = %q, want consumed by the paced retry wake", got)
+	}
+}
+
+// A turn that panics never settled: its coverage must NOT be consumed during
+// unwinding. The recover defer marks err before re-panicking, and the finish
+// defer — unwinding right after — reads it and skips the success path.
+func TestRootDelegateAttention_PanicUnwindDoesNotConsumeCoverage(t *testing.T) {
+	stateDir := t.TempDir()
+	const (
+		attentionID = "delegate:dlg_panic/delivery/1"
+		content     = `<delegate-notification delegate_id="dlg_panic">panic must not consume</delegate-notification>`
+	)
+	root := newSession(t,
+		withDir(stateDir),
+		withConfig(SessionConfig{StateDir: stateDir, MaxSubagentDepth: 1, NoProjectPrompts: true}),
+	)
+	if _, err := root.appendDelegateNotificationDurably(attentionID, content); err != nil {
+		t.Fatalf("append attention: %v", err)
+	}
+	root.attentionMu.Lock()
+	root.rootAttentionCoveredIDs = map[string]struct{}{attentionID: {}}
+	root.attentionMu.Unlock()
+	panicErr := errors.New("injected turn panic")
+	ctx := context.WithValue(context.Background(), sessionLifecycleFaultsKey{}, map[string]error{"panic": panicErr})
+	func() {
+		defer func() {
+			if r := recover(); r == nil {
+				t.Error("injected panic did not propagate")
+			}
+		}()
+		_, _ = root.ProcessInputKind(ctx, "question", nil, EntryUserInput)
+	}()
+	fold, err := readDelegateAttentionFold(transcriptPath(stateDir, root.ID()), root.ID())
+	if err != nil {
+		t.Fatalf("read fold after panicking turn: %v", err)
+	}
+	if pending := fold.pendingIDs(); !reflect.DeepEqual(pending, []string{attentionID}) {
+		t.Fatalf("panic unwinding consumed coverage: pending = %#v, want the delivery kept", pending)
+	}
+}
+
+// Coverage consumption is an optimization over the wake path: when its
+// resolution append fails, a covering NON-notification turn still succeeds —
+// the item stays pending, its armed wake fires, and the follow-up
+// notification turn consumes it — instead of failing the user's turn with
+// the optimization's error. The injected writer fails exactly one
+// ATTENTION_RESOLUTION sync: the covering turn's own attempt.
+func TestRootDelegateAttention_CoveredResolutionFailureDoesNotFailUserTurn(t *testing.T) {
+	stateDir := t.TempDir()
+	const (
+		attentionID = "delegate:dlg_resfail/delivery/1"
+		content     = `<delegate-notification delegate_id="dlg_resfail">resolution will fail</delegate-notification>`
+	)
+	var root *Session
+	var wakeTurnSaw bool
+	root = newSession(t,
+		withDir(stateDir),
+		withConfig(SessionConfig{StateDir: stateDir, MaxSubagentDepth: 1, NoProjectPrompts: true}),
+		withSteps(
+			func(llm.Request) llm.Response {
+				if _, err := root.appendDelegateNotificationDurably(attentionID, content); err != nil {
+					t.Errorf("mid-turn append: %v", err)
+				}
+				if err := root.armDelegateAttention(attentionID); err != nil {
+					t.Errorf("mid-turn arm: %v", err)
+				}
+				return toolCallResponse(llm.ToolCallData{ID: "round-one", Name: "task_list", Arguments: json.RawMessage(`{"action":"view"}`), Type: "function"})
+			},
+			func(llm.Request) llm.Response {
+				return toolCallResponse(communicateCall("resolution-failure-turn", "answer stands"))
+			},
+			// The armed wake's follow-up notification turn, which the failed
+			// coverage resolution left the item pending for.
+			func(req llm.Request) llm.Response {
+				wakeTurnSaw = requestContainsText(req, content)
+				return toolCallResponse(communicateCall("resolution-failure-wake", "delivery consumed by the wake"))
+			},
+		),
+	)
+	installResolutionSyncFailureWriter(t, root)
+	if _, err := root.ProcessInput(context.Background(), "question", nil); err != nil {
+		t.Fatalf("covering user turn (or its recovery wake) failed with the coverage resolution error: %v", err)
+	}
+	if !wakeTurnSaw {
+		t.Fatal("the recovery wake turn did not present the delivery before consuming it")
+	}
+	fold, err := readDelegateAttentionFold(transcriptPath(stateDir, root.ID()), root.ID())
+	if err != nil {
+		t.Fatalf("read root attention fold: %v", err)
+	}
+	if got := fold.resolutions[attentionID]; got != delegateAttentionConsumed {
+		t.Fatalf("attention disposition = %q, want consumed by the recovery wake after the failed coverage resolution", got)
+	}
+}
+
+// A failed turn never resolves, and the union's only job on that path is the
+// emptiness gate that arms the paced-retry backstop. A non-empty begin
+// snapshot already passes that gate, so unioning it with the durable fold is
+// a fold read whose result is discarded: skip it.
+func TestRootDelegateAttention_FailedTurnWithSnapshotSkipsFoldRead(t *testing.T) {
+	stateDir := t.TempDir()
+	root := newSession(t,
+		withDir(stateDir),
+		withConfig(SessionConfig{StateDir: stateDir, MaxSubagentDepth: 1, NoProjectPrompts: true}),
+	)
+	const (
+		snapshotID = "delegate:dlg_snapshotfail/delivery/1"
+		coveredID  = "delegate:dlg_coveredfail/delivery/1"
+	)
+	for _, attentionID := range []string{snapshotID, coveredID} {
+		if _, err := root.appendDelegateNotificationDurably(attentionID, `<delegate-notification delegate_id="dlg_`+attentionID+`">fold must not be read</delegate-notification>`); err != nil {
+			t.Fatalf("append attention %q: %v", attentionID, err)
+		}
+	}
+	root.attentionMu.Lock()
+	root.rootAttentionWakeIDs = map[string]struct{}{snapshotID: {}, coveredID: {}}
+	root.rootAttentionCoveredIDs = map[string]struct{}{coveredID: {}}
+	root.attentionMu.Unlock()
+
+	var foldReads int
+	root.cfg.testOnly.delegateAttentionReadFold = func(path, sessionID string) (delegateAttentionFold, error) {
+		foldReads++
+		return readDelegateAttentionFold(path, sessionID)
+	}
+	defer func() { root.cfg.testOnly.delegateAttentionReadFold = nil }()
+
+	if err := root.finishRootDelegateAttentionTurn([]string{snapshotID}, errors.New("turn failed")); err != nil {
+		t.Fatalf("failed turn with snapshot: %v", err)
+	}
+	if foldReads != 0 {
+		t.Fatalf("failed turn with a non-empty snapshot read the fold %d times, want 0", foldReads)
+	}
+	if !root.sessionWorkPending() {
+		t.Fatal("failed turn left no paced retry for the still-pending attention")
+	}
+}
+
+// The empty-snapshot counterpart is the backstop and MUST keep reading the
+// fold: a settled round presented mid-turn attention before the turn failed,
+// the drain skips the notification rung right after a notification turn, and
+// only this gate arms the paced retry that eventually consumes the item.
+func TestRootDelegateAttention_FailedEmptySnapshotTurnStillReadsFold(t *testing.T) {
+	stateDir := t.TempDir()
+	root := newSession(t,
+		withDir(stateDir),
+		withConfig(SessionConfig{StateDir: stateDir, MaxSubagentDepth: 1, NoProjectPrompts: true}),
+	)
+	const coveredID = "delegate:dlg_coveredgate/delivery/1"
+	if _, err := root.appendDelegateNotificationDurably(coveredID, `<delegate-notification delegate_id="dlg_coveredgate">gate needs the fold</delegate-notification>`); err != nil {
+		t.Fatalf("append attention: %v", err)
+	}
+	root.attentionMu.Lock()
+	root.rootAttentionWakeIDs = map[string]struct{}{coveredID: {}}
+	root.rootAttentionCoveredIDs = map[string]struct{}{coveredID: {}}
+	root.attentionMu.Unlock()
+
+	var foldReads int
+	root.cfg.testOnly.delegateAttentionReadFold = func(path, sessionID string) (delegateAttentionFold, error) {
+		foldReads++
+		return readDelegateAttentionFold(path, sessionID)
+	}
+	defer func() { root.cfg.testOnly.delegateAttentionReadFold = nil }()
+
+	if err := root.finishRootDelegateAttentionTurn(nil, errors.New("turn failed")); err != nil {
+		t.Fatalf("failed empty-snapshot turn: %v", err)
+	}
+	if foldReads != 1 {
+		t.Fatalf("failed empty-snapshot turn read the fold %d times, want exactly 1 (the backstop gate)", foldReads)
+	}
+	if !root.sessionWorkPending() {
+		t.Fatal("failed empty-snapshot turn left no paced retry for the covered-but-pending attention")
+	}
+}
+
+// The liveness counterpart to the fold-read pair above: a FAILED turn with an
+// empty snapshot and nothing covered leaves a set wake flag untouched — and
+// that is correct, because the flag is a coalescing suppressor, not the
+// liveness carrier. The arm's own guaranteed notify kick is what refires: it
+// drives a fresh notification turn whose begin snapshot is non-empty and
+// which consumes the item. This test is the adversarial answer to "the early
+// return strands the flag": the flag stays set precisely so the in-flight
+// kick's turn cannot be suppressed into redundancy.
+func TestRootDelegateAttention_FailedEmptyCoverageTurnRefiresViaArmKick(t *testing.T) {
+	stateDir := t.TempDir()
+	clock := agenttest.NewFakeClock()
+	const attentionID = "delegate:dlg_refire/delivery/1"
+	var root *Session
+	root = newSession(t,
+		withDir(stateDir),
+		withConfig(SessionConfig{StateDir: stateDir, MaxSubagentDepth: 1, NoProjectPrompts: true, clock: clock}),
+		withSteps(
+			// The covering turn: appends and arms the attention mid-turn, then
+			// its round settles — the notification turn that consumes it comes
+			// later, from the arm's kick.
+			func(llm.Request) llm.Response {
+				if _, err := root.appendDelegateNotificationDurably(attentionID, `<delegate-notification delegate_id="dlg_refire">refire me</delegate-notification>`); err != nil {
+					t.Errorf("mid-turn append: %v", err)
+				}
+				if err := root.armDelegateAttention(attentionID); err != nil {
+					t.Errorf("mid-turn arm: %v", err)
+				}
+				return toolCallResponse(communicateCall("refire-covering", "covered mid-turn"))
+			},
+			// The turn driven by the arm's kick. Its begin snapshot is
+			// non-empty, so the finish path resolves and consumes.
+			func(llm.Request) llm.Response {
+				return toolCallResponse(communicateCall("refire-consumer", "consumed by the arm kick turn"))
+			},
+		),
+	)
+	wakes := make(chan struct{}, 2)
+	root.SetNotifyFunc(func() { wakes <- struct{}{} })
+
+	// A user turn (not the notification turn) presents and covers the item;
+	// it succeeds, and its finish consumes the covered delivery. That leaves
+	// nothing pending, so no kick is stranded.
+	if _, err := root.ProcessInputKind(context.Background(), "question", nil, EntryUserInput); err != nil {
+		t.Fatalf("covering user turn: %v", err)
+	}
+	fold, err := readDelegateAttentionFold(transcriptPath(stateDir, root.ID()), root.ID())
+	if err != nil {
+		t.Fatalf("read fold after covering turn: %v", err)
+	}
+	if got := fold.resolutions[attentionID]; got != delegateAttentionConsumed {
+		t.Fatalf("attention disposition = %q, want consumed by the covering turn", got)
+	}
+	if root.sessionWorkPending() {
+		t.Fatal("consumed attention still reports autonomous work pending")
+	}
+
+	// Now the adversarial shape itself: a failed turn, empty snapshot,
+	// nothing covered, wake flag set. The finish path must leave the flag
+	// set (it is the coalescing suppressor) and the liveness carrier — the
+	// arm's kick — is still in flight.
+	root.attentionMu.Lock()
+	wakeFlagBefore := root.rootAttentionWake
+	root.rootAttentionWake = true
+	root.attentionMu.Unlock()
+	if err := root.finishRootDelegateAttentionTurn(nil, errors.New("turn failed")); err != nil {
+		t.Fatalf("failed empty turn: %v", err)
+	}
+	root.attentionMu.Lock()
+	wakeFlagAfter := root.rootAttentionWake
+	root.attentionMu.Unlock()
+	if !wakeFlagAfter {
+		t.Fatal("empty failed turn cleared the wake flag: the in-flight arm kick's turn would be suppressed into a redundant notification")
+	}
+	if wakeFlagBefore {
+		t.Fatal("test setup: wake flag was already set before the adversarial injection")
+	}
+}
+
 func TestRootDelegateAttention_FailedConsumptionRemainsPendingAndRearms(t *testing.T) {
 	stateDir := t.TempDir()
 	clock := agenttest.NewFakeClock()

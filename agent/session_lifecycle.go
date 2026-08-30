@@ -1039,13 +1039,56 @@ func (s *Session) processOneInput(ctx context.Context, input string, images []Im
 			s.emit(events.EventCommunicatePreviewReset, events.CommunicatePreviewResetData{CallID: callID})
 		}
 	}()
+	var rootAttentionIDs []string
+	rootAttentionAccepted := false
+	// Every successful turn consumes the mid-turn deliveries its settled
+	// rounds presented — not only a notification turn's begin snapshot. A
+	// delivery injected as steering while this turn was running was
+	// incorporated by it; leaving it for the wake it armed runs a redundant
+	// notification turn whose request carries nothing new. The guard skips
+	// only wakes that were never accepted: an accepted notification turn with
+	// an EMPTY snapshot still finishes, because it may have covered a
+	// delivery armed while it ran. A resolution failure joins into the turn's
+	// error only when there IS a begin snapshot (its established contract);
+	// coverage is an optimization over the wake path, so a coverage-only
+	// failure — every non-notification kind, and empty-snapshot notification
+	// turns — warns and leaves the item pending instead of failing an
+	// otherwise successful turn.
+	//
+	// Registered BEFORE the autosave/recover defer below so that on panic the
+	// recover unwinds first and marks err: a panicking turn never settled,
+	// and this defer must read a non-nil err to skip consuming coverage on
+	// the success path.
+	defer func() {
+		if kind == EntryNotification && !rootAttentionAccepted {
+			return
+		}
+		finishErr := s.finishRootDelegateAttentionTurn(rootAttentionIDs, err)
+		if finishErr == nil {
+			return
+		}
+		// rootAttentionAccepted is set only in the notification branch, so this
+		// predicate is exactly "an accepted notification turn with a non-empty
+		// begin snapshot" — the begin-snapshot contract that joins failures.
+		if rootAttentionAccepted && len(rootAttentionIDs) != 0 {
+			err = errors.Join(err, finishErr)
+			return
+		}
+		s.emit(events.EventWarning, warningDataFromError("mid-turn delegate attention consumption failed; left pending for its wake", finishErr))
+	}()
 	// Flush meta.json on every exit from this function — normal return, error
 	// return, ctx cancellation, retry-budget exhaustion, or panic. Without
 	// this, in-memory modelResponses bumps that happen between happy-path
 	// autosaves (e.g. pause_turn, empty-response retries that exhaust) stay
 	// stranded if any exit path is taken before the next tool round. Kata ztne.
+	//
+	// On panic, mark err before re-panicking: the attention-finish defer above
+	// unwinds right after this one and must read a non-nil err — a panicking
+	// turn never settled, and consuming its covered attention on the success
+	// path would durably resolve items the model never finished answering.
 	defer func() {
 		if r := recover(); r != nil {
+			err = fmt.Errorf("session turn panicked: %v", r)
 			s.maybeAutoSave()
 			panic(r)
 		}
@@ -1094,6 +1137,10 @@ func (s *Session) processOneInput(ctx context.Context, input string, images []Im
 	s.mu.Unlock()
 	s.delegateDeliveryMu.Unlock()
 
+	// Attention coverage credits only what this turn's requests present; clear
+	// a previous turn's marks before any path below can finish this one.
+	s.resetRootDelegateAttentionCoverage()
+
 	select {
 	case <-ctx.Done():
 		s.emit(events.EventError, errorDataFromError(ctx.Err()))
@@ -1109,8 +1156,6 @@ func (s *Session) processOneInput(ctx context.Context, input string, images []Im
 	var runningTurnID string
 	defer func() { s.releaseRunningTurnID(runningTurnID) }()
 
-	var rootAttentionIDs []string
-	rootAttentionAccepted := false
 	if kind == EntryNotification {
 		// Take the name first, and in ONE atomic take-or-refuse against the
 		// durable store. Asking whether the name is free and then taking it
@@ -1188,14 +1233,6 @@ func (s *Session) processOneInput(ctx context.Context, input string, images []Im
 		// Named: drop any backoff this session accumulated standing down.
 		s.resetRunningTurnNameRetry()
 		rootAttentionIDs = s.beginRootDelegateAttentionTurn()
-		defer func() {
-			if !rootAttentionAccepted || len(rootAttentionIDs) == 0 {
-				return
-			}
-			if finishErr := s.finishRootDelegateAttentionTurn(rootAttentionIDs, err); finishErr != nil {
-				err = errors.Join(err, finishErr)
-			}
-		}()
 	}
 
 	// Name the turn before the event that opens it, so the AppWire projection
@@ -1316,6 +1353,11 @@ func (s *Session) processOneInput(ctx context.Context, input string, images []Im
 			}
 			return "", progressed, ferr
 		}
+		// The round settled: its staged attention is credited as covered. A
+		// round that failed (or was retried after compaction folded the
+		// steering turn away) never reaches here, so coverage always means
+		// "presented in a settled call of this turn".
+		s.promoteStagedRootDelegateAttention()
 
 		if abortErr := errors.Join(s.abortResponseProcessing(ctx), sessionLifecycleFault(ctx, "abort_after_log")); abortErr != nil {
 			return "", progressed, abortErr
