@@ -19,8 +19,16 @@ func filepathJoinDerivedTotals(t testing.TB, name string) string {
 	return filepath.Join(t.TempDir(), name)
 }
 
-func writeDerivedTotalsLines(t testing.TB, path string, records []any) {
+// renderDerivedTotalsTranscript renders a header plus entries into the
+// on-disk transcript bytes. writeDerivedTotalsTranscript writes them to a
+// file; the differential fuzz seeds them directly.
+func renderDerivedTotalsTranscript(t testing.TB, entries []schema.Turn) []byte {
 	t.Helper()
+	records := []any{transcript.Header{Kind: "header", FormatVersion: transcript.FormatVersion, SessionID: "derived"}}
+	for i, turn := range entries {
+		turn.Timestamp = time.Unix(1_700_000_000+int64(i), 0).UTC()
+		records = append(records, transcript.Entry{Kind: "entry", Seq: i + 1, Turn: turn})
+	}
 	var data []byte
 	for _, record := range records {
 		line, err := json.Marshal(record)
@@ -30,9 +38,7 @@ func writeDerivedTotalsLines(t testing.TB, path string, records []any) {
 		data = append(data, line...)
 		data = append(data, '\n')
 	}
-	if err := os.WriteFile(path, data, 0o600); err != nil {
-		t.Fatal(err)
-	}
+	return data
 }
 
 func marshalDerivedTotalsToolState(t testing.TB, state map[string]any) json.RawMessage {
@@ -50,12 +56,9 @@ func marshalDerivedTotalsToolState(t testing.TB, state map[string]any) json.RawM
 func writeDerivedTotalsTranscript(t testing.TB, entries []schema.Turn) string {
 	t.Helper()
 	path := filepathJoinDerivedTotals(t, "derived.transcript.jsonl")
-	records := []any{transcript.Header{Kind: "header", FormatVersion: transcript.FormatVersion, SessionID: "derived"}}
-	for i, turn := range entries {
-		turn.Timestamp = time.Unix(1_700_000_000+int64(i), 0).UTC()
-		records = append(records, transcript.Entry{Kind: "entry", Seq: i + 1, Turn: turn})
+	if err := os.WriteFile(path, renderDerivedTotalsTranscript(t, entries), 0o600); err != nil {
+		t.Fatal(err)
 	}
-	writeDerivedTotalsLines(t, path, records)
 	return path
 }
 
