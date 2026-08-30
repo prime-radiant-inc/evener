@@ -1195,6 +1195,7 @@ func (s *Session) recordClientMutationFailure(
 			return fmt.Errorf("append failed client start input: %w", err)
 		}
 		s.mu.Lock()
+		s.clientMutationAppendedTurn = true
 		s.history = append(s.history, turn)
 		s.mu.Unlock()
 		if err := s.clientMutationFailureFault("after_user"); err != nil {
@@ -1214,6 +1215,7 @@ func (s *Session) recordClientMutationFailure(
 			return fmt.Errorf("append failed client start diagnostic: %w", err)
 		}
 		s.mu.Lock()
+		s.clientMutationAppendedTurn = true
 		s.history = append(s.history, turn)
 		s.mu.Unlock()
 		if err := s.clientMutationFailureFault("after_failure"); err != nil {

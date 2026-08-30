@@ -660,7 +660,7 @@ func TurnsFromFile(path string, maxLineBytes int, project EntryProjector) ([]app
 	header, err := scanSemanticTranscript(path, maxLineBytes, func(raw json.RawMessage) error {
 		entryIndex := entryIndexNext
 		entryIndexNext++
-		projectEntryIntoTurns(&turns, project, raw, entryIndex)
+		projectEntryIntoTurns(&turns, project, raw, schema.Turn{}, entryIndex)
 		return nil
 	})
 	if err != nil {
@@ -688,7 +688,7 @@ func TurnsFromFile(path string, maxLineBytes int, project EntryProjector) ([]app
 func TurnsFromEntries(header transcript.Header, entries []transcript.Entry, project EntryProjector) ([]appwire.Turn, error) {
 	var turns []appwire.Turn
 	for i := range entries {
-		projectTurnIntoTurns(&turns, project, entries[i].Turn, i+1)
+		projectEntryIntoTurns(&turns, project, nil, entries[i].Turn, i+1)
 	}
 	// Same prelude position as TurnsFromFile: before every entry's turn.
 	if prelude := PreludeTurn(header); prelude != nil {
@@ -697,25 +697,28 @@ func TurnsFromEntries(header transcript.Header, entries []transcript.Entry, proj
 	return turns, nil
 }
 
-// projectEntryIntoTurns is the raw-JSON per-entry step TurnsFromFile's scan
-// runs. entryIndex is this entry's 1-based position over the whole scan,
-// incremented BEFORE the entry is decoded so a malformed line consumes its
-// index exactly as it does in the file scan.
-func projectEntryIntoTurns(turns *[]appwire.Turn, project EntryProjector, raw json.RawMessage, entryIndex int) {
-	// A malformed entry decodes to neither a projection nor a stamp: skip it
-	// (matching the pre-fix behavior, where a projector's own internal decode
-	// of the same malformed bytes would likewise fail and yield no items)
-	// rather than aborting the whole read over one bad line.
-	entry, decodeErr := transcript.DecodeEntry(raw)
-	if decodeErr != nil {
-		return
+// projectEntryIntoTurns is the per-entry step both forms share: turn id,
+// items, failure stamp, timestamp, and usage. TurnsFromFile's scan passes
+// each raw entry, which this helper decodes; TurnsFromEntries passes the
+// already-decoded turn. entryIndex is the entry's 1-based position over the
+// whole scan.
+//
+// The malformed-entry skip is defense-in-depth for callers that pass raw
+// bytes: TurnsFromFile's own scanner aborts the whole read on a malformed
+// entry, so from that path the skip cannot fire. A caller that hands this
+// function raw bytes directly (bypassing the scan) still gets a skip rather
+// than a panic or a partial projection.
+func projectEntryIntoTurns(turns *[]appwire.Turn, project EntryProjector, raw json.RawMessage, turn schema.Turn, entryIndex int) {
+	if raw != nil {
+		// A malformed entry decodes to neither a projection nor a stamp: skip
+		// it rather than projecting partial items from bytes that failed to
+		// decode.
+		entry, decodeErr := transcript.DecodeEntry(raw)
+		if decodeErr != nil {
+			return
+		}
+		turn = entry.Turn
 	}
-	projectTurnIntoTurns(turns, project, entry.Turn, entryIndex)
-}
-
-// projectTurnIntoTurns is the decoded per-entry step both forms share: turn
-// id, items, failure stamp, timestamp, and usage.
-func projectTurnIntoTurns(turns *[]appwire.Turn, project EntryProjector, turn schema.Turn, entryIndex int) {
 	turnID := persistedTurnID(turn, entryIndex)
 	var items []appwire.ThreadItem
 	if project != nil {

@@ -17,6 +17,10 @@ import (
 // unresolved and one consumed delegate attention, and returns the restored
 // session plus the durable pending id the fold must re-arm.
 func rearmFixtureSession(t *testing.T) (*Session, string) {
+	return rearmFixtureSessionWithTestOnly(t, testConfig{})
+}
+
+func rearmFixtureSessionWithTestOnly(t *testing.T, testOnly testConfig) (*Session, string) {
 	t.Helper()
 	stateDir := t.TempDir()
 	rootID := identifier.MustNewSessionID()
@@ -60,11 +64,87 @@ func rearmFixtureSession(t *testing.T) (*Session, string) {
 	if err := schema.SaveSessionMeta(stateDir, meta); err != nil {
 		t.Fatalf("save root metadata: %v", err)
 	}
-	restored, err := RestoreSessionFromMeta(llm.NewClient(), NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(stateDir), meta, stateDir)
+	restored, err := RestoreSessionFromMetaWithConfig(llm.NewClient(), NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(stateDir), meta, RestoreSessionConfig{StateDir: stateDir, testOnly: testOnly})
 	if err != nil {
 		t.Fatalf("restore root: %v", err)
 	}
 	return restored, pendingID
+}
+
+// TestRootDelegateAttention_RestoreRearmFoldsTheRetainedEntries proves the
+// restore-path rearm took the entries branch (not the file read): the seam
+// captures the entry list restore passed to the fold, and that list must be
+// the one RestoredTranscript exposes — the same final entry list serve will
+// see.
+func TestRootDelegateAttention_RestoreRearmFoldsTheRetainedEntries(t *testing.T) {
+	var foldedEntries []transcript.Entry
+	testOnly := testConfig{}
+	testOnly.delegateAttentionFoldEntries = func(entries []transcript.Entry) (delegateAttentionFold, error) {
+		foldedEntries = entries
+		return foldDelegateAttention(entries)
+	}
+	restored, pendingID := rearmFixtureSessionWithTestOnly(t, testOnly)
+	defer restored.Close()
+
+	if foldedEntries == nil {
+		t.Fatal("restore rearm never took the entries fold branch")
+	}
+	_, retained, ok := restored.RestoredTranscript()
+	if !ok {
+		t.Fatal("restored session retained no transcript entries")
+	}
+	if len(foldedEntries) != len(retained) {
+		t.Fatalf("entries passed to the fold = %d, retained entries = %d; the rearm must fold the same final list serve sees", len(foldedEntries), len(retained))
+	}
+	for i := range foldedEntries {
+		if foldedEntries[i].Turn.StableTurnID != retained[i].Turn.StableTurnID {
+			t.Fatalf("folded entry %d stable turn = %q, want the retained %q", i, foldedEntries[i].Turn.StableTurnID, retained[i].Turn.StableTurnID)
+		}
+	}
+	fold, err := foldDelegateAttention(foldedEntries)
+	if err != nil {
+		t.Fatalf("fold captured entries: %v", err)
+	}
+	if got := fold.pendingIDs(); !reflect.DeepEqual(got, []string{pendingID}) {
+		t.Fatalf("pending from the captured entries = %#v, want exactly the unresolved attention", got)
+	}
+}
+
+// TestRestoreSession_RestoredTranscriptOKBoundary pins the ok flag's
+// boundary: a session restored with NO transcript on disk reports ok=false,
+// and one restored over a transcript with at least one entry reports ok=true
+// with that entry. (A header-only transcript currently lands on the ok=false
+// side of the line: resumeWriter returns a nil entry slice when no entry
+// line follows the header, and RestoredTranscript keys ok on entries != nil.
+// That is the pre-existing resumeWriter behavior, not a restore decision.)
+func TestRestoreSession_RestoredTranscriptOKBoundary(t *testing.T) {
+	t.Run("no transcript on disk", func(t *testing.T) {
+		stateDir := t.TempDir()
+		rootID := identifier.MustNewSessionID()
+		if err := os.MkdirAll(filepath.Join(stateDir, sessionsSubdir), 0o755); err != nil {
+			t.Fatalf("mkdir sessions: %v", err)
+		}
+		meta := schema.SessionMeta{ID: rootID, ProfileID: "openai", Model: "gpt-5.2"}
+		if err := schema.SaveSessionMeta(stateDir, meta); err != nil {
+			t.Fatalf("save root metadata: %v", err)
+		}
+		restored, err := RestoreSessionFromMeta(llm.NewClient(), NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(stateDir), meta, stateDir)
+		if err != nil {
+			t.Fatalf("restore root: %v", err)
+		}
+		defer restored.Close()
+		if _, _, ok := restored.RestoredTranscript(); ok {
+			t.Fatal("a session restored without a transcript reported a restored one")
+		}
+	})
+	t.Run("transcript with entries", func(t *testing.T) {
+		restored, _ := rearmFixtureSession(t)
+		defer restored.Close()
+		_, entries, ok := restored.RestoredTranscript()
+		if !ok || len(entries) == 0 {
+			t.Fatalf("RestoredTranscript = ok:%t entries:%d, want ok:true with the fixture's entries", ok, len(entries))
+		}
+	})
 }
 
 // TestRootDelegateAttention_RearmFromTranscriptDoesNotOpenTheFile proves the

@@ -221,9 +221,10 @@ type Writer struct {
 	closed    atomic.Bool
 	// header is the validated header of the resumed transcript, retained
 	// from the resume scan so callers that already hold the decoded entries
-	// can project them without re-reading the file for its header. Zero for
-	// a writer that created a fresh transcript; NewWriter callers use
-	// HeaderOf / WriteFile for the same data.
+	// can project them without re-reading the file for its header.
+	// newWriterFS records the header it wrote, so Header() returns the real
+	// header for both fresh and resumed writers; only a writer whose header
+	// was never set — the zero-value Writer — reports a zero Header from it.
 	header Header
 
 	// SyncInterval controls how often Append calls fsync.

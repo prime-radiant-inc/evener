@@ -317,7 +317,7 @@ type testConfig struct {
 	delegateAttentionReadFold func(string, string) (delegateAttentionFold, error)
 	// delegateAttentionFoldEntries replaces only the in-memory attention fold
 	// over restore-retained entries. Nil preserves the production fold.
-	delegateAttentionFoldEntries func([]transcript.Entry, string) (delegateAttentionFold, error)
+	delegateAttentionFoldEntries func([]transcript.Entry) (delegateAttentionFold, error)
 	// delegateAttentionOpenWriter replaces only transcript resume for attention
 	// repair. Nil preserves the production transcript opener.
 	delegateAttentionOpenWriter delegateAttentionWriterOpener

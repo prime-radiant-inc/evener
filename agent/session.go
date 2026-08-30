@@ -361,6 +361,11 @@ type Session struct {
 	// captured before ResumeHistory compacts model context.
 	restoredClientMutationTurns map[string]string
 	restoredClientMutationItems map[string]clientMutationTranscriptItems
+	// clientMutationAppendedTurn flags that a restore-time client-mutation
+	// recovery appended turns to the transcript file. Restore consults it
+	// after the recovery pass to decide whether the retained transcript
+	// entry list must be refreshed from disk. Guarded by mu.
+	clientMutationAppendedTurn bool
 	// clientMutationStartWake is installed by the lifecycle runner. Start
 	// acceptance invokes it only after the durable mutation commit; setting it
 	// after restore immediately wakes any accepted start already owned by the

@@ -799,8 +799,9 @@ func (s *Session) resetStableDelegateAttentionRetry() {
 // entries is the final in-memory entry list restore produced (refreshed from
 // disk when delegate delivery replay appended to the transcript): folding it
 // instead of re-opening the file is what keeps resume from strict-decoding
-// the whole transcript a second time. Callers without an entry list use
-// rearmRootDelegateAttentionFromTranscriptReload.
+// the whole transcript a second time. A nil entries list falls back to the
+// file read (the fresh-session construction path, which holds no decoded
+// entry list).
 func (s *Session) rearmRootDelegateAttentionFromTranscript(entries []transcript.Entry) error {
 	if !s.isRootDelegateAttentionReceiver() {
 		return nil
@@ -819,7 +820,7 @@ func (s *Session) rearmRootDelegateAttentionFromTranscript(entries []transcript.
 	var fold delegateAttentionFold
 	var err error
 	if entries != nil {
-		fold, err = s.foldDelegateAttentionEntries(entries, sessionID)
+		fold, err = s.foldDelegateAttentionEntries(entries)
 	} else {
 		fold, err = s.readDelegateAttentionFold(transcriptPath(stateDir, sessionID), sessionID)
 	}
@@ -843,22 +844,12 @@ func (s *Session) rearmRootDelegateAttentionFromTranscript(entries []transcript.
 	return nil
 }
 
-// rearmRootDelegateAttentionFromTranscriptReload re-derives the root wake
-// cache from the transcript FILE, for callers (the fresh-session
-// construction path) that have no decoded entry list in hand.
-func (s *Session) rearmRootDelegateAttentionFromTranscriptReload() error {
-	return s.rearmRootDelegateAttentionFromTranscript(nil)
-}
-
 // foldDelegateAttentionEntries is the entries form of
 // readDelegateAttentionFold: same fold over the same entry list, no file
-// read. sessionID is unused by the fold itself (the entries were already
-// validated against the session by the pass that decoded them) but is kept
-// so the testOnly delegateAttentionReadFold seam below stays shape-stable
-// for both forms.
-func (s *Session) foldDelegateAttentionEntries(entries []transcript.Entry, sessionID string) (delegateAttentionFold, error) {
+// read.
+func (s *Session) foldDelegateAttentionEntries(entries []transcript.Entry) (delegateAttentionFold, error) {
 	if foldEntries := s.cfg.testOnly.delegateAttentionFoldEntries; foldEntries != nil {
-		return foldEntries(entries, sessionID)
+		return foldEntries(entries)
 	}
 	return foldDelegateAttention(entries)
 }

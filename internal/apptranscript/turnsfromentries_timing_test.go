@@ -13,10 +13,12 @@ import (
 	"primeradiant.com/evener/llm"
 )
 
-// TestTurnsFromEntriesLargeFixtureTiming is a measurement, not a gate: it
-// times the file read against the in-memory entries projection over a large
-// synthetic transcript and reports both. It always passes; its value is the
-// printed ratio proving the entries form skips the file I/O + decode pass.
+// TestTurnsFromEntriesLargeFixtureTiming times the file read against the
+// in-memory entries projection over a large synthetic transcript and gates
+// on a generous ratio floor: the file form (scan + decode + project) must be
+// at least 3x slower than the entries form (project only). The floor is
+// deliberately loose so machine load cannot flake it — a regression that
+// erases the entries form's win has to cost more than 3x before this fails.
 func TestTurnsFromEntriesLargeFixtureTiming(t *testing.T) {
 	if testing.Short() {
 		t.Skip("timing measurement, not a correctness gate")
@@ -77,7 +79,11 @@ func TestTurnsFromEntriesLargeFixtureTiming(t *testing.T) {
 	t.Logf("fixture: %d entries, %d bytes (%.1f MB)", entryCount, info.Size(), float64(info.Size())/1024/1024)
 	t.Logf("file form (scan+decode+project): %v, turns=%d", fileElapsed, len(fileTurns))
 	t.Logf("entries form (project only):     %v, turns=%d", entriesElapsed, len(entryTurns))
-	t.Logf("ratio: %.1fx", float64(fileElapsed)/float64(entriesElapsed))
+	ratio := float64(fileElapsed) / float64(entriesElapsed)
+	t.Logf("ratio: %.1fx", ratio)
+	if ratio < 3 {
+		t.Fatalf("file form was only %.1fx slower than the entries form; the entries projection's skip of the file I/O + decode pass is its entire reason to exist", ratio)
+	}
 	if len(fileTurns) != len(entryTurns) {
 		t.Fatalf("turn counts diverge: file=%d entries=%d", len(fileTurns), len(entryTurns))
 	}
