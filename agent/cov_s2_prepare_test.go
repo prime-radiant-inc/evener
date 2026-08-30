@@ -48,7 +48,9 @@ func TestS2Cov_PrepareModelRequest_RepairsOrphan(t *testing.T) {
 	sess.mu.Unlock()
 
 	var rt events.RoundTimings
-	sess.prepareModelRequest(context.Background(), 0, &rt)
+	if _, _, _, _, _, _, err := sess.prepareModelRequestWithError(context.Background(), 0, &rt); err != nil {
+		t.Fatalf("prepareModelRequestWithError: %v", err)
+	}
 
 	sess.mu.Lock()
 	var foundSynthetic bool

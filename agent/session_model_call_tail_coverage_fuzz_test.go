@@ -126,7 +126,10 @@ func FuzzModelCallExactCoverage(f *testing.F) {
 		}
 		s.strategy = modelCallTailStrategy{}
 		var timings events.RoundTimings
-		_, _, _, req, effort := s.prepareModelRequest(context.Background(), 1, &timings)
+		_, _, _, req, _, effort, err := s.prepareModelRequestWithError(context.Background(), 1, &timings)
+		if err != nil {
+			t.Fatalf("prepareModelRequestWithError: %v", err)
+		}
 		if effort != "high" || req.ReasoningEffort == nil {
 			t.Fatalf("task effort override = %q, request %#v", effort, req.ReasoningEffort)
 		}

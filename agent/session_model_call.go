@@ -139,22 +139,16 @@ func effectiveReasoningEffort(cfg, override string, escalated bool) string {
 	return override
 }
 
-// prepareModelRequest runs the per-round input phases and assembles the llm.Request
-// for the round. It snapshots the model inputs (profile, system prompt, tool
-// definitions, reasoning effort) under s.mu — keeping the round on one consistent
-// model and removing the lock-free read races (PRI-1958 A2/A4) — then applies
-// context management and expands history. It records the SystemPrompt, ContextMgmt,
-// and HistoryExpand phase timings into t. It never returns an error: the input
-// phases only emit warnings.
-func (s *Session) prepareModelRequest(ctx context.Context, round int, t *events.RoundTimings) (profile *provider.Profile, sys string, history []llm.Message, req llm.Request, reasoningEffort string) {
-	profile, sys, history, req, _, reasoningEffort, _ = s.prepareModelRequestWithError(ctx, round, t)
-	return profile, sys, history, req, reasoningEffort
-}
-
-// prepareModelRequestWithError also returns the full-history message list a
-// planned continuation delta was cut from. It is the round's, not the
-// request's: the retry after a rejected anchor rebuilds from it, and nothing
-// on the wire ever carries it.
+// prepareModelRequestWithError runs the per-round input phases and assembles the
+// llm.Request for the round. It snapshots the model inputs (profile, system
+// prompt, tool definitions, reasoning effort) under s.mu — keeping the round on
+// one consistent model and removing the lock-free read races (PRI-1958 A2/A4) —
+// then applies context management and expands history. It records the
+// SystemPrompt, ContextMgmt, and HistoryExpand phase timings into t.
+//
+// It also returns the full-history message list a planned continuation delta was
+// cut from. That list is the round's, not the request's: the retry after a
+// rejected anchor rebuilds from it, and nothing on the wire ever carries it.
 func (s *Session) prepareModelRequestWithError(ctx context.Context, round int, t *events.RoundTimings) (profile *provider.Profile, sys string, history []llm.Message, req llm.Request, fullHistory []llm.Message, reasoningEffort string, err error) {
 	if err := s.flushPendingDelegateDeliveries(); err != nil {
 		return nil, "", nil, llm.Request{}, nil, "", err
