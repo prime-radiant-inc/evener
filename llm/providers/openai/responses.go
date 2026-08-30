@@ -137,9 +137,17 @@ func (a *Adapter) buildRequestBody(req llm.Request) (map[string]any, error) {
 	} else if len(req.Metadata) > 0 {
 		body["metadata"] = req.Metadata
 	}
-	if req.ReasoningEffort != nil {
+	effort := req.ReasoningEffort
+	if effort == nil && !responsesLiteModel(req.Model) && modelMayReason(req.Model) {
+		// Without an effort the provider picks its own thinking budget, and a
+		// gateway-fronted model was observed spending 25k reasoning tokens on
+		// a single turn. Send a bounded default instead. Responses-lite keeps
+		// the codex client's contract of letting the API choose.
+		effort = &defaultReasoningEffort
+	}
+	if effort != nil {
 		body["reasoning"] = map[string]any{
-			"effort":  *req.ReasoningEffort,
+			"effort":  *effort,
 			"summary": reasoningSummaryLevel(req.Model),
 		}
 	} else if responsesLiteModel(req.Model) {
@@ -158,7 +166,7 @@ func (a *Adapter) buildRequestBody(req llm.Request) (map[string]any, error) {
 		body["reasoning"] = reasoning
 	}
 	include := append([]string{}, req.Include...)
-	if req.ReasoningEffort != nil || responsesLiteModel(req.Model) {
+	if effort != nil || responsesLiteModel(req.Model) {
 		include = appendUniqueString(include, encryptedReasoning)
 	}
 	if len(include) > 0 {
@@ -599,6 +607,8 @@ var responsesAPIEventTypes = map[string]struct{}{
 	"response.output_text.delta":             {},
 	"response.reasoning_summary_part.added":  {},
 	"response.reasoning_summary_text.delta":  {},
+	"response.reasoning_part.added":          {},
+	"response.reasoning_text.delta":          {},
 	"response.function_call_arguments.delta": {},
 	"response.function_call_arguments.done":  {},
 	"response.completed":                     {},
@@ -668,13 +678,16 @@ func (a *Adapter) decodeResponsesStream(sctx context.Context, cancel context.Can
 				s.Send(llm.StreamEvent{Type: llm.StreamEventTextStart, TextID: textID})
 			}
 			s.Send(llm.StreamEvent{Type: llm.StreamEventTextDelta, TextID: textID, Delta: delta})
-		case "response.reasoning_summary_text.delta":
+		case "response.reasoning_summary_text.delta", "response.reasoning_text.delta":
+			// OpenAI streams reasoning as summaries; some gateways (lunaroute
+			// fronting GLM) stream the raw reasoning text instead. Both are
+			// the model thinking, so both render as reasoning.
 			delta, _ := payload["delta"].(string)
 			if delta == "" {
 				return nil
 			}
 			s.Send(llm.StreamEvent{Type: llm.StreamEventReasoningDelta, ReasoningDelta: delta})
-		case "response.reasoning_summary_part.added":
+		case "response.reasoning_summary_part.added", "response.reasoning_part.added":
 			// Detailed reasoning arrives as multiple summary parts; separate
 			// them with a blank line so the rendered thought stays readable.
 			if reasoningStarted {
@@ -1005,6 +1018,19 @@ func toResponsesToolChoice(tc llm.ToolChoice) (any, error) {
 // translating the legacy prompt_cache_retention policy.
 func responsesLiteModel(model string) bool {
 	return strings.HasPrefix(model, "gpt-5.6")
+}
+
+// defaultReasoningEffort is sent when the caller requests no effort for a
+// model that may reason.
+var defaultReasoningEffort = "medium"
+
+// modelMayReason reports whether a reasoning object is safe to send: the
+// catalog says the model reasons, or the catalog has never heard of it (a
+// gateway-hosted model, say). Only a model the catalog knows cannot reason is
+// excluded, because the API rejects a reasoning object for those.
+func modelMayReason(model string) bool {
+	info := llm.EmbeddedModelCatalog().LookupModelInfo(model)
+	return info == nil || info.SupportsReasoning
 }
 
 // codexModelVariants maps a caller-facing gpt-5.6 slug to the wire slug the
@@ -1405,11 +1431,16 @@ func responseContentFromOutputItems(out []any) []llm.ContentPart {
 		case "reasoning":
 			id, _ := item["id"].(string)
 			encryptedContent, _ := item["encrypted_content"].(string)
-			if encryptedContent != "" {
+			// OpenAI returns reasoning as encrypted_content plus summaries;
+			// gateways that expose the raw thinking put reasoning_text parts
+			// in content instead. Keep whichever the provider sent.
+			text := strings.Join(parseReasoningSummary(item["content"]), "")
+			if encryptedContent != "" || text != "" {
 				content = append(content, llm.ContentPart{
 					Kind: llm.ContentThinking,
 					Thinking: &llm.ThinkingData{
 						ID:               id,
+						Text:             text,
 						EncryptedContent: encryptedContent,
 						Summary:          parseReasoningSummary(item["summary"]),
 					},
