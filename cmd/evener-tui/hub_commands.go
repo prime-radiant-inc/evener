@@ -16,6 +16,7 @@ import (
 	"primeradiant.com/evener/cmd/evener-tui/internal/clipboard"
 	"primeradiant.com/evener/cmd/evener-tui/internal/transcript"
 	"primeradiant.com/evener/cmd/evener-tui/internal/tuipick"
+	"primeradiant.com/evener/llm"
 )
 
 type hubTreeMsg struct {
