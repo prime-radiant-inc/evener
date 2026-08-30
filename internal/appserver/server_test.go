@@ -1519,6 +1519,11 @@ func TestUnsubscribeBetweenCaptureAndCommitEndsUnsubscribed(t *testing.T) {
 	if err := conn.enqueueResponse(context.Background(), response); err != nil {
 		t.Fatalf("enqueue response: %v", err)
 	}
+	// The commit resolved the withdrawn entry by removing it — not by
+	// leaving it behind, filtered out of the count.
+	if server.subs.IsSubscribed(conn.ID(), "th_live") {
+		t.Fatal("committed capture left the withdrawn entry in the registry")
+	}
 	if got := server.SubscriberCount("th_live"); got != 0 {
 		t.Fatalf("subscriber count after unsubscribe-then-commit = %d, want 0", got)
 	}
