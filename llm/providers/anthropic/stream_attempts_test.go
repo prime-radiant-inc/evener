@@ -57,7 +57,7 @@ func TestStreamAppendsTheAttemptBeforeTheTerminalEvent(t *testing.T) {
 		}
 		if ev.Type == llm.StreamEventFinish {
 			sawFinish = true
-			if got := len(sink.attempts); got != 1 {
+			if got := len(sink.records()); got != 1 {
 				t.Fatalf("attempts visible at finish = %d, want 1", got)
 			}
 		}
@@ -65,7 +65,7 @@ func TestStreamAppendsTheAttemptBeforeTheTerminalEvent(t *testing.T) {
 	if !sawFinish {
 		t.Fatal("stream ended without a finish event")
 	}
-	if got := sink.attempts[0].Outcome; got != apilog.AttemptSuccess {
+	if got := sink.records()[0].Outcome; got != apilog.AttemptSuccess {
 		t.Fatalf("attempt outcome = %q, want success", got)
 	}
 }
@@ -90,10 +90,11 @@ func TestStreamClassifiesAnSSEReadTimeoutAsAProviderTimeout(t *testing.T) {
 	for range s.Events() { //nolint:revive // Drain to the terminal timeout evidence.
 	}
 	llm.WaitForPriorAPIAttempts(ctx)
-	if len(sink.attempts) != 1 {
-		t.Fatalf("attempts = %d, want 1", len(sink.attempts))
+	attempts := sink.records()
+	if len(attempts) != 1 {
+		t.Fatalf("attempts = %d, want 1", len(attempts))
 	}
-	if got := sink.attempts[0].Outcome; got != apilog.AttemptProviderTimeout {
+	if got := attempts[0].Outcome; got != apilog.AttemptProviderTimeout {
 		t.Fatalf("SSE-read timeout outcome = %q, want %q", got, apilog.AttemptProviderTimeout)
 	}
 }

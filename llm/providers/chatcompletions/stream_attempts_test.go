@@ -29,10 +29,13 @@ func (s *captureSink) AppendSettlement(context.Context, apilog.APIAttemptGroupSe
 	return nil
 }
 
-func (s *captureSink) count() int {
+// records returns a copy of the attempts appended so far. Every read goes
+// through it: the producer appends from its own goroutine, so an unguarded
+// read is only accidentally safe.
+func (s *captureSink) records() []apilog.APIAttemptRecord {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	return len(s.attempts)
+	return append([]apilog.APIAttemptRecord(nil), s.attempts...)
 }
 
 // twoChatChunks is the opening of a Chat Completions stream: two content
@@ -82,7 +85,7 @@ func TestStreamAppendsTheAttemptBeforeTheTerminalEvent(t *testing.T) {
 		}
 		if ev.Type == llm.StreamEventFinish {
 			sawFinish = true
-			if got := sink.count(); got != 1 {
+			if got := len(sink.records()); got != 1 {
 				t.Fatalf("attempts visible at finish = %d, want 1", got)
 			}
 		}
@@ -90,7 +93,7 @@ func TestStreamAppendsTheAttemptBeforeTheTerminalEvent(t *testing.T) {
 	if !sawFinish {
 		t.Fatal("stream ended without a finish event")
 	}
-	if got := sink.attempts[0].Outcome; got != apilog.AttemptSuccess {
+	if got := sink.records()[0].Outcome; got != apilog.AttemptSuccess {
 		t.Fatalf("attempt outcome = %q, want success", got)
 	}
 }
@@ -115,10 +118,11 @@ func TestStreamClassifiesAnSSEReadTimeoutAsAProviderTimeout(t *testing.T) {
 	for range s.Events() { //nolint:revive // Drain to the terminal timeout evidence.
 	}
 	llm.WaitForPriorAPIAttempts(ctx)
-	if sink.count() != 1 {
-		t.Fatalf("attempts = %d, want 1", sink.count())
+	attempts := sink.records()
+	if len(attempts) != 1 {
+		t.Fatalf("attempts = %d, want 1", len(attempts))
 	}
-	if got := sink.attempts[0].Outcome; got != apilog.AttemptProviderTimeout {
+	if got := attempts[0].Outcome; got != apilog.AttemptProviderTimeout {
 		t.Fatalf("SSE-read timeout outcome = %q, want %q", got, apilog.AttemptProviderTimeout)
 	}
 }
