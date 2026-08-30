@@ -159,11 +159,12 @@ Recent — spawn real sessions.
   of the no-config branch's `credentials.SourceNone` bypass. This card
   worked around it by adding a placeholder `api_key` to the hermetic
   `[instances.ollama]` block. Commit `1b717fe72` fixed it properly: the
-  config path now returns nil for any instance whose *behavior tag*
-  declares auth mode `none` (`cmd/evener-hub/spawn.go:567-573`,
-  `envvars.RequiresNoCredential`, `envvars/providers.go#RequiresNoCredential`; ollama's
-  `AuthModes: []string{"none"}` at `envvars/providers.go:155-160`),
-  pinned by `TestValidateProviderCredentials_ConfigInstanceAuthModeNone`
+  config path now returns nil for any instance whose resolved auth scheme
+  needs no credential
+  (`cmd/evener-hub/spawn.go#validateProviderCredentials`, on
+  `registry.AuthNone` / `registry.AuthOptionalBearer`; the curated ollama
+  row carries `auth = "none"`), pinned by
+  `TestValidateProviderCredentials_ConfigInstanceAuthModeNone`
   (`cmd/evener-hub/spawn_test.go:1243`). Step 1 spawns ollama with no
   credential at all and must succeed. If it doesn't, that is a fresh
   regression of `1b717fe72` — file it, don't paper over it with an

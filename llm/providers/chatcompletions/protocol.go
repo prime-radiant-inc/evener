@@ -20,8 +20,8 @@ type Protocol struct {
 	Client *http.Client
 }
 
-// DefaultProtocol is the registered openai-chat instance; step 3 sets
-// Client on it from the llm client.
+// DefaultProtocol is the registered openai-chat instance; it is the handle
+// a test sets Client on.
 var DefaultProtocol = &Protocol{}
 
 func init() { llm.RegisterProtocol(DefaultProtocol) }

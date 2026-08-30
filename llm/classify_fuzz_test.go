@@ -12,7 +12,6 @@ type classifyResidualError struct{ status int }
 
 func (e classifyResidualError) Error() string              { return "residual" }
 func (e classifyResidualError) Provider() string           { return "other" }
-func (e classifyResidualError) BehaviorTag() string        { return "other" }
 func (e classifyResidualError) StatusCode() int            { return e.status }
 func (e classifyResidualError) ErrorCode() string          { return "" }
 func (e classifyResidualError) Retryable() bool            { return false }

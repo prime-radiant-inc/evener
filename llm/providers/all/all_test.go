@@ -25,8 +25,8 @@ func TestEveryProtocolAndSchemeIsRegistered(t *testing.T) {
 }
 
 // TestRegisteredProtocolsAreThePackageSingletons proves each package
-// registered its exported DefaultProtocol, which is the handle step 3 sets
-// Client and Hasher on.
+// registered its exported DefaultProtocol, which is the handle a caller or
+// test sets Client and Hasher on.
 func TestRegisteredProtocolsAreThePackageSingletons(t *testing.T) {
 	for _, want := range []llm.Protocol{
 		chatcompletions.DefaultProtocol,

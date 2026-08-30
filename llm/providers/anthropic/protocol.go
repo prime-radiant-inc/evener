@@ -11,14 +11,13 @@ import (
 
 const anthropicVersion = "2023-06-01"
 
-// Protocol is the registry-driven Messages API implementation (spec §8),
-// registered beside the pre-registry Adapter until step 3 deletes it.
+// Protocol is the Messages API implementation (spec §8).
 type Protocol struct {
 	Client *http.Client
 }
 
-// DefaultProtocol is the registered anthropic instance; step 3 sets Client
-// on it from the llm client.
+// DefaultProtocol is the registered anthropic instance; it is the handle a
+// test sets Client on.
 var DefaultProtocol = &Protocol{}
 
 func init() { llm.RegisterProtocol(DefaultProtocol) }

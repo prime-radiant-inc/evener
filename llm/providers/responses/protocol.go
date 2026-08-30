@@ -17,14 +17,15 @@ import (
 // Protocol is the single registered openai-responses implementation.
 // Client is nil for protocolhttp.DefaultClient. Hasher, when set, stamps
 // resp.Raw["id_hash"] for the session's continuation bookkeeping (spec
-// §7.6); step 3 wires it from the client's state root.
+// §7.6); it stands in for the hasher a dispatching client attaches to the
+// context, which wins when both are present.
 type Protocol struct {
 	Client *http.Client
 	Hasher *llm.ContinuationHasher
 }
 
-// DefaultProtocol is the registered openai-responses instance; step 3 sets
-// Client and Hasher on it from the llm client.
+// DefaultProtocol is the registered openai-responses instance; it is the
+// handle a test sets Client or Hasher on.
 var DefaultProtocol = &Protocol{}
 
 func init() { llm.RegisterProtocol(DefaultProtocol) }

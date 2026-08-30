@@ -15,7 +15,7 @@ const defaultOllamaBaseURL = "http://localhost:11434/v1"
 // resolveOllamaHost is the ollama-host rule (spec §9.1): OLLAMA_BASE_URL
 // wins outright (trailing slash stripped, validated); otherwise the
 // OLLAMA_HOST value (host, host:port, or URL) becomes a full base URL ending
-// in /v1. Ported from envvars.ResolveOllamaBaseURL, which step 3 deletes.
+// in /v1.
 func resolveOllamaHost(baseURL, host string) (string, error) {
 	if b := strings.TrimSpace(baseURL); b != "" {
 		return validateOllamaURL(strings.TrimRight(b, "/"), false)

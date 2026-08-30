@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -21,9 +22,17 @@ import (
 
 func TestSession_ExcludesConfiguredCredentialFromResponseEndpointArtifacts(t *testing.T) {
 	const credential = "endpoint-path-credential-sentinel"
+	const communicateArgs = `{\"message\":\"done\",\"end_turn\":true,\"output\":{\"message\":\"\",\"data\":{},\"artifacts\":[]}}`
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/"+credential+"/chat/completions" {
 			http.NotFound(w, r)
+			return
+		}
+		body, _ := io.ReadAll(r.Body)
+		if bytes.Contains(body, []byte(`"stream":true`)) {
+			w.Header().Set("Content-Type", "text/event-stream")
+			_, _ = io.WriteString(w, "data: "+`{"id":"chatcmpl-endpoint-material","model":"test-model","choices":[{"index":0,"delta":{"role":"assistant","tool_calls":[{"index":0,"id":"communicate-endpoint-material","type":"function","function":{"name":"communicate","arguments":"`+communicateArgs+`"}}]},"finish_reason":"tool_calls"}],"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}}`+"\n\n")
+			_, _ = io.WriteString(w, "data: [DONE]\n\n")
 			return
 		}
 		w.Header().Set("Content-Type", "application/json")
@@ -33,7 +42,7 @@ func TestSession_ExcludesConfiguredCredentialFromResponseEndpointArtifacts(t *te
 			"choices":[{"index":0,"message":{"role":"assistant","content":null,"tool_calls":[{
 				"id":"communicate-endpoint-material",
 				"type":"function",
-				"function":{"name":"communicate","arguments":"{\"message\":\"done\",\"end_turn\":true,\"output\":{\"message\":\"\",\"data\":{},\"artifacts\":[]}}"}
+				"function":{"name":"communicate","arguments":"` + communicateArgs + `"}
 			}]},"finish_reason":"tool_calls"}],
 			"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}
 		}`))

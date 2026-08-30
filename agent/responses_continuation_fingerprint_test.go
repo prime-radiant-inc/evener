@@ -14,8 +14,8 @@ func TestOpenAIResponsesContinuationFingerprint_ProductionPromptStableWithFixedE
 	first := openAIResponsesContinuationFingerprintForPromptTest(t, client, openAIContinuationPromptDataForTest("2026-06-24"))
 	second := openAIResponsesContinuationFingerprintForPromptTest(t, client, openAIContinuationPromptDataForTest("2026-06-24"))
 
-	if first == "" || !strings.HasPrefix(first, "cont-req-v1:") {
-		t.Fatalf("RequestFingerprint = %q, want cont-req-v1 prefix", first)
+	if first == "" || !strings.HasPrefix(first, "cont-req-v2:") {
+		t.Fatalf("RequestFingerprint = %q, want cont-req-v2 prefix", first)
 	}
 	if first != second {
 		t.Fatalf("fingerprint changed for fixed production prompt environment:\nfirst:  %s\nsecond: %s", first, second)

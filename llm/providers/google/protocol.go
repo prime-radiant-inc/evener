@@ -8,16 +8,15 @@ import (
 	"primeradiant.com/evener/llm/registry"
 )
 
-// Protocol is the registry-driven Gemini API implementation (spec §8),
-// registered beside the pre-registry Adapter until step 3 deletes it. The
-// model always rides in the endpoint path, and the credential in the
-// header the transport names (x-goog-api-key, or a Vertex bearer token).
+// Protocol is the Gemini API implementation (spec §8). The model always
+// rides in the endpoint path, and the credential in the header the
+// transport names (x-goog-api-key, or a Vertex bearer token).
 type Protocol struct {
 	Client *http.Client
 }
 
-// DefaultProtocol is the registered google instance; step 3 sets Client on
-// it from the llm client.
+// DefaultProtocol is the registered google instance; it is the handle a
+// test sets Client on.
 var DefaultProtocol = &Protocol{}
 
 func init() { llm.RegisterProtocol(DefaultProtocol) }
