@@ -97,24 +97,20 @@ func DefShell() llm.ToolDefinition {
 	}
 }
 
-// DelegateSandboxSchema describes the sandbox controls that the current
-// session can actually enforce. Available=false removes both sandbox knobs;
-// explicit values are still rejected by the handler rather than ignored.
-// Modes and NetworkValues are copied into the returned definition. An empty
-// NetworkValues leaves sandbox_net as an unconstrained boolean, which is the
-// portable full-capability schema used by DefDelegate.
+// DelegateSandboxSchema describes the sandbox control that the current
+// session can actually enforce. Available=false removes the sandbox knob;
+// an explicit value is still rejected by the handler rather than ignored.
+// Modes lists the mode names the parent floor permits (informational);
+// SandboxEnum (or, when empty, DelegateSandboxEnumFromModes over Modes)
+// becomes the sandbox property's enum: combined mode+network values such
+// as "read-only+nonet" and "nonet".
 type DelegateSandboxSchema struct {
-	Available                   bool
-	Modes                       []string
-	NetworkValues               []bool
-	RequireNonOffModeForNetwork bool
-	SandboxDescription          string
-	SandboxNetDescription       string
+	Available          bool
+	Modes              []string
+	SandboxDescription string
 	// SandboxEnum carries the precomputed combined sandbox+sandbox_net enum
-	// values (e.g. "off", "read-only", "read-only+nonet", "nonet"). When
-	// non-empty it replaces the separate sandbox and sandbox_net fields with
-	// a single sandbox field whose enum lists every valid combination, so the
-	// model can never send an invalid combo.
+	// values (e.g. "off", "read-only", "read-only+nonet", "nonet"). Empty
+	// derives the enum from Modes via DelegateSandboxEnumFromModes.
 	SandboxEnum []string
 	// ModelDescription is appended to the model override description when a
 	// caller has captured a bounded, startup-frozen availability snapshot.
@@ -215,10 +211,8 @@ func DefDelegateWithSandbox(agentTypes []string, sandboxSchema DelegateSandboxSc
 	}
 	if len(sandboxSchema.SandboxEnum) > 0 {
 		props["sandbox"].(map[string]any)["enum"] = append([]string(nil), sandboxSchema.SandboxEnum...)
-	} else if len(sandboxSchema.Modes) > 0 {
-		// Fallback: build enum from Modes (without +nonet variants) for
-		// callers that have not precomputed the combined enum.
-		props["sandbox"].(map[string]any)["enum"] = append([]string(nil), sandboxSchema.Modes...)
+	} else if enum := DelegateSandboxEnumFromModes(sandboxSchema.Modes, true, false); len(enum) > 0 {
+		props["sandbox"].(map[string]any)["enum"] = enum
 	} else {
 		// No usable sandbox mode; remove the control entirely.
 		delete(props, "sandbox")
@@ -229,6 +223,34 @@ func DefDelegateWithSandbox(agentTypes []string, sandboxSchema DelegateSandboxSc
 		}
 	}
 	return def
+}
+
+// DelegateSandboxEnumFromModes expands sandbox mode names into the combined
+// sandbox+sandbox_net enum values: each non-off mode produces a base value
+// (inherit parent network) and a +nonet variant (disable network). When the
+// parent network is off, only +nonet variants are emitted. Bare "nonet"
+// (inherit the parent's mode, disable network) is available under any non-off
+// parent with network on; when parentModeOff it is omitted, since network
+// confinement is meaningless without a sandbox.
+func DelegateSandboxEnumFromModes(modes []string, parentNetwork, parentModeOff bool) []string {
+	var values []string
+	for _, mode := range modes {
+		if mode == "off" {
+			values = append(values, "off")
+			continue
+		}
+		if parentNetwork {
+			// Parent has network: base value inherits network, +nonet disables it.
+			values = append(values, mode, mode+"+nonet")
+		} else {
+			// Parent network is off: only +nonet is enforceable.
+			values = append(values, mode+"+nonet")
+		}
+	}
+	if parentNetwork && !parentModeOff {
+		values = append(values, "nonet")
+	}
+	return values
 }
 
 // DefDelegateSend defines the delegate_send tool, the single follow-up surface

@@ -2459,7 +2459,7 @@ func TestExecReadTranscriptJobPageFormatRejected(t *testing.T) {
 	_, err := execReadTranscript(deps, map[string]any{
 		"transcript_ref": "job:abc",
 		"offset_bytes":   float64(0),
-		"format":         "markdown",
+		"format":         "outline",
 	})
 	if err == nil || !strings.Contains(err.Error(), "format cannot be combined") {
 		t.Fatalf("expected format+offset error, got %v", err)
@@ -2471,7 +2471,7 @@ func TestExecReadTranscriptJobSearchFormatRejected(t *testing.T) {
 	_, err := execReadTranscript(deps, map[string]any{
 		"transcript_ref": "job:abc",
 		"output_match":   "x",
-		"format":         "markdown",
+		"format":         "outline",
 	})
 	if err == nil || !strings.Contains(err.Error(), "format cannot be combined") {
 		t.Fatalf("expected format+search error, got %v", err)

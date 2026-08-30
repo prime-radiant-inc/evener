@@ -278,7 +278,15 @@ func TestDefDelegateHasSandboxParams(t *testing.T) {
 	if !ok {
 		t.Fatalf("sandbox enum = %T, want []string", sb["enum"])
 	}
-	wantEnum := []string{"off", "read-only", "workspace-write", "restricted"}
+	// DefDelegate is the portable full-capability surface: every mode plus
+	// its +nonet variant, plus bare "nonet" (net-only tightening).
+	wantEnum := []string{
+		"off",
+		"read-only", "read-only+nonet",
+		"workspace-write", "workspace-write+nonet",
+		"restricted", "restricted+nonet",
+		"nonet",
+	}
 	if !reflect.DeepEqual(enum, wantEnum) {
 		t.Errorf("sandbox enum = %v, want %v", enum, wantEnum)
 	}
@@ -287,32 +295,19 @@ func TestDefDelegateHasSandboxParams(t *testing.T) {
 		t.Errorf("sandbox description must explain the no-escalation floor, got %q", sbDesc)
 	}
 	// The modes must be glossed, not merely enumerated.
-	for _, want := range []string{"read-only", "workspace-write", "restricted", "no writes", "working tree", "network is a separate toggle"} {
+	for _, want := range []string{"read-only", "workspace-write", "restricted", "no writes", "working tree", "+nonet"} {
 		if !strings.Contains(sbDesc, want) {
 			t.Errorf("sandbox description must define the modes (missing %q), got %q", want, sbDesc)
 		}
 	}
 
-	sn, ok := props["sandbox_net"].(map[string]any)
-	if !ok {
-		t.Fatal("DefDelegate missing sandbox_net param")
+	// The combined-enum surface has no separate sandbox_net property and no
+	// oneOf pairing constraint: an invalid combo is unrepresentable.
+	if _, hasNet := props["sandbox_net"]; hasNet {
+		t.Fatal("DefDelegate must not expose a separate sandbox_net param")
 	}
-	if typ, _ := sn["type"].(string); typ != "boolean" {
-		t.Errorf("sandbox_net type = %q, want boolean", sn["type"])
-	}
-	// Pin the load-bearing semantics (matching the sandbox param's pinning strength):
-	// network-off consequences, inherit-on-omit behavior, and the no-escalation floor.
-	snDesc, _ := sn["description"].(string)
-	for _, want := range []string{"disables all IP networking", "local network server"} {
-		if !strings.Contains(snDesc, want) {
-			t.Errorf("sandbox_net must warn that network-off can break local-server tests (missing %q), got %q", want, snDesc)
-		}
-	}
-	if !strings.Contains(snDesc, "Omit to inherit") {
-		t.Errorf("sandbox_net must document inherit-on-omit with the exact contract phrase, got %q", snDesc)
-	}
-	if !strings.Contains(snDesc, "cannot enable network") {
-		t.Errorf("sandbox_net must document the network no-escalation floor, got %q", snDesc)
+	if _, hasOneOf := DefDelegate(nil).Parameters["oneOf"]; hasOneOf {
+		t.Fatal("DefDelegate must not carry a oneOf constraint")
 	}
 }
 

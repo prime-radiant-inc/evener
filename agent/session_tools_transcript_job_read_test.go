@@ -542,8 +542,9 @@ func TestReadTranscriptJobPageAndSearchValidation(t *testing.T) {
 		want []string
 	}{
 		{name: "outline format", args: map[string]any{"transcript_ref": "job:" + jobID, "format": "outline"}, want: []string{"invalid_request", "format"}},
-		{name: "markdown plus page", args: map[string]any{"transcript_ref": "job:" + jobID, "format": "markdown", "offset_bytes": float64(0)}, want: []string{"invalid_request", "format", "offset_bytes"}},
-		{name: "markdown plus search", args: map[string]any{"transcript_ref": "job:" + jobID, "format": "markdown", "output_match": "line"}, want: []string{"invalid_request", "format", "output_match"}},
+		{name: "outline format plus page", args: map[string]any{"transcript_ref": "job:" + jobID, "format": "outline", "offset_bytes": float64(0)}, want: []string{"invalid_request", "format", "offset_bytes"}},
+		{name: "outline format plus search", args: map[string]any{"transcript_ref": "job:" + jobID, "format": "outline", "output_match": "line"}, want: []string{"invalid_request", "format", "output_match"}},
+		{name: "jsonl format plus search", args: map[string]any{"transcript_ref": "job:" + jobID, "format": "jsonl", "output_match": "line"}, want: []string{"invalid_request", "format", "output_match"}},
 		{name: "range", args: map[string]any{"transcript_ref": "job:" + jobID, "range": "1-2"}, want: []string{"invalid_request", "range", "session"}},
 		{name: "expand turn", args: map[string]any{"transcript_ref": "job:" + jobID, "expand_turn": float64(0)}, want: []string{"invalid_request", "expand_turn", "session"}},
 		{name: "invalid re2", args: map[string]any{"transcript_ref": "job:" + jobID, "output_match": "["}, want: []string{"invalid_request", "output_match"}},
@@ -562,6 +563,25 @@ func TestReadTranscriptJobPageAndSearchValidation(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+// markdown is the default view, so an explicit format=markdown must be
+// accepted alongside offset_bytes and output_match on job: refs.
+func TestReadTranscriptJobMarkdownWithPageAndSearchAccepted(t *testing.T) {
+	stateDir := t.TempDir()
+	owner := identifier.MustNewSessionID()
+	jobID := identifier.MustNewJobID(owner)
+	const output = "line\n"
+	seedLocalJobRecord(t, stateDir, owner, jobID, "/decoy", output, maxJobOutputRetentionBytes, false, 0, nil)
+	deps := &toolDeps{stateDir: stateDir, sessionID: owner}
+
+	page := execRead(t, deps, map[string]any{"transcript_ref": "job:" + jobID, "format": "markdown", "offset_bytes": float64(0)})
+	requirePage(t, page, 0, "line\n")
+
+	search := execRead(t, deps, map[string]any{"transcript_ref": "job:" + jobID, "format": "markdown", "output_match": "line"})
+	if search["job_status"] == "" {
+		t.Fatalf("search result missing job_status: %#v", search)
 	}
 }
 
