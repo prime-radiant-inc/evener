@@ -12,6 +12,18 @@ import (
 	authopenai "primeradiant.com/evener/auth/openai"
 )
 
+// clearOpenAIKey leaves OPENAI_API_KEY genuinely unset for the test, so a
+// status reads the OAuth record rather than falling back to a key in the
+// developer's environment. t.Setenv registers the restore; os.Unsetenv is
+// what "unset" means.
+func clearOpenAIKey(t *testing.T) {
+	t.Helper()
+	t.Setenv("OPENAI_API_KEY", "")
+	if err := os.Unsetenv("OPENAI_API_KEY"); err != nil {
+		t.Fatal(err)
+	}
+}
+
 // codexRecord plants a valid OAuth record for instanceName under stateDir and
 // returns the file the auth layer put it in.
 func codexRecord(t *testing.T, stateDir, instanceName string) string {
@@ -33,8 +45,7 @@ func codexRecord(t *testing.T, stateDir, instanceName string) string {
 // auth/openai.json left over from before the cut-over belongs to an instance
 // named openai, which by default is the platform API and never reads it.
 func TestOpenAIStatusDefaultsToTheCodexInstance(t *testing.T) {
-	t.Setenv("OPENAI_API_KEY", "")
-	os.Unsetenv("OPENAI_API_KEY")
+	clearOpenAIKey(t)
 	stateDir := t.TempDir()
 	path := codexRecord(t, stateDir, "openai-codex")
 	if filepath.Base(path) != "openai-codex.json" {
@@ -53,8 +64,7 @@ func TestOpenAIStatusDefaultsToTheCodexInstance(t *testing.T) {
 // Logout defaults to the same instance, so the record `login` wrote is the
 // record `logout` removes.
 func TestOpenAILogoutDefaultsToTheCodexInstance(t *testing.T) {
-	t.Setenv("OPENAI_API_KEY", "")
-	os.Unsetenv("OPENAI_API_KEY")
+	clearOpenAIKey(t)
 	stateDir := t.TempDir()
 	codex := codexRecord(t, stateDir, "openai-codex")
 	stale := codexRecord(t, stateDir, "openai")

@@ -237,6 +237,125 @@ func TestProvidersProbeWriteRecordsTheOneProtocolThatSucceeded(t *testing.T) {
 	}
 }
 
+// Both protocols working is not a discovery: the registry's own choice
+// stands, and providers.toml is left alone (spec §11.2).
+func TestProvidersProbeWriteKeepsTheRegistryChoiceWhenBothProtocolsWork(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch r.URL.Path {
+		case "/models":
+			_, _ = w.Write([]byte(`{"data":[{"id":"m1"}]}`))
+		case "/chat/completions":
+			_, _ = w.Write([]byte(`{"id":"c","model":"m1","choices":[{"index":0,"message":{"role":"assistant","content":"pong"},"finish_reason":"stop"}],"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}}`))
+		case "/responses":
+			_, _ = w.Write([]byte(`{"id":"resp_1","model":"m1","status":"completed","output":[{"type":"message","content":[{"type":"output_text","text":"pong"}]}],"usage":{"input_tokens":1,"output_tokens":1,"total_tokens":2}}`))
+		default:
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	t.Cleanup(srv.Close)
+	root := providersTestEnv(t, nil)
+	body := "[providers.gw]\nbase = \"openai-compatible\"\nbase_url = \"" + srv.URL + "\"\n"
+	path := writeProvidersToml(t, root, body)
+	before, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	var stdout, stderr bytes.Buffer
+	if err := runProviders([]string{"probe", "gw", "--write"}, nil, &stdout, &stderr); err != nil {
+		t.Fatalf("probe --write: %v\n%s", err, stderr.String())
+	}
+	out := stdout.String()
+	if !strings.Contains(out, "openai-chat: ok") || !strings.Contains(out, "openai-responses: ok") {
+		t.Fatalf("both protocols must be reported working:\n%s", out)
+	}
+	if !strings.Contains(out, "keeps the registry's choice") || strings.Contains(out, "wrote protocol") {
+		t.Fatalf("nothing is recorded when both work:\n%s", out)
+	}
+	after, err := os.ReadFile(path)
+	if err != nil || string(after) != string(before) {
+		t.Fatalf("providers.toml must be untouched: %v\n%s", err, after)
+	}
+}
+
+// No protocol working records nothing either — a probe writes only what it
+// learned (spec §11.2).
+func TestProvidersProbeWriteRecordsNothingWhenNoProtocolWorks(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/models" {
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"data":[{"id":"m1"}]}`))
+			return
+		}
+		w.WriteHeader(http.StatusNotFound)
+	}))
+	t.Cleanup(srv.Close)
+	root := providersTestEnv(t, nil)
+	path := writeProvidersToml(t, root, "[providers.gw]\nbase = \"openai-compatible\"\nbase_url = \""+srv.URL+"\"\n")
+
+	var stdout, stderr bytes.Buffer
+	if err := runProviders([]string{"probe", "gw", "--write"}, nil, &stdout, &stderr); err != nil {
+		t.Fatalf("probe --write: %v\n%s", err, stderr.String())
+	}
+	if !strings.Contains(stdout.String(), "no protocol succeeded") || strings.Contains(stdout.String(), "wrote protocol") {
+		t.Fatalf("a probe that learned nothing writes nothing:\n%s", stdout.String())
+	}
+	l, _, err := registry.ReadConfigFile(path)
+	if err != nil || l.Providers["gw"].Protocol != "" {
+		t.Fatalf("providers.toml must be untouched: %v %+v", err, l.Providers["gw"])
+	}
+}
+
+// An implicit instance is authored nowhere, so the probe reloads it from the
+// curated record of the same id (spec §5.1).
+func TestProvidersProbeAnImplicitInstanceWithNoAuthoredEntry(t *testing.T) {
+	srv := openAIProbeServer(t)
+	providersTestEnv(t, map[string]string{"GROQ_API_KEY": "gk", "GROQ_BASE_URL": srv.URL})
+
+	var stdout, stderr bytes.Buffer
+	if err := runProviders([]string{"probe", "groq"}, nil, &stdout, &stderr); err != nil {
+		t.Fatalf("probe: %v\n%s", err, stderr.String())
+	}
+	if !strings.Contains(stdout.String(), "openai-chat: ok") {
+		t.Fatalf("an implicit instance must be probed through its curated record:\n%s", stdout.String())
+	}
+}
+
+// Flag day (spec §14.1): a write command reads the file first, so an
+// old-schema providers.toml stops it before anything is written.
+func TestProvidersWriteCommandsRefuseAnOldSchemaFileBeforeWriting(t *testing.T) {
+	for _, tt := range []struct {
+		name string
+		args []string
+	}{
+		{"add", []string{"add", "gw", "--base", "openai", "--base-url", "https://gw.example.com/v1"}},
+		{"probe --write", []string{"probe", "openai", "--write"}},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			// The base URL is pinned at a dead local port: the command must
+			// exit before it probes anything, and a regression that got past
+			// that must still not reach the real endpoint.
+			root := providersTestEnv(t, map[string]string{"OPENAI_API_KEY": "sk", "OPENAI_BASE_URL": "http://127.0.0.1:1/v1"})
+			body := "[instances.openai]\ntype = \"openai\"\n"
+			path := writeProvidersToml(t, root, body)
+
+			var stdout, stderr bytes.Buffer
+			err := runProviders(tt.args, nil, &stdout, &stderr)
+			if err == nil {
+				t.Fatalf("an old-schema providers.toml must stop the command; stdout:\n%s", stdout.String())
+			}
+			if !errors.Is(err, registry.ErrOldSchema) || !strings.Contains(err.Error(), "§14.1") {
+				t.Fatalf("error must be the §14.1 pointer: %v", err)
+			}
+			after, readErr := os.ReadFile(path)
+			if readErr != nil || string(after) != body {
+				t.Fatalf("the file must be untouched: %v\n%s", readErr, after)
+			}
+		})
+	}
+}
+
 func TestProvidersAddWritesEntryAndSkipsProbeWithoutCredential(t *testing.T) {
 	root := providersTestEnv(t, nil)
 
