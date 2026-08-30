@@ -46,6 +46,12 @@ test("renders rail content when open", () => {
   expect(screen.getByTestId("rail-fixture")).toBeTruthy();
 });
 
+test("renders a search box at the top", () => {
+  render(<MobilePanel rail={<RailFixture />} open onClose={vi.fn()} />);
+  expect(screen.getByRole("searchbox")).toBeTruthy();
+  expect(screen.getByRole("searchbox").getAttribute("placeholder")).toBe("Search sessions");
+});
+
 test("renders welcome content when nothing is focused", () => {
   // Nothing focused → backstop opens welcome
   workspaceStore.getState().openPane("welcome");

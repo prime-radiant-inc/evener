@@ -81,7 +81,7 @@ afterEach(() => {
 });
 
 test("renders a trigger button labeled Sessions", () => {
-  render(<TreeDrawer onOpen={vi.fn()} />);
+  render(<TreeDrawer onToggle={vi.fn()} />);
   expect(screen.getByRole("button", { name: "Sessions" })).toBeTruthy();
 });
 
@@ -90,13 +90,13 @@ test("renders a trigger button labeled Sessions", () => {
 // is visible without opening the drawer first.
 test("the trigger carries the same needs-you Badge overlay the desktop chip has", () => {
   setNeedsYou(2);
-  render(<TreeDrawer onOpen={vi.fn()} />);
+  render(<TreeDrawer onToggle={vi.fn()} />);
   expect(screen.getByText("2")).toBeTruthy();
 });
 
 test("no Badge overlay when nothing needs attention", () => {
   setNeedsYou(0);
-  render(<TreeDrawer onOpen={vi.fn()} />);
+  render(<TreeDrawer onToggle={vi.fn()} />);
   expect(screen.queryByText("0")).toBeNull();
 });
 
@@ -114,16 +114,16 @@ test("no Badge overlay when nothing needs attention", () => {
 // with what the drawer's own rows show once opened.
 test("the trigger badge follows the bounded needs-you rows", () => {
   setNeedsYou(1);
-  render(<TreeDrawer onOpen={vi.fn()} />);
+  render(<TreeDrawer onToggle={vi.fn()} />);
   expect(screen.getByText("1")).toBeTruthy();
 });
 
-test("trigger calls onOpen instead of opening a Sheet", async () => {
-  const onOpen = vi.fn();
+test("trigger calls onToggle instead of opening a Sheet", async () => {
+  const onToggle = vi.fn();
   const user = userEvent.setup();
-  render(<TreeDrawer onOpen={onOpen} />);
+  render(<TreeDrawer onToggle={onToggle} />);
   await user.click(screen.getByRole("button", { name: "Sessions" }));
-  expect(onOpen).toHaveBeenCalled();
+  expect(onToggle).toHaveBeenCalled();
   // No dialog (Sheet) should be rendered by TreeDrawer anymore
   expect(screen.queryByRole("dialog")).toBeNull();
 });

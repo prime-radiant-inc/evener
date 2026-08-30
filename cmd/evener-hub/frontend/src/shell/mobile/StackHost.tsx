@@ -355,7 +355,7 @@ export function StackHost({ railSlot, routeDeferred = false }: StackHostProps = 
         <span className={styles.title} data-testid="topbar-title">
           {paneTitle}
         </span>
-        <TreeDrawer onOpen={() => setPanelOpen(true)} />
+        <TreeDrawer onToggle={() => setPanelOpen((v) => !v)} />
       </div>
       <div className={styles.body}>
         {focusedPane && (
