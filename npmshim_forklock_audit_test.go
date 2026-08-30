@@ -5,6 +5,7 @@ import (
 	"go/parser"
 	"go/token"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"testing"
 )
@@ -56,43 +57,49 @@ func TestNpmShimWriteGoesThroughForkLock(t *testing.T) {
 			"the npm shim is the file that needs the ForkLock guard (issue #270)")
 	}
 
-	// No raw executable write may bypass the helper — in ANY spelling, since
-	// a mode a human cannot read at a glance is exactly the bypass the
-	// audit refuses to wave through. os.WriteFile with any non-literal mode
-	// (a variable, a fs.FileMode cast, a helper call) fails loudly rather
-	// than silently passing, per the refuse-unreadable convention the
-	// recursive-delete audits use.
-	if raw := rawWritePath(shimEnv); raw != "" {
-		t.Errorf("npmShimEnv writes via os.%s instead of writeExecutable: "+
-			"any direct write bypasses the ForkLock guard (golang/go#22315); "+
-			"route it through writeExecutable", raw)
-	}
+	// No raw EXECUTABLE write may bypass the helper. The hazard this audit
+	// exists for is the exec'd file: only a write whose mode has an execute
+	// bit needs the ForkLock guard, so a non-executable literal mode (a fake
+	// .npmrc at 0o644) is fine to write directly — writeExecutable would
+	// wrongly make it 0o755. Non-executable writes through the other os
+	// write calls (Create/OpenFile/WriteFile) are still named, since those
+	// do not carry a readable mode at all; only os.WriteFile's literal mode
+	// can prove a write non-executable.
 	for _, w := range rawWriteFileCalls(shimEnv) {
 		lit, ok := w.Args[len(w.Args)-1].(*ast.BasicLit)
 		if !ok {
 			t.Errorf("npmShimEnv's os.WriteFile passes a non-literal mode: " +
-				"an unreadable mode is refused by this audit — write it as 0o755 or use writeExecutable")
+				"an unreadable mode is refused by this audit — write it as a literal (0o755 for executables, 0o644 for configs)")
 			continue
 		}
 		mode, err := strconv.ParseInt(lit.Value, 0, 32)
 		if err != nil || mode&0o111 == 0 {
-			continue
+			continue // non-executable: no ForkLock guard needed
 		}
 		t.Errorf("npmShimEnv's os.WriteFile uses executable mode %s: "+
 			"an executable written raw bypasses the ForkLock guard (golang/go#22315); use writeExecutable", lit.Value)
 	}
+	if raw := rawWritePathNonWriteFile(shimEnv); raw != "" {
+		t.Errorf("npmShimEnv writes via os.%s instead of os.WriteFile or writeExecutable: "+
+			"a write call with no readable mode cannot prove the file non-executable, "+
+			"and an executable written raw bypasses the ForkLock guard (golang/go#22315)", raw)
+	}
 
 	// The guard itself: writeExecutable must hold ForkLock across its write.
 	// Routing the call through a helper whose lock was deleted is the
-	// silent-failure mode this half exists for.
+	// silent-failure mode this half exists for. The pairing is checked in
+	// the block that encloses the write — a retry loop that locks and
+	// unlocks around each attempt is the idiomatic guard for a write that
+	// may be retried, and its lock/unlock pair lives inside the loop body
+	// beside the write, not before it at function top level.
 	writer := funcDecl(t, file, "writeExecutable", "install_test.go")
-	writeStmt, ok := writeExecutableWriteStmt(writer)
+	writeStmt, enclosing, ok := writeExecutableWriteStmt(writer)
 	if !ok {
 		t.Fatal("writeExecutable no longer performs an os.WriteFile: " +
 			"the helper this audit routes the npm shim through has lost its write — " +
 			"update the audit alongside whatever replaced it")
 	}
-	if !holdsForkLockAcross(writer, writeStmt) {
+	if !holdsForkLockAcross(writer, writeStmt, enclosing) {
 		t.Error("writeExecutable no longer holds syscall.ForkLock across its os.WriteFile: " +
 			"routing the npm shim write through the helper is defense-in-depth only if the lock is actually there — " +
 			"a sibling parallel test's fork can leave a child holding the shim's write fd (golang/go#22315)")
@@ -118,12 +125,13 @@ func writeExecutableCalls(fn *ast.FuncDecl) []*ast.CallExpr {
 	return calls
 }
 
-// rawWritePath returns the os write-call name npmShimEnv uses directly —
-// WriteFile, Create, OpenFile, CreateTemp — or "" when it uses none. The
-// fake-bin directory's only content is writeExecutable output; ANY direct
-// os write there is a bypass worth naming, regardless of mode.
-func rawWritePath(fn *ast.FuncDecl) string {
-	for _, name := range []string{"WriteFile", "Create", "OpenFile", "CreateTemp"} {
+// rawWritePathNonWriteFile returns the modeless os write-call name
+// npmShimEnv uses directly — Create, OpenFile, CreateTemp — or "" when it
+// uses none. These calls cannot prove the written file non-executable the
+// way os.WriteFile's literal mode can, so any direct use is named; the
+// fake-bin directory's exec'd content belongs to writeExecutable.
+func rawWritePathNonWriteFile(fn *ast.FuncDecl) string {
+	for _, name := range []string{"Create", "OpenFile", "CreateTemp"} {
 		found := false
 		ast.Inspect(fn, func(n ast.Node) bool {
 			call, ok := n.(*ast.CallExpr)
@@ -190,7 +198,9 @@ func callMentionsNpmPath(fn *ast.FuncDecl, call *ast.CallExpr) bool {
 }
 
 // assignmentMentionsNpmPath reports whether fn assigns the named variable
-// from an expression mentioning the npm path.
+// from an expression mentioning the npm path. Multi-value assignments
+// (`v, ok := ...`) pair Lhs and Rhs by index; a mismatched shape simply does
+// not match rather than indexing out of range.
 func assignmentMentionsNpmPath(fn *ast.FuncDecl, name string) bool {
 	mentions := false
 	ast.Inspect(fn, func(n ast.Node) bool {
@@ -201,6 +211,9 @@ func assignmentMentionsNpmPath(fn *ast.FuncDecl, name string) bool {
 		for i, lhs := range assign.Lhs {
 			ident, ok := lhs.(*ast.Ident)
 			if !ok || ident.Name != name {
+				continue
+			}
+			if i >= len(assign.Rhs) {
 				continue
 			}
 			if mentionsStringLiteral(assign.Rhs[i], `"npm"`) || mentionsIdentifier(assign.Rhs[i], "fakeBin") {
@@ -239,75 +252,180 @@ func mentionsIdentifier(expr ast.Expr, name string) bool {
 }
 
 // writeExecutableWriteStmt returns the statement holding fn's os.WriteFile
-// call — the assignment form `if err := os.WriteFile(...); err != nil` nests
-// the call inside an IfStmt, so the search walks statements rather than
-// expecting a bare expression statement.
-func writeExecutableWriteStmt(fn *ast.FuncDecl) (ast.Stmt, bool) {
+// call and the statement list of the block enclosing it — the assignment form
+// `if err := os.WriteFile(...); err != nil` nests the call inside an IfStmt,
+// and a retry loop nests it inside a ForStmt, so the search walks statements
+// and reports the nesting level it found the write at. The enclosing list is
+// where the write's lock/unlock pair must appear when the write is nested
+// (a loop-scoped pair is the idiomatic guard for a retried write); a nil
+// enclosing list means the write sits at fn's own top level.
+func writeExecutableWriteStmt(fn *ast.FuncDecl) (write ast.Stmt, enclosing []ast.Stmt, ok bool) {
 	if fn.Body == nil {
-		return nil, false
+		return nil, nil, false
 	}
-	var found ast.Stmt
 	for _, stmt := range fn.Body.List {
-		ast.Inspect(stmt, func(n ast.Node) bool {
-			if found != nil {
-				return false
-			}
-			call, ok := n.(*ast.CallExpr)
-			if !ok {
-				return true
-			}
-			sel, ok := call.Fun.(*ast.SelectorExpr)
-			if !ok || sel.Sel.Name != "WriteFile" {
-				return true
-			}
-			if pkg, ok := sel.X.(*ast.Ident); ok && pkg.Name == "os" {
-				found = stmt
-				return false
-			}
-			return true
-		})
-		if found != nil {
-			return found, true
+		if stmtOSWriteFlat(stmt) != nil {
+			// The write sits in this statement itself — the `if err :=
+			// os.WriteFile(...); err != nil` form nests the call in the
+			// IfStmt's init clause, at function top level.
+			return stmt, nil, true
+		}
+		if inner, list := nestedOSWrite(stmt); inner != nil {
+			// The write sits inside a nested block (a retry loop's body);
+			// its lock/unlock pairing lives in that block's list.
+			return inner, list, true
 		}
 	}
-	return nil, false
+	return nil, nil, false
 }
 
-// holdsForkLockAcross reports whether fn acquires the ForkLock read lock at
-// the top level of its body before stmt, and releases it after — either an
-// explicit RUnlock after the statement or a deferred one. An acquisition
-// after the write, or a release before it, is not a guard.
-func holdsForkLockAcross(fn *ast.FuncDecl, stmt ast.Stmt) bool {
-	locked := false
-	released := false
-	for _, s := range fn.Body.List {
-		if !locked {
-			if isForkLockCall(s, "RLock") {
-				locked = true
-				continue
-			}
-			// A statement at lock depth cannot be the write we are auditing
-			// unless the lock came first — which the loop above would have
-			// caught by now.
-			if s == stmt {
-				return false
-			}
-			continue
+// stmtOSWriteFlat returns the statement's os.WriteFile call only when the
+// call is NOT inside a nested block — a write inside a loop body belongs to
+// the loop's scope, not the function's top level.
+func stmtOSWriteFlat(stmt ast.Stmt) *ast.CallExpr {
+	var found *ast.CallExpr
+	ast.Inspect(stmt, func(n ast.Node) bool {
+		if found != nil {
+			return false
 		}
-		if s == stmt {
-			continue // the guarded write itself, between lock and unlock
+		if _, isBlock := n.(*ast.BlockStmt); isBlock {
+			return false // do not descend into nested blocks
 		}
-		if isForkLockCall(s, "RUnlock") {
-			released = true
-			continue
-		}
-		if isDeferForkLockCall(s, "RUnlock") {
-			// A deferred release keeps the lock held past the write and
-			// across the function's remainder — a valid guard.
+		call, ok := n.(*ast.CallExpr)
+		if !ok {
 			return true
 		}
+		sel, ok := call.Fun.(*ast.SelectorExpr)
+		if !ok || sel.Sel.Name != "WriteFile" {
+			return true
+		}
+		if pkg, ok := sel.X.(*ast.Ident); ok && pkg.Name == "os" {
+			found = call
+			return false
+		}
+		return true
+	})
+	return found
+}
+
+// nestedOSWrite returns the statement holding an os.WriteFile nested inside
+// one of stmt's block statements, with that block's statement list — the
+// pairing scope for the guard check. The IfStmt-init form is handled by the
+// caller's flat branch, so only block-nested writes reach here.
+func nestedOSWrite(stmt ast.Stmt) (write ast.Stmt, list []ast.Stmt) {
+	var blocks []*ast.BlockStmt
+	ast.Inspect(stmt, func(n ast.Node) bool {
+		if b, ok := n.(*ast.BlockStmt); ok {
+			blocks = append(blocks, b)
+		}
+		return true
+	})
+	// Deepest-first: the write's true enclosing block is the innermost one.
+	for _, block := range slices.Backward(blocks) {
+		for _, s := range block.List {
+			if stmtOSWrite(s) != nil {
+				return s, block.List
+			}
+		}
 	}
-	return locked && released
+	return nil, nil
+}
+
+// stmtOSWrite returns the statement's os.WriteFile call, descending through
+// nested blocks — used inside a block scope where the write's own nesting is
+// already accounted for.
+func stmtOSWrite(stmt ast.Stmt) *ast.CallExpr {
+	var found *ast.CallExpr
+	ast.Inspect(stmt, func(n ast.Node) bool {
+		if found != nil {
+			return false
+		}
+		call, ok := n.(*ast.CallExpr)
+		if !ok {
+			return true
+		}
+		sel, ok := call.Fun.(*ast.SelectorExpr)
+		if !ok || sel.Sel.Name != "WriteFile" {
+			return true
+		}
+		if pkg, ok := sel.X.(*ast.Ident); ok && pkg.Name == "os" {
+			found = call
+			return false
+		}
+		return true
+	})
+	return found
+}
+
+// holdsForkLockAcross reports whether the statements before write in scope
+// acquire the ForkLock read lock — plainly or via a deferred release — and
+// never release it before the write. scope is the statement list the pairing
+// is checked in: fn's top level when the write sits there, or the enclosing
+// block's list (a retry loop's body) when the write is nested. The ordering
+// is the whole point: a plain RUnlock anywhere before the write leaves the
+// write unguarded no matter how many RLocks precede it (the release-before-
+// write mutations — RLock/RUnlock/write, a sandwich re-lock after the write,
+// and a plain RUnlock chasing a deferred one — must all fail).
+func holdsForkLockAcross(fn *ast.FuncDecl, write ast.Stmt, scope []ast.Stmt) bool {
+	list := fn.Body.List
+	if scope != nil {
+		list = scope
+	}
+	locked := false
+	deferGuard := false
+	for _, s := range list {
+		if s == write {
+			// Only the state at the write matters: the lock is held across
+			// it from here until a plain RUnlock or function exit.
+			return locked || deferGuard
+		}
+		switch {
+		case isForkLockCall(s, "RLock"):
+			locked = true
+		case isForkLockCall(s, "RUnlock"):
+			// A plain release before the write leaves it unguarded —
+			// including the deferred-then-plain spelling, whose plain
+			// release is this case.
+			return false
+		case isDeferForkLockCall(s, "RUnlock"):
+			// A deferred release holds the lock past the write and the rest
+			// of the function — a guard for everything after it.
+			deferGuard = true
+		default:
+			if containsForkLockRelease(s) {
+				// A release hidden inside a compound statement (a block, an
+				// if, a loop) before the write is the same unguarded write.
+				return false
+			}
+		}
+	}
+	return false
+}
+
+// containsForkLockRelease reports whether any statement nested inside s
+// releases the ForkLock read lock. A release the flat walk cannot see is a
+// release the ordering check must not wave through.
+func containsForkLockRelease(s ast.Stmt) bool {
+	found := false
+	ast.Inspect(s, func(n ast.Node) bool {
+		if found {
+			return false
+		}
+		expr, ok := n.(*ast.ExprStmt)
+		if !ok {
+			return true
+		}
+		call, ok := expr.X.(*ast.CallExpr)
+		if !ok {
+			return true
+		}
+		if isForkLockSelector(call.Fun, "RUnlock") {
+			found = true
+			return false
+		}
+		return true
+	})
+	return found
 }
 
 // isForkLockCall reports whether stmt is `syscall.ForkLock.<method>()`.
