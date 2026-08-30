@@ -213,12 +213,16 @@ async function main() {
       await evaluate(send, "document.fonts.ready.then(() => true)");
 
       // Keyboard axis: for keyboard-open points, drive the real visualViewport
-      // coordinator the platform-integration test proves. The harness dispatch
-      // of `viewport/set` is a no-op in the browser (the real coordinator reads
-      // window.visualViewport directly), so override the visualViewport metrics
-      // and the safe-area token, then dispatch a resize so the coordinator
-      // recomputes --viewport-height/--keyboard-inset. Keyboard-closed points
-      // leave the viewport as the device-metrics override left it.
+      // Keyboard axis: for keyboard-open points, model the declarative CSS
+      // tokens the real visualViewport coordinator (`computeViewportMetrics`
+      // in platformPresentation.ts) would produce, and set them directly.
+      // The harness `viewport/set` dispatch is a no-op in the browser (the
+      // real coordinator reads window.visualViewport, which the harness does
+      // not run), so this is a token-composition ruling: set the same
+      // `--viewport-height`/`--keyboard-inset` declarations the coordinator
+      // writes, exactly as its `finiteNonnegative` final clamp dictates.
+      // Keyboard-closed points leave the viewport as the device-metrics
+      // override left it.
       if (testCase.keyboard) {
         await applyKeyboardOpen(send, viewport.height);
       }
@@ -294,16 +298,20 @@ async function main() {
       checks.push(["work present", data.workPresent]);
       checks.push(["switch present", data.switchPresent]);
       if (testCase.keyboard) {
-        // The platform-integration test proves keyboard-open offset-zero
-        // geometry: --viewport-height/--keyboard-inset subtract to the visual
-        // height (532), the frame's block-size resolves to that visual height,
-        // the composer lands at the frame bottom, the keyboard region does not
-        // overlap the frame, and the composer's bottom padding carries the
-        // safe-area-bottom once. The harness renders the frame at a non-zero y
-        // offset, so the assertions key off the frame height and the composer
-        // bottom equaling the frame bottom rather than an absolute 532.
+        // Model the coordinator faithfully. `computeViewportMetrics` writes
+        // `--viewport-height: innerHeight` and `--keyboard-inset:
+        // max(0, innerHeight - visualHeight)` with offsetTop 0. For a visual
+        // height of 532 the inset is `max(0, innerHeight - 532)`. On a viewport
+        // shorter than 532 (e.g. the 852x393 landscape, innerHeight 393) the
+        // keyboard cannot overlap, so the coordinator clamps the inset to 0 and
+        // keyboard-open is geometrically identical to keyboard-closed: the
+        // frame resolves to the full innerHeight. Each keyboard-open point
+        // asserts the geometry the coordinator would actually produce for that
+        // viewport — not a hardcoded 532 everywhere.
         const viewportHeight = Number.parseFloat(data.viewportHeightToken);
         const keyboardInset = Number.parseFloat(data.keyboardInsetToken);
+        const expectedInset = Math.max(0, viewport.height - 532);
+        const expectedFrameHeight = viewport.height - expectedInset;
         checks.push([
           "viewport-height token",
           Number.isFinite(viewportHeight) && viewportHeight === viewport.height,
@@ -311,12 +319,13 @@ async function main() {
         checks.push([
           "keyboard-inset subtracts once",
           Number.isFinite(keyboardInset) &&
-            viewportHeight - keyboardInset === 532,
+            keyboardInset === expectedInset &&
+            viewportHeight - keyboardInset === expectedFrameHeight,
         ]);
         checks.push([
-          "frame height equals visual height",
+          "frame height equals modeled visual height",
           Number.isFinite(data.frameRect.height) &&
-            data.frameRect.height === 532,
+            data.frameRect.height === expectedFrameHeight,
         ]);
         checks.push([
           "composer bottom at frame bottom",
@@ -423,6 +432,9 @@ async function runPannedTraversal(ws, send, harnessUrl) {
       return {
         frameRect: frame ? (() => { const r = frame.getBoundingClientRect(); return { x: r.x, y: r.y, width: r.width, height: r.height, top: r.top, bottom: r.bottom }; })() : null,
         composerRect: composer ? (() => { const r = composer.getBoundingClientRect(); return { x: r.x, y: r.y, width: r.width, height: r.height, top: r.top, bottom: r.bottom }; })() : null,
+        composerPaddingBottom: composer
+          ? Number.parseFloat(getComputedStyle(composer).paddingBottom) || 0
+          : null,
         viewportHeightToken: rootStyle.getPropertyValue('--viewport-height'),
         keyboardInsetToken: rootStyle.getPropertyValue('--keyboard-inset'),
         safeAreaBottomToken: rootStyle.getPropertyValue('--safe-area-bottom'),
@@ -459,8 +471,8 @@ async function runPannedTraversal(ws, send, harnessUrl) {
         data.composerRect.top < 547,
     ]);
     pannedChecks.push([
-      "safe-area-bottom applied once",
-      data.safeAreaBottomToken === "34px",
+      "composer bottom padding reflects safe-area once",
+      data.composerPaddingBottom === 34,
     ]);
   }
   const pannedFailed = pannedChecks.filter(([, ok]) => !ok);
@@ -500,14 +512,23 @@ async function runPannedTraversal(ws, send, harnessUrl) {
  * tokens the coordinator WOULD produce — `--viewport-height` and
  * `--keyboard-inset` — directly, exactly as computeViewportMetrics does for
  * innerHeight kept at the device height and a visual viewport shrunk to height
- * 532 at offsetTop 0: viewport-height=innerHeight, keyboard-inset=innerHeight-
- * (0+532). For innerHeight 852 that is 320, so the frame's `block-size:
- * calc(var(--viewport-height) - var(--keyboard-inset))` resolves to 532. The
- * safe-area-bottom token is set to 34px so the composer's bottom padding
- * carries it once.
+ * 532 at offsetTop 0: viewport-height=innerHeight, keyboard-inset=max(0,
+ * innerHeight-(0+532)). For innerHeight 852 that is 320, so the frame's
+ * `block-size: calc(var(--viewport-height) - var(--keyboard-inset))` resolves
+ * to 532. For the 852x393 landscape (innerHeight 393) the clamp yields inset 0,
+ * so the frame resolves to the full 393 — keyboard-open is geometrically
+ * identical to keyboard-closed. The safe-area-bottom token is set to 34px so
+ * the composer's bottom padding carries it once.
  */
 async function applyKeyboardOpen(send, innerHeight) {
-  const keyboardInset = innerHeight - 532;
+  // Model computeViewportMetrics faithfully: the coordinator's final
+  // `finiteNonnegative` clamp yields `max(0, innerHeight - 532)`. On a
+  // viewport shorter than 532 (the 852x393 landscape, innerHeight 393) the
+  // keyboard cannot overlap, so the inset is 0 and keyboard-open is
+  // geometrically identical to keyboard-closed. The frame's `block-size:
+  // calc(var(--viewport-height) - var(--keyboard-inset))` then resolves to
+  // innerHeight - max(0, innerHeight - 532) = min(innerHeight, 532).
+  const keyboardInset = Math.max(0, innerHeight - 532);
   await evaluate(
     send,
     `(() => {
