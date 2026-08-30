@@ -93,6 +93,7 @@ var Methods = []MethodSpec{
 	{MethodPing, EmptyParams{}, EmptyResponse{}, ScopeConnection, "Connection keepalive, answered directly before the initialize gate (the browser's app-level heartbeat)."},
 	{MethodThreadList, ThreadListParams{}, ThreadListResponse{}, ScopeBoth, "Lists threads; the daemon returns its single session."},
 	{MethodThreadRead, ThreadReadParams{}, ThreadReadResponse{}, ScopeBoth, "Reads one thread and optionally subscribes to its live updates."},
+	{MethodThreadUnsubscribe, ThreadUnsubscribeParams{}, EmptyResponse{}, ScopeBoth, "Drops this connection's live-update subscription to a thread without reading it."},
 	{MethodThreadTurnsList, ThreadTurnsListParams{}, ThreadTurnsListResponse{}, ScopeBoth, "Pages turns backward (older) for lazy transcript loading; the cold load seeds the latest window via thread/read(turnLimit)."},
 	{MethodThreadTurnItemsList, ThreadTurnItemsListParams{}, ThreadTurnItemsListResponse{}, ScopeUnimplemented, "Codex-parity: paginated items for one turn. Experimental even in Codex (returns method-not-supported) and served by no evener router."},
 	{MethodThreadStart, ThreadStartParams{}, ThreadStartResponse{}, ScopeHub, "Starts a new thread and attaches a live-update relay."},

@@ -2732,6 +2732,104 @@ func TestHubRPCThreadReadSubscribeOverridesSourceReadRelayPolicy(t *testing.T) {
 	}
 }
 
+// thread/unsubscribe must drop the calling connection's downstream
+// subscription — the registry entry thread/read's relay created — so the
+// relay's idle ticker sees SubscriberCount zero and can retire, and a second
+// call stays a quiet no-op.
+func TestHubRPCThreadUnsubscribeDropsDownstreamSubscription(t *testing.T) {
+	const threadID = "th_unsub"
+	source := &relayBroadcastSource{
+		id: "codex",
+		thread: appwire.Thread{
+			ID:        threadID,
+			SessionID: threadID,
+			Source:    "codex",
+			Evener:    appwire.EvenerThread{Ref: "codex:" + threadID, Capabilities: appwire.ThreadCapabilities{Send: true}},
+		},
+		notifications: make(chan appwire.Notification, 4),
+		subscribed:    make(chan struct{}, 1),
+		canceled:      make(chan struct{}, 1),
+	}
+	srv := httptest.NewUnstartedServer(nil)
+	web := NewWebServer(hubcore.WebConfig{HubAddr: srv.Listener.Addr().String(), Past: hubcore.NewPastIndex("")})
+	web.sources.Add(source)
+	srv.Config.Handler = web.Handler()
+	srv.Start()
+	defer srv.Close()
+
+	client := dialHubRPC(t, srv)
+	defer client.Close()
+	if _, err := client.Initialize(context.Background(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
+		t.Fatalf("Initialize: %v", err)
+	}
+	if _, err := client.ThreadRead(context.Background(), appwire.ThreadReadParams{Ref: "codex:" + threadID, Subscribe: true}); err != nil {
+		t.Fatalf("ThreadRead: %v", err)
+	}
+	expectRelaySubscription(t, source.subscribed)
+	if got := web.appRPC.SubscriberCount("codex:" + threadID); got != 1 {
+		t.Fatalf("subscriber count after subscribed read = %d, want 1", got)
+	}
+
+	if _, err := client.ThreadUnsubscribe(context.Background(), appwire.ThreadUnsubscribeParams{Ref: "codex:" + threadID}); err != nil {
+		t.Fatalf("ThreadUnsubscribe: %v", err)
+	}
+	if got := web.appRPC.SubscriberCount("codex:" + threadID); got != 0 {
+		t.Fatalf("subscriber count after unsubscribe = %d, want 0", got)
+	}
+
+	// The relay's notifications no longer reach this connection.
+	source.notifications <- appwire.Notification{
+		Method: appwire.NotifyAgentMessageDelta,
+		Params: testRawJSON(t, appwire.AgentMessageDeltaParams{
+			ThreadID: threadID,
+			Ref:      "codex:" + threadID,
+			TurnID:   "turn_1",
+			ItemID:   "item_1",
+			Delta:    "after unsubscribe",
+		}),
+	}
+	select {
+	case got := <-client.Notifications():
+		t.Fatalf("notification delivered after unsubscribe: %+v", got)
+	case <-time.After(200 * time.Millisecond):
+	}
+
+	// Idempotent: unsubscribing again succeeds quietly.
+	if _, err := client.ThreadUnsubscribe(context.Background(), appwire.ThreadUnsubscribeParams{Ref: "codex:" + threadID}); err != nil {
+		t.Fatalf("second ThreadUnsubscribe: %v", err)
+	}
+	if got := web.appRPC.SubscriberCount("codex:" + threadID); got != 0 {
+		t.Fatalf("subscriber count after second unsubscribe = %d, want 0", got)
+	}
+}
+
+// The fallback branch: when no source resolves (an exited session removed
+// its rendezvous entry), an unsubscribe still quietly succeeds. The handler
+// resolves through the plain registry (sourceForThread, never the
+// managed-launch path), so no launcher is even consulted — an unsubscribe is
+// a "stop caring" operation and must not spawn.
+func TestHubRPCThreadUnsubscribeUnresolvedSourceIsQuiet(t *testing.T) {
+	srv := httptest.NewUnstartedServer(nil)
+	web := NewWebServer(hubcore.WebConfig{HubAddr: srv.Listener.Addr().String(), Past: hubcore.NewPastIndex("")})
+	srv.Config.Handler = web.Handler()
+	srv.Start()
+	defer srv.Close()
+
+	client := dialHubRPC(t, srv)
+	defer client.Close()
+	if _, err := client.Initialize(context.Background(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
+		t.Fatalf("Initialize: %v", err)
+	}
+	// A ref whose source never existed: quiet success, no error.
+	if _, err := client.ThreadUnsubscribe(context.Background(), appwire.ThreadUnsubscribeParams{Ref: "codex:th_missing"}); err != nil {
+		t.Fatalf("ThreadUnsubscribe for unresolvable source: %v", err)
+	}
+	// The same for a bare threadID with no ref.
+	if _, err := client.ThreadUnsubscribe(context.Background(), appwire.ThreadUnsubscribeParams{ThreadID: "th_missing"}); err != nil {
+		t.Fatalf("ThreadUnsubscribe for unresolvable thread: %v", err)
+	}
+}
+
 func TestHubRPCThreadReadRecoversEstablishedRelayAfterSourceClose(t *testing.T) {
 	const threadID = "th_recover"
 	results := make(chan relaySubscribeResult)
@@ -9855,6 +9953,7 @@ func TestHubRPCRegistersExpectedHandlerSet(t *testing.T) {
 	expected := []string{
 		appwire.MethodThreadList,
 		appwire.MethodThreadRead,
+		appwire.MethodThreadUnsubscribe,
 		appwire.MethodThreadTurnsList,
 		appwire.MethodEvenerSubagentPreview,
 		appwire.MethodThreadStart,

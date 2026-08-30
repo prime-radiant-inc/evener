@@ -924,6 +924,7 @@ func (s *Server) registerAppWireHandlers() {
 	router := s.appServer.Router()
 	appserver.HandleTyped(router, appwire.MethodThreadList, s.handleAppThreadList)
 	appserver.HandleTyped(router, appwire.MethodThreadRead, s.handleAppThreadRead)
+	appserver.HandleTyped(router, appwire.MethodThreadUnsubscribe, s.handleAppThreadUnsubscribe)
 	appserver.HandleTyped(router, appwire.MethodTurnStart, s.handleAppTurnStart)
 	appserver.HandleTyped(router, appwire.MethodTurnSteer, s.handleAppTurnSteer)
 	appserver.HandleTyped(router, appwire.MethodEvenerSandboxEscalationResolve, s.handleAppSandboxEscalationResolve)
@@ -1022,6 +1023,34 @@ func (s *Server) appThreadReadSnapshot(params appwire.ThreadReadParams) appwire.
 		thread.Turns, olderCursor = s.appLatestTurns(thread.ID, params.TurnLimit)
 	}
 	return appwire.ThreadReadResponse{Thread: thread, OlderCursor: olderCursor}
+}
+
+// handleAppThreadUnsubscribe drops the calling connection's subscription to
+// this daemon's thread. It resolves the thread identity exactly as
+// handleAppThreadRead does, so an unsubscribe names the same registry key the
+// subscribe created — including through a replace/clear identity swap, where
+// appNotificationTarget's stable ref is the key subscribers were registered
+// under. A ref that no longer resolves (an identity swap moved the stable ref
+// on, an old pre-swap ref) still tries the raw identities the client named:
+// the registry keys a subscribe could have used are exactly the stable-ref
+// form and the bare thread ID, and Unsubscribe is idempotent, so trying both
+// costs nothing and leaks nothing.
+func (s *Server) handleAppThreadUnsubscribe(ctx context.Context, params appwire.ThreadUnsubscribeParams) (appwire.EmptyResponse, error) {
+	threadID := s.appThreadIDForRead(appwire.ThreadReadParams{ThreadID: params.ThreadID, Ref: params.Ref})
+	if threadID == "" {
+		// Teardown finding nothing is a success; still try the raw identities
+		// so a pre-swap key does not linger until connection close.
+		rawRef := strings.TrimSpace(params.Ref)
+		if rawRef != "" {
+			appserver.Unsubscribe(ctx, rawRef)
+		}
+		if bare := strings.TrimSpace(params.ThreadID); bare != "" {
+			appserver.Unsubscribe(ctx, s.appNotificationTarget(bare))
+		}
+		return appwire.EmptyResponse{}, nil
+	}
+	appserver.Unsubscribe(ctx, s.appNotificationTarget(threadID))
+	return appwire.EmptyResponse{}, nil
 }
 
 func (s *Server) appThreadIDForRead(params appwire.ThreadReadParams) string {

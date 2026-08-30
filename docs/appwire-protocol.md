@@ -89,6 +89,7 @@ no router (reserved).
 | `ping` | connection | `EmptyParams` | `EmptyResponse` | Connection keepalive, answered directly before the initialize gate (the browser's app-level heartbeat). |
 | `thread/list` | both | `ThreadListParams` | `ThreadListResponse` | Lists threads; the daemon returns its single session. |
 | `thread/read` | both | `ThreadReadParams` | `ThreadReadResponse` | Reads one thread and optionally subscribes to its live updates. |
+| `thread/unsubscribe` | both | `ThreadUnsubscribeParams` | `EmptyResponse` | Drops this connection's live-update subscription to a thread without reading it. |
 | `thread/turns/list` | both | `ThreadTurnsListParams` | `ThreadTurnsListResponse` | Pages turns backward (older) for lazy transcript loading; the cold load seeds the latest window via thread/read(turnLimit). |
 | `thread/turns/items/list` | unimplemented | `ThreadTurnItemsListParams` | `ThreadTurnItemsListResponse` | Codex-parity: paginated items for one turn. Experimental even in Codex (returns method-not-supported) and served by no evener router. |
 | `thread/start` | hub | `ThreadStartParams` | `ThreadStartResponse` | Starts a new thread and attaches a live-update relay. |
@@ -1684,6 +1685,14 @@ _(no fields)_
 |-------|---------|-----------|----------|
 | `data` | `[]appwire.Turn` |  |  |
 | `nextCursor` | `string` | yes |  |
+
+
+### `ThreadUnsubscribeParams`
+
+| Field | Go type | Omitempty | Embedded |
+|-------|---------|-----------|----------|
+| `threadId` | `string` | yes |  |
+| `ref` | `string` | yes |  |
 
 
 ### `ThreadVisionModelChangedParams`

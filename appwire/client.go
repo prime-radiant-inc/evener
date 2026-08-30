@@ -353,6 +353,12 @@ func (c *Client) ThreadRead(ctx context.Context, params ThreadReadParams) (Threa
 	return out, err
 }
 
+func (c *Client) ThreadUnsubscribe(ctx context.Context, params ThreadUnsubscribeParams) (EmptyResponse, error) {
+	var out EmptyResponse
+	err := c.request(ctx, MethodThreadUnsubscribe, params, &out)
+	return out, err
+}
+
 func (c *Client) ThreadTurnsList(ctx context.Context, params ThreadTurnsListParams) (ThreadTurnsListResponse, error) {
 	var out ThreadTurnsListResponse
 	err := c.request(ctx, MethodThreadTurnsList, params, &out)

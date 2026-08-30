@@ -38,9 +38,11 @@
   },
   {
     "input": "{\"threadId\":\"t\",\"turnLimit\":5}",
-    "detail": "thread/resume",
+    "detail": "thread/start",
     "decoded": true,
-    "output": {}
+    "output": {
+      "cwd": ""
+    }
   },
   {
     "input": "null",

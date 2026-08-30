@@ -577,6 +577,27 @@ func Subscribe(ctx context.Context, threadID string) bool {
 	return true
 }
 
+// Unsubscribe drops the calling connection's subscription to one thread so a
+// browser switching views stops receiving its live updates and the relay can
+// idle out once no connection remains. Quietly a no-op when there is nothing
+// to remove (no connection on the context, an empty threadID, a connection
+// already replaced): teardown never needs to distinguish those. Unlike
+// Subscribe it takes no projection gate: removing a subscription only
+// shrinks delivery.
+func Unsubscribe(ctx context.Context, threadID string) {
+	conn, ok := ctx.Value(connectionContextKey{}).(*Connection)
+	if !ok || conn == nil || threadID == "" {
+		return
+	}
+	server := conn.server
+	server.mu.Lock()
+	defer server.mu.Unlock()
+	if server.conns[conn.id] != conn {
+		return
+	}
+	server.subs.Unsubscribe(conn.id, threadID)
+}
+
 func ReplaceSubscriptions(ctx context.Context, threadID string) bool {
 	conn, ok := ctx.Value(connectionContextKey{}).(*Connection)
 	if !ok || conn == nil {

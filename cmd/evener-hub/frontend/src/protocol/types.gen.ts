@@ -1749,6 +1749,11 @@ export interface ThreadTurnsListResponse {
   nextCursor?: string;
 }
 
+export interface ThreadUnsubscribeParams {
+  threadId?: string;
+  ref?: string;
+}
+
 export interface ThreadVisionModelChangedParams {
   threadId: string;
   ref: string;
@@ -1978,6 +1983,7 @@ export const METHOD_NAMES = [
   "ping",
   "thread/list",
   "thread/read",
+  "thread/unsubscribe",
   "thread/turns/list",
   "thread/turns/items/list",
   "thread/start",
@@ -2153,6 +2159,7 @@ export interface MethodTypes {
   "ping": { params: EmptyParams; result: EmptyResponse };
   "thread/list": { params: ThreadListParams; result: ThreadListResponse };
   "thread/read": { params: ThreadReadParams; result: ThreadReadResponse };
+  "thread/unsubscribe": { params: ThreadUnsubscribeParams; result: EmptyResponse };
   "thread/turns/list": { params: ThreadTurnsListParams; result: ThreadTurnsListResponse };
   "thread/turns/items/list": { params: ThreadTurnItemsListParams; result: ThreadTurnItemsListResponse };
   "thread/start": { params: ThreadStartParams; result: ThreadStartResponse };

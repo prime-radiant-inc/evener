@@ -285,6 +285,36 @@ func registerThreadHandlers(
 		}
 		return resp, nil
 	})
+	// thread/unsubscribe drops only the calling connection's downstream
+	// subscription — the browser's own read of a thread it is navigating away
+	// from. The relay key is derived by the same helper thread/read's relay
+	// uses (threadRelayTarget), so the removal lands on the exact registry
+	// entry Subscribe created. Resolution deliberately uses the plain registry
+	// lookup — never the managed-launch path — because an unsubscribe must not
+	// start a session just to stop delivering to it. When no source resolves,
+	// the ref's own namespace (parsed from the ref itself) is the best key
+	// available; Unsubscribe is conn-scoped and idempotent, so a missed key
+	// costs only a subscription the connection-close cleanup reaps anyway.
+	appserver.HandleTyped(server.Router(), appwire.MethodThreadUnsubscribe, func(ctx context.Context, params appwire.ThreadUnsubscribeParams) (appwire.EmptyResponse, error) {
+		source, err := sourceForThread(sources, params.Ref, params.ThreadID)
+		if err != nil {
+			if isTargetDeletedError(err) {
+				return appwire.EmptyResponse{}, err
+			}
+			if parsed, parseErr := appwire.ParseRef(strings.TrimSpace(params.Ref)); parseErr == nil && parsed.SourceID != "" {
+				appserver.Unsubscribe(ctx, parsed.SourceID+":"+parsed.ThreadID)
+				return appwire.EmptyResponse{}, nil
+			}
+			appserver.Unsubscribe(ctx, "local:"+strings.TrimSpace(params.ThreadID))
+			return appwire.EmptyResponse{}, nil
+		}
+		relayKey, _, keyErr := threadRelayTarget(source, appwire.ThreadReadParams{ThreadID: params.ThreadID, Ref: params.Ref})
+		if keyErr != nil {
+			return appwire.EmptyResponse{}, keyErr
+		}
+		appserver.Unsubscribe(ctx, relayKey)
+		return appwire.EmptyResponse{}, nil
+	})
 	appserver.HandleTyped(server.Router(), appwire.MethodThreadTurnsList, func(ctx context.Context, params appwire.ThreadTurnsListParams) (appwire.ThreadTurnsListResponse, error) {
 		// Live source first; fall back to the saved transcript (paged on the
 		// hub) for past/not-loaded sessions.

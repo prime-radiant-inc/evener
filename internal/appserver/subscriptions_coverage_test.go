@@ -124,6 +124,98 @@ func TestSubscriptionsWithdrawBufferedReplace(t *testing.T) {
 	}
 }
 
+// A mid-capture unsubscribe against the buffering entry of a replace-capture
+// must not strand the capture's rollback snapshot: the abort still restores
+// the connection's other subscriptions, minus exactly the thread the client
+// dropped. Regression test for the shape where Unsubscribe removing the
+// buffering entry made withdrawBuffered bail at current==nil and silently
+// dropped every other subscription.
+func TestSubscriptionsUnsubscribeDuringReplaceCaptureDefersToAbort(t *testing.T) {
+	subs := NewSubscriptions()
+	subs.Subscribe("conn-1", "th_1")
+	subs.Subscribe("conn-1", "th_2")
+	rollback := subs.beginBuffered("conn-1", "th_3", true, 1)
+
+	// The client unsubscribes the thread the capture is hydrating, mid-flight.
+	subs.Unsubscribe("conn-1", "th_3")
+
+	// The buffering entry survives until the capture resolves.
+	if !subs.IsSubscribed("conn-1", "th_3") {
+		t.Fatal("mid-capture unsubscribe removed the buffering entry")
+	}
+	// The capture aborts (its read failed): the displaced snapshot comes back
+	// minus the dropped thread.
+	if !subs.withdrawBuffered("conn-1", "th_3", 1, rollback) {
+		t.Fatal("withdrawBuffered with replace should succeed after a mid-capture unsubscribe")
+	}
+	if !subs.IsSubscribed("conn-1", "th_1") {
+		t.Fatal("th_1 should be restored after the aborted capture")
+	}
+	if !subs.IsSubscribed("conn-1", "th_2") {
+		t.Fatal("th_2 should be restored after the aborted capture")
+	}
+	if subs.IsSubscribed("conn-1", "th_3") {
+		t.Fatal("th_3 should stay dropped: the client explicitly unsubscribed it")
+	}
+	// A later capture's abort must not skip th_1/th_2 because of the spent
+	// withdrawn record.
+	subs.Subscribe("conn-1", "th_2")
+	subs.Unsubscribe("conn-1", "th_2")
+	if subs.IsSubscribed("conn-1", "th_2") {
+		t.Fatal("th_2 should be unsubscribed normally once no capture holds it")
+	}
+}
+
+// The non-replace counterpart: a mid-capture unsubscribe defers to the
+// generation's abort, which restores the previous subscription for that
+// thread minus the client's drop.
+func TestSubscriptionsUnsubscribeDuringNonReplaceCaptureDefersToAbort(t *testing.T) {
+	subs := NewSubscriptions()
+	subs.Subscribe("conn-1", "th_1")
+	rollback := subs.beginBuffered("conn-1", "th_1", false, 3)
+
+	subs.Unsubscribe("conn-1", "th_1")
+	if !subs.IsSubscribed("conn-1", "th_1") {
+		t.Fatal("mid-capture unsubscribe removed the buffering entry")
+	}
+	if !subs.withdrawBuffered("conn-1", "th_1", 3, rollback) {
+		t.Fatal("withdrawBuffered should succeed after a mid-capture unsubscribe")
+	}
+	if subs.IsSubscribed("conn-1", "th_1") {
+		t.Fatal("th_1 should stay dropped: the client explicitly unsubscribed it")
+	}
+}
+
+// A committed capture clears the mid-capture unsubscribe record: the entry
+// went live, so a later capture's abort must restore it normally.
+func TestSubscriptionsUnsubscribeDuringCaptureThenCommit(t *testing.T) {
+	subs := NewSubscriptions()
+	subs.Subscribe("conn-1", "th_1")
+	subs.Subscribe("conn-1", "th_2")
+	subs.beginBuffered("conn-1", "th_3", true, 4)
+
+	subs.Unsubscribe("conn-1", "th_3")
+	if _, ok := subs.Release("conn-1", "th_3", 4); !ok {
+		t.Fatal("Release should succeed for the live generation")
+	}
+	if !subs.IsSubscribed("conn-1", "th_3") {
+		t.Fatal("committed capture should leave the entry live")
+	}
+	// A LATER capture that displaces th_3 must have it restored on its abort
+	// — the spent withdrawn record from generation 4 must not suppress it.
+	rollback2 := subs.beginBuffered("conn-1", "th_4", true, 5)
+	subs.Unsubscribe("conn-1", "th_4")
+	if !subs.withdrawBuffered("conn-1", "th_4", 5, rollback2) {
+		t.Fatal("second capture's abort should succeed")
+	}
+	if !subs.IsSubscribed("conn-1", "th_3") {
+		t.Fatal("the spent withdrawn record suppressed restoring th_3 on the later capture's abort")
+	}
+	if subs.IsSubscribed("conn-1", "th_4") {
+		t.Fatal("th_4 should stay dropped: the client explicitly unsubscribed it mid-capture")
+	}
+}
+
 func TestSubscriptionsReplaceConnectionSubscriptions(t *testing.T) {
 	subs := NewSubscriptions()
 	subs.Subscribe("conn-1", "th_1")
