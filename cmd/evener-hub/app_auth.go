@@ -175,6 +175,7 @@ func (c *hubAuthController) Status(params appwire.AuthStatusParams) (appwire.Aut
 	if p, ok := r.Provider(name); ok && registry.BoolValue(p.Implicit) {
 		res, err := r.ResolveInstance(name)
 		if err != nil {
+			//nolint:nilerr // a provider the registry cannot resolve is reported as unsupported, which is the answer, not an RPC failure
 			return appwire.AuthStatusResponse{Provider: name, Supported: false, ActiveSource: "none"}, nil
 		}
 		return c.instanceStatus(registry.Instance{
@@ -604,9 +605,11 @@ func (c *hubAuthController) instanceStatus(inst registry.Instance) appwire.AuthS
 		return resp
 	}
 	hasFile, _ := c.creds.Layers(inst.Name)
+	// The registry names an environment credential "env:<VAR>", and that
+	// variable is the one the pane shows.
 	envVar := ""
-	if strings.HasPrefix(inst.CredentialSource, "env:") {
-		envVar = strings.TrimPrefix(inst.CredentialSource, "env:")
+	if v, ok := strings.CutPrefix(inst.CredentialSource, "env:"); ok {
+		envVar = v
 	}
 	return appwire.AuthStatusResponse{
 		Provider:  inst.Name,

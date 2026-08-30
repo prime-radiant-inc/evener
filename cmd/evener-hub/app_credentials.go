@@ -136,8 +136,7 @@ func (c *hubAuthController) runCredentialTest(ctx context.Context, name string, 
 }
 
 func classifyCredentialTestError(err error) (string, string) {
-	var configErr *llm.ConfigurationError
-	if errors.As(err, &configErr) {
+	if _, ok := errors.AsType[*llm.ConfigurationError](err); ok {
 		return appwire.AuthTestStatusConfigurationFailure, credentialTestConfigurationMessage
 	}
 
