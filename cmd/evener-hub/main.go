@@ -253,7 +253,7 @@ func runMain(args []string, stderr io.Writer, deps mainDeps) error {
 		StateRoot:           hubStateRoot,
 		ProvidersConfigPath: providersConfigPath,
 		CredentialsPath:     credentialsPath,
-		NoUserLayer:         noUserLayer || hubReg.WritesRefused(),
+		NoUserLayer:         noUserLayer,
 	}
 	var codexLauncher *codexlaunch.CodexLauncher
 	if len(cfg.CodexLaunches) > 0 {
@@ -368,7 +368,7 @@ func runMain(args []string, stderr io.Writer, deps mainDeps) error {
 		Registry:                  hubReg,
 		ProvidersConfigPath:       providersConfigPath,
 		CredentialsPath:           credentialsPath,
-		NoUserLayer:               noUserLayer || hubReg.WritesRefused(),
+		NoUserLayer:               noUserLayer,
 		CodexSources:              cfg.CodexSources,
 		CodexLaunches:             cfg.CodexLaunches,
 		CodexLauncher:             codexLauncher,

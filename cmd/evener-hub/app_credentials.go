@@ -29,16 +29,25 @@ type credentialProbeClient interface {
 	Close() error
 }
 
-type credentialProbeLoader func(string) (credentialProbeClient, error)
+type credentialProbeLoader func(path string, noUserLayer bool) (credentialProbeClient, error)
 
 type credentialTestCall struct {
 	done   chan struct{}
 	result appwire.AuthTestResponse
 }
 
-// loadCredentialTestClient builds the probe client the way session startup
-// does, against the same providers.toml the spawn path will read.
-func loadCredentialTestClient(path string) (credentialProbeClient, error) {
+// loadCredentialTestClient builds the probe client the child would get: the
+// user layer at path while the hub is reading it, and none at all when there
+// is no user layer or the file does not load (spec §10). Probing a client the
+// child will never build answers about a different session.
+func loadCredentialTestClient(path string, noUserLayer bool) (credentialProbeClient, error) {
+	if noUserLayer {
+		r, _, err := cmdutil.LoadRegistry(registry.WithNoUserLayer())
+		if err != nil {
+			return nil, err
+		}
+		return cmdutil.NewRegistryClient(r, ""), nil
+	}
 	var (
 		client *llm.Client
 		err    error
@@ -116,7 +125,7 @@ func (c *hubAuthController) runCredentialTest(ctx context.Context, name string, 
 	if required && inst.CredentialSource == "none" {
 		return credentialTestResponse(name, appwire.AuthTestStatusMissing, credentialTestMissingMessage)
 	}
-	client, err := loader(c.providersConfigPath)
+	client, err := loader(c.providersConfigPath, childNoUserLayer(c.noUserLayer, c.reg))
 	if err != nil || client == nil {
 		return credentialTestResponse(name, appwire.AuthTestStatusConfigurationFailure, credentialTestConfigurationMessage)
 	}

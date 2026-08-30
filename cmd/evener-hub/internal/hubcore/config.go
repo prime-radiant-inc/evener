@@ -57,7 +57,7 @@ type WebConfig struct {
 	Registry                  *ProviderRegistry  // live provider registry; the instance, auth, credential-test and model surfaces all read it
 	ProvidersConfigPath       string             // path to providers.toml; the instances pane is its only writer
 	CredentialsPath           string             // path to credentials.toml; handed to every spawned child as EVENER_CREDENTIALS_CONFIG
-	NoUserLayer               bool               // the child gets EVENER_PROVIDERS_CONFIG= (present, empty): no user layer at all (spec §10)
+	NoUserLayer               bool               // EVENER_PROVIDERS_CONFIG is present and empty: no user layer at all (spec §10). A file that fails to load adds to this per call; it is not folded in here.
 	CodexSources              []appsource.CodexSourceConfig
 	CodexLaunches             []codexlaunch.CodexLaunchConfig
 	CodexLauncher             *codexlaunch.CodexLauncher

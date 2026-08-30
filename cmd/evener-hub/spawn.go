@@ -51,7 +51,17 @@ type HubSpawner struct {
 	StateRoot           string                    // hub-level state root; used for resolving
 	ProvidersConfigPath string                    // providers.toml the child reads as its user layer
 	CredentialsPath     string                    // credentials.toml the child resolves keys from
-	NoUserLayer         bool                      // hand the child EVENER_PROVIDERS_CONFIG= (present, empty): no user layer (spec §10)
+	NoUserLayer         bool                      // the tri-state from EVENER_PROVIDERS_CONFIG: present and empty means no user layer (spec §10)
+}
+
+// childNoUserLayer is spec §10's third state as a child must see it: the hub's
+// own tri-state, or a providers.toml the registry cannot read right now. It is
+// asked per call rather than frozen at startup, because every credential
+// action reloads the registry and can change the answer in either direction —
+// and a child pointed at a file the hub is not reading (or denied one it is)
+// fails at launch with none of the hub's diagnostics attached.
+func childNoUserLayer(configured bool, reg *hubcore.ProviderRegistry) bool {
+	return configured || (reg != nil && reg.WritesRefused())
 }
 
 type EvenerLaunchModelLister interface {
@@ -86,7 +96,7 @@ func (h *HubSpawner) ListLaunchModelContract(ctx context.Context) (appwire.Model
 		HubToken:            h.HubToken,
 		ParentEnv:           os.Environ(),
 		ProvidersConfigPath: h.ProvidersConfigPath,
-		NoUserLayer:         h.NoUserLayer,
+		NoUserLayer:         childNoUserLayer(h.NoUserLayer, h.Registry),
 		CredentialsPath:     h.CredentialsPath,
 	})
 	return listEvenerLaunchModelContractFn(ctx, h.EvenerBinary, env)
@@ -119,7 +129,7 @@ func (h *HubSpawner) ListLaunchModelContractForWorkingDir(ctx context.Context, w
 		HubToken:            h.HubToken,
 		ParentEnv:           os.Environ(),
 		ProvidersConfigPath: h.ProvidersConfigPath,
-		NoUserLayer:         h.NoUserLayer,
+		NoUserLayer:         childNoUserLayer(h.NoUserLayer, h.Registry),
 		CredentialsPath:     h.CredentialsPath,
 	})
 	return listEvenerLaunchModelContractFn(ctx, h.EvenerBinary, env)
@@ -158,7 +168,7 @@ func (h *HubSpawner) Spawn(ctx context.Context, req hubcore.SpawnRequest) (rende
 		StateDir:            req.StateDir,
 		HubToken:            h.HubToken,
 		ProvidersConfigPath: h.ProvidersConfigPath,
-		NoUserLayer:         h.NoUserLayer,
+		NoUserLayer:         childNoUserLayer(h.NoUserLayer, h.Registry),
 		CredentialsPath:     h.CredentialsPath,
 	})
 	if err := validateProviderCredentials(req.Provider, h.Registry); err != nil {
@@ -203,7 +213,7 @@ func (h *HubSpawner) Resume(ctx context.Context, req hubcore.ResumeRequest) (ren
 		StateDir:            req.StateDir,
 		HubToken:            h.HubToken,
 		ProvidersConfigPath: h.ProvidersConfigPath,
-		NoUserLayer:         h.NoUserLayer,
+		NoUserLayer:         childNoUserLayer(h.NoUserLayer, h.Registry),
 		CredentialsPath:     h.CredentialsPath,
 	})
 	if req.Provider != "" {

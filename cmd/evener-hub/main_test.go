@@ -12,7 +12,6 @@ import (
 	"testing"
 
 	"primeradiant.com/evener/appwire"
-	"primeradiant.com/evener/cmd/evener-hub/internal/launchconfig"
 	"primeradiant.com/evener/cmdutil"
 	"primeradiant.com/evener/internal/credentials"
 	"primeradiant.com/evener/llm/registry"
@@ -376,17 +375,22 @@ func TestRunMainDegradesOnAnOldSchemaProvidersConfig(t *testing.T) {
 	}
 
 	// And the child it spawns is pointed at no user layer, with the hub's own
-	// credentials.toml.
+	// credentials.toml. Asked through the spawner's own env-building path, not
+	// a copy of it.
 	spawner, ok := web.cfg.Spawner.(*HubSpawner)
 	if !ok {
 		t.Fatalf("spawner = %T, want *HubSpawner", web.cfg.Spawner)
 	}
-	env := launchconfig.ToEnv(launchconfig.EnvInputs{
-		ParentEnv:           []string{"EVENER_PROVIDERS_CONFIG=" + providersPath},
-		ProvidersConfigPath: spawner.ProvidersConfigPath,
-		NoUserLayer:         spawner.NoUserLayer,
-		CredentialsPath:     spawner.CredentialsPath,
-	})
+	var env []string
+	oldFn := listEvenerLaunchModelContractFn
+	listEvenerLaunchModelContractFn = func(_ context.Context, _ string, childEnv []string) (appwire.ModelListResponse, error) {
+		env = childEnv
+		return appwire.ModelListResponse{}, nil
+	}
+	t.Cleanup(func() { listEvenerLaunchModelContractFn = oldFn })
+	if _, err := spawner.ListLaunchModelContract(ctx); err != nil {
+		t.Fatalf("ListLaunchModelContract: %v", err)
+	}
 	if !slices.Contains(env, "EVENER_PROVIDERS_CONFIG=") {
 		t.Fatalf("child env must carry a present, empty EVENER_PROVIDERS_CONFIG: %v", env)
 	}

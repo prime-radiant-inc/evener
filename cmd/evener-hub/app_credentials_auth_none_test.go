@@ -10,6 +10,8 @@ package hub
 
 import (
 	"context"
+	"os"
+	"reflect"
 	"testing"
 
 	"primeradiant.com/evener/appwire"
@@ -172,5 +174,55 @@ func TestAuthTestCredentials_ProbesTheCredentialTheLaunchPathResolves(t *testing
 				t.Errorf("probe calls = %d, want 1: this instance has a resolvable credential, so evener/auth/test must actually test it", got)
 			}
 		})
+	}
+}
+
+// TestAuthTestCredentials_ProbesTheClientTheChildWouldGet: while providers.toml
+// does not load, the hub launches against the implicit set and hands children
+// no user layer (spec §10). The probe must build that same client, or "Test
+// credentials" answers configuration failure for every instance the pane lists
+// as configured and the gate launches happily.
+func TestAuthTestCredentials_ProbesTheClientTheChildWouldGet(t *testing.T) {
+	oaitest.IsolateOpenAIAuth(t)
+	clearProviderKeysFromEnvironment(t)
+	f := newInstancesFixture(t, map[string]string{"GROQ_API_KEY": "gk"})
+	auth := f.ctl.auth
+
+	var sawNoUserLayer []bool
+	client := &credentialProbeFakeClient{}
+	auth.credentialTestLoader = func(_ string, noUserLayer bool) (credentialProbeClient, error) {
+		sawNoUserLayer = append(sawNoUserLayer, noUserLayer)
+		return client, nil
+	}
+
+	// A file the registry reads: the probe gets the user layer.
+	if err := os.WriteFile(f.tomlPath, []byte("default = \"groq\"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := auth.reg.Reload(); err != nil {
+		t.Fatalf("Reload: %v", err)
+	}
+	if resp, err := auth.TestCredentials(t.Context(), appwire.AuthTestParams{Provider: "groq"}); err != nil {
+		t.Fatalf("TestCredentials: %v", err)
+	} else if resp.Status != appwire.AuthTestStatusSuccess {
+		t.Fatalf("status = %q (%q), want success", resp.Status, resp.Message)
+	}
+
+	// The same file broken: the hub is not reading it, so neither is the probe.
+	if err := os.WriteFile(f.tomlPath, []byte("[instances.openai]\ntype = \"openai\"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := auth.reg.Reload(); err == nil {
+		t.Fatal("the registry accepted an old-schema file")
+	}
+	if resp, err := auth.TestCredentials(t.Context(), appwire.AuthTestParams{Provider: "groq"}); err != nil {
+		t.Fatalf("TestCredentials: %v", err)
+	} else if resp.Status != appwire.AuthTestStatusSuccess {
+		t.Fatalf("status = %q (%q), want success: the hub still launches groq against the implicit set", resp.Status, resp.Message)
+	}
+
+	want := []bool{false, true}
+	if !reflect.DeepEqual(sawNoUserLayer, want) {
+		t.Fatalf("the probe's user-layer choice = %v, want %v", sawNoUserLayer, want)
 	}
 }

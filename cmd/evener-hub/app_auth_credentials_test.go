@@ -85,7 +85,7 @@ func newCredentialProbeController(t *testing.T, client credentialProbeClient, in
 	c := newHubAuthControllerWithStore(t.TempDir(), store)
 	c.stateDir = stateDir
 	c.reg = newProbeRegistry(t, stateDir, store, env, instances)
-	c.credentialTestLoader = func(string) (credentialProbeClient, error) { return client, nil }
+	c.credentialTestLoader = func(string, bool) (credentialProbeClient, error) { return client, nil }
 	return c
 }
 
@@ -224,7 +224,7 @@ func TestAuthTestCredentialsReportsLoaderFailureAsConfigurationFailure(t *testin
 	c := newCredentialProbeController(t, nil, map[string]registry.Provider{
 		"work": {Base: "anthropic", APIKey: "configured"},
 	}, nil)
-	c.credentialTestLoader = func(string) (credentialProbeClient, error) {
+	c.credentialTestLoader = func(string, bool) (credentialProbeClient, error) {
 		return nil, errors.New("providers config is unreadable")
 	}
 
@@ -362,7 +362,7 @@ func TestAuthTestCredentialsAcceptsStoredOAuthForCodexInstance(t *testing.T) {
 	c.reg = newProbeRegistry(t, stateDir, store, nil, map[string]registry.Provider{
 		"openai-work": {Base: "openai-codex"},
 	})
-	c.credentialTestLoader = func(string) (credentialProbeClient, error) {
+	c.credentialTestLoader = func(string, bool) (credentialProbeClient, error) {
 		return &credentialProbeFakeClient{}, nil
 	}
 

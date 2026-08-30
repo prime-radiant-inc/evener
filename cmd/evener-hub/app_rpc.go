@@ -183,6 +183,7 @@ func newHubAppServerWithNavigation(cfg hubcore.WebConfig, sources *appsource.Reg
 	authController := newHubAuthControllerWithStore(hubStateRoot, cfg.CredsStore)
 	authController.reg = cfg.Registry
 	authController.providersConfigPath = cfg.ProvidersConfigPath
+	authController.noUserLayer = cfg.NoUserLayer
 	var instancesController *hubInstancesController
 	if cfg.Registry != nil && cfg.ProvidersConfigPath != "" {
 		instancesController = &hubInstancesController{

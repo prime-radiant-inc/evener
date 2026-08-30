@@ -46,6 +46,9 @@ type hubAuthController struct {
 	// from, so evener/auth/test resolves the instance exactly as the spawn
 	// path will (spec §11.3). Every other answer comes from reg.
 	providersConfigPath string
+	// noUserLayer is EVENER_PROVIDERS_CONFIG's tri-state: present and empty
+	// means the probe must build a client with no user layer, as a child would.
+	noUserLayer bool
 
 	credentialTestLoader credentialProbeLoader
 	credentialTests      map[string]*credentialTestCall

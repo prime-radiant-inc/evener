@@ -1413,3 +1413,85 @@ func TestHubSpawnerListLaunchModelContract_NonexistentWorkingDir(t *testing.T) {
 		t.Fatalf("EVENER_STATE_DIR = %q, must not be derived from the non-existent working dir", capturedStateDir)
 	}
 }
+
+// TestHubSpawnerNoUserLayerFollowsTheLiveRegistry: whether a child gets the
+// user layer is a live property, not a startup constant. The auth controller
+// reloads the registry on every credential action, so a hub that started
+// refusing writes can come to accept them and vice versa; a frozen answer
+// hands the child a providers.toml the hub is not reading, or withholds one it
+// is (spec §10).
+func TestHubSpawnerNoUserLayerFollowsTheLiveRegistry(t *testing.T) {
+	f := newInstancesFixture(t, map[string]string{"GROQ_API_KEY": "gk"})
+	const good = "default = \"groq\"\n"
+	const broken = "default = \"openai\"\n[instances.openai]\ntype = \"openai\"\n"
+	if err := os.WriteFile(f.tomlPath, []byte(good), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.ctl.reg.Reload(); err != nil {
+		t.Fatalf("Reload: %v", err)
+	}
+
+	var captured []string
+	oldFn := listEvenerLaunchModelContractFn
+	listEvenerLaunchModelContractFn = func(_ context.Context, _ string, env []string) (appwire.ModelListResponse, error) {
+		captured = env
+		return appwire.ModelListResponse{}, nil
+	}
+	t.Cleanup(func() { listEvenerLaunchModelContractFn = oldFn })
+
+	h := &HubSpawner{Registry: f.ctl.reg, ProvidersConfigPath: f.tomlPath, CredentialsPath: f.credsPath}
+	childProvidersConfig := func() (string, bool) {
+		captured = nil
+		if _, err := h.ListLaunchModelContract(context.Background()); err != nil {
+			t.Fatalf("ListLaunchModelContract: %v", err)
+		}
+		return envLookup(captured, "EVENER_PROVIDERS_CONFIG")
+	}
+
+	if got, ok := childProvidersConfig(); !ok || got != f.tomlPath {
+		t.Fatalf("EVENER_PROVIDERS_CONFIG = %q (present %v), want the path the hub is reading", got, ok)
+	}
+
+	// fixed → broken: the hub degrades mid-life, so the child must too.
+	if err := os.WriteFile(f.tomlPath, []byte(broken), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.ctl.reg.Reload(); err == nil {
+		t.Fatal("the registry accepted an old-schema file")
+	}
+	if got, ok := childProvidersConfig(); !ok || got != "" {
+		t.Fatalf("EVENER_PROVIDERS_CONFIG = %q (present %v), want present and empty: the hub is not reading this file", got, ok)
+	}
+
+	// broken → fixed: the user repairs the file and a credential action
+	// reloads it, so the child gets the user layer back.
+	if err := os.WriteFile(f.tomlPath, []byte(good), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.ctl.reg.Reload(); err != nil {
+		t.Fatalf("Reload: %v", err)
+	}
+	if got, ok := childProvidersConfig(); !ok || got != f.tomlPath {
+		t.Fatalf("EVENER_PROVIDERS_CONFIG = %q (present %v), want the path back", got, ok)
+	}
+}
+
+// TestHubSpawnerNoUserLayerHonoursTheTriState: an explicitly empty
+// EVENER_PROVIDERS_CONFIG means "no user layer" whatever the registry says.
+func TestHubSpawnerNoUserLayerHonoursTheTriState(t *testing.T) {
+	var captured []string
+	oldFn := listEvenerLaunchModelContractFn
+	listEvenerLaunchModelContractFn = func(_ context.Context, _ string, env []string) (appwire.ModelListResponse, error) {
+		captured = env
+		return appwire.ModelListResponse{}, nil
+	}
+	t.Cleanup(func() { listEvenerLaunchModelContractFn = oldFn })
+
+	h := &HubSpawner{NoUserLayer: true, Registry: newSpawnGateRegistry(t, t.TempDir(), nil, nil)}
+	if _, err := h.ListLaunchModelContract(context.Background()); err != nil {
+		t.Fatalf("ListLaunchModelContract: %v", err)
+	}
+	if got, ok := envLookup(captured, "EVENER_PROVIDERS_CONFIG"); !ok || got != "" {
+		t.Fatalf("EVENER_PROVIDERS_CONFIG = %q (present %v), want present and empty", got, ok)
+	}
+}
