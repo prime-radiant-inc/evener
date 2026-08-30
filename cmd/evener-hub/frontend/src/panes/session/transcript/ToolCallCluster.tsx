@@ -44,7 +44,7 @@ function leadItem(items: ItemModel[]): ItemModel {
 // web_fetch-led run's URL is a real link here too rather than dead text the
 // reader has to unfold the run to click (kata 79cs). Text and link come from
 // ONE descriptor lookup of ONE item, because they must always describe the
-// same call. This row never passes a `intent`, so ToolRow always renders the
+// same call. This row never passes an `intent`, so ToolRow always renders the
 // summary in full - the clamped head/tail split that keeps xw3t's per-call
 // row plain text while collapsed cannot arise here.
 function clusterHeader(

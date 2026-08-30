@@ -219,7 +219,7 @@ function decisionFor(
 
   if (item.type === "commandExecution") {
     const interaction = INTERACTION_TOOL_NAMES.has(item.toolName ?? "");
-    const missingPurpose = !item.description?.trim();
+    const missingIntent = !item.description?.trim();
     const failure = hasItemFailure(item);
     const active = isActiveItem(item, turn);
 
@@ -229,14 +229,14 @@ function decisionFor(
     // levels, keep an intent-less call on the critical path so its renderer
     // receives the exact neutral summary instead of inventing one from the
     // tool name. Intent-only levels use the proxy's rationale field instead.
-    if (vector.toolCalls && missingPurpose) return "critical";
+    if (vector.toolCalls && missingIntent) return "critical";
     if (vector.toolCalls) return "item";
     if (vector.toolIntent) return "intent";
     if (failure || active || (isTerminalTurn(turn) && !vector.toolCalls)) return "critical";
     // A Custom vector may disable both calls and intent. Even there, a call
     // with no intent is not routine-readable content: keep its neutral
     // critical contract rather than inventing a summary from the tool name.
-    return missingPurpose ? "critical" : "hidden";
+    return missingIntent ? "critical" : "hidden";
   }
 
   if (item.type === "reasoning") {
