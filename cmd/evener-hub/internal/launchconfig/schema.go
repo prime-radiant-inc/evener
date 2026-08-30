@@ -157,7 +157,7 @@ func reasoningChoices() []LaunchOptionChoice {
 	// reaches the daemon as an explicit off (thinking disabled where the model
 	// allows it, the field omitted otherwise). So both are kept and are
 	// genuinely distinct here.
-	return []LaunchOptionChoice{{Value: "", Label: "(default)"}, {Value: "minimal", Label: "minimal"}, {Value: "low", Label: "low"}, {Value: "medium", Label: "medium"}, {Value: "high", Label: "high"}, {Value: "xhigh", Label: "xhigh"}, {Value: "max", Label: "max"}, {Value: "none", Label: "none (off)"}}
+	return []LaunchOptionChoice{{Value: "", Label: "(default)"}, {Value: "minimal", Label: "minimal"}, {Value: "low", Label: "low"}, {Value: "medium", Label: "medium"}, {Value: "high", Label: "high"}, {Value: "xhigh", Label: "xhigh"}, {Value: "max", Label: "max"}, {Value: "none", Label: "none (off where supported)"}}
 }
 
 func contextChoices() []LaunchOptionChoice {

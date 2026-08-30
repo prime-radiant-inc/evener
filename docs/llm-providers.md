@@ -307,7 +307,7 @@ similar). Leave them off for a bare model server that would reject the fields.
 |---|---|
 | `context_window` | overlays the catalog's context window for this model (must be ≥0) |
 | `max_output_tokens` | sent as the output cap when a request doesn't set one (`ModelCompat.DefaultMaxTokens`, `compat.go:20`) |
-| `reasoning` | `true`/`false` — the authoritative answer, in either direction, to whether the model accepts a reasoning-effort control, overriding the catalog's model facts; `false` clears the profile's effort levels entirely (`agent/provider/profile.go`, `reasoningFacts`) |
+| `reasoning` | `true`/`false` — the authoritative answer, in either direction, to whether the model accepts a reasoning-effort control, overriding the catalog's model facts; with `false`, `Profile.ReasoningEffortLevels()` reads as empty and no effort ever reaches the wire (`agent/provider/profile.go`) |
 | `thinking_levels` | map of evener effort level → wire string (see below) |
 | `compat` | per-model `CompatConfig`, overlays the instance's |
 

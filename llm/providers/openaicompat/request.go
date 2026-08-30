@@ -211,6 +211,13 @@ func promptCacheKey(req llm.Request) string {
 	return ""
 }
 
+// formatsWithOffLevel are the thinking dialects with a real off level an
+// explicit "none" can ride (openai's reasoning_effort: none on gpt-5.1+,
+// OpenRouter's unified vocabulary). Every other format's wire shapes switch
+// thinking ON, which would invert the user's intent, so applyThinkingFormat
+// emits nothing for them and the provider default applies.
+var formatsWithOffLevel = map[string]bool{"": true, "openai": true, "openrouter": true}
+
 // applyThinkingFormat emits the reasoning controls in the wire dialect the
 // provider speaks. No effort on the request means "send nothing" for every
 // format, and an explicit "none" reaches the wire only for the dialects with
@@ -226,13 +233,6 @@ func promptCacheKey(req llm.Request) string {
 // the model's declared levels and translated to the provider's wire value)
 // is emitted so a mandatory-reasoning model never gets a reasoning-less
 // request — even when the session has no --reasoning-effort configured.
-// formatsWithOffLevel are the thinking dialects with a real off level an
-// explicit "none" can ride (openai's reasoning_effort: none on gpt-5.1+,
-// OpenRouter's unified vocabulary). Every other format's wire shapes switch
-// thinking ON, which would invert the user's intent, so applyThinkingFormat
-// emits nothing for them and the provider default applies.
-var formatsWithOffLevel = map[string]bool{"": true, "openai": true, "openrouter": true}
-
 func applyThinkingFormat(body map[string]any, req llm.Request, mc ModelCompat) {
 	if mc.ReasoningOff {
 		return
@@ -252,7 +252,10 @@ func applyThinkingFormat(body map[string]any, req llm.Request, mc ModelCompat) {
 		// translates it to the provider's wire value.
 		wire = mc.wireEffort("medium")
 	}
-	if wire == llm.ReasoningEffortNone && !formatsWithOffLevel[quirks.ThinkingFormat] {
+	if req.ReasoningEffort != nil && *req.ReasoningEffort == llm.ReasoningEffortNone && !formatsWithOffLevel[quirks.ThinkingFormat] {
+		// The guard keys on the configured effort, not the post-translation
+		// wire string: a thinking_levels entry may legitimately spell a real
+		// thinking-on tier as the provider's literal "none".
 		return
 	}
 	switch quirks.ThinkingFormat {

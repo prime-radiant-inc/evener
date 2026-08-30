@@ -3,9 +3,14 @@
 // "" is "(default)" (the session default applies), "none" is an explicit off
 // the user chose and always reads "none (off)".
 
-export function effortLabel(level: string): string {
+export function effortLabel(level: string, levels: string[]): string {
   if (level === "") return "(default)";
-  if (level === "none") return "none (off)";
+  if (level === "none") {
+    // Only a model whose ladder lists a none level can actually turn
+    // thinking off; elsewhere an explicit none omits the field and the
+    // provider's own default applies.
+    return levels.includes("none") ? "none (off)" : "none (provider default)";
+  }
   return level;
 }
 

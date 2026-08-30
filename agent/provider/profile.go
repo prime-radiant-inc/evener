@@ -807,7 +807,8 @@ func restampInstanceIdentity(p *Profile, behaviorTag, id string) *Profile {
 // or handled by the dedicated anthropic branch of WithModel.
 func rebuildOnSameProviderChange(behaviorTag string) bool {
 	switch behaviorTag {
-	case "kimi", "glm", "openrouter", "ollama", "openrouter-anthropic", "openai-compatible", "openai":
+	case "kimi", "glm", "openrouter", "ollama", "openrouter-anthropic", "openai-compatible", "openai",
+		"google", "minimax", "kimi-anthropic":
 		return true
 	}
 	return false
@@ -879,6 +880,12 @@ func (p *Profile) WithModel(model string) *Profile {
 			rebuilt = newOpenRouterAnthropicProfile(model)
 		case "openai":
 			rebuilt = NewOpenAIProfile(model)
+		case "google":
+			rebuilt = newGeminiProfile(model)
+		case "minimax":
+			rebuilt = newMiniMaxProfile(model)
+		case "kimi-anthropic":
+			rebuilt = newKimiAnthropicProfile(model)
 		default:
 			rebuilt = newOpenAICompatProfile(p.behaviorTag, model, 0, p.instModels)
 		}
@@ -890,19 +897,6 @@ func (p *Profile) WithModel(model string) *Profile {
 	}
 	clone := *p
 	clone.model = model
-	// The shallow clone keeps provider-derived state, but reasoning is a
-	// model fact: re-derive it for the new model unless providers.toml
-	// answered for it, keeping a configured ladder and otherwise falling
-	// back to the incumbent one when the catalog has none.
-	if entry, ok := p.instModels[model]; !ok || entry.Reasoning == nil {
-		var configuredLevels []string
-		if ok && len(entry.ThinkingLevels) > 0 {
-			configuredLevels = clone.effortLevels
-		}
-		var levels []string
-		clone.reasoning, clone.defaultEffort, levels = reasoningFacts(catalogModelFor(model), nil, configuredLevels, clone.effortLevels)
-		clone.setEffortLevels(levels)
-	}
 	return &clone
 }
 

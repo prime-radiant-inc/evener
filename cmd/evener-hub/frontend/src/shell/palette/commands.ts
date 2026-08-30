@@ -472,7 +472,7 @@ export function buildCommands(): Command[] {
           if (!levels.length) return [];
           return effortOptionLevels(levels, model?.reasoningEffort ?? "").map((l) => ({
             id: l,
-            label: effortLabel(l),
+            label: effortLabel(l, levels),
           }));
         },
         run: (ctx, item) => {

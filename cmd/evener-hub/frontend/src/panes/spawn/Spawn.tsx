@@ -582,7 +582,7 @@ export default function Spawn(_props: PaneProps<SpawnPaneParams>) {
     { value: "", label: resolvedEffortDefault !== "" ? `${resolvedEffortDefault} (default)` : "(default)" },
     ...effortLevels.filter((level) => level !== "none").map((level) => ({ value: level, label: level })),
     ...(preservedEffort === null ? [] : [{ value: preservedEffort, label: preservedEffort }]),
-    { value: "none", label: effortLabel("none") },
+    { value: "none", label: effortLabel("none", effortLevels) },
   ];
   // Access mode is the chip-level face of the launch-config sandbox field
   // (floor §1.8), so its empty option follows the same rule as Effort's:

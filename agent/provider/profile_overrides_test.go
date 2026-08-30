@@ -277,8 +277,9 @@ func TestRebuildOnSameProviderChange(t *testing.T) {
 		// go stale.
 		{"openai", true},
 		{"anthropic", false},
-		{"minimax", false},
-		{"google", false},
+		{"minimax", true},
+		{"google", true},
+		{"kimi-anthropic", true},
 	}
 	for _, tt := range tests {
 		t.Run(tt.tag, func(t *testing.T) {

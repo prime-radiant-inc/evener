@@ -12,7 +12,10 @@ func TestParseLiteLLMCatalog_ReasoningAuthoritative(t *testing.T) {
 	cat, err := parseLiteLLMCatalog([]byte(`{
         "bare-reasoner":            {"litellm_provider": "openai", "supports_reasoning": true},
         "bare-silent":              {"litellm_provider": "openai"},
+        "bare-effort-flags":        {"litellm_provider": "openai", "supports_xhigh_reasoning_effort": true},
         "openrouter/vendor/silent": {"litellm_provider": "openrouter"},
+        "openrouter/vendor/flags":  {"litellm_provider": "openrouter", "supports_xhigh_reasoning_effort": true},
+        "openrouter/vendor/denied": {"litellm_provider": "openrouter", "supports_reasoning": false, "supports_xhigh_reasoning_effort": true},
         "openrouter/vendor/nope":   {"litellm_provider": "openrouter", "supports_reasoning": false}
     }`))
 	if err != nil {
@@ -25,7 +28,13 @@ func TestParseLiteLLMCatalog_ReasoningAuthoritative(t *testing.T) {
 	}{
 		{"bare-reasoner", true, true},
 		{"bare-silent", true, false},
+		// Effort flags imply a reasoning model when supports_reasoning is
+		// absent (gpt-5-search-api's shape) — on bare and mirror keys alike —
+		// and an explicit false wins over them (perplexity mirrors).
+		{"bare-effort-flags", true, true},
 		{"openrouter/vendor/silent", false, false},
+		{"openrouter/vendor/flags", true, true},
+		{"openrouter/vendor/denied", true, false},
 		{"openrouter/vendor/nope", true, false},
 	}
 	for _, tc := range cases {
