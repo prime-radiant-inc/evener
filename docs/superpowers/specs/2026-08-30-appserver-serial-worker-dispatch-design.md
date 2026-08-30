@@ -46,9 +46,13 @@ not handlers waiting on each other.
   every queued frame — requests and notifications alike — with no ordering audit of
   the 105 hub and daemon handler registrations. The contract is a partial order,
   stated precisely in "The ordering contract" below — not total FIFO, because the
-  three concurrent slow reads participate on both sides — and the single
-  deliberate exception is ping, whose scheduling this design changes on purpose
-  (it bypasses the queue; see the table's ping cells).
+  three concurrent slow reads participate on both sides — with exactly two
+  deliberate scheduling changes, both named where they are made: ping bypasses
+  the queue (the table's ping cells), and a connection that saturates the
+  slow-read cap head-of-line blocks until a read finishes (the cap paragraph in
+  the slow-read composition section). Nothing ever runs *earlier* than the
+  table allows; those two changes are the complete list of what may run
+  *later* than under PR #667.
 - One panic barrier in one place (`handleAndEnqueue`), covering every execution path
   identically, exactly as PR #667 left it.
 - Every transport property PR #667's tests pin — response/id pairing, hydration
@@ -148,13 +152,15 @@ enqueuing into a full queue. Under saturation — a client more than
 `requestQueueCap` requests deep — the ping frame itself waits for a queue slot,
 per the flow-control analysis in "Queue semantics". The slow-read cells carry the
 matching qualification: with `slowReadDispatchCap` reads already in flight, the
-next slow read's dispatch blocks the worker until a slot frees — backpressure,
-analyzed in the slow-read composition section, not a change to what may run
-before what.
+next slow read's dispatch blocks the worker — and the requests queued behind it —
+until a slot frees. That head-of-line wait is this design's second deliberate
+scheduling change, specified in the slow-read composition section.
 
 The one cell this design changes relative to PR #667 is ping: today ping is answered
 inline in the receive loop, so it waits behind an executing serial handler; here it
-bypasses the queue (see the split below). Every other cell is preserved unchanged.
+bypasses the queue (see the split below). Every other cell is preserved unchanged —
+the cap's head-of-line wait changes no cell (nothing runs earlier than the table
+allows); it is the scheduling qualification recorded above.
 
 Wire compatibility of the ping change: AppWire clients correlate responses by
 request id (`appwire/client.go`'s pending-request map), and `ping` carries no state —
@@ -274,13 +280,34 @@ The cap is the same blocking-backpressure principle as the request queue, and
 explicitly *not* a return of the deleted 128-slot limiter: a full cap blocks the
 worker from dispatching the next slow read — no wire error, no `Unavailable`
 overflow response, nothing a client observes except latency it caused. The
-ordering consequence is stated honestly, as a qualification in the same class as
-the queue's ping qualification: below the cap, the partial-order table holds
-exactly as written; at the cap, the worker parks in the acquire, so the blocked
-slow read — and every request queued behind it — waits for one of the four
-in-flight reads to finish. That is backpressure applied to a connection running
-four transcript walks simultaneously, not a change to any ordering guarantee: no
-request ever runs earlier than the table allows, only later.
+ordering consequence is this design's **second deliberate scheduling change**
+(ping bypass is the first), and it is stated as contract, not buried as a
+qualification: below the cap, the partial-order table holds exactly as written;
+at the cap, the worker parks in the acquire, so the blocked slow read — and
+every request queued behind it, `turn/interrupt` included — waits for one of the
+four in-flight reads to finish. Under PR #667 those later requests would have
+overtaken the parked reads; under the cap they wait. No request ever runs
+*earlier* than the table allows, and the wait is bounded by the in-flight reads'
+own completion (they hold the connection context and unwind on teardown). A
+client that keeps four transcript walks in flight and then pipelines
+priority-sensitive work behind a fifth has priced that wait in; a client that
+wants interrupt to land promptly during heavy reads sends it before the fifth
+read, exactly as it must already order it against mutations. If unchanged
+overtaking were mandatory here, capped admission would need a redesign
+(deferring only the blocked read, not the worker) — rejected as machinery for a
+traffic pattern no legitimate client has.
+
+Two mechanics keep the cap honest. First, the acquire is a third lifecycle
+state — *dequeued, awaiting dispatch capacity* — and it gets the same
+cancellation discipline as the dequeue itself: the acquire selects on
+`ctx.Done()`, and because `select` chooses randomly when a slot release and
+cancellation are simultaneously ready, the worker re-checks `ctx.Err()` after
+acquiring and before spawning, releasing the slot and returning on cancel — so
+no slow read starts after cancellation is observable at the acquire, and
+teardown is never held. Second, cap saturation is observable exactly like queue
+saturation: the first blocked acquire per connection reports through
+`Server.logf`, so head-of-line latency that never fills the request queue still
+has its explanatory log line.
 
 ### Queue semantics: bound, backpressure, memory
 
@@ -401,7 +428,7 @@ AppWire has no per-request cancel frame, so "cancellation" on this transport mea
 exactly one thing: the connection context ending — client disconnect, keepalive
 failure, response-enqueue failure (`enqueueDispatched` → `cancelContext`), or server
 shutdown tearing down the HTTP request context. The design keeps that shape and
-threads it through both queue states:
+threads it through all three request states:
 
 - **Queued but not started.** The worker returns without executing anything further.
   The guarantee is stated exactly, because Go's `select` is not a priority
@@ -416,6 +443,13 @@ threads it through both queue states:
   behind the observation point never execute. Abandonment is clean by construction:
   a request that never started has no side effects, no peer remains to answer, and
   `enqueueResponse` on the closed send channel would refuse the response anyway.
+- **Dequeued, awaiting dispatch capacity.** A slow read parked in the
+  `slowReadDispatchCap` acquire is past the dequeue but not yet executing. The
+  acquire selects on `ctx.Done()`, and the worker re-checks `ctx.Err()` after
+  acquiring and before spawning (releasing the slot on cancel), so this state
+  has the same guarantee as the dequeue: no slow read begins executing after the
+  worker observes cancellation at the acquire (see the cap mechanics in the
+  slow-read composition section).
 - **Executing.** The handler already holds the connection context (the worker passes
   the same `ctx` the inline path passes today), so handlers that respect their
   context — `DevicePoll`'s HTTP calls, `resolveGitHead`'s `exec.CommandContext` —
@@ -546,12 +580,16 @@ Worker lifecycle is owned by `ServeWebSocket`, symmetric with the send loop:
   message just the same; both sides only ever discard. After the purge, an orphaned
   handler retains exactly one frame — the one it is executing — not sixty-four (a
   frame the receive loop held while blocked enqueuing is released when that loop
-  returns). When the purge discards a non-empty queue it reports the count and the
-  abandoned method names — never params, which can carry user content — through
-  `Server.logf`. This is an aggregate teardown advisory, not request-level
-  attribution: repeated methods are indistinguishable, and a frame discarded by
-  the worker's post-dequeue check or released with a dying receive loop bypasses
-  it. Request-level "did my mutation run?" diagnosis belongs to the retry
+  returns). When the purge discards a non-empty queue it reports through
+  `Server.logf` — one bounded line: the count, plus a per-method tally in which
+  only methods present in the appwire catalog appear by name and anything else
+  is aggregated as `unknown` (the method field is client-controlled and the
+  read limit admits very large strings; raw uncataloged values could carry
+  arbitrary size or control characters into the log). Never params, which can
+  carry user content. This is an aggregate teardown advisory, not request-level
+  attribution: repeated methods are tallied, not distinguished, and a frame
+  discarded by the worker's post-dequeue check or released with a dying receive
+  loop bypasses it. Request-level "did my mutation run?" diagnosis belongs to the retry
   contract above (`ClientMutationID` dedup answers it authoritatively on
   reconnect), not to this log line.
 - **Teardown does not join the worker.** `unregisterConnection` proceeds while a
@@ -651,7 +689,12 @@ without modification:
    context before it could execute anything. The side-effect counters are the
    abandonment contract; a "no responses arrived" assertion is deliberately absent
    because a closed client cannot tell "never ran" from "ran and the enqueue was
-   refused". Hydration-finalizer cleanup is likewise *not* asserted here — a queued
+   refused". The purge advisory is asserted here too, adversarially: queue frames
+   whose method fields are oversized garbage and whose params carry sentinel
+   strings, capture `Logf`, and assert one bounded line, catalog methods tallied
+   by name, everything else aggregated as `unknown`, and no sentinel (no param
+   content) and no raw uncataloged method string in the output.
+   Hydration-finalizer cleanup is likewise *not* asserted here — a queued
    request that never started cannot have opened a capture, so the assertion would
    be vacuous; the executing-capture abort path is already pinned by the carried
    accounting and unregister tests.
@@ -679,15 +722,22 @@ without modification:
    with a serial handler parked, keepalive ping decisions report the reader
    available. Fails against PR #667; pins the incidental improvement so it cannot
    silently regress.
-10. **Slow-read cap blocks, drains, and tears down** — park `slowReadDispatchCap`
-    slow reads on one connection; assert the next slow read does not start (a
-    dispatch-count seam or per-read started signal), and that no wire error or
-    eviction occurred — the connection is healthy, just full. Release one parked
-    read; assert the blocked read starts (the cap drains on completion, not on
-    response delivery races). Then refill the cap and close the client while the
-    worker is parked in the acquire; assert the worker exits promptly (the
-    acquire selects on `ctx.Done()`) and teardown completes without waiting for
-    the parked reads.
+10. **Slow-read cap blocks, drains, orders, and tears down** — four cases on one
+    connection. (a) Park `slowReadDispatchCap` slow reads; assert the next slow
+    read does not start (a dispatch-count seam or per-read started signal) and
+    no wire error or eviction occurred — the connection is healthy, just full;
+    the one-shot cap advisory reached `Logf`. (b) The second scheduling change,
+    pinned: with the cap full and a fifth slow read queued, a serial request
+    queued behind it does not execute until a slot frees — then release one
+    parked read and assert the fifth read starts, the serial request completes,
+    and ordering matched the contract (drain on completion, not on response
+    delivery races). (c) Close the client while the worker is parked in the
+    acquire; assert the worker exits promptly (the acquire selects on
+    `ctx.Done()`) and teardown completes without waiting for the parked reads.
+    (d) The acquire race, deterministically: an after-acquire/before-spawn hook
+    in the style of the after-dequeue seam — park the worker there, cancel the
+    connection, release the hook; assert the slow read never starts and the
+    slot was released.
 
 ## Rejected alternative: full-async dispatch for all handlers
 
@@ -760,21 +810,27 @@ the semantics the final design requires):
    minimum correct form, and so do the tests that pin them: a slice that could
    execute queued work after cancellation or strand sixty-four frames must not
    exist even briefly, and a slice whose lifecycle floor is untested has not
-   landed its behavior with its tests. Carried tests green unmodified, plus
-   tests 1–3, 5, 6, 8, and 9 with the seams they need (worker-exit,
+   landed its behavior with its tests. The bounded queue's saturation behavior
+   exists from the moment the queue does, so its advisory and coverage belong
+   here too, not deferred: the queue-saturation one-shot advisory, the
+   injectable capacity and blocked-enqueue seams, and tests 1–9 — carried tests
+   green unmodified throughout — with the seams they need (worker-exit,
    after-dequeue, purge-complete).
-2. **Saturation and the slow-read cap** — the blocked-enqueue path's one-shot
-   advisory, the injectable capacity and blocked-enqueue seams, and the
-   `slowReadDispatchCap` semaphore, plus tests 4, 7, and 10.
+2. **The slow-read cap** — the `slowReadDispatchCap` semaphore with its acquire
+   cancellation discipline, its one-shot saturation advisory, and the
+   after-acquire seam, plus test 10.
 
 Estimated size for the worker mechanism: roughly 140–180 lines of production delta
 (most of it comments; the mechanisms are one channel, one goroutine, and one
 semaphore) and 500–620 lines of new tests per the plan above; handler remediation, if slice 0 names any, is additional and estimated
 per finding. No wire-format or API change and no client change; handler changes
-are exactly the slice-0 remediation set (expected small, possibly empty); the one
-wire-observable behavior change is scheduling — a ping response may now overtake
-earlier responses, which the ordering-contract section shows is meaningless to
-id-correlating clients.
+are exactly the slice-0 remediation set (expected small, possibly empty); the
+wire-observable behavior changes are the two scheduling changes named in the
+goals — a ping response may now overtake earlier responses (meaningless to
+id-correlating clients, per the ordering-contract section), and a connection
+saturating the slow-read cap head-of-line blocks later requests,
+`turn/interrupt` included, that would have overtaken the parked reads under PR
+#667 (specified with its rationale in the slow-read composition section).
 
 ## Decided questions (Jesse, 2026-08-30)
 
