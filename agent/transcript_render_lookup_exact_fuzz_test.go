@@ -84,7 +84,7 @@ func rleRenderEdges(t *testing.T, payload string) {
 	t.Helper()
 	rleAssertRenderScenarios(t, payload)
 	for _, tc := range []struct{ name, args, want string }{
-		{"shell", `{"command":"ls","purpose":"inspect"}`, "ls"},
+		{"shell", `{"command":"ls","intent":"inspect"}`, "ls"},
 		{"read_file", `{"file_path":"/tmp/a","offset":1,"limit":2}`, "/tmp/a (offset 1, limit 2)"},
 		{"write_file", `{"file_path":"/tmp/a","content":"x"}`, "/tmp/a (1 bytes)"},
 		{"edit_file", `{"file_path":"/tmp/a","old_string":"x","new_string":"y","replace_all":true}`, "/tmp/a (replace 1→1 chars, all)"},
@@ -312,17 +312,16 @@ func rleRenderContracts(t *testing.T) {
 	}
 
 	for _, tc := range []struct {
-		raw         json.RawMessage
-		wantPurpose string
-		wantParsed  bool
+		raw        json.RawMessage
+		wantIntent string
+		wantParsed bool
 	}{
 		{nil, "", false}, {json.RawMessage("{"), "", false},
-		{json.RawMessage(`{"purpose":false}`), "false", true},
+		{json.RawMessage(`{"intent":false}`), "false", true},
 		{json.RawMessage(`{"intent":"why"}`), "why", true},
-		{json.RawMessage(`{"description":"what"}`), "what", true},
 	} {
-		if got := toolPurpose(tc.raw); got != tc.wantPurpose {
-			t.Fatalf("toolPurpose(%q) = %q, want %q", tc.raw, got, tc.wantPurpose)
+		if got := toolIntent(tc.raw); got != tc.wantIntent {
+			t.Fatalf("toolIntent(%q) = %q, want %q", tc.raw, got, tc.wantIntent)
 		}
 		if parsed := parseArgs(tc.raw); (parsed != nil) != tc.wantParsed {
 			t.Fatalf("parseArgs(%q) parsed=%v, wantParsed=%v", tc.raw, parsed, tc.wantParsed)

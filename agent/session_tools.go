@@ -449,10 +449,10 @@ func (s *Session) describeImageCall(ctx context.Context, r tool.ExecResult) visi
 		return visionSideChannelResult{outcome: visionSideChannelSuccess}
 	}
 
-	// Use the caller's stated purpose as the vision prompt. The calling LLM
+	// Use the caller's stated intent as the vision prompt. The calling LLM
 	// knows what it needs — we just ask the vision model to answer that question
 	// under one unconditional observation contract.
-	prompt := visionPrompt(r.ImagePurpose)
+	prompt := visionPrompt(r.ImageIntent)
 
 	mt := r.ImageMediaType
 	if mt == "" {
@@ -913,15 +913,11 @@ func (r toolCallRerunner) run(ctx context.Context) tool.ExecResult {
 }
 
 // toolStartDescription resolves the tool-call-start Description from a tool call's
-// decoded arguments: an explicit "purpose" wins, falling back to "description"
-// (backward compatibility for older shell calls and transcripts), else empty. Pure
-// over the args map, so the promotion order is fuzzable in isolation.
+// decoded arguments: the "intent" field, else empty. Pure over the args map,
+// so the promotion order is fuzzable in isolation.
 func toolStartDescription(args map[string]any) string {
-	if purpose, ok := args["purpose"].(string); ok && purpose != "" {
-		return purpose
-	}
-	if desc, ok := args["description"].(string); ok && desc != "" {
-		return desc
+	if v, ok := args["intent"].(string); ok && v != "" {
+		return v
 	}
 	return ""
 }
@@ -1308,8 +1304,8 @@ func (s *Session) delegateAgentTypeNames() []string {
 
 // wireToolDef renders a canonical tool definition in its provider-visible wire
 // form: it renames the tool to the provider-specific name (nameMap is
-// canonical→provider) and adds the shared "purpose" parameter to work tools.
-// communicate/result tools omit purpose because their user-facing message and
+// canonical→provider) and adds the shared "intent" parameter to work tools.
+// communicate/result tools omit intent because their user-facing message and
 // strict output envelope already carry the result intent.
 func wireToolDef(td llm.ToolDefinition, nameMap map[string]string, resultToolName string) llm.ToolDefinition {
 	canonicalName := td.Name
@@ -1317,9 +1313,9 @@ func wireToolDef(td llm.ToolDefinition, nameMap map[string]string, resultToolNam
 		td.Name = mapped
 	}
 	if isResultToolDefinition(canonicalName, td.Name, resultToolName) {
-		return tool.WithoutPurposeParameter(td)
+		return tool.WithoutIntentParameter(td)
 	}
-	return tool.WithPurposeParameter(td)
+	return tool.WithIntentParameter(td)
 }
 
 func isResultToolDefinition(canonicalName, wireName, resultToolName string) bool {
@@ -1402,9 +1398,9 @@ func (s *Session) rebuildToolDefsCache() {
 	}
 	for i := range defs {
 		if isResultToolDefinition(defs[i].Name, defs[i].Name, s.resultToolName()) {
-			defs[i] = tool.WithoutPurposeParameter(defs[i])
+			defs[i] = tool.WithoutIntentParameter(defs[i])
 		} else {
-			defs[i] = tool.WithPurposeParameter(defs[i])
+			defs[i] = tool.WithIntentParameter(defs[i])
 		}
 	}
 

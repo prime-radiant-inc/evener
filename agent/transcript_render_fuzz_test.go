@@ -402,7 +402,7 @@ func FuzzToolInputSummary(f *testing.F) {
 		name string
 		args string
 	}{
-		{"shell", `{"command":"ls -la /tmp","purpose":"look"}`},
+		{"shell", `{"command":"ls -la /tmp","intent":"look"}`},
 		{"read_file", `{"file_path":"/a/b.go","offset":10,"limit":50}`},
 		{"write_file", `{"file_path":"/a/b.go","content":"package main"}`},
 		{"edit_file", `{"file_path":"/a","old_string":"x","new_string":"yy","replace_all":true}`},
@@ -716,7 +716,7 @@ func trender_program(program []byte, payload string) (transcript.Header, []trans
 				llm.ContentPart{Kind: llm.ContentThinking, Thinking: &llm.ThinkingData{Text: "think " + payload}},
 				llm.ContentPart{Kind: llm.ContentRedThinking},
 				part(llm.ContentText, "assistant "+payload),
-				call("call-shell", "shell", `{"command":"printf hi","purpose":"inspect"}`),
+				call("call-shell", "shell", `{"command":"printf hi","intent":"inspect"}`),
 				call("call-result", "communicate", `{"message":"done"}`),
 				llm.ContentPart{Kind: llm.ContentToolCall},
 			),

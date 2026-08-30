@@ -151,18 +151,16 @@ func EchoesAssistantText(shown, message string) bool {
 	return shown != "" && shown == strings.TrimSpace(message)
 }
 
-// ToolIntentFromArguments extracts a compact tool-call description from common
-// intent fields.
+// ToolIntentFromArguments extracts a compact tool-call description from the
+// "intent" field.
 func ToolIntentFromArguments(raw json.RawMessage) string {
 	var args map[string]any
 	if len(raw) == 0 || json.Unmarshal(raw, &args) != nil {
 		return ""
 	}
-	for _, key := range []string{"intent", "purpose", "description"} {
-		if value, ok := args[key].(string); ok {
-			if trimmed := strings.TrimSpace(value); trimmed != "" {
-				return trimmed
-			}
+	if value, ok := args["intent"].(string); ok {
+		if trimmed := strings.TrimSpace(value); trimmed != "" {
+			return trimmed
 		}
 	}
 	return ""

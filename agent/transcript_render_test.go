@@ -999,29 +999,29 @@ func TestRenderMarkdown_ResultToolResultNotOrphaned(t *testing.T) {
 	}
 }
 
-// TestRenderMarkdown_PurposeField verifies purpose: appears only when an explicit
-// purpose/intent/description argument is present.
-func TestRenderMarkdown_PurposeField(t *testing.T) {
+// TestRenderMarkdown_IntentField verifies intent: appears only when an explicit
+// intent/purpose/description argument is present.
+func TestRenderMarkdown_IntentField(t *testing.T) {
 	t.Parallel()
-	t.Run("purpose present when explicit purpose arg given", func(t *testing.T) {
+	t.Run("intent present when explicit intent arg given", func(t *testing.T) {
 		entries := []transcript.Entry{
-			toolCallEntry(call("c1", "shell", `{"command":"ls","purpose":"list the directory"}`)),
+			toolCallEntry(call("c1", "shell", `{"command":"ls","intent":"list the directory"}`)),
 			toolResultEntry(result("c1", "shell", "file.go", false)),
 		}
 		out := renderMarkdown(transcript.Header{}, entries, 0, renderOpts{})
-		if !strings.Contains(out, "purpose: list the directory") {
-			t.Errorf("expected purpose segment from explicit purpose arg, got:\n%s", out)
+		if !strings.Contains(out, "intent: list the directory") {
+			t.Errorf("expected intent segment from explicit intent arg, got:\n%s", out)
 		}
 	})
 
-	t.Run("no purpose segment when absent", func(t *testing.T) {
+	t.Run("no intent segment when absent", func(t *testing.T) {
 		entries := []transcript.Entry{
 			toolCallEntry(call("c1", "shell", `{"command":"ls"}`)),
 			toolResultEntry(result("c1", "shell", "file.go", false)),
 		}
 		out := renderMarkdown(transcript.Header{}, entries, 0, renderOpts{})
-		if strings.Contains(out, "purpose:") {
-			t.Errorf("purpose segment must be omitted when no purpose/intent/description arg, got:\n%s", out)
+		if strings.Contains(out, "intent:") {
+			t.Errorf("intent segment must be omitted when no intent/purpose/description arg, got:\n%s", out)
 		}
 	})
 
@@ -1031,8 +1031,8 @@ func TestRenderMarkdown_PurposeField(t *testing.T) {
 			toolResultEntry(result("c1", "grep", "match", false)),
 		}
 		out := renderMarkdown(transcript.Header{}, entries, 0, renderOpts{})
-		if !strings.Contains(out, "purpose: find the symbol") {
-			t.Errorf("expected purpose from intent arg, got:\n%s", out)
+		if !strings.Contains(out, "intent: find the symbol") {
+			t.Errorf("expected intent from intent arg, got:\n%s", out)
 		}
 	})
 }

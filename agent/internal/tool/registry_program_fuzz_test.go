@@ -45,7 +45,7 @@ func FuzzToolRegistryProgram(f *testing.F) {
 			return
 		}
 		payload := toolProgramPayload(raw)
-		reg, calls, readFileSawPurpose := toolProgramRegistry(t)
+		reg, calls, readFileSawIntent := toolProgramRegistry(t)
 		deny := &agenttest.DenyEnv{WorkDir: t.TempDir(), Seed: seed}
 
 		beforeCalls := *calls
@@ -105,8 +105,8 @@ func FuzzToolRegistryProgram(f *testing.F) {
 			t.Fatalf("executor calls = %d, want %d", *calls, beforeCalls+6)
 		}
 
-		if got := toolProgramCall(t, reg, deny, "read_file", payload, 0, false, "read-file"); got.IsError || !*readFileSawPurpose {
-			t.Fatalf("read_file purpose preservation = result=%+v saw=%v", got, *readFileSawPurpose)
+		if got := toolProgramCall(t, reg, deny, "read_file", payload, 0, false, "read-file"); got.IsError || !*readFileSawIntent {
+			t.Fatalf("read_file intent preservation = result=%+v saw=%v", got, *readFileSawIntent)
 		}
 
 		toolProgramPatchBoundary(t, reg, deny, payload)
@@ -121,7 +121,7 @@ func toolProgramRegistry(t *testing.T) (*Registry, *int, *bool) {
 	t.Helper()
 	reg := NewRegistry()
 	calls := new(int)
-	readFileSawPurpose := new(bool)
+	readFileSawIntent := new(bool)
 
 	if err := reg.Register(RegisteredTool{
 		Definition: llm.ToolDefinition{
@@ -140,8 +140,8 @@ func toolProgramRegistry(t *testing.T) (*Registry, *int, *bool) {
 		},
 		Exec: func(_ context.Context, _ execenv.ExecutionEnvironment, args map[string]any) (any, error) {
 			*calls++
-			if _, found := args["purpose"]; found {
-				return nil, errors.New("purpose leaked to non-read_file executor")
+			if _, found := args["intent"]; found {
+				return nil, errors.New("intent leaked to non-read_file executor")
 			}
 			value, _ := args["value"].(string)
 			mode, _ := args["mode"].(float64)
@@ -151,7 +151,7 @@ func toolProgramRegistry(t *testing.T) (*Registry, *int, *bool) {
 			case 2:
 				return TextResult{Output: "text:" + value, FullOutput: "full:" + value}, nil
 			case 3:
-				return ImageResult{Text: "image:" + value, Data: encodeRasterFixture(t, "png"), MediaType: "image/png", Purpose: "program"}, nil
+				return ImageResult{Text: "image:" + value, Data: encodeRasterFixture(t, "png"), MediaType: "image/png", Intent: "program"}, nil
 			case 4:
 				return "partial:" + value, errors.New("program executor error")
 			case 5:
@@ -167,7 +167,7 @@ func toolProgramRegistry(t *testing.T) (*Registry, *int, *bool) {
 	if err := reg.Register(RegisteredTool{
 		Definition: llm.ToolDefinition{
 			Name:        "read_file",
-			Description: "program read_file purpose witness",
+			Description: "program read_file intent witness",
 			Parameters: map[string]any{
 				"type":       "object",
 				"properties": map[string]any{"value": map[string]any{"type": "string"}, "mode": map[string]any{"type": "integer"}, "block": map[string]any{"type": "boolean"}},
@@ -175,7 +175,7 @@ func toolProgramRegistry(t *testing.T) (*Registry, *int, *bool) {
 			},
 		},
 		Exec: func(_ context.Context, _ execenv.ExecutionEnvironment, args map[string]any) (any, error) {
-			_, *readFileSawPurpose = args["purpose"]
+			_, *readFileSawIntent = args["intent"]
 			return "read:" + fmt.Sprint(args["value"]), nil
 		},
 	}); err != nil {
@@ -215,12 +215,12 @@ func toolProgramRegistry(t *testing.T) (*Registry, *int, *bool) {
 		}
 		return nil
 	})
-	return reg, calls, readFileSawPurpose
+	return reg, calls, readFileSawIntent
 }
 
 func toolProgramCall(t *testing.T, reg *Registry, env execenv.ExecutionEnvironment, name, value string, mode int, block bool, callID string) ExecResult {
 	t.Helper()
-	raw, err := json.Marshal(map[string]any{"value": value, "mode": mode, "block": block, "purpose": "fuzz registry program"})
+	raw, err := json.Marshal(map[string]any{"value": value, "mode": mode, "block": block, "intent": "fuzz registry program"})
 	if err != nil {
 		t.Fatalf("marshal %s args: %v", name, err)
 	}
@@ -230,7 +230,7 @@ func toolProgramCall(t *testing.T, reg *Registry, env execenv.ExecutionEnvironme
 func toolProgramPatchBoundary(t *testing.T, reg *Registry, deny *agenttest.DenyEnv, payload string) {
 	t.Helper()
 	patch := "*** Begin Patch\n*** Add File: program.txt\n+" + payload + "\n*** End Patch\n"
-	raw, err := json.Marshal(map[string]string{"patch": patch, "purpose": "exercise FileMutator"})
+	raw, err := json.Marshal(map[string]string{"patch": patch, "intent": "exercise FileMutator"})
 	if err != nil {
 		t.Fatalf("marshal patch args: %v", err)
 	}
@@ -329,21 +329,21 @@ func toolProgramHelpers(t *testing.T, payload string) {
 // schemas here: each case has one stable, independently checkable contract.
 func toolProgramRegistryEdges(t *testing.T) {
 	t.Helper()
-	if got := WithPurposeParameter(llm.ToolDefinition{}); got.Parameters["type"] != "object" {
+	if got := WithIntentParameter(llm.ToolDefinition{}); got.Parameters["type"] != "object" {
 		t.Fatalf("nil schema purpose injection = %#v", got.Parameters)
 	}
 	nonObject := llm.ToolDefinition{Parameters: map[string]any{"type": "string"}}
-	if got := WithPurposeParameter(nonObject); got.Parameters["type"] != "string" {
+	if got := WithIntentParameter(nonObject); got.Parameters["type"] != "string" {
 		t.Fatalf("non-object schema changed: %#v", got.Parameters)
 	}
 	withRequired := llm.ToolDefinition{Parameters: map[string]any{
 		"type":       "object",
-		"properties": map[string]any{"purpose": map[string]any{"type": "string"}},
-		"required":   []any{"purpose", 9, "value"},
+		"properties": map[string]any{"intent": map[string]any{"type": "string"}},
+		"required":   []any{"intent", 9, "value"},
 	}}
-	without := WithoutPurposeParameter(withRequired)
+	without := WithoutIntentParameter(withRequired)
 	if got := without.Parameters["required"].([]any); len(got) != 2 || got[0] != 9 || got[1] != "value" {
-		t.Fatalf("purpose removal retained wrong required list: %#v", got)
+		t.Fatalf("intent removal retained wrong required list: %#v", got)
 	}
 
 	cloneSource := map[string]any{

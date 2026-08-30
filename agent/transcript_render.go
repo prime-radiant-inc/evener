@@ -954,8 +954,8 @@ func writeToolCard(b *strings.Builder, callOwnerSeq int, tc *llm.ToolCallData, i
 // header line for a tool card. The purpose segment is omitted when absent.
 func writeToolCardLine(b *strings.Builder, status, name string, args json.RawMessage) {
 	fmt.Fprintf(b, "- [%s] `%s`", status, name)
-	if purpose := toolPurpose(args); purpose != "" {
-		fmt.Fprintf(b, " — purpose: %s", purpose)
+	if intent := toolIntent(args); intent != "" {
+		fmt.Fprintf(b, " — intent: %s", intent)
 	}
 	fmt.Fprintf(b, " — input: %s\n", toolInputSummary(name, args))
 }
@@ -1428,19 +1428,17 @@ func indentLines(lines []string) string {
 	return b.String()
 }
 
-// toolPurpose returns the value of an explicit purpose/intent/description
-// argument, or "" if none is present. Purpose is never inferred from commands
-// or paths. Spec §Tool Call Condensation.
-func toolPurpose(args json.RawMessage) string {
+// toolIntent returns the value of an explicit "intent" argument, or "" if
+// none is present. Intent is never inferred from commands or paths.
+// Spec §Tool Call Condensation.
+func toolIntent(args json.RawMessage) string {
 	m := parseArgs(args)
 	if m == nil {
 		return ""
 	}
-	for _, key := range []string{"purpose", "intent", "description"} {
-		if v, ok := m[key]; ok {
-			if s := scalarString(v); s != "" {
-				return s
-			}
+	if v, ok := m["intent"]; ok {
+		if s := scalarString(v); s != "" {
+			return s
 		}
 	}
 	return ""

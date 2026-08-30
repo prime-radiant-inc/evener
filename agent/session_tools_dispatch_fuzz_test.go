@@ -160,10 +160,10 @@ func FuzzStoolDispatch(f *testing.F) {
 			t.Fatalf("execTool under canceled context did not report an error: %#v", skipped)
 		}
 
-		// A call whose args carry a bare "description" (no "purpose") exercises the
-		// event-description fallback branch.
-		descArgs, _ := json.Marshal(map[string]any{"path": r.str(), "description": r.str()})
-		stool_execOne(ctx, t, sess, "list_dir", descArgs)
+		// A call whose args carry a bare "intent" exercises the event-description
+		// promotion branch (toolStartDescription reads only "intent").
+		intentArgs, _ := json.Marshal(map[string]any{"path": r.str(), "intent": r.str()})
+		stool_execOne(ctx, t, sess, "list_dir", intentArgs)
 
 		// Build a fuzzed batch of 1..4 calls with a mix of known, unknown, and
 		// garbage names, then dispatch it through the real batch executor. Some
@@ -341,9 +341,9 @@ func stool_structuredArgs(r *jobtools_reader, name string) map[string]any {
 	default:
 		m["k"] = r.str()
 	}
-	// Occasionally attach a stray purpose (the wire param) to exercise its strip.
+	// Occasionally attach a stray intent (the wire param) to exercise its strip.
 	if r.booln() {
-		m["purpose"] = r.str()
+		m["intent"] = r.str()
 	}
 	return m
 }

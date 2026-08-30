@@ -91,7 +91,7 @@ func TestJobControlTargetsKeepSameOwnerJobSuffixesDistinct(t *testing.T) {
 
 func TestShellRenderer(t *testing.T) {
 	r, _ := lookupToolRenderer("shell")
-	args := toolArgsFromJSON(`{"command":"ls -la","purpose":"List home dir"}`)
+	args := toolArgsFromJSON(`{"command":"ls -la","intent":"List home dir"}`)
 	if r.Verb(args) != "shell" {
 		t.Errorf("shell verb = %q", r.Verb(args))
 	}

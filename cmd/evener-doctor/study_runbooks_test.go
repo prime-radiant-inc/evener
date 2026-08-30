@@ -213,7 +213,7 @@ func TestRun_AuditErrorLoopBundledRunbook_HealthyEmitsZero(t *testing.T) {
 // inBandMCPErrorLoopTurns reproduces the real-world session shape the
 // 2026-08-06 final review found the identical-run check blind to: a tool
 // call (like use_browser) whose arguments carry a free-text field the model
-// varies every call (here "purpose"), fragmenting longest_identical_run's
+// varies every call (here "intent"), fragmenting longest_identical_run's
 // signature well below the check's threshold even though the underlying
 // action repeats; and a failure reported in-band inside a successful result
 // (is_error=false, "Error: ..." text) rather than via the transport error
@@ -229,7 +229,7 @@ func inBandMCPErrorLoopTurns() []schema.Turn {
 	}
 	for i, purpose := range purposes {
 		id := fmt.Sprintf("mcp%d", i)
-		args := fmt.Sprintf(`{"action":"screenshot","purpose":%q}`, purpose)
+		args := fmt.Sprintf(`{"action":"screenshot","intent":%q}`, purpose)
 		turns = append(turns,
 			schema.NewTurn(schema.TurnAssistant, llm.Message{Role: llm.RoleAssistant, Content: []llm.ContentPart{
 				studyToolCall(id, "use_browser", args),

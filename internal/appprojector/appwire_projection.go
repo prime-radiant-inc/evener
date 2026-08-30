@@ -684,9 +684,9 @@ func (p *AppEventProjector) Project(event events.SessionEvent) []AppNotification
 			OutputImages:  projectOutputImages(data.OutputImages),
 			Status:        apptranscript.SettledToolStatus(data.Error != ""),
 			Raw:           raw,
-			// Carry the call's purpose onto the completed item too (#26):
+			// Carry the call's intent onto the completed item too (#26):
 			// the started item already has it, and live consumers (the web
-			// subagent activity line) render the purpose from Description.
+			// subagent activity line) render the intent from Description.
 			Description: apptranscript.ToolIntentFromArguments(json.RawMessage(argsJSON)),
 			// ExitCode promotes the shell tool's exit code, already riding
 			// data.ToolState end to end (agent/session_tools_shell.go:483

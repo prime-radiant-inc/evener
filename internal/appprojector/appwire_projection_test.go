@@ -2597,10 +2597,10 @@ func notificationTurnID(t *testing.T, items []AppNotification, method string) st
 }
 
 // Issue #26: live tool frames feed the web UI's inline subagent activity line,
-// which renders the tool call's purpose. The started item carries the purpose
+// which renders the tool call's intent. The started item carries the intent
 // in Description; the completed item must carry it too (derived from the
 // call's arguments, mirroring apptranscript.ToolIntentFromArguments) so the
-// activity line stays on the purpose when the tool finishes.
+// activity line stays on the intent when the tool finishes.
 func TestAppEventProjectorToolCallEndCarriesPurposeDescription(t *testing.T) {
 	projector := NewAppEventProjector("th_1", "local:th_1")
 	projector.Project(events.SessionEvent{Kind: events.EventUserInput, SessionID: "th_1", Data: events.UserInputData{Text: "hello"}})
@@ -2608,7 +2608,7 @@ func TestAppEventProjectorToolCallEndCarriesPurposeDescription(t *testing.T) {
 	projector.Project(events.SessionEvent{Kind: events.EventToolCallStart, SessionID: "th_1", Data: events.ToolCallStartData{
 		ToolName:      "shell",
 		CallID:        "call_1",
-		ArgumentsJSON: `{"command":"go test ./...","purpose":"run the full test suite"}`,
+		ArgumentsJSON: `{"command":"go test ./...","intent":"run the full test suite"}`,
 		Description:   "run the full test suite",
 	}})
 	out := projector.Project(events.SessionEvent{Kind: events.EventToolCallEnd, SessionID: "th_1", Data: events.ToolCallEndData{
@@ -2618,7 +2618,7 @@ func TestAppEventProjectorToolCallEndCarriesPurposeDescription(t *testing.T) {
 	}})
 	item := notificationThreadItem(t, out, appwire.NotifyItemCompleted)
 	if item.Description != "run the full test suite" {
-		t.Fatalf("completed tool item should carry the purpose-derived Description, got %q", item.Description)
+		t.Fatalf("completed tool item should carry the intent-derived Description, got %q", item.Description)
 	}
 
 	// The intent field is honored too, matching ToolIntentFromArguments.

@@ -368,8 +368,8 @@ func buildProfileToolRegistry(defs []llm.ToolDefinition) *tool.Registry {
 	reg := tool.NewRegistry()
 	for _, td := range defs {
 		_ = reg.Register(tool.RegisteredTool{
-			Definition:  td,
-			OmitPurpose: td.Name == "communicate",
+			Definition: td,
+			OmitIntent: td.Name == "communicate",
 			Exec: func(ctx context.Context, env execenv.ExecutionEnvironment, args map[string]any) (any, error) {
 				return nil, errors.New("tool executor not wired")
 			},

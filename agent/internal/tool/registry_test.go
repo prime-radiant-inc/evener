@@ -17,21 +17,21 @@ import (
 	"primeradiant.com/evener/llm"
 )
 
-func TestWithPurposeParameter_DescriptionGuidesGerundForm(t *testing.T) {
-	td := WithPurposeParameter(llm.ToolDefinition{Name: "demo"})
+func TestWithIntentParameter_DescriptionGuidesGerundForm(t *testing.T) {
+	td := WithIntentParameter(llm.ToolDefinition{Name: "demo"})
 	props, _ := td.Parameters["properties"].(map[string]any)
 	if props == nil {
-		t.Fatalf("purpose injection produced no properties: %#v", td.Parameters)
+		t.Fatalf("intent injection produced no properties: %#v", td.Parameters)
 	}
-	purpose, _ := props["purpose"].(map[string]any)
-	if purpose == nil {
-		t.Fatalf("purpose property missing: %#v", props)
+	intent, _ := props["intent"].(map[string]any)
+	if intent == nil {
+		t.Fatalf("intent property missing: %#v", props)
 	}
-	desc, _ := purpose["description"].(string)
+	desc, _ := intent["description"].(string)
 	if desc == "" {
-		t.Fatalf("purpose property has no description: %#v", purpose)
+		t.Fatalf("intent property has no description: %#v", intent)
 	}
-	// The purpose string renders as an inline activity label in the UI, so the
+	// The intent string renders as an inline activity label in the UI, so the
 	// description must steer the model toward a verb-first gerund phrase with
 	// a concrete example rather than imperative or verbose prose.
 	if !strings.Contains(desc, "gerund") {
@@ -156,23 +156,23 @@ func TestToolRegistry_AddsAndStripsUniversalPurpose(t *testing.T) {
 	}
 	defs := r.Definitions()
 	props, _ := defs[0].Parameters["properties"].(map[string]any)
-	if _, ok := props["purpose"]; !ok {
-		t.Fatal("registered schema missing universal purpose")
+	if _, ok := props["intent"]; !ok {
+		t.Fatal("registered schema missing universal intent")
 	}
 	res := r.ExecuteCall(context.Background(), execenv.NewLocalExecutionEnvironment(t.TempDir()), llm.ToolCallData{
 		ID:        "c1",
 		Name:      "echo",
-		Arguments: json.RawMessage(`{"value":"x","purpose":"checking behavior"}`),
+		Arguments: json.RawMessage(`{"value":"x","intent":"checking behavior"}`),
 	})
 	if res.IsError {
 		t.Fatalf("unexpected error: %q", res.Output)
 	}
-	if _, ok := gotArgs["purpose"]; ok {
-		t.Fatalf("purpose should be stripped before non-read_file execution: %#v", gotArgs)
+	if _, ok := gotArgs["intent"]; ok {
+		t.Fatalf("intent should be stripped before non-read_file execution: %#v", gotArgs)
 	}
 }
 
-func TestToolRegistry_OmitPurposeLeavesSchemaStrict(t *testing.T) {
+func TestToolRegistry_OmitIntentLeavesSchemaStrict(t *testing.T) {
 	r := NewRegistry()
 	if err := r.Register(RegisteredTool{
 		Definition: llm.ToolDefinition{
@@ -187,7 +187,7 @@ func TestToolRegistry_OmitPurposeLeavesSchemaStrict(t *testing.T) {
 				"required": []string{"message"},
 			},
 		},
-		OmitPurpose: true,
+		OmitIntent: true,
 		Exec: func(ctx context.Context, env execenv.ExecutionEnvironment, args map[string]any) (any, error) {
 			_ = ctx
 			_ = env
@@ -199,19 +199,19 @@ func TestToolRegistry_OmitPurposeLeavesSchemaStrict(t *testing.T) {
 	}
 	defs := r.Definitions()
 	props, _ := defs[0].Parameters["properties"].(map[string]any)
-	if _, ok := props["purpose"]; ok {
-		t.Fatalf("schema should omit purpose: %#v", props["purpose"])
+	if _, ok := props["intent"]; ok {
+		t.Fatalf("schema should omit intent: %#v", props["intent"])
 	}
 	res := r.ExecuteCall(context.Background(), execenv.NewLocalExecutionEnvironment(t.TempDir()), llm.ToolCallData{
 		ID:        "c1",
 		Name:      "result",
-		Arguments: json.RawMessage(`{"message":"done","purpose":"final_result"}`),
+		Arguments: json.RawMessage(`{"message":"done","intent":"final_result"}`),
 	})
 	if !res.IsError {
-		t.Fatalf("purpose should be rejected by strict schema, got: %q", res.Output)
+		t.Fatalf("intent should be rejected by strict schema, got: %q", res.Output)
 	}
-	if !strings.Contains(res.Output, "additionalProperties") || !strings.Contains(res.Output, "purpose") {
-		t.Fatalf("expected purpose schema error, got: %s", res.Output)
+	if !strings.Contains(res.Output, "additionalProperties") || !strings.Contains(res.Output, "intent") {
+		t.Fatalf("expected intent schema error, got: %s", res.Output)
 	}
 }
 

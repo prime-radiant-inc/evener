@@ -15,7 +15,7 @@ func FuzzSummarizeTool(f *testing.F) {
 		tool string
 		args string
 	}{
-		{"shell", `{"command":"ls -la","purpose":"list"}`},
+		{"shell", `{"command":"ls -la","intent":"list"}`},
 		{"read_file", `{"file_path":"/a/b/c.go","offset":10,"limit":20}`},
 		{"write_file", `{"file_path":"/a/b.go","content":"x\ny\nz"}`},
 		{"edit_file", `{"file_path":"/a.go","old_string":"foo","new_string":"bar"}`},
