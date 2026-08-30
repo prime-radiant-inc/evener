@@ -178,9 +178,21 @@ func ReadConfigFile(path string) (*Layer, bool, error) {
 // caller decides what a user authored (spec §10 "WriteFile keeps today's
 // scrub-and-restore" is satisfied by never putting a resolved credential
 // into the Layer in the first place).
+//
+// The marshalled bytes are re-parsed through the reader's own path before
+// anything reaches disk, so a providers.toml this writes is always one the
+// registry can read back. Every rule the parser enforces — the protocol and
+// surface vocabularies, the $VAR syntax in credential headers and api_key,
+// unknown keys — refuses the write instead of landing a file whose reload
+// fails and whose author is then locked out of the corrective edit (spec
+// §10, §11.3). The parser never echoes a value it rejects, so its error is
+// safe to hand back to whoever proposed the entry.
 func WriteConfigFile(path string, l *Layer) error {
 	data, err := MarshalConfig(l)
 	if err != nil {
+		return err
+	}
+	if _, err := ParseConfig(data); err != nil {
 		return err
 	}
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {

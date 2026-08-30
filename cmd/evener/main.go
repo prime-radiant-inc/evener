@@ -325,6 +325,7 @@ func printRunCommands(w io.Writer) {
 	_, _ = fmt.Fprintf(tw, "  doctor\tRead-only forensic inspector for sessions/jobs/watches\n")
 	_, _ = fmt.Fprintf(tw, "  migrate\tMigrate user data to the final evener layout\n")
 	_, _ = fmt.Fprintf(tw, "  models\tInspect the provider registry (list, inspect, refresh)\n")
+	_, _ = fmt.Fprintf(tw, "  providers\tInspect and author provider instances (list, probe, add)\n")
 	_ = tw.Flush()
 }
 
@@ -408,7 +409,8 @@ func dispatchCLICommand(args []string, stdin io.Reader, stdout, stderr io.Writer
 			}
 			return nil
 		},
-		models: runModels,
+		models:    runModels,
+		providers: runProviders,
 	})
 }
 
@@ -423,6 +425,7 @@ type cliCommandRunners struct {
 	doctor      func([]string, io.Reader, io.Writer, io.Writer) error
 	migrate     func([]string, io.Reader, io.Writer, io.Writer) error
 	models      func([]string, io.Reader, io.Writer, io.Writer) error
+	providers   func([]string, io.Reader, io.Writer, io.Writer) error
 }
 
 func dispatchCLICommandWith(args []string, stdin io.Reader, stdout, stderr io.Writer, runners cliCommandRunners) (bool, string, error) {
@@ -451,6 +454,8 @@ func dispatchCLICommandWith(args []string, stdin io.Reader, stdout, stderr io.Wr
 		return true, "evener migrate", runners.migrate(args[1:], stdin, stdout, stderr)
 	case "models":
 		return true, "evener models", runners.models(args[1:], stdin, stdout, stderr)
+	case "providers":
+		return true, "evener providers", runners.providers(args[1:], stdin, stdout, stderr)
 	default:
 		return false, "", nil
 	}

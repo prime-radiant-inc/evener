@@ -114,6 +114,33 @@ func TestReadWriteConfigFile(t *testing.T) {
 	}
 }
 
+// WriteConfigFile holds the invariant every writer needs: a providers.toml
+// it accepts is one the reader can read back. A layer the parser would refuse
+// never lands on disk, so the write cannot lock its own author out of the
+// corrective edit (spec §10, §11.3).
+func TestWriteConfigFileRefusesALayerTheReaderWouldRefuse(t *testing.T) {
+	for _, tt := range []struct {
+		name string
+		p    Provider
+		want string
+	}{
+		{"protocol outside the vocabulary", Provider{ID: "work", Base: "openai", Protocol: "chat-completions"}, "unknown protocol"},
+		{"surface outside the vocabulary", Provider{ID: "work", Base: "openai", Surface: "compat"}, "unknown surface"},
+		{"unterminated variable reference", Provider{ID: "work", Base: "openai", CredentialHeaders: map[string]string{"Authorization": "Bearer ${TOKEN"}}, "credential_headers"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "providers.toml")
+			err := WriteConfigFile(path, &Layer{Tag: LayerConfig, Providers: map[string]Provider{"work": tt.p}})
+			if err == nil || !strings.Contains(err.Error(), tt.want) {
+				t.Fatalf("WriteConfigFile = %v, want an error mentioning %q", err, tt.want)
+			}
+			if _, statErr := os.Stat(path); !errors.Is(statErr, os.ErrNotExist) {
+				t.Fatalf("a refused write reached disk (stat err = %v)", statErr)
+			}
+		})
+	}
+}
+
 func TestValidInstanceName(t *testing.T) {
 	for name, want := range map[string]bool{"work": true, "kimi-for-coding": true, "a.b_c": true, "Work": false, "a/b": false, "": false, "-x": false} {
 		if got := ValidInstanceName(name); got != want {

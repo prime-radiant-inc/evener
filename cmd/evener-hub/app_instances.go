@@ -146,24 +146,22 @@ func sanitizeEndpointURL(raw string) string {
 }
 
 // writeLoadable is the invariant every mutation holds: a providers.toml the
-// hub writes must be one the registry can read back. The candidate layer is
-// marshalled and re-parsed through the reader's own path, so every rule the
-// parser enforces — the protocol and surface vocabularies, the $VAR syntax in
-// credential headers and api_key, unknown keys — refuses the write instead of
-// landing on disk. Without it the write succeeds, the reload that follows
-// fails, refuseWhenBroken flips, and the corrective edit is refused too: the
-// pane locked out of its own recovery.
+// hub writes must be one the registry can read back. registry.WriteConfigFile
+// re-parses what it marshals, so every rule the parser enforces — the
+// protocol and surface vocabularies, the $VAR syntax in credential headers
+// and api_key, unknown keys — refuses the write instead of landing on disk.
+// Without that the write succeeds, the reload that follows fails,
+// refuseWhenBroken flips, and the corrective edit is refused too: the pane
+// locked out of its own recovery.
 //
-// The parser never echoes a value it rejects, so its error is safe to return.
+// A refusal is about the fields the caller sent, so it comes back as invalid
+// params; the parser never echoes a value it rejects, so its error is safe to
+// return.
 func (c *hubInstancesController) writeLoadable(l *registry.Layer) error {
-	data, err := registry.MarshalConfig(l)
-	if err != nil {
+	if err := c.write(l); err != nil {
 		return appwire.InvalidParams(err.Error())
 	}
-	if _, err := registry.ParseConfig(data); err != nil {
-		return appwire.InvalidParams(err.Error())
-	}
-	return c.write(l)
+	return nil
 }
 
 // refuseWhenBroken stops every write while there is no registry to write
