@@ -79,7 +79,8 @@ func FuzzMainBootstrapPass6(f *testing.F) {
 				return nil, nil, stop
 			}
 		case 3:
-			// The user-layer load fails but the implicit-only fallback works.
+			// Only the user-layer load fails; the implicit-only fallback
+			// works, and the hub starts on it (spec §10).
 			deps.loadRegistry = func(extra ...registry.Option) (*registry.Registry, *credentials.Store, error) {
 				if len(extra) == 0 {
 					return nil, nil, stop
@@ -105,16 +106,19 @@ func FuzzMainBootstrapPass6(f *testing.F) {
 
 		var stderr bytes.Buffer
 		err := runMain([]string{"-addr", cfg.Addr, "-config", filepath.Join(root, "hub.toml"), "-evener", "/bin/evener"}, &stderr, deps)
-		if mode == 2 {
+		// Modes 2 and 3 are the two degrade paths: the whole registry load
+		// fails, or only its user layer does. Neither stops the hub — it
+		// starts on implicit instances and says so.
+		if mode == 2 || mode == 3 {
 			if err != nil {
-				t.Fatalf("mode 2: an unparseable providers.toml must not stop the hub: %v", err)
+				t.Fatalf("mode %d: a providers.toml the registry cannot read must not stop the hub: %v", mode, err)
 			}
 			if !strings.Contains(stderr.String(), "providers config:") {
-				t.Fatalf("mode 2: the hub must announce the degraded config: %s", stderr.String())
+				t.Fatalf("mode %d: the hub must announce the degraded config: %s", mode, stderr.String())
 			}
 			return
 		}
-		if mode <= 3 || mode == 9 {
+		if mode <= 1 || mode == 9 {
 			if !errors.Is(err, stop) {
 				t.Fatalf("mode %d: error = %v, output=%s", mode, err, stderr.String())
 			}
