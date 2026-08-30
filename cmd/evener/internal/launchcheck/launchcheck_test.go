@@ -58,7 +58,8 @@ api_key  = "test-key"
 	}
 	t.Setenv("EVENER_PROVIDERS_CONFIG", cfgPath)
 	t.Setenv("EVENER_CREDENTIALS_CONFIG", filepath.Join(dir, "credentials.toml"))
-	t.Setenv("EVENER_STATE_DIR", t.TempDir())
+	// IsolateOpenAIAuth already pointed XDG_STATE_HOME at a temp dir, which is
+	// where LoadRegistry reads its catalog cache and OAuth records from.
 }
 
 func TestLaunchCheckReportsProtocolAndValidatedModel(t *testing.T) {

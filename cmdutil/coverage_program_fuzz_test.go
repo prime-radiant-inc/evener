@@ -122,6 +122,7 @@ func FuzzCmdutilCoverage(f *testing.F) {
 		}
 		t.Setenv(envvars.EVENERProvidersConfig.Name, credentialConfig)
 		t.Setenv(envvars.EVENERCredentialsConfig.Name, filepath.Join(credentialDir, "credentials.toml"))
+		t.Setenv(envvars.XDGStateHome.Name, t.TempDir())
 		// A corrupt credentials.toml is a load failure, not a silent skip.
 		if _, err := LoadClient(""); err == nil {
 			t.Fatal("a corrupt credentials.toml must fail the load")

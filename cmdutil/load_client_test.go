@@ -68,7 +68,10 @@ func writeGatewayConfig(t *testing.T, baseURL string) string {
 	}
 	t.Setenv("EVENER_PROVIDERS_CONFIG", path)
 	t.Setenv("EVENER_CREDENTIALS_CONFIG", filepath.Join(dir, "credentials.toml"))
-	t.Setenv("EVENER_STATE_DIR", t.TempDir())
+	// LoadRegistry reads its state root (catalog cache, OAuth records) from
+	// DefaultStateRoot; point that at a temp dir so no test reads the
+	// developer's cached catalog.
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
 	return path
 }
 
@@ -176,7 +179,7 @@ func TestLoadClientAt_ReadsTheExplicitPath(t *testing.T) {
 	}
 	t.Setenv("EVENER_PROVIDERS_CONFIG", other)
 	t.Setenv("EVENER_CREDENTIALS_CONFIG", filepath.Join(dir, "credentials.toml"))
-	t.Setenv("EVENER_STATE_DIR", t.TempDir())
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
 
 	client, err := LoadClientAt(wanted, "")
 	if err != nil {
@@ -197,7 +200,7 @@ func TestLoadClient_OldSchemaFileIsReported(t *testing.T) {
 	}
 	t.Setenv("EVENER_PROVIDERS_CONFIG", path)
 	t.Setenv("EVENER_CREDENTIALS_CONFIG", filepath.Join(dir, "credentials.toml"))
-	t.Setenv("EVENER_STATE_DIR", t.TempDir())
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
 
 	if _, err := LoadClient(""); !errors.Is(err, registry.ErrOldSchema) {
 		t.Fatalf("LoadClient on an old-schema file = %v, want registry.ErrOldSchema", err)
