@@ -44,6 +44,25 @@ type ServerConfig struct {
 // would let the wrong contract resize this one.
 const requestQueueCap = 64
 
+// slowReadDispatchCap bounds how many concurrent slow reads one connection
+// holds in flight. 16 is the operating point the slice-0 audit's client sweep
+// chose (Jesse, 2026-08-30): routine flows exceed the earlier draft's 4 — the
+// web delegate rail mounts every visible delegate card with a full
+// thread/read watch, reconnect resync reads every tracked and watched ref at
+// once, and the TUI subscribes N+1 children on session entry — and 16 covers
+// those bursts while still closing the formerly unbounded goroutine/params
+// retention. A full cap blocks the worker's next slow-read dispatch — no wire
+// error, no Unavailable — so later requests head-of-line wait for a read to
+// finish; that wait is the design's second deliberate scheduling change.
+const slowReadDispatchCap = 16
+
+// slowReadCapStallAdvisory is how long a single blocked slow-read acquire
+// parks before the worker reports the wedged lane — the same scale as
+// webSocketWriteTimeout. The ping bypass keeps a connection looking healthy
+// while its serial lane is dead behind a saturated cap, so the wedge needs an
+// operational signature even though the client sees a live heartbeat.
+const slowReadCapStallAdvisory = 30 * time.Second
+
 type Server struct {
 	cfg                    ServerConfig
 	router                 *Router
@@ -62,6 +81,15 @@ type Server struct {
 	// before the post-dequeue cancellation re-check, so a test can pin the
 	// re-check deterministically. Production leaves it nil.
 	afterWorkerDequeue func(appwire.Message)
+	// afterSlowReadAcquire runs on the worker goroutine after a slow-read
+	// cap slot is acquired and before the post-acquire cancellation
+	// re-check, so a test can pin that re-check deterministically.
+	// Production leaves it nil.
+	afterSlowReadAcquire func()
+	// slowReadStallThreshold overrides slowReadCapStallAdvisory for tests
+	// that drive the stall advisory without waiting 30 seconds. Zero means
+	// the production threshold.
+	slowReadStallThreshold time.Duration
 	// wrapWebSocketTransport lets a test interpose on the transport
 	// ServeWebSocket builds — e.g. a blocking Send — before the loops start.
 	// Production leaves it nil.
@@ -129,11 +157,12 @@ func (s *Server) NewConnection(id string) *Connection {
 		capacity = requestQueueCap
 	}
 	return &Connection{
-		id:           id,
-		server:       s,
-		send:         make(chan appwire.Message, appwire.NotificationBufferCap),
-		requests:     make(chan appwire.Message, capacity),
-		workerExited: make(chan struct{}),
+		id:            id,
+		server:        s,
+		send:          make(chan appwire.Message, appwire.NotificationBufferCap),
+		requests:      make(chan appwire.Message, capacity),
+		slowReadSlots: make(chan struct{}, slowReadDispatchCap),
+		workerExited:  make(chan struct{}),
 	}
 }
 
@@ -348,6 +377,18 @@ type Connection struct {
 	// queueSaturationAdvised makes the queue-saturation advisory one-shot per
 	// connection. Only the receive-loop goroutine touches it.
 	queueSaturationAdvised bool
+	// slowReadSlots is the buffered-channel semaphore capping in-flight slow
+	// reads per connection (slowReadDispatchCap). The worker acquires a slot
+	// before spawning a slow read; the slow-read goroutine releases it when
+	// handleAndEnqueue returns.
+	slowReadSlots chan struct{}
+	// capSaturationAdvised makes the cap-saturation advisory one-shot per
+	// connection. Only the worker goroutine touches it.
+	capSaturationAdvised bool
+	// slowReadMu guards slowReadInflight, the per-method tally of in-flight
+	// slow reads the stall advisory names.
+	slowReadMu       sync.Mutex
+	slowReadInflight map[string]int
 	// workerExited closes when the serial worker returns; tests assert
 	// worker teardown against it instead of sleeping.
 	workerExited chan struct{}
@@ -1055,10 +1096,116 @@ func (c *Connection) purgeRequestQueue() {
 // dequeue and the receive loop's next Recv fails into normal close handling.
 func (c *Connection) executeOrdered(ctx context.Context, msg appwire.Message) {
 	if msg.Request != nil && concurrentDispatchMethod(msg.Request.Method) && c.isInitialized() {
-		go c.handleAndEnqueue(ctx, msg)
+		method := msg.Request.Method
+		if !c.acquireSlowReadSlot(ctx, method) {
+			// Canceled while dequeued-awaiting-dispatch-capacity; the worker
+			// loop observes the same cancellation at its next select and
+			// exits without executing anything further.
+			return
+		}
+		go func() {
+			defer c.releaseSlowReadSlot(method)
+			c.handleAndEnqueue(ctx, msg)
+		}()
 		return
 	}
 	c.handleAndEnqueue(ctx, msg)
+}
+
+// acquireSlowReadSlot takes one slowReadDispatchCap slot on behalf of the
+// worker before it spawns a slow read — the request's third lifecycle state,
+// dequeued awaiting dispatch capacity. A full cap parks the worker here, so
+// the blocked slow read and every request queued behind it wait for one of
+// the in-flight reads to finish: the design's second deliberate scheduling
+// change (ping bypass is the first), blocking backpressure like the request
+// queue and explicitly not the dead 128-slot limiter's wire error. The
+// acquire gets the same cancellation discipline as the dequeue: it selects on
+// ctx.Done so teardown is never held, and because select chooses randomly
+// when a slot release and cancellation are simultaneously ready, it re-checks
+// ctx.Err after acquiring — releasing the slot and reporting false on cancel,
+// so no slow read starts after cancellation is observable here.
+//
+// Saturation is observable like queue saturation: the first blocked acquire
+// per connection reports through Server.logf. And because the ping bypass
+// keeps the connection's heartbeat answering while the serial lane is dead
+// behind a saturated cap — a wedge PR #667 would have surfaced as a stalled
+// heartbeat — a single acquire parked past the stall threshold reports again,
+// naming the wait duration and the in-flight methods, so a wedged lane has an
+// operational signature even though the connection looks healthy.
+func (c *Connection) acquireSlowReadSlot(ctx context.Context, method string) bool {
+	acquired := false
+	select {
+	case c.slowReadSlots <- struct{}{}:
+		acquired = true
+	default:
+	}
+	if !acquired {
+		if !c.capSaturationAdvised {
+			c.capSaturationAdvised = true
+			c.server.logf("appserver: connection %s slow-read dispatch cap is full (%d in flight); holding the next slow read until one finishes", c.id, cap(c.slowReadSlots))
+		}
+		threshold := c.server.slowReadStallThreshold
+		if threshold == 0 {
+			threshold = slowReadCapStallAdvisory
+		}
+		start := time.Now()
+		stall := time.NewTimer(threshold)
+		defer stall.Stop()
+		for !acquired {
+			select {
+			case c.slowReadSlots <- struct{}{}:
+				acquired = true
+			case <-stall.C:
+				c.server.logf("appserver: connection %s slow-read acquire for %s has been parked %s behind in-flight reads (%s)", c.id, method, time.Since(start).Round(time.Second), c.inflightSlowReads())
+			case <-ctx.Done():
+				return false
+			}
+		}
+	}
+	if c.server.afterSlowReadAcquire != nil {
+		c.server.afterSlowReadAcquire()
+	}
+	if ctx.Err() != nil {
+		<-c.slowReadSlots
+		return false
+	}
+	c.slowReadMu.Lock()
+	if c.slowReadInflight == nil {
+		c.slowReadInflight = map[string]int{}
+	}
+	c.slowReadInflight[method]++
+	c.slowReadMu.Unlock()
+	return true
+}
+
+// releaseSlowReadSlot frees the cap slot when a slow read's handleAndEnqueue
+// returns — completion, not response delivery, is what drains the cap.
+func (c *Connection) releaseSlowReadSlot(method string) {
+	c.slowReadMu.Lock()
+	c.slowReadInflight[method]--
+	if c.slowReadInflight[method] <= 0 {
+		delete(c.slowReadInflight, method)
+	}
+	c.slowReadMu.Unlock()
+	<-c.slowReadSlots
+}
+
+// inflightSlowReads renders the per-method tally the stall advisory names.
+// Every key is a concurrentDispatchMethod member, so the strings are ours,
+// not client-controlled.
+func (c *Connection) inflightSlowReads() string {
+	c.slowReadMu.Lock()
+	defer c.slowReadMu.Unlock()
+	names := make([]string, 0, len(c.slowReadInflight))
+	for name := range c.slowReadInflight {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	parts := make([]string, 0, len(names))
+	for _, name := range names {
+		parts = append(parts, fmt.Sprintf("%s=%d", name, c.slowReadInflight[name]))
+	}
+	return strings.Join(parts, " ")
 }
 
 // handleAndEnqueue runs one request through HandleMessage and enqueues its
