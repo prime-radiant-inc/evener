@@ -113,25 +113,31 @@ describe("credentialLayers", () => {
     ]);
   });
 
-  test("an environment variable left set behind a now-effective store entry shows as shadowed", () => {
+  // The one shadow the wire can express: hasStoredFile is read from the
+  // credential store independently of the resolution (app_auth.go's
+  // instanceStatus), so a stored key can sit behind a source that outranks
+  // it - here providers.toml, which spec §10 puts first.
+  test("a stored key behind a higher-ranked source shows as shadowed", () => {
     const inst = instance({
       name: "a",
       providerId: "anthropic",
-      activeSource: "store",
+      activeSource: "api_key",
       hasStoredFile: true,
-      envVar: "ANTHROPIC_API_KEY",
     });
     expect(credentialLayers(inst)).toEqual([
-      { source: "store", label: "Configured via stored API key", effective: true },
-      {
-        source: "env:ANTHROPIC_API_KEY",
-        label: "Configured via environment variable (ANTHROPIC_API_KEY)",
-        effective: false,
-      },
+      { source: "api_key", label: "Configured via providers.toml", effective: true },
+      { source: "store", label: "Configured via stored API key", effective: false },
     ]);
   });
 
-  test("an env-effective instance with no store entry shows only the one env layer", () => {
+  test("a stored key that IS what resolves is the one effective layer, never doubled", () => {
+    const inst = instance({ name: "a", providerId: "anthropic", activeSource: "store", hasStoredFile: true });
+    expect(credentialLayers(inst)).toEqual([
+      { source: "store", label: "Configured via stored API key", effective: true },
+    ]);
+  });
+
+  test("an env-effective instance with no stored key shows only the one env layer", () => {
     const inst = instance({
       name: "a",
       providerId: "anthropic",

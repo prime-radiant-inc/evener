@@ -6,6 +6,8 @@
 // no rendering, no store access, easily unit-tested in isolation.
 import type { AuthTestResponse, InstanceEntry } from "../../../../protocol/types.gen";
 
+const STORED_KEY_LABEL = "Configured via stored API key";
+
 export interface CredentialLayerView {
   source: string;
   label: string;
@@ -30,7 +32,7 @@ export function activeSourceLabel(instance: InstanceEntry): string {
     case "credential_headers":
       return "Configured via a credential header";
     case "store":
-      return "Configured via stored API key";
+      return STORED_KEY_LABEL;
     case "oauth":
       return instance.storedEmail ? `Configured via OAuth (${instance.storedEmail})` : "Configured via OAuth";
     case "adc":
@@ -44,24 +46,24 @@ export function activeSourceLabel(instance: InstanceEntry): string {
 }
 
 // credentialLayers lists the credential line(s) the detail sheet shows: the
-// effective source first, plus - the one case that can still shadow another
-// under the registry's resolution order (spec §10: api_key >
-// credential_headers > store > env, and oauth-openai-codex/gcp-adc never
-// layer against any of those on the same instance) - an environment
-// variable left set behind a stored key that now wins. Empty when nothing
-// has ever resolved (activeSource "none"); see activeSourceLabel for that
-// case's own message.
+// effective source first, then any credential this instance holds that the
+// resolution passed over. Spec §10 ranks four of them - api_key >
+// credential_headers > store > env - but the wire only lets the pane see one
+// of those losers: hasStoredFile is read straight from the credential store
+// (instanceStatus, cmd/evener-hub/app_auth.go), independently of what won,
+// while envVar is DERIVED from an "env:" activeSource and so is only ever
+// set on the winner. A set-but-losing environment variable is therefore
+// invisible here until the hub reports it separately. Saying the stored key
+// lost matters most anyway: it is the one the sheet offers to replace.
+// Empty when nothing has ever resolved (activeSource "none"); see
+// activeSourceLabel for that case's own message.
 export function credentialLayers(instance: InstanceEntry): CredentialLayerView[] {
   if (instance.activeSource === "none") return [];
   const layers: CredentialLayerView[] = [
     { source: instance.activeSource, label: activeSourceLabel(instance), effective: true },
   ];
-  if (instance.activeSource === "store" && instance.envVar) {
-    layers.push({
-      source: `env:${instance.envVar}`,
-      label: `Configured via environment variable (${instance.envVar})`,
-      effective: false,
-    });
+  if (instance.hasStoredFile && instance.activeSource !== "store") {
+    layers.push({ source: "store", label: STORED_KEY_LABEL, effective: false });
   }
   return layers;
 }

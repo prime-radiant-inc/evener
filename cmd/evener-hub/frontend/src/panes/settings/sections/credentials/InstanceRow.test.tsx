@@ -57,8 +57,7 @@ describe("the row carries identity and status only", () => {
           name: "a",
           providerId: "anthropic",
           hasStoredFile: true,
-          envVar: "ANTHROPIC_API_KEY",
-          activeSource: "store",
+          activeSource: "api_key",
         })}
         onSelect={() => {}}
       />,

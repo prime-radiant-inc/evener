@@ -90,20 +90,19 @@ describe("visibility", () => {
 });
 
 describe("credential display", () => {
-  test("an environment variable left set behind a now-effective store entry shows effective + shadowed chips", () => {
+  test("a stored key behind a higher-ranked source shows effective + shadowed chips", () => {
     renderSheet(
       instance({
         name: "a",
         providerId: "anthropic",
         hasStoredFile: true,
-        envVar: "ANTHROPIC_API_KEY",
-        activeSource: "store",
+        activeSource: "api_key",
       }),
     );
     expect(screen.getByText("effective")).toBeTruthy();
     expect(screen.getByText("shadowed")).toBeTruthy();
+    expect(screen.getByText(/Configured via providers\.toml/)).toBeTruthy();
     expect(screen.getByText(/Configured via stored API key/)).toBeTruthy();
-    expect(screen.getByText(/Configured via environment variable \(ANTHROPIC_API_KEY\)/)).toBeTruthy();
   });
 
   test("an oauth layer carries the stored email", () => {
@@ -223,7 +222,7 @@ describe("action labels follow stored state", () => {
     expect(screen.getByRole("button", { name: "Set key" })).toBeTruthy();
   });
 
-  test("'Replace key' whenever a stored key exists, even if a different source is currently effective", () => {
+  test("'Replace key' whenever a stored key exists, and the sheet says that key is shadowed", () => {
     renderSheet(
       instance({
         name: "a",
@@ -234,6 +233,10 @@ describe("action labels follow stored state", () => {
       }),
     );
     expect(screen.getByRole("button", { name: "Replace key" })).toBeTruthy();
+    // Replacing a key that providers.toml outranks changes nothing the
+    // instance actually uses, so the shadowed chip has to be on screen next
+    // to the offer.
+    expect(screen.getByText("shadowed")).toBeTruthy();
   });
 
   test("'Sign in…' when no OAuth is stored", () => {
