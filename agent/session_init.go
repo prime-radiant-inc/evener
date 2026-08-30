@@ -627,6 +627,10 @@ func RestoreSessionFromMetaWithConfig(client *llm.Client, profile *provider.Prof
 	}()
 
 	cfg := configFromSnapshot(meta.Config)
+	// A pre-normalization meta.json may carry a mixed-case level or disable
+	// alias; canonicalize so the loop detector's and request builder's
+	// comparisons hold on restored sessions too.
+	cfg.ReasoningEffort = llm.NormalizeReasoningEffort(cfg.ReasoningEffort)
 	cfg.LifetimeContext = restoreCfg.LifetimeContext
 	cfg.StateDir = restoreCfg.StateDir
 	cfg.Project = restoreCfg.Project

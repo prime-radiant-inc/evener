@@ -839,9 +839,9 @@ func resolveRequestEffort(configured string, supportsReasoning bool, levels []st
 		effort = defaultReasoningEffort
 	}
 	if effort == llm.ReasoningEffortNone {
-		// Off, whether the user or the model's data said so: a wire level
-		// only where the model lists it (in whatever case the ladder spells
-		// it), otherwise the field stays out.
+		// Off, whether the user or the model's data said so: sent (as the
+		// canonical lowercase "none") only where the model's ladder lists an
+		// off level in any case, otherwise the field stays out.
 		if slices.ContainsFunc(levels, func(l string) bool {
 			return strings.EqualFold(l, llm.ReasoningEffortNone)
 		}) {

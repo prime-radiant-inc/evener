@@ -182,6 +182,15 @@ func (c *ModelCatalog) LookupModelInfo(modelID string) *ModelInfo {
 			mi = c.GetModelInfo(id)
 		}
 	}
+	if mi == nil && strings.HasPrefix(id, "claude-") && strings.Contains(id, ".") {
+		// OpenRouter spells Anthropic versions with dots (claude-opus-4.6);
+		// the catalog keys on the dashed convention. Claude-scoped so dots in
+		// other families (gpt-4.1) stay meaningful.
+		if dashed := strings.ReplaceAll(id, ".", "-"); dashed != id {
+			id = dashed
+			mi = c.GetModelInfo(id)
+		}
+	}
 	if mi == nil {
 		// A dated snapshot newer than the bundled catalog has no entry of its
 		// own; fall back to its family (claude-opus-4-5-YYYYMMDD → claude-opus-4-5).

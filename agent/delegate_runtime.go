@@ -1147,7 +1147,7 @@ func (runtime delegateRuntime) create(ctx context.Context, args delegateArgs) de
 	if ok, validRange := validateDelegateGrant(args.DelegationAllowance, ownAllowance); !ok {
 		return delegateStartFailed(fmt.Errorf("invalid_request: delegation_allowance must be less than your own allowance (%d); valid grants: %s", ownAllowance, validRange))
 	}
-	if err := llm.ValidateReasoningEffort(args.ReasoningEffort); err != nil {
+	if err := llm.ValidateReasoningEffort(llm.NormalizeReasoningEffort(args.ReasoningEffort)); err != nil {
 		return delegateStartFailed(err)
 	}
 	selection, err := s.selectSubagentModel(ctx, args.Model, args.AgentType)
