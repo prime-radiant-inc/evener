@@ -102,15 +102,98 @@ func TestProfile_WithLiveModelInfo_ReasoningFollowsAdvertisedCapabilities(t *tes
 	}
 }
 
-// Switching model on a provider that clones rather than rebuilds must still
-// re-derive the model facts, or a switch to a non-reasoning model would keep
-// sending effort.
-func TestProfile_WithModel_RederivesReasoningFacts(t *testing.T) {
+// Switching model on a provider that rebuilds via its constructor re-derives
+// the model facts through construction.
+func TestProfile_WithModel_RebuildRederivesReasoningFacts(t *testing.T) {
 	p := newAnthropicProfile("claude-opus-4-6").WithModel("claude-3-haiku-20240307")
 	if p.SupportsReasoning() {
-		t.Fatal("claude-3-5-haiku after WithModel: SupportsReasoning() = true, want false (cataloged non-reasoning)")
+		t.Fatal("claude-3-haiku after WithModel: SupportsReasoning() = true, want false (cataloged non-reasoning)")
 	}
 	if got := p.DefaultReasoningEffort(); got != "" {
-		t.Fatalf("claude-3-5-haiku after WithModel: DefaultReasoningEffort() = %q, want empty", got)
+		t.Fatalf("claude-3-haiku after WithModel: DefaultReasoningEffort() = %q, want empty", got)
+	}
+}
+
+// google/minimax/kimi-anthropic clone rather than rebuild on a model switch;
+// the shallow path must re-derive the facts too, in both directions, and a
+// switch away from a non-reasoning model must restore a usable ladder — an
+// empty one would defeat the clamp (max → an unclamped 131072-token Gemini
+// thinking budget).
+func TestProfile_WithModel_ShallowCloneRederivesReasoningFacts(t *testing.T) {
+	toNonReasoning := newGeminiProfile("gemini-2.5-pro").WithModel("gemini-2.0-flash")
+	if toNonReasoning.SupportsReasoning() {
+		t.Fatal("gemini-2.0-flash after WithModel: SupportsReasoning() = true, want false")
+	}
+	if len(toNonReasoning.ReasoningEffortLevels()) != 0 {
+		t.Fatalf("gemini-2.0-flash after WithModel: levels = %v, want empty", toNonReasoning.ReasoningEffortLevels())
+	}
+
+	back := toNonReasoning.WithModel("gemini-2.5-pro")
+	if !back.SupportsReasoning() {
+		t.Fatal("gemini-2.5-pro after WithModel back: SupportsReasoning() = false, want true")
+	}
+	if len(back.ReasoningEffortLevels()) == 0 {
+		t.Fatal("gemini-2.5-pro after WithModel back: empty effort ladder, want the provider vocabulary restored")
+	}
+}
+
+// litellm's provider-prefixed mirror entries (openrouter/*, ollama/*) carry
+// shape and pricing but are sparse about supports_reasoning, so a mirror
+// entry never marks a model non-reasoning: openrouter/google/gemini-2.5-pro
+// and the ollama -cloud tags stay permitted. Bare curated entries (gpt-4.1)
+// remain authoritative.
+func TestProfile_MirrorCatalogEntriesDoNotDisableReasoning(t *testing.T) {
+	cfg := providercfg.Config{Instances: []providercfg.InstanceConfig{
+		{Name: "openrouter", Type: "openrouter"},
+		{Name: "ollama", Type: "ollama"},
+	}}
+	or, err := ResolveProfileFromConfig(cfg, "openrouter/google/gemini-2.5-pro")
+	if err != nil {
+		t.Fatalf("ResolveProfileFromConfig(openrouter): %v", err)
+	}
+	if !or.SupportsReasoning() {
+		t.Fatal("openrouter/google/gemini-2.5-pro: SupportsReasoning() = false, want true (mirror entry is not authoritative)")
+	}
+	ol, err := ResolveProfileFromConfig(cfg, "ollama/gpt-oss:20b-cloud")
+	if err != nil {
+		t.Fatalf("ResolveProfileFromConfig(ollama): %v", err)
+	}
+	if !ol.SupportsReasoning() {
+		t.Fatal("ollama/gpt-oss:20b-cloud: SupportsReasoning() = false, want true (mirror entry is not authoritative)")
+	}
+}
+
+// providers.toml reasoning = true is a permission statement, not a level
+// configuration: a live /models ladder must still be adopted.
+func TestProfile_WithLiveModelInfo_ReasoningTrueKeepsLiveLevels(t *testing.T) {
+	on := true
+	cfg := providercfg.Config{Instances: []providercfg.InstanceConfig{{
+		Name:     "gw",
+		Type:     "openai",
+		APIStyle: providercfg.StyleChatCompletions,
+		Models: map[string]providercfg.ModelConfig{
+			"gw-model": {Reasoning: &on},
+		},
+	}}}
+	p, err := ResolveProfileFromConfig(cfg, "gw/gw-model")
+	if err != nil {
+		t.Fatalf("ResolveProfileFromConfig: %v", err)
+	}
+	live := p.WithLiveModelInfo(llm.ModelInfo{SupportsReasoning: true, ReasoningEffortLevels: []string{"minimal", "low", "medium", "high", "xhigh"}})
+	if got := live.ReasoningEffortLevels(); len(got) != 5 || got[4] != "xhigh" {
+		t.Fatalf("levels = %v, want the live ladder adopted (reasoning = true configures support, not levels)", got)
+	}
+}
+
+// A live entry that turns reasoning back on for a profile whose ladder was
+// emptied must restore a usable ladder, not leave the clamp toothless.
+func TestProfile_WithLiveModelInfo_ReasoningOnRestoresLadder(t *testing.T) {
+	base := NewOpenAIProfile("gpt-4.1") // cataloged non-reasoning: empty ladder
+	live := base.WithLiveModelInfo(llm.ModelInfo{CapabilitiesAdvertised: true, SupportsReasoning: true})
+	if !live.SupportsReasoning() {
+		t.Fatal("SupportsReasoning() = false, want true from advertised capabilities")
+	}
+	if len(live.ReasoningEffortLevels()) == 0 {
+		t.Fatal("empty effort ladder after live reasoning-on, want the provider vocabulary restored")
 	}
 }

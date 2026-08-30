@@ -245,6 +245,18 @@ func applyThinkingFormat(body map[string]any, req llm.Request, mc ModelCompat) {
 		// translates it to the provider's wire value.
 		wire = mc.wireEffort("medium")
 	}
+	if wire == llm.ReasoningEffortNone {
+		// An explicit off. Only the dialects with a real off level put it on
+		// the wire (openai's reasoning_effort: none on gpt-5.1+, OpenRouter's
+		// unified vocabulary); every other format's shapes below switch
+		// thinking ON, which would invert the user's intent, so the request
+		// carries nothing and the provider default applies.
+		switch quirks.ThinkingFormat {
+		case "", "openai", "openrouter":
+		default:
+			return
+		}
+	}
 	switch quirks.ThinkingFormat {
 	case "", "openai":
 		if quirks.supportsEffort(true) {
@@ -273,8 +285,8 @@ func applyThinkingFormat(body map[string]any, req llm.Request, mc ModelCompat) {
 		body["enable_thinking"] = true
 	case "qwen-chat-template":
 		// Divergence from Pi: Pi always emits enable_thinking (false when off).
-		// evener's none-clears convention means we only reach here with an effort
-		// set (wire != "" above), so enable_thinking is always true.
+		// evener reaches here only with a real thinking-on effort (empty and
+		// "none" returned above), so enable_thinking is always true.
 		body["chat_template_kwargs"] = map[string]any{
 			"enable_thinking":   true,
 			"preserve_thinking": true,

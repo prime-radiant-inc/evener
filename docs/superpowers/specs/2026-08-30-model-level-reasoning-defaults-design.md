@@ -113,8 +113,17 @@ behavior with no effort configured is unchanged.
 - glm-5.3 via lunaroute (uncataloged): permitted, `medium` clamped to the
   openai vocabulary → `reasoning.effort: medium` on the wire.
 - gpt-4.1 / gpt-4o / gemini-2.0-flash (cataloged, non-reasoning): no reasoning
-  control ever, even with `--reasoning-effort high`. Operators can force it
-  with providers.toml `reasoning = true`.
+  control ever, even with `--reasoning-effort high`. On chat-completions-style
+  instances, providers.toml `reasoning = true` forces it back on; other
+  provider types accept no per-model blocks today, so a wrong catalog verdict
+  there is fixed in the overrides file (follow-up issue tracks extending the
+  toml override).
+- Provider-prefixed catalog mirrors (`openrouter/*`, `ollama/*` keys) are
+  sparse about `supports_reasoning`, so a mirror entry never marks a model
+  non-reasoning; only bare curated entries are authoritative about that.
+- An explicit `none` on a mandatory-thinking model (live `reasoning.mandatory`)
+  omits the field and the provider rejects the request — surfacing the
+  conflict rather than silently overriding the user.
 - Adaptive Claude: `output_config.effort: high` explicitly (was implicit).
 - Cataloged reasoning models whose provider default was "off" or "dynamic"
   (legacy Claude budgets, Gemini 2.5, zai/qwen thinking toggles) now run at

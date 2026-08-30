@@ -75,13 +75,12 @@ const DEFAULT_EFFORT_LABEL = "(default)";
 // agent/provider/profile.go:454 vs :442; the reducer coerces the absent ladder
 // to [], reducer.ts:263). A model that does not reason at all gets no control.
 //
-// none-vs-(default): an unset effort - and evener's "none", which clears the
-// effort to the provider default (llm/types.go:670, providercfg/load.go:76) -
-// both mean "no explicit level, the model decides". They read as "(default)",
-// a real leading option (value ""), never the first ladder level (which a
-// bare value-"" select would display) and never a literal "none" the user
-// appears to have chosen. Mirrors the legacy palette's own option list
-// (search.js:415: a "(default)" head, "none" omitted as redundant with it).
+// none-vs-(default): an unset effort ("") means "the session default applies"
+// and reads as "(default)", a real leading option, never the first ladder
+// level a bare value-"" select would display. "none" is an explicit off the
+// user chose (llm/types.go ReasoningEffortNone): it displays as "none (off)"
+// and is offered as its own option when the model's ladder lists it (or when
+// the session already runs at it).
 function ReasoningEffortControl({ sessionRef, model }: { sessionRef: string; model: ThreadModel }) {
   const toasts = useToasts();
 
@@ -101,8 +100,12 @@ function ReasoningEffortControl({ sessionRef, model }: { sessionRef: string; mod
         : [];
   if (levels.length === 0) return null;
 
-  const current = model.reasoningEffort && model.reasoningEffort !== "none" ? model.reasoningEffort : "";
-  const options = ["", ...levels.filter((level) => level !== "none")];
+  const current = model.reasoningEffort ?? "";
+  const ladder = levels.filter((level) => level !== "none");
+  const offersNone = levels.includes("none") || current === "none";
+  const options = offersNone ? ["", "none", ...ladder] : ["", ...ladder];
+  const effortLabel = (level: string) =>
+    level === "" ? DEFAULT_EFFORT_LABEL : level === "none" ? "none (off)" : level;
 
   return (
     <span className={CLASS.effortTrigger} data-testid="status-row-effort">
@@ -115,7 +118,7 @@ function ReasoningEffortControl({ sessionRef, model }: { sessionRef: string; mod
           select already speaks its own value - without it the value would be
           announced twice. */}
       <span className={CLASS.effortValue} data-testid="status-row-effort-value" aria-hidden="true">
-        {current === "" ? DEFAULT_EFFORT_LABEL : current}
+        {effortLabel(current)}
       </span>
       <span className={CLASS.effortChevron} aria-hidden="true">
         <Chevron direction="down" />
@@ -135,7 +138,7 @@ function ReasoningEffortControl({ sessionRef, model }: { sessionRef: string; mod
       >
         {options.map((level) => (
           <option key={level} value={level}>
-            {level === "" ? DEFAULT_EFFORT_LABEL : level}
+            {effortLabel(level)}
           </option>
         ))}
       </select>

@@ -74,8 +74,9 @@ func ThinkingFormatNames() []string {
 
 // validThinkingLevelKeys are the evener effort levels a thinking_levels map may
 // name. "xhigh" and "max" are distinct ascending tiers (max ranks above
-// xhigh). "off" is deliberately absent: evener's "none" clears the effort
-// setting to the provider default rather than forcing an explicit disable.
+// xhigh). "off" is deliberately absent: an explicit "none" effort reaches the
+// wire only on models whose ladder lists a none level, and omits the field
+// otherwise, so there is nothing for a thinking_levels entry to spell.
 var validThinkingLevelKeys = map[string]bool{
 	"minimal": true,
 	"low":     true,
@@ -166,7 +167,7 @@ func validateAndNormalizeModels(errs []string, instName string, models map[strin
 					continue
 				}
 				if key == "off" {
-					errs = append(errs, fmt.Sprintf("instance %q: model %q: thinking_levels key \"off\" is not supported (evener's \"none\" effort clears to the provider default)", instName, id))
+					errs = append(errs, fmt.Sprintf("instance %q: model %q: thinking_levels key \"off\" is not supported (an explicit \"none\" effort is sent only on models whose ladder lists a none level, and the field is omitted otherwise)", instName, id))
 					continue
 				}
 				if !validThinkingLevelKeys[key] {

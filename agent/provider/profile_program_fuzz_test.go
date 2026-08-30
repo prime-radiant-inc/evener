@@ -140,7 +140,6 @@ func assertProviderProfileCopies(t *testing.T, profile *Profile) {
 	if profile.ConfiguredCheapModel() != "" {
 		t.Fatalf("new %s profile unexpectedly has configured cheap model", profile.ID())
 	}
-	_ = profile.CatalogEffortFallbackEligible()
 	_ = profile.EffortLevelsConfigured()
 	defs := profile.ToolDefinitions()
 	if len(defs) == 0 {
@@ -298,7 +297,7 @@ func assertProviderPurePrograms(t *testing.T, next string) {
 	configured := newOpenAICompatProfile("local", "configured", 0, map[string]providercfg.ModelConfig{
 		"configured": {ContextWindow: 77_777, Reasoning: &reasoningOff},
 	})
-	if configured.ContextWindowSize() != 77_777 || configured.SupportsReasoning() || !configured.EffortLevelsConfigured() || configured.CatalogEffortFallbackEligible() {
+	if configured.ContextWindowSize() != 77_777 || configured.SupportsReasoning() || !configured.EffortLevelsConfigured() {
 		t.Fatalf("configured model precedence = %#v", configured)
 	}
 	live := configured.WithLiveModelInfo(llm.ModelInfo{ContextWindow: 1, ReasoningEffortLevels: []string{"high"}, SupportsReasoning: true})
@@ -308,7 +307,7 @@ func assertProviderPurePrograms(t *testing.T, next string) {
 	configuredLevels := newOpenAICompatProfile("local", "levels", 0, map[string]providercfg.ModelConfig{
 		"levels": {ThinkingLevels: map[string]string{"low": "low", "high": "high"}},
 	})
-	if !configuredLevels.EffortLevelsConfigured() || configuredLevels.CatalogEffortFallbackEligible() || len(configuredLevels.ReasoningEffortLevels()) != 2 {
+	if !configuredLevels.EffortLevelsConfigured() || len(configuredLevels.ReasoningEffortLevels()) != 2 {
 		t.Fatalf("configured thinking levels = %#v", configuredLevels)
 	}
 

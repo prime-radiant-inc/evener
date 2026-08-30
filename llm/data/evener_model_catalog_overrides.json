@@ -138,6 +138,7 @@
     "_note": "LiteLLM now supplies the public OpenAI API metadata. Evener overrides only the effective Codex/OAuth context window (272,000 in codex-cli 0.145.0 models_cache.json; public API is 1,050,000) per Jesse's 2026-07-28 decision, plus the existing max effort tier.",
     "context_window": 272000,
     "reasoning_effort_levels": [
+      "none",
       "low",
       "medium",
       "high",
@@ -148,6 +149,7 @@
   "bedrock_mantle/openai.gpt-5.6-luna": {
     "_note": "Amazon Bedrock serves the GPT-5.6 family over /v1/responses without OpenAI's hosted tools, so web search must be off or Bedrock rejects the entire request. LiteLLM supplies context, output cap and pricing for this serving path; the overlay adds only the effort ladder upstream does not express and that capability flag. Reached from the us./global. inference-profile IDs via bedrockOpenAICatalogKey.",
     "reasoning_effort_levels": [
+      "none",
       "low",
       "medium",
       "high",
@@ -159,6 +161,7 @@
   "bedrock_mantle/openai.gpt-5.6-sol": {
     "_note": "See bedrock_mantle/openai.gpt-5.6-luna.",
     "reasoning_effort_levels": [
+      "none",
       "low",
       "medium",
       "high",
@@ -170,6 +173,7 @@
   "bedrock_mantle/openai.gpt-5.6-terra": {
     "_note": "See bedrock_mantle/openai.gpt-5.6-luna.",
     "reasoning_effort_levels": [
+      "none",
       "low",
       "medium",
       "high",
@@ -182,6 +186,7 @@
     "_note": "LiteLLM supplies the public API metadata; see gpt-5.6-sol for Evener's intentional Codex/OAuth context override.",
     "context_window": 272000,
     "reasoning_effort_levels": [
+      "none",
       "low",
       "medium",
       "high",
@@ -193,6 +198,7 @@
     "_note": "LiteLLM supplies the public API metadata; see gpt-5.6-sol for Evener's intentional Codex/OAuth context override.",
     "context_window": 272000,
     "reasoning_effort_levels": [
+      "none",
       "low",
       "medium",
       "high",

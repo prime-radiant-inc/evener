@@ -463,13 +463,16 @@ export function buildCommands(): Command[] {
         // Snapshot-based (the focused model's own reasoningEffortLevels /
         // supportsReasoning), not a separate catalog request - the live
         // surface shouldn't need it (floor §2.5). A non-reasoning model yields ZERO options, not
-        // just "(default)". "none" is omitted from a non-empty ladder: it
-        // normalizes to "" (same as default), so it isn't a distinct option.
+        // just "(default)". "none" is a distinct explicit-off option where the
+        // ladder lists it, labelled so it can't be mistaken for the default.
         source: (ctx) => {
           const model = focusedModel(ctx.sessionRef);
-          const levels = model?.supportsReasoning ? model.reasoningEffortLevels.filter((l) => l !== "none") : [];
+          const levels = model?.supportsReasoning ? model.reasoningEffortLevels : [];
           if (!levels.length) return [];
-          return [{ id: "", label: "(default)" }, ...levels.map((l) => ({ id: l, label: l }))];
+          return [
+            { id: "", label: "(default)" },
+            ...levels.map((l) => ({ id: l, label: l === "none" ? "none (off)" : l })),
+          ];
         },
         run: (ctx, item) => {
           if (!ctx.sessionRef) return undefined;
