@@ -204,11 +204,16 @@ func (s *Subscriptions) IsSubscribed(connID, threadID string) bool {
 	return ok && !sub.withdrawn
 }
 
+// Threads lists the threads the connection holds a live interest in; a
+// withdrawn mid-capture entry does not count (see subscription.withdrawn).
 func (s *Subscriptions) Threads(connID string) []string {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	threads := make([]string, 0, len(s.byConn[connID]))
-	for threadID := range s.byConn[connID] {
+	for threadID, sub := range s.byConn[connID] {
+		if sub.withdrawn {
+			continue
+		}
 		threads = append(threads, threadID)
 	}
 	return threads
