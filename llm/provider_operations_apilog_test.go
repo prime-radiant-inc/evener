@@ -269,54 +269,87 @@ func TestClientModelListDecodeFailurePreservesObservedResponse(t *testing.T) {
 	}
 }
 
-// TestClientTokenCountReadFailurePreservesResultAndForensicFailure pins the
-// split verdict a truncated read produces: the caller still gets the count
-// the body carried, while the attempt records the read failure and the
-// public settlement stays successful.
-func TestClientTokenCountReadFailurePreservesResultAndForensicFailure(t *testing.T) {
+// TestClientTokenCountDecodeConditionsPreserveResultsAndForensicFailures pins
+// the two verdicts a token count can reach when the body does not decode
+// cleanly. A truncated read splits: the caller still gets the count the body
+// carried, the attempt records the read failure, and the public settlement
+// stays successful. A body that never decodes has no count to hand back, so
+// the call is an error — the protocols report the gap rather than returning
+// the zero the adapters used to call exact.
+func TestClientTokenCountDecodeConditionsPreserveResultsAndForensicFailures(t *testing.T) {
 	t.Setenv("XDG_STATE_HOME", t.TempDir())
-	body := []byte(`{"input_tokens":17,"totalTokens":17}`)
+
+	responses := []struct {
+		name string
+		body []byte
+		// truncate promises more bytes than are written, so the read fails
+		// after the whole body has been observed.
+		truncate   bool
+		wantTokens int
+		wantErr    bool
+	}{
+		{name: "read failure after complete JSON", body: []byte(`{"input_tokens":17,"totalTokens":17}`), truncate: true, wantTokens: 17},
+		{name: "body never decodes", body: []byte("not-json"), wantErr: true},
+	}
 
 	for _, providerCase := range tokenCountProviderOperations {
-		t.Run(providerCase.name, func(t *testing.T) {
-			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-				w.Header().Set("Content-Type", "application/json")
-				// Promise more bytes than are written: the read fails after
-				// the whole JSON body has been observed.
-				w.Header().Set("Content-Length", "4096")
-				_, _ = w.Write(body)
-			}))
-			t.Cleanup(server.Close)
+		for _, responseCase := range responses {
+			t.Run(providerCase.name+"/"+responseCase.name, func(t *testing.T) {
+				server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+					w.Header().Set("Content-Type", "application/json")
+					if responseCase.truncate {
+						w.Header().Set("Content-Length", "4096")
+					}
+					_, _ = w.Write(responseCase.body)
+				}))
+				t.Cleanup(server.Close)
 
-			client, provider := newProviderOperationClient(t, providerCase, server.URL)
-			logger, logPath := attachProviderOperationLogger(t, client)
-			defer func() { _ = logger.Close() }()
+				client, provider := newProviderOperationClient(t, providerCase, server.URL)
+				logger, logPath := attachProviderOperationLogger(t, client)
+				defer func() { _ = logger.Close() }()
 
-			count, callErr := client.CountInputTokens(context.Background(), llm.Request{
-				Provider: provider, Model: providerCase.model, Messages: []llm.Message{llm.User("count this")},
+				count, callErr := client.CountInputTokens(context.Background(), llm.Request{
+					Provider: provider, Model: providerCase.model, Messages: []llm.Message{llm.User("count this")},
+				})
+				if responseCase.wantErr {
+					if callErr == nil {
+						t.Fatalf("CountInputTokens = %+v, want an error for a body that does not decode", count)
+					}
+					if count.Exact || count.Tokens != 0 {
+						t.Fatalf("CountInputTokens = %+v, want no count beside the error", count)
+					}
+				} else {
+					if callErr != nil {
+						t.Fatalf("CountInputTokens returned an error for an observed body: %v", callErr)
+					}
+					if count.Tokens != responseCase.wantTokens || !count.Exact || count.Source != llm.TokenCountSourceProvider {
+						t.Fatalf("CountInputTokens = %+v, want %d exact provider tokens", count, responseCase.wantTokens)
+					}
+				}
+
+				attempt, settlement := oneProviderOperationAttempt(t, logPath)
+				loggedBody, err := apilog.DecodeBody(attempt.Response.Body)
+				if err != nil {
+					t.Fatalf("DecodeBody(response): %v", err)
+				}
+				if !bytes.Equal(loggedBody, responseCase.body) {
+					t.Fatalf("logged response body = %q, want the observed wire body %q", loggedBody, responseCase.body)
+				}
+				if attempt.Response.Body.Exact == responseCase.truncate {
+					t.Fatalf("logged body exact = %t for a %s", attempt.Response.Body.Exact, responseCase.name)
+				}
+				if attempt.Outcome != apilog.AttemptDecodeFail || attempt.ErrorMessage == "" {
+					t.Fatalf("attempt = %+v, want an observed decode failure", attempt)
+				}
+				wantSettlement := apilog.AttemptSuccess
+				if responseCase.wantErr {
+					wantSettlement = apilog.AttemptDecodeFail
+				}
+				if settlement.Outcome != wantSettlement {
+					t.Fatalf("settlement = %+v, want %q", settlement, wantSettlement)
+				}
 			})
-			if callErr != nil {
-				t.Fatalf("CountInputTokens returned an error for an observed body: %v", callErr)
-			}
-			if count.Tokens != 17 || !count.Exact || count.Source != llm.TokenCountSourceProvider {
-				t.Fatalf("CountInputTokens = %+v, want 17 exact provider tokens", count)
-			}
-
-			attempt, settlement := oneProviderOperationAttempt(t, logPath)
-			loggedBody, err := apilog.DecodeBody(attempt.Response.Body)
-			if err != nil {
-				t.Fatalf("DecodeBody(response): %v", err)
-			}
-			if !bytes.Equal(loggedBody, body) {
-				t.Fatalf("logged response body = %q, want the observed wire body %q", loggedBody, body)
-			}
-			if attempt.Response.Body.Exact {
-				t.Fatal("a body whose read failed must not be marked exact")
-			}
-			if attempt.Outcome != apilog.AttemptDecodeFail || attempt.ErrorMessage == "" || settlement.Outcome != apilog.AttemptSuccess {
-				t.Fatalf("attempt/settlement = %+v/%+v, want observed decode failure and successful public result", attempt, settlement)
-			}
-		})
+		}
 	}
 }
 

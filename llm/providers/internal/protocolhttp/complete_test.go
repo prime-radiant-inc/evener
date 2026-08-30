@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"primeradiant.com/evener/llm"
+	"primeradiant.com/evener/llm/apilog"
 	"primeradiant.com/evener/llm/registry"
 )
 
@@ -126,6 +127,43 @@ func TestComplete(t *testing.T) {
 					t.Fatalf("resp = %+v, want zero value on a decode error", r.resp)
 				}
 				assertOneAttemptCompleted(r.ctx, t, r.sink, http.StatusOK, r.err)
+			},
+		},
+		{
+			// The property the deleted per-adapter provider_result_compat
+			// tests pinned: a body that arrives whole and then fails to read
+			// splits the verdict — the caller keeps the decoded result, the
+			// attempt records the read failure over an inexact body.
+			name: "a read failure after the whole body keeps the caller's result",
+			handler: func(w http.ResponseWriter, _ *http.Request) {
+				// Promise more bytes than are written, so the read fails
+				// only after the complete JSON has been observed.
+				w.Header().Set("Content-Length", "4096")
+				_, _ = w.Write([]byte(`{"id":"r1"}`))
+			},
+			wantDecodeCall: true,
+			check: func(t *testing.T, r completeResult) {
+				if r.err != nil {
+					t.Fatalf("err = %v; a read failure after a complete body must not lose the result", r.err)
+				}
+				if r.raw["id"] != "r1" || r.resp.Provider != r.res.Instance {
+					t.Fatalf("decode saw raw = %+v, resp = %+v", r.raw, r.resp)
+				}
+				llm.WaitForPriorAPIAttempts(r.ctx)
+				if len(r.sink.attempts) != 1 {
+					t.Fatalf("attempts = %d, want 1", len(r.sink.attempts))
+				}
+				rec := r.sink.attempts[0]
+				if rec.Outcome != apilog.AttemptDecodeFail || rec.ErrorMessage == "" {
+					t.Fatalf("attempt = %+v, want an observed decode failure", rec)
+				}
+				if rec.Response == nil || rec.Response.Body.Exact {
+					t.Fatalf("attempt response = %+v, want the observed body marked inexact", rec.Response)
+				}
+				body, err := apilog.DecodeBody(rec.Response.Body)
+				if err != nil || string(body) != `{"id":"r1"}` {
+					t.Fatalf("logged body = %q (%v), want the bytes the exchange observed", body, err)
+				}
 			},
 		},
 		{
