@@ -134,3 +134,65 @@ func TestStrayOAuthRecords(t *testing.T) {
 		}
 	}
 }
+
+// TestResolveInstancePurgesFieldsProvenanceOnProtocolReset pins parity with
+// resolveOn (resolve.go): a layer that changes the record's protocol
+// mid-chain must purge any "Fields.*" provenance already recorded by an
+// earlier layer, not just clear caps.Fields itself. "work" inherits from
+// openai (protocol openai-responses, whose overlay layer sets several
+// provider-level Fields with recorded provenance) and overrides the
+// protocol to openai-chat, the same cross-protocol fixture load_test.go's
+// TestLoad_ExplicitInstances uses to pin resetFields itself.
+func TestResolveInstancePurgesFieldsProvenanceOnProtocolReset(t *testing.T) {
+	r := cutoverRegistry(t, map[string]string{"OPENAI_API_KEY": "k"}, map[string]Provider{
+		"work": {Base: "openai", Protocol: ProtocolOpenAIChat},
+	})
+	res, err := r.ResolveInstance("work")
+	if err != nil {
+		t.Fatalf("ResolveInstance: %v", err)
+	}
+	for k := range res.Provenance {
+		if strings.HasPrefix(k, "Fields.") {
+			t.Fatalf("cross-protocol reset must purge stale Fields provenance, found %q: %+v", k, res.Provenance)
+		}
+	}
+}
+
+// TestResolveInstanceCarriesHiddenProviderWarning pins parity with
+// resolveOn: a hidden record (here, an injected instance whose base_url
+// template variable is never set) must explain itself through
+// ResolveInstance the same way a model-based Resolve already does.
+func TestResolveInstanceCarriesHiddenProviderWarning(t *testing.T) {
+	r := cutoverRegistry(t, nil, map[string]Provider{"nobedrockregion": {Base: "amazon-bedrock"}})
+	res, err := r.ResolveInstance("nobedrockregion")
+	if err != nil {
+		t.Fatalf("ResolveInstance: %v", err)
+	}
+	want := "hidden: provider has no resolvable base URL or protocol"
+	if !strings.Contains(strings.Join(res.Warnings, "\n"), want) {
+		t.Fatalf("hidden instance must explain itself: %v", res.Warnings)
+	}
+}
+
+// TestResolveInstanceCarriesConverterNotes pins parity with resolveOn: a
+// record's converter notes (spec: "protocol unverified" and similar,
+// populated by the models.dev conversion in modelsdev.go) must ride
+// through ResolveInstance's Warnings the same way they ride through
+// Resolve's. Setting the unexported notes field directly is the simplest
+// way to construct "a record whose converter notes are non-empty" — notes
+// is ordinary Provider input data (like DefaultModel, which other tests in
+// this file already set directly), just usually populated by the
+// converter instead of a literal.
+func TestResolveInstanceCarriesConverterNotes(t *testing.T) {
+	r := cutoverRegistry(t, map[string]string{"OPENAI_API_KEY": "k"}, map[string]Provider{
+		"noted": {Base: "openai", notes: []string{"protocol unverified: unknown npm test-sdk"}},
+	})
+	res, err := r.ResolveInstance("noted")
+	if err != nil {
+		t.Fatalf("ResolveInstance: %v", err)
+	}
+	want := "protocol unverified: unknown npm test-sdk"
+	if !strings.Contains(strings.Join(res.Warnings, "\n"), want) {
+		t.Fatalf("converter notes must ride through to Warnings: %v", res.Warnings)
+	}
+}

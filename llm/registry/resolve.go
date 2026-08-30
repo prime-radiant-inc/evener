@@ -190,6 +190,20 @@ func (r *Registry) unknownInstance(name string) error {
 	return fmt.Errorf("unknown instance %q (available: %s)", name, strings.Join(names, ", "))
 }
 
+// resetLayerFields clears caps.Fields and purges any "Fields.*" provenance
+// entries already recorded, for a layer that changes the record's declared
+// protocol mid-chain (fold's cross-protocol rule, load.go). Shared by
+// resolveOn and ResolveInstance so neither leaves a stale Fields provenance
+// entry attributing a value to a layer whose contribution was wiped.
+func resetLayerFields(caps *Caps, prov map[string]string) {
+	caps.Fields = nil
+	for k := range prov {
+		if strings.HasPrefix(k, "Fields.") {
+			delete(prov, k)
+		}
+	}
+}
+
 // ResolveInstance resolves an instance without a model: what a model-less
 // call (ListModels, a credential probe) needs — protocol, transport,
 // headers, credential, and the provider-level caps — with no row
@@ -203,7 +217,7 @@ func (r *Registry) ResolveInstance(name string) (Resolved, error) {
 	prov := map[string]string{}
 	for _, layer := range rec.layers {
 		if layer.resetFields {
-			caps.Fields = nil
+			resetLayerFields(&caps, prov)
 		}
 		mergeCaps(&caps, layer.provider, layer.tag+"/provider", prov)
 	}
@@ -217,6 +231,10 @@ func (r *Registry) ResolveInstance(name string) (Resolved, error) {
 			credHeaders[k] = e
 		}
 	}
+	if rec.head.Hidden {
+		warnings = append(warnings, "hidden: provider has no resolvable base URL or protocol")
+	}
+	warnings = append(warnings, rec.notes...)
 	providerID := rec.providerID
 	if providerID == "" {
 		providerID = rec.name
@@ -288,12 +306,7 @@ func (r *Registry) resolveOn(rec *record, ref Ref, warnings []string) (Resolved,
 			liveApplied = true
 		}
 		if layer.resetFields {
-			caps.Fields = nil
-			for k := range prov {
-				if strings.HasPrefix(k, "Fields.") {
-					delete(prov, k)
-				}
-			}
+			resetLayerFields(&caps, prov)
 		}
 		pc := layer.provider
 		if crossProto {

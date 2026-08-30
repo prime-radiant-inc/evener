@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"regexp"
+	"slices"
 	"sort"
 	"strings"
 
@@ -166,10 +167,22 @@ func parseLayer(data []byte, tag string, curated bool) (*Layer, error) {
 	if undecoded := md.Undecoded(); len(undecoded) > 0 {
 		keys := make([]string, 0, len(undecoded))
 		for _, k := range undecoded {
+			// chat_template_kwargs is a free-form passthrough map (Caps.ChatTemplateKwargs
+			// is map[string]any): per the toml package's own doc for Undecoded, "decoding
+			// into an empty interface will result in no decoding," so a key nested inside
+			// its value is never marked decoded even though toml.Decode populates it
+			// correctly. That makes a legitimate nested value indistinguishable from a
+			// typo by key path alone, so this one field is exempt from the typo guard;
+			// every other key still gets it.
+			if slices.Contains([]string(k), "chat_template_kwargs") {
+				continue
+			}
 			keys = append(keys, k.String())
 		}
-		sort.Strings(keys)
-		return nil, fmt.Errorf("%s: unknown key(s): %s", tag, strings.Join(keys, ", "))
+		if len(keys) > 0 {
+			sort.Strings(keys)
+			return nil, fmt.Errorf("%s: unknown key(s): %s", tag, strings.Join(keys, ", "))
+		}
 	}
 	if !curated {
 		if fs.DefaultOrder != nil {

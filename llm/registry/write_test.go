@@ -24,12 +24,16 @@ func writerFixtureLayer() *Layer {
 				APIKeyEnv:         []string{},
 				DefaultModel:      "glm-5.2-nvfp4",
 				Transport:         Transport{BaseURL: "https://gw.example.com/v1"},
-				Caps:              Caps{Fields: map[string]bool{"stream_options": false}, ContextWindow: new(131072)},
+				Caps: Caps{
+					Fields: map[string]bool{"stream_options": false}, ContextWindow: new(131072),
+					ChatTemplateKwargs: map[string]any{"enable_thinking": true, "options": map[string]any{"mode": "fast"}},
+				},
 				Models: map[string]Model{
 					"glm-5.2-nvfp4": {ID: "glm-5.2-nvfp4", Caps: Caps{
 						ContextWindow: new(1048576), MaxOutputTokens: new(131072),
 						EffortValues: []string{"high", "max"}, ThinkingFormat: new("zai"),
-						Cost: &Cost{Input: 0.5, Output: 1.5, Tiers: []CostTier{{InputTokensAbove: 200000, Input: 1, Output: 3}}},
+						Fields: map[string]bool{"store": false},
+						Cost:   &Cost{Input: 0.5, Output: 1.5, Tiers: []CostTier{{InputTokensAbove: 200000, Input: 1, Output: 3}}},
 					}},
 				},
 			},

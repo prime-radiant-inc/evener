@@ -167,6 +167,28 @@ func TestParseConfig_UnknownKeyNamesIt(t *testing.T) {
 	}
 }
 
+// TestParseConfig_ChatTemplateKwargsNestedValueParses pins a BurntSushi/toml
+// limitation the typo guard must not misreport: decoding a table into
+// map[string]any never marks a key nested inside that value as decoded (the
+// toml package's own doc for Undecoded says so), so without an exemption a
+// legitimate nested chat_template_kwargs value reads as an "unknown key".
+// The second half confirms the exemption is narrow: a real typo elsewhere
+// in the same document is still caught.
+func TestParseConfig_ChatTemplateKwargsNestedValueParses(t *testing.T) {
+	l, err := ParseConfig([]byte("[providers.x.chat_template_kwargs]\nenable_thinking = true\n[providers.x.chat_template_kwargs.options]\nmode = \"fast\"\n"))
+	if err != nil {
+		t.Fatalf("a nested chat_template_kwargs value must parse, not read as an unknown key: %v", err)
+	}
+	want := map[string]any{"enable_thinking": true, "options": map[string]any{"mode": "fast"}}
+	if !reflect.DeepEqual(l.Providers["x"].Caps.ChatTemplateKwargs, want) {
+		t.Fatalf("chat_template_kwargs: got %+v want %+v", l.Providers["x"].Caps.ChatTemplateKwargs, want)
+	}
+	_, err = ParseConfig([]byte("[providers.x]\ntypo_key = 1\n[providers.x.chat_template_kwargs]\nenable_thinking = true\n"))
+	if err == nil || !strings.Contains(err.Error(), "typo_key") {
+		t.Fatalf("a real typo must still be rejected even alongside chat_template_kwargs: %v", err)
+	}
+}
+
 func TestParseConfig_OldSchema(t *testing.T) {
 	for _, src := range []string{
 		"[instances.openai]\ntype = \"openai\"\n",
