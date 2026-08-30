@@ -362,12 +362,11 @@ test("an unset reasoning effort shows as (default), never the first ladder level
   expect(screen.getByTestId("status-row-effort-value").textContent).toBe("(default)");
 });
 
-// evener's "none" clears the effort to the provider default (llm/types.go:670,
-// providercfg/load.go:76) - the same meaning as unset. A ladder that lists
-// "none" collapses it into the single "(default)" entry (never a duplicate
-// option), and a current "none" effort selects that entry, not a literal
-// "none" the user appears to have chosen (mirrors legacy search.js:409-415).
-test("collapses a ladder-listed 'none' into (default) rather than a duplicate option, and a current 'none' effort selects it", () => {
+// "none" is an explicit off the user chose (llm.ReasoningEffortNone), distinct
+// from unset: a session running at "none" must say so, never masquerade as
+// "(default)" (which now means "the session default applies"), and a ladder
+// that lists "none" offers it as its own labelled option.
+test("shows a current 'none' effort as its own selected 'none (off)' option, distinct from (default)", () => {
   render(
     <StatusRow
       sessionRef="ref_a"
@@ -380,10 +379,10 @@ test("collapses a ladder-listed 'none' into (default) rather than a duplicate op
     />,
   );
   const select = screen.getByRole("combobox", { name: /reasoning effort/i }) as HTMLSelectElement;
-  expect(select.value).toBe("");
-  expect(select.options[select.selectedIndex]?.textContent).toBe("(default)");
-  expect(Array.from(select.options).map((o) => o.value)).toEqual(["", "low", "medium", "high"]);
-  expect(screen.getByTestId("status-row-effort-value").textContent).toBe("(default)");
+  expect(select.value).toBe("none");
+  expect(select.options[select.selectedIndex]?.textContent).toBe("none (off)");
+  expect(Array.from(select.options).map((o) => o.value)).toEqual(["", "none", "low", "medium", "high"]);
+  expect(screen.getByTestId("status-row-effort-value").textContent).toBe("none (off)");
 });
 
 test("changing the reasoning-effort select calls setReasoningEffort with the new level", async () => {

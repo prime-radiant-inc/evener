@@ -519,7 +519,7 @@ func TestEmbeddedModelCatalog_GPT56Family(t *testing.T) {
 	if cat == nil {
 		t.Fatal("embedded catalog nil")
 	}
-	wantLevels := []string{"low", "medium", "high", "xhigh", "max"}
+	wantLevels := []string{"none", "low", "medium", "high", "xhigh", "max"}
 	pricing := map[string][3]float64{ // in, out, cache-read $/MTok
 		"gpt-5.6-sol":   {5, 30, 0.5},
 		"gpt-5.6-terra": {2, 12, 0.2},

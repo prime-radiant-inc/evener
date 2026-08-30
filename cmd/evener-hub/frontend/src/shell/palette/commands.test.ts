@@ -576,7 +576,7 @@ test("splitModelId splits on the first slash so a model id with slashes survives
 
 // --- /reasoning-effort: snapshot source + set + toast ---
 
-test("/reasoning-effort source prefixes (default) and omits 'none'; run sets the effort", async () => {
+test("/reasoning-effort source prefixes (default) and offers a ladder-listed 'none' as an explicit off; run sets the effort", async () => {
   const fake = connectFake();
   fake.on("thread/reasoning-effort/set", () => ({}));
   focusSession("ref_a");
@@ -585,6 +585,7 @@ test("/reasoning-effort source prefixes (default) and omits 'none'; run sets the
   if (c.args?.kind !== "enum") throw new Error("expected enum args");
   expect(c.args.source(runContext())).toEqual([
     { id: "", label: "(default)" },
+    { id: "none", label: "none (off)" },
     { id: "low", label: "low" },
     { id: "high", label: "high" },
   ]);

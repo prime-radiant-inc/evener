@@ -595,6 +595,8 @@ func responsesInbandError(data []byte) error {
 // live view (the contract Response.ReasoningText documents).
 const reasoningPartSeparator = "\n\n"
 
+// responsesAPIEventTypes lists the events that prove the endpoint served a
+// Responses API request; see the discussion above.
 var responsesAPIEventTypes = map[string]struct{}{
 	"response.created":                       {},
 	"response.in_progress":                   {},
@@ -1417,9 +1419,10 @@ func responseContentFromOutputItems(out []any) []llm.ContentPart {
 			encryptedContent, _ := item["encrypted_content"].(string)
 			// OpenAI returns reasoning as encrypted_content plus summaries;
 			// gateways that expose the raw thinking put reasoning_text parts
-			// in content instead. The raw text is kept for display and the
-			// transcript only; replay (toResponsesInput) still needs
-			// encrypted_content.
+			// in content instead. On this path the raw text feeds display and
+			// the transcript; toResponsesInput replays a reasoning item only
+			// when it has encrypted_content, so the text never returns to
+			// this API.
 			text := strings.Join(parseReasoningSummary(item["content"]), reasoningPartSeparator)
 			if encryptedContent != "" || text != "" {
 				content = append(content, llm.ContentPart{
