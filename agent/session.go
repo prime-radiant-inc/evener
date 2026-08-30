@@ -661,6 +661,21 @@ type Session struct {
 	rootAttentionWakeIDs map[string]struct{}
 	rootAttentionWake    bool
 	rootAttentionRetry   notificationRetry
+	// rootAttentionCoveredIDs is the running turn's coverage set; the contract
+	// it feeds lives on stageRootDelegateAttentionCoverage and
+	// unionCoveredRootDelegateAttention. Reset at each turn start; read at
+	// turn finish.
+	rootAttentionCoveredIDs map[string]struct{}
+	// rootAttentionStagedIDs is one round's candidate coverage: the attention
+	// the round's built request presents. The round loop promotes it into
+	// rootAttentionCoveredIDs only when the round's call settles, so a failed
+	// or filtered round never credits an item the model did not see in a
+	// settled call. Re-staged by every request build.
+	rootAttentionStagedIDs map[string]struct{}
+	// rootAttentionPreTurnArmIDs snapshots rootAttentionWakeIDs at turn start
+	// (resetRootDelegateAttentionCoverage) so marking can tell deliveries
+	// armed mid-turn from attention already owed a dedicated wake.
+	rootAttentionPreTurnArmIDs map[string]struct{}
 
 	// turnNameRetryMu guards turnNameRetry alone. The paced wake it schedules
 	// runs while the session goroutine is mid-stand-down, so it must not queue
