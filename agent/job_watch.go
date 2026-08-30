@@ -254,6 +254,10 @@ func normalizeWatchSource(source string) (watchSource, error) {
 	case "parent":
 		return watchSource{Kind: watchSourceParentSession, Public: "parent", Internal: runtimeMessageAliasCaller}, nil
 	default:
+		// Accept an optional "job:" prefix so both "job:job_123" and "job_123"
+		// resolve to the same concrete job. The transcript_ref convention uses
+		// the "job:" prefix; job_watch source should tolerate it for ergonomics.
+		source = strings.TrimPrefix(source, "job:")
 		if strings.HasPrefix(source, "job_") {
 			return watchSource{Kind: watchSourceConcreteJob, Public: source, Internal: source}, nil
 		}

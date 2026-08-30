@@ -192,6 +192,18 @@ func TestNormalizeWatchSource(t *testing.T) {
 			t.Fatalf("Public = %q", src.Public)
 		}
 	})
+	t.Run("job id with job: prefix", func(t *testing.T) {
+		src, err := normalizeWatchSource("job:job_abc123")
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if src.Kind != watchSourceConcreteJob {
+			t.Fatalf("Kind = %v", src.Kind)
+		}
+		if src.Public != "job_abc123" {
+			t.Fatalf("Public = %q, want job_abc123 (prefix stripped)", src.Public)
+		}
+	})
 	t.Run("delegate id", func(t *testing.T) {
 		src, err := normalizeWatchSource("dlg_abc123")
 		if err != nil {

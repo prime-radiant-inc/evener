@@ -2506,10 +2506,18 @@ func (s *Session) worktreeList(ctx context.Context) ([]WorktreeListEntry, error)
 				// inviting its removal, so it needs no unknown marker.
 				if tipOut, tErr := run("-C", e.Path, "rev-parse", "HEAD"); tErr == nil {
 					tip := strings.TrimSpace(tipOut)
-					if mr, mErr := worktree.Merged(run, tip, entry.MergeTarget, entry.BaseSHA); mErr == nil {
-						entry.Merged = mr.Merged
-						entry.MergedArm = mr.Arm
-						entry.MergeTargetUnknown = mr.TargetUnknown
+					// A 0-commit lane (tip == baseSHA) is "unchanged", not
+					// "merged": isAncestor(base, main) is trivially true since
+					// the branch was cut from main, but that is not evidence of
+					// a merge — it is the absence of any work to merge. Skip
+					// the Merged check so the lane reads as "0 ahead" rather
+					// than the misleading "merged".
+					if tip != entry.BaseSHA {
+						if mr, mErr := worktree.Merged(run, tip, entry.MergeTarget, entry.BaseSHA); mErr == nil {
+							entry.Merged = mr.Merged
+							entry.MergedArm = mr.Arm
+							entry.MergeTargetUnknown = mr.TargetUnknown
+						}
 					}
 				}
 			}

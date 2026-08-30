@@ -57,7 +57,7 @@ func rejectUnavailableDelegateSandboxControls(toolName string, parameters, args 
 	}
 	properties, _ := parameters["properties"].(map[string]any)
 	invalid := make([]string, 0, 2)
-	for _, field := range []string{"sandbox", "sandbox_net"} {
+	for _, field := range []string{"sandbox"} {
 		if _, supplied := args[field]; !supplied {
 			continue
 		}
@@ -95,15 +95,16 @@ func (s *Session) delegateSandboxSchemaForEnv(env execenv.ExecutionEnvironment) 
 	result := tool.DelegateSandboxSchema{
 		Available:          true,
 		Modes:              modes,
+		SandboxEnum:        buildDelegateSandboxEnum(modes, parentNetwork, parentMode == sandbox.ModeOff),
 		SandboxDescription: fmt.Sprintf("The current parent floor permits only these explicit modes: %s.", strings.Join(modes, ", ")),
 	}
 	if !parentNetwork {
-		result.NetworkValues = []bool{false}
-		result.SandboxNetDescription = "Your session has network disabled, so only sandbox_net=false is enforceable."
+		// Parent network is off: +nonet variants are the only network option
+		// and "nonet" alone is available. SandboxEnum already reflects this.
 	}
 	if parentMode == sandbox.ModeOff {
-		result.RequireNonOffModeForNetwork = true
-		result.SandboxNetDescription += " When sandbox is omitted or set to off, omit sandbox_net; a network setting requires a non-off sandbox mode."
+		// Parent mode is off: the combined enum already excludes invalid
+		// combos (off+nonet is meaningless since off applies no confinement).
 	}
 	return result
 }
@@ -117,6 +118,37 @@ func delegateSandboxBackendAvailable(host sandbox.HostFacts) bool {
 	default:
 		return false
 	}
+}
+// buildDelegateSandboxEnum computes the combined sandbox+sandbox_net enum
+// values for the delegate schema. Each non-off mode produces a base value
+// (inherit parent network) and a +nonet variant (disable network). When
+// the parent network is off, only +nonet variants are emitted. "off" is
+// alone inherits the parent's mode and disables network — it is available
+// under any non-off parent. When parentMode is off, "nonet" is omitted
+// (network confinement is meaningless without a sandbox, and the handler
+// rejects sandbox_net without a non-off mode under an off parent).
+func buildDelegateSandboxEnum(modes []string, parentNetwork, parentModeOff bool) []string {
+	var values []string
+	for _, mode := range modes {
+		if mode == "off" {
+			values = append(values, "off")
+			continue
+		}
+		if parentNetwork {
+			// Parent has network: base value inherits network, +nonet disables it.
+			values = append(values, mode)
+			values = append(values, mode+"+nonet")
+		} else {
+			// Parent network is off: only +nonet is enforceable.
+			values = append(values, mode+"+nonet")
+		}
+	}
+	// "nonet" alone (inherit parent mode, disable network) is available
+	// under a non-off parent with network on (it tightens the parent).
+	if parentNetwork && !parentModeOff {
+		values = append(values, "nonet")
+	}
+	return values
 }
 
 func (s *Session) prepareSubagentEnvironment(workingDir string, requested *sandbox.SandboxPolicy) (execenv.ExecutionEnvironment, bool, error) {

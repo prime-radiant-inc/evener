@@ -110,6 +110,12 @@ type DelegateSandboxSchema struct {
 	RequireNonOffModeForNetwork bool
 	SandboxDescription          string
 	SandboxNetDescription       string
+	// SandboxEnum carries the precomputed combined sandbox+sandbox_net enum
+	// values (e.g. "off", "read-only", "read-only+nonet", "nonet"). When
+	// non-empty it replaces the separate sandbox and sandbox_net fields with
+	// a single sandbox field whose enum lists every valid combination, so the
+	// model can never send an invalid combo.
+	SandboxEnum []string
 	// ModelDescription is appended to the model override description when a
 	// caller has captured a bounded, startup-frozen availability snapshot.
 	// Empty preserves the generic string contract.
@@ -187,11 +193,7 @@ func DefDelegateWithSandbox(agentTypes []string, sandboxSchema DelegateSandboxSc
 				"sandbox": map[string]any{
 					"type":        "string",
 					"enum":        []string{"off", "read-only", "workspace-write", "restricted"},
-					"description": "Run this delegate under its own sandbox, independent of your session. Modes: off = no confinement; read-only = reads anywhere but secret paths, no writes (a private temp dir only); workspace-write = reads anywhere but secret paths, writes the working tree; restricted = reads and writes only the working tree. All sandboxed modes mask credential/secret paths, give a private temp dir, and confine spawned shell commands too; network is a separate toggle (sandbox_net). Most useful with isolation=\"worktree\". The modes are a partial order: you may only pick a box at least as confining as your own on BOTH reads and writes — you cannot grant a delegate more access than you have. Omit to inherit your session's sandbox.",
-				},
-				"sandbox_net": map[string]any{
-					"type":        "boolean",
-					"description": "Whether the sandboxed delegate may use the network. Setting this to false disables all IP networking, including TCP, UDP, DNS, and loopback, and may break tests that start or connect to a local network server. Omit to inherit your session's setting. You cannot enable network for a delegate if your own session has it off.",
+					"description": "Run this delegate under its own sandbox, independent of your session. Each value encodes a sandbox mode and an optional network override: the base mode (e.g. \"read-only\") inherits your session's network; appending \"+nonet\" (e.g. \"read-only+nonet\") disables all IP networking. \"off\" = no confinement; \"read-only\" = reads anywhere but secret paths, no writes (a private temp dir only); \"workspace-write\" = reads anywhere but secret paths, writes the working tree; \"restricted\" = reads and writes only the working tree. All sandboxed modes mask credential/secret paths, give a private temp dir, and confine spawned shell commands too. \"nonet\" alone inherits your session's sandbox mode and disables network. Most useful with isolation=\"worktree\". The modes are a partial order: you may only pick a box at least as confining as your own on BOTH reads and writes — you cannot grant a delegate more access than you have. Omit to inherit your session's sandbox.",
 				},
 				"result_schema": map[string]any{
 					"type":                 "object",
@@ -208,46 +210,23 @@ func DefDelegateWithSandbox(agentTypes []string, sandboxSchema DelegateSandboxSc
 	}
 	if !sandboxSchema.Available {
 		delete(props, "sandbox")
-		delete(props, "sandbox_net")
-		def.Description += " This session's host cannot enforce per-delegate sandboxing, so `sandbox` and `sandbox_net` are unavailable; do not send them."
+		def.Description += " This session's host cannot enforce per-delegate sandboxing, so `sandbox` is unavailable; do not send it."
 		return def
 	}
-	if len(sandboxSchema.Modes) > 0 {
+	if len(sandboxSchema.SandboxEnum) > 0 {
+		props["sandbox"].(map[string]any)["enum"] = append([]string(nil), sandboxSchema.SandboxEnum...)
+	} else if len(sandboxSchema.Modes) > 0 {
+		// Fallback: build enum from Modes (without +nonet variants) for
+		// callers that have not precomputed the combined enum.
 		props["sandbox"].(map[string]any)["enum"] = append([]string(nil), sandboxSchema.Modes...)
 	} else {
-		// An available backend may still have no explicit mode that satisfies the
-		// parent's effective floor (for example, restricted plus WriteBlocked).
-		// Omit only the unusable mode control; sandbox_net remains available for
-		// the valid net-only tightening/inheritance path.
+		// No usable sandbox mode; remove the control entirely.
 		delete(props, "sandbox")
-	}
-	if len(sandboxSchema.NetworkValues) > 0 {
-		props["sandbox_net"].(map[string]any)["enum"] = append([]bool(nil), sandboxSchema.NetworkValues...)
-	}
-	if sandboxSchema.RequireNonOffModeForNetwork {
-		nonOffModes := make([]string, 0, len(sandboxSchema.Modes))
-		for _, mode := range sandboxSchema.Modes {
-			if mode != "off" {
-				nonOffModes = append(nonOffModes, mode)
-			}
-		}
-		def.Parameters["oneOf"] = []any{
-			map[string]any{"not": map[string]any{"required": []string{"sandbox_net"}}},
-			map[string]any{
-				"required": []string{"sandbox", "sandbox_net"},
-				"properties": map[string]any{
-					"sandbox": map[string]any{"enum": nonOffModes},
-				},
-			},
-		}
 	}
 	if sandboxSchema.SandboxDescription != "" {
 		if sandbox, ok := props["sandbox"].(map[string]any); ok {
 			sandbox["description"] = strings.TrimSpace(sandbox["description"].(string) + " " + sandboxSchema.SandboxDescription)
 		}
-	}
-	if sandboxSchema.SandboxNetDescription != "" {
-		props["sandbox_net"].(map[string]any)["description"] = strings.TrimSpace(props["sandbox_net"].(map[string]any)["description"].(string) + " " + sandboxSchema.SandboxNetDescription)
 	}
 	return def
 }
@@ -654,7 +633,7 @@ func DefTaskList(effortLevels []string) llm.ToolDefinition {
 				},
 				"updates": map[string]any{
 					"type":        "array",
-					"description": "For update: list of {id, status} pairs with optional notes.",
+					"description": "For update: list of {id} entries with optional status, notes, depends_on, or reasoning_effort.",
 					"items": map[string]any{
 						"type": "object",
 						"properties": map[string]any{
@@ -668,7 +647,7 @@ func DefTaskList(effortLevels []string) llm.ToolDefinition {
 							},
 							"reasoning_effort": reasoningSchema,
 						},
-						"required": []string{"id", "status"},
+						"required": []string{"id"},
 					},
 				},
 			},

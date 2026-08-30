@@ -1163,8 +1163,8 @@ func (runtime delegateRuntime) create(ctx context.Context, args delegateArgs) de
 	explicitSandbox := strings.TrimSpace(args.Sandbox) != "" || args.SandboxNet != nil
 	if explicitSandbox && args.SandboxNet != nil && strings.TrimSpace(args.Sandbox) == "" && !delegateSandboxBackendAvailable(s.sandboxHostFacts()) {
 		return delegateStartFailed(newDelegateSandboxRequestError(
-			errors.New("invalid_request: sandbox_net cannot be enforced on this host because no sandbox backend is available; omit sandbox_net"),
-			"sandbox_net",
+			errors.New("invalid_request: sandbox cannot be enforced on this host because no sandbox backend is available; omit the sandbox parameter"),
+			"sandbox",
 		))
 	}
 	if readOnlyScope {

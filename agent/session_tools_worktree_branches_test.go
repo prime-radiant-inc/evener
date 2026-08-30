@@ -632,6 +632,34 @@ func TestWorktreeListSummaryWithUnmanaged(t *testing.T) {
 	}
 }
 
+// TestWorktreeListSummaryZeroAheadNotMerged verifies a 0-commit lane (0 ahead,
+// not merged) renders as "0 ahead" without the misleading "merged" label.
+// The list operation skips the Merged check when tip == baseSHA (0 commits)
+// because isAncestor(base, main) is trivially true but is not evidence of a
+// merge.
+func TestWorktreeListSummaryZeroAheadNotMerged(t *testing.T) {
+	entries := []WorktreeListEntry{
+		{Name: "fresh-lane", AheadCommits: 0, Dirty: false, Merged: false},
+	}
+	result := worktreeListSummary(entries, nil)
+	if !strings.Contains(result, "0 ahead") {
+		t.Fatalf("expected '0 ahead' in summary: %q", result)
+	}
+	if !strings.Contains(result, "unmerged") {
+		t.Fatalf("0-commit lane should show as unmerged: %q", result)
+	}
+	// Ensure it does NOT show as "merged" (the misleading label for 0-commit
+	// lanes). Check that "merged" only appears as part of "unmerged", not as
+	// the standalone "merged" label.
+	for _, line := range strings.Split(result, "\n") {
+		if strings.Contains(line, " fresh-lane ") {
+			if strings.Contains(line, " merged") && !strings.Contains(line, "unmerged") {
+				t.Fatalf("0-commit lane should not show as merged: %q", result)
+			}
+		}
+	}
+}
+
 // ---------------------------------------------------------------------------
 // worktreeListEntryToMap
 // ---------------------------------------------------------------------------
