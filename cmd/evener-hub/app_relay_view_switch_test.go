@@ -122,7 +122,7 @@ func TestHubRelayViewSwitchDeliversEachDeltaOnce(t *testing.T) {
 	streamDeltas(0, deltaCount)
 	for label, client := range map[string]*appwire.Client{"A": clientA, "B": clientB} {
 		received := counts(client)
-		for i := 0; i < deltaCount; i++ {
+		for i := range deltaCount {
 			key := fmt.Sprintf("delta-%d ", i)
 			switch got := received[key]; got {
 			case 1:
