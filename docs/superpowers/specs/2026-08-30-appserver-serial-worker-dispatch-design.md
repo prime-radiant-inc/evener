@@ -261,9 +261,13 @@ The queue is a buffered channel on `Connection`:
 requests chan appwire.Message // cap appserver.requestQueueCap = 64
 ```
 
-**Bound.** 64 slots. The number needs to hold any legitimate pipelined burst from one
-client tab — the observed bursts are a handful of requests on pane switch — while
-staying small enough that the memory multiplier below stays boring. It is deliberately
+**Bound.** 64 slots, and the number is explicitly **provisional**: slice 0 of the
+landing order characterizes real client burst depth (named UI scenarios in the web
+client and TUI, or queue high-water logging during an e2e run) and the final
+constant is the worst measured legitimate burst with at least 4× headroom. 64 is
+the ceiling this design commits to, not a measured value. The number needs to hold
+any legitimate pipelined burst from one client tab while staying small enough that
+the memory multiplier below stays boring. It is deliberately
 not `appwire.NotificationBufferCap` (4096): that constant sizes the *outbound*
 notification firehose, where overflow means eviction; this queue sizes inbound
 pipelining, where overflow means flow control. Coupling them would let the wrong
@@ -406,16 +410,46 @@ system is already built for it on all three sides:
   handler runs — and through server shutdown; and every concurrent slow read
   experiences prompt disconnect cancellation today. No handler may assume its
   context outlives its await points now.
-- *The wire already answers the client-side ambiguity.* A client disconnected
-  mid-mutation has never been able to know whether the mutation applied — under
-  PR #667 the handler runs to completion but its response is undeliverable. That
-  is why the retry-safe mutation machinery exists: `ClientMutationID` rides 13
-  mutation param types (validated in `HandleMessage` via
-  `ValidateMutationParams`), and the queue-mutation fences
-  (`ExpectedQueueRevision`, `ExpectedEntryID`, `ExpectedInstanceID`) make retries
-  safe across reconnects. "Did my mutation land?" is a question the protocol
-  already refuses to answer with ordering and answers with idempotent retry
-  instead.
+- *The core mutations cannot be canceled mid-flight at all, because they never
+  observe the context.* Measured on the #667 branch: 16 of the daemon's 22
+  handlers bind `_ context.Context` — they ignore it entirely. `turn/start` and
+  `turn/steer` are the archetype (`server/appwire_runtime.go`): under
+  `lockRetrySafeMutation` — the durable per-`ClientMutationID` dedup — they
+  accept a durable mutation intent and return a receipt; the turn itself runs
+  under session-lifetime context in the serve loop, not under the RPC. Prompt
+  disconnect cancellation is a no-op for this entire class. The six daemon
+  handlers that do bind ctx are the slow read (`thread/read`), two benign reads
+  (`thread/unsubscribe`, `model/list`), and three mutations that carry their own
+  failure discipline: `turn/interrupt` sits under the same `lockRetrySafeMutation`
+  dedup as start/steer, `thread/clear`'s failure path releases its gate and
+  admits a retry with a fresh mutation id, and `thread/compact/start` forwards
+  ctx into a single callback — each is a named subject for the slice-0 audit
+  below, not an open-ended population.
+- *The wire already answers the client-side ambiguity, and the retry contract is
+  explicit.* A client disconnected mid-mutation has never been able to know
+  whether the mutation applied — under PR #667 the handler usually ran to
+  completion but its response was undeliverable. That is why the retry-safe
+  machinery exists (`ClientMutationID` on 13 mutation param types, validated via
+  `ValidateMutationParams`; the queue-mutation fences `ExpectedQueueRevision`,
+  `ExpectedEntryID`, `ExpectedInstanceID`; the reconnect flow in
+  `2026-07-28-appwire-retry-safe-mutations-and-atomic-rejoin-design.md` and
+  `2026-07-30-single-composer-mutation-recovery-design.md`): after reconnect the
+  client retries with the *same* `ClientMutationID`, and the durable dedup
+  answers "already applied" with the original outcome rather than applying
+  twice. An abandoned (never-started) mutation retries as a fresh application.
+  This design adds no new state to that contract; it only makes the
+  abandoned-vs-canceled cases more common relative to ran-to-completion.
+- *The remaining class is small and gets a bounded pre-implementation audit.*
+  The only handlers prompt cancellation can touch are those that bind ctx *and*
+  await between durable side effects. Slice 0 of the landing order inventories
+  them mechanically (grep the serial mutation registrations for ctx-binding
+  signatures — 6 of 22 in the daemon as measured above; the same sweep over the
+  hub's 81 — then read the ctx-binding bodies for awaits between durable
+  writes). Each member either already tolerates mid-flight cancellation (the
+  gate-release/retry shape `thread/clear` has), or gets an explicit decision —
+  fix the handler, or run it under a context detached from connection cancel —
+  and a test. This is a bounded audit of a grep-able class, not the ~104-handler
+  ordering audit this design exists to avoid.
 - *Post-cancellation access to connection-owned state is fenced at the seam, not
   per handler.* Handler code can reach connection-owned state only through five
   entry points, each already fenced for exactly this race because PR #667's
@@ -463,7 +497,10 @@ Worker lifecycle is owned by `ServeWebSocket`, symmetric with the send loop:
   message just the same; both sides only ever discard. After the purge, an orphaned
   handler retains exactly one frame — the one it is executing — not sixty-four (a
   frame the receive loop held while blocked enqueuing is released when that loop
-  returns).
+  returns). When the purge discards a non-empty queue it reports the count and the
+  abandoned methods through `Server.logf`, so a "did my mutation run?" report can
+  be answered from the log: abandoned means never started; a mid-flight
+  cancellation surfaces as the handler's own error path.
 - **Teardown does not join the worker.** `unregisterConnection` proceeds while a
   parked handler may still be executing, exactly as it does for PR #667's concurrent
   slow reads: `closeSend` flips `sendClosed`, the parked handler's eventual
@@ -637,25 +674,31 @@ Assumes PR #667 is merged; this change is a delta on its end state, touching onl
   the queue/worker contract — it is the authoritative statement of the ordering
   contract and must move with the policy.
 
-Landing order — three slices, each landing its behavior *with* the tests that pin
-it (test-driven, and each slice independently green), rather than a
-mechanism-then-tests split whose intermediate commit nothing verifies:
+Landing order — a pre-implementation slice and three code slices, each code slice
+landing its behavior *with* the tests that pin it (test-driven, each independently
+green and safe to deploy alone — no slice ships the worker without the semantics
+the final design requires):
 
-1. **Worker, queue, ordering, ping** — the receive-loop split, the worker with its
-   classification, the inline ping bypass, and the rewritten policy comment;
-   carried tests green unmodified, plus new tests 1–3 (ping under slow mutation,
-   pairwise ordering, panic in the worker) and 9 (keepalive live during a slow
-   mutation).
-2. **Cancellation and teardown** — the post-dequeue re-check, the teardown purge
-   with its ownership rule, and the worker-exit/after-dequeue/purge seams, plus
-   tests 5, 6, and 8 (abandonment on close, deterministic dequeue cancellation,
-   executing mutation across disconnect).
-3. **Saturation** — the blocked-enqueue path, the one-shot advisory, the
-   injectable capacity and blocked-enqueue seams, plus tests 4 and 7. Before this
-   slice freezes `requestQueueCap`, characterize real client burst depth (count
-   frames per UI action in the web client's request layer, or log queue high-water
-   marks during an e2e scenario run) so the constant encodes evidence, not the
-   guess recorded here.
+0. **Audit and measurement, no code.** (a) The ctx-binding mutation audit from
+   "Admitted-request semantics on disconnect": grep the serial mutation
+   registrations for ctx-binding signatures, read those bodies for awaits between
+   durable side effects, and record the per-handler disposition (tolerates
+   cancellation / fix / detach from connection cancel), each non-tolerating member
+   getting a test in slice 2. (b) Burst-depth characterization for
+   `requestQueueCap` (named UI/TUI scenarios or e2e high-water logging; final
+   constant = worst legitimate burst with ≥4× headroom).
+1. **Worker, queue, ordering, ping — with its lifecycle floor.** The receive-loop
+   split, the worker with its classification, the inline ping bypass, the
+   post-dequeue cancellation re-check, the teardown purge, and the rewritten
+   policy comment. The re-check and purge are ten lines and belong to the
+   worker's minimum correct form — a slice that can execute queued work after
+   cancellation or strand sixty-four frames must not exist, even briefly.
+   Carried tests green unmodified, plus tests 1–3 and 9.
+2. **Cancellation and teardown, pinned** — the worker-exit, after-dequeue, and
+   purge-complete seams, plus tests 5, 6, and 8, plus whatever per-handler tests
+   slice 0's audit demanded.
+3. **Saturation** — the one-shot advisory, the injectable capacity and
+   blocked-enqueue seams, the measured `requestQueueCap`, plus tests 4 and 7.
 
 Estimated size: roughly 120–160 lines of production delta (most of it comments and
 the worker loop) and 450–550 lines of new tests per the plan above. No wire-format
@@ -675,9 +718,11 @@ the ordering-contract section shows is meaningless to id-correlating clients.
   across all of a client's connections), which is its own design. If only the
   slow-read count needs a bound sooner, a per-connection semaphore around the spawn
   is a separate small change.
-- **Queue capacity.** 64 is a judgment call sized against observed UI bursts; the
-  constant is one line to change and the backpressure behavior is capacity-
-  independent. If real clients ever pipeline deeper legitimately, raise it.
+- **Queue capacity.** Resolved to a process rather than a number: 64 is the
+  provisional ceiling, slice 0 measures real burst depth, and the frozen constant
+  is worst-measured-burst × ≥4 headroom (see "Bound" and the landing order). The
+  backpressure behavior is capacity-independent, so nothing else in the design
+  moves with the number.
 - **Should `evener/auth/device/poll` still do network I/O on the RPC path at all?**
   The worker makes it harmless to the transport, but a poll loop that holds the
   serial queue for a network round trip still delays same-connection requests behind
