@@ -569,6 +569,12 @@ func TestCovReasoningEffortLevelKnown(t *testing.T) {
 	if !reasoningEffortLevelKnown(levels, "HIGH") {
 		t.Fatal("should find 'HIGH' (case-insensitive)")
 	}
+	if !reasoningEffortLevelKnown(levels, "none") {
+		t.Error("reasoningEffortLevelKnown(none) = false, want true (explicit off is always settable; it omits the field where the model has no off level)")
+	}
+	if !reasoningEffortLevelKnown(levels, "off") {
+		t.Error("reasoningEffortLevelKnown(off) = false, want true (disable alias)")
+	}
 	if reasoningEffortLevelKnown(levels, "xhigh") {
 		t.Fatal("should not find 'xhigh'")
 	}

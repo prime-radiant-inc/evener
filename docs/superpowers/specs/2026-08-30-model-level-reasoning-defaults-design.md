@@ -97,8 +97,9 @@ passes it through. Loop-detector escalation treats `none` like `""`.
 The catalog ladder includes `none` for models whose litellm entry sets
 `supports_none_reasoning_effort` (gpt-5.1 and later), so the explicit-off
 path has a level to send on exactly the models that accept one. `none` has
-no rank, so the clamp ignores it; the hub palette already filters it out of
-tier pickers, and a `task_list` task may select it to run without thinking.
+no rank, so the clamp ignores it; the hub surfaces offer it as its own
+"none (off)" option where the ladder lists it, and a `task_list` task may
+select it to run without thinking.
 
 The hub's launch chip value `none` therefore means "off", and its label
 changes from "none (clear)" to "none (off)".
@@ -126,9 +127,13 @@ behavior with no effort configured is unchanged.
   silence means non-reasoning. A silent provider-prefixed mirror key
   (`openrouter/*`, `ollama/*`) leaves the answer unknown and the model
   permitted.
-- An explicit `none` on a mandatory-thinking model (live `reasoning.mandatory`)
-  omits the field and the provider rejects the request — surfacing the
-  conflict rather than silently overriding the user.
+- An explicit `none` on a mandatory-thinking model omits the field. When the
+  model reached the wire through a live `reasoning.mandatory` signal the
+  provider then rejects the request, surfacing the conflict. On an
+  openai-compat instance whose embedded-catalog entry is thinking_always_on
+  (the fable-5 family), the adapter's own mandatory backstop substitutes its
+  medium default instead — the model cannot run without thinking either way,
+  and the backstop cannot see whether nil meant "unset" or "off".
 - Adaptive Claude: `output_config.effort: high` explicitly (was implicit).
 - Cataloged reasoning models whose provider default was "off" or "dynamic"
   (legacy Claude budgets, Gemini 2.5, zai/qwen thinking toggles) now run at

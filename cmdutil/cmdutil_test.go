@@ -83,7 +83,7 @@ func TestResolveReasoningEffort(t *testing.T) {
 		{name: "env none means off", cli: "", env: "none", wantSet: true, wantVal: "none"},
 		{name: "xhigh", cli: "xhigh", env: "", wantSet: true, wantVal: "xhigh"},
 		{name: "minimal", cli: "minimal", env: "", wantSet: true, wantVal: "minimal"},
-		{name: "max alias of top tier", cli: "max", env: "", wantSet: true, wantVal: "max"},
+		{name: "max distinct top tier", cli: "max", env: "", wantSet: true, wantVal: "max"},
 		{name: "off alias means off", cli: "off", env: "", wantSet: true, wantVal: "none"},
 		{name: "invalid", cli: "banana", env: "", wantErr: true},
 	}

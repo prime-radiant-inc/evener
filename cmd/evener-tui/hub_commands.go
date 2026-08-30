@@ -675,7 +675,13 @@ func sendHubAction(client *appwire.Client, ref appwire.Ref, action string, expec
 // reasoningEffortLevelKnown reports whether level (case-insensitively)
 // appears in the session's snapshot-cached reasoning-effort levels, so
 // /effort <level> can be rejected client-side without a wire round trip.
+// The explicit off ("none" and its aliases) is always settable: the session
+// stores it and the request builder sends it only where the model's ladder
+// lists an off level, omitting the field otherwise.
 func reasoningEffortLevelKnown(levels []string, level string) bool {
+	if llm.NormalizeReasoningEffort(level) == llm.ReasoningEffortNone {
+		return true
+	}
 	for _, l := range levels {
 		if strings.EqualFold(l, level) {
 			return true

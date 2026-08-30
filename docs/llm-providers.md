@@ -321,8 +321,8 @@ similar). Leave them off for a bare model server that would reject the fields.
   unsupported and gets clamped away by `llm.ClampReasoningEffort`
   (`llm/types.go:587`) before it ever reaches the adapter.
 - **Keys** are evener's canonical levels — `minimal`, `low`, `medium`, `high`,
-  `xhigh` — normalized lowercase at load; `max` is accepted as an input alias
-  and folded into `xhigh` (evener's rank table treats them as one tier).
+  `xhigh`, `max` — normalized lowercase at load; `xhigh` and `max` are
+  distinct ascending tiers (`max` ranks above `xhigh`).
   `"off"` is rejected at load — an explicit `none` effort reaches the wire only
   on models whose ladder lists a `none` level and omits the field otherwise, so
   there's no slot for an "off" wire spelling (`llm/providercfg/load.go`).
@@ -741,9 +741,9 @@ original problem stopped mattering.
 
 ## Reasoning effort
 
-One per-session knob ordered `minimal < low < medium < high < xhigh == max`
-(`xhigh` and `max` are aliases for the top tier — OpenRouter/OpenAI advertise
-`xhigh`, Anthropic and the evener catalog say `max`; `none` turns thinking off
+One per-session knob ordered `minimal < low < medium < high < xhigh < max`
+(distinct ascending tiers — the per-model clamp resolves either top tier to
+the nearest level the model advertises; `none` turns thinking off
 where the model lists a `none` level and omits the field otherwise). With
 nothing configured, a reasoning model runs at its catalog-stated default or
 `medium`; see "`thinking_format`" above for the exact rule. The
