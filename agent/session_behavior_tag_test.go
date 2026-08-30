@@ -130,6 +130,57 @@ func TestBehaviorTag_Gemini_OriginalGeminiRegistersWebSearch(t *testing.T) {
 	}
 }
 
+// TestBehaviorTag_Gemini_WithoutWebSearchDoesNotRegisterWebSearch pins the
+// second half of the §7.5 rule: the function tool is registered for
+// Protocol == google AND a row that serves web search. A google model whose
+// live /models entry says it does not gets no web_search.
+func TestBehaviorTag_Gemini_WithoutWebSearchDoesNotRegisterWebSearch(t *testing.T) {
+	t.Parallel()
+	profile := newGeminiProfile("gemini-2.5-pro").
+		WithLiveModelInfo(llm.ModelInfo{SupportsWebSearch: new(false)})
+	if profile.SupportsWebSearch() {
+		t.Fatal("pre-condition: SupportsWebSearch = true, want false")
+	}
+
+	sess := &Session{
+		profile: profile,
+		env:     execenv.NewLocalExecutionEnvironment(t.TempDir()),
+	}
+
+	if webSearchIsWired(t, sess) {
+		t.Fatal("registerCoreTools wired web_search for a google model that serves none")
+	}
+}
+
+// TestReapplyProviderTools_GoogleWithoutWebSearch covers the same conjunct on
+// the mid-session switch path: switching INTO a google profile that serves no
+// web search registers nothing, and switching from one that does into one that
+// does not removes the tool.
+func TestReapplyProviderTools_GoogleWithoutWebSearch(t *testing.T) {
+	t.Parallel()
+	searching := newGeminiProfile("gemini-2.5-pro")
+	if !searching.SupportsWebSearch() {
+		t.Fatal("pre-condition: the google profile must serve web search")
+	}
+	quiet := newGeminiProfile("gemini-2.5-pro").
+		WithLiveModelInfo(llm.ModelInfo{SupportsWebSearch: new(false)})
+
+	s := &Session{reg: tool.NewRegistry(), env: execenv.NewLocalExecutionEnvironment(t.TempDir())}
+	s.reapplyProviderSpecificTools(NewOpenAIProfile("gpt-5.4"), quiet)
+	if s.reg.Get("web_search") != nil {
+		t.Fatal("switching into a google profile that serves no web search registered web_search")
+	}
+
+	s.reapplyProviderSpecificTools(NewOpenAIProfile("gpt-5.4"), searching)
+	if s.reg.Get("web_search") == nil {
+		t.Fatal("switching into a web-searching google profile must register web_search")
+	}
+	s.reapplyProviderSpecificTools(searching, quiet)
+	if s.reg.Get("web_search") != nil {
+		t.Fatal("losing web search on a google profile must remove web_search")
+	}
+}
+
 // TestBehaviorTag_Gemini_OpenAIDoesNotRegisterWebSearch verifies that
 // registerCoreTools does NOT wire web_search for OpenAI
 // (it uses native web search via req.WebSearch instead).

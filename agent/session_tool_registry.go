@@ -115,8 +115,9 @@ type toolDeps struct {
 	// reasoningEffortLevels is captured once for the task_list tool definition.
 	reasoningEffortLevels []string
 
-	// webSearchEnabled is the resolved decision (BehaviorTag == "google") for
-	// whether the function-tool web_search should be registered.
+	// webSearchEnabled is the resolved decision (the google protocol on a row
+	// that serves web search) for whether the function-tool web_search should
+	// be registered.
 	webSearchEnabled bool
 
 	// stateDir and sessionID locate the current session's transcript bucket and

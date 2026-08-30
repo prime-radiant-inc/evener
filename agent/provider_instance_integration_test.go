@@ -5,21 +5,26 @@ package agent
 // Proves end-to-end at the session level that a provider instance whose NAME
 // differs from its TYPE:
 //   - identifies by NAME (ID(), req.Provider stamped by llm.Client)
-//   - behaves by TAG (prompt-cache eligibility, system-prompt section, tool wiring)
+//   - behaves by its registry identity (system-prompt section, tool wiring)
+//
+// Prompt-cache eligibility is deliberately absent: the session stamps both
+// prompt-cache fields for every instance and the resolved row's Fields decide
+// at dispatch (spec §7.5) — that is pinned in session_openai_prompt_cache_test.go.
 //
 // Coverage map:
 //  1. Identity by name — WithProviderID(openai, "work") → ID="work", tag="openai";
 //     session turn completes; error event reports provider "work".
-//  2. Behavior by tag — same "work" instance gets the openai prompt section and
-//     24h prompt-cache eligibility via renderSystemPrompt / applyModelRequestMetadata.
-//  3. "any real openai" boundary — openai-compatible tag does NOT get the openai
-//     section or prompt-cache eligibility (already tested individually; verified
-//     cohesively here in a single subtest).
+//  2. Behavior by surface — the same "work" instance gets the openai prompt
+//     section via renderSystemPrompt, and applyModelRequestMetadata stamps the
+//     session identity onto the request.
+//  3. "any real openai" boundary — the generic surface does NOT get the openai
+//     section (already tested individually; verified cohesively here in a single
+//     subtest).
 //  4. Cross-instance switch — resolver maps "work2/<model>" to a renamed openai
 //     profile; SetModel("work2/gpt-5.2") swaps the profile, preserves a
 //     WithCommunicateOutputSchema override, and keeps identity "work2".
-//  5. Provider-conditional tool on switch — SetModel to a google-tag instance
-//     wires real web_search; SetModel away removes it.
+//  5. Provider-conditional tool on switch — SetModel to a google-protocol
+//     instance wires real web_search; SetModel away removes it.
 
 import (
 	"context"
@@ -64,8 +69,8 @@ func instanceTestResolver(ref string) (*provider.Profile, error) {
 //  1. ID()=="work", BehaviorTag()=="openai" (identity fields).
 //  2. ProcessInput returns the fake response (session is functional).
 //  3. The error-path event reports provider "work" (llm.Client stamping).
-//  4. renderSystemPrompt contains the openai section (behavior by tag).
-//  5. applyModelRequestMetadata sets 24h prompt-cache (behavior by tag).
+//  4. renderSystemPrompt contains the openai section (behavior by surface).
+//  5. applyModelRequestMetadata stamps the session's request metadata.
 func TestProviderInstance_RenamedOpenAI_IdentityAndBehavior(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
@@ -168,9 +173,8 @@ func TestProviderInstance_OpenAICompatible_NoOpenAIBehavior(t *testing.T) {
 	const openAIMarker = "they execute in the order you"
 	prompt, _ := sess.renderSystemPrompt(sess.env)
 	if strings.Contains(prompt, openAIMarker) {
-		t.Fatalf("system prompt contains openai section marker %q — openai-compatible must NOT load the openai section", openAIMarker)
+		t.Fatalf("system prompt contains openai section marker %q — the generic surface must NOT load the openai section", openAIMarker)
 	}
-
 }
 
 // ── Subtest 4: Cross-instance switch ─────────────────────────────────────────
