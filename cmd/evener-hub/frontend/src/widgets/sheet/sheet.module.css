@@ -95,6 +95,7 @@
   .left {
     animation: none;
   }
+}
 
 /* --- expandable bottom Sheet (Task 2) -------------------------------------
  * A bottom-anchored Sheet can opt into a peek/full geometry: a drag handle
@@ -128,7 +129,7 @@
 .expandableHeader {
   position: sticky;
   top: 0;
-  z-index: 1;
+  z-index: var(--z-sticky-bar);
   background: var(--surface-inset);
 }
 
@@ -143,5 +144,4 @@
   .expandableBottom {
     transition: none;
   }
-}
 }
