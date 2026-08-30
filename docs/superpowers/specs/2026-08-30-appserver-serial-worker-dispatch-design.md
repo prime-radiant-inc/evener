@@ -67,10 +67,13 @@ not handlers waiting on each other.
   design does not add one.
 - Reintroducing an in-flight limiter with a wire-visible overflow error. The 128-slot
   limiter and its `Unavailable` response died in PR #667 and stay dead; the queue
-  bound here applies flow control, never a wire error.
-- Bounding the *count* of in-flight concurrent slow reads. PR #667 dispatches each
-  slow read on its own goroutine with no cap; this design keeps that property
-  unchanged (see Open questions).
+  bound and the slow-read cap here apply blocking flow control, never a wire error.
+- An aggregate per-client admission budget spanning a client's connections. The
+  per-connection slow-read cap (see the slow-read composition section) bounds what
+  one connection holds in flight; a client opening more connections multiplies it,
+  and that residue is consciously accepted under the current trust model (the
+  peers are our own authenticated web UI and TUI). The aggregate budget is the
+  named escalation if that trust model ever changes.
 
 ## Current state (post-#667) and the residual exposure
 
@@ -143,7 +146,11 @@ qualification the queue section derives: ping bypass applies from the moment the
 loop reads the ping frame, and the loop can only read it when it is not blocked
 enqueuing into a full queue. Under saturation — a client more than
 `requestQueueCap` requests deep — the ping frame itself waits for a queue slot,
-per the flow-control analysis in "Queue semantics".
+per the flow-control analysis in "Queue semantics". The slow-read cells carry the
+matching qualification: with `slowReadDispatchCap` reads already in flight, the
+next slow read's dispatch blocks the worker until a slot frees — backpressure,
+analyzed in the slow-read composition section, not a change to what may run
+before what.
 
 The one cell this design changes relative to PR #667 is ping: today ping is answered
 inline in the receive loop, so it waits behind an executing serial handler; here it
@@ -253,6 +260,28 @@ The cost is one queue hop of latency for a slow read behind a slow mutation — 
 waiting for earlier requests to finish is precisely the ordering PR #667 pinned for
 the moment a slow read *starts*, so this is the contract, not a regression.
 
+**In-flight slow reads are capped per connection.** The worker holds a
+per-connection cap of **4** concurrent slow reads (`slowReadDispatchCap`, a
+buffered-channel semaphore): before spawning a slow read it acquires a slot —
+blocking, with the acquire selecting on `ctx.Done()` so teardown is never held —
+and the slow-read goroutine releases the slot when `handleAndEnqueue` returns.
+This closes the unbounded half of PR #667's exposure: one connection can no
+longer hold arbitrarily many transcript walks (and their decoded params frames)
+in flight; four covers any legitimate use of three slow-read methods with room
+to spare.
+
+The cap is the same blocking-backpressure principle as the request queue, and
+explicitly *not* a return of the deleted 128-slot limiter: a full cap blocks the
+worker from dispatching the next slow read — no wire error, no `Unavailable`
+overflow response, nothing a client observes except latency it caused. The
+ordering consequence is stated honestly, as a qualification in the same class as
+the queue's ping qualification: below the cap, the partial-order table holds
+exactly as written; at the cap, the worker parks in the acquire, so the blocked
+slow read — and every request queued behind it — waits for one of the four
+in-flight reads to finish. That is backpressure applied to a connection running
+four transcript walks simultaneously, not a change to any ordering guarantee: no
+request ever runs earlier than the table allows, only later.
+
 ### Queue semantics: bound, backpressure, memory
 
 The queue is a buffered channel on `Connection`:
@@ -261,17 +290,16 @@ The queue is a buffered channel on `Connection`:
 requests chan appwire.Message // cap appserver.requestQueueCap = 64
 ```
 
-**Bound.** 64 slots, and the number is explicitly **provisional**: slice 0 of the
-landing order characterizes real client burst depth (named UI scenarios measured at
-the existing client edges — see the landing order for the method) and the final
-constant is the worst measured legitimate burst with at least 4× headroom, capped
-at 64 — the ceiling this design's memory analysis covers. The decision branch is
-explicit: measured burst ≤ 16 freezes `min(burst × 4, 64)`; a measured burst
-above 16 means a real client legitimately pipelines deeper than this design
-assumed, and the capacity **and** the memory analysis come back to this spec for
-revision together rather than the ceiling being quietly raised. The number needs to hold
-any legitimate pipelined burst from one client tab while staying small enough that
-the memory multiplier below stays boring. It is deliberately
+**Bound.** 64 slots, decided (Jesse, 2026-08-30): `requestQueueCap = 64` is simply
+the constant. An earlier draft carried a measure-then-freeze mechanism (burst-depth
+characterization, a `min(burst × 4, 64)` rule, a spec-revision tripwire); it was
+deliberately dropped, because blocking backpressure is benign in both directions —
+a too-large capacity costs only the bounded memory the analysis below already
+covers, a too-small one costs only flow-control latency for a client that
+pipelined deeper than any of ours do — so precision isn't worth the ceremony. The
+number needs to hold any legitimate pipelined burst from one client tab (observed
+bursts are a handful of requests) while staying small enough that the memory
+multiplier below stays boring. It is deliberately
 not `appwire.NotificationBufferCap` (4096): that constant sizes the *outbound*
 notification firehose, where overflow means eviction; this queue sizes inbound
 pipelining, where overflow means flow control. Coupling them would let the wrong
@@ -335,23 +363,26 @@ plus two frames the queue does not hold — the one the worker is executing and 
 one the receive loop may hold while blocked enqueuing (capacity + 2 total). A
 frame's decoded size is bounded by the transport read limit
 (`appWireWebSocketReadLimit`, 128 MiB in `appwire/ws_transport.go`), so the
-arithmetic worst case is (capacity + 2) × read limit — ~8 GiB — from an
-authenticated client deliberately stuffing maximal frames behind a parked handler.
-On teardown the buffered frames are explicitly discarded rather than left to
-`Connection` garbage collection, because an orphaned handler can retain the
-`Connection` (see the teardown purge in Shutdown). Recorded deliberately, with its context: this is not the cheapest
-route to that outcome on the current tree. PR #667 already lets the same client hold
-*unbounded* decoded maximal frames — each pipelined `thread/read` spawns a goroutine
-that retains its params message, with no cap since the 128-slot limiter died — and
-the same client can open additional connections besides. The queue's ×64 multiplier
-on the serial path is therefore strictly smaller than an exposure the trusted-client
-model already accepts. The governing knob for the whole class is the per-frame read
-limit, which is a transport decision outside this design's scope. A byte-budgeted
-queue was considered and rejected: it adds real complexity to close one route into a
-class that stays open through the concurrent-read route and the extra-connection
-route, against a peer that is our own authenticated web UI and TUI. If the class is
-ever closed for real, it needs an aggregate per-client admission budget spanning all
-of these, not a budget on this one channel (see Open questions).
+arithmetic worst case is (capacity + 2 + `slowReadDispatchCap`) × read limit —
+64 queued + one executing + one blocked-enqueue + up to 4 in-flight slow-read
+params, ~8.75 GiB at the limit — from an authenticated client deliberately
+stuffing maximal frames behind a parked handler. On teardown the buffered frames
+are explicitly discarded rather than left to `Connection` garbage collection,
+because an orphaned handler can retain the `Connection` (see the teardown purge
+in Shutdown). Two decisions bound this analysis (both Jesse, 2026-08-30). First,
+the slow-read cap above closes what used to be the *unbounded* half of the
+exposure — under PR #667 each pipelined `thread/read` spawns a goroutine
+retaining its params message with no cap — so every per-connection retention
+path is now a named constant. Second, a byte-weighted queue budget was
+considered across several review rounds and the rejection stands: it adds real
+complexity to tighten one already-bounded route, against a peer that is our own
+authenticated web UI and TUI, while the per-frame read limit remains the
+governing knob for the whole class. What remains open is only multiplication
+across connections — a malicious *authenticated* client opening many connections
+multiplies every per-connection bound — and that residue is consciously
+accepted under the current trust model; an aggregate per-client admission budget
+spanning connections is the named escalation if that trust model changes (see
+Decided questions).
 
 **Initialize handshake.** No special casing. Pre-initialize frames ride the queue like
 everything else; the worker executes them in order, and `HandleMessage`'s existing
@@ -648,6 +679,15 @@ without modification:
    with a serial handler parked, keepalive ping decisions report the reader
    available. Fails against PR #667; pins the incidental improvement so it cannot
    silently regress.
+10. **Slow-read cap blocks, drains, and tears down** — park `slowReadDispatchCap`
+    slow reads on one connection; assert the next slow read does not start (a
+    dispatch-count seam or per-read started signal), and that no wire error or
+    eviction occurred — the connection is healthy, just full. Release one parked
+    read; assert the blocked read starts (the cap drains on completion, not on
+    response delivery races). Then refill the cap and close the client while the
+    worker is parked in the acquire; assert the worker exits promptly (the
+    acquire selects on `ctx.Done()`) and teardown completes without waiting for
+    the parked reads.
 
 ## Rejected alternative: full-async dispatch for all handlers
 
@@ -704,18 +744,15 @@ slice landing its behavior *with* the tests that pin it (test-driven, each
 independently green and safe to deploy alone — no slice ships the worker without
 the semantics the final design requires):
 
-0. **Audit and measurement — a hard gate, remediation included.** (a) The
-   ctx-binding mutation audit from "Admitted-request semantics on disconnect",
-   producing the complete 105-row disposition table appended to this spec; any
-   handler the audit finds intolerant of mid-flight cancellation gets its fix (or
-   its detachment from connection cancel) and its test landed *here*, before the
-   worker exists, so slice 1 can never deploy prompt cancellation ahead of a
-   handler that cannot take it. (b) Burst-depth measurement for
-   `requestQueueCap`. It cannot come from the not-yet-built queue, so measure at
-   the existing edges: count requests per named UI action in the web client's
-   request layer and the TUI's client (static reading plus a browser-devtools
-   frame count on the real UI), and apply the min(burst × 4, 64) rule from
-   "Bound". No production code beyond audit remediation.
+0. **Audit — a hard gate, remediation included.** The ctx-binding mutation audit
+   from "Admitted-request semantics on disconnect", producing the complete
+   105-row disposition table appended to this spec; any handler the audit finds
+   intolerant of mid-flight cancellation gets its fix (or its detachment from
+   connection cancel) and its test landed *here*, before the worker exists, so
+   slice 1 can never deploy prompt cancellation ahead of a handler that cannot
+   take it. No production code beyond audit remediation. (An earlier draft also
+   put a burst-depth measurement task here; it died with the measure-then-freeze
+   capacity rule — `requestQueueCap` is simply 64.)
 1. **Worker, queue, ordering, ping — with its lifecycle floor and its tests.**
    The receive-loop split, the worker with its classification, the inline ping
    bypass, the post-dequeue cancellation re-check, the teardown purge, and the
@@ -726,38 +763,52 @@ the semantics the final design requires):
    landed its behavior with its tests. Carried tests green unmodified, plus
    tests 1–3, 5, 6, 8, and 9 with the seams they need (worker-exit,
    after-dequeue, purge-complete).
-2. **Saturation** — the blocked-enqueue path's one-shot advisory, the injectable
-   capacity and blocked-enqueue seams, the measured `requestQueueCap`, plus
-   tests 4 and 7.
+2. **Saturation and the slow-read cap** — the blocked-enqueue path's one-shot
+   advisory, the injectable capacity and blocked-enqueue seams, and the
+   `slowReadDispatchCap` semaphore, plus tests 4, 7, and 10.
 
-Estimated size for the worker mechanism: roughly 120–160 lines of production delta
-(most of it comments and the worker loop) and 450–550 lines of new tests per the
-plan above; handler remediation, if slice 0 names any, is additional and estimated
+Estimated size for the worker mechanism: roughly 140–180 lines of production delta
+(most of it comments; the mechanisms are one channel, one goroutine, and one
+semaphore) and 500–620 lines of new tests per the plan above; handler remediation, if slice 0 names any, is additional and estimated
 per finding. No wire-format or API change and no client change; handler changes
 are exactly the slice-0 remediation set (expected small, possibly empty); the one
 wire-observable behavior change is scheduling — a ping response may now overtake
 earlier responses, which the ordering-contract section shows is meaningless to
 id-correlating clients.
 
-## Open questions
+## Decided questions (Jesse, 2026-08-30)
 
-- **Unbounded concurrent slow reads, and aggregate per-client admission.** PR #667
-  spawns a goroutine per slow read with no cap (the old limiter died with the
-  overflow error). A client can pipeline many `thread/read`s and hold that many
-  transcript walks — and their decoded params frames — in flight, and can multiply
-  any per-connection bound by opening more connections. This design neither worsens
-  nor fixes that class; the queue-memory analysis above concludes that closing it
-  for real means an aggregate per-client admission budget (bytes and goroutines
-  across all of a client's connections), which is its own design. If only the
-  slow-read count needs a bound sooner, a per-connection semaphore around the spawn
-  is a separate small change.
-- **Queue capacity.** Resolved to a process rather than a number: 64 is the
-  provisional ceiling, slice 0 measures real burst depth, and the frozen constant
-  is worst-measured-burst × ≥4 headroom (see "Bound" and the landing order). The
-  backpressure behavior is capacity-independent, so nothing else in the design
-  moves with the number.
-- **Should `evener/auth/device/poll` still do network I/O on the RPC path at all?**
-  The worker makes it harmless to the transport, but a poll loop that holds the
-  serial queue for a network round trip still delays same-connection requests behind
-  it. Restructuring device-poll (server-side polling with a notification) is out of
-  scope here and may be worth its own note.
+Four questions this design originally left open have been decided; the decisions
+are folded into the sections above and recorded here as the paper trail.
+
+- **Byte-weighted queue budget: rejection accepted.** The reviewer's repeated
+  demand for a byte-weighted queue budget is declined. The per-frame read limit
+  (`appWireWebSocketReadLimit`) stands as the governing trust knob, the queue's
+  count bound is the whole of the queue-side mechanism, and the rationale in
+  "Memory" is unchanged.
+- **Queue capacity: hardcode 64.** The measure-and-freeze mechanism (slice-0
+  burst-depth measurement, the `min(burst × 4, 64)` rule, the >16 spec-revision
+  tripwire) is dropped. `requestQueueCap = 64` is simply the constant: it holds
+  any legitimate pipelined burst, the memory analysis covers it, and blocking
+  backpressure is benign in both directions, so precision is not worth the
+  ceremony. The deliberate decoupling from `appwire.NotificationBufferCap`
+  stands.
+- **`evener/auth/device/poll` stays inline on the RPC path.** The handler is one
+  to two HTTPS round trips bounded by the auth client's 10-second `HTTPTimeout`
+  (`newHubAuthController` builds `&http.Client{Timeout: cfg.HTTPTimeout}` in
+  `cmd/evener-hub/app_auth.go`; `authopenai.DefaultConfig` sets 10s in
+  `auth/openai/config.go`), it runs only during interactive login, and under
+  this design it parks the worker while ping stays live — the transport exposure
+  it posed under PR #667 is exactly what the worker removes. Async restructuring
+  (server-side polling with a notification) is the known escape hatch if
+  login-time heartbeat issues ever materialize; promoting it to the concurrent
+  set was rejected because it is a mutation and the concurrent set stays
+  reads-only.
+- **The memory class, re-scoped.** Instead of deferring the whole class to a
+  future aggregate per-client admission budget, this design gained the
+  per-connection blocking cap on in-flight slow reads (`slowReadDispatchCap = 4`,
+  see the slow-read composition section), closing the unbounded per-connection
+  half. The residue — a malicious authenticated client multiplying every
+  per-connection bound across many connections — is consciously accepted under
+  the current trust model; the aggregate budget remains the named escalation if
+  that trust model changes. Issue #680 is re-scoped to match.
