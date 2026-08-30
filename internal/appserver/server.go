@@ -4,6 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log"
+	"runtime/debug"
 	"sort"
 	"sync"
 	"time"
@@ -877,9 +879,35 @@ func (c *Connection) dispatchMessage(ctx context.Context, msg appwire.Message) {
 }
 
 // handleAndEnqueue runs one request through HandleMessage and enqueues its
-// response.
+// response. It is the panic barrier for handler code: a panicking handler is
+// logged with its stack and answered with an InternalError response, and the
+// connection lives on. Handlers dispatched on their own goroutine have no
+// other recover between them and the runtime (the net/http barrier only
+// covers the receive loop's goroutine), and the inline path shares the
+// barrier so both dispatch modes contain a panic identically.
 func (c *Connection) handleAndEnqueue(ctx context.Context, msg appwire.Message) {
+	defer func() {
+		if r := recover(); r != nil {
+			log.Printf("appserver: panic handling %s: %v\n%s", methodOf(msg), r, debug.Stack())
+			if msg.Request != nil {
+				c.enqueueDispatched(ctx, appwire.ErrorMessage(msg.Request.ID, appwire.InternalError("internal error handling request")))
+			}
+		}
+	}()
 	c.enqueueDispatched(ctx, c.HandleMessage(ctx, msg))
+}
+
+// methodOf names a message's method for the panic log; a frame that is
+// neither request nor notification cannot reach a handler, but the barrier
+// covers it anyway.
+func methodOf(msg appwire.Message) string {
+	switch {
+	case msg.Request != nil:
+		return msg.Request.Method
+	case msg.Notification != nil:
+		return msg.Notification.Method
+	}
+	return "invalid frame"
 }
 
 // enqueueDispatched is the one enqueue body every dispatch path shares:

@@ -4,10 +4,12 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"log"
 	"net/http"
 	"net/http/httptest"
 	"sort"
 	"strconv"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -529,4 +531,91 @@ func seenMarkers(seen map[string]bool) []string {
 	}
 	sort.Strings(markers)
 	return markers
+}
+
+// panicLogCapture redirects the standard logger to a buffer for the duration
+// of the test, so an intentionally provoked panic keeps the test output
+// pristine and the log line itself can be asserted on.
+func panicLogCapture(t *testing.T) func() string {
+	t.Helper()
+	var mu sync.Mutex
+	var buf strings.Builder
+	prev := log.Writer()
+	log.SetOutput(writerFunc(func(p []byte) (int, error) {
+		mu.Lock()
+		defer mu.Unlock()
+		return buf.Write(p)
+	}))
+	t.Cleanup(func() { log.SetOutput(prev) })
+	return func() string {
+		mu.Lock()
+		defer mu.Unlock()
+		return buf.String()
+	}
+}
+
+type writerFunc func(p []byte) (int, error)
+
+func (f writerFunc) Write(p []byte) (int, error) { return f(p) }
+
+// requireInternalError asserts one request error is the panic barrier's
+// InternalError wire error.
+func requireInternalError(t *testing.T, what string, err error) {
+	t.Helper()
+	var wire appwire.WireError
+	if !errors.As(err, &wire) || wire.Code != appwire.CodeInternalError {
+		t.Fatalf("%s error = %v, want InternalError wire error", what, err)
+	}
+}
+
+// TestServeWebSocketPanickingHandlerAnswersInternalErrorAndConnectionSurvives
+// pins the panic barrier on both dispatch paths: a panic in an
+// inline-dispatched handler (thread/list) and in a concurrently dispatched
+// slow read (thread/read) each answer an InternalError response, are logged
+// with a stack, and leave the connection — and the process — alive for
+// subsequent requests.
+func TestServeWebSocketPanickingHandlerAnswersInternalErrorAndConnectionSurvives(t *testing.T) {
+	logged := panicLogCapture(t)
+	server := NewServer(ServerConfig{ServerName: "test-server", Version: "test", SourceID: "local"})
+	HandleTyped(server.Router(), appwire.MethodThreadList, func(_ context.Context, _ appwire.ThreadListParams) (appwire.ThreadListResponse, error) {
+		panic("inline handler blew up")
+	})
+	HandleTyped(server.Router(), appwire.MethodThreadRead, func(_ context.Context, _ appwire.ThreadReadParams) (appwire.ThreadReadResponse, error) {
+		panic("slow-read handler blew up")
+	})
+	HandleTyped(server.Router(), appwire.MethodThreadModelSet, func(_ context.Context, _ appwire.ThreadModelSetParams) (appwire.EmptyResponse, error) {
+		return appwire.EmptyResponse{}, nil
+	})
+	httpServer := serveWebSocketHTTP(t, server)
+	client := dialAppWireClient(t, httpServer)
+	ctx := context.Background()
+
+	_, err := client.ThreadList(ctx, appwire.ThreadListParams{})
+	requireInternalError(t, "inline panicking request", err)
+
+	_, err = client.ThreadRead(ctx, appwire.ThreadReadParams{Ref: "local:th_1"})
+	requireInternalError(t, "concurrent panicking request", err)
+
+	// The same connection keeps serving: a routed request and the app-level
+	// ping both still answer.
+	if err := client.ThreadModelSet(ctx, appwire.ThreadModelSetParams{Ref: "local:th_1", ModelProvider: "p", Model: "m"}); err != nil {
+		t.Fatalf("routed request after panics failed: %v", err)
+	}
+	var out appwire.EmptyResponse
+	if err := client.Request(ctx, appwire.MethodPing, appwire.EmptyParams{}, &out); err != nil {
+		t.Fatalf("ping after panics failed: %v", err)
+	}
+
+	output := logged()
+	for _, want := range []string{
+		"panic handling " + appwire.MethodThreadList,
+		"inline handler blew up",
+		"panic handling " + appwire.MethodThreadRead,
+		"slow-read handler blew up",
+		"goroutine", // the stack trace made it into the log
+	} {
+		if !strings.Contains(output, want) {
+			t.Fatalf("panic log missing %q in:\n%s", want, output)
+		}
+	}
 }
