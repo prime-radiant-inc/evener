@@ -152,12 +152,6 @@ const (
 	// triple only when the live binding still matches the claim's lease at
 	// apply time.
 	finishLatchLeaseConditionalTriple
-	// finishLatchRecoveryConditional: RequireFinalizationRecovery sets
-	// recoveryRequired conditionally (only when not already latched) and the
-	// finalization/runner fences unconditionally. This site performs no
-	// journal append; the latch is its effect, so it applies on every
-	// reduction, not only on append failure.
-	finishLatchRecoveryConditional
 )
 
 // finishLatchPlan is the reducer's per-site append-failure latch plan.
@@ -189,8 +183,6 @@ const (
 	finishEffectBumpEvidence
 	// finishEffectCaptureSnapshot appends the delegate's update plan.
 	finishEffectCaptureSnapshot
-	// finishEffectSignalStop signals progress to a covering subtree stop.
-	finishEffectSignalStop
 )
 
 type finishEffect struct {
@@ -265,9 +257,7 @@ func (c *delegateTreeController) executeFinishIntentLocked(intent finishIntent) 
 // reduceFinishAppendResult applies the reducer's per-site latch plan to the
 // append outcome and returns the error the wrapper must surface. Latch
 // shapes are inputs: the unconditional and lease-conditional triples apply
-// only when the append failed; the recovery-conditional latch is the site's
-// effect (there is no journal append on that path) and applies on every
-// reduction. The caller holds c.mu.
+// only when the append failed. The caller holds c.mu.
 func (c *delegateTreeController) reduceFinishAppendResult(decision finishDecision, appendErr error) error {
 	switch decision.latch.kind {
 	case finishLatchUnconditionalTriple:
@@ -287,13 +277,6 @@ func (c *delegateTreeController) reduceFinishAppendResult(decision finishDecisio
 			live.finalizationRecoveryRequired = true
 			live.recoveryRunnerPending = true
 		}
-	case finishLatchRecoveryConditional:
-		live := decision.latch.live
-		if !live.recoveryRequired {
-			live.recoveryRequired = true
-		}
-		live.finalizationRecoveryRequired = true
-		live.recoveryRunnerPending = true
 	case finishLatchNone:
 	}
 	return appendErr
@@ -322,8 +305,6 @@ func (c *delegateTreeController) finishEffectsLocked(decision finishDecision, cl
 			c.evidenceVersion++
 		case finishEffectCaptureSnapshot:
 			plans.updates = append(plans.updates, c.capturedPlanLocked(effect.delegateID))
-		case finishEffectSignalStop:
-			c.signalStopProgressLocked()
 		case finishEffectNone:
 		}
 	}
@@ -729,7 +710,8 @@ func (c *delegateTreeController) reduceGenerationFinishIntent(intent finishInten
 // reduceRequireFinalizationRecoveryIntent latches an exact finalization
 // whose external attention persistence failed. The claim remains fenced until
 // a durable stop can atomically close the open generation and then discard
-// pending attention.
+// pending attention. This site performs no journal append; the latch is its
+// effect, so it applies in-place on every successful reduction.
 func (c *delegateTreeController) reduceRequireFinalizationRecoveryIntent(intent finishIntent) finishDecision {
 	claim := intent.claim
 	if claim == nil || c.settlementClaims[claim.token] != claim {
@@ -739,14 +721,14 @@ func (c *delegateTreeController) reduceRequireFinalizationRecoveryIntent(intent 
 	if err != nil {
 		return finishDecision{err: err}
 	}
-	effects := []finishEffect{{kind: finishEffectBumpEvidence}}
+	live.recoveryRequired = true
+	live.finalizationRecoveryRequired = true
+	live.recoveryRunnerPending = true
+	c.evidenceVersion++
 	if c.stopTracksFinalizationLocked(claim.lease) {
-		effects = append(effects, finishEffect{kind: finishEffectSignalStop})
+		c.signalStopProgressLocked()
 	}
-	return finishDecision{
-		latch:   finishLatchPlan{kind: finishLatchRecoveryConditional, live: live},
-		effects: effects,
-	}
+	return finishDecision{}
 }
 
 // reduceReportQuiescedIntent releases only the process-local runner fence for
@@ -765,11 +747,11 @@ func (c *delegateTreeController) reduceReportQuiescedIntent(intent finishIntent)
 		return finishDecision{}
 	}
 	live.recoveryRunnerPending = false
-	effects := []finishEffect{{kind: finishEffectBumpEvidence}}
+	c.evidenceVersion++
 	if c.stopTracksFinalizationLocked(intent.lease) {
-		effects = append(effects, finishEffect{kind: finishEffectSignalStop})
+		c.signalStopProgressLocked()
 	}
-	return finishDecision{effects: effects}
+	return finishDecision{}
 }
 
 // reduceWorkAdmittedIntent escalates the completion requirement when

@@ -135,12 +135,7 @@ func (c *delegateTreeController) RequireFinalizationRecovery(claim *delegateSett
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	decision := c.reduceFinishIntent(finishIntent{site: finishSiteRequireFinalizationRecovery, claim: claim})
-	if decision.err != nil {
-		return decision.err
-	}
-	_ = c.reduceFinishAppendResult(decision, nil)
-	c.finishEffectsLocked(decision, delegateUpdatePlan{})
-	return nil
+	return decision.err
 }
 
 // ReportFinalizationQuiesced releases only the process-local runner fence for
@@ -150,11 +145,7 @@ func (c *delegateTreeController) ReportFinalizationQuiesced(lease delegateLease,
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	decision := c.reduceFinishIntent(finishIntent{site: finishSiteReportQuiesced, lease: lease, runtime: runtime, stalePolicy: finishStaleSwallow})
-	if decision.err != nil {
-		return decision.err
-	}
-	c.finishEffectsLocked(decision, delegateUpdatePlan{})
-	return nil
+	return decision.err
 }
 
 func (c *delegateTreeController) attentionResolutionPlansLocked(lease delegateLease, aggregate *delegatestore.Aggregate, live *delegateLiveState) []delegateAttentionCleanupPlan {
