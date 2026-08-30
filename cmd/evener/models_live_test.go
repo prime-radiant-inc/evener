@@ -15,6 +15,7 @@ import (
 	"testing"
 	"time"
 
+	"primeradiant.com/evener/cmdutil"
 	"primeradiant.com/evener/internal/credentials"
 	"primeradiant.com/evener/llm/registry"
 )
@@ -68,7 +69,7 @@ func TestLiveSmoke(t *testing.T) {
 	if err != nil {
 		t.Fatalf("credentials: %v", err)
 	}
-	r, err := registry.Load(registry.WithConfigPath(*liveConfig), registry.WithCredentials(storeCredentialSource{store}),
+	r, err := registry.Load(registry.WithConfigPath(*liveConfig), registry.WithCredentials(cmdutil.StoreCredentialSource{Store: store}),
 		registry.WithStateRoot(t.TempDir()), registry.WithOffline(true))
 	if err != nil {
 		t.Fatalf("load: %v", err)

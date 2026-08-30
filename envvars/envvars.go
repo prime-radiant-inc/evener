@@ -71,6 +71,7 @@ var (
 	EVENEROpenAIResponsesContinuation = Var{Name: "EVENER_OPENAI_RESPONSES_CONTINUATION", Summary: "Default OpenAI Responses continuation mode: off|auto. CLI and launch config override it.", Visibility: Public}
 	EVENERProvider                    = Var{Name: "EVENER_PROVIDER", Summary: "Fallback provider for llmcall when --provider and LLM_PROVIDER are unset.", Visibility: Public}
 	EVENERProvidersConfig             = Var{Name: "EVENER_PROVIDERS_CONFIG", Summary: "Path to providers.toml.", Visibility: Public}
+	EVENERCredentialsConfig           = Var{Name: "EVENER_CREDENTIALS_CONFIG", Summary: "Path to credentials.toml; unset means the sibling of providers.toml.", Visibility: Public}
 	EVENERReasoningEffort             = Var{Name: "EVENER_REASONING_EFFORT", Summary: "Default reasoning effort: minimal|low|medium|high|xhigh|max|none.", Visibility: Public}
 	EVENERRecordAppwire               = Var{Name: "EVENER_RECORD_APPWIRE", Summary: "Records raw AppWire WebSocket frames to appwire-frames.jsonl for fuzz-corpus harvesting when set to 1/true/yes/on; overrides EVENER_FUZZ_RECORD for this recorder.", Visibility: Tooling}
 	EVENERRecordHTTP                  = Var{Name: "EVENER_RECORD_HTTP", Summary: "Records inbound hub HTTP requests to hub-http.jsonl for fuzz-corpus harvesting when set to 1/true/yes/on; overrides EVENER_FUZZ_RECORD for this recorder.", Visibility: Tooling}
@@ -175,6 +176,7 @@ var allVars = []Var{
 	EVENEROpenAIResponsesContinuation,
 	EVENERProvider,
 	EVENERProvidersConfig,
+	EVENERCredentialsConfig,
 	EVENERReasoningEffort,
 	EVENERRecordAppwire,
 	EVENERRecordHTTP,

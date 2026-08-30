@@ -57,21 +57,6 @@ func runModels(args []string, _ io.Reader, stdout, stderr io.Writer) error {
 	}
 }
 
-// storeCredentialSource exposes the credentials.toml file layer to the
-// registry (spec §10: store entries are looked up by instance name only).
-type storeCredentialSource struct{ store *credentials.Store }
-
-func (s storeCredentialSource) Lookup(name string) (string, bool) {
-	if s.store == nil {
-		return "", false
-	}
-	if hasFile, _ := s.store.Layers(name); !hasFile {
-		return "", false
-	}
-	v, _ := s.store.Get(name)
-	return v, v != ""
-}
-
 // providersPath is the providers.toml the registry reads:
 // EVENER_PROVIDERS_CONFIG when it names one, else <config-root>/providers.toml.
 func providersPath() string {
@@ -100,7 +85,7 @@ func loadRegistryForCLI(stderr io.Writer) (*registry.Registry, error) {
 	}
 	// list and inspect never fetch: `evener models refresh` is the explicit
 	// path to the network (spec §6.4, §11.1).
-	opts := []registry.Option{registry.WithCredentials(storeCredentialSource{store}), registry.WithStateRoot(cmdutil.DefaultStateRoot()), registry.WithOffline(true)}
+	opts := []registry.Option{registry.WithCredentials(cmdutil.StoreCredentialSource{Store: store}), registry.WithStateRoot(cmdutil.DefaultStateRoot()), registry.WithOffline(true)}
 	opts = append(opts, modelsLoadOptions...)
 	r, err := registry.Load(opts...)
 	if errors.Is(err, registry.ErrOldSchema) {
