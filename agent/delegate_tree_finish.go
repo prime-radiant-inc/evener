@@ -280,15 +280,6 @@ func (c *delegateTreeController) FinishNoAction(claim *delegateSettlementClaim) 
 	return plans, err
 }
 
-func (c *delegateTreeController) finishGenerationLocked(lease delegateLease, finish delegateFinish, aggregate *delegatestore.Aggregate, live *delegateLiveState, authorizedNoAction bool) (delegateMutationPlans, context.CancelFunc, error) {
-	return c.executeFinishIntentLocked(finishIntent{
-		site:               finishSiteGeneration,
-		lease:              lease,
-		finish:             finish,
-		authorizedNoAction: authorizedNoAction,
-	})
-}
-
 func (c *delegateTreeController) noActionFinishLocked(claim *delegateSettlementClaim) (*delegatestore.Aggregate, *delegateLiveState, delegateFinish, error) {
 	decision := c.reduceFinishIntent(finishIntent{site: finishSiteNoActionFinish, claim: claim})
 	return nil, nil, decision.finish, decision.err
