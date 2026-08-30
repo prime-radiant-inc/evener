@@ -140,6 +140,16 @@ func hubThreadStart(ctx context.Context, cfg hubcore.WebConfig, sources *appsour
 	} else if err := pluginResolution.ValidateSelection(); err != nil {
 		return appwire.ThreadStartResponse{}, appwire.InvalidParams(err.Error())
 	}
+	// The mutation is admitted here: every validation has passed and the spawn
+	// is about to happen. From this point its outcome must not depend on the
+	// connection's fate — a client that disconnects mid-sequence must still get
+	// a fully-formed thread (spawn + read + optional initial turn) that
+	// reconnect resync then discovers via thread/list, instead of an orphan
+	// half-progressed session. The spawned child was already detached from ctx
+	// (spawnDaemon deliberately uses exec.Command, not CommandContext); the
+	// shield covers the handler's own awaits: the rendezvous wait, ReadThread,
+	// and the initial StartTurn.
+	ctx = context.WithoutCancel(ctx)
 	entry, err := cfg.Spawner.Spawn(ctx, hubcore.SpawnRequest{
 		Project:    spawnResolved.Project,
 		Resolved:   spawnResolved,
