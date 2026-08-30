@@ -175,9 +175,10 @@ type NavigationService struct {
 	pendingHint         navigationChangeHint
 	pendingInvalidation bool
 	pendingEpoch        uint64
-	// pendingRetryAt is the earliest time a failed forced refresh of the
-	// pending invalidation may be attempted again. See refreshPending.
-	pendingRetryAt time.Time
+	// nextAttemptAt is the earliest time a failed forced refresh of the
+	// pending invalidation may be attempted again; zero means the next
+	// attempt is not paced. See refreshPending.
+	nextAttemptAt time.Time
 }
 
 func newNavigationService(cfg navigationServiceConfig) *NavigationService {
@@ -250,7 +251,7 @@ func (s *NavigationService) Invalidate(hint navigationChangeHint) {
 	// is a first try for this epoch, not a retry, and must not inherit the
 	// older failure's deadline. (Persistent failure re-arms a fresh deadline
 	// on its own next failure.)
-	s.pendingRetryAt = time.Time{}
+	s.nextAttemptAt = time.Time{}
 	s.mu.Unlock()
 	select {
 	case s.wake <- struct{}{}:
@@ -1082,12 +1083,12 @@ func (s *NavigationService) Start(ctx context.Context) {
 			return
 		}
 		if err != nil {
-			if !s.waitRetryOrWake(ctx) {
+			if _, keepGoing := s.waitUntil(ctx, s.now().Add(s.retryAfter)); !keepGoing {
 				return
 			}
 			// Same pacing as the boundary path: a failed forced refresh's
-			// retry deadline governs when refreshPending may attempt again.
-			if retryWait, pacing := s.pendingRetryWait(); !pacing || retryWait == 0 {
+			// next-attempt time governs when refreshPending may try again.
+			if at, _ := s.pendingAttemptAt(); !s.now().Before(at) {
 				s.refreshPending(ctx)
 			}
 			continue
@@ -1099,26 +1100,29 @@ func (s *NavigationService) Start(ctx context.Context) {
 		}
 		s.mu.Unlock()
 		if boundary.IsZero() {
-			if !s.waitRetryOrWake(ctx) {
+			if _, keepGoing := s.waitUntil(ctx, s.now().Add(s.retryAfter)); !keepGoing {
 				return
 			}
 			continue
 		}
 		// A failed forced refresh paces its retry: park no longer than the
-		// retry deadline rather than the full snapshot boundary, so the
+		// next-attempt time rather than the full snapshot boundary, so the
 		// pending invalidation is attempted again promptly instead of
 		// spinning (immediate wake) or parking for up to 24h (boundary).
 		wait := boundary
-		if retryWait, pacing := s.pendingRetryWait(); pacing && s.hasPendingInvalidation() {
-			if retryWait == 0 || retryWait < boundary.Sub(s.now()) {
-				wait = s.now().Add(retryWait)
-			}
+		if at, pending := s.pendingAttemptAt(); pending && !at.IsZero() && at.Before(wait) {
+			wait = at
 		}
-		elapsed, keepGoing := s.waitBoundaryOrWake(ctx, wait)
+		elapsed, keepGoing := s.waitUntil(ctx, wait)
 		if !keepGoing {
 			return
 		}
-		if elapsed {
+		// elapsed only says the park's own deadline passed, and that deadline
+		// is the EARLIER of the snapshot boundary and the next-attempt time.
+		// Only a genuine boundary crossing is a time invalidation; a
+		// retry-deadline wake retries the already-pending invalidation as-is,
+		// stamping no hint and consuming no epoch.
+		if elapsed && !s.now().Before(boundary) {
 			s.Invalidate(navigationChangeHint{Time: true})
 			s.refreshPending(ctx)
 		} else if s.hasPendingInvalidation() {
@@ -1144,7 +1148,7 @@ func (s *NavigationService) refreshPending(ctx context.Context) {
 	// speed under a persistently failing source. Instead record the earliest
 	// retry time; the Start loop waits until it (bounded by retryAfter)
 	// before attempting the pending invalidation again.
-	if retryAt, armed := s.pendingRetryDeadline(); armed && s.now().Before(retryAt) {
+	if at, pending := s.pendingAttemptAt(); pending && s.now().Before(at) {
 		return
 	}
 	if _, err := s.Refresh(ctx, hint); err != nil {
@@ -1155,7 +1159,7 @@ func (s *NavigationService) refreshPending(ctx context.Context) {
 			// append the Projects slice onto itself (snapshotPendingHint's value
 			// copy shares the backing array), doubling it per failed retry.
 			s.pendingInvalidation = true
-			s.pendingRetryAt = s.now().Add(s.retryAfter)
+			s.nextAttemptAt = s.now().Add(s.retryAfter)
 		}
 		s.mu.Unlock()
 		return
@@ -1168,7 +1172,7 @@ func (s *NavigationService) refreshPending(ctx context.Context) {
 	if s.pendingEpoch == epoch {
 		s.pendingHint = navigationChangeHint{}
 		s.pendingInvalidation = false
-		s.pendingRetryAt = time.Time{}
+		s.nextAttemptAt = time.Time{}
 		navigationPendingCleared()
 	}
 	s.mu.Unlock()
@@ -1180,47 +1184,20 @@ func (s *NavigationService) snapshotPendingHint() (navigationChangeHint, uint64,
 	return s.pendingHint, s.pendingEpoch, s.pendingInvalidation
 }
 
-// pendingRetryDeadline reports the earliest time a failed forced refresh of
-// the pending invalidation may be retried, and whether one is armed at all.
-func (s *NavigationService) pendingRetryDeadline() (time.Time, bool) {
+// pendingAttemptAt reports the earliest time the pending invalidation may be
+// attempted again (zero when the next attempt is not paced) and whether an
+// invalidation is pending at all.
+func (s *NavigationService) pendingAttemptAt() (time.Time, bool) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	return s.pendingRetryAt, s.pendingInvalidation
+	return s.nextAttemptAt, s.pendingInvalidation
 }
 
-// pendingRetryWait returns how long the Start loop should park before the
-// next attempt on the pending invalidation: the retry deadline when one is
-// armed, zero when the retry is already due. ok is false when no failed
-// refresh is pacing a retry (nothing to wait for).
-func (s *NavigationService) pendingRetryWait() (time.Duration, bool) {
-	retryAt, armed := s.pendingRetryDeadline()
-	if !armed || retryAt.IsZero() {
-		return 0, false
-	}
-	delay := retryAt.Sub(s.now())
-	if delay <= 0 {
-		return 0, true
-	}
-	return delay, true
-}
-
-func (s *NavigationService) waitRetryOrWake(ctx context.Context) bool {
-	timer := s.newTimer(s.retryAfter)
-	defer timer.Stop()
-	select {
-	case <-ctx.Done():
-		return false
-	case <-s.wake:
-		return true
-	case <-timer.C():
-		return true
-	}
-}
-
-func (s *NavigationService) waitBoundaryOrWake(ctx context.Context, boundary time.Time) (elapsed, keepGoing bool) {
-	delay := boundary.Sub(s.now())
-	delay = max(delay, 0)
-	timer := s.newTimer(delay)
+// waitUntil parks until deadline, an invalidation wake, or cancellation.
+// elapsed reports that the deadline itself passed (a wake reports false);
+// keepGoing is false only on cancellation.
+func (s *NavigationService) waitUntil(ctx context.Context, deadline time.Time) (elapsed, keepGoing bool) {
+	timer := s.newTimer(max(deadline.Sub(s.now()), 0))
 	defer timer.Stop()
 	select {
 	case <-ctx.Done():
