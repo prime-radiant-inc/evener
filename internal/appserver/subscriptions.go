@@ -50,12 +50,12 @@ func (s *Subscriptions) Subscribe(connID, threadID string) {
 // so a client racing its own re-subscribe can never wedge the registry.
 //
 // A thread currently held by a BUFFERING capture generation records the drop
-// and leaves the entry in place: the capture displaced the connection's
-// previous subscriptions into its rollback snapshot, and removing the
-// buffering entry here would strand that snapshot (withdrawBuffered matches
-// on the live generation and would bail without restoring). The generation's
-// own commit/abort resolves the entry — commit keeps it live, abort restores
-// the snapshot minus this thread.
+// and leaves the entry in place until the generation resolves: removing the
+// buffering entry here would strand the capture's rollback snapshot
+// (withdrawBuffered matches on the live generation and would bail without
+// restoring). The resolution then honors the drop — abort restores the
+// snapshot minus this thread, and commit removes the entry instead of
+// reviving it.
 func (s *Subscriptions) Unsubscribe(connID, threadID string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -195,10 +195,14 @@ func (s *Subscriptions) Release(connID, threadID string, generation uint64) ([]S
 	}
 	sub.buffering = false
 	sub.buffer = nil
-	// The generation committed: the entry is live, so any mid-capture
-	// unsubscribe record for it is spent — clear it, or a later capture's
-	// abort would wrongly skip restoring this thread.
-	s.clearWithdrawnLocked(connID, threadID)
+	if s.withdrawnLocked(connID, threadID) {
+		// The client unsubscribed while this generation buffered. Commit
+		// honors that will instead of reviving the thread it dropped: remove
+		// the entry and report no records, so nothing it buffered is delivered.
+		s.clearWithdrawnLocked(connID, threadID)
+		s.removeThreadLocked(connID, threadID)
+		return nil, true
+	}
 	return release, true
 }
 

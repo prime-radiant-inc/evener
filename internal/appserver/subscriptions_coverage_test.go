@@ -186,6 +186,36 @@ func TestSubscriptionsUnsubscribeDuringNonReplaceCaptureDefersToAbort(t *testing
 	}
 }
 
+// The commit counterpart of the two abort tests above, and the registry-level
+// regression for a CI flake in the daemon tests: an unsubscribe can arrive
+// while the hydration generation is still buffering — the client received
+// the read response and sent its unsubscribe before the handler goroutine
+// reached finalizer.commit(). The commit must honor the drop, not revive the
+// thread: the client asked to stop receiving it, and a revived entry both
+// counts as a subscriber and delivers its buffered records.
+func TestSubscriptionsUnsubscribeDuringCaptureThenCommitDropsEntry(t *testing.T) {
+	subs := NewSubscriptions()
+	subs.Subscribe("conn-1", "th_1")
+	// The non-replace shape: the generation buffers a thread the connection
+	// already held, buffering records past its cut.
+	subs.beginBuffered("conn-1", "th_1", false, 7)
+
+	subs.Unsubscribe("conn-1", "th_1")
+	records, ok := subs.Release("conn-1", "th_1", 7)
+	if !ok {
+		t.Fatal("Release should succeed for the live generation")
+	}
+	if subs.IsSubscribed("conn-1", "th_1") {
+		t.Fatal("commit must honor the unsubscribe recorded while the generation buffered")
+	}
+	if len(records) != 0 {
+		t.Fatalf("commit delivered buffered records for a withdrawn thread: %d", len(records))
+	}
+	if got := subs.ConnectionCount("th_1"); got != 0 {
+		t.Fatalf("subscriber count after commit = %d, want 0", got)
+	}
+}
+
 // A committed capture clears the mid-capture unsubscribe record: the entry
 // went live, so a later capture's abort must restore it normally.
 func TestSubscriptionsUnsubscribeDuringCaptureThenCommit(t *testing.T) {
@@ -195,21 +225,23 @@ func TestSubscriptionsUnsubscribeDuringCaptureThenCommit(t *testing.T) {
 	subs.beginBuffered("conn-1", "th_3", true, 4)
 
 	subs.Unsubscribe("conn-1", "th_3")
-	if _, ok := subs.Release("conn-1", "th_3", 4); !ok {
+	records, ok := subs.Release("conn-1", "th_3", 4)
+	if !ok {
 		t.Fatal("Release should succeed for the live generation")
 	}
-	if !subs.IsSubscribed("conn-1", "th_3") {
-		t.Fatal("committed capture should leave the entry live")
+	if subs.IsSubscribed("conn-1", "th_3") {
+		t.Fatal("commit must honor the unsubscribe recorded while the generation buffered")
 	}
-	// A LATER capture that displaces th_3 must have it restored on its abort
-	// — the spent withdrawn record from generation 4 must not suppress it.
+	if len(records) != 0 {
+		t.Fatalf("commit delivered buffered records for a withdrawn thread: %d", len(records))
+	}
+	// A LATER capture still resolves cleanly on top of the committed one. Its
+	// rollback is empty — gen 4's commit already consumed the displacement —
+	// so its abort restores nothing and honors its own withdrawn thread.
 	rollback2 := subs.beginBuffered("conn-1", "th_4", true, 5)
 	subs.Unsubscribe("conn-1", "th_4")
 	if !subs.withdrawBuffered("conn-1", "th_4", 5, rollback2) {
 		t.Fatal("second capture's abort should succeed")
-	}
-	if !subs.IsSubscribed("conn-1", "th_3") {
-		t.Fatal("the spent withdrawn record suppressed restoring th_3 on the later capture's abort")
 	}
 	if subs.IsSubscribed("conn-1", "th_4") {
 		t.Fatal("th_4 should stay dropped: the client explicitly unsubscribed it mid-capture")
