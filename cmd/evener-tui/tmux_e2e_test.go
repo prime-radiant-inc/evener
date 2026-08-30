@@ -1005,7 +1005,13 @@ func TestTUITmuxE2E_APIErrorsRenderInPlace(t *testing.T) {
 	app.WaitFor("EVENER LIVE", "live task")
 	hub.SetFailSpawn(true)
 	app.SendKeys("n")
-	app.WaitFor("evener / new session", "Prompt (optional):")
+	// The form's model default arrives asynchronously (fetchHubSpawnOptions
+	// round-trips to the hub); submitting before hubSpawnOptionsMsg lands sees
+	// an empty spawnModel and renders "choose a model before starting" instead
+	// of the scripted spawn failure — a startup race a loaded CI runner loses.
+	// Waiting for the populated Model field pins the happens-before edge the
+	// same way the harness-cycling spawn test does.
+	app.WaitFor("evener / new session", "Prompt (optional):", "Model:    openai/gpt-5")
 	app.TypeLine("spawn should fail")
 	app.WaitFor("Hub session start failed.", "cause appwire thread/start: spawn failed", "> spawn should fail")
 }
