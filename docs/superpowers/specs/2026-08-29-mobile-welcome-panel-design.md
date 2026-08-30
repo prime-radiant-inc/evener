@@ -119,6 +119,16 @@ interface SheetProps {
   (MobilePanel) stays mounted and the geometry state persisted from a prior
   peek. Without this, reopening after collapsing to peek would show peek,
   violating "full screen first."
+
+  **Known edge case (accepted):** when the panel is open at peek over a
+  session and focus transitions to welcome (session→welcome), the auto-close
+  effect (child) and the nothingFocused-open effect (parent) batch in the same
+  commit — `open` never goes false→true in a rendered frame, so the
+  geometry-reset effect does not fire, and the panel stays at peek instead of
+  resetting to full. This is a narrow case (panel open at peek + session
+  closes under you) and the panel is still usable at peek; a follow-up could
+  key the geometry reset on `nothingFocused` too, but that couples the Sheet
+  to focus state it should not know about. Accepted for now.
 - **Drag:** pointer/touch drag on the handle transitions the panel height
   continuously between `peekHeight` and `100vh`. Release snaps to the nearer
   bound (with a small hysteresis band; >50% of the way to the other bound

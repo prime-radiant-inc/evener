@@ -608,6 +608,49 @@ func nestedSessionIDs(metas []schema.SessionMeta) (nested map[string]struct{}, f
 	return nested, forkChildren
 }
 
+// liveParentOrForkContinuation returns the ID of the row a nested session
+// attaches under: a subagent's direct parent, or a fork-superseded parent's
+// active continuation (the child whose ParentSessionID names it). Returns ""
+// when the meta is neither a subagent nor a fork-superseded parent. The Live
+// tier uses this to decide whether a nested live session has a live parent to
+// nest under; if not, it keeps its own top-level row rather than vanishing.
+func liveParentOrForkContinuation(m schema.SessionMeta, forkChildren map[string]string) string {
+	if m.IsSubagent && m.ParentSessionID != "" {
+		return m.ParentSessionID
+	}
+	if childID, ok := forkChildren[m.ID]; ok {
+		return childID
+	}
+	return ""
+}
+
+// pruneLiveSubtree keeps only live descendants of node (live = present in
+// liveMap, or an in-process child in runningSubagentIDs). The node itself is
+// always kept — the Live tier calls this only on live top-level rows.
+// MoreSubagents is zeroed: buildNode capped subagent children before pruning,
+// so the count reflected a live/non-live mix; after pruning only live children
+// remain and a live-only cap is meaningless on a tier that is itself all-live.
+func pruneLiveSubtree(node TreeNode, liveMap map[string]LiveEntry, runningSubagentIDs map[string]bool) TreeNode {
+	kept := make([]TreeNode, 0, len(node.Children))
+	for _, child := range node.Children {
+		if !isLiveID(child.ID, liveMap, runningSubagentIDs) {
+			continue
+		}
+		pruned := pruneLiveSubtree(child, liveMap, runningSubagentIDs)
+		kept = append(kept, pruned)
+	}
+	node.Children = kept
+	node.MoreSubagents = 0
+	return node
+}
+
+func isLiveID(id string, liveMap map[string]LiveEntry, runningSubagentIDs map[string]bool) bool {
+	if _, ok := liveMap[id]; ok {
+		return true
+	}
+	return runningSubagentIDs[id]
+}
+
 // TopLevelSessionIDs returns the session IDs that the navigation tree treats
 // as independently addressable rows. It is intentionally based on the full
 // metadata snapshot so callers do not mistake a capped rail projection for
@@ -1272,38 +1315,65 @@ func buildTreeAtWithProjects(metas []schema.SessionMeta, live []LiveEntry, decis
 	sort.SliceStable(activeProjects, byLastActivityDesc(activeProjects))
 	sort.SliceStable(archivedProjects, byLastActivityDesc(archivedProjects))
 
-	// Build the Live slice: every live session, flat, sorted by attention rank
-	// desc, then the Hub session ordering contract. Archived sessions are
-	// filtered out after the sort, below.
+	// Build the Live slice: every live, top-level session, with its subagent
+	// children nested the same way the Projects tier builds them (buildNode),
+	// sorted by attention rank desc, then the Hub session ordering contract.
+	// Archived sessions are filtered out after the sort, below.
+	//
+	// Only top-level sessions get their own row. Subagents and
+	// fork-superseded parents (nested under their live continuation, per
+	// nestedSessionIDs) nest under the row that owns their task tree, so they
+	// render with the same foldout and active-status color as every other
+	// section — not as flat, parentless top-level rows. This is the same
+	// membership rule the NeedsYou tier (tierEligible) and the project
+	// accumulator (topLevel) apply; all three read the one
+	// nestedSessionIDs/forkChildren result, so they can never disagree about
+	// which sessions are top-level.
 	liveNodes := make([]TreeNode, 0, len(live))
 	for _, le := range live {
 		if le.SessionID == "" {
 			continue
 		}
+		// A nested session (subagent, or a fork-superseded parent whose active
+		// continuation is itself live) is NOT a top-level Live row when the
+		// row it nests under is also live: it renders under that parent's
+		// foldout instead. When the parent/continuation is NOT live, though,
+		// the nested session has no live row to nest under — so it keeps its
+		// own top-level Live row, the same way the project accumulator keeps a
+		// fork-superseded parent top-level when no active branch references it.
 		metaValue, hasMeta := metaMap[le.SessionID]
-		state := stateFor(le.SessionID)
-		node := TreeNode{
-			ID:         le.SessionID,
-			Ref:        liveRefMap[le.SessionID],
-			State:      state,
-			AskPending: askPendingFor(le.SessionID),
-			Dormant:    dormantFor(le.SessionID),
-			Kind:       "session",
-		}
 		if hasMeta {
-			kind := nodeKind(metaValue)
-			node.Kind = kind
-			node.Title = nodeTitle(metaValue, kind)
-			node.Project = projectName(metaValue)
-			node.CreatedAt = OrderCreatedAt(metaValue.CreatedAt, metaValue.UpdatedAt)
-			node.UpdatedAt = OrderUpdatedAt(metaValue.UpdatedAt, metaValue.CreatedAt)
-			node.Age = AgeString(node.UpdatedAt)
-		} else {
-			node.Title = ShortID(le.SessionID)
-			node.CreatedAt = le.StartedAt
-			node.UpdatedAt = le.StartedAt
-			node.Age = AgeString(le.StartedAt)
+			if parent := liveParentOrForkContinuation(metaValue, forkChildren); parent != "" {
+				if _, ok := liveMap[parent]; ok {
+					continue
+				}
+			}
 		}
+		// A live-only session the past index has not caught up with has no
+		// meta; build a flat leaf node the way the original loop did. buildNode
+		// needs a meta to resolve kind/title/project, and a session with none
+		// has no lineage to recurse into.
+		if !hasMeta {
+			node := TreeNode{
+				ID:         le.SessionID,
+				Ref:        liveRefMap[le.SessionID],
+				State:      stateFor(le.SessionID),
+				AskPending: askPendingFor(le.SessionID),
+				Dormant:    dormantFor(le.SessionID),
+				Kind:       "session",
+				Title:      ShortID(le.SessionID),
+				CreatedAt:  le.StartedAt,
+				UpdatedAt:  le.StartedAt,
+				Age:        AgeString(le.StartedAt),
+			}
+			liveNodes = append(liveNodes, node)
+			continue
+		}
+		kind := nodeKind(metaValue)
+		node := buildNode(metaValue, kind, &projectAccum{name: projectName(metaValue)}, map[string]bool{}, false)
+		// buildNode attaches every child the metadata knows about, including
+		// non-live subagents and forks. The Live tier is only live sessions.
+		node = pruneLiveSubtree(node, liveMap, runningSubagentIDs)
 		liveNodes = append(liveNodes, node)
 	}
 	sort.SliceStable(liveNodes, func(i, j int) bool {

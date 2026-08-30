@@ -223,9 +223,22 @@ func fuzzScenarioBuildTree_GroupsByProjectWithSubagentsAndForks(t *testing.T) {
 		t.Errorf("01OTHER should have no children, got %d", len(sessions[1].Children))
 	}
 
-	// Live: 2 entries, both active.
-	if len(tree.Live) != 2 {
+	// Live: 1 top-level row (01ACTIVE). 01SUB1 is a live subagent of 01ACTIVE,
+	// so it nests under it in the Live tier — the same foldout structure the
+	// Projects tier uses — rather than appearing as a flat, parentless row.
+	// 01OLDORIG is not live, so it is absent from the Live tier entirely.
+	if len(tree.Live) != 1 {
 		t.Fatalf("live: %d", len(tree.Live))
+	}
+	if tree.Live[0].ID != "01ACTIVE" {
+		t.Fatalf("live[0]: %q, want 01ACTIVE", tree.Live[0].ID)
+	}
+	liveChildren := tree.Live[0].Children
+	if len(liveChildren) != 1 || liveChildren[0].ID != "01SUB1" || liveChildren[0].Kind != "subagent" {
+		t.Fatalf("live[0] children = %#v, want one subagent child 01SUB1", liveChildren)
+	}
+	if liveChildren[0].State != "active" {
+		t.Errorf("live subagent state = %q, want active", liveChildren[0].State)
 	}
 
 	// Rollup state for the project: active (the most-attention live state).
