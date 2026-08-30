@@ -256,23 +256,37 @@ func TestProvidersAddWritesEntryAndSkipsProbeWithoutCredential(t *testing.T) {
 }
 
 // Secrets never appear on the command line (spec §11.2): a credential header
-// carries a $VAR reference, never the key itself.
+// carries $VARIABLE references, never the key itself. The accepted shape
+// (`Bearer $PORTKEY_KEY`) is pinned by
+// TestProvidersAddWritesEntryAndSkipsProbeWithoutCredential.
 func TestProvidersAddRefusesALiteralCredentialHeader(t *testing.T) {
-	root := providersTestEnv(t, nil)
-
-	var stdout, stderr bytes.Buffer
-	err := runProviders([]string{"add", "bad", "--base", "openai", "--credential-header", "Authorization=Bearer literal-secret"}, nil, &stdout, &stderr)
-	if err == nil {
-		t.Fatal("a credential header without a $VAR is refused")
-	}
-	if !strings.Contains(err.Error(), "$VARIABLE") {
-		t.Fatalf("the refusal must say what is accepted: %v", err)
-	}
-	if strings.Contains(err.Error(), "literal-secret") || strings.Contains(stdout.String(), "literal-secret") || strings.Contains(stderr.String(), "literal-secret") {
-		t.Fatalf("the refusal must not echo the value: %v %q %q", err, stdout.String(), stderr.String())
-	}
-	if _, statErr := os.Stat(filepath.Join(root, "providers.toml")); !os.IsNotExist(statErr) {
-		t.Fatalf("a refused add wrote providers.toml (stat err = %v)", statErr)
+	for _, tt := range []struct {
+		name   string
+		header string
+		secret string
+	}{
+		{"no reference at all", "Authorization=Bearer literal-secret", "literal-secret"},
+		{"a literal key smuggled beside a reference", "Authorization=Bearer sk-live-abc$X", "sk-live-abc"},
+		{"a literal key as its own word", "Authorization=Bearer sk-live-abc $X", "sk-live-abc"},
+		{"an unterminated reference", "Authorization=Bearer ${PORTKEY", "${PORTKEY"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			root := providersTestEnv(t, nil)
+			var stdout, stderr bytes.Buffer
+			err := runProviders([]string{"add", "bad", "--base", "openai", "--credential-header", tt.header}, nil, &stdout, &stderr)
+			if err == nil {
+				t.Fatal("a credential header that is not a $VARIABLE reference is refused")
+			}
+			if !strings.Contains(err.Error(), "$VARIABLE") {
+				t.Fatalf("the refusal must say what is accepted: %v", err)
+			}
+			if strings.Contains(err.Error(), tt.secret) || strings.Contains(stdout.String(), tt.secret) || strings.Contains(stderr.String(), tt.secret) {
+				t.Fatalf("the refusal must not echo the value: %v %q %q", err, stdout.String(), stderr.String())
+			}
+			if _, statErr := os.Stat(filepath.Join(root, "providers.toml")); !os.IsNotExist(statErr) {
+				t.Fatalf("a refused add wrote providers.toml (stat err = %v)", statErr)
+			}
+		})
 	}
 }
 

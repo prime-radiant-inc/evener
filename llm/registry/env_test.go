@@ -2,6 +2,7 @@ package registry
 
 import (
 	"reflect"
+	"slices"
 	"testing"
 )
 
@@ -26,6 +27,36 @@ func TestExpandEnv(t *testing.T) {
 		got, missing := expandEnv(c.in, lookup)
 		if got != c.want || !reflect.DeepEqual(missing, c.missing) {
 			t.Errorf("expandEnv(%q) = %q, %v; want %q, %v", c.in, got, missing, c.want, c.missing)
+		}
+	}
+}
+
+// ScanConfigValue splits a value into the two halves a caller needs to tell a
+// reference from a literal: everything a secret could hide in is in `literal`.
+func TestScanConfigValue(t *testing.T) {
+	for _, tt := range []struct {
+		value   string
+		refs    []string
+		literal string
+	}{
+		{"$PORTKEY_KEY", []string{"PORTKEY_KEY"}, ""},
+		{"Bearer $KEY", []string{"KEY"}, "Bearer "},
+		{"sk-live-abc$X", []string{"X"}, "sk-live-abc"},
+		{"${A}${B}", []string{"A", "B"}, ""},
+		{"literal only", nil, "literal only"},
+		{"a$$b", nil, "a$b"},
+	} {
+		refs, literal, err := ScanConfigValue(tt.value)
+		if err != nil {
+			t.Fatalf("ScanConfigValue(%q): %v", tt.value, err)
+		}
+		if !slices.Equal(refs, tt.refs) || literal != tt.literal {
+			t.Errorf("ScanConfigValue(%q) = %v/%q, want %v/%q", tt.value, refs, literal, tt.refs, tt.literal)
+		}
+	}
+	for _, bad := range []string{"${UNTERMINATED", "${9BAD}"} {
+		if _, _, err := ScanConfigValue(bad); err == nil {
+			t.Errorf("ScanConfigValue(%q) must report the syntax error", bad)
 		}
 	}
 }

@@ -499,18 +499,67 @@ func parseKeyValues(pairs []string, flagName string) (map[string]string, error) 
 }
 
 // parseCredentialHeaders splits repeated K=V credential headers and enforces
-// spec §11.2's boundary: the value references a $VARIABLE, so no key is ever
-// typed on a command line or written into providers.toml. The refusal never
-// echoes the value it refused.
+// spec §11.2's boundary: the value carries $VARIABLE references, so no key is
+// ever typed on a command line or written into providers.toml. The refusal
+// never echoes the value it refused.
 func parseCredentialHeaders(pairs []string) (map[string]string, error) {
 	headers, err := parseKeyValues(pairs, "--credential-header")
 	if err != nil {
 		return nil, err
 	}
 	for k, v := range headers {
-		if !strings.Contains(v, "$") {
-			return nil, fmt.Errorf("--credential-header %s: the value must reference a $VARIABLE, never a literal secret (for example: %s=Bearer $PORTKEY_KEY)", k, k)
+		if err := checkCredentialHeaderValue(v); err != nil {
+			return nil, fmt.Errorf("--credential-header %s: %w (a value is an auth scheme word and $VARIABLE references, as in %s=Bearer $PORTKEY_KEY)", k, err, k)
 		}
 	}
 	return headers, nil
+}
+
+// checkCredentialHeaderValue holds the command line's half of the secrets
+// boundary: every whitespace-separated token of a credential header is either
+// a run of $VARIABLE references or a bare auth scheme word, and at least one
+// is a reference. That refuses both a value with no reference at all and a
+// key smuggled beside one ("Bearer sk-live-abc$X"), which a bare "contains a
+// $" check accepts. References are read with the registry's own grammar
+// (spec §10), so this agrees with what the parser will make of the value.
+//
+// The rule is stricter than providers.toml itself, deliberately: an argv is
+// world-readable and lands in shell history, so the file may hold shapes the
+// command line will not author.
+func checkCredentialHeaderValue(value string) error {
+	referenced := false
+	for _, token := range strings.Fields(value) {
+		refs, literal, err := registry.ScanConfigValue(token)
+		switch {
+		case err != nil:
+			return err
+		case len(refs) == 0 && isAuthSchemeWord(token):
+			// A scheme name carries no secret.
+		case len(refs) > 0 && literal == "":
+			referenced = true
+		default:
+			return errors.New("only an auth scheme word may be literal; the value itself must be a $VARIABLE reference, never a literal secret")
+		}
+	}
+	if !referenced {
+		return errors.New("the value must reference a $VARIABLE, never a literal secret")
+	}
+	return nil
+}
+
+// isAuthSchemeWord reports whether a literal token is an HTTP auth scheme
+// name (Bearer, Basic, Token, ...). Letters only: a token carrying digits,
+// dashes, or underscores has the shape of a key, and a key is never literal
+// here.
+func isAuthSchemeWord(token string) bool {
+	if token == "" {
+		return false
+	}
+	for i := range len(token) {
+		c := token[i]
+		if (c < 'a' || c > 'z') && (c < 'A' || c > 'Z') {
+			return false
+		}
+	}
+	return true
 }

@@ -67,6 +67,19 @@ func scanEnvRefs(value string, lit func(string), ref func(string)) error {
 	return nil
 }
 
+// ScanConfigValue reports what a providers.toml value is made of under spec
+// §10's grammar: the variables it references, and its literal text with those
+// references removed. A caller that must refuse a literal secret standing
+// beside a reference reads both halves. Neither the result nor the error
+// echoes the value, which may hold one.
+func ScanConfigValue(value string) (refs []string, literal string, err error) {
+	var lit strings.Builder
+	if err := scanEnvRefs(value, func(s string) { lit.WriteString(s) }, func(name string) { refs = append(refs, name) }); err != nil {
+		return nil, "", err
+	}
+	return refs, lit.String(), nil
+}
+
 // checkEnvRefs validates the $ENV syntax of a config value at load time;
 // what names the field in the error.
 func checkEnvRefs(value, what string) error {
