@@ -643,7 +643,7 @@ func TestEnvelopeCommittedBeforeTheCutIsInTheResponse(t *testing.T) {
 // TestEnvelopeCommittedBeforeTheCutIsInTheResponse looks like this pin and is
 // not: feedBridge returns only after the whole bridge pass, so it pins "refresh
 // before the reader's gate", which the inverted order still satisfies. This one
-// observes from INSIDE the commit, through the insideAppProjectionCommit seam,
+// observes from INSIDE the commit, through the insideAppProjectionCommitHook,
 // where the difference is the whole question. No parking and no second
 // goroutine: the commit runs on feedBridge's own.
 //
@@ -655,8 +655,7 @@ func TestEnvelopeLeadsTheCommitThatAnnouncesIt(t *testing.T) {
 
 	var atCommit *int
 	var sawCommit bool
-	srv.mu.Lock()
-	srv.insideAppProjectionCommit = func() {
+	setInsideAppProjectionCommitHook(t, func() {
 		sawCommit = true
 		srv.mu.RLock()
 		if srv.appEnvelope.FailedToolCalls != nil {
@@ -664,8 +663,7 @@ func TestEnvelopeLeadsTheCommitThatAnnouncesIt(t *testing.T) {
 			atCommit = &v
 		}
 		srv.mu.RUnlock()
-	}
-	srv.mu.Unlock()
+	})
 
 	// A tool call fails: the session writes its count, then emits the event
 	// announcing it. That is the production ordering the bridge samples under.

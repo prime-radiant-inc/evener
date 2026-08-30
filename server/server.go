@@ -331,10 +331,6 @@ type Server struct {
 	appEnvelopeSource         ThreadEnvelopeSource
 	appReservedTurnID         string
 	beforeAppProjectionCommit func()
-	// insideAppProjectionCommit is a test seam invoked from within
-	// RecordAppEvent's commit callback, i.e. while the projection gate is held.
-	// Production leaves it nil.
-	insideAppProjectionCommit func()
 	// appLastStampedFailedToolCalls is the failure count most recently
 	// stamped onto an item/completed notification (kata 895d) — nil means
 	// nothing has been stamped yet for the current identity. It exists so

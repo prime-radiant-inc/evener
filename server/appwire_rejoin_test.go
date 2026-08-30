@@ -40,14 +40,12 @@ func TestAtomicProjectionCommitPreservesProducerOrderAcrossSequenceAllocation(t 
 	release := make(chan struct{})
 	var once sync.Once
 	setEnvelope(srv, func(e *stubThreadEnvelopeSource) { e.failuresMeasured = true })
-	srv.mu.Lock()
-	srv.insideAppProjectionCommit = func() {
+	setInsideAppProjectionCommitHook(t, func() {
 		once.Do(func() {
 			close(projected)
 			<-release
 		})
-	}
-	srv.mu.Unlock()
+	})
 
 	completed := make(chan struct{})
 	go func() {
