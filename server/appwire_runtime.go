@@ -745,7 +745,7 @@ func stampAppNotificationTarget(params any, threadID, ref string) any {
 		// Copy rather than mutate: the caller's map must stay untouched so a
 		// future multi-target fanout of one params value cannot make every
 		// notification share the last target stamped.
-		out := make(map[string]any, len(p)+2)
+		out := make(map[string]any, len(p))
 		maps.Copy(out, p)
 		out["threadId"] = threadID
 		out["ref"] = ref
