@@ -18,11 +18,10 @@ package agent
 // (comparing runtime pointer identity for the binding-runtime guard is the
 // one permitted use of a *Session). It performs the pre-append in-memory
 // transitions (claim acquisition/fencing, evidence observation) and returns
-// the decision: the journal batch to append, the per-site append-failure
-// latch plan, the abstract post-append effect descriptors (release claim,
-// release generation with its delivery plans, evidence-version bump, stop
-// progress signal, snapshot capture), and the entry point's stale-lease
-// policy already applied to the returned error.
+// the decision: the journal batch to append, the append-failure latch
+// target, the post-append effects (release claim, release generation with
+// its delivery plans, evidence-version bump, snapshot capture), and the
+// entry point's stale-lease policy already applied to the returned error.
 //
 // Deferred by spec (do not add here): the start-failure finishers
 // (CompleteStartInput, FailCommittedStart, FailCommittedRestart,
@@ -118,15 +117,33 @@ type finishDecision struct {
 	// (non-resumable exhaustion) and substitutes the closure plan for the
 	// first post-append update.
 	closure bool
-	// latch is the per-site append-failure latch plan; reduceFinishAppendResult
-	// applies it.
-	latch finishLatchPlan
-	// effects are the abstract post-append effect descriptors, applied by
-	// finishEffectsLocked against post-append durable state. Two idioms:
-	// append-carrying sites express evidence bumps as finishEffectBumpEvidence
-	// so they are skipped when the append fails; no-batch sites bump inline in
-	// the reducer.
-	effects []finishEffect
+	// Append-failure latch targets: when the append fails, the recovery
+	// triple (recoveryRequired, finalizationRecoveryRequired,
+	// recoveryRunnerPending) is latched on latchLive when set (the generation
+	// finish latches its authenticated live state unconditionally); otherwise
+	// latchLease re-resolves the binding at apply time and latches only when
+	// it still matches (CompleteSettlement).
+	latchLive  *delegateLiveState
+	latchLease delegateLease
+	// Post-append effects, applied by finishEffectsLocked against post-append
+	// durable state only when the append succeeded. Sites without a journal
+	// batch apply their effects inline in the reducer instead.
+	//
+	// releaseClaim releases the settlement claim token
+	// (releaseSettlementClaimLocked).
+	releaseClaim *delegateSettlementClaim
+	// releaseGeneration finishes the generation identified by lease: releases
+	// its claims and stop tracking, releases the runtime binding (returning
+	// the cancel that must run after c.mu is released), and captures the
+	// snapshot and delivery plans (generationFinishedPlansLocked with
+	// deliveryID).
+	releaseGeneration bool
+	lease             delegateLease
+	deliveryID        string
+	// bumpEvidence increments the evidence version.
+	bumpEvidence bool
+	// snapshotDelegateID, when non-empty, appends the delegate's update plan.
+	snapshotDelegateID string
 	// Outputs carried back through the unchanged wrapper signatures.
 	claim          *delegateSettlementClaim
 	continued      bool
@@ -135,62 +152,6 @@ type finishDecision struct {
 	completion     delegateCompletionDecision
 	finish         delegateFinish
 	attentionPlans []delegateAttentionCleanupPlan
-}
-
-// finishLatchKind is the per-site append-failure latch shape. The shapes are
-// inputs, not a constant: no uniform latching.
-type finishLatchKind uint8
-
-const (
-	// finishLatchNone: the site performs no append and no recovery latch.
-	finishLatchNone finishLatchKind = iota
-	// finishLatchUnconditionalTriple: finishGenerationLocked latches the
-	// full recovery triple on the authenticated live state unconditionally
-	// when the append failed.
-	finishLatchUnconditionalTriple
-	// finishLatchLeaseConditionalTriple: CompleteSettlement latches the full
-	// triple only when the live binding still matches the claim's lease at
-	// apply time.
-	finishLatchLeaseConditionalTriple
-)
-
-// finishLatchPlan is the reducer's per-site append-failure latch plan.
-type finishLatchPlan struct {
-	kind finishLatchKind
-	// live is the authenticated live state for the shapes that target it.
-	live *delegateLiveState
-	// lease re-resolves the binding at apply time for the lease-conditional
-	// shape, exactly as the pre-reducer code re-read c.live after the failed
-	// append.
-	lease delegateLease
-}
-
-// finishEffectKind names an abstract post-append effect. The wrapper applies
-// these after the journal append, against post-append durable state.
-type finishEffectKind uint8
-
-const (
-	finishEffectNone finishEffectKind = iota
-	// finishEffectReleaseClaim releases the settlement claim token
-	// (releaseSettlementClaimLocked).
-	finishEffectReleaseClaim
-	// finishEffectReleaseGeneration finishes the generation: releases the
-	// lease's claims and stop tracking, releases the runtime binding
-	// (returning the cancel that must run after c.mu is released), captures
-	// the snapshot and delivery plans (generationFinishedPlansLocked).
-	finishEffectReleaseGeneration
-	// finishEffectBumpEvidence increments the evidence version.
-	finishEffectBumpEvidence
-	// finishEffectCaptureSnapshot appends the delegate's update plan.
-	finishEffectCaptureSnapshot
-)
-
-type finishEffect struct {
-	kind       finishEffectKind
-	lease      delegateLease
-	delegateID string
-	token      uint64
-	deliveryID string
 }
 
 // reduceFinishIntent is the single locked transition function for the
@@ -231,10 +192,12 @@ func (c *delegateTreeController) reduceFinishIntent(intent finishIntent) finishD
 	return finishDecision{err: errDelegateTargetBusy}
 }
 
-// executeFinishIntentLocked drives the append and effect tail for an intent
-// whose reducer decision carries a journal batch (the ordinary and no-action
-// generation finishes). The caller holds c.mu; the caller releases it and
-// then runs the returned cancel after c.mu is released (cancel-after-unlock).
+// executeFinishIntentLocked drives the append, the append-failure recovery
+// latch, and the post-append effects for an intent whose reducer decision
+// carries a journal batch (settlement completion and the ordinary and
+// no-action generation finishes). The caller holds c.mu; the caller releases
+// it and then runs the returned cancel after c.mu is released
+// (cancel-after-unlock).
 func (c *delegateTreeController) executeFinishIntentLocked(intent finishIntent) (delegateMutationPlans, context.CancelFunc, error) {
 	decision := c.reduceFinishIntent(intent)
 	if decision.err != nil || decision.events == nil {
@@ -247,66 +210,56 @@ func (c *delegateTreeController) executeFinishIntentLocked(intent finishIntent) 
 	} else {
 		_, appendErr = c.appendLocked(decision.events...)
 	}
-	if err := c.reduceFinishAppendResult(decision, appendErr); err != nil {
-		return delegateMutationPlans{}, nil, err
+	if appendErr != nil {
+		if live := c.latchTargetLocked(decision); live != nil {
+			live.recoveryRequired = true
+			live.finalizationRecoveryRequired = true
+			live.recoveryRunnerPending = true
+		}
+		return delegateMutationPlans{}, nil, appendErr
 	}
 	plans, cancel := c.finishEffectsLocked(decision, closurePlan)
 	return plans, cancel, nil
 }
 
-// reduceFinishAppendResult applies the reducer's per-site latch plan to the
-// append outcome and returns the error the wrapper must surface. Latch
-// shapes are inputs: the unconditional and lease-conditional triples apply
-// only when the append failed. The caller holds c.mu.
-func (c *delegateTreeController) reduceFinishAppendResult(decision finishDecision, appendErr error) error {
-	switch decision.latch.kind {
-	case finishLatchUnconditionalTriple:
-		if appendErr == nil {
-			return nil
-		}
-		live := decision.latch.live
-		live.recoveryRequired = true
-		live.finalizationRecoveryRequired = true
-		live.recoveryRunnerPending = true
-	case finishLatchLeaseConditionalTriple:
-		if appendErr == nil {
-			return nil
-		}
-		if live := c.live[decision.latch.lease.delegateID]; live != nil && live.binding != nil && live.binding.lease == decision.latch.lease {
-			live.recoveryRequired = true
-			live.finalizationRecoveryRequired = true
-			live.recoveryRunnerPending = true
-		}
-	case finishLatchNone:
+// latchTargetLocked resolves the live state the recovery triple must be
+// latched on after a failed finish append. The generation finish targets its
+// authenticated live state unconditionally; CompleteSettlement re-resolves
+// the binding at apply time (exactly as the pre-reducer code re-read c.live
+// after the failed append) and latches only when it still matches the claim's
+// lease. The caller holds c.mu.
+func (c *delegateTreeController) latchTargetLocked(decision finishDecision) *delegateLiveState {
+	if decision.latchLive != nil {
+		return decision.latchLive
 	}
-	return appendErr
+	if live := c.live[decision.latchLease.delegateID]; live != nil && live.binding != nil && live.binding.lease == decision.latchLease {
+		return live
+	}
+	return nil
 }
 
-// finishEffectsLocked applies the reducer's post-append effect descriptors
-// against post-append durable state, using the existing pure plan helpers, and
+// finishEffectsLocked applies the reducer's post-append effects against
+// post-append durable state, using the existing pure plan helpers, and
 // returns the concrete mutation plans plus the cancel that must run after
 // c.mu is released. It branches only on the reducer's decision. The caller
 // holds c.mu.
 func (c *delegateTreeController) finishEffectsLocked(decision finishDecision, closurePlan delegateUpdatePlan) (delegateMutationPlans, context.CancelFunc) {
 	plans := delegateMutationPlans{}
 	var cancel context.CancelFunc
-	for _, effect := range decision.effects {
-		switch effect.kind {
-		case finishEffectReleaseClaim:
-			c.releaseSettlementClaimLocked(effect.token)
-		case finishEffectReleaseGeneration:
-			finished, generationCancel := c.generationFinishedPlansLocked(effect.lease, effect.deliveryID)
-			plans = finished
-			cancel = generationCancel
-			if decision.closure {
-				plans.updates[0] = closurePlan
-			}
-		case finishEffectBumpEvidence:
-			c.evidenceVersion++
-		case finishEffectCaptureSnapshot:
-			plans.updates = append(plans.updates, c.capturedPlanLocked(effect.delegateID))
-		case finishEffectNone:
+	if decision.releaseClaim != nil {
+		c.releaseSettlementClaimLocked(decision.releaseClaim.token)
+	}
+	if decision.releaseGeneration {
+		plans, cancel = c.generationFinishedPlansLocked(decision.lease, decision.deliveryID)
+		if decision.closure {
+			plans.updates[0] = closurePlan
 		}
+	}
+	if decision.bumpEvidence {
+		c.evidenceVersion++
+	}
+	if decision.snapshotDelegateID != "" {
+		plans.updates = append(plans.updates, c.capturedPlanLocked(decision.snapshotDelegateID))
 	}
 	return plans, cancel
 }
@@ -464,12 +417,10 @@ func (c *delegateTreeController) reduceCompleteSettlementIntent(intent finishInt
 				Packet:     packet,
 			},
 		}},
-		latch: finishLatchPlan{kind: finishLatchLeaseConditionalTriple, lease: claim.lease},
-		effects: []finishEffect{
-			{kind: finishEffectReleaseClaim, token: claim.token},
-			{kind: finishEffectBumpEvidence},
-			{kind: finishEffectCaptureSnapshot, delegateID: claim.lease.delegateID},
-		},
+		latchLease:         claim.lease,
+		releaseClaim:       claim,
+		bumpEvidence:       true,
+		snapshotDelegateID: claim.lease.delegateID,
 	}
 }
 
@@ -700,10 +651,12 @@ func (c *delegateTreeController) reduceGenerationFinishIntent(intent finishInten
 
 	closure := outcome == delegatestore.OutcomeExhausted && finish.exhaustionResumable != nil && !*finish.exhaustionResumable
 	return finishDecision{
-		events:  events,
-		closure: closure,
-		latch:   finishLatchPlan{kind: finishLatchUnconditionalTriple, live: live},
-		effects: []finishEffect{{kind: finishEffectReleaseGeneration, lease: lease, deliveryID: deliveryID}},
+		events:            events,
+		closure:           closure,
+		latchLive:         live,
+		releaseGeneration: true,
+		lease:             lease,
+		deliveryID:        deliveryID,
 	}
 }
 

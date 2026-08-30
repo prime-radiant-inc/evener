@@ -83,16 +83,10 @@ func (c *delegateTreeController) BeginRunFinalization(lease delegateLease, mode 
 func (c *delegateTreeController) CompleteSettlement(claim *delegateSettlementClaim, supplied *delegatestore.TerminalPacket) (delegateMutationPlans, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	decision := c.reduceFinishIntent(finishIntent{site: finishSiteCompleteSettlement, claim: claim, packet: supplied})
-	if decision.err != nil || decision.events == nil {
-		return delegateMutationPlans{}, decision.err
-	}
-	_, appendErr := c.appendLocked(decision.events...)
-	if err := c.reduceFinishAppendResult(decision, appendErr); err != nil {
-		return delegateMutationPlans{}, err
-	}
-	plans, _ := c.finishEffectsLocked(decision, delegateUpdatePlan{})
-	return plans, nil
+	// This site never releases a generation, so there is no cancel to run
+	// after c.mu is released.
+	plans, _, err := c.executeFinishIntentLocked(finishIntent{site: finishSiteCompleteSettlement, claim: claim, packet: supplied})
+	return plans, err
 }
 
 func (c *delegateTreeController) AttentionResolutionsForFinalization(claim *delegateSettlementClaim) (delegateMutationPlans, error) {
