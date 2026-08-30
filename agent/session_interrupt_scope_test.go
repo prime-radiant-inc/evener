@@ -429,6 +429,81 @@ func TestInterruptSinceTurnID(t *testing.T) {
 				}
 			},
 		},
+		{
+			// The namespace gate (round-1 review B-1): the wire publishes a
+			// PROJECTOR-namespace turn_N as the active turn id for
+			// daemon-started kinds (setProcessingLocked mints it for goal
+			// continuations, notification wakes, queued drains, steering
+			// claims -- before the durable turn_mN exists), so a client that
+			// reads the thread in that window legitimately holds turn_N for
+			// the SAME logical turn the session's turn_mN names. A
+			// cross-namespace comparison of those two ids is inequality
+			// without staleness -- a false "stop expired" for a Stop that is
+			// exactly on time. SinceTurnID a projector id cannot be ordered
+			// against the mutation counter, so the guard must fall through to
+			// session-scoped behavior, exactly as an absent field does.
+			name: "projector-namespace sinceTurnId falls through to session-scoped behavior",
+			run: func(t *testing.T, sess *Session) {
+				durableTurn := runningStartTurn(t, sess, "start-since-projector", "running message")
+
+				cancels := 0
+				response, err := sess.InterruptClientMutation(context.Background(), appwire.TurnInterruptParams{
+					ClientMutationID: "interrupt-since-projector",
+					// What thread/read publishes in the window before the
+					// durable id exists: the projector's own turn_N.
+					SinceTurnID: "turn_1",
+				}, func() { cancels++ })
+				if err != nil {
+					t.Fatalf("projector-namespace SinceTurnID against durable turn %s: %v", durableTurn, err)
+				}
+				if cancels != 1 {
+					t.Fatalf("projector-namespace SinceTurnID cancelled %d times, want 1", cancels)
+				}
+				if response.Receipt.TurnID != durableTurn {
+					t.Fatalf("interrupt receipt turn = %q, want the running durable turn %q (a projector sinceTurnId is not comparable and must not reject)", response.Receipt.TurnID, durableTurn)
+				}
+			},
+		},
+		{
+			// The between-turn gap (round-1 review B-2): turn 1 settled, a
+			// queued message keeps the session running, so ActiveTurnID is
+			// empty while WireState reports processing -- the
+			// TestInterruptStopsATurnItCannotName fixture shape, now carrying
+			// a SinceTurnID for the turn that already ended. The guard is
+			// gated on a non-empty current id, so it must not fire: the Stop
+			// applies session-scoped, as it did before the field existed.
+			name: "sinceTurnId with an empty active turn applies session-scoped",
+			run: func(t *testing.T, sess *Session) {
+				firstTurn := completedStartTurn(t, sess, "start-since-gap-one", "first message")
+				if _, err := sess.AcceptClientMutationQueue(appwire.TurnQueueParams{
+					ClientMutationID: "queue-since-gap-follow-up",
+					Input:            []appwire.InputItem{{Type: "text", Text: "second message"}},
+				}); err != nil {
+					t.Fatalf("AcceptClientMutationQueue: %v", err)
+				}
+				if got := sess.clientMutations.snapshot().ActiveTurnID; got != "" {
+					t.Fatalf("durable ActiveTurnID after the first turn settled = %q, want empty", got)
+				}
+				if got := sess.WireState(); got != string(SessionProcessing) {
+					t.Fatalf("WireState in the gap = %q, want %q", got, SessionProcessing)
+				}
+
+				cancels := 0
+				response, err := sess.InterruptClientMutation(context.Background(), appwire.TurnInterruptParams{
+					ClientMutationID: "interrupt-since-gap",
+					SinceTurnID:      firstTurn,
+				}, func() { cancels++ })
+				if err != nil {
+					t.Fatalf("SinceTurnID interrupt in the between-turn gap: %v", err)
+				}
+				if cancels != 1 {
+					t.Fatalf("SinceTurnID interrupt in the gap cancelled %d times, want 1", cancels)
+				}
+				if response.Receipt.Disposition != appwire.MutationDispositionApplied {
+					t.Fatalf("interrupt disposition = %q, want applied (session-scoped behavior in the gap)", response.Receipt.Disposition)
+				}
+			},
+		},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {

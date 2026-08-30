@@ -1198,6 +1198,7 @@ func (s *Server) handleAppSandboxEscalationResolve(_ context.Context, params app
 func (s *Server) handleAppTurnInterrupt(ctx context.Context, params appwire.TurnInterruptParams) (appwire.TurnInterruptResponse, error) {
 	params.ClientMutationID = strings.TrimSpace(params.ClientMutationID)
 	params.ExpectedInstanceID = strings.TrimSpace(params.ExpectedInstanceID)
+	params.SinceTurnID = strings.TrimSpace(params.SinceTurnID)
 	unlock, err := s.lockRetrySafeMutation(params.Ref, params.ThreadID, params.ExpectedInstanceID, params.ClientMutationID)
 	if err != nil {
 		return appwire.TurnInterruptResponse{}, err

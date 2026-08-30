@@ -210,19 +210,21 @@ var hubCommandRegistry = []hubCommandDefinition{
 		UnavailableAction:  "interrupt",
 		UnavailableSummary: "Interrupt is not available for this session.",
 		Available:          capabilityAvailable(func(c hubSessionCapabilities) bool { return c.Interrupt }, "source does not advertise interrupt"),
-		// No ActiveTurnID gate here. turn/interrupt is session-scoped -- it
-		// names no turn (appwire v3) and the daemon decides on the session's own
-		// quiescence. Gating on an id the request does not carry can only refuse
-		// a Stop the daemon would have taken, and active-with-no-id is a state
-		// the wire really reaches -- a session holding queued work reports
-		// active with no turn running (kata vewa).
+		// No ActiveTurnID GATE here. turn/interrupt is session-scoped -- it
+		// targets no turn (appwire v3) and the daemon decides on the session's
+		// own quiescence. Gating on an id can only refuse a Stop the daemon
+		// would have taken, and active-with-no-id is a state the wire really
+		// reaches -- a session holding queued work reports active with no turn
+		// running (kata vewa). The id still RIDES ALONG as sinceTurnId (issue
+		// #178): the click-time binding the daemon's stale-Stop guard reads,
+		// never a precondition of its own.
 		Run: func(m *hubModel, _ string) tea.Cmd {
 			ref, ok := m.currentRef()
 			if !ok {
 				m.addSessionSystem("Session ref is invalid.")
 				return nil
 			}
-			return sendHubAction(m.client, ref, "interrupt", m.detail.InstanceID)
+			return sendHubAction(m.client, ref, "interrupt", m.detail.ActiveTurnID, m.detail.InstanceID)
 		},
 	},
 	{
@@ -240,7 +242,7 @@ var hubCommandRegistry = []hubCommandDefinition{
 				m.addSessionSystem("Session ref is invalid.")
 				return nil
 			}
-			return sendHubAction(m.client, ref, "compact")
+			return sendHubAction(m.client, ref, "compact", "")
 		},
 	},
 	{
@@ -317,7 +319,7 @@ var hubCommandRegistry = []hubCommandDefinition{
 				m.addSessionSystem("Session ref is invalid.")
 				return nil
 			}
-			return sendHubAction(m.client, ref, "shutdown")
+			return sendHubAction(m.client, ref, "shutdown", "")
 		},
 	},
 	{
@@ -344,7 +346,7 @@ var hubCommandRegistry = []hubCommandDefinition{
 				m.addSessionSystem("Session ref is invalid.")
 				return nil
 			}
-			return sendHubAction(m.client, ref, model)
+			return sendHubAction(m.client, ref, model, "")
 		},
 	},
 	{

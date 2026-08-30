@@ -107,7 +107,7 @@ func (m hubModel) updateSessionKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 					return m, nil
 				}
 				m.addSessionSystem(fmt.Sprintf("Switching to model %s...", selected))
-				return m, sendHubAction(m.client, ref, selected)
+				return m, sendHubAction(m.client, ref, selected, "")
 			}
 			m.session.refreshViewport()
 		}
@@ -349,7 +349,7 @@ func (m hubModel) updateSessionKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			if turnID := strings.TrimSpace(m.detail.ActiveTurnID); turnID != "" {
 				if ref, ok := m.currentRef(); ok {
 					m.addSessionSystem("Interrupting active turn. Press ctrl+c again to quit.")
-					return m, sendHubAction(m.client, ref, "interrupt", m.detail.InstanceID)
+					return m, sendHubAction(m.client, ref, "interrupt", m.detail.ActiveTurnID, m.detail.InstanceID)
 				}
 			}
 		}

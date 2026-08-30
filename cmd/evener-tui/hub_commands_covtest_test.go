@@ -377,7 +377,7 @@ func TestCovSendHubAction(t *testing.T) {
 	defer cleanup()
 	ref := appwire.Ref{SourceID: "local", ThreadID: "01TEST"}
 	for _, action := range []string{"interrupt", "compact", "shutdown", "openai/gpt-5"} {
-		cmd := sendHubAction(client, ref, action)
+		cmd := sendHubAction(client, ref, action, "")
 		msg, ok := cmd().(hubActionMsg)
 		if !ok || msg.err != nil {
 			t.Fatalf("action %q result = %#v", action, msg)

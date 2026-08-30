@@ -533,12 +533,28 @@ func (s *Session) InterruptClientMutation(
 		// turn is already running, refers to a turn the user saw end. Applying
 		// it would cancel a later turn they never saw, so it is rejected as
 		// expired instead -- surfaced, not silent. Inequality with a non-empty
-		// current id is the whole test: every ActiveTurnID is minted from one
-		// monotonic counter and never reused, so a different id IS a later
-		// generation. An equal id (late delivery still inside the clicked
-		// turn, the #176 window) and an absent one (old client, old durable
-		// outbox record) both fall through to today's session-scoped rule.
-		if params.SinceTurnID != "" && snapshot.ActiveTurnID != "" && snapshot.ActiveTurnID != params.SinceTurnID {
+		// current id is the whole test: every durable ActiveTurnID is minted
+		// from one monotonic counter and never reused, so a different id IS a
+		// later generation. An equal id (late delivery still inside the clicked
+		// turn, the #176 window), an absent one (old client, old durable
+		// outbox record), and an empty current one (the between-turn gap, or a
+		// daemon-started turn whose durable mint has not landed) all fall
+		// through to today's session-scoped rule.
+		//
+		// The namespace gate: only a durable turn_m<N> SinceTurnID can be
+		// ordered against the mutation counter. The wire also publishes
+		// PROJECTOR-namespace turn_N ids as the active turn (setProcessingLocked
+		// mints them for daemon-started kinds before the durable mint exists),
+		// so a client that read the thread in that window legitimately holds a
+		// turn_N naming the SAME logical turn the session's turn_mN names --
+		// two non-empty, unequal ids with no staleness between them, and
+		// comparing them would reject an on-time Stop as expired. A projector id
+		// has no durable alias to compare against, so it falls through to the
+		// session-scoped rule exactly as an absent field does -- and that costs
+		// nothing, because the projector namespace is only ever the click-time
+		// view of the CURRENT turn, never of a past one.
+		if strings.HasPrefix(params.SinceTurnID, "turn_m") &&
+			snapshot.ActiveTurnID != "" && snapshot.ActiveTurnID != params.SinceTurnID {
 			rejectClientMutation(record, appwire.Conflict("stop expired: a later turn is already running"))
 			return nil
 		}

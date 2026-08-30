@@ -1373,12 +1373,18 @@ type TurnSteerParams struct {
 // that was active when the user clicked Stop, captured client-side at click
 // time and carried in the durable outbox record, so a dispatch delayed across
 // a turn boundary can be recognized as stale (issue #178). At delivery, a
-// non-empty SinceTurnID that differs from the session's current active turn
-// means the Stop refers to a turn the user already saw end, and applying it
-// would cancel a later turn they never saw -- so it is rejected instead. An
-// equal (or empty) SinceTurnID never rejects: a same-generation Stop still
-// lands however late it arrives (the #176 window), and an old client or an
-// old durable outbox record without the field gets today's behavior unchanged.
+// SinceTurnID in the durable turn_m<N> namespace that differs from the
+// session's current active turn means the Stop refers to a turn the user
+// already saw end, and applying it would cancel a later turn they never saw
+// -- so it is rejected instead. Everything else falls through to today's
+// session-scoped behavior: an equal SinceTurnID (a same-generation Stop,
+// however late), an absent one (old client, old durable outbox record), an
+// empty current active turn (the between-turn gap), and a
+// projector-namespace turn_N one (the wire publishes those for
+// daemon-started turns before the durable mint exists; they name the same
+// logical turn a turn_mN names and cannot be ordered against the mutation
+// counter, so they are never treated as stale). Clients that hold an active
+// turn id SHOULD send it.
 type TurnInterruptParams struct {
 	Ref                string `json:"ref,omitempty"`
 	ThreadID           string `json:"threadId,omitempty"`

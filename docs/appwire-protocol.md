@@ -103,7 +103,7 @@ no router (reserved).
 | `thread/shutdown` | both | `ThreadShutdownParams` | `EmptyResponse` | Shuts the session down (the daemon runs it asynchronously). |
 | `turn/start` | both | `TurnStartParams` | `TurnStartResponse` | Starts a new user turn and reserves a turn ID. |
 | `turn/steer` | both | `TurnSteerParams` | `TurnSteerResponse` | Injects a steering message into the active turn. |
-| `turn/interrupt` | both | `TurnInterruptParams` | `TurnInterruptResponse` | Cancels whatever turn the session is running; the receipt names the turn actually cancelled. |
+| `turn/interrupt` | both | `TurnInterruptParams` | `TurnInterruptResponse` | Cancels whatever turn the session is running; the receipt names the turn actually cancelled. sinceTurnId is the click-time binding (issue #178): a stale Stop is rejected, never applied to a later turn. |
 | `turn/queue` | both | `TurnQueueParams` | `TurnQueueResponse` | Queues a user message for after the active turn completes. |
 | `turn/drainAsSteer` | both | `TurnDrainAsSteerParams` | `TurnDrainAsSteerResponse` | Drains the input queue and injects it as a single steering message. |
 | `turn/promoteQueuedAsSteer` | both | `TurnPromoteQueuedAsSteerParams` | `TurnPromoteQueuedAsSteerResponse` | Removes one queued message by index and injects it as user-sourced steering into the in-flight turn. |
@@ -171,6 +171,34 @@ no router (reserved).
 | `evener/settings/transcriptDisplay/get` | hub | `EmptyParams` | `TranscriptDisplayDefaults` | Reads the canonical Desktop and Mobile transcript-display defaults. |
 | `evener/settings/transcriptDisplay/patch` | hub | `TranscriptDisplayDefaultsPatchParams` | `TranscriptDisplayPatchResponse` | Updates one transcript-display default using an expected revision and returns the canonical value. |
 | `evener/sandbox/escalation/resolve` | both | `SandboxEscalationResolveParams` | `EmptyResponse` | Delivers a human's approve/deny decision for a pending sandbox-exemption escalation (M7); the daemon unblocks the waiting tool-exec goroutine, the hub relays. |
+
+### `turn/interrupt` — the click-time binding
+
+Stop is session-scoped: it cancels whatever turn the session is running, and
+the receipt names the turn actually cancelled. `sinceTurnId` is not a target
+and never gates acceptance by itself — it is the turn that was active when
+the user pressed Stop, captured client-side at click time and carried in the
+durable outbox record, so a dispatch delayed across a turn boundary (behind an
+earlier mutation in the per-ref FIFO, or until a reconnect) can be recognized
+as stale. Clients SHOULD send it whenever they hold an active turn id.
+
+At delivery the daemon rejects the Stop with a `conflict` — "stop expired: a
+later turn is already running" — only when all of these hold:
+
+- `sinceTurnId` is a non-empty **durable-namespace** id (`turn_m<N>` — the id
+  family `thread.evener.activeTurnId` carries for client-authored and
+  daemon-autonomous turns once the durable mint has landed);
+- the session's current active turn id is also non-empty and **differs** from
+  it, meaning a later turn the user never saw is already running.
+
+Everything else falls through to the session-scoped rule (apply to whatever
+is running): an absent `sinceTurnId` (old client, old durable outbox record),
+an equal one (late delivery still inside the clicked turn), an empty current
+active id (the between-turn gap), and a projector-namespace `turn_N` one (the
+wire publishes those ids for daemon-started turns before the durable mint
+exists; they cannot be ordered against the mutation counter and are never
+treated as stale). A rejected Stop settles through the ordinary recovery
+pipeline — it is surfaced, never silently applied to the later turn.
 
 ## Notifications (server → client)
 

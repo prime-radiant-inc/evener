@@ -641,7 +641,14 @@ func fetchHubTasksSync(ctx context.Context, client *appwire.Client, ref appwire.
 	return tasks, nil
 }
 
-func sendHubAction(client *appwire.Client, ref appwire.Ref, action string, expectedInstanceIDs ...string) tea.Cmd {
+// sendHubAction dispatches a hub session action. sinceTurnID is the
+// click-time binding for the interrupt branch (issue #178): the turn the wire
+// published as active when Stop was invoked, captured by the CALLER at
+// command-run time so a dispatch delayed across a turn boundary can be
+// recognized as stale by the daemon. It is never a target -- the daemon
+// rejects only a DIFFERENT durable id at delivery -- and empty when this TUI
+// holds no id, which the daemon treats as today's session-scoped behavior.
+func sendHubAction(client *appwire.Client, ref appwire.Ref, action, sinceTurnID string, expectedInstanceIDs ...string) tea.Cmd {
 	// Only the interrupt branch is a retry-safe turn mutation; the rest are
 	// thread-level calls the guard does not cover. Minted unconditionally so the
 	// identity is fixed to the action, not to the branch taken at run time.
@@ -658,6 +665,7 @@ func sendHubAction(client *appwire.Client, ref appwire.Ref, action string, expec
 				Ref:                ref.String(),
 				ClientMutationID:   mutationID,
 				ExpectedInstanceID: expectedInstanceID,
+				SinceTurnID:        strings.TrimSpace(sinceTurnID),
 			})
 		case "compact":
 			err = client.ThreadCompactStart(context.Background(), appwire.ThreadCompactStartParams{Ref: ref.String()})

@@ -65,12 +65,15 @@ func TestSendHubActionInterruptSendsIdentityAndExpectedTurn(t *testing.T) {
 	client, cleanup := newTUIAppWireClient(t, app)
 	defer cleanup()
 
-	msg := sendHubAction(client, appwire.Ref{SourceID: "local", ThreadID: "th_1"}, "interrupt")()
+	msg := sendHubAction(client, appwire.Ref{SourceID: "local", ThreadID: "th_1"}, "interrupt", "turn_m2")()
 	if actionMsg, ok := msg.(hubActionMsg); !ok || actionMsg.err != nil {
 		t.Fatalf("msg=%T err=%v", msg, actionMsg.err)
 	}
 	if got.ClientMutationID == "" {
 		t.Error("ClientMutationID is empty")
+	}
+	if got.SinceTurnID != "turn_m2" {
+		t.Errorf("SinceTurnID = %q, want the click-time turn id carried through", got.SinceTurnID)
 	}
 }
 
