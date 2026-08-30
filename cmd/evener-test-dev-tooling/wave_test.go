@@ -285,15 +285,35 @@ func graceFor(deadline, now time.Time) time.Duration {
 }
 
 // fifoReadTripwireFor scales the FIFO read tripwire from the same deadline
-// arithmetic graceFor uses (#173): a TERMed suite legitimately gets graceFor of
-// KillGrace before its group is KILLed, and a writer that outlives the wave
-// gets up to postExitGraceMax more after its exit, so the tripwire sits a full
-// post-exit ceiling beyond the grace the deadline still grants. The flat 60s
-// constant it replaces sat exactly on top of both ceilings and raced them
-// under load. graceFor's own postExitGrace floor keeps the no-deadline case at
-// 65s, the same generosity the old constant carried.
+// arithmetic graceFor uses (#173). While the wave is still running it grants
+// TWO sequential KillGrace windows — the watcher's TERM-then-KILL escalation,
+// then the survivor sweep's own KillGrace for descendants still finishing
+// their TERM traps (see runSuite) — and waveKillGrace sizes KillGrace with
+// graceFor, so a writer can legitimately still arrive 2×graceFor after TERM.
+// A writer that outlives the wave gets up to postExitGraceMax more after its
+// exit, which is padding on top of the window the tripwire actually races.
+//
+// The flat 60s constant this replaces sat exactly on top of the capped
+// still-running window (120s) and raced it under load; counting only one
+// KillGrace (the first fix) sat exactly on top of it again.
+//
+// Two deliberate tradeoffs:
+//   - Wedge-diagnosis latency roughly triples at the cap (180s vs the old
+//     flat 60s), because the wave legitimately gets both windows. A read that
+//     should complete in milliseconds still does; only a genuinely wedged
+//     wave ever pays the ceiling.
+//   - deadlineReportReserve is respected by shaving only the post-exit
+//     padding, never the still-running window: a tripwire inside THAT window
+//     is the #173 race reborn. When the deadline cannot afford both, the
+//     still-running window wins and the runner's own deadline backstops.
 func fifoReadTripwireFor(deadline, now time.Time) time.Duration {
-	return graceFor(deadline, now) + postExitGraceMax
+	runningWindow := 2 * graceFor(deadline, now)
+	liveWindow := runningWindow + postExitGraceMax
+	if deadline.IsZero() {
+		return liveWindow
+	}
+	budget := deadline.Sub(now) - deadlineReportReserve
+	return max(min(liveWindow, budget), runningWindow)
 }
 
 // waveRun is a running wave whose exit any number of waiters can observe.
@@ -597,8 +617,9 @@ func TestReadFifoLineFailsWhenWaveExitsWithoutWriting(t *testing.T) {
 	if !strings.Contains(err.Error(), "7") {
 		t.Errorf("error should name the wave's exit code so the failure is diagnosable, got: %v", err)
 	}
-	// The tripwire is a minute; returning anywhere near it means the wave-exit
-	// path is not wired and we fell through to the ceiling instead.
+	// The tripwire is minutes (see fifoReadTripwireFor); returning anywhere
+	// near it means the wave-exit path is not wired and we fell through to
+	// the ceiling instead.
 	if elapsed > 10*time.Second {
 		t.Errorf("took %v: fell through to the tripwire instead of noticing the wave had exited", elapsed)
 	}
@@ -666,16 +687,29 @@ func TestGraceFor(t *testing.T) {
 // TestFifoReadTripwireOutlivesTheGraceWindow pins the #173 fix: the FIFO read
 // tripwire must be derived from the same deadline arithmetic that sizes the
 // post-exit grace and the wave's KillGrace (graceFor), so it can never fire
-// inside a window the grace logic still considers live. A wave whose suite was
-// TERMed right now can legitimately still deliver a writer up to a full grace
-// later (KillGrace while running, plus up to postExitGraceMax after the wave
-// exits); a tripwire that expires inside that span reports "no line ... and the
-// wave is still running" while the wave is behaving exactly as configured.
+// inside a window the grace logic still considers live. The live window is
+// counted from runSuite's actual TERM-then-KILL escalation, not from the
+// tripwire's own arithmetic: the watcher grants one KillGrace, the survivor
+// sweep grants a second one for descendants still finishing their TERM traps
+// (wave.go), and a writer that outlives the wave gets up to postExitGraceMax
+// more after its exit. waveKillGrace sizes KillGrace with graceFor, so that
+// window is 2×graceFor + postExitGraceMax; a tripwire that expires inside it
+// reports "no line ... and the wave is still running" while the wave is
+// behaving exactly as configured.
 //
 // This is the strongest deterministic pin available: the race it guards is
 // load-sensitivity in which select case wins, so it is pinned structurally
-// (tripwire > graceFor + postExitGraceMax for every deadline) rather than by
-// reproducing the timing, per docs/developing-evener/testing.md's no-sleeps rule.
+// (tripwire >= the counted live window for every deadline) rather than by
+// reproducing the timing, per docs/developing-evener/testing.md's no-sleeps
+// rule. The window count here is deliberately written from wave.go's
+// escalation, not mirrored from fifoReadTripwireFor, so the pin fails if
+// either side drifts.
+//
+// The reserve is a layered contract, not an absolute one: a deadline too
+// close to afford the full window cannot have the tripwire wait past it —
+// the runner would panic first. The still-running window (2×grace) is the
+// #173 race itself and is never given up; the post-exit padding is what gets
+// shed when the budget is tight.
 func TestFifoReadTripwireOutlivesTheGraceWindow(t *testing.T) {
 	t.Parallel()
 
@@ -691,13 +725,35 @@ func TestFifoReadTripwireOutlivesTheGraceWindow(t *testing.T) {
 	} {
 		grace := graceFor(deadline, now)
 		tripwire := fifoReadTripwireFor(deadline, now)
-		// A TERMed suite gets KillGrace = graceFor to exit before KILL, and a
-		// writer that outlives the wave gets up to postExitGraceMax more after
-		// its exit. The tripwire must sit beyond that whole live window.
-		liveWindow := grace + postExitGraceMax
-		if tripwire < liveWindow {
-			t.Errorf("deadline %v from now: tripwire %v expires inside the live grace window (grace %v + post-exit max %v = %v)",
-				deadline.Sub(now), tripwire, grace, postExitGraceMax, liveWindow)
+		// runSuite's escalation: watcher KillGrace, then the survivor sweep's
+		// second KillGrace, then post-exit grace for a writer that outlives
+		// the wave. The tripwire must never sit inside the still-running
+		// window — that is the #173 race itself.
+		liveWindow := 2*grace + postExitGraceMax
+		runningWindow := 2 * grace
+		if tripwire < runningWindow {
+			t.Errorf("deadline %v from now: tripwire %v expires inside the still-running grace window (2×grace %v) it must never race",
+				deadline.Sub(now), tripwire, runningWindow)
+		}
+		if deadline.IsZero() {
+			if tripwire < liveWindow {
+				t.Errorf("no deadline: tripwire %v is inside the full live window %v it should cover", tripwire, liveWindow)
+			}
+			continue
+		}
+		budget := deadline.Sub(now) - deadlineReportReserve
+		if budget >= liveWindow && tripwire < liveWindow {
+			t.Errorf("deadline %v from now: budget %v affords the full live window %v but tripwire is only %v",
+				deadline.Sub(now), budget, liveWindow, tripwire)
+		}
+		// deadlineReportReserve: when the budget cannot afford the full
+		// window, the post-exit padding is shed so a wedged read surfaces as
+		// this file's clean one-line error rather than the runner's panic —
+		// unless even the still-running window exceeds the budget, where that
+		// window wins and the runner's deadline backstops.
+		if tripwire > budget && tripwire > liveWindow {
+			t.Errorf("deadline %v from now: tripwire %v exceeds the reportable budget %v while also exceeding the live window %v: it should shed its post-exit padding instead",
+				deadline.Sub(now), tripwire, budget, liveWindow)
 		}
 	}
 }
