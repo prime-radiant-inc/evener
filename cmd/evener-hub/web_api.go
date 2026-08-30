@@ -93,6 +93,15 @@ func (s *WebServer) handleAPIHealth(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+func (s *WebServer) handleAPIDebugSubscriptions(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		writeAPIError(w, http.StatusMethodNotAllowed, "GET required")
+		return
+	}
+	w.Header().Set("Cache-Control", "no-store")
+	writeAPIJSON(w, http.StatusOK, s.appRPC.DebugSubscriptions())
+}
+
 func (s *WebServer) apiStateGlob() string {
 	if s.cfg.Past == nil {
 		return ""

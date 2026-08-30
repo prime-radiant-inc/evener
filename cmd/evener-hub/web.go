@@ -173,6 +173,7 @@ func (s *WebServer) Handler() http.Handler {
 
 	// API
 	mux.HandleFunc("/api/health", s.handleAPIHealth)
+	mux.HandleFunc("/api/debug/subscriptions", s.handleAPIDebugSubscriptions)
 
 	mux.HandleFunc("/auth", hubedge.HandleAuth(s.cfg.AuthToken))
 
