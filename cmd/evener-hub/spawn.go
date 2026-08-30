@@ -655,6 +655,12 @@ func validateProviderCredentials(provider string, reg *hubcore.ProviderRegistry)
 	// Not an instance: a curated implicit provider whose credential does not
 	// resolve in this environment (spec §5.1), or a name nothing declares.
 	if p, ok := r.Provider(name); ok && registry.BoolValue(p.Implicit) {
+		// The Codex transport reads no key at all (spec §5.1), so its
+		// api_key_env list is empty and the key advice below would name
+		// nothing. Point at the flow that does configure it.
+		if p.Transport.Auth == registry.AuthOAuthOpenAICodex {
+			return appwire.HubLaunchError(fmt.Sprintf("provider credentials missing for %s: run `evener openai login --instance %s`", name, name))
+		}
 		return appwire.HubLaunchError(fmt.Sprintf("provider credentials missing for %s: set a key via evener/auth/apiKey/set or export one of %s", name, strings.Join(p.APIKeyEnv, ", ")))
 	}
 	return appwire.HubLaunchError(fmt.Sprintf("unknown instance %q: add a [providers.%s] entry to providers.toml", name, name))

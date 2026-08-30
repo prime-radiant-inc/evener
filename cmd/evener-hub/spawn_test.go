@@ -1266,14 +1266,30 @@ func TestValidateProviderCredentials_EndpointStop(t *testing.T) {
 
 // TestValidateProviderCredentials_CuratedImplicitWithoutCredential covers the
 // name that is a curated implicit provider but has no credential in this
-// environment, so it never became an instance: the refusal names the
-// variables that would make it one.
+// environment, so it never became an instance: the refusal names the way in,
+// and which way in depends on how the provider authenticates. The Codex
+// transport reads no key at all (spec §5.1), so telling a fresh install to
+// "export one of" its empty api_key_env list is advice that cannot work.
 func TestValidateProviderCredentials_CuratedImplicitWithoutCredential(t *testing.T) {
-	reg := newSpawnGateRegistry(t, t.TempDir(), nil, nil)
-	err := validateProviderCredentials("groq", reg)
-	assertHubLaunchError(t, err)
-	if !strings.Contains(err.Error(), "GROQ_API_KEY") {
-		t.Fatalf("the refusal names the variable that would configure groq: %v", err)
+	for _, tt := range []struct {
+		provider string
+		want     string
+		notWant  string
+	}{
+		{provider: "groq", want: "GROQ_API_KEY"},
+		{provider: "openai-codex", want: "evener openai login --instance openai-codex", notWant: "export one of"},
+	} {
+		t.Run(tt.provider, func(t *testing.T) {
+			reg := newSpawnGateRegistry(t, t.TempDir(), nil, nil)
+			err := validateProviderCredentials(tt.provider, reg)
+			assertHubLaunchError(t, err)
+			if !strings.Contains(err.Error(), tt.want) {
+				t.Fatalf("the refusal names the way in (%q): %v", tt.want, err)
+			}
+			if tt.notWant != "" && strings.Contains(err.Error(), tt.notWant) {
+				t.Fatalf("the refusal gives advice that cannot work (%q): %v", tt.notWant, err)
+			}
+		})
 	}
 }
 
