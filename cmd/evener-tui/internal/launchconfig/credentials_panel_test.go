@@ -2,6 +2,7 @@ package launchconfig
 
 import (
 	"errors"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -233,20 +234,25 @@ func TestCredentialsPanel_NavigationSkipsGroupHeaders(t *testing.T) {
 	}}})
 	panel := updated.(CredentialsPanel)
 
-	// Move down from first instance: should land on second openai instance, not the anthropic header
+	// The panel groups by provider, so the rows read anthropic, then the two
+	// openai instances by name. Move down from the first instance: it must
+	// skip the openai group header and land on the first openai instance.
+	if got := panel.selectedInstance(); got == nil || got.Name != "anthropic" {
+		t.Fatalf("the first selectable row is %v, want anthropic", got)
+	}
 	panel2, _ := panel.Update(tea.KeyMsg{Type: tea.KeyDown})
 	p2 := panel2.(CredentialsPanel)
 	inst := p2.selectedInstance()
-	if inst == nil || inst.Name != "openai2" {
-		t.Errorf("down from openai should land on openai2, got %v", inst)
+	if inst == nil || inst.Name != "openai" {
+		t.Errorf("down from anthropic should skip the openai header and land on openai, got %v", inst)
 	}
 
-	// Move down again: should skip group header and land on anthropic
+	// Move down again: the second instance of the same group, no header between.
 	panel3, _ := p2.Update(tea.KeyMsg{Type: tea.KeyDown})
 	p3 := panel3.(CredentialsPanel)
 	inst = p3.selectedInstance()
-	if inst == nil || inst.Name != "anthropic" {
-		t.Errorf("down from openai2 should land on anthropic (skipping header), got %v", inst)
+	if inst == nil || inst.Name != "openai2" {
+		t.Errorf("down from openai should land on openai2, got %v", inst)
 	}
 }
 
@@ -575,5 +581,34 @@ func TestCredentialsPanelSourceBadgeTones(t *testing.T) {
 	optional := p.credentialBadge(appwire.InstanceEntry{Name: "llama", ActiveSource: "none"})
 	if !strings.Contains(optional, tuiprim.StatusBadge(th.TextDim, "optional")) {
 		t.Errorf("an instance that needs no credential must wear the optional badge: %q", ansiPattern.ReplaceAllString(optional, ""))
+	}
+}
+
+// TestCredentialsPanel_GroupsEachProviderOnce: the registry ranks instances by
+// default order then name, which can interleave providers, and the panel emits
+// a header whenever the provider changes from one row to the next. Sorting
+// first is what keeps a provider's header from appearing twice.
+func TestCredentialsPanel_GroupsEachProviderOnce(t *testing.T) {
+	m := NewCredentialsPanel()
+	updated, _ := m.Update(InstanceListResultMsg{List: appwire.InstanceListResponse{Instances: []appwire.InstanceEntry{
+		{Name: "work", ProviderID: "anthropic", ActiveSource: "store"},
+		{Name: "gpt", ProviderID: "openai", ActiveSource: "store"},
+		{Name: "claude", ProviderID: "anthropic", ActiveSource: "store"},
+	}}})
+	panel := updated.(CredentialsPanel)
+
+	var headers, names []string
+	for _, row := range panel.rows {
+		if row.header {
+			headers = append(headers, row.groupName)
+			continue
+		}
+		names = append(names, row.entry.Name)
+	}
+	if !reflect.DeepEqual(headers, []string{"anthropic", "openai"}) {
+		t.Errorf("headers = %v, want each provider once, in order", headers)
+	}
+	if !reflect.DeepEqual(names, []string{"claude", "work", "gpt"}) {
+		t.Errorf("rows = %v, want each provider's instances together, by name", names)
 	}
 }

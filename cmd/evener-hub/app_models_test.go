@@ -188,7 +188,7 @@ func TestIsDatedSnapshotModelID(t *testing.T) {
 }
 
 func TestEnrichModelDescriptors_UsesPrettifiedDisplayNameAndSortsDatedLast(t *testing.T) {
-	models := enrichModelListResponse(hubcore.WebConfig{}, appwire.ModelListResponse{Data: []appwire.ModelDescriptor{
+	models := enrichModelListResponse(appwire.ModelListResponse{Data: []appwire.ModelDescriptor{
 		{Provider: "anthropic", Model: "claude-opus-4-6-20251101"},
 		{Provider: "anthropic", Model: "claude-opus-4-6"},
 		{Provider: "openai", Model: "gpt-5.2"},
@@ -227,7 +227,7 @@ func TestEnrichModelListResponse_KeepsCapabilitiesAndAddsDisplayNames(t *testing
 		ContextWindow: &contextWindow,
 		SupportsTools: &supportsTools,
 	}
-	got := enrichModelListResponse(hubcore.WebConfig{}, appwire.ModelListResponse{Data: []appwire.ModelDescriptor{in}}).Data
+	got := enrichModelListResponse(appwire.ModelListResponse{Data: []appwire.ModelDescriptor{in}}).Data
 	if len(got) != 1 {
 		t.Fatalf("got %d descriptors, want 1", len(got))
 	}
@@ -240,7 +240,7 @@ func TestEnrichModelListResponse_KeepsCapabilitiesAndAddsDisplayNames(t *testing
 // graceful-degradation rule: a model the registry carries no capabilities for
 // must still render name+provider+id, just without any badge fields.
 func TestEnrichModelListResponse_ModelWithoutCapsStillRenders(t *testing.T) {
-	models := enrichModelListResponse(hubcore.WebConfig{}, appwire.ModelListResponse{Data: []appwire.ModelDescriptor{
+	models := enrichModelListResponse(appwire.ModelListResponse{Data: []appwire.ModelDescriptor{
 		{Provider: "mycompany", Model: "totally-unknown-model-xyz"},
 	}}).Data
 	if len(models) != 1 {
@@ -273,12 +273,26 @@ func TestEnrichModelListResponse_ModelWithoutCapsStillRenders(t *testing.T) {
 // provider or no model id has nothing to select, so it never reaches the
 // picker.
 func TestEnrichModelListResponse_DropsIncompleteDescriptors(t *testing.T) {
-	got := enrichModelListResponse(hubcore.WebConfig{}, appwire.ModelListResponse{Data: []appwire.ModelDescriptor{
+	got := enrichModelListResponse(appwire.ModelListResponse{Data: []appwire.ModelDescriptor{
 		{Provider: "", Model: "orphan"},
 		{Provider: "openai", Model: "  "},
 		{Provider: "openai", Model: "gpt-5.2"},
 	}}).Data
 	if len(got) != 1 || got[0].Model != "gpt-5.2" {
 		t.Fatalf("got %+v, want only the complete descriptor", got)
+	}
+}
+
+// TestWithDisplayNames_DoesNotMutateItsInput: the model list is served from a
+// cache the hub keeps, so filling a blank display name must produce new
+// descriptors rather than write through to the cached ones.
+func TestWithDisplayNames_DoesNotMutateItsInput(t *testing.T) {
+	in := []appwire.ModelDescriptor{{Provider: "anthropic", Model: "claude-opus-4-6"}}
+	out := withDisplayNames(in)
+	if out[0].DisplayName == "" {
+		t.Fatal("the copy did not get a display name, so this test proves nothing")
+	}
+	if in[0].DisplayName != "" {
+		t.Fatalf("the input was mutated: %+v", in[0])
 	}
 }

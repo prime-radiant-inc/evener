@@ -27,7 +27,7 @@ func hubModelList(ctx context.Context, cfg hubcore.WebConfig, sources *appsource
 	if err != nil {
 		return resp, err
 	}
-	resp = enrichModelListResponse(cfg, resp)
+	resp = enrichModelListResponse(resp)
 	return attachRecentModels(cfg, resp), nil
 }
 
@@ -277,7 +277,7 @@ func sortModelDescriptors(models []appwire.ModelDescriptor) {
 // rows in the picker's order. Every capability on a descriptor comes from
 // the registry's Resolved record (spec §11.3), so there is nothing else to
 // merge in here.
-func enrichModelListResponse(_ hubcore.WebConfig, resp appwire.ModelListResponse) appwire.ModelListResponse {
+func enrichModelListResponse(resp appwire.ModelListResponse) appwire.ModelListResponse {
 	resp.Data = withDisplayNames(resp.Data)
 	if resp.Data == nil {
 		resp.Data = []appwire.ModelDescriptor{}

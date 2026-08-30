@@ -2,6 +2,7 @@ package launchconfig
 
 import (
 	"maps"
+	"sort"
 	"strings"
 
 	tea "github.com/charmbracelet/bubbletea"
@@ -59,15 +60,25 @@ func NewCredentialsPanel() CredentialsPanel {
 
 func (p CredentialsPanel) Init() tea.Cmd { return nil }
 
-// buildRows constructs the flat header+instance row list from the instance
-// slice, grouping by the registry provider each instance resolves to, in the
-// order they appear.
+// buildRows constructs the flat header+instance row list, grouping by the
+// registry provider each instance resolves to. The registry ranks instances by
+// default order and then by name, which interleaves providers; a header is
+// emitted whenever the provider changes from one row to the next, so the rows
+// are sorted by (provider, name) first or a provider gets two headers.
 func buildPanelRows(instances []appwire.InstanceEntry) []panelRow {
+	ordered := make([]appwire.InstanceEntry, len(instances))
+	copy(ordered, instances)
+	sort.SliceStable(ordered, func(i, j int) bool {
+		if ordered[i].ProviderID != ordered[j].ProviderID {
+			return ordered[i].ProviderID < ordered[j].ProviderID
+		}
+		return ordered[i].Name < ordered[j].Name
+	})
 	var rows []panelRow
 	seenProvider := ""
-	for i := range instances {
-		inst := &instances[i]
-		if inst.ProviderID != seenProvider {
+	for i := range ordered {
+		inst := &ordered[i]
+		if inst.ProviderID != seenProvider || i == 0 {
 			seenProvider = inst.ProviderID
 			rows = append(rows, panelRow{header: true, groupName: inst.ProviderID})
 		}

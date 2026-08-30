@@ -78,7 +78,9 @@ func (c *hubInstancesController) List() appwire.InstanceListResponse {
 		AvailableProviders: providers,
 		Diagnostics:        c.reg.Diagnostics(),
 		UserLayer:          userLayer,
-		WritesRefused:      c.reg.WritesRefused(),
+		// The wire bit is the refusal the mutators would give, asked once, so
+		// the pane cannot offer an edit this controller would reject.
+		WritesRefused: c.refuseWhenBroken() != nil,
 	}
 }
 
@@ -160,12 +162,17 @@ func validatedProtocolAndSurface(protocol, surface string) (string, string, erro
 	return protocol, surface, nil
 }
 
-// refuseWhenBroken stops every write while providers.toml does not load: the
-// hub has no way to rewrite a file it could not read without destroying what
-// the user wrote (spec §10, §14.1).
+// refuseWhenBroken stops every write while there is no registry to write
+// against: a providers.toml that does not load (the hub has no way to rewrite
+// a file it could not read without destroying what the user wrote — spec §10,
+// §14.1), or a holder that has not loaded one yet. Every mutator asks this
+// first, so none of them has to guard the reads that follow.
 func (c *hubInstancesController) refuseWhenBroken() error {
 	if c.reg.WritesRefused() {
 		return fmt.Errorf("providers.toml cannot be edited until it loads: %w", c.reg.LoadError())
+	}
+	if c.reg.Get() == nil {
+		return errors.New("providers.toml cannot be edited: the provider registry has not loaded")
 	}
 	return nil
 }

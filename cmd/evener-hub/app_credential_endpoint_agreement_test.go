@@ -16,7 +16,6 @@ import (
 
 	"primeradiant.com/evener/appwire"
 	"primeradiant.com/evener/auth/openai/oaitest"
-	"primeradiant.com/evener/cmd/evener-hub/internal/hubcore"
 	"primeradiant.com/evener/internal/credentials"
 	"primeradiant.com/evener/llm/registry"
 )
@@ -120,8 +119,11 @@ func TestCredentialAgreement_HubAgreesWithTheKeyTheChildSends(t *testing.T) {
 				map[string]string{tt.envVar: tt.value},
 				map[string]registry.Provider{tt.instance: tt.provider})
 
-			// The credential the child process is actually built with.
-			resolved := childCredentialSource(t, reg, tt.instance)
+			// The credential the child process is actually built with,
+			// resolved on its own registry.
+			resolved := childCredentialSource(t, t.TempDir(),
+				map[string]string{tt.envVar: tt.value},
+				map[string]registry.Provider{tt.instance: tt.provider}, tt.instance)
 			if got := resolved != "" && resolved != "none"; got != tt.wantInjected {
 				t.Fatalf("the registry resolves a credential = %v (source %q), want %v: %s", got, resolved, tt.wantInjected, tt.why)
 			}
@@ -173,16 +175,27 @@ func TestCredentialAgreement_HubAgreesWithTheKeyTheChildSends(t *testing.T) {
 }
 
 // childCredentialSource is what the spawned child's registry resolves for one
-// instance — the third party the two hub surfaces have to agree with.
-func childCredentialSource(t *testing.T, reg *hubcore.ProviderRegistry, name string) string {
+// instance — the third party the two hub surfaces have to agree with. It loads
+// its own registry from the same inputs the child would get rather than
+// reading the holder the pane reads, so agreement here is between two
+// independent resolutions.
+func childCredentialSource(t *testing.T, stateDir string, env map[string]string, instances map[string]registry.Provider, name string) string {
 	t.Helper()
-	inst, ok := reg.Get().Instance(name)
-	if !ok {
-		res, err := reg.Get().ResolveInstance(name)
-		if err != nil {
-			t.Fatalf("the registry has no instance %q: %v", name, err)
-		}
-		return res.Credential.Source
+	r, err := registry.Load(
+		registry.WithOffline(true), registry.WithoutCache(), registry.WithNoUserLayer(),
+		registry.WithStateRoot(stateDir),
+		registry.WithEnv(func(k string) (string, bool) { v, ok := env[k]; return v, ok }),
+		registry.WithInstances(instances),
+	)
+	if err != nil {
+		t.Fatalf("registry twin for %q: %v", name, err)
 	}
-	return inst.CredentialSource
+	if inst, ok := r.Instance(name); ok {
+		return inst.CredentialSource
+	}
+	res, err := r.ResolveInstance(name)
+	if err != nil {
+		t.Fatalf("the registry twin has no instance %q: %v", name, err)
+	}
+	return res.Credential.Source
 }

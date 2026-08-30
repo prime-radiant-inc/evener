@@ -52,8 +52,8 @@ func FuzzCovWebViewsSpawn(f *testing.F) {
 		sortModelDescriptors(models)
 		_ = withDisplayNames(nil)
 		_ = withDisplayNames([]appwire.ModelDescriptor{{}, {Provider: "openai", Model: "gpt-4o"}})
-		_ = enrichModelListResponse(hubcore.WebConfig{}, appwire.ModelListResponse{})
-		_ = enrichModelListResponse(hubcore.WebConfig{}, appwire.ModelListResponse{
+		_ = enrichModelListResponse(appwire.ModelListResponse{})
+		_ = enrichModelListResponse(appwire.ModelListResponse{
 			Data:   []appwire.ModelDescriptor{{Provider: "openai", Model: "gpt-4o"}},
 			Recent: []appwire.ModelDescriptor{{Provider: "openai", Model: "gpt-4o"}},
 		})

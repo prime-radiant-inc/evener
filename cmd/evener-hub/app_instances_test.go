@@ -497,3 +497,24 @@ func TestSanitizeEndpointURL(t *testing.T) {
 		}
 	}
 }
+
+// TestInstances_WritesRefusedBeforeTheFirstLoad: a holder that has not loaded
+// has no registry to consult, and the mutators dereference it. Refusing is the
+// same answer a broken file gets, and it is one condition rather than four
+// nil checks at the call sites.
+func TestInstances_WritesRefusedBeforeTheFirstLoad(t *testing.T) {
+	ctl := &hubInstancesController{reg: hubcore.NewProviderRegistry(nil), providersConfigPath: filepath.Join(t.TempDir(), "providers.toml")}
+	for name, call := range map[string]func() error{
+		"Create":     func() error { return ctl.Create(appwire.InstanceCreateParams{Name: "work", Base: "openai"}) },
+		"Edit":       func() error { return ctl.Edit(appwire.InstanceEditParams{Name: "work"}) },
+		"Remove":     func() error { return ctl.Remove(appwire.InstanceRemoveParams{Name: "work"}) },
+		"SetDefault": func() error { return ctl.SetDefault(appwire.InstanceSetDefaultParams{Name: "work"}) },
+	} {
+		if err := call(); err == nil {
+			t.Errorf("%s = nil, want a refusal: there is no registry to write against", name)
+		}
+	}
+	if resp := ctl.List(); !resp.WritesRefused || len(resp.Instances) != 0 {
+		t.Fatalf("List = %+v, want no instances and writes refused", resp)
+	}
+}
