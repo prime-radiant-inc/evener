@@ -20,10 +20,9 @@ import {
   applyViewport,
   assertGuardOrigin,
   connectPage,
+  devtoolsHttpURL,
   evaluate,
   navigateTo,
-  realizedViewport,
-  waitForFonts,
   waitForHttp,
 } from "../../cmd/evener-hub/frontend/scripts/browserGuardCdp.mjs";
 import { startBrowserGuard } from "../../cmd/evener-hub/frontend/scripts/browserGuardProcess.mjs";
@@ -152,9 +151,6 @@ async function main() {
   const scriptDirectory = path.dirname(fileURLToPath(import.meta.url));
   const repositoryRoot = path.resolve(scriptDirectory, "../..");
   const mobileRoot = path.resolve(repositoryRoot, "mobile");
-  const outputDir = process.env.EVENER_SCRATCH_DIR
-    ? path.join(process.env.EVENER_SCRATCH_DIR, "live-conversation-geometry")
-    : path.join(scriptDirectory, "geometry-output");
 
   const cases = buildMatrixCases();
   assert.strictEqual(
@@ -175,11 +171,22 @@ async function main() {
     validateGuardOrigin(origin);
     await waitForHttp(origin, "live conversation harness");
 
-    const { ws, send } = await connectPage(guard.chromeEndpoint);
+    const cdpEndpoint = await guard.waitForChrome();
+    await waitForHttp(
+      devtoolsHttpURL(cdpEndpoint, "/json/version"),
+      "chrome devtools endpoint",
+      guard.getChromeLaunchError,
+    );
+    const { ws, send } = await connectPage(cdpEndpoint);
     const harnessUrl = `${origin}/live-conversation-harness.html`;
     await navigateTo({ ws, send }, harnessUrl);
     await assertGuardOrigin(send, `127.0.0.1:${guard.vitePort}`);
-    await waitForFonts(send);
+    // Ruling (controller): the mobile product ships the system font stack and
+    // declares no webfonts, so browserGuardCdp's waitForFonts webfont-presence
+    // guard (written for the hub frontend, which ships @fontsource faces)
+    // cannot hold here. Keep its readiness guarantee (document.fonts.ready)
+    // without the webfont-presence assertion.
+    await evaluate(send, "document.fonts.ready.then(() => true)");
 
     let passed = 0;
     const observations = [];
@@ -187,7 +194,6 @@ async function main() {
     for (const testCase of cases) {
       const viewport = testCase.viewport;
       await applyViewport(send, viewport);
-      const realized = await realizedViewport(send);
 
       // Navigate to the harness with query params for this case.
       const params = new URLSearchParams({
@@ -199,7 +205,12 @@ async function main() {
         safeArea: testCase.safeArea,
       });
       await navigateTo({ ws, send }, `${harnessUrl}?${params}`);
-      await waitForFonts(send);
+      // Ruling (controller): the mobile product ships the system font stack and
+      // declares no webfonts, so browserGuardCdp's waitForFonts webfont-presence
+      // guard (written for the hub frontend, which ships @fontsource faces)
+      // cannot hold here. Keep its readiness guarantee (document.fonts.ready)
+      // without the webfont-presence assertion.
+      await evaluate(send, "document.fonts.ready.then(() => true)");
 
       // Assert the actual Host/frame criteria at this matrix point.
       const result = await evaluate(
@@ -236,7 +247,7 @@ async function main() {
         })()`,
       );
 
-      const data = JSON.parse(result.value ?? "null");
+      const data = result ?? null;
       if (data?.error) {
         console.error(`FAIL: ${testCase.id}: ${data.error}`);
         continue;
@@ -273,7 +284,7 @@ async function main() {
     }
 
     // Panned viewport focus-traversal case.
-    const pannedResult = await runPannedTraversal(send, harnessUrl);
+    const pannedResult = await runPannedTraversal(ws, send, harnessUrl);
     if (pannedResult.passed) {
       passed += 1;
     }
@@ -288,11 +299,11 @@ async function main() {
       process.exitCode = 1;
     }
   } finally {
-    await guard.close();
+    await guard.cleanup();
   }
 }
 
-async function runPannedTraversal(send, harnessUrl) {
+async function runPannedTraversal(ws, send, harnessUrl) {
   // Panned viewport: {innerHeight:852, offsetTop:47, height:500, safeBottom:34}
   // with the real composer focused and keyboard open.
   await applyViewport(send, { width: 393, height: 852 });
@@ -304,8 +315,10 @@ async function runPannedTraversal(send, harnessUrl) {
     reducedMotion: "false",
     safeArea: "top-bottom",
   });
-  await navigateTo({ ws: send.ws, send }, `${harnessUrl}?${params}`);
-  await waitForFonts(send);
+  await navigateTo({ ws, send }, `${harnessUrl}?${params}`);
+  // Ruling (controller): see the base-matrix note — the mobile product ships
+  // system fonts only, so keep document.fonts.ready without the webfont gate.
+  await evaluate(send, "document.fonts.ready.then(() => true)");
 
   // Dispatch the panned viewport via the harness API.
   const result = await evaluate(
@@ -322,7 +335,7 @@ async function runPannedTraversal(send, harnessUrl) {
       };
     })()`,
   );
-  const data = JSON.parse(result.value ?? "null");
+  const data = result ?? null;
   return {
     passed: data && !data.error,
     observation: {
