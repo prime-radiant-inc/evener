@@ -2,6 +2,7 @@ package agent
 
 import (
 	"errors"
+	"fmt"
 	"strconv"
 
 	"primeradiant.com/evener/agent/internal/delegatestore"
@@ -133,6 +134,21 @@ func (m *delegateLifecycleModel) recordAttentionNoAction() {
 // latches and clears the no-action outcome eligibility.
 func (m *delegateLifecycleModel) recordTerminalSeen() {
 	m.terminalSeen = true
+}
+
+// completionDecisionPrediction is the model's copy of completionDecision's
+// branch order (delegate_tree_steer.go): terminal-seen wins (use the
+// existing terminal); then attention-only with the recorded no-action
+// outcome selects the packetless no-action finish; otherwise the run needs
+// a nudge (a report).
+func (m *delegateLifecycleModel) completionDecisionPrediction() delegateCompletionDecision {
+	if m.terminalSeen {
+		return delegateCompletionUseExistingTerminal
+	}
+	if !m.reportRequired && m.attentionNoAction {
+		return delegateCompletionFinishNoAction
+	}
+	return delegateCompletionNeedsNudge
 }
 
 // classifyRunEnd mirrors the production classifier pins for op 8's outcome
@@ -271,7 +287,9 @@ func (m *delegateLifecycleModel) noActionEligible(fallbackRetained bool) bool {
 func legalDelegateLifecyclePhaseTransition(from, to delegatestore.Phase) bool {
 	switch from {
 	case delegatestore.PhaseIdle:
-		return to == delegatestore.PhaseRunning || to == delegatestore.PhaseClosed
+		// A stop request sets Stopping for every phase except Closed
+		// (applySubtreeStopRequested), so idle → stopping is legal too.
+		return to == delegatestore.PhaseRunning || to == delegatestore.PhaseClosed || to == delegatestore.PhaseStopping
 	case delegatestore.PhaseRunning:
 		return to == delegatestore.PhaseSettling || to == delegatestore.PhaseStopping || to == delegatestore.PhaseIdle
 	case delegatestore.PhaseSettling:
@@ -395,6 +413,28 @@ func (m *delegateLifecycleModel) agreeWithModel(opName string, obs delegateLifec
 				field:  "exhausted",
 				model:  m.exhausted,
 				actual: obs.exhausted,
+			}
+		}
+		// A-M1: whenever the terminal outcome is exhausted, the payload
+		// source must be asserted — run-error when the run error carried the
+		// budget (the a.err overwrite), prepared-terminal when the outcome
+		// was normalized from the prepared terminal packet. A tracked-but-
+		// unasserted source is exactly the exhaustion-overwrite blind spot.
+		if m.exhausted {
+			if m.exhaustionSource != delegateLifecycleExhaustionFromRunError && m.exhaustionSource != delegateLifecycleExhaustionFromPreparedTerminal {
+				return &delegateLifecycleAgreementError{
+					op:     opName,
+					field:  "exhaustionSource",
+					model:  fmt.Sprintf("exhausted with source %v", m.exhaustionSource),
+					actual: "none",
+				}
+			}
+		} else if m.exhaustionSource != delegateLifecycleExhaustionNone {
+			return &delegateLifecycleAgreementError{
+				op:     opName,
+				field:  "exhaustionSource",
+				model:  fmt.Sprintf("not exhausted but source %v", m.exhaustionSource),
+				actual: "none",
 			}
 		}
 	}

@@ -8,6 +8,7 @@ import (
 	"github.com/spf13/afero"
 
 	"primeradiant.com/evener/agent/internal/delegatestore"
+	"primeradiant.com/evener/agent/transcript"
 )
 
 // errDelegateLifecycleCanceled is the harness's stand-in for context.Canceled in the
@@ -82,6 +83,11 @@ type delegateLifecycleHarness struct {
 	c          *delegateTreeController
 	model      delegateLifecycleModel
 	delegateID string
+	// root is the controller's root runtime: the receiver identity for
+	// top-level deliveries (deliveryReceiverLocked("") returns
+	// c.rootRuntime), with an attached root transcript so delivery
+	// acknowledgements are durable.
+	root *Session
 	// runtime is the bound runtime session for steering paths.
 	runtime *Session
 	// stopDone is the current stop's done channel once a stop is requested.
@@ -103,10 +109,21 @@ func newDelegateLifecycleHarness(t *testing.T, legacyBinding bool) *delegateLife
 	t.Helper()
 	c, _ := newDelegateControllerTestHarness(t, 3, 2)
 	h := &delegateLifecycleHarness{t: t, c: c, delegateID: "dlg_target"}
-	// The root transcript is the durable receiver identity for top-level
-	// deliveries (deliveryTranscriptIdentity uses stateDir/rootSessionID);
-	// an empty one is enough for the delivery receiver to arm.
-	writeEmptyAttentionTranscript(t, transcriptPath(c.stateDir, "root-session"), "root-session")
+	// The root runtime is the delivery receiver for top-level delegates
+	// (deliveryReceiverLocked("") → c.rootRuntime) and the root transcript
+	// is the durable receiver identity (deliveryTranscriptIdentity uses
+	// stateDir/rootSessionID). Without a root runtime, ReplayDeliveries
+	// never returns a plan and op 12 would be dead.
+	rootWriter, err := transcript.NewWriter(transcriptPath(c.stateDir, "root-session"), transcript.Header{SessionID: "root-session"})
+	if err != nil {
+		t.Fatalf("lifecycle root transcript: %v", err)
+	}
+	t.Cleanup(func() { _ = rootWriter.Close() })
+	h.root = &Session{id: "root-session", stateDir: c.stateDir, delegateController: c}
+	h.root.attachTranscript(rootWriter)
+	c.mu.Lock()
+	c.rootRuntime = h.root
+	c.mu.Unlock()
 	if legacyBinding {
 		seedDelegateControllerRunning(t, c, h.delegateID, "")
 		attachDelegateSteerRuntime(t, c, h.delegateID, afero.NewMemMapFs())
@@ -156,7 +173,6 @@ func (h *delegateLifecycleHarness) observe() delegateLifecycleObservation {
 		h.t.Fatalf("lifecycle observe: load journal: %v", err)
 	}
 	acknowledged := map[string]bool{}
-	finishedDeliveries := map[string]bool{}
 	for _, event := range events {
 		if event.DelegateID != h.delegateID {
 			continue
@@ -164,13 +180,15 @@ func (h *delegateLifecycleHarness) observe() delegateLifecycleObservation {
 		if event.DeliveryAcknowledged != nil {
 			acknowledged[event.DeliveryAcknowledged.DeliveryID] = true
 		}
-		if event.RunFinished != nil && event.RunFinished.DeliveryID != "" {
-			finishedDeliveries[event.RunFinished.DeliveryID] = true
-		}
 	}
 	delivered := 0
-	for id := range finishedDeliveries {
-		if acknowledged[id] {
+	// I4 is scoped to the model's current generation (opStartGeneration
+	// resets the model; earlier generations carry their own deliveries).
+	for _, event := range events {
+		if event.DelegateID != h.delegateID || event.RunFinished == nil {
+			continue
+		}
+		if event.RunFinished.Generation == h.model.generation && event.RunFinished.DeliveryID != "" && acknowledged[event.RunFinished.DeliveryID] {
 			delivered++
 		}
 	}
@@ -325,6 +343,12 @@ func (h *delegateLifecycleHarness) assertInvariants(obs delegateLifecycleObserva
 			if event.DelegateID != h.delegateID || event.RunFinished == nil {
 				continue
 			}
+			// Only the model's current generation is bound to its
+			// requirement state (opStartGeneration resets the model);
+			// earlier generations carry their own.
+			if event.RunFinished.Generation != h.model.generation {
+				continue
+			}
 			if event.RunFinished.Disposition == delegatestore.DispositionCompletedNoAction {
 				h.t.Fatal("lifecycle I5: report-requiring generation with evidence finished completed_no_action")
 			}
@@ -356,10 +380,19 @@ func delegateLifecyclePhaseAfterEvent(event delegatestore.Event, previous delega
 		return previous, true
 	case delegatestore.EventDelegateSubtreeStopRequested:
 		if previous == delegatestore.PhaseClosed {
-			return previous, true
+			// A stop request on a closed delegate journals legally but leaves
+			// the phase unchanged (the fold skips Closed): there is no phase
+			// transition to check.
+			return previous, false
 		}
 		return delegatestore.PhaseStopping, true
 	case delegatestore.EventDelegateSubtreeStopCompleted:
+		if previous == delegatestore.PhaseIdle {
+			// The covered member's run already finished back to idle before
+			// the stop completed; the completion confirms idle (a no-op on
+			// the phase — the fold re-assigns the same value).
+			return previous, false
+		}
 		return delegatestore.PhaseIdle, true
 	default:
 		return previous, false
@@ -440,6 +473,26 @@ func (h *delegateLifecycleHarness) opAdmitReportWork(_ lifecycleOp) string {
 	if _, err := completeDelegateModelRequest(h.c, h.currentLease()); err != nil {
 		return "report-work-unbound"
 	}
+	// B-S1 targeted assertion: production's evidence requirement must have
+	// transitioned exactly as the model predicts — report-required when
+	// evidence is present (escalateCompletionRequirementLocked), unchanged
+	// when it is nil (the legacy tolerance path). A production
+	// under-action here must fail this op, not just desync the mirror.
+	h.c.mu.Lock()
+	var requirement delegateCompletionRequirement
+	requirementSet := false
+	if live := h.c.live[h.delegateID]; live != nil && live.binding != nil && live.binding.evidence != nil {
+		requirement = live.binding.evidence.requirement
+		requirementSet = true
+	}
+	h.c.mu.Unlock()
+	if h.model.evidencePresent {
+		if !requirementSet || requirement != delegateCompletionReportRequired {
+			h.t.Fatalf("lifecycle differential: report work: evidence requirement = %v (set:%t), want report-required on the evidence path", requirement, requirementSet)
+		}
+	} else if requirementSet && requirement == delegateCompletionReportRequired {
+		h.t.Fatal("lifecycle differential: report work: legacy nil-evidence binding escalated to report-required")
+	}
 	h.model.admitReportRequiringWork()
 	return "admit-report-work"
 }
@@ -451,9 +504,21 @@ func (h *delegateLifecycleHarness) opBareAttention() string {
 		return "bare-attention-suppressed"
 	}
 	lease := h.currentLease()
+	// B-S1 targeted assertion input: predict eligibility from the model
+	// before asking production, so the returned eligibility is checked
+	// against an expectation rather than merely mirrored. The predicate is
+	// production's exact shape: evidence present (completionEvidenceLocked
+	// rejects nil evidence with a stale-lease error), requirement still
+	// attention-only, and no terminal seen. Production re-records an
+	// already-recorded outcome (it does not check the existing outcome), so
+	// a prior no-action does not make the second call ineligible.
+	wantRecorded := h.model.evidencePresent && !h.model.reportRequired && !h.model.terminalSeen
 	recorded, err := h.c.recordAttentionNoAction(lease)
 	if err != nil {
 		return "bare-attention-rejected"
+	}
+	if recorded != wantRecorded {
+		h.t.Fatalf("lifecycle differential: bare attention: recordAttentionNoAction recorded=%t, want %t (model eligibility)", recorded, wantRecorded)
 	}
 	if !recorded {
 		return "bare-attention-ineligible"
@@ -484,6 +549,12 @@ func (h *delegateLifecycleHarness) opSupervisionBoundary(_ lifecycleOp) string {
 	if err != nil {
 		return "supervision-busy"
 	}
+	// B-S2 targeted assertion: with no pending steers, the boundary must
+	// proceed (continue requires pending steers; suppress requires a
+	// closing/stopping/recovery state the model would know about).
+	if boundary == delegateSupervisionContinue && !h.modelHasPendingSteers() {
+		h.t.Fatal("lifecycle differential: supervision: continue without pending steers")
+	}
 	switch boundary {
 	case delegateSupervisionContinue:
 		return "supervision-continue"
@@ -492,6 +563,13 @@ func (h *delegateLifecycleHarness) opSupervisionBoundary(_ lifecycleOp) string {
 	default:
 		return "supervision-proceed"
 	}
+}
+
+// modelHasPendingSteers reports whether the model expects pending steers
+// (admitted via op 2 and not yet bound). The controller-level harness binds
+// steers synchronously in op 2, so the model tracks no persistent steers.
+func (h *delegateLifecycleHarness) modelHasPendingSteers() bool {
+	return false
 }
 
 // opNudgeContinuation drives the needs-nudge decision → nudge → outcome
@@ -504,6 +582,14 @@ func (h *delegateLifecycleHarness) opNudgeContinuation(_ lifecycleOp) string {
 	decision, err := h.c.completionDecision(h.currentLease())
 	if err != nil {
 		return "nudge-decision-error"
+	}
+	// B-S2 targeted assertion: the decision must match the model's
+	// prediction, so every branch (needs-nudge / finish-no-action /
+	// existing-terminal) is checked against an expectation rather than
+	// merely labeled.
+	wantDecision := h.model.completionDecisionPrediction()
+	if decision != wantDecision {
+		h.t.Fatalf("lifecycle differential: nudge: completionDecision=%v, model=%v", decision, wantDecision)
 	}
 	switch decision {
 	case delegateCompletionNeedsNudge:
@@ -533,9 +619,13 @@ func (h *delegateLifecycleHarness) opRunEndError(op lifecycleOp) string {
 	lease := h.currentLease()
 
 	// Mirror (*subagent).run's finalization. The settlement mode is predicted
-	// by the model's own copy (settlementModeForRun) — production must agree
-	// with it, which is itself one of the differential checks.
+	// by the model's own copy (settlementModeForRun) and asserted against
+	// the production projection (delegateSettlementModeForRun) — B-S3: the
+	// claim production granted must be the mode both copies predict.
 	mode := h.model.settlementModeForRun(err, cancelRequested)
+	if productionMode := delegateSettlementModeForRun(err, cancelRequested); productionMode != mode {
+		h.t.Fatalf("lifecycle differential: run end: production settlement mode=%v, model=%v (settlement-mode divergence)", productionMode, mode)
+	}
 	claim, continued, beginErr := h.c.BeginRunFinalization(lease, mode, err)
 	if beginErr != nil {
 		return "run-end-begin-rejected"
@@ -639,6 +729,11 @@ func (h *delegateLifecycleHarness) reconcileModelStopAfterFinish() {
 	h.model.phase = delegatestore.PhaseStopping
 	h.model.lastOutcome = delegatestore.OutcomeStopped
 	h.model.lastDisposition = delegatestore.DispositionTerminalError
+	// The durable RunFinished.Outcome.Status is ground truth: a stop-covered
+	// finish publishes stopped, so any exhaustion the pre-stop classification
+	// predicted (including its payload source) no longer holds.
+	h.model.exhausted = false
+	h.model.exhaustionSource = delegateLifecycleExhaustionNone
 }
 
 // opStopRequest requests a subtree stop before finalization (op 9). The stop
@@ -655,7 +750,7 @@ func (h *delegateLifecycleHarness) opStopRequest() string {
 		return "stop-rejected"
 	}
 	executeDelegateCancelPlan(cancelPlan)
-	if err := h.executeLifecyclePlans(plans); err != nil {
+	if _, err := h.executeLifecyclePlans(plans); err != nil {
 		h.t.Fatalf("lifecycle stop: execute plans: %v", err)
 	}
 	h.model.requestStop()
@@ -676,7 +771,7 @@ func (h *delegateLifecycleHarness) opStopRequest() string {
 		if err != nil {
 			h.t.Fatalf("lifecycle stop: reconcile: %v", err)
 		}
-		if err := h.executeLifecyclePlans(reconcilePlans); err != nil {
+		if _, err := h.executeLifecyclePlans(reconcilePlans); err != nil {
 			h.t.Fatalf("lifecycle stop: execute reconcile plans: %v", err)
 		}
 		h.c.mu.Lock()
@@ -718,9 +813,31 @@ func (h *delegateLifecycleHarness) opOrdinaryFinish(op lifecycleOp) string {
 		finish.outcome = delegatestore.OutcomeFailed
 		finish.disposition = delegatestore.DispositionTerminalError
 	}
-	if _, err := h.c.FinishGeneration(lease, finish); err != nil {
+	// The arg's deferred bit makes the root receiver "processing" during the
+	// finish, so the finish's delivery plans are deferred into the root's
+	// delivery queue (acceptDelegateDeliveryPlan's processing path) instead
+	// of acknowledging inline — the state op 12 pumps.
+	deferredReceiver := (op.arg/3)%2 == 1
+	if deferredReceiver {
+		h.root.mu.Lock()
+		h.root.state = SessionProcessing
+		h.root.mu.Unlock()
+	}
+	finishPlans, err := h.c.FinishGeneration(lease, finish)
+	if err != nil {
+		h.resetRootProcessing(deferredReceiver)
 		return "finish-rejected"
 	}
+	// The finish's delivery plans are the parent-visible half of the
+	// generation's terminal result; execute them through the root runtime
+	// (full BeginDelivery → durable append → CompleteDelivery path) instead
+	// of leaving a claim orphaned.
+	acknowledged, execErr := h.executeLifecyclePlans(finishPlans)
+	h.resetRootProcessing(deferredReceiver)
+	if execErr != nil {
+		h.t.Fatalf("lifecycle finish: execute plans: %v", execErr)
+	}
+	h.model.delivered += acknowledged
 	h.c.mu.Lock()
 	stopSeq := uint64(0)
 	phase := delegatestore.PhaseIdle
@@ -732,15 +849,76 @@ func (h *delegateLifecycleHarness) opOrdinaryFinish(op lifecycleOp) string {
 	h.model.finish(finish.outcome, finish.disposition, stopSeq)
 	if phase == delegatestore.PhaseStopping {
 		// The finish landed under a covering stop that has not completed yet:
-		// the fold forces the outcome to stopped (outcome_stopped /
-		// stopped_by_parent) and keeps the phase in stopping until
-		// SubtreeStopCompleted.
-		h.model.stopPending = true
-		h.model.phase = delegatestore.PhaseStopping
-		h.model.lastOutcome = delegatestore.OutcomeStopped
-		h.model.lastDisposition = delegatestore.DispositionTerminalError
+		// the fold forces the outcome to stopped and keeps the phase in
+		// stopping until SubtreeStopCompleted. The model rewrite lives in
+		// reconcileModelStopAfterFinish so both finish paths share it.
+		h.reconcileModelStopAfterFinish()
+		// The finish is what the pending stop was waiting on; drain it to
+		// completion through the real reconcile path (production's stop
+		// driver does this — StopSubtreeAndDrive — which this harness
+		// replaces with a synchronous drain).
+		acknowledgedByDrain, drainErr := h.drainPendingStop()
+		if drainErr != nil {
+			h.t.Fatalf("lifecycle finish: drain stop: %v", drainErr)
+		}
+		h.model.delivered += acknowledgedByDrain
+		// The drain completed the stop (SubtreeStopCompleted): pending stop
+		// clears and the phase returns to idle for the resumable delegate,
+		// keeping the stopped outcome.
+		h.model.completeStop()
+	}
+	if deferredReceiver {
+		return "ordinary-finish-deferred-delivery"
 	}
 	return "ordinary-finish"
+}
+
+// resetRootProcessing restores the root receiver's idle state after a
+// deferred finish, so subsequent operations see an idle receiver.
+func (h *delegateLifecycleHarness) resetRootProcessing(deferred bool) {
+	if !deferred {
+		return
+	}
+	h.root.mu.Lock()
+	h.root.state = SessionIdle
+	h.root.mu.Unlock()
+}
+
+// drainPendingStop runs the real reconcile loop until the pending stop
+// completes. It is the synchronous replacement for production's stop driver
+// (StopSubtreeAndDrive's runStopReconcileDriver goroutine): op 9 issues the
+// stop, and the finish that the stop was waiting on drains it here.
+func (h *delegateLifecycleHarness) drainPendingStop() (int, error) {
+	totalAcknowledged := 0
+	for {
+		h.c.mu.Lock()
+		pending := h.c.stop
+		h.c.mu.Unlock()
+		if pending == nil {
+			return totalAcknowledged, nil
+		}
+		evidence, err := collectDelegateReconcileEvidence(h.c.stateDir, h.c.ReconcileRequirements())
+		if err != nil {
+			return 0, err
+		}
+		reconcilePlans, err := h.c.Reconcile(evidence)
+		if err != nil {
+			return 0, err
+		}
+		acknowledged, err := h.executeLifecyclePlans(reconcilePlans)
+		if err != nil {
+			return acknowledged, err
+		}
+		totalAcknowledged += acknowledged
+		h.c.mu.Lock()
+		stillPending := h.c.stop
+		h.c.mu.Unlock()
+		if stillPending == pending {
+			// No progress: the stop is waiting on something this harness
+			// never launches. Leave it pending (the model keeps stopPending).
+			return totalAcknowledged, nil
+		}
+	}
 }
 
 // opNoActionFinish performs the no-action finish through the claim path
@@ -809,18 +987,44 @@ func (h *delegateLifecycleHarness) opDelivery() string {
 	if deliveries == 0 {
 		return "delivery-none-pending"
 	}
+	// A pending delivery deferred by a processing receiver is pumped by the
+	// root's delivery queue (flushPendingDelegateDeliveries); a fresh head
+	// delivery is re-issued by ReplayDeliveries. Try the root's deferred
+	// queue first (op 10 may have deferred the finish's delivery when the
+	// root was processing), then ReplayDeliveries.
+	before := h.acknowledgedDeliveryCount()
+	h.root.delegateDeliveryMu.Lock()
+	deferred := append([]delegateDeliveryPlan(nil), h.root.pendingDelegateDeliveries...)
+	h.root.delegateDeliveryMu.Unlock()
+	if len(deferred) != 0 {
+		// The root's flush pumps the deferred queue through the production
+		// delivery path (BeginDelivery → durable append → CompleteDelivery).
+		if err := h.root.flushPendingDelegateDeliveries(); err != nil {
+			return "delivery-rejected"
+		}
+		h.model.delivered += h.acknowledgedDeliveryCount() - before
+		if h.acknowledgedDeliveryCount() == before {
+			return "delivery-not-acknowledged"
+		}
+		return "delivery-acknowledged"
+	}
 	plans := h.c.ReplayDeliveries()
 	if len(plans) == 0 {
 		return "delivery-none-replayable"
 	}
 	plan := plans[0]
-	receiver := newFakeDelegateDeliveryReceiver()
-	next, err := deliverDelegatePacket(plan, receiver)
-	if err != nil {
+	// Drive the delivery through the harness's root runtime — the real
+	// receiver, with a real transcript — so BeginDelivery, the durable
+	// receiver-side attention append, and CompleteDelivery all execute
+	// against production code (the fake receiver would bypass the
+	// receiver-side durability I4's parent-visible half depends on).
+	if _, err := deliverDelegatePacket(plan, h.root); err != nil {
 		return "delivery-rejected"
 	}
-	_ = next
-	h.model.delivered++
+	h.model.delivered += h.acknowledgedDeliveryCount() - before
+	if h.acknowledgedDeliveryCount() == before {
+		return "delivery-not-acknowledged"
+	}
 	return "delivery-acknowledged"
 }
 
@@ -843,22 +1047,50 @@ func (h *delegateLifecycleHarness) currentLease() delegateLease {
 	return live.binding.lease
 }
 
-// executeLifecyclePlans executes mutation plans on a bound root-free session.
-func (h *delegateLifecycleHarness) executeLifecyclePlans(plans delegateMutationPlans) error {
-	for _, update := range plans.updates {
-		_ = update
-	}
+// executeLifecyclePlans executes mutation plans through the harness's root
+// runtime. Deliveries run the full production path (BeginDelivery → durable
+// receiver-side attention append → CompleteDelivery) so no claim is
+// orphaned; a BeginDelivery without its completion would fence the head
+// delivery forever. It returns how many of the delegate's deliveries were
+// acknowledged, so the model can mirror the parent-visible effect.
+func (h *delegateLifecycleHarness) executeLifecyclePlans(plans delegateMutationPlans) (int, error) {
+	before := h.acknowledgedDeliveryCount()
 	for _, attention := range plans.attention {
 		if err := h.c.executeDelegateAttentionCleanup(attention); err != nil {
-			return err
+			return 0, err
 		}
 	}
-	for _, plan := range plans.deliveries {
-		if _, _, err := h.c.BeginDelivery(plan); err != nil {
-			continue // not currently deliverable; leave pending
+	if len(plans.deliveries) != 0 {
+		if err := h.root.executeDelegateMutationPlans(plans); err != nil {
+			return 0, err
 		}
 	}
-	return nil
+	after := h.acknowledgedDeliveryCount()
+	return after - before, nil
+}
+
+// acknowledgedDeliveryCount counts the model's current generation's
+// finished deliveries that have a matching DeliveryAcknowledged event (I4's
+// durable record). Earlier generations carry their own deliveries; the
+// model resets per generation (opStartGeneration).
+func (h *delegateLifecycleHarness) acknowledgedDeliveryCount() int {
+	events, err := h.c.store.Load()
+	if err != nil {
+		h.t.Fatalf("lifecycle acknowledged count: load journal: %v", err)
+	}
+	acknowledged := map[string]bool{}
+	for _, event := range events {
+		if event.DelegateID == h.delegateID && event.DeliveryAcknowledged != nil {
+			acknowledged[event.DeliveryAcknowledged.DeliveryID] = true
+		}
+	}
+	count := 0
+	for _, event := range events {
+		if event.DelegateID == h.delegateID && event.RunFinished != nil && event.RunFinished.Generation == h.model.generation && event.RunFinished.DeliveryID != "" && acknowledged[event.RunFinished.DeliveryID] {
+			count++
+		}
+	}
+	return count
 }
 
 // runLifecycleProgram applies the whole decoded program, checking agreement
@@ -973,10 +1205,33 @@ var delegateLifecycleSeedCorpus = []lifecycleSeed{
 	{
 		// delivery execute+ack: after a reported finish (op 10), the pending
 		// delivery is executed and acknowledged exactly once (op 12) (I4).
-		name:          "delivery-execute-ack",
-		program:       []byte{op1(5), op1(10), op1(12)},
+		name: "delivery-execute-ack",
+		// Op 10 with the deferred-receiver bit (arg 3: flavor 0 + deferred)
+		// leaves the finish's delivery in the root's deferred queue; op 12
+		// then pumps it through the production delivery path
+		// (BeginDelivery → durable append → CompleteDelivery), exercising
+		// I4's parent-visible half in op 12's own right. The second op-12
+		// byte proves no second acknowledgement occurs.
+		program:       []byte{op1(5), opArg(10, 3), op1(12), op1(12)},
 		legacyBinding: false,
 		targets:       "delivery uniqueness (I4)",
+	},
+	{
+		// completion-decision branches: op 5 (terminal communicate) then op 7
+		// asserts UseExistingTerminal; a fresh generation's op 4 (bare
+		// attention) then op 7 asserts FinishNoAction; the fresh-start op 7
+		// asserts NeedsNudge. All three completionDecision branches are
+		// checked against the model's prediction (B-S2).
+		name: "completion-decision-branches",
+		program: []byte{
+			op1(5), op1(7), op1(10), // terminal-seen → UseExistingTerminal, finish
+			op1(1),                  // fresh generation
+			op1(4), op1(7), op1(10), // bare attention → FinishNoAction, finish
+			op1(1), // fresh generation
+			op1(7), // nothing admitted → NeedsNudge
+		},
+		legacyBinding: false,
+		targets:       "completion decision branches (UseExistingTerminal / FinishNoAction / NeedsNudge)",
 	},
 }
 
