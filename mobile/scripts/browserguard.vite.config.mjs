@@ -13,7 +13,7 @@
 import { defineConfig, mergeConfig } from "vite";
 import { fileURLToPath } from "node:url";
 import path from "node:path";
-import baseConfig from "../vitest.config.mjs";
+import baseConfig from "../vite.config.ts";
 
 const moduleDirectory = path.dirname(fileURLToPath(import.meta.url));
 const mobileRoot = path.resolve(moduleDirectory, "..");
