@@ -37,13 +37,14 @@
 // restored anywhere. A reload lands wherever the URL says (see the URL-
 // sync effect below), the same as any other fresh navigation - there is no
 // separate "last mobile screen" memory to restore independently of that.
-import { type ReactNode, Suspense, useEffect, useRef } from "react";
+import { type ReactNode, Suspense, useEffect, useRef, useState } from "react";
 import { Chevron, IconButton } from "../../widgets";
 import { useChromeStore } from "../chromeStore";
 import { paneFor } from "../paneRegistry";
 import { navigate, paneToURL, urlToPane } from "../routing";
 import { isSinglePaneRoute } from "../singlePane";
 import { type OpenPaneRecord, useWorkspaceStore, workspaceStore } from "../workspace";
+import { MobilePanel } from "./MobilePanel";
 import styles from "./StackHost.module.css";
 import { TreeDrawer } from "./TreeDrawer";
 
@@ -143,10 +144,10 @@ export function setLastPopstateWasTrustedForTests(value: boolean): void {
 }
 
 export interface StackHostProps {
-  // The rail content for the tree drawer, threaded through to TreeDrawer's
-  // children slot (children ARE TreeDrawer's whole rail contract). AppShell
-  // — the integrator — passes <Rail/> here; StackHost itself stays
-  // rail-agnostic, exactly like TreeDrawer.
+  // The rail content, threaded through to MobilePanel's `rail` prop (the
+  // panel's whole rail contract). AppShell — the integrator — passes
+  // <Rail/> here; StackHost itself stays rail-agnostic, exactly like the
+  // panel and the trigger-only TreeDrawer.
   railSlot?: ReactNode;
   // True while the shell has parsed the address bar's route but cannot place
   // it yet — a /s/{ref} deep link waits for its navigation location resource before it can tell a
@@ -172,6 +173,13 @@ export function StackHost({ railSlot, routeDeferred = false }: StackHostProps = 
   // publishes one, the top-bar Back invokes IT instead of the stack walk.
   const paneBack = useChromeStore((s) => s.paneBack);
   const focusedPane = panes.find((p) => p.id === focusedPaneId) ?? null;
+  const [panelOpen, setPanelOpen] = useState(false);
+  // True when no real pane is focused: either nothing at all, or the
+  // welcome pane (the app's "nothing open" landing screen). The mobile
+  // panel auto-opens in this state (see the effect below) so the rail —
+  // the only way to open a pane on a phone — is one tap away, the same
+  // role the always-docked desktop rail plays without a panel.
+  const nothingFocused = focusedPaneId === null || focusedPane?.type === "welcome";
 
   // This component's OWN back-stack: ids previously focused, most-recent-
   // last. Not part of useWorkspaceStore (the store only ever tracks the
@@ -282,6 +290,20 @@ export function StackHost({ railSlot, routeDeferred = false }: StackHostProps = 
     if (!focusedPane) workspaceStore.getState().openPane("welcome");
   }, [focusedPane]);
 
+  // Opens the mobile panel whenever nothing real is focused — the rail
+  // (the only pane-opener on a phone) lives inside it, so a blank or
+  // welcome screen must not strand the user with no way forward. Guarded
+  // by routeDeferred: a deep-linked route spends a beat parsed-but-unplaced
+  // (AppShell's openRouteAsPane waiting on its navigation resource), which
+  // the backstop above fills with welcome — opening the panel over that
+  // would flash it for one frame before the real pane lands, so the panel
+  // stays closed until the route resolves (the same beat the URL-sync effect
+  // declines to publish over, see its own comment).
+  useEffect(() => {
+    if (routeDeferred) return;
+    if (nothingFocused) setPanelOpen(true);
+  }, [nothingFocused, routeDeferred]);
+
   function handleBack(): void {
     const target = popValidBackTarget(backStackRef.current, panes, focusedPaneId);
     wentBackRef.current = true;
@@ -333,7 +355,7 @@ export function StackHost({ railSlot, routeDeferred = false }: StackHostProps = 
         <span className={styles.title} data-testid="topbar-title">
           {paneTitle}
         </span>
-        <TreeDrawer>{railSlot}</TreeDrawer>
+        <TreeDrawer onOpen={() => setPanelOpen(true)} />
       </div>
       <div className={styles.body}>
         {focusedPane && (
@@ -349,6 +371,7 @@ export function StackHost({ railSlot, routeDeferred = false }: StackHostProps = 
           <StackedPane key={focusedPane.id} pane={focusedPane} />
         )}
       </div>
+      <MobilePanel rail={railSlot} open={panelOpen} onClose={() => setPanelOpen(false)} />
     </div>
   );
 }
