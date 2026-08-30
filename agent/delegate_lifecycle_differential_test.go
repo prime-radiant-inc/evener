@@ -370,8 +370,11 @@ func delegateLifecyclePhaseAfterEvent(event delegatestore.Event, previous delega
 	case delegatestore.EventDelegateTerminalPrepared:
 		return delegatestore.PhaseSettling, true
 	case delegatestore.EventDelegateRunFinished:
-		// The fold keeps the aggregate's resumability; the harness's delegate
-		// is always resumable, so finishing returns to idle.
+		// The fold keeps the aggregate's resumability: a resumable delegate
+		// returns to idle, a non-resumable one to closed (op 8's
+		// non-resumable budget class closes resumability alongside the finish).
+		// The event carries no resumability, so the caller's replay tracks it:
+		// a ResumabilityClosed event in the same batch tells closed from idle.
 		return delegatestore.PhaseIdle, true
 	case delegatestore.EventDelegateResumabilityClosed:
 		if previous == delegatestore.PhaseIdle {
@@ -391,6 +394,12 @@ func delegateLifecyclePhaseAfterEvent(event delegatestore.Event, previous delega
 			// The covered member's run already finished back to idle before
 			// the stop completed; the completion confirms idle (a no-op on
 			// the phase — the fold re-assigns the same value).
+			return previous, false
+		}
+		if previous == delegatestore.PhaseClosed {
+			// The fold's applySubtreeStopCompleted keeps non-resumable members
+			// closed (resumable members return to idle): the completion
+			// confirms closed, a no-op on the phase.
 			return previous, false
 		}
 		return delegatestore.PhaseIdle, true
@@ -669,9 +678,11 @@ func (h *delegateLifecycleHarness) opRunEndError(op lifecycleOp) string {
 		h.t.Fatalf("lifecycle differential: run end: production exhaustion payload=%t, model=%t (exhaustion-overwrite payload divergence)", productionClass.exhaustion != nil, exhaustionFromRunError)
 	}
 	if claim.mode == delegateSettlementTerminal {
-		if _, finishErr := h.c.FinishGeneration(lease, finish); finishErr != nil {
+		finishPlans, finishErr := h.c.FinishGeneration(lease, finish)
+		if finishErr != nil {
 			return "run-end-finish-error"
 		}
+		h.executeRunEndPlans(finishPlans)
 		h.applyRunEndModelFinish(finish.outcome, finish.disposition, exhaustionFromRunError, nonResumableExhaustion(finish))
 		h.reconcileModelStopAfterFinish()
 		return "run-end-terminal"
@@ -680,12 +691,27 @@ func (h *delegateLifecycleHarness) opRunEndError(op lifecycleOp) string {
 	if _, settleErr := h.c.CompleteSettlement(claim, finish.packet); settleErr != nil {
 		return "run-end-settle-error"
 	}
-	if _, finishErr := h.c.FinishGeneration(lease, finish); finishErr != nil {
+	finishPlans, finishErr := h.c.FinishGeneration(lease, finish)
+	if finishErr != nil {
 		return "run-end-finish-error"
 	}
+	h.executeRunEndPlans(finishPlans)
 	h.applyRunEndModelFinish(finish.outcome, finish.disposition, exhaustionFromRunError, nonResumableExhaustion(finish))
 	h.reconcileModelStopAfterFinish()
 	return "run-end-ordinary"
+}
+
+// executeRunEndPlans executes op 8's finish plans through the root runtime
+// (M1: the plans are the parent-visible half of the run's terminal result;
+// discarding them orphaned the delivery claim so op-8 deliveries only ever
+// acknowledged through a later stop drain) and mirrors the acknowledged
+// count in the model.
+func (h *delegateLifecycleHarness) executeRunEndPlans(finishPlans delegateMutationPlans) {
+	acknowledged, execErr := h.executeLifecyclePlans(finishPlans)
+	if execErr != nil {
+		h.t.Fatalf("lifecycle run end: execute plans: %v", execErr)
+	}
+	h.model.delivered += acknowledged
 }
 
 // nonResumableExhaustion reports whether the finish is a non-resumable
@@ -755,36 +781,26 @@ func (h *delegateLifecycleHarness) opStopRequest() string {
 	}
 	h.model.requestStop()
 	h.stopDone = result.done
-	// Drain the stop synchronously via the real reconcile path.
-	for {
-		h.c.mu.Lock()
-		pending := h.c.stop
-		h.c.mu.Unlock()
-		if pending == nil {
-			break
-		}
-		evidence, err := collectDelegateReconcileEvidence(h.c.stateDir, h.c.ReconcileRequirements())
-		if err != nil {
-			h.t.Fatalf("lifecycle stop: collect evidence: %v", err)
-		}
-		reconcilePlans, err := h.c.Reconcile(evidence)
-		if err != nil {
-			h.t.Fatalf("lifecycle stop: reconcile: %v", err)
-		}
-		if _, err := h.executeLifecyclePlans(reconcilePlans); err != nil {
-			h.t.Fatalf("lifecycle stop: execute reconcile plans: %v", err)
-		}
-		h.c.mu.Lock()
-		stillPending := h.c.stop
-		h.c.mu.Unlock()
-		if stillPending == pending {
-			// The stop is waiting on the open generation's finish (or an
-			// in-flight runner this harness never launches). The pending stop
-			// legitimately persists; the model keeps stopPending until the
-			// stop completes.
-			h.model.requestStop()
-			return "stop-requested-pending"
-		}
+	// Drain the stop synchronously via the real reconcile path. The drain
+	// accumulates acknowledged deliveries (a drain pass may pump a pending
+	// delivery through the root receiver), so the model's delivered count
+	// must absorb them — R1: the previous inline loop discarded the count
+	// and desynced the model.
+	acknowledged, drainErr := h.drainPendingStop()
+	if drainErr != nil {
+		h.t.Fatalf("lifecycle stop: drain: %v", drainErr)
+	}
+	h.model.delivered += acknowledged
+	h.c.mu.Lock()
+	stopDone := h.c.stop == nil
+	h.c.mu.Unlock()
+	if !stopDone {
+		// The stop is waiting on the open generation's finish (or an
+		// in-flight runner this harness never launches). The pending stop
+		// legitimately persists; the model keeps stopPending until the
+		// stop completes.
+		h.model.requestStop()
+		return "stop-requested-pending"
 	}
 	h.model.completeStop()
 	return "stop-requested"
