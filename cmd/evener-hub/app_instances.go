@@ -145,21 +145,25 @@ func sanitizeEndpointURL(raw string) string {
 	return u.String()
 }
 
-// validatedProtocolAndSurface trims the two vocabulary fields a form can set
-// and refuses anything the registry would reject at load. Without this a typo
-// is written, the reload that follows fails, and refuseWhenBroken then refuses
-// the corrective edit too — the pane locked out of its own recovery.
-func validatedProtocolAndSurface(protocol, surface string) (string, string, error) {
-	protocol, surface = strings.TrimSpace(protocol), strings.TrimSpace(surface)
-	if protocol != "" && !registry.ValidProtocol(protocol) {
-		return "", "", fmt.Errorf("invalid protocol %q (one of %s)", protocol,
-			strings.Join([]string{registry.ProtocolOpenAIChat, registry.ProtocolOpenAIResponses, registry.ProtocolAnthropic, registry.ProtocolGoogle}, ", "))
+// writeLoadable is the invariant every mutation holds: a providers.toml the
+// hub writes must be one the registry can read back. The candidate layer is
+// marshalled and re-parsed through the reader's own path, so every rule the
+// parser enforces — the protocol and surface vocabularies, the $VAR syntax in
+// credential headers and api_key, unknown keys — refuses the write instead of
+// landing on disk. Without it the write succeeds, the reload that follows
+// fails, refuseWhenBroken flips, and the corrective edit is refused too: the
+// pane locked out of its own recovery.
+//
+// The parser never echoes a value it rejects, so its error is safe to return.
+func (c *hubInstancesController) writeLoadable(l *registry.Layer) error {
+	data, err := registry.MarshalConfig(l)
+	if err != nil {
+		return appwire.InvalidParams(err.Error())
 	}
-	if surface != "" && !registry.ValidSurface(surface) {
-		return "", "", fmt.Errorf("invalid surface %q (one of %s)", surface,
-			strings.Join([]string{registry.SurfaceOpenAI, registry.SurfaceAnthropic, registry.SurfaceGoogle, registry.SurfaceGeneric}, ", "))
+	if _, err := registry.ParseConfig(data); err != nil {
+		return appwire.InvalidParams(err.Error())
 	}
-	return protocol, surface, nil
+	return c.write(l)
 }
 
 // refuseWhenBroken stops every write while there is no registry to write
@@ -195,11 +199,6 @@ func (c *hubInstancesController) Create(params appwire.InstanceCreateParams) err
 	if params.CredentialHeader != "" && !strings.Contains(params.CredentialHeader, "$") {
 		return errors.New("credential header must reference a $VARIABLE, never a literal secret")
 	}
-	protocol, surface, err := validatedProtocolAndSurface(params.Protocol, params.Surface)
-	if err != nil {
-		return err
-	}
-
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	l, _, err := c.read()
@@ -212,8 +211,8 @@ func (c *hubInstancesController) Create(params appwire.InstanceCreateParams) err
 	p := registry.Provider{
 		ID:       name,
 		Base:     base,
-		Protocol: protocol,
-		Surface:  surface,
+		Protocol: strings.TrimSpace(params.Protocol),
+		Surface:  strings.TrimSpace(params.Surface),
 		Transport: registry.Transport{
 			BaseURL: strings.TrimSpace(params.BaseURL),
 			Vars:    params.Vars,
@@ -226,7 +225,7 @@ func (c *hubInstancesController) Create(params appwire.InstanceCreateParams) err
 		p.CredentialHeaders = map[string]string{strings.TrimSpace(k): strings.TrimSpace(v)}
 	}
 	l.Providers[name] = p
-	if err := c.write(l); err != nil {
+	if err := c.writeLoadable(l); err != nil {
 		return err
 	}
 	return c.reg.Reload()
@@ -242,10 +241,6 @@ func (c *hubInstancesController) Edit(params appwire.InstanceEditParams) error {
 		return err
 	}
 	name := strings.TrimSpace(params.Name)
-	protocol, surface, err := validatedProtocolAndSurface(params.Protocol, params.Surface)
-	if err != nil {
-		return err
-	}
 
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -263,11 +258,11 @@ func (c *hubInstancesController) Edit(params appwire.InstanceEditParams) error {
 	if v := strings.TrimSpace(params.BaseURL); v != "" {
 		p.Transport.BaseURL = v
 	}
-	if protocol != "" {
-		p.Protocol = protocol
+	if v := strings.TrimSpace(params.Protocol); v != "" {
+		p.Protocol = v
 	}
-	if surface != "" {
-		p.Surface = surface
+	if v := strings.TrimSpace(params.Surface); v != "" {
+		p.Surface = v
 	}
 	if len(params.Vars) > 0 {
 		if p.Transport.Vars == nil {
@@ -276,7 +271,7 @@ func (c *hubInstancesController) Edit(params appwire.InstanceEditParams) error {
 		maps.Copy(p.Transport.Vars, params.Vars)
 	}
 	l.Providers[name] = p
-	if err := c.write(l); err != nil {
+	if err := c.writeLoadable(l); err != nil {
 		return err
 	}
 	return c.reg.Reload()
@@ -316,7 +311,7 @@ func (c *hubInstancesController) Remove(params appwire.InstanceRemoveParams) err
 	if l.Default == name {
 		l.Default = ""
 	}
-	if err := c.write(l); err != nil {
+	if err := c.writeLoadable(l); err != nil {
 		return err
 	}
 
@@ -363,7 +358,7 @@ func (c *hubInstancesController) SetDefault(params appwire.InstanceSetDefaultPar
 		return err
 	}
 	l.Default = name
-	if err := c.write(l); err != nil {
+	if err := c.writeLoadable(l); err != nil {
 		return err
 	}
 	return c.reg.Reload()

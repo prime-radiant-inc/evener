@@ -2570,8 +2570,9 @@ type ProviderDescriptor struct {
 
 // InstanceListResponse is the result of evener/instance/list. Diagnostics
 // carries the providers.toml load error, the user-layer note, stray OAuth
-// records and load warnings; WritesRefused says the file could not be read,
-// so no instance may be written until the user fixes it (spec §10).
+// records and load warnings; WritesRefused says the hub has no registry to
+// write against — the file could not be read, or none has loaded yet — so no
+// instance may be written until that is fixed (spec §10).
 type InstanceListResponse struct {
 	Instances          []InstanceEntry      `json:"instances"`
 	AvailableProviders []ProviderDescriptor `json:"availableProviders"`

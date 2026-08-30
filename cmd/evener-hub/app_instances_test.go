@@ -229,20 +229,6 @@ func TestInstances_CreateRejectsBadInput(t *testing.T) {
 			params: appwire.InstanceCreateParams{Name: "work", Base: "openai", CredentialHeader: "Authorization=Bearer sk-literal"},
 			want:   "$VARIABLE",
 		},
-		{
-			// The word the form itself used to show. The registry rejects it
-			// as a parse error, so writing it would brick the pane: the next
-			// reload fails and refuseWhenBroken then refuses the corrective
-			// edit too.
-			name:   "protocol outside the registry vocabulary",
-			params: appwire.InstanceCreateParams{Name: "work", Base: "openai", Protocol: "chat-completions"},
-			want:   "invalid protocol",
-		},
-		{
-			name:   "surface outside the registry vocabulary",
-			params: appwire.InstanceCreateParams{Name: "work", Base: "openai", Surface: "compat"},
-			want:   "invalid surface",
-		},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			f := newInstancesFixture(t, nil)
@@ -327,27 +313,6 @@ func TestInstances_EditMergesVarsIntoAuthoredEntry(t *testing.T) {
 	}
 	if p.Base != "amazon-bedrock" {
 		t.Fatalf("the edit dropped base = %q", p.Base)
-	}
-}
-
-// TestInstances_EditRejectsAnUnloadableProtocol: the invariant is that a write
-// the pane accepts must reload cleanly. An unvalidated protocol would be
-// written, fail the reload, and then lock the pane out of its own recovery.
-func TestInstances_EditRejectsAnUnloadableProtocol(t *testing.T) {
-	f := newInstancesFixture(t, map[string]string{"GROQ_API_KEY": "gk"})
-	err := f.ctl.Edit(appwire.InstanceEditParams{Name: "groq", Protocol: "responses"})
-	if err == nil || !strings.Contains(err.Error(), "invalid protocol") {
-		t.Fatalf("Edit = %v, want an invalid-protocol error", err)
-	}
-	if _, statErr := os.Stat(f.tomlPath); !os.IsNotExist(statErr) {
-		t.Fatalf("a rejected edit wrote providers.toml (stat err=%v)", statErr)
-	}
-	if f.ctl.reg.WritesRefused() {
-		t.Fatal("the registry still loads after a rejected edit; the pane must not be locked out")
-	}
-	if err := f.ctl.Edit(appwire.InstanceEditParams{Name: "groq", Surface: "compat"}); err == nil ||
-		!strings.Contains(err.Error(), "invalid surface") {
-		t.Fatalf("Edit = %v, want an invalid-surface error", err)
 	}
 }
 
@@ -516,5 +481,89 @@ func TestInstances_WritesRefusedBeforeTheFirstLoad(t *testing.T) {
 	}
 	if resp := ctl.List(); !resp.WritesRefused || len(resp.Instances) != 0 {
 		t.Fatalf("List = %+v, want no instances and writes refused", resp)
+	}
+}
+
+// TestInstances_RefusesAnyWriteTheRegistryCouldNotReadBack is the invariant
+// behind kata-shaped lockouts: a file the pane writes must be one the registry
+// can read. Anything else lands on disk, fails the reload that follows, flips
+// WritesRefused, and leaves refuseWhenBroken refusing the corrective edit —
+// the pane locked out of its own recovery. Each case names a different way the
+// parser refuses, and none of them is a field the controller checks by hand.
+func TestInstances_RefusesAnyWriteTheRegistryCouldNotReadBack(t *testing.T) {
+	for _, tt := range []struct {
+		name   string
+		params appwire.InstanceCreateParams
+		want   string
+	}{
+		{
+			name:   "unterminated variable reference in a credential header",
+			params: appwire.InstanceCreateParams{Name: "work", Base: "openai", CredentialHeader: "Authorization=Bearer ${TOKEN"},
+			want:   "credential_headers",
+		},
+		{
+			name:   "invalid variable name in a credential header",
+			params: appwire.InstanceCreateParams{Name: "work", Base: "openai", CredentialHeader: "Authorization=Bearer ${1BAD}"},
+			want:   "credential_headers",
+		},
+		{
+			// The word the form itself used to show.
+			name:   "protocol outside the registry vocabulary",
+			params: appwire.InstanceCreateParams{Name: "work", Base: "openai", Protocol: "chat-completions"},
+			want:   "unknown protocol",
+		},
+		{
+			name:   "surface outside the registry vocabulary",
+			params: appwire.InstanceCreateParams{Name: "work", Base: "openai", Surface: "compat"},
+			want:   "unknown surface",
+		},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			f := newInstancesFixture(t, map[string]string{"GROQ_API_KEY": "gk"})
+			err := f.ctl.Create(tt.params)
+			if err == nil || !strings.Contains(err.Error(), tt.want) {
+				t.Fatalf("Create = %v, want an error mentioning %q", err, tt.want)
+			}
+			if _, statErr := os.Stat(f.tomlPath); !os.IsNotExist(statErr) {
+				t.Fatalf("a rejected create wrote providers.toml (stat err=%v)", statErr)
+			}
+			// The pane is not locked out: the registry still loads, and the
+			// next valid write goes through.
+			if f.ctl.reg.WritesRefused() {
+				t.Fatal("the registry stopped loading after a rejected create")
+			}
+			if err := f.ctl.Create(appwire.InstanceCreateParams{Name: "work", Base: "openai", APIKeyEnv: "WORK_KEY"}); err != nil {
+				t.Fatalf("the pane refused a valid create after rejecting an invalid one: %v", err)
+			}
+			if _, ok := f.ctl.reg.Get().Instance("work"); !ok {
+				t.Fatal("the valid instance did not reach the reloaded registry")
+			}
+		})
+	}
+}
+
+// TestInstances_EditRefusesAnUnreadableCredentialHeader: Edit holds the same
+// invariant, on the field a shadowing entry can carry.
+func TestInstances_EditRefusesAnUnreadableCredentialHeader(t *testing.T) {
+	f := newInstancesFixture(t, map[string]string{"GROQ_API_KEY": "gk", "PORTKEY_KEY": "pk"})
+	if err := f.ctl.Create(appwire.InstanceCreateParams{
+		Name: "work", Base: "openai", CredentialHeader: "Authorization=Bearer $PORTKEY_KEY",
+	}); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	before := authoredEntry(t, f.tomlPath, "work")
+
+	err := f.ctl.Edit(appwire.InstanceEditParams{Name: "work", Protocol: "responses"})
+	if err == nil || !strings.Contains(err.Error(), "unknown protocol") {
+		t.Fatalf("Edit = %v, want an unknown-protocol error", err)
+	}
+	if after := authoredEntry(t, f.tomlPath, "work"); after.Protocol != before.Protocol {
+		t.Fatalf("a rejected edit changed the authored entry: %q → %q", before.Protocol, after.Protocol)
+	}
+	if f.ctl.reg.WritesRefused() {
+		t.Fatal("the registry stopped loading after a rejected edit; the pane must not be locked out")
+	}
+	if err := f.ctl.Edit(appwire.InstanceEditParams{Name: "work", Protocol: "openai-responses"}); err != nil {
+		t.Fatalf("the pane refused a valid edit after rejecting an invalid one: %v", err)
 	}
 }

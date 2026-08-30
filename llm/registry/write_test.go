@@ -132,29 +132,3 @@ func TestReadConfigFileReportsOldSchema(t *testing.T) {
 		t.Fatalf("want ErrOldSchema, got %v", err)
 	}
 }
-
-// TestValidProtocolAndSurface pins the two predicates a writer asks before it
-// authors an entry: every value the parser accepts, and nothing else. A write
-// the hub accepts must reload cleanly (spec §10).
-func TestValidProtocolAndSurface(t *testing.T) {
-	for _, name := range []string{ProtocolOpenAIChat, ProtocolOpenAIResponses, ProtocolAnthropic, ProtocolGoogle} {
-		if !ValidProtocol(name) {
-			t.Errorf("ValidProtocol(%q) = false, want true", name)
-		}
-	}
-	for _, name := range []string{"", "responses", "chat-completions", "openai", "OPENAI-CHAT"} {
-		if ValidProtocol(name) {
-			t.Errorf("ValidProtocol(%q) = true, want false", name)
-		}
-	}
-	for _, name := range []string{SurfaceOpenAI, SurfaceAnthropic, SurfaceGoogle, SurfaceGeneric} {
-		if !ValidSurface(name) {
-			t.Errorf("ValidSurface(%q) = false, want true", name)
-		}
-	}
-	for _, name := range []string{"", "openai-chat", "compat", "Generic"} {
-		if ValidSurface(name) {
-			t.Errorf("ValidSurface(%q) = true, want false", name)
-		}
-	}
-}
