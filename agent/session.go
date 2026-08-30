@@ -716,14 +716,18 @@ type Session struct {
 
 	// restoredTranscript holds the decoded transcript a RESUME read while
 	// validating the session it was asked to restore: the header (with its
-	// SessionID already checked against this session's id) and the retained
-	// entries. It exists so serve's app-identity projection can reuse that
-	// one strict decode instead of re-reading and re-decoding the whole
-	// append-only file; it is populated only on the restore path, after any
-	// delegate-delivery refresh, and is never updated after construction.
-	// Guarded by s.mu.
+	// SessionID already checked against this session's id), the retained
+	// entries, and whether a transcript was opened at all — the ok flag, kept
+	// as an explicit bool rather than inferred from the entries slice, so a
+	// header-only refresh (whose entry list is empty) cannot silently flip
+	// ok back to false. It exists so serve's app-identity projection can
+	// reuse that one strict decode instead of re-reading and re-decoding the
+	// whole append-only file; it is populated only on the restore path,
+	// after any delegate-delivery refresh, and is never updated after
+	// construction. Guarded by s.mu.
 	restoredTranscriptHeader transcript.Header
 	restoredTranscript       []transcript.Entry
+	restoredTranscriptOpened bool
 
 	// Cached tool definitions.
 	cachedToolDefs []llm.ToolDefinition
@@ -1787,22 +1791,26 @@ func (s *Session) TranscriptPath() string {
 
 // setRestoredTranscript installs the final restore-time transcript view. It
 // runs once, at the end of restore construction, with the entry list that any
-// delegate-delivery replay already refreshed from disk.
-func (s *Session) setRestoredTranscript(header transcript.Header, entries []transcript.Entry) {
+// delegate-delivery replay already refreshed from disk. opened reports
+// whether restore opened a transcript at all, independent of the entry
+// slice's emptiness.
+func (s *Session) setRestoredTranscript(header transcript.Header, entries []transcript.Entry, opened bool) {
 	s.mu.Lock()
 	s.restoredTranscriptHeader = header
 	s.restoredTranscript = entries
+	s.restoredTranscriptOpened = opened
 	s.mu.Unlock()
 }
 
 // RestoredTranscript returns the header and decoded entry list this resume
 // validated, for a caller (serve's app-identity projection) that would
-// otherwise re-read the transcript file. ok is false unless this session was
-// constructed by restore with a transcript; the slice aliases retained state
-// and must be treated as read-only.
+// otherwise re-read the transcript file. ok is true exactly when restore
+// opened a transcript, including a header-only one; the slice aliases
+// retained state and must be treated as read-only.
 func (s *Session) RestoredTranscript() (transcript.Header, []transcript.Entry, bool) {
 	s.mu.Lock()
 	header, entries := s.restoredTranscriptHeader, s.restoredTranscript
+	opened := s.restoredTranscriptOpened
 	s.mu.Unlock()
-	return header, entries, entries != nil
+	return header, entries, opened
 }
