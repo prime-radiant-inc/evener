@@ -148,6 +148,10 @@ func TestCredentialAgreement_HubAgreesWithTheKeyTheChildSends(t *testing.T) {
 					t.Errorf("Status(%q).EnvVar = %q, want %q: the pane must name the variable the child signs with (%s)",
 						tt.instance, status.EnvVar, tt.envVar, tt.why)
 				}
+				if status.ActiveSource != resolved {
+					t.Errorf("Status(%q).ActiveSource = %q, but the registry resolved %q — the pane must report the source the child used",
+						tt.instance, status.ActiveSource, resolved)
+				}
 				return
 			}
 			if preflight == nil {
@@ -160,6 +164,9 @@ func TestCredentialAgreement_HubAgreesWithTheKeyTheChildSends(t *testing.T) {
 			if status.EnvVar != "" {
 				t.Errorf("Status(%q).EnvVar = %q, want \"\": naming a variable the child never sends describes a different client (%s)",
 					tt.instance, status.EnvVar, tt.why)
+			}
+			if status.ActiveSource != "none" {
+				t.Errorf("Status(%q).ActiveSource = %q, want none: the registry resolved nothing here", tt.instance, status.ActiveSource)
 			}
 		})
 	}

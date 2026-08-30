@@ -261,8 +261,8 @@ func TestRunMainLeavesAnAbsentProvidersConfigAlone(t *testing.T) {
 		t.Fatalf("the hub wrote %s (stat err=%v); an absent providers.toml must stay absent", providersPath, err)
 	}
 
-	// The property the materialized file broke: a child pointed at this same
-	// path builds a client.
+	// A child pointed at this same path builds a client: an absent user layer
+	// is a valid configuration, not a missing one.
 	client, err := cmdutil.LoadClientAt(providersPath, t.TempDir())
 	if err != nil {
 		t.Fatalf("LoadClientAt(%q): %v — a child spawned with EVENER_PROVIDERS_CONFIG=%s must build a client", providersPath, err, providersPath)

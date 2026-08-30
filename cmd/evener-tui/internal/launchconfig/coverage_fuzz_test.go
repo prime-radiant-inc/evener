@@ -123,9 +123,8 @@ func exerciseLaunchConfigCoverage(t *testing.T) {
 	TestLaunchSettingsFieldUsesPathCompletion(t)
 	TestLaunchOptionDefaultableInLayer(t)
 	TestFormActiveField(t)
-	TestToggleAPIStyle(t)
 	TestFormAppendAndDeleteChar(t)
-	TestApiStyleDisplay(t)
+	TestProtocolDisplay(t)
 	TestSourceBadgeColor(t)
 	TestParseOptionalBool(t)
 	TestParseOptionalInt(t)
@@ -223,7 +222,7 @@ func exerciseRemainingStates(t *testing.T) {
 	}
 	blank := CredentialsPanel{}
 	blank.formField = 0
-	blank.formType = "x"
+	blank.formBase = "x"
 	blank.formDeleteChar()
 	blank.formField = 3
 	blank.formDeleteChar()
@@ -233,7 +232,7 @@ func exerciseRemainingStates(t *testing.T) {
 	_ = (CredentialsPanel{loading: true}).View()
 	_, _ = (CredentialsPanel{instances: nil, cursor: 3}).Update(InstanceListResultMsg{})
 	_ = (CredentialsPanel{loading: false}).View()
-	_ = (CredentialsPanel{loading: false, rows: []panelRow{{entry: &appwire.InstanceEntry{Name: "x", IsDefault: true, APIStyle: "responses", BaseURL: "url", ActiveSource: "env"}}}}).View()
+	_ = (CredentialsPanel{loading: false, rows: []panelRow{{entry: &appwire.InstanceEntry{Name: "x", IsDefault: true, Protocol: "openai-responses", BaseURL: "url", ActiveSource: "env:OPENAI_API_KEY"}}}}).View()
 
 	modal := NewLaunchOverridesModal()
 	_ = modal.Init()
