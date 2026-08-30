@@ -704,7 +704,7 @@ func ReasoningEffortRank(effort string) int {
 // supports minimal/low/medium/high).
 func ClampReasoningEffort(requested string, supportedLevels []string) string {
 	req := strings.ToLower(strings.TrimSpace(requested))
-	if req == "" || req == "none" || len(supportedLevels) == 0 {
+	if req == "" || req == ReasoningEffortNone || len(supportedLevels) == 0 {
 		return requested
 	}
 	reqRank, ok := effortRank[req]

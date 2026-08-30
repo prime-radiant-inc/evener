@@ -92,6 +92,12 @@ appwire `thread/reasoningEffort/set` handler, and delegates.
 `ValidateReasoningEffort` accepts `none`. `ClampReasoningEffort` already
 passes it through. Loop-detector escalation treats `none` like `""`.
 
+The catalog ladder includes `none` for models whose litellm entry sets
+`supports_none_reasoning_effort` (gpt-5.1 and later), so the explicit-off
+path has a level to send on exactly the models that accept one. `none` has
+no rank, so the clamp ignores it; the hub palette already filters it out of
+tier pickers, and a `task_list` task may select it to run without thinking.
+
 The hub's launch chip value `none` therefore means "off", and its label
 changes from "none (clear)" to "none (off)".
 

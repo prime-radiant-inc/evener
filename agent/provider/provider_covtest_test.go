@@ -7,11 +7,8 @@ import (
 
 func TestCovOpenAIProfileCapabilities(t *testing.T) {
 	p := NewOpenAIProfile("evener-uncatalogued-test-model")
-	if p.ThinkingAlwaysOn() {
-		t.Fatal("ThinkingAlwaysOn() = true, want false for default OpenAI profile")
-	}
-	if !p.CatalogEffortFallbackEligible() {
-		t.Fatal("CatalogEffortFallbackEligible() = false, want true without explicit model configuration")
+	if p.EffortLevelsConfigured() {
+		t.Fatal("EffortLevelsConfigured() = true, want false without explicit model configuration")
 	}
 	if !p.SupportsStreaming() {
 		t.Fatal("SupportsStreaming() = false, want true for OpenAI profile")
