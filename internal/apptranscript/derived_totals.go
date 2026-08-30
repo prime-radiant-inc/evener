@@ -82,8 +82,7 @@ func (c *TurnCache) DerivedTotalsFromFile(path string, maxLineBytes int, fromEnt
 // reader in this package applies.
 func scanDerivedTotals(path string, maxLineBytes int, fromEntryOrdinal int) (derivedTotals, error) {
 	var totals derivedTotals
-	var accumulated llm.Usage
-	counted := false
+	var accumulated usageAccumulator
 	ordinal := 0
 	// toolNames resolves a result whose own record omits its name, mirroring
 	// ProjectTurn's map of the same name. It is filled from EVERY assistant
@@ -103,9 +102,8 @@ func scanDerivedTotals(path string, maxLineBytes int, fromEntryOrdinal int) (der
 			return fmt.Errorf("decode transcript entry derived totals: %w", err)
 		}
 		counting := ordinal >= fromEntryOrdinal
-		if counting && appwire.EvenerUsageFromLLM(record.Turn.Usage) != nil {
-			accumulated = accumulated.Add(record.Turn.Usage)
-			counted = true
+		if counting {
+			accumulated.add(record.Turn.Usage)
 		}
 		totals.failedToolCall += tallyFailedToolCalls(record.Turn.Message.Content, counting, toolNames)
 		return nil
@@ -113,10 +111,7 @@ func scanDerivedTotals(path string, maxLineBytes int, fromEntryOrdinal int) (der
 		return derivedTotals{}, err
 	}
 	observeIndexRead(ReadStats{derivedScans: 1})
-	if !counted {
-		return totals, nil
-	}
-	totals.usage = appwire.EvenerUsageFromLLM(accumulated)
+	totals.usage = accumulated.total()
 	return totals, nil
 }
 

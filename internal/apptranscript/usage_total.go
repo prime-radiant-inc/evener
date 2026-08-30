@@ -70,8 +70,7 @@ func (c *TurnCache) UsageTotalFromFile(path string, maxLineBytes int, fromEntryO
 // unknown-field strictness, header validation) is exactly the one every other
 // reader in this package applies.
 func scanUsageTotal(path string, maxLineBytes int, fromEntryOrdinal int) (*appwire.EvenerUsage, error) {
-	var accumulated llm.Usage
-	counted := false
+	var accumulated usageAccumulator
 	ordinal := 0
 	if _, err := scanSemanticTranscript(path, maxLineBytes, func(raw json.RawMessage) error {
 		ordinal++
@@ -88,20 +87,37 @@ func scanUsageTotal(path string, maxLineBytes int, fromEntryOrdinal int) (*appwi
 			// worse than reporting none, so surface it.
 			return fmt.Errorf("decode transcript entry usage: %w", err)
 		}
-		if appwire.EvenerUsageFromLLM(record.Turn.Usage) == nil {
-			return nil
-		}
-		accumulated = accumulated.Add(record.Turn.Usage)
-		counted = true
+		accumulated.add(record.Turn.Usage)
 		return nil
 	}); err != nil {
 		return nil, err
 	}
 	observeIndexRead(ReadStats{usageScans: 1})
-	if !counted {
-		return nil, nil
+	return accumulated.total(), nil
+}
+
+// usageAccumulator applies the token-sum rule shared by scanUsageTotal and
+// scanDerivedTotals: only entries carrying real token data count, and a span
+// that carried none totals to nil rather than a fabricated zero (absent and
+// zero are different claims — see UsageTotalFromFile).
+type usageAccumulator struct {
+	sum     llm.Usage
+	counted bool
+}
+
+func (a *usageAccumulator) add(usage llm.Usage) {
+	if appwire.EvenerUsageFromLLM(usage) == nil {
+		return
 	}
-	return appwire.EvenerUsageFromLLM(accumulated), nil
+	a.sum = a.sum.Add(usage)
+	a.counted = true
+}
+
+func (a *usageAccumulator) total() *appwire.EvenerUsage {
+	if !a.counted {
+		return nil
+	}
+	return appwire.EvenerUsageFromLLM(a.sum)
 }
 
 // usageOnlyEntry decodes the one field the sum needs. scanSemanticTranscript has
