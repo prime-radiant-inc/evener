@@ -14,11 +14,12 @@ function connectFakeClient(): FakeClient {
 
 const ONE_INSTANCE: InstanceEntry = {
   name: "work",
-  type: "anthropic",
-  apiStyle: "",
-  baseUrl: "",
+  providerId: "openai-codex",
+  protocol: "openai-responses",
+  auth: "oauth-openai-codex",
   isDefault: true,
-  authModes: ["apiKey", "oauth"],
+  implicit: false,
+  authModes: ["oauth"],
   activeSource: "oauth",
   hasStoredFile: false,
   hasStoredOAuth: true,
@@ -29,7 +30,10 @@ const ONE_INSTANCE: InstanceEntry = {
 
 const LIST_RESPONSE: InstanceListResponse = {
   instances: [ONE_INSTANCE],
-  availableTypes: ["anthropic", "openai"],
+  availableProviders: [
+    { id: "anthropic", protocol: "anthropic", auth: "bearer", implicit: true },
+    { id: "openai-codex", protocol: "openai-responses", auth: "oauth-openai-codex", implicit: true },
+  ],
 };
 
 beforeEach(() => {
@@ -47,15 +51,33 @@ describe("fetch", () => {
     await expect(credentialsStore.getState().fetch()).rejects.toThrow(/no client connected/);
   });
 
-  test("populates instances/availableTypes from evener/instance/list on success", async () => {
+  test("populates instances/availableProviders/diagnostics/writesRefused from evener/instance/list on success", async () => {
     const fake = connectFakeClient();
-    fake.on("evener/instance/list", () => LIST_RESPONSE);
+    fake.on("evener/instance/list", () => ({
+      ...LIST_RESPONSE,
+      diagnostics: ['providers.toml: unexpected key "type"'],
+      userLayer: "user layer: /home/x/.config/evener/providers.toml",
+      writesRefused: true,
+    }));
     await credentialsStore.getState().fetch();
     const state = credentialsStore.getState();
     expect(state.instances).toEqual([ONE_INSTANCE]);
-    expect(state.availableTypes).toEqual(["anthropic", "openai"]);
+    expect(state.availableProviders).toEqual(LIST_RESPONSE.availableProviders);
+    expect(state.diagnostics).toEqual(['providers.toml: unexpected key "type"']);
+    expect(state.userLayer).toBe("user layer: /home/x/.config/evener/providers.toml");
+    expect(state.writesRefused).toBe(true);
     expect(state.loading).toBe(false);
     expect(state.error).toBeNull();
+  });
+
+  test("defaults diagnostics/userLayer/writesRefused when the response omits them", async () => {
+    const fake = connectFakeClient();
+    fake.on("evener/instance/list", () => LIST_RESPONSE); // no diagnostics/userLayer/writesRefused keys
+    await credentialsStore.getState().fetch();
+    const state = credentialsStore.getState();
+    expect(state.diagnostics).toEqual([]);
+    expect(state.userLayer).toBe("");
+    expect(state.writesRefused).toBe(false);
   });
 
   test("sets loading true for the duration of the request", async () => {
@@ -95,22 +117,22 @@ describe("fetch", () => {
 describe("mutations returning the updated instance list", () => {
   test("create() calls evener/instance/create and applies the returned list", async () => {
     const fake = connectFakeClient();
-    const created: InstanceListResponse = { instances: [ONE_INSTANCE], availableTypes: ["anthropic"] };
+    const created: InstanceListResponse = { instances: [ONE_INSTANCE], availableProviders: [] };
     fake.on("evener/instance/create", (params) => {
-      expect(params).toEqual({ type: "anthropic", name: "work", apiStyle: "", baseUrl: "" });
+      expect(params).toEqual({ name: "work", base: "openai-codex", baseUrl: "" });
       return created;
     });
-    await credentialsStore.getState().create({ type: "anthropic", name: "work", apiStyle: "", baseUrl: "" });
+    await credentialsStore.getState().create({ name: "work", base: "openai-codex", baseUrl: "" });
     expect(credentialsStore.getState().instances).toEqual([ONE_INSTANCE]);
   });
 
   test("edit() calls evener/instance/edit and applies the returned list", async () => {
     const fake = connectFakeClient();
     fake.on("evener/instance/edit", (params) => {
-      expect(params).toEqual({ name: "work", apiStyle: "responses", baseUrl: "https://x" });
+      expect(params).toEqual({ name: "work", baseUrl: "https://x" });
       return LIST_RESPONSE;
     });
-    await credentialsStore.getState().edit({ name: "work", apiStyle: "responses", baseUrl: "https://x" });
+    await credentialsStore.getState().edit({ name: "work", baseUrl: "https://x" });
     expect(credentialsStore.getState().instances).toEqual([ONE_INSTANCE]);
   });
 
@@ -118,7 +140,7 @@ describe("mutations returning the updated instance list", () => {
     const fake = connectFakeClient();
     fake.on("evener/instance/remove", (params) => {
       expect(params).toEqual({ name: "work" });
-      return { instances: [], availableTypes: ["anthropic"] };
+      return { instances: [], availableProviders: [] };
     });
     await credentialsStore.getState().remove("work");
     expect(credentialsStore.getState().instances).toEqual([]);
@@ -140,7 +162,7 @@ describe("mutations returning the updated instance list", () => {
       throw new Error("name already exists");
     });
     await expect(
-      credentialsStore.getState().create({ type: "anthropic", name: "work", apiStyle: "", baseUrl: "" }),
+      credentialsStore.getState().create({ name: "work", base: "openai-codex", baseUrl: "" }),
     ).rejects.toThrow("name already exists");
     expect(credentialsStore.getState().instances).toEqual([]);
   });
@@ -166,10 +188,10 @@ describe("auth RPCs: thin proxies, no local state mutation", () => {
     const fake = connectFakeClient();
     fake.on("evener/auth/apiKey/set", (params) => {
       expect(params).toEqual({ provider: "work", value: "sk-secret" });
-      return { provider: "work", supported: true, signedIn: true, activeSource: "file", hasStoredOAuth: false };
+      return { provider: "work", supported: true, signedIn: true, activeSource: "store", hasStoredOAuth: false };
     });
     const result = await credentialsStore.getState().setApiKey("work", "sk-secret");
-    expect(result.activeSource).toBe("file");
+    expect(result.activeSource).toBe("store");
     // Never stored on the store itself - never-echo invariant.
     expect(JSON.stringify(credentialsStore.getState())).not.toContain("sk-secret");
   });
@@ -180,7 +202,7 @@ describe("auth RPCs: thin proxies, no local state mutation", () => {
       expect(params).toEqual({ provider: "work" });
       return {
         removed: true,
-        status: { provider: "work", supported: true, signedIn: false, activeSource: "absent", hasStoredOAuth: false },
+        status: { provider: "work", supported: true, signedIn: false, activeSource: "none", hasStoredOAuth: false },
       };
     });
     const result = await credentialsStore.getState().logout("work");
@@ -268,7 +290,7 @@ describe("notification-triggered refetch", () => {
     await credentialsStore.getState().fetch(); // initial load; also wires notification handling
     const updated: InstanceListResponse = {
       instances: [{ ...ONE_INSTANCE, hasStoredOAuth: false }],
-      availableTypes: [],
+      availableProviders: [],
     };
     fake.on("evener/instance/list", () => updated);
 

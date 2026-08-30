@@ -6,10 +6,11 @@
 //
 // Every evener/instance/* mutation's Go handler returns the FULL updated
 // InstanceListResponse (appwire/types.go) - so create/edit/remove/setDefault
-// apply that response directly to `instances`/`availableTypes` instead of
-// issuing a separate evener/instance/list refetch, same round-trip the legacy
-// credentials.html's own instanceCreate/instanceEdit/... + refresh() pattern
-// achieves in two calls.
+// apply that response directly to `instances`/`availableProviders`/
+// `diagnostics`/`userLayer`/`writesRefused` instead of issuing a separate
+// evener/instance/list refetch, same round-trip the legacy credentials.html's
+// own instanceCreate/instanceEdit/... + refresh() pattern achieves in two
+// calls.
 //
 // Never-echo invariant: no method here stores a secret VALUE anywhere in
 // this store's state - setApiKey/loginComplete/deviceStart/devicePoll return
@@ -33,6 +34,7 @@ import type {
   InstanceEditParams,
   InstanceEntry,
   InstanceListResponse,
+  ProviderDescriptor,
 } from "../protocol/types.gen";
 import { connectionStore } from "./connection";
 
@@ -46,7 +48,14 @@ function requireClient(): AppwireClientLike {
 
 export interface CredentialsStoreState {
   instances: InstanceEntry[];
-  availableTypes: string[];
+  availableProviders: ProviderDescriptor[];
+  // diagnostics/userLayer/writesRefused mirror InstanceListResponse's own
+  // optional fields (appwire/types.go), normalized here to always-present
+  // values (spec §11.3) so components never need an `?? []`/`?? false`
+  // fallback of their own.
+  diagnostics: string[];
+  userLayer: string;
+  writesRefused: boolean;
   loading: boolean;
   error: string | null;
   fetch(): Promise<void>;
@@ -55,7 +64,7 @@ export interface CredentialsStoreState {
   remove(name: string): Promise<void>;
   setDefault(name: string): Promise<void>;
   // Auth mutations return the raw wire response and never touch
-  // instances/availableTypes themselves - the caller (CredentialsSection)
+  // instances/availableProviders themselves - the caller (CredentialsSection)
   // re-fetches on success, matching the legacy's own "close editor +
   // refresh()" sequencing, and surfaces failures as inline errors/toasts
   // itself rather than this store swallowing them into an `error` field.
@@ -69,12 +78,21 @@ export interface CredentialsStoreState {
 }
 
 function applyList(resp: InstanceListResponse): void {
-  credentialsStore.setState({ instances: resp.instances, availableTypes: resp.availableTypes });
+  credentialsStore.setState({
+    instances: resp.instances,
+    availableProviders: resp.availableProviders,
+    diagnostics: resp.diagnostics ?? [],
+    userLayer: resp.userLayer ?? "",
+    writesRefused: resp.writesRefused ?? false,
+  });
 }
 
 export const credentialsStore = createStore<CredentialsStoreState>((set) => ({
   instances: [],
-  availableTypes: [],
+  availableProviders: [],
+  diagnostics: [],
+  userLayer: "",
+  writesRefused: false,
   loading: false,
   error: null,
 
@@ -83,7 +101,14 @@ export const credentialsStore = createStore<CredentialsStoreState>((set) => ({
     set({ loading: true, error: null });
     try {
       const resp = await client.request("evener/instance/list", {});
-      set({ instances: resp.instances, availableTypes: resp.availableTypes, loading: false });
+      set({
+        instances: resp.instances,
+        availableProviders: resp.availableProviders,
+        diagnostics: resp.diagnostics ?? [],
+        userLayer: resp.userLayer ?? "",
+        writesRefused: resp.writesRefused ?? false,
+        loading: false,
+      });
     } catch (err) {
       set({ loading: false, error: errorText(err) });
     }
@@ -219,5 +244,13 @@ export function resetCredentialsStoreForTests(): void {
   wiredClient = null;
   clearTimeout(refetchTimer);
   refetchTimer = undefined;
-  credentialsStore.setState({ instances: [], availableTypes: [], loading: false, error: null });
+  credentialsStore.setState({
+    instances: [],
+    availableProviders: [],
+    diagnostics: [],
+    userLayer: "",
+    writesRefused: false,
+    loading: false,
+    error: null,
+  });
 }
