@@ -16,6 +16,7 @@
 
 import { sessionActionError } from "../../../protocol/errors";
 import type { ThreadModel } from "../../../protocol/model";
+import { effortLabel, effortOptionLevels } from "../../../shell/reasoningEffort";
 import { threadsStore } from "../../../stores/threads";
 import { Chevron, Meter, useToasts } from "../../../widgets";
 import { requireClass } from "../../../widgets/internal/requireClass";
@@ -55,9 +56,6 @@ const CLASS = {
 // the spawn form agree; the daemon clamps a request to what the model actually
 // accepts, so an over-broad list is safe.
 const DEFAULT_EFFORT_LEVELS = ["minimal", "low", "medium", "high"];
-
-// The label an unset effort reads as - see the none-vs-(default) rule below.
-const DEFAULT_EFFORT_LABEL = "(default)";
 
 // ReasoningEffortControl renders the reasoning-effort switcher as a quiet
 // trigger matching the model switcher beside it: the current value IS the
@@ -101,11 +99,7 @@ function ReasoningEffortControl({ sessionRef, model }: { sessionRef: string; mod
   if (levels.length === 0) return null;
 
   const current = model.reasoningEffort ?? "";
-  const ladder = levels.filter((level) => level !== "none");
-  const offersNone = levels.includes("none") || current === "none";
-  const options = offersNone ? ["", "none", ...ladder] : ["", ...ladder];
-  const effortLabel = (level: string) =>
-    level === "" ? DEFAULT_EFFORT_LABEL : level === "none" ? "none (off)" : level;
+  const options = effortOptionLevels(levels, current);
 
   return (
     <span className={CLASS.effortTrigger} data-testid="status-row-effort">

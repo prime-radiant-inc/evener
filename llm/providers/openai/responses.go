@@ -595,8 +595,6 @@ func responsesInbandError(data []byte) error {
 // live view (the contract Response.ReasoningText documents).
 const reasoningPartSeparator = "\n\n"
 
-// responsesAPIEventTypes lists the events that prove the endpoint served a
-// Responses API request; see the discussion above.
 var responsesAPIEventTypes = map[string]struct{}{
 	"response.created":                       {},
 	"response.in_progress":                   {},

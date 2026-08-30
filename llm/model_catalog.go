@@ -15,15 +15,22 @@ import (
 // ModelInfo is the normalized model metadata entry, primarily sourced from the LiteLLM catalog
 // in evener. This is metadata-only and is not used as a provider call path.
 type ModelInfo struct {
-	ID                    string   `json:"id"`
-	Provider              string   `json:"provider"`
-	DisplayName           string   `json:"display_name"`
-	ContextWindow         int      `json:"context_window"`
-	MaxOutputTokens       *int     `json:"max_output_tokens,omitempty"`
-	SupportsTools         bool     `json:"supports_tools"`
-	SupportsVision        bool     `json:"supports_vision"`
-	SupportsReasoning     bool     `json:"supports_reasoning"`
-	ReasoningEffortLevels []string `json:"reasoning_effort_levels,omitempty"`
+	ID                string `json:"id"`
+	Provider          string `json:"provider"`
+	DisplayName       string `json:"display_name"`
+	ContextWindow     int    `json:"context_window"`
+	MaxOutputTokens   *int   `json:"max_output_tokens,omitempty"`
+	SupportsTools     bool   `json:"supports_tools"`
+	SupportsVision    bool   `json:"supports_vision"`
+	SupportsReasoning bool   `json:"supports_reasoning"`
+	// ReasoningAuthoritative marks that SupportsReasoning is knowledge rather
+	// than sparse data: the source stated it explicitly, or the entry is a
+	// bare curated key (litellm's silence there means the model does not
+	// reason). Provider-prefixed mirror keys (openrouter/*, ollama/*) that
+	// are silent leave the model's reasoning support unknown, and consumers
+	// treat it as permitted.
+	ReasoningAuthoritative bool     `json:"reasoning_authoritative,omitempty"`
+	ReasoningEffortLevels  []string `json:"reasoning_effort_levels,omitempty"`
 	// DefaultReasoningEffort is the effort a model runs at when the session
 	// has none configured, where a source states it: the overrides layer
 	// (adaptive Claude runs at high server-side) or a live /models entry
@@ -488,6 +495,7 @@ func parseLiteLLMCatalog(data []byte) (*ModelCatalog, error) {
 			SupportsTools:                 parseBool(v["supports_function_calling"]),
 			SupportsVision:                parseBool(v["supports_vision"]),
 			SupportsReasoning:             parseBool(v["supports_reasoning"]),
+			ReasoningAuthoritative:        v["supports_reasoning"] != nil || !strings.Contains(id, "/"),
 			ReasoningEffortLevels:         effortLevels,
 			SupportsAdaptiveThinking:      parseBool(v["supports_adaptive_thinking"]),
 			SupportsEffortParameter:       parseBool(v["supports_effort_parameter"]),
