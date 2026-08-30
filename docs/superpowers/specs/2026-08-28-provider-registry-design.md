@@ -910,7 +910,10 @@ that upstream now covers.
 `(*Registry).Resolve(ref string) (Resolved, error)` is the single lookup
 path. It replaces `LookupModelInfo`, `resolveOpenAICompatCatalogModel`,
 `fillFromCatalog`, `GetPrice`'s prefix scan, `ResolveLiveModelInfo`,
-`cmdutil.ParseModelRef` + `SelectProfile`, and the profile constructors.
+`SelectProfile`, and the profile constructors. It does **not** replace
+`cmdutil.ParseModelRef`, which validates a CLI argument (provider and model
+both required, provider lowercased) rather than implementing §7.1's
+reference syntax with its default-instance fallback.
 `(*Registry).FindModel(id string) []Ref` answers the other question the
 agent asks ("which instances serve this model id?") for plugin-agent model
 declarations (§7.5): an instance *serves* an id when §7.2 steps 1–4 match it
