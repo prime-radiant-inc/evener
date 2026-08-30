@@ -577,18 +577,40 @@ func (p *Profile) WithLiveModelInfo(info llm.ModelInfo) *Profile {
 	return &clone
 }
 
-// setEffortLevels replaces the profile's effort ladder and keeps the
-// effort-enum tool schema (task_list) in sync with it, or the model would
-// see the constructor's enum instead.
-func (p *Profile) setEffortLevels(levels []string) {
-	p.effortLevels = append([]string(nil), levels...)
-	defs := append([]llm.ToolDefinition(nil), p.toolDefs...)
+// WithResolved returns a copy of the profile carrying the facts of a fresh
+// registry resolution — after a live listing was applied, the registry's
+// merged caps are the truth (spec §5: live facts never beat the user layer,
+// so nothing here consults providers.toml).
+func (p *Profile) WithResolved(res registry.Resolved) *Profile {
+	if p == nil {
+		return nil
+	}
+	clone := *p
+	caps := res.Caps
+	if caps.ContextWindow != nil && *caps.ContextWindow > 0 {
+		clone.contextWindow = *caps.ContextWindow
+	}
+	if caps.Reasoning != nil {
+		clone.reasoning = *caps.Reasoning
+	}
+	switch {
+	case caps.ReasoningDisabled():
+		clone.effortLevels = []string{}
+	case len(caps.EffortValues) > 0:
+		clone.effortLevels = append([]string(nil), caps.EffortValues...)
+	}
+	defs := append([]llm.ToolDefinition(nil), clone.toolDefs...)
 	for i := range defs {
 		if defs[i].Name == "task_list" {
-			defs[i] = tool.DefTaskList(p.ReasoningEffortLevels())
+			defs[i] = tool.DefTaskList(clone.effortLevels)
 		}
 	}
-	p.toolDefs = defs
+	clone.toolDefs = defs
+	clone.thinkingAlwaysOn = registry.BoolValue(caps.ThinkingAlwaysOn)
+	if caps.WebSearch != nil {
+		clone.webSearch = *caps.WebSearch
+	}
+	return &clone
 }
 
 // materializeInstanceModelConfig resolves explicit providers.toml model
