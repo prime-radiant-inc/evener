@@ -8,7 +8,7 @@ import (
 const devHelp = `Usage: evener-dev <subcommand> [flags]
 
 Subcommands:
-  dev                        Dev tooling (agent-shards, module-lint)
+  dev                        Dev tooling (agent-shards, covstmt, module-lint)
   module-lint              Run golangci-lint across workspace modules in parallel waves
   agent-shards             Run agent test shards in parallel
   fuzz-harvest             Harvest fuzz seed corpora from recorded traffic
