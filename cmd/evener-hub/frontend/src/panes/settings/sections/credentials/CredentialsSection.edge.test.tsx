@@ -21,12 +21,13 @@ function connectFakeClient(): FakeClient {
   return fake;
 }
 
-function instance(overrides: Partial<InstanceEntry> & Pick<InstanceEntry, "name" | "type">): InstanceEntry {
+function instance(overrides: Partial<InstanceEntry> & Pick<InstanceEntry, "name" | "providerId">): InstanceEntry {
   return {
-    apiStyle: "",
-    baseUrl: "",
+    protocol: "openai-chat",
+    auth: "bearer",
+    implicit: false,
     isDefault: false,
-    activeSource: "absent",
+    activeSource: "none",
     hasStoredOAuth: false,
     credentialRequired: true,
     ...overrides,
@@ -35,14 +36,19 @@ function instance(overrides: Partial<InstanceEntry> & Pick<InstanceEntry, "name"
 
 const WORK = instance({
   name: "work",
-  type: "anthropic",
+  providerId: "anthropic",
   authModes: ["apiKey"],
   isDefault: true,
   hasStoredFile: true,
-  activeSource: "file",
+  activeSource: "store",
 });
-const PERSONAL = instance({ name: "personal", type: "openai", authModes: ["apiKey", "oauth"] });
-const LIST: InstanceListResponse = { instances: [WORK, PERSONAL], availableTypes: ["anthropic", "openai"] };
+const PERSONAL = instance({
+  name: "personal",
+  providerId: "openai-codex",
+  auth: "oauth-openai-codex",
+  authModes: ["oauth"],
+});
+const LIST: InstanceListResponse = { instances: [WORK, PERSONAL], availableProviders: [] };
 
 // Same detail-sheet navigation path as CredentialsSection.test.tsx: every
 // per-instance action is reached through the row's inspector.
@@ -79,7 +85,7 @@ describe("CredentialsSection edge cases", () => {
     );
     await screen.findByText("work");
     const user = userEvent.setup();
-    // WORK has stored file → its sheet offers Clear.
+    // WORK has a stored key → its sheet offers Clear.
     const inspector = await openSheet(user, "work");
     await user.click(within(inspector).getByRole("button", { name: "Clear" }));
     const dialog = screen.getByRole("dialog", { name: "Clear credentials" });

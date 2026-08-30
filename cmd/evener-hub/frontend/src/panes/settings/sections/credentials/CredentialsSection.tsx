@@ -9,6 +9,13 @@
 // opening one from the sheet replaces it (single-mutable-editor invariant
 // below).
 //
+// Updated for the provider registry's instance wire shape (spec §11.3):
+// instances group by providerId, the add form is fed availableProviders, and
+// a providers.toml load error surfaces as a diagnostics banner that disables
+// every instance-CRUD action until it clears (writesRefused) - Set key/Sign
+// in/Clear/Test credentials are unaffected, since none of them write
+// providers.toml.
+//
 // Single-mutable-editor invariant: `openEditor` is ONE section-level state
 // value (a discriminated union), so opening a second editor always replaces
 // whatever was open, matching the legacy's own single module-level
@@ -21,7 +28,7 @@ import { Button, ConfirmDialog, EmptyState, Skeleton, useToasts } from "../../..
 import { requireClass } from "../../../../widgets/internal/requireClass";
 import { useConnectedEffect } from "../useConnectedEffect";
 import styles from "./CredentialsSection.module.css";
-import { groupByType, safeCredentialTestResult } from "./credentialLabels";
+import { groupByProvider, safeCredentialTestResult } from "./credentialLabels";
 import { InstanceDetailSheet } from "./InstanceDetailSheet";
 import { InstanceRow } from "./InstanceRow";
 import { AddInstanceDialog, ApiKeyDialog, EditInstanceDialog } from "./instanceDialogs";
@@ -35,6 +42,9 @@ const CLASS = {
   group: requireClass(styles.group, "CredentialsSection.module.css", "group"),
   groupHeader: requireClass(styles.groupHeader, "CredentialsSection.module.css", "groupHeader"),
   list: requireClass(styles.list, "CredentialsSection.module.css", "list"),
+  diagnostics: requireClass(styles.diagnostics, "CredentialsSection.module.css", "diagnostics"),
+  diagnosticsHeading: requireClass(styles.diagnosticsHeading, "CredentialsSection.module.css", "diagnosticsHeading"),
+  diagnosticsList: requireClass(styles.diagnosticsList, "CredentialsSection.module.css", "diagnosticsList"),
 };
 
 type OpenEditor =
@@ -48,6 +58,26 @@ type OpenEditor =
 type PendingConfirm = { kind: "clear" | "remove"; name: string } | null;
 type CredentialTestState = { version: number; pending: boolean; result?: AuthTestResponse };
 
+// Diagnostics: the providers.toml load-error pointer, the user-layer note,
+// stray OAuth record notices, and registry warnings (InstanceListResponse.
+// diagnostics, spec §11.3) - mirrors launchServer.tsx's own Diagnostics
+// component (this pane's sibling settings section), a flat unordered list
+// with no stable per-entry identity of its own.
+function Diagnostics({ diagnostics }: { diagnostics: string[] }) {
+  if (diagnostics.length === 0) return null;
+  return (
+    <div className={CLASS.diagnostics} role="status" aria-live="polite">
+      <p className={CLASS.diagnosticsHeading}>Warnings</p>
+      <ul className={CLASS.diagnosticsList}>
+        {diagnostics.map((d, index) => (
+          // biome-ignore lint/suspicious/noArrayIndexKey: diagnostics are a flat, unordered warning list with no stable identity of their own
+          <li key={index}>{d}</li>
+        ))}
+      </ul>
+    </div>
+  );
+}
+
 export interface CredentialsSectionProps {
   /** Unused - kept so this component's signature matches every other
    * dispatched settings section (see Settings.tsx's SECTION_COMPONENTS map). */
@@ -55,7 +85,7 @@ export interface CredentialsSectionProps {
 }
 
 export function CredentialsSection(_props: CredentialsSectionProps) {
-  const { instances, availableTypes, loading, error, fetch } = useCredentialsStore();
+  const { instances, availableProviders, diagnostics, writesRefused, loading, error, fetch } = useCredentialsStore();
   const [openEditor, setOpenEditor] = useState<OpenEditor>(null);
   const [selectedInstance, setSelectedInstance] = useState<string | null>(null);
   const [pendingConfirm, setPendingConfirm] = useState<PendingConfirm>(null);
@@ -180,7 +210,7 @@ export function CredentialsSection(_props: CredentialsSectionProps) {
     if (name !== null) editor(name);
   }
 
-  const groups = groupByType(instances);
+  const groups = groupByProvider(instances);
   // useCallback'd (not a plain inline arrow) so its identity stays stable
   // across CredentialsSection re-renders - DeviceCodeDialog's own poll
   // effect depends on the onSuccess it's given, and an unstable reference
@@ -191,8 +221,12 @@ export function CredentialsSection(_props: CredentialsSectionProps) {
   return (
     <div className={CLASS.root}>
       <div className={CLASS.headerRow}>
-        <Button onClick={() => setOpenEditor({ kind: "add" })}>+ Add provider instance</Button>
+        <Button onClick={() => setOpenEditor({ kind: "add" })} disabled={writesRefused}>
+          + Add provider instance
+        </Button>
       </div>
+
+      <Diagnostics diagnostics={diagnostics} />
 
       {loading && <Skeleton />}
       {error && <p className={CLASS.error}>Failed to load: {friendlyErrorMessage(error)}</p>}
@@ -203,8 +237,8 @@ export function CredentialsSection(_props: CredentialsSectionProps) {
         ) : (
           <div className={CLASS.groups}>
             {groups.map((group) => (
-              <div key={group.type} className={CLASS.group}>
-                <div className={CLASS.groupHeader}>{group.type}</div>
+              <div key={group.providerId} className={CLASS.group}>
+                <div className={CLASS.groupHeader}>{group.providerId}</div>
                 <ul className={CLASS.list}>
                   {group.instances.map((instance) => (
                     <InstanceRow
@@ -221,6 +255,7 @@ export function CredentialsSection(_props: CredentialsSectionProps) {
 
       <InstanceDetailSheet
         name={selectedInstance}
+        writesRefused={writesRefused}
         onClose={() => setSelectedInstance(null)}
         onSetApiKey={() => openEditorFromSheet((name) => setOpenEditor({ kind: "apiKey", name }))}
         onOAuthStart={() => openEditorFromSheet((name) => void handleOAuthStart(name))}
@@ -250,7 +285,7 @@ export function CredentialsSection(_props: CredentialsSectionProps) {
       />
 
       {openEditor?.kind === "add" && (
-        <AddInstanceDialog availableTypes={availableTypes} onCancel={closeEditor} onSuccess={closeEditor} />
+        <AddInstanceDialog availableProviders={availableProviders} onCancel={closeEditor} onSuccess={closeEditor} />
       )}
       {openEditor?.kind === "apiKey" &&
         (() => {
