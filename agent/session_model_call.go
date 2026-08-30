@@ -270,16 +270,11 @@ func (s *Session) prepareModelRequestWithError(ctx context.Context, round int, t
 	// --- Phase: ToolDefs --- (toolDefs snapshotted with profile/sys above)
 	req = s.buildModelRequest(profile, sys, history, toolDefs, reasoningEffort)
 	req = s.applyResponsesContinuationAnchorPlanning(ctx, req, historyTurns, profile.SupportsStreaming())
-	// Stage the mid-turn attention this round's request presents; the guard
-	// inside is the single gate, independent of which path built the history.
-	// Staging follows anchor planning because credit belongs to what the
-	// request actually carries: in responses-continuation delta mode the
-	// request sends only new items and any older steering turn lives in
-	// server-side state this session cannot verify, so nothing stages and
-	// the items keep their wake for a full-history turn.
-	if req.HistoryMode != llm.HistoryModeResponsesDelta {
-		s.stageRootDelegateAttentionCoverage(historyTurns)
-	}
+	// Stage the mid-turn attention this round's request presents. The guard
+	// inside is the single gate, whichever path built the history; staging
+	// follows anchor planning because credit belongs to what the request
+	// actually carries.
+	s.stageRootDelegateAttentionCoverage(req, historyTurns)
 	return profile, sys, history, req, reasoningEffort, nil
 }
 

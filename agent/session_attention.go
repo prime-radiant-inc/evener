@@ -622,17 +622,17 @@ func (s *Session) beginRootDelegateAttentionTurn() []string {
 // needs no wake of its own. Failures keep the transcript-owned IDs pending and
 // arrange a paced retry wake.
 func (s *Session) finishRootDelegateAttentionTurn(ids []string, turnErr error) error {
-	// A failed turn never resolves, and a non-empty snapshot already passes the
-	// emptiness gate the union serves on that path; unioning would read the
-	// durable fold only to discard the result. An empty snapshot still
-	// consults the union — which reads the fold only when this turn covered
-	// something — because a covered-but-pending item on a failed turn needs
-	// the paced-retry backstop only that gate can arm. When the union finds
-	// nothing at all, the early return below leaves a set wake flag
-	// deliberately untouched: the flag coalesces, and the mid-turn arm's own
-	// guaranteed notify kick (armRootDelegateAttention → notify → the serve
-	// loop's parked EntryNotification) is what refires, not the retry
-	// scheduler this flag suppresses.
+	// A failed turn never resolves, so on that path the union serves only as
+	// the emptiness gate that arms the paced-retry backstop — and a non-empty
+	// snapshot already passes it. Skip the fold read there; keep it for an
+	// empty snapshot, where a covered-but-pending item needs the backstop.
+	// The union reads the fold only when this turn covered something.
+	//
+	// When it finds nothing, the early return below leaves a set wake flag
+	// untouched on purpose. The flag coalesces; the liveness carrier is the
+	// mid-turn arm's own guaranteed kick (armRootDelegateAttention → notify →
+	// the serve loop's parked EntryNotification), not the retry scheduler the
+	// flag suppresses.
 	if turnErr == nil || len(ids) == 0 {
 		ids = s.unionCoveredRootDelegateAttention(ids)
 	}
@@ -657,11 +657,10 @@ func (s *Session) finishRootDelegateAttentionTurn(ids []string, turnErr error) e
 		resolutionErr = err
 	}
 	s.attentionMu.Lock()
-	// Force the paced retry even while a wake is flagged: this turn could have
-	// honored that wake and declined (its resolution failed), and the drain
-	// deliberately skips the notification rung immediately after a
-	// notification turn, so the flagged wake alone can leave the item without
-	// a paced refire. Clearing the flag lets the retry own the next wake.
+	// Clear the flag even while a wake is pending. This turn may have honored
+	// that wake and then declined — its resolution failed — and the drain
+	// skips the notification rung right after a notification turn, so the
+	// flagged wake alone can strand the item. The retry owns the next wake.
 	s.rootAttentionWake = false
 	s.scheduleRootAttentionRetryLocked()
 	s.attentionMu.Unlock()
@@ -669,16 +668,24 @@ func (s *Session) finishRootDelegateAttentionTurn(ids []string, turnErr error) e
 }
 
 // stageRootDelegateAttentionCoverage records one built request's candidate
-// coverage: attention IDs the request presents that were NOT armed when this
-// turn began. Staging is not credit — the round loop promotes the staged set
-// into rootAttentionCoveredIDs only when the round's call settles, because a
-// request that never settled (a failed attempt, a content-filter retry whose
-// compaction then folds the steering turn away) presented nothing the design
-// may consume. Only the root receiver stages: a child's attention settles
-// through the controller's generation protocol, and a generation-less
-// consumption marker would conflict with it.
-func (s *Session) stageRootDelegateAttentionCoverage(historyTurns []schema.Turn) {
+// coverage: the attention IDs the request presents that were not armed when
+// this turn began. Staging is candidacy, not credit — the round loop promotes
+// the staged set into rootAttentionCoveredIDs only when the round's call
+// settles, because a request that never settled (a failed attempt, a
+// content-filter retry whose compaction then folds the steering turn away)
+// presented nothing the design may consume. Only the root receiver stages:
+// this session marks only deliveries it owns, and a child's consumption is
+// governed by the controller's generation markers, which a generation-less
+// consumption marker would conflict with.
+//
+// A responses-continuation delta request carries only new items; any older
+// steering turn lives in server-side state this session cannot verify. Nothing
+// stages, and the items keep their wake for a full-history turn.
+func (s *Session) stageRootDelegateAttentionCoverage(req llm.Request, historyTurns []schema.Turn) {
 	if !s.isRootDelegateAttentionReceiver() {
+		return
+	}
+	if req.HistoryMode == llm.HistoryModeResponsesDelta {
 		return
 	}
 	s.attentionMu.Lock()
@@ -707,18 +714,25 @@ func (s *Session) promoteStagedRootDelegateAttention() {
 	if len(s.rootAttentionStagedIDs) == 0 {
 		return
 	}
-	if s.rootAttentionCoveredIDs == nil {
-		s.rootAttentionCoveredIDs = make(map[string]struct{}, len(s.rootAttentionStagedIDs))
+	covered := s.rootAttentionCoveredIDs
+	if covered == nil {
+		covered = make(map[string]struct{}, len(s.rootAttentionStagedIDs))
 	}
-	maps.Copy(s.rootAttentionCoveredIDs, s.rootAttentionStagedIDs)
+	maps.Copy(covered, s.rootAttentionStagedIDs)
+	s.rootAttentionCoveredIDs = covered
 	s.rootAttentionStagedIDs = nil
 }
 
 // resetRootDelegateAttentionCoverage clears the per-turn coverage at turn
-// start and snapshots the armed set marking excludes, so consumption credits
-// only deliveries armed after this turn began. maps.Clone(nil) is nil, and the
-// field is lookup-only, so an empty armed set needs no special case.
+// start and snapshots the armed set that marking excludes, so consumption
+// credits only deliveries armed after this turn began. Guarded like the
+// staging it pairs with: a child session tracks no root coverage, and the
+// early return skips its per-turn lock and clone. maps.Clone(nil) is nil, and
+// the field is lookup-only, so an empty armed set needs no special case.
 func (s *Session) resetRootDelegateAttentionCoverage() {
+	if !s.isRootDelegateAttentionReceiver() {
+		return
+	}
 	s.attentionMu.Lock()
 	s.rootAttentionCoveredIDs = nil
 	s.rootAttentionStagedIDs = nil
@@ -728,15 +742,16 @@ func (s *Session) resetRootDelegateAttentionCoverage() {
 
 // unionCoveredRootDelegateAttention adds to the selected IDs the covered
 // deliveries still pending in the durable fold. A successful turn settles only
-// when every round's call settled, so each marked item reached the model in a
-// settled call of this very turn; an item appended after the final request was
-// built is never marked and keeps the wake it armed. The pending filter is
-// load-bearing, not a pre-validation: a presented steering turn whose item is
-// already resolved with another disposition (a stop-drain discard, a
-// conflicting cold resolution) would otherwise poison the batch — validation
-// rejects the whole resolve atomically and the wake would retry it forever.
-// A fold read failure degrades to the selected IDs alone; the wake path
-// retries.
+// when every round's call settled, so each covered item reached the model in
+// a settled call of this very turn; an item appended after the final request
+// was built stays uncovered and keeps the wake it armed.
+//
+// The pending filter is load-bearing. A presented steering turn whose item is
+// already resolved under another disposition (a stop-drain discard, a
+// conflicting cold resolution) would otherwise poison the batch: validation
+// rejects the whole resolve atomically, and the wake would retry the item
+// forever. A fold read failure degrades to the selected IDs alone; the wake
+// path retries.
 func (s *Session) unionCoveredRootDelegateAttention(ids []string) []string {
 	s.attentionMu.Lock()
 	defer s.attentionMu.Unlock()
@@ -749,11 +764,8 @@ func (s *Session) unionCoveredRootDelegateAttention(ids []string) []string {
 	}
 	out := slices.Clone(ids)
 	for _, id := range pending {
-		if _, ok := s.rootAttentionCoveredIDs[id]; !ok {
-			continue
-		}
-		if !slices.Contains(out, id) {
-			out = append(out, id)
+		if _, ok := s.rootAttentionCoveredIDs[id]; ok {
+			out = appendUniqueStrings(out, id)
 		}
 	}
 	return out
