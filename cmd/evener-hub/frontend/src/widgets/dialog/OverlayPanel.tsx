@@ -1,4 +1,4 @@
-import { type KeyboardEvent, type MouseEvent, type ReactNode, useId, useRef } from "react";
+import { type CSSProperties, type KeyboardEvent, type MouseEvent, type ReactNode, useId, useRef } from "react";
 import { FocusScope } from "../focusscope";
 import { requireClass } from "../internal/requireClass";
 import { CloseIcon } from "./CloseIcon";
@@ -23,6 +23,12 @@ export interface OverlayPanelProps {
   bodyClassName?: string;
   /** Optional extra class appended to the header element's base `.header` class. */
   headerClassName?: string;
+  /** Optional inline style applied to the panel element. Defaults to
+   * undefined; existing consumers that don't pass it are unchanged. Used by
+   * the expandable Sheet to drive a dynamic peek/full height on the panel
+   * itself (not a child wrapper) so a `.bottom` max-height cap can't clamp
+   * the full-screen geometry. */
+  style?: CSSProperties;
 }
 
 const CLASS = {
@@ -54,6 +60,7 @@ export function OverlayPanel({
   handle,
   bodyClassName,
   headerClassName,
+  style,
 }: OverlayPanelProps) {
   const titleId = useId();
   // Radix-style pointer-down-outside semantics: the gesture that decides
@@ -121,6 +128,7 @@ export function OverlayPanel({
           aria-labelledby={titleId}
           className={panelClassName}
           onKeyDown={handleKeyDown}
+          style={style}
         >
           {handle}
           <header className={headerClassName ? `${CLASS.header} ${headerClassName}` : CLASS.header}>

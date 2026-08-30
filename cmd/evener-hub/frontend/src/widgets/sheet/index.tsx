@@ -92,6 +92,13 @@ export function Sheet({
   const [geometry, setGeometry] = useState<"peek" | "full">(expandable?.fullScreenFirst ? "full" : "peek");
   const dragStartYRef = useRef<number | null>(null);
   const dragStartGeometryRef = useRef<"peek" | "full">("peek");
+  // The window pointermove/pointerup listeners added in startDrag are
+  // removed in handlePointerUp. If the component unmounts mid-drag (e.g.
+  // the panel closes), handlePointerUp never runs and the listeners leak
+  // on window. These refs hold the active listener functions so an unmount
+  // cleanup can remove them by the same reference that added them.
+  const pointerMoveRef = useRef<((e: PointerEvent) => void) | null>(null);
+  const pointerUpRef = useRef<((e: PointerEvent) => void) | null>(null);
 
   // Reset geometry to full on every open transition (false->true). An effect
   // keyed on `open` (and fullScreenFirst) is the only place that observes
@@ -102,6 +109,16 @@ export function Sheet({
     if (open && expandable?.fullScreenFirst) setGeometry("full");
   }, [open, expandable?.fullScreenFirst]);
 
+  // Remove any active drag listeners on unmount so a mid-drag close can't
+  // leak pointermove/pointerup handlers on window. The refs hold the exact
+  // functions that were added (stored in startDrag); if no drag is active
+  // they are null and removeEventListener is a no-op on a missing handler.
+  useEffect(() => {
+    return () => {
+      if (pointerMoveRef.current) window.removeEventListener("pointermove", pointerMoveRef.current);
+      if (pointerUpRef.current) window.removeEventListener("pointerup", pointerUpRef.current);
+    };
+  }, []);
   function handlePointerMove(e: PointerEvent) {
     if (dragStartYRef.current === null) return;
     const delta = e.clientY - dragStartYRef.current;
@@ -121,11 +138,17 @@ export function Sheet({
     }
     window.removeEventListener("pointermove", handlePointerMove);
     window.removeEventListener("pointerup", handlePointerUp);
+    pointerMoveRef.current = null;
+    pointerUpRef.current = null;
   }
 
   function startDrag(e: ReactPointerEvent) {
     dragStartYRef.current = e.clientY;
     dragStartGeometryRef.current = geometry;
+    // Store the listener functions in the refs BEFORE adding them so the
+    // unmount cleanup can remove these exact references.
+    pointerMoveRef.current = handlePointerMove;
+    pointerUpRef.current = handlePointerUp;
     window.addEventListener("pointermove", handlePointerMove);
     window.addEventListener("pointerup", handlePointerUp);
   }
@@ -157,10 +180,9 @@ export function Sheet({
       headerClassName={EXPANDABLE_HEADER_CLASS}
       bodyClassName={EXPANDABLE_BODY_CLASS}
       panelClassName={`${SIDE_CLASS[side]} ${EXPANDABLE_BOTTOM_CLASS}`}
+      style={heightStyle}
     >
-      <div style={heightStyle} data-geometry={geometry}>
-        {children}
-      </div>
+      <div data-geometry={geometry}>{children}</div>
     </OverlayPanel>
   );
 }
