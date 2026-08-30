@@ -104,37 +104,34 @@ OpenAI arms if running through OAuth per the main README's convention.
 ### Reading results
 
 Compare, per arm and model: `results.jsonl`/`summary.json`'s
-`status` (passed/failed), `canonical_tool_counts`/`model_tool_counts`
-(`shell` count is a proxy for test-run iterations), and manually read the
-`state_dir` transcripts for the specific things the kata acceptance wants
-measured (see "What remains" — the runner does not compute these yet):
-how many tool rounds elapsed before the first `go test` call, whether the
-model read/greped the same file repeatedly without new information, and
-whether it reported `DIAGNOSIS_COMPLETE` with a coherent root cause versus
-converging on the wrong fix.
+`status` (passed/failed), `canonical_tool_counts`/`model_tool_counts`,
+and the phase-discipline `metrics` on each result
+(`investigative_call_count`, `repeated_read_or_grep_count`,
+`tool_round_of_first_test_run`, `tool_round_of_first_source_edit`,
+`premature_fix_before_red_test_flag` — see "What remains" item 1), plus
+whether the model reported `DIAGNOSIS_COMPLETE` with a coherent root
+cause versus converging on the wrong fix.
 
 ## What remains for the controller
 
-This scaffold deliberately stops short of full kata nbcf acceptance:
+This scaffold deliberately stops short of full kata nbcf acceptance. The
+runner-side metric wiring itself landed with #187:
 
-1. **The runner does not yet compute phase-transition metrics.**
-   `probeFile.Metrics` (`tools/tool-fluency/cmd/evener-fluency/main.go:161`)
-   is parsed from YAML but never read — `grep '\.Metrics\b'` in that
-   package has zero hits. The probe's `metrics:` block names the fields
-   kata nbcf's acceptance wants (`wants_investigative_call_count`,
-   `wants_repeated_read_or_grep_count`, `wants_tool_round_of_first_test_run`,
-   `wants_tool_round_of_first_source_edit`,
-   `wants_premature_fix_before_red_test_flag`) as a spec for that work, not
-   as something already wired up. Implementing it means walking
-   `doctor.TranscriptResult.Turns` (already available via
-   `allTranscriptToolCounts` in the same file) turn-by-turn instead of only
-   aggregating counts, and it should get its own offline unit test against a
-   synthetic transcript fixture before any live run is trusted to interpret
-   it.
+1. **Phase-transition metrics are wired (#187).** `probeFile.Metrics` is a
+   validated typed spec; the runner walks the run's transcripts turn-by-turn
+   (`computeProbeMetrics` in
+   `tools/tool-fluency/cmd/evener-fluency/main.go`) and reports the
+   manifest-named metrics on each result's `metrics` field:
+   `investigative_call_count`, `repeated_read_or_grep_count`,
+   `tool_round_of_first_test_run`, `tool_round_of_first_source_edit`, and
+   `premature_fix_before_red_test_flag`. `--max-rounds` is a real runner
+   flag (default 80) that governs both the cli and live harnesses. Unknown
+   metric keys in a manifest fail at load time. Offline unit tests
+   (`issue187_test.go`) cover these against synthetic transcripts.
 2. **No live runs have happened.** This worktree made zero LLM API calls,
    per kata rule. The three-model A/B above needs to actually run.
 3. **No baseline-vs-candidate churn comparison exists yet.** That requires
-   (1) and (2) both done, then a report comparing analysis-churn metrics
+   (2) done, then a report comparing analysis-churn metrics
    between the baseline and candidate binaries per model, per kata
    acceptance's "require a clear reduction in analysis churn without
    increasing premature or incorrect fixes."
