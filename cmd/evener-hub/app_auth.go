@@ -22,7 +22,6 @@ import (
 
 type hubAuthController struct {
 	stateDir          string
-	authEnv           map[string]string
 	creds             *credentials.Store
 	cfg               authopenai.Config
 	client            *http.Client
@@ -94,7 +93,6 @@ func newHubAuthController(launchEnv ...map[string]string) *hubAuthController {
 	store, _ := credentials.LoadStore(credsPath)
 	c := &hubAuthController{
 		stateDir:             stateDir,
-		authEnv:              authEnv,
 		creds:                store,
 		cfg:                  cfg,
 		client:               client,
@@ -135,7 +133,6 @@ func newHubAuthControllerWithStore(_ string, store *credentials.Store) *hubAuthC
 	}
 	c := &hubAuthController{
 		stateDir:             stateDir,
-		authEnv:              authEnv,
 		creds:                store,
 		cfg:                  cfg,
 		client:               client,

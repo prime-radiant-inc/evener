@@ -39,7 +39,6 @@ func FuzzAuthInstancesFactories(f *testing.F) {
 		c := newHubAuthControllerWithStore(root, store)
 		c.stateDir, c.providersConfigPath = stateDir, providers
 		c.reg = newTestRegistry(t, stateDir, providers, store, nil)
-		c.authEnv = map[string]string{}
 		now := time.Date(2026, 1, 2, 3, 4, 5, 0, time.UTC)
 		c.now = func() time.Time { return now }
 
