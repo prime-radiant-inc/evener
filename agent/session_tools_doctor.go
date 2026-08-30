@@ -239,6 +239,10 @@ func execDoctorEvener(deps *toolDeps, args map[string]any) (any, error) {
 		return doctor.RunAudit(stateBase, runbook, opts)
 
 	case "plugins":
+		// Manager.Doctor includes a store-writability probe (create + remove one
+		// temp file) mirroring the CLI's plugins check; everything else it does is
+		// read-only. The tool's store root is the default config root — the CLI's
+		// --store-root override has no tool counterpart.
 		findings, err := plugins.NewManager(doctorPluginStoreRoot).Doctor()
 		if err != nil {
 			return nil, fmt.Errorf("plugins: %w", err)
