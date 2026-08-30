@@ -5,8 +5,9 @@ any artifact. It is the map; the cited Go types are the territory (the
 `evener doctor` tools `import` them, so they cannot drift). Citations are to Go
 **symbols**, never `file:line`.
 
-Every section ends with **read it via:** the `evener doctor` command that exposes
-it — you should rarely open these files by hand.
+Every section ends with **read it via:** the `doctor_evener` command (the
+in-process `evener doctor` data plane) that exposes it — you should rarely
+open these files by hand.
 
 ---
 

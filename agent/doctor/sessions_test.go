@@ -19,7 +19,7 @@ import (
 // newSessionsTestSID mints a real, validator-passing session id — the fixed
 // consts (sidA, sidB, hash1, hash2) shared across doctor's tests cover only
 // two session ids, so a three-session fixture needs a generator.
-func newSessionsTestSID(t *testing.T) string {
+func newSessionsTestSID(t testing.TB) string {
 	t.Helper()
 	sid, err := identifier.NewSessionID()
 	if err != nil {
@@ -33,7 +33,7 @@ func newSessionsTestSID(t *testing.T) string {
 // file's mtime — the signal ListSessions reads as "last activity" — to a
 // caller-chosen time so --since filtering and ordering are deterministic
 // without depending on wall-clock timing during the test run.
-func writeSessionsFixtureSession(t *testing.T, bucketDir, sid string, header transcript.Header, turns []schema.Turn, meta schema.SessionMeta, jobsEvents []jobstore.Event, mtime time.Time) {
+func writeSessionsFixtureSession(t testing.TB, bucketDir, sid string, header transcript.Header, turns []schema.Turn, meta schema.SessionMeta, jobsEvents []jobstore.Event, mtime time.Time) {
 	t.Helper()
 	path := filepath.Join(bucketDir, "sessions", sid+".transcript.jsonl")
 	header.SessionID = sid

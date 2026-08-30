@@ -67,17 +67,22 @@ func TestBuiltinAgents_LoadsDoctor(t *testing.T) {
 	if !hasSkill {
 		t.Errorf("doctor should auto-inject the doctoring-evener skill, got skills: %v", doc.Skills)
 	}
-	// The doctor needs shell (to run evener-doctor) and edit tools (gated Heal/Extend).
-	wantTools := map[string]bool{"shell": false, "write_file": false}
+	// The doctor inspects through the in-process doctor_evener tool (its
+	// data plane — replacing the shell-out to the CLI, which failed when the
+	// binary wasn't on PATH) and carries edit tools for the gated Heal/Extend
+	// tiers. It must NOT need shell for diagnosis.
+	hasTool := map[string]bool{}
 	for _, tool := range doc.Tools {
-		if _, ok := wantTools[tool]; ok {
-			wantTools[tool] = true
-		}
+		hasTool[tool] = true
 	}
-	for tool, found := range wantTools {
-		if !found {
-			t.Errorf("doctor should carry the %q tool, got: %v", tool, doc.Tools)
-		}
+	if !hasTool["doctor_evener"] {
+		t.Errorf("doctor should carry the doctor_evener tool, got: %v", doc.Tools)
+	}
+	if !hasTool["write_file"] {
+		t.Errorf("doctor should carry the write_file tool, got: %v", doc.Tools)
+	}
+	if hasTool["shell"] {
+		t.Errorf("doctor should not need shell for diagnosis (doctor_evener replaced it), got: %v", doc.Tools)
 	}
 }
 

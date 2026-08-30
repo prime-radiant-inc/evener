@@ -9,7 +9,7 @@ import (
 )
 
 // writeFile writes content to path, creating parent dirs. Test-only helper.
-func writeFile(t *testing.T, path, content string) {
+func writeFile(t testing.TB, path, content string) {
 	t.Helper()
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		t.Fatal(err)
@@ -19,7 +19,7 @@ func writeFile(t *testing.T, path, content string) {
 	}
 }
 
-func writeDelegateEvents(t *testing.T, delegatesPath string, events []delegatestore.Event) {
+func writeDelegateEvents(t testing.TB, delegatesPath string, events []delegatestore.Event) {
 	t.Helper()
 	store, err := delegatestore.Open(delegatesPath)
 	if err != nil {

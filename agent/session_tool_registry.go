@@ -409,5 +409,10 @@ func registerCoreTools(reg *tool.Registry, s *Session) error {
 			return err
 		}
 	}
+	for _, rt := range doctorTools(deps) {
+		if err := register(rt); err != nil {
+			return err
+		}
+	}
 	return nil
 }
