@@ -299,7 +299,7 @@ func (p *Profile) BehaviorTag() string { return p.behaviorTag }
 func (p *Profile) Model() string { return p.model }
 
 // ToolDefinitions returns the profile's tool schemas by their canonical names.
-// Provider-specific renaming (via ToolNameMap) and the shared purpose parameter
+// Provider-specific renaming (via ToolNameMap) and the shared intent parameter
 // are applied by the agent when advertising tools to the model, not here.
 func (p *Profile) ToolDefinitions() []llm.ToolDefinition {
 	return append([]llm.ToolDefinition{}, p.toolDefs...)

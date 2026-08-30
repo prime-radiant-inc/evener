@@ -3,10 +3,10 @@
 // only its own CONTENT (what the verb/target is, what meta it shows, what its
 // expanded body looks like), never how the row is arranged.
 //
-// THE ROW GRAMMAR, two lines when a purpose exists (one otherwise):
+// THE ROW GRAMMAR, two lines when an intent exists (one otherwise):
 //
 //     rail:   [kind icon, 50%]            (in the gutter, beside line 1)
-//     line 1: [✗ failure glyph?] [status?] purpose[chevron inline]
+//     line 1: [✗ failure glyph?] [status?] intent[chevron inline]
 //     line 2: verb target [· meta] [affordances]
 //
 //   Line 2's truncation: COLLAPSED it middle-truncates (head … tail, the
@@ -23,21 +23,21 @@
 //     runContent wrapper reserves, at 50% opacity - the kind is ambient
 //     context, not content. Below the breakpoint (no gutter) it leads the
 //     rationale line inline, same 50%;
-//   - a COLLAPSED row with both a purpose and a summary STACKS them: the
-//     purpose (the agent's stated rationale, italic) on the first line, the
+//   - a COLLAPSED row with both an intent and a summary STACKS them: the
+//     intent (the agent's stated rationale, italic) on the first line, the
 //     verb/target summary demoted to a quiet second line (truncation
 //     per above). Composing both onto one line was tried (tiered density)
 //     and reverted on review: two clamped, truncated fragments read worse
 //     than one full line plus one clamped one.
 //   - the chevron rides INLINE at the end of the headline text - inside the
-//     purpose when there is one, otherwise inside the summary - wrapping with
+//     intent when there is one, otherwise inside the summary - wrapping with
 //     the words it opens. It is never a flex item of the row: right-justified
 //     at the end of the line it sat a column of whitespace away from its own
 //     rationale (Jesse's review call), the very defect the trailing placement
 //     was supposed to fix;
 //   - the failure glyph appears ONLY on a failed call and reserves no space
 //     otherwise (A2 — see the deliberate-inconsistency note below);
-//   - the purpose is the agent's own stated reason for the call
+//   - the intent is the agent's own stated reason for the call
 //     (ItemModel.description) and LEADS the text, because it is the one part
 //     written for a human; verb/target recede to a quiet line under it, in
 //     the same sans face - fixed-width is reserved for shell, whose summary
@@ -45,9 +45,9 @@
 //   - verb/target/meta are one string the descriptor's summary() produced;
 //   - affordances are trailing controls (e.g. "Open beside") and they ride the
 //     TOOL-CALL line: inline at the end of the summary when there is one,
-//     which - with a purpose present - is the demoted second line, not the
-//     rationale line. A purpose-only row (no summary) trails them on the
-//     purpose line instead, the one line it has: a sibling flex item AFTER
+//     which - with an intent present - is the demoted second line, not the
+//     rationale line. An intent-only row (no summary) trails them on the
+//     intent line instead, the one line it has: a sibling flex item AFTER
 //     the trigger button (never nested inside it - a button inside a button
 //     is not valid), sprung to the line's end by the trigger's own flex-grow,
 //     the same placement the notification card's head gives "Open subagent"
@@ -56,7 +56,7 @@
 //     openBesideInline) anchors the control mid-summary via trailingAfter -
 //     between the file name and the line range it opens.
 //
-// A row with no purpose is a single line: summary, then affordances, then
+// A row with no intent is a single line: summary, then affordances, then
 // the chevron if there is something to expand.
 import { type ReactNode, useId } from "react";
 import { Chevron, FailureGlyph, ToolIcon, type ToolIconKind } from "../../../widgets";
@@ -67,7 +67,7 @@ const CLASS = {
   row: requireClass(styles.row, "toolcallitem.module.css", "row"),
   trigger: requireClass(styles.trigger, "toolcallitem.module.css", "trigger"),
   summaryLine: requireClass(styles.summaryLine, "toolcallitem.module.css", "summaryLine"),
-  purpose: requireClass(styles.purpose, "toolcallitem.module.css", "purpose"),
+  intent: requireClass(styles.intent, "toolcallitem.module.css", "intent"),
   summary: requireClass(styles.summary, "toolcallitem.module.css", "summary"),
   mono: requireClass(styles.mono, "toolcallitem.module.css", "mono"),
   status: requireClass(styles.status, "toolcallitem.module.css", "status"),
@@ -77,7 +77,7 @@ const CLASS = {
   clampedHead: requireClass(styles.clampedHead, "toolcallitem.module.css", "clampedHead"),
   clampedTail: requireClass(styles.clampedTail, "toolcallitem.module.css", "clampedTail"),
   summaryTrailing: requireClass(styles.summaryTrailing, "toolcallitem.module.css", "summaryTrailing"),
-  purposeTrailing: requireClass(styles.purposeTrailing, "toolcallitem.module.css", "purposeTrailing"),
+  intentTrailing: requireClass(styles.intentTrailing, "toolcallitem.module.css", "intentTrailing"),
   summaryMeta: requireClass(styles.summaryMeta, "toolcallitem.module.css", "summaryMeta"),
   chevron: requireClass(styles.chevron, "toolcallitem.module.css", "chevron"),
 };
@@ -97,10 +97,10 @@ export interface ToolRowProps {
   summaryLink?: string;
   /** The agent's stated reason for the call (ItemModel.description). Blank or
    * absent renders nothing at all — no placeholder, no empty separator. */
-  purpose?: string;
+  intent?: string;
   /** The tool-FAMILY glyph, riding inline at the start of the tool-use line
    * (the descriptor's `icon` field); a summary-less row rides it on the
-   * purpose line instead. Absent renders no icon. */
+   * intent line instead. Absent renders no icon. */
   icon?: ToolIconKind;
   /** Fixed-width summary text (shell, whose summary IS a command). Default
    * is the sans face - Jesse's review call: fixed-width everywhere made
@@ -126,7 +126,7 @@ export interface ToolRowProps {
    * anchor" contract as summaryLink). */
   trailingAfter?: string;
   /** Optional status rail content for tools that need a one-glance
-   * progression/health signal before human-facing purpose text. */
+   * progression/health signal before human-facing intent text. */
   status?: ReactNode;
   /** Hover text for details that are real but must not be the headline — the
    * shell exit code, per A2. */
@@ -135,13 +135,13 @@ export interface ToolRowProps {
   bodyId?: string;
 }
 
-/** The one rule for reading a tool call's stated purpose (ItemModel.description):
+/** The one rule for reading a tool call's stated intent (ItemModel.description):
  * trimmed, and blank means ABSENT. Shared with the subagent activity feed
  * (tools/subagentModule.tsx), which presents the same field very differently
  * (a numbered feed of a child's steps) but must agree on when it exists at all -
  * otherwise a whitespace-only description is a line in one surface and nothing
  * in the other. */
-export function statedPurposeOf(item: { description?: string }): string | undefined {
+export function statedIntentOf(item: { description?: string }): string | undefined {
   const trimmed = item.description?.trim();
   return trimmed === undefined || trimmed === "" ? undefined : trimmed;
 }
@@ -210,7 +210,7 @@ function linkifySummary(text: string, href: string | undefined): ReactNode {
 export function ToolRow({
   summary,
   summaryLink,
-  purpose,
+  intent,
   icon,
   monoSummary,
   failed,
@@ -225,8 +225,8 @@ export function ToolRow({
 }: ToolRowProps) {
   const generatedBodyId = useId();
   const disclosureBodyId = bodyId ?? generatedBodyId;
-  const statedPurpose = statedPurposeOf({ description: purpose });
-  const hasPurpose = statedPurpose !== undefined;
+  const statedIntent = statedIntentOf({ description: intent });
+  const hasIntent = statedIntent !== undefined;
   const hasSummary = summary.trim() !== "";
   // `status` is typed ReactNode, so it admits values that render nothing and
   // carry no accessible name - null, undefined, false (the common
@@ -255,7 +255,7 @@ export function ToolRow({
     return [trailingAfter, summary.slice(trailingAfter.length)];
   })();
   // The chevron rides INLINE at the end of the headline text (see the grammar
-  // above): inside the purpose when there is one, otherwise inside the
+  // above): inside the intent when there is one, otherwise inside the
   // summary - never a flex item of the row, so nothing can justify it away
   // from the words it opens.
   const chevron = expandable ? (
@@ -287,19 +287,19 @@ export function ToolRow({
         <ToolIcon kind={icon} />
       </span>
     ) : null;
-  // A purpose-only row has no tool-call line for affordances to ride, so they
+  // An intent-only row has no tool-call line for affordances to ride, so they
   // ride the DISCLOSURE line - the one line it has (see the grammar above).
   // The disclosure trigger is a <button>, so the control cannot nest inside
   // it: the slot follows the trigger as a sibling flex item of the row, and
-  // data-purpose-trailing on the row is the stylesheet's hook for letting the
+  // data-intent-trailing on the row is the stylesheet's hook for letting the
   // two share line 1.
-  const purposeLineTrailing =
-    hasPurpose && !hasSummary && anchorSplit === undefined && trailing !== undefined && trailing !== null ? (
-      <span className={CLASS.purposeTrailing} data-testid="tool-row-purpose-trailing">
+  const intentLineTrailing =
+    hasIntent && !hasSummary && anchorSplit === undefined && trailing !== undefined && trailing !== null ? (
+      <span className={CLASS.intentTrailing} data-testid="tool-row-intent-trailing">
         {trailing}
       </span>
     ) : null;
-  const showPurposeTrailing = purposeLineTrailing !== null;
+  const showIntentTrailing = intentLineTrailing !== null;
   // The collapsed second line's middle-truncation, WITH the inline-affordance
   // variant: when anchorSplit places the trailing control mid-summary, the
   // control becomes a flex item of the clamped line between the anchor's end
@@ -366,21 +366,21 @@ export function ToolRow({
           indent. Different context, different answer. */}
       {failureNode}
       {statusNode}
-      {hasPurpose && (
-        <span className={CLASS.purpose} data-testid="tool-row-purpose">
-          {statedPurpose}
+      {hasIntent && (
+        <span className={CLASS.intent} data-testid="tool-row-intent">
+          {statedIntent}
           {chevron}
         </span>
       )}
       {hasSummary && (
         <span
           className={`${CLASS.summary}${monoSummary ? ` ${CLASS.mono}` : ""}${
-            hasPurpose ? ` ${CLASS.demoted}${expanded ? "" : ` ${CLASS.clamped}`}` : ""
+            hasIntent ? ` ${CLASS.demoted}${expanded ? "" : ` ${CLASS.clamped}`}` : ""
           }`}
           data-testid="tool-row-summary"
-          title={hasPurpose ? summary : undefined}
+          title={hasIntent ? summary : undefined}
         >
-          {hasPurpose && !expanded ? (
+          {hasIntent && !expanded ? (
             clampedSummary
           ) : anchorSplit !== undefined ? (
             <>
@@ -393,24 +393,24 @@ export function ToolRow({
           ) : (
             linkifySummary(summary, summaryLink)
           )}
-          {!hasPurpose && chevron}
+          {!hasIntent && chevron}
           {/* Affordances ride the TOOL-CALL line (see the grammar above):
-              inline at the end of the summary text, so with a purpose present
+              inline at the end of the summary text, so with an intent present
               they sit on the demoted second line - not the rationale line.
               Skipped when anchorSplit already placed the control mid-summary. */}
-          {hasPurpose && trailing && anchorSplit === undefined ? (
+          {hasIntent && trailing && anchorSplit === undefined ? (
             <span className={CLASS.summaryTrailing}>{trailing}</span>
           ) : null}
         </span>
       )}
-      {!hasPurpose && !hasSummary && chevron}
-      {(!hasPurpose || !hasSummary) && anchorSplit === undefined ? trailing : null}
+      {!hasIntent && !hasSummary && chevron}
+      {(!hasIntent || !hasSummary) && anchorSplit === undefined ? trailing : null}
     </>
   );
 
   if (!expandable) {
     return (
-      <div className={CLASS.row} data-testid="tool-row" data-purpose={hasPurpose ? "true" : undefined} title={title}>
+      <div className={CLASS.row} data-testid="tool-row" data-intent={hasIntent ? "true" : undefined} title={title}>
         {content}
       </div>
     );
@@ -421,12 +421,12 @@ export function ToolRow({
       {hasSummary && (
         <span
           className={`${CLASS.summary}${monoSummary ? ` ${CLASS.mono}` : ""}${
-            hasPurpose ? ` ${CLASS.demoted}${expanded ? "" : ` ${CLASS.clamped}`}` : ""
+            hasIntent ? ` ${CLASS.demoted}${expanded ? "" : ` ${CLASS.clamped}`}` : ""
           }`}
           data-testid="tool-row-summary"
-          title={hasPurpose ? summary : undefined}
+          title={hasIntent ? summary : undefined}
         >
-          {hasPurpose && !expanded ? (
+          {hasIntent && !expanded ? (
             clampedSummary
           ) : anchorSplit !== undefined ? (
             <>
@@ -439,19 +439,19 @@ export function ToolRow({
           ) : (
             linkifySummary(summary, summaryLink)
           )}
-          {hasPurpose && trailing && anchorSplit === undefined ? (
+          {hasIntent && trailing && anchorSplit === undefined ? (
             <span className={CLASS.summaryTrailing}>{trailing}</span>
           ) : null}
         </span>
       )}
-      {/* Rows with no purpose trail the control at the summary line's end. A
-          purpose-only row never reaches this fallback: its control rides the
-          disclosure line via purposeLineTrailing (the summaryLine div below
+      {/* Rows with no intent trail the control at the summary line's end. A
+          intent-only row never reaches this fallback: its control rides the
+          disclosure line via intentLineTrailing (the summaryLine div below
           only mounts when there is no such slot). */}
-      {!hasPurpose && anchorSplit === undefined ? trailing : null}
+      {!hasIntent && anchorSplit === undefined ? trailing : null}
     </>
   );
-  const triggerLabel = !hasPurpose
+  const triggerLabel = !hasIntent
     ? [
         failed ? "Failed" : undefined,
         hasSummary ? summary : undefined,
@@ -465,11 +465,11 @@ export function ToolRow({
     <div
       className={CLASS.row}
       data-testid="tool-row"
-      data-purpose={hasPurpose ? "true" : undefined}
-      data-purpose-trailing={showPurposeTrailing ? "true" : undefined}
+      data-intent={hasIntent ? "true" : undefined}
+      data-intent-trailing={showIntentTrailing ? "true" : undefined}
       title={title}
     >
-      {hasPurpose ? (
+      {hasIntent ? (
         <button
           type="button"
           className={CLASS.trigger}
@@ -481,8 +481,8 @@ export function ToolRow({
           {iconNode}
           {failureNode}
           {statusNode}
-          <span className={CLASS.purpose} data-testid="tool-row-purpose">
-            {statedPurpose}
+          <span className={CLASS.intent} data-testid="tool-row-intent">
+            {statedIntent}
             {chevron}
           </span>
         </button>
@@ -493,9 +493,9 @@ export function ToolRow({
           {statusNode}
         </>
       )}
-      {purposeLineTrailing}
-      {!hasPurpose && <div className={CLASS.summaryLine}>{summaryContent}</div>}
-      {!hasPurpose && (
+      {intentLineTrailing}
+      {!hasIntent && <div className={CLASS.summaryLine}>{summaryContent}</div>}
+      {!hasIntent && (
         <button
           type="button"
           className={CLASS.trigger}
@@ -508,7 +508,7 @@ export function ToolRow({
           {chevron}
         </button>
       )}
-      {hasPurpose && !showPurposeTrailing && <div className={CLASS.summaryLine}>{summaryContent}</div>}
+      {hasIntent && !showIntentTrailing && <div className={CLASS.summaryLine}>{summaryContent}</div>}
     </div>
   );
 }

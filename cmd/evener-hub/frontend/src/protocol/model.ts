@@ -56,7 +56,7 @@ export interface ItemModel {
   toolName?: string;
   callId?: string;
   argumentsJSON?: string;
-  // Tool-call purpose — the wire ThreadItem.description, surfaced for the
+  // Tool-call intent — the wire ThreadItem.description, surfaced for the
   // subagent Activity feed. Dropped historically by wireItemToModel; now carried.
   description?: string;
   // The wire ThreadItem.eventKind: a stable typed discriminator naming what a

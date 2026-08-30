@@ -12,7 +12,7 @@ import { requireClass } from "../../../../widgets/internal/requireClass";
 import { formatUsagePair } from "../../chrome/activityFormat";
 import { cadenceStateForStatus, useSessionNow } from "../../liveness";
 import { formatClockTimeSeconds, formatElapsed, plainQuoteLine } from "../messages/format";
-import { statedPurposeOf } from "../ToolRow";
+import { statedIntentOf } from "../ToolRow";
 import type { ToolRenderProps } from "../toolRenderers";
 import { registerToolRenderer } from "../toolRenderers";
 import { parseJSONObject, str } from "./helpers";
@@ -92,8 +92,8 @@ const STATUS_GLYPH: Record<SubagentRowKind | "attention", string> = {
 //   child's feed otherwise drowns real steps in them (every round produces
 //   one). Excluded by eventKind - the stable typed discriminator, not by
 //   matching the "Round timings" description text.
-// - purpose-less tool calls: a whitespace-only description is ABSENCE, not a
-//   step - the same statedPurposeOf rule the main transcript's tool row
+// - intent-less tool calls: a whitespace-only description is ABSENCE, not a
+//   step - the same statedIntentOf rule the main transcript's tool row
 //   applies, so a line is a quote on one surface iff it is on the other.
 function deriveQuotes(items: ItemModel[]): Quote[] {
   const out: Quote[] = [];
@@ -106,9 +106,9 @@ function deriveQuotes(items: ItemModel[]): Quote[] {
       if (text !== "") out.push({ id: it.id, text, msg: true, startedAt: it.startedAt, completedAt: it.completedAt });
       continue;
     }
-    const purpose = statedPurposeOf(it);
-    if (purpose !== undefined) {
-      out.push({ id: it.id, text: purpose, msg: false, startedAt: it.startedAt, completedAt: it.completedAt });
+    const intent = statedIntentOf(it);
+    if (intent !== undefined) {
+      out.push({ id: it.id, text: intent, msg: false, startedAt: it.startedAt, completedAt: it.completedAt });
     }
   }
   return out;

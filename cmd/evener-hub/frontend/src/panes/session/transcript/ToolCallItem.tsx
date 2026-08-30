@@ -26,7 +26,7 @@ import { requireClass } from "../../../widgets/internal/requireClass";
 import { FileOpenBesideButton, fileDocParams } from "./fileOpenBeside";
 import { ImageGallery } from "./flow/ImageGallery";
 import { OpenTranscriptButton } from "./openTranscript";
-import { statedPurposeOf, ToolRow } from "./ToolRow";
+import { statedIntentOf, ToolRow } from "./ToolRow";
 import styles from "./toolcallitem.module.css";
 import { toolCallFailed, toolRendererFor } from "./toolRenderers";
 import { supersededBySuccess } from "./toolSupersession";
@@ -60,19 +60,19 @@ const DELEGATE_INDICATOR_STATE: Record<DelegateStatusKey, CadenceState> = {
   unknown: "needs-you",
 };
 
-const DELEGATE_PURPOSE_PREVIEW_MAX = 120;
+const DELEGATE_INTENT_PREVIEW_MAX = 120;
 
-function clipDelegatePurpose(text: string, max: number): string {
+function clipDelegateIntent(text: string, max: number): string {
   const codePoints = Array.from(text);
   return codePoints.length <= max ? text : `${codePoints.slice(0, max).join("")}…`;
 }
 
-function delegatePurposeOf(item: ItemModel): string | undefined {
-  const statedPurpose = statedPurposeOf(item);
-  if (statedPurpose !== undefined) return statedPurpose;
+function delegateIntentOf(item: ItemModel): string | undefined {
+  const statedIntent = statedIntentOf(item);
+  if (statedIntent !== undefined) return statedIntent;
 
   const task = str(parseArgs(item.argumentsJSON), "task")?.replace(/\s+/g, " ").trim();
-  return task === undefined || task === "" ? undefined : clipDelegatePurpose(task, DELEGATE_PURPOSE_PREVIEW_MAX);
+  return task === undefined || task === "" ? undefined : clipDelegateIntent(task, DELEGATE_INTENT_PREVIEW_MAX);
 }
 
 // Both status readers take the delegate call's ALREADY-PARSED output envelope
@@ -212,14 +212,14 @@ function ToolCallItemBody({ item, live, sessionRef, projectedSummary, renderCont
   // cwd (subscribed once above) is threaded into summary() as
   // ToolSummaryContext so shell's own descriptor can strip a redundant
   // "cd <cwd> && " prefix from its summary.
-  const statedPurpose = statedPurposeOf(item);
-  const useProjectedSummary = projectedSummary !== undefined && statedPurpose === undefined;
+  const statedIntent = statedIntentOf(item);
+  const useProjectedSummary = projectedSummary !== undefined && statedIntent === undefined;
   const summary = useProjectedSummary ? projectedSummary : descriptor.summary(item, { cwd }) + (summarySuffix ?? "");
-  let purpose = item.description;
+  let intent = item.description;
   if (isDelegate) {
-    purpose = delegatePurposeOf(item);
-  } else if (projectedSummary !== undefined && statedPurpose !== undefined) {
-    purpose = projectedSummary;
+    intent = delegateIntentOf(item);
+  } else if (projectedSummary !== undefined && statedIntent !== undefined) {
+    intent = projectedSummary;
   }
   // kata xw3t: the URL, if any, embedded in this row's own summary text -
   // web_fetch's only descriptor with one today. Read directly off the item
@@ -292,7 +292,7 @@ function ToolCallItemBody({ item, live, sessionRef, projectedSummary, renderCont
         <ToolRow
           summary={isDelegate ? "" : summary}
           summaryLink={summaryLink}
-          purpose={purpose}
+          intent={intent}
           icon={descriptor.icon}
           monoSummary={descriptor.monoSummary}
           failed={false}
@@ -334,7 +334,7 @@ function ToolCallItemBody({ item, live, sessionRef, projectedSummary, renderCont
         // representation. Collapsed, the summary stays: it is the only glance.
         summary={isDelegate || (expanded && descriptor.summaryHiddenWhenExpanded) ? "" : summary}
         summaryLink={summaryLink}
-        purpose={purpose}
+        intent={intent}
         icon={descriptor.icon}
         monoSummary={descriptor.monoSummary}
         failed={failed}

@@ -129,7 +129,7 @@ func TestToolRegistry_ToolStateResult_CarriesStateAsSideChannel(t *testing.T) {
 	}
 }
 
-func TestToolRegistry_AddsAndStripsUniversalPurpose(t *testing.T) {
+func TestToolRegistry_AddsAndStripsUniversalIntent(t *testing.T) {
 	r := NewRegistry()
 	var gotArgs map[string]any
 	if err := r.Register(RegisteredTool{

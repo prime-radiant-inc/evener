@@ -226,7 +226,7 @@ function decisionFor(
     // Questions and approvals are interaction rows at every regular level.
     if (interaction) return "critical";
     // The ordinary item shape has no projected summary field. At tool-call
-    // levels, keep a purpose-less call on the critical path so its renderer
+    // levels, keep an intent-less call on the critical path so its renderer
     // receives the exact neutral summary instead of inventing one from the
     // tool name. Intent-only levels use the proxy's rationale field instead.
     if (vector.toolCalls && missingPurpose) return "critical";
@@ -234,7 +234,7 @@ function decisionFor(
     if (vector.toolIntent) return "intent";
     if (failure || active || (isTerminalTurn(turn) && !vector.toolCalls)) return "critical";
     // A Custom vector may disable both calls and intent. Even there, a call
-    // with no purpose is not routine-readable content: keep its neutral
+    // with no intent is not routine-readable content: keep its neutral
     // critical contract rather than inventing a summary from the tool name.
     return missingPurpose ? "critical" : "hidden";
   }

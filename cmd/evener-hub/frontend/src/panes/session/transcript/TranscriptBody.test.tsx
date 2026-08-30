@@ -747,7 +747,7 @@ describe("TranscriptBody", () => {
     expect(single.hasAttribute("open")).toBe(true);
   });
 
-  test("coalesces purpose-only intents across adjacent turns into one stable virtual row", () => {
+  test("coalesces intent-only actions across adjacent turns into one stable virtual row", () => {
     const { rerender } = render(
       <TranscriptBody
         model={crossTurnFixture}
