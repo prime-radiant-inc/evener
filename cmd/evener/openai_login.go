@@ -17,6 +17,12 @@ import (
 	"primeradiant.com/evener/envvars"
 )
 
+// codexInstance is the instance `evener openai` manages when no --instance
+// names another: the curated OAuth provider, whose record is
+// auth/openai-codex.json under the state root (spec §9.5, §14.1). An
+// instance named openai is the platform API and never reads that record.
+const codexInstance = "openai-codex"
+
 type openAILoginService interface {
 	Login(context.Context, string, string) (authopenai.AuthStatus, error)
 }
@@ -92,7 +98,7 @@ func runOpenAILogin(args []string, stdin io.Reader, stdout, stderr io.Writer) er
 
 	workDir := fs.String("dir", "", "working directory hint")
 	stateDir := fs.String("state-dir", "", "override OpenAI auth state directory")
-	instance := fs.String("instance", "openai", "instance name (default: openai)")
+	instance := fs.String("instance", codexInstance, "instance name (default: "+codexInstance+")")
 	device := fs.Bool("device", false, "force device-code flow")
 	noDevice := fs.Bool("no-device", false, "force browser flow")
 	fs.Usage = func() {
@@ -107,7 +113,7 @@ func runOpenAILogin(args []string, stdin io.Reader, stdout, stderr io.Writer) er
 		_, _ = fmt.Fprintf(stderr, "Flags:\n")
 		_, _ = fmt.Fprintf(stderr, "  --dir <path>         Working directory hint\n")
 		_, _ = fmt.Fprintf(stderr, "  --state-dir <path>   Override OpenAI auth state directory\n")
-		_, _ = fmt.Fprintf(stderr, "  --instance <name>    Instance name (default: openai)\n")
+		_, _ = fmt.Fprintf(stderr, "  --instance <name>    Instance name (default: %s)\n", codexInstance)
 		_, _ = fmt.Fprintf(stderr, "  --device             Force device-code flow (headless / remote sessions)\n")
 		_, _ = fmt.Fprintf(stderr, "  --no-device          Force browser flow (overrides auto-detection)\n")
 	}
@@ -128,7 +134,7 @@ func runOpenAILogin(args []string, stdin io.Reader, stdout, stderr io.Writer) er
 	}
 	instanceName := strings.TrimSpace(*instance)
 	if instanceName == "" {
-		instanceName = "openai"
+		instanceName = codexInstance
 	}
 
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt)

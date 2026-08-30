@@ -49,7 +49,10 @@ func TestForcedNoteLive(t *testing.T) {
 	if err != nil {
 		t.Skipf("live eval requires a resolvable user home: %v", err)
 	}
-	stateHome, providersConfig := liveeval.Paths(envvars.XDGStateHome.Trimmed(), home)
+	stateHome, providersConfig, noUserLayer := liveeval.Paths(envvars.XDGStateHome.Trimmed(), home)
+	if noUserLayer {
+		t.Skipf("%s is empty: no user provider layer to run a live eval against", envvars.EVENERProvidersConfig.Name)
+	}
 	if _, err := os.Stat(filepath.Join(stateHome, "evener", "auth", "openai.json")); err != nil {
 		t.Skipf("no OAuth record at %s/evener/auth/openai.json: %v", stateHome, err)
 	}

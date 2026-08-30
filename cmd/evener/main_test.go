@@ -669,7 +669,7 @@ func TestOpenAILogoutDeletesOnlyEvenerOwnedAuthState(t *testing.T) {
 	oaitest.IsolateOpenAIAuth(t)
 	stateDir := t.TempDir()
 
-	if err := authopenai.SaveAuth(stateDir, "openai", authopenai.AuthRecord{
+	if err := authopenai.SaveAuth(stateDir, "openai-codex", authopenai.AuthRecord{
 		Version:      1,
 		Provider:     "openai",
 		Source:       authopenai.AuthSourceOAuth,
@@ -693,7 +693,7 @@ func TestOpenAILogoutDeletesOnlyEvenerOwnedAuthState(t *testing.T) {
 		t.Fatalf("runOpenAI() error = %v", err)
 	}
 
-	if _, err := os.Stat(authopenai.AuthFilePath(stateDir, "openai")); !os.IsNotExist(err) {
+	if _, err := os.Stat(authopenai.AuthFilePath(stateDir, "openai-codex")); !os.IsNotExist(err) {
 		t.Fatalf("auth file stat error = %v, want not exist", err)
 	}
 	if _, err := os.Stat(keepPath); err != nil {

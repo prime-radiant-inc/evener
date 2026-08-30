@@ -209,7 +209,7 @@ func run(ctx context.Context, cfg runConfig) error {
 	if err != nil {
 		return fmt.Errorf("LLM client setup: %w", err)
 	}
-	printRegistryNotices(cfg.stderr, client)
+	printRegistryNotices(cfg.stderr, client.Registry())
 	if err := ctx.Err(); err != nil {
 		return err
 	}

@@ -34,6 +34,7 @@ import (
 	"primeradiant.com/evener/internal/plugins"
 	"primeradiant.com/evener/llm"
 	_ "primeradiant.com/evener/llm/providers/all"
+	"primeradiant.com/evener/llm/registry"
 	"primeradiant.com/evener/rendezvous"
 	"primeradiant.com/evener/server"
 )
@@ -229,18 +230,17 @@ func newUnloggedServeLLMClient(stateDir string, warnings io.Writer) (*llm.Client
 	if err != nil {
 		return nil, nil, fmt.Errorf("LLM client: %w", err)
 	}
-	printRegistryNotices(warnings, client)
+	printRegistryNotices(warnings, client.Registry())
 	return client, func() error { return nil }, nil
 }
 
 // printRegistryNotices writes the registry's load warnings and its stray
 // OAuth records to w at startup (spec §9.5): a misconfigured instance or an
 // unreadable auth record is announced once, not swallowed.
-func printRegistryNotices(w io.Writer, client *llm.Client) {
-	if w == nil || client == nil {
+func printRegistryNotices(w io.Writer, r *registry.Registry) {
+	if w == nil || r == nil {
 		return
 	}
-	r := client.Registry()
 	for _, notice := range append(r.Warnings(), r.StrayOAuthRecords()...) {
 		_, _ = fmt.Fprintln(w, "warning:", notice)
 	}

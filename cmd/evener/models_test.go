@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -34,9 +35,9 @@ func modelsFixture(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	old := modelsLoadOptions
-	t.Cleanup(func() { modelsLoadOptions = old })
-	modelsLoadOptions = []registry.Option{registry.WithSnapshot(data)}
+	old := cliRegistryOptions
+	t.Cleanup(func() { cliRegistryOptions = old })
+	cliRegistryOptions = []registry.Option{registry.WithSnapshot(data)}
 }
 
 func TestModelsInspect(t *testing.T) {
@@ -169,7 +170,10 @@ func TestModelsInspectMasksLiteralAuthHeaders(t *testing.T) {
 	}
 }
 
-func TestModelsOldSchemaIgnoredWithNote(t *testing.T) {
+// Flag day (spec §14.1): an old-schema providers.toml is not downgraded to a
+// note any more. The command exits with the pointer at the section that says
+// what to do about the file.
+func TestModelsOldSchemaIsTheFlagDayError(t *testing.T) {
 	modelsTestEnv(t)
 	path := filepath.Join(t.TempDir(), "providers.toml")
 	if err := os.WriteFile(path, []byte("[instances.openai]\ntype = \"openai\"\n"), 0o600); err != nil {
@@ -177,11 +181,15 @@ func TestModelsOldSchemaIgnoredWithNote(t *testing.T) {
 	}
 	t.Setenv("EVENER_PROVIDERS_CONFIG", path)
 	var stdout, stderr bytes.Buffer
-	if err := runModels([]string{"inspect", "anthropic/claude-opus-5"}, strings.NewReader(""), &stdout, &stderr); err != nil {
-		t.Fatalf("old schema must be ignored during step 1: %v", err)
+	err := runModels([]string{"inspect", "anthropic/claude-opus-5"}, strings.NewReader(""), &stdout, &stderr)
+	if err == nil {
+		t.Fatalf("an old-schema providers.toml must fail the command; stdout:\n%s", stdout.String())
 	}
-	if !strings.Contains(stderr.String(), "ignored until the cut-over") {
-		t.Fatalf("stderr must carry the note: %q", stderr.String())
+	if !errors.Is(err, registry.ErrOldSchema) || !strings.Contains(err.Error(), "§14.1") {
+		t.Fatalf("error must be the §14.1 pointer: %v", err)
+	}
+	if !strings.Contains(err.Error(), path) {
+		t.Fatalf("error must name the file: %v", err)
 	}
 }
 

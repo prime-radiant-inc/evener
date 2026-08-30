@@ -108,7 +108,11 @@ func liveEvalOAuthPaths(t *testing.T) (string, string) {
 	if err != nil {
 		t.Skipf("live eval requires a resolvable user home: %v", err)
 	}
-	return liveeval.Paths(envvars.XDGStateHome.Trimmed(), home)
+	stateHome, providersConfig, noUserLayer := liveeval.Paths(envvars.XDGStateHome.Trimmed(), home)
+	if noUserLayer {
+		t.Skipf("%s is empty: no user provider layer to run a live eval against", envvars.EVENERProvidersConfig.Name)
+	}
+	return stateHome, providersConfig
 }
 
 // pinnedNote wraps a note in a delimited block for the controlled with/without-note

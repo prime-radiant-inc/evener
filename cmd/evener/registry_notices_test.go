@@ -120,11 +120,11 @@ func TestServePrintsRegistryNoticesToItsWarningsWriter(t *testing.T) {
 // A nil writer is not a crash, and a nil client prints nothing.
 func TestPrintRegistryNoticesGuards(t *testing.T) {
 	client := noticeClient(t, noticeStateRoot(t))
-	printRegistryNotices(nil, client)
+	printRegistryNotices(nil, client.Registry())
 	var out bytes.Buffer
 	printRegistryNotices(&out, nil)
 	if out.Len() != 0 {
-		t.Fatalf("a nil client printed %q", out.String())
+		t.Fatalf("a nil registry printed %q", out.String())
 	}
-	printRegistryNotices(io.Discard, client)
+	printRegistryNotices(io.Discard, client.Registry())
 }

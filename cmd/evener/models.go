@@ -9,7 +9,6 @@ import (
 	"io"
 	"maps"
 	"net/http"
-	"path/filepath"
 	"sort"
 	"strconv"
 	"strings"
@@ -17,8 +16,6 @@ import (
 	"time"
 
 	"primeradiant.com/evener/cmdutil"
-	"primeradiant.com/evener/envvars"
-	"primeradiant.com/evener/internal/credentials"
 	"primeradiant.com/evener/llm/registry"
 )
 
@@ -57,50 +54,6 @@ func runModels(args []string, _ io.Reader, stdout, stderr io.Writer) error {
 	}
 }
 
-// providersPath is the providers.toml the registry reads:
-// EVENER_PROVIDERS_CONFIG when it names one, else <config-root>/providers.toml.
-func providersPath() string {
-	if p, ok := envvars.EVENERProvidersConfig.LookupEnv(); ok && strings.TrimSpace(p) != "" {
-		return p
-	}
-	return filepath.Join(cmdutil.DefaultConfigRoot(), "providers.toml")
-}
-
-// credentialsPath is credentials.toml's location: the sibling of the
-// providers.toml in use.
-func credentialsPath() string {
-	return filepath.Join(filepath.Dir(providersPath()), "credentials.toml")
-}
-
-// modelsLoadOptions are extra registry options every `evener models` load
-// appends; tests set it to inject a catalog fixture.
-var modelsLoadOptions []registry.Option
-
-// loadRegistryForCLI loads the registry with the credentials store. During
-// steps 1–2 an old-schema providers.toml is ignored with a note (spec §14).
-func loadRegistryForCLI(stderr io.Writer) (*registry.Registry, error) {
-	store, err := credentials.LoadStore(credentialsPath())
-	if err != nil {
-		return nil, fmt.Errorf("credentials: %w", err)
-	}
-	// list and inspect never fetch: `evener models refresh` is the explicit
-	// path to the network (spec §6.4, §11.1).
-	opts := []registry.Option{registry.WithCredentials(cmdutil.StoreCredentialSource{Store: store}), registry.WithStateRoot(cmdutil.DefaultStateRoot()), registry.WithOffline(true)}
-	opts = append(opts, modelsLoadOptions...)
-	r, err := registry.Load(opts...)
-	if errors.Is(err, registry.ErrOldSchema) {
-		_, _ = fmt.Fprintf(stderr, "note: %s uses the pre-registry providers.toml schema; ignored until the cut-over\n", providersPath())
-		r, err = registry.Load(append(opts, registry.WithNoUserLayer())...)
-	}
-	if err != nil {
-		return nil, err
-	}
-	for _, w := range r.Warnings() {
-		_, _ = fmt.Fprintln(stderr, "warning:", w)
-	}
-	return r, nil
-}
-
 func runModelsList(args []string, stdout, stderr io.Writer) error {
 	fs := flag.NewFlagSet("models list", flag.ContinueOnError)
 	fs.SetOutput(stderr)
@@ -112,7 +65,7 @@ func runModelsList(args []string, stdout, stderr io.Writer) error {
 	if fs.NArg() != 0 {
 		return fmt.Errorf("unexpected arguments: %s", strings.Join(fs.Args(), " "))
 	}
-	r, err := loadRegistryForCLI(stderr)
+	r, _, err := loadRegistryForCLI(stderr)
 	if err != nil {
 		return err
 	}
@@ -226,7 +179,7 @@ func runModelsInspect(args []string, stdout, stderr io.Writer) error {
 	if fs.NArg() != 1 {
 		return errors.New("usage: evener models inspect <instance/model>")
 	}
-	r, err := loadRegistryForCLI(stderr)
+	r, _, err := loadRegistryForCLI(stderr)
 	if err != nil {
 		return err
 	}
