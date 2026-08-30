@@ -244,8 +244,9 @@ func BeginAPIAttempt(ctx context.Context, meta APIAttemptMeta) *APIAttempt {
 		group.mu.Unlock()
 		return &APIAttempt{}
 	}
-	// Recorded before the sink check so the protocol is observable whether or
-	// not the call is being logged: the agent reads it back to stamp the turn.
+	// Recorded before the sink nil check below, so a group whose attempts all
+	// went inert for want of a sink still carries the protocol the agent reads
+	// back to stamp the turn.
 	group.finalProtocol = meta.Protocol
 	group.bindSinkLocked(state)
 	group.credentialMaterial = mergeAPILogCredentialMaterial(group.credentialMaterial, meta.CredentialMaterial)

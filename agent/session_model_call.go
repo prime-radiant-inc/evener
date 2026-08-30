@@ -928,8 +928,8 @@ func (s *Session) callModelWithFallback(ctx context.Context, profile *provider.P
 		}
 	}
 	// Fallback chain: when the primary model returns a Permanent-class
-	// provider error (403/404/422/...) or an endpoint-fallback signal,
-	// try each configured fallback in literal order. Stops at the first
+	// provider error (403/404/422/..., including an endpoint that cannot
+	// serve the model at all), try each configured fallback in literal order. Stops at the first
 	// success; if all fallbacks also fail, the LAST attempt's error is
 	// returned to the caller. Retryable errors (429/5xx) burn the
 	// existing retry budget on the same model and DO NOT trigger the
