@@ -530,17 +530,24 @@ func synthesizeReasoningEffortLevels(v map[string]any) []string {
 		}
 	}
 
+	none, hasNone := flag("supports_none_reasoning_effort")
 	_, hasMinimal := flag("supports_minimal_reasoning_effort")
 	_, hasLow := flag("supports_low_reasoning_effort")
 	_, hasMedium := flag("supports_medium_reasoning_effort")
 	_, hasHigh := flag("supports_high_reasoning_effort")
 	xhigh, hasXHigh := flag("supports_xhigh_reasoning_effort")
 	maxEffort, hasMax := flag("supports_max_reasoning_effort")
-	if !hasMinimal && !hasLow && !hasMedium && !hasHigh && !hasXHigh && !hasMax {
+	if !hasNone && !hasMinimal && !hasLow && !hasMedium && !hasHigh && !hasXHigh && !hasMax {
 		return nil
 	}
 
-	levels := make([]string, 0, 5)
+	levels := make([]string, 0, 6)
+	if none {
+		// A real wire level on these models: the session sends an explicit
+		// off only where it is listed. It has no rank, so the clamp ignores
+		// it and tier pickers filter it out.
+		levels = append(levels, ReasoningEffortNone)
+	}
 	if minimal, ok := flag("supports_minimal_reasoning_effort"); ok && minimal {
 		levels = append(levels, "minimal")
 	}

@@ -20,14 +20,39 @@ func catalogModelFor(model string) *llm.ModelInfo {
 	return cat.LookupModelInfo(model)
 }
 
-// resolveReasoningFacts answers "does this model reason, and at what effort
-// by default" from its catalog entry. An uncataloged model keeps the
-// provider's default (permitted) and has no known default effort.
-func resolveReasoningFacts(mi *llm.ModelInfo, providerDefault bool) (reasoning bool, defaultEffort string) {
-	if mi == nil {
-		return providerDefault, ""
+// reasoningFacts composes the model-level reasoning facts: whether the model
+// reasons (a providers.toml override first, then the catalog entry, then
+// permitted for a model nobody has data on), the effort it runs at when the
+// session configures none, and its effort ladder (configured levels win,
+// then the catalog's, then the provider's vocabulary). A non-reasoning model
+// gets an empty ladder so the task_list enum and the effort chip agree with
+// the request builder.
+func reasoningFacts(mi *llm.ModelInfo, override *bool, configuredLevels, providerLevels []string) (reasoning bool, defaultEffort string, levels []string) {
+	reasoning = true
+	if mi != nil {
+		reasoning = mi.SupportsReasoning
+		defaultEffort = llm.NormalizeReasoningEffort(mi.DefaultReasoningEffort)
 	}
-	return mi.SupportsReasoning, llm.NormalizeReasoningEffort(mi.DefaultReasoningEffort)
+	if override != nil {
+		reasoning = *override
+	}
+	levels = configuredLevels
+	if levels == nil {
+		levels = effortLevelsFor(mi, providerLevels)
+	}
+	if !reasoning {
+		levels = []string{}
+	}
+	return reasoning, defaultEffort, levels
+}
+
+// effortLevelsFor returns the catalog entry's effort ladder, or the provider
+// default when the catalog has none for the model.
+func effortLevelsFor(mi *llm.ModelInfo, providerDefault []string) []string {
+	if mi != nil && len(mi.ReasoningEffortLevels) > 0 {
+		return append([]string(nil), mi.ReasoningEffortLevels...)
+	}
+	return providerDefault
 }
 
 // resolveEffortLevels returns reasoning effort levels for the given model.
@@ -35,14 +60,7 @@ func resolveReasoningFacts(mi *llm.ModelInfo, providerDefault bool) (reasoning b
 // falls back to the provider default. This allows per-model effort vocabularies
 // while maintaining backward compatibility.
 func resolveEffortLevels(model string, providerDefault []string) []string {
-	if cat := llm.EmbeddedModelCatalog(); cat != nil {
-		// LookupModelInfo canonicalizes the "[1m]" suffix and dated snapshots so a
-		// 1M-context or dated model still resolves its family's real levels.
-		if mi := cat.LookupModelInfo(model); mi != nil && len(mi.ReasoningEffortLevels) > 0 {
-			return append([]string(nil), mi.ReasoningEffortLevels...)
-		}
-	}
-	return providerDefault
+	return effortLevelsFor(catalogModelFor(model), providerDefault)
 }
 
 // resolveWebSearch reports whether the model's endpoint serves provider-native
@@ -50,10 +68,8 @@ func resolveEffortLevels(model string, providerDefault []string) []string {
 // the catalog being silent is not the same as it saying false, so an
 // uncatalogued model keeps the provider default.
 func resolveWebSearch(model string, providerDefault bool) bool {
-	if cat := llm.EmbeddedModelCatalog(); cat != nil {
-		if mi := cat.LookupModelInfo(model); mi != nil && mi.SupportsWebSearch != nil {
-			return *mi.SupportsWebSearch
-		}
+	if mi := catalogModelFor(model); mi != nil && mi.SupportsWebSearch != nil {
+		return *mi.SupportsWebSearch
 	}
 	return providerDefault
 }
@@ -81,12 +97,7 @@ type Profile struct {
 	// configured, where the catalog or a live /models entry states one.
 	defaultEffort string
 	webSearch     bool
-	// thinkingAlwaysOn marks a model whose thinking cannot be disabled
-	// (OpenRouter reasoning.mandatory=true). When set, the session emits a
-	// default reasoning effort even when none is configured so a
-	// mandatory-reasoning model never gets a reasoning-less request.
-	thinkingAlwaysOn bool
-	cheapModel       string
+	cheapModel    string
 	// cheapProvider routes auxiliary "side calls" (naming, summarization,
 	// web_fetch Q&A) to a different provider instance than the main model. Empty
 	// means same provider as the main model. Set via WithCheapModel("provider/model").
@@ -118,7 +129,6 @@ type profileSpec struct {
 	parallel        bool
 	contextWindow   int
 	docFiles        []string
-	reasoning       bool
 	streaming       bool
 	webSearch       bool
 	defaultTimeout  int
@@ -131,12 +141,13 @@ type profileSpec struct {
 	cheapModel      string
 	// catalogModel is the catalog entry for spec.model, nil when the model is
 	// unknown or the constructor suppresses catalog lookups. It is the source
-	// of the model-level reasoning facts (support, levels, default effort).
+	// of the model-level reasoning facts (support, levels, default effort); a
+	// constructor that omits it silently treats every model as an unknown,
+	// permitted-to-reason one.
 	catalogModel *llm.ModelInfo
-	// reasoningConfigured marks that providers.toml set reasoning explicitly
-	// for this model, in which case spec.reasoning is the user's answer and
-	// the catalog does not get a vote.
-	reasoningConfigured bool
+	// reasoningOverride is providers.toml's explicit answer to whether the
+	// model reasons; nil leaves the question to the catalog.
+	reasoningOverride *bool
 }
 
 // Keep in sync with agent.WatchEventKindNames / agent.modelEventKinds. The
@@ -287,22 +298,7 @@ func toolDefinitionsForCapabilities(capabilities []toolCapability, efforts []str
 
 func buildBaseProfile(spec profileSpec) Profile {
 	model := strings.TrimSpace(spec.model)
-	efforts := spec.resolvedEfforts
-	if efforts == nil {
-		efforts = spec.defaultEfforts
-		if spec.catalogModel != nil && len(spec.catalogModel.ReasoningEffortLevels) > 0 {
-			efforts = spec.catalogModel.ReasoningEffortLevels
-		}
-	}
-	reasoning, defaultEffort := spec.reasoning, ""
-	if !spec.reasoningConfigured {
-		reasoning, defaultEffort = resolveReasoningFacts(spec.catalogModel, spec.reasoning)
-	}
-	if !reasoning {
-		// A non-reasoning model advertises no effort levels, so the task_list
-		// enum and the effort chip agree with the request builder.
-		efforts = []string{}
-	}
+	reasoning, defaultEffort, efforts := reasoningFacts(spec.catalogModel, spec.reasoningOverride, spec.resolvedEfforts, spec.defaultEfforts)
 
 	defaultTimeout := spec.defaultTimeout
 	if defaultTimeout == 0 {
@@ -399,12 +395,6 @@ func (p *Profile) SupportsReasoning() bool { return p.reasoning }
 // session has none configured, or "" when no source states one and the
 // session should apply its own default.
 func (p *Profile) DefaultReasoningEffort() string { return p.defaultEffort }
-
-// ThinkingAlwaysOn reports whether the model's thinking cannot be disabled
-// (OpenRouter reasoning.mandatory=true). When true, the session must emit a
-// default reasoning effort even when none is configured — omitting the
-// reasoning field is an API error for these models.
-func (p *Profile) ThinkingAlwaysOn() bool { return p.thinkingAlwaysOn }
 
 // ReasoningEffortLevels returns the valid effort strings this provider
 // accepts, in ascending order. Returns an empty slice when the provider
@@ -512,35 +502,31 @@ func (p *Profile) WithLiveModelInfo(info llm.ModelInfo) *Profile {
 	// /models enrichment for the fields they set.
 	instEntry, hasInstEntry := p.instModels[p.model]
 	configuredWindow := hasInstEntry && instEntry.ContextWindow > 0
-	// An explicit reasoning=false in providers.toml is authoritative user
-	// intent and must survive live /models enrichment: a non-reasoning model
-	// declares no ThinkingLevels (there's nothing to configure), so treat
-	// reasoningOff as "levels are configured" too — otherwise live
-	// SupportsReasoning/ReasoningEffortLevels would re-enable reasoning on a
-	// model the user explicitly turned off.
-	reasoningOff := hasInstEntry && instEntry.Reasoning != nil && !*instEntry.Reasoning
-	configuredLevels := hasInstEntry && (len(instEntry.ThinkingLevels) > 0 || reasoningOff)
+	// An explicit reasoning flag in providers.toml is authoritative user
+	// intent and must survive live /models enrichment. A model declared
+	// non-reasoning declares no ThinkingLevels (there's nothing to
+	// configure), so treat that as "levels are configured" too — otherwise
+	// live ReasoningEffortLevels would re-enable reasoning on a model the
+	// user explicitly turned off.
+	reasoningConfigured := hasInstEntry && instEntry.Reasoning != nil
+	configuredLevels := hasInstEntry && (len(instEntry.ThinkingLevels) > 0 || reasoningConfigured)
 	if info.ContextWindow > 0 && !configuredWindow {
 		clone.contextWindow = info.ContextWindow
 	}
 	if len(info.ReasoningEffortLevels) > 0 && !configuredLevels {
 		clone.setEffortLevels(info.ReasoningEffortLevels)
 	}
-	reasoningOn := hasInstEntry && instEntry.Reasoning != nil && *instEntry.Reasoning
-	switch {
-	case reasoningOff || reasoningOn:
-		// providers.toml answered; live data does not get a vote.
-	case info.CapabilitiesAdvertised:
-		// The endpoint states capabilities explicitly, so false is knowledge.
-		clone.reasoning = info.SupportsReasoning
-		if !clone.reasoning {
-			clone.setEffortLevels([]string{})
+	if !reasoningConfigured {
+		if info.CapabilitiesAdvertised {
+			// The endpoint states capabilities explicitly, so false is
+			// knowledge, not silence.
+			clone.reasoning = info.SupportsReasoning
+			if !clone.reasoning {
+				clone.setEffortLevels([]string{})
+			}
+		} else if info.SupportsReasoning {
+			clone.reasoning = true
 		}
-	case info.SupportsReasoning:
-		clone.reasoning = true
-	}
-	if info.ThinkingAlwaysOn && !reasoningOff {
-		clone.thinkingAlwaysOn = true
 	}
 	if d := llm.NormalizeReasoningEffort(info.DefaultReasoningEffort); d != "" {
 		clone.defaultEffort = d
@@ -551,12 +537,6 @@ func (p *Profile) WithLiveModelInfo(info llm.ModelInfo) *Profile {
 	return &clone
 }
 
-// materializeInstanceModelConfig resolves explicit providers.toml model
-// configuration by exact key, then a unique surrounding-whitespace match,
-// then a unique case-insensitive match. A normalized match is renamed to the
-// concrete wire model in a private clone so every later profile operation sees
-// the same explicit configuration without creating duplicate provenance.
-// Ambiguous normalized matches fail closed.
 // setEffortLevels replaces the profile's effort ladder and keeps the
 // effort-enum tool schema (task_list) in sync with it, or the model would
 // see the constructor's enum instead.
@@ -571,6 +551,12 @@ func (p *Profile) setEffortLevels(levels []string) {
 	p.toolDefs = defs
 }
 
+// materializeInstanceModelConfig resolves explicit providers.toml model
+// configuration by exact key, then a unique surrounding-whitespace match,
+// then a unique case-insensitive match. A normalized match is renamed to the
+// concrete wire model in a private clone so every later profile operation sees
+// the same explicit configuration without creating duplicate provenance.
+// Ambiguous normalized matches fail closed.
 func materializeInstanceModelConfig(
 	models map[string]providercfg.ModelConfig,
 	model string,
@@ -894,16 +880,16 @@ func (p *Profile) WithModel(model string) *Profile {
 	clone.model = model
 	// The shallow clone keeps provider-derived state, but reasoning is a
 	// model fact: re-derive it for the new model unless providers.toml
-	// answered for it.
+	// answered for it, keeping a configured ladder and otherwise falling
+	// back to the incumbent one when the catalog has none.
 	if entry, ok := p.instModels[model]; !ok || entry.Reasoning == nil {
-		mi := catalogModelFor(model)
-		clone.reasoning, clone.defaultEffort = resolveReasoningFacts(mi, true)
-		switch {
-		case !clone.reasoning:
-			clone.setEffortLevels([]string{})
-		case mi != nil && len(mi.ReasoningEffortLevels) > 0:
-			clone.setEffortLevels(mi.ReasoningEffortLevels)
+		var configuredLevels []string
+		if ok && len(entry.ThinkingLevels) > 0 {
+			configuredLevels = clone.effortLevels
 		}
+		var levels []string
+		clone.reasoning, clone.defaultEffort, levels = reasoningFacts(catalogModelFor(model), nil, configuredLevels, clone.effortLevels)
+		clone.setEffortLevels(levels)
 	}
 	return &clone
 }
@@ -917,7 +903,6 @@ func NewOpenAIProfile(model string) *Profile {
 		parallel:        true,
 		contextWindow:   400_000,
 		docFiles:        []string{"AGENTS.md", ".codex/instructions.md"},
-		reasoning:       true,
 		catalogModel:    catalogModelFor(model),
 		streaming:       true,
 		webSearch:       resolveWebSearch(model, true),
@@ -979,7 +964,6 @@ func newAnthropicProfile(model string) *Profile {
 		parallel:        true,
 		contextWindow:   ctxWindow,
 		docFiles:        []string{"CLAUDE.md", "AGENTS.md"},
-		reasoning:       true,
 		catalogModel:    catalogModelFor(model),
 		streaming:       true,
 		webSearch:       true,
@@ -1002,7 +986,6 @@ func newGeminiProfile(model string) *Profile {
 		parallel:        true,
 		contextWindow:   1_000_000,
 		docFiles:        []string{"GEMINI.md", "AGENTS.md"},
-		reasoning:       true,
 		catalogModel:    catalogModelFor(model),
 		streaming:       true,
 		webSearch:       true,
@@ -1038,7 +1021,6 @@ func newMiniMaxProfile(model string) *Profile {
 		parallel:        true,
 		contextWindow:   204_800,
 		docFiles:        []string{"CLAUDE.md", "AGENTS.md"},
-		reasoning:       true,
 		catalogModel:    catalogModelFor(model),
 		streaming:       true,
 		defaultTimeout:  120_000,
@@ -1066,7 +1048,6 @@ func newKimiAnthropicProfile(model string) *Profile {
 		parallel:        true,
 		contextWindow:   contextWindow,
 		docFiles:        []string{"CLAUDE.md", "AGENTS.md"},
-		reasoning:       true,
 		catalogModel:    catalogModelFor(model),
 		streaming:       true,
 		defaultTimeout:  120_000,
@@ -1247,7 +1228,6 @@ func newOpenRouterAnthropicProfile(model string) *Profile {
 		parallel:        true,
 		contextWindow:   contextWindow,
 		docFiles:        []string{"CLAUDE.md", "AGENTS.md"},
-		reasoning:       true,
 		catalogModel:    catalogModelFor(model),
 		streaming:       true,
 		webSearch:       ws,
@@ -1344,14 +1324,8 @@ func newOpenAICompatProfile(id, model string, contextWindow int, instModels map[
 		contextWindow = 128_000
 	}
 	defaultEfforts := []string{"low", "medium", "high"}
-	reasoning := true
 	var efforts []string
 	switch {
-	case hasEntry && entry.Reasoning != nil && !*entry.Reasoning:
-		// A declared non-reasoning model advertises no effort levels at all.
-		// Non-nil empty keeps buildBaseProfile from re-deriving defaults.
-		reasoning = false
-		efforts = []string{}
 	case hasEntry && len(entry.ThinkingLevels) > 0:
 		efforts = llm.OrderedEffortLevels(entry.ThinkingLevels)
 	case catModel != nil && len(catModel.ReasoningEffortLevels) > 0:
@@ -1386,43 +1360,27 @@ func newOpenAICompatProfile(id, model string, contextWindow int, instModels map[
 		parallel:      true,
 		contextWindow: contextWindow,
 		docFiles:      []string{"AGENTS.md"},
-		reasoning:     reasoning,
 		// providers.toml reasoning is the user's answer either way; the
 		// catalog only speaks for models it was not set for.
-		reasoningConfigured: hasEntry && entry.Reasoning != nil,
-		catalogModel:        catModel,
-		streaming:           true,
-		webSearch:           false,
-		defaultTimeout:      120_000,
-		knowledgeCutoff:     "2025-06-01",
-		defaultEfforts:      defaultEfforts,
-		resolvedEfforts:     efforts,
-		providerOpts:        providerOpts,
-		toolNameMap:         nil,
-		capabilities:        openAICodexCapabilities,
+		reasoningOverride: entry.Reasoning,
+		catalogModel:      catModel,
+		streaming:         true,
+		webSearch:         false,
+		defaultTimeout:    120_000,
+		knowledgeCutoff:   "2025-06-01",
+		defaultEfforts:    defaultEfforts,
+		resolvedEfforts:   efforts,
+		providerOpts:      providerOpts,
+		toolNameMap:       nil,
+		capabilities:      openAICodexCapabilities,
 	})
 	bp.instModels = instModels
 	return &bp
 }
 
-// CatalogEffortFallbackEligible reports whether the model-fallback clamp may
-// re-derive this profile's effort levels from the embedded catalog. False
-// when the levels are explicitly configured (authoritative), and false for
-// ollama — a local model name is unrelated to a same-named upstream catalog
-// entry, the same suppression newOpenAICompatProfile and the adapter's
-// catalog-fill apply.
-func (p *Profile) CatalogEffortFallbackEligible() bool {
-	if p.EffortLevelsConfigured() {
-		return false
-	}
-	return !suppressBareCatalogLookup(p.behaviorTag)
-}
-
 // EffortLevelsConfigured reports whether this profile's effort ladder comes
 // from explicit providers.toml model configuration (a thinking_levels map or
 // an explicit reasoning flag) rather than catalog or default derivation.
-// Callers that re-derive levels from the embedded catalog (the model-fallback
-// clamp) must not second-guess configured levels with catalog data.
 func (p *Profile) EffortLevelsConfigured() bool {
 	entry, ok := p.instModels[p.model]
 	if !ok {

@@ -126,7 +126,10 @@ func (m openaiCompatModelEntry) modelInfo() llm.ModelInfo {
 	}
 	// The reasoning object, when present, refines reasoning metadata. Its
 	// presence alone (even all-false) means reasoning is supported — the
-	// model can do reasoning, it's just opt-in.
+	// model can do reasoning, it's just opt-in. default_enabled is read for
+	// presence only: it says whether thinking is on by default, not at what
+	// effort, and mapping "off" to a default effort of none would send a
+	// literal none level to models that do not list one.
 	if m.Reasoning.Mandatory != nil || m.Reasoning.DefaultEnabled != nil || len(m.Reasoning.SupportedEfforts) > 0 {
 		info.SupportsReasoning = true
 		if m.Reasoning.Mandatory != nil && *m.Reasoning.Mandatory {

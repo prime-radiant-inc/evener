@@ -590,6 +590,11 @@ func responsesInbandError(data []byte) error {
 // decoder does not know what it is, so it cannot vouch for the endpoint. A bare
 // "error" envelope is not enough either — it is generic SSE, not this API. Both
 // leave the empty-stream sentinel armed.
+// reasoningPartSeparator joins consecutive reasoning parts, both as they
+// stream and in the settled thinking text, so the transcript reads like the
+// live view (the contract Response.ReasoningText documents).
+const reasoningPartSeparator = "\n\n"
+
 var responsesAPIEventTypes = map[string]struct{}{
 	"response.created":                       {},
 	"response.in_progress":                   {},
@@ -683,7 +688,7 @@ func (a *Adapter) decodeResponsesStream(sctx context.Context, cancel context.Can
 			// Detailed reasoning arrives as multiple summary parts; separate
 			// them with a blank line so the rendered thought stays readable.
 			if reasoningStarted {
-				s.Send(llm.StreamEvent{Type: llm.StreamEventReasoningDelta, ReasoningDelta: "\n\n"})
+				s.Send(llm.StreamEvent{Type: llm.StreamEventReasoningDelta, ReasoningDelta: reasoningPartSeparator})
 			}
 			reasoningStarted = true
 		case "response.function_call_arguments.delta":
@@ -1414,9 +1419,8 @@ func responseContentFromOutputItems(out []any) []llm.ContentPart {
 			// gateways that expose the raw thinking put reasoning_text parts
 			// in content instead. The raw text is kept for display and the
 			// transcript only; replay (toResponsesInput) still needs
-			// encrypted_content. Parts join with the blank line the stream
-			// emits between them so settled text matches the live view.
-			text := strings.Join(parseReasoningSummary(item["content"]), "\n\n")
+			// encrypted_content.
+			text := strings.Join(parseReasoningSummary(item["content"]), reasoningPartSeparator)
 			if encryptedContent != "" || text != "" {
 				content = append(content, llm.ContentPart{
 					Kind: llm.ContentThinking,

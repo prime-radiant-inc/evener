@@ -27,22 +27,40 @@ func TestFallbackChain_ClampsToFallbackModelLevels(t *testing.T) {
 	cases := []struct {
 		name          string
 		fallback      string
+		sessionEffort string
+		want          string
 		wantEffortMsg string
 	}{
 		{
 			name:          "PlainFallbackModel",
 			fallback:      "claude-opus-4-5",
+			sessionEffort: "max",
+			want:          "high",
 			wantEffortMsg: "fallback effort = %q, want high (max clamped to the fallback model's catalog levels)",
 		},
 		{
 			name:          "1MSuffix",
 			fallback:      "claude-opus-4-5[1m]",
+			sessionEffort: "max",
+			want:          "high",
 			wantEffortMsg: "fallback effort = %q, want high (max clamped to opus-4-5 catalog levels after stripping [1m])",
 		},
 		{
 			name:          "DatedFallbackToFamilyLevels",
 			fallback:      "claude-opus-4-5-20251101[1m]",
+			sessionEffort: "max",
+			want:          "high",
 			wantEffortMsg: "fallback effort = %q, want high (max clamped to the opus-4-5 family levels for the dated [1m] fallback)",
+		},
+		{
+			// The fallback applies the same rule as the primary path: with
+			// no effort configured, a reasoning model gets the default,
+			// clamped to its own levels, rather than a reasoning-less request.
+			name:          "UnsetGetsDefault",
+			fallback:      "claude-opus-4-5",
+			sessionEffort: "",
+			want:          "medium",
+			wantEffortMsg: "fallback effort = %q, want medium (the default, within opus-4-5's levels)",
 		},
 	}
 	for _, tc := range cases {
@@ -78,7 +96,7 @@ func TestFallbackChain_ClampsToFallbackModelLevels(t *testing.T) {
 				StateDir:        dir,
 				LLMRetryPolicy:  &policy,
 				ModelFallbacks:  []string{tc.fallback},
-				ReasoningEffort: "max",
+				ReasoningEffort: tc.sessionEffort,
 				testOnly:        testConfig{metaFS: afero.NewMemMapFs()},
 			})
 			if err != nil {
@@ -99,7 +117,7 @@ func TestFallbackChain_ClampsToFallbackModelLevels(t *testing.T) {
 			if !fbInvoked {
 				t.Fatal("fallback model was not invoked")
 			}
-			if fbEffort != "high" {
+			if fbEffort != tc.want {
 				t.Fatalf(tc.wantEffortMsg, fbEffort)
 			}
 		})

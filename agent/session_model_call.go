@@ -828,18 +828,20 @@ func resolveRequestEffort(configured string, supportsReasoning bool, levels []st
 	if !supportsReasoning {
 		return nil
 	}
-	if configured == llm.ReasoningEffortNone {
-		if slices.Contains(levels, llm.ReasoningEffortNone) {
-			return &configured
-		}
-		return nil
-	}
 	effort := configured
 	if effort == "" {
 		effort = modelDefault
 	}
 	if effort == "" {
 		effort = defaultReasoningEffort
+	}
+	if effort == llm.ReasoningEffortNone {
+		// Off, whether the user or the model's data said so: a wire level
+		// only where the model lists it, otherwise the field stays out.
+		if slices.Contains(levels, llm.ReasoningEffortNone) {
+			return &effort
+		}
+		return nil
 	}
 	v := llm.ClampReasoningEffort(effort, levels)
 	return &v
@@ -927,7 +929,6 @@ func (s *Session) callModelWithFallback(ctx context.Context, profile *provider.P
 		// than re-reading live session config) keeps a concurrent runtime effort
 		// change from racing/leaking into this request's fallback, and lets a
 		// fallback that supports a higher level than the primary use it.
-		origEffort := requestedEffort
 		for _, fbModel := range s.cfg.ModelFallbacks {
 			// validateModelFallbacks already rejected cross-provider fallbacks,
 			// so resolveProfileForRef is guaranteed to return the WithModel path
@@ -937,28 +938,11 @@ func (s *Session) callModelWithFallback(ctx context.Context, profile *provider.P
 			fbReq := responsesContinuationModelFallbackRequest(req)
 			fbReq.Model = fbProfile.Model()
 			fbReq.Provider = fbProfile.ID()
-			// Clamp to the FALLBACK model's levels. WithModel keeps the primary
-			// profile's effort levels for some providers (openai/anthropic), so
-			// consult the catalog for the fallback model rather than trusting
-			// fbProfile's possibly-stale set. LookupModelInfo canonicalizes the
-			// "[1m]" suffix, a provider namespace ("anthropic/…" from
-			// openrouter-anthropic), and dated snapshots, so a qualified or
-			// dated fallback still resolves real levels.
-			//
-			// Explicit providers.toml thinking_levels / reasoning config is
-			// authoritative, and ollama's local model names never resolve
-			// against the upstream catalog — only consult it when the
-			// profile's levels were derived (and might be stale
-			// primary-model state).
-			fbLevels := fbProfile.ReasoningEffortLevels()
-			if fbProfile.CatalogEffortFallbackEligible() {
-				if cat := llm.EmbeddedModelCatalog(); cat != nil {
-					if mi := cat.LookupModelInfo(fbProfile.Model()); mi != nil && len(mi.ReasoningEffortLevels) > 0 {
-						fbLevels = mi.ReasoningEffortLevels
-					}
-				}
-			}
-			fbReq.ReasoningEffort = resolveRequestEffort(origEffort, fbProfile.SupportsReasoning(), fbLevels, fbProfile.DefaultReasoningEffort())
+			// The fallback profile carries the fallback model's own facts:
+			// WithModel re-derives reasoning support and levels from the
+			// catalog (canonicalizing "[1m]", provider namespaces, and dated
+			// snapshots), so the same rule as the primary path applies.
+			fbReq.ReasoningEffort = resolveRequestEffort(requestedEffort, fbProfile.SupportsReasoning(), fbProfile.ReasoningEffortLevels(), fbProfile.DefaultReasoningEffort())
 			fbReq.WebSearch = s.providerWebSearchEnabled(fbProfile)
 			fbReq.ProviderOptions = fbProfile.ProviderOptions()
 			fbReq.PromptCacheKey = ""

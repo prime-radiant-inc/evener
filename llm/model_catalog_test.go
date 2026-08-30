@@ -919,9 +919,12 @@ func TestParseLiteLLMCatalog_SynthesizesXHighEffortLevelFromFlags(t *testing.T) 
 	if mi == nil {
 		t.Fatal("gpt-5.5 not found")
 	}
-	want := []string{"low", "medium", "high", "xhigh"}
+	// none is a real wire level on these models (an explicit off the session
+	// sends only when listed), so it leads the ladder; UIs that pick a
+	// thinking tier filter it out.
+	want := []string{"none", "low", "medium", "high", "xhigh"}
 	if !reflect.DeepEqual(mi.ReasoningEffortLevels, want) {
-		t.Fatalf("ReasoningEffortLevels = %v, want %v (supports_xhigh_reasoning_effort should reach the launch picker)", mi.ReasoningEffortLevels, want)
+		t.Fatalf("ReasoningEffortLevels = %v, want %v (supports_none/xhigh_reasoning_effort should reach the ladder)", mi.ReasoningEffortLevels, want)
 	}
 }
 
