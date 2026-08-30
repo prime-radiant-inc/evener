@@ -84,7 +84,7 @@ func TestServeWebSocketSlowReadCapBlocksNextReadWithOneAdvisory(t *testing.T) {
 		t.Fatalf("cap saturation caused an eviction:\n%s", logs)
 	}
 	advisories := 0
-	for _, line := range strings.Split(logs, "\n") {
+	for line := range strings.SplitSeq(logs, "\n") {
 		if strings.Contains(line, "slow-read") {
 			advisories++
 		}
@@ -283,7 +283,7 @@ func TestServeWebSocketSlowReadCapStallAdvisoryNamesWedgedLane(t *testing.T) {
 		time.Sleep(5 * time.Millisecond)
 	}
 	var stall string
-	for _, line := range strings.Split(logged(), "\n") {
+	for line := range strings.SplitSeq(logged(), "\n") {
 		if strings.Contains(line, "parked") {
 			stall = line
 		}

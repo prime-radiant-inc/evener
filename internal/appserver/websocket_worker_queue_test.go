@@ -459,7 +459,7 @@ func TestServeWebSocketCloseAbandonsQueuedRequestsWithPurgeAdvisory(t *testing.T
 	logs := logged()
 	advisories := 0
 	var advisory string
-	for _, line := range strings.Split(logs, "\n") {
+	for line := range strings.SplitSeq(logs, "\n") {
 		if strings.Contains(line, "discarded") {
 			advisories++
 			advisory = line
@@ -573,7 +573,7 @@ func TestServeWebSocketQueueSaturationAdvisoryFiresOncePerConnection(t *testing.
 	// Second saturation on the same connection.
 	sendRaw(t, transport, rawRequest(t, 5, appwire.MethodEvenerThreadNameSet, appwire.ThreadNameSetParams{Ref: "local:th_1", Name: "n"}))
 	waitFor(t, "receive loop to park on the refilled queue", blocked)
-	for i := 0; i < 3; i++ {
+	for range 3 {
 		releases <- struct{}{}
 	}
 
@@ -585,7 +585,7 @@ func TestServeWebSocketQueueSaturationAdvisoryFiresOncePerConnection(t *testing.
 	}
 
 	lines := 0
-	for _, line := range strings.Split(logged(), "\n") {
+	for line := range strings.SplitSeq(logged(), "\n") {
 		if strings.Contains(line, conn.id) {
 			lines++
 		}
