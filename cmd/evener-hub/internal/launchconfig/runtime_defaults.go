@@ -17,7 +17,7 @@ const (
 
 // ApplyEnvDefaults returns resolved with the effective layer's
 // still-unset fields filled from the environment floor only: the schema's
-// non-secret EnvFallback set (EVENER_MODEL, EVENER_REASONING_EFFORT,
+// EnvFallback set (EVENER_MODEL, EVENER_REASONING_EFFORT,
 // EVENER_OPENAI_RESPONSES_CONTINUATION). A field any file layer already set
 // is left untouched; provenance records "env" for the fields filled.
 //
@@ -49,7 +49,7 @@ func ApplyEnvDefaults(resolved Resolved, getenv func(string) string, schema []La
 	}
 
 	for _, opt := range schema {
-		if opt.EnvFallback == nil || opt.EnvFallback.Secret {
+		if opt.EnvFallback == nil {
 			continue
 		}
 		// All env-fallback fields are string scalars, so a single read of the
@@ -81,7 +81,7 @@ func ApplyEnvDefaults(resolved Resolved, getenv func(string) string, schema []La
 // ApplyRuntimeDefaults returns a copy of resolved with the effective layer's
 // still-unset fields filled from two floors of the fallback chain, in order:
 //
-//  1. env: the schema's non-secret EnvFallback set, and
+//  1. env: the schema's EnvFallback set, and
 //  2. builtin: the agent's own defaults declared on each LaunchOption
 //     (BuiltinDefault / BuiltinDefaultInt / BuiltinDefaultBool) — the floor
 //     the agent itself applies when flag, env, and layer are all absent.

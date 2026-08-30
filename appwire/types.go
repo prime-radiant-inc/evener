@@ -2445,8 +2445,7 @@ type LaunchOptionChoice struct {
 }
 
 type LaunchOptionEnvFallback struct {
-	Name   string `json:"name"`
-	Secret bool   `json:"secret,omitempty"`
+	Name string `json:"name"`
 }
 
 type LaunchOption struct {
