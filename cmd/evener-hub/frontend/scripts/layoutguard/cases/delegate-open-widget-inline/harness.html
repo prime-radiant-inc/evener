@@ -1,0 +1,173 @@
+<!doctype html>
+<html lang="en" data-theme="dark">
+<head>
+<meta charset="utf-8">
+<title>delegate-open-widget-inline layoutguard harness</title>
+<link rel="stylesheet" href="tokens.css">
+<link rel="stylesheet" href="resolved.css">
+<style>
+  /* Transitions OFF (docs/testing.md): the assertion reads line placement via
+     top-edge equality, which a chevron rotation transition does not move - but
+     a hover fade on the trigger's ink wash could repaint mid-measure. Settled
+     is what we want. */
+  *, *::before, *::after { transition: none !important; }
+  body {
+    margin: 0;
+    background: var(--surface-1);
+    font-family: var(--font-sans);
+    color: var(--ink-hi);
+  }
+  .fixtures { display: flex; flex-direction: column; align-items: flex-start; gap: 12px; padding: 12px; }
+  .fixtureLabel { color: var(--ink-low); font: var(--font-size-caption) var(--font-mono); margin-bottom: 2px; }
+  /* The row sits inside runContent's --speaker-gutter padding in production;
+     a transcript column is what bounds it. Reproduce both a narrow
+     transcript column (420px) and a comfortable desktop width (880px) by
+     wrapping .row in a box of that width. The row's own .rowIcon negative
+     margin (pulling into the gutter) is irrelevant to whether the trigger
+     and the trailing control share a line, so the icon is omitted for
+     clarity - its slot is not a flex item that affects the wrap decision. */
+  .railBox { box-sizing: border-box; padding-left: var(--speaker-gutter); }
+</style>
+</head>
+<body data-font-size="m">
+<!-- Reproduces ToolRow.tsx's intent-only expandable branch (the delegate /
+     subagent card) against the REAL classes from
+     panes/session/transcript/toolcallitem.module.css and
+     widgets/button/button.module.css:
+
+       <div class="row" data-intent="true" data-intent-trailing="true">
+         <button class="trigger">
+           <span class="intent">{statedIntent}<span class="chevron"><Chevron/></span></span>
+         </button>
+         <span class="intentTrailing">{trailing open control}</span>
+       </div>
+
+     The trailing control is the word-form OpenButton the delegate row renders
+     (OpenTranscriptButton -> Button variant="quiet" size="sm" with the word
+     "open" + the box-arrow OpenIcon), reproduced with Button's real classes.
+
+     Two intent lengths x two column widths:
+       short intent - already fits beside the control, so it is inline
+         regardless of the trigger's flex-basis (it is not the binding case,
+         but it must not regress either);
+       long intent  - the binding case: with flex-basis:auto it claims its
+         max-content width and pushes the control to line 2; with flex-basis:0
+         it wraps INSIDE the trigger and the control stays on line 1.
+
+     The measure reports each fixture's trigger and control top edges (and
+     whether they share a line) so the assert is font- and platform-independent:
+     line membership is decided against the trigger's first line box (a Range
+     over the intent text), not a pixel-position snapshot. -->
+<div class="fixtures"></div>
+<script>
+// The real Chevron widget's "right" path (widgets/chevron/index.tsx), 14px box.
+const CHEVRON_SVG = '<svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true" focusable="false" style="display:block"><path d="M6 3.5 L10.5 8 L6 12.5" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" fill="none"></path></svg>';
+
+// The real OpenIcon (widgets/openbutton/index.tsx), 14px box, currentColor so
+// the quiet Button's ink is what it inherits in production.
+const OPEN_SVG = '<svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true" focusable="false" style="display:block"><path d="M12.5 8.5V12.5H3.5V3.5H7.5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" fill="none"></path><path d="M8 8L13 3M9.5 3H13V6.5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" fill="none"></path></svg>';
+
+// ToolRow.tsx's intent-only expandable branch: the trigger holds the intent
+// + inline chevron; the trailing control follows as a sibling flex item in
+// the .intentTrailing slot (data-intent-trailing="true" on the row).
+function delegateRowHtml(id, intent) {
+  return `
+    <div class="row" id="row-${id}" data-intent="true" data-intent-trailing="true">
+      <button type="button" class="trigger" id="trigger-${id}" aria-expanded="false">
+        <span class="intent" id="intent-${id}">
+          ${intent}
+          <span class="chevron" aria-hidden="true" data-open="false">${CHEVRON_SVG}</span>
+        </span>
+      </button>
+      <span class="intentTrailing" id="trailing-${id}">
+        <button type="button" class="button quiet sm" id="open-${id}" aria-label="Open transcript" title="Open transcript">
+          open
+          <span class="icon" aria-hidden="true">${OPEN_SVG}</span>
+        </button>
+      </span>
+    </div>`;
+}
+
+const SHORT_INTENT = "Scout the frontend for the open-widget renderer.";
+// Long enough that at a 420px transcript column the intent alone is wider
+// than (column - control): the binding case where flex-basis decides the wrap.
+const LONG_INTENT = "Locate the delegate row renderer in the transcript pane, trace how its trailing open-transcript control is composed against the disclosure trigger, and confirm the inline placement holds when the stated intent wraps across more than one line inside the row.";
+
+const CONFIGS = [
+  { key: "narrow-short",  width: 420, intent: SHORT_INTENT, label: "420px column, short intent (fits beside the control)" },
+  { key: "narrow-long",  width: 420, intent: LONG_INTENT,  label: "420px column, long intent (binding: must wrap inside the trigger)" },
+  { key: "wide-short",   width: 880, intent: SHORT_INTENT, label: "880px column, short intent" },
+  { key: "wide-long",    width: 880, intent: LONG_INTENT,  label: "880px column, long intent (binding)" },
+];
+
+const root = document.querySelector(".fixtures");
+for (const c of CONFIGS) {
+  const section = document.createElement("div");
+  section.className = "fixture";
+  const label = document.createElement("div");
+  label.className = "fixtureLabel";
+  label.textContent = `${c.label} (#${c.key})`;
+  const box = document.createElement("div");
+  box.className = "railBox";
+  box.style.width = `${c.width}px`;
+  box.innerHTML = delegateRowHtml(c.key, c.intent);
+  section.append(label, box);
+  root.append(section);
+}
+
+function box(el) {
+  const r = el.getBoundingClientRect();
+  return { left: r.left, right: r.right, top: r.top, bottom: r.bottom, width: r.width, height: r.height };
+}
+
+// The trigger's FIRST line box. The row uses align-items:baseline, so two
+// siblings on the SAME flex line have different top edges (a 28px-tall
+// button baseline-aligns above an italic text line -> its top is HIGHER,
+// not lower). A naive top-equality test misreads that baseline offset as a
+// wrap. Line membership is decided instead against the trigger's own first
+// line: a Range over the intent text yields one rect per wrapped line, and
+// rects[0] is line 1. The control shares line 1 iff it starts WITHIN or ABOVE
+// that line (its top is below the line-1 bottom by only sub-pixel noise);
+// once it wraps to line 2 its top sits at the line-1 bottom (the row's
+// row-gap is 0, so flex line 2 begins exactly where line 1 ends). Font- and
+// platform-independent: no line-height constant, no pixel snapshot.
+function firstLineBox(intentEl) {
+  const range = document.createRange();
+  range.selectNodeContents(intentEl);
+  const rects = range.getClientRects();
+  // An intent with no text would return nothing; the harness always has one.
+  return rects[0];
+}
+
+window.measure = () => {
+  return CONFIGS.map((c) => {
+    const trigger  = box(document.getElementById(`trigger-${c.key}`));
+    const trailing = box(document.getElementById(`trailing-${c.key}`));
+    const open     = box(document.getElementById(`open-${c.key}`));
+    const intentEl = document.getElementById(`intent-${c.key}`);
+    const intent   = box(intentEl);
+    const line1    = firstLineBox(intentEl);
+    // Same line: the control's top is within line 1 (allowing baseline
+    // alignment to pull it ABOVE line1.top, and sub-pixel noise). Wrapped:
+    // the control's top reaches line 1's bottom (it starts on line 2). The
+    // 1px tolerance absorbs rounding where line 2 meets line 1's bottom.
+    const sameLine = open.top < line1.bottom - 1;
+    return {
+      id: c.key,
+      label: c.label,
+      width: c.width,
+      trigger,
+      trailing,
+      open,
+      intent,
+      line1,
+      sameLine,
+      // How far the control's top sits below line 1's bottom, for the assert's
+      // reason: 0 (or negative) = inline; >0 = dropped to a later line.
+      dropBelowLine1: open.top - line1.bottom,
+    };
+  });
+};
+</script>
+</body>
+</html>

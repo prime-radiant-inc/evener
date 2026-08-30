@@ -1,0 +1,22 @@
+{
+  "name": "delegate-open-widget-inline",
+  "description": "An intent-only tool row (the delegate/subagent card: a stated intent, no separate verb/target summary, with an 'open' trailing control that opens the child transcript) must keep its disclosure trigger and the 'open' control on the SAME line. The trigger gives up the full-width flex basis an intent-bearing row otherwise assigns (data-intent-trailing=true), so the control rides the disclosure line as a sibling flex item. A flex-basis:auto on that trigger resolves to the intent text's max-content (one long unwrapped line) BEFORE flex-wrap decides to break, so a long intent pushes the 'open' control onto its own second line - the regression this case pins. The control must share the trigger's first line at the pane's narrow (transcript-column) width and at a comfortable desktop width, for both a short intent (fits beside the control) and a long one (must wrap INSIDE the trigger, not push the control down).",
+  "cssFiles": [
+    "styles/global.css",
+    "styles/tokens.css",
+    "panes/session/transcript/toolcallitem.module.css",
+    "widgets/button/button.module.css"
+  ],
+  "viewport": {
+    "width": 1200,
+    "height": 900,
+    "deviceScaleFactor": 1,
+    "mobile": false
+  },
+  "mutation": {
+    "declaration": "toolcallitem.module.css: .row[data-intent-trailing=\"true\"] .trigger reverted from flex:1 1 0 to the pre-fix flex:1 1 auto",
+    "verified": "2026-08-30",
+    "expect": "fail",
+    "note": "With flex-basis:auto the trigger's base size resolves to the long intent's max-content (one unwrapped line). Because .row is flex-wrap:wrap, line-breaking is decided on flex base sizes BEFORE shrink, so an intent longer than (container - control) claims its full width and the .intentTrailing control wraps to a second line. The long-intent fixtures fail sameLine (the control's top drops below the intent's first line box). Restoring flex:1 1 0 lets the trigger's content wrap within a zero basis (grow absorbing the remaining space) so the control stays on line 1; short-intent fixtures stay inline either way (the basis is never the binding constraint when the text already fits)."
+  }
+}

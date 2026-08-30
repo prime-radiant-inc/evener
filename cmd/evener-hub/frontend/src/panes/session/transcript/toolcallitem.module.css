@@ -65,11 +65,22 @@
 }
 
 /* data-intent-trailing marks an intent-only row whose trailing affordance
- * rides the disclosure line (ToolRow.tsx's grammar): the trigger gives up
- * the full-width basis the rule above assigns, so trigger and control share
- * line 1, the trigger's own grow springing the control to the line's end. */
+ * rides the disclosure line (ToolRow.tsx's grammar): the trigger gives up the
+ * full-width basis the rule above assigns, so trigger and control share line
+ * 1, the trigger's own grow springing the control to the line's end.
+ *
+ * flex-basis 0, NOT auto: .row is flex-wrap:wrap, so line-breaking is decided
+ * on flex BASE SIZES before shrink is considered. With basis auto the trigger's
+ * base size resolves to the intent text's max-content (one long unwrapped
+ * line), and an intent wider than (column - control) claims that full
+ * width - pushing the trailing control (the delegate row's "open" widget)
+ * onto its own second line (the regression a layoutguard case pins). Basis 0
+ * starts the trigger at zero width: the intent wraps INSIDE it as the
+ * trigger's grow absorbs the remaining space, and the control stays on line
+ * 1. The trigger still grows to fill (flex-grow 1), so a short intent's
+ * control still springs to the line's end unchanged. */
 .row[data-intent-trailing="true"] .trigger {
-  flex: 1 1 auto;
+  flex: 1 1 0;
 }
 
 .summaryLine {
