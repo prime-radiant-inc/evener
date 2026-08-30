@@ -57,6 +57,14 @@ func SummarizeToolInDir(toolName, argsJSON, cwd string) (desc, detail string) {
 		v, _ := args[key].(string)
 		return v
 	}
+	firstNonEmpty := func(get func(string) string, keys ...string) string {
+		for _, k := range keys {
+			if v := get(k); v != "" {
+				return v
+			}
+		}
+		return ""
+	}
 	num := func(key string) (int, bool) {
 		v, ok := args[key].(float64)
 		return int(v), ok
@@ -73,10 +81,7 @@ func SummarizeToolInDir(toolName, argsJSON, cwd string) (desc, detail string) {
 	case "shell":
 		cmd := str("command")
 		cmd = stripRedundantCd(cmd, cwd)
-		if d := str("purpose"); d != "" {
-			desc = trunc(d, 80)
-		} else if d := str("description"); d != "" {
-			// Backward compatibility for older transcripts.
+		if d := firstNonEmpty(str, "intent", "purpose", "description"); d != "" {
 			desc = trunc(d, 80)
 		} else {
 			// Show first line as desc; full command as detail if multi-line.

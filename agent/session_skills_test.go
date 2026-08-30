@@ -499,7 +499,7 @@ func TestOpenAIUseSkillToolExecutes(t *testing.T) {
 	result := sess.reg.ExecuteCall(context.Background(), execenv.NewLocalExecutionEnvironment(root), llm.ToolCallData{
 		ID:        "call_use_skill",
 		Name:      "use_skill",
-		Arguments: json.RawMessage(`{"skill_name":"greet","purpose":"test skill loading"}`),
+		Arguments: json.RawMessage(`{"skill_name":"greet","intent":"test skill loading"}`),
 		Type:      "function",
 	})
 	if result.IsError {

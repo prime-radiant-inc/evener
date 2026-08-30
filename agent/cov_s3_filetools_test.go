@@ -19,7 +19,7 @@ func TestS3Cov_FileTools_ReadWriteEdit(t *testing.T) {
 	}
 
 	// read_file returns content and tracks the read.
-	res = s3cov_exec(t, s, "read_file", `{"file_path":"note.txt","purpose":"inspect"}`)
+	res = s3cov_exec(t, s, "read_file", `{"file_path":"note.txt","intent":"inspect"}`)
 	if res.IsError || !strings.Contains(res.Output, "hello world") {
 		t.Fatalf("read_file: err=%v out=%s", res.IsError, res.Output)
 	}

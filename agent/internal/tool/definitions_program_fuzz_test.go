@@ -79,8 +79,8 @@ func FuzzToolDefinitionsProgram(f *testing.F) {
 			}
 
 			if err := reg.Register(RegisteredTool{
-				Definition:  def,
-				OmitPurpose: i%2 == 0,
+				Definition: def,
+				OmitIntent: i%2 == 0,
 				Exec: func(_ context.Context, _ execenv.ExecutionEnvironment, _ map[string]any) (any, error) {
 					return "definition program", nil
 				},
@@ -150,15 +150,15 @@ func toolProgramDefinitionShape(t *testing.T, def llm.ToolDefinition) {
 	if typ, _ := def.Parameters["type"].(string); typ != "object" {
 		t.Fatalf("definition %q root type = %q, want object", def.Name, typ)
 	}
-	withPurpose := WithPurposeParameter(def)
-	props, _ := withPurpose.Parameters["properties"].(map[string]any)
-	if props == nil || props["purpose"] == nil {
-		t.Fatalf("definition %q did not gain purpose: %#v", def.Name, withPurpose.Parameters)
+	withIntent := WithIntentParameter(def)
+	props, _ := withIntent.Parameters["properties"].(map[string]any)
+	if props == nil || props["intent"] == nil {
+		t.Fatalf("definition %q did not gain intent: %#v", def.Name, withIntent.Parameters)
 	}
-	withoutPurpose := WithoutPurposeParameter(withPurpose)
-	withoutProps, _ := withoutPurpose.Parameters["properties"].(map[string]any)
-	if withoutProps != nil && withoutProps["purpose"] != nil {
-		t.Fatalf("definition %q retained purpose after removal: %#v", def.Name, withoutPurpose.Parameters)
+	withoutIntent := WithoutIntentParameter(withIntent)
+	withoutProps, _ := withoutIntent.Parameters["properties"].(map[string]any)
+	if withoutProps != nil && withoutProps["intent"] != nil {
+		t.Fatalf("definition %q retained intent after removal: %#v", def.Name, withoutIntent.Parameters)
 	}
 }
 

@@ -187,7 +187,7 @@ func TestProviderProfiles_AllIncludeUseSkill(t *testing.T) {
 	}
 }
 
-func TestProviderProfiles_AddPurposeToWorkToolSchemas(t *testing.T) {
+func TestProviderProfiles_AddIntentToWorkToolSchemas(t *testing.T) {
 	t.Parallel()
 	profiles := []*provider.Profile{
 		NewOpenAIProfile("gpt-5.2"),
@@ -204,15 +204,15 @@ func TestProviderProfiles_AddPurposeToWorkToolSchemas(t *testing.T) {
 			if props == nil {
 				t.Fatalf("%s/%s has no properties schema", p.ID(), td.Name)
 			}
-			_, hasPurpose := props["purpose"]
+			_, hasIntent := props["intent"]
 			if canonicalName == "communicate" {
-				if hasPurpose {
-					t.Fatalf("%s/%s should not advertise purpose", p.ID(), td.Name)
+				if hasIntent {
+					t.Fatalf("%s/%s should not advertise intent", p.ID(), td.Name)
 				}
 				continue
 			}
-			if !hasPurpose {
-				t.Fatalf("%s/%s missing purpose parameter", p.ID(), td.Name)
+			if !hasIntent {
+				t.Fatalf("%s/%s missing intent parameter", p.ID(), td.Name)
 			}
 		}
 	}

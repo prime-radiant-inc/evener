@@ -23,18 +23,18 @@ func registerFileTools(reg *tool.Registry, deps *toolDeps) error {
 			path := fmt.Sprint(args["file_path"])
 			offset := optionalIntArg(args, "offset")
 			limit := optionalIntArg(args, "limit")
-			purpose, _ := args["purpose"].(string)
+			intent, _ := args["intent"].(string)
 			result, err := env.ReadFile(path, offset, limit)
 			if err == nil {
 				deps.readGuard.TrackRead(path)
 				// If the file is an image or document (PDF), return an
 				// tool.ImageResult so the vision side-channel can process it.
 				if img := tool.ParseImageResult(path, result); img != nil {
-					img.Purpose = purpose
+					img.Intent = intent
 					return *img, nil
 				}
 				if doc := tool.ParseDocumentResult(path, result); doc != nil {
-					doc.Purpose = purpose
+					doc.Intent = intent
 					return *doc, nil
 				}
 			}

@@ -292,9 +292,12 @@ func RenderToolCall(tc transcript.ToolCallInfo, width int, focused bool) string 
 	}
 
 	var bodyLines []string
-	if purpose := strings.TrimSpace(args.Str("purpose")); purpose != "" {
-		purposeLine := lipgloss.NewStyle().Italic(true).Render(purpose)
-		bodyLines = append(bodyLines, indentBlock(purposeLine, th.IndentToolBody))
+	for _, key := range []string{"intent", "purpose"} {
+		if v := strings.TrimSpace(args.Str(key)); v != "" {
+			line := lipgloss.NewStyle().Italic(true).Render(v)
+			bodyLines = append(bodyLines, indentBlock(line, th.IndentToolBody))
+			break
+		}
 	}
 
 	// Show expanded body: renderer Body func takes priority; fall back to

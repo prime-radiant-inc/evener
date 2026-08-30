@@ -67,18 +67,22 @@ func TestS3Cov_ScalarStringAndFormatNumber(t *testing.T) {
 	}
 }
 
-func TestS3Cov_ToolPurpose(t *testing.T) {
+func TestS3Cov_ToolIntent(t *testing.T) {
 	t.Parallel()
-	if got := toolPurpose(json.RawMessage(`{"purpose":"explain"}`)); got != "explain" {
-		t.Fatalf("purpose = %q", got)
-	}
-	if got := toolPurpose(json.RawMessage(`{"intent":"find bug"}`)); got != "find bug" {
+	if got := toolIntent(json.RawMessage(`{"intent":"explain"}`)); got != "explain" {
 		t.Fatalf("intent = %q", got)
 	}
-	if got := toolPurpose(json.RawMessage(`{"other":"x"}`)); got != "" {
+	// "purpose" remains a supported fallback key (backward compatibility).
+	if got := toolIntent(json.RawMessage(`{"purpose":"explain"}`)); got != "explain" {
+		t.Fatalf("intent = %q", got)
+	}
+	if got := toolIntent(json.RawMessage(`{"intent":"find bug"}`)); got != "find bug" {
+		t.Fatalf("intent = %q", got)
+	}
+	if got := toolIntent(json.RawMessage(`{"other":"x"}`)); got != "" {
 		t.Fatalf("expected empty, got %q", got)
 	}
-	if got := toolPurpose(nil); got != "" {
+	if got := toolIntent(nil); got != "" {
 		t.Fatalf("nil args => %q", got)
 	}
 }

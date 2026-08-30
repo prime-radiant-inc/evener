@@ -85,7 +85,7 @@ func stceFileTools(t *testing.T) {
 		{"doc.pdf", "[document: doc.pdf]\n" + base64.StdEncoding.EncodeToString(validPDFFixture(t))},
 		{"plain.txt", "plain"},
 	} {
-		res := exec(&stceFileEnv{DenyEnv: &agenttest.DenyEnv{WorkDir: root}, readOutput: tc.output}, "read", "read_file", map[string]any{"file_path": tc.path, "offset": 1.0, "limit": 2.0, "purpose": "inspect"})
+		res := exec(&stceFileEnv{DenyEnv: &agenttest.DenyEnv{WorkDir: root}, readOutput: tc.output}, "read", "read_file", map[string]any{"file_path": tc.path, "offset": 1.0, "limit": 2.0, "intent": "inspect"})
 		if res.IsError || tracked != tc.path {
 			t.Fatalf("read %s = %#v tracked=%q", tc.path, res, tracked)
 		}

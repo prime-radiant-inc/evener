@@ -30,8 +30,8 @@ func registerCommunicateTool(reg *tool.Registry, deps *toolDeps) {
 		resultToolDef = existing.Definition
 	}
 	_ = reg.Register(tool.RegisteredTool{
-		Definition:  resultToolDef,
-		OmitPurpose: true,
+		Definition: resultToolDef,
+		OmitIntent: true,
 		Exec: func(ctx context.Context, env execenv.ExecutionEnvironment, args map[string]any) (any, error) {
 			_ = env
 			if err := deps.abort(ctx); err != nil {

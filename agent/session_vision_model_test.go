@@ -12,7 +12,7 @@ import (
 )
 
 func visionImageResult() tool.ExecResult {
-	return tool.ExecResult{ImageData: []byte("fake-png"), ImageMediaType: "image/png", ImagePurpose: "describe it"}
+	return tool.ExecResult{ImageData: []byte("fake-png"), ImageMediaType: "image/png", ImageIntent: "describe it"}
 }
 
 func TestDescribeImage_OffMakesNoCall(t *testing.T) {

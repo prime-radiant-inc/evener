@@ -30,7 +30,7 @@ func FuzzRenderToolCall(f *testing.F) {
 		name, args, output, errStr string
 	}{
 		{"read_file", `{"file_path":"/a/b.go","offset":1,"limit":5}`, "line\nline", ""},
-		{"shell", `{"command":"ls -la","purpose":"list"}`, "out", ""},
+		{"shell", `{"command":"ls -la","intent":"list"}`, "out", ""},
 		{"edit_file", `{"file_path":"/a.go","old_string":"x","new_string":"y"}`, "", ""},
 		{"grep", `{"pattern":"TODO"}`, "match", ""},
 		{"glob", `{"pattern":"**/*"}`, "", "boom"},
@@ -135,7 +135,7 @@ func replayRenderSurface() {
 	toolCases := []transcript.ToolCallInfo{
 		{Name: "unknown", RawArgs: `{"purpose":"why"}`, Expanded: false},
 		{Name: "read_file", Description: ` {"file_path":"x.go"}`, Done: true, Duration: 500 * time.Microsecond},
-		{Name: "read_file", RawArgs: `{"file_path":"x.go","purpose":"inspect"}`, Output: "a\nb\nc\nd\ne\nf\n", Done: true, Expanded: true, Duration: 250 * time.Millisecond},
+		{Name: "read_file", RawArgs: `{"file_path":"x.go","intent":"inspect"}`, Output: "a\nb\nc\nd\ne\nf\n", Done: true, Expanded: true, Duration: 250 * time.Millisecond},
 		{Name: "read_file", RawArgs: `{"file_path":"x.go"}`, Detail: "detail", Output: "output", Error: "boom", Expanded: true},
 		{Name: "read_file", RawArgs: `{"file_path":"x.go"}`, Detail: "detail", Error: "boom", Expanded: true},
 		{Name: "delegate", RawArgs: `{"task":"inspect"}`, Error: "boom", Expanded: true, Subagent: &transcript.SubagentRunInfo{Task: "inspect", Status: "done"}},
@@ -152,7 +152,7 @@ func replayRenderSurface() {
 
 	args := ToolArgs{
 		"command": "first line\nsecond line", "pattern": "TODO", "path": "/tmp", "file_path": "x.go",
-		"purpose": "why", "query": "find", "task": "task", "job_id": "123456789", "status": "done",
+		"intent": "why", "query": "find", "task": "task", "job_id": "123456789", "status": "done",
 		"patch": "*** Update File: x.go\n@@ -1 +1 @@\n-old\n+new", "content": "a\nb",
 	}
 	_ = args.Str("missing")

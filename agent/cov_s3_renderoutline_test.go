@@ -24,7 +24,7 @@ func TestS3Cov_RenderOutline_ToolCallsAndStatus(t *testing.T) {
 	entries := s3cov_entries(
 		schema.NewTurn(schema.TurnUserInput, llm.User("do a thing")),
 		s3cov_assistantCall("reading files",
-			&llm.ToolCallData{ID: "c1", Name: "read_file", Arguments: json.RawMessage(`{"purpose":"inspect"}`)},
+			&llm.ToolCallData{ID: "c1", Name: "read_file", Arguments: json.RawMessage(`{"intent":"inspect"}`)},
 			&llm.ToolCallData{ID: "c2", Name: "grep"},
 		),
 		schema.NewTurn(schema.TurnToolResults, s3cov_twoResults("c1", "ok content", false, "c2", "match", false)),

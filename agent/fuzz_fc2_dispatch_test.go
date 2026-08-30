@@ -82,25 +82,34 @@ func FuzzFc2OutputWindowStatus(f *testing.F) {
 }
 
 // FuzzFc2ToolStartDescription drives toolStartDescription — the pure description
-// promotion lifted out of execTool: an explicit "purpose" wins over the legacy
-// "description", else empty. Oracles (beyond never-panic):
+// promotion lifted out of execTool: an explicit "intent" wins over the legacy
+// "purpose" (backward compat) and "description", else empty. Oracles (beyond
+// never-panic):
 //   - determinism;
-//   - a non-empty string "purpose" is always returned verbatim;
+//   - a non-empty string "intent" (or legacy "purpose") is always returned verbatim;
 //   - otherwise a non-empty string "description" is returned;
 //   - otherwise the result is empty.
 func FuzzFc2ToolStartDescription(f *testing.F) {
-	f.Add("do the thing", "shell desc", true, true)
-	f.Add("", "shell desc", false, true)
-	f.Add("", "", false, false)
-	f.Add("purpose only", "", true, false)
+	f.Add("do the thing", "shell desc", true, true, false)
+	f.Add("", "shell desc", false, true, false)
+	f.Add("", "", false, false, false)
+	f.Add("intent only", "", true, false, false)
+	// Backward-compat: a legacy "purpose" key is still honored as a fallback.
+	f.Add("legacy purpose", "", true, false, true)
 
-	f.Fuzz(func(t *testing.T, purpose, desc string, hasPurpose, hasDesc bool) {
+	f.Fuzz(func(t *testing.T, purpose, desc string, hasIntent, hasDesc, useLegacyPurpose bool) {
 		args := map[string]any{}
 		// Vary the value TYPES too: only a string value should be honored.
-		if hasPurpose {
-			args["purpose"] = purpose
+		// The value rides the primary "intent" key, or the legacy "purpose"
+		// fallback key when useLegacyPurpose is set, to exercise both paths.
+		key := "intent"
+		if useLegacyPurpose {
+			key = "purpose"
+		}
+		if hasIntent {
+			args[key] = purpose
 		} else {
-			args["purpose"] = 42 // non-string: ignored
+			args[key] = 42 // non-string: ignored
 		}
 		if hasDesc {
 			args["description"] = desc
@@ -113,12 +122,12 @@ func FuzzFc2ToolStartDescription(f *testing.F) {
 			t.Fatalf("non-deterministic: %q vs %q", got, got2)
 		}
 
-		wantPurpose := hasPurpose && purpose != ""
+		wantIntent := hasIntent && purpose != ""
 		wantDesc := hasDesc && desc != ""
 		switch {
-		case wantPurpose:
+		case wantIntent:
 			if got != purpose {
-				t.Fatalf("purpose set but got %q, want %q", got, purpose)
+				t.Fatalf("intent set but got %q, want %q", got, purpose)
 			}
 		case wantDesc:
 			if got != desc {

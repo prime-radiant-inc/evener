@@ -6,7 +6,16 @@ import (
 	"testing"
 )
 
-func TestSummarizeTool_Shell_WithPurpose(t *testing.T) {
+func TestSummarizeTool_Shell_WithIntent(t *testing.T) {
+	desc, _ := SummarizeTool("shell", `{"command":"ls -la /tmp","intent":"list temp files"}`)
+	if desc != "list temp files" {
+		t.Errorf("got %q", desc)
+	}
+}
+
+// TestSummarizeTool_Shell_WithLegacyPurpose verifies the older "purpose" wire
+// key still works as a backward-compat fallback (intent takes priority).
+func TestSummarizeTool_Shell_WithLegacyPurpose(t *testing.T) {
 	desc, _ := SummarizeTool("shell", `{"command":"ls -la /tmp","purpose":"list temp files"}`)
 	if desc != "list temp files" {
 		t.Errorf("got %q", desc)
