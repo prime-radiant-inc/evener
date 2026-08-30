@@ -6,12 +6,13 @@ import { InstanceRow } from "./InstanceRow";
 
 afterEach(cleanup);
 
-function instance(overrides: Partial<InstanceEntry> & Pick<InstanceEntry, "name" | "type">): InstanceEntry {
+function instance(overrides: Partial<InstanceEntry> & Pick<InstanceEntry, "name" | "providerId">): InstanceEntry {
   return {
-    apiStyle: "",
-    baseUrl: "",
+    protocol: "openai-chat",
+    auth: "bearer",
+    implicit: false,
     isDefault: false,
-    activeSource: "absent",
+    activeSource: "none",
     hasStoredOAuth: false,
     credentialRequired: true,
     ...overrides,
@@ -22,7 +23,7 @@ describe("the row carries identity and status only", () => {
   test("the whole row is one button showing name, meta, and a chevron", () => {
     render(
       <InstanceRow
-        instance={instance({ name: "openai-work", type: "openai", hasStoredFile: true, activeSource: "file" })}
+        instance={instance({ name: "openai-work", providerId: "openai", hasStoredFile: true, activeSource: "store" })}
         onSelect={() => {}}
       />,
     );
@@ -35,10 +36,10 @@ describe("the row carries identity and status only", () => {
       <InstanceRow
         instance={instance({
           name: "a",
-          type: "openai",
-          authModes: ["apiKey", "oauth"],
+          providerId: "openai",
+          authModes: ["apiKey"],
           hasStoredFile: true,
-          activeSource: "file",
+          activeSource: "store",
         })}
         onSelect={() => {}}
       />,
@@ -54,10 +55,10 @@ describe("the row carries identity and status only", () => {
       <InstanceRow
         instance={instance({
           name: "a",
-          type: "openai",
-          hasStoredOAuth: true,
+          providerId: "anthropic",
           hasStoredFile: true,
-          activeSource: "oauth",
+          envVar: "ANTHROPIC_API_KEY",
+          activeSource: "store",
         })}
         onSelect={() => {}}
       />,
@@ -68,64 +69,84 @@ describe("the row carries identity and status only", () => {
   });
 
   test("the default badge shows when isDefault", () => {
-    render(<InstanceRow instance={instance({ name: "a", type: "x", isDefault: true })} onSelect={() => {}} />);
+    render(<InstanceRow instance={instance({ name: "a", providerId: "x", isDefault: true })} onSelect={() => {}} />);
     expect(screen.getByText(/default/i)).toBeTruthy();
   });
 });
 
+// implicit is the wire's own "exists from the environment, not from
+// providers.toml" flag (InstanceEntry, appwire/types.go) - removal of an
+// implicit instance is refused server-side (spec §11.3), so the sheet
+// offers no Remove, and this badge tells the user why Edit there writes a
+// shadow instead of changing the instance itself.
+describe("implicit instances", () => {
+  test("a 'from environment' badge marks an implicit instance", () => {
+    render(
+      <InstanceRow instance={instance({ name: "groq", providerId: "groq", implicit: true })} onSelect={() => {}} />,
+    );
+    expect(screen.getByText("from environment")).toBeTruthy();
+  });
+
+  test("a non-implicit instance carries no badge", () => {
+    render(
+      <InstanceRow
+        instance={instance({ name: "work", providerId: "groq", base: "groq", implicit: false })}
+        onSelect={() => {}}
+      />,
+    );
+    expect(screen.queryByText("from environment")).toBeNull();
+  });
+});
+
 describe("the meta line", () => {
-  test("apiStyle/baseUrl trailing text: apiStyle preferred, then base url", () => {
+  test("protocol and base URL trailing text", () => {
     render(
       <InstanceRow
         instance={instance({
           name: "a",
-          type: "openai",
-          apiStyle: "responses",
+          providerId: "openai",
+          protocol: "openai-responses",
           baseUrl: "https://x",
           hasStoredFile: true,
-          activeSource: "file",
+          activeSource: "store",
         })}
         onSelect={() => {}}
       />,
     );
-    expect(screen.getByText("responses · base https://x")).toBeTruthy();
+    expect(screen.getByText("openai-responses · base https://x")).toBeTruthy();
   });
 
-  test("base url alone when apiStyle is empty", () => {
+  test("protocol alone when baseUrl is empty", () => {
     render(
       <InstanceRow
         instance={instance({
           name: "a",
-          type: "openai",
-          baseUrl: "https://x",
+          providerId: "openai",
+          protocol: "openai-chat",
           hasStoredFile: true,
-          activeSource: "file",
+          activeSource: "store",
         })}
         onSelect={() => {}}
       />,
     );
-    expect(screen.getByText("base https://x")).toBeTruthy();
+    expect(screen.getByText("openai-chat")).toBeTruthy();
   });
 
-  test("the unconfigured label wins the meta line, with style info appended when present", () => {
+  test("the unconfigured label wins the meta line, with the protocol/base URL appended", () => {
     render(
       <InstanceRow
         instance={instance({
           name: "llama",
-          type: "openai",
+          providerId: "openai-compatible",
+          auth: "optional-bearer",
           baseUrl: "http://127.0.0.1:8080/v1",
-          activeSource: "absent",
+          activeSource: "none",
           credentialRequired: false,
         })}
         onSelect={() => {}}
       />,
     );
-    expect(screen.getByText("No key set · optional · base http://127.0.0.1:8080/v1")).toBeTruthy();
-  });
-
-  test("an unconfigured instance with no style info shows just the label", () => {
-    render(<InstanceRow instance={instance({ name: "a", type: "x", activeSource: "absent" })} onSelect={() => {}} />);
-    expect(screen.getByText("Not configured")).toBeTruthy();
+    expect(screen.getByText("No key set · optional · openai-chat · base http://127.0.0.1:8080/v1")).toBeTruthy();
   });
 });
 
@@ -140,42 +161,56 @@ describe("the heading dot agrees with the meta line", () => {
       <InstanceRow
         instance={instance({
           name: "llama",
-          type: "openai",
-          baseUrl: "http://127.0.0.1:8080/v1",
-          activeSource: "absent",
+          providerId: "openai-compatible",
+          auth: "optional-bearer",
+          activeSource: "none",
           credentialRequired: false,
         })}
         onSelect={() => {}}
       />,
     );
+    expect(screen.getByText(/No key set · optional/)).toBeTruthy();
     expect(screen.getByRole("img", { name: "Idle" })).toBeTruthy();
   });
 
   test("an auth-none provider - one that authenticates nothing - is not announced as ended", () => {
     render(
       <InstanceRow
-        instance={instance({ name: "ollama", type: "ollama", activeSource: "none", credentialRequired: false })}
+        instance={instance({
+          name: "ollama",
+          providerId: "ollama",
+          auth: "none",
+          activeSource: "none",
+          credentialRequired: false,
+        })}
         onSelect={() => {}}
       />,
     );
-    expect(screen.getByText("No credentials required")).toBeTruthy();
+    expect(screen.getByText(/No credentials required/)).toBeTruthy();
     expect(screen.getByRole("img", { name: "Idle" })).toBeTruthy();
   });
 
   test("a provider whose required key is missing keeps the ended dot", () => {
     render(
       <InstanceRow
-        instance={instance({ name: "a", type: "anthropic", activeSource: "absent", credentialRequired: true })}
+        instance={instance({
+          name: "a",
+          providerId: "anthropic",
+          auth: "bearer",
+          activeSource: "none",
+          credentialRequired: true,
+        })}
         onSelect={() => {}}
       />,
     );
+    expect(screen.getByText(/Not configured/)).toBeTruthy();
     expect(screen.getByRole("img", { name: "Ended" })).toBeTruthy();
   });
 
   test("a configured instance shows the idle dot", () => {
     render(
       <InstanceRow
-        instance={instance({ name: "a", type: "x", hasStoredFile: true, activeSource: "file" })}
+        instance={instance({ name: "a", providerId: "x", hasStoredFile: true, activeSource: "store" })}
         onSelect={() => {}}
       />,
     );
@@ -187,7 +222,7 @@ describe("selection", () => {
   test("clicking the row calls onSelect", async () => {
     const user = userEvent.setup();
     const onSelect = vi.fn();
-    render(<InstanceRow instance={instance({ name: "openai-work", type: "openai" })} onSelect={onSelect} />);
+    render(<InstanceRow instance={instance({ name: "openai-work", providerId: "openai" })} onSelect={onSelect} />);
     await user.click(screen.getByRole("button", { name: /openai-work/ }));
     expect(onSelect).toHaveBeenCalledTimes(1);
   });
