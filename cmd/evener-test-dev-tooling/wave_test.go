@@ -751,9 +751,9 @@ func TestFifoReadTripwireOutlivesTheGraceWindow(t *testing.T) {
 		// this file's clean one-line error rather than the runner's panic —
 		// unless even the still-running window exceeds the budget, where that
 		// window wins and the runner's deadline backstops.
-		if tripwire > budget && tripwire > liveWindow {
-			t.Errorf("deadline %v from now: tripwire %v exceeds the reportable budget %v while also exceeding the live window %v: it should shed its post-exit padding instead",
-				deadline.Sub(now), tripwire, budget, liveWindow)
+		if tripwire > budget && tripwire > runningWindow {
+			t.Errorf("deadline %v from now: tripwire %v exceeds the reportable budget %v while also beyond the still-running window %v: it should shed its post-exit padding instead",
+				deadline.Sub(now), tripwire, budget, runningWindow)
 		}
 	}
 }
