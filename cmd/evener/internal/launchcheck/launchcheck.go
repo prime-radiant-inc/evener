@@ -20,6 +20,10 @@ import (
 // calls cmdutil.LoadClient; tests may replace this to inject a stub client.
 var launchCheckLoadClient = cmdutil.LoadClient
 
+// launchCheckListTimeout bounds one instance's model listing. It is per
+// instance, not per command, so a slow endpoint costs only its own budget.
+const launchCheckListTimeout = 8 * time.Second
+
 type launchCheckModel struct {
 	Provider string `json:"provider"`
 	Model    string `json:"model"`
@@ -103,12 +107,10 @@ func validateLaunchCheckProfile(ref cmdutil.ModelRef) error {
 }
 
 // launchCheckModels lists what every visible instance can launch. Each
-// instance is listed on its own so one unreachable endpoint reports a
-// diagnostic instead of hiding the rest.
+// instance is listed on its own, under its own timeout, so one unreachable
+// endpoint reports a diagnostic instead of hiding the rest or starving every
+// instance after it.
 func launchCheckModels() ([]launchCheckModel, []appwire.ModelListDiagnostic, error) {
-	ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
-	defer cancel()
-
 	client, err := launchCheckLoadClient("")
 	if err != nil {
 		return nil, nil, err
@@ -119,7 +121,9 @@ func launchCheckModels() ([]launchCheckModel, []appwire.ModelListDiagnostic, err
 		if inst.Hidden {
 			continue
 		}
-		listing, err := client.Models(ctx, inst.Name)
+		listCtx, cancel := context.WithTimeout(context.Background(), launchCheckListTimeout)
+		listing, err := client.Models(listCtx, inst.Name)
+		cancel()
 		if err != nil {
 			diagnostics = append(diagnostics, launchCheckModelDiagnostic(inst.Name, err))
 			continue
@@ -168,7 +172,7 @@ func launchCheckSensitiveEnvKey(key string) bool {
 // answered with a live listing — membership in what it advertised. A
 // registry-only listing proves nothing about availability, so it passes.
 func validateLaunchCheckModel(ref cmdutil.ModelRef) error {
-	ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), launchCheckListTimeout)
 	defer cancel()
 
 	client, err := launchCheckLoadClient("")

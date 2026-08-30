@@ -13,25 +13,26 @@ import (
 
 	"primeradiant.com/evener/appwire"
 	"primeradiant.com/evener/auth/openai/oaitest"
+	"primeradiant.com/evener/cmdutil"
+	"primeradiant.com/evener/llm"
 	_ "primeradiant.com/evener/llm/providers/all"
+	"primeradiant.com/evener/llm/registry"
 )
 
 // launchCheckGateway starts a /models endpoint answering with status and body,
-// declares it as the "gw" instance in an isolated providers.toml, and points
-// every environment seam at that temp directory. It returns nothing: the
-// launch check reads the environment the same way the CLI does.
+// declares it as the "gw" instance in an isolated providers.toml, and installs
+// a client built from that file on the launchCheckLoadClient seam.
+//
+// The client is the real one — cmdutil.LoadRegistry over the real providers
+// file, no mocks — but its environment is a fixed table rather than the
+// machine's. That matters because launchCheckModels lists every visible
+// instance and implicit instances are conjured from the environment: an
+// ambient TOGETHER_API_KEY would otherwise put api.together.ai in the loop.
+// The one variable the table answers is OLLAMA_HOST, whose instance needs no
+// credential and is therefore always visible; it points at a closed port so
+// its listing fails instantly instead of reaching a real daemon.
 func launchCheckGateway(t *testing.T, status int, body string) {
 	t.Helper()
-	// Isolate from any stored OAuth record or provider key on the dev machine
-	// so only the declared instance is configured.
-	oaitest.IsolateOpenAIAuth(t)
-	for _, key := range []string{
-		"OPENAI_API_KEY", "ANTHROPIC_API_KEY", "GEMINI_API_KEY", "GLM_API_KEY",
-		"GROK_API_KEY", "KIMI_API_KEY", "MINIMAX_API_KEY", "OPENROUTER_API_KEY",
-		"OLLAMA_API_KEY", "OPENAI_COMPATIBLE_BASE_URL",
-	} {
-		t.Setenv(key, "")
-	}
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if !strings.HasSuffix(r.URL.Path, "/models") {
 			http.NotFound(w, r)
@@ -42,9 +43,6 @@ func launchCheckGateway(t *testing.T, status int, body string) {
 		_, _ = w.Write([]byte(body))
 	}))
 	t.Cleanup(srv.Close)
-	// The ollama instance is always configured (its auth is optional); point it
-	// at a closed port so its listing fails fast instead of reaching a real one.
-	t.Setenv("OLLAMA_HOST", "127.0.0.1:1")
 
 	dir := t.TempDir()
 	cfgPath := filepath.Join(dir, "providers.toml")
@@ -56,10 +54,23 @@ api_key  = "test-key"
 `), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	t.Setenv("EVENER_PROVIDERS_CONFIG", cfgPath)
-	t.Setenv("EVENER_CREDENTIALS_CONFIG", filepath.Join(dir, "credentials.toml"))
-	// IsolateOpenAIAuth already pointed XDG_STATE_HOME at a temp dir, which is
-	// where LoadRegistry reads its catalog cache and OAuth records from.
+	stateRoot := t.TempDir()
+	env := map[string]string{"OLLAMA_HOST": "127.0.0.1:1"}
+
+	old := launchCheckLoadClient
+	t.Cleanup(func() { launchCheckLoadClient = old })
+	launchCheckLoadClient = func(stateDir string) (*llm.Client, error) {
+		r, _, err := cmdutil.LoadRegistry(
+			registry.WithConfigPath(cfgPath),
+			registry.WithStateRoot(stateRoot),
+			registry.WithOffline(true), registry.WithoutCache(),
+			registry.WithEnv(func(k string) (string, bool) { v, ok := env[k]; return v, ok }),
+		)
+		if err != nil {
+			return nil, err
+		}
+		return cmdutil.NewRegistryClient(r, stateDir), nil
+	}
 }
 
 func TestLaunchCheckReportsProtocolAndValidatedModel(t *testing.T) {
@@ -264,5 +275,31 @@ func TestLaunchCheckRejectsUnknownInstance(t *testing.T) {
 	}
 	if stdout.Len() != 0 {
 		t.Fatalf("stdout=%q, want empty on failure", stdout.String())
+	}
+}
+
+// TestLaunchCheckSeesOnlyTheDeclaredInstances pins the suite's hermeticity:
+// the launch check lists every visible registry instance, and implicit
+// instances are conjured from the environment, so a provider key that happens
+// to be exported on the machine running the tests would put a real endpoint in
+// the loop. The fixture's client must see the declared gateway and nothing
+// else that could be reached over the network.
+func TestLaunchCheckSeesOnlyTheDeclaredInstances(t *testing.T) {
+	// A key the old hand-listed sweep did not clear.
+	t.Setenv("TOGETHER_API_KEY", "sk-ambient-must-not-leak")
+	launchCheckGateway(t, http.StatusOK, `{"data":[{"id":"glm-5"}]}`)
+
+	client, err := launchCheckLoadClient("")
+	if err != nil {
+		t.Fatalf("launchCheckLoadClient: %v", err)
+	}
+	for _, inst := range client.Registry().Instances() {
+		if inst.Hidden {
+			continue
+		}
+		if inst.Name != "gw" && inst.Name != "ollama" {
+			t.Errorf("visible instance %q (base URL %q) came from the ambient environment; the launch check would list it over the network",
+				inst.Name, inst.BaseURL)
+		}
 	}
 }
