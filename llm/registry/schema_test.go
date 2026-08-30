@@ -189,6 +189,74 @@ func TestParseConfig_ChatTemplateKwargsNestedValueParses(t *testing.T) {
 	}
 }
 
+// TestParseConfig_ChatTemplateKwargsExemptionIsPositionScoped pins that the
+// Undecoded() typo-guard exemption for chat_template_kwargs applies only
+// where Caps actually lives — providers.<name>, providers.<name>.models.
+// <id>, and the top-level models.<glob> — not to any key path that merely
+// contains the segment "chat_template_kwargs" somewhere. A typo'd
+// intermediate table name, or a bare top-level chat_template_kwargs table
+// that no schema owns, must still produce the unknown-key error (spec §10).
+func TestParseConfig_ChatTemplateKwargsExemptionIsPositionScoped(t *testing.T) {
+	cases := []struct {
+		name  string
+		src   string
+		check func(t *testing.T, l *Layer, err error)
+	}{
+		{
+			"typo'd intermediate table before chat_template_kwargs still errors",
+			"[providers.x.nonexistent_table.chat_template_kwargs]\nmode = \"a\"\n",
+			func(t *testing.T, l *Layer, err error) {
+				if err == nil || !strings.Contains(err.Error(), "nonexistent_table") {
+					t.Fatalf("want an unknown-key error naming nonexistent_table, got %v", err)
+				}
+			},
+		},
+		{
+			"bare top-level chat_template_kwargs table errors",
+			"[chat_template_kwargs]\nmode = \"a\"\n",
+			func(t *testing.T, l *Layer, err error) {
+				if err == nil {
+					t.Fatal("want an unknown-key error, got nil")
+				}
+			},
+		},
+		{
+			"model row chat_template_kwargs is accepted and decoded",
+			"[providers.x.models.\"m\".chat_template_kwargs.options]\nmode = \"a\"\n",
+			func(t *testing.T, l *Layer, err error) {
+				if err != nil {
+					t.Fatalf("want no error, got %v", err)
+				}
+				want := map[string]any{"options": map[string]any{"mode": "a"}}
+				got := l.Providers["x"].Models["m"].Caps.ChatTemplateKwargs
+				if !reflect.DeepEqual(got, want) {
+					t.Fatalf("chat_template_kwargs: got %+v want %+v", got, want)
+				}
+			},
+		},
+		{
+			"top-level glob row chat_template_kwargs is accepted and decoded",
+			"[models.\"g*\".chat_template_kwargs]\nmode = \"a\"\n",
+			func(t *testing.T, l *Layer, err error) {
+				if err != nil {
+					t.Fatalf("want no error, got %v", err)
+				}
+				want := map[string]any{"mode": "a"}
+				got := l.TopGlobs["g*"].Caps.ChatTemplateKwargs
+				if !reflect.DeepEqual(got, want) {
+					t.Fatalf("chat_template_kwargs: got %+v want %+v", got, want)
+				}
+			},
+		},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			l, err := ParseConfig([]byte(c.src))
+			c.check(t, l, err)
+		})
+	}
+}
+
 func TestParseConfig_OldSchema(t *testing.T) {
 	for _, src := range []string{
 		"[instances.openai]\ntype = \"openai\"\n",

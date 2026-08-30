@@ -4,7 +4,6 @@ import (
 	"errors"
 	"fmt"
 	"regexp"
-	"slices"
 	"sort"
 	"strings"
 
@@ -167,14 +166,7 @@ func parseLayer(data []byte, tag string, curated bool) (*Layer, error) {
 	if undecoded := md.Undecoded(); len(undecoded) > 0 {
 		keys := make([]string, 0, len(undecoded))
 		for _, k := range undecoded {
-			// chat_template_kwargs is a free-form passthrough map (Caps.ChatTemplateKwargs
-			// is map[string]any): per the toml package's own doc for Undecoded, "decoding
-			// into an empty interface will result in no decoding," so a key nested inside
-			// its value is never marked decoded even though toml.Decode populates it
-			// correctly. That makes a legitimate nested value indistinguishable from a
-			// typo by key path alone, so this one field is exempt from the typo guard;
-			// every other key still gets it.
-			if slices.Contains([]string(k), "chat_template_kwargs") {
+			if chatTemplateKwargsUndecoded(k) {
 				continue
 			}
 			keys = append(keys, k.String())
@@ -260,6 +252,34 @@ func parseLayer(data []byte, tag string, curated bool) (*Layer, error) {
 		}
 	}
 	return l, nil
+}
+
+// chatTemplateKwargsUndecoded reports whether an Undecoded() key path names
+// something nested inside a Caps.ChatTemplateKwargs value (map[string]any),
+// at one of the three table shapes that embed Caps: providers.<name>.
+// chat_template_kwargs.* (key[2]), providers.<name>.models.<id>.
+// chat_template_kwargs.* (key[4]), and the top-level models.<glob>.
+// chat_template_kwargs.* (key[2]). Position, not mere presence of the
+// segment, decides: a typo'd intermediate table name, or a bare top-level
+// chat_template_kwargs table that no schema owns, must still be caught by
+// the unknown-key guard that calls this.
+//
+// This exists only because the toml package's own Undecoded() never marks a
+// key nested inside a map[string]any value as decoded ("decoding into an
+// empty interface will result in no decoding"), so a legitimate nested
+// chat_template_kwargs value is otherwise indistinguishable from a typo by
+// key path alone.
+func chatTemplateKwargsUndecoded(key []string) bool {
+	switch {
+	case len(key) >= 3 && key[0] == "providers" && key[2] == "chat_template_kwargs":
+		return true
+	case len(key) >= 5 && key[0] == "providers" && key[2] == "models" && key[4] == "chat_template_kwargs":
+		return true
+	case len(key) >= 3 && key[0] == "models" && key[2] == "chat_template_kwargs":
+		return true
+	default:
+		return false
+	}
 }
 
 func validateProvider(ps providerSchema, where string) error {
