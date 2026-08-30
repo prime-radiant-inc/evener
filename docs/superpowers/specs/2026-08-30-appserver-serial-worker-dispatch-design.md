@@ -636,22 +636,31 @@ system is already built for it on all three sides:
   non-`app_rpc.go` hub registrations) and the client sweep. Drift policy: the
   table is pinned to `173411a6a`, so before slice 1 merges, the registration
   sweep is re-run at the merge base — the 108-row checksum makes the diff
-  mechanical — and any added registration or changed ctx-binding handler body
-  gets its row audited then; a row count that no longer matches is a gate
-  failure, not a rounding error.
-  Outcome: the daemon 18/6 ctx split verified exact; two gate findings, both in
-  the marketplace/plugin family the spec named — `evener/marketplace/refresh`
+  mechanical — and a row is re-audited when its registration, its handler
+  body, or the delegate machinery its evidence note names (the rows cite their
+  load-bearing dependencies: `internal/plugins`, the codex launch path, the
+  shared `git()` runner, the clear callback) has changed since `173411a6a`; a
+  row count that no longer matches is a gate failure, not a rounding error.
+  Outcome: the daemon 18/6 ctx split verified exact; three FLAG findings, each
+  with its disposition. Two, both in the marketplace/plugin family the spec
+  named, were gate failures remediated with behavior fixes —
+  `evener/marketplace/refresh`
   (a canceled `git pull` is SIGKILLed inside the *live* marketplace clone,
   which can strand `.git/index.lock`/partial checkout with no self-heal path:
   every later refresh fails until manual cleanup) and `evener/plugin/checkNow`
   (same root cause through the shared machinery). Both are remediated in the
-  standalone PR `review/slice0-audit-remediations`: a staged reclone self-heal
+  standalone PR `review/slice0-audit-remediations` (whose staged-reclone
+  approach supersedes the cheaper wipe-and-reclone sketch in the shard files —
+  the checked-in shards are the pinned audit record, and their inline
+  remediation suggestions are historical, not the plan): a staged reclone self-heal
   that never removes the old clone before the new content is fully down,
   SIGTERM `Cancel` + `WaitDelay` on the shared `git()` runner so cancellation
   stops being a SIGKILL mid-write, and a ctx-aware flock. One further finding,
   `thread/start` (a ctx-binding spawn→read→initial-turn sequence with no
   dedup — it is not in the `ValidateMutationParams` 8 and its initial turn's
-  `ClientMutationID` is server-minted per attempt), is shielded with
+  `ClientMutationID` is server-minted per attempt), is the third: not an
+  accepted exception but a gate finding whose remediation is the shield — it is
+  shielded with
   `context.WithoutCancel` around its admitted sequence: once admitted it runs
   to completion as it effectively did under PR #667, and the retry-duplicate
   residue (an orphan session visible in `thread/list`) is tolerated rather
@@ -976,12 +985,13 @@ the semantics the final design requires):
    ran as four parallel auditors at origin/main `173411a6a`, covering all 108
    rows (the counting convention in Goals — the row count is the
    exhaustiveness checksum) plus the client call-site sweep. Outcome recorded
-   in that section: two gate findings (`evener/marketplace/refresh`,
-   `evener/plugin/checkNow` — a canceled git pull SIGKILLed in the live clone
-   with no self-heal) remediated in the standalone PR
-   `review/slice0-audit-remediations` (staged reclone self-heal, SIGTERM
-   `Cancel` + `WaitDelay` on `git()`, ctx-aware flock); `thread/start`
-   shielded with `context.WithoutCancel` for its admitted sequence; the
+   in that section: three FLAG findings, all dispositioned — two gate
+   failures (`evener/marketplace/refresh`, `evener/plugin/checkNow` — a
+   canceled git pull SIGKILLed in the live clone with no self-heal)
+   remediated in the standalone PR `review/slice0-audit-remediations`
+   (staged reclone self-heal, SIGTERM `Cancel` + `WaitDelay` on `git()`,
+   ctx-aware flock), and `thread/start`, whose remediation is the
+   `context.WithoutCancel` shield for its admitted sequence; the
    client sweep fired the cap's revision clause and `slowReadDispatchCap`
    became 16. The disposition shards and client sweep are checked in at
    `2026-08-30-appserver-serial-worker-dispatch-audit/`; the drift policy in
