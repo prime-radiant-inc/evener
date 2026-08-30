@@ -159,12 +159,12 @@ beforeEach(() => {
     },
   });
   HTMLElement.prototype.getBoundingClientRect = function () {
-    const article = this.matches('[data-testid="virtual-transcript-row"]')
+    const article = this.matches("[data-virtual-row]")
       ? this.querySelector<HTMLElement>("[data-height]")
       : null;
     const height = article
       ? Number(article.dataset.height)
-      : this.matches('[data-testid="virtual-transcript-row"]')
+      : this.matches("[data-virtual-row]")
         ? fallbackVirtualRowHeight
         : this.getAttribute("role") === "feed" ||
             this.hasAttribute("data-virtual-list-scroll")
@@ -403,9 +403,7 @@ function emitMeasurementWhere(predicate: (target: Element) => boolean): void {
 }
 
 function rowStart(key: string): number {
-  const row = screen
-    .getByText(key)
-    .closest<HTMLElement>('[data-testid="virtual-transcript-row"]');
+  const row = screen.getByText(key).closest<HTMLElement>("[data-virtual-row]");
   if (row === null) throw new Error(`missing row ${key}`);
   const match = row.style.transform.match(/translateY\(([-\d.]+)px\)/);
   if (match?.[1] === undefined) throw new Error(`missing transform for ${key}`);
@@ -434,9 +432,7 @@ async function focusKey(
 ): Promise<void> {
   act(() => ref.current?.focusKey(key));
   await waitFor(() =>
-    expect(
-      screen.getByText(key).closest('[data-testid="virtual-transcript-row"]'),
-    ).toHaveFocus(),
+    expect(screen.getByText(key).closest("[data-virtual-row]")).toHaveFocus(),
   );
 }
 
@@ -894,9 +890,7 @@ describe("VariableHeightVirtualList", () => {
     await emitMeasurements();
     await focusKey(ref, "item-12");
     expect(
-      screen
-        .getByText("item-12")
-        .closest('[data-testid="virtual-transcript-row"]'),
+      screen.getByText("item-12").closest("[data-virtual-row]"),
     ).toHaveFocus();
 
     const feed = screen.getByRole("feed");
@@ -909,9 +903,7 @@ describe("VariableHeightVirtualList", () => {
 
     await focusKey(ref, "item-12");
     expect(
-      screen
-        .getByText("item-12")
-        .closest('[data-testid="virtual-transcript-row"]'),
+      screen.getByText("item-12").closest("[data-virtual-row]"),
     ).toHaveFocus();
   });
 
@@ -941,9 +933,7 @@ describe("VariableHeightVirtualList", () => {
       name: "Evidence item-80",
     });
     await waitFor(() => expect(target).toHaveFocus());
-    expect(
-      target.closest('[data-testid="virtual-transcript-row"]'),
-    ).not.toHaveFocus();
+    expect(target.closest("[data-virtual-row]")).not.toHaveFocus();
   });
 
   it("preserves descendant focus for retained rows and moves it before same-count removal", async () => {

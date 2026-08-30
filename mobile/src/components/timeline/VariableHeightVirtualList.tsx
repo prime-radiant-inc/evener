@@ -543,7 +543,7 @@ export const VariableHeightVirtualList = forwardRef(
         pendingFocusRef.current = true;
         const mounted = [
           ...(scrollRef.current?.querySelectorAll<HTMLElement>(
-            '[data-testid="virtual-transcript-row"]',
+            '[data-virtual-row="true"]',
           ) ?? []),
         ].find((row) => row.dataset.itemKey === key);
         if (mounted !== null && mounted !== undefined) {
@@ -666,7 +666,7 @@ export const VariableHeightVirtualList = forwardRef(
       if (key === null || !pendingFocusRef.current) return;
       const mounted = [
         ...(scrollRef.current?.querySelectorAll<HTMLElement>(
-          '[data-testid="virtual-transcript-row"]',
+          '[data-virtual-row="true"]',
         ) ?? []),
       ].find((row) => row.dataset.itemKey === key);
       if (mounted !== null && mounted !== undefined) {
@@ -707,6 +707,7 @@ export const VariableHeightVirtualList = forwardRef(
             ref: rowRefFor(key),
             "data-index": virtualItem.index,
             "data-item-key": key,
+            "data-virtual-row": "true",
             "data-testid": "virtual-transcript-row",
             tabIndex: -1,
             style: {

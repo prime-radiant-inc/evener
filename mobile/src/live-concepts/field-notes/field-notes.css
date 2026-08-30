@@ -598,9 +598,7 @@
     max(0.65rem, var(--safe-area-left, 0px));
 }
 
-.concept-field-notes.fn-conversation-skin
-  [data-testid="virtual-transcript-row"]
-  > article {
+.concept-field-notes.fn-conversation-skin [data-virtual-row] > article {
   min-width: 0;
   padding-block: 0.45rem;
 }

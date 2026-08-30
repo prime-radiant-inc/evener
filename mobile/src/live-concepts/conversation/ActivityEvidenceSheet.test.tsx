@@ -111,7 +111,7 @@ beforeEach(() => {
     },
   });
   HTMLElement.prototype.getBoundingClientRect = function () {
-    const height = this.matches('[data-testid="virtual-transcript-row"]')
+    const height = this.matches("[data-virtual-row]")
       ? ROW_HEIGHT
       : this.hasAttribute("data-virtual-list-scroll")
         ? VIEWPORT_HEIGHT
