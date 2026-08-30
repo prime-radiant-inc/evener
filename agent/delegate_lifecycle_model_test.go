@@ -270,12 +270,15 @@ func (m *delegateLifecycleModel) completeStop() {
 	}
 }
 
-// noActionEligible mirrors noActionEvidenceEligible plus the fallback
-// presence check in noActionFinishLocked: the packetless no-action finish is
-// reachable only with evidence present, attention-only requirement, the
-// recorded no-action outcome, no terminal seen, and a retained fallback.
+// noActionEligible mirrors the full production eligibility chain in
+// prepareNoAction: the packetless no-action finish is reachable only with
+// the aggregate still in the running phase (a pending stop request moves the
+// aggregate to stopping, which refuses the finish), evidence present,
+// attention-only requirement, the recorded no-action outcome, no terminal
+// seen, and a retained fallback.
 func (m *delegateLifecycleModel) noActionEligible(fallbackRetained bool) bool {
-	return m.evidencePresent && !m.reportRequired && m.attentionNoAction && !m.terminalSeen && fallbackRetained
+	return m.phase == delegatestore.PhaseRunning && m.evidencePresent && !m.reportRequired &&
+		m.attentionNoAction && !m.terminalSeen && fallbackRetained
 }
 
 // legalPhaseTransition reports whether from → to is a path in the model's
