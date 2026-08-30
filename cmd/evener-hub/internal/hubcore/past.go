@@ -719,10 +719,12 @@ func (i *PastIndex) Find(sessionID string) (PastEntry, bool) {
 	if sessionID == "" || i.stateGlob == "" {
 		return PastEntry{}, false
 	}
-	if _, err := i.Rebuild(); err != nil {
+	entry, found := i.probeOne(sessionID)
+	if !found {
 		return PastEntry{}, false
 	}
-	return i.findCached(sessionID)
+	i.foldOne(entry)
+	return entry, true
 }
 
 func (i *PastIndex) findCached(sessionID string) (PastEntry, bool) {
@@ -730,4 +732,76 @@ func (i *PastIndex) findCached(sessionID string) (PastEntry, bool) {
 	defer i.mu.RUnlock()
 	e, ok := i.byID[sessionID]
 	return e, ok
+}
+
+// probeOne looks for one session's meta across every project the glob
+// matches, reading only that session's meta.json per project — the same file
+// and decode Rebuild's list path reads — instead of decoding every meta on
+// disk. Like Rebuild's byID map, a session present in several projects
+// resolves to the LAST project in glob order.
+//
+// A miss here is not proof the session does not exist: unlike a full
+// Rebuild, a corrupt meta file, an unlistable sessions dir, or an invalid
+// project id all just skip that project. The 60s rebuild tick remains the
+// authority for those; Find's miss path only needs to surface a session
+// persisted after the last index (the fuzzScenarioPastIndex_FindRefreshesNewSessionOnMiss
+// contract).
+func (i *PastIndex) probeOne(sessionID string) (PastEntry, bool) {
+	matches, err := filepath.Glob(i.stateGlob)
+	if err != nil {
+		return PastEntry{}, false
+	}
+	var found PastEntry
+	for _, project := range matches {
+		if identifier.ValidateProjectID(filepath.Base(project)) != nil {
+			continue
+		}
+		meta, err := schema.LoadSessionMeta(project, sessionID)
+		if err != nil {
+			continue
+		}
+		found = PastEntry{ID: sessionID, Meta: meta, StateDir: project}
+	}
+	return found, found.ID != ""
+}
+
+// foldOne inserts a probed entry into the in-memory index, mirroring
+// UpdateMeta's allocate-then-swap discipline (the sorted slice Rebuild may
+// still be reading must not be mutated in place). Unlike UpdateMeta it
+// inserts an id the index has never seen, so it also renumbers the FTS rows
+// and re-fingerprints, firing onChange exactly when the fold changed content.
+func (i *PastIndex) foldOne(entry PastEntry) {
+	i.mu.Lock()
+	if _, ok := i.byID[entry.ID]; ok {
+		// A concurrent Rebuild indexed it first; its entry is at least as
+		// fresh as the probe's (both read the same file), so keep it.
+		i.mu.Unlock()
+		return
+	}
+	i.byID[entry.ID] = entry
+	fresh := make([]PastEntry, 0, len(i.all)+1)
+	fresh = append(fresh, i.all...)
+	pos := sort.Search(len(fresh), func(k int) bool { return !sessionMetaLess(fresh[k].Meta, entry.Meta) })
+	fresh = append(fresh, PastEntry{})
+	copy(fresh[pos+1:], fresh[pos:])
+	fresh[pos] = entry
+	i.all = fresh
+	all := append([]PastEntry(nil), i.all...)
+	i.mu.Unlock()
+
+	if i.dbPath != "" {
+		if err := i.rebuildFTS(all); err == nil {
+			i.mu.Lock()
+			i.fts = true
+			i.mu.Unlock()
+		}
+	}
+	fp := contentFingerprint(all)
+	i.mu.Lock()
+	changed := fp != i.fingerprint
+	i.fingerprint = fp
+	i.mu.Unlock()
+	if changed && i.onChange != nil {
+		i.onChange()
+	}
 }
