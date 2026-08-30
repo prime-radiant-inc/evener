@@ -549,6 +549,15 @@ let dispatchReadyEpoch = -1;
 const pinnedMutationRefs = new Set<string>();
 const dispatchableMutationRefs = new Set<string>();
 
+// Refs this connection generation holds a wire subscription for. thread/read
+// with subscribe:true is how a subscription is created, and every re-read of
+// a tracked ref (ensureThread retry, onReady resync, watchThread upgrade)
+// used to send it again — additively and with a fresh capture cycle, because
+// nothing recorded "already subscribed on THIS socket". A new connection
+// carries no subscriptions, so rewireClient and the onReady path both clear
+// the set; the next read of a still-tracked ref re-subscribes as before.
+const wireSubscribedRefs = new Set<string>();
+
 interface MutationRuntime {
   storage: MutationOutboxIndexedDB;
   dispatcher: MutationDispatcher;
@@ -836,16 +845,22 @@ const watchIncludeTurns = new Map<string, boolean>();
 // was released before either response arrived.
 const watchHydratedIncludeTurns = new Map<string, boolean>();
 
-// Every tracked ref gets exactly these params on both the first subscribe
-// (ensureThread) and every re-subscribe (onReady after reconnect):
-// replaceSubscription is always false — additive, layering onto whatever the
-// daemon already tracks for this client rather than resetting it.
-function readParams(ref: string) {
+// Both hydrate paths (open-pane and watched) read a ref with exactly these
+// params, differing only in includeTurns: replaceSubscription is always
+// false — additive, layering onto whatever the daemon already tracks for this
+// client rather than resetting it.
+//
+// subscribe is true only when this connection generation holds no wire
+// subscription for the ref yet (see wireSubscribeDecision): a re-read of an
+// already-subscribed ref sends subscribe:false so the server skips the
+// buffered-capture cycle a second subscribe would run, and
+// releaseThread's unsubscribe is what drops the entry again.
+function threadReadParams(ref: string, includeTurns: boolean, subscribe: boolean) {
   return {
     ref,
-    includeTurns: true,
+    includeTurns,
     itemsView: "full",
-    subscribe: true,
+    subscribe,
     replaceSubscription: false,
     turnLimit: 40,
   } as const;
@@ -856,6 +871,56 @@ interface ThreadHydration {
   response: ThreadReadResponse;
 }
 
+// sendThreadUnsubscribe drops this client's wire subscription to a ref the
+// last holder of just released. Fire-and-forget on purpose: the local release
+// is already complete and cannot be rolled back, so a failed or racing
+// unsubscribe must not block navigation — the hub's idle-relay teardown and
+// the server's connection-close cleanup (RemoveConnection) are both
+// idempotent backstops for a lost message.
+function sendThreadUnsubscribe(ref: string): void {
+  const client = wiredClient;
+  if (client?.state !== "ready") return;
+  void client.request("thread/unsubscribe", { ref }).catch(() => {
+    // Swallow: see above. A dropped unsubscribe costs only a kept server-side
+    // subscription until the connection or the relay's idle timer ends it.
+  });
+}
+
+// The shared subscribe decision for both hydrate paths (open-pane and
+// watched): a read subscribes only when this connection generation holds no
+// wire subscription for the ref yet, and marks it held only after the read
+// succeeds — a failed read's subscribe never took effect server-side, so its
+// retry must send subscribe:true again.
+//
+// The membership set is NOT derivable from refCounts/watchRefCounts: those
+// count local interest (incremented synchronously, before any wire call),
+// while this records a fact about the wire (a subscribe that completed).
+// A count>0 with no held entry is exactly the pending-hydration and
+// failed-read-retry window, and deriving subscribe:false there would strand
+// the ref unsubscribed.
+//
+// markSubscribed re-checks holders after the read resolves: a release that
+// ran mid-flight left no holder, and that release saw the set WITHOUT this
+// ref (so it sent no unsubscribe). Recording the entry now would leak the
+// server-side subscription this read just created until connection close —
+// so the zero-holder read sends its own unsubscribe instead. A pinned
+// outbox ref is the deliberate exception: it holds no pane but must keep
+// its subscription for the mutation replay.
+function wireSubscribeDecision(ref: string): { subscribe: boolean; markSubscribed: () => void } {
+  const subscribe = !wireSubscribedRefs.has(ref);
+  return {
+    subscribe,
+    markSubscribed: () => {
+      if (!subscribe) return;
+      if ((refCounts.get(ref) ?? 0) <= 0 && (watchRefCounts.get(ref) ?? 0) <= 0 && !pinnedMutationRefs.has(ref)) {
+        sendThreadUnsubscribe(ref);
+        return;
+      }
+      wireSubscribedRefs.add(ref);
+    },
+  };
+}
+
 async function hydrateAndSubscribe(
   client: AppwireClientLike,
   ref: string,
@@ -863,8 +928,9 @@ async function hydrateAndSubscribe(
   pending: PendingThreadHydration,
 ): Promise<ThreadHydration> {
   let response: ThreadReadResponse;
+  const { subscribe, markSubscribed } = wireSubscribeDecision(ref);
   try {
-    response = await client.request("thread/read", readParams(ref));
+    response = await client.request("thread/read", threadReadParams(ref, true, subscribe));
   } catch (err) {
     // thread/read is answered from the daemon's in-memory snapshot, so a
     // rejection here is a transport failure, not a slow file read and not a
@@ -873,6 +939,7 @@ async function hydrateAndSubscribe(
     scheduleOwnedHydrationRetry("thread", ref, pending);
     throw err;
   }
+  markSubscribed();
   const model = hydrateThread(response, ref, now);
   applyHydrationResponseCut(pending, ref, model);
   return { model, response };
@@ -897,18 +964,10 @@ function markThreadDeletedIfFenced(ref: string, err: unknown): void {
   });
 }
 
-// Lean watches omit turns until an expanded card asks for them.
-function watchReadParams(ref: string, includeTurns = false) {
-  return {
-    ref,
-    includeTurns,
-    itemsView: "full",
-    subscribe: true,
-    replaceSubscription: false,
-    turnLimit: 40,
-  } as const;
-}
-
+// Lean watches omit turns until an expanded card asks for them; the shared
+// threadReadParams carries the rest (subscribe:false for a ref this
+// connection generation already subscribes — the read still refreshes the
+// snapshot).
 async function hydrateAndSubscribeWatch(
   client: AppwireClientLike,
   ref: string,
@@ -917,13 +976,15 @@ async function hydrateAndSubscribeWatch(
   includeTurns = false,
 ): Promise<ThreadModel> {
   let resp: ThreadReadResponse;
+  const { subscribe, markSubscribed } = wireSubscribeDecision(ref);
   try {
-    resp = await client.request("thread/read", watchReadParams(ref, includeTurns));
+    resp = await client.request("thread/read", threadReadParams(ref, includeTurns, subscribe));
   } catch (err) {
     markThreadDeletedIfFenced(ref, err);
     scheduleOwnedHydrationRetry("watched", ref, pending);
     throw err;
   }
+  markSubscribed();
   const model = hydrateThread(resp, ref, now);
   applyHydrationResponseCut(pending, ref, model);
   return model;
@@ -1814,6 +1875,11 @@ async function handleReady(client: AppwireClientLike, epoch: number, targetRef?:
 function rewireClient(client: AppwireClientLike): void {
   if (client === wiredClient) return;
   readyEpoch += 1;
+  // A different client is a different connection: every wire subscription
+  // this generation tracked belongs to a socket that is gone, so drop the
+  // whole set — handleReady's re-reads re-subscribe the still-tracked refs on
+  // the new client.
+  wireSubscribedRefs.clear();
   retireAllOwnedHydrations();
   dispatchReadyClient = null;
   dispatchReadyEpoch = -1;
@@ -1824,6 +1890,10 @@ function rewireClient(client: AppwireClientLike): void {
   unwireNotification = client.onNotification(handleNotification);
   unwireReady = client.onReady(() => {
     readyEpoch += 1;
+    // onReady is the SAME client reconnecting: its old connection's
+    // subscriptions are server-side gone too, even though the client object
+    // survives. handleReady re-subscribes the still-tracked refs.
+    wireSubscribedRefs.clear();
     retireAllOwnedHydrations();
     dispatchReadyClient = null;
     dispatchReadyEpoch = -1;
@@ -2103,10 +2173,14 @@ export const threadsStore = createStore<ThreadsStoreState>(() => ({
     inflightHydrateClients.delete(ref);
     inflightHydrateEpochs.delete(ref);
     pendingThreadHydrations.delete(ref);
-    // No wire call exists for "stop pushing me updates for this ref" (no
-    // thread/read subscribe:false, no unsubscribe method) — the daemon keeps
-    // sending; removing it from `threads` just stops handleNotification's
-    // per-model scan from matching it, so nothing routes here anymore.
+    // A watched lifecycle may still hold this ref (watchRefCounts), and its
+    // model stays; only the pane's own tracking goes. Unsubscribe the wire
+    // subscription when this was the last holder of either kind, so the hub
+    // stops relaying a thread nobody renders and its relay can idle out.
+    if (wireSubscribedRefs.has(ref) && (watchRefCounts.get(ref) ?? 0) <= 0) {
+      wireSubscribedRefs.delete(ref);
+      sendThreadUnsubscribe(ref);
+    }
     // frameTimes is dropped in lockstep — an untracked ref has no business
     // holding onto a liveness trace a future ensureThread() of the same ref
     // should start fresh, the same way it re-reads a fresh model.
@@ -2243,6 +2317,12 @@ export const threadsStore = createStore<ThreadsStoreState>(() => ({
     // the same ref starts lean again (yd16 §4.2).
     watchIncludeTurns.delete(ref);
     watchHydratedIncludeTurns.delete(ref);
+    // The open-pane lifecycle may still hold this ref; only when it is gone
+    // too does the wire subscription have no remaining holder.
+    if (wireSubscribedRefs.has(ref) && (refCounts.get(ref) ?? 0) <= 0) {
+      wireSubscribedRefs.delete(ref);
+      sendThreadUnsubscribe(ref);
+    }
     removeWatchedThreadModel(ref);
   },
 
@@ -2575,6 +2655,7 @@ export function resetThreadsStoreForTests(): void {
   watchGenerations.clear();
   watchIncludeTurns.clear();
   watchHydratedIncludeTurns.clear();
+  wireSubscribedRefs.clear();
   threadsIndex.clear();
   watchedThreadsIndex.clear();
   modelsCache = null;

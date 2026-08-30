@@ -196,6 +196,25 @@ type hubRelayFunctions struct {
 var observeHubRelayFunctions func(hubRelayFunctions)
 var observeHubRelayWait func()
 
+// threadRelayTarget resolves the relay key (source.ID()+":"+threadID) and the
+// bare threadID for a read-shaped request. thread/read's relay, its recovery
+// paths, and thread/unsubscribe all derive the key here so a subscribe and
+// its unsubscribe can never disagree about which registry entry they name.
+func threadRelayTarget(source appsource.Source, params appwire.ThreadReadParams) (string, string, error) {
+	threadID := strings.TrimSpace(params.ThreadID)
+	if threadID == "" && params.Ref != "" {
+		ref, err := appwire.ParseRef(params.Ref)
+		if err != nil {
+			return "", "", err
+		}
+		threadID = ref.ThreadID
+	}
+	if threadID == "" {
+		return "", "", appwire.InvalidParams("threadId or ref is required")
+	}
+	return source.ID() + ":" + threadID, threadID, nil
+}
+
 func newHubRelayFunctions(server *appserver.Server, cfg hubcore.WebConfig, sources *appsource.Registry) hubRelayFunctions {
 	relayIdleInterval := hubRelayIdleInterval
 	retryClock := newRelayRetryClock()
@@ -211,6 +230,7 @@ func newHubRelayFunctions(server *appserver.Server, cfg hubcore.WebConfig, sourc
 		}
 		return appserver.Subscribe(ctx, relayKey)
 	}
+	relayTarget := threadRelayTarget
 	var relayMu sync.Mutex
 	relayedThreads := map[string]*hubRelayHandle{}
 	finishHandleLocked := func(handle *hubRelayHandle, err error) {
@@ -237,20 +257,6 @@ func newHubRelayFunctions(server *appserver.Server, cfg hubcore.WebConfig, sourc
 		}
 		relayMu.Unlock()
 		closeRelayHandle(handle)
-	}
-	relayTarget := func(source appsource.Source, params appwire.ThreadReadParams) (string, string, error) {
-		threadID := strings.TrimSpace(params.ThreadID)
-		if threadID == "" && params.Ref != "" {
-			ref, err := appwire.ParseRef(params.Ref)
-			if err != nil {
-				return "", "", err
-			}
-			threadID = ref.ThreadID
-		}
-		if threadID == "" {
-			return "", "", appwire.InvalidParams("threadId or ref is required")
-		}
-		return source.ID() + ":" + threadID, threadID, nil
 	}
 	startAcknowledgedFanout := func(
 		relayKey string,
@@ -484,6 +490,12 @@ func newHubRelayFunctions(server *appserver.Server, cfg hubcore.WebConfig, sourc
 		if sourceID == "" {
 			sourceID = "local"
 		}
+		// Keyed on the response's Thread.ID rather than the request's
+		// ref.ThreadID: the daemon maps a stable ref back to the live session
+		// id before answering (server/appwire_runtime.go appThreadIDForRead),
+		// so the two coincide on every reachable path, and thread/unsubscribe
+		// resolves through the same mapping. Kept explicit so a future source
+		// that lets them diverge shows exactly where to look.
 		relayKey := sourceID + ":" + read.response.Thread.ID
 		captured, err := withDeletionTargetOwnership(
 			cfg,

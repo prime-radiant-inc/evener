@@ -2053,6 +2053,145 @@ func TestServerAppWireRootAndDescendantSubscribeOnOneConnection(t *testing.T) {
 	}
 }
 
+// thread/unsubscribe drops one connection's subscription to a thread — the
+// same registry entry a subscribed thread/read created — and is idempotent.
+// The hub-facing counterpart (relay teardown) rides on this count reaching 0.
+func TestServerAppWireThreadUnsubscribeDropsSubscription(t *testing.T) {
+	srv := NewServer(ServerConfig{})
+	srv.SetAppIdentity("local", "th_1")
+
+	httpServer := httptest.NewServer(http.HandlerFunc(srv.AppServer().ServeWebSocket))
+	defer httpServer.Close()
+	ctx := context.Background()
+	transport, err := appwire.DialWebSocket(ctx, "ws"+httpServer.URL[len("http"):], httpServer.Client())
+	if err != nil {
+		t.Fatalf("websocket dial: %v", err)
+	}
+	defer transport.Close() //nolint:errcheck // test cleanup
+	client := appwire.NewClient(transport)
+	client.Start(ctx)
+	if _, err := client.Initialize(ctx, appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
+		t.Fatalf("initialize: %v", err)
+	}
+	if _, err := client.ThreadRead(ctx, appwire.ThreadReadParams{Ref: "local:th_1", Subscribe: true}); err != nil {
+		t.Fatalf("thread read: %v", err)
+	}
+	if got := srv.AppSubscriberCount("th_1"); got != 1 {
+		t.Fatalf("subscriber count after subscribe = %d, want 1", got)
+	}
+
+	if _, err := client.ThreadUnsubscribe(ctx, appwire.ThreadUnsubscribeParams{Ref: "local:th_1"}); err != nil {
+		t.Fatalf("thread unsubscribe: %v", err)
+	}
+	if got := srv.AppSubscriberCount("th_1"); got != 0 {
+		t.Fatalf("subscriber count after unsubscribe = %d, want 0", got)
+	}
+
+	// Unsubscribed, the connection no longer receives this thread's events.
+	srv.RecordAppEvent(events.SessionEvent{Kind: events.EventAssistantTextDelta, SessionID: "th_1", Data: events.AssistantTextDeltaData{Delta: "post-unsubscribe"}})
+	select {
+	case notification := <-client.Notifications():
+		t.Fatalf("notification delivered after unsubscribe: %+v", notification)
+	case <-time.After(200 * time.Millisecond):
+	}
+
+	// Idempotent: unsubscribing again succeeds quietly.
+	if _, err := client.ThreadUnsubscribe(ctx, appwire.ThreadUnsubscribeParams{Ref: "local:th_1"}); err != nil {
+		t.Fatalf("second thread unsubscribe: %v", err)
+	}
+	if got := srv.AppSubscriberCount("th_1"); got != 0 {
+		t.Fatalf("subscriber count after second unsubscribe = %d, want 0", got)
+	}
+}
+
+// Across a replace/clear identity swap, a subscriber registered under the
+// STABLE REF must be removable by an unsubscribe naming that ref after the
+// swap advanced the session: the resolution path maps the ref to the current
+// session and back to the stable ref — the same key the subscribe used.
+func TestServerAppWireThreadUnsubscribeResolvesStableRefAcrossSwap(t *testing.T) {
+	srv := NewServer(ServerConfig{})
+	srv.SetAppIdentity("local", "th_old")
+	prepared, err := PrepareAppIdentityForRef("local", "th_new", "local:th_stable", "")
+	if err != nil {
+		t.Fatalf("prepare replacement identity: %v", err)
+	}
+	srv.ReplaceAppIdentity(prepared, nil)
+
+	httpServer := httptest.NewServer(http.HandlerFunc(srv.AppServer().ServeWebSocket))
+	defer httpServer.Close()
+	ctx := context.Background()
+	transport, err := appwire.DialWebSocket(ctx, "ws"+httpServer.URL[len("http"):], httpServer.Client())
+	if err != nil {
+		t.Fatalf("websocket dial: %v", err)
+	}
+	defer transport.Close() //nolint:errcheck // test cleanup
+	client := appwire.NewClient(transport)
+	client.Start(ctx)
+	if _, err := client.Initialize(ctx, appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
+		t.Fatalf("initialize: %v", err)
+	}
+	if _, err := client.ThreadRead(ctx, appwire.ThreadReadParams{Ref: "local:th_stable", Subscribe: true}); err != nil {
+		t.Fatalf("subscribed read via stable ref: %v", err)
+	}
+	if got := srv.AppSubscriberCount("th_new"); got != 1 {
+		t.Fatalf("subscriber count after subscribe via stable ref = %d, want 1", got)
+	}
+
+	// The unsubscribe names the SAME stable ref, after the swap.
+	if _, err := client.ThreadUnsubscribe(ctx, appwire.ThreadUnsubscribeParams{Ref: "local:th_stable"}); err != nil {
+		t.Fatalf("unsubscribe via stable ref: %v", err)
+	}
+	if got := srv.AppSubscriberCount("th_new"); got != 0 {
+		t.Fatalf("subscriber count after unsubscribe via stable ref = %d, want 0", got)
+	}
+}
+
+// An unsubscribe for a ref the daemon no longer resolves (the pre-swap ref)
+// quietly succeeds and still clears the raw key the subscribe could have
+// used — teardown finding nothing is a success, and a lingering key must
+// not outlive the client's interest.
+func TestServerAppWireThreadUnsubscribeUnresolvedRefCleansRawKeys(t *testing.T) {
+	srv := NewServer(ServerConfig{})
+	srv.SetAppIdentity("local", "th_live")
+
+	httpServer := httptest.NewServer(http.HandlerFunc(srv.AppServer().ServeWebSocket))
+	defer httpServer.Close()
+	ctx := context.Background()
+	transport, err := appwire.DialWebSocket(ctx, "ws"+httpServer.URL[len("http"):], httpServer.Client())
+	if err != nil {
+		t.Fatalf("websocket dial: %v", err)
+	}
+	defer transport.Close() //nolint:errcheck // test cleanup
+	client := appwire.NewClient(transport)
+	client.Start(ctx)
+	if _, err := client.Initialize(ctx, appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
+		t.Fatalf("initialize: %v", err)
+	}
+	// Subscribe to the live thread by its bare id (one raw key form).
+	if _, err := client.ThreadRead(ctx, appwire.ThreadReadParams{ThreadID: "th_live", Subscribe: true}); err != nil {
+		t.Fatalf("subscribed read by bare id: %v", err)
+	}
+	if got := srv.AppSubscriberCount("th_live"); got != 1 {
+		t.Fatalf("subscriber count after subscribe = %d, want 1", got)
+	}
+
+	// A ref this daemon never served: quiet success, nothing removed.
+	if _, err := client.ThreadUnsubscribe(ctx, appwire.ThreadUnsubscribeParams{Ref: "local:th_never_served"}); err != nil {
+		t.Fatalf("unsubscribe for unresolvable ref: %v", err)
+	}
+	if got := srv.AppSubscriberCount("th_live"); got != 1 {
+		t.Fatalf("unrelated unsubscribe changed the live count = %d, want 1", got)
+	}
+
+	// The same connection unsubscribes its own bare-id key.
+	if _, err := client.ThreadUnsubscribe(ctx, appwire.ThreadUnsubscribeParams{ThreadID: "th_live"}); err != nil {
+		t.Fatalf("unsubscribe by thread id: %v", err)
+	}
+	if got := srv.AppSubscriberCount("th_live"); got != 0 {
+		t.Fatalf("subscriber count after bare-id unsubscribe = %d, want 0", got)
+	}
+}
+
 func TestServerRejectsLateDescendantEventAfterIdentityReplacement(t *testing.T) {
 	srv := NewServer(ServerConfig{})
 	srv.SetAppIdentity("local", "old-root")

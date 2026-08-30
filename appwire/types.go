@@ -26,6 +26,7 @@ const (
 	MethodPing                        = "ping"
 	MethodThreadList                  = "thread/list"
 	MethodThreadRead                  = "thread/read"
+	MethodThreadUnsubscribe           = "thread/unsubscribe"
 	MethodThreadTurnsList             = "thread/turns/list"
 	MethodThreadTurnItemsList         = "thread/turns/items/list"
 	MethodThreadStart                 = "thread/start"
@@ -1217,6 +1218,11 @@ type ThreadReadResponse struct {
 	// to thread/turns/list to fetch the page of turns just before the window.
 	// Empty means the response already includes the oldest turn.
 	OlderCursor string `json:"olderCursor,omitempty"`
+}
+
+type ThreadUnsubscribeParams struct {
+	ThreadID string `json:"threadId,omitempty"`
+	Ref      string `json:"ref,omitempty"`
 }
 
 type ThreadTurnsListParams struct {

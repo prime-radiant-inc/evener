@@ -2586,6 +2586,118 @@ describe("useThreadsStore.releaseThread", () => {
   test("releasing an untracked ref is a harmless no-op", () => {
     expect(() => threadsStore.getState().releaseThread("never_tracked")).not.toThrow();
   });
+
+  test("the final pane release unsubscribes the ref on the wire; earlier releases do not", async () => {
+    const fake = connectFakeClient();
+    fake.on("thread/read", () => readResponse("ref_a"));
+    await threadsStore.getState().ensureThread("ref_a"); // pane 1
+    await threadsStore.getState().ensureThread("ref_a"); // pane 2
+
+    threadsStore.getState().releaseThread("ref_a"); // pane 1 leaves
+    expect(fake.calls.filter((call) => call.method === "thread/unsubscribe")).toHaveLength(0);
+
+    threadsStore.getState().releaseThread("ref_a"); // last pane leaves
+    const unsubscribes = fake.calls.filter((call) => call.method === "thread/unsubscribe");
+    expect(unsubscribes).toHaveLength(1);
+    expect(unsubscribes[0]?.params).toMatchObject({ ref: "ref_a" });
+  });
+
+  test("a released-then-re-ensured ref re-subscribes with subscribe:true again", async () => {
+    const fake = connectFakeClient();
+    fake.on("thread/read", () => readResponse("ref_a"));
+    await threadsStore.getState().ensureThread("ref_a");
+    threadsStore.getState().releaseThread("ref_a");
+
+    await threadsStore.getState().ensureThread("ref_a");
+    const reads = fake.calls.filter((call) => call.method === "thread/read");
+    expect(reads).toHaveLength(2);
+    expect(reads[0]?.params).toMatchObject({ subscribe: true });
+    expect(reads[1]?.params).toMatchObject({ subscribe: true });
+    // And the final release unsubscribes exactly once more.
+    threadsStore.getState().releaseThread("ref_a");
+    expect(fake.calls.filter((call) => call.method === "thread/unsubscribe")).toHaveLength(2);
+  });
+});
+
+describe("wire subscription tracking", () => {
+  test("a re-read of an already-subscribed ref sends subscribe:false, not another subscribe", async () => {
+    const fake = connectFakeClient();
+    fake.on("thread/read", () => readResponse("ref_a"));
+    await threadsStore.getState().ensureThread("ref_a");
+
+    // The resync path re-reads the ref while it stays tracked.
+    fake.emitNotification({
+      method: "evener/thread/resync",
+      params: { threadId: "thr_ref_a", ref: "ref_a" },
+    });
+    await flushUntil(() => fake.calls.filter((call) => call.method === "thread/read").length >= 2);
+    await flushUntil(() => threadsStore.getState().hydrations.get("ref_a") !== undefined);
+
+    const reads = fake.calls.filter((call) => call.method === "thread/read");
+    expect(reads.length).toBeGreaterThanOrEqual(2);
+    expect(reads[0]?.params).toMatchObject({ subscribe: true });
+    expect(reads[1]?.params).toMatchObject({ subscribe: false });
+  });
+
+  test("a reconnect re-subscribes the still-tracked ref on the new connection", async () => {
+    const fake = connectFakeClient();
+    fake.on("thread/read", () => readResponse("ref_a"));
+    await threadsStore.getState().ensureThread("ref_a");
+
+    // A fresh client is a fresh connection: its subscriptions start empty.
+    const next = connectFakeClient();
+    next.on("thread/read", () => readResponse("ref_a"));
+    await flushUntil(() => next.calls.some((call) => call.method === "thread/read"));
+
+    const nextReads = next.calls.filter((call) => call.method === "thread/read");
+    expect(nextReads[0]?.params).toMatchObject({ subscribe: true });
+  });
+
+  test("releasing while another pane is pending does not unsubscribe the watched ref", async () => {
+    const fake = connectFakeClient();
+    fake.on("thread/read", () => readResponse("ref_a"));
+    await threadsStore.getState().ensureThread("ref_a");
+    await threadsStore.getState().watchThread("ref_a", { includeTurns: false });
+
+    threadsStore.getState().releaseThread("ref_a"); // pane leaves; watcher remains
+    expect(fake.calls.filter((call) => call.method === "thread/unsubscribe")).toHaveLength(0);
+
+    threadsStore.getState().releaseWatchedThread("ref_a"); // watcher leaves too
+    expect(fake.calls.filter((call) => call.method === "thread/unsubscribe")).toHaveLength(1);
+  });
+
+  // The lost-window fix: a release that runs while the hydrating read is
+  // still in flight sees the set WITHOUT the ref (no unsubscribe sent), so
+  // the read's own resolution must not record a zero-holder entry — it sends
+  // its own unsubscribe instead, and the server-side subscription this read
+  // created does not linger until connection close.
+  test("a read resolving after its final release unsubscribes instead of leaking the entry", async () => {
+    const fake = connectFakeClient();
+    const releaseRead: { resolve: ((response: ThreadReadResponse) => void) | null } = { resolve: null };
+    fake.on(
+      "thread/read",
+      () =>
+        new Promise<ThreadReadResponse>((resolve) => {
+          releaseRead.resolve = resolve;
+        }),
+    );
+    const ensuring = threadsStore.getState().ensureThread("ref_a");
+    await flushUntil(() => releaseRead.resolve !== null);
+
+    threadsStore.getState().releaseThread("ref_a"); // mid-flight: no unsubscribe yet
+    expect(fake.calls.filter((call) => call.method === "thread/unsubscribe")).toHaveLength(0);
+
+    releaseRead.resolve?.(readResponse("ref_a"));
+    await ensuring;
+    await flushUntil(() => fake.calls.filter((call) => call.method === "thread/unsubscribe").length === 1);
+    const unsubscribes = fake.calls.filter((call) => call.method === "thread/unsubscribe");
+    expect(unsubscribes[0]?.params).toMatchObject({ ref: "ref_a" });
+    // And a later ensure of the same ref subscribes afresh.
+    fake.on("thread/read", () => readResponse("ref_a"));
+    await threadsStore.getState().ensureThread("ref_a");
+    const reads = fake.calls.filter((call) => call.method === "thread/read");
+    expect(reads[reads.length - 1]?.params).toMatchObject({ subscribe: true });
+  });
 });
 
 describe("notification routing", () => {
