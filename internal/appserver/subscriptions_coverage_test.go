@@ -179,6 +179,15 @@ func TestSubscriptionsUnsubscribeDuringNonReplaceCaptureDefersToAbort(t *testing
 	if subs.byConn["conn-1"]["th_1"] == nil {
 		t.Fatal("mid-capture unsubscribe removed the buffering entry")
 	}
+	// Every live-interest query agrees the drop already happened.
+	if subs.IsSubscribed("conn-1", "th_1") {
+		t.Fatal("IsSubscribed still reports a thread the client unsubscribed mid-capture")
+	}
+	for _, thread := range subs.Threads("conn-1") {
+		if thread == "th_1" {
+			t.Fatal("Threads still enumerates a thread the client unsubscribed mid-capture")
+		}
+	}
 	if !subs.withdrawBuffered("conn-1", "th_1", 3, rollback) {
 		t.Fatal("withdrawBuffered should succeed after a mid-capture unsubscribe")
 	}
