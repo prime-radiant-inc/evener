@@ -105,17 +105,17 @@ func TestBuildModelRequest_NetOffDisablesProviderWebSearch(t *testing.T) {
 	}
 }
 
-// A mid-session cross-provider switch to a google-tag profile dynamically
+// A mid-session cross-provider switch to a google-protocol profile dynamically
 // re-registers the web_search function tool. That executor must still honor
 // net=off egress denial — otherwise a SetModel makes evener's Gemini web search
 // reachable in a session whose network egress the user turned off.
 func TestReapplyProviderTools_GoogleWebSearchEgressDeniedUnderNetOff(t *testing.T) {
 	s := &Session{env: netEnv(t, false), reg: tool.NewRegistry()}
-	s.reapplyProviderSpecificTools("openai", "google")
+	s.reapplyProviderSpecificTools(NewOpenAIProfile("gpt-5.4"), newGeminiProfile("gemini-3-pro"))
 
 	rt := s.reg.Get("web_search")
 	if rt == nil {
-		t.Fatal("web_search must be registered after switching to a google-tag profile")
+		t.Fatal("web_search must be registered after switching to a google-protocol profile")
 	}
 	_, err := rt.Exec(context.Background(), s.env, map[string]any{"query": "x"})
 	var de *sandbox.DeniedError

@@ -14,9 +14,12 @@ package agent
 //                           req.Provider=<name> reaches its adapter.
 //  2. Behavior by tag     — ResolveProfileFromConfig: each instance name maps to
 //                           the correct behavior tag and routes by its own ID.
-//  3. Real-openai boundary — compat-x (tag "openai-compatible") does NOT get the
-//                            openai prompt section or 24h prompt-cache; work (tag
-//                            "openai") does.
+//  3. Real-openai boundary — compat-x (surface "generic") does NOT get the
+//                            openai prompt section; work (surface "openai")
+//                            does. Prompt-cache eligibility is no longer part
+//                            of this boundary: the session stamps both fields
+//                            and the resolved row's Fields decide (spec §7.5,
+//                            session_openai_prompt_cache_test.go).
 //  4. Per-instance OAuth  — SaveAuth("work", rec) writes auth/work.json; loading
 //                           the work instance's OAuth reads it back independently
 //                           of auth/openai.json.
@@ -174,8 +177,10 @@ func TestPhase1b_NameToTag_AllFive(t *testing.T) {
 // ── Assertion 3: Real-openai boundary ─────────────────────────────────────────
 
 // TestPhase1b_CompatX_NoOpenAIBehavior verifies cohesively that compat-x
-// (tag "openai-compatible") does NOT get the openai prompt section or 24h cache,
-// while work (tag "openai") does.
+// (surface "generic") does NOT get the openai prompt section while work
+// (surface "openai") does, and that the prompt-cache fields are no longer part
+// of that boundary: the session stamps them for every instance and
+// llm.ShapeRequest drops what the resolved row cannot send.
 func TestPhase1b_CompatX_NoOpenAIBehavior(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
@@ -217,12 +222,12 @@ func TestPhase1b_CompatX_NoOpenAIBehavior(t *testing.T) {
 	}
 
 	workReq := llm.Request{Model: "gpt-5.2", Provider: workProfile.ID()}
-	workSess.applyModelRequestMetadata(workSess.profile, &workReq)
+	workSess.applyModelRequestMetadata(&workReq)
 	if strings.TrimSpace(workReq.PromptCacheKey) == "" {
-		t.Error("work session (tag=openai): PromptCacheKey empty — must be prompt-cache eligible")
+		t.Error("work session: PromptCacheKey empty — the session stamps it for every instance")
 	}
 	if workReq.PromptCacheRetention != "24h" {
-		t.Errorf("work session (tag=openai): PromptCacheRetention = %q, want 24h", workReq.PromptCacheRetention)
+		t.Errorf("work session: PromptCacheRetention = %q, want 24h", workReq.PromptCacheRetention)
 	}
 
 	// ── compat-x instance does NOT get openai behavior ──
@@ -239,13 +244,12 @@ func TestPhase1b_CompatX_NoOpenAIBehavior(t *testing.T) {
 		t.Errorf("compat-x session (tag=openai-compatible): system prompt must NOT contain openai section marker %q", openAIMarker)
 	}
 
+	// The prompt-cache fields are stamped here for compat-x too; what the
+	// endpoint may carry is the row's decision at dispatch, not the profile's.
 	compatReq := llm.Request{Model: "gpt-4o", Provider: compatProfile.ID()}
-	compatSess.applyModelRequestMetadata(compatSess.profile, &compatReq)
-	if got := strings.TrimSpace(compatReq.PromptCacheKey); got != "" {
-		t.Errorf("compat-x session (tag=openai-compatible): PromptCacheKey = %q, want empty", got)
-	}
-	if compatReq.PromptCacheRetention != "" {
-		t.Errorf("compat-x session (tag=openai-compatible): PromptCacheRetention = %q, want empty", compatReq.PromptCacheRetention)
+	compatSess.applyModelRequestMetadata(&compatReq)
+	if strings.TrimSpace(compatReq.PromptCacheKey) == "" || compatReq.PromptCacheRetention != "24h" {
+		t.Errorf("compat-x session: prompt-cache fields = key %q retention %q, want both stamped", compatReq.PromptCacheKey, compatReq.PromptCacheRetention)
 	}
 }
 

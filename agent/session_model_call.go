@@ -15,6 +15,7 @@ import (
 	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/identifier"
 	"primeradiant.com/evener/llm"
+	"primeradiant.com/evener/llm/registry"
 )
 
 // ModelAttemptMetadata records continuation, endpoint, and attempt-grouping
@@ -248,12 +249,12 @@ func (s *Session) prepareModelRequestWithError(ctx context.Context, round int, t
 
 	// Reuse historyTurns from context management — no redundant copy.
 	scope := replayScope{
-		Provider:       profile.ID(),
+		Instance:       profile.ID(),
 		Model:          profile.Model(),
-		BehaviorTag:    profile.BehaviorTag(),
+		Protocol:       profile.Protocol(),
 		InFlightFrom:   inFlightFrom,
-		behaviorTagOf:  s.client.BehaviorTagOf,
-		canonicalModel: canonicalModelID,
+		protocolOf:     s.instanceProtocol,
+		canonicalModel: func(model string) string { return s.canonicalModelID(profile.ID(), model) },
 	}
 	if lease, ok := ctx.Value(delegateRunLeaseContextKey{}).(delegateLease); ok && s.delegateController != nil {
 		claim, claimErr := s.delegateController.BeginModelRequest(lease)
@@ -746,7 +747,7 @@ func (s *Session) providerWebSearchEnabled(profile *provider.Profile) bool {
 		return false
 	}
 	if w := s.sandboxWrapper(); w != nil && !w.Policy().Network {
-		return sandbox.ProviderWebAllowedUnderNetOff(profile.BehaviorTag())
+		return sandbox.ProviderWebAllowedUnderNetOff(profile.ProviderID())
 	}
 	return true
 }
@@ -802,8 +803,19 @@ func (s *Session) buildModelRequest(profile *provider.Profile, sys string, histo
 	if mt := profile.MaxOutputTokens(); mt > 0 {
 		req.MaxTokens = &mt
 	}
-	req.ReasoningEffort = resolveRequestEffort(reasoningEffort, profile.SupportsReasoning(), profile.ReasoningEffortLevels(), profile.DefaultReasoningEffort())
-	s.applyModelRequestMetadata(profile, &req)
+	if reasoningEffort != "" && profile.SupportsReasoning() {
+		// Clamp to what the active model supports so loop-detector escalation,
+		// the --reasoning-effort flag, and the UI selector never send a level the
+		// provider rejects (e.g. "xhigh" to a model that tops out at "high").
+		// Gated on SupportsReasoning so a model explicitly declared non-reasoning
+		// (providers.toml reasoning=false) never gets reasoning_effort on the
+		// wire — ClampReasoningEffort passes the value through unchanged when
+		// the supported list is empty, which would otherwise leak the session
+		// effort straight through and 400.
+		v := llm.ClampReasoningEffort(reasoningEffort, profile.ReasoningEffortLevels())
+		req.ReasoningEffort = &v
+	}
+	s.applyModelRequestMetadata(&req)
 	return req
 }
 
@@ -948,16 +960,39 @@ func (s *Session) callModelWithFallback(ctx context.Context, profile *provider.P
 			fbReq := responsesContinuationModelFallbackRequest(req)
 			fbReq.Model = fbProfile.Model()
 			fbReq.Provider = fbProfile.ID()
-			// The fallback profile carries the fallback model's own facts:
-			// WithModel re-derives reasoning support and levels from the
-			// catalog (canonicalizing "[1m]", provider namespaces, and dated
-			// snapshots), so the same rule as the primary path applies.
-			fbReq.ReasoningEffort = resolveRequestEffort(requestedEffort, fbProfile.SupportsReasoning(), fbProfile.ReasoningEffortLevels(), fbProfile.DefaultReasoningEffort())
+			if origEffort != "" && fbProfile.SupportsReasoning() {
+				// Clamp to the FALLBACK model's levels. WithModel keeps the primary
+				// profile's effort levels for some providers (openai/anthropic), so
+				// consult the catalog for the fallback model rather than trusting
+				// fbProfile's possibly-stale set. LookupModelInfo canonicalizes the
+				// "[1m]" suffix, a provider namespace ("anthropic/…" from
+				// openrouter-anthropic), and dated snapshots, so a qualified or
+				// dated fallback still resolves real levels.
+				//
+				// Gated on SupportsReasoning so a fallback explicitly declared
+				// non-reasoning never gets reasoning_effort on the wire (see the
+				// same guard on the primary path above).
+				fbLevels := fbProfile.ReasoningEffortLevels()
+				// Explicit providers.toml thinking_levels / reasoning config is
+				// authoritative, and ollama's local model names never resolve
+				// against the upstream catalog — only consult it when the
+				// profile's levels were derived (and might be stale
+				// primary-model state).
+				if fbProfile.CatalogEffortFallbackEligible() {
+					if cat := llm.EmbeddedModelCatalog(); cat != nil {
+						if mi := cat.LookupModelInfo(fbProfile.Model()); mi != nil && len(mi.ReasoningEffortLevels) > 0 {
+							fbLevels = mi.ReasoningEffortLevels
+						}
+					}
+				}
+				clamped := llm.ClampReasoningEffort(origEffort, fbLevels)
+				fbReq.ReasoningEffort = &clamped
+			} else {
+				fbReq.ReasoningEffort = nil
+			}
 			fbReq.WebSearch = s.providerWebSearchEnabled(fbProfile)
 			fbReq.ProviderOptions = fbProfile.ProviderOptions()
-			fbReq.PromptCacheKey = ""
-			fbReq.PromptCacheRetention = ""
-			s.applyModelRequestMetadata(profile, &fbReq)
+			s.applyModelRequestMetadata(&fbReq)
 			// Group-transition reset (spec: "Group-transition reset"): OnReset
 			// only clears the screen between attempts WITHIN one callModel
 			// invocation, so a chain walk away from a group that already
@@ -1061,82 +1096,69 @@ func responsesContinuationModelFallbackRequest(req llm.Request) llm.Request {
 // replayScope carries the outgoing target identity that decides whether
 // provider/model-scoped content — thinking/redacted_thinking and web_search raw
 // blocks — from completed prior turns may replay after a mid-session model
-// switch (spec N4). A zero replayScope (empty BehaviorTag) disables all
+// switch (spec N4). A zero replayScope (empty Protocol) disables all
 // filtering, so history expansion for a target that keeps its own builder
-// guards (openai Responses, openai-compat) or for the Responses-continuation
+// guards (openai Responses, openai-chat) or for the Responses-continuation
 // delta path is byte-identical to before this rule existed.
 type replayScope struct {
-	Provider    string // outgoing instance id (req.Provider)
-	Model       string // outgoing requested model (req.Model)
-	BehaviorTag string // outgoing behavior tag; empty ⇒ no filtering
+	Instance string // outgoing instance (req.Provider)
+	Model    string // outgoing requested model (req.Model)
+	Protocol string // outgoing wire protocol; empty ⇒ no filtering
 
 	// InFlightFrom is the history index of the first turn belonging to the
 	// in-flight turn. Turns at or after it are exempt from filtering: a
-	// same-behavior-tag fallback round earlier in the current turn keeps its
+	// same-protocol fallback round earlier in the current turn keeps its
 	// thinking (N4 exempts in-flight rounds and the fallback path).
 	InFlightFrom int
 
-	// behaviorTagOf resolves a stored turn's ResponseProvider (instance id) to
-	// its behavior tag for the web_search family check. Nil ⇒ the producing
-	// family is treated as unknown and web_search is compared same-provider.
-	behaviorTagOf func(string) string
+	// protocolOf resolves a stored turn's instance to the protocol it speaks
+	// today, for turns written before ResponseProtocol existed; "" means the
+	// instance is no longer configured and the turn is not eligible (spec §7.5).
+	protocolOf func(instance string) string
 	// canonicalModel canonicalizes a model id for the ResponseModel fallback
 	// comparison. Nil ⇒ raw (trimmed) string comparison.
 	canonicalModel func(string) string
 }
 
 // active reports whether the scope enforces the N4 replay-provenance rules. An
-// empty behavior tag means "expand without filtering".
-func (rs replayScope) active() bool { return strings.TrimSpace(rs.BehaviorTag) != "" }
+// empty protocol means "expand without filtering".
+func (rs replayScope) active() bool { return strings.TrimSpace(rs.Protocol) != "" }
 
-// builderFamily maps a behavior tag to the wire-format family whose request
-// builder serves it. web_search raw blocks are foreign JSON across families, and
-// the thinking rule is scoped per family (exact-model for anthropic, same-
-// provider for google and openai). An unrecognized tag maps to itself so an unknown
-// provider never silently shares a family with a known one.
-//
-// Sibling tags collapse to one family because they emit the *same* raw block
-// shape on the wire: kimi-anthropic/openrouter-anthropic/minimax all speak the
-// anthropic wire format, so an anthropic-produced web_search raw block is
-// byte-compatible when replayed into any of them (and vice versa). Grouping
-// them here is what lets those cross-tag hops replay web_search verbatim
-// instead of dropping it as foreign JSON.
-func builderFamily(tag string) string {
-	switch strings.TrimSpace(tag) {
-	case "anthropic", "kimi-anthropic", "openrouter-anthropic", "minimax":
-		return "anthropic"
-	case "google":
-		return "google"
-	case "openai":
-		return "openai"
-	case "openai-compatible", "kimi", "glm", "zai", "deepseek", "together", "ollama", "openrouter":
-		return "compat"
-	default:
-		return strings.TrimSpace(tag)
+// producerProtocol is the wire protocol that produced a stored turn: the one
+// recorded on the turn, or — for a turn written before ResponseProtocol
+// existed — the protocol its instance speaks today.
+func (rs replayScope) producerProtocol(t schema.Turn) string {
+	if p := strings.TrimSpace(t.ResponseProtocol); p != "" {
+		return p
 	}
+	if rs.protocolOf == nil {
+		return ""
+	}
+	return rs.protocolOf(t.ResponseProvider)
 }
 
 // thinkingReplayEligible reports whether a completed prior turn's
 // thinking/redacted_thinking blocks may replay into the outgoing request.
-// Empty provenance (legacy transcripts) is always eligible. anthropic-family
-// targets require an exact (instance id, requested model) match — the requested
-// model taken from ResponseRequestModel, or catalog-canonicalized ResponseModel
-// when the request-model field is empty (closes G12). google and openai targets
-// require the same instance id: google's builder must replay prior tool-call
-// thought signatures regardless of model, and openai Responses carries an
-// opaque encrypted_content blob that only its issuing deployment can decrypt
-// (a cross-deployment replay yields "Encrypted content is not supported").
-// Every other target keeps its own builder guard, so expansion never strips
-// thinking for it.
+// Empty provenance (legacy transcripts) is always eligible. An anthropic
+// target requires an exact (instance, requested model) match — the requested
+// model taken from ResponseRequestModel, or canonicalized ResponseModel when
+// the request-model field is empty (closes G12). google and openai-responses
+// targets require the same instance: google's builder must replay prior
+// tool-call thought signatures regardless of model, and openai Responses
+// carries an opaque encrypted_content blob that only its issuing deployment
+// can decrypt (a cross-deployment replay yields "Encrypted content is not
+// supported"). Every other target keeps its own builder guard, so expansion
+// never strips thinking for it.
 func (rs replayScope) thinkingReplayEligible(t schema.Turn) bool {
 	if strings.TrimSpace(t.ResponseProvider) == "" {
 		return true
 	}
-	switch builderFamily(rs.BehaviorTag) {
-	case "anthropic":
-		return rs.Provider == t.ResponseProvider && rs.requestedModelMatches(t)
-	case "google", "openai":
-		return rs.Provider == t.ResponseProvider
+	producer := rs.producerProtocol(t)
+	switch rs.Protocol {
+	case registry.ProtocolAnthropic:
+		return producer == rs.Protocol && rs.Instance == t.ResponseProvider && rs.requestedModelMatches(t)
+	case registry.ProtocolGoogle, registry.ProtocolOpenAIResponses:
+		return producer == rs.Protocol && rs.Instance == t.ResponseProvider
 	default:
 		return true
 	}
@@ -1144,8 +1166,7 @@ func (rs replayScope) thinkingReplayEligible(t schema.Turn) bool {
 
 // requestedModelMatches compares the outgoing requested model against the
 // producing turn's, in requested-model space (ResponseRequestModel), falling
-// back to catalog-canonicalized ResponseModel when the request-model field is
-// empty.
+// back to canonicalized ResponseModel when the request-model field is empty.
 func (rs replayScope) requestedModelMatches(t schema.Turn) bool {
 	if rm := strings.TrimSpace(t.ResponseRequestModel); rm != "" {
 		return strings.TrimSpace(rs.Model) == rm
@@ -1162,22 +1183,13 @@ func (rs replayScope) canonicalize(model string) string {
 
 // webSearchReplayEligible reports whether a completed prior turn's web_search
 // raw blocks may replay verbatim. Empty provenance is eligible; otherwise the
-// producing behavior-tag family must match the target family (anthropic ↔
-// anthropic, openai ↔ openai) — cross-family the raw payload is foreign JSON and
-// is dropped (G13).
+// producing protocol must match the target's — across protocols the raw
+// payload is foreign JSON and is dropped (G13).
 func (rs replayScope) webSearchReplayEligible(t schema.Turn) bool {
 	if strings.TrimSpace(t.ResponseProvider) == "" {
 		return true
 	}
-	var producerTag string
-	if rs.behaviorTagOf != nil {
-		producerTag = rs.behaviorTagOf(t.ResponseProvider)
-	} else if rs.Provider == t.ResponseProvider {
-		producerTag = rs.BehaviorTag
-	} else {
-		producerTag = t.ResponseProvider
-	}
-	return builderFamily(producerTag) == builderFamily(rs.BehaviorTag)
+	return rs.producerProtocol(t) == rs.Protocol
 }
 
 // projectTurnMessage returns t.Message with provider/model-scoped content
@@ -1319,16 +1331,32 @@ func expandHistory(historyTurns []schema.Turn, scope replayScope) []llm.Message 
 	return history
 }
 
-// canonicalModelID canonicalizes a model ref through the embedded catalog so a
-// requested alias and a provider-reported dated snapshot of the same model
-// compare equal in the ResponseModel provenance fallback. Unknown refs compare
-// by trimmed string.
-func canonicalModelID(model string) string {
+// instanceProtocol resolves an instance name to the protocol it speaks
+// today; "" when it is no longer configured. It resolves the instance rather
+// than reading the credentialed instance list so a turn produced by a
+// curated implicit provider still reports its protocol (spec §5.2).
+func (s *Session) instanceProtocol(name string) string {
+	if s.client == nil {
+		return ""
+	}
+	res, err := s.client.Registry().ResolveInstance(name)
+	if err != nil {
+		return ""
+	}
+	return res.Protocol
+}
+
+// canonicalModelID canonicalizes a model ref through the registry so a
+// requested alias and a provider-reported dated snapshot compare equal in the
+// ResponseModel provenance fallback. instance names the instance the ref
+// belongs to; unknown refs compare by trimmed string.
+func (s *Session) canonicalModelID(instance, model string) string {
 	trimmed := strings.TrimSpace(model)
-	if cat := llm.EmbeddedModelCatalog(); cat != nil {
-		if mi := cat.LookupModelInfo(trimmed); mi != nil && mi.ID != "" {
-			return mi.ID
-		}
+	if s.client == nil {
+		return trimmed
+	}
+	if res, err := s.client.Resolve(instance + "/" + trimmed); err == nil && res.Model.ID != "" {
+		return res.Model.ID
 	}
 	return trimmed
 }

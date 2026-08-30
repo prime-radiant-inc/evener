@@ -1,10 +1,11 @@
 package agent
 
-// Tests that session.go provider-conditional behavior sites key on
-// s.profile.BehaviorTag() rather than s.profile.ID() or req.Provider.
+// Tests that session.go provider-conditional behavior sites key on the
+// profile's registry identity rather than s.profile.ID() or req.Provider.
 // This ensures renamed provider instances (WithProviderID) keep the right
-// behavior, and that chat-completions instances (tag "openai-compatible")
-// correctly do NOT get the real-openai behavior.
+// behavior, and that chat-completions instances (surface "generic")
+// correctly do NOT get the real-openai behavior. The prompt-cache site moved
+// off this axis entirely — see session_openai_prompt_cache_test.go.
 
 import (
 	_ "embed"
@@ -34,67 +35,6 @@ func openAISectionLiteral() string {
 		body = body[:i]
 	}
 	return strings.TrimRight(body, "\n")
-}
-
-// ── Site 1: applyModelRequestMetadata (prompt-cache) ──────────────────────
-
-// TestBehaviorTag_PromptCache_RenamedOpenAI verifies that a renamed OpenAI
-// instance (id="work", tag="openai") is still prompt-cache eligible.
-// Before the fix, applyModelRequestMetadata keyed on req.Provider == "openai";
-// a renamed instance has req.Provider = s.profile.ID() = "work", so the cache
-// was never activated.
-func TestBehaviorTag_PromptCache_RenamedOpenAI(t *testing.T) {
-	t.Parallel()
-	// WithProviderID(NewOpenAIProfile("gpt-5.5"), "work") → id="work", tag="openai"
-	renamedProfile := WithProviderID(NewOpenAIProfile("gpt-5.5"), "work")
-	if renamedProfile.ID() != "work" {
-		t.Fatalf("pre-condition: ID() = %q, want work", renamedProfile.ID())
-	}
-	if renamedProfile.BehaviorTag() != "openai" {
-		t.Fatalf("pre-condition: BehaviorTag() = %q, want openai", renamedProfile.BehaviorTag())
-	}
-
-	sess := &Session{id: "sess-abc", profile: renamedProfile}
-	req := llm.Request{
-		Model:    "gpt-5.5",
-		Provider: renamedProfile.ID(), // "work" — what the main loop sets
-	}
-
-	sess.applyModelRequestMetadata(sess.profile, &req)
-
-	if strings.TrimSpace(req.PromptCacheKey) == "" {
-		t.Fatalf("PromptCacheKey is empty — renamed openai instance must be prompt-cache eligible")
-	}
-	if got, want := req.PromptCacheRetention, "24h"; got != want {
-		t.Fatalf("PromptCacheRetention = %q, want %q", got, want)
-	}
-}
-
-// TestBehaviorTag_PromptCache_OpenAICompatible verifies that a chat-completions
-// instance (tag="openai-compatible") does NOT get prompt-cache set.
-func TestBehaviorTag_PromptCache_OpenAICompatible(t *testing.T) {
-	t.Parallel()
-	compatProfile := testOpenAICompatProfile("openai", "gpt-5.5", 0)
-	if compatProfile.BehaviorTag() != "openai-compatible" {
-		t.Fatalf("pre-condition: BehaviorTag() = %q, want openai-compatible", compatProfile.BehaviorTag())
-	}
-
-	sess := &Session{id: "sess-xyz", profile: compatProfile}
-	req := llm.Request{
-		// Use a cache-eligible model; eligibility must be blocked by the behavior
-		// tag ("openai-compatible"), not by the model.
-		Model:    "gpt-5.5",
-		Provider: "openai", // even if provider says "openai", tag must override
-	}
-
-	sess.applyModelRequestMetadata(sess.profile, &req)
-
-	if got := strings.TrimSpace(req.PromptCacheKey); got != "" {
-		t.Fatalf("PromptCacheKey = %q, want empty — openai-compatible must NOT be prompt-cache eligible", got)
-	}
-	if got := req.PromptCacheRetention; got != "" {
-		t.Fatalf("PromptCacheRetention = %q, want empty", got)
-	}
 }
 
 // ── Site 2: registerCoreTools (gemini web_search) ─────────────────────────

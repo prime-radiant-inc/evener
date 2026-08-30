@@ -125,14 +125,16 @@ func TestProviderInstance_RenamedOpenAI_IdentityAndBehavior(t *testing.T) {
 		t.Fatalf("system prompt missing openai section marker %q — renamed openai instance must get openai-tagged behavior", openAIMarker)
 	}
 
-	// ── Assertion 4: behavior by tag — 24h prompt-cache eligibility ──
+	// ── Assertion 4: the session stamps the prompt-cache fields ──
+	// Which of them survive is the resolved row's decision at dispatch
+	// (llm.ShapeRequest, spec §7.5), not the instance name's.
 	req := llm.Request{
 		Model:    renamedProfile.Model(),
 		Provider: renamedProfile.ID(), // "work"
 	}
-	sess.applyModelRequestMetadata(sess.profile, &req)
+	sess.applyModelRequestMetadata(&req)
 	if strings.TrimSpace(req.PromptCacheKey) == "" {
-		t.Fatalf("PromptCacheKey empty — renamed openai instance must be prompt-cache eligible by tag")
+		t.Fatalf("PromptCacheKey empty — the session stamps it for every instance")
 	}
 	if got, want := req.PromptCacheRetention, "24h"; got != want {
 		t.Fatalf("PromptCacheRetention = %q, want %q", got, want)
@@ -141,10 +143,11 @@ func TestProviderInstance_RenamedOpenAI_IdentityAndBehavior(t *testing.T) {
 
 // ── Subtest 3: "any real openai" boundary ─────────────────────────────────────
 
-// TestProviderInstance_OpenAICompatible_NoOpenAIBehavior verifies cohesively
-// that a profile with tag "openai-compatible" does NOT get:
-//   - the OpenAI prompt section in the system prompt
-//   - 24h prompt-cache eligibility
+// TestProviderInstance_OpenAICompatible_NoOpenAIBehavior verifies that a
+// profile on the generic surface does NOT get the OpenAI prompt section in
+// the system prompt. (Prompt-cache eligibility left this axis: the session
+// stamps the fields and the resolved row decides — see
+// session_openai_prompt_cache_test.go.)
 func TestProviderInstance_OpenAICompatible_NoOpenAIBehavior(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
@@ -168,18 +171,6 @@ func TestProviderInstance_OpenAICompatible_NoOpenAIBehavior(t *testing.T) {
 		t.Fatalf("system prompt contains openai section marker %q — openai-compatible must NOT load the openai section", openAIMarker)
 	}
 
-	// Prompt-cache eligibility must be blocked by the tag.
-	req := llm.Request{
-		Model:    "gpt-4o",
-		Provider: "openai", // even if provider says "openai", tag must override
-	}
-	sess.applyModelRequestMetadata(sess.profile, &req)
-	if got := strings.TrimSpace(req.PromptCacheKey); got != "" {
-		t.Fatalf("PromptCacheKey = %q, want empty — openai-compatible must NOT be prompt-cache eligible", got)
-	}
-	if got := req.PromptCacheRetention; got != "" {
-		t.Fatalf("PromptCacheRetention = %q, want empty", got)
-	}
 }
 
 // ── Subtest 4: Cross-instance switch ─────────────────────────────────────────

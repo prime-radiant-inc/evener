@@ -515,7 +515,7 @@ func (s *Session) describeImageCall(ctx context.Context, r tool.ExecResult) visi
 		effort := llm.ClampReasoningEffort(visionReasoningEffort, levels)
 		req.ReasoningEffort = &effort
 	}
-	s.applyModelRequestMetadata(profile, &req)
+	s.applyModelRequestMetadata(&req)
 
 	start := s.sclock().Now()
 	resp, err := s.cheap.CompleteRouted(visionCtx, profile, routeProvider, routeModel, req)

@@ -8,14 +8,14 @@ import (
 	"primeradiant.com/evener/llm"
 )
 
-// TestUnrepresentableHistoryKinds_UnknownFamily covers the early return
-// when unrepresentableContentKinds returns nil for an unknown builder
-// family (session_set_model.go:46-47).
-func TestUnrepresentableHistoryKinds_UnknownFamily(t *testing.T) {
+// TestUnrepresentableHistoryKinds_UnknownProtocol covers the early return
+// when unrepresentableContentKinds returns nil for a protocol with no
+// restricted kinds (session_set_model.go:46-47).
+func TestUnrepresentableHistoryKinds_UnknownProtocol(t *testing.T) {
 	history := newSetModelHistoryWithContent(llm.ContentDocument)
-	got := unrepresentableHistoryKinds(history, "unknown_family_tag")
+	got := unrepresentableHistoryKinds(history, "unknown-protocol")
 	if got != nil {
-		t.Fatalf("expected nil for unknown family, got %v", got)
+		t.Fatalf("expected nil for an unknown protocol, got %v", got)
 	}
 }
 

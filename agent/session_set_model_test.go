@@ -19,6 +19,7 @@ import (
 	"primeradiant.com/evener/agent/provider"
 	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/llm"
+	"primeradiant.com/evener/llm/registry"
 )
 
 // unknownInstanceResolver mirrors the production resolver's behavior for an
@@ -471,46 +472,34 @@ func unrepresentableTargetResolver(ref string) (*provider.Profile, error) {
 	return nil, nil
 }
 
-// TestUnrepresentableContentKinds_FamilyTable pins the derived per-tag policy so
-// the switch preflight and the N4 builderFamily classifier cannot drift again.
-// zai/deepseek/together are openai-compat thinking-format tags carried defensively
-// in builderFamily; they are unit-covered here because they are not constructible
-// as live profiles (they are thinking_format values, not provider types).
-func TestUnrepresentableContentKinds_FamilyTable(t *testing.T) {
+// TestUnrepresentableContentKinds_ProtocolTable pins the per-protocol policy so
+// the switch preflight and the request builders cannot drift: every protocol
+// whose builder hard-errors or silently drops a kind must be named here.
+func TestUnrepresentableContentKinds_ProtocolTable(t *testing.T) {
 	t.Parallel()
 	doc := llm.ContentDocument
 	aud := llm.ContentAudio
 	both := map[llm.ContentKind]bool{doc: true, aud: true}
 	audioOnly := map[llm.ContentKind]bool{aud: true}
 	cases := []struct {
-		tag  string
-		want map[llm.ContentKind]bool
+		protocol string
+		want     map[llm.ContentKind]bool
 	}{
-		{"anthropic", both},
-		{"kimi-anthropic", both},
-		{"openrouter-anthropic", both},
-		{"minimax", both},
-		{"google", both},
-		{"openai-compatible", both},
-		{"kimi", both},
-		{"glm", both},
-		{"zai", both},
-		{"deepseek", both},
-		{"together", both},
-		{"ollama", both},
-		{"openrouter", both},
-		{"openai", audioOnly},
-		{"some-future-provider", nil},
+		{registry.ProtocolAnthropic, both},
+		{registry.ProtocolGoogle, both},
+		{registry.ProtocolOpenAIChat, both},
+		{registry.ProtocolOpenAIResponses, audioOnly},
+		{"some-future-protocol", nil},
 	}
 	for _, tc := range cases {
-		got := unrepresentableContentKinds(tc.tag)
+		got := unrepresentableContentKinds(tc.protocol)
 		if len(got) != len(tc.want) {
-			t.Errorf("unrepresentableContentKinds(%q) = %v, want %v", tc.tag, got, tc.want)
+			t.Errorf("unrepresentableContentKinds(%q) = %v, want %v", tc.protocol, got, tc.want)
 			continue
 		}
 		for k, v := range tc.want {
 			if got[k] != v {
-				t.Errorf("unrepresentableContentKinds(%q)[%v] = %v, want %v", tc.tag, k, got[k], v)
+				t.Errorf("unrepresentableContentKinds(%q)[%v] = %v, want %v", tc.protocol, k, got[k], v)
 			}
 		}
 	}

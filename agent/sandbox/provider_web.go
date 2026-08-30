@@ -2,7 +2,7 @@ package sandbox
 
 import "strings"
 
-// providerWebEgressCapable records, per LLM provider, whether the provider runs
+// providerWebEgressCapable records, per registry provider id, whether the provider runs
 // SERVER-SIDE web egress for the model (its own web-search / fetch tooling that
 // reaches the internet on the model's behalf). This is orthogonal to evener's own
 // web_fetch/web_search tools and to LLM inference traffic: net=off governs the
@@ -14,10 +14,10 @@ import "strings"
 // web capability is refused rather than silently allowed through a path the user
 // cannot inspect.
 var providerWebEgressCapable = map[string]bool{
-	"openai":    true,
-	"anthropic": true,
-	"gemini":    true,
-	"google":    true,
+	"openai":       true,
+	"openai-codex": true,
+	"anthropic":    true,
+	"google":       true,
 }
 
 // WebEgress reports whether a provider is known to run server-side web egress

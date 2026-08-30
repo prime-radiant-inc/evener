@@ -18,6 +18,7 @@ import (
 	"primeradiant.com/evener/agent/skill"
 	taskpkg "primeradiant.com/evener/agent/task"
 	"primeradiant.com/evener/llm"
+	"primeradiant.com/evener/llm/registry"
 )
 
 // toolDeps is the dependency surface the core tool handler closures need from
@@ -287,7 +288,7 @@ func newToolDeps(s *Session) *toolDeps {
 			return meta, ok
 		},
 		reasoningEffortLevels: s.profile.ReasoningEffortLevels(),
-		webSearchEnabled:      s.profile.BehaviorTag() == "google",
+		webSearchEnabled:      s.profile.Protocol() == registry.ProtocolGoogle && s.profile.SupportsWebSearch(),
 		stateDir:              s.stateDir,
 		sessionID:             s.id,
 		currentMeta:           s.Meta,

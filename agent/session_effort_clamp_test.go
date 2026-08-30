@@ -87,6 +87,83 @@ func TestBuildModelRequest_OmitsEffortWhenProfileDoesNotSupportReasoning(t *test
 	}
 }
 
+// TestBuildModelRequest_ThinkingAlwaysOn_InjectsNoEffort pins spec §7.4: a
+// mandatory-reasoning model is a builder concern, never an injected effort.
+// With no --reasoning-effort configured the request carries none, and the
+// protocol's builder is what keeps the always-on model legal.
+func TestBuildModelRequest_ThinkingAlwaysOn_InjectsNoEffort(t *testing.T) {
+	t.Parallel()
+	s := &Session{}
+	profile := provider.NewOpenAIProfile("stealth/ox-alpha").
+		WithLiveModelInfo(llm.ModelInfo{
+			SupportsReasoning:     true,
+			ThinkingAlwaysOn:      true,
+			ReasoningEffortLevels: []string{"low", "high", "max"},
+		})
+
+	// No session reasoning effort configured (empty string).
+	req := s.buildModelRequest(profile, "sys", []llm.Message{llm.User("hi")}, nil, "")
+
+	if req.ReasoningEffort != nil {
+		t.Fatalf("ReasoningEffort = %q, want nil (no effort is ever injected)", *req.ReasoningEffort)
+	}
+}
+
+// TestBuildModelRequest_ThinkingAlwaysOn_ExplicitEffortWins verifies that an
+// explicit session effort still reaches a ThinkingAlwaysOn model's request.
+func TestBuildModelRequest_ThinkingAlwaysOn_ExplicitEffortWins(t *testing.T) {
+	t.Parallel()
+	s := &Session{}
+	profile := provider.NewOpenAIProfile("stealth/ox-alpha").
+		WithLiveModelInfo(llm.ModelInfo{
+			SupportsReasoning:     true,
+			ThinkingAlwaysOn:      true,
+			ReasoningEffortLevels: []string{"low", "high", "max"},
+		})
+
+	req := s.buildModelRequest(profile, "sys", []llm.Message{llm.User("hi")}, nil, "max")
+
+	if req.ReasoningEffort == nil || *req.ReasoningEffort != "max" {
+		t.Fatalf("ReasoningEffort = %v, want max (an explicit effort is honored)", req.ReasoningEffort)
+	}
+}
+
+// TestBuildModelRequest_ThinkingAlwaysOn_ReasoningOffOmits verifies that a
+// model declared reasoning=false gets no effort, even if the live /models
+// endpoint also reported ThinkingAlwaysOn — the explicit reasoning=false
+// declaration is authoritative user intent.
+func TestBuildModelRequest_ThinkingAlwaysOn_ReasoningOffOmits(t *testing.T) {
+	t.Parallel()
+	s := &Session{}
+	reasoningOff := false
+	cfg := providercfg.Config{Instances: []providercfg.InstanceConfig{{
+		Name:     "lunaroute",
+		Type:     "openai",
+		APIStyle: providercfg.StyleChatCompletions,
+		Models: map[string]providercfg.ModelConfig{
+			"mandatory-model": {Reasoning: &reasoningOff},
+		},
+	}}}
+	p, err := provider.ResolveProfileFromConfig(cfg, "lunaroute/mandatory-model")
+	if err != nil {
+		t.Fatalf("ResolveProfileFromConfig: %v", err)
+	}
+	// Simulate live /models reporting ThinkingAlwaysOn=true; the explicit
+	// reasoning=false must suppress it.
+	p = p.WithLiveModelInfo(llm.ModelInfo{
+		SupportsReasoning: true,
+		ThinkingAlwaysOn:  true,
+	})
+	if p.ThinkingAlwaysOn() {
+		t.Fatal("profile ThinkingAlwaysOn = true, want false (reasoning=false suppresses it)")
+	}
+
+	req := s.buildModelRequest(p, "sys", []llm.Message{llm.User("hi")}, nil, "")
+	if req.ReasoningEffort != nil {
+		t.Fatalf("ReasoningEffort = %q, want nil (an unconfigured effort is never filled in)", *req.ReasoningEffort)
+	}
+}
+
 // The vision side-channel (describeImage) builds its request manually rather
 // than via buildModelRequest, so it needs its own SupportsReasoning guard —
 // covered separately here since it has its own bug-prone code path.

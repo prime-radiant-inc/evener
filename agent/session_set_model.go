@@ -10,26 +10,26 @@ import (
 	"primeradiant.com/evener/agent/provider"
 	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/llm"
+	"primeradiant.com/evener/llm/registry"
 )
 
-// unrepresentableContentKinds is the spec's per-tag policy table
+// unrepresentableContentKinds is the spec's per-protocol policy table
 // (docs/superpowers/specs/2026-07-12-model-switching-design.md, "Unrepresentable
 // history") for content kinds a target's request builder cannot faithfully
-// carry. It derives the family from builderFamily (session_model_call.go) so
-// this preflight and the N4 replay classifier share a single source of truth
-// and cannot drift: a tag misfiled here that the anthropic/google builder
-// hard-errors on would brick every subsequent turn.
+// carry. It keys on the wire protocol because the restriction belongs to the
+// request builder: a protocol misfiled here whose builder hard-errors on the
+// kind would brick every subsequent turn.
 //
-// Per family: hard errors for anthropic-family (anthropic/request.go:512-513)
-// and google (google/request.go:280-281,328-329); silent drops for openai-compat
+// Per protocol: hard errors for anthropic (anthropic/request.go:512-513) and
+// google (google/request.go:280-281,328-329); silent drops for openai-chat
 // (openaicompat/request.go:299-329 has no document/audio cases — silently
 // dropping user content counts as unrepresentable by policy); audio only for
-// openai Responses (responses.go:913-938 — documents are carried).
-func unrepresentableContentKinds(behaviorTag string) map[llm.ContentKind]bool {
-	switch builderFamily(behaviorTag) {
-	case "anthropic", "google", "compat":
+// openai-responses (responses.go:913-938 — documents are carried).
+func unrepresentableContentKinds(protocol string) map[llm.ContentKind]bool {
+	switch protocol {
+	case registry.ProtocolAnthropic, registry.ProtocolGoogle, registry.ProtocolOpenAIChat:
 		return map[llm.ContentKind]bool{llm.ContentDocument: true, llm.ContentAudio: true}
-	case "openai":
+	case registry.ProtocolOpenAIResponses:
 		return map[llm.ContentKind]bool{llm.ContentAudio: true}
 	default:
 		return nil
@@ -37,12 +37,12 @@ func unrepresentableContentKinds(behaviorTag string) map[llm.ContentKind]bool {
 }
 
 // unrepresentableHistoryKinds scans history for content kinds the target
-// behavior tag's request builder cannot faithfully carry (per
+// protocol's request builder cannot faithfully carry (per
 // unrepresentableContentKinds), returning the distinct offending kinds in
 // first-seen order. Returns nil when the target has no restricted kinds or
 // none appear in history.
-func unrepresentableHistoryKinds(history []schema.Turn, behaviorTag string) []llm.ContentKind {
-	restricted := unrepresentableContentKinds(behaviorTag)
+func unrepresentableHistoryKinds(history []schema.Turn, protocol string) []llm.ContentKind {
+	restricted := unrepresentableContentKinds(protocol)
 	if len(restricted) == 0 {
 		return nil
 	}
