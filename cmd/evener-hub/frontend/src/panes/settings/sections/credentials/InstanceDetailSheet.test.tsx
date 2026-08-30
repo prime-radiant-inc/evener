@@ -64,6 +64,19 @@ describe("visibility", () => {
     expect(screen.getByText(/default/i)).toBeTruthy();
   });
 
+  // The sheet is the whole screen on mobile and the only place Remove would
+  // have been, so the badge explaining an implicit instance has to be here
+  // too - not only on the row behind it.
+  test("an implicit instance is badged 'from environment'", () => {
+    renderSheet(instance({ name: "groq", providerId: "groq", implicit: true }));
+    expect(screen.getByText("from environment")).toBeTruthy();
+  });
+
+  test("a non-implicit instance carries no such badge", () => {
+    renderSheet(instance({ name: "work", providerId: "groq", base: "groq", implicit: false }));
+    expect(screen.queryByText("from environment")).toBeNull();
+  });
+
   test("the close button calls onClose", async () => {
     const user = userEvent.setup();
     const { onClose } = renderSheet(instance({ name: "a", providerId: "x" }));

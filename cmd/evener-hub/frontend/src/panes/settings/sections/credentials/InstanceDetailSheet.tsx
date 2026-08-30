@@ -112,6 +112,7 @@ export function InstanceDetailSheet({
           <div className={CLASS.headingRow}>
             <StatusDot state={layers.length > 0 || keylessByDesign(instance) ? "idle" : "ended"} />
             {instance.isDefault && <Chip>★ default</Chip>}
+            {instance.implicit && <Chip>from environment</Chip>}
           </div>
           {unconfigured !== null ? (
             <p className={CLASS.unconfigured}>{unconfigured}</p>
