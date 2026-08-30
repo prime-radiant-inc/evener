@@ -261,7 +261,13 @@ func TestClientModelsAppliesLiveListingAndHidesToolLessRows(t *testing.T) {
 		_, _ = w.Write([]byte(`{"data":[{"id":"tools-ok","supported_parameters":["tools","temperature"]},{"id":"no-tools","supported_parameters":["temperature"]}]}`))
 	}))
 	t.Cleanup(srv.Close)
-	r := fixtureRegistry(t, srv.URL, nil)
+	r := fixtureRegistry(t, srv.URL, map[string]registry.Provider{
+		// work, plus a catalog row that says tools = false. Only the live
+		// layer's verdict hides a row (spec §5, §7.5), so this one stays.
+		"work": {Base: "openai", Protocol: registry.ProtocolOpenAIChat, Surface: registry.SurfaceGeneric, APIKey: "work-key",
+			Transport: registry.Transport{BaseURL: srv.URL},
+			Models:    map[string]registry.Model{"catalog-no-tools": {Caps: registry.Caps{Tools: new(false)}}}},
+	})
 	c := llm.NewClient(llm.WithRegistry(r))
 	listing, err := c.Models(context.Background(), "work")
 	if err != nil {
@@ -279,6 +285,9 @@ func TestClientModelsAppliesLiveListingAndHidesToolLessRows(t *testing.T) {
 	}
 	if !ids["tools-ok"] || ids["no-tools"] {
 		t.Fatalf("live Tools=false hides the row (spec §5, §7.5): %v", ids)
+	}
+	if !ids["catalog-no-tools"] {
+		t.Fatalf("a catalog row's tools = false is not the live verdict and must not hide it: %v", ids)
 	}
 	res, err := c.Resolve("work/tools-ok")
 	if err != nil || res.Provenance["model"] != "live" {
@@ -312,6 +321,30 @@ func TestClientModelsOverrideLister(t *testing.T) {
 	c.Register(&recordingAdapter{name: "mute"})
 	if _, err := c.Models(context.Background(), "mute"); err == nil {
 		t.Fatal("an unresolvable override without LiveModels cannot list")
+	}
+}
+
+// TestClientModelsOverrideListingStaysOutOfTheRegistry pins that an override's
+// rows are the override's own. A bare client shares one process-wide registry
+// with every other bare client, so a listing that did not come from the
+// instance's own transport must never become a live layer there.
+func TestClientModelsOverrideListingStaysOutOfTheRegistry(t *testing.T) {
+	srv, _ := responsesServer(t)
+	r := fixtureRegistry(t, srv.URL, nil)
+	c := llm.NewClient(llm.WithRegistry(r))
+	lister := &listingAdapter{models: []registry.Model{{ID: "override-only"}}}
+	lister.name = "openai"
+	c.Register(lister)
+	listing, err := c.Models(context.Background(), "openai")
+	if err != nil || !listing.Live || len(listing.Models) != 1 || listing.Models[0].ModelID != "override-only" {
+		t.Fatalf("override listing: %v %+v", err, listing)
+	}
+	res, err := r.Resolve("openai/override-only")
+	if err != nil {
+		t.Fatalf("Resolve: %v", err)
+	}
+	if !res.Synthesized || res.Provenance["model"] == "live" {
+		t.Fatalf("the registry learned the override's row: synthesized=%v provenance=%q", res.Synthesized, res.Provenance["model"])
 	}
 }
 

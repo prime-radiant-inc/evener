@@ -65,8 +65,9 @@ func samplingPaths(protocol string) (temperature, topP, stop string) {
 // Reasoning = false; clamp the effort to EffortValues (an empty ladder
 // passes it through; no effort is ever added); apply MaxOutputTokens when
 // the request has none; drop request-level sampling parameters the row's
-// Sampling or Fields say not to send; gate the prompt-cache fields. It
-// returns a shaped copy and never writes through the caller's pointers.
+// Sampling or Fields say not to send; gate the prompt-cache fields; turn
+// store on for a planned Responses continuation. It returns a shaped copy
+// and never writes through the caller's pointers.
 func ShapeRequest(req Request, res registry.Resolved) Request {
 	caps := res.Caps
 	send := func(path string) bool {
@@ -108,8 +109,13 @@ func ShapeRequest(req Request, res registry.Resolved) Request {
 	}
 	// A planned Responses continuation needs server-side storage; the
 	// continuation store override (spec §7.6) turns store on unless the
-	// caller decided it explicitly.
-	if req.HistoryMode == HistoryModeResponsesDelta && strings.TrimSpace(req.PreviousResponseID) != "" && req.Store == nil {
+	// caller decided it explicitly. §7.6 calls a continuation planned only
+	// on the Responses protocol with a row that sends both fields, so a row
+	// that cannot carry the anchor is never told to store for one.
+	plannedContinuation := res.Protocol == registry.ProtocolOpenAIResponses &&
+		caps.Fields["store"] && caps.Fields["previous_response_id"] &&
+		req.HistoryMode == HistoryModeResponsesDelta && strings.TrimSpace(req.PreviousResponseID) != ""
+	if plannedContinuation && req.Store == nil {
 		req.Store = new(true)
 	}
 	return req

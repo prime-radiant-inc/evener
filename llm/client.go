@@ -29,14 +29,16 @@ type ProviderAdapter interface {
 // the request passes through untouched. Middleware, API-attempt logging,
 // and provider stamping apply to both paths.
 type Client struct {
-	registry     *registry.Registry
-	hasRegistry  bool
-	registryOnce sync.Once
-	registryErr  error
-	stateDir     string
-	hasherOnce   sync.Once
-	hasher       *ContinuationHasher
-	hasherErr    error
+	registry *registry.Registry
+	// hasRegistry records that WithRegistry supplied the registry above.
+	// A client without one still resolves, against EmbeddedRegistry, but
+	// that snapshot's instances are neither listed nor eligible as the
+	// default (spec §5.1, §8.1).
+	hasRegistry bool
+	stateDir    string
+	hasherOnce  sync.Once
+	hasher      *ContinuationHasher
+	hasherErr   error
 
 	overrides     map[string]ProviderAdapter
 	pinnedDefault string
@@ -68,7 +70,7 @@ func WithClientStateDir(dir string) ClientOption {
 }
 
 // NewClient returns a client with no overrides. Without WithRegistry it
-// lazily loads the embedded snapshot offline (spec §8.1).
+// resolves against EmbeddedRegistry (spec §8.1).
 func NewClient(opts ...ClientOption) *Client {
 	c := &Client{overrides: map[string]ProviderAdapter{}}
 	for _, opt := range opts {
@@ -79,30 +81,46 @@ func NewClient(opts ...ClientOption) *Client {
 	return c
 }
 
-// Registry returns the client's registry. Without WithRegistry it is the
-// embedded snapshot and overlay loaded offline with no user layer, no
-// cache, and no environment, so a bare NewClient() resolves the same
-// records on every machine and never reads a developer's keys.
-func (c *Client) Registry() *registry.Registry {
-	c.registryOnce.Do(func() {
-		if c.registry != nil {
-			return
-		}
-		c.registry, c.registryErr = registry.Load(
+var (
+	embeddedRegistryOnce sync.Once
+	embeddedRegistry     *registry.Registry
+)
+
+// EmbeddedRegistry is the process-wide fallback registry: the embedded
+// models.dev snapshot and curated overlay, loaded offline with no user layer,
+// no cache, and no environment. Every client built without WithRegistry
+// resolves against this one instance, so the catalog is parsed once per
+// process rather than once per client, and a bare client resolves the same
+// records on every machine without ever reading a developer's keys.
+//
+// It panics when the load fails: the snapshot and the overlay are compiled
+// into the binary, so a failure here is a build defect, not a condition a
+// caller can handle.
+func EmbeddedRegistry() *registry.Registry {
+	embeddedRegistryOnce.Do(func() {
+		r, err := registry.Load(
 			registry.WithOffline(true), registry.WithoutCache(), registry.WithNoUserLayer(),
 			registry.WithEnv(func(string) (string, bool) { return "", false }),
 		)
+		if err != nil {
+			panic("llm: the embedded provider registry failed to load: " + err.Error())
+		}
+		embeddedRegistry = r
 	})
-	return c.registry
+	return embeddedRegistry
+}
+
+// Registry returns the registry WithRegistry supplied, or EmbeddedRegistry.
+func (c *Client) Registry() *registry.Registry {
+	if c.registry != nil {
+		return c.registry
+	}
+	return EmbeddedRegistry()
 }
 
 // Resolve resolves an instance/model reference through the client's registry.
 func (c *Client) Resolve(ref string) (registry.Resolved, error) {
-	r := c.Registry()
-	if r == nil {
-		return registry.Resolved{}, fmt.Errorf("registry unavailable: %w", c.registryErr)
-	}
-	return r.Resolve(ref)
+	return c.Registry().Resolve(ref)
 }
 
 // ContinuationHasher returns the hasher for the client's state directory,
@@ -330,14 +348,14 @@ func (c *Client) Stream(ctx context.Context, req Request) (Stream, error) {
 	return newProviderStampStream(st, t.name, tag), nil
 }
 
-// ModelListing is what Models returns: the instance's visible rows after
-// its live listing, when the transport has one, was applied to the registry.
+// ModelListing is what Models returns: the instance's visible rows, after a
+// live listing from its transport was applied to the registry.
 type ModelListing struct {
-	// Live is true when a live listing was fetched and applied; false means
-	// registry-only (spec §8.1: an unsupported models endpoint is not a failure).
+	// Live is true when a live listing was fetched; false means registry-only
+	// (spec §8.1: an unsupported models endpoint is not a failure).
 	Live bool
-	// Models are the visible rows — hidden rows and rows a live listing marks
-	// Tools = false are dropped (spec §5) — sorted by model id.
+	// Models are the visible rows — hidden rows and rows whose live layer
+	// says Tools = false are dropped (spec §5) — sorted by model id.
 	Models []registry.Resolved
 }
 
@@ -348,65 +366,50 @@ type LiveModelLister interface {
 	LiveModels(ctx context.Context) ([]registry.Model, error)
 }
 
-// Models lists an instance's models: the live listing is fetched through
-// the protocol (or the override's LiveModels), applied to the registry so
-// later Resolve calls see it, and every id the registry now knows for the
-// instance is resolved and filtered by the §5 visibility rule.
+// Models lists an instance's models. An override lists through its own
+// LiveModels seam and its rows are returned as they came; otherwise the
+// protocol's listing is applied to the registry so later Resolve calls see
+// it, and every id the registry then knows for the instance is resolved and
+// filtered by the §5 visibility rule.
 func (c *Client) Models(ctx context.Context, instance string) (ModelListing, error) {
 	instance = normalizeProviderName(instance)
 	r := c.Registry()
-	if r == nil {
-		return ModelListing{}, fmt.Errorf("registry unavailable: %w", c.registryErr)
-	}
-	override := c.overrides[instance]
-	res, resolveErr := r.ResolveInstance(instance)
-	if resolveErr != nil && override == nil {
-		return ModelListing{}, &ConfigurationError{Message: resolveErr.Error()}
-	}
-	var rows []registry.Model
-	live := false
-	if override != nil {
+	if override := c.overrides[instance]; override != nil {
 		// An override owns its instance name: its listing seam is the only
 		// way it can list, so no registry-only fallback stands in for it.
+		// Its rows stay out of the registry — a client without WithRegistry
+		// shares EmbeddedRegistry with every other client in the process,
+		// and only an instance's own transport may speak for it.
 		lister, ok := override.(LiveModelLister)
 		if !ok {
 			return ModelListing{}, &ConfigurationError{Message: fmt.Sprintf("provider %s does not support listing models", instance)}
 		}
 		opCtx, op := c.beginProviderOperation(ctx)
-		var err error
-		rows, err = lister.LiveModels(opCtx)
+		rows, err := lister.LiveModels(opCtx)
 		op.settle(opCtx, err)
 		if err != nil {
 			return ModelListing{}, RewriteErrorProvider(err, instance)
 		}
+		return ModelListing{Live: true, Models: standaloneRows(instance, rows)}, nil
+	}
+	res, err := r.ResolveInstance(instance)
+	if err != nil {
+		return ModelListing{}, &ConfigurationError{Message: err.Error()}
+	}
+	p, ok := ProtocolFor(res.Protocol)
+	if !ok {
+		return ModelListing{}, &ConfigurationError{Message: fmt.Sprintf("%s: protocol %q is not registered", instance, res.Protocol)}
+	}
+	opCtx, op := c.beginProviderOperation(ctx)
+	rows, err := p.ListModels(opCtx, res)
+	op.settle(opCtx, err)
+	live := false
+	switch {
+	case errors.Is(err, ErrModelListingUnsupported):
+	case err != nil:
+		return ModelListing{}, RewriteErrorProvider(err, instance)
+	default:
 		live = true
-	} else {
-		p, ok := ProtocolFor(res.Protocol)
-		if !ok {
-			return ModelListing{}, &ConfigurationError{Message: fmt.Sprintf("%s: protocol %q is not registered", instance, res.Protocol)}
-		}
-		opCtx, op := c.beginProviderOperation(ctx)
-		var err error
-		rows, err = p.ListModels(opCtx, res)
-		op.settle(opCtx, err)
-		switch {
-		case errors.Is(err, ErrModelListingUnsupported):
-		case err != nil:
-			return ModelListing{}, RewriteErrorProvider(err, instance)
-		default:
-			live = true
-		}
-	}
-	if resolveErr != nil {
-		// An override with no registry record: its listing is the whole truth.
-		out := make([]registry.Resolved, 0, len(rows))
-		for _, m := range rows {
-			out = append(out, registry.Resolved{Instance: instance, ModelID: m.ID, WireID: m.ID, Model: m, Caps: m.Caps})
-		}
-		sort.Slice(out, func(i, j int) bool { return out[i].ModelID < out[j].ModelID })
-		return ModelListing{Live: live, Models: out}, nil
-	}
-	if live {
 		r.ApplyLive(instance, rows)
 	}
 	ids, err := r.ModelIDs(instance)
@@ -416,12 +419,31 @@ func (c *Client) Models(ctx context.Context, instance string) (ModelListing, err
 	out := make([]registry.Resolved, 0, len(ids))
 	for _, id := range ids {
 		row, err := r.Resolve(instance + "/" + id)
-		if err != nil || row.Model.Hidden || (row.Caps.Tools != nil && !*row.Caps.Tools) {
+		if err != nil || row.Model.Hidden || liveSaysNoTools(row) {
 			continue
 		}
 		out = append(out, row)
 	}
 	return ModelListing{Live: live, Models: out}, nil
+}
+
+// liveSaysNoTools reports the §5 visibility rule: a row is hidden when the
+// live layer is the one that set Tools = false. A catalog row that declares
+// no tool support stays listed — the registry, not the provider's current
+// listing, is what said so.
+func liveSaysNoTools(row registry.Resolved) bool {
+	return row.Caps.Tools != nil && !*row.Caps.Tools && row.Provenance["Tools"] == registry.LayerLive
+}
+
+// standaloneRows turns a listing that has no registry record behind it into
+// Resolved rows, sorted by model id.
+func standaloneRows(instance string, rows []registry.Model) []registry.Resolved {
+	out := make([]registry.Resolved, 0, len(rows))
+	for _, m := range rows {
+		out = append(out, registry.Resolved{Instance: instance, ModelID: m.ID, WireID: m.ID, Model: m, Caps: m.Caps})
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].ModelID < out[j].ModelID })
+	return out
 }
 
 // PlanResponsesContinuation returns the Responses-API continuation plan for
