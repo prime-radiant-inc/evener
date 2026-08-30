@@ -1036,8 +1036,8 @@ func TestProjectorTurnEndedPreservesInterruptStatus(t *testing.T) {
 // TestProjectorAccumulatesPerTurnUsageAcrossRounds verifies the completed
 // Turn's Usage is the turn's own total across every round (not a
 // cumulative-session figure) — each EventAssistantTextEnd's usage is summed
-// until the turn itself completes, and Cost is estimated from the model seen
-// on those rounds.
+// until the turn itself completes, and Cost is estimated at the cost the
+// instance and model seen on those rounds resolve to.
 func TestProjectorAccumulatesPerTurnUsageAcrossRounds(t *testing.T) {
 	projector := NewAppEventProjector("th_1", "local:th_1")
 	projector.SetCostLookup(func(provider, model string) *registry.Cost {
