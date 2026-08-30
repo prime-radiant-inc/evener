@@ -162,6 +162,9 @@ func NewSession(client *llm.Client, profile *provider.Profile, env execenv.Execu
 	if err := env.Initialize(); err != nil {
 		return nil, fmt.Errorf("env initialize: %w", err)
 	}
+	// Normalize before validating so a mixed-case level or disable alias is
+	// stored canonically rather than reaching a provider verbatim.
+	cfg.ReasoningEffort = llm.NormalizeReasoningEffort(cfg.ReasoningEffort)
 	if err := llm.ValidateReasoningEffort(cfg.ReasoningEffort); err != nil {
 		return nil, err
 	}

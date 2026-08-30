@@ -406,7 +406,7 @@ var hubCommandRegistry = []hubCommandDefinition{
 				}
 				items := make([]tuipick.ModelPickerItem, 0, len(choices))
 				for _, l := range choices {
-					items = append(items, tuipick.ModelPickerItem{ID: l, Display: l})
+					items = append(items, tuipick.ModelPickerItem{ID: l, Display: effortDisplay(l, m.detail.ReasoningEffortLevels)})
 				}
 				picker := tuipick.NewModelPicker(items, m.detail.ReasoningEffort, m.width)
 				picker.SetTitle("Select reasoning effort")

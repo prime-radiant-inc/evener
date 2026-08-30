@@ -66,6 +66,9 @@ func claudeCatalogFamilyID(modelID string) (string, bool) {
 	if !strings.HasPrefix(id, "claude-") {
 		return "", false
 	}
+	// OpenRouter and some mirrors spell versions with dots
+	// (claude-opus-4.6); the overrides file keys on the dashed convention.
+	id = strings.ReplaceAll(id, ".", "-")
 	return familyModelID(id), true
 }
 

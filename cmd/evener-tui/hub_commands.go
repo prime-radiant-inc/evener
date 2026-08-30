@@ -685,6 +685,21 @@ func effortChoices(levels []string) []string {
 	return append(append([]string(nil), levels...), llm.ReasoningEffortNone)
 }
 
+// effortDisplay labels a picker choice the way the hub surfaces do: an off
+// level says "off" only where the model's ladder can express one, and
+// "provider default" where an explicit none merely omits the field.
+func effortDisplay(level string, levels []string) string {
+	if llm.NormalizeReasoningEffort(level) != llm.ReasoningEffortNone {
+		return level
+	}
+	for _, l := range levels {
+		if strings.EqualFold(l, llm.ReasoningEffortNone) {
+			return "none (off)"
+		}
+	}
+	return "none (provider default)"
+}
+
 // reasoningEffortLevelSettable reports whether level (case-insensitively,
 // with disable aliases normalized) is one of effortChoices, so
 // /effort <level> can be rejected client-side without a wire round trip.

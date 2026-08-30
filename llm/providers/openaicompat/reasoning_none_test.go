@@ -44,6 +44,32 @@ func TestApplyThinkingFormat_ExplicitNone(t *testing.T) {
 	}
 }
 
+// The mandatory-thinking backstop on the "openai" thinking format (the
+// dialect the fable-5 family reaches through compat gateways): with no effort
+// on the request the format emits the medium default — and when the effort
+// parameter is switched off by config, the backstop has no field to ride and
+// the body stays empty, a known gap pinned here so it can't change silently.
+func TestApplyThinkingFormat_MandatoryBackstopOpenAIFormat(t *testing.T) {
+	body := map[string]any{}
+	applyThinkingFormat(body, llm.Request{}, ModelCompat{
+		Quirks:           ProviderQuirks{ThinkingFormat: "openai"},
+		ThinkingAlwaysOn: true,
+	})
+	if body["reasoning_effort"] != "medium" {
+		t.Fatalf("body = %#v, want the medium backstop on the openai format", body)
+	}
+
+	off := false
+	gated := map[string]any{}
+	applyThinkingFormat(gated, llm.Request{}, ModelCompat{
+		Quirks:           ProviderQuirks{ThinkingFormat: "openai", SupportsReasoningEffort: &off},
+		ThinkingAlwaysOn: true,
+	})
+	if len(gated) != 0 {
+		t.Fatalf("body = %#v, want empty when the effort parameter is disabled (the backstop has no field to ride)", gated)
+	}
+}
+
 // The off-guard keys on the configured effort, not the post-translation wire
 // string: a thinking_levels entry may spell a real thinking-on tier as the
 // provider's literal "none", and that tier must still emit its wire shape.
