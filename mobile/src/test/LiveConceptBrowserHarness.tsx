@@ -48,7 +48,12 @@ import {
   type LiveConceptHostRuntime,
 } from "../live-concepts/LiveConceptHost";
 import { createLiveConceptUiStore } from "../live-concepts/live-ui-store";
+import type { ConceptId } from "../live-concepts/model";
 import type { NativeBridge } from "../native/client";
+import {
+  type ContentSizeCategory,
+  isContentSizeCategory,
+} from "../native/contract";
 import type { ActivityView } from "../services/activity";
 import type {
   ConversationReadProjection,
@@ -60,6 +65,10 @@ import { createConversationStore } from "../state/conversation";
 import { createNavigationStore } from "../state/navigation";
 import { createPreferencesStore } from "../state/preferences";
 import { createRosterStore } from "../state/roster";
+import {
+  applyPlatformPresentation,
+  type PlatformPresentation,
+} from "../ui/platformPresentation";
 import { FakeProfileService } from "./fakeProfileService";
 import {
   type HarnessAction,
@@ -218,6 +227,16 @@ export interface ReadyHarnessOptions {
   readonly draft: string;
   readonly lastGoodKeyDigest: string;
   readonly fixture?: "pathological-39" | "variable-500";
+  /** Concept skin to render; defaults to the persisted/initial concept. */
+  readonly concept?: ConceptId;
+  /** Explicit theme; defaults to "system". */
+  readonly theme?: PlatformPresentation["theme"];
+  /** Dynamic Type category; defaults to "large". */
+  readonly contentSize?: ContentSizeCategory;
+  /** Reduced-motion preference; defaults to false. */
+  readonly reducedMotion?: boolean;
+  /** When "top-bottom", sets --safe-area-bottom to 34px on the document root. */
+  readonly safeArea?: "none" | "top-bottom";
 }
 
 /**
@@ -261,6 +280,34 @@ export function createReadyHarness(
 
   const navigation = createNavigationStore();
   const preferences = createPreferencesStore();
+  // Apply the matrix point's presentation preferences (theme, content-size,
+  // reduced-motion) to document.documentElement exactly as RootShell does via
+  // usePlatformPresentation, so each point renders its intended configuration.
+  const contentSize =
+    options.contentSize !== undefined &&
+    isContentSizeCategory(options.contentSize)
+      ? options.contentSize
+      : preferences.getState().contentSize;
+  const theme = options.theme ?? preferences.getState().theme;
+  const reducedMotion =
+    options.reducedMotion ?? preferences.getState().reducedMotion;
+  preferences.setState({ theme, contentSize, reducedMotion });
+  const stopPresentation = applyPlatformPresentation({
+    theme,
+    contentSize,
+    reducedMotion,
+  });
+  // The browser harness does not run the real visualViewport coordinator, so
+  // for the "top-bottom" safe-area axis set the declarative --safe-area-bottom
+  // token the native layer would otherwise supply. The composer's
+  // padding-block-end consumes it through the real CSS cascade.
+  const SAFE_AREA_BOTTOM = "--safe-area-bottom";
+  const rootEl = document.documentElement;
+  const priorSafeAreaBottom = rootEl.style.getPropertyValue(SAFE_AREA_BOTTOM);
+  const priorSafeAreaHad = priorSafeAreaBottom !== "";
+  if (options.safeArea === "top-bottom") {
+    rootEl.style.setProperty(SAFE_AREA_BOTTOM, "34px");
+  }
   const rosterStore = createRosterStore();
   rosterStore.setState({
     entries: [
@@ -286,6 +333,11 @@ export function createReadyHarness(
     write: (value) => writes.push(value),
     remove: () => {},
   });
+  // Render the matrix point's concept skin. setConcept writes through the store
+  // before the first render so LiveConceptHost presents the intended concept.
+  if (options.concept !== undefined) {
+    uiStore.getState().setConcept(options.concept);
+  }
 
   const nativeOpenExternalUrl = () => {};
   const runtime: LiveConceptHostRuntime = {
@@ -435,6 +487,14 @@ export function createReadyHarness(
     snapshot,
     cleanup: () => {
       cleanup();
+      // Restore the document-root presentation + safe-area declarations this
+      // harness point applied, so successive matrix points do not leak state.
+      stopPresentation();
+      if (priorSafeAreaHad) {
+        rootEl.style.setProperty(SAFE_AREA_BOTTOM, priorSafeAreaBottom);
+      } else {
+        rootEl.style.removeProperty(SAFE_AREA_BOTTOM);
+      }
     },
   };
   return api;
