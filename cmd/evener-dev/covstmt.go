@@ -35,13 +35,21 @@ func covstmtRun(args []string, stdout, stderr io.Writer) int {
 		fs.Usage()
 		return 2
 	}
+	var lines []string
+	// Count every profile before printing any line: stdout is all-or-nothing,
+	// so a consumer reading N lines for N profiles either gets all N or
+	// nothing plus a non-zero exit. Emitting as it counts would hand a
+	// partial line set to a `read` that cannot tell it was short.
 	for _, p := range profiles {
 		covered, total, err := covstmt.StmtCounts(p)
 		if err != nil {
 			_, _ = fmt.Fprintf(stderr, "evener dev covstmt: %s: %v\n", p, err)
 			return 1
 		}
-		_, _ = fmt.Fprintf(stdout, "%d %d\n", covered, total)
+		lines = append(lines, fmt.Sprintf("%d %d", covered, total))
+	}
+	for _, line := range lines {
+		_, _ = fmt.Fprintln(stdout, line)
 	}
 	return 0
 }

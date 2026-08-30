@@ -48,6 +48,31 @@ func TestCovstmtMissingProfileFails(t *testing.T) {
 	}
 }
 
+// TestCovstmtMidListFailureEmitsNoStdout pins the failure seam: a consumer
+// reads N lines for N profiles, so a profile that fails MID-list must not
+// hand it a prefix of those lines. The command counts everything first and
+// prints only on full success, so stdout is empty and the exit is 1 — a
+// `read -r tc tt fc ft uc ut` in coverage-floor.sh sees nothing and falls to
+// its no-statements branch instead of silently counting with empty fields.
+func TestCovstmtMidListFailureEmitsNoStdout(t *testing.T) {
+	dir := t.TempDir()
+	good := filepath.Join(dir, "good.cov")
+	writeCovFixture(t, good, "mode: set\npkg/a.go:10.1,20.2 40 1\n")
+	missing := filepath.Join(dir, "missing.cov")
+
+	var out, errOut strings.Builder
+	code := covstmtRun([]string{good, missing, good}, &out, &errOut)
+	if code != 1 {
+		t.Fatalf("covstmtRun with a mid-list failure exits %d, want 1", code)
+	}
+	if got := out.String(); got != "" {
+		t.Fatalf("stdout on mid-list failure = %q, want empty (all-or-nothing)", got)
+	}
+	if !strings.Contains(errOut.String(), "missing.cov") {
+		t.Fatalf("stderr does not name the failing profile: %q", errOut.String())
+	}
+}
+
 func TestCovstmtRequiresAProfile(t *testing.T) {
 	var out, errOut strings.Builder
 	code := covstmtRun(nil, &out, &errOut)

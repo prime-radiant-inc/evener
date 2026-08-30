@@ -1,6 +1,6 @@
 // Command evener-dev is the dev/test infrastructure binary: it dispatches
 // the dev and test tooling subcommands that an end-user install never needs
-// (agent-shards, module-lint, fuzz-harvest, fuzzcov, fuzzregistry,
+// (agent-shards, covstmt, module-lint, fuzz-harvest, fuzzcov, fuzzregistry,
 // internalcheck, test-dev-tooling, tomlcheck, transcript-v2-upgrade).
 //
 // The end-user binary is `evener`; this binary is built and used by repo
@@ -65,7 +65,7 @@ func dispatch(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 func usage(w io.Writer) {
 	tw := tabwriter.NewWriter(w, 0, 0, 2, ' ', 0)
 	_, _ = fmt.Fprintf(w, "Usage: evener-dev <subcommand> [flags]\n\nSubcommands:\n")
-	_, _ = fmt.Fprintf(tw, "  dev\t\t\tDev tooling (agent-shards, module-lint)\n")
+	_, _ = fmt.Fprintf(tw, "  dev\t\t\tDev tooling (agent-shards, covstmt, module-lint)\n")
 	_, _ = fmt.Fprintf(tw, "  module-lint\t\tRun golangci-lint across workspace modules in parallel waves\n")
 	_, _ = fmt.Fprintf(tw, "  agent-shards\t\tRun agent test shards in parallel\n")
 	_, _ = fmt.Fprintf(tw, "  fuzz-harvest\t\tHarvest fuzz seed corpora from recorded traffic\n")

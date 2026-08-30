@@ -1,9 +1,7 @@
-// Package covstmt_test exercises the RED-phase test set for the Go port of
-// scripts/lib/covstmt-lib.sh's stmt_counts: parse a Go coverage profile, dedupe
-// blocks by position, and report covered/total statement counts.
-//
-// These tests are written first; no implementation exists yet, so the package
-// does not compile until covstmt.go is added in the GREEN phase.
+// Package covstmt_test pins the statement counting this repo's coverage
+// ratchet depends on: parse a Go coverage profile, dedupe blocks by position,
+// and report covered/total statement counts — including the last-wins NumStmt
+// tie-break the deleted Python stmt_counts had.
 package covstmt
 
 import (
@@ -68,6 +66,20 @@ func TestDedupesBothUncovered(t *testing.T) {
 		"pkg/file.go:10.1,20.2 200 0\n" +
 		"pkg/file.go:10.1,20.2 200 0\n"
 	assertCounts(t, writeProfile(t, profile), 0, 200)
+}
+
+// TestDuplicatePositionStmtCountIsLastWins pins the NumStmt tie-break for a
+// duplicate position whose occurrences disagree: the deleted Python
+// stmt_counts kept the LAST occurrence's count, so last-wins is what keeps
+// this package equivalent to it on every input. Real go-toolchain profiles
+// never disagree (the same position is emitted with the same NumStmt), but
+// the pin is the whole point — an off-toolchain profile must not silently
+// diverge.
+func TestDuplicatePositionStmtCountIsLastWins(t *testing.T) {
+	const profile = "mode: set\n" +
+		"pkg/file.go:10.1,20.2 10 0\n" +
+		"pkg/file.go:10.1,20.2 99 1\n"
+	assertCounts(t, writeProfile(t, profile), 99, 99)
 }
 
 // TestMultipleFiles counts blocks from different files independently: the

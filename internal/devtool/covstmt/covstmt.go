@@ -1,7 +1,9 @@
-// Package covstmt counts statements in a Go coverage profile. It is the Go
-// counterpart of scripts/lib/covstmt-lib.sh's stmt_counts, which still serves
-// the shell coverage runners (coverage-floor.sh); the two
-// must agree, because their numbers are compared against the same floors.
+// Package covstmt counts statements in a Go coverage profile. It is the one
+// definition of that count in the repo: coverage-floor.sh and the other shell
+// coverage runners invoke it through the `evener dev covstmt` subcommand, so
+// the numbers the scripts report and the numbers these tests pin can never
+// drift apart. (It replaced the deleted Python stmt_counts helper, whose
+// semantics — including the last-wins NumStmt tie-break — it preserves.)
 //
 // Two properties, both inherited from the shell definition, are the heart of
 // the algorithm:
@@ -29,8 +31,8 @@ import (
 //
 // The file path is matched non-greedily so Windows paths containing a drive
 // colon still parse; the trailing position and count fields are unambiguous
-// since they are digits and dots. This mirrors the python regex in
-// covstmt-lib.sh exactly.
+// since they are digits and dots. This mirrors the regex the deleted Python
+// stmt_counts used, byte for byte.
 var blockLine = regexp.MustCompile(`^(.+?):(\d+)\.(\d+),(\d+)\.(\d+) (\d+) (\d+)$`)
 
 // StmtCounts opens the coverage profile at path and reports the covered and
@@ -85,8 +87,13 @@ func StmtCountsReader(r io.Reader) (covered, total int, err error) {
 		}
 
 		if prev, ok := seen[key]; ok {
-			// stmtCount is the same for every occurrence of a position; keep
-			// the existing entry but union the covered flag — ANY hit covers.
+			// stmtCount is the same for every occurrence of a position on
+			// real profiles, but the tie-break is pinned anyway: the deleted
+			// Python stmt_counts kept the LAST occurrence's count, so
+			// last-wins keeps the two implementations equivalent on every
+			// input, not just toolchain-produced ones. covered unions
+			// separately — ANY hit covers.
+			prev.stmtCount = stmtCount
 			prev.covered = prev.covered || count > 0
 			seen[key] = prev
 		} else {

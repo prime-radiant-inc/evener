@@ -16,10 +16,11 @@ e2e-cover:
 # the test track and the deterministic fuzz-replay track, plus the frontend's
 # vitest line coverage, against scripts/coverage/coverage-floors.txt. Bare
 # invocation reports; CHECK=1 fails on a drop; BLESS=1 raises floors. Heavy +
-# local. Its contract is currently unpinned: the fake-toolchain selftest that
-# used to pin it was banned outright by docs/developing-evener/testing.md's
-# rule against faking `go` on PATH and deleted; the port that would pin it
-# honestly is tracked as issue #293.
+# local. The counting arithmetic is pinned by internal/devtool/covstmt's tests
+# plus the `evener dev covstmt` contract test in cmd/evener-dev; the script's
+# own orchestration (driving go test per module, per track) has no honest
+# selftest, because the fake-toolchain approach testing.md bans was the only
+# way to exercise it.
 ## The repo's one coverage ratchet: per module, the union of the test track
 ## and the deterministic fuzz-replay track, plus the frontend's vitest line
 ## coverage.
