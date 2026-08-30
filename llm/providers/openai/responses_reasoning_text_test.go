@@ -138,3 +138,16 @@ func TestResponses_NoDefaultReasoningEffortForNonReasoningModel(t *testing.T) {
 		t.Fatalf("include = %#v, want omitted for a non-reasoning model", inc)
 	}
 }
+
+// The default effort must be a level the model accepts: glm-5.2's catalog
+// overlay declares only high and max, so medium rounds up to high.
+func TestResponses_DefaultReasoningEffortClampedToModelLevels(t *testing.T) {
+	body := buildBodyForTest(t, llm.Request{
+		Model:    "glm-5.2",
+		Messages: []llm.Message{llm.User("hi")},
+	})
+	reasoning, _ := body["reasoning"].(map[string]any)
+	if reasoning == nil || reasoning["effort"] != "high" {
+		t.Fatalf("reasoning = %#v, want effort high (medium clamped to glm-5.2's levels)", body["reasoning"])
+	}
+}

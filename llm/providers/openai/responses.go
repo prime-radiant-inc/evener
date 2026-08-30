@@ -138,12 +138,14 @@ func (a *Adapter) buildRequestBody(req llm.Request) (map[string]any, error) {
 		body["metadata"] = req.Metadata
 	}
 	effort := req.ReasoningEffort
-	if effort == nil && !responsesLiteModel(req.Model) && modelMayReason(req.Model) {
+	if effort == nil && !responsesLiteModel(req.Model) {
 		// Without an effort the provider picks its own thinking budget, and a
 		// gateway-fronted model was observed spending 25k reasoning tokens on
 		// a single turn. Send a bounded default instead. Responses-lite keeps
 		// the codex client's contract of letting the API choose.
-		effort = &defaultReasoningEffort
+		if def, ok := defaultReasoningEffortFor(req.Model); ok {
+			effort = &def
+		}
 	}
 	if effort != nil {
 		body["reasoning"] = map[string]any{
@@ -1022,15 +1024,23 @@ func responsesLiteModel(model string) bool {
 
 // defaultReasoningEffort is sent when the caller requests no effort for a
 // model that may reason.
-var defaultReasoningEffort = "medium"
+const defaultReasoningEffort = "medium"
 
-// modelMayReason reports whether a reasoning object is safe to send: the
-// catalog says the model reasons, or the catalog has never heard of it (a
-// gateway-hosted model, say). Only a model the catalog knows cannot reason is
-// excluded, because the API rejects a reasoning object for those.
-func modelMayReason(model string) bool {
+// defaultReasoningEffortFor returns the effort to send when the caller set
+// none. A model the catalog knows cannot reason gets nothing, because the API
+// rejects a reasoning object for those. A cataloged reasoning model gets the
+// default clamped to its declared levels (glm-5.2 accepts only high/max). A
+// model the catalog has never heard of, such as one behind a gateway, gets
+// the default as-is.
+func defaultReasoningEffortFor(model string) (string, bool) {
 	info := llm.EmbeddedModelCatalog().LookupModelInfo(model)
-	return info == nil || info.SupportsReasoning
+	if info == nil {
+		return defaultReasoningEffort, true
+	}
+	if !info.SupportsReasoning {
+		return "", false
+	}
+	return llm.ClampReasoningEffort(defaultReasoningEffort, info.ReasoningEffortLevels), true
 }
 
 // codexModelVariants maps a caller-facing gpt-5.6 slug to the wire slug the
