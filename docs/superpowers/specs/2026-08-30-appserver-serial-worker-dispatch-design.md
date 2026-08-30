@@ -262,8 +262,8 @@ requests chan appwire.Message // cap appserver.requestQueueCap = 64
 ```
 
 **Bound.** 64 slots, and the number is explicitly **provisional**: slice 0 of the
-landing order characterizes real client burst depth (named UI scenarios in the web
-client and TUI, or queue high-water logging during an e2e run) and the final
+landing order characterizes real client burst depth (named UI scenarios measured at
+the existing client edges — see the landing order for the method) and the final
 constant is the worst measured legitimate burst with at least 4× headroom, capped
 at 64 — the ceiling this design's memory analysis covers. The decision branch is
 explicit: measured burst ≤ 16 freezes `min(burst × 4, 64)`; a measured burst
@@ -480,6 +480,8 @@ system is already built for it on all three sides:
   *other* connections. A per-handler audit would re-verify 105 handlers against
   a race the seams already close; this design instead pins the seam behavior in
   the test plan (test 8).
+
+### Shutdown, abandonment, teardown
 
 Worker lifecycle is owned by `ServeWebSocket`, symmetric with the send loop:
 
