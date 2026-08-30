@@ -5,7 +5,7 @@
 set -euo pipefail
 
 repo_root="$(cd "$(dirname "$0")/../.." && pwd)"
-registry="$(mktemp "$TMPDIR/evener-fuzz-registry.XXXXXX")"
+registry="$(mktemp "${TMPDIR:-/tmp}/evener-fuzz-registry.XXXXXX")"
 trap 'rm -f "$registry"' EXIT
 
 bash "$repo_root/scripts/fuzz/run-fuzz.sh" --list >"$registry"

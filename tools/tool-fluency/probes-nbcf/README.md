@@ -29,7 +29,8 @@ worktree (kata rule: no live LLM API calls from an implementer).
 
 It is deliberately **not** under `tools/tool-fluency/probes/`, so an ordinary
 `--probe all` run of the core suite never picks it up — this probe is far
-heavier (up to 40 tool rounds) and measures a different thing (phase
+heavier (up to 40 tool rounds under its documented `--max-rounds 40`; the
+runner's default is 80) and measures a different thing (phase
 discipline on a multi-step diagnose-and-fix task, not single-tool-call
 fluency).
 
@@ -124,9 +125,14 @@ runner-side metric wiring itself landed with #187:
    manifest-named metrics on each result's `metrics` field:
    `investigative_call_count`, `repeated_read_or_grep_count`,
    `tool_round_of_first_test_run`, `tool_round_of_first_source_edit`, and
-   `premature_fix_before_red_test_flag`. `--max-rounds` is a real runner
-   flag (default 80) that governs both the cli and live harnesses. Unknown
-   metric keys in a manifest fail at load time. Offline unit tests
+   `premature_fix_before_red_test_flag`. Rounds are 1-based tool rounds of
+   the root session (assistant turns with at least one tool call; delegate
+   sessions excluded), and provider wire names (OpenAI's `exec_command`,
+   Gemini's `run_shell_command`, ...) resolve to canonical tool names before
+   classification. `--max-rounds` is a real runner
+   flag (default 80) that governs both the cli and live harnesses, and
+   `max_tool_calls` is enforced as a churn finding when the run exceeds it.
+   Unknown metric keys in a manifest fail at load time. Offline unit tests
    (`issue187_test.go`) cover these against synthetic transcripts.
 2. **No live runs have happened.** This worktree made zero LLM API calls,
    per kata rule. The three-model A/B above needs to actually run.

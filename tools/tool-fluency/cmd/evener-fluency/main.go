@@ -288,6 +288,9 @@ func runSuiteWithConfig(cfg runConfig) error {
 	if cfg.repetitions < 1 {
 		return errors.New("--repetitions must be >= 1")
 	}
+	if cfg.maxRounds < 1 {
+		return errors.New("--max-rounds must be >= 1")
+	}
 	if cfg.harness != "cli" && cfg.harness != "live" {
 		return errors.New("--harness must be cli or live")
 	}
@@ -439,7 +442,9 @@ type probeResult struct {
 // probeMetrics holds the phase-discipline metrics the runner computes from
 // a run's transcripts (#187). They exist so a caller comparing prompting
 // arms reads them out of result.json instead of hand-reading transcripts.
-// Rounds are 1-based transcript assistant turns; zero means "never".
+// Rounds are 1-based tool rounds of the ROOT session (assistant turns with
+// at least one tool call; delegate/subagent sessions are excluded); zero
+// means "never".
 type probeMetrics struct {
 	InvestigativeCallCount    int
 	RepeatedReadOrGrepCount   int
@@ -448,111 +453,182 @@ type probeMetrics struct {
 	PrematureFixBeforeRedTest bool
 }
 
-// classifyToolCall classifies one tool call for the phase metrics:
-// investigative reads/searches, test runs, and source edits. Arg previews
-// come from doctor.TranscriptResult, so classification is structural
-// (tool name plus argument shape), never assistant prose.
-func classifyToolCall(name, argPreview string) (isInvestigative, isTestRun, isSourceEdit bool) {
-	switch name {
-	case "read_file", "list_dir", "grep_files", "find_files":
+// wireNameToCanonical maps provider-visible wire names back to the
+// canonical tool names the registry uses. Transcripts persist the names the
+// provider emitted, and OpenAI and Gemini rename tools before the model sees
+// grep→grep_files, glob→find_files; shell→run_shell_command, grep→grep_search,
+// list_dir→list_directory). Anthropic, Kimi, GLM, and the openai-compatible
+// providers keep canonical names, which the identity mapping covers.
+var wireNameToCanonical = map[string]string{
+	// OpenAI (responses API)
+	"exec_command": "shell",
+	"grep_files":   "grep",
+	"find_files":   "glob",
+	// Gemini
+	"run_shell_command": "shell",
+	"grep_search":       "grep",
+	"list_directory":    "list_dir",
+}
+
+// canonicalToolCallName resolves a transcript tool-call name to its
+// canonical registry name. Wire names map through wireNameToCanonical;
+// already-canonical and unknown names pass through.
+func canonicalToolCallName(name string) string {
+	if canonical, ok := wireNameToCanonical[name]; ok {
+		return canonical
+	}
+	return name
+}
+
+// classifyToolCall classifies one canonical tool call for the phase metrics:
+// investigative reads/searches, test runs, and source edits. Classification
+// is structural (canonical tool name plus full argument JSON), never
+// assistant prose.
+func classifyToolCall(canonical, argsJSON string) (isInvestigative, isTestRun, isSourceEdit bool) {
+	switch canonical {
+	case "read_file", "list_dir", "grep", "glob":
 		return true, false, false
 	case "write_file", "edit_file", "apply_patch":
 		return false, false, true
 	case "shell":
-		return false, isTestCommand(argPreview), false
+		return false, isTestCommand(argsJSON), false
 	default:
 		return false, false, false
 	}
 }
 
-// isTestCommand reports whether a shell call's argument preview is itself a
-// test invocation (`go test ...`, `go vet` runs excluded: tests only). The
-// preview is the raw JSON arguments string, so this inspects the command
-// value, not assistant prose — a textual "go test" mention in prose never
-// reaches this function.
-func isTestCommand(argPreview string) bool {
+// isTestCommand reports whether a shell call runs a test suite. It inspects
+// the full raw JSON arguments object (never the truncated preview, and never
+// assistant prose — a textual "go test" mention in prose does not reach this
+// function). A `cd pkg && go test ...` compound or `FOO=1 go test ...`
+// env-prefixed invocation counts; `go vet` does not (tests only).
+func isTestCommand(argsJSON string) bool {
 	decoded := struct {
 		Command string `json:"command"`
 	}{}
-	if err := json.Unmarshal([]byte(argPreview), &decoded); err != nil {
+	if err := json.Unmarshal([]byte(argsJSON), &decoded); err != nil {
 		return false
 	}
 	cmd := decoded.Command
-	return cmd == "go test" || strings.HasPrefix(cmd, "go test ")
+	for segment := range strings.SplitSeq(cmd, "&&") {
+		segment = strings.TrimSpace(segment)
+		// Strip leading env VAR=VALUE assignments.
+		for strings.Contains(segment, "=") {
+			head, rest, hasRest := strings.Cut(segment, " ")
+			if !hasRest || !strings.Contains(head, "=") {
+				break
+			}
+			segment = strings.TrimSpace(rest)
+		}
+		if segment == "go test" || strings.HasPrefix(segment, "go test ") {
+			return true
+		}
+	}
+	return false
 }
 
-// computeProbeMetrics walks every session transcript under stateDir in order
-// and computes the phase-discipline metrics. Rounds are 1-based positions
-// among the transcripts' assistant turns, in session-file order.
+// computeProbeMetrics walks the ROOT session's transcript (delegate and
+// subagent sessions share the state dir but run their own rounds, so they are
+// excluded the same way rootSessionID excludes them) and computes the
+// phase-discipline metrics. Rounds are 1-based tool rounds: assistant turns
+// that carry at least one tool call. Zero means "never".
 func computeProbeMetrics(stateDir string) (probeMetrics, error) {
 	var m probeMetrics
-	seenReadTargets := map[string]int{}
-	round := 0
-	err := walkTranscripts(stateDir, func(tr doctor.TranscriptResult) error {
-		for _, turn := range tr.Turns {
-			if turn.Kind != string(schema.TurnAssistant) {
-				continue
-			}
-			round++
-			for _, call := range turn.ToolCalls {
-				isInvestigative, isTestRun, isSourceEdit := classifyToolCall(call.Name, call.ArgPreview)
-				if isInvestigative {
-					m.InvestigativeCallCount++
-					if target := readTarget(call.Name, call.ArgPreview); target != "" {
-						seenReadTargets[target]++
-						if seenReadTargets[target] > 1 {
-							m.RepeatedReadOrGrepCount++
-						}
-					}
-				}
-				if isTestRun && m.FirstTestRunRound == 0 {
-					m.FirstTestRunRound = round
-				}
-				if isSourceEdit && m.FirstSourceEditRound == 0 {
-					m.FirstSourceEditRound = round
-				}
-			}
-		}
-		return nil
-	})
+	rootID, err := rootSessionID(stateDir)
+	if err != nil {
+		// No root meta means no session ran (e.g. a skipped probe): there is
+		// nothing to compute, which is not an error. The zero-valued metrics
+		// say "never" for every round, exactly as a no-run should.
+		return m, nil //nolint:nilerr // absent root session is a classified no-run state, not a metrics failure
+	}
+	seenReadTargets := map[string]bool{}
+	tr, err := runnerReadTranscript(stateDir, rootID, doctor.TranscriptOpts{})
 	if err != nil {
 		return m, err
 	}
-	m.PrematureFixBeforeRedTest = m.FirstSourceEditRound > 0 && m.FirstTestRunRound == 0
+	round := 0
+	for _, turn := range tr.Turns {
+		if turn.Kind != string(schema.TurnAssistant) || len(turn.ToolCalls) == 0 {
+			continue
+		}
+		round++
+		for _, call := range turn.ToolCalls {
+			canonical := canonicalToolCallName(call.Name)
+			isInvestigative, isTestRun, isSourceEdit := classifyToolCall(canonical, call.Arguments)
+			if isInvestigative {
+				m.InvestigativeCallCount++
+				if key := readRepeatKey(canonical, call.Arguments); key != "" {
+					if seenReadTargets[key] {
+						m.RepeatedReadOrGrepCount++
+					}
+					seenReadTargets[key] = true
+				}
+			}
+			if isTestRun && m.FirstTestRunRound == 0 {
+				m.FirstTestRunRound = round
+			}
+			if isSourceEdit && m.FirstSourceEditRound == 0 {
+				m.FirstSourceEditRound = round
+			}
+		}
+	}
+	// Premature fix: the first source edit landed before the first test run
+	// — including the never-ran-a-test case. The RED-then-fix discipline the
+	// metric measures is violated either way.
+	m.PrematureFixBeforeRedTest = m.FirstSourceEditRound > 0 &&
+		(m.FirstTestRunRound == 0 || m.FirstSourceEditRound < m.FirstTestRunRound)
 	return m, nil
 }
 
-// readTarget extracts the repeat-tracking key for an investigative call:
-// the file path or pattern it targets. Two reads of the same target count
-// as a repeat regardless of which read tool made them.
-func readTarget(name, argPreview string) string {
+// readRepeatKey builds the repeat-tracking key for an investigative call:
+// the canonical tool shape plus the discriminating argument values (path or
+// pattern, and offset where the tool takes one). Two calls count as a
+// repeat only when they read the same thing the same way — a read_file of
+// a.go is not a repeat of a list_dir of a.go, and page 2 of a file is not a
+// repeat of page 1.
+func readRepeatKey(canonical, argsJSON string) string {
 	var decoded struct {
 		FilePath string `json:"file_path"`
 		Path     string `json:"path"`
 		Pattern  string `json:"pattern"`
+		Offset   int    `json:"offset"`
 	}
-	if err := json.Unmarshal([]byte(argPreview), &decoded); err != nil {
+	if err := json.Unmarshal([]byte(argsJSON), &decoded); err != nil {
 		return ""
 	}
-	switch name {
-	case "grep_files", "find_files":
-		return decoded.Pattern
+	var target string
+	switch canonical {
+	case "grep":
+		target = decoded.Pattern + "\x00" + decoded.Path
+	case "glob":
+		target = decoded.Pattern
 	default:
 		if decoded.FilePath != "" {
-			return decoded.FilePath
+			target = decoded.FilePath
+		} else {
+			target = decoded.Path
 		}
-		return decoded.Path
 	}
+	if target == "" {
+		return ""
+	}
+	return canonical + "\x00" + target + "\x00" + strconv.Itoa(decoded.Offset)
 }
 
 // applyProbeMetrics computes the phase metrics for a run and reports on the
 // result exactly the metrics the probe's manifest asked for. Unrequested
 // metrics stay unreported so a result reflects its probe's declared scope.
+// A transcript that cannot be read is surfaced as a finding (the run may
+// still pass its expectations, but the missing metrics are never silently
+// dropped).
 func applyProbeMetrics(res *probeResult, probe probeFile, stateDir string) {
 	m, err := computeProbeMetrics(stateDir)
 	if err != nil {
-		// Metrics are diagnostic, not gating: a transcript that cannot be
-		// read here is already reported through the result's error path.
+		res.Findings = append(res.Findings, finding{
+			Category: "infra",
+			Title:    "phase metrics unavailable",
+			Detail:   err.Error(),
+		})
 		return
 	}
 	if res.Metrics == nil {
@@ -572,6 +648,23 @@ func applyProbeMetrics(res *probeResult, probe probeFile, stateDir string) {
 	}
 	if probe.Metrics.WantsPrematureFixBeforeRedTestFlg {
 		res.Metrics["premature_fix_before_red_test_flag"] = m.PrematureFixBeforeRedTest
+	}
+	// max_tool_calls is the manifest's budget for total tool calls in the
+	// root session (#187: it was previously parsed and ignored). Exceeding
+	// it is churn, not task failure: a finding, so the run reports the
+	// overage instead of silently passing.
+	if probe.Metrics.MaxToolCalls > 0 {
+		total := 0
+		for _, n := range res.ModelToolCounts {
+			total += n
+		}
+		if total > probe.Metrics.MaxToolCalls {
+			res.Findings = append(res.Findings, finding{
+				Category: "churn",
+				Title:    "tool call budget exceeded",
+				Detail:   fmt.Sprintf("calls=%d budget=%d", total, probe.Metrics.MaxToolCalls),
+			})
+		}
 	}
 }
 
