@@ -514,7 +514,7 @@ func TestExplainSchemaError_ContainerPathMissingField(t *testing.T) {
 	params := taskListParamsForExplain()
 	args := map[string]any{
 		"action":  "update",
-		"updates": []any{map[string]any{"id": float64(1)}},
+		"updates": []any{map[string]any{"status": "done"}},
 	}
 	got := ExplainSchemaError("task_list", params, args, "updates/0", "")
 	if !strings.Contains(got, "missing required argument") || !strings.Contains(got, "updates[0]") {

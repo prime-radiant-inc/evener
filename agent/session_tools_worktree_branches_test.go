@@ -651,7 +651,7 @@ func TestWorktreeListSummaryZeroAheadNotMerged(t *testing.T) {
 	// Ensure it does NOT show as "merged" (the misleading label for 0-commit
 	// lanes). Check that "merged" only appears as part of "unmerged", not as
 	// the standalone "merged" label.
-	for _, line := range strings.Split(result, "\n") {
+	for line := range strings.SplitSeq(result, "\n") {
 		if strings.Contains(line, " fresh-lane ") {
 			if strings.Contains(line, " merged") && !strings.Contains(line, "unmerged") {
 				t.Fatalf("0-commit lane should not show as merged: %q", result)

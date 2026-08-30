@@ -197,12 +197,12 @@ func TestPrepareToolCall_NestedSchemaErrors_NameRealFieldAndContainer(t *testing
 		t.Fatalf("register ask_user: %v", err)
 	}
 
-	t.Run("task_list update missing status", func(t *testing.T) {
+	t.Run("task_list update missing id", func(t *testing.T) {
 		call := llm.ToolCallData{ID: "c1", Name: "task_list",
-			Arguments: json.RawMessage(`{"action":"update","updates":[{"id":1,"notes":"x"}]}`)}
+			Arguments: json.RawMessage(`{"action":"update","updates":[{"status":"done","notes":"x"}]}`)}
 		res := prepareToolCall(call, reg.Get("task_list"), []string{"task_list"}, "task_list", "")
-		want := "task_list: missing required argument \"status\" in updates[0].\n" +
-			"Required arguments in updates[0]: id (integer), status (string).\n" +
+		want := "task_list: missing required argument \"id\" in updates[0].\n" +
+			"Required arguments in updates[0]: id (integer).\n" +
 			"Example: {\"action\": \"...\"}"
 		if res.PrevalErr != want {
 			t.Fatalf("PrevalErr =\n%s\nwant:\n%s", res.PrevalErr, want)

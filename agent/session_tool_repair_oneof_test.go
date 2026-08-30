@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 	"encoding/json"
+	"slices"
 	"strings"
 	"testing"
 
@@ -83,14 +84,7 @@ func TestDelegateSandboxSchemaNoOneOfOrSandboxNet(t *testing.T) {
 	}
 	// Verify combined enum values are present.
 	for _, want := range []string{"off", "read-only", "read-only+nonet", "nonet"} {
-		found := false
-		for _, v := range enum {
-			if v == want {
-				found = true
-				break
-			}
-		}
-		if !found {
+		if !slices.Contains(enum, want) {
 			t.Fatalf("sandbox enum missing %q: %v", want, enum)
 		}
 	}
