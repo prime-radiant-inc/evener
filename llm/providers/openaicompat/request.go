@@ -213,8 +213,8 @@ func promptCacheKey(req llm.Request) string {
 
 // applyThinkingFormat emits the reasoning controls in the wire dialect the
 // provider speaks. No effort on the request means "send nothing" for every
-// format — evener's "none" clears the setting to the provider default rather
-// than forcing an explicit disable. A model declared reasoning=false
+// format, and an explicit "none" reaches the wire only for the dialects with
+// a real off level (formatsWithOffLevel). A model declared reasoning=false
 // (mc.ReasoningOff) emits nothing regardless of the request's effort: the
 // adapter enforces its own declared non-reasoning models rather than relying
 // on the caller (e.g. the session-side profile clamp) to have done so.
@@ -226,6 +226,13 @@ func promptCacheKey(req llm.Request) string {
 // the model's declared levels and translated to the provider's wire value)
 // is emitted so a mandatory-reasoning model never gets a reasoning-less
 // request — even when the session has no --reasoning-effort configured.
+// formatsWithOffLevel are the thinking dialects with a real off level an
+// explicit "none" can ride (openai's reasoning_effort: none on gpt-5.1+,
+// OpenRouter's unified vocabulary). Every other format's wire shapes switch
+// thinking ON, which would invert the user's intent, so applyThinkingFormat
+// emits nothing for them and the provider default applies.
+var formatsWithOffLevel = map[string]bool{"": true, "openai": true, "openrouter": true}
+
 func applyThinkingFormat(body map[string]any, req llm.Request, mc ModelCompat) {
 	if mc.ReasoningOff {
 		return
@@ -245,17 +252,8 @@ func applyThinkingFormat(body map[string]any, req llm.Request, mc ModelCompat) {
 		// translates it to the provider's wire value.
 		wire = mc.wireEffort("medium")
 	}
-	if wire == llm.ReasoningEffortNone {
-		// An explicit off. Only the dialects with a real off level put it on
-		// the wire (openai's reasoning_effort: none on gpt-5.1+, OpenRouter's
-		// unified vocabulary); every other format's shapes below switch
-		// thinking ON, which would invert the user's intent, so the request
-		// carries nothing and the provider default applies.
-		switch quirks.ThinkingFormat {
-		case "", "openai", "openrouter":
-		default:
-			return
-		}
+	if wire == llm.ReasoningEffortNone && !formatsWithOffLevel[quirks.ThinkingFormat] {
+		return
 	}
 	switch quirks.ThinkingFormat {
 	case "", "openai":

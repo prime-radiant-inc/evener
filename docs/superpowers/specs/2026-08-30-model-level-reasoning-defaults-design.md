@@ -118,9 +118,12 @@ behavior with no effort configured is unchanged.
   provider types accept no per-model blocks today, so a wrong catalog verdict
   there is fixed in the overrides file (follow-up issue tracks extending the
   toml override).
-- Provider-prefixed catalog mirrors (`openrouter/*`, `ollama/*` keys) are
-  sparse about `supports_reasoning`, so a mirror entry never marks a model
-  non-reasoning; only bare curated entries are authoritative about that.
+- `supports_reasoning` is knowledge (`ModelInfo.ReasoningAuthoritative`) when
+  the source states it explicitly — anywhere, including mirrors like azure's
+  audio models — or when the entry is a bare curated key, where litellm's
+  silence means non-reasoning. A silent provider-prefixed mirror key
+  (`openrouter/*`, `ollama/*`) leaves the answer unknown and the model
+  permitted.
 - An explicit `none` on a mandatory-thinking model (live `reasoning.mandatory`)
   omits the field and the provider rejects the request — surfacing the
   conflict rather than silently overriding the user.

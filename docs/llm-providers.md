@@ -323,9 +323,9 @@ similar). Leave them off for a bare model server that would reject the fields.
 - **Keys** are evener's canonical levels — `minimal`, `low`, `medium`, `high`,
   `xhigh` — normalized lowercase at load; `max` is accepted as an input alias
   and folded into `xhigh` (evener's rank table treats them as one tier).
-  `"off"` is rejected at load — evener's `none` effort clears the setting to the
-  provider default rather than forcing an explicit disable, so there's no slot
-  for an explicit "off" wire value (`llm/providercfg/load.go:149-152`).
+  `"off"` is rejected at load — an explicit `none` effort reaches the wire only
+  on models whose ladder lists a `none` level and omits the field otherwise, so
+  there's no slot for an "off" wire spelling (`llm/providercfg/load.go`).
 - **Values** are the literal wire strings sent to the provider — they need not
   match evener's vocabulary (the lunaroute example below maps every level to
   `"high"` except the top tier).

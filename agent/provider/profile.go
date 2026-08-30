@@ -21,20 +21,16 @@ func catalogModelFor(model string) *llm.ModelInfo {
 }
 
 // reasoningFacts composes the model-level reasoning facts: whether the model
-// reasons (a providers.toml override first, then the catalog entry, then
-// permitted for a model nobody has data on), the effort it runs at when the
-// session configures none, and its effort ladder (configured levels win,
-// then the catalog's, then the provider's vocabulary). A non-reasoning model
-// gets an empty ladder so the task_list enum and the effort chip agree with
-// the request builder.
+// reasons (a providers.toml override first, then the catalog entry where its
+// answer is knowledge rather than sparse mirror data, then permitted), the
+// effort it runs at when the session configures none, and its effort ladder
+// (configured levels win, then the catalog's, then the provider's
+// vocabulary). The ladder always holds the vocabulary; ReasoningEffortLevels
+// gates the read for a non-reasoning model.
 func reasoningFacts(mi *llm.ModelInfo, override *bool, configuredLevels, providerLevels []string) (reasoning bool, defaultEffort string, levels []string) {
 	reasoning = true
 	if mi != nil {
-		// Provider-prefixed mirror entries (openrouter/*, ollama/*-style
-		// keys) carry shape and pricing but are sparse about
-		// supports_reasoning, so only a bare curated entry may mark a model
-		// non-reasoning; a mirror leaves the model permitted.
-		if !strings.Contains(mi.ID, "/") {
+		if mi.ReasoningAuthoritative {
 			reasoning = mi.SupportsReasoning
 		}
 		defaultEffort = llm.NormalizeReasoningEffort(mi.DefaultReasoningEffort)
@@ -45,9 +41,6 @@ func reasoningFacts(mi *llm.ModelInfo, override *bool, configuredLevels, provide
 	levels = configuredLevels
 	if levels == nil {
 		levels = effortLevelsFor(mi, providerLevels)
-	}
-	if !reasoning {
-		levels = []string{}
 	}
 	return reasoning, defaultEffort, levels
 }
@@ -102,12 +95,8 @@ type Profile struct {
 	// defaultEffort is the effort the model runs at when the session has none
 	// configured, where the catalog or a live /models entry states one.
 	defaultEffort string
-	// defaultEfforts is the provider's effort vocabulary, kept so a model
-	// switch or a live reasoning-on can restore a usable ladder after a
-	// non-reasoning model emptied it.
-	defaultEfforts []string
-	webSearch      bool
-	cheapModel     string
+	webSearch     bool
+	cheapModel    string
 	// cheapProvider routes auxiliary "side calls" (naming, summarization,
 	// web_fetch Q&A) to a different provider instance than the main model. Empty
 	// means same provider as the main model. Set via WithCheapModel("provider/model").
@@ -309,6 +298,13 @@ func toolDefinitionsForCapabilities(capabilities []toolCapability, efforts []str
 func buildBaseProfile(spec profileSpec) Profile {
 	model := strings.TrimSpace(spec.model)
 	reasoning, defaultEffort, efforts := reasoningFacts(spec.catalogModel, spec.reasoningOverride, spec.resolvedEfforts, spec.defaultEfforts)
+	// The ladder stays stored for a non-reasoning model (a later model switch
+	// or live reasoning-on returns to it); the read is gated, so the task_list
+	// schema gets the gated view.
+	enumEfforts := efforts
+	if !reasoning {
+		enumEfforts = nil
+	}
 
 	defaultTimeout := spec.defaultTimeout
 	if defaultTimeout == 0 {
@@ -324,7 +320,6 @@ func buildBaseProfile(spec profileSpec) Profile {
 		docFiles:        cloneStringSlice(spec.docFiles),
 		reasoning:       reasoning,
 		defaultEffort:   defaultEffort,
-		defaultEfforts:  cloneStringSlice(spec.defaultEfforts),
 		streaming:       spec.streaming,
 		webSearch:       spec.webSearch,
 		defaultTimeout:  defaultTimeout,
@@ -332,7 +327,7 @@ func buildBaseProfile(spec profileSpec) Profile {
 		effortLevels:    cloneStringSlice(efforts),
 		providerOpts:    cloneAnyMap(spec.providerOpts),
 		toolNameMap:     cloneStringMap(spec.toolNameMap),
-		toolDefs:        toolDefinitionsForCapabilities(spec.capabilities, efforts),
+		toolDefs:        toolDefinitionsForCapabilities(spec.capabilities, enumEfforts),
 		cheapModel:      spec.cheapModel,
 	}
 }
@@ -411,6 +406,12 @@ func (p *Profile) DefaultReasoningEffort() string { return p.defaultEffort }
 // accepts, in ascending order. Returns an empty slice when the provider
 // does not support reasoning control.
 func (p *Profile) ReasoningEffortLevels() []string {
+	if !p.reasoning {
+		// The vocabulary stays stored so a model switch or live reasoning-on
+		// has a ladder to return to; the read is what a non-reasoning model
+		// gates off.
+		return nil
+	}
 	return append([]string(nil), p.effortLevels...)
 }
 
@@ -514,16 +515,12 @@ func (p *Profile) WithLiveModelInfo(info llm.ModelInfo) *Profile {
 	instEntry, hasInstEntry := p.instModels[p.model]
 	configuredWindow := hasInstEntry && instEntry.ContextWindow > 0
 	// An explicit reasoning flag in providers.toml is authoritative user
-	// intent and must survive live /models enrichment. A model declared
-	// non-reasoning declares no ThinkingLevels (there's nothing to
-	// configure), so treat that as "levels are configured" too — otherwise
-	// live ReasoningEffortLevels would re-enable reasoning on a model the
-	// user explicitly turned off.
-	reasoningConfigured := hasInstEntry && instEntry.Reasoning != nil
-	reasoningOff := reasoningConfigured && !*instEntry.Reasoning
-	// reasoning = true is a permission statement, not a level configuration,
-	// so only an explicit off freezes the ladder.
-	configuredLevels := hasInstEntry && (len(instEntry.ThinkingLevels) > 0 || reasoningOff)
+	// intent and must survive live /models enrichment. reasoning = true is a
+	// permission statement, not a level configuration, so only an explicit
+	// off freezes the ladder (a non-reasoning model has nothing to
+	// configure; adopting live levels would re-enable it).
+	reasoningConfigured := instEntry.Reasoning != nil
+	configuredLevels := len(instEntry.ThinkingLevels) > 0 || (reasoningConfigured && !*instEntry.Reasoning)
 	if info.ContextWindow > 0 && !configuredWindow {
 		clone.contextWindow = info.ContextWindow
 	}
@@ -535,16 +532,12 @@ func (p *Profile) WithLiveModelInfo(info llm.ModelInfo) *Profile {
 			// The endpoint states capabilities explicitly, so false is
 			// knowledge, not silence.
 			clone.reasoning = info.SupportsReasoning
-			if !clone.reasoning {
-				clone.setEffortLevels([]string{})
-			}
 		} else if info.SupportsReasoning {
 			clone.reasoning = true
 		}
-		if clone.reasoning && len(clone.effortLevels) == 0 {
-			// Turning reasoning on for a profile whose ladder was emptied
-			// must leave the clamp something to clamp to.
-			clone.setEffortLevels(p.defaultEfforts)
+		if clone.reasoning != p.reasoning {
+			// The task_list effort enum follows the gated ladder.
+			clone.setEffortLevels(clone.effortLevels)
 		}
 	}
 	if d := llm.NormalizeReasoningEffort(info.DefaultReasoningEffort); d != "" {
@@ -564,7 +557,7 @@ func (p *Profile) setEffortLevels(levels []string) {
 	defs := append([]llm.ToolDefinition(nil), p.toolDefs...)
 	for i := range defs {
 		if defs[i].Name == "task_list" {
-			defs[i] = tool.DefTaskList(p.effortLevels)
+			defs[i] = tool.DefTaskList(p.ReasoningEffortLevels())
 		}
 	}
 	p.toolDefs = defs
@@ -906,15 +899,8 @@ func (p *Profile) WithModel(model string) *Profile {
 		if ok && len(entry.ThinkingLevels) > 0 {
 			configuredLevels = clone.effortLevels
 		}
-		// The provider vocabulary, not the incumbent model's ladder, is the
-		// fallback: a non-reasoning incumbent has an empty ladder, and
-		// handing that to the next model would defeat the clamp.
-		providerLevels := p.defaultEfforts
-		if len(providerLevels) == 0 {
-			providerLevels = clone.effortLevels
-		}
 		var levels []string
-		clone.reasoning, clone.defaultEffort, levels = reasoningFacts(catalogModelFor(model), nil, configuredLevels, providerLevels)
+		clone.reasoning, clone.defaultEffort, levels = reasoningFacts(catalogModelFor(model), nil, configuredLevels, clone.effortLevels)
 		clone.setEffortLevels(levels)
 	}
 	return &clone

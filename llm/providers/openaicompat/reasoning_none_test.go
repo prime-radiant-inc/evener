@@ -1,6 +1,7 @@
 package openaicompat
 
 import (
+	"reflect"
 	"testing"
 
 	"primeradiant.com/evener/llm"
@@ -32,30 +33,12 @@ func TestApplyThinkingFormat_ExplicitNone(t *testing.T) {
 			body := map[string]any{}
 			mc := ModelCompat{Quirks: ProviderQuirks{ThinkingFormat: tc.format}}
 			applyThinkingFormat(body, req, mc)
-			if tc.want == nil {
-				if len(body) != 0 {
-					t.Fatalf("body = %#v, want empty (no thinking-off wire shape for %s)", body, tc.format)
-				}
-				return
+			want := tc.want
+			if want == nil {
+				want = map[string]any{}
 			}
-			for k, v := range tc.want {
-				got, ok := body[k]
-				if !ok {
-					t.Fatalf("body missing %q: %#v", k, body)
-				}
-				switch wantV := v.(type) {
-				case map[string]any:
-					gotM, _ := got.(map[string]any)
-					for kk, vv := range wantV {
-						if gotM[kk] != vv {
-							t.Fatalf("body[%q][%q] = %#v, want %#v", k, kk, gotM[kk], vv)
-						}
-					}
-				default:
-					if got != v {
-						t.Fatalf("body[%q] = %#v, want %#v", k, got, v)
-					}
-				}
+			if !reflect.DeepEqual(body, want) {
+				t.Fatalf("body = %#v, want %#v", body, want)
 			}
 		})
 	}

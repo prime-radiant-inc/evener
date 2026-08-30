@@ -229,6 +229,7 @@ func applyOverlayFields(m *ModelInfo, ov map[string]any, includeAliases bool) {
 	}
 	if v, ok := ov["supports_reasoning"].(bool); ok {
 		m.SupportsReasoning = v
+		m.ReasoningAuthoritative = true
 	}
 	if v, ok := ov["supports_tools"].(bool); ok {
 		m.SupportsTools = v
