@@ -25,6 +25,7 @@ import (
 	"primeradiant.com/evener/agent/provider"
 	"primeradiant.com/evener/agent/schema"
 	taskpkg "primeradiant.com/evener/agent/task"
+	"primeradiant.com/evener/agent/transcript"
 	"primeradiant.com/evener/appwire"
 	"primeradiant.com/evener/cmd/evener/internal/rvreg"
 	"primeradiant.com/evener/cmdutil"
@@ -149,8 +150,14 @@ type serveDeps struct {
 	// is injectable: a test needs a deterministic preparation failure to prove
 	// thread/clear abandons a half-built session instead of publishing it.
 	prepareAppIdentity func(sourceID, threadID, ref, transcriptPath string) (server.PreparedAppIdentity, error)
-	updateSessionID    func(*rvreg.Registration, string) error
-	observeCallbacks   func(serveCallbackObserver)
+	// prepareAppIdentityFromEntries is the resume-path form of
+	// prepareAppIdentity: same projection from the entries restore already
+	// decoded instead of a second file read. Injectable for the same reason —
+	// the resume branch below bypasses prepareAppIdentity, so without this
+	// seam no test can observe which form ran.
+	prepareAppIdentityFromEntries func(sourceID, threadID, ref string, header transcript.Header, entries []transcript.Entry) (server.PreparedAppIdentity, error)
+	updateSessionID               func(*rvreg.Registration, string) error
+	observeCallbacks              func(serveCallbackObserver)
 }
 
 type serveCallbackObserver struct {
@@ -188,12 +195,13 @@ func defaultServeDeps() serveDeps {
 		drainWaitExpiry: func() <-chan time.Time { return time.After(shutdownDrainWaitBudget) },
 		subscriberCount: func(s serveServer, id string) int { return s.(*server.Server).AppSubscriberCount(id) },
 		notifyContext:   signal.NotifyContext, startCPUProfile: cmdutil.StartCPUProfile, startTrace: cmdutil.StartTrace,
-		register:           func(r *rvreg.Registration, dir string, entry rendezvous.Entry) error { return r.Register(dir, entry) },
-		serveHTTP:          func(s *http.Server, l net.Listener) error { return s.Serve(l) },
-		provisionSandbox:   provisionSandbox,
-		newClearSession:    agent.NewSession,
-		prepareAppIdentity: server.PrepareAppIdentityForRef,
-		updateSessionID:    func(r *rvreg.Registration, id string) error { return r.UpdateSessionID(id) },
+		register:                      func(r *rvreg.Registration, dir string, entry rendezvous.Entry) error { return r.Register(dir, entry) },
+		serveHTTP:                     func(s *http.Server, l net.Listener) error { return s.Serve(l) },
+		provisionSandbox:              provisionSandbox,
+		newClearSession:               agent.NewSession,
+		prepareAppIdentity:            server.PrepareAppIdentityForRef,
+		prepareAppIdentityFromEntries: server.PrepareAppIdentityFromEntries,
+		updateSessionID:               func(r *rvreg.Registration, id string) error { return r.UpdateSessionID(id) },
 	}
 }
 
@@ -540,7 +548,7 @@ func runServeWithDeps(args []string, deps serveDeps) error {
 		// OpenWriterForSession pass) and validated its header against the
 		// session id; projecting from those entries keeps the daemon's
 		// startup from re-reading and re-decoding the whole append-only file.
-		prepared, err = server.PrepareAppIdentityFromEntries("local", sess.ID(), workspaceRef, header, entries)
+		prepared, err = deps.prepareAppIdentityFromEntries("local", sess.ID(), workspaceRef, header, entries)
 	} else {
 		prepared, err = deps.prepareAppIdentity("local", sess.ID(), workspaceRef, sess.TranscriptPath())
 	}
