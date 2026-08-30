@@ -30,22 +30,6 @@ const (
 	ResponsesContinuationAuto ResponsesContinuationMode = "auto"
 )
 
-// ResponsesErrorClass categorizes a Responses-API error to drive retry and
-// fallback handling.
-type ResponsesErrorClass string
-
-const (
-	// ResponsesErrorContinuationRejected means the server rejected the
-	// continuation anchor (e.g. an unknown or expired previous response).
-	ResponsesErrorContinuationRejected ResponsesErrorClass = "continuation_rejected"
-	// ResponsesErrorModelEndpoint means the model or endpoint is unavailable or misconfigured.
-	ResponsesErrorModelEndpoint ResponsesErrorClass = "model_endpoint"
-	// ResponsesErrorTransient is a temporary error that is safe to retry.
-	ResponsesErrorTransient ResponsesErrorClass = "transient"
-	// ResponsesErrorPermanentOther is a permanent error not covered by the other classes.
-	ResponsesErrorPermanentOther ResponsesErrorClass = "permanent_other"
-)
-
 const (
 	// ResponsesStoragePolicyPublicOpenAIStore is the public OpenAI endpoint with
 	// server-side storage (store=true) enabled.
