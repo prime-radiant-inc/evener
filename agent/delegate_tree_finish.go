@@ -82,10 +82,11 @@ func (c *delegateTreeController) BeginRunFinalization(lease delegateLease, mode 
 
 func (c *delegateTreeController) CompleteSettlement(claim *delegateSettlementClaim, supplied *delegatestore.TerminalPacket) (delegateMutationPlans, error) {
 	c.mu.Lock()
-	defer c.mu.Unlock()
-	// This site never releases a generation, so there is no cancel to run
-	// after c.mu is released.
-	plans, _, err := c.executeFinishDecisionLocked(c.reduceCompleteSettlementIntent(finishIntent{claim: claim, packet: supplied}))
+	plans, cancel, err := c.executeFinishDecisionLocked(c.reduceCompleteSettlementIntent(finishIntent{claim: claim, packet: supplied}))
+	c.mu.Unlock()
+	if cancel != nil {
+		cancel()
+	}
 	return plans, err
 }
 
@@ -246,14 +247,14 @@ func (c *delegateTreeController) FinishGeneration(lease delegateLease, finish de
 // prepareNoAction before process-local terminal state publication.
 func (c *delegateTreeController) FinishNoAction(claim *delegateSettlementClaim) (delegateMutationPlans, error) {
 	c.mu.Lock()
-	_, _, finish, err := c.noActionFinishLocked(claim)
-	if err != nil {
+	noAction := c.reduceNoActionFinishIntent(finishIntent{claim: claim})
+	if noAction.err != nil {
 		c.mu.Unlock()
-		return delegateMutationPlans{}, err
+		return delegateMutationPlans{}, noAction.err
 	}
 	plans, cancel, err := c.executeFinishDecisionLocked(c.reduceGenerationFinishIntent(finishIntent{
 		lease:              claim.lease,
-		finish:             finish,
+		finish:             noAction.finish,
 		authorizedNoAction: true,
 	}))
 	c.mu.Unlock()
@@ -261,11 +262,6 @@ func (c *delegateTreeController) FinishNoAction(claim *delegateSettlementClaim) 
 		cancel()
 	}
 	return plans, err
-}
-
-func (c *delegateTreeController) noActionFinishLocked(claim *delegateSettlementClaim) (*delegatestore.Aggregate, *delegateLiveState, delegateFinish, error) {
-	decision := c.reduceNoActionFinishIntent(finishIntent{claim: claim})
-	return nil, nil, decision.finish, decision.err
 }
 
 func cloneDelegateFinish(finish delegateFinish) delegateFinish {

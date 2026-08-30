@@ -99,14 +99,17 @@ type finishDecision struct {
 	// (non-resumable exhaustion) and substitutes the closure plan for the
 	// first post-append update.
 	closure bool
-	// Append-failure latch targets: when the append fails, the recovery
-	// triple (recoveryRequired, finalizationRecoveryRequired,
+	// lease is the generation the batch-carrying decision is about: the
+	// closure append, the append-failure latch, the generation release, and
+	// the snapshot capture all key off it.
+	lease delegateLease
+	// latchLive is the append-failure latch target: when the append fails,
+	// the recovery triple (recoveryRequired, finalizationRecoveryRequired,
 	// recoveryRunnerPending) is latched on latchLive when set (the generation
 	// finish latches its authenticated live state unconditionally); otherwise
-	// latchLease re-resolves the binding at apply time and latches only when
-	// it still matches (CompleteSettlement).
-	latchLive  *delegateLiveState
-	latchLease delegateLease
+	// lease re-resolves the binding at apply time and latches only when it
+	// still matches (CompleteSettlement).
+	latchLive *delegateLiveState
 	// Post-append effects, applied by finishEffectsLocked against post-append
 	// durable state only when the append succeeded. Sites without a journal
 	// batch apply their effects inline in the reducer instead.
@@ -120,12 +123,11 @@ type finishDecision struct {
 	// snapshot and delivery plans (generationFinishedPlansLocked with
 	// deliveryID).
 	releaseGeneration bool
-	lease             delegateLease
 	deliveryID        string
 	// bumpEvidence increments the evidence version.
 	bumpEvidence bool
-	// snapshotDelegateID, when non-empty, appends the delegate's update plan.
-	snapshotDelegateID string
+	// captureSnapshot appends the lease's delegate update plan.
+	captureSnapshot bool
 	// Outputs carried back through the unchanged wrapper signatures.
 	claim          *delegateSettlementClaim
 	continued      bool
@@ -175,7 +177,7 @@ func (c *delegateTreeController) latchTargetLocked(decision finishDecision) *del
 	if decision.latchLive != nil {
 		return decision.latchLive
 	}
-	if live := c.live[decision.latchLease.delegateID]; live != nil && live.binding != nil && live.binding.lease == decision.latchLease {
+	if live := c.live[decision.lease.delegateID]; live != nil && live.binding != nil && live.binding.lease == decision.lease {
 		return live
 	}
 	return nil
@@ -201,8 +203,8 @@ func (c *delegateTreeController) finishEffectsLocked(decision finishDecision, cl
 	if decision.bumpEvidence {
 		c.evidenceVersion++
 	}
-	if decision.snapshotDelegateID != "" {
-		plans.updates = append(plans.updates, c.capturedPlanLocked(decision.snapshotDelegateID))
+	if decision.captureSnapshot {
+		plans.updates = append(plans.updates, c.capturedPlanLocked(decision.lease.delegateID))
 	}
 	return plans, cancel
 }
@@ -360,10 +362,10 @@ func (c *delegateTreeController) reduceCompleteSettlementIntent(intent finishInt
 				Packet:     packet,
 			},
 		}},
-		latchLease:         claim.lease,
-		releaseClaim:       claim,
-		bumpEvidence:       true,
-		snapshotDelegateID: claim.lease.delegateID,
+		lease:           claim.lease,
+		releaseClaim:    claim,
+		bumpEvidence:    true,
+		captureSnapshot: true,
 	}
 }
 
