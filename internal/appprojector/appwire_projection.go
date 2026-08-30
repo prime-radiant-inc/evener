@@ -15,6 +15,7 @@ import (
 	"primeradiant.com/evener/internal/apptranscript"
 	"primeradiant.com/evener/invariant"
 	"primeradiant.com/evener/llm"
+	"primeradiant.com/evener/llm/registry"
 )
 
 type AppNotification struct {
@@ -112,14 +113,20 @@ type AppEventProjector struct {
 	pendingCompletedAtMillis int64
 	pendingDurationMS        int64
 
-	// activeTurnUsage/activeTurnModel accumulate the current turn's own
-	// (not cumulative-session) usage across every EventAssistantTextEnd
-	// since startTurn(), stamped onto the completing Turn at each of the
-	// five completion sites. Unlike pendingTurnID/pendingDurationMS, no
+	// activeTurnUsage/activeTurnModel/activeTurnProvider accumulate the
+	// current turn's own (not cumulative-session) usage and the
+	// instance/model it ran on across every EventAssistantTextEnd since
+	// startTurn(), stamped onto the completing Turn at each of the five
+	// completion sites. Unlike pendingTurnID/pendingDurationMS, no
 	// stash-vs-completion-ordering race exists here: EventAssistantTextEnd
 	// always fires chronologically before the turn's own completion event.
-	activeTurnUsage llm.Usage
-	activeTurnModel string
+	activeTurnUsage    llm.Usage
+	activeTurnModel    string
+	activeTurnProvider string
+	// costLookup prices the completing turn. Nil until SetCostLookup
+	// installs one, which is the honest answer for a projection with no
+	// registry behind it: the turn reports usage and no cost.
+	costLookup func(provider, model string) *registry.Cost
 }
 
 type communicatePhase uint8
@@ -146,6 +153,14 @@ func NewAppEventProjector(threadID, ref string) *AppEventProjector {
 		communicateCommittedCalls:   map[string]struct{}{},
 		communicatePhases:           map[string]communicatePhase{},
 	}
+}
+
+// SetCostLookup installs the $/Mtok cost source the completing turn is priced
+// at: the daemon passes the live session's registry lookup, keyed on the
+// instance and model each round reported (spec §7.5). A projector without one
+// reports usage and no cost.
+func (p *AppEventProjector) SetCostLookup(lookup func(provider, model string) *registry.Cost) {
+	p.costLookup = lookup
 }
 
 // SeedPersistedTurns raises the projector's turn counter so no live turn it
@@ -421,6 +436,9 @@ func (p *AppEventProjector) Project(event events.SessionEvent) []AppNotification
 		p.activeTurnUsage = p.activeTurnUsage.Add(data.Usage)
 		if data.Model != "" {
 			p.activeTurnModel = data.Model
+		}
+		if data.Provider != "" {
+			p.activeTurnProvider = data.Provider
 		}
 		text := data.Text
 		if text == "" {
@@ -1446,7 +1464,10 @@ func (p *AppEventProjector) stampTurnUsage(turn *appwire.Turn) {
 		return
 	}
 	turn.Usage = usage
-	turn.Cost = appwire.EstimateCost(p.activeTurnModel, usage)
+	if p.costLookup == nil {
+		return
+	}
+	turn.Cost = appwire.EstimateCost(p.costLookup(p.activeTurnProvider, p.activeTurnModel), usage)
 }
 
 func (p *AppEventProjector) systemAnnouncement(eventKind appwire.ThreadItemEventKind, description, text string) []AppNotification {
@@ -1955,6 +1976,7 @@ func (p *AppEventProjector) startTurn() string {
 	clear(p.heldToolResultImages)
 	p.activeTurnUsage = llm.Usage{}
 	p.activeTurnModel = ""
+	p.activeTurnProvider = ""
 	// startTurn always yields a usable turn id (a promoted reservation or a
 	// freshly minted turn_N); the item-emitting paths rely on activeTurnID being
 	// non-empty after this returns.

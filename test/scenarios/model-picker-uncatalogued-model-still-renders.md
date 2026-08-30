@@ -117,9 +117,10 @@ So the assertion is **absence of the element**, not an empty one.
   or the row is greyed/disabled.
 - **Step 6**: the TUI row reads `Gemma4:e4b  ollama/gemma4:e4b` with no
   ` · ctx · price · caps` tail — `modelInfoMetaTail` returns `""` for a
-  nil catalog entry (`cmd/evener-tui/hub_commands.go:396-399`), pinned by
-  `TestModelPickerItems_UncataloguedModelStillRendersEmptyMeta`
-  (`cmd/evener-tui/hub_model_picker_items_test.go#TestModelPickerItems_UncataloguedModelStillRendersEmptyMeta`). Contrast the
+  descriptor carrying none of those fields
+  (`cmd/evener-tui/hub_commands.go#modelInfoMetaTail`), pinned by
+  `TestModelPickerItems_DescriptorWithoutMetadataStillRendersEmptyMeta`
+  (`cmd/evener-tui/hub_model_picker_items_test.go#TestModelPickerItems_DescriptorWithoutMetadataStillRendersEmptyMeta`). Contrast the
   adjacent `Gpt 5.4` row's
   `1M ctx · $2.50/$15.00 · tools,vision,reasoning`.
 - **Step 3**: `thread/start` returns a

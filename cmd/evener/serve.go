@@ -80,6 +80,9 @@ type serveServer interface {
 	SetNameFunc(func(string))
 	SetReasoningEffortFunc(func(string))
 	SetListModelsFunc(func(context.Context) ([]appwire.ModelDescriptor, error))
+	// SetCostLookupFunc is the one place a dollar figure enters the daemon:
+	// the live session's registry resolution of an instance/model reference.
+	SetCostLookupFunc(func(string) *registry.Cost)
 	SetTasksFunc(func() any)
 	SetJobsFunc(func(appwire.JobsListParams) (any, error))
 	SetJobOutputFunc(func(string, int64, int64) (any, bool, error))
@@ -921,6 +924,9 @@ func runServeWithDeps(args []string, deps serveDeps) error {
 	// session's method value here would pin the hook to the pre-thread/clear session.
 	srv.SetVisionModelFunc(func(v string) error { return getSession().SetVisionModel(v) })
 	srv.SetListModelsFunc(cmdutil.ListModelsFunc(client, profile.ID()))
+	// Resolved per call like the model hook above: the replacement session a
+	// thread/clear installs resolves on its own registry.
+	srv.SetCostLookupFunc(func(ref string) *registry.Cost { return getSession().CostFor(ref) })
 	srv.SetTasksFunc(func() any { return getSession().Tasks() })
 	srv.SetJobsFunc(func(params appwire.JobsListParams) (any, error) {
 		sess := getSession()

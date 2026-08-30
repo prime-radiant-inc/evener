@@ -779,8 +779,9 @@ func TestWorkspaceDataUsesDaemonStatusTurnCountForLiveLocalSession(t *testing.T)
 }
 
 // TestWorkspaceData_LiveSessionCarriesCostEstimate verifies the roster-live
-// branch of workspaceData computes Cost from the daemon-reported Model and
-// Usage via appwire.EstimateCost, once both are finalized.
+// branch of workspaceData renders the cost the daemon reported on
+// thread.Evener.Cost, which it priced from its own session's registry row
+// (spec §7.5), rather than re-deriving one here.
 func TestWorkspaceData_LiveSessionCarriesCostEstimate(t *testing.T) {
 	const sessionID = "02wMz5TxvHIJQPOuIBJQct"
 	web, _ := webWithLiveAppWireStatus(t, appwire.Thread{
@@ -789,6 +790,7 @@ func TestWorkspaceData_LiveSessionCarriesCostEstimate(t *testing.T) {
 		Evener: appwire.EvenerThread{
 			Ref: "local:" + sessionID, TurnCount: 1,
 			Usage: &appwire.EvenerUsage{InputTokens: 100_000, OutputTokens: 20_000},
+			Cost:  "~$1.00",
 		},
 	})
 
@@ -799,8 +801,8 @@ func TestWorkspaceData_LiveSessionCarriesCostEstimate(t *testing.T) {
 }
 
 // TestWorkspaceData_PastSessionCarriesCostEstimate verifies the past-meta
-// branch of workspaceData computes Cost from the persisted Model and
-// CumulativeUsage.
+// branch of workspaceData prices the persisted CumulativeUsage at the cost
+// the session's own ProfileID/Model resolve to on the hub's registry.
 func TestWorkspaceData_PastSessionCarriesCostEstimate(t *testing.T) {
 	root := t.TempDir()
 	proj := filepath.Join(root, "projects", "project-x-0123456789")
@@ -809,8 +811,9 @@ func TestWorkspaceData_PastSessionCarriesCostEstimate(t *testing.T) {
 	}
 	const sessionID = "02wMz5TxvIl3yzzcpdlu4x"
 	if err := schema.SaveSessionMeta(proj, schema.SessionMeta{
-		ID:    sessionID,
-		Model: "claude-opus-4-5",
+		ID:        sessionID,
+		ProfileID: "anthropic",
+		Model:     "claude-opus-4-5",
 		CumulativeUsage: schema.CumulativeUsage{
 			InputTokens:  100_000,
 			OutputTokens: 20_000,
@@ -823,10 +826,22 @@ func TestWorkspaceData_PastSessionCarriesCostEstimate(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	web := NewWebServer(hubcore.WebConfig{Roster: hubcore.NewRoster(t.TempDir(), nil), Past: idx})
+	reg := pricingRegistry(t)
+	web := NewWebServer(hubcore.WebConfig{Roster: hubcore.NewRoster(t.TempDir(), nil), Past: idx, Registry: reg})
 	got := web.workspaceData(sessionID)
-	if got.Cost != "~$1.00" {
-		t.Fatalf("Cost = %q, want ~$1.00", got.Cost)
+	want := appwire.EstimateCost(costFor(reg, "anthropic", "claude-opus-4-5"), &appwire.EvenerUsage{InputTokens: 100_000, OutputTokens: 20_000})
+	if want == "" {
+		t.Fatal("fixture registry has no cost for anthropic/claude-opus-4-5")
+	}
+	if got.Cost != want {
+		t.Fatalf("Cost = %q, want %q", got.Cost, want)
+	}
+
+	// Flag day (spec §14.1): the same session on a hub with no registry
+	// reports its tokens and no dollar figure.
+	noRegistry := NewWebServer(hubcore.WebConfig{Roster: hubcore.NewRoster(t.TempDir(), nil), Past: idx})
+	if got := noRegistry.workspaceData(sessionID); got.Cost != "" {
+		t.Fatalf("Cost = %q with no registry, want empty", got.Cost)
 	}
 }
 
@@ -840,8 +855,9 @@ func TestWorkspaceData_NoCostWhenUsageNil(t *testing.T) {
 	}
 	const sessionID = "02wMz5TxvKDoXaaLN6ENX1"
 	if err := schema.SaveSessionMeta(proj, schema.SessionMeta{
-		ID:    sessionID,
-		Model: "claude-opus-4-5",
+		ID:        sessionID,
+		ProfileID: "anthropic",
+		Model:     "claude-opus-4-5",
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -850,7 +866,7 @@ func TestWorkspaceData_NoCostWhenUsageNil(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	web := NewWebServer(hubcore.WebConfig{Roster: hubcore.NewRoster(t.TempDir(), nil), Past: idx})
+	web := NewWebServer(hubcore.WebConfig{Roster: hubcore.NewRoster(t.TempDir(), nil), Past: idx, Registry: pricingRegistry(t)})
 	got := web.workspaceData(sessionID)
 	if got.Cost != "" {
 		t.Fatalf("Cost = %q, want empty for zero usage", got.Cost)

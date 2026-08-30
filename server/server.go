@@ -12,6 +12,7 @@ import (
 	"primeradiant.com/evener/internal/appprojector"
 	"primeradiant.com/evener/internal/appserver"
 	"primeradiant.com/evener/internal/httpguard"
+	"primeradiant.com/evener/llm/registry"
 )
 
 // ImageAttachment is re-exported from package agent so HTTP clients and the
@@ -380,6 +381,13 @@ type Server struct {
 	jobsFn                          func(appwire.JobsListParams) (any, error)
 	jobOutputFn                     func(jobID string, beforeBytes, maxBytes int64) (data any, found bool, err error)
 	shutdownFunc                    func()
+
+	// costLookupMu guards costLookup. It is deliberately NOT s.mu: the turn
+	// projector calls the lookup from inside Project, which RecordAppEvent
+	// runs while s.mu is held, so a lookup reaching for s.mu would deadlock.
+	costLookupMu sync.RWMutex
+	costLookup   func(ref string) *registry.Cost
+
 	// sandboxEscalationResolveFunc delivers a human's approve/deny decision for a
 	// pending sandbox-exemption escalation (M7) to the session, unblocking the
 	// waiting tool-exec goroutine. nil when no session is attached.
@@ -691,6 +699,28 @@ func (s *Server) SetShutdownFunc(fn func()) {
 	s.mu.Lock()
 	s.shutdownFunc = fn
 	s.mu.Unlock()
+}
+
+// SetCostLookupFunc installs the $/Mtok cost source every priced figure this
+// daemon reports is derived from: the live session's registry resolution of an
+// "instance/model" reference (spec §7.5). Without one the daemon reports usage
+// and no cost, never a bundled pricing table's guess.
+func (s *Server) SetCostLookupFunc(fn func(ref string) *registry.Cost) {
+	s.costLookupMu.Lock()
+	s.costLookup = fn
+	s.costLookupMu.Unlock()
+}
+
+// costFor is the cost of ref under the installed lookup; nil when none is
+// installed or the row carries no cost.
+func (s *Server) costFor(ref string) *registry.Cost {
+	s.costLookupMu.RLock()
+	fn := s.costLookup
+	s.costLookupMu.RUnlock()
+	if fn == nil {
+		return nil
+	}
+	return fn(ref)
 }
 
 // SetListModelsFunc sets the function used by the typed model/list method.

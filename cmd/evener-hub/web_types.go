@@ -97,5 +97,6 @@ type daemonStatus struct {
 	ContextRemaining    int
 	WorkMillis          int64
 	Usage               *appwire.EvenerUsage
+	Cost                string
 	ActiveTurnStartedAt int64
 }

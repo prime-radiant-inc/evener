@@ -59,9 +59,30 @@ func TestWorkspaceDataFromAppThreadCarriesWorkMetrics(t *testing.T) {
 }
 
 // TestWorkspaceDataFromAppThread_CarriesCostEstimate verifies the
-// remote/appwire workspace path computes Cost from thread.ModelProvider and
-// thread.Evener.Usage via appwire.EstimateCost.
+// remote/appwire workspace path renders the cost the daemon delivered on
+// thread.Evener.Cost rather than re-deriving one of its own (spec §7.5: the
+// daemon prices from its session's registry, which the web cannot see).
 func TestWorkspaceDataFromAppThread_CarriesCostEstimate(t *testing.T) {
+	wd := workspaceDataFromAppThread(appwire.Thread{
+		ID:            "th_cost",
+		Source:        "local",
+		Status:        appwire.ThreadStatus{Type: "idle"},
+		ModelProvider: "claude-opus-4-5",
+		Evener: appwire.EvenerThread{
+			Ref:   "local:th_cost",
+			Usage: &appwire.EvenerUsage{InputTokens: 100_000, OutputTokens: 20_000},
+			Cost:  "~$1.00",
+		},
+	})
+	if wd.Cost != "~$1.00" {
+		t.Fatalf("Cost = %q, want ~$1.00", wd.Cost)
+	}
+}
+
+// TestWorkspaceDataFromAppThread_NoDaemonCostRendersNothing pins the flag-day
+// rule (spec §14.1): a daemon that reported no cost leaves the chip empty; the
+// web never invents one from a bundled pricing table.
+func TestWorkspaceDataFromAppThread_NoDaemonCostRendersNothing(t *testing.T) {
 	wd := workspaceDataFromAppThread(appwire.Thread{
 		ID:            "th_cost",
 		Source:        "local",
@@ -72,8 +93,8 @@ func TestWorkspaceDataFromAppThread_CarriesCostEstimate(t *testing.T) {
 			Usage: &appwire.EvenerUsage{InputTokens: 100_000, OutputTokens: 20_000},
 		},
 	})
-	if wd.Cost != "~$1.00" {
-		t.Fatalf("Cost = %q, want ~$1.00", wd.Cost)
+	if wd.Cost != "" {
+		t.Fatalf("Cost = %q, want empty when the daemon reported none", wd.Cost)
 	}
 }
 

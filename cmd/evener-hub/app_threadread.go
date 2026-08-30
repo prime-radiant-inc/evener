@@ -19,7 +19,33 @@ import (
 	"primeradiant.com/evener/cmd/evener-hub/internal/hubcore"
 	"primeradiant.com/evener/internal/apptranscript"
 	"primeradiant.com/evener/llm"
+	"primeradiant.com/evener/llm/registry"
 )
+
+// costFor is the $/Mtok cost the hub's registry resolves for instance/model
+// (spec §7.5) — what every dollar figure a past thread reports is derived
+// from. Nil when the hub holds no registry, the reference does not resolve, or
+// the row carries no cost: the caller then renders nothing.
+func costFor(reg *hubcore.ProviderRegistry, instance, model string) *registry.Cost {
+	if reg == nil {
+		return nil
+	}
+	r := reg.Get()
+	if r == nil {
+		return nil
+	}
+	res, err := r.Resolve(instance + "/" + model)
+	if err != nil {
+		return nil
+	}
+	return res.Caps.Cost
+}
+
+// pastEntryCost is costFor over the instance and model a past session
+// recorded, the pair every one of its persisted figures is priced at.
+func pastEntryCost(cfg hubcore.WebConfig, entry hubcore.PastEntry) *registry.Cost {
+	return costFor(cfg.Registry, entry.Meta.ProfileID, entry.Meta.Model)
+}
 
 func pastThreadForRead(cfg hubcore.WebConfig, params appwire.ThreadReadParams) (appwire.Thread, bool, error) {
 	entry, ok := pastEntryForRead(cfg, params)
@@ -35,7 +61,7 @@ func pastThreadForRead(cfg hubcore.WebConfig, params appwire.ThreadReadParams) (
 	// scans the per-entry list sweeps cannot (see stampDerivedTotals).
 	// One combined scan answers both figures; two separate ones would read and
 	// decode the same immutable bytes twice.
-	return stampDerivedTotals(entry, thread), true, nil
+	return stampDerivedTotals(cfg, entry, thread), true, nil
 }
 
 func pastThreadReadResponse(cfg hubcore.WebConfig, params appwire.ThreadReadParams) (appwire.ThreadReadResponse, bool, error) {
@@ -59,11 +85,11 @@ func pastThreadReadResponse(cfg hubcore.WebConfig, params appwire.ThreadReadPara
 	}
 	thread = attachPastThreadSkillCatalog(entry, thread)
 	var olderCursor string
-	thread.Turns, olderCursor, err = pastEntryLatestTurns(entry, params.TurnLimit)
+	thread.Turns, olderCursor, err = pastEntryLatestTurns(cfg, entry, params.TurnLimit)
 	if err != nil {
 		return appwire.ThreadReadResponse{}, true, err
 	}
-	thread = stampDerivedTotals(entry, reconcileAndEnrichPastThread(entry, thread))
+	thread = stampDerivedTotals(cfg, entry, reconcileAndEnrichPastThread(entry, thread))
 	return appwire.ThreadReadResponse{Thread: thread, OlderCursor: olderCursor}, true, nil
 }
 
@@ -84,7 +110,7 @@ func pastThreadTurnsList(cfg hubcore.WebConfig, params appwire.ThreadTurnsListPa
 	if !ok {
 		return appwire.ThreadTurnsListResponse{}, false, nil
 	}
-	page, err := pastEntryPageTurns(entry, params.Cursor, params.Limit)
+	page, err := pastEntryPageTurns(cfg, entry, params.Cursor, params.Limit)
 	if err != nil {
 		return appwire.ThreadTurnsListResponse{}, true, err
 	}
@@ -383,7 +409,7 @@ func pastEntryThread(cfg hubcore.WebConfig, entry hubcore.PastEntry, includeTurn
 			Capabilities: pastThreadCapabilities(),
 			WorkMillis:   entry.Meta.WorkMillis,
 			Usage:        cumulativeUsage,
-			Cost:         appwire.EstimateCost(entry.Meta.Model, cumulativeUsage),
+			Cost:         appwire.EstimateCost(pastEntryCost(cfg, entry), cumulativeUsage),
 			// ActiveTurnStartedAt stays 0 because the parent status payload does not
 			// expose the in-process child's turn start time.
 		},
@@ -405,7 +431,7 @@ func pastEntryThread(cfg hubcore.WebConfig, entry hubcore.PastEntry, includeTurn
 	}
 	if includeTurns {
 		var err error
-		thread.Turns, err = pastEntryTurns(entry)
+		thread.Turns, err = pastEntryTurns(cfg, entry)
 		if err != nil {
 			return appwire.Thread{}, err
 		}
@@ -569,7 +595,7 @@ var pastTranscriptCache = apptranscript.NewTurnCache()
 // renders an absent total as nothing rather than "↑0 ↓0" and an absent count as
 // nothing rather than "clean", and a missing figure is no reason to fail the
 // whole thread projection.
-func stampDerivedTotals(entry hubcore.PastEntry, thread appwire.Thread) appwire.Thread {
+func stampDerivedTotals(cfg hubcore.WebConfig, entry hubcore.PastEntry, thread appwire.Thread) appwire.Thread {
 	if thread.Evener.Usage != nil {
 		return stampDerivedFailureCount(entry, thread)
 	}
@@ -579,7 +605,7 @@ func stampDerivedTotals(entry hubcore.PastEntry, thread appwire.Thread) appwire.
 	}
 	if total != nil {
 		thread.Evener.Usage = total
-		thread.Evener.Cost = appwire.EstimateCost(entry.Meta.Model, total)
+		thread.Evener.Cost = appwire.EstimateCost(pastEntryCost(cfg, entry), total)
 	}
 	thread.Evener.FailedToolCalls = &failures
 	return thread
@@ -615,7 +641,7 @@ func pastTranscriptPath(entry hubcore.PastEntry) string {
 	return filepath.Join(entry.StateDir, "sessions", entry.Meta.ID+".transcript.jsonl")
 }
 
-func pastEntryTurns(entry hubcore.PastEntry) ([]appwire.Turn, error) {
+func pastEntryTurns(cfg hubcore.WebConfig, entry hubcore.PastEntry) ([]appwire.Turn, error) {
 	transcriptPath := pastTranscriptPath(entry)
 	toolNames := map[string]string{}
 	turns, err := pastTranscriptCache.TurnsFromFile(transcriptPath, transcriptJSONLMaxLineBytes, func(turn schema.Turn, turnID string, entryIndex int) []appwire.ThreadItem {
@@ -626,13 +652,9 @@ func pastEntryTurns(entry hubcore.PastEntry) ([]appwire.Turn, error) {
 	}
 	stampSessionImageURLs(entry.Meta.ID, turns)
 	// TurnsFromFile only has the per-round usage persisted in the transcript;
-	// it doesn't know the session's model, so the cost estimate is stamped
-	// here as a post-pass against entry.Meta.Model.
-	for i := range turns {
-		if turns[i].Usage != nil {
-			turns[i].Cost = appwire.EstimateCost(entry.Meta.Model, turns[i].Usage)
-		}
-	}
+	// it doesn't know the session's instance and model, so the cost estimate
+	// is stamped here as a post-pass against the row those resolve to.
+	stampPastTurnCosts(pastEntryCost(cfg, entry), turns)
 	return turns, nil
 }
 
@@ -655,32 +677,32 @@ func decodeTranscriptTurn(raw json.RawMessage) (schema.Turn, bool) {
 	return entryRec.Turn, true
 }
 
-func pastEntryLatestTurns(entry hubcore.PastEntry, limit int) ([]appwire.Turn, string, error) {
+func pastEntryLatestTurns(cfg hubcore.WebConfig, entry hubcore.PastEntry, limit int) ([]appwire.Turn, string, error) {
 	path := filepath.Join(entry.StateDir, "sessions", entry.Meta.ID+".transcript.jsonl")
 	turns, cursor, err := pastTranscriptCache.LatestFromFile(path, transcriptJSONLMaxLineBytes, limit, projectBoundedPastTranscriptTurn)
 	if err != nil {
 		return nil, "", err
 	}
 	stampSessionImageURLs(entry.Meta.ID, turns)
-	stampPastTurnCosts(entry.Meta.Model, turns)
+	stampPastTurnCosts(pastEntryCost(cfg, entry), turns)
 	return turns, cursor, nil
 }
 
-func pastEntryPageTurns(entry hubcore.PastEntry, cursor string, limit int) (appwire.ThreadTurnsListResponse, error) {
+func pastEntryPageTurns(cfg hubcore.WebConfig, entry hubcore.PastEntry, cursor string, limit int) (appwire.ThreadTurnsListResponse, error) {
 	path := filepath.Join(entry.StateDir, "sessions", entry.Meta.ID+".transcript.jsonl")
 	page, err := pastTranscriptCache.PageFromFile(path, transcriptJSONLMaxLineBytes, cursor, limit, projectBoundedPastTranscriptTurn)
 	if err != nil {
 		return appwire.ThreadTurnsListResponse{}, err
 	}
 	stampSessionImageURLs(entry.Meta.ID, page.Turns)
-	stampPastTurnCosts(entry.Meta.Model, page.Turns)
+	stampPastTurnCosts(pastEntryCost(cfg, entry), page.Turns)
 	return appwire.ThreadTurnsListResponse{Data: page.Turns, NextCursor: page.NextCursor}, nil
 }
 
-func stampPastTurnCosts(model string, turns []appwire.Turn) {
+func stampPastTurnCosts(cost *registry.Cost, turns []appwire.Turn) {
 	for i := range turns {
 		if turns[i].Usage != nil {
-			turns[i].Cost = appwire.EstimateCost(model, turns[i].Usage)
+			turns[i].Cost = appwire.EstimateCost(cost, turns[i].Usage)
 		}
 	}
 }

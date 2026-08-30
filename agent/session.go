@@ -1066,6 +1066,17 @@ func (s *Session) currentEnv() execenv.ExecutionEnvironment {
 // Client returns the session's LLM client.
 func (s *Session) Client() *llm.Client { return s.client }
 
+// CostFor is the $/Mtok cost of the instance/model reference ref, resolved on
+// the session's own registry (spec §7.5). Nil when ref does not resolve or the
+// row carries no cost — the caller renders nothing rather than a zero.
+func (s *Session) CostFor(ref string) *registry.Cost {
+	res, err := s.client.Resolve(ref)
+	if err != nil {
+		return nil
+	}
+	return res.Caps.Cost
+}
+
 // SetReasoningEffort updates the reasoning effort used for future LLM calls.
 // Takes effect on the next request (spec).
 func (s *Session) SetReasoningEffort(effort string) {

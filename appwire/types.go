@@ -572,10 +572,10 @@ type EvenerThread struct {
 	WorkMillis          int64        `json:"workMillis,omitempty"`
 	ActiveTurnStartedAt int64        `json:"activeTurnStartedAt,omitempty"`
 	// Cost is the session's cumulative estimated dollar total — the "~$X.XX"
-	// string EstimateCost derives from Usage at the thread's model price, the
+	// string EstimateCost derives from Usage at the registry row's cost, the
 	// session-scope sibling of the per-turn Turn.Cost (same shape, same "~"
-	// estimate marker). Empty (omitted) when Usage is nil or the model is
-	// uncataloged: an honest "unknown" that renders no chip, never a
+	// estimate marker). Empty (omitted) when Usage is nil or the row carries
+	// no cost: an honest "unknown" that renders no chip, never a
 	// misleading "~$0.00" — the only "~$0.00" a consumer sees is a genuinely
 	// sub-cent priced session. Derived from the authoritative full-session
 	// cumulative Usage (the same total the token cluster trusts), never a
@@ -973,7 +973,7 @@ type Turn struct {
 	DurationMS  *int64 `json:"durationMs,omitempty"`
 	// Usage and Cost are the turn's own (not cumulative-session) token totals
 	// and estimated dollar cost — nil/empty when not computable (no usage
-	// data for this turn, or an uncataloged model). Populated live by
+	// data for this turn, or a registry row with no cost). Populated live by
 	// summing EventAssistantTextEnd's per-round usage across the turn
 	// (internal/appprojector), and for ended sessions by reading the
 	// persisted per-round schema.Turn.Usage (internal/apptranscript).

@@ -709,6 +709,7 @@ func (s *Session) emitAssistantResponse(ctx context.Context, resp llm.Response, 
 			Usage:        resp.Usage,
 			FinishReason: resp.Finish.Reason,
 			Model:        resp.Model,
+			Provider:     resp.Provider,
 		}
 		if reasoning := resp.ReasoningText(); reasoning != "" {
 			textEndData.Reasoning = reasoning

@@ -1546,6 +1546,12 @@ func TestAssistantTextEnd_EnrichedData(t *testing.T) {
 		t.Fatalf("model: got %q want %q", endData.Model, "gpt-5.2")
 	}
 
+	// Verify provider: with Model it names the instance/model reference the
+	// round's cost resolves from (spec §7.5).
+	if endData.Provider != "openai" {
+		t.Fatalf("provider: got %q want %q", endData.Provider, "openai")
+	}
+
 	// Verify usage is present and has expected values.
 	usage := endData.Usage
 	if usage.InputTokens != 100 {

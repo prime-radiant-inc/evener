@@ -11,6 +11,7 @@ import (
 	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/appwire"
 	"primeradiant.com/evener/llm"
+	"primeradiant.com/evener/llm/registry"
 )
 
 func TestAppEventProjectorProjectsAssistantDelta(t *testing.T) {
@@ -1039,18 +1040,26 @@ func TestProjectorTurnEndedPreservesInterruptStatus(t *testing.T) {
 // on those rounds.
 func TestProjectorAccumulatesPerTurnUsageAcrossRounds(t *testing.T) {
 	projector := NewAppEventProjector("th_1", "local:th_1")
+	projector.SetCostLookup(func(provider, model string) *registry.Cost {
+		if provider != "anthropic" || model != "claude-opus-4-5" {
+			return nil
+		}
+		return &registry.Cost{Input: 5, Output: 25}
+	})
 	projector.Project(events.SessionEvent{Kind: events.EventUserInput, SessionID: "th_1", Data: events.UserInputData{Text: "hello"}})
 	projector.Project(events.SessionEvent{Kind: events.EventAssistantTextStart, SessionID: "th_1", Data: events.AssistantTextStartData{Model: "claude-opus-4-5"}})
 	projector.Project(events.SessionEvent{Kind: events.EventAssistantTextEnd, SessionID: "th_1", Data: events.AssistantTextEndData{
-		Text:  "first round",
-		Usage: llm.Usage{InputTokens: 100, OutputTokens: 50},
-		Model: "claude-opus-4-5",
+		Text:     "first round",
+		Usage:    llm.Usage{InputTokens: 100, OutputTokens: 50},
+		Model:    "claude-opus-4-5",
+		Provider: "anthropic",
 	}})
 	projector.Project(events.SessionEvent{Kind: events.EventAssistantTextStart, SessionID: "th_1", Data: events.AssistantTextStartData{Model: "claude-opus-4-5"}})
 	projector.Project(events.SessionEvent{Kind: events.EventAssistantTextEnd, SessionID: "th_1", Data: events.AssistantTextEndData{
-		Text:  "second round",
-		Usage: llm.Usage{InputTokens: 20, OutputTokens: 10},
-		Model: "claude-opus-4-5",
+		Text:     "second round",
+		Usage:    llm.Usage{InputTokens: 20, OutputTokens: 10},
+		Model:    "claude-opus-4-5",
+		Provider: "anthropic",
 	}})
 	sessionEnd := projector.Project(events.SessionEvent{Kind: events.EventSessionEnd, SessionID: "th_1", Data: events.SessionEndData{Reason: "input_complete", State: "idle"}})
 
@@ -1064,8 +1073,62 @@ func TestProjectorAccumulatesPerTurnUsageAcrossRounds(t *testing.T) {
 	if turn.Usage.OutputTokens != 60 {
 		t.Fatalf("turn.Usage.OutputTokens=%d, want 60", turn.Usage.OutputTokens)
 	}
-	if !strings.HasPrefix(turn.Cost, "~$") {
-		t.Fatalf("turn.Cost=%q, want ~$ prefix", turn.Cost)
+	// 120/1e6*5 + 60/1e6*25 = 0.0006 + 0.0015 = 0.0021 -> "~$0.00"
+	if turn.Cost != "~$0.00" {
+		t.Fatalf("turn.Cost=%q, want ~$0.00 from the looked-up registry cost", turn.Cost)
+	}
+}
+
+// TestProjectorTurnCostComesFromTheRegistryLookup pins where the per-turn
+// cost comes from (spec §7.5): the lookup is keyed on the provider and model
+// the round reported, and its Cost — not a catalog entry keyed on the model
+// id alone — is what the turn is priced at.
+func TestProjectorTurnCostComesFromTheRegistryLookup(t *testing.T) {
+	var gotProvider, gotModel string
+	projector := NewAppEventProjector("th_1", "local:th_1")
+	projector.SetCostLookup(func(provider, model string) *registry.Cost {
+		gotProvider, gotModel = provider, model
+		return &registry.Cost{Input: 3, Output: 15}
+	})
+	projector.Project(events.SessionEvent{Kind: events.EventUserInput, SessionID: "th_1", Data: events.UserInputData{Text: "hello"}})
+	projector.Project(events.SessionEvent{Kind: events.EventAssistantTextEnd, SessionID: "th_1", Data: events.AssistantTextEndData{
+		Text:     "answer",
+		Usage:    llm.Usage{InputTokens: 1_000_000, OutputTokens: 100_000},
+		Model:    "claude-sonnet-4-5",
+		Provider: "work",
+	}})
+	sessionEnd := projector.Project(events.SessionEvent{Kind: events.EventSessionEnd, SessionID: "th_1", Data: events.SessionEndData{Reason: "input_complete", State: "idle"}})
+
+	turn := notificationTurn(t, sessionEnd, appwire.NotifyTurnCompleted)
+	if gotProvider != "work" || gotModel != "claude-sonnet-4-5" {
+		t.Fatalf("cost lookup called with (%q, %q), want (\"work\", \"claude-sonnet-4-5\")", gotProvider, gotModel)
+	}
+	// 1_000_000/1e6*3 + 100_000/1e6*15 = 3.00 + 1.50 = 4.50
+	if turn.Cost != "~$4.50" {
+		t.Fatalf("turn.Cost=%q, want ~$4.50", turn.Cost)
+	}
+}
+
+// TestProjectorWithoutCostLookupLeavesTurnCostEmpty pins the flag-day rule
+// (spec §14.1): with nothing to price against, the turn reports its usage and
+// no cost at all rather than a fabricated "~$0.00".
+func TestProjectorWithoutCostLookupLeavesTurnCostEmpty(t *testing.T) {
+	projector := NewAppEventProjector("th_1", "local:th_1")
+	projector.Project(events.SessionEvent{Kind: events.EventUserInput, SessionID: "th_1", Data: events.UserInputData{Text: "hello"}})
+	projector.Project(events.SessionEvent{Kind: events.EventAssistantTextEnd, SessionID: "th_1", Data: events.AssistantTextEndData{
+		Text:     "answer",
+		Usage:    llm.Usage{InputTokens: 100, OutputTokens: 50},
+		Model:    "claude-opus-4-5",
+		Provider: "anthropic",
+	}})
+	sessionEnd := projector.Project(events.SessionEvent{Kind: events.EventSessionEnd, SessionID: "th_1", Data: events.SessionEndData{Reason: "input_complete", State: "idle"}})
+
+	turn := notificationTurn(t, sessionEnd, appwire.NotifyTurnCompleted)
+	if turn.Usage == nil {
+		t.Fatalf("turn.Usage=nil, want the turn's own usage regardless of pricing")
+	}
+	if turn.Cost != "" {
+		t.Fatalf("turn.Cost=%q, want empty with no cost lookup installed", turn.Cost)
 	}
 }
 

@@ -21,6 +21,7 @@ import (
 	"primeradiant.com/evener/internal/appprojector"
 	"primeradiant.com/evener/internal/appserver"
 	"primeradiant.com/evener/llm"
+	"primeradiant.com/evener/llm/registry"
 )
 
 func (s *Server) AppServer() *appserver.Server {
@@ -211,6 +212,7 @@ func (s *Server) ReplaceAppIdentity(prepared PreparedAppIdentity, activate func(
 		s.appThreadID = prepared.threadID
 		s.appRef = newRef
 		s.appProjector = prepared.projector
+		s.installCostLookup(s.appProjector)
 		s.appTurns = prepared.turns
 		oldDescendantIDs := make([]string, 0, len(s.appDescendants))
 		for threadID := range s.appDescendants {
@@ -454,6 +456,7 @@ func (s *Server) RecordDescendantAppEvent(ownerThreadID string, event events.Ses
 					Evener:    appwire.EvenerThread{Ref: ref, Kind: "subagent"},
 				},
 			}
+			s.installCostLookup(projection.projector)
 			// Seed from the descendant's own transcript BEFORE this first event is
 			// applied, the same order PrepareAppIdentity uses for the ROOT thread:
 			// a resumed descendant's persisted history must already be in the
@@ -1987,7 +1990,7 @@ func (s *Server) appThreadLocked() appwire.Thread {
 			Tasks:                 taskAggregate,
 			Goal:                  goalState,
 			Usage:                 usage,
-			Cost:                  appwire.EstimateCost(status.Model, usage),
+			Cost:                  appwire.EstimateCost(s.costFor(status.Profile+"/"+status.Model), usage),
 			WorkMillis:            workMillis,
 			ActiveTurnStartedAt:   activeTurnStartedAt,
 			FailedToolCalls:       failedToolCalls,
@@ -2180,6 +2183,20 @@ func (s *Server) ensureAppProjectorLocked(threadID string) {
 		ref = appwire.Ref{SourceID: s.appSourceID, ThreadID: threadID}.String()
 	}
 	s.appProjector = appprojector.NewAppEventProjector(threadID, ref)
+	s.installCostLookup(s.appProjector)
+}
+
+// installCostLookup points a projector at this daemon's cost source, so the
+// turns it stamps are priced from the live session's registry (spec §7.5).
+// The closure reads the lookup at call time, so a projector installed before
+// the daemon was wired still prices correctly once it is.
+func (s *Server) installCostLookup(p *appprojector.AppEventProjector) {
+	if p == nil {
+		return
+	}
+	p.SetCostLookup(func(provider, model string) *registry.Cost {
+		return s.costFor(provider + "/" + model)
+	})
 }
 
 func (s *Server) reserveAppTurnIDForStart() (string, error) {
