@@ -76,6 +76,63 @@ var replayProtocolOf = protocolResolver(map[string]string{
 	"work":        registry.ProtocolOpenAIChat,
 })
 
+// --- the session-side lookups the scope is wired to ---
+
+// TestSessionInstanceProtocol resolves through the registry rather than the
+// credentialed instance list (controller ruling R1): a curated implicit
+// provider has no credential on a bare client, so Instance() would not list it
+// and a legacy turn from it would silently lose its thinking replay.
+func TestSessionInstanceProtocol(t *testing.T) {
+	t.Parallel()
+	sess := &Session{client: llm.NewClient()}
+	cases := map[string]string{
+		"openai":    registry.ProtocolOpenAIResponses,
+		"anthropic": registry.ProtocolAnthropic,
+		"nope":      "",
+	}
+	for name, want := range cases {
+		if got := sess.instanceProtocol(name); got != want {
+			t.Errorf("instanceProtocol(%q) = %q, want %q", name, got, want)
+		}
+	}
+	if got := (&Session{}).instanceProtocol("openai"); got != "" {
+		t.Errorf("instanceProtocol without a client = %q, want empty", got)
+	}
+}
+
+// TestSessionCanonicalModelID pins the G12 provenance fallback's
+// canonicalization: a "[1m]" ref is an alias row, so it folds onto its target,
+// and a dated id the catalog does not carry as its own row folds onto the base
+// row the registry matched.
+//
+// Known narrowing: a dated snapshot the catalog DOES carry as its own row
+// (anthropic's claude-sonnet-4-5-20250929) canonicalizes to itself, so it no
+// longer compares equal to the undated alias the way the deleted
+// EmbeddedModelCatalog canonicalizer made it. Legacy transcripts only, and the
+// conservative direction — thinking is stripped, never wrongly replayed.
+func TestSessionCanonicalModelID(t *testing.T) {
+	t.Parallel()
+	sess := &Session{client: llm.NewClient()}
+	cases := []struct{ model, want string }{
+		{"claude-sonnet-4-5[1m]", "claude-sonnet-4-5"},
+		{"claude-sonnet-4-5", "claude-sonnet-4-5"},
+		{"claude-sonnet-4-5-20990101", "claude-sonnet-4-5"},
+		{"  claude-sonnet-4-5[1m]  ", "claude-sonnet-4-5"},
+		{"claude-sonnet-4-5-20250929", "claude-sonnet-4-5-20250929"},
+	}
+	for _, tc := range cases {
+		if got := sess.canonicalModelID("anthropic", tc.model); got != tc.want {
+			t.Errorf("canonicalModelID(anthropic, %q) = %q, want %q", tc.model, got, tc.want)
+		}
+	}
+	if got := sess.canonicalModelID("nope", "some-model"); got != "some-model" {
+		t.Errorf("canonicalModelID on an unresolvable instance = %q, want the trimmed ref", got)
+	}
+	if got := (&Session{}).canonicalModelID("anthropic", " claude-sonnet-4-5[1m] "); got != "claude-sonnet-4-5[1m]" {
+		t.Errorf("canonicalModelID without a client = %q, want the trimmed ref", got)
+	}
+}
+
 // --- thinking, anthropic-family targets (exact-model, closes G12) ---
 
 func TestExpandHistory_Anthropic_SameModel_ThinkingReplays(t *testing.T) {
@@ -312,11 +369,11 @@ func TestExpandHistory_WebSearch_SameFamilyReplays(t *testing.T) {
 	}
 }
 
-// TestExpandHistory_WebSearch_AnthropicSiblingTagReplays pins that distinct
-// anthropic-wire behavior tags (anthropic and kimi-anthropic) share the
-// anthropic family, so an anthropic-produced raw web_search block replays
-// verbatim into a kimi-anthropic request — the raw block shape is identical.
-func TestExpandHistory_WebSearch_AnthropicSiblingTagReplays(t *testing.T) {
+// TestExpandHistory_WebSearch_AcrossAnthropicInstancesReplays pins that two
+// different instances both speaking the anthropic protocol replay each other's
+// raw web_search blocks verbatim: the block shape is the protocol's, so an
+// anthropic-produced one is byte-compatible in a request to the kimi instance.
+func TestExpandHistory_WebSearch_AcrossAnthropicInstancesReplays(t *testing.T) {
 	t.Parallel()
 	turns := []schema.Turn{assistantWebSearchTurn("anthropic", "claude-opus-4-6")}
 	out := expandHistory(turns, replayScope{
@@ -325,7 +382,7 @@ func TestExpandHistory_WebSearch_AnthropicSiblingTagReplays(t *testing.T) {
 		protocolOf:   protocolResolver(map[string]string{"anthropic": registry.ProtocolAnthropic, "kimi": registry.ProtocolAnthropic}),
 	})
 	if !hasContentKind(out, llm.ContentWebSearch) {
-		t.Fatal("anthropic→kimi-anthropic web_search must replay verbatim (same anthropic-wire family)")
+		t.Fatal("anthropic→kimi web_search must replay verbatim (both speak the anthropic protocol)")
 	}
 }
 

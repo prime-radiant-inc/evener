@@ -952,11 +952,18 @@ func (s *Session) callModelWithFallback(ctx context.Context, profile *provider.P
 		// change from racing/leaking into this request's fallback, and lets a
 		// fallback that supports a higher level than the primary use it.
 		for _, fbModel := range s.cfg.ModelFallbacks {
-			// validateModelFallbacks already rejected cross-provider fallbacks,
-			// so resolveProfileForRef is guaranteed to return the WithModel path
-			// here. We call it anyway so the fallback always uses the same
-			// resolution logic as SetModel.
-			fbProfile, _, _ := s.resolveProfileForRef(profile, fbModel)
+			// validateModelFallbacks keeps a cross-instance entry whose surface
+			// matches the session's (spec §7.5), so this is where the session
+			// resolver first runs for such an entry — it is no longer the
+			// guaranteed WithModel projection it was when every slashed entry
+			// was refused. An entry the resolver cannot answer for right now is
+			// skipped so the rest of the chain still gets its turn.
+			fbProfile, _, resolveErr := s.resolveProfileForRef(profile, fbModel)
+			if resolveErr != nil {
+				s.emit(events.EventWarning, warningDataFromError(
+					fmt.Sprintf("model_fallbacks entry %q could not be resolved; skipping it", fbModel), resolveErr))
+				continue
+			}
 			fbReq := responsesContinuationModelFallbackRequest(req)
 			fbReq.Model = fbProfile.Model()
 			fbReq.Provider = fbProfile.ID()
@@ -1350,12 +1357,26 @@ func (s *Session) instanceProtocol(name string) string {
 // requested alias and a provider-reported dated snapshot compare equal in the
 // ResponseModel provenance fallback. instance names the instance the ref
 // belongs to; unknown refs compare by trimmed string.
+//
+// An alias row folds onto its target, which is what canonicalizes a "[1m]"
+// ref: the curated overlay carries claude-sonnet-4-5[1m] as an alias of
+// claude-sonnet-4-5, and both address the same deployment. Otherwise the
+// matched row's id is the canonical one, which folds a dated snapshot the
+// catalog does not carry as its own row onto the base row the registry
+// matched it against.
 func (s *Session) canonicalModelID(instance, model string) string {
 	trimmed := strings.TrimSpace(model)
 	if s.client == nil {
 		return trimmed
 	}
-	if res, err := s.client.Resolve(instance + "/" + trimmed); err == nil && res.Model.ID != "" {
+	res, err := s.client.Resolve(instance + "/" + trimmed)
+	if err != nil {
+		return trimmed
+	}
+	if target := strings.TrimSpace(res.Model.AliasOf); target != "" {
+		return target
+	}
+	if res.Model.ID != "" {
 		return res.Model.ID
 	}
 	return trimmed

@@ -2,7 +2,9 @@ package agent_test
 
 import (
 	"context"
+	"errors"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -84,6 +86,86 @@ func TestFallbackChain_PermanentErrorTriesNextModel(t *testing.T) {
 
 	got := f.Models()
 	want := []string{"primary", "fallback-b"}
+	if len(got) != len(want) {
+		t.Fatalf("attempted models: got %v want %v", got, want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Errorf("attempt %d: got %q want %q", i, got[i], want[i])
+		}
+	}
+}
+
+// TestFallbackChain_SkipsEntryWhoseResolverFails: the surface rule keeps a
+// cross-instance model_fallbacks entry whose surface matches, so this loop is
+// the first place the session resolver runs for it. A resolver that fails
+// there must skip the entry and try the next one — before this was handled the
+// discarded error left a nil *provider.Profile that the next line dereferenced,
+// panicking inside the model-call fallback chain.
+func TestFallbackChain_SkipsEntryWhoseResolverFails(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	c := llm.NewClient()
+
+	permErr := llm.ErrorFromHTTPStatus("openai", 403, "access denied", nil, nil)
+	f := &agenttest.ModelTrackingAdapter{
+		Provider: "openai",
+		Respond: func(req llm.Request) (llm.Response, error) {
+			switch req.Model {
+			case "primary":
+				return llm.Response{}, permErr
+			case "gpt-4o-mini":
+				return agenttest.FinalResponse("same-instance fallback answered"), nil
+			}
+			t.Errorf("unexpected model %q", req.Model)
+			return llm.Response{}, nil
+		},
+	}
+	c.Register(f)
+
+	// The resolver answers while the session validates its fallbacks at init,
+	// then starts failing, standing in for an instance that becomes
+	// unresolvable between launch and the round that needs it.
+	var resolverFails atomic.Bool
+	resolver := func(ref string) (*provider.Profile, error) {
+		if resolverFails.Load() {
+			return nil, errors.New("work instance is unavailable")
+		}
+		instance, model, _ := strings.Cut(ref, "/")
+		if instance != "work" {
+			return nil, nil
+		}
+		return provider.WithProviderID(agent.NewOpenAIProfile(model), "work"), nil
+	}
+
+	policy := llm.RetryPolicy{MaxRetries: 0}
+	sess, err := agent.NewSession(c, agent.NewOpenAIProfile("primary"), execenv.NewLocalExecutionEnvironment(dir), agent.SessionConfig{
+		LLMRetryPolicy: &policy,
+		ResolveProfile: resolver,
+		ModelFallbacks: []string{"work/gpt-4.1-mini", "gpt-4o-mini"},
+	})
+	if err != nil {
+		t.Fatalf("NewSession: %v", err)
+	}
+	defer sess.Close()
+	go func() {
+		for range sess.Events() {
+		}
+	}()
+	resolverFails.Store(true)
+
+	// TRIPWIRE: scripted in-process adapter, no real I/O; only fires on a genuine hang.
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	out, err := sess.ProcessInput(ctx, "hi", nil)
+	if err != nil {
+		t.Fatalf("ProcessInput: got error %v, want nil (the resolvable fallback should answer)", err)
+	}
+	if !strings.Contains(out, "same-instance fallback answered") {
+		t.Errorf("output: got %q, want substring 'same-instance fallback answered'", out)
+	}
+	got := f.Models()
+	want := []string{"primary", "gpt-4o-mini"}
 	if len(got) != len(want) {
 		t.Fatalf("attempted models: got %v want %v", got, want)
 	}
