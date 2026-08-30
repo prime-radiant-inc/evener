@@ -945,6 +945,7 @@ func (s *Session) callModelWithFallback(ctx context.Context, profile *provider.P
 		// than re-reading live session config) keeps a concurrent runtime effort
 		// change from racing/leaking into this request's fallback, and lets a
 		// fallback that supports a higher level than the primary use it.
+		origEffort := requestedEffort
 		for _, fbModel := range s.cfg.ModelFallbacks {
 			// validateModelFallbacks keeps a cross-instance entry whose surface
 			// matches the session's (spec §7.5), so this is where the session
