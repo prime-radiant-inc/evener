@@ -1377,6 +1377,17 @@ func (p *AppEventProjector) notification(method string, params any) AppNotificat
 	// callers all pass a non-empty appwire.Notify* constant; an empty method
 	// would produce an unroutable wire frame.
 	invariant.Hold(method != "", "appprojector: notification with empty method (threadID=%q)", p.threadID)
+	if invariant.Enabled {
+		// The daemon restamps every notification's threadId/ref with its
+		// authoritative fanout target (server.stampAppNotificationTarget), so
+		// params must be either a struct implementing NotificationTargeted or
+		// a map carrying the keys — anything else would ship untargeted.
+		switch params.(type) {
+		case appwire.NotificationTargeted, map[string]any:
+		default:
+			invariant.Hold(false, "appprojector: %s params %T cannot carry a notification target", method, params)
+		}
+	}
 	return AppNotification{ThreadID: p.threadID, Method: method, Params: params}
 }
 

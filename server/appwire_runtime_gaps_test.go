@@ -1,77 +1,59 @@
 package server
 
 import (
-	"encoding/json"
 	"testing"
 
 	"primeradiant.com/evener/appwire"
 )
 
-// TestStampAppNotificationTargetWithStruct covers the happy path where params
-// is a struct that can be marshaled and have fields added.
+// TestStampAppNotificationTargetWithStruct covers the happy path: a
+// projector-produced params struct is restamped in place of its own view of
+// the target, and the concrete type survives the trip (no JSON round trip).
 func TestStampAppNotificationTargetWithStruct(t *testing.T) {
-	params := appwire.ThreadStatusChangedParams{ThreadID: "old-id"}
+	params := appwire.ThreadStatusChangedParams{ThreadID: "old-id", Ref: "old-ref", Status: appwire.ThreadStatus{Type: appwire.ThreadStatusActive}}
 	got := stampAppNotificationTarget(params, "thread-1", "local:thread-1")
-	raw, ok := got.(json.RawMessage)
+	stamped, ok := got.(appwire.ThreadStatusChangedParams)
 	if !ok {
-		t.Fatalf("got type = %T, want json.RawMessage", got)
+		t.Fatalf("got type = %T, want appwire.ThreadStatusChangedParams", got)
 	}
-	var fields map[string]json.RawMessage
-	if err := json.Unmarshal(raw, &fields); err != nil {
-		t.Fatalf("unmarshal: %v", err)
+	if stamped.ThreadID != "thread-1" || stamped.Ref != "local:thread-1" {
+		t.Fatalf("target = (%q, %q), want (thread-1, local:thread-1)", stamped.ThreadID, stamped.Ref)
 	}
-	if tid, _ := json.Marshal("thread-1"); string(fields["threadId"]) != string(tid) {
-		t.Fatalf("threadId = %q, want %q", fields["threadId"], tid)
+	if stamped.Status.Type != appwire.ThreadStatusActive {
+		t.Fatalf("status = %q, want the original payload preserved", stamped.Status.Type)
 	}
-	if ref, _ := json.Marshal("local:thread-1"); string(fields["ref"]) != string(ref) {
-		t.Fatalf("ref = %q, want %q", fields["ref"], ref)
+	if params.ThreadID != "old-id" {
+		t.Fatal("the caller's params value must not be mutated")
 	}
 }
 
-// TestStampAppNotificationTargetWithNil covers the nil-params path.
-func TestStampAppNotificationTargetWithNil(t *testing.T) {
-	got := stampAppNotificationTarget(nil, "thread-1", "ref-1")
-	// nil marshals to "null", which is not "null" string check — it's the
-	// bytes "null". The function checks `string(data) != "null"`, so nil
-	// params skip the Unmarshal but still add threadId and ref fields.
-	raw, ok := got.(json.RawMessage)
+// TestStampAppNotificationTargetWithMap covers the projector's map-shaped
+// params (warning, turn/completed, thread/closed, steering): the server's
+// target overwrites the projector's own threadId/ref keys.
+func TestStampAppNotificationTargetWithMap(t *testing.T) {
+	params := map[string]any{"threadId": "old-id", "ref": "old-ref", "message": "boom"}
+	got := stampAppNotificationTarget(params, "thread-1", "local:thread-1")
+	stamped, ok := got.(map[string]any)
 	if !ok {
-		t.Fatalf("got type = %T, want json.RawMessage", got)
+		t.Fatalf("got type = %T, want map[string]any", got)
 	}
-	var fields map[string]json.RawMessage
-	if err := json.Unmarshal(raw, &fields); err != nil {
-		t.Fatalf("unmarshal: %v", err)
+	if stamped["threadId"] != "thread-1" || stamped["ref"] != "local:thread-1" {
+		t.Fatalf("target = (%v, %v), want (thread-1, local:thread-1)", stamped["threadId"], stamped["ref"])
 	}
-	if _, ok := fields["threadId"]; !ok {
-		t.Fatal("threadId should be present")
+	if stamped["message"] != "boom" {
+		t.Fatalf("message = %v, want the original payload preserved", stamped["message"])
 	}
 }
 
-// TestStampAppNotificationTargetWithEmptyParams covers the path where params
-// is an empty struct (marshals to "{}").
-func TestStampAppNotificationTargetWithEmptyParams(t *testing.T) {
-	got := stampAppNotificationTarget(struct{}{}, "thread-1", "ref-1")
-	raw, ok := got.(json.RawMessage)
-	if !ok {
-		t.Fatalf("got type = %T, want json.RawMessage", got)
+// TestStampAppNotificationTargetPassesThroughUnknownParams pins the fallback:
+// params that neither implement appwire.NotificationTargeted nor are maps
+// (nil included) pass through untouched rather than being force-stamped.
+func TestStampAppNotificationTargetPassesThroughUnknownParams(t *testing.T) {
+	if got := stampAppNotificationTarget(nil, "thread-1", "ref-1"); got != nil {
+		t.Fatalf("nil params = %v, want nil pass-through", got)
 	}
-	var fields map[string]json.RawMessage
-	if err := json.Unmarshal(raw, &fields); err != nil {
-		t.Fatalf("unmarshal: %v", err)
-	}
-	if _, ok := fields["threadId"]; !ok {
-		t.Fatal("threadId should be present")
-	}
-}
-
-// TestStampAppNotificationTargetMarshalError covers the marshal-error path by
-// passing a channel (which cannot be marshaled to JSON).
-func TestStampAppNotificationTargetMarshalError(t *testing.T) {
-	ch := make(chan int)
-	got := stampAppNotificationTarget(ch, "thread-1", "ref-1")
-	// Should return the original value since Marshal fails.
-	if got == nil {
-		t.Fatal("should return original value, not nil")
+	if got := stampAppNotificationTarget(struct{}{}, "thread-1", "ref-1"); got != struct{}{} {
+		t.Fatalf("unknown params = %v, want unchanged pass-through", got)
 	}
 }
 
