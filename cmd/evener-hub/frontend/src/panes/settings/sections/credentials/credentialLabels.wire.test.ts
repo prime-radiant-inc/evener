@@ -7,30 +7,12 @@
 // responses.json, produced and re-verified by
 // TestAuthWireFixturesMatchTheHubHandler), so an activeSource the registry
 // starts sending that this pane has no words for fails here.
-import { readFileSync } from "node:fs";
-import { join } from "node:path";
 import { describe, expect, test } from "vitest";
-import type { InstanceEntry } from "../../../../protocol/types.gen";
+import { hubInstanceEntries } from "../../../../protocol/testing/hubWireFixtures";
 import { activeSourceLabel, credentialLayers, keylessByDesign, unconfiguredLabel } from "./credentialLabels";
 
-interface AuthWireFixture {
-  case: string;
-  method: string;
-  field?: string;
-  response: unknown;
-}
-
-// The fixture path is relative to the frontend package root, which is what
-// vitest sets the working directory to.
-const FIXTURE_PATH = join("..", "testdata", "authwire", "responses.json");
-
-function hubInstances(): InstanceEntry[] {
-  const records = JSON.parse(readFileSync(FIXTURE_PATH, "utf8")) as AuthWireFixture[];
-  const listing = records.find((rec) => rec.method === "evener/instance/list" && rec.field === "instances");
-  if (!listing) throw new Error(`no evener/instance/list fixture in ${FIXTURE_PATH}`);
-  const entries = listing.response as InstanceEntry[];
-  if (entries.length === 0) throw new Error(`fixture ${listing.case} carries no instances`);
-  return entries;
+function hubInstances() {
+  return hubInstanceEntries();
 }
 
 describe("activeSourceLabel against the hub's own instance list", () => {
