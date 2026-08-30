@@ -193,7 +193,7 @@ Pushed to subscribed connections; no `id`. The web client maps these in
 | `item/started` | `ItemLifecycleParams` | A thread item began streaming. |
 | `item/completed` | `ItemLifecycleParams` | A thread item finished. |
 | `item/agentMessage/delta` | `AgentMessageDeltaParams` | Incremental assistant-message text chunk for an item. |
-| `item/agentMessage/reset` | `AgentMessageResetParams` | Discard the in-progress assistant item (a retry replaces it). |
+| `item/agentMessage/reset` | `AgentMessageResetParams` | Discard the in-progress streamed item (assistant or reasoning — a retry replaces it). |
 | `item/reasoning/summaryTextDelta` | `ReasoningSummaryDeltaParams` | Incremental reasoning-summary text chunk for a reasoning item. |
 | `item/toolOutput/delta` | `ToolOutputDeltaParams` | Incremental tool-output chunk for a tool-call item. |
 | `warning` | `WarningParams` | Non-fatal diagnostic. Also used for cancelled turns and relay-attach failures. |

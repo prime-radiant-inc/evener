@@ -454,22 +454,35 @@ func (p *AppEventProjector) Project(event events.SessionEvent) []AppNotification
 			Item:     item,
 		}))
 	case events.EventAssistantTextReset:
-		// A retry after partial output: discard the in-progress assistant item
-		// so the retry's stream replaces it rather than appending. No-op when
-		// nothing was streamed yet (no item to reset).
-		if p.assistantItem == "" {
-			return nil
+		// A retry after partial output: discard the in-progress items so the
+		// retry's stream replaces them rather than appending. The retry loop
+		// emits this one reset for BOTH item kinds — a failed attempt's
+		// reasoning and assistant text both streamed, and both must be
+		// discarded; resetting only the assistant item left the reasoning
+		// item open, so the retry's reasoning deltas appended onto the failed
+		// attempt's (the #641 repeated-word live view). No-op when nothing
+		// was streamed yet (no items to reset).
+		out := []AppNotification{}
+		if p.assistantItem != "" {
+			out = append(out, p.notification(appwire.NotifyAgentMessageReset, appwire.AgentMessageResetParams{
+				ThreadID: p.threadID,
+				Ref:      p.ref,
+				TurnID:   p.activeTurnID,
+				ItemID:   p.assistantItem,
+			}))
+			p.assistantItem = ""
+			p.assistantText = ""
 		}
-		itemID := p.assistantItem
-		turnID := p.activeTurnID
-		p.assistantItem = ""
-		p.assistantText = ""
-		return []AppNotification{p.notification(appwire.NotifyAgentMessageReset, appwire.AgentMessageResetParams{
-			ThreadID: p.threadID,
-			Ref:      p.ref,
-			TurnID:   turnID,
-			ItemID:   itemID,
-		})}
+		if p.reasoningItem != "" {
+			out = append(out, p.notification(appwire.NotifyAgentMessageReset, appwire.AgentMessageResetParams{
+				ThreadID: p.threadID,
+				Ref:      p.ref,
+				TurnID:   p.activeTurnID,
+				ItemID:   p.reasoningItem,
+			}))
+			p.reasoningItem = ""
+		}
+		return out
 	case events.EventModelRetry:
 		// Thread-scoped, item-less: the retry is state about the wait in
 		// progress, not a fact worth a transcript row (see
