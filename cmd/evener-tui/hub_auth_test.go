@@ -62,44 +62,44 @@ func TestHubModelAuthCommandsUseAppWire(t *testing.T) {
 	client, cleanup := newTestHubClient(t, func(app *appserver.Server) {
 		appserver.HandleTyped(app.Router(), appwire.MethodEvenerAuthStatus, func(_ context.Context, params appwire.AuthStatusParams) (appwire.AuthStatusResponse, error) {
 			methods = append(methods, appwire.MethodEvenerAuthStatus+":"+params.Provider)
-			return appwire.AuthStatusResponse{Provider: "openai", Supported: true, ActiveSource: "signed-out"}, nil
+			return appwire.AuthStatusResponse{Provider: "openai-codex", Supported: true, ActiveSource: "none", AuthModes: []string{"oauth"}}, nil
 		})
 		appserver.HandleTyped(app.Router(), appwire.MethodEvenerAuthLoginStart, func(_ context.Context, params appwire.AuthLoginStartParams) (appwire.AuthLoginStartResponse, error) {
 			methods = append(methods, appwire.MethodEvenerAuthLoginStart+":"+params.Provider)
-			return appwire.AuthLoginStartResponse{Provider: "openai", FlowID: "flow-1", URL: "https://auth.example/authorize"}, nil
+			return appwire.AuthLoginStartResponse{Provider: "openai-codex", FlowID: "flow-1", URL: "https://auth.example/authorize"}, nil
 		})
 		appserver.HandleTyped(app.Router(), appwire.MethodEvenerAuthLoginComplete, func(_ context.Context, params appwire.AuthLoginCompleteParams) (appwire.AuthLoginCompleteResponse, error) {
 			methods = append(methods, appwire.MethodEvenerAuthLoginComplete+":"+params.Provider)
 			completed = params
-			return appwire.AuthLoginCompleteResponse{Status: appwire.AuthStatusResponse{Provider: "openai", Supported: true, SignedIn: true, ActiveSource: "oauth", Email: "j@example.com"}}, nil
+			return appwire.AuthLoginCompleteResponse{Status: appwire.AuthStatusResponse{Provider: "openai-codex", Supported: true, SignedIn: true, ActiveSource: "oauth", AuthModes: []string{"oauth"}, Email: "j@example.com"}}, nil
 		})
 		appserver.HandleTyped(app.Router(), appwire.MethodEvenerAuthLogout, func(_ context.Context, params appwire.AuthLogoutParams) (appwire.AuthLogoutResponse, error) {
 			methods = append(methods, appwire.MethodEvenerAuthLogout+":"+params.Provider)
-			return appwire.AuthLogoutResponse{Removed: true, Status: appwire.AuthStatusResponse{Provider: "openai", Supported: true, ActiveSource: "signed-out"}}, nil
+			return appwire.AuthLogoutResponse{Removed: true, Status: appwire.AuthStatusResponse{Provider: "openai-codex", Supported: true, ActiveSource: "none", AuthModes: []string{"oauth"}}}, nil
 		})
 	})
 	defer cleanup()
 
 	m := newSessionHubModel(client)
-	m.session.setInputValue("/auth openai")
+	m.session.setInputValue("/auth openai-codex")
 	updated, cmd := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
 	if cmd == nil {
-		t.Fatal("/auth openai should call Hub auth status")
+		t.Fatal("/auth openai-codex should call Hub auth status")
 	}
 	updated, _ = updated.(hubModel).Update(cmd())
 	m = updated.(hubModel)
-	if got := m.View(); !strings.Contains(got, "OpenAI auth: signed out") {
+	if got := m.View(); !strings.Contains(got, "openai-codex auth: not configured") {
 		t.Fatalf("auth status missing:\n%s", got)
 	}
 
-	m.session.setInputValue("/login openai")
+	m.session.setInputValue("/login openai-codex")
 	updated, cmd = m.Update(tea.KeyMsg{Type: tea.KeyEnter})
 	if cmd == nil {
-		t.Fatal("/login openai should start Hub auth login")
+		t.Fatal("/login openai-codex should start Hub auth login")
 	}
 	updated, _ = updated.(hubModel).Update(cmd())
 	m = updated.(hubModel)
-	if got := m.View(); !strings.Contains(got, "OpenAI sign-in URL:") || !strings.Contains(got, "https://auth.example/authorize") {
+	if got := m.View(); !strings.Contains(got, "Sign-in URL for openai-codex:") || !strings.Contains(got, "https://auth.example/authorize") {
 		t.Fatalf("login URL missing:\n%s", got)
 	}
 
@@ -113,25 +113,25 @@ func TestHubModelAuthCommandsUseAppWire(t *testing.T) {
 	if completed.FlowID != "flow-1" || completed.RedirectURL == "" {
 		t.Fatalf("complete params=%+v", completed)
 	}
-	if got := m.View(); !strings.Contains(got, "OpenAI login complete. OpenAI auth: oauth (j@example.com)") {
+	if got := m.View(); !strings.Contains(got, "Sign-in complete for openai-codex. openai-codex auth: OAuth (j@example.com)") {
 		t.Fatalf("login completion missing:\n%s", got)
 	}
 
-	m.session.setInputValue("/logout openai")
+	m.session.setInputValue("/logout openai-codex")
 	updated, cmd = m.Update(tea.KeyMsg{Type: tea.KeyEnter})
 	if cmd == nil {
-		t.Fatal("/logout openai should call Hub auth logout")
+		t.Fatal("/logout openai-codex should call Hub auth logout")
 	}
 	updated, _ = updated.(hubModel).Update(cmd())
-	if got := updated.(hubModel).View(); !strings.Contains(got, "OpenAI sign-out complete.") {
+	if got := updated.(hubModel).View(); !strings.Contains(got, "Removed the stored credential for openai-codex.") {
 		t.Fatalf("logout completion missing:\n%s", got)
 	}
 
 	want := strings.Join([]string{
-		appwire.MethodEvenerAuthStatus + ":openai",
-		appwire.MethodEvenerAuthLoginStart + ":openai",
-		appwire.MethodEvenerAuthLoginComplete + ":openai",
-		appwire.MethodEvenerAuthLogout + ":openai",
+		appwire.MethodEvenerAuthStatus + ":openai-codex",
+		appwire.MethodEvenerAuthLoginStart + ":openai-codex",
+		appwire.MethodEvenerAuthLoginComplete + ":openai-codex",
+		appwire.MethodEvenerAuthLogout + ":openai-codex",
 	}, ",")
 	if strings.Join(methods, ",") != want {
 		t.Fatalf("methods=%v, want %s", methods, want)
@@ -150,56 +150,5 @@ func TestHubModelAuthCommandsAppearInHelp(t *testing.T) {
 		if !strings.Contains(got, want) {
 			t.Fatalf("help missing %q:\n%s", want, got)
 		}
-	}
-}
-
-func TestHubAuthStatusSummaryDistinguishesRefreshAndExpiredOAuth(t *testing.T) {
-	tests := []struct {
-		name   string
-		status authStatus
-		want   string
-	}{
-		{
-			name: "refreshable oauth",
-			status: authStatus{
-				Provider:       "openai",
-				ActiveSource:   "oauth",
-				SignedIn:       true,
-				HasStoredOAuth: true,
-				Email:          "bot@example.com",
-				NeedsRefresh:   true,
-			},
-			want: "OpenAI auth: oauth refreshable (bot@example.com)",
-		},
-		{
-			name: "expired oauth",
-			status: authStatus{
-				Provider:       "openai",
-				ActiveSource:   "oauth",
-				HasStoredOAuth: true,
-				StoredEmail:    "bot@example.com",
-				NeedsLogin:     true,
-			},
-			want: "OpenAI auth: oauth expired (bot@example.com)",
-		},
-		{
-			name: "refresh failed",
-			status: authStatus{
-				Provider:       "openai",
-				ActiveSource:   "signed-out",
-				HasStoredOAuth: true,
-				StoredEmail:    "bot@example.com",
-				Error:          "refresh token rejected",
-			},
-			want: "OpenAI auth: login required (bot@example.com): refresh token rejected",
-		},
-	}
-
-	for _, tc := range tests {
-		t.Run(tc.name, func(t *testing.T) {
-			if got := formatAuthStatusSummary(tc.status); got != tc.want {
-				t.Fatalf("formatAuthStatusSummary() = %q, want %q", got, tc.want)
-			}
-		})
 	}
 }

@@ -275,7 +275,7 @@ func (m hubModel) updateSessionKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.authLoginProvider = ""
 			m.authLoginFlowID = ""
 			m.session.resetInput()
-			m.addSessionSystem("OpenAI login cancelled.")
+			m.addSessionSystem("Sign-in cancelled.")
 			return m, nil
 		case "enter":
 			redirectURL := strings.TrimSpace(m.session.input.Value())
@@ -285,7 +285,7 @@ func (m hubModel) updateSessionKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			provider := m.authLoginProvider
 			flowID := m.authLoginFlowID
 			m.session.resetInput()
-			m.addSessionSystem("Finishing OpenAI login...")
+			m.addSessionSystem("Finishing sign-in for " + authStatusInstanceName(authStatus{Provider: provider}) + "...")
 			return m, completeHubAuthLogin(m.client, provider, flowID, redirectURL)
 		}
 	}

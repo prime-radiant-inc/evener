@@ -97,11 +97,16 @@ fuzz:
 # silently alters a decoder's output (no panic, round-trip still holds) fails the
 # `make fuzz` golden check; run this ONLY after an INTENDED decoder change, then
 # commit the diff. See docs/developing-evener/fuzzing.md ("Choosing an oracle").
-## Regenerate the decode SNAPSHOT goldens from the current decoders. Run
-## ONLY after an intended decoder change, then commit the diff.
+# The third line is the same idea one layer up: the hub's recorded credential-
+# wire answers, which the TUI and the React pane decode instead of hand-building
+# InstanceEntry/AuthStatusResponse values of their own.
+## Regenerate the decode SNAPSHOT goldens from the current decoders, and the
+## hub credential-wire fixtures its clients decode. Run ONLY after an intended
+## change, then commit the diff.
 fuzz-goldens:
 	@sh -c "go test -run '^Test.*Golden\$$' ./appwire -update-goldens"
 	@sh -c "cd llm && go test -run '^Test.*Golden\$$' ./providers/difftest -update-goldens"
+	@sh -c "go test -run '^TestAuthWireFixtures' ./cmd/evener-hub -update-authwire"
 
 # fuzz-nightly runs the unbounded coverage-guided search per target, bounded by a
 # per-target time budget. Manual / nightly only — never in the gate.

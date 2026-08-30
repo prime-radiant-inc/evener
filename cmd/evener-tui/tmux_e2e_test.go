@@ -474,22 +474,22 @@ func TestTUITmuxE2E_SessionCommandsAndNavigation(t *testing.T) {
 	openLiveSession(t, app)
 	app.WaitFor("evener / session / live task", "enter send")
 
-	app.TypeLine("/auth openai")
-	app.WaitFor("OpenAI auth: signed out")
+	app.TypeLine("/auth openai-codex")
+	app.WaitFor("openai-codex auth: not configured")
 
-	app.TypeLine("/login openai")
-	app.WaitFor("OpenAI sign-in URL:", "https://auth.example/authorize", "Paste the full OpenAI redirect URL")
+	app.TypeLine("/login openai-codex")
+	app.WaitFor("Sign-in URL for openai-codex:", "https://auth.example/authorize", "Paste the full redirect URL")
 	app.TypeLine("http://localhost:1455/auth/callback?code=abc&state=flow")
-	app.WaitFor("OpenAI login complete. OpenAI auth: oauth (tmux@example.com)")
+	app.WaitFor("Sign-in complete for openai-codex. openai-codex auth: OAuth (tmux@example.com)")
 	completions := hub.WaitForAuthCompletions(t, 1)
 	if completions[0].FlowID != "flow-1" || completions[0].RedirectURL == "" {
 		t.Fatalf("auth completion=%+v, want flow-1 and redirect URL", completions[0])
 	}
 
-	app.TypeLine("/logout openai")
-	app.WaitFor("OpenAI sign-out complete.")
+	app.TypeLine("/logout openai-codex")
+	app.WaitFor("Removed the stored credential for openai-codex.")
 	authCalls := hub.WaitForAuthCalls(t, 4)
-	if got := strings.Join(authCalls, ","); got != "status:openai,login-start:openai,login-complete:openai,logout:openai" {
+	if got := strings.Join(authCalls, ","); got != "status:openai-codex,login-start:openai-codex,login-complete:openai-codex,logout:openai-codex" {
 		t.Fatalf("auth calls=%s", got)
 	}
 
@@ -877,8 +877,8 @@ func TestTUITmuxE2E_SessionHeaderStatusAndComposerStates(t *testing.T) {
 		"busy: turn_active",
 	)
 
-	app.TypeLine("/auth openai")
-	app.WaitFor("OpenAI auth: signed out", "auth: openai signed out")
+	app.TypeLine("/auth openai-codex")
+	app.WaitFor("openai-codex auth: not configured", "auth: openai-codex none")
 
 	// While a turn is active the composer is in queue mode: Enter enqueues
 	// the multiline draft via turn/queue rather than starting a new turn.
@@ -2409,14 +2409,14 @@ func tuiE2EGPT5Descriptor() appwire.ModelDescriptor {
 func (h *tuiE2EHub) handleAuthStatus(_ context.Context, params appwire.AuthStatusParams) (appwire.AuthStatusResponse, error) {
 	defer h.notify()
 	h.recordAuthCall("status", params.Provider)
-	return appwire.AuthStatusResponse{Provider: "openai", Supported: true, ActiveSource: "signed-out"}, nil
+	return appwire.AuthStatusResponse{Provider: "openai-codex", Supported: true, ActiveSource: "none", AuthModes: []string{"oauth"}}, nil
 }
 
 func (h *tuiE2EHub) handleAuthLoginStart(_ context.Context, params appwire.AuthLoginStartParams) (appwire.AuthLoginStartResponse, error) {
 	defer h.notify()
 	h.recordAuthCall("login-start", params.Provider)
 	return appwire.AuthLoginStartResponse{
-		Provider: "openai",
+		Provider: "openai-codex",
 		FlowID:   "flow-1",
 		URL:      "https://auth.example/authorize",
 	}, nil
@@ -2430,10 +2430,11 @@ func (h *tuiE2EHub) handleAuthLoginComplete(_ context.Context, params appwire.Au
 	h.mu.Unlock()
 	return appwire.AuthLoginCompleteResponse{
 		Status: appwire.AuthStatusResponse{
-			Provider:     "openai",
+			Provider:     "openai-codex",
 			Supported:    true,
 			SignedIn:     true,
 			ActiveSource: "oauth",
+			AuthModes:    []string{"oauth"},
 			Email:        "tmux@example.com",
 		},
 	}, nil
@@ -2444,7 +2445,7 @@ func (h *tuiE2EHub) handleAuthLogout(_ context.Context, params appwire.AuthLogou
 	h.recordAuthCall("logout", params.Provider)
 	return appwire.AuthLogoutResponse{
 		Removed: true,
-		Status:  appwire.AuthStatusResponse{Provider: "openai", Supported: true, ActiveSource: "signed-out"},
+		Status:  appwire.AuthStatusResponse{Provider: "openai-codex", Supported: true, ActiveSource: "none", AuthModes: []string{"oauth"}},
 	}, nil
 }
 

@@ -117,9 +117,9 @@ var hubCommandRegistry = []hubCommandDefinition{
 	},
 	{
 		Name:          "auth",
-		Summary:       "Show OpenAI auth status",
+		Summary:       "Show a provider instance's credential status",
 		PaletteLabel:  "/auth",
-		PaletteDetail: "show OpenAI auth status",
+		PaletteDetail: "show a provider instance's credential status",
 		Scopes:        hubCommandSession,
 		Run: func(m *hubModel, args string) tea.Cmd {
 			return fetchHubAuthStatus(m.client, authProviderArg(args))
@@ -127,19 +127,24 @@ var hubCommandRegistry = []hubCommandDefinition{
 	},
 	{
 		Name:          "login",
-		Summary:       "Start OpenAI OAuth login",
+		Summary:       "Start OAuth sign-in for a provider instance",
 		PaletteLabel:  "/login",
-		PaletteDetail: "start OpenAI OAuth login",
+		PaletteDetail: "start OAuth sign-in for a provider instance",
 		Scopes:        hubCommandSession,
 		Run: func(m *hubModel, args string) tea.Cmd {
-			return startHubAuthLogin(m.client, authProviderArg(args))
+			provider := authProviderArg(args)
+			if reason := m.hubAuthLoginBlockedReason(provider); reason != "" {
+				m.addSessionSystem(reason)
+				return nil
+			}
+			return startHubAuthLogin(m.client, provider)
 		},
 	},
 	{
 		Name:          "logout",
-		Summary:       "Sign out of OpenAI OAuth",
+		Summary:       "Remove a provider instance's stored credential",
 		PaletteLabel:  "/logout",
-		PaletteDetail: "sign out of OpenAI OAuth",
+		PaletteDetail: "remove a provider instance's stored credential",
 		Scopes:        hubCommandSession,
 		Run: func(m *hubModel, args string) tea.Cmd {
 			return logoutHubAuth(m.client, authProviderArg(args))

@@ -735,7 +735,9 @@ func TestCovShortStatusJobID(t *testing.T) {
 	}
 }
 
-// TestCovAuthSummary exercises auth summary rendering.
+// TestCovAuthSummary covers the shapes the hub's recorded corpus cannot
+// produce; every real credential source is pinned in hub_auth_wire_test.go
+// against the hub's own answers.
 func TestCovAuthSummary(t *testing.T) {
 	// Not supported.
 	auth := appwire.AuthStatusResponse{Provider: "openai", Supported: false}
@@ -743,34 +745,16 @@ func TestCovAuthSummary(t *testing.T) {
 		t.Fatalf("got %q, want 'openai not supported'", got)
 	}
 
-	// Not signed in.
-	auth = appwire.AuthStatusResponse{Provider: "openai", Supported: true, SignedIn: false}
-	if got := authSummary(auth); got != "openai signed out" {
-		t.Fatalf("got %q, want 'openai signed out'", got)
+	// A source this build has no words for shows the hub's own value.
+	auth = appwire.AuthStatusResponse{Provider: "openai", Supported: true, SignedIn: true, ActiveSource: "something-new"}
+	if got := authSummary(auth); got != "openai something-new" {
+		t.Fatalf("got %q, want 'openai something-new'", got)
 	}
 
-	// Signed in, no source.
-	auth = appwire.AuthStatusResponse{Provider: "openai", Supported: true, SignedIn: true}
-	if got := authSummary(auth); got != "openai signed in" {
-		t.Fatalf("got %q, want 'openai signed in'", got)
-	}
-
-	// With source.
-	auth = appwire.AuthStatusResponse{Provider: "openai", Supported: true, SignedIn: true, ActiveSource: "oauth"}
-	if got := authSummary(auth); got != "openai oauth" {
-		t.Fatalf("got %q, want 'openai oauth'", got)
-	}
-
-	// With email.
-	auth = appwire.AuthStatusResponse{Provider: "openai", Supported: true, SignedIn: true, ActiveSource: "oauth", Email: "user@test.com"}
-	if got := authSummary(auth); got != "openai oauth user@test.com" {
-		t.Fatalf("got %q, want 'openai oauth user@test.com'", got)
-	}
-
-	// With stored email (no email).
-	auth = appwire.AuthStatusResponse{Provider: "openai", Supported: true, SignedIn: true, StoredEmail: "stored@test.com"}
-	if got := authSummary(auth); got != "openai signed in stored@test.com" {
-		t.Fatalf("got %q, want 'openai signed in stored@test.com'", got)
+	// A stored email stands in for a missing live one.
+	auth = appwire.AuthStatusResponse{Provider: "openai-codex", Supported: true, SignedIn: true, ActiveSource: "oauth", StoredEmail: "stored@test.com"}
+	if got := authSummary(auth); got != "openai-codex OAuth stored@test.com" {
+		t.Fatalf("got %q, want 'openai-codex OAuth stored@test.com'", got)
 	}
 
 	// No provider: defaults to "auth".
@@ -1187,8 +1171,9 @@ func TestCovHubReconnectDelay(t *testing.T) {
 
 // TestCovAuthProviderArg exercises auth provider arg parsing.
 func TestCovAuthProviderArg(t *testing.T) {
-	if got := authProviderArg(""); got != "openai" {
-		t.Fatalf("got %q, want 'openai'", got)
+	// Empty: the hub picks the instance, so the TUI sends nothing.
+	if got := authProviderArg(""); got != "" {
+		t.Fatalf("got %q, want the empty string", got)
 	}
 	if got := authProviderArg("anthropic"); got != "anthropic" {
 		t.Fatalf("got %q, want 'anthropic'", got)
@@ -1208,10 +1193,10 @@ func TestCovSessionAuthReadinessLabel(t *testing.T) {
 		t.Fatalf("got %q, want 'openai' and 'oauth'", got)
 	}
 
-	// authStatusSeen with signed-out.
-	m = hubModel{authStatusSeen: true, authStatus: authStatus{Provider: "openai", ActiveSource: "signed-out"}}
-	if got := m.sessionAuthReadinessLabel(); !contains(got, "signed out") {
-		t.Fatalf("got %q, want 'signed out'", got)
+	// authStatusSeen with the registry's "no credential" source.
+	m = hubModel{authStatusSeen: true, authStatus: authStatus{Provider: "openai", ActiveSource: "none"}}
+	if got := m.sessionAuthReadinessLabel(); !contains(got, "none") {
+		t.Fatalf("got %q, want 'none'", got)
 	}
 
 	// authStatusSeen with empty source.

@@ -113,7 +113,7 @@ func FuzzSpawnAndViewProgram(f *testing.F) {
 		_ = m.sessionHeaderLines()
 		m.width = 20
 		m.authStatusSeen = true
-		for _, source := range []string{"", "signed-out", "key"} {
+		for _, source := range []string{"", "none", "env:OPENAI_API_KEY"} {
 			m.authStatus.ActiveSource = source
 			_ = m.sessionAuthReadinessLabel()
 		}
