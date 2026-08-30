@@ -97,39 +97,117 @@ func TestHubRelaySharedSessionAliasesDeliverEachNotificationOnce(t *testing.T) {
 	}
 }
 
+func TestHubRelayThreadIDReadUsesAuthoritativeResponseRef(t *testing.T) {
+	pool := &aliasRelayPool{}
+	source := &aliasRelaySource{
+		pool:              pool,
+		authoritativeRefs: map[string]string{"lookup-thread": "local:workspace-thread"},
+	}
+	sources := appsource.NewRegistry()
+	sources.Add(source)
+	appServer := newHubAppServer(hubcore.WebConfig{
+		HubStateRoot: t.TempDir(),
+		Past:         hubcore.NewPastIndex(""),
+	}, sources)
+	hub := httptest.NewServer(http.HandlerFunc(appServer.ServeWebSocket))
+	defer hub.Close()
+
+	client := dialHubRPC(t, hub)
+	defer client.Close()
+	if _, err := client.Initialize(t.Context(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
+		t.Fatalf("initialize client: %v", err)
+	}
+	if _, err := client.ThreadRead(t.Context(), appwire.ThreadReadParams{ThreadID: "lookup-thread", Subscribe: true}); err != nil {
+		t.Fatalf("subscribe by thread id: %v", err)
+	}
+	params, err := json.Marshal(appwire.ReasoningSummaryDeltaParams{
+		ThreadID:     "lookup-thread",
+		Ref:          "local:workspace-thread",
+		TurnID:       "turn-workspace",
+		ItemID:       "item-workspace",
+		SummaryIndex: 0,
+		Delta:        "authoritative workspace delta",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	pool.emit(t, appwire.Notification{Method: appwire.NotifyReasoningSummaryDelta, Params: params})
+	appServer.BroadcastAll("test/alias-barrier", map[string]any{})
+	if got := aliasDeltaCountUntilBarrier(t, client, "authoritative workspace delta"); got != 1 {
+		t.Fatalf("thread-id subscriber received authoritative-ref delta %d times, want once", got)
+	}
+}
+
+func TestRelayNotificationTargetsPreservesRoutingPrecedenceAndUnknownPayloads(t *testing.T) {
+	tests := []struct {
+		name         string
+		params       string
+		threadID     string
+		ref          string
+		wantTargeted bool
+	}{
+		{name: "matching ref wins over conflicting thread", params: `{"ref":"local:target","threadId":"other"}`, threadID: "target", ref: "local:target", wantTargeted: true},
+		{name: "mismatched ref wins over matching thread", params: `{"ref":"local:other","threadId":"target"}`, threadID: "target", ref: "local:target", wantTargeted: false},
+		{name: "thread fallback matches", params: `{"threadId":"target"}`, threadID: "target", ref: "local:target", wantTargeted: true},
+		{name: "thread fallback rejects mismatch", params: `{"threadId":"other"}`, threadID: "target", ref: "local:target", wantTargeted: false},
+		{name: "untargeted payload preserves delivery", params: `{}`, threadID: "target", ref: "local:target", wantTargeted: true},
+		{name: "malformed payload preserves delivery", params: `{`, threadID: "target", ref: "local:target", wantTargeted: true},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got := relayNotificationTargets(appwire.Notification{Params: json.RawMessage(tc.params)}, tc.threadID, tc.ref)
+			if got != tc.wantTargeted {
+				t.Fatalf("relayNotificationTargets() = %v, want %v", got, tc.wantTargeted)
+			}
+		})
+	}
+}
+
 type aliasRelaySource struct {
 	relayLifecycleSource
-	pool *aliasRelayPool
+	pool              *aliasRelayPool
+	authoritativeRefs map[string]string
 }
 
 func (*aliasRelaySource) ID() string { return "local" }
 
 func (s *aliasRelaySource) AcquireRelaySession(appwire.ThreadReadParams) (appsource.RelaySessionLease, error) {
-	return &aliasRelayLease{pool: s.pool}, nil
+	return &aliasRelayLease{source: s}, nil
 }
 
 type aliasRelayLease struct {
-	pool *aliasRelayPool
+	source *aliasRelaySource
 }
 
 func (l *aliasRelayLease) Read(_ context.Context, params appwire.ThreadReadParams) (appsource.RelayReadResult, error) {
-	ref, err := appwire.ParseRef(params.Ref)
-	if err != nil {
-		return appsource.RelayReadResult{}, err
+	threadID := params.ThreadID
+	authoritativeRef := params.Ref
+	if params.Ref != "" {
+		ref, err := appwire.ParseRef(params.Ref)
+		if err != nil {
+			return appsource.RelayReadResult{}, err
+		}
+		threadID = ref.ThreadID
+	}
+	if mapped := l.source.authoritativeRefs[threadID]; mapped != "" {
+		authoritativeRef = mapped
+	}
+	if authoritativeRef == "" {
+		authoritativeRef = appwire.Ref{SourceID: "local", ThreadID: threadID}.String()
 	}
 	return appsource.RelayReadResult{
 		Response: appwire.ThreadReadResponse{Thread: appwire.Thread{
-			ID:        ref.ThreadID,
-			SessionID: ref.ThreadID,
-			Source:    ref.SourceID,
-			Evener:    appwire.EvenerThread{Ref: params.Ref},
+			ID:        threadID,
+			SessionID: threadID,
+			Source:    "local",
+			Evener:    appwire.EvenerThread{Ref: authoritativeRef},
 		}},
 		Handoff: &recordingRelayHandoff{committed: make(chan struct{}), aborted: make(chan struct{})},
 	}, nil
 }
 
 func (l *aliasRelayLease) Listen(context.Context) (<-chan appsource.RelayDelivery, error) {
-	return l.pool.listen(), nil
+	return l.source.pool.listen(), nil
 }
 
 func (*aliasRelayLease) Close() {}

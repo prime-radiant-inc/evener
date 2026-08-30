@@ -1,6 +1,7 @@
 package appserver
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"reflect"
@@ -42,6 +43,11 @@ func TestServerSubscriptionDebugSnapshotShowsCaptureState(t *testing.T) {
 	raw, err := json.Marshal(values[0].Interface())
 	if err != nil {
 		t.Fatalf("marshal snapshot: %v", err)
+	}
+	for _, forbidden := range [][]byte{[]byte(`"value"`), []byte("debug/notice"), []byte("debug/queued")} {
+		if bytes.Contains(raw, forbidden) {
+			t.Fatalf("snapshot leaked notification payload marker %q: %s", forbidden, raw)
+		}
 	}
 	var got struct {
 		RoutedSequence uint64 `json:"routedSequence"`
