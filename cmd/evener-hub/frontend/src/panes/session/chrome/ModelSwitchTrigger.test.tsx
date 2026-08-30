@@ -1,8 +1,9 @@
-import { cleanup, render, screen, waitFor } from "@testing-library/react";
+import { cleanup, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, expect, test, vi } from "vitest";
 import { WireError } from "../../../protocol/errors";
 import type { ModelCatalog } from "../../../widgets";
+import { installMobileViewport } from "../testing/mobileViewport";
 import { ModelSwitchTrigger } from "./ModelSwitchTrigger";
 import rawStyles from "./modelswitch.module.css";
 
@@ -194,4 +195,63 @@ test("a scroll does not close the open picker", async () => {
   window.dispatchEvent(new Event("scroll"));
 
   expect(screen.getByRole("combobox")).toBeTruthy();
+});
+
+// --- mobile: the same trigger opens a bottom Sheet, not a Popover -------------
+// docs/web-ui/design-system.md §11: mobile choice controls use the bottom Sheet
+// pattern with >=48px options and no search input. Both surfaces that mount this
+// component (the spawn pane's prompt card, the session composer's status row)
+// get it from this one branch.
+
+test("on a mobile viewport the trigger opens a Choose-model bottom Sheet, not a Popover", async () => {
+  const restoreViewport = installMobileViewport();
+  const user = userEvent.setup();
+  try {
+    renderTrigger();
+
+    await user.click(screen.getByTestId("trigger"));
+
+    const sheet = await screen.findByRole("dialog", { name: "Choose model" });
+    expect(sheet.className).toContain("bottom");
+    expect(screen.queryByRole("combobox")).toBeNull();
+    expect(within(sheet).getAllByRole("option")).toHaveLength(2);
+  } finally {
+    restoreViewport();
+  }
+});
+
+test("picking from the mobile sheet reports the entry and closes it", async () => {
+  const restoreViewport = installMobileViewport();
+  const user = userEvent.setup();
+  const onPick = vi.fn();
+  try {
+    renderTrigger({ onPick });
+
+    await user.click(screen.getByTestId("trigger"));
+    const sheet = await screen.findByRole("dialog", { name: "Choose model" });
+    await user.click(within(sheet).getByRole("option", { name: /gpt-5\.5/i }));
+
+    expect(onPick).toHaveBeenCalledWith(expect.objectContaining({ provider: "openai", model: "gpt-5.5" }));
+    await waitFor(() => expect(screen.queryByRole("dialog", { name: "Choose model" })).toBeNull());
+  } finally {
+    restoreViewport();
+  }
+});
+
+test("Escape closes the mobile sheet and returns focus to the trigger", async () => {
+  const restoreViewport = installMobileViewport();
+  const user = userEvent.setup();
+  try {
+    renderTrigger();
+
+    const trigger = screen.getByTestId("trigger");
+    await user.click(trigger);
+    await screen.findByRole("dialog", { name: "Choose model" });
+    await user.keyboard("{Escape}");
+
+    await waitFor(() => expect(screen.queryByRole("dialog", { name: "Choose model" })).toBeNull());
+    expect(document.activeElement).toBe(trigger);
+  } finally {
+    restoreViewport();
+  }
 });

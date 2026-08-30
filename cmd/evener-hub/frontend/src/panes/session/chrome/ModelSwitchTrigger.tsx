@@ -13,9 +13,24 @@
 // thread/model/set; the spawn pane records the choice for its next launch
 // (panes/spawn/Spawn.tsx). Both get the identical affordance because it is the
 // identical component, which is the whole point of issue #198.
+//
+// The picker's OVERLAY is viewport-selected (docs/web-ui/design-system.md §11):
+// a floating Popover with the search combobox on desktop, the same catalog
+// rows in a bottom Sheet with 48px tap targets and no search input on mobile.
+// Chrome, not a pane: the "panes never ask am I mobile?" rule doesn't reach
+// this component (SessionChrome's own openDetails already branches the same
+// way).
 import { useRef, useState } from "react";
 import { friendlyLaunchErrorMessage, sessionActionHeadline } from "../../../protocol/errors";
-import { Chevron, type ModelCatalog, type ModelCatalogEntry, ModelCatalogPanel, Popover } from "../../../widgets";
+import { useIsMobile } from "../../../shell/useIsMobile";
+import {
+  Chevron,
+  type ModelCatalog,
+  type ModelCatalogEntry,
+  ModelCatalogPanel,
+  Popover,
+  Sheet,
+} from "../../../widgets";
 import { requireClass } from "../../../widgets/internal/requireClass";
 import styles from "./modelswitch.module.css";
 
@@ -51,6 +66,8 @@ const CLASS = {
   chevron: requireClass(styles.chevron, "modelswitch.module.css", "chevron"),
   srOnly: requireClass(styles.srOnly, "modelswitch.module.css", "srOnly"),
   popoverPanel: requireClass(styles.popoverPanel, "modelswitch.module.css", "popoverPanel"),
+  sheetBody: requireClass(styles.sheetBody, "modelswitch.module.css", "sheetBody"),
+  triggerWrapper: requireClass(styles.triggerWrapper, "modelswitch.module.css", "triggerWrapper"),
 };
 
 export function ModelSwitchTrigger({
@@ -63,6 +80,7 @@ export function ModelSwitchTrigger({
   "data-testid": testId,
   valueTestId,
 }: ModelSwitchTriggerProps) {
+  const isMobile = useIsMobile();
   const [open, setOpen] = useState(false);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -92,12 +110,14 @@ export function ModelSwitchTrigger({
     }
   }
 
-  // Popover's FocusScope is opted out of focus management (autoFocus={false})
-  // so the panel's input can own focus and its selection - which makes
-  // restoring focus to the trigger on close this component's job.
+  // The Popover path's FocusScope is opted out of focus management
+  // (autoFocus={false}) so the panel's input can own focus and its selection -
+  // which makes restoring focus to the trigger on close this component's job.
+  // The Sheet path's FocusScope keeps its default focus management (first
+  // tabbable option in, restore on close), so only the Popover path needs this.
   function closePicker(): void {
     setOpen(false);
-    triggerRef.current?.focus();
+    if (!isMobile) triggerRef.current?.focus();
   }
 
   function handlePick(entry: ModelCatalogEntry): void {
@@ -107,6 +127,70 @@ export function ModelSwitchTrigger({
     // of the (already-closed) picker."
     setOpen(false);
     onPick(entry);
+  }
+
+  const panel = (
+    <ModelCatalogPanel
+      loading={loading}
+      error={error}
+      catalog={catalog}
+      value={value}
+      onPick={handlePick}
+      variant={isMobile ? "sheet" : "default"}
+    />
+  );
+
+  // One trigger button, whichever overlay sits behind it: the visible control
+  // must not change identity across the breakpoint, or the spawn pane's
+  // phone-only trigger slot and the status row's chip would both re-mount on
+  // a viewport crossing.
+  const triggerButton = (
+    <button
+      ref={triggerRef}
+      type="button"
+      className={CLASS.trigger}
+      data-testid={testId}
+      title={label}
+      onClick={() => (open ? closePicker() : void openPicker())}
+      disabled={disabled}
+    >
+      {/* Plain text, not a Chip: the trigger already draws the control's
+          own hover box, and a bordered chip inside it reads as a double
+          border - the same rule widgets/pathfield's and
+          widgets/modelCatalog's triggers follow. */}
+      <span className={CLASS.value} data-testid={valueTestId}>
+        {label}
+      </span>
+      <span className={CLASS.chevron} aria-hidden="true">
+        <Chevron direction="down" />
+      </span>{" "}
+      {/* That separating space is load-bearing: the accessible name is this
+          button's children concatenated, and each child's own text is
+          trimmed first, so a space INSIDE either span would be dropped and
+          the name would run together as "…sonnet-4-5— change model". A
+          whitespace-only text node between them survives that trim and
+          renders nothing of its own (an all-whitespace anonymous flex item
+          is not laid out). */}
+      <span className={CLASS.srOnly}>— {actionLabel}</span>
+    </button>
+  );
+
+  if (isMobile) {
+    return (
+      <>
+        {/* A span wrapper matching Popover's own trigger wrapper
+            (widgets/popover's .trigger: inline-flex, hugging): the status
+            row's container-query compression targets
+            `.identity > span:first-child > button`, so the trigger must stay
+            one span deep on both sides of the breakpoint or the phone-width
+            label floor (min-width: 1rem, padding-inline: 0) stops applying
+            and the fixed facts squeeze the model label to zero width. */}
+        <span className={CLASS.triggerWrapper}>{triggerButton}</span>
+        <Sheet open={open} side="bottom" onClose={closePicker} title="Choose model">
+          <div className={CLASS.sheetBody}>{panel}</div>
+        </Sheet>
+      </>
+    );
   }
 
   return (
@@ -119,40 +203,9 @@ export function ModelSwitchTrigger({
       // The panel's input owns focus and its own text selection - see
       // closePicker for why FocusScope must not manage focus here.
       autoFocus={false}
-      trigger={
-        <button
-          ref={triggerRef}
-          type="button"
-          className={CLASS.trigger}
-          data-testid={testId}
-          title={label}
-          onClick={() => (open ? closePicker() : void openPicker())}
-          disabled={disabled}
-        >
-          {/* Plain text, not a Chip: the trigger already draws the control's
-              own hover box, and a bordered chip inside it reads as a double
-              border - the same rule widgets/pathfield's and
-              widgets/modelCatalog's triggers follow. */}
-          <span className={CLASS.value} data-testid={valueTestId}>
-            {label}
-          </span>
-          <span className={CLASS.chevron} aria-hidden="true">
-            <Chevron direction="down" />
-          </span>{" "}
-          {/* That separating space is load-bearing: the accessible name is this
-              button's children concatenated, and each child's own text is
-              trimmed first, so a space INSIDE either span would be dropped and
-              the name would run together as "…sonnet-4-5— change model". A
-              whitespace-only text node between them survives that trim and
-              renders nothing of its own (an all-whitespace anonymous flex item
-              is not laid out). */}
-          <span className={CLASS.srOnly}>— {actionLabel}</span>
-        </button>
-      }
+      trigger={triggerButton}
     >
-      <div className={CLASS.popoverPanel}>
-        <ModelCatalogPanel loading={loading} error={error} catalog={catalog} value={value} onPick={handlePick} />
-      </div>
+      <div className={CLASS.popoverPanel}>{panel}</div>
     </Popover>
   );
 }
