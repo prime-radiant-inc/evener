@@ -185,7 +185,8 @@ func (c *ModelCatalog) LookupModelInfo(modelID string) *ModelInfo {
 	if mi == nil && strings.HasPrefix(id, "claude-") && strings.Contains(id, ".") {
 		// OpenRouter spells Anthropic versions with dots (claude-opus-4.6);
 		// the catalog keys on the dashed convention. Claude-scoped so dots in
-		// other families (gpt-4.1) stay meaningful.
+		// other families (gpt-4.1) stay meaningful. claudeCatalogFamilyID
+		// applies the same bridge at overlay-load time; keep the two in step.
 		if dashed := strings.ReplaceAll(id, ".", "-"); dashed != id {
 			id = dashed
 			mi = c.GetModelInfo(id)
@@ -289,10 +290,12 @@ func IsChatModelID(modelID string) bool {
 //     "openrouter/<model>") still resolve.
 //
 // The OpenRouter case is the motivating bug: OpenRouter's /v1/models endpoint
-// returns bare IDs like "anthropic/claude-sonnet-4.5", but the embedded LiteLLM
-// catalog keys those models as "openrouter/anthropic/claude-sonnet-4.5". An exact
+// returns bare IDs like "anthropic/claude-3.7-sonnet", but the embedded LiteLLM
+// catalog keys those models as "openrouter/anthropic/claude-3.7-sonnet". An exact
 // GetModelInfo(bareID) returns nil, so a tools-capability filter dropped nearly
-// every OpenRouter model. The tag-qualified fallback resolves them.
+// every OpenRouter model. The tag-qualified fallback resolves them. (Newer
+// dotted Claude refs resolve through LookupModelInfo's dash bridge to their
+// direct dashed entries first; the fallback covers everything mirror-only.)
 //
 // Returns nil when the catalog is nil or nothing matches.
 func (c *ModelCatalog) ResolveLiveModelInfo(behaviorTag, modelID string) *ModelInfo {

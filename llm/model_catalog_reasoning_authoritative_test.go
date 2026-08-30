@@ -82,7 +82,13 @@ func TestEmbeddedCatalog_DottedClaudeMirrorsInheritFamilyOverlay(t *testing.T) {
 	if mi.DefaultReasoningEffort != "high" || !mi.SupportsAdaptiveThinking {
 		t.Fatalf("LookupModelInfo(anthropic/claude-opus-4.6) default/adaptive = %q/%v, want high/true", mi.DefaultReasoningEffort, mi.SupportsAdaptiveThinking)
 	}
-	if got := cat.LookupModelInfo("anthropic/claude-opus-4.6[1m]"); got == nil || got.ContextWindow != 1_000_000 {
-		t.Fatalf("LookupModelInfo(anthropic/claude-opus-4.6[1m]) = %+v, want the 1M window on the dashed entry", got)
+	// sonnet-4-5's base window is 200k, so the [1m] override is observable
+	// (the 4.6+ generation's base is already 1M, which would make this
+	// assertion vacuous).
+	if base := cat.LookupModelInfo("anthropic/claude-sonnet-4.5"); base == nil || base.ContextWindow == 1_000_000 {
+		t.Fatalf("LookupModelInfo(anthropic/claude-sonnet-4.5) = %+v, want the dashed entry with its sub-1M base window", base)
+	}
+	if got := cat.LookupModelInfo("anthropic/claude-sonnet-4.5[1m]"); got == nil || got.ContextWindow != 1_000_000 {
+		t.Fatalf("LookupModelInfo(anthropic/claude-sonnet-4.5[1m]) = %+v, want the 1M window on the dashed entry", got)
 	}
 }
