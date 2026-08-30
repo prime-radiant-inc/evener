@@ -303,6 +303,13 @@ func (s *Server) appNotificationTarget(threadID string) string {
 	return threadID
 }
 
+// insideAppProjectionCommitHook, when non-nil, runs inside RecordAppEvent's
+// commit callback, i.e. while the projection gate is held. It is a test seam:
+// production never assigns it, so the commit path pays one nil check on a
+// package-level word instead of the s.mu.RLock a per-server field would need
+// on every projected event.
+var insideAppProjectionCommitHook func()
+
 func (s *Server) RecordAppEvent(event events.SessionEvent) {
 	s.mu.RLock()
 	beforeCommit := s.beforeAppProjectionCommit
@@ -315,13 +322,10 @@ func (s *Server) RecordAppEvent(event events.SessionEvent) {
 		// held. beforeAppProjectionCommit above cannot serve that purpose: it
 		// runs before CommitProjection takes the gate, so a goroutine parked
 		// there holds nothing and any ordering it appears to establish is a
-		// coin toss. Deliberately called without s.mu, so a parked commit
+		// coin toss. Deliberately consulted without s.mu, so a parked commit
 		// blocks a concurrent one on the projection gate rather than on s.mu.
-		s.mu.RLock()
-		insideCommit := s.insideAppProjectionCommit
-		s.mu.RUnlock()
-		if insideCommit != nil {
-			insideCommit()
+		if insideAppProjectionCommitHook != nil {
+			insideAppProjectionCommitHook()
 		}
 		s.mu.Lock()
 		if !s.acceptsSessionEventLocked(event.SessionID) {

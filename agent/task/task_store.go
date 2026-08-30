@@ -175,10 +175,13 @@ type TaskStore struct {
 	path                  string
 	now                   func() time.Time
 	fs                    afero.Fs
-	// beforeMutationPublicationWait is a deterministic contention seam for the
-	// shared-producer ordering test. Production leaves it nil.
-	beforeMutationPublicationWait func()
 }
+
+// beforeMutationPublicationWaitHook, when non-nil, runs when MutateAndPublish
+// finds the publication serializer contended, before blocking on it. It is a
+// deterministic contention seam for the shared-producer ordering test;
+// production never assigns it.
+var beforeMutationPublicationWaitHook func()
 
 // NewTaskStore creates a TaskStore that persists to <stateDir>/tasks/<sessionID>.json.
 // Each session (parent or subagent) gets its own task file, ensuring isolation.
@@ -201,8 +204,8 @@ func NewTaskStore(stateDir, sessionID string) *TaskStore {
 // is never held by this method.
 func (s *TaskStore) MutateAndPublish(fn func(epoch, revision uint64) error) error {
 	if !s.mutationPublicationMu.TryLock() {
-		if s.beforeMutationPublicationWait != nil {
-			s.beforeMutationPublicationWait()
+		if beforeMutationPublicationWaitHook != nil {
+			beforeMutationPublicationWaitHook()
 		}
 		s.mutationPublicationMu.Lock()
 	}

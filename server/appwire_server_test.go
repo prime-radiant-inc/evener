@@ -1179,14 +1179,12 @@ func TestServerAppWireTaskAndGoalUpdatesHaveOneOrderForEveryClient(t *testing.T)
 	insideCommit := make(chan struct{})
 	release := make(chan struct{})
 	var parked sync.Once
-	srv.mu.Lock()
-	srv.insideAppProjectionCommit = func() {
+	setInsideAppProjectionCommitHook(t, func() {
 		parked.Do(func() {
 			close(insideCommit)
 			<-release
 		})
-	}
-	srv.mu.Unlock()
+	})
 
 	taskDone := make(chan struct{})
 	go func() {
