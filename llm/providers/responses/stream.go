@@ -444,7 +444,7 @@ func (p *Protocol) decodeStream(sctx context.Context, cancel context.CancelFunc,
 			built := fromResponses(rawResp, req.Model)
 			settleResponsesTerminalOutput(&built, rawResp, acc.Output())
 			built.Provider = res.Instance
-			p.stampResponseIDHash(&built)
+			p.stampResponseIDHash(sctx, &built)
 			llm.StampEndpointURL(&built, r.EndpointURL, r.Material)
 			// Ensure text segment is closed.
 			if textStarted {

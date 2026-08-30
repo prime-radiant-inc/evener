@@ -27,7 +27,7 @@ func (p *Protocol) Complete(ctx context.Context, req llm.Request, res registry.R
 	call := p.call("responses.create", http.MethodPost, protocolhttp.URL(res, res.Transport.Endpoint), body, req, res)
 	return protocolhttp.Complete(ctx, call, func(raw map[string]any) (llm.Response, error) {
 		resp := fromResponses(raw, req.Model)
-		p.stampResponseIDHash(&resp)
+		p.stampResponseIDHash(ctx, &resp)
 		return resp, nil
 	})
 }
@@ -45,12 +45,18 @@ func (p *Protocol) Stream(ctx context.Context, req llm.Request, res registry.Res
 }
 
 // stampResponseIDHash records the redaction-keyed hash of the response id
-// for the session's continuation bookkeeping when a hasher is configured.
-func (p *Protocol) stampResponseIDHash(resp *llm.Response) {
-	if p.Hasher == nil || resp == nil || resp.ID == "" {
+// for the session's continuation bookkeeping when a hasher is available.
+// The dispatching client attaches its own hasher to the context, which the
+// process-wide p.Hasher only stands in for.
+func (p *Protocol) stampResponseIDHash(ctx context.Context, resp *llm.Response) {
+	hasher := llm.ContinuationHasherFromContext(ctx)
+	if hasher == nil {
+		hasher = p.Hasher
+	}
+	if hasher == nil || resp == nil || resp.ID == "" {
 		return
 	}
-	hash, err := p.Hasher.HashContinuationHandle("response_id", resp.ID)
+	hash, err := hasher.HashContinuationHandle("response_id", resp.ID)
 	if err != nil {
 		return
 	}

@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"net/http"
+	"strings"
 
 	"primeradiant.com/evener/llm/registry"
 )
@@ -104,6 +105,12 @@ func ShapeRequest(req Request, res registry.Resolved) Request {
 	}
 	if !caps.Fields["prompt_cache_retention"] {
 		req.PromptCacheRetention = ""
+	}
+	// A planned Responses continuation needs server-side storage; the
+	// continuation store override (spec §7.6) turns store on unless the
+	// caller decided it explicitly.
+	if req.HistoryMode == HistoryModeResponsesDelta && strings.TrimSpace(req.PreviousResponseID) != "" && req.Store == nil {
+		req.Store = new(true)
 	}
 	return req
 }

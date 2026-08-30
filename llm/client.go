@@ -4,10 +4,12 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"sort"
 	"strings"
 	"sync"
 
 	"primeradiant.com/evener/identifier"
+	"primeradiant.com/evener/llm/registry"
 )
 
 // ProviderAdapter is the interface a single LLM provider backend implements.
@@ -19,19 +21,111 @@ type ProviderAdapter interface {
 	Stream(ctx context.Context, req Request) (Stream, error)
 }
 
-// Client routes LLM requests to registered provider adapters, applies
-// middleware, and stamps the resolved provider name and behavior tag onto
-// responses and errors.
+// Client routes LLM requests (spec §8.1): the instance half of a request
+// resolves through the registry to a Resolved record whose Protocol names
+// the wire implementation. Adapters registered with Register form an
+// override map consulted by instance name first — when the name also
+// resolves, the override receives the shaped request; when it does not,
+// the request passes through untouched. Middleware, API-attempt logging,
+// and provider stamping apply to both paths.
 type Client struct {
-	providers       map[string]ProviderAdapter
-	defaultProvider string
-	middleware      []Middleware
-	nameToTag       map[string]string
+	registry     *registry.Registry
+	hasRegistry  bool
+	registryOnce sync.Once
+	registryErr  error
+	stateDir     string
+	hasherOnce   sync.Once
+	hasher       *ContinuationHasher
+	hasherErr    error
+
+	overrides     map[string]ProviderAdapter
+	pinnedDefault string
+	firstOverride string
+	middleware    []Middleware
+	nameToTag     map[string]string
 }
 
-// NewClient returns a Client with no registered providers.
-func NewClient() *Client {
-	return &Client{providers: map[string]ProviderAdapter{}}
+// ClientOption configures NewClient.
+type ClientOption func(*Client)
+
+// WithRegistry supplies the registry the client resolves instances against.
+// Only a client given one lists the registry's instances in ProviderNames
+// and takes its default instance as DefaultProvider: the fallback registry
+// a bare client loads is a hermetic snapshot for resolution alone, and its
+// credential-less implicit instances are nobody's default.
+func WithRegistry(r *registry.Registry) ClientOption {
+	return func(c *Client) {
+		c.registry = r
+		c.hasRegistry = r != nil
+	}
+}
+
+// WithClientStateDir names the session state directory that holds the
+// continuation secret (spec §7.6: the ContinuationHasher stays on the
+// client, keyed by state dir).
+func WithClientStateDir(dir string) ClientOption {
+	return func(c *Client) { c.stateDir = dir }
+}
+
+// NewClient returns a client with no overrides. Without WithRegistry it
+// lazily loads the embedded snapshot offline (spec §8.1).
+func NewClient(opts ...ClientOption) *Client {
+	c := &Client{overrides: map[string]ProviderAdapter{}}
+	for _, opt := range opts {
+		if opt != nil {
+			opt(c)
+		}
+	}
+	return c
+}
+
+// Registry returns the client's registry. Without WithRegistry it is the
+// embedded snapshot and overlay loaded offline with no user layer, no
+// cache, and no environment, so a bare NewClient() resolves the same
+// records on every machine and never reads a developer's keys.
+func (c *Client) Registry() *registry.Registry {
+	c.registryOnce.Do(func() {
+		if c.registry != nil {
+			return
+		}
+		c.registry, c.registryErr = registry.Load(
+			registry.WithOffline(true), registry.WithoutCache(), registry.WithNoUserLayer(),
+			registry.WithEnv(func(string) (string, bool) { return "", false }),
+		)
+	})
+	return c.registry
+}
+
+// Resolve resolves an instance/model reference through the client's registry.
+func (c *Client) Resolve(ref string) (registry.Resolved, error) {
+	r := c.Registry()
+	if r == nil {
+		return registry.Resolved{}, fmt.Errorf("registry unavailable: %w", c.registryErr)
+	}
+	return r.Resolve(ref)
+}
+
+// ContinuationHasher returns the hasher for the client's state directory,
+// creating the secret on first use; ErrContinuationSecretUnavailable when
+// the client has no state directory.
+func (c *Client) ContinuationHasher() (*ContinuationHasher, error) {
+	c.hasherOnce.Do(func() {
+		if strings.TrimSpace(c.stateDir) == "" {
+			c.hasherErr = fmt.Errorf("%w: client has no state directory", ErrContinuationSecretUnavailable)
+			return
+		}
+		c.hasher, c.hasherErr = ContinuationHasherForStateDir(c.stateDir)
+	})
+	return c.hasher, c.hasherErr
+}
+
+// withHasher attaches the client's continuation hasher to ctx so the
+// protocols, which are process singletons, can stamp the response-id hash.
+func (c *Client) withHasher(ctx context.Context) context.Context {
+	if h, err := c.ContinuationHasher(); err == nil {
+		return ContextWithContinuationHasher(ctx, h)
+	}
+	return ctx
 }
 
 // SetNameToTag configures a mapping from provider instance names to behavior
@@ -53,18 +147,20 @@ type NonDefaultEligible interface {
 	NonDefaultEligible()
 }
 
-// Register adds an adapter to the client, keyed by its Name. If no default
-// provider has been set yet and the adapter does not implement
-// NonDefaultEligible, it becomes the default. Adapters implementing
-// Initializer are initialized immediately with a background context.
+// Register adds an override adapter keyed by its Name. The first override
+// that does not implement NonDefaultEligible becomes the default when
+// nothing was pinned and the registry names no default instance. Adapters
+// implementing Initializer are initialized immediately with a background
+// context.
 func (c *Client) Register(adapter ProviderAdapter) {
-	if c.providers == nil {
-		c.providers = map[string]ProviderAdapter{}
+	if c.overrides == nil {
+		c.overrides = map[string]ProviderAdapter{}
 	}
-	c.providers[adapter.Name()] = adapter
-	if c.defaultProvider == "" {
+	name := normalizeProviderName(adapter.Name())
+	c.overrides[name] = adapter
+	if c.firstOverride == "" {
 		if _, skip := adapter.(NonDefaultEligible); !skip {
-			c.defaultProvider = adapter.Name()
+			c.firstOverride = name
 		}
 	}
 	if init, ok := adapter.(Initializer); ok {
@@ -72,37 +168,95 @@ func (c *Client) Register(adapter ProviderAdapter) {
 	}
 }
 
-// SetDefaultProvider sets the provider name used when a request does not
-// specify one.
+// SetDefaultProvider pins the default instance name for requests that
+// name none. A pin outranks both the registry and registration order.
 func (c *Client) SetDefaultProvider(name string) {
-	c.defaultProvider = name
+	c.pinnedDefault = normalizeProviderName(name)
 }
 
-// DefaultProvider returns the name of the currently-elected default
-// provider, or an empty string if none has been set. The default is
-// the first registered ProviderAdapter that does not implement
-// NonDefaultEligible.
+// DefaultProvider is the pinned name, else the default instance of a
+// registry the client was given (spec §5.1), else the first registered
+// override, else "".
 func (c *Client) DefaultProvider() string {
-	return c.defaultProvider
+	if c.pinnedDefault != "" {
+		return c.pinnedDefault
+	}
+	if c.hasRegistry {
+		if name, _, err := c.registry.DefaultInstance(); err == nil && name != "" {
+			return name
+		}
+	}
+	return c.firstOverride
 }
 
-// ProviderNames returns the names of all registered providers in unspecified
-// order, or nil if none are registered.
+// ProviderNames lists every override, plus every instance of a registry the
+// client was given, sorted.
 func (c *Client) ProviderNames() []string {
-	if c == nil || len(c.providers) == 0 {
+	if c == nil {
 		return nil
 	}
-	out := make([]string, 0, len(c.providers))
-	for k := range c.providers {
-		out = append(out, k)
+	seen := map[string]bool{}
+	for name := range c.overrides {
+		seen[name] = true
 	}
+	if c.hasRegistry {
+		for _, inst := range c.registry.Instances() {
+			seen[inst.Name] = true
+		}
+	}
+	if len(seen) == 0 {
+		return nil
+	}
+	out := make([]string, 0, len(seen))
+	for name := range seen {
+		out = append(out, name)
+	}
+	sort.Strings(out)
 	return out
 }
 
-// Complete validates the request, resolves the target provider (falling back
-// to the default when unset), runs the request through the middleware chain
-// and the selected adapter, and returns the response. The resolved provider
-// name and behavior tag are stamped onto the response and any error.
+// dispatchTarget is where one request goes: an override, a resolved record,
+// or both (spec §8.1).
+type dispatchTarget struct {
+	name     string
+	override ProviderAdapter
+	res      registry.Resolved
+	resolved bool
+	protocol Protocol
+}
+
+// dispatchTarget names the instance a request goes to and picks what serves
+// it: an override registered under that name wins, and the registry record
+// behind the name — when there is one — shapes the request either way.
+func (c *Client) dispatchTarget(req Request) (dispatchTarget, error) {
+	name := normalizeProviderName(req.Provider)
+	if name == "" {
+		name = c.DefaultProvider()
+	}
+	if name == "" {
+		return dispatchTarget{}, &ConfigurationError{Message: "no provider specified and no default provider configured"}
+	}
+	t := dispatchTarget{name: name, override: c.overrides[name]}
+	res, err := c.Resolve(name + "/" + req.Model)
+	switch {
+	case err == nil:
+		t.res, t.resolved = res, true
+	case t.override == nil:
+		return dispatchTarget{}, &ConfigurationError{Message: err.Error()}
+	}
+	if t.override == nil {
+		p, ok := ProtocolFor(t.res.Protocol)
+		if !ok {
+			return dispatchTarget{}, &ConfigurationError{Message: fmt.Sprintf("%s: protocol %q is not registered (import primeradiant.com/evener/llm/providers/all)", name, t.res.Protocol)}
+		}
+		t.protocol = p
+	}
+	return t, nil
+}
+
+// Complete validates the request, resolves its target, shapes it for the
+// resolved row, runs it through the middleware chain and the override or
+// protocol, and stamps the instance name onto the response and any error.
 func (c *Client) Complete(ctx context.Context, req Request) (Response, error) {
 	ctx = c.bindAPIAttemptSinkBeforeDispatch(ctx)
 	if err := req.Validate(); err != nil {
@@ -111,40 +265,34 @@ func (c *Client) Complete(ctx context.Context, req Request) (Response, error) {
 	// Complete defaults to a bounded network profile covering connection setup and
 	// the whole request/response cycle.
 	if req.AdapterTimeout == nil {
-		at := DefaultAdapterTimeout()
-		req.AdapterTimeout = &at
+		req.AdapterTimeout = new(DefaultAdapterTimeout())
 	}
-	prov := req.Provider
-	if prov == "" {
-		prov = c.defaultProvider
+	t, err := c.dispatchTarget(req)
+	if err != nil {
+		return Response{}, err
 	}
-	if prov == "" {
-		return Response{}, &ConfigurationError{Message: "no provider specified and no default provider configured"}
+	req.Provider = t.name
+	if t.resolved {
+		req = ShapeRequest(req, t.res)
 	}
-	prov = normalizeProviderName(prov)
-	adapter, ok := c.providers[prov]
-	if !ok {
-		return Response{}, &ConfigurationError{Message: "unknown provider: " + prov}
-	}
-	req.Provider = prov
-
-	tag := c.behaviorTagFor(prov)
+	tag := c.behaviorTagFor(t.name)
 
 	base := func(ctx context.Context, req Request) (Response, error) {
-		return adapter.Complete(ctx, req)
+		if t.override != nil {
+			return t.override.Complete(ctx, req)
+		}
+		return t.protocol.Complete(c.withHasher(ctx), req, t.res)
 	}
 	handler := applyMiddlewareComplete(base, c.middleware)
 	resp, err := handler(ctx, req)
-	resp.Provider = prov
-	err = RewriteErrorProvider(err, prov)
+	resp.Provider = t.name
+	err = RewriteErrorProvider(err, t.name)
 	err = StampErrorBehaviorTag(err, tag)
 	return resp, err
 }
 
-// Stream validates the request, resolves the target provider (falling back to
-// the default when unset), runs the request through the middleware chain and
-// the selected adapter, and returns a Stream. The resolved provider name and
-// behavior tag are stamped onto stream events and any error.
+// Stream is Complete's streaming twin; stream events carry the instance
+// name through providerStampStream.
 func (c *Client) Stream(ctx context.Context, req Request) (Stream, error) {
 	ctx = c.bindAPIAttemptSinkBeforeDispatch(ctx)
 	if err := req.Validate(); err != nil {
@@ -154,51 +302,140 @@ func (c *Client) Stream(ctx context.Context, req Request) (Stream, error) {
 	// stream-read profile. The request lifetime includes response headers and body
 	// consumption; caller-supplied context and HTTP client policies remain authoritative.
 	if req.AdapterTimeout == nil {
-		at := DefaultAdapterTimeout()
-		req.AdapterTimeout = &at
+		req.AdapterTimeout = new(DefaultAdapterTimeout())
 	}
-	prov := req.Provider
-	if prov == "" {
-		prov = c.defaultProvider
+	t, err := c.dispatchTarget(req)
+	if err != nil {
+		return nil, err
 	}
-	if prov == "" {
-		return nil, &ConfigurationError{Message: "no provider specified and no default provider configured"}
+	req.Provider = t.name
+	if t.resolved {
+		req = ShapeRequest(req, t.res)
 	}
-	prov = normalizeProviderName(prov)
-	adapter, ok := c.providers[prov]
-	if !ok {
-		return nil, &ConfigurationError{Message: "unknown provider: " + prov}
-	}
-	req.Provider = prov
-
-	tag := c.behaviorTagFor(prov)
+	tag := c.behaviorTagFor(t.name)
 
 	base := func(ctx context.Context, req Request) (Stream, error) {
-		return adapter.Stream(ctx, req)
+		if t.override != nil {
+			return t.override.Stream(ctx, req)
+		}
+		return t.protocol.Stream(c.withHasher(ctx), req, t.res)
 	}
 	handler := applyMiddlewareStream(base, c.middleware)
 	st, err := handler(ctx, req)
 	if err != nil {
-		err = RewriteErrorProvider(err, prov)
+		err = RewriteErrorProvider(err, t.name)
 		err = StampErrorBehaviorTag(err, tag)
 		return nil, err
 	}
-	return newProviderStampStream(st, prov, tag), nil
+	return newProviderStampStream(st, t.name, tag), nil
+}
+
+// ModelListing is what Models returns: the instance's visible rows after
+// its live listing, when the transport has one, was applied to the registry.
+type ModelListing struct {
+	// Live is true when a live listing was fetched and applied; false means
+	// registry-only (spec §8.1: an unsupported models endpoint is not a failure).
+	Live bool
+	// Models are the visible rows — hidden rows and rows a live listing marks
+	// Tools = false are dropped (spec §5) — sorted by model id.
+	Models []registry.Resolved
+}
+
+// LiveModelLister is the optional override interface for adapters that serve
+// a live model listing. An override that does not implement it cannot list
+// models under its instance name, even when the registry knows that name.
+type LiveModelLister interface {
+	LiveModels(ctx context.Context) ([]registry.Model, error)
+}
+
+// Models lists an instance's models: the live listing is fetched through
+// the protocol (or the override's LiveModels), applied to the registry so
+// later Resolve calls see it, and every id the registry now knows for the
+// instance is resolved and filtered by the §5 visibility rule.
+func (c *Client) Models(ctx context.Context, instance string) (ModelListing, error) {
+	instance = normalizeProviderName(instance)
+	r := c.Registry()
+	if r == nil {
+		return ModelListing{}, fmt.Errorf("registry unavailable: %w", c.registryErr)
+	}
+	override := c.overrides[instance]
+	res, resolveErr := r.ResolveInstance(instance)
+	if resolveErr != nil && override == nil {
+		return ModelListing{}, &ConfigurationError{Message: resolveErr.Error()}
+	}
+	var rows []registry.Model
+	live := false
+	if override != nil {
+		// An override owns its instance name: its listing seam is the only
+		// way it can list, so no registry-only fallback stands in for it.
+		lister, ok := override.(LiveModelLister)
+		if !ok {
+			return ModelListing{}, &ConfigurationError{Message: fmt.Sprintf("provider %s does not support listing models", instance)}
+		}
+		opCtx, op := c.beginProviderOperation(ctx)
+		var err error
+		rows, err = lister.LiveModels(opCtx)
+		op.settle(opCtx, err)
+		if err != nil {
+			return ModelListing{}, RewriteErrorProvider(err, instance)
+		}
+		live = true
+	} else {
+		p, ok := ProtocolFor(res.Protocol)
+		if !ok {
+			return ModelListing{}, &ConfigurationError{Message: fmt.Sprintf("%s: protocol %q is not registered", instance, res.Protocol)}
+		}
+		opCtx, op := c.beginProviderOperation(ctx)
+		var err error
+		rows, err = p.ListModels(opCtx, res)
+		op.settle(opCtx, err)
+		switch {
+		case errors.Is(err, ErrModelListingUnsupported):
+		case err != nil:
+			return ModelListing{}, RewriteErrorProvider(err, instance)
+		default:
+			live = true
+		}
+	}
+	if resolveErr != nil {
+		// An override with no registry record: its listing is the whole truth.
+		out := make([]registry.Resolved, 0, len(rows))
+		for _, m := range rows {
+			out = append(out, registry.Resolved{Instance: instance, ModelID: m.ID, WireID: m.ID, Model: m, Caps: m.Caps})
+		}
+		sort.Slice(out, func(i, j int) bool { return out[i].ModelID < out[j].ModelID })
+		return ModelListing{Live: live, Models: out}, nil
+	}
+	if live {
+		r.ApplyLive(instance, rows)
+	}
+	ids, err := r.ModelIDs(instance)
+	if err != nil {
+		return ModelListing{}, &ConfigurationError{Message: err.Error()}
+	}
+	out := make([]registry.Resolved, 0, len(ids))
+	for _, id := range ids {
+		row, err := r.Resolve(instance + "/" + id)
+		if err != nil || row.Model.Hidden || (row.Caps.Tools != nil && !*row.Caps.Tools) {
+			continue
+		}
+		out = append(out, row)
+	}
+	return ModelListing{Live: live, Models: out}, nil
 }
 
 // PlanResponsesContinuation returns the Responses-API continuation plan for
 // req's provider, or an error when no provider can serve the request.
 func (c *Client) PlanResponsesContinuation(ctx context.Context, req Request) (ResponsesContinuationPlan, error) {
 	_ = ctx
-	prov := req.Provider
+	prov := normalizeProviderName(req.Provider)
 	if prov == "" {
-		prov = c.defaultProvider
+		prov = c.DefaultProvider()
 	}
 	if prov == "" {
 		return ResponsesContinuationPlan{}, &ConfigurationError{Message: "no provider specified and no default provider configured"}
 	}
-	prov = normalizeProviderName(prov)
-	adapter, ok := c.providers[prov]
+	adapter, ok := c.overrides[prov]
 	if !ok {
 		return ResponsesContinuationPlan{}, &ConfigurationError{Message: "unknown provider: " + prov}
 	}
@@ -355,7 +592,7 @@ func (c *Client) Close() error {
 		return nil
 	}
 	var firstErr error
-	for _, a := range c.providers {
+	for _, a := range c.overrides {
 		if cl, ok := a.(Closer); ok {
 			if err := cl.Close(); err != nil && firstErr == nil {
 				firstErr = err
@@ -370,7 +607,7 @@ func (c *Client) Initialize(ctx context.Context) error {
 	if c == nil {
 		return nil
 	}
-	for _, a := range c.providers {
+	for _, a := range c.overrides {
 		if init, ok := a.(Initializer); ok {
 			if err := init.Initialize(ctx); err != nil {
 				return err
@@ -387,7 +624,7 @@ func (c *Client) SupportsToolChoice(provider, mode string) bool {
 		return false
 	}
 	provider = normalizeProviderName(provider)
-	a, ok := c.providers[provider]
+	a, ok := c.overrides[provider]
 	if !ok {
 		return false
 	}
@@ -405,7 +642,7 @@ func (c *Client) ValidateModelCompatibility(provider, model string) error {
 		return nil
 	}
 	provider = normalizeProviderName(provider)
-	a, ok := c.providers[provider]
+	a, ok := c.overrides[provider]
 	if !ok {
 		return nil
 	}
@@ -422,7 +659,7 @@ func (c *Client) ListModels(ctx context.Context, provider string) ([]ModelInfo, 
 		return nil, &ConfigurationError{Message: "client is nil"}
 	}
 	provider = normalizeProviderName(provider)
-	a, ok := c.providers[provider]
+	a, ok := c.overrides[provider]
 	if !ok {
 		return nil, &ConfigurationError{Message: "unknown provider: " + provider}
 	}
