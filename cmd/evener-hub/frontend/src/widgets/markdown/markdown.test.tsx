@@ -211,3 +211,46 @@ test("the root rule wraps long unbreakable tokens anywhere", () => {
   expect(root).not.toBeNull();
   expect(root![1]).toContain("overflow-wrap: anywhere");
 });
+
+// --- GFM tables -------------------------------------------------------------
+// marked tokenizes GFM pipe tables (gfm: true) into <table> markup; the
+// DOMPurify allowlist must keep every table tag so the structure survives
+// sanitization instead of collapsing to unwrapped cell text (headers dropped
+// entirely). These guard against re-removing the tags from the allowlist.
+
+test("renders a GFM table with header and body rows", () => {
+  const { container } = render(
+    <Markdown source={"| Name | Value |\n| ---- | ----- |\n| foo | 123 |\n| bar | 456 |"} />,
+  );
+  expect(container.querySelector("table")).not.toBeNull();
+  expect(container.querySelectorAll("thead tr th")).toHaveLength(2);
+  expect(container.querySelectorAll("thead tr th")[0]?.textContent).toBe("Name");
+  expect(container.querySelectorAll("tbody tr")).toHaveLength(2);
+  expect(container.querySelectorAll("tbody tr")[0]?.querySelectorAll("td")).toHaveLength(2);
+  expect(container.querySelectorAll("tbody tr")[0]?.querySelectorAll("td")[0]?.textContent).toBe("foo");
+});
+
+test("renders GFM column alignment via the align attribute", () => {
+  const { container } = render(<Markdown source={"| L | C | R |\n| :--- | :---: | ---: |\n| a | b | c |"} />);
+  const ths = Array.from(container.querySelectorAll("thead th"));
+  expect(ths.map((th) => th.getAttribute("align"))).toEqual(["left", "center", "right"]);
+  const tds = Array.from(container.querySelectorAll("tbody tr:first-child td"));
+  expect(tds.map((td) => td.getAttribute("align"))).toEqual(["left", "center", "right"]);
+});
+
+// The table chrome lives in the stylesheet, not on a class the component
+// writes, so - like the ink/font-size assertions above - this reads the
+// stylesheet's own source. Guards the table styling contract: a header band
+// on --surface-inset, --edge hairlines, and the legacy align attribute
+// honored via attribute selectors (so GFM column alignment works without
+// allowing the style attribute through DOMPurify).
+test("the stylesheet styles GFM tables: header band, edge borders, align selectors", () => {
+  const here = dirname(fileURLToPath(import.meta.url));
+  const css = readFileSync(join(here, "markdown.module.css"), "utf8").replace(/\/\*[\s\S]*?\*\//g, "");
+  expect(css).toContain(".root :where(table)");
+  expect(css).toContain("border-collapse: collapse");
+  expect(css).toMatch(/thead th[^{]*\{[^}]*--surface-inset/);
+  expect(css).toMatch(/--edge/);
+  expect(css).toContain('th[align="center"]');
+  expect(css).toContain('td[align="right"]');
+});
