@@ -7,9 +7,11 @@ import (
 )
 
 // TestThreadClearRequestHash pins the property the "client mutation ID reused
-// with a different clear request" guard is built on: equal params hash equal,
-// different params hash different, and an encoding failure is reported rather
-// than collapsing every request onto the hash of nil.
+// with a different clear request" guard is built on: equal params hash equal
+// and different params hash different. The error return is unreachable for
+// the current all-strings params struct, so only the nil-error path runs here;
+// it exists so an encoding failure surfaces instead of collapsing every
+// request onto the hash of nil.
 func TestThreadClearRequestHash(t *testing.T) {
 	base := appwire.ThreadClearParams{Ref: "local:a", ClientMutationID: "clear-1", ExpectedInstanceID: "old"}
 	first, err := threadClearRequestHash(base)
