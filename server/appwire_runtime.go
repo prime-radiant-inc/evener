@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"io/fs"
+	"maps"
 	"os"
 	"path/filepath"
 	"sort"
@@ -1584,9 +1585,7 @@ func (s *Server) handleAppThreadClear(ctx context.Context, params appwire.Thread
 	s.clearRecords[params.ClientMutationID] = record
 	if err := persistThreadClearJournal(s.clearJournalPath, s.clearRecords); err != nil {
 		delete(s.clearRecords, params.ClientMutationID)
-		for id, existing := range superseded {
-			s.clearRecords[id] = existing
-		}
+		maps.Copy(s.clearRecords, superseded)
 		s.mu.Unlock()
 		return appwire.ThreadClearResponse{}, appwire.MutationUnknown(params.ClientMutationID, "thread clear reservation could not be persisted")
 	}
