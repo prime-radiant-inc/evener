@@ -302,12 +302,19 @@ func probeProtocol(name, proto string, entry registry.Provider, model string) pr
 	ctx, cancel := context.WithTimeout(context.Background(), providerNetworkTimeout)
 	defer cancel()
 	if _, err := p.Complete(ctx, probeRequest(model), res); err != nil {
-		// Only a reply carrying an HTTP status is the provider rejecting the
-		// protocol. A refused connection, a DNS failure, or a timeout never
-		// reached it, and reporting those as "unsupported" claims something
-		// about the endpoint from evidence about the network.
+		// "unsupported" is a verdict the endpoint gave; anything the endpoint
+		// never answered is the probe's own error. A rejection normally
+		// carries an HTTP status, with one exception: a 200 that served
+		// nothing the protocol recognizes, which the adapter reports as an
+		// UnsupportedEndpointError and which is exactly this verdict without
+		// a status. A refused connection, a DNS failure, and a deadline all
+		// also carry no status, and calling those "unsupported" would claim
+		// something about the endpoint from evidence about the network.
 		e, answered := errors.AsType[llm.Error](err)
+		_, servedNothing := errors.AsType[*llm.UnsupportedEndpointError](err)
 		switch {
+		case servedNothing:
+			return probeResult{status: probeUnsupported, detail: err.Error()}
 		case !answered || e.StatusCode() == 0:
 			return probeResult{status: probeFailed, detail: err.Error()}
 		case namesMaxTokensField(e.Error()):

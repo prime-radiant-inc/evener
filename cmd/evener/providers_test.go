@@ -199,6 +199,40 @@ func TestProvidersProbeReportsAnUnreachableEndpointAsAnError(t *testing.T) {
 	}
 }
 
+// A 200 that carries no Responses events is the provider saying the model does
+// not speak this protocol (llm.UnsupportedEndpointError), not a network
+// failure: it is a verdict the endpoint gave, so it reads as unsupported.
+func TestProvidersProbeReportsAnEndpointThatServedNoEventsAsUnsupported(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/models" {
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"data":[{"id":"gpt-5.6"}]}`))
+			return
+		}
+		// 200 OK on the stream endpoint, and not one event.
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+	}))
+	t.Cleanup(srv.Close)
+	providersTestEnv(t, map[string]string{"OPENAI_CODEX_BASE_URL": srv.URL})
+	codexRecord(t, filepath.Join(os.Getenv("XDG_STATE_HOME"), "evener"), "openai-codex")
+
+	var stdout, stderr bytes.Buffer
+	if err := runProviders([]string{"probe", "openai-codex"}, nil, &stdout, &stderr); err != nil {
+		t.Fatalf("probe: %v\n%s", err, stderr.String())
+	}
+	out := stdout.String()
+	if !strings.Contains(out, "openai-responses: unsupported") {
+		t.Fatalf("an endpoint that answered 200 with no events gave a verdict, not a network failure:\n%s", out)
+	}
+	// The same server breaks the Chat Completions stream a different way — it
+	// ends without completing — and that really is the probe's own error. The
+	// verdict is only for the endpoint's own "I serve nothing here".
+	if !strings.Contains(out, "openai-chat: error") {
+		t.Fatalf("a stream that ended without completion is not a protocol verdict:\n%s", out)
+	}
+}
+
 // Only the two OpenAI protocols are interchangeable: every other protocol is
 // probed as itself alone (spec §11.2).
 func TestProvidersProbeOnANonOpenAIProtocolProbesOnlyItsOwn(t *testing.T) {
