@@ -13,6 +13,7 @@ import (
 	"primeradiant.com/evener/agent/transcript"
 	"primeradiant.com/evener/appwire"
 	"primeradiant.com/evener/envvars"
+	"primeradiant.com/evener/internal/toolargs"
 	"primeradiant.com/evener/invariant"
 	"primeradiant.com/evener/llm"
 )
@@ -158,14 +159,12 @@ func ToolIntentFromArguments(raw json.RawMessage) string {
 	if len(raw) == 0 || json.Unmarshal(raw, &args) != nil {
 		return ""
 	}
-	for _, key := range []string{"intent", "purpose", "description"} {
+	return toolargs.FirstNonEmpty(func(key string) string {
 		if value, ok := args[key].(string); ok {
-			if trimmed := strings.TrimSpace(value); trimmed != "" {
-				return trimmed
-			}
+			return strings.TrimSpace(value)
 		}
-	}
-	return ""
+		return ""
+	}, "intent", "purpose", "description")
 }
 
 // ExitCodeFromToolState extracts a shell tool call's process exit code from

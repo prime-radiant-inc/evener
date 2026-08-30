@@ -15,6 +15,7 @@ import (
 	"primeradiant.com/evener/cmd/evener-tui/internal/transcript"
 	"primeradiant.com/evener/cmd/evener-tui/internal/tuiprim"
 	"primeradiant.com/evener/cmd/evener-tui/internal/tuitheme"
+	"primeradiant.com/evener/internal/toolargs"
 	"primeradiant.com/evener/llm"
 )
 
@@ -292,12 +293,9 @@ func RenderToolCall(tc transcript.ToolCallInfo, width int, focused bool) string 
 	}
 
 	var bodyLines []string
-	for _, key := range []string{"intent", "purpose"} {
-		if v := strings.TrimSpace(args.Str(key)); v != "" {
-			line := lipgloss.NewStyle().Italic(true).Render(v)
-			bodyLines = append(bodyLines, indentBlock(line, th.IndentToolBody))
-			break
-		}
+	if v := toolargs.FirstNonEmpty(func(key string) string { return strings.TrimSpace(args.Str(key)) }, "intent", "purpose"); v != "" {
+		line := lipgloss.NewStyle().Italic(true).Render(v)
+		bodyLines = append(bodyLines, indentBlock(line, th.IndentToolBody))
 	}
 
 	// Show expanded body: renderer Body func takes priority; fall back to

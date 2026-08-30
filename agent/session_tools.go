@@ -21,6 +21,7 @@ import (
 	"primeradiant.com/evener/agent/provider"
 	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/agent/task"
+	"primeradiant.com/evener/internal/toolargs"
 	"primeradiant.com/evener/llm"
 )
 
@@ -918,12 +919,10 @@ func (r toolCallRerunner) run(ctx context.Context) tool.ExecResult {
 // else empty. Pure over the args map, so the promotion order is fuzzable in
 // isolation.
 func toolStartDescription(args map[string]any) string {
-	for _, key := range []string{"intent", "purpose", "description"} {
-		if v, ok := args[key].(string); ok && v != "" {
-			return v
-		}
-	}
-	return ""
+	return toolargs.FirstNonEmpty(func(key string) string {
+		v, _ := args[key].(string)
+		return v
+	}, "intent", "purpose", "description")
 }
 
 func applyUpdatedToolInput(call *llm.ToolCallData, updated map[string]any) error {

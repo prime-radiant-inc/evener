@@ -13,6 +13,7 @@ import (
 	"github.com/alecthomas/chroma/v2/formatters"
 	"github.com/alecthomas/chroma/v2/lexers"
 	"github.com/alecthomas/chroma/v2/styles"
+	"primeradiant.com/evener/internal/toolargs"
 )
 
 // SummarizeTool summarizes without a known session cwd: the redundant-cd
@@ -57,14 +58,6 @@ func SummarizeToolInDir(toolName, argsJSON, cwd string) (desc, detail string) {
 		v, _ := args[key].(string)
 		return v
 	}
-	firstNonEmpty := func(get func(string) string, keys ...string) string {
-		for _, k := range keys {
-			if v := get(k); v != "" {
-				return v
-			}
-		}
-		return ""
-	}
 	num := func(key string) (int, bool) {
 		v, ok := args[key].(float64)
 		return int(v), ok
@@ -81,7 +74,7 @@ func SummarizeToolInDir(toolName, argsJSON, cwd string) (desc, detail string) {
 	case "shell":
 		cmd := str("command")
 		cmd = stripRedundantCd(cmd, cwd)
-		if d := firstNonEmpty(str, "intent", "purpose", "description"); d != "" {
+		if d := toolargs.FirstNonEmpty(str, "intent", "purpose", "description"); d != "" {
 			desc = trunc(d, 80)
 		} else {
 			// Show first line as desc; full command as detail if multi-line.

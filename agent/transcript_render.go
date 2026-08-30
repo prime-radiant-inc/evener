@@ -13,6 +13,7 @@ import (
 
 	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/agent/transcript"
+	"primeradiant.com/evener/internal/toolargs"
 	"primeradiant.com/evener/llm"
 )
 
@@ -1436,14 +1437,7 @@ func toolIntent(args json.RawMessage) string {
 	if m == nil {
 		return ""
 	}
-	for _, key := range []string{"intent", "purpose", "description"} {
-		if v, ok := m[key]; ok {
-			if s := scalarString(v); s != "" {
-				return s
-			}
-		}
-	}
-	return ""
+	return toolargs.FirstNonEmpty(func(key string) string { return scalarString(m[key]) }, "intent", "purpose", "description")
 }
 
 // parseArgs decodes tool-call arguments into a map, or nil on any error.
