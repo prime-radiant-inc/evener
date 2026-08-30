@@ -55,6 +55,35 @@ func PrepareAppIdentity(sourceID, threadID, transcriptPath string) (PreparedAppI
 	return PrepareAppIdentityForRef(sourceID, threadID, ref, transcriptPath)
 }
 
+// prepareAppIdentitySource is the already-projected half every
+// PrepareAppIdentity* entry point installs.
+type prepareAppIdentitySource struct {
+	turns            []appwire.Turn
+	persistedEntries int
+}
+
+// fromTranscriptFile is the file-reading source. A missing transcript is not
+// an error: the session simply has no persisted history to seed from. A
+// transcript whose header names a DIFFERENT session is an error -- seeding
+// one thread from another thread's history would publish a conversation
+// that never happened.
+func fromTranscriptFile(threadID, transcriptPath string) (prepareAppIdentitySource, error) {
+	var out prepareAppIdentitySource
+	if path := strings.TrimSpace(transcriptPath); path != "" {
+		header := transcriptHeader(path, appTranscriptMaxLineBytes)
+		if header.SessionID != "" && header.SessionID != threadID {
+			return out, fmt.Errorf("transcript %s belongs to session %s, not %s", path, header.SessionID, threadID)
+		}
+		projected, entries, err := appTurnsFromTranscriptFile(path)
+		if err != nil && !errors.Is(err, fs.ErrNotExist) {
+			return out, err
+		}
+		out.turns = projected
+		out.persistedEntries = entries
+	}
+	return out, nil
+}
+
 // PrepareAppIdentityForRef is PrepareAppIdentity for a replacement that keeps
 // the same stable workspace ref while advancing the live session instance.
 // The projector must use that ref too: otherwise the first event after clear
@@ -74,29 +103,63 @@ func PrepareAppIdentityForRef(sourceID, threadID, ref, transcriptPath string) (P
 	if parsedRef.SourceID != sourceID {
 		return PreparedAppIdentity{}, fmt.Errorf("app identity ref belongs to source %s, not %s", parsedRef.SourceID, sourceID)
 	}
-	var turns []appwire.Turn
-	persistedEntries := 0
-	if path := strings.TrimSpace(transcriptPath); path != "" {
-		header := transcriptHeader(path, appTranscriptMaxLineBytes)
-		if header.SessionID != "" && header.SessionID != threadID {
-			return PreparedAppIdentity{}, fmt.Errorf("transcript %s belongs to session %s, not %s", path, header.SessionID, threadID)
-		}
-		projected, entries, err := appTurnsFromTranscriptFile(path)
-		if err != nil && !errors.Is(err, fs.ErrNotExist) {
-			return PreparedAppIdentity{}, err
-		}
-		turns = projected
-		persistedEntries = entries
+	source, err := fromTranscriptFile(threadID, transcriptPath)
+	if err != nil {
+		return PreparedAppIdentity{}, err
 	}
+	return finishPreparedAppIdentity(sourceID, threadID, parsedRef, source)
+}
+
+// PrepareAppIdentityFromEntries is PrepareAppIdentityForRef for the resume
+// path: it projects the SAME transcript the session restore just
+// strict-decoded, instead of re-reading and re-decoding the file. header and
+// entries must come from that restore pass (OpenWriterForSession's resume
+// reader), which already validated the header's SessionID against threadID --
+// so a transcript naming a different session cannot reach this point, and
+// the error contract of the file form (a mismatch is an error) is preserved
+// by construction rather than by re-reading. Callers that cannot prove
+// that validation must use the file form.
+//
+// Everything else -- ref parsing, turn seeding, projector construction, and
+// the fence of live turn ids above the seeded ones -- is identical to
+// PrepareAppIdentityForRef.
+func PrepareAppIdentityFromEntries(sourceID, threadID, ref string, header transcript.Header, entries []transcript.Entry) (PreparedAppIdentity, error) {
+	if sourceID == "" {
+		sourceID = "local"
+	}
+	if strings.TrimSpace(threadID) == "" {
+		return PreparedAppIdentity{}, errors.New("thread id is required")
+	}
+	parsedRef, err := appwire.ParseRef(strings.TrimSpace(ref))
+	if err != nil {
+		return PreparedAppIdentity{}, fmt.Errorf("invalid app identity ref: %w", err)
+	}
+	if parsedRef.SourceID != sourceID {
+		return PreparedAppIdentity{}, fmt.Errorf("app identity ref belongs to source %s, not %s", parsedRef.SourceID, sourceID)
+	}
+	if header.SessionID != "" && header.SessionID != threadID {
+		return PreparedAppIdentity{}, fmt.Errorf("transcript header belongs to session %s, not %s", header.SessionID, threadID)
+	}
+	turns, persisted, err := appTurnsFromEntries(header, entries)
+	if err != nil {
+		return PreparedAppIdentity{}, err
+	}
+	return finishPreparedAppIdentity(sourceID, threadID, parsedRef, prepareAppIdentitySource{turns: turns, persistedEntries: persisted})
+}
+
+// finishPreparedAppIdentity validates the identity triple and installs the
+// projected source into a PreparedAppIdentity. It is the shared tail of
+// PrepareAppIdentityForRef and PrepareAppIdentityFromEntries.
+func finishPreparedAppIdentity(sourceID, threadID string, parsedRef appwire.Ref, source prepareAppIdentitySource) (PreparedAppIdentity, error) {
 	snapshot := &appTurnSnapshot{threadID: threadID}
-	snapshot.Seed(turns)
+	snapshot.Seed(source.turns)
 	// Fence the live turn ids above the seeded ones HERE, where the seed count
 	// is known, rather than waiting for the session's own SessionStart to carry
 	// it: nothing orders that event ahead of the first turn-starting request,
 	// and since this snapshot became the only turn authority a collision
 	// overwrites the seeded turn permanently.
 	projector := appprojector.NewAppEventProjector(threadID, parsedRef.String())
-	projector.SeedPersistedTurns(persistedEntries)
+	projector.SeedPersistedTurns(source.persistedEntries)
 	return PreparedAppIdentity{
 		sourceID:  sourceID,
 		threadID:  threadID,

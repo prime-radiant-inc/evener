@@ -420,7 +420,7 @@ func NewSession(client *llm.Client, profile *provider.Profile, env execenv.Execu
 	if err := s.flushPendingDelegateDeliveries(); err != nil {
 		return nil, fmt.Errorf("replay delegate deliveries: %w", err)
 	}
-	if err := s.rearmRootDelegateAttentionFromTranscript(); err != nil {
+	if err := s.rearmRootDelegateAttentionFromTranscript(nil); err != nil {
 		return nil, fmt.Errorf("rearm root delegate attention: %w", err)
 	}
 
@@ -674,12 +674,16 @@ func RestoreSessionFromMetaWithConfig(client *llm.Client, profile *provider.Prof
 	// every other open or parse error fails the resume closed.
 	var resumeTranscript *transcript.Writer
 	var transcriptEntries []transcript.Entry
+	var restoredTranscriptHeader transcript.Header
 	if cfg.StateDir != "" {
 		tpath := filepath.Join(cfg.StateDir, sessionsSubdir, meta.ID+".transcript.jsonl")
 		var openErr error
 		resumeTranscript, transcriptEntries, openErr = transcript.OpenWriterForSession(tpath, meta.ID)
 		if openErr != nil && !errors.Is(openErr, os.ErrNotExist) {
 			return nil, fmt.Errorf("open transcript for resume: %w", openErr)
+		}
+		if resumeTranscript != nil {
+			restoredTranscriptHeader = resumeTranscript.Header()
 		}
 	}
 	defer func() {
@@ -1000,6 +1004,24 @@ func RestoreSessionFromMetaWithConfig(client *llm.Client, profile *provider.Prof
 		}
 	}
 	s.attachTranscript(tw)
+	// refreshFromDisk re-reads the transcript file whenever a restore-time
+	// replay appended turns it did not decode: the retained entry list would
+	// otherwise end at the last pre-append entry, and serve (which projects
+	// exactly this list) would seed its turn snapshot and live-turn-id fence
+	// one turn behind the file. Both refresh triggers share it so there is
+	// one refresh, not two mechanisms.
+	refreshFromDisk := func(reason string) error {
+		refreshed, err := readTranscriptFull(transcriptPath(s.stateDir, s.id))
+		if err != nil {
+			return fmt.Errorf("refresh transcript after %s: %w", reason, err)
+		}
+		if refreshed.Header.SessionID != s.id {
+			return fmt.Errorf("refresh transcript after %s: header session %q does not match %q", reason, refreshed.Header.SessionID, s.id)
+		}
+		transcriptEntries = refreshed.Entries
+		restoredTranscriptHeader = refreshed.Header
+		return nil
+	}
 	s.delegateDeliveryMu.Lock()
 	hadPendingDelegateDeliveries := len(s.pendingDelegateDeliveries) != 0
 	s.delegateDeliveryMu.Unlock()
@@ -1007,23 +1029,38 @@ func RestoreSessionFromMetaWithConfig(client *llm.Client, profile *provider.Prof
 		return nil, fmt.Errorf("replay delegate deliveries: %w", err)
 	}
 	if tw != nil && hadPendingDelegateDeliveries {
-		refreshed, err := readTranscriptFull(transcriptPath(s.stateDir, s.id))
-		if err != nil {
-			return nil, fmt.Errorf("refresh transcript after delegate delivery replay: %w", err)
+		if err := refreshFromDisk("delegate delivery replay"); err != nil {
+			return nil, err
 		}
-		if refreshed.Header.SessionID != s.id {
-			return nil, fmt.Errorf("refresh transcript after delegate delivery replay: header session %q does not match %q", refreshed.Header.SessionID, s.id)
-		}
-		transcriptEntries = refreshed.Entries
 	}
-	if err := s.rearmRootDelegateAttentionFromTranscript(); err != nil {
-		return nil, fmt.Errorf("rearm root delegate attention: %w", err)
-	}
+	// Client-mutation failure recovery appends the turns the crashed process
+	// never got to write (recordClientMutationFailure's user and failure
+	// turns, plus the environment-context turn that can precede the user
+	// one inside the same !items.User block). The interrupt recovery writes
+	// nothing — it only terminalizes the journal fence — so only the failure
+	// path can append. Restored history and the durable identity index stay
+	// on the pre-recovery list on purpose: the recovered turns enter
+	// s.history directly (recordClientMutationFailure appends them itself).
 	if err := s.recoverClientMutationFailures(); err != nil {
 		return nil, fmt.Errorf("recover client mutation failures: %w", err)
 	}
 	if err := s.recoverClientMutationInterrupt(); err != nil {
 		return nil, fmt.Errorf("recover client mutation interrupt: %w", err)
+	}
+	s.mu.Lock()
+	clientMutationRecoveryAppended := s.clientMutationAppendedTurn
+	s.mu.Unlock()
+	if tw != nil && clientMutationRecoveryAppended {
+		if err := refreshFromDisk("client mutation recovery"); err != nil {
+			return nil, err
+		}
+	}
+	// setRestoredTranscript and the attention rearm both run after every
+	// restore-time transcript append, so serve and the fold see the same
+	// final entry list the file holds.
+	s.setRestoredTranscript(restoredTranscriptHeader, transcriptEntries)
+	if err := s.rearmRootDelegateAttentionFromTranscript(transcriptEntries); err != nil {
+		return nil, fmt.Errorf("rearm root delegate attention: %w", err)
 	}
 
 	if !restoreCfg.deferRestoreSideEffects {

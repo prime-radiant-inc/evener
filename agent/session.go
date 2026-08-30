@@ -361,6 +361,11 @@ type Session struct {
 	// captured before ResumeHistory compacts model context.
 	restoredClientMutationTurns map[string]string
 	restoredClientMutationItems map[string]clientMutationTranscriptItems
+	// clientMutationAppendedTurn flags that a restore-time client-mutation
+	// recovery appended turns to the transcript file. Restore consults it
+	// after the recovery pass to decide whether the retained transcript
+	// entry list must be refreshed from disk. Guarded by mu.
+	clientMutationAppendedTurn bool
 	// clientMutationStartWake is installed by the lifecycle runner. Start
 	// acceptance invokes it only after the durable mutation commit; setting it
 	// after restore immediately wakes any accepted start already owned by the
@@ -693,6 +698,17 @@ type Session struct {
 	// and its turns are dropped rather than accumulated. Guarded by s.mu.
 	transcriptReady        bool
 	pendingTranscriptTurns []schema.Turn
+
+	// restoredTranscript holds the decoded transcript a RESUME read while
+	// validating the session it was asked to restore: the header (with its
+	// SessionID already checked against this session's id) and the retained
+	// entries. It exists so serve's app-identity projection can reuse that
+	// one strict decode instead of re-reading and re-decoding the whole
+	// append-only file; it is populated only on the restore path, after any
+	// delegate-delivery refresh, and is never updated after construction.
+	// Guarded by s.mu.
+	restoredTranscriptHeader transcript.Header
+	restoredTranscript       []transcript.Entry
 
 	// Cached tool definitions.
 	cachedToolDefs []llm.ToolDefinition
@@ -1752,4 +1768,26 @@ func (s *Session) TranscriptPath() string {
 		return ""
 	}
 	return filepath.Join(s.stateDir, sessionsSubdir, s.id+".transcript.jsonl")
+}
+
+// setRestoredTranscript installs the final restore-time transcript view. It
+// runs once, at the end of restore construction, with the entry list that any
+// delegate-delivery replay already refreshed from disk.
+func (s *Session) setRestoredTranscript(header transcript.Header, entries []transcript.Entry) {
+	s.mu.Lock()
+	s.restoredTranscriptHeader = header
+	s.restoredTranscript = entries
+	s.mu.Unlock()
+}
+
+// RestoredTranscript returns the header and decoded entry list this resume
+// validated, for a caller (serve's app-identity projection) that would
+// otherwise re-read the transcript file. ok is false unless this session was
+// constructed by restore with a transcript; the slice aliases retained state
+// and must be treated as read-only.
+func (s *Session) RestoredTranscript() (transcript.Header, []transcript.Entry, bool) {
+	s.mu.Lock()
+	header, entries := s.restoredTranscriptHeader, s.restoredTranscript
+	s.mu.Unlock()
+	return header, entries, entries != nil
 }

@@ -795,7 +795,14 @@ func (s *Session) resetStableDelegateAttentionRetry() {
 // rearmRootDelegateAttentionFromTranscript reconstructs the root wake cache
 // from the only durable attention authority. It performs no provider or Session
 // construction and is called after the root transcript is attached/replayed.
-func (s *Session) rearmRootDelegateAttentionFromTranscript() error {
+//
+// entries is the final in-memory entry list restore produced (refreshed from
+// disk when delegate delivery replay appended to the transcript): folding it
+// instead of re-opening the file is what keeps resume from strict-decoding
+// the whole transcript a second time. A nil entries list falls back to the
+// file read (the fresh-session construction path, which holds no decoded
+// entry list).
+func (s *Session) rearmRootDelegateAttentionFromTranscript(entries []transcript.Entry) error {
 	if !s.isRootDelegateAttentionReceiver() {
 		return nil
 	}
@@ -810,7 +817,13 @@ func (s *Session) rearmRootDelegateAttentionFromTranscript() error {
 		s.attentionMu.Unlock()
 		return nil
 	}
-	fold, err := s.readDelegateAttentionFold(transcriptPath(stateDir, sessionID), sessionID)
+	var fold delegateAttentionFold
+	var err error
+	if entries != nil {
+		fold, err = s.foldDelegateAttentionEntries(entries)
+	} else {
+		fold, err = s.readDelegateAttentionFold(transcriptPath(stateDir, sessionID), sessionID)
+	}
 	if err != nil {
 		s.attentionMu.Unlock()
 		return err
@@ -829,6 +842,16 @@ func (s *Session) rearmRootDelegateAttentionFromTranscript() error {
 		s.notify()
 	}
 	return nil
+}
+
+// foldDelegateAttentionEntries is the entries form of
+// readDelegateAttentionFold: same fold over the same entry list, no file
+// read.
+func (s *Session) foldDelegateAttentionEntries(entries []transcript.Entry) (delegateAttentionFold, error) {
+	if foldEntries := s.cfg.testOnly.delegateAttentionFoldEntries; foldEntries != nil {
+		return foldEntries(entries)
+	}
+	return foldDelegateAttention(entries)
 }
 
 func (s *Session) retainDelegateAttentionTurn(turn schema.Turn) error {
