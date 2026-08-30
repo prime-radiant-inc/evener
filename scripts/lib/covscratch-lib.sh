@@ -17,7 +17,7 @@
 # failed run's diagnostics stop being the current answer.
 #
 # One copy, not four: the pid rules below are subtle enough that a second
-# spelling would be a second thing to get wrong (see covstmt-lib.sh).
+# spelling would be a second thing to get wrong.
 
 # reclaim_own_scratch TMPBASE PREFIX — remove every "TMPBASE/PREFIX.<pid>"
 # directory whose pid is no longer running. Call it BEFORE creating this run's
