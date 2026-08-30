@@ -503,7 +503,11 @@ without modification:
    it (counting handlers), close the client; assert — *while the parked handler is
    still parked* — that the teardown purge emptied the queue (a package-private
    length check or purge-complete seam), then release the handler and assert the
-   worker exits and the counters stayed untouched. The side-effect counters are the
+   worker exits and the counters stayed untouched. The sequence is deterministic,
+   not racy: the parked handler pins the worker inside `executeOrdered` for the
+   whole close-and-purge window, so the worker cannot dequeue a queued request
+   before the purge empties the queue, and after release it observes the canceled
+   context before it could execute anything. The side-effect counters are the
    abandonment contract; a "no responses arrived" assertion is deliberately absent
    because a closed client cannot tell "never ran" from "ran and the enqueue was
    refused". Hydration-finalizer cleanup is likewise *not* asserted here — a queued
