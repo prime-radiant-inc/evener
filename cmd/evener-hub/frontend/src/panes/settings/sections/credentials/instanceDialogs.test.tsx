@@ -237,6 +237,47 @@ describe("EditInstanceDialog", () => {
     expect(screen.getByLabelText(/base url/i)).toHaveProperty("value", "https://existing");
   });
 
+  test("emptying a set Base URL blocks Save and says how to reach the default", async () => {
+    const user = userEvent.setup();
+    connectFakeClient();
+    const onSuccess = vi.fn();
+    render(
+      <EditInstanceDialog
+        instance={instance({ name: "work", providerId: "anthropic", baseUrl: "https://existing" })}
+        onCancel={() => {}}
+        onSuccess={onSuccess}
+      />,
+    );
+    await user.clear(screen.getByLabelText(/base url/i));
+    // evener/instance/edit reads an empty baseUrl as "unchanged", so a save
+    // here would report success and change nothing (spec §11.3,
+    // InstanceEditParams).
+    expect(screen.getByText(/remove and re-add the instance/i)).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Save" })).toHaveProperty("disabled", true);
+    await user.click(screen.getByRole("button", { name: "Save" }));
+    expect(onSuccess).not.toHaveBeenCalled();
+  });
+
+  test("an instance with no Base URL of its own may be saved empty", async () => {
+    const user = userEvent.setup();
+    const fake = connectFakeClient();
+    fake.on("evener/instance/edit", (params) => {
+      expect(params).toEqual({ name: "work" });
+      return { instances: [], availableProviders: [] };
+    });
+    const onSuccess = vi.fn();
+    render(
+      <EditInstanceDialog
+        instance={instance({ name: "work", providerId: "anthropic" })}
+        onCancel={() => {}}
+        onSuccess={onSuccess}
+      />,
+    );
+    expect(screen.queryByText(/remove and re-add the instance/i)).toBeNull();
+    await user.click(screen.getByRole("button", { name: "Save" }));
+    await waitFor(() => expect(onSuccess).toHaveBeenCalled());
+  });
+
   test("submit with an unchanged Base URL sends only { name }", async () => {
     const fake = connectFakeClient();
     fake.on("evener/instance/edit", (params) => {

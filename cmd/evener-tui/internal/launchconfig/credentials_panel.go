@@ -48,6 +48,9 @@ type CredentialsPanel struct {
 	formBase     string
 	formProtocol string
 	formBaseURL  string
+	// formBaseURLWas is the base URL the edited instance already had, so the
+	// form can tell "left blank" from "cleared".
+	formBaseURLWas string
 
 	testPending    map[string]bool
 	testResults    map[string]appwire.AuthTestResponse
@@ -260,6 +263,7 @@ func (p CredentialsPanel) updateList(m tea.KeyMsg) (tea.Model, tea.Cmd) {
 			p.formBase = ""
 			p.formProtocol = ""
 			p.formBaseURL = ""
+			p.formBaseURLWas = ""
 			return p, nil
 		case "e":
 			cur := p.selectedInstance()
@@ -273,6 +277,7 @@ func (p CredentialsPanel) updateList(m tea.KeyMsg) (tea.Model, tea.Cmd) {
 			p.formBase = cur.Base
 			p.formProtocol = cur.Protocol
 			p.formBaseURL = cur.BaseURL
+			p.formBaseURLWas = cur.BaseURL
 			return p, nil
 		}
 	}
@@ -299,6 +304,11 @@ func (p CredentialsPanel) updateForm(m tea.KeyMsg) (tea.Model, tea.Cmd) {
 			return p, nil
 		}
 		// Submit.
+		if p.clearedBaseURL() {
+			// evener/instance/edit reads an empty baseUrl as "unchanged", so
+			// sending this would report a success that changed nothing.
+			return p, nil
+		}
 		p.formOpen = false
 		if p.formEditing {
 			params := appwire.InstanceEditParams{
@@ -534,6 +544,9 @@ func (p CredentialsPanel) formView() string {
 			p.formFieldLine("Protocol", "protocol", p.protocolDisplay(), 0),
 			p.formFieldLine("Base URL", "baseURL", p.formBaseURL, 1),
 		)
+		if p.clearedBaseURL() {
+			lines = append(lines, "", lipgloss.NewStyle().Foreground(tuitheme.ActiveTheme().StateWarning).Render(clearedBaseURLNote))
+		}
 	} else {
 		lines = append(lines,
 			"New instance",
@@ -545,6 +558,17 @@ func (p CredentialsPanel) formView() string {
 		)
 	}
 	return strings.Join(lines, "\n")
+}
+
+// clearedBaseURLNote is what the form says instead of submitting an emptied
+// base URL. The wire has no way to express a clear (appwire.InstanceEditParams),
+// so re-creating the instance is the only route back to the default endpoint.
+const clearedBaseURLNote = "Emptying this leaves the endpoint unchanged — remove and re-add the instance to change its endpoint back to the default."
+
+// clearedBaseURL reports whether the edit form would submit an emptied base
+// URL for an instance that had one.
+func (p CredentialsPanel) clearedBaseURL() bool {
+	return p.formEditing && strings.TrimSpace(p.formBaseURLWas) != "" && strings.TrimSpace(p.formBaseURL) == ""
 }
 
 func (p CredentialsPanel) protocolDisplay() string {

@@ -612,3 +612,93 @@ func TestCredentialsPanel_GroupsEachProviderOnce(t *testing.T) {
 		t.Errorf("rows = %v, want each provider's instances together, by name", names)
 	}
 }
+
+// TestCredentialsPanelEditRefusesToClearAnAuthoredBaseURL: evener/instance/edit
+// reads an empty baseUrl as "leave unchanged" (spec §11.3,
+// appwire.InstanceEditParams), so submitting a cleared field would report
+// success and change nothing. The form says so instead of sending it.
+func TestCredentialsPanelEditRefusesToClearAnAuthoredBaseURL(t *testing.T) {
+	withTestColorProfile(t)
+	m := NewCredentialsPanel()
+	updated, _ := m.Update(InstanceListResultMsg{List: appwire.InstanceListResponse{Instances: []appwire.InstanceEntry{
+		{Name: "work", ProviderID: "anthropic", Protocol: "anthropic", BaseURL: "https://existing/v1", CredentialRequired: true, AuthModes: []string{"apiKey"}},
+	}}})
+	p := updated.(CredentialsPanel)
+
+	// Open the edit form on the selected instance.
+	panel, _ := p.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'e'}})
+	p = panel.(CredentialsPanel)
+	if p.formBaseURL != "https://existing/v1" {
+		t.Fatalf("formBaseURL = %q, want the instance's authored URL", p.formBaseURL)
+	}
+
+	// Move to the Base URL field and erase it.
+	panel, _ = p.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	p = panel.(CredentialsPanel)
+	if p.formActiveField() != "baseURL" {
+		t.Fatalf("active field = %q, want baseURL", p.formActiveField())
+	}
+	for range len("https://existing/v1") {
+		panel, _ = p.Update(tea.KeyMsg{Type: tea.KeyBackspace})
+		p = panel.(CredentialsPanel)
+	}
+
+	if note := flattenPanelText(p.View()); !strings.Contains(note, "remove and re-add the instance to change its endpoint back to the default") {
+		t.Fatalf("the form does not say how to reach the default endpoint:\n%s", p.View())
+	}
+
+	panel, cmd := p.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	p = panel.(CredentialsPanel)
+	if cmd != nil {
+		if msg, ok := cmd().(InstanceEditSubmitMsg); ok {
+			t.Fatalf("the cleared field was submitted anyway: %+v", msg.Params)
+		}
+	}
+	if !p.formOpen {
+		t.Fatal("the form closed on a submit it refused")
+	}
+}
+
+// TestCredentialsPanelEditAllowsAnEmptyBaseURLWhenNoneWasSet: an instance with
+// no base_url of its own has nothing to clear, so the empty field is honest.
+func TestCredentialsPanelEditAllowsAnEmptyBaseURLWhenNoneWasSet(t *testing.T) {
+	withTestColorProfile(t)
+	m := NewCredentialsPanel()
+	updated, _ := m.Update(InstanceListResultMsg{List: appwire.InstanceListResponse{Instances: []appwire.InstanceEntry{
+		{Name: "work", ProviderID: "anthropic", Protocol: "anthropic", CredentialRequired: true, AuthModes: []string{"apiKey"}},
+	}}})
+	p := updated.(CredentialsPanel)
+	panel, _ := p.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'e'}})
+	p = panel.(CredentialsPanel)
+	panel, _ = p.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	p = panel.(CredentialsPanel)
+
+	if note := flattenPanelText(p.View()); strings.Contains(note, "remove and re-add the instance") {
+		t.Fatalf("nothing was cleared, so the form must not warn:\n%s", p.View())
+	}
+	_, cmd := p.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	if cmd == nil {
+		t.Fatal("the edit was not submitted")
+	}
+	msg, ok := cmd().(InstanceEditSubmitMsg)
+	if !ok {
+		t.Fatalf("cmd produced %T, want InstanceEditSubmitMsg", cmd())
+	}
+	if msg.Params.Name != "work" || msg.Params.BaseURL != "" {
+		t.Fatalf("params = %+v", msg.Params)
+	}
+}
+
+// flattenPanelText strips styling and the overlay's box rules, then collapses
+// whitespace, so an assertion on a sentence does not depend on where the
+// panel wrapped it.
+func flattenPanelText(view string) string {
+	plain := ansiPattern.ReplaceAllString(view, "")
+	plain = strings.Map(func(r rune) rune {
+		if strings.ContainsRune("│─╭╮╰╯", r) {
+			return ' '
+		}
+		return r
+	}, plain)
+	return strings.Join(strings.Fields(plain), " ")
+}

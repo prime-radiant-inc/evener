@@ -2595,9 +2595,20 @@ type InstanceCreateParams struct {
 	CredentialHeader string            `json:"credentialHeader,omitempty"`
 }
 
-// InstanceEditParams is the params for evener/instance/edit; empty fields
-// are unchanged. Editing an implicit instance writes a shadowing entry
-// carrying only these fields (spec §11.3).
+// InstanceEditParams is the params for evener/instance/edit. Editing an
+// implicit instance writes a shadowing entry carrying only these fields
+// (spec §11.3).
+//
+// EMPTY MEANS UNCHANGED, not "clear". An empty BaseURL, Protocol or Surface
+// leaves the stored value alone, so this shape cannot express "drop the
+// authored base_url and go back to the registry default" — those three are
+// the only fields where the distinction is reachable, since Name identifies
+// the instance and an empty Vars map is a no-op edit either way. That is a
+// deliberate limit rather than an oversight: expressing a clear needs a wire
+// change (pointer scalars, or a Clear []string), and it is ledgered for a
+// later plan. Both authoring forms — the React edit dialog and the TUI
+// credentials panel — refuse to submit an emptied base URL rather than
+// reporting a success that changes nothing.
 type InstanceEditParams struct {
 	Name     string            `json:"name"`
 	BaseURL  string            `json:"baseUrl,omitempty"`
