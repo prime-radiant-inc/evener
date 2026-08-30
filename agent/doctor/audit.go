@@ -4,6 +4,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io/fs"
+	"path"
 	"slices"
 	"sort"
 	"strings"
@@ -234,6 +236,23 @@ func ParseRunbook(name string, content []byte) (Runbook, error) {
 		return Runbook{}, fmt.Errorf("runbook %s: no audit: block and no CLASSIFY prose steps found", name)
 	}
 	return rb, nil
+}
+
+// ParseRunbookFromFS resolves a runbook by name from a runbooks/ dir inside
+// fsys (path: <skill>/runbooks/<name>.md) and parses it. The two runbook
+// consumers — the evener-doctor CLI and the doctor_evener tool — share this
+// resolution so their name→runbook mapping cannot drift; each supplies its
+// own FS (the bundled skills embed for both, tests substitute fixtures).
+// Name sanitization rejects path traversal before the FS join.
+func ParseRunbookFromFS(fsys fs.FS, skill, name string) (Runbook, error) {
+	if name == "" || strings.ContainsAny(name, "/\\") || strings.Contains(name, "..") {
+		return Runbook{}, fmt.Errorf("invalid runbook name %q", name)
+	}
+	content, err := fs.ReadFile(fsys, path.Join(skill, "runbooks", name+".md"))
+	if err != nil {
+		return Runbook{}, fmt.Errorf("load runbook %q: %w", name, err)
+	}
+	return ParseRunbook(name, content)
 }
 
 // parseAuditFence tries to YAML-decode a fenced block as an `audit:` list,
@@ -651,13 +670,30 @@ func RunAudit(stateBase string, runbook Runbook, opts AuditOpts) (AuditResult, e
 		f := findingsBySignature[sig]
 		check := checkBySignature[sig]
 		f.Description = fmt.Sprintf("Runbook %q check %q tripped (%s) in %d session(s): %s",
-			runbook.Name, check.Title, conditionsSummary(check.Conditions), len(f.Evidence.SessionRefs), strings.Join(f.Evidence.SessionRefs, ", "))
-		f.Evidence.DoctorCommand = fmt.Sprintf("evener doctor audit --runbook %s --sessions %s", runbook.Name, strings.Join(f.Evidence.SessionRefs, ","))
+			runbook.Name, check.Title, conditionsSummary(check.Conditions), len(f.Evidence.SessionRefs), joinSessionRefs(f.Evidence.SessionRefs))
+		f.Evidence.DoctorCommand = fmt.Sprintf("evener doctor audit --runbook %s --sessions %s", runbook.Name, joinSessionRefs(f.Evidence.SessionRefs))
 		res.Findings = append(res.Findings, *f)
 		res.Summary = append(res.Summary, AuditSummaryRow{Title: f.Title, Severity: f.Severity, Sessions: len(f.Evidence.SessionRefs)})
 	}
 	sort.Slice(res.Unreadable, func(i, j int) bool { return res.Unreadable[i].SessionID < res.Unreadable[j].SessionID })
 	return res, nil
+}
+
+// evidenceSessionRefCap bounds how many session refs a Finding's prose
+// fields (Description, DoctorCommand) spell out. Both fields are built from
+// the full SessionRefs list; a fleet-wide trip can carry thousands of refs,
+// which would overflow any envelope carrying the Finding. The structured
+// SessionRefs list stays complete — only the prose is bounded, with an
+// explicit "…and N more" marker so the cut is disclosed, never silent.
+const evidenceSessionRefCap = 200
+
+// joinSessionRefs joins refs comma-separated, appending an "…and N more"
+// marker past the cap. The ref list itself is never truncated.
+func joinSessionRefs(refs []string) string {
+	if len(refs) <= evidenceSessionRefCap {
+		return strings.Join(refs, ", ")
+	}
+	return strings.Join(refs[:evidenceSessionRefCap], ", ") + fmt.Sprintf(" …and %d more", len(refs)-evidenceSessionRefCap)
 }
 
 func conditionsSummary(conds []auditCondition) string {
