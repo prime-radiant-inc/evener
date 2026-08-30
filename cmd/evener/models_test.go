@@ -193,6 +193,30 @@ func TestModelsOldSchemaIsTheFlagDayError(t *testing.T) {
 	}
 }
 
+// TestModelsListOldSchemaIsTheFlagDayError is
+// TestModelsOldSchemaIsTheFlagDayError's sibling for the `list` subcommand:
+// `evener models list` shares loadRegistryForCLI with `inspect`, so an
+// old-schema providers.toml must fail it the same way (spec §14.1).
+func TestModelsListOldSchemaIsTheFlagDayError(t *testing.T) {
+	modelsTestEnv(t)
+	path := filepath.Join(t.TempDir(), "providers.toml")
+	if err := os.WriteFile(path, []byte("[instances.openai]\ntype = \"openai\"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("EVENER_PROVIDERS_CONFIG", path)
+	var stdout, stderr bytes.Buffer
+	err := runModels([]string{"list"}, strings.NewReader(""), &stdout, &stderr)
+	if err == nil {
+		t.Fatalf("an old-schema providers.toml must fail the command; stdout:\n%s", stdout.String())
+	}
+	if !errors.Is(err, registry.ErrOldSchema) || !strings.Contains(err.Error(), "§14.1") {
+		t.Fatalf("error must be the §14.1 pointer: %v", err)
+	}
+	if !strings.Contains(err.Error(), path) {
+		t.Fatalf("error must name the file: %v", err)
+	}
+}
+
 func TestModelsRefreshUsesInjectedFetcher(t *testing.T) {
 	modelsTestEnv(t)
 	raw, _, err := registry.EmbeddedSnapshot()
