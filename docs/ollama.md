@@ -71,6 +71,9 @@ order for the base URL:
    stripped).
 2. Otherwise, if `OLLAMA_HOST` is set, it's normalized:
    - bare host (`ollama.local`) → `http://ollama.local:11434/v1`
+   - the bare host `ollama.com` (Ollama Cloud) is the one exception to that
+     rule → `https://ollama.com:443/v1` (https, port 443, not the usual
+     11434)
    - host:port (`192.168.1.5:11434`) → `http://192.168.1.5:11434/v1`
    - `localhost` → `http://localhost:11434/v1`
    - a bare IPv6 literal (`::1`) → `http://[::1]:11434/v1`
@@ -182,5 +185,7 @@ machine with a GPU and point Evener at it via `OLLAMA_HOST`.
 - [`llm-providers.md`](llm-providers.md) — the registry: layers, instances,
   and how `ollama` fits the implicit-provider table.
 - [`llm-provider-config-and-launch.md`](llm-provider-config-and-launch.md) —
-  the `OLLAMA_HOST`/`OLLAMA_BASE_URL` env vars in context, and how config
-  reaches spawned sessions.
+  credentials, OAuth, and how config reaches spawned sessions.
+- [`developing-evener/environment.md`](developing-evener/environment.md#provider-configuration) —
+  the `OLLAMA_HOST`/`OLLAMA_BASE_URL`/`OLLAMA_API_KEY` env vars alongside
+  every other provider's.

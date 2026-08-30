@@ -53,7 +53,7 @@ native tool-call format is Anthropic's, and they want the Anthropic tool set
 for the same reason — the curated overlay pins `surface = "anthropic"` on
 their rows because their models.dev `family` doesn't otherwise imply it (the
 `kimi-for-coding` and `minimax` rows in the table below). This is also why
-today's separate `openrouter-anthropic` adapter is gone: routing Claude-style
+the separate `openrouter-anthropic` adapter is gone: routing Claude-style
 tool calls through OpenRouter is now an ordinary user entry —
 `base = "openrouter", protocol = "anthropic"` with a model glob pinning
 `surface = "anthropic"` (the `orclaude` recipe in
@@ -110,8 +110,8 @@ this order:
 
 | # | Layer | Source | Refreshable |
 |---|---|---|---|
-| 1 | **Upstream snapshot** | `llm/data/models.dev.json.gz`, the raw models.dev catalog, converted at load | `make refresh-model-catalog` |
-| 2 | **Upstream cache** | `<state-root>/catalog/models.dev.json` + `.meta` (etag, fetched-at), same converter | background, every 24h |
+| 1 | **Upstream snapshot** | `llm/registry/data/models.dev.json.gz`, the raw models.dev catalog, converted at load | `make refresh-model-catalog` |
+| 2 | **Upstream cache** | `<state-root>/catalog/models.dev.json` plus a sibling `models.dev.meta.json` (etag, fetched-at), same converter | background, every 24h |
 | 3 | **Curated overlay** | `llm/registry/data/providers_overlay.toml`, hand-maintained | ships with the release |
 | 4 | **User config** | `<config-root>/providers.toml`; `credentials.toml` is its sibling; OAuth records live at `auth/<instance>.json` under the state root | by the user, the hub, or `evener providers add`/`probe --write` |
 | live | **Live listing** | the instance's models endpoint | per process, cached |
@@ -237,8 +237,11 @@ they're usable only through an explicit `providers.toml` entry with
 `base = "<id>"`: `azure-cognitive-services` (the Azure AI Services host
 form), `moonshotai-cn`, `zhipuai`, `zhipuai-coding-plan`, `minimax-cn`,
 `minimax-coding-plan`, `minimax-cn-coding-plan`. They carry the same
-protocol/caps corrections as their implicit siblings but no curated
-`base_url`, credential, or default model of their own.
+protocol/caps corrections as their implicit siblings, and several of them —
+`zhipuai`, `moonshotai-cn`, `minimax-cn`, `azure-cognitive-services` — do
+resolve a base URL and a credential straight from models.dev with no
+curated pin at all. What none of the seven carries is a curated
+`default_model`, so none of them is ever the automatic default.
 
 ## Reference syntax and model lookup
 
@@ -290,7 +293,7 @@ effort-capability rather than a separately configured
 
 | `thinking_format` | when an effort is set | with `ThinkingAlwaysOn` and no effort |
 |---|---|---|
-| `openai` (default) | `reasoning_effort: <wire>` if effort-capable, else nothing | `reasoning_effort: medium` clamped to `EffortValues` |
+| `openai` (default) | `reasoning_effort: <wire>` if effort-capable, else nothing | `reasoning_effort: medium` clamped to `EffortValues`, if effort-capable, else nothing |
 | `openrouter` | `reasoning: {effort: <wire>}` unconditionally | `reasoning: {enabled: true}` |
 | `zai` | always `thinking: {type: enabled, clear_thinking: false}`; plus `reasoning_effort: <wire>` if effort-capable | `thinking: {type: enabled, clear_thinking: false}` |
 | `deepseek` | always `thinking: {type: enabled}`; plus `reasoning_effort: <wire>` if effort-capable | `thinking: {type: enabled}` |
@@ -404,8 +407,8 @@ Load rules, enforced with errors that name the instance and key:
   `api_key` used to be a hard load-time error; now it yields an empty
   `Credential` with a `Warnings: no credential (<NAME> unset)` entry, and the
   error is deferred to the first request. In `headers` an unset variable
-  **drops the header** (today it's a load error — another explicit behavior
-  change), and an empty string removes an inherited header of that name.
+  **drops the header** (it used to be a load error — another explicit
+  behavior change), and an empty string removes an inherited header of that name.
 - credential inheritance **stops at the endpoint**: an instance whose literal
   `base_url` differs from its base's does not inherit the base's
   `APIKeyEnv`, so a gateway never receives a vendor key by accident.
@@ -525,10 +528,15 @@ It works with no credential configured.
   [--var K=V] [--api-key-env NAME] [--credential-header K=V] [--surface S]`
   — writes the entry, then runs `probe --write` unless `--no-probe`; when no
   credential would resolve, it still writes the entry, skips the probe, and
-  prints what to set. Secrets never go on the command line: `--credential-header`
-  must contain a `$VARIABLE` reference, never a literal secret (an argv is
-  world-readable) — stricter than the hub's credentials-pane form, which
-  accepts a literal because it never touches a process argument list.
+  prints what to set. Secrets never go on the command line:
+  `--credential-header` enforces a stricter grammar than the hub's own
+  instance form does. Every whitespace-separated token must be an auth-scheme
+  word (`Bearer`, …) or a run of `$VARIABLE` references, with at least one
+  reference required, so a literal secret smuggled beside a reference
+  (`Bearer sk-live-abc$X`) is rejected. The hub's form only checks that the
+  value contains a `$` somewhere, which that same smuggled value would
+  pass — the CLI is stricter because an argv is world-readable and lands in
+  shell history.
 
 ## Errors
 

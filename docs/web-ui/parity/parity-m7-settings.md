@@ -318,6 +318,11 @@ separate `credentials*.js` file exists).
 
 ### 7e. Edit instance flow
 
+*(`type`/`apiStyle`/`api_style` throughout 7e-7f are the pre-registry
+schema fields, replaced by `base`/`protocol`; `templates/partials/credentials.html`
+itself is gone — this is a point-in-time record of the old form's behavior
+for whoever ports it.)*
+
 - [ ] "Edit" form shows an API-style radio (responses/chat-completions), pre-checked to current
       value, **only when `inst.type === "openai"`**; Base URL input always, pre-filled —
       `templates/partials/credentials.html:232-253`

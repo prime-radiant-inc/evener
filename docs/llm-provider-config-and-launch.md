@@ -64,8 +64,7 @@ documents. The store never sees a separate lookup table for it.
 
 The complete list — API keys and base URLs together — lives in
 [`docs/developing-evener/environment.md`](developing-evener/environment.md#provider-configuration).
-This necessarily duplicates most of that table; the two are meant to stay in
-sync, so update both together on a future change.
+Single source, not duplicated here, so it can't drift out of sync.
 
 ## OpenAI OAuth and the Codex transport
 
@@ -255,9 +254,9 @@ The TUI strips a model chip's instance-name prefix generically now
 it takes whatever the first slash-segment is, rather than matching a
 hardcoded provider allowlist, so it stays correct as instance names change.
 The web hub's frontend was rewritten to a React SPA as part of a separate
-effort; a search of the current frontend source turned up no equivalent
-hardcoded-allowlist function to describe here (today's doc's specific claim
-about `spawn.js`'s prefix list no longer applies — that file is gone).
+effort — the old `spawn.js` and its hardcoded prefix list are gone along
+with it, and a search of the current frontend source turned up no
+equivalent allowlist function to describe here.
 
 ## Upgrading from the old schema
 
