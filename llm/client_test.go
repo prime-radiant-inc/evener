@@ -173,7 +173,7 @@ func TestClient_DefaultAdapterTimeout_DoesNotOverrideExplicit(t *testing.T) {
 
 // TestClient_GoogleProviderRoutes verifies that the "google" provider key routes
 // to the registered "google" adapter directly. After PRI-1880, the Gemini profile
-// id is "google" so req.Provider=="google" hits c.providers["google"] without any
+// id is "google" so req.Provider=="google" hits c.overrides["google"] without any
 // rewrite. The old gemini→google alias in normalizeProviderName is removed.
 func TestClient_GoogleProviderRoutes(t *testing.T) {
 	c := NewClient()
@@ -686,8 +686,8 @@ func TestClient_Complete_StampsInstanceNameOnResponse(t *testing.T) {
 	c := NewClient()
 	// Register adapter under instance name "work"; it hardcodes "openaicompat".
 	adapter := &instanceAdapter{typeName: "openaicompat"}
-	c.providers["work"] = adapter
-	c.defaultProvider = "work"
+	c.overrides["work"] = adapter
+	c.pinnedDefault = "work"
 
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
@@ -705,8 +705,8 @@ func TestClient_Complete_StampsInstanceNameOnError(t *testing.T) {
 	// Adapter hardcodes "openaicompat" in its error; instance name is "work".
 	adapterErr := ErrorFromHTTPStatus("openaicompat", 429, "rate limited", nil, nil)
 	adapter := &instanceAdapter{typeName: "openaicompat", errToReturn: adapterErr}
-	c.providers["work"] = adapter
-	c.defaultProvider = "work"
+	c.overrides["work"] = adapter
+	c.pinnedDefault = "work"
 
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
@@ -729,8 +729,8 @@ func TestClient_Complete_PreservesEmptyProviderError(t *testing.T) {
 	c := NewClient()
 	// A ConfigurationError has Provider()==""; the client must leave it alone.
 	adapter := &instanceAdapter{typeName: "openaicompat", errToReturn: &ConfigurationError{Message: "simulated"}}
-	c.providers["work"] = adapter
-	c.defaultProvider = "work"
+	c.overrides["work"] = adapter
+	c.pinnedDefault = "work"
 
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
@@ -750,8 +750,8 @@ func TestClient_Complete_PreservesEmptyProviderError(t *testing.T) {
 func TestClient_Stream_StampsInstanceNameOnFinishResponse(t *testing.T) {
 	c := NewClient()
 	adapter := &instanceAdapter{typeName: "openaicompat"}
-	c.providers["work"] = adapter
-	c.defaultProvider = "work"
+	c.overrides["work"] = adapter
+	c.pinnedDefault = "work"
 
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
@@ -779,8 +779,8 @@ func TestClient_Stream_StampsInstanceNameOnErrorEvent(t *testing.T) {
 	c := NewClient()
 	adapterErr := ErrorFromHTTPStatus("openaicompat", 500, "server error", nil, nil)
 	adapter := &instanceAdapter{typeName: "openaicompat", errToReturn: adapterErr}
-	c.providers["work"] = adapter
-	c.defaultProvider = "work"
+	c.overrides["work"] = adapter
+	c.pinnedDefault = "work"
 
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
@@ -812,8 +812,8 @@ func TestClient_Stream_PreservesEmptyProviderErrorEvent(t *testing.T) {
 	c := NewClient()
 	// ConfigurationError has Provider()=="" — must not be stamped.
 	adapter := &instanceAdapter{typeName: "openaicompat", errToReturn: &ConfigurationError{Message: "simulated"}}
-	c.providers["work"] = adapter
-	c.defaultProvider = "work"
+	c.overrides["work"] = adapter
+	c.pinnedDefault = "work"
 
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
@@ -847,8 +847,8 @@ func TestClient_SetNameToTag_StampsBehaviorTagOnCompleteError(t *testing.T) {
 	c := NewClient()
 	adapterErr := ErrorFromHTTPStatus("openaicompat", 429, "rate limited", nil, nil)
 	adapter := &instanceAdapter{typeName: "openaicompat", errToReturn: adapterErr}
-	c.providers["work"] = adapter
-	c.defaultProvider = "work"
+	c.overrides["work"] = adapter
+	c.pinnedDefault = "work"
 	c.SetNameToTag(map[string]string{"work": "openai"})
 
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
@@ -870,8 +870,8 @@ func TestClient_SetNameToTag_StampsBehaviorTagOnStreamError(t *testing.T) {
 	c := NewClient()
 	adapterErr := ErrorFromHTTPStatus("openaicompat", 500, "server error", nil, nil)
 	adapter := &instanceAdapter{typeName: "openaicompat", errToReturn: adapterErr}
-	c.providers["work"] = adapter
-	c.defaultProvider = "work"
+	c.overrides["work"] = adapter
+	c.pinnedDefault = "work"
 	c.SetNameToTag(map[string]string{"work": "openai"})
 
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
@@ -905,8 +905,8 @@ func TestClient_NilNameToTag_BehaviorTagEmpty(t *testing.T) {
 	c := NewClient()
 	adapterErr := ErrorFromHTTPStatus("openai", 429, "rate limited", nil, nil)
 	adapter := &instanceAdapter{typeName: "openai", errToReturn: adapterErr}
-	c.providers["openai"] = adapter
-	c.defaultProvider = "openai"
+	c.overrides["openai"] = adapter
+	c.pinnedDefault = "openai"
 
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()

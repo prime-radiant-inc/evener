@@ -75,7 +75,7 @@ func TestLLMCallProfilesAndOptions(t *testing.T) {
 	trace := filepath.Join(t.TempDir(), "trace.out")
 	// Provider lookup will fail after both profilers have started and deferred stops run.
 	err := llmcallMain([]string{"--provider", "missing", "--model", "m", "--cpu-profile", cpu, "--trace", trace, "--timeout", "1s", "p"}, &out, &errOut)
-	if err == nil || !strings.Contains(err.Error(), "unknown provider: missing") {
+	if err == nil || !strings.Contains(err.Error(), `unknown instance "missing"`) {
 		t.Fatalf("provider failure = %v, want missing-provider error", err)
 	}
 	for _, p := range []string{cpu, trace} {
