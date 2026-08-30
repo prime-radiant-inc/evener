@@ -465,14 +465,42 @@ func runProvidersAdd(args []string, stdout, stderr io.Writer) error {
 		_, _ = fmt.Fprintf(stdout, "%s: %s\n", name, w)
 	}
 	if res.Credential.Source == "none" && res.Transport.Auth != registry.AuthNone && res.Transport.Auth != registry.AuthOptionalBearer {
-		_, _ = fmt.Fprintf(stdout, "no credential resolves for %s: set %s, add --api-key-env, or enter a key with the hub's credentials pane (credentials.toml [providers.%s])\n",
-			name, instanceKeyVar(name), name)
+		if credentialPointerHelps(entry, res.Transport.Auth) {
+			_, _ = fmt.Fprintf(stdout, "no credential resolves for %s: set %s, add --api-key-env, or enter a key with the hub's credentials pane (credentials.toml [providers.%s]); not probing\n",
+				name, instanceKeyVar(name), name)
+		} else {
+			_, _ = fmt.Fprintf(stdout, "no credential resolves for %s (the warning above names what to set); not probing\n", name)
+		}
 		return nil
 	}
 	if *noProbe {
 		return nil
 	}
-	return probeInstance(reloaded, name, true, stdout)
+	if err := probeInstance(reloaded, name, true, stdout); err != nil {
+		// The entry is on disk and reported; a probe that could not run is a
+		// report, not a failed add. Returning it would tell a script the whole
+		// command failed after providers.toml changed.
+		_, _ = fmt.Fprintf(stderr, "probe skipped: %v\n", err)
+	}
+	return nil
+}
+
+// credentialPointerHelps reports whether "set <NAME>_API_KEY, add
+// --api-key-env, or use the hub's credentials pane" would actually resolve
+// this instance. It would not for an entry carrying its own api_key or
+// credential_headers — resolution stops there and never reaches the store or
+// the environment (spec §10) — nor for a scheme that authenticates some other
+// way, whose own warning already names the real fix (spec §5.1, §9.5).
+func credentialPointerHelps(entry registry.Provider, auth string) bool {
+	if entry.APIKey != "" || len(entry.CredentialHeaders) > 0 {
+		return false
+	}
+	switch auth {
+	case registry.AuthBearer, registry.AuthOptionalBearer, registry.AuthHeader:
+		return true
+	default:
+		return false
+	}
 }
 
 // instanceKeyVar is the environment variable a custom-named instance falls

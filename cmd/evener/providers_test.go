@@ -250,8 +250,56 @@ func TestProvidersAddWritesEntryAndSkipsProbeWithoutCredential(t *testing.T) {
 	if err != nil || !exists || l.Providers["gw"].CredentialHeaders["Authorization"] != "Bearer $PORTKEY_KEY" || l.Providers["gw"].Protocol != "openai-chat" {
 		t.Fatalf("written entry: %v %v %+v", err, exists, l.Providers["gw"])
 	}
-	if !strings.Contains(stdout.String(), "PORTKEY_KEY") || !strings.Contains(stdout.String(), "no credential resolves for gw") {
-		t.Fatalf("add prints what to set when no credential resolves:\n%s", stdout.String())
+	out := stdout.String()
+	if !strings.Contains(out, "PORTKEY_KEY") || !strings.Contains(out, "no credential resolves for gw") {
+		t.Fatalf("add prints what to set when no credential resolves:\n%s", out)
+	}
+	// An entry carrying credential_headers never reaches the store or the
+	// environment (spec §10 resolution order), so suggesting them would send
+	// the user down a dead end — only PORTKEY_KEY resolves this instance.
+	if strings.Contains(out, "GW_API_KEY") || strings.Contains(out, "--api-key-env") || strings.Contains(out, "credentials pane") {
+		t.Fatalf("the pointer must not suggest layers this entry can never reach:\n%s", out)
+	}
+}
+
+// The pointer is printed when it is the truth: an entry with no api_key and
+// no credential_headers really is resolved by the store or the environment.
+func TestProvidersAddPrintsTheCredentialPointerWhenItHelps(t *testing.T) {
+	providersTestEnv(t, nil)
+	var stdout, stderr bytes.Buffer
+	if err := runProviders([]string{"add", "gw", "--base", "openai", "--base-url", "https://gw.example.com/v1"}, nil, &stdout, &stderr); err != nil {
+		t.Fatalf("add: %v\n%s", err, stderr.String())
+	}
+	out := stdout.String()
+	for _, want := range []string{"no credential resolves for gw", "GW_API_KEY", "--api-key-env", "credentials.toml [providers.gw]"} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("missing %q in\n%s", want, out)
+		}
+	}
+}
+
+// A probe that cannot run is a report, not a failed add: providers.toml
+// changed, so a script must not see the command fail.
+func TestProvidersAddExitsZeroWhenTheProbeCannotRun(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusNotFound)
+	}))
+	t.Cleanup(srv.Close)
+	root := providersTestEnv(t, nil)
+
+	var stdout, stderr bytes.Buffer
+	if err := runProviders([]string{"add", "gw", "--base", "openai-compatible", "--base-url", srv.URL}, nil, &stdout, &stderr); err != nil {
+		t.Fatalf("the entry was written, so add succeeded: %v", err)
+	}
+	if !strings.Contains(stdout.String(), "wrote [providers.gw]") {
+		t.Fatalf("the write must still be reported:\n%s", stdout.String())
+	}
+	if !strings.Contains(stderr.String(), "no model to send") {
+		t.Fatalf("the probe failure must be reported on stderr:\n%s", stderr.String())
+	}
+	l, exists, err := registry.ReadConfigFile(filepath.Join(root, "providers.toml"))
+	if err != nil || !exists || l.Providers["gw"].Base != "openai-compatible" {
+		t.Fatalf("the entry must survive a failed probe: %v %v %+v", err, exists, l.Providers["gw"])
 	}
 }
 
