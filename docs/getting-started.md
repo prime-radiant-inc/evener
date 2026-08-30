@@ -88,12 +88,15 @@ web UI is the easiest place to add one: open
 `http://127.0.0.1:9180/credentials` and paste an API key. The page writes
 `${XDG_CONFIG_HOME:-$HOME/.config}/evener/credentials.toml` with owner-only
 permissions. If `EVENER_PROVIDERS_CONFIG` points to a custom `providers.toml`,
-Evener stores `credentials.toml` beside it.
+Evener stores `credentials.toml` beside it, unless `EVENER_CREDENTIALS_CONFIG`
+names a different path.
 
 Two alternatives cover other workflows. Environment variables such as
 `OPENAI_API_KEY` and `ANTHROPIC_API_KEY` work as a fallback when the
-credentials file has no entry for that provider. For OpenAI you can also sign
-in with OAuth from the credentials page instead of managing a key. For the
+credentials file has no entry for that instance. You can also sign in to
+OpenAI's ChatGPT/Codex subscription with OAuth from the credentials page —
+that authenticates the separate `openai-codex` instance, not `openai`, and
+`openai-codex` is preferred over `openai` when both are available. For the
 full resolution order and provider-specific behavior, see
 [docs/llm-provider-config-and-launch.md](llm-provider-config-and-launch.md).
 

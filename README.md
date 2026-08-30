@@ -75,11 +75,13 @@ that plugin and become available through the plugin path.
 
 Install does not create provider credentials. Hosted/auth-required providers
 can be configured through the hub or TUI credentials UI, supported provider
-environment variables such as `OPENAI_API_KEY`, or OpenAI OAuth. Local/auth-none
+environment variables such as `OPENAI_API_KEY`, or OpenAI OAuth (which signs
+in to the separate `openai-codex` instance, not `openai`). Local/auth-none
 providers such as Ollama may not need credentials. The default credentials file
 is `${XDG_CONFIG_HOME:-$HOME/.config}/evener/credentials.toml`; when
 `EVENER_PROVIDERS_CONFIG` points to a custom `providers.toml`, the credentials
-file is beside it. See [docs/developing-evener/environment.md](docs/developing-evener/environment.md)
+file is beside it unless `EVENER_CREDENTIALS_CONFIG` names a different one. See
+[docs/developing-evener/environment.md](docs/developing-evener/environment.md)
 for the complete environment variable reference.
 
 ## Quick start: the hub and web UI
@@ -229,7 +231,7 @@ its shell tool and redirects the command's own logs:
 
 ### Provider and model
 
-Evener takes a provider-qualified model in one value: `--model <provider/model>`. Providers: `openai`, `anthropic`, `google`, `minimax`, `openrouter`, `openrouter-anthropic`, `kimi`, `glm`, `ollama`.
+Evener takes a provider-qualified model in one value: `--model <provider/model>`. Every provider with a resolvable credential is usable with no config file: `anthropic`, `openai-codex`, `openai`, `google`, `groq`, `zai`, `deepseek`, `openrouter`, `xai`, `mistral`, `cerebras`, `togetherai`, `moonshotai`, `kimi-for-coding`, `minimax`, `zai-coding-plan`, `google-vertex-anthropic`, `google-vertex`, `amazon-bedrock`, `azure`, `ollama`. A `providers.toml` entry adds anything else. See [docs/llm-providers.md](docs/llm-providers.md).
 
 Use `--model` or set `EVENER_MODEL` to the same `provider/model` format.
 
@@ -244,7 +246,7 @@ variables:
 |---|---|
 | `EVENER_MODEL` | Default model as `provider/model` (used when `--model` is omitted) |
 | `EVENER_REASONING_EFFORT` | Default reasoning effort |
-| `EVENER_PROVIDERS_CONFIG` | Path to `providers.toml` |
+| `EVENER_PROVIDERS_CONFIG` | Path to `providers.toml`. Set and empty means "no user layer" — see [docs/llm-provider-config-and-launch.md](docs/llm-provider-config-and-launch.md) |
 | `OPENAI_API_KEY` | OpenAI API key |
 | `ANTHROPIC_API_KEY` | Anthropic API key |
 | `GEMINI_API_KEY` | Google Gemini API key |
