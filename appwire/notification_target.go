@@ -5,7 +5,7 @@ package appwire
 // round trip. Every params struct the app-event projector emits implements it;
 // the value receiver mutates a copy and returns it, so callers holding the
 // params as `any` get the restamped value back. Params the projector builds as
-// map[string]any carry threadId/ref keys instead and are restamped directly.
+// map[string]any carry threadId/ref keys instead and are restamped on a copy.
 type NotificationTargeted interface {
 	WithNotificationTarget(threadID, ref string) NotificationTargeted
 }

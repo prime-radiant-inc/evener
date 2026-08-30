@@ -43,6 +43,9 @@ func TestStampAppNotificationTargetWithMap(t *testing.T) {
 	if stamped["message"] != "boom" {
 		t.Fatalf("message = %v, want the original payload preserved", stamped["message"])
 	}
+	if params["threadId"] != "old-id" || params["ref"] != "old-ref" {
+		t.Fatalf("caller's map = (%v, %v), want it left unmutated", params["threadId"], params["ref"])
+	}
 }
 
 // TestStampAppNotificationTargetPassesThroughUnknownParams pins the fallback:
