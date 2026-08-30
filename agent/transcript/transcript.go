@@ -219,6 +219,12 @@ type Writer struct {
 	seq       int
 	closeOnce sync.Once
 	closed    atomic.Bool
+	// header is the validated header of the resumed transcript, retained
+	// from the resume scan so callers that already hold the decoded entries
+	// can project them without re-reading the file for its header. Zero for
+	// a writer that created a fresh transcript; NewWriter callers use
+	// HeaderOf / WriteFile for the same data.
+	header Header
 
 	// SyncInterval controls how often Append calls fsync.
 	// If 0, every Append fsyncs (backward-compatible default for tests).
@@ -338,7 +344,18 @@ func newWriterFS(fs afero.Fs, path string, header Header, sync bool) (*Writer, e
 		}
 	}
 
-	return &Writer{fs: fs, file: f, lastSync: time.Now()}, nil
+	return &Writer{fs: fs, file: f, lastSync: time.Now(), header: header}, nil
+}
+
+// Header returns the transcript's validated header: the header this writer
+// wrote (NewWriter), or the one the resume scan validated
+// (OpenWriterForSession). Callers that already hold the decoded entries of
+// the same scan use it to project them without re-reading the file.
+func (w *Writer) Header() Header {
+	if w == nil {
+		return Header{}
+	}
+	return w.header
 }
 
 // Append writes a turn as an Entry to the JSONL file.
@@ -579,6 +596,7 @@ func resumeWriter(fs afero.Fs, f afero.File, expectedSessionID string) (*Writer,
 	var validLen int64
 	hasPartialTail := false
 	headerRead := false
+	var header Header
 	for {
 		line, complete, bytesRead, readErr := ReadLine(reader, transcriptJSONLMaxLineBytes)
 		if readErr != nil {
@@ -595,7 +613,8 @@ func resumeWriter(fs afero.Fs, f afero.File, expectedSessionID string) (*Writer,
 			continue
 		}
 		if !headerRead {
-			header, err := DecodeHeader(line)
+			var err error
+			header, err = DecodeHeader(line)
 			if err != nil {
 				_ = f.Close()
 				return nil, nil, fmt.Errorf("parse transcript header: %w", err)
@@ -645,5 +664,5 @@ func resumeWriter(fs afero.Fs, f afero.File, expectedSessionID string) (*Writer,
 		return nil, nil, fmt.Errorf("seek to end of transcript: %w", err)
 	}
 
-	return &Writer{fs: fs, file: f, seq: nextSeq, lastSync: time.Now()}, entries, nil
+	return &Writer{fs: fs, file: f, seq: nextSeq, lastSync: time.Now(), header: header}, entries, nil
 }

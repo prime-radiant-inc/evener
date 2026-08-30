@@ -21,6 +21,7 @@ import (
 	"primeradiant.com/evener/agent/sandbox"
 	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/agent/task"
+	"primeradiant.com/evener/agent/transcript"
 	"primeradiant.com/evener/identifier"
 	"primeradiant.com/evener/llm"
 )
@@ -314,6 +315,9 @@ type testConfig struct {
 	// delegateAttentionReadFold replaces only resident attention verification
 	// reads. Nil preserves the production transcript fold.
 	delegateAttentionReadFold func(string, string) (delegateAttentionFold, error)
+	// delegateAttentionFoldEntries replaces only the in-memory attention fold
+	// over restore-retained entries. Nil preserves the production fold.
+	delegateAttentionFoldEntries func([]transcript.Entry, string) (delegateAttentionFold, error)
 	// delegateAttentionOpenWriter replaces only transcript resume for attention
 	// repair. Nil preserves the production transcript opener.
 	delegateAttentionOpenWriter delegateAttentionWriterOpener

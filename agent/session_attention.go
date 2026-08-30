@@ -795,7 +795,13 @@ func (s *Session) resetStableDelegateAttentionRetry() {
 // rearmRootDelegateAttentionFromTranscript reconstructs the root wake cache
 // from the only durable attention authority. It performs no provider or Session
 // construction and is called after the root transcript is attached/replayed.
-func (s *Session) rearmRootDelegateAttentionFromTranscript() error {
+//
+// entries is the final in-memory entry list restore produced (refreshed from
+// disk when delegate delivery replay appended to the transcript): folding it
+// instead of re-opening the file is what keeps resume from strict-decoding
+// the whole transcript a second time. Callers without an entry list use
+// rearmRootDelegateAttentionFromTranscriptReload.
+func (s *Session) rearmRootDelegateAttentionFromTranscript(entries []transcript.Entry) error {
 	if !s.isRootDelegateAttentionReceiver() {
 		return nil
 	}
@@ -810,7 +816,13 @@ func (s *Session) rearmRootDelegateAttentionFromTranscript() error {
 		s.attentionMu.Unlock()
 		return nil
 	}
-	fold, err := s.readDelegateAttentionFold(transcriptPath(stateDir, sessionID), sessionID)
+	var fold delegateAttentionFold
+	var err error
+	if entries != nil {
+		fold, err = s.foldDelegateAttentionEntries(entries, sessionID)
+	} else {
+		fold, err = s.readDelegateAttentionFold(transcriptPath(stateDir, sessionID), sessionID)
+	}
 	if err != nil {
 		s.attentionMu.Unlock()
 		return err
@@ -829,6 +841,26 @@ func (s *Session) rearmRootDelegateAttentionFromTranscript() error {
 		s.notify()
 	}
 	return nil
+}
+
+// rearmRootDelegateAttentionFromTranscriptReload re-derives the root wake
+// cache from the transcript FILE, for callers (the fresh-session
+// construction path) that have no decoded entry list in hand.
+func (s *Session) rearmRootDelegateAttentionFromTranscriptReload() error {
+	return s.rearmRootDelegateAttentionFromTranscript(nil)
+}
+
+// foldDelegateAttentionEntries is the entries form of
+// readDelegateAttentionFold: same fold over the same entry list, no file
+// read. sessionID is unused by the fold itself (the entries were already
+// validated against the session by the pass that decoded them) but is kept
+// so the testOnly delegateAttentionReadFold seam below stays shape-stable
+// for both forms.
+func (s *Session) foldDelegateAttentionEntries(entries []transcript.Entry, sessionID string) (delegateAttentionFold, error) {
+	if foldEntries := s.cfg.testOnly.delegateAttentionFoldEntries; foldEntries != nil {
+		return foldEntries(entries, sessionID)
+	}
+	return foldDelegateAttention(entries)
 }
 
 func (s *Session) retainDelegateAttentionTurn(turn schema.Turn) error {

@@ -534,7 +534,16 @@ func runServeWithDeps(args []string, deps serveDeps) error {
 	// transcript that cannot be projected is a session this daemon must not
 	// serve, because every read after it would silently start mid-conversation.
 	workspaceRef := appwire.Ref{SourceID: "local", ThreadID: sess.ID()}.String()
-	prepared, err := deps.prepareAppIdentity("local", sess.ID(), workspaceRef, sess.TranscriptPath())
+	var prepared server.PreparedAppIdentity
+	if header, entries, ok := sess.RestoredTranscript(); ok {
+		// Resume already strict-decoded this transcript once (restore's
+		// OpenWriterForSession pass) and validated its header against the
+		// session id; projecting from those entries keeps the daemon's
+		// startup from re-reading and re-decoding the whole append-only file.
+		prepared, err = server.PrepareAppIdentityFromEntries("local", sess.ID(), workspaceRef, header, entries)
+	} else {
+		prepared, err = deps.prepareAppIdentity("local", sess.ID(), workspaceRef, sess.TranscriptPath())
+	}
 	if err != nil {
 		sess.Close()
 		listener.Close() //nolint:errcheck // returning the preparation failure; the close error is not actionable

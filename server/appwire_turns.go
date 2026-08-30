@@ -8,6 +8,7 @@ import (
 	"sync"
 
 	"primeradiant.com/evener/agent/schema"
+	"primeradiant.com/evener/agent/transcript"
 	"primeradiant.com/evener/appwire"
 	"primeradiant.com/evener/internal/appserver"
 	"primeradiant.com/evener/internal/apptranscript"
@@ -30,10 +31,10 @@ var (
 	appTurnsItemForDeltaHook func(*appwire.ThreadItem)
 )
 
-// appTurnsFromTranscriptFile projects a whole session transcript into AppWire
-// turns. This runs once per identity, at PrepareAppIdentity time, and never on
-// a read: the installed snapshot is the sole authority for every daemon turn
-// read, so nothing reopens this file to answer an RPC.
+// appTurnsFromTranscriptFile projects a whole session transcript file into
+// AppWire turns. This runs once per identity, at PrepareAppIdentity time, and
+// never on a read: the installed snapshot is the sole authority for every
+// daemon turn read, so nothing reopens this file to answer an RPC.
 //
 // It also reports the highest entry index the projection consumed. Persisted
 // turn ids are "turn_<entry index>", so that figure is the floor a live
@@ -48,6 +49,27 @@ func appTurnsFromTranscriptFile(path string) ([]appwire.Turn, int, error) {
 		return apptranscript.ProjectTurn(turnID, entryIndex, turn, toolNames, nil, apptranscript.ToolResultOutputImages)
 	})
 	return turns, entries, err
+}
+
+// appTurnsFromEntries projects already-decoded transcript entries into
+// AppWire turns. It is the in-memory form of appTurnsFromTranscriptFile: the
+// resume path strict-decodes the transcript once (OpenWriterForSession) and
+// hands the retained entries here rather than re-reading the file.
+//
+// The shared projector below guarantees the two forms agree: entry indexing
+// (and therefore every persisted turn id) is 1-based over the entries in
+// order, identical to the file scan's callback indexing, and the header is
+// the same header the file scan read.
+func appTurnsFromEntries(header transcript.Header, entries []transcript.Entry) ([]appwire.Turn, int, error) {
+	toolNames := map[string]string{}
+	highest := 0
+	turns, err := apptranscript.TurnsFromEntries(header, entries, func(turn schema.Turn, turnID string, entryIndex int) []appwire.ThreadItem {
+		if entryIndex > highest {
+			highest = entryIndex
+		}
+		return apptranscript.ProjectTurn(turnID, entryIndex, turn, toolNames, nil, apptranscript.ToolResultOutputImages)
+	})
+	return turns, highest, err
 }
 
 type appTurnSnapshot struct {

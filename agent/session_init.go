@@ -420,7 +420,7 @@ func NewSession(client *llm.Client, profile *provider.Profile, env execenv.Execu
 	if err := s.flushPendingDelegateDeliveries(); err != nil {
 		return nil, fmt.Errorf("replay delegate deliveries: %w", err)
 	}
-	if err := s.rearmRootDelegateAttentionFromTranscript(); err != nil {
+	if err := s.rearmRootDelegateAttentionFromTranscriptReload(); err != nil {
 		return nil, fmt.Errorf("rearm root delegate attention: %w", err)
 	}
 
@@ -674,12 +674,16 @@ func RestoreSessionFromMetaWithConfig(client *llm.Client, profile *provider.Prof
 	// every other open or parse error fails the resume closed.
 	var resumeTranscript *transcript.Writer
 	var transcriptEntries []transcript.Entry
+	var restoredTranscriptHeader transcript.Header
 	if cfg.StateDir != "" {
 		tpath := filepath.Join(cfg.StateDir, sessionsSubdir, meta.ID+".transcript.jsonl")
 		var openErr error
 		resumeTranscript, transcriptEntries, openErr = transcript.OpenWriterForSession(tpath, meta.ID)
 		if openErr != nil && !errors.Is(openErr, os.ErrNotExist) {
 			return nil, fmt.Errorf("open transcript for resume: %w", openErr)
+		}
+		if resumeTranscript != nil {
+			restoredTranscriptHeader = resumeTranscript.Header()
 		}
 	}
 	defer func() {
@@ -1015,8 +1019,10 @@ func RestoreSessionFromMetaWithConfig(client *llm.Client, profile *provider.Prof
 			return nil, fmt.Errorf("refresh transcript after delegate delivery replay: header session %q does not match %q", refreshed.Header.SessionID, s.id)
 		}
 		transcriptEntries = refreshed.Entries
+		restoredTranscriptHeader = refreshed.Header
 	}
-	if err := s.rearmRootDelegateAttentionFromTranscript(); err != nil {
+	s.setRestoredTranscript(restoredTranscriptHeader, transcriptEntries)
+	if err := s.rearmRootDelegateAttentionFromTranscript(transcriptEntries); err != nil {
 		return nil, fmt.Errorf("rearm root delegate attention: %w", err)
 	}
 	if err := s.recoverClientMutationFailures(); err != nil {
