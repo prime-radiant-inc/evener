@@ -2377,7 +2377,7 @@ func (h *tuiE2EHub) handleModelList(_ context.Context, params appwire.ModelListP
 	}
 	if authRequired {
 		return appwire.ModelListResponse{
-			Data: []appwire.ModelDescriptor{{Provider: "openai", Model: "gpt-5"}},
+			Data: []appwire.ModelDescriptor{tuiE2EGPT5Descriptor()},
 			Diagnostics: []appwire.ModelListDiagnostic{{
 				Provider: "openai",
 				Title:    "Login required",
@@ -2386,7 +2386,24 @@ func (h *tuiE2EHub) handleModelList(_ context.Context, params appwire.ModelListP
 			}},
 		}, nil
 	}
-	return appwire.ModelListResponse{Data: []appwire.ModelDescriptor{{Provider: "openai", Model: "gpt-5"}}}, nil
+	return appwire.ModelListResponse{Data: []appwire.ModelDescriptor{tuiE2EGPT5Descriptor()}}, nil
+}
+
+// tuiE2EGPT5Descriptor is the model row a real hub delivers: identity plus the
+// capability and cost fields it fills from the registry's resolved row. The
+// picker renders its meta tail from these, so the fixture has to carry them
+// for the popup to lay out the way the daemon's does.
+func tuiE2EGPT5Descriptor() appwire.ModelDescriptor {
+	return appwire.ModelDescriptor{
+		Provider:             "openai",
+		Model:                "gpt-5",
+		ContextWindow:        new(272_000),
+		SupportsTools:        new(true),
+		SupportsVision:       new(true),
+		SupportsReasoning:    new(true),
+		InputCostPerMillion:  new(1.25),
+		OutputCostPerMillion: new(10.0),
+	}
 }
 
 func (h *tuiE2EHub) handleAuthStatus(_ context.Context, params appwire.AuthStatusParams) (appwire.AuthStatusResponse, error) {

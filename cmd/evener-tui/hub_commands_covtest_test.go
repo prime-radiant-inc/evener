@@ -625,10 +625,10 @@ func TestCovIsDatedSnapshotModelID(t *testing.T) {
 	}
 }
 
-// TestCovModelInfoMetaTail exercises catalog meta tail rendering.
+// TestCovModelInfoMetaTail exercises descriptor meta tail rendering.
 func TestCovModelInfoMetaTail(t *testing.T) {
-	// Nil.
-	if got := modelInfoMetaTail(nil); got != "" {
+	// A descriptor carrying nothing but its identity.
+	if got := modelInfoMetaTail(appwire.ModelDescriptor{Provider: "p", Model: "m"}); got != "" {
 		t.Fatalf("got %q, want empty", got)
 	}
 }

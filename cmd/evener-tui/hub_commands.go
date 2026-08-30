@@ -16,7 +16,6 @@ import (
 	"primeradiant.com/evener/cmd/evener-tui/internal/clipboard"
 	"primeradiant.com/evener/cmd/evener-tui/internal/transcript"
 	"primeradiant.com/evener/cmd/evener-tui/internal/tuipick"
-	"primeradiant.com/evener/llm"
 )
 
 type hubTreeMsg struct {
@@ -296,8 +295,8 @@ func fetchHubSessionModels(client *appwire.Client, workingDir string) tea.Cmd {
 }
 
 // fetchHubVisionSessionModels loads the session's launchable models and filters
-// them to vision-capable ones (embedded catalog), prepending the two pseudo-
-// entries of the vision setting: current-model and off.
+// them to the vision-capable ones, prepending the two pseudo-entries of the
+// vision setting: current-model and off.
 func fetchHubVisionSessionModels(client *appwire.Client, workingDir string) tea.Cmd {
 	workingDir = strings.TrimSpace(workingDir)
 	return func() tea.Msg {
@@ -305,26 +304,31 @@ func fetchHubVisionSessionModels(client *appwire.Client, workingDir string) tea.
 		if err != nil {
 			return hubVisionModelsMsg{err: err}
 		}
-		return hubVisionModelsMsg{models: visionModelPickerItems(modelPickerItemsFromResponse(resp, false))}
+		// Recent descriptors are the same rows the picker's Recent group is
+		// built from, so both halves of the item list can be matched.
+		descriptors := append(append([]appwire.ModelDescriptor(nil), resp.Recent...), resp.Data...)
+		return hubVisionModelsMsg{models: visionModelPickerItems(descriptors, modelPickerItemsFromResponse(resp, false))}
 	}
 }
 
-func visionModelPickerItems(items []tuipick.ModelPickerItem) []tuipick.ModelPickerItem {
-	cat := llm.EmbeddedModelCatalog()
-	capable := func(id string) bool {
-		if cat == nil {
-			return false
+// visionModelPickerItems keeps the picker items whose descriptor reports vision
+// support, prepending the two pseudo-entries of the vision setting. A
+// descriptor that says nothing about vision is not vision-capable: the picker
+// only offers a model the registry vouches for.
+func visionModelPickerItems(models []appwire.ModelDescriptor, items []tuipick.ModelPickerItem) []tuipick.ModelPickerItem {
+	capable := make(map[string]bool, len(models))
+	for _, descriptor := range models {
+		if descriptor.SupportsVision == nil || !*descriptor.SupportsVision {
+			continue
 		}
-		_, model := splitProviderModel(id)
-		mi := cat.LookupModelInfo(model)
-		return mi != nil && mi.SupportsVision
+		capable[strings.TrimSpace(descriptor.Provider)+"/"+strings.TrimSpace(descriptor.Model)] = true
 	}
 	out := []tuipick.ModelPickerItem{
 		{ID: "", Display: "Current model"},
 		{ID: "off", Display: "Off"},
 	}
 	for _, item := range items {
-		if capable(item.ID) {
+		if capable[item.ID] {
 			out = append(out, item)
 		}
 	}
@@ -444,32 +448,28 @@ func formatModelContextWindow(n int) string {
 	}
 }
 
-// modelInfoMetaTail builds the model picker row's compact caps/ctx/price
-// tail from a direct llm.EmbeddedModelCatalog() lookup. Unlike the web's
-// catalogModelInfo, this has no providers.toml/behaviorTag to resolve the
-// tag-qualified fallback — the TUI process has no such config — so it only
-// tries the canonicalized bare lookup (LookupModelInfo). A nil mi (model not
-// in the embedded catalog) yields "": the uncatalogued-model rule (still
-// render name+provider+id, no badges) applies.
-func modelInfoMetaTail(mi *llm.ModelInfo) string {
-	if mi == nil {
-		return ""
-	}
+// modelInfoMetaTail builds the model picker row's compact caps/ctx/price tail
+// from the descriptor the hub delivered, whose fields come from the registry's
+// resolved row (spec §7.5). A field the row does not carry is simply left out:
+// a descriptor with no metadata at all yields "", the uncatalogued-model rule
+// (still render name+provider+id, no badges), and a priceless row renders no
+// cost rather than a fabricated "$0.00/$0.00".
+func modelInfoMetaTail(descriptor appwire.ModelDescriptor) string {
 	var parts []string
-	if mi.ContextWindow > 0 {
-		parts = append(parts, formatModelContextWindow(mi.ContextWindow)+" ctx")
+	if descriptor.ContextWindow != nil && *descriptor.ContextWindow > 0 {
+		parts = append(parts, formatModelContextWindow(*descriptor.ContextWindow)+" ctx")
 	}
-	if mi.InputCostPerMillion != nil && mi.OutputCostPerMillion != nil {
-		parts = append(parts, fmt.Sprintf("$%.2f/$%.2f", *mi.InputCostPerMillion, *mi.OutputCostPerMillion))
+	if descriptor.InputCostPerMillion != nil && descriptor.OutputCostPerMillion != nil {
+		parts = append(parts, fmt.Sprintf("$%.2f/$%.2f", *descriptor.InputCostPerMillion, *descriptor.OutputCostPerMillion))
 	}
 	var caps []string
-	if mi.SupportsTools {
+	if boolValue(descriptor.SupportsTools) {
 		caps = append(caps, "tools")
 	}
-	if mi.SupportsVision {
+	if boolValue(descriptor.SupportsVision) {
 		caps = append(caps, "vision")
 	}
-	if mi.SupportsReasoning {
+	if boolValue(descriptor.SupportsReasoning) {
 		caps = append(caps, "reasoning")
 	}
 	if len(caps) > 0 {
@@ -478,14 +478,17 @@ func modelInfoMetaTail(mi *llm.ModelInfo) string {
 	return strings.Join(parts, " · ")
 }
 
+// boolValue reads an optional descriptor capability: nil and false both mean
+// the model does not have it.
+func boolValue(p *bool) bool { return p != nil && *p }
+
 // buildModelPickerItems enriches raw model descriptors into picker items
-// (display name, ID, catalog meta, provider group) without reordering them.
+// (display name, ID, descriptor meta, provider group) without reordering them.
 // Callers that need the provider-grouped, dated-snapshot-last presentation
 // order should use modelPickerItems instead; callers that must preserve the
 // input order (e.g. the server's recency-ordered Recent list) should call
 // this directly.
 func buildModelPickerItems(models []appwire.ModelDescriptor, rawModelID bool) []tuipick.ModelPickerItem {
-	cat := llm.EmbeddedModelCatalog()
 	items := make([]tuipick.ModelPickerItem, 0, len(models))
 	for _, option := range models {
 		model := strings.TrimSpace(option.Model)
@@ -498,11 +501,7 @@ func buildModelPickerItems(models []appwire.ModelDescriptor, rawModelID bool) []
 		if rawModelID {
 			id = model
 		}
-		var meta string
-		if cat != nil {
-			meta = modelInfoMetaTail(cat.LookupModelInfo(model))
-		}
-		items = append(items, tuipick.ModelPickerItem{ID: id, Display: display, Group: provider, Meta: meta})
+		items = append(items, tuipick.ModelPickerItem{ID: id, Display: display, Group: provider, Meta: modelInfoMetaTail(option)})
 	}
 	return items
 }
