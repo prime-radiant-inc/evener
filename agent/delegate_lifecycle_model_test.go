@@ -158,7 +158,7 @@ func (m *delegateLifecycleModel) completionDecisionPrediction() delegateCompleti
 // divergence between the model and the real run path.
 func (m *delegateLifecycleModel) classifyRunEnd(err error, cancelRequested bool) (status delegatestore.OutcomeStatus, exhaustionFromRunError bool) {
 	budgetExhausted := isDelegateLifecycleBudgetExhaustion(err)
-	canceled := errors.Is(err, delegateLifecycleCanceled)
+	canceled := errors.Is(err, errDelegateLifecycleCanceled)
 	switch {
 	case cancelRequested && canceled:
 		// Cancelled keeps the joined error verbatim — never an exhaustion
@@ -179,11 +179,6 @@ func isDelegateLifecycleBudgetExhaustion(err error) bool {
 	var exhausted *budgetExhaustionError
 	return errors.As(err, &exhausted)
 }
-
-// delegateLifecycleCanceled is an indirection alias so the model file has no
-// direct context import beyond this single use; defined once in the runner
-// file.
-var delegateLifecycleCanceled = errDelegateLifecycleCanceled
 
 // finish models the terminal effects of a RunFinished event on the durable
 // aggregate (fold semantics): the run closes, the phase returns to idle
@@ -228,7 +223,7 @@ func (m *delegateLifecycleModel) finishOutcomeFromRun(err error, communicated bo
 	if isDelegateLifecycleBudgetExhaustion(err) {
 		return delegatestore.OutcomeExhausted
 	}
-	if errors.Is(err, delegateLifecycleCanceled) {
+	if errors.Is(err, errDelegateLifecycleCanceled) {
 		return delegatestore.OutcomeCancelled
 	}
 	return delegatestore.OutcomeFailed

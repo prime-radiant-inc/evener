@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 	"errors"
+	"slices"
 	"testing"
 
 	"github.com/spf13/afero"
@@ -92,8 +93,6 @@ type delegateLifecycleHarness struct {
 	runtime *Session
 	// stopDone is the current stop's done channel once a stop is requested.
 	stopDone <-chan struct{}
-	// lastFinishedDeliveryID tracks I4's delivery uniqueness window.
-	lastFinishedDeliveryID string
 }
 
 // newDelegateLifecycleHarness seeds one delegate with the given binding kind and
@@ -202,8 +201,7 @@ func (h *delegateLifecycleHarness) observe() delegateLifecycleObservation {
 // journal), so the model's disposition agreement is read from the durable
 // record rather than derived.
 func delegateLifecycleLastDisposition(events []delegatestore.Event, delegateID string) delegatestore.RunDisposition {
-	for i := len(events) - 1; i >= 0; i-- {
-		event := events[i]
+	for _, event := range slices.Backward(events) {
 		if event.DelegateID == delegateID && event.RunFinished != nil {
 			return event.RunFinished.Disposition
 		}
