@@ -253,6 +253,18 @@ func TestProfile_ConfiguredThinkingLevelsImplyReasoning(t *testing.T) {
 	if got := p.ReasoningEffortLevels(); len(got) != 2 {
 		t.Fatalf("ReasoningEffortLevels() = %v, want the configured [low high]", got)
 	}
+
+	// The configured intent survives live /models enrichment too: a gateway
+	// advertising the model as non-reasoning must not switch off the effort
+	// control the user hand-configured — wrong live data is exactly why they
+	// configured it.
+	live := p.WithLiveModelInfo(llm.ModelInfo{CapabilitiesAdvertised: true, SupportsReasoning: false})
+	if !live.SupportsReasoning() {
+		t.Fatal("SupportsReasoning() = false after live enrichment, want true (thinking_levels is configured intent)")
+	}
+	if got := live.ReasoningEffortLevels(); len(got) != 2 {
+		t.Fatalf("ReasoningEffortLevels() = %v after live enrichment, want the configured [low high]", got)
+	}
 }
 
 // providers.toml reasoning = true is a permission statement, not a level
