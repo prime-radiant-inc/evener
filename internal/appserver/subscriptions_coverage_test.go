@@ -186,8 +186,14 @@ func TestSubscriptionsUnsubscribeDuringNonReplaceCaptureDefersToAbort(t *testing
 	}
 }
 
-// A committed capture clears the mid-capture unsubscribe record: the entry
-// went live, so a later capture's abort must restore it normally.
+// A committed capture honors the mid-capture unsubscribe: the client dropped
+// the thread after the capture began, so the commit removes the entry instead
+// of resurrecting a subscription the client no longer holds, releases none of
+// the buffered records, and consumes the withdrawal so later captures behave
+// normally. Regression test for the wire-level flake where a serial
+// unsubscribe landing between a subscribed read's capture and its
+// release-commit was silently discarded
+// (TestServerAppWireThreadUnsubscribeResolvesStableRefAcrossSwap).
 func TestSubscriptionsUnsubscribeDuringCaptureThenCommit(t *testing.T) {
 	subs := NewSubscriptions()
 	subs.Subscribe("conn-1", "th_1")
@@ -195,14 +201,26 @@ func TestSubscriptionsUnsubscribeDuringCaptureThenCommit(t *testing.T) {
 	subs.beginBuffered("conn-1", "th_3", true, 4)
 
 	subs.Unsubscribe("conn-1", "th_3")
-	if _, ok := subs.Release("conn-1", "th_3", 4); !ok {
+	// The drop is visible immediately: the lingering buffering entry is
+	// capture bookkeeping, not a live interest, so it must not hold the
+	// relay open while the commit is still pending.
+	if got := subs.ConnectionCount("th_3"); got != 0 {
+		t.Fatalf("connection count after mid-capture unsubscribe = %d, want 0", got)
+	}
+	subs.Route(SequencedNotification{Seq: 9, ThreadID: "th_3"})
+	records, ok := subs.Release("conn-1", "th_3", 4)
+	if !ok {
 		t.Fatal("Release should succeed for the live generation")
 	}
-	if !subs.IsSubscribed("conn-1", "th_3") {
-		t.Fatal("committed capture should leave the entry live")
+	if len(records) != 0 {
+		t.Fatalf("released records = %#v, want none: the client unsubscribed mid-capture", records)
 	}
-	// A LATER capture that displaces th_3 must have it restored on its abort
-	// — the spent withdrawn record from generation 4 must not suppress it.
+	if subs.IsSubscribed("conn-1", "th_3") {
+		t.Fatal("committed capture resurrected a subscription the client dropped mid-capture")
+	}
+	// The withdrawal is consumed: a re-subscribe works, and a LATER capture
+	// that displaces th_3 must have it restored on its abort.
+	subs.Subscribe("conn-1", "th_3")
 	rollback2 := subs.beginBuffered("conn-1", "th_4", true, 5)
 	subs.Unsubscribe("conn-1", "th_4")
 	if !subs.withdrawBuffered("conn-1", "th_4", 5, rollback2) {
