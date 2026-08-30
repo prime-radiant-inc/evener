@@ -393,7 +393,12 @@ frame's decoded size is bounded by the transport read limit
 arithmetic worst case is (capacity + 2 + `slowReadDispatchCap`) × read limit —
 64 queued + one executing + one blocked-enqueue + up to 4 in-flight slow-read
 params, ~8.75 GiB at the limit — from an authenticated client deliberately
-stuffing maximal frames behind a parked handler. On teardown the buffered frames
+stuffing maximal frames behind a parked handler. That arithmetic is a floor,
+not a ceiling: decoded Go objects and transient decoding copies can exceed the
+raw frame size, so the read limit bounds the wire, not the heap. The trade is
+decided (see Decided questions): the peers are our own authenticated clients,
+and the deliberate answer to a hostile authenticated peer is the trust model,
+not per-queue byte accounting. On teardown the buffered frames
 are explicitly discarded rather than left to `Connection` garbage collection,
 because an orphaned handler can retain the `Connection` (see the teardown purge
 in Shutdown). Two decisions bound this analysis (both Jesse, 2026-08-30). First,
