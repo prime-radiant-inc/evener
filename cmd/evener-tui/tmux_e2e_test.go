@@ -118,7 +118,14 @@ func TestTUITmuxE2E_DashboardProjectAndSpawn(t *testing.T) {
 	app.WaitFor("EVENER LIVE", "live task", "ended maintenance")
 
 	app.SendKeys("n")
-	app.WaitFor("evener / new session", "Dir:      "+tuiE2EProjectDir, "Prompt (optional):")
+	// The form's model default arrives asynchronously (fetchHubSpawnOptions
+	// round-trips to the hub); submitting before hubSpawnOptionsMsg lands sees
+	// an empty spawnModel and renders "choose a model before starting" — the
+	// startup race that flaked TestTUITmuxE2E_APIErrorsRenderInPlace in CI
+	// (issue #656). Waiting for the populated Model field pins the
+	// happens-before edge the way that test and the harness-cycling spawn
+	// test do.
+	app.WaitFor("evener / new session", "Dir:      "+tuiE2EProjectDir, "Prompt (optional):", "Model:    openai/gpt-5")
 	app.SendKeys("Tab", "Tab", "Tab", "C-u")
 	app.TypeText("/tmp/evener-e2e/custom")
 	app.WaitFor("Dir:      /tmp/evener-e2e/custom")
