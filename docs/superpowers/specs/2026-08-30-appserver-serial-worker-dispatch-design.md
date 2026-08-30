@@ -629,7 +629,16 @@ system is already built for it on all three sides:
   this one reads six named daemon bodies, the marketplace/plugin family named in
   "Current state", and whatever else the hub sweep names.
 - *The audit has now run, and the gate held.* Four parallel auditors covered
-  all 108 rows plus the client call-site sweep, at origin/main `173411a6a`.
+  all 108 rows plus the client call-site sweep, at origin/main `173411a6a`. The
+  acceptance artifact is checked in beside this spec:
+  `2026-08-30-appserver-serial-worker-dispatch-audit/` holds the three
+  disposition shards (hub `app_rpc.go` rows 1–35 and 36–70; the daemon and
+  non-`app_rpc.go` hub registrations) and the client sweep. Drift policy: the
+  table is pinned to `173411a6a`, so before slice 1 merges, the registration
+  sweep is re-run at the merge base — the 108-row checksum makes the diff
+  mechanical — and any added registration or changed ctx-binding handler body
+  gets its row audited then; a row count that no longer matches is a gate
+  failure, not a rounding error.
   Outcome: the daemon 18/6 ctx split verified exact; two gate findings, both in
   the marketplace/plugin family the spec named — `evener/marketplace/refresh`
   (a canceled `git pull` is SIGKILLed inside the *live* marketplace clone,
@@ -646,7 +655,19 @@ system is already built for it on all three sides:
   `context.WithoutCancel` around its admitted sequence: once admitted it runs
   to completion as it effectively did under PR #667, and the retry-duplicate
   residue (an orphan session visible in `thread/list`) is tolerated rather
-  than building dedup for it. One handler turned out client-orphaned:
+  than building dedup for it. The shield's semantics are stated precisely,
+  because detachment must not conflate the two cancellation lifetimes the
+  Cancellation section defines: what the sequence sheds is *peer-lifetime*
+  cancellation (disconnect, keepalive failure, enqueue failure), not
+  lifecycle bounds. `WithoutCancel` alone would also shed server-shutdown
+  cancellation and deadlines, so the detached sequence must stay bounded on
+  its own terms: the spawned daemon is already process-detached
+  (`exec.Command`, deliberately not `CommandContext`), the rendezvous wait
+  carries its own timeout, and the remediation must pair the detachment with
+  an explicit deadline covering the read and initial-turn legs — a wedged
+  detached sequence may not park the worker with no cancel path, and hub
+  shutdown must still conclude it (test: shutdown at each await point of the
+  detached sequence, riding with the remediation PR). One handler turned out client-orphaned:
   `evener/subagentPreview` has zero call sites in the web client or TUI; it
   stays in the concurrent set (nothing calls it, so it costs nothing), noted
   so nobody mistakes it for a load-bearing member.
@@ -698,9 +719,13 @@ Worker lifecycle is owned by `ServeWebSocket`, symmetric with the send loop:
   them explicitly: after the receive loop has returned (the queue's only producer
   has stopped — this is the ownership rule that makes the purge safe) and `cancel()`
   has fired, `ServeWebSocket`'s teardown drains the channel in a non-blocking loop,
-  dropping every buffered message without executing anything. The worker may race
-  it by winning a dequeue, but its post-dequeue `ctx.Err()` check discards the
-  message just the same; both sides only ever discard. After the purge, an orphaned
+  dropping every buffered message without executing anything. The purge's
+  guarantee is scoped exactly: it covers messages still buffered in the channel.
+  A message the worker dequeued *before* cancellation became observable is
+  governed by the Cancellation section's admission cutoff, not the purge — it
+  may already be executing, by design. A worker that races the purge for a
+  dequeue *after* observing cancellation discards via its post-dequeue
+  `ctx.Err()` check, so on that side both parties only ever discard. After the purge, an orphaned
   handler retains exactly one frame — the one it is executing — not sixty-four (a
   frame the receive loop held while blocked enqueuing is released when that loop
   returns). When the purge discards a non-empty queue it reports through
@@ -884,8 +909,11 @@ without modification:
     notifications, send a ping: assert no response arrives while the buffer is
     full (the receive loop is parked in `enqueueResponse`, as specified — the
     precondition is real). Release the write side; assert the ping response
-    arrives. Repeat without releasing; assert the write-timeout cascade tears
-    the connection down rather than leaving the loop parked forever.
+    arrives. Repeat without releasing; with an injectable write timeout (a
+    package-private field beside the other seams — the production 30s constant
+    unchanged), assert the write-timeout cascade tears the connection down
+    rather than leaving the loop parked forever, observed through transport
+    behavior (the socket closes), not through wall-clock waiting.
 
 ## Rejected alternative: full-async dispatch for all handlers
 
@@ -955,8 +983,10 @@ the semantics the final design requires):
    `Cancel` + `WaitDelay` on `git()`, ctx-aware flock); `thread/start`
    shielded with `context.WithoutCancel` for its admitted sequence; the
    client sweep fired the cap's revision clause and `slowReadDispatchCap`
-   became 16. The gate condition for slice 1 is that the remediation PR lands
-   first. (An earlier draft also put a burst-depth measurement task here; it
+   became 16. The disposition shards and client sweep are checked in at
+   `2026-08-30-appserver-serial-worker-dispatch-audit/`; the drift policy in
+   the admitted-request section governs re-audit at the merge base. The gate
+   condition for slice 1 is that the remediation PR lands first. (An earlier draft also put a burst-depth measurement task here; it
    died with the measure-then-freeze capacity rule — `requestQueueCap` is
    simply 64.)
 1. **Worker, queue, ordering, ping — with its lifecycle floor and its tests.**
