@@ -50,7 +50,7 @@ test("renders the resolved descriptor's summary", () => {
   expect(screen.getByText("did a thing")).toBeTruthy();
 });
 
-test("settled purpose-bearing commandExecution rows stack purpose over the demoted summary", () => {
+test("settled intent-bearing commandExecution rows stack intent over the demoted summary", () => {
   registerToolRenderer({ match: "tci_one_line", summary: () => "Ran npm test -- src/foo" });
   render(
     <ToolCallItem
@@ -63,11 +63,11 @@ test("settled purpose-bearing commandExecution rows stack purpose over the demot
       live={false}
     />,
   );
-  // Two lines through the real consumer: no composed "purpose — summary"
+  // Two lines through the real consumer: no composed "intent — summary"
   // single line (tried in tiered density, reverted on review).
-  expect(screen.getByTestId("tool-row-purpose").textContent).toBe("Running the foo tests");
+  expect(screen.getByTestId("tool-row-intent").textContent).toBe("Running the foo tests");
   expect(screen.getByTestId("tool-row-summary").textContent).toBe("Ran npm test -- src/foo");
-  expect(screen.getByTestId("tool-row-purpose").textContent).not.toContain(" — ");
+  expect(screen.getByTestId("tool-row-intent").textContent).not.toContain(" — ");
 });
 
 // The expanded content mounts only while the row is open (the same shape
@@ -552,7 +552,7 @@ test("an expanded shell row drops the one-line summary - the body's pretty-print
   expect(screen.queryByTestId("tool-row-summary")).toBeNull();
   // The command still appears exactly once: the body's pretty-printed block.
   expect(screen.getByTestId("tool-call-body").textContent).toContain("echo hi");
-  // The row stays toggleable: with no purpose and no summary, the chevron
+  // The row stays toggleable: with no intent and no summary, the chevron
   // still renders.
   expect(screen.getByTestId("tool-row-chevron")).toBeTruthy();
 });
@@ -979,7 +979,7 @@ test("summarySuffix is omitted (bare summary) when the descriptor doesn't define
   expect(screen.getByTestId("tool-row-summary").textContent).toBe("plain summary");
 });
 
-test("delegate tool rows keep the human description as purpose and suppress the technical delegate summary", () => {
+test("delegate tool rows keep the human description as intent and suppress the technical delegate summary", () => {
   render(
     <ToolCallItem
       item={item({
@@ -991,11 +991,11 @@ test("delegate tool rows keep the human description as purpose and suppress the 
       live={false}
     />,
   );
-  expect(screen.getByTestId("tool-row-purpose").textContent).toBe("Testing delegation");
+  expect(screen.getByTestId("tool-row-intent").textContent).toBe("Testing delegation");
   expect(screen.queryByTestId("tool-row-summary")).toBeNull();
 });
 
-test("task-only delegate purpose previews preserve an emoji at the Unicode clipping boundary", () => {
+test("task-only delegate intent previews preserve an emoji at the Unicode clipping boundary", () => {
   const emojiTask = `${"a".repeat(119)}😀 suffix`;
   const exactAsciiTask = "b".repeat(120);
   render(
@@ -1024,8 +1024,8 @@ test("task-only delegate purpose previews preserve an emoji at the Unicode clipp
   );
 
   const [unicodeTool, asciiTool] = screen.getAllByTestId("tool-call-item");
-  expect(within(unicodeTool!).getByTestId("tool-row-purpose").textContent).toBe(`${"a".repeat(119)}😀…`);
-  expect(within(asciiTool!).getByTestId("tool-row-purpose").textContent).toBe(exactAsciiTask);
+  expect(within(unicodeTool!).getByTestId("tool-row-intent").textContent).toBe(`${"a".repeat(119)}😀…`);
+  expect(within(asciiTool!).getByTestId("tool-row-intent").textContent).toBe(exactAsciiTask);
 });
 
 test("delegate controls require stable delegate_id and reject activation-only job_id", () => {
@@ -1069,7 +1069,7 @@ test("delegate controls require stable delegate_id and reject activation-only jo
   expect(screen.getAllByRole("button", { name: "Open transcript" })).toHaveLength(1);
 });
 
-test("malformed delegate arguments keep status without inventing a purpose", () => {
+test("malformed delegate arguments keep status without inventing an intent", () => {
   render(
     <ToolCallItem
       item={item({
@@ -1083,13 +1083,13 @@ test("malformed delegate arguments keep status without inventing a purpose", () 
     />,
   );
 
-  expect(screen.queryByTestId("tool-row-purpose")).toBeNull();
+  expect(screen.queryByTestId("tool-row-intent")).toBeNull();
   expect(screen.queryByTestId("tool-row-summary")).toBeNull();
   expect(screen.getByTestId("tool-row-status")).toBeTruthy();
   expect(screen.queryByText("delegate")).toBeNull();
 });
 
-test("blank and non-string delegate tasks keep status without inventing a purpose", () => {
+test("blank and non-string delegate tasks keep status without inventing an intent", () => {
   const blank = item({
     id: "blank_delegate",
     toolName: "delegate",
@@ -1109,7 +1109,7 @@ test("blank and non-string delegate tasks keep status without inventing a purpos
     </>,
   );
 
-  expect(screen.queryAllByTestId("tool-row-purpose")).toHaveLength(0);
+  expect(screen.queryAllByTestId("tool-row-intent")).toHaveLength(0);
   expect(screen.queryAllByTestId("tool-row-summary")).toHaveLength(0);
   expect(screen.getAllByTestId("tool-row-status")).toHaveLength(2);
 });

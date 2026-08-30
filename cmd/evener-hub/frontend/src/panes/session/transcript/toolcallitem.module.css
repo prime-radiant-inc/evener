@@ -10,9 +10,9 @@
 }
 
 /* The shared row (ToolRow.tsx) - see that file for the row grammar it
- * implements. A purpose-bearing row wraps onto two lines (italic purpose
+ * implements. An intent-bearing row wraps onto two lines (italic intent
  * above, quiet verb/target below) via the demoted line's flex-basis rule
- * further down; without a purpose it stays on one.
+ * further down; without an intent it stays on one.
  *
  * row-gap vs column-gap, split deliberately: the column gap separates the
  * glyph/status/text on one line; the row gap is the rationale-to-call
@@ -25,7 +25,7 @@
   align-items: baseline;
   column-gap: var(--space-2);
   /* No row gap at all: the rationale-to-call coupling comes from the two
-   * lines' own tightened line-height (see .purpose/.demoted) alone, so the
+   * lines' own tightened line-height (see .intent/.demoted) alone, so the
    * gap between a description and its call reads clearly tighter than the
    * 2x8px .call padding between separate calls. */
   row-gap: 0;
@@ -60,15 +60,15 @@
   cursor: pointer;
 }
 
-.row[data-purpose="true"] .trigger {
+.row[data-intent="true"] .trigger {
   flex: 1 1 100%;
 }
 
-/* data-purpose-trailing marks a purpose-only row whose trailing affordance
+/* data-intent-trailing marks an intent-only row whose trailing affordance
  * rides the disclosure line (ToolRow.tsx's grammar): the trigger gives up
  * the full-width basis the rule above assigns, so trigger and control share
  * line 1, the trigger's own grow springing the control to the line's end. */
-.row[data-purpose-trailing="true"] .trigger {
+.row[data-intent-trailing="true"] .trigger {
   flex: 1 1 auto;
 }
 
@@ -79,16 +79,16 @@
   min-width: 0;
 }
 
-.row[data-purpose="true"] .summaryLine {
+.row[data-intent="true"] .summaryLine {
   flex: 1 1 100%;
 }
 
-/* A purpose-less row keeps its visible summary and inline actions as siblings
+/* An intent-less row keeps its visible summary and inline actions as siblings
  * of the disclosure button. The button still owns the whole visual row: its
  * transparent box sits under the summary line, while real links/buttons opt
  * back into pointer hit testing. This restores the old full-row disclosure
  * target without nesting interactive controls. */
-.row:not([data-purpose="true"]) .trigger {
+.row:not([data-intent="true"]) .trigger {
   position: absolute;
   inset: 0;
   width: 100%;
@@ -96,17 +96,17 @@
   justify-content: flex-end;
 }
 
-.row:not([data-purpose="true"]) .summaryLine {
+.row:not([data-intent="true"]) .summaryLine {
   position: relative;
   z-index: var(--z-raised);
   pointer-events: none;
 }
 
-.row:not([data-purpose="true"]) .summaryLine a,
-.row:not([data-purpose="true"]) .summaryLine button,
-.row:not([data-purpose="true"]) .summaryLine input,
-.row:not([data-purpose="true"]) .summaryLine select,
-.row:not([data-purpose="true"]) .summaryLine textarea {
+.row:not([data-intent="true"]) .summaryLine a,
+.row:not([data-intent="true"]) .summaryLine button,
+.row:not([data-intent="true"]) .summaryLine input,
+.row:not([data-intent="true"]) .summaryLine select,
+.row:not([data-intent="true"]) .summaryLine textarea {
   pointer-events: auto;
 }
 
@@ -132,8 +132,8 @@
  * from the machine text below it without a colour or size of its own.
  *
  * overflow-wrap:anywhere so long machine text can still break when the
- * purpose itself is the long part. */
-.purpose {
+ * intent itself is the long part. */
+.intent {
   flex: 1 1 0;
   min-width: 0;
   font-family: var(--font-sans);
@@ -150,9 +150,9 @@
 /* verb + target + meta, the descriptor's own summary() string: the sans
  * face (Jesse's review call - fixed-width everywhere made every tool read
  * like a terminal; mono is now reserved for shell, whose summary IS a
- * command - see .mono). flex-basis 0 for the same reason .purpose has it -
- * see there. overflow-wrap:anywhere serves the purpose-less one-line case;
- * with a purpose present the .demoted override below replaces it with
+ * command - see .mono). flex-basis 0 for the same reason .intent has it -
+ * see there. overflow-wrap:anywhere serves the intent-less one-line case;
+ * with an intent present the .demoted override below replaces it with
  * nowrap + the middle-truncation split on the second line. */
 .summary {
   flex: 1 1 0;
@@ -214,14 +214,14 @@
   }
 }
 
-/* With a purpose above it the summary is a glanceable detail, not the story:
+/* With an intent above it the summary is a glanceable detail, not the story:
  * it takes the whole next line, dimmer. flex-basis 100% is what forces the
  * line break inside the wrapping row. The row's affordances (e.g. "Open
  * beside") ride THIS line now - rendered inline at the end of the summary
  * text by ToolRow, not as flex items of the row - so no order trick is
  * needed to keep the row at two lines. */
 /* kata rdry: this line is a tool RESULT ("Wrote fizzbuzz.py"), shown on every
- * purpose-bearing row in every transcript - not a placeholder/disabled/
+ * intent-bearing row in every transcript - not a placeholder/disabled/
  * timestamp, --ink-low's documented job (design-system.md). --ink-low measured
  * 2.97:1 dark / 3.64:1 light against --surface-1, under the 4.5:1 AA floor for
  * body text; --ink-mid clears it at 6.86/6.56. Same fix as usermessageitem's
@@ -230,7 +230,7 @@
 .demoted {
   flex: 0 0 100%;
   color: var(--ink-mid);
-  /* Same tightened line box as the rationale above it - see .purpose. */
+  /* Same tightened line box as the rationale above it - see .intent. */
   line-height: var(--line-height-title);
 }
 
@@ -291,11 +291,11 @@
   margin-left: var(--space-2);
 }
 
-/* The disclosure-line trailing slot (a purpose-only row's affordance - see
- * the [data-purpose-trailing] rule above): a plain flex-none item of the row,
+/* The disclosure-line trailing slot (an intent-only row's affordance - see
+ * the [data-intent-trailing] rule above): a plain flex-none item of the row,
  * baseline-aligned with the rationale like every other line-mate; the row's
  * own column-gap separates it from the trigger. */
-.purposeTrailing {
+.intentTrailing {
   display: inline-flex;
   flex: none;
 }

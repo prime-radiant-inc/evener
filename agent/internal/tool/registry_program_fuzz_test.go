@@ -24,7 +24,7 @@ import (
 // intentional FileMutator path and receives a fresh LocalExecutionEnvironment
 // rooted in t.TempDir, so its mutation is confined to the test's own root.
 //
-// Its semantic checks cover registration/clone/restrict isolation, purpose
+// Its semantic checks cover registration/clone/restrict isolation, intent
 // handling, schema and JSON rejection, middleware, typed execution results,
 // error propagation, output limits, and FileMutator capability handling.
 func FuzzToolRegistryProgram(f *testing.F) {
@@ -330,7 +330,7 @@ func toolProgramHelpers(t *testing.T, payload string) {
 func toolProgramRegistryEdges(t *testing.T) {
 	t.Helper()
 	if got := WithIntentParameter(llm.ToolDefinition{}); got.Parameters["type"] != "object" {
-		t.Fatalf("nil schema purpose injection = %#v", got.Parameters)
+		t.Fatalf("nil schema intent injection = %#v", got.Parameters)
 	}
 	nonObject := llm.ToolDefinition{Parameters: map[string]any{"type": "string"}}
 	if got := WithIntentParameter(nonObject); got.Parameters["type"] != "string" {

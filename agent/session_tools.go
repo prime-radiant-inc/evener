@@ -550,12 +550,12 @@ func (s *Session) describeImageCall(ctx context.Context, r tool.ExecResult) visi
 	}
 }
 
-func visionPrompt(purpose string) string {
-	purpose = strings.TrimSpace(purpose)
-	if purpose == "" {
-		purpose = "Describe what you see in this image in thorough detail."
+func visionPrompt(intent string) string {
+	intent = strings.TrimSpace(intent)
+	if intent == "" {
+		intent = "Describe what you see in this image in thorough detail."
 	}
-	return purpose + "\n\n" + visionRequestContract
+	return intent + "\n\n" + visionRequestContract
 }
 
 func (s *Session) canonicalToolName(name string) string {
@@ -733,7 +733,7 @@ func (s *Session) execTool(ctx context.Context, call llm.ToolCallData, finishRea
 		CallID:        call.ID,
 		ArgumentsJSON: string(argsJSON),
 	}
-	// Promote purpose to the top-level event field for observability.
+	// Promote intent to the top-level event field for observability.
 	var args map[string]any
 	if len(call.Arguments) > 0 {
 		_ = json.Unmarshal(call.Arguments, &args)
@@ -1349,7 +1349,7 @@ func (s *Session) rebuildToolDefsCache() {
 
 	// Profile tool definitions are canonical (e.g. "shell"); the registry is also
 	// keyed by canonical names. Each registered profile tool is advertised in its
-	// provider-visible wire form (provider-specific rename + purpose param).
+	// provider-visible wire form (provider-specific rename + intent param).
 	nameMap := s.profile.ToolNameMap() // canonical → provider, may be nil
 
 	var defs []llm.ToolDefinition

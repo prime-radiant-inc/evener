@@ -34,13 +34,13 @@ func TestVisionPromptContractIsUnconditional(t *testing.T) {
 		}
 	}()
 
-	purposes := []string{
+	intents := []string{
 		"Describe the layout and visible controls.",
 		"Transcribe the rendered text exactly, including punctuation.",
 	}
 	var suffix string
-	for _, purpose := range purposes {
-		if got := sess.describeImage(context.Background(), tool.ExecResult{ImageData: []byte("image"), ImageIntent: purpose}); got != "vision" {
+	for _, intent := range intents {
+		if got := sess.describeImage(context.Background(), tool.ExecResult{ImageData: []byte("image"), ImageIntent: intent}); got != "vision" {
 			t.Fatalf("vision response = %q", got)
 		}
 		requests := adapter.Requests()
@@ -49,9 +49,9 @@ func TestVisionPromptContractIsUnconditional(t *testing.T) {
 			t.Fatalf("vision request content shape = %#v", request.Messages)
 		}
 		prompt := request.Messages[0].Content[0].Text
-		wantPrefix := strings.TrimSpace(purpose) + "\n\n"
+		wantPrefix := strings.TrimSpace(intent) + "\n\n"
 		if !strings.HasPrefix(prompt, wantPrefix) {
-			t.Fatalf("prompt does not preserve purpose: %q", prompt)
+			t.Fatalf("prompt does not preserve intent: %q", prompt)
 		}
 		gotSuffix := strings.TrimPrefix(prompt, wantPrefix)
 		if gotSuffix != visionRequestContract {
@@ -63,7 +63,7 @@ func TestVisionPromptContractIsUnconditional(t *testing.T) {
 		if suffix == "" {
 			suffix = gotSuffix
 		} else if gotSuffix != suffix {
-			t.Fatal("description and transcription purposes received different contracts")
+			t.Fatal("description and transcription intents received different contracts")
 		}
 	}
 }

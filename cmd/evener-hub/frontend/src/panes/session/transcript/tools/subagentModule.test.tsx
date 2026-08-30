@@ -366,7 +366,7 @@ test("a still-running row (with a transcriptRef) offers Open transcript, not gat
 // --- expanded card: disclosure + Mandate / Activity / Summary (qb8e, tv5k) -
 
 // A child thread/read that carries a real Activity feed (two tool-call items
-// with a `description` purpose) plus a final agentMessage summary - but ONLY
+// with a `description` intent) plus a final agentMessage summary - but ONLY
 // when the caller asked for turns. A lean (includeTurns:false) read returns
 // none, so a passing Activity/Summary assertion proves the expanded card's
 // watch upgraded to { includeTurns: true } (Task 9's Option B), not that the
@@ -415,7 +415,7 @@ function childThreadRead(params: unknown, childStatus: string) {
                 {
                   // A whitespace-only description is ABSENCE, not a step - the
                   // same rule the main transcript's tool row applies
-                  // (ToolRow.tsx's statedPurposeOf, shared by both surfaces).
+                  // (ToolRow.tsx's statedIntentOf, shared by both surfaces).
                   // A truthiness filter here would count it and the two
                   // surfaces would disagree about whether it exists.
                   id: "item_act_blank",
@@ -458,7 +458,7 @@ test("a folded card quotes the child's newest own words from the full event stre
   expect(quote.tagName).toBe("EM");
 });
 
-test("expanding a card lists recent quotes - purposes plain, messages italic - each with its runtime and timestamp", async () => {
+test("expanding a card lists recent quotes - intents plain, messages italic - each with its runtime and timestamp", async () => {
   const fake = new FakeClient("ready");
   fake.on("thread/read", (params) => {
     const base = childThreadRead(params, "active");
@@ -487,7 +487,7 @@ test("expanding a card lists recent quotes - purposes plain, messages italic - e
   const quotes = await within(row).findByTestId("subagent-quotes");
   const items = within(quotes).getAllByRole("listitem") as HTMLLIElement[];
   // Two real steps plus the final message; the whitespace-only description
-  // contributed no quote (the same statedPurposeOf rule the old feed used).
+  // contributed no quote (the same statedIntentOf rule the old feed used).
   expect(items).toHaveLength(3);
   expect(items.map((li) => li.value)).toEqual([1, 2, 3]);
 
@@ -525,7 +525,7 @@ test("an expanded card with no child activity yet says so instead of rendering a
   expect(within(quotes).queryAllByRole("listitem")).toHaveLength(0);
 });
 
-// mhcf: a child thread/read fixture with MANY purpose-bearing steps.
+// mhcf: a child thread/read fixture with MANY intent-bearing steps.
 // childThreadRead above hard-codes exactly two real steps - useful for the
 // Mandate/Activity/Summary shape, but far too few to exercise a cap. `status`
 // is fixed "active" (childRunning: true) so the same fixture also exercises
@@ -587,7 +587,7 @@ test("mhcf: the Activity feed caps to the 5 most recent steps, not the first 5",
   for (const n of [1, 2, 14, 15]) expect(within(activity).queryByText(`step ${n}`)).toBeNull();
 });
 
-// A timing annotation is not an action: round_timings items carry a purpose-
+// A timing annotation is not an action: round_timings items carry an intent-
 // like description ("Round timings") that would otherwise flood the feed -
 // one per round - and crowd real steps out of the five-slot window. They are
 // elided by eventKind, and the remaining steps keep contiguous true ordinals
@@ -702,7 +702,7 @@ test("the stats line counts the child's turns and tool calls from the full-turns
   const row = screen.getByTestId("subagent-row");
   const stats = await within(row).findByTestId("subagent-stats");
   // 1 real turn (the prelude excluded), 3 tool calls (the final agent message
-  // is not a call; the blank-purpose commandExecution still is).
+  // is not a call; the blank-intent commandExecution still is).
   await waitFor(() => {
     expect(stats.textContent).toContain("1 turn");
     expect(stats.textContent).toContain("3 calls");

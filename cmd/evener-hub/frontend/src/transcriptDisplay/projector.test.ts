@@ -215,7 +215,7 @@ describe("transcript projector", () => {
     },
   );
 
-  test("uses the neutral action summary for a blank tool purpose without dropping the action", () => {
+  test("uses the neutral action summary for a blank tool intent without dropping the action", () => {
     const model = threadWith(item("blank-tool", "commandExecution", { toolName: "shell", description: "   " }));
 
     expect(entriesFor(model, preset("intent"))).toEqual([

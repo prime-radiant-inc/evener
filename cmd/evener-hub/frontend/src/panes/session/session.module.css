@@ -19,7 +19,7 @@
   min-width: 0;
 }
 
-/* Projected purpose-only actions use the same quiet disclosure treatment on
+/* Projected intent-only actions use the same quiet disclosure treatment on
  * every TranscriptBody surface, including read-only and preview. */
 .intentGroup {
   width: 100%;

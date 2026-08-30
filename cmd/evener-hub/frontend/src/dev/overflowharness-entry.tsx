@@ -157,7 +157,7 @@ const snapshot: ThreadReadResponse = {
             output: JSON.stringify({ delegate_id: "dlg_1", status: "running", reason: CARD_LONG_TOKEN }),
           },
           {
-            // A purpose-bearing shell row: the two-line composition (italic
+            // An intent-bearing shell row: the two-line composition (italic
             // rationale over the demoted verb/target line) is the transcript's
             // most common tool-row shape, and this guard is the only thing
             // that measures IT for horizontal escape at every width.
