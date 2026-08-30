@@ -133,8 +133,11 @@ func persistThreadClearJournal(path string, records map[string]threadClearRecord
 	return nil
 }
 
-func threadClearRequestHash(params appwire.ThreadClearParams) string {
-	data, _ := json.Marshal(params)
+func threadClearRequestHash(params appwire.ThreadClearParams) (string, error) {
+	data, err := json.Marshal(params)
+	if err != nil {
+		return "", fmt.Errorf("encode thread clear request for hashing: %w", err)
+	}
 	hash := sha256.Sum256(data)
-	return hex.EncodeToString(hash[:])
+	return hex.EncodeToString(hash[:]), nil
 }
