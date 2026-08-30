@@ -251,7 +251,7 @@ func (c *Caller) serves(r route) bool {
 	c.mu.Lock()
 	_, refused := c.refused[r]
 	c.mu.Unlock()
-	return !refused && c.client.ValidateModelCompatibility(r.provider, r.model) == nil
+	return !refused && c.client.CanServe(r.provider, r.model)
 }
 
 // refusesModel reports whether err is the provider saying it will not serve the
@@ -263,8 +263,8 @@ func (c *Caller) serves(r route) bool {
 // price of that conservatism is maintenance — if a provider rewords its refusal
 // this reactive path silently stops firing and auxiliary calls fail instead of
 // falling back. That degradation is bounded because the proactive half of the
-// pair, serves(), already skips pairs the client's own model-compatibility
-// validator knows about, so a new wording costs the fallback, not the session.
+// pair, serves(), already skips routes the client says it cannot serve
+// (CanServe), so a new wording costs the fallback, not the session.
 func refusesModel(err error) bool {
 	if llm.Classify(err) != llm.ErrorClassPermanent {
 		return false
