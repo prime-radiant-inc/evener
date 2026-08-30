@@ -7,7 +7,6 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
-	"sync"
 	"testing"
 
 	"primeradiant.com/evener/agent/schema"
@@ -20,7 +19,7 @@ import (
 // a real --resume can restore: OpenWriterForSession will strict-decode the
 // entries and RestoredTranscript will report them, so serve's identity
 // preparation has a choice of forms to make.
-func seedResumableSession(t *testing.T, stateDir, sessionID string, headerSessionID string) string {
+func seedResumableSession(t *testing.T, stateDir, sessionID string, headerSessionID string) {
 	t.Helper()
 	if err := schema.SaveSessionMeta(stateDir, schema.SessionMeta{
 		ID: sessionID, ProfileID: "openai", Model: "gpt-test",
@@ -46,14 +45,14 @@ func seedResumableSession(t *testing.T, stateDir, sessionID string, headerSessio
 	if err := writer.Close(); err != nil {
 		t.Fatalf("Close writer: %v", err)
 	}
-	return path
 }
 
 // serveResumeIdentityProbe records which app-identity preparation form a
-// --resume run used. Plain fields suffice: identity preparation and the
-// serveHTTP override both run on the goroutine that called
-// runServeWithDeps, before any serve goroutine exists, and the test reads
-// the probe only after runServeWithDeps returns.
+// --resume run used. Plain fields suffice: every write happens on the
+// goroutine that called runServeWithDeps (identity preparation at
+// serve.go:551 and the serveHTTP override at serve.go:1181), before it
+// returns, and the test reads the probe only after that return. The serve
+// goroutines spawned along the way never touch the probe.
 type serveResumeIdentityProbe struct {
 	entriesFormUsed bool
 	fileFormUsed    bool
@@ -69,13 +68,10 @@ func runServeResumeWithProbe(t *testing.T, stateDir, sessionID string) (*serveRe
 	deps := defaultServeDeps()
 	deps.ensureConfigDirs = func() error { return nil }
 	deps.seedMarketplaces = func() error { return nil }
-	var cancelMu sync.Mutex
 	var cancel context.CancelFunc
 	deps.notifyContext = func(ctx context.Context, _ ...os.Signal) (context.Context, context.CancelFunc) {
 		next, stop := context.WithCancel(ctx)
-		cancelMu.Lock()
 		cancel = stop
-		cancelMu.Unlock()
 		return next, stop
 	}
 	entriesForm := deps.prepareAppIdentityFromEntries
@@ -95,10 +91,7 @@ func runServeResumeWithProbe(t *testing.T, stateDir, sessionID string) (*serveRe
 		// even after serveHTTP returns, so returning without canceling would
 		// deadlock the test (same pattern as
 		// TestRunResumeWithFailedReservationPreservesForeignOwnedChild).
-		cancelMu.Lock()
-		stop := cancel
-		cancelMu.Unlock()
-		stop()
+		cancel()
 		return http.ErrServerClosed
 	}
 	args := []string{
