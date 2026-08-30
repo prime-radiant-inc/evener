@@ -41,7 +41,7 @@ type delegateSettlementClaim struct {
 func (c *delegateTreeController) SupervisionBoundary(lease delegateLease, mode delegateSettlementMode) (delegateSupervisionBoundary, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	decision := c.reduceFinishIntent(finishIntent{site: finishSiteSupervisionBoundary, lease: lease, mode: mode})
+	decision := c.reduceSupervisionBoundaryIntent(finishIntent{lease: lease, mode: mode})
 	return decision.boundary, decision.err
 }
 
@@ -65,7 +65,7 @@ func (c *delegateTreeController) BeginSettlement(lease delegateLease) (*delegate
 func (c *delegateTreeController) BeginFinalization(lease delegateLease, mode delegateSettlementMode) (*delegateSettlementClaim, bool, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	decision := c.reduceFinishIntent(finishIntent{site: finishSiteBeginFinalization, lease: lease, mode: mode})
+	decision := c.reduceBeginFinalizationIntent(finishIntent{lease: lease, mode: mode})
 	return decision.claim, decision.continued, decision.err
 }
 
@@ -76,7 +76,7 @@ func (c *delegateTreeController) BeginFinalization(lease delegateLease, mode del
 func (c *delegateTreeController) BeginRunFinalization(lease delegateLease, mode delegateSettlementMode, runErr error) (*delegateSettlementClaim, bool, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	decision := c.reduceFinishIntent(finishIntent{site: finishSiteBeginFinalization, lease: lease, mode: mode, runErrorKnown: true, runErr: runErr})
+	decision := c.reduceBeginFinalizationIntent(finishIntent{lease: lease, mode: mode, runErrorKnown: true, runErr: runErr})
 	return decision.claim, decision.continued, decision.err
 }
 
@@ -85,14 +85,14 @@ func (c *delegateTreeController) CompleteSettlement(claim *delegateSettlementCla
 	defer c.mu.Unlock()
 	// This site never releases a generation, so there is no cancel to run
 	// after c.mu is released.
-	plans, _, err := c.executeFinishIntentLocked(finishIntent{site: finishSiteCompleteSettlement, claim: claim, packet: supplied})
+	plans, _, err := c.executeFinishDecisionLocked(c.reduceCompleteSettlementIntent(finishIntent{claim: claim, packet: supplied}))
 	return plans, err
 }
 
 func (c *delegateTreeController) AttentionResolutionsForFinalization(claim *delegateSettlementClaim) (delegateMutationPlans, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	decision := c.reduceFinishIntent(finishIntent{site: finishSiteAttentionResolutions, claim: claim})
+	decision := c.reduceAttentionResolutionsIntent(finishIntent{claim: claim})
 	if decision.err != nil {
 		return delegateMutationPlans{}, decision.err
 	}
@@ -108,7 +108,7 @@ func (c *delegateTreeController) AttentionResolutionsForFinalization(claim *dele
 func (c *delegateTreeController) prepareNoAction(claim *delegateSettlementClaim, fallback delegateFinish) (bool, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	decision := c.reduceFinishIntent(finishIntent{site: finishSitePrepareNoAction, claim: claim, finish: fallback})
+	decision := c.reducePrepareNoActionIntent(finishIntent{claim: claim, finish: fallback})
 	return decision.recorded, decision.err
 }
 
@@ -128,7 +128,7 @@ func noActionEvidenceEligible(evidence *delegateGenerationEvidence) bool {
 func (c *delegateTreeController) RequireFinalizationRecovery(claim *delegateSettlementClaim) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	decision := c.reduceFinishIntent(finishIntent{site: finishSiteRequireFinalizationRecovery, claim: claim})
+	decision := c.reduceRequireFinalizationRecoveryIntent(finishIntent{claim: claim})
 	return decision.err
 }
 
@@ -138,7 +138,7 @@ func (c *delegateTreeController) RequireFinalizationRecovery(claim *delegateSett
 func (c *delegateTreeController) ReportFinalizationQuiesced(lease delegateLease, runtime *Session) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	decision := c.reduceFinishIntent(finishIntent{site: finishSiteReportQuiesced, lease: lease, runtime: runtime, stalePolicy: finishStaleSwallow})
+	decision := c.reduceReportQuiescedIntent(finishIntent{lease: lease, runtime: runtime, stalePolicy: finishStaleSwallow})
 	return decision.err
 }
 
@@ -229,12 +229,11 @@ func (c *delegateTreeController) hasSteeringClaimLocked(lease delegateLease) boo
 
 func (c *delegateTreeController) FinishGeneration(lease delegateLease, finish delegateFinish) (delegateMutationPlans, error) {
 	c.mu.Lock()
-	plans, cancel, err := c.executeFinishIntentLocked(finishIntent{
-		site:        finishSiteGeneration,
+	plans, cancel, err := c.executeFinishDecisionLocked(c.reduceGenerationFinishIntent(finishIntent{
 		lease:       lease,
 		finish:      finish,
 		stalePolicy: finishStaleSuppress,
-	})
+	}))
 	c.mu.Unlock()
 	if cancel != nil {
 		cancel()
@@ -252,12 +251,11 @@ func (c *delegateTreeController) FinishNoAction(claim *delegateSettlementClaim) 
 		c.mu.Unlock()
 		return delegateMutationPlans{}, err
 	}
-	plans, cancel, err := c.executeFinishIntentLocked(finishIntent{
-		site:               finishSiteGeneration,
+	plans, cancel, err := c.executeFinishDecisionLocked(c.reduceGenerationFinishIntent(finishIntent{
 		lease:              claim.lease,
 		finish:             finish,
 		authorizedNoAction: true,
-	})
+	}))
 	c.mu.Unlock()
 	if cancel != nil {
 		cancel()
@@ -266,7 +264,7 @@ func (c *delegateTreeController) FinishNoAction(claim *delegateSettlementClaim) 
 }
 
 func (c *delegateTreeController) noActionFinishLocked(claim *delegateSettlementClaim) (*delegatestore.Aggregate, *delegateLiveState, delegateFinish, error) {
-	decision := c.reduceFinishIntent(finishIntent{site: finishSiteNoActionFinish, claim: claim})
+	decision := c.reduceNoActionFinishIntent(finishIntent{claim: claim})
 	return nil, nil, decision.finish, decision.err
 }
 

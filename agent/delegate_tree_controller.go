@@ -574,21 +574,21 @@ func (c *delegateTreeController) escalateCompletionRequirement(lease delegateLea
 }
 
 func (c *delegateTreeController) escalateCompletionRequirementLocked(lease delegateLease) error {
-	decision := c.reduceFinishIntent(finishIntent{site: finishSiteWorkAdmitted, lease: lease})
+	decision := c.reduceWorkAdmittedIntent(finishIntent{lease: lease})
 	return decision.err
 }
 
 func (c *delegateTreeController) recordAttentionNoAction(lease delegateLease) (bool, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	decision := c.reduceFinishIntent(finishIntent{site: finishSiteAttentionNoAction, lease: lease})
+	decision := c.reduceAttentionNoActionIntent(finishIntent{lease: lease})
 	return decision.recorded, decision.err
 }
 
 func (c *delegateTreeController) recordTerminalSeen(lease delegateLease) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	decision := c.reduceFinishIntent(finishIntent{site: finishSiteTerminalSeen, lease: lease})
+	decision := c.reduceTerminalSeenIntent(finishIntent{lease: lease})
 	return decision.err
 }
 
