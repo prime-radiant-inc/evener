@@ -13,7 +13,8 @@ import (
 	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/agent/transcript"
 	"primeradiant.com/evener/llm"
-	"primeradiant.com/evener/server")
+	"primeradiant.com/evener/server"
+)
 
 // seedResumableSession writes a session meta and a two-entry transcript that
 // a real --resume can restore: OpenWriterForSession will strict-decode the
@@ -26,11 +27,8 @@ func seedResumableSession(t *testing.T, stateDir, sessionID string, headerSessio
 	}); err != nil {
 		t.Fatalf("SaveSessionMeta: %v", err)
 	}
-	sessionsDir := filepath.Join(stateDir, "sessions")
-	if err := os.MkdirAll(sessionsDir, 0o755); err != nil {
-		t.Fatalf("mkdir sessions: %v", err)
-	}
-	path := filepath.Join(sessionsDir, sessionID+".transcript.jsonl")
+	// SaveSessionMeta creates <stateDir>/sessions.
+	path := filepath.Join(stateDir, "sessions", sessionID+".transcript.jsonl")
 	writer, err := transcript.NewWriter(path, transcript.Header{
 		SessionID:  headerSessionID,
 		ProfileID:  "openai",
@@ -52,30 +50,15 @@ func seedResumableSession(t *testing.T, stateDir, sessionID string, headerSessio
 }
 
 // serveResumeIdentityProbe records which app-identity preparation form a
-// --resume run used. The serveHTTP override samples inside the live loop
-// (same pattern as runClearAttempt) and ends it by returning
-// http.ErrServerClosed, which runServeWithDeps treats as a clean stop.
+// --resume run used. Plain fields suffice: identity preparation and the
+// serveHTTP override both run on the goroutine that called
+// runServeWithDeps, before any serve goroutine exists, and the test reads
+// the probe only after runServeWithDeps returns.
 type serveResumeIdentityProbe struct {
-	mu sync.Mutex
-
 	entriesFormUsed bool
-	fileFormUsed     bool
-	gotThreadID      string
-	gotEntryCount    int
-}
-
-func (p *serveResumeIdentityProbe) recordEntries(threadID string, entryCount int) {
-	p.mu.Lock()
-	defer p.mu.Unlock()
-	p.entriesFormUsed = true
-	p.gotThreadID = threadID
-	p.gotEntryCount = entryCount
-}
-
-func (p *serveResumeIdentityProbe) recordFile() {
-	p.mu.Lock()
-	defer p.mu.Unlock()
-	p.fileFormUsed = true
+	fileFormUsed    bool
+	gotThreadID     string
+	gotEntryCount   int
 }
 
 // runServeResumeWithProbe drives one --resume through runServeWithDeps and
@@ -86,10 +69,6 @@ func runServeResumeWithProbe(t *testing.T, stateDir, sessionID string) (*serveRe
 	deps := defaultServeDeps()
 	deps.ensureConfigDirs = func() error { return nil }
 	deps.seedMarketplaces = func() error { return nil }
-	// Capture the serve context's cancel the way the existing tests do (see
-	// TestRunResumeWithFailedReservationPreservesForeignOwnedChild): the
-	// shutdown goroutine waits on ctx.Done() even after serveHTTP returns,
-	// so the override below must cancel before returning.
 	var cancelMu sync.Mutex
 	var cancel context.CancelFunc
 	deps.notifyContext = func(ctx context.Context, _ ...os.Signal) (context.Context, context.CancelFunc) {
@@ -101,18 +80,21 @@ func runServeResumeWithProbe(t *testing.T, stateDir, sessionID string) (*serveRe
 	}
 	entriesForm := deps.prepareAppIdentityFromEntries
 	deps.prepareAppIdentityFromEntries = func(sourceID, threadID, ref string, header transcript.Header, entries []transcript.Entry) (server.PreparedAppIdentity, error) {
-		probe.recordEntries(threadID, len(entries))
+		probe.entriesFormUsed = true
+		probe.gotThreadID = threadID
+		probe.gotEntryCount = len(entries)
 		return entriesForm(sourceID, threadID, ref, header, entries)
 	}
 	fileForm := deps.prepareAppIdentity
 	deps.prepareAppIdentity = func(sourceID, threadID, ref, transcriptPath string) (server.PreparedAppIdentity, error) {
-		probe.recordFile()
+		probe.fileFormUsed = true
 		return fileForm(sourceID, threadID, ref, transcriptPath)
 	}
 	deps.serveHTTP = func(*http.Server, net.Listener) error {
-		// The identity is installed by the time HTTP serves; observe, cancel
-		// the serve context (the shutdown goroutine waits on ctx.Done()), and
-		// stop the loop with the clean-shutdown sentinel.
+		// Cancel before returning: the shutdown goroutine waits on ctx.Done()
+		// even after serveHTTP returns, so returning without canceling would
+		// deadlock the test (same pattern as
+		// TestRunResumeWithFailedReservationPreservesForeignOwnedChild).
 		cancelMu.Lock()
 		stop := cancel
 		cancelMu.Unlock()
@@ -149,8 +131,6 @@ func TestServeResumeSeedsIdentityFromRestoredEntries(t *testing.T) {
 	if serveErr != nil {
 		t.Fatalf("runServeWithDeps(resume): %v", serveErr)
 	}
-	probe.mu.Lock()
-	defer probe.mu.Unlock()
 	if !probe.entriesFormUsed {
 		t.Fatal("resume did not seed its app identity from the restored entries (entries form unused)")
 	}
@@ -183,8 +163,6 @@ func TestServeResumeForeignHeaderEntryListFailsStartup(t *testing.T) {
 	if serveErr == nil {
 		t.Fatal("serve accepted a resume over a transcript whose header names another session")
 	}
-	probe.mu.Lock()
-	defer probe.mu.Unlock()
 	if probe.entriesFormUsed || probe.fileFormUsed {
 		t.Fatal("identity preparation ran over a foreign-header transcript; restore should have failed first")
 	}
