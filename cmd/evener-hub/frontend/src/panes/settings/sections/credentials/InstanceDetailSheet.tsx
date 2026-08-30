@@ -2,13 +2,13 @@
 // redesign. Opens from an InstanceRow tap and owns everything the old row
 // carried: the layered credential display (the effective source, plus an
 // environment variable shadowed behind it), the meta table, and every
-// per-instance ACTION (test,
-// set/replace key, sign in/refresh OAuth, edit, make default, clear,
-// remove). A right side Sheet on desktop, a bottom Sheet on mobile
-// (useIsMobile, the shell's own source). The instance is read from the
-// store by name so cross-client changes land live, and the sheet closes
-// itself when the instance disappears (its own Remove completing, or
-// another client's) - an inspector is only as alive as its subject.
+// per-instance ACTION (test, set/replace key, sign in/refresh OAuth, edit,
+// make default, clear, remove). A right side Sheet on desktop, a bottom
+// Sheet on mobile (useIsMobile, the shell's own source). The instance is
+// read from the store by name so cross-client changes land live, and the
+// sheet closes itself when the instance disappears (its own Remove
+// completing, or another client's) - an inspector is only as alive as its
+// subject.
 // Presentation only - the section owns what each action DOES (opening an
 // editor, a confirm dialog, or calling the store), same division of labor
 // as the old InstanceRow.
