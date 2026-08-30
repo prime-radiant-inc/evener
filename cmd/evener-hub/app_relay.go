@@ -337,8 +337,16 @@ func newHubRelayFunctions(server *appserver.Server, cfg hubcore.WebConfig, sourc
 					relayMu.Lock()
 					active := relayedThreads[relayKey] == handle
 					thread := handle.thread
+					targetThreadID := threadID
+					if thread.ID != "" {
+						targetThreadID = thread.ID
+					}
+					targetRef := ref
+					if thread.Evener.Ref != "" {
+						targetRef = thread.Evener.Ref
+					}
 					relayMu.Unlock()
-					if active && relayNotificationTargets(delivery.Notification, threadID, ref) {
+					if active && relayNotificationTargets(delivery.Notification, targetThreadID, targetRef) {
 						notification := delivery.Notification
 						// The edits only this hub can make to a local daemon's
 						// notification on its way to a browser: the images it can
