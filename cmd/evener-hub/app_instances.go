@@ -143,6 +143,23 @@ func sanitizeEndpointURL(raw string) string {
 	return u.String()
 }
 
+// validatedProtocolAndSurface trims the two vocabulary fields a form can set
+// and refuses anything the registry would reject at load. Without this a typo
+// is written, the reload that follows fails, and refuseWhenBroken then refuses
+// the corrective edit too — the pane locked out of its own recovery.
+func validatedProtocolAndSurface(protocol, surface string) (string, string, error) {
+	protocol, surface = strings.TrimSpace(protocol), strings.TrimSpace(surface)
+	if protocol != "" && !registry.ValidProtocol(protocol) {
+		return "", "", fmt.Errorf("invalid protocol %q (one of %s)", protocol,
+			strings.Join([]string{registry.ProtocolOpenAIChat, registry.ProtocolOpenAIResponses, registry.ProtocolAnthropic, registry.ProtocolGoogle}, ", "))
+	}
+	if surface != "" && !registry.ValidSurface(surface) {
+		return "", "", fmt.Errorf("invalid surface %q (one of %s)", surface,
+			strings.Join([]string{registry.SurfaceOpenAI, registry.SurfaceAnthropic, registry.SurfaceGoogle, registry.SurfaceGeneric}, ", "))
+	}
+	return protocol, surface, nil
+}
+
 // refuseWhenBroken stops every write while providers.toml does not load: the
 // hub has no way to rewrite a file it could not read without destroying what
 // the user wrote (spec §10, §14.1).
@@ -171,6 +188,10 @@ func (c *hubInstancesController) Create(params appwire.InstanceCreateParams) err
 	if params.CredentialHeader != "" && !strings.Contains(params.CredentialHeader, "$") {
 		return errors.New("credential header must reference a $VARIABLE, never a literal secret")
 	}
+	protocol, surface, err := validatedProtocolAndSurface(params.Protocol, params.Surface)
+	if err != nil {
+		return err
+	}
 
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -184,8 +205,8 @@ func (c *hubInstancesController) Create(params appwire.InstanceCreateParams) err
 	p := registry.Provider{
 		ID:       name,
 		Base:     base,
-		Protocol: strings.TrimSpace(params.Protocol),
-		Surface:  strings.TrimSpace(params.Surface),
+		Protocol: protocol,
+		Surface:  surface,
 		Transport: registry.Transport{
 			BaseURL: strings.TrimSpace(params.BaseURL),
 			Vars:    params.Vars,
@@ -214,6 +235,10 @@ func (c *hubInstancesController) Edit(params appwire.InstanceEditParams) error {
 		return err
 	}
 	name := strings.TrimSpace(params.Name)
+	protocol, surface, err := validatedProtocolAndSurface(params.Protocol, params.Surface)
+	if err != nil {
+		return err
+	}
 
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -231,11 +256,11 @@ func (c *hubInstancesController) Edit(params appwire.InstanceEditParams) error {
 	if v := strings.TrimSpace(params.BaseURL); v != "" {
 		p.Transport.BaseURL = v
 	}
-	if v := strings.TrimSpace(params.Protocol); v != "" {
-		p.Protocol = v
+	if protocol != "" {
+		p.Protocol = protocol
 	}
-	if v := strings.TrimSpace(params.Surface); v != "" {
-		p.Surface = v
+	if surface != "" {
+		p.Surface = surface
 	}
 	if len(params.Vars) > 0 {
 		if p.Transport.Vars == nil {

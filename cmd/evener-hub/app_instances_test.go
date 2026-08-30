@@ -229,6 +229,20 @@ func TestInstances_CreateRejectsBadInput(t *testing.T) {
 			params: appwire.InstanceCreateParams{Name: "work", Base: "openai", CredentialHeader: "Authorization=Bearer sk-literal"},
 			want:   "$VARIABLE",
 		},
+		{
+			// The word the form itself used to show. The registry rejects it
+			// as a parse error, so writing it would brick the pane: the next
+			// reload fails and refuseWhenBroken then refuses the corrective
+			// edit too.
+			name:   "protocol outside the registry vocabulary",
+			params: appwire.InstanceCreateParams{Name: "work", Base: "openai", Protocol: "chat-completions"},
+			want:   "invalid protocol",
+		},
+		{
+			name:   "surface outside the registry vocabulary",
+			params: appwire.InstanceCreateParams{Name: "work", Base: "openai", Surface: "compat"},
+			want:   "invalid surface",
+		},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			f := newInstancesFixture(t, nil)
@@ -313,6 +327,27 @@ func TestInstances_EditMergesVarsIntoAuthoredEntry(t *testing.T) {
 	}
 	if p.Base != "amazon-bedrock" {
 		t.Fatalf("the edit dropped base = %q", p.Base)
+	}
+}
+
+// TestInstances_EditRejectsAnUnloadableProtocol: the invariant is that a write
+// the pane accepts must reload cleanly. An unvalidated protocol would be
+// written, fail the reload, and then lock the pane out of its own recovery.
+func TestInstances_EditRejectsAnUnloadableProtocol(t *testing.T) {
+	f := newInstancesFixture(t, map[string]string{"GROQ_API_KEY": "gk"})
+	err := f.ctl.Edit(appwire.InstanceEditParams{Name: "groq", Protocol: "responses"})
+	if err == nil || !strings.Contains(err.Error(), "invalid protocol") {
+		t.Fatalf("Edit = %v, want an invalid-protocol error", err)
+	}
+	if _, statErr := os.Stat(f.tomlPath); !os.IsNotExist(statErr) {
+		t.Fatalf("a rejected edit wrote providers.toml (stat err=%v)", statErr)
+	}
+	if f.ctl.reg.WritesRefused() {
+		t.Fatal("the registry still loads after a rejected edit; the pane must not be locked out")
+	}
+	if err := f.ctl.Edit(appwire.InstanceEditParams{Name: "groq", Surface: "compat"}); err == nil ||
+		!strings.Contains(err.Error(), "invalid surface") {
+		t.Fatalf("Edit = %v, want an invalid-surface error", err)
 	}
 }
 

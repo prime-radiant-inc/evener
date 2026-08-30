@@ -149,6 +149,15 @@ func setString(t map[string]any, key, v string) {
 // the same predicate the parser applies, for callers that write entries.
 func ValidInstanceName(name string) bool { return validProviderName(name) }
 
+// ValidProtocol reports whether name is one of spec §10's four protocols. The
+// parser rejects anything else as a load error, so a writer asks this before
+// it authors an entry it could not read back.
+func ValidProtocol(name string) bool { return protocols[name] }
+
+// ValidSurface reports whether name is one of spec §10's four surfaces, on the
+// same terms as ValidProtocol.
+func ValidSurface(name string) bool { return surfaces[name] }
+
 func setStringMap(t map[string]any, key string, m map[string]string) {
 	if len(m) > 0 {
 		t[key] = m
