@@ -1064,8 +1064,8 @@ func (s *Session) SetReasoningEffort(effort string) {
 		s.mu.Unlock()
 		return
 	}
-	// Normalize disable-aliases (none/off/...) to "" so a runtime "none" omits
-	// reasoning effort rather than forwarding the literal to the provider, matching
+	// Normalize disable-aliases (off/false/...) to the canonical "none" so a
+	// runtime off stays an explicit off through buildModelRequest, matching
 	// the CLI resolver.
 	s.cfg.ReasoningEffort = llm.NormalizeReasoningEffort(effort)
 	normalized := s.cfg.ReasoningEffort

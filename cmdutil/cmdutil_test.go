@@ -79,12 +79,12 @@ func TestResolveReasoningEffort(t *testing.T) {
 		{name: "unset", cli: "", env: "", wantSet: false},
 		{name: "env medium", cli: "", env: "medium", wantSet: true, wantVal: "medium"},
 		{name: "cli overrides env", cli: "HIGH", env: "low", wantSet: true, wantVal: "high"},
-		{name: "cli none clears", cli: "none", env: "high", wantSet: true, wantVal: ""},
-		{name: "env none clears", cli: "", env: "none", wantSet: true, wantVal: ""},
+		{name: "cli none means off", cli: "none", env: "high", wantSet: true, wantVal: "none"},
+		{name: "env none means off", cli: "", env: "none", wantSet: true, wantVal: "none"},
 		{name: "xhigh", cli: "xhigh", env: "", wantSet: true, wantVal: "xhigh"},
 		{name: "minimal", cli: "minimal", env: "", wantSet: true, wantVal: "minimal"},
 		{name: "max alias of top tier", cli: "max", env: "", wantSet: true, wantVal: "max"},
-		{name: "off alias clears", cli: "off", env: "", wantSet: true, wantVal: ""},
+		{name: "off alias means off", cli: "off", env: "", wantSet: true, wantVal: "none"},
 		{name: "invalid", cli: "banana", env: "", wantErr: true},
 	}
 

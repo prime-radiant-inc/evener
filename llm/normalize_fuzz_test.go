@@ -89,8 +89,8 @@ func FuzzReasoningEffort(f *testing.F) {
 		}
 		switch strings.ToLower(strings.TrimSpace(requested)) {
 		case "none", "null", "off", "false", "0":
-			if norm != "" {
-				t.Fatalf("disable alias %q normalized to %q, want \"\"", requested, norm)
+			if norm != ReasoningEffortNone {
+				t.Fatalf("disable alias %q normalized to %q, want %q", requested, norm, ReasoningEffortNone)
 			}
 		}
 
