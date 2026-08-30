@@ -139,8 +139,9 @@ func TestSubscriptionsUnsubscribeDuringReplaceCaptureDefersToAbort(t *testing.T)
 	// The client unsubscribes the thread the capture is hydrating, mid-flight.
 	subs.Unsubscribe("conn-1", "th_3")
 
-	// The buffering entry survives until the capture resolves.
-	if !subs.IsSubscribed("conn-1", "th_3") {
+	// The raw buffering entry survives until the capture resolves (IsSubscribed
+	// already reports the withdrawal).
+	if subs.byConn["conn-1"]["th_3"] == nil {
 		t.Fatal("mid-capture unsubscribe removed the buffering entry")
 	}
 	// The capture aborts (its read failed): the displaced snapshot comes back
@@ -175,7 +176,7 @@ func TestSubscriptionsUnsubscribeDuringNonReplaceCaptureDefersToAbort(t *testing
 	rollback := subs.beginBuffered("conn-1", "th_1", false, 3)
 
 	subs.Unsubscribe("conn-1", "th_1")
-	if !subs.IsSubscribed("conn-1", "th_1") {
+	if subs.byConn["conn-1"]["th_1"] == nil {
 		t.Fatal("mid-capture unsubscribe removed the buffering entry")
 	}
 	if !subs.withdrawBuffered("conn-1", "th_1", 3, rollback) {
