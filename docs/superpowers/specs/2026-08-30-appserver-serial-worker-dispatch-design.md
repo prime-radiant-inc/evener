@@ -35,13 +35,17 @@ not handlers waiting on each other.
 
 ## Goals
 
-- No handler can starve the transport. `ping`, WebSocket keepalive/dead-peer
-  detection, close handling, and connection cancellation all stay live while any
-  handler — mutation or read, fast or slow — is executing.
-- Per-connection request ordering is fully preserved for every handler: a later
-  request does not begin executing until the earlier request's handler has returned
-  and its response has been enqueued. No audit of the ~104 hub and daemon handler
-  registrations is required.
+- No *handler* can starve the transport. `ping`, close handling, and connection
+  cancellation stay live while any handler — mutation or read, fast or slow — is
+  executing, regardless of how long it runs or whether it respects its context.
+  Scoped deliberately: a *client* can still delay the transport by pipelining more
+  requests than the queue holds — that is flow control, analyzed in the queue
+  section, not handler starvation — and dead-peer detection pauses in exactly the
+  windows it pauses today (see Queue semantics).
+- The per-connection ordering contract PR #667 restored is preserved bit-for-bit for
+  every handler, with no audit of the ~104 hub and daemon handler registrations. The
+  contract is a partial order, stated precisely in "The ordering contract" below —
+  not total FIFO, because the three concurrent slow reads participate on both sides.
 - One panic barrier in one place (`handleAndEnqueue`), covering every execution path
   identically, exactly as PR #667 left it.
 - Every transport property PR #667's tests pin — response/id pairing, hydration
@@ -106,6 +110,37 @@ addition reopens the ordering question PR #667 existed to close.
 
 ## Design
 
+### The ordering contract, stated as a partial order
+
+This is the contract PR #667's end state actually provides, derived from its
+mechanics (serial requests run inline in the receive loop; slow reads spawn from that
+loop the moment their frame is read), and it is the contract the worker must
+reproduce exactly. For two requests A before B on one connection:
+
+| A ↓ / B → | serial request | concurrent slow read | ping |
+|---|---|---|---|
+| **serial request** | B starts only after A's handler returned and its response was enqueued | B starts only after A completed | B may overtake A |
+| **concurrent slow read** | B does not wait for A | B does not wait for A | B may overtake A |
+| **ping** | B does not wait for A | B does not wait for A | — |
+
+In words: *earlier serial requests block all later work; nothing waits for a slow
+read; ping waits for nothing.* Slow reads are unordered among themselves — two
+pipelined `thread/read`s run concurrently — and a serial request issued after a slow
+read runs without waiting for it (that overtaking is the point of the concurrent
+set). Responses always pair by request id, and only the sequence-cut discipline
+governs how notifications interleave with a hydration response.
+
+The one cell this design changes relative to PR #667 is ping: today ping is answered
+inline in the receive loop, so it waits behind an executing serial handler; here it
+overtakes everything (see the split below). Every other cell is preserved unchanged.
+
+Wire compatibility of the ping change: AppWire clients correlate responses by
+request id (`appwire/client.go`'s pending-request map), and `ping` carries no state —
+`HandleMessage` answers it before the initialize gate with an empty struct. A ping
+response overtaking an earlier serial or pre-initialize response is therefore
+observable on the wire but meaningless to any conforming client; no ordering
+semantics attach to ping in the protocol.
+
 ### The receive-loop / worker split
 
 Each connection runs three goroutines instead of two: the existing send loop, the
@@ -129,17 +164,25 @@ for {
     case <-ctx.Done():
         return
     case msg := <-c.requests:
+        // select chooses randomly when both cases are ready, so a canceled
+        // connection can still win a dequeue; re-check before executing so
+        // no request *starts* after cancellation is observable here.
+        if ctx.Err() != nil {
+            return
+        }
         c.executeOrdered(ctx, msg) // classification + handleAndEnqueue, below
     }
 }
 ```
 
 It drains the queue strictly in arrival order. Because the receive loop is the only
-producer and the worker the only consumer, FIFO channel semantics *are* the ordering
-contract: request N's handler returns and its response is enqueued before request N+1
-is dequeued. That is the same observable ordering PR #667's inline path provides —
-the only difference is that frame N+1 may already be decoded and sitting in the queue
-while N executes, which no client can observe.
+producer and the worker the only consumer, FIFO dequeue plus `executeOrdered`'s
+classification implements the partial order above: a serial request executes to
+completion — handler returned, response enqueued — before the worker dequeues
+anything later, and a slow read is spawned and left behind, exactly as the receive
+loop leaves it behind today. The only difference from PR #667's inline path is that
+later frames may already be decoded and sitting in the queue while a serial handler
+executes, which no client can observe.
 
 `ping` overtaking the queue is deliberate and safe: the ping handler is stateless
 (`HandleMessage` answers it before the initialize gate with `struct{}{}`), so no
@@ -173,17 +216,16 @@ it executes inline in the worker.
 Why the worker and not the receive loop:
 
 - **It reproduces PR #667's ordering exactly.** On that branch, by the time the
-  receive loop reads a slow-read frame, every earlier serial request has already
-  completed (they ran inline, ahead of it, in the same loop). So the pinned contract
-  is: *a slow read begins only after every earlier request on the connection has
-  completed; later requests may overtake it; responses pair by id; only the
-  sequence-cut discipline governs how notifications interleave with a hydration
-  response.* Dispatching from the worker preserves all four clauses. Dispatching from
-  the receive loop would create a reordering PR #667 never had: a `thread/read` could
-  begin — and take its hydration capture cut — while an earlier queued mutation
-  (say, the `session/setThread`-shaped call that repoints the connection's
-  subscription) had not yet run. Nothing pins what that interleaving means, because
-  it has never been possible.
+  receive loop reads a slow-read frame, every earlier *serial* request has already
+  completed (they ran inline, ahead of it, in the same loop), while earlier slow
+  reads may still be in flight (they were spawned and left behind). That is
+  precisely the "nothing waits for a slow read / earlier serial requests block all
+  later work" partial order stated above, and worker-side dispatch preserves every
+  cell of it. Dispatching from the receive loop instead would create a reordering PR
+  #667 never had: a `thread/read` could begin — and take its hydration capture cut —
+  while an earlier *queued serial mutation* (say, the subscription-repointing call)
+  had not yet run. Nothing pins what that interleaving means, because it has never
+  been possible.
 - **One classification site.** The initialize gate, the method-set check, and the
   spawn all live in the worker's `executeOrdered`; the receive loop stays free of
   dispatch policy. The `isInitialized` check is also exact there rather than racy:
@@ -235,19 +277,46 @@ This is the natural pressure valve, and it is worth analyzing rather than hiding
   reader unavailable and transport pings are deferred — the same no-false-teardown
   behavior inline handlers get today, now confined to the >64-deep-pipeline case
   instead of every slow handler. App-level `ping` is also delayed in that window
-  (the loop cannot read it); this is the one residue of the old exposure, reachable
-  only by a client that has already buried the connection 64 requests deep.
+  (the loop cannot read it). This is the deliberate scope limit on the liveness
+  goal: transport liveness is guaranteed against handler behavior, not against a
+  client that buries the connection more than `requestQueueCap` requests deep. Such
+  a client has explicitly asked for 64+ operations to happen in order behind a slow
+  one; delaying its heartbeat until the queue admits the next frame is flow control
+  doing its job, and the alternative — an overload policy that times out the
+  enqueue and closes the connection — would turn a self-inflicted wait into a
+  server-inflicted disconnect. Rejected.
+- Disconnect detection while blocked: the loop cannot observe a peer close frame or
+  a dead TCP peer until it next parks in `Recv`, and the read gate suspends
+  keepalive for the same window. This is not new — PR #667 has the identical window
+  during *every* inline handler's execution — and it is bounded the same way: a
+  queue slot frees when the executing handler finishes, the loop re-enters `Recv`,
+  and normal close/keepalive handling resumes. Independent of that path, the send
+  loop still cancels the connection if a write fails or exceeds
+  `webSocketWriteTimeout`, and server shutdown still cancels outright. The window
+  shrinks under this design overall: it used to cover every serial handler's
+  runtime; now it exists only while the queue is full.
+- Saturation is observable: the receive loop reports the first blocked enqueue per
+  connection through `Server.logf`, the same advisory channel `evictSlowConsumer`
+  uses. No metrics fabric exists in `internal/appserver` and this design does not
+  introduce one; one log line is the proportionate version.
 
 **Memory.** Per connection: 64 queued frames plus the channel array. A frame's decoded
 size is bounded by the transport read limit (`appWireWebSocketReadLimit`, 128 MiB in
-`appwire/ws_transport.go`), so the worst case is capacity × read limit from a client
-deliberately stuffing maximal frames behind a parked handler. That is a ×64 multiplier
-over PR #667's inline path, which buffers at most one decoded frame while a handler
-runs. It is not a new trust boundary — the transport already extends 128 MiB of trust
-per frame to an authenticated client, and the same client can open more connections —
-but it is a real multiplier and is recorded here deliberately. A byte-budgeted queue
-was considered and rejected as YAGNI: the clients are our own web UI and TUI, and the
-budget's complexity would defend against a peer the per-frame limit already trusts.
+`appwire/ws_transport.go`), so the arithmetic worst case is capacity × read limit —
+~8 GiB — from an authenticated client deliberately stuffing maximal frames behind a
+parked handler. Recorded deliberately, with its context: this is not the cheapest
+route to that outcome on the current tree. PR #667 already lets the same client hold
+*unbounded* decoded maximal frames — each pipelined `thread/read` spawns a goroutine
+that retains its params message, with no cap since the 128-slot limiter died — and
+the same client can open additional connections besides. The queue's ×64 multiplier
+on the serial path is therefore strictly smaller than an exposure the trusted-client
+model already accepts. The governing knob for the whole class is the per-frame read
+limit, which is a transport decision outside this design's scope. A byte-budgeted
+queue was considered and rejected: it adds real complexity to close one route into a
+class that stays open through the concurrent-read route and the extra-connection
+route, against a peer that is our own authenticated web UI and TUI. If the class is
+ever closed for real, it needs an aggregate per-client admission budget spanning all
+of these, not a budget on this one channel (see Open questions).
 
 **Initialize handshake.** No special casing. Pre-initialize frames ride the queue like
 everything else; the worker executes them in order, and `HandleMessage`'s existing
@@ -268,12 +337,19 @@ failure, response-enqueue failure (`enqueueDispatched` → `cancelContext`), or 
 shutdown tearing down the HTTP request context. The design keeps that shape and
 threads it through both queue states:
 
-- **Queued but not started.** The worker's `select` observes `ctx.Done()` and returns
-  without executing anything further. Queued requests are abandoned unanswered —
-  correct, because connection cancellation is connection death: there is no peer to
-  answer, and `enqueueResponse` on the closed send channel would refuse the response
-  anyway. No handler side effects occur for a request that never started, so
-  abandonment is clean by construction.
+- **Queued but not started.** The worker returns without executing anything further.
+  The guarantee is stated exactly, because Go's `select` is not a priority
+  statement: when `ctx.Done()` and a non-empty queue are simultaneously ready, the
+  dequeue can win, so the worker re-checks `ctx.Err()` after every dequeue (see the
+  loop above) and the contract is *no request begins executing after the worker has
+  observed cancellation, and it observes at every dequeue*. The admission cutoff is
+  therefore racy by one edge, unavoidably: a cancellation that lands between the
+  `ctx.Err()` check and the handler's first instruction does not stop that one
+  request from starting — the same edge every cancellation mechanism has — and the
+  handler then runs with an already-canceled context. Requests still in the queue
+  behind the observation point never execute. Abandonment is clean by construction:
+  a request that never started has no side effects, no peer remains to answer, and
+  `enqueueResponse` on the closed send channel would refuse the response anyway.
 - **Executing.** The handler already holds the connection context (the worker passes
   the same `ctx` the inline path passes today), so handlers that respect their
   context — `DevicePoll`'s HTTP calls, `resolveGitHead`'s `exec.CommandContext` —
@@ -296,8 +372,12 @@ Worker lifecycle is owned by `ServeWebSocket`, symmetric with the send loop:
   context is done. The receive loop is the only producer, the worker the only
   consumer, and neither closes the channel — producer teardown is "stop sending"
   (the loop returned), consumer teardown is `ctx.Done()`, and the channel is
-  garbage-collected with the `Connection`.
-- **Close with a non-empty queue: no drain.** When the receive loop returns,
+  garbage-collected with the `Connection`. For any future second transport, this is
+  the embedding contract: the transport owns a cancelable connection context, starts
+  the worker beside its send loop, feeds the enqueue path from its receive loop, and
+  cancels the context when either loop exits — the same obligations `ServeWebSocket`
+  discharges today for the send loop.
+- **Close with a non-empty queue: abandonment, not drain.** When the receive loop returns,
   `ServeWebSocket`'s deferred `cancel()` fires and the worker exits at its next
   `select` without executing the remaining entries. Executing them would be work for
   a peer that is gone, and any hydration capture they might open would be aborted at
@@ -311,12 +391,27 @@ Worker lifecycle is owned by `ServeWebSocket`, symmetric with the send loop:
   `takeAllHydrations` in `unregisterConnectionLocked` has already swept whatever was
   registered. A wedged handler must not be able to hold connection teardown hostage;
   teardown-by-cancellation is the existing contract and the worker inherits it.
-- **Leak-freedom.** The worker can only be blocked in its `select` (exits on cancel),
-  in a handler (bounded by the handler's own respect for `ctx`, same as every
-  execution path today), or in `enqueueResponse` (which selects on `ctx.Done`). The
-  implementation should expose the worker's exit to tests the same way the keepalive
-  loop exposes decisions (`keepaliveDecision`): a package-private done channel or
-  callback seam, so the drain test asserts exit instead of sleeping.
+  The obvious worry — a still-executing handler registering hydration state *after*
+  the sweep, leaving teardown incomplete — cannot happen, and the argument is
+  already load-bearing for PR #667's concurrent slow reads: `captureSubscription`
+  verifies `server.conns[conn.id] == conn` while holding `projectionMu`, the same
+  gate `unregisterConnection` holds for the sweep, so a capture either completes
+  before the sweep (and is swept) or observes the unregistration (and aborts
+  without registering). Response enqueue is likewise fenced by `sendClosed` under
+  `sendMu`. The worker adds no new registration path, so it inherits the fence.
+- **Non-blocking teardown, not absolute leak-freedom.** The worker can only be
+  blocked in its `select` (exits on cancel), in `enqueueResponse` (selects on
+  `ctx.Done`), or in a handler. The last is the honest limitation: a handler that
+  ignores its canceled context retains the worker goroutine — and through it the
+  `Connection` — until it returns. That is cooperative cancellation, the same
+  bound every execution path has today (an inline handler retains the receive-loop
+  goroutine identically), not a hard guarantee, and no handler
+  cancellation-deadline contract exists to make it one. What the design does
+  guarantee is that teardown never *waits* on such a handler and that a worker
+  whose handlers return eventually exits. The implementation should expose the
+  worker's exit to tests the same way the keepalive loop exposes decisions
+  (`keepaliveDecision`): a package-private done channel or callback seam, so the
+  abandonment test asserts exit instead of sleeping.
 
 An incidental improvement worth naming: because the receive loop returns to `Recv`
 immediately after enqueuing, the keepalive read gate now reports the reader available
@@ -353,20 +448,35 @@ without modification:
    inline-set handler (e.g. `thread/list`); assert `ping` completes on the same
    connection while it is parked. This is the slow-*mutation* twin of
    `TestServeWebSocketSlowHandlerDoesNotDelayPing` and fails against PR #667.
-2. **Ordering across the worker under interleaving** — pipeline a mix of parked and
-   fast serial requests with slow reads sprinkled in; assert serial responses arrive
-   in request order, each serial handler observes the previous one's completion, and
-   slow reads start only after all earlier requests completed.
+2. **Ordering across the worker, pairwise** — one case per cell of the partial-order
+   table: serial→serial (the later handler observes the earlier one's completion;
+   responses in request order), serial→slow-read (a slow read does not start until
+   the parked serial handler ahead of it completes), slow-read→serial (the serial
+   request completes while the earlier slow read is still parked), and
+   slow-read→slow-read (two parked slow reads are in flight simultaneously). The
+   carried serial-ordering and overtaking tests cover the first and third cells
+   already; the second and fourth are new.
 3. **Panic in the worker** — extend the carried panic test: requests queued *behind*
    the panicking one still execute and answer; the worker goroutine survived.
-4. **Queue-full backpressure** — park a serial handler, pipeline `requestQueueCap`+k
-   further requests; assert no wire error and no eviction, and that after release
-   every response arrives, in order. Then repeat and close the client while the
-   receive loop is blocked enqueuing; assert clean teardown (worker exit seam).
-5. **Drain on close** — park a serial handler, queue several requests, close the
-   client; assert the worker exits, abandoned requests produce no responses and no
-   handler side effects (a counting handler), and — via the existing accounting
-   tests' machinery — no hydration finalizer leaks.
+4. **Queue-full backpressure** — with an injectable small capacity (a
+   package-private field beside the existing `keepaliveTickerFactory` seam, so the
+   test does not need 65 real frames) and a blocked-enqueue seam that signals when
+   the receive loop is actually parked on the full queue: park a serial handler,
+   pipeline past capacity, wait for the blocked-enqueue signal; assert no wire error
+   and no eviction, then release the handler and assert every response arrives, in
+   order. For teardown-under-saturation: reach the blocked-enqueue signal, close
+   the client, then release the parked handler; assert the connection tears down
+   cleanly and the worker exits (exit seam). The release step is part of the
+   contract being tested, not a test convenience — the design states that a close
+   arriving during saturation is *observed* only when a queue slot frees and the
+   loop re-enters `Recv`, exactly like PR #667's inline-handler window.
+5. **Abandonment on close** — park a serial handler, queue several requests behind
+   it (counting handlers), close the client, release the parked handler; assert the
+   worker exits, and the queued requests produced no responses and no side effects
+   (counters untouched). Hydration-finalizer cleanup is deliberately *not* asserted
+   here — a queued request that never started cannot have opened a capture, so the
+   assertion would be vacuous; the executing-capture abort path is already pinned by
+   the carried accounting and unregister tests.
 6. **Keepalive live during a slow mutation** — using the `keepaliveDecision` seam:
    with a serial handler parked, keepalive ping decisions report the reader
    available. Fails against PR #667; pins the incidental improvement so it cannot
@@ -419,17 +529,35 @@ Assumes PR #667 is merged; this change is a delta on its end state, touching onl
   the queue/worker contract — it is the authoritative statement of the ordering
   contract and must move with the policy.
 
-Estimated size: roughly 80–120 lines of production delta (most of it comments and the
-worker loop; the mechanism is one channel and one goroutine) and 300–400 lines of new
-tests per the plan above. No wire change, no handler change, no client change.
+Landing order, sized for review rather than ceremony (the whole production delta is
+one channel and one goroutine; a four-way stage split would be more process than
+mechanism):
+
+1. **Worker + queue, behavior-preserving where possible** — the receive-loop split,
+   the worker with its classification, the ping fast path, cancellation re-check,
+   and the rewritten policy comment, landing with every carried test green
+   unmodified. This commit is where the contract moves; it must not also invent
+   test machinery.
+2. **The new test plan** — the seams (injectable capacity, blocked-enqueue signal,
+   worker-exit signal) and the six new tests. Seams land with the tests that need
+   them so no production field exists without its consumer.
+
+Estimated size: roughly 100–140 lines of production delta (most of it comments and
+the worker loop) and 350–450 lines of new tests per the plan above. No wire change,
+no handler change, no client change.
 
 ## Open questions
 
-- **Unbounded concurrent slow reads.** PR #667 spawns a goroutine per slow read with
-  no cap (the old limiter died with the overflow error). A client can pipeline many
-  `thread/read`s and hold that many transcript walks in flight. This design neither
-  worsens nor fixes it; if it needs a bound, that is a separate small change (a
-  per-connection semaphore around the spawn) and a separate decision.
+- **Unbounded concurrent slow reads, and aggregate per-client admission.** PR #667
+  spawns a goroutine per slow read with no cap (the old limiter died with the
+  overflow error). A client can pipeline many `thread/read`s and hold that many
+  transcript walks — and their decoded params frames — in flight, and can multiply
+  any per-connection bound by opening more connections. This design neither worsens
+  nor fixes that class; the queue-memory analysis above concludes that closing it
+  for real means an aggregate per-client admission budget (bytes and goroutines
+  across all of a client's connections), which is its own design. If only the
+  slow-read count needs a bound sooner, a per-connection semaphore around the spawn
+  is a separate small change.
 - **Queue capacity.** 64 is a judgment call sized against observed UI bursts; the
   constant is one line to change and the backpressure behavior is capacity-
   independent. If real clients ever pipeline deeper legitimately, raise it.
