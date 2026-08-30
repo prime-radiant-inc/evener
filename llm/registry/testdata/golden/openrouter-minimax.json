@@ -87,6 +87,8 @@
     "Tools": "snapshot/row",
     "model": "row:minimax/minimax-m2.7"
   },
+  "default_model": "anthropic/claude-opus-5",
+  "cheap_model": "google/gemini-2.5-flash-lite",
   "credential_source": "env:OPENROUTER_API_KEY",
   "pruned_fields": [
     "developer_role",

@@ -3,6 +3,7 @@ package registry
 import (
 	"errors"
 	"fmt"
+	"maps"
 	"os"
 	"path/filepath"
 	"sort"
@@ -19,17 +20,20 @@ type instance struct {
 
 // Instance is the listing view of an instance (spec §5.1, §11.2).
 type Instance struct {
-	Name             string   `json:"name"`
-	ProviderID       string   `json:"provider_id,omitempty"`
-	Base             string   `json:"base,omitempty"`
-	Protocol         string   `json:"protocol"`
-	Surface          string   `json:"surface,omitempty"`
-	Auth             string   `json:"auth"`
-	Implicit         bool     `json:"implicit"`
-	Hidden           bool     `json:"hidden,omitempty"`
-	Default          bool     `json:"default,omitempty"`
-	CredentialSource string   `json:"credential_source"`
-	Warnings         []string `json:"warnings,omitempty"`
+	Name             string            `json:"name"`
+	ProviderID       string            `json:"provider_id,omitempty"`
+	Base             string            `json:"base,omitempty"`
+	Protocol         string            `json:"protocol"`
+	Surface          string            `json:"surface,omitempty"`
+	Auth             string            `json:"auth"`
+	BaseURL          string            `json:"base_url,omitempty"`
+	Vars             map[string]string `json:"vars,omitempty"`
+	DefaultModel     string            `json:"default_model,omitempty"`
+	Implicit         bool              `json:"implicit"`
+	Hidden           bool              `json:"hidden,omitempty"`
+	Default          bool              `json:"default,omitempty"`
+	CredentialSource string            `json:"credential_source"`
+	Warnings         []string          `json:"warnings,omitempty"`
 }
 
 // envVarName is the spec §6.2 rule: the id uppercased with `-` → `_`.
@@ -266,11 +270,55 @@ func (r *Registry) Instances() []Instance {
 		if !inst.rec.curated && inst.rec.providerID != inst.name {
 			base = inst.rec.providerID
 		}
+		baseURL := ""
+		if !h.Hidden {
+			baseURL, _, _ = r.resolveBaseURL(inst.rec, h.Transport)
+		}
 		out = append(out, Instance{
 			Name: inst.name, ProviderID: inst.rec.providerID, Base: base, Protocol: h.Protocol, Surface: h.Surface,
-			Auth: h.Transport.Auth, Implicit: inst.implicit, Hidden: h.Hidden, Default: inst.name == def,
+			Auth: h.Transport.Auth, BaseURL: baseURL, Vars: maps.Clone(inst.rec.userVars), DefaultModel: h.DefaultModel,
+			Implicit: inst.implicit, Hidden: h.Hidden, Default: inst.name == def,
 			CredentialSource: cred.Source, Warnings: warns,
 		})
 	}
+	return out
+}
+
+// Instance returns one instance's listing view.
+func (r *Registry) Instance(name string) (Instance, bool) {
+	for _, inst := range r.Instances() {
+		if inst.Name == name {
+			return inst, true
+		}
+	}
+	return Instance{}, false
+}
+
+// StateRoot is the state root the registry was loaded with: OAuth records
+// and the catalog cache live under it, and the Codex authenticator must
+// read the same directory (spec §9.5).
+func (r *Registry) StateRoot() string { return r.stateRoot }
+
+// StrayOAuthRecords lists auth/<name>.json records under the state root
+// whose <name> is not an instance on the Codex transport (spec §9.5, §14.1).
+// Nothing reads such a record, so each notice says how to remove it.
+func (r *Registry) StrayOAuthRecords() []string {
+	dir := filepath.Join(r.stateRoot, "auth")
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return nil
+	}
+	var out []string
+	for _, e := range entries {
+		name, ok := strings.CutSuffix(e.Name(), ".json")
+		if !ok || e.IsDir() {
+			continue
+		}
+		if rec, found := r.recordFor(name); found && rec.head.Transport.Auth == AuthOAuthOpenAICodex {
+			continue
+		}
+		out = append(out, fmt.Sprintf("stray OAuth record %s: %q is not an instance on the Codex transport; remove it with `evener openai logout --instance %s`", filepath.Join(dir, e.Name()), name, name))
+	}
+	sort.Strings(out)
 	return out
 }

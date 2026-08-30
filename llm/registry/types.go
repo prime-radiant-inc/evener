@@ -192,6 +192,14 @@ type Resolved struct {
 	CredentialHeaders map[string]string `json:"-"`
 	Provenance        map[string]string `json:"provenance,omitempty"`
 	Warnings          []string          `json:"warnings,omitempty"`
+	// DefaultModel and CheapModel are the instance's curated or configured
+	// default_model / cheap_model (spec §6.2, §7.5); the agent's profile reads
+	// them instead of a per-provider switch.
+	DefaultModel string `json:"default_model,omitempty"`
+	CheapModel   string `json:"cheap_model,omitempty"`
+	// Synthesized is true when the reference matched no catalog row and no
+	// live id (spec §7.3): the row was made up from provider-level caps.
+	Synthesized bool `json:"synthesized,omitempty"`
 }
 
 // Ref names an instance/model pair (spec §7).
@@ -213,3 +221,8 @@ func StringValue(p *string) string {
 	}
 	return *p
 }
+
+// ReasoningDisabled reports an explicit reasoning = false (spec §7.4): the
+// row must send no reasoning control at all. nil means "unknown", which is
+// not disabled.
+func (c Caps) ReasoningDisabled() bool { return c.Reasoning != nil && !*c.Reasoning }

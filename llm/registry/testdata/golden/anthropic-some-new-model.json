@@ -57,6 +57,9 @@
   "warnings": [
     "model not in catalog"
   ],
+  "default_model": "claude-opus-5",
+  "cheap_model": "claude-haiku-4-5",
+  "synthesized": true,
   "credential_source": "env:ANTHROPIC_API_KEY",
   "pruned_fields": [
     "container",

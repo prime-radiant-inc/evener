@@ -84,6 +84,8 @@
     "Tools": "snapshot/row",
     "model": "row:deepseek/deepseek-r1"
   },
+  "default_model": "anthropic/claude-opus-5",
+  "cheap_model": "google/gemini-2.5-flash-lite",
   "credential_source": "env:OPENROUTER_API_KEY",
   "pruned_fields": [
     "developer_role",

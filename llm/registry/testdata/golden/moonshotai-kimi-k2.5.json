@@ -90,6 +90,8 @@
     "Tools": "snapshot/row",
     "model": "row:kimi-k2.5"
   },
+  "default_model": "kimi-k3",
+  "cheap_model": "kimi-k2.5",
   "credential_source": "env:MOONSHOT_API_KEY",
   "pruned_fields": [
     "developer_role",

@@ -75,6 +75,8 @@
     "Tools": "snapshot/row",
     "model": "row:kimi-for-coding"
   },
+  "default_model": "k3",
+  "cheap_model": "kimi-for-coding",
   "credential_source": "env:KIMI_API_KEY",
   "pruned_fields": [
     "container",

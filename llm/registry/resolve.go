@@ -175,13 +175,58 @@ func (r *Registry) Resolve(ref string) (Resolved, error) {
 	}
 	rec, ok := r.recordFor(pr.Instance)
 	if !ok {
-		names := make([]string, 0, len(r.instances))
-		for _, inst := range r.rankedInstances() {
-			names = append(names, inst.name)
-		}
-		return Resolved{}, fmt.Errorf("unknown instance %q (available: %s)", pr.Instance, strings.Join(names, ", "))
+		return Resolved{}, r.unknownInstance(pr.Instance)
 	}
 	return r.resolveOn(rec, pr, warnings)
+}
+
+// unknownInstance reports a reference or ResolveInstance call naming an
+// instance the registry does not have, listing the available ones.
+func (r *Registry) unknownInstance(name string) error {
+	names := make([]string, 0, len(r.instances))
+	for _, inst := range r.rankedInstances() {
+		names = append(names, inst.name)
+	}
+	return fmt.Errorf("unknown instance %q (available: %s)", name, strings.Join(names, ", "))
+}
+
+// ResolveInstance resolves an instance without a model: what a model-less
+// call (ListModels, a credential probe) needs — protocol, transport,
+// headers, credential, and the provider-level caps — with no row
+// (spec §8.1: ListModels takes a Resolved). ModelID and WireID stay empty.
+func (r *Registry) ResolveInstance(name string) (Resolved, error) {
+	rec, ok := r.recordFor(name)
+	if !ok {
+		return Resolved{}, r.unknownInstance(name)
+	}
+	caps := Caps{}
+	prov := map[string]string{}
+	for _, layer := range rec.layers {
+		if layer.resetFields {
+			caps.Fields = nil
+		}
+		mergeCaps(&caps, layer.provider, layer.tag+"/provider", prov)
+	}
+	seedFields(&caps, rec.head.Protocol)
+	transport, warnings := r.buildTransport(rec, Model{}, rec.head.Protocol)
+	cred, cw := r.credential(rec)
+	warnings = append(warnings, cw...)
+	credHeaders := map[string]string{}
+	for k, v := range rec.head.CredentialHeaders {
+		if e, missing := expandEnv(v, r.env); len(missing) == 0 && e != "" {
+			credHeaders[k] = e
+		}
+	}
+	providerID := rec.providerID
+	if providerID == "" {
+		providerID = rec.name
+	}
+	return Resolved{
+		Instance: rec.name, ProviderID: providerID, Protocol: rec.head.Protocol, Surface: rec.head.Surface,
+		Transport: transport, Caps: caps, Headers: r.buildHeaders(rec.head.Headers, nil),
+		Credential: cred, CredentialHeaders: credHeaders, Provenance: prov, Warnings: warnings,
+		DefaultModel: rec.head.DefaultModel, CheapModel: rec.head.CheapModel,
+	}, nil
 }
 
 func (r *Registry) resolveOn(rec *record, ref Ref, warnings []string) (Resolved, error) {
@@ -314,6 +359,7 @@ func (r *Registry) resolveOn(rec *record, ref Ref, warnings []string) (Resolved,
 		Instance: rec.name, ProviderID: providerID, Protocol: rowProto, Surface: row.Surface, Transport: transport,
 		ModelID: ref.Model, WireID: hit.wireID, Model: row, Caps: caps, Headers: headers,
 		Credential: cred, CredentialHeaders: credHeaders, Provenance: prov, Warnings: warnings,
+		DefaultModel: rec.head.DefaultModel, CheapModel: rec.head.CheapModel, Synthesized: hit.synthesized,
 	}, nil
 }
 

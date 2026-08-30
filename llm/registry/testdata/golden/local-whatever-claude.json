@@ -57,6 +57,7 @@
   "warnings": [
     "model not in catalog"
   ],
+  "synthesized": true,
   "credential_source": "none",
   "pruned_fields": [
     "developer_role",

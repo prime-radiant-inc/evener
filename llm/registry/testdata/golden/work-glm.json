@@ -76,6 +76,8 @@
     "WebSearch": "overlay/provider",
     "model": "row:glm-5.2-nvfp4"
   },
+  "default_model": "gpt-5.6",
+  "cheap_model": "gpt-4.1-nano",
   "credential_source": "credential_headers",
   "pruned_fields": [
     "developer_role",

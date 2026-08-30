@@ -83,6 +83,8 @@
     "Tools": "snapshot/row",
     "model": "row:openai/gpt-oss-120b"
   },
+  "default_model": "openai/gpt-oss-120b",
+  "cheap_model": "llama-3.1-8b-instant",
   "credential_source": "env:GROQ_API_KEY",
   "pruned_fields": [
     "background",

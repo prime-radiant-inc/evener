@@ -78,6 +78,8 @@
     "Tools": "snapshot/row",
     "model": "row:MiniMax-M3"
   },
+  "default_model": "MiniMax-M3",
+  "cheap_model": "MiniMax-M2.7",
   "credential_source": "env:MINIMAX_API_KEY",
   "pruned_fields": [
     "container",

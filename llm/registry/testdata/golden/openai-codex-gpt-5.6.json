@@ -143,6 +143,8 @@
     "WebSearch": "overlay/provider",
     "model": "row:gpt-5.6"
   },
+  "default_model": "gpt-5.6",
+  "cheap_model": "gpt-5.6-luna",
   "credential_source": "oauth",
   "pruned_fields": [
     "background",
