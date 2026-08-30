@@ -587,6 +587,9 @@ func printHubEnvVars(w io.Writer) {
 	} {
 		_, _ = fmt.Fprintf(tw, "  %s\t%s\n", v.Name, v.Summary)
 	}
+	// Every implicit provider the registry knows reads its own key and base
+	// URL; naming them all here would be a second, drifting roster.
+	_, _ = fmt.Fprintf(tw, "  %s\t%s\n", "<ID>_API_KEY / <ID>_BASE_URL", "any implicit provider's key or base URL (evener providers list)")
 	_ = tw.Flush()
 }
 

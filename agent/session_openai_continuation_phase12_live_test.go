@@ -19,7 +19,8 @@ import (
 	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/llm"
 	apilog "primeradiant.com/evener/llm/apilog"
-	"primeradiant.com/evener/llm/providers/openai"
+	_ "primeradiant.com/evener/llm/providers/all"
+	"primeradiant.com/evener/llm/registry"
 )
 
 func TestSession_OpenAIResponsesContinuationPhase12PublicLiveProof(t *testing.T) {
@@ -47,14 +48,13 @@ func TestSession_OpenAIResponsesContinuationPhase12PublicLiveProof(t *testing.T)
 		}
 	})
 
-	adapter, err := openai.NewFromEnv(openai.Config{StateHome: stateDir})
+	r, err := registry.Load(registry.WithStateRoot(stateDir))
 	if err != nil {
-		t.Fatalf("openai.NewFromEnv: %v", err)
+		t.Fatalf("registry.Load: %v", err)
 	}
-	capture := &phase12PublicOpenAIAdapter{inner: adapter}
-	client := llm.NewClient()
-	client.Register(capture)
-	client.Use(apiLogger)
+	capture := &phase12RequestRecorder{}
+	client := llm.NewClient(llm.WithRegistry(r), llm.WithClientStateDir(stateDir))
+	client.Use(apiLogger, capture)
 
 	runID := strings.ToLower(ulid.Make().String())
 	priorMarker := "phase12-prior-" + runID
@@ -142,10 +142,8 @@ func TestSession_OpenAIResponsesContinuationPhase12PublicLiveProof(t *testing.T)
 		PreviousResponseID: "resp_evener_invalid_" + runID,
 		Store:              &store,
 	}
-	if _, err := adapter.Complete(ctx, invalidReq); err == nil {
+	if _, err := client.Complete(ctx, invalidReq); err == nil {
 		t.Fatal("invalid previous_response_id was accepted")
-	} else if got := adapter.ClassifyResponsesError(invalidReq, err); got != llm.ResponsesErrorContinuationRejected {
-		t.Fatalf("ClassifyResponsesError = %q, want %q; err=%v", got, llm.ResponsesErrorContinuationRejected, err)
 	}
 
 	transcriptPath := sess.TranscriptPath()
@@ -239,35 +237,34 @@ func TestSession_OpenAIResponsesContinuationPhase12PublicLiveProof(t *testing.T)
 	)
 }
 
-type phase12PublicOpenAIAdapter struct {
-	inner *openai.Adapter
-	mu    sync.Mutex
-	reqs  []llm.Request
+// phase12RequestRecorder is middleware that records every shaped request the
+// client dispatches, which is where the continuation evidence rides.
+type phase12RequestRecorder struct {
+	mu   sync.Mutex
+	reqs []llm.Request
 }
 
-func (a *phase12PublicOpenAIAdapter) Name() string { return a.inner.Name() }
-
-func (a *phase12PublicOpenAIAdapter) Complete(ctx context.Context, req llm.Request) (llm.Response, error) {
-	a.record(req)
-	return a.inner.Complete(ctx, req)
+func (a *phase12RequestRecorder) WrapComplete(next llm.CompleteFunc) llm.CompleteFunc {
+	return func(ctx context.Context, req llm.Request) (llm.Response, error) {
+		a.record(req)
+		return next(ctx, req)
+	}
 }
 
-func (a *phase12PublicOpenAIAdapter) Stream(ctx context.Context, req llm.Request) (llm.Stream, error) {
-	a.record(req)
-	return a.inner.Stream(ctx, req)
+func (a *phase12RequestRecorder) WrapStream(next llm.StreamFunc) llm.StreamFunc {
+	return func(ctx context.Context, req llm.Request) (llm.Stream, error) {
+		a.record(req)
+		return next(ctx, req)
+	}
 }
 
-func (a *phase12PublicOpenAIAdapter) PlanResponsesContinuation(req llm.Request) (llm.ResponsesContinuationPlan, error) {
-	return a.inner.PlanResponsesContinuation(req)
-}
-
-func (a *phase12PublicOpenAIAdapter) record(req llm.Request) {
+func (a *phase12RequestRecorder) record(req llm.Request) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	a.reqs = append(a.reqs, phase12CloneRequest(req))
 }
 
-func (a *phase12PublicOpenAIAdapter) firstRequestWithHistoryMode(mode llm.HistoryMode) (llm.Request, bool) {
+func (a *phase12RequestRecorder) firstRequestWithHistoryMode(mode llm.HistoryMode) (llm.Request, bool) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	for _, req := range a.reqs {
@@ -278,7 +275,7 @@ func (a *phase12PublicOpenAIAdapter) firstRequestWithHistoryMode(mode llm.Histor
 	return llm.Request{}, false
 }
 
-func (a *phase12PublicOpenAIAdapter) requestSummaries() []string {
+func (a *phase12RequestRecorder) requestSummaries() []string {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	summaries := make([]string, 0, len(a.reqs))

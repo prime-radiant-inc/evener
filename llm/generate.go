@@ -170,11 +170,9 @@ type generationState struct {
 func prepareGeneration(opts GenerateOptions) (*generationState, error) {
 	client := opts.Client
 	if client == nil {
-		var err error
-		client, err = DefaultClient()
-		if err != nil {
-			return nil, err
-		}
+		// A caller that names no client gets one with no registry of its
+		// own: it resolves against EmbeddedRegistry (spec §8.1).
+		client = NewClient()
 	}
 	if err := opts.validate(); err != nil {
 		return nil, err

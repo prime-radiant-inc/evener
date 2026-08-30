@@ -28,7 +28,7 @@ type APILogOpts struct {
 	// Recompute re-extracts text/tool-call counts from stored response
 	// bodies for rows whose recorded TextLength and ToolCalls are both zero
 	// (historical records from before the accumulated-item settlement fix
-	// -- see llm/providers/openai.ExtractRecordedResponse). It reads bodies
+	// -- see responses.ExtractRecordedResponse). It reads bodies
 	// on demand for those rows only; it does not change the decoder mode
 	// APILog otherwise uses for the whole log.
 	Recompute bool

@@ -143,22 +143,14 @@ func TestClassifyAbortErrorIsPermanent(t *testing.T) {
 	}
 }
 
-// TestClassify_BehaviorTagNeverChangesTheClass pins that the classifier no
-// longer keys on provider identity at all: with the endpoint handoff deleted,
-// a Responses 404 is Permanent whether it arrives from "openai", from a
-// renamed instance tagged "openai", or from one tagged "anthropic".
-func TestClassify_BehaviorTagNeverChangesTheClass(t *testing.T) {
-	for _, tag := range []string{"", "openai", "anthropic"} {
-		err := ErrorFromHTTPStatus("work", 404, "responses.create(stream) failed: model not found", nil, nil)
-		if tag != "" {
-			var bs behaviorTagSetter
-			if !errors.As(err, &bs) {
-				t.Fatalf("expected behaviorTagSetter, got %T", err)
-			}
-			bs.setBehaviorTag(tag)
-		}
+// TestClassify_ProviderIdentityNeverChangesTheClass pins that the classifier
+// does not key on provider identity at all: with the endpoint handoff
+// deleted, a Responses 404 is Permanent whichever instance it arrives from.
+func TestClassify_ProviderIdentityNeverChangesTheClass(t *testing.T) {
+	for _, instance := range []string{"work", "openai", "anthropic"} {
+		err := ErrorFromHTTPStatus(instance, 404, "responses.create(stream) failed: model not found", nil, nil)
 		if got := Classify(err); got != ErrorClassPermanent {
-			t.Fatalf("Classify(work/tag=%q responses 404) = %v, want Permanent", tag, got)
+			t.Fatalf("Classify(%s responses 404) = %v, want Permanent", instance, got)
 		}
 	}
 }

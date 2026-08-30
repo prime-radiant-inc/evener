@@ -14,7 +14,8 @@ import (
 	"primeradiant.com/evener/agent/events"
 	"primeradiant.com/evener/agent/execenv"
 	"primeradiant.com/evener/llm"
-	_ "primeradiant.com/evener/llm/providers/openai"
+	_ "primeradiant.com/evener/llm/providers/all"
+	"primeradiant.com/evener/llm/registry"
 )
 
 // integrationTestModel is the OpenAI model used by live integration tests.
@@ -41,10 +42,7 @@ func skipWithoutAPIKey(t *testing.T) {
 
 func integrationSession(t *testing.T) *Session {
 	t.Helper()
-	client, err := llm.NewFromEnv()
-	if err != nil {
-		t.Fatal(err)
-	}
+	client := liveRegistryClient(t)
 	dir := t.TempDir()
 	sess, err := NewSession(client, NewOpenAIProfile(integrationTestModel), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{
 		MaxToolRoundsPerInput: 20,
@@ -294,10 +292,7 @@ func TestIntegration_Delegate(t *testing.T) {
 
 	// Delegate flow needs more tool rounds: the parent calls delegate and may
 	// inspect the resulting job while the delegated session uses several rounds.
-	client, err := llm.NewFromEnv()
-	if err != nil {
-		t.Fatal(err)
-	}
+	client := liveRegistryClient(t)
 	dir := t.TempDir()
 	sess, err := NewSession(client, NewOpenAIProfile(integrationTestModel), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{
 		MaxToolRoundsPerInput: 40,
@@ -400,4 +395,16 @@ func TestIntegration_Timeout(t *testing.T) {
 		t.Fatalf("ProcessInput took too long after timeout: %v", elapsed)
 	}
 	t.Logf("timeout error after %v: %v", elapsed, err)
+}
+
+// liveRegistryClient builds the client these live tests dispatch through: the
+// real registry, so the developer's environment and user layer name the
+// instances exactly as a real run would.
+func liveRegistryClient(t *testing.T) *llm.Client {
+	t.Helper()
+	r, err := registry.Load()
+	if err != nil {
+		t.Fatalf("registry.Load: %v", err)
+	}
+	return llm.NewClient(llm.WithRegistry(r))
 }

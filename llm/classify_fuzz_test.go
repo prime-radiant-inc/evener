@@ -76,13 +76,12 @@ func FuzzClassify(f *testing.F) {
 		}
 		streamErr := NewStreamError("old", msg, nil)
 		RewriteErrorProvider(streamErr, " new ")
-		StampErrorBehaviorTag(streamErr, " tag ")
 		var e Error
 		if !errors.As(streamErr, &e) {
 			t.Fatalf("stream error does not implement llm.Error: %v", streamErr)
 		}
-		if e.Provider() != "new" || e.BehaviorTag() != "tag" {
-			t.Fatalf("non-HTTP stamps not applied: provider=%q tag=%q", e.Provider(), e.BehaviorTag())
+		if e.Provider() != "new" {
+			t.Fatalf("non-HTTP provider stamp not applied: provider=%q", e.Provider())
 		}
 		if Classify(classifyResidualError{status: 408}) != ErrorClassRetryable {
 			t.Fatal("non-retryable 408 must classify retryable by status")

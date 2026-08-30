@@ -131,10 +131,7 @@ func (c *Client) CountInputTokens(ctx context.Context, req Request) (InputTokenC
 			estimate.Provider = t.name
 			return estimate, nil
 		}
-		tag := c.behaviorTagFor(t.name)
-		err = RewriteErrorProvider(err, t.name)
-		err = StampErrorBehaviorTag(err, tag)
-		return InputTokenCount{}, err
+		return InputTokenCount{}, RewriteErrorProvider(err, t.name)
 	}
 	if out.Source == "" {
 		out.Source = TokenCountSourceProvider

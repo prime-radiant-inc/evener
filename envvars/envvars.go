@@ -68,6 +68,7 @@ var (
 	EVENERHubToken                    = Var{Name: "EVENER_HUB_TOKEN", Summary: "Per-hub bearer token passed to spawned evener serve daemons.", Secret: true, Visibility: Internal}
 	EVENERLoginHeadless               = Var{Name: "EVENER_LOGIN_HEADLESS", Summary: "Overrides OpenAI login flow detection: 1 for device-code, 0 for browser.", Visibility: Public}
 	EVENERModel                       = Var{Name: "EVENER_MODEL", Summary: "Default model as provider/model when --model is omitted.", Visibility: Public}
+	EVENEROffline                     = Var{Name: "EVENER_OFFLINE", Summary: "Set to 1 to keep the provider registry offline: no models.dev refresh, embedded snapshot only.", Visibility: Public}
 	EVENEROpenAIResponsesContinuation = Var{Name: "EVENER_OPENAI_RESPONSES_CONTINUATION", Summary: "Default OpenAI Responses continuation mode: off|auto. CLI and launch config override it.", Visibility: Public}
 	EVENERProvider                    = Var{Name: "EVENER_PROVIDER", Summary: "Fallback provider for llmcall when --provider and LLM_PROVIDER are unset.", Visibility: Public}
 	EVENERProvidersConfig             = Var{Name: "EVENER_PROVIDERS_CONFIG", Summary: "Path to providers.toml.", Visibility: Public}
@@ -86,33 +87,66 @@ var (
 	LLMModel    = Var{Name: "LLM_MODEL", Summary: "Model for llmcall when --model is unset; checked before EVENER_MODEL.", Visibility: Public}
 	LLMProvider = Var{Name: "LLM_PROVIDER", Summary: "Provider for llmcall when --provider is unset; checked before EVENER_PROVIDER.", Visibility: Public}
 
-	OpenAIAPIKey                   = Var{Name: "OPENAI_API_KEY", Summary: "OpenAI API key.", Secret: true, Visibility: Public}
-	OpenAIBaseURL                  = Var{Name: "OPENAI_BASE_URL", Summary: "OpenAI API-key backend base URL.", Visibility: Public}
-	OpenAIChatGPTBaseURL           = Var{Name: "OPENAI_CHATGPT_BASE_URL", Summary: "OpenAI OAuth ChatGPT/Codex backend base URL.", Visibility: Public}
-	OpenAIChatGPTClientID          = Var{Name: "OPENAI_CHATGPT_CLIENT_ID", Summary: "OpenAI OAuth client id override for tests and development.", Visibility: Tooling}
-	OpenAICompatibleAPIKey         = Var{Name: "OPENAI_COMPATIBLE_API_KEY", Summary: "OpenAI-compatible provider API key.", Secret: true, Visibility: Public}
-	OpenAICompatibleBaseURL        = Var{Name: "OPENAI_COMPATIBLE_BASE_URL", Summary: "Required base URL for openai-compatible provider registration.", Visibility: Public}
-	OpenAICompatibleProviderQuirks = Var{Name: "OPENAI_COMPATIBLE_PROVIDER_QUIRKS", Summary: "Quirks preset for the openai-compatible adapter.", Visibility: Public}
-	OpenAIOrgID                    = Var{Name: "OPENAI_ORG_ID", Summary: "OpenAI organization header for API-key requests.", Visibility: Public}
-	OpenAIProjectID                = Var{Name: "OPENAI_PROJECT_ID", Summary: "OpenAI project header for API-key requests.", Visibility: Public}
-	AnthropicAPIKey                = Var{Name: "ANTHROPIC_API_KEY", Summary: "Anthropic API key.", Secret: true, Visibility: Public}
-	AnthropicBaseURL               = Var{Name: "ANTHROPIC_BASE_URL", Summary: "Anthropic API base URL override.", Visibility: Public}
-	GeminiAPIKey                   = Var{Name: "GEMINI_API_KEY", Summary: "Google Gemini API key; checked before GOOGLE_API_KEY.", Secret: true, Visibility: Public}
-	GeminiBaseURL                  = Var{Name: "GEMINI_BASE_URL", Summary: "Google Gemini API base URL override.", Visibility: Public}
-	GoogleAPIKey                   = Var{Name: "GOOGLE_API_KEY", Summary: "Google Gemini API key fallback.", Secret: true, Visibility: Public}
-	GLMAPIKey                      = Var{Name: "GLM_API_KEY", Summary: "GLM API key.", Secret: true, Visibility: Public}
-	GLMBaseURL                     = Var{Name: "GLM_BASE_URL", Summary: "GLM API base URL.", Visibility: Public}
-	KimiAPIKey                     = Var{Name: "KIMI_API_KEY", Summary: "Kimi API key.", Secret: true, Visibility: Public}
-	KimiBaseURL                    = Var{Name: "KIMI_BASE_URL", Summary: "Kimi API base URL.", Visibility: Public}
-	KimiCodingAPIKey               = Var{Name: "KIMI_CODING_API_KEY", Summary: "Kimi coding-plan API key.", Secret: true, Visibility: Public}
-	KimiCodingBaseURL              = Var{Name: "KIMI_CODING_BASE_URL", Summary: "Kimi coding-plan Anthropic-compatible base URL.", Visibility: Public}
-	MinimaxAPIKey                  = Var{Name: "MINIMAX_API_KEY", Summary: "MiniMax API key.", Secret: true, Visibility: Public}
-	MinimaxBaseURL                 = Var{Name: "MINIMAX_BASE_URL", Summary: "MiniMax API base URL override.", Visibility: Public}
-	OllamaAPIKey                   = Var{Name: "OLLAMA_API_KEY", Summary: "Optional API key for authenticated Ollama proxies or Ollama Cloud.", Secret: true, Visibility: Public}
-	OllamaBaseURL                  = Var{Name: "OLLAMA_BASE_URL", Summary: "Ollama OpenAI-compatible base URL; must include /v1.", Visibility: Public}
-	OllamaHost                     = Var{Name: "OLLAMA_HOST", Summary: "Ollama canonical host; used when OLLAMA_BASE_URL is unset.", Visibility: Public}
-	OpenRouterAPIKey               = Var{Name: "OPENROUTER_API_KEY", Summary: "OpenRouter API key.", Secret: true, Visibility: Public}
-	OpenRouterBaseURL              = Var{Name: "OPENROUTER_BASE_URL", Summary: "OpenRouter API base URL.", Visibility: Public}
+	OpenAIAPIKey          = Var{Name: "OPENAI_API_KEY", Summary: "OpenAI API key.", Secret: true, Visibility: Public}
+	OpenAIBaseURL         = Var{Name: "OPENAI_BASE_URL", Summary: "OpenAI API-key backend base URL.", Visibility: Public}
+	OpenAICodexBaseURL    = Var{Name: "OPENAI_CODEX_BASE_URL", Summary: "OpenAI OAuth Codex backend base URL.", Visibility: Public}
+	OpenAIChatGPTClientID = Var{Name: "OPENAI_CHATGPT_CLIENT_ID", Summary: "OpenAI OAuth client id override for tests and development.", Visibility: Tooling}
+	OpenAIOrgID           = Var{Name: "OPENAI_ORG_ID", Summary: "OpenAI organization header for API-key requests.", Visibility: Public}
+	OpenAIProjectID       = Var{Name: "OPENAI_PROJECT_ID", Summary: "OpenAI project header for API-key requests.", Visibility: Public}
+
+	AnthropicAPIKey  = Var{Name: "ANTHROPIC_API_KEY", Summary: "Anthropic API key.", Secret: true, Visibility: Public}
+	AnthropicBaseURL = Var{Name: "ANTHROPIC_BASE_URL", Summary: "Anthropic API base URL override.", Visibility: Public}
+	GeminiAPIKey     = Var{Name: "GEMINI_API_KEY", Summary: "Google Gemini API key; checked before GOOGLE_API_KEY.", Secret: true, Visibility: Public}
+	GoogleAPIKey     = Var{Name: "GOOGLE_API_KEY", Summary: "Google Gemini API key fallback.", Secret: true, Visibility: Public}
+	GoogleBaseURL    = Var{Name: "GOOGLE_BASE_URL", Summary: "Google Gemini API base URL override.", Visibility: Public}
+
+	GroqAPIKey           = Var{Name: "GROQ_API_KEY", Summary: "Groq API key.", Secret: true, Visibility: Public}
+	GroqBaseURL          = Var{Name: "GROQ_BASE_URL", Summary: "Groq API base URL override.", Visibility: Public}
+	XAIAPIKey            = Var{Name: "XAI_API_KEY", Summary: "xAI API key.", Secret: true, Visibility: Public}
+	XAIBaseURL           = Var{Name: "XAI_BASE_URL", Summary: "xAI API base URL override.", Visibility: Public}
+	CerebrasAPIKey       = Var{Name: "CEREBRAS_API_KEY", Summary: "Cerebras API key.", Secret: true, Visibility: Public}
+	CerebrasBaseURL      = Var{Name: "CEREBRAS_BASE_URL", Summary: "Cerebras API base URL override.", Visibility: Public}
+	MistralAPIKey        = Var{Name: "MISTRAL_API_KEY", Summary: "Mistral API key.", Secret: true, Visibility: Public}
+	MistralBaseURL       = Var{Name: "MISTRAL_BASE_URL", Summary: "Mistral API base URL override.", Visibility: Public}
+	TogetherAPIKey       = Var{Name: "TOGETHER_API_KEY", Summary: "Together AI API key.", Secret: true, Visibility: Public}
+	TogetherAIBaseURL    = Var{Name: "TOGETHERAI_BASE_URL", Summary: "Together AI API base URL override.", Visibility: Public}
+	DeepSeekAPIKey       = Var{Name: "DEEPSEEK_API_KEY", Summary: "DeepSeek API key.", Secret: true, Visibility: Public}
+	DeepSeekBaseURL      = Var{Name: "DEEPSEEK_BASE_URL", Summary: "DeepSeek API base URL override.", Visibility: Public}
+	ZhipuAPIKey          = Var{Name: "ZHIPU_API_KEY", Summary: "Z.ai (Zhipu) API key, used by both the zai and zai-coding-plan instances.", Secret: true, Visibility: Public}
+	ZAIBaseURL           = Var{Name: "ZAI_BASE_URL", Summary: "Z.ai API base URL override.", Visibility: Public}
+	ZAICodingPlanBaseURL = Var{Name: "ZAI_CODING_PLAN_BASE_URL", Summary: "Z.ai coding-plan base URL override.", Visibility: Public}
+	MoonshotAPIKey       = Var{Name: "MOONSHOT_API_KEY", Summary: "Moonshot AI API key.", Secret: true, Visibility: Public}
+	MoonshotAIBaseURL    = Var{Name: "MOONSHOTAI_BASE_URL", Summary: "Moonshot AI API base URL override.", Visibility: Public}
+	KimiAPIKey           = Var{Name: "KIMI_API_KEY", Summary: "Kimi coding-plan API key (models.dev's convention).", Secret: true, Visibility: Public}
+	KimiForCodingBaseURL = Var{Name: "KIMI_FOR_CODING_BASE_URL", Summary: "Kimi coding-plan base URL override.", Visibility: Public}
+	MinimaxAPIKey        = Var{Name: "MINIMAX_API_KEY", Summary: "MiniMax API key.", Secret: true, Visibility: Public}
+	MinimaxBaseURL       = Var{Name: "MINIMAX_BASE_URL", Summary: "MiniMax API base URL override.", Visibility: Public}
+	OpenRouterAPIKey     = Var{Name: "OPENROUTER_API_KEY", Summary: "OpenRouter API key.", Secret: true, Visibility: Public}
+	OpenRouterBaseURL    = Var{Name: "OPENROUTER_BASE_URL", Summary: "OpenRouter API base URL.", Visibility: Public}
+	OllamaAPIKey         = Var{Name: "OLLAMA_API_KEY", Summary: "Optional API key for authenticated Ollama proxies or Ollama Cloud.", Secret: true, Visibility: Public}
+	OllamaBaseURL        = Var{Name: "OLLAMA_BASE_URL", Summary: "Ollama base URL; wins over OLLAMA_HOST.", Visibility: Public}
+	OllamaHost           = Var{Name: "OLLAMA_HOST", Summary: "Ollama canonical host; used when OLLAMA_BASE_URL is unset.", Visibility: Public}
+
+	AWSBearerTokenBedrock              = Var{Name: "AWS_BEARER_TOKEN_BEDROCK", Summary: "Amazon Bedrock bearer token.", Secret: true, Visibility: Public}
+	AWSRegion                          = Var{Name: "AWS_REGION", Summary: "AWS region the Bedrock endpoint is built from.", Visibility: Public}
+	AzureAPIKey                        = Var{Name: "AZURE_API_KEY", Summary: "Azure OpenAI API key.", Secret: true, Visibility: Public}
+	AzureResourceName                  = Var{Name: "AZURE_RESOURCE_NAME", Summary: "Azure OpenAI resource name the endpoint is built from.", Visibility: Public}
+	AzureCognitiveServicesResourceName = Var{Name: "AZURE_COGNITIVE_SERVICES_RESOURCE_NAME", Summary: "Azure AI Services resource name the endpoint is built from.", Visibility: Public}
+	GoogleVertexProject                = Var{Name: "GOOGLE_VERTEX_PROJECT", Summary: "Google Vertex project the endpoint is built from.", Visibility: Public}
+	GoogleVertexLocation               = Var{Name: "GOOGLE_VERTEX_LOCATION", Summary: "Google Vertex location the endpoint host is built from.", Visibility: Public}
+	GoogleApplicationCredentials       = Var{Name: "GOOGLE_APPLICATION_CREDENTIALS", Summary: "Path to the Google application-default credentials file; when unset, the well-known gcloud path is used.", Visibility: Public}
+	CloudflareAccountID                = Var{Name: "CLOUDFLARE_ACCOUNT_ID", Summary: "Cloudflare account id the Workers AI endpoint is built from.", Visibility: Public}
+	DatabricksHost                     = Var{Name: "DATABRICKS_HOST", Summary: "Databricks workspace host the endpoint is built from.", Visibility: Public}
+	InfomaniakProductID                = Var{Name: "INFOMANIAK_PRODUCT_ID", Summary: "Infomaniak product id the endpoint is built from.", Visibility: Public}
+	NeonAIGatewayBaseURL               = Var{Name: "NEON_AI_GATEWAY_BASE_URL", Summary: "Neon AI gateway base URL.", Visibility: Public}
+	SnowflakeAccount                   = Var{Name: "SNOWFLAKE_ACCOUNT", Summary: "Snowflake account the Cortex endpoint is built from.", Visibility: Public}
+
+	AnthropicCompatibleAPIKey  = Var{Name: "ANTHROPIC_COMPATIBLE_API_KEY", Summary: "API key for the anthropic-compatible instance.", Secret: true, Visibility: Public}
+	AnthropicCompatibleBaseURL = Var{Name: "ANTHROPIC_COMPATIBLE_BASE_URL", Summary: "Required base URL for the anthropic-compatible instance.", Visibility: Public}
+	GoogleCompatibleAPIKey     = Var{Name: "GOOGLE_COMPATIBLE_API_KEY", Summary: "API key for the google-compatible instance.", Secret: true, Visibility: Public}
+	GoogleCompatibleBaseURL    = Var{Name: "GOOGLE_COMPATIBLE_BASE_URL", Summary: "Required base URL for the google-compatible instance.", Visibility: Public}
+	OpenAICompatibleAPIKey     = Var{Name: "OPENAI_COMPATIBLE_API_KEY", Summary: "API key for the openai-compatible instance.", Secret: true, Visibility: Public}
+	OpenAICompatibleBaseURL    = Var{Name: "OPENAI_COMPATIBLE_BASE_URL", Summary: "Required base URL for the openai-compatible instance.", Visibility: Public}
 
 	XDGCacheHome   = Var{Name: "XDG_CACHE_HOME", Summary: "Base for Evener cache data.", Visibility: Inherited}
 	XDGConfigHome  = Var{Name: "XDG_CONFIG_HOME", Summary: "Base for Evener config, skills, plugins, and MCP config discovery.", Visibility: Inherited}
@@ -173,6 +207,7 @@ var allVars = []Var{
 	EVENERHubToken,
 	EVENERLoginHeadless,
 	EVENERModel,
+	EVENEROffline,
 	EVENEROpenAIResponsesContinuation,
 	EVENERProvider,
 	EVENERProvidersConfig,
@@ -191,31 +226,60 @@ var allVars = []Var{
 	LLMProvider,
 	OpenAIAPIKey,
 	OpenAIBaseURL,
-	OpenAIChatGPTBaseURL,
+	OpenAICodexBaseURL,
 	OpenAIChatGPTClientID,
-	OpenAICompatibleAPIKey,
-	OpenAICompatibleBaseURL,
-	OpenAICompatibleProviderQuirks,
 	OpenAIOrgID,
 	OpenAIProjectID,
 	AnthropicAPIKey,
 	AnthropicBaseURL,
 	GeminiAPIKey,
-	GeminiBaseURL,
 	GoogleAPIKey,
-	GLMAPIKey,
-	GLMBaseURL,
+	GoogleBaseURL,
+	GroqAPIKey,
+	GroqBaseURL,
+	XAIAPIKey,
+	XAIBaseURL,
+	CerebrasAPIKey,
+	CerebrasBaseURL,
+	MistralAPIKey,
+	MistralBaseURL,
+	TogetherAPIKey,
+	TogetherAIBaseURL,
+	DeepSeekAPIKey,
+	DeepSeekBaseURL,
+	ZhipuAPIKey,
+	ZAIBaseURL,
+	ZAICodingPlanBaseURL,
+	MoonshotAPIKey,
+	MoonshotAIBaseURL,
 	KimiAPIKey,
-	KimiBaseURL,
-	KimiCodingAPIKey,
-	KimiCodingBaseURL,
+	KimiForCodingBaseURL,
 	MinimaxAPIKey,
 	MinimaxBaseURL,
+	OpenRouterAPIKey,
+	OpenRouterBaseURL,
 	OllamaAPIKey,
 	OllamaBaseURL,
 	OllamaHost,
-	OpenRouterAPIKey,
-	OpenRouterBaseURL,
+	AWSBearerTokenBedrock,
+	AWSRegion,
+	AzureAPIKey,
+	AzureResourceName,
+	AzureCognitiveServicesResourceName,
+	GoogleVertexProject,
+	GoogleVertexLocation,
+	GoogleApplicationCredentials,
+	CloudflareAccountID,
+	DatabricksHost,
+	InfomaniakProductID,
+	NeonAIGatewayBaseURL,
+	SnowflakeAccount,
+	AnthropicCompatibleAPIKey,
+	AnthropicCompatibleBaseURL,
+	GoogleCompatibleAPIKey,
+	GoogleCompatibleBaseURL,
+	OpenAICompatibleAPIKey,
+	OpenAICompatibleBaseURL,
 	XDGCacheHome,
 	XDGConfigHome,
 	XDGStateHome,

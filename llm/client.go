@@ -44,7 +44,6 @@ type Client struct {
 	pinnedDefault string
 	firstOverride string
 	middleware    []Middleware
-	nameToTag     map[string]string
 }
 
 // ClientOption configures NewClient.
@@ -158,30 +157,10 @@ func (c *Client) withHasher(ctx context.Context) context.Context {
 	return ctx
 }
 
-// SetNameToTag configures a mapping from provider instance names to behavior
-// tags (e.g. {"work": "openai"}). The client stamps the behavior tag onto
-// errors so classifiers can key on provider type rather than instance name.
-// A nil map means no tag is stamped (behavior tag remains empty).
-func (c *Client) SetNameToTag(m map[string]string) {
-	c.nameToTag = m
-}
-
-// NonDefaultEligible is implemented by adapters that should never be
-// auto-elected as the client's default provider. They remain reachable
-// by explicit name lookup. Use for providers that are always-registered
-// for ergonomic explicit selection (e.g. local Ollama with no API key)
-// but where becoming the silent default in a process that didn't
-// explicitly opt in would be wrong.
-type NonDefaultEligible interface {
-	ProviderAdapter
-	NonDefaultEligible()
-}
-
 // Register adds an override adapter keyed by its Name. The first override
-// that does not implement NonDefaultEligible becomes the default when
-// nothing was pinned and the registry names no default instance. Adapters
-// implementing Initializer are initialized immediately with a background
-// context.
+// becomes the default when nothing was pinned and the registry names no
+// default instance. Adapters implementing Initializer are initialized
+// immediately with a background context.
 func (c *Client) Register(adapter ProviderAdapter) {
 	if c.overrides == nil {
 		c.overrides = map[string]ProviderAdapter{}
@@ -189,9 +168,7 @@ func (c *Client) Register(adapter ProviderAdapter) {
 	name := normalizeProviderName(adapter.Name())
 	c.overrides[name] = adapter
 	if c.firstOverride == "" {
-		if _, skip := adapter.(NonDefaultEligible); !skip {
-			c.firstOverride = name
-		}
+		c.firstOverride = name
 	}
 	if init, ok := adapter.(Initializer); ok {
 		_ = init.Initialize(context.Background())
@@ -305,8 +282,6 @@ func (c *Client) Complete(ctx context.Context, req Request) (Response, error) {
 	if t.resolved {
 		req = ShapeRequest(req, t.res)
 	}
-	tag := c.behaviorTagFor(t.name)
-
 	base := func(ctx context.Context, req Request) (Response, error) {
 		if t.override != nil {
 			return t.override.Complete(ctx, req)
@@ -317,7 +292,6 @@ func (c *Client) Complete(ctx context.Context, req Request) (Response, error) {
 	resp, err := handler(ctx, req)
 	resp.Provider = t.name
 	err = RewriteErrorProvider(err, t.name)
-	err = StampErrorBehaviorTag(err, tag)
 	return resp, err
 }
 
@@ -342,8 +316,6 @@ func (c *Client) Stream(ctx context.Context, req Request) (Stream, error) {
 	if t.resolved {
 		req = ShapeRequest(req, t.res)
 	}
-	tag := c.behaviorTagFor(t.name)
-
 	base := func(ctx context.Context, req Request) (Stream, error) {
 		if t.override != nil {
 			return t.override.Stream(ctx, req)
@@ -353,11 +325,9 @@ func (c *Client) Stream(ctx context.Context, req Request) (Stream, error) {
 	handler := applyMiddlewareStream(base, c.middleware)
 	st, err := handler(ctx, req)
 	if err != nil {
-		err = RewriteErrorProvider(err, t.name)
-		err = StampErrorBehaviorTag(err, tag)
-		return nil, err
+		return nil, RewriteErrorProvider(err, t.name)
 	}
-	return newProviderStampStream(st, t.name, tag), nil
+	return newProviderStampStream(st, t.name), nil
 }
 
 // ModelListing is what Models returns: the instance's visible rows, after a
@@ -598,30 +568,10 @@ type Initializer interface {
 	Initialize(ctx context.Context) error
 }
 
-// ToolChoiceSupporter is implemented by adapters that want to declare which
-// tool choice modes they support. If not implemented, all modes are assumed supported.
-type ToolChoiceSupporter interface {
-	SupportsToolChoice(mode string) bool
-}
-
-// ModelLister is implemented by adapters that can list available models from
-// the provider API.
-type ModelLister interface {
-	ListModels(ctx context.Context) ([]ModelInfo, error)
-}
-
 // ResponsesContinuationPlanner is implemented by adapters that can build a
 // ResponsesContinuationPlan for a request.
 type ResponsesContinuationPlanner interface {
 	PlanResponsesContinuation(req Request) (ResponsesContinuationPlan, error)
-}
-
-// ModelCompatibilityValidator is implemented by adapters that enforce a
-// static model-support map independent of live enumeration — e.g. the
-// OpenAI Codex backend, whose ChatGPT-account model set is narrower than
-// the platform API and isn't reliably distinguished by a live models list.
-type ModelCompatibilityValidator interface {
-	ValidateModel(model string) error
 }
 
 // Close closes all registered adapters that implement the Closer interface.
@@ -655,113 +605,32 @@ func (c *Client) Initialize(ctx context.Context) error {
 	return nil
 }
 
-// SupportsToolChoice checks whether the named provider supports the given tool choice mode.
-// Returns true if the adapter does not implement ToolChoiceSupporter (assumed supported).
-func (c *Client) SupportsToolChoice(provider, mode string) bool {
-	if c == nil {
-		return false
-	}
-	provider = normalizeProviderName(provider)
-	a, ok := c.overrides[provider]
-	if !ok {
-		return false
-	}
-	if tc, ok := a.(ToolChoiceSupporter); ok {
-		return tc.SupportsToolChoice(mode)
-	}
-	return true
-}
-
-// ValidateModelCompatibility runs an adapter's static compatibility check
-// for model, when the adapter implements ModelCompatibilityValidator; nil
-// (no opinion) otherwise, including for unknown providers.
-func (c *Client) ValidateModelCompatibility(provider, model string) error {
-	if c == nil {
-		return nil
-	}
-	provider = normalizeProviderName(provider)
-	a, ok := c.overrides[provider]
-	if !ok {
-		return nil
-	}
-	if v, ok := a.(ModelCompatibilityValidator); ok {
-		return v.ValidateModel(model)
-	}
-	return nil
-}
-
-// ListModels returns available models from the named provider. The adapter
-// must implement the ModelLister interface.
-func (c *Client) ListModels(ctx context.Context, provider string) ([]ModelInfo, error) {
-	if c == nil {
-		return nil, &ConfigurationError{Message: "client is nil"}
-	}
-	provider = normalizeProviderName(provider)
-	a, ok := c.overrides[provider]
-	if !ok {
-		return nil, &ConfigurationError{Message: "unknown provider: " + provider}
-	}
-	lister, ok := a.(ModelLister)
-	if !ok {
-		return nil, &ConfigurationError{Message: fmt.Sprintf("provider %s does not support listing models", provider)}
-	}
-	ctx, operation := c.beginProviderOperation(ctx)
-	models, err := lister.ListModels(ctx)
-	operation.settle(ctx, err)
-	return models, err
-}
-
-// behaviorTagFor returns the behavior tag for a given provider instance name.
-// If no nameToTag mapping is configured, or the name is not in the map,
-// an empty string is returned (no tag is stamped).
-func (c *Client) behaviorTagFor(provName string) string {
-	if t, ok := c.nameToTag[provName]; ok {
-		return t
-	}
-	return ""
-}
-
-// BehaviorTagOf returns the behavior tag for the given provider instance name.
-// When a nameToTag mapping is configured and the name is present, the mapped
-// tag is returned. Otherwise the name itself is returned (identity fallback),
-// so callers can compare against tag constants without special-casing the
-// env path (where instance name == type == tag).
-func (c *Client) BehaviorTagOf(name string) string {
-	if t, ok := c.nameToTag[name]; ok {
-		return t
-	}
-	return name
-}
-
 // providerStampStream wraps a Stream and rewrites the provider field on all
 // StreamEventResponse and StreamEventError events so that downstream consumers
-// see the instance name (req.Provider) rather than the adapter's hardcoded type.
-// It also stamps the behavior tag onto errors when a nameToTag mapping exists.
+// see the instance name (req.Provider) rather than the adapter's own name.
 type providerStampStream struct {
-	inner       Stream
-	provider    string
-	behaviorTag string
-	out         chan StreamEvent
-	once        sync.Once
-	done        chan struct{}
-	closing     chan struct{}
+	inner    Stream
+	provider string
+	out      chan StreamEvent
+	once     sync.Once
+	done     chan struct{}
+	closing  chan struct{}
 }
 
-func newProviderStampStream(inner Stream, provider, behaviorTag string) *providerStampStream {
+func newProviderStampStream(inner Stream, provider string) *providerStampStream {
 	s := &providerStampStream{
-		inner:       inner,
-		provider:    provider,
-		behaviorTag: behaviorTag,
-		out:         make(chan StreamEvent, 128),
-		done:        make(chan struct{}),
-		closing:     make(chan struct{}),
+		inner:    inner,
+		provider: provider,
+		out:      make(chan StreamEvent, 128),
+		done:     make(chan struct{}),
+		closing:  make(chan struct{}),
 	}
 	go s.pump()
 	return s
 }
 
-// pump forwards events from the inner stream, stamping the provider name (and
-// behavior tag) onto FINISH responses and errors. It exits when the inner
+// pump forwards events from the inner stream, stamping the provider name onto
+// FINISH responses and errors. It exits when the inner
 // stream closes its events channel OR when Close signals s.closing. The closing
 // signal is selected on both the inner receive and the out send so that Close
 // returns promptly even if the consumer has stopped draining and the inner
@@ -779,7 +648,6 @@ func (s *providerStampStream) pump() {
 			}
 			if ev.Type == StreamEventError && ev.Err != nil {
 				ev.Err = RewriteErrorProvider(ev.Err, s.provider)
-				ev.Err = StampErrorBehaviorTag(ev.Err, s.behaviorTag)
 			}
 			if ev.Type == StreamEventFinish && ev.Response != nil {
 				ev.Response.Provider = s.provider

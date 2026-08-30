@@ -35,6 +35,10 @@ func TestPrintHubEnvVars(t *testing.T) {
 		"OPENROUTER_API_KEY":      "OpenRouter API key.",
 	}
 
+	if !strings.Contains(out, "<ID>_API_KEY / <ID>_BASE_URL") {
+		t.Fatalf("hub env help does not point at per-instance provider vars: %s", out)
+	}
+
 	lines := strings.Split(strings.TrimRight(out, "\n"), "\n")
 	for name, summary := range wantSummary {
 		var line string

@@ -22,9 +22,8 @@ import (
 	"primeradiant.com/evener/agent/provider"
 	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/llm"
-	_ "primeradiant.com/evener/llm/providers/anthropic"
-	_ "primeradiant.com/evener/llm/providers/google"
-	_ "primeradiant.com/evener/llm/providers/openai"
+	_ "primeradiant.com/evener/llm/providers/all"
+	"primeradiant.com/evener/llm/registry"
 )
 
 // obedienceCase is a single eval scenario. The history contains droppable
@@ -343,10 +342,11 @@ func newRealSummarizerManager(t *testing.T) *Manager {
 		t.Skip("no LLM API key set (OPENAI_API_KEY, ANTHROPIC_API_KEY, GEMINI_API_KEY, GOOGLE_API_KEY); skipping obedience eval")
 	}
 
-	client, err := llm.NewFromEnv()
+	r, err := registry.Load()
 	if err != nil {
-		t.Skipf("llm.NewFromEnv: %v", err)
+		t.Skipf("registry.Load: %v", err)
 	}
+	client := llm.NewClient(llm.WithRegistry(r))
 
 	// Build a profile using the first available provider so the Manager can
 	// resolve a cheap model.  The contextmgr testProfile helper is in this

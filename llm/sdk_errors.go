@@ -7,12 +7,11 @@ import (
 )
 
 type nonHTTPBaseError struct {
-	provider    string
-	behaviorTag string
-	message     string
-	retryable   bool
-	retryAfter  *time.Duration
-	cause       error
+	provider   string
+	message    string
+	retryable  bool
+	retryAfter *time.Duration
+	cause      error
 }
 
 // Error returns the error message. It is prefixed with "<provider> error: "
@@ -33,11 +32,6 @@ func (e *nonHTTPBaseError) Error() string {
 // string when it has no provider attribution (e.g. user cancellation).
 func (e *nonHTTPBaseError) Provider() string        { return e.provider }
 func (e *nonHTTPBaseError) setProvider(name string) { e.provider = strings.TrimSpace(name) }
-
-// BehaviorTag returns the provider behavior tag (provider type) stamped onto
-// the error, or the empty string if none was set.
-func (e *nonHTTPBaseError) BehaviorTag() string       { return e.behaviorTag }
-func (e *nonHTTPBaseError) setBehaviorTag(tag string) { e.behaviorTag = strings.TrimSpace(tag) }
 
 // StatusCode returns 0; these errors are not HTTP failures.
 func (e *nonHTTPBaseError) StatusCode() int { return 0 }

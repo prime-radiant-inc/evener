@@ -320,21 +320,19 @@ func FuzzAnthropicStreamStructured(f *testing.F) {
 		f.Add(s)
 	}
 
-	a := &Adapter{BaseURL: "http://fuzz.local"}
-
 	f.Fuzz(func(t *testing.T, raw []byte) {
 		sse := structuredAnthropicSSE(raw)
 
-		base, baseErr := accumulateAnthropicSSE(a, sse, false) // Oracle (floor): never panics.
+		base, baseErr := accumulateAnthropicSSE(sse, false) // Oracle (floor): never panics.
 
-		rechunked, reErr := accumulateAnthropicSSE(a, sse, true)
+		rechunked, reErr := accumulateAnthropicSSE(sse, true)
 		if !sameAnthropicResponse(base, baseErr, rechunked, reErr) {
 			t.Fatalf("re-chunk boundary changed the accumulated response:\n base=%+v (err=%v)\n one-byte=%+v (err=%v)\n sse=%q",
 				base, baseErr, rechunked, reErr, sse)
 		}
 
 		commented := bytes.ReplaceAll(sse, []byte("\n\n"), []byte("\n\n: fuzz-keepalive\n\n"))
-		withComments, cErr := accumulateAnthropicSSE(a, commented, false)
+		withComments, cErr := accumulateAnthropicSSE(commented, false)
 		if !sameAnthropicResponse(base, baseErr, withComments, cErr) {
 			t.Fatalf("interstitial SSE comments changed the accumulated response:\n base=%+v (err=%v)\n commented=%+v (err=%v)\n sse=%q",
 				base, baseErr, withComments, cErr, sse)
@@ -349,7 +347,6 @@ func FuzzAnthropicStreamStructured(f *testing.F) {
 // bytes interpreted as SSE essentially never form a valid completed stream; the
 // structured generator does so on most inputs.
 func TestStructuredAnthropicReachesDeeper(t *testing.T) {
-	a := &Adapter{BaseURL: "http://fuzz.local"}
 	const iters = 2000
 
 	rng := rand.New(rand.NewSource(1)) //nolint:gosec // deterministic test fixture, not security
@@ -358,10 +355,10 @@ func TestStructuredAnthropicReachesDeeper(t *testing.T) {
 		raw := make([]byte, rng.Intn(64))
 		_, _ = rng.Read(raw)
 
-		if resp, _ := accumulateAnthropicSSE(a, raw, false); resp != nil {
+		if resp, _ := accumulateAnthropicSSE(raw, false); resp != nil {
 			rawCompleted++
 		}
-		if resp, _ := accumulateAnthropicSSE(a, structuredAnthropicSSE(raw), false); resp != nil {
+		if resp, _ := accumulateAnthropicSSE(structuredAnthropicSSE(raw), false); resp != nil {
 			structCompleted++
 		}
 	}

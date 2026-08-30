@@ -59,15 +59,17 @@ func (f *credentialProbeFakeClient) callCount() int {
 	return f.calls
 }
 
-// clearProviderKeysFromEnvironment unsets every API key the envvars registry
-// knows about, for the duration of the test. The credentials store's Layers
-// reads the ambient environment, so a test asserting an instance has no stored
-// key means nothing unless it states that the environment holds none either
-// (docs/developing-evener/testing.md: no ambient developer machine state).
+// clearProviderKeysFromEnvironment unsets every credential variable the
+// envvars registry declares, for the duration of the test. The credentials
+// store's Layers reads the ambient environment, so a test asserting an
+// instance has no stored key means nothing unless it states that the
+// environment holds none either (docs/developing-evener/testing.md: no
+// ambient developer machine state). cmdutil's envvars_registry_test pins
+// that this roster names every variable the registry reads.
 func clearProviderKeysFromEnvironment(t *testing.T) {
 	t.Helper()
-	for _, p := range envvars.Providers() {
-		for _, v := range p.APIKeyVars {
+	for _, v := range envvars.All() {
+		if v.Secret {
 			t.Setenv(v.Name, "")
 		}
 	}

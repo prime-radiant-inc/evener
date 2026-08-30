@@ -329,15 +329,12 @@ func TestNewSessionBoundedSnapshotRetainsSelectedProvider(t *testing.T) {
 	selected.name = selectedName
 	client := llm.NewClient()
 	client.Register(selected)
-	nameToTag := map[string]string{selectedName: "openai"}
 	for i := range 16 {
 		name := fmt.Sprintf("provider-%02d", i)
 		adapter := &modelAvailabilityAdapter{models: []registry.Model{{ID: "model"}}}
 		adapter.name = name
 		client.Register(adapter)
-		nameToTag[name] = "openai"
 	}
-	client.SetNameToTag(nameToTag)
 	profile := namedInstanceProfile(selectedName, "openai", "gpt-5.5")
 
 	sess, err := NewSession(client, profile, execenv.NewLocalExecutionEnvironment(t.TempDir()), SessionConfig{})

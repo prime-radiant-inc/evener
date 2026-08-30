@@ -16,7 +16,7 @@ import (
 	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/agent/transcript"
 	"primeradiant.com/evener/llm"
-	"primeradiant.com/evener/llm/providers/openaicompat"
+	"primeradiant.com/evener/llm/registry"
 )
 
 func TestSession_ExcludesConfiguredCredentialFromResponseEndpointArtifacts(t *testing.T) {
@@ -40,14 +40,16 @@ func TestSession_ExcludesConfiguredCredentialFromResponseEndpointArtifacts(t *te
 	}))
 	t.Cleanup(server.Close)
 
-	adapter := openaicompat.NewForInstance(openaicompat.OpenAICompatInstanceParams{
-		Name:    "credential-path-provider",
-		BaseURL: server.URL + "/" + credential,
-		APIKey:  credential,
+	// The instance's base URL carries the credential in its path, which is
+	// exactly what must not reach a session artifact.
+	r := mustTestRegistry(map[string]registry.Provider{
+		"credential-path-provider": {
+			Base:      "openai-compatible",
+			APIKey:    credential,
+			Transport: registry.Transport{BaseURL: server.URL + "/" + credential},
+		},
 	})
-	adapter.Client = server.Client()
-	client := llm.NewClient()
-	client.Register(completeOnlyEndpointAdapter{ProviderAdapter: adapter})
+	client := llm.NewClient(llm.WithRegistry(r))
 
 	stateDir := t.TempDir()
 	sess, err := NewSession(

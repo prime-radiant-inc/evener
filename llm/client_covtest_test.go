@@ -48,33 +48,6 @@ func TestCovBeginProviderOperationNoSink(t *testing.T) {
 	}
 }
 
-// TestCovValidateModelCompatibilityNilClient covers the nil-client guard
-// in ValidateModelCompatibility (client.go line 413-414).
-func TestCovValidateModelCompatibilityNilClient(t *testing.T) {
-	var c *Client
-	if err := c.ValidateModelCompatibility("any", "any"); err != nil {
-		t.Fatalf("ValidateModelCompatibility on nil client = %v, want nil", err)
-	}
-}
-
-// TestCovValidateModelCompatibilityWithValidator covers the path where
-// the adapter implements ModelCompatibilityValidator.
-func TestCovValidateModelCompatibilityWithValidator(t *testing.T) {
-	c := NewClient()
-	wantErr := errors.New("unsupported by validator")
-	validator := &modelValidatorAdapter{name: "validator", validateErr: wantErr}
-	c.Register(validator)
-	err := c.ValidateModelCompatibility("validator", "unsupported-model")
-	if !errors.Is(err, wantErr) {
-		t.Fatalf("validation error = %v, want validator error identity", err)
-	}
-	if len(validator.validatedModels) != 1 || validator.validatedModels[0] != "unsupported-model" {
-		t.Fatalf("validated models = %q, want [unsupported-model]", validator.validatedModels)
-	}
-}
-
-// TestCovBeginAPIAttemptGroupScopeNilContext covers the nil-ctx path
-// (api_attempt_scope.go line 22-23).
 func TestCovBeginAPIAttemptGroupScopeNilContext(t *testing.T) {
 	var input context.Context
 	ctx, scope := BeginAPIAttemptGroupScope(input)

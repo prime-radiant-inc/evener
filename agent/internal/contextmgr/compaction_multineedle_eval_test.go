@@ -39,7 +39,8 @@ import (
 	"primeradiant.com/evener/agent/provider"
 	"primeradiant.com/evener/envvars"
 	"primeradiant.com/evener/llm"
-	"primeradiant.com/evener/llm/providercfg"
+	_ "primeradiant.com/evener/llm/providers/all"
+	"primeradiant.com/evener/llm/registry"
 )
 
 // mnSummarizerModel is the summarizer under test. gpt-5.5 first (the realistic
@@ -220,18 +221,15 @@ func oauthEvalClient(t *testing.T) *llm.Client {
 		t.Skipf("no OAuth record at %s/evener/auth/openai.json: %v", oauthStateHome, err)
 	}
 	t.Setenv(envvars.XDGStateHome.Name, oauthStateHome)
-	cfg, exists, err := providercfg.LoadFile(oauthProvidersConfig)
+	if _, err := os.Stat(oauthProvidersConfig); err != nil {
+		t.Skipf("providers.toml not found at %s: %v", oauthProvidersConfig, err)
+	}
+	t.Setenv(envvars.EVENERProvidersConfig.Name, oauthProvidersConfig)
+	r, err := registry.Load()
 	if err != nil {
-		t.Fatalf("load providers.toml: %v", err)
+		t.Fatalf("registry.Load: %v", err)
 	}
-	if !exists {
-		t.Skipf("providers.toml not found at %s", oauthProvidersConfig)
-	}
-	client, errs, err := llm.NewFromAvailableProviders(cfg)
-	if err != nil {
-		t.Fatalf("NewFromAvailableProviders: %v (errs: %v)", err, errs)
-	}
-	return client
+	return llm.NewClient(llm.WithRegistry(r))
 }
 
 func managerForModel(t *testing.T, client *llm.Client, model string) *Manager {

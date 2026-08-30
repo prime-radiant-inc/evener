@@ -101,16 +101,6 @@ func generateContentBody(req llm.Request, system string, contents []map[string]a
 	return body, nil
 }
 
-func (a *Adapter) buildRequestBody(req llm.Request, system string, contents []map[string]any) (map[string]any, error) {
-	options := map[string]any{}
-	for _, key := range []string{"google", "gemini"} {
-		if ov, ok := req.ProviderOptions[key].(map[string]any); ok {
-			maps.Copy(options, ov)
-		}
-	}
-	return generateContentBody(req, system, contents, req.WebSearch, options)
-}
-
 func toGeminiFunctionDecls(tools []llm.ToolDefinition) []map[string]any {
 	out := make([]map[string]any, 0, len(tools))
 	for _, t := range tools {

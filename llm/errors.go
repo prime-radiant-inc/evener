@@ -14,7 +14,6 @@ import (
 type Error interface {
 	error
 	Provider() string
-	BehaviorTag() string
 	StatusCode() int
 	ErrorCode() string
 	Retryable() bool
@@ -24,8 +23,8 @@ type Error interface {
 
 // ConfigurationError reports a configuration problem (e.g. invalid or missing
 // setup) and carries an optional underlying Cause. It satisfies the Error
-// interface with empty provider, behavior tag, status code, and error code,
-// and is never retryable.
+// interface with empty provider, status code, and error code, and is never
+// retryable.
 type ConfigurationError struct {
 	Message string
 	Cause   error
@@ -40,9 +39,6 @@ func (e *ConfigurationError) Error() string {
 // Provider returns the empty string; configuration errors are not attributed
 // to a provider.
 func (e *ConfigurationError) Provider() string { return "" }
-
-// BehaviorTag returns the empty string; configuration errors carry no behavior tag.
-func (e *ConfigurationError) BehaviorTag() string { return "" }
 
 // StatusCode returns 0; configuration errors have no HTTP status.
 func (e *ConfigurationError) StatusCode() int { return 0 }
@@ -64,7 +60,6 @@ func (e *ConfigurationError) Unwrap() error { return e.Cause }
 
 type httpBaseError struct {
 	provider    string
-	behaviorTag string
 	protocol    string
 	hint        string
 	statusCode  int
@@ -94,11 +89,6 @@ func (e *httpBaseError) Error() string {
 // Provider returns the provider that produced the error.
 func (e *httpBaseError) Provider() string        { return e.provider }
 func (e *httpBaseError) setProvider(name string) { e.provider = strings.TrimSpace(name) }
-
-// BehaviorTag returns the provider behavior tag (provider type) stamped onto
-// the error, or the empty string if none was set.
-func (e *httpBaseError) BehaviorTag() string       { return e.behaviorTag }
-func (e *httpBaseError) setBehaviorTag(tag string) { e.behaviorTag = strings.TrimSpace(tag) }
 
 // Protocol returns the protocol id stamped by ClassifyHTTPError, or "".
 func (e *httpBaseError) Protocol() string { return e.protocol }
@@ -213,14 +203,6 @@ type providerSetter interface {
 	setProvider(string)
 }
 
-// behaviorTagSetter is implemented by errors whose behavior tag can be
-// stamped in place. Used by Client to record the behavior tag (e.g. "openai")
-// associated with the provider instance that returned the error, so classifiers
-// can key on behavior type rather than instance name.
-type behaviorTagSetter interface {
-	setBehaviorTag(string)
-}
-
 // RewriteErrorProvider rewrites err's provider name in place if the error
 // (or any error in its Unwrap chain) supports it. Returns err unchanged
 // otherwise. Safe to call on nil. Thin wrappers should call this on every
@@ -244,25 +226,6 @@ func RewriteErrorProvider(err error, provider string) error {
 		return err
 	}
 	ps.setProvider(provider)
-	return err
-}
-
-// StampErrorBehaviorTag stamps the behavior tag onto err in place if the error
-// (or any error in its Unwrap chain) supports it. Returns err unchanged
-// otherwise. Safe to call on nil. Only stamps errors that already have a
-// non-empty Provider() — same no-op guard as RewriteErrorProvider.
-func StampErrorBehaviorTag(err error, tag string) error {
-	if err == nil || strings.TrimSpace(tag) == "" {
-		return err
-	}
-	var bs behaviorTagSetter
-	if !errors.As(err, &bs) {
-		return err
-	}
-	if getter, ok := bs.(interface{ Provider() string }); ok && getter.Provider() == "" {
-		return err
-	}
-	bs.setBehaviorTag(tag)
 	return err
 }
 

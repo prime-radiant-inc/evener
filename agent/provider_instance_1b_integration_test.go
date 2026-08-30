@@ -10,8 +10,8 @@ package agent
 //   kc           kimi
 //
 // Assertions (all must pass against current code with no production changes):
-//  1. Routing by name     — NewFromProviders registers all five; each explicit
-//                           req.Provider=<name> reaches its adapter.
+//  1. Routing by name     — a client registered with all five names routes
+//                           each explicit req.Provider=<name> to its adapter.
 //  2. Behavior by surface — each instance name resolves to the right
 //                           surface/provider-id pair and routes by its own ID.
 //  3. Real-openai boundary — compat-x (surface "generic") does NOT get the
@@ -42,26 +42,13 @@ import (
 	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/auth/openai"
 	"primeradiant.com/evener/llm"
-	"primeradiant.com/evener/llm/providercfg"
 	"primeradiant.com/evener/llm/registry"
 )
 
 // ── Fixture ────────────────────────────────────────────────────────────────────
 
-// phase1bCfg is the five-instance config used across all 1b subtests.
-var phase1bCfg = providercfg.Config{
-	Default: "work",
-	Instances: []providercfg.InstanceConfig{
-		{Name: "anthro-corp", Type: providercfg.Type("anthropic"), BaseURL: "https://anthropic.example.com", APIKey: "ant-key"},
-		{Name: "compat-x", Type: providercfg.Type("openai"), APIStyle: providercfg.StyleChatCompletions, BaseURL: "https://compat.example.com/v1", APIKey: "compat-key"},
-		{Name: "kc", Type: providercfg.Type("kimi"), APIKey: "kimi-key"},
-		{Name: "work", Type: providercfg.Type("openai"), APIStyle: providercfg.StyleResponses, APIKey: "sk-work"},
-		{Name: "work2", Type: providercfg.Type("openai"), APIStyle: providercfg.StyleResponses, APIKey: "sk-work2"},
-	},
-}
-
-// phase1bInstances is phase1bCfg as registry instances: the same five names,
-// each based on the provider id its type resolved to.
+// phase1bInstances is the five-instance fixture: each name based on the
+// curated provider it inherits from.
 func phase1bInstances() map[string]registry.Provider {
 	return map[string]registry.Provider{
 		"anthro-corp": {Base: "anthropic", APIKey: "ant-key", Transport: registry.Transport{BaseURL: "https://anthropic.example.com"}},
@@ -77,17 +64,15 @@ func resolvePhase1bProfile(ref string) (*provider.Profile, error) {
 	return provider.Resolve(mustTestRegistry(phase1bInstances()), ref)
 }
 
-// buildPhase1bClient builds an llm.Client for the phase1bCfg fixture by
-// registering one fakeAdapter per instance and calling SetNameToTag — exactly
-// what llm.NewFromProviders does internally. This lets us test the routing and
-// tag wiring without real network credentials.
+// buildPhase1bClient builds an llm.Client over the fixture by registering one
+// fakeAdapter per instance name, so routing is testable without credentials
+// or a network.
 func buildPhase1bClient() *llm.Client {
 	c := llm.NewClient()
-	for _, inst := range phase1bCfg.Instances {
-		c.Register(&fakeAdapter{name: inst.Name})
+	for name := range phase1bInstances() {
+		c.Register(&fakeAdapter{name: name})
 	}
-	c.SetDefaultProvider(phase1bCfg.Default)
-	c.SetNameToTag(providercfg.NameToTag(phase1bCfg))
+	c.SetDefaultProvider("work")
 	return c
 }
 
@@ -168,29 +153,6 @@ func TestPhase1b_ResolveProfile_RegistryKeys(t *testing.T) {
 				t.Errorf("Model() = %q, want %q", got, tc.wantModel)
 			}
 		})
-	}
-}
-
-// TestPhase1b_NameToTag_AllFive verifies that providercfg.NameToTag maps each
-// instance to the right behavior tag — which is what NewFromProviders passes to
-// c.SetNameToTag for error stamping and BehaviorTagOf lookups.
-func TestPhase1b_NameToTag_AllFive(t *testing.T) {
-	t.Parallel()
-	m := providercfg.NameToTag(phase1bCfg)
-	want := map[string]string{
-		"work":        "openai",
-		"work2":       "openai",
-		"compat-x":    "openai-compatible",
-		"anthro-corp": "anthropic",
-		"kc":          "kimi",
-	}
-	for name, wantTag := range want {
-		if got := m[name]; got != wantTag {
-			t.Errorf("NameToTag[%q] = %q, want %q", name, got, wantTag)
-		}
-	}
-	if len(m) != len(want) {
-		t.Errorf("NameToTag len = %d, want %d; map = %v", len(m), len(want), m)
 	}
 }
 

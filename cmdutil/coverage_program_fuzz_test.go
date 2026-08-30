@@ -12,10 +12,15 @@ import (
 )
 
 // FuzzCmdutilCoverage is a deterministic union seed for dependency-bound
-// cmdutil branches. All HTTP is intercepted before it reaches a transport.
+// cmdutil branches, plus a fuzzed providers.toml at EVENER_PROVIDERS_CONFIG:
+// LoadClient must either build a client or report an error for arbitrary
+// bytes, never panic. All HTTP is intercepted before it reaches a transport.
 func FuzzCmdutilCoverage(f *testing.F) {
-	f.Add(uint8(0))
-	f.Fuzz(func(t *testing.T, _ uint8) {
+	f.Add(uint8(0), []byte(""))
+	f.Add(uint8(1), []byte("["))
+	f.Add(uint8(2), []byte("default = \"gw\"\n[providers.gw]\nbase = \"openai\"\n"))
+	f.Add(uint8(3), []byte("[instances.work]\ntype = \"openai\"\n"))
+	f.Fuzz(func(t *testing.T, _ uint8, providersTOML []byte) {
 		closeLog, err := AttachAPILogger(llm.NewClient(), t.TempDir(), nil)
 		if err != nil {
 			t.Fatal(err)
@@ -94,6 +99,19 @@ func FuzzCmdutilCoverage(f *testing.F) {
 			t.Fatalf("an absent credentials.toml is an empty store: %v", err)
 		}
 
+		// The fuzzed layer: whatever bytes arrive, loading is a verdict, not
+		// a crash, and a client that loads resolves its own default.
+		fuzzedRoot := t.TempDir()
+		fuzzedConfig := filepath.Join(fuzzedRoot, "providers.toml")
+		if err := os.WriteFile(fuzzedConfig, providersTOML, 0o600); err != nil {
+			t.Fatal(err)
+		}
+		t.Setenv(envvars.EVENERProvidersConfig.Name, fuzzedConfig)
+		t.Setenv(envvars.EVENERCredentialsConfig.Name, filepath.Join(fuzzedRoot, "credentials.toml"))
+		if client, err := LoadClient(""); err == nil {
+			_ = client.ProviderNames()
+			_ = client.DefaultProvider()
+		}
 	})
 }
 
@@ -110,8 +128,6 @@ func FuzzCmdutilScenarioReplay(f *testing.F) {
 		}{
 			{"user-config-xdg", TestUserConfigDirsUseXDGConfigHome},
 			{"user-config-create", TestEnsureUserConfigDirsCreatesExtensionRoots},
-			{"seed", TestSeedDescriptorsOnly},
-			{"base-url-env", TestBaseURLEnvVar},
 			{"state-linked-worktree", TestDefaultProjectStateDir_LinkedWorktreeSameAsMain},
 			{"state-non-repo", TestDefaultProjectStateDir_NotInRepo_FallsBackToWorkDir},
 			{"list-models", TestListModelsFunc},

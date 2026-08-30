@@ -44,13 +44,8 @@ import (
 	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/envvars"
 	"primeradiant.com/evener/llm"
-	"primeradiant.com/evener/llm/providercfg"
-
-	_ "primeradiant.com/evener/llm/providers/anthropic"
-	_ "primeradiant.com/evener/llm/providers/google"
-	_ "primeradiant.com/evener/llm/providers/kimi"
-	_ "primeradiant.com/evener/llm/providers/ollama"
-	_ "primeradiant.com/evener/llm/providers/openai"
+	_ "primeradiant.com/evener/llm/providers/all"
+	"primeradiant.com/evener/llm/registry"
 )
 
 // evalModel is the openai model the eval drives. The profile's cheap-model
@@ -75,21 +70,19 @@ func newOAuthManager(t *testing.T) *Manager {
 	// Point OAuth resolution at the real state home for the duration of the test.
 	t.Setenv(envvars.XDGStateHome.Name, oauthStateHome)
 
-	cfg, exists, err := providercfg.LoadFile(oauthProvidersConfig)
-	if err != nil {
-		t.Fatalf("load providers.toml %s: %v", oauthProvidersConfig, err)
-	}
-	if !exists {
-		t.Skipf("providers.toml not found at %s", oauthProvidersConfig)
+	if _, err := os.Stat(oauthProvidersConfig); err != nil {
+		t.Skipf("providers.toml not found at %s: %v", oauthProvidersConfig, err)
 	}
 
-	// Build the client. NewFromAvailableProviders threads StateHome (from
-	// XDG_STATE_HOME) into each factory, so the openai factory resolves OAuth
-	// from <stateHome>/evener/auth/openai.json and prefers it over any API key.
-	client, errs, err := llm.NewFromAvailableProviders(cfg)
+	// Build the client on the real registry: the user layer at
+	// oauthProvidersConfig names the instances, and the Codex authenticator
+	// reads OAuth from <stateHome>/evener/auth/<instance>.json.
+	t.Setenv(envvars.EVENERProvidersConfig.Name, oauthProvidersConfig)
+	r, err := registry.Load()
 	if err != nil {
-		t.Fatalf("llm.NewFromAvailableProviders: %v (partial errs: %v)", err, errs)
+		t.Fatalf("registry.Load: %v", err)
 	}
+	client := llm.NewClient(llm.WithRegistry(r))
 
 	prof, err := provider.Resolve(client.Registry(), "openai/"+evalModel)
 	if err != nil {

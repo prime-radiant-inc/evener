@@ -20,7 +20,7 @@ import (
 //   - FuzzAreqClampEffort          — reasoning-effort clamping (response.go).
 //   - FuzzAreqParseUsage           — usage token accounting (response.go).
 //   - FuzzAreqDecodeStreamGrammar  — grammar-driven adversarial SSE that reaches
-//     decodeStream's deeper assembly branches (adapter.go).
+//     the stream decoder's deeper assembly branches (stream.go).
 //
 // Every top-level identifier is prefixed `areq`/`Areq` so parallel lanes editing
 // package anthropic cannot collide. The stream target deliberately reuses the
@@ -485,18 +485,16 @@ func FuzzAreqDecodeStreamGrammar(f *testing.F) {
 	f.Add([]byte{5, 6, 11, 11}, "srv_1", "query text", []byte(`{}`))
 	f.Add([]byte{2, 11}, "toolu_2", "noargs", []byte(``))
 
-	a := &Adapter{BaseURL: "http://areq.local"}
-
 	f.Fuzz(func(t *testing.T, script []byte, s1, s2 string, blob []byte) {
 		sse := areqBuildSSE(script, s1, s2, blob)
 
-		base, baseErr := accumulateAnthropicSSE(a, sse, false)
-		again, againErr := accumulateAnthropicSSE(a, sse, false)
+		base, baseErr := accumulateAnthropicSSE(sse, false)
+		again, againErr := accumulateAnthropicSSE(sse, false)
 		if !sameAnthropicResponse(base, baseErr, again, againErr) {
 			t.Fatalf("nondeterministic decode:\n a=%+v (err=%v)\n b=%+v (err=%v)\n sse=%q", base, baseErr, again, againErr, sse)
 		}
 
-		rechunked, reErr := accumulateAnthropicSSE(a, sse, true)
+		rechunked, reErr := accumulateAnthropicSSE(sse, true)
 		if !sameAnthropicResponse(base, baseErr, rechunked, reErr) {
 			t.Fatalf("re-chunk boundary changed accumulated response:\n whole=%+v (err=%v)\n one-byte=%+v (err=%v)\n sse=%q", base, baseErr, rechunked, reErr, sse)
 		}

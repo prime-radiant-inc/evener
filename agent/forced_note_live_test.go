@@ -32,13 +32,8 @@ import (
 	"primeradiant.com/evener/agent/provider"
 	"primeradiant.com/evener/envvars"
 	"primeradiant.com/evener/llm"
-	"primeradiant.com/evener/llm/providercfg"
-
-	_ "primeradiant.com/evener/llm/providers/anthropic"
-	_ "primeradiant.com/evener/llm/providers/google"
-	_ "primeradiant.com/evener/llm/providers/kimi"
-	_ "primeradiant.com/evener/llm/providers/ollama"
-	_ "primeradiant.com/evener/llm/providers/openai"
+	_ "primeradiant.com/evener/llm/providers/all"
+	"primeradiant.com/evener/llm/registry"
 )
 
 func TestForcedNoteLive(t *testing.T) {
@@ -58,14 +53,15 @@ func TestForcedNoteLive(t *testing.T) {
 	}
 	t.Setenv(envvars.XDGStateHome.Name, stateHome)
 
-	cfg, exists, err := providercfg.LoadFile(providersConfig)
-	if err != nil || !exists {
-		t.Skipf("providers.toml at %s: %v exists=%v", providersConfig, err, exists)
+	if _, err := os.Stat(providersConfig); err != nil {
+		t.Skipf("providers.toml at %s: %v", providersConfig, err)
 	}
-	client, _, err := llm.NewFromAvailableProviders(cfg)
+	t.Setenv(envvars.EVENERProvidersConfig.Name, providersConfig)
+	r, err := registry.Load()
 	if err != nil {
-		t.Fatalf("NewFromAvailableProviders: %v", err)
+		t.Fatalf("registry.Load: %v", err)
 	}
+	client := llm.NewClient(llm.WithRegistry(r))
 	prof, err := provider.Resolve(client.Registry(), "openai/gpt-5.5")
 	if err != nil {
 		t.Fatalf("Resolve openai/gpt-5.5: %v", err)

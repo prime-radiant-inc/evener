@@ -6,7 +6,7 @@ import (
 	"testing"
 
 	"primeradiant.com/evener/llm"
-	openaiadapter "primeradiant.com/evener/llm/providers/openai"
+	"primeradiant.com/evener/llm/registry"
 )
 
 func TestOpenAIResponsesContinuationFingerprint_ProductionPromptStableWithFixedEnvironment(t *testing.T) {
@@ -45,18 +45,12 @@ func openAIContinuationPromptDataForTest(today string) promptData {
 
 func openAIResponsesContinuationClientForTest(t *testing.T) *llm.Client {
 	t.Helper()
-	adapter, err := openaiadapter.NewForInstance(openaiadapter.OpenAIInstanceParams{
-		Name:               "openai",
-		APIKey:             "sk-test",
-		StateHome:          t.TempDir(),
-		ContinuationHasher: llm.NewContinuationHasher([]byte("01234567890123456789012345678901")),
+	r := mustTestRegistry(map[string]registry.Provider{
+		"openai": {Base: "openai", APIKey: "sk-test"},
 	})
-	if err != nil {
-		t.Fatalf("NewForInstance: %v", err)
-	}
-	client := llm.NewClient()
-	client.Register(adapter)
-	return client
+	// The state dir keys the continuation hasher; a fresh one per test keeps
+	// the fingerprints comparable within a test and unrelated across them.
+	return llm.NewClient(llm.WithRegistry(r), llm.WithClientStateDir(t.TempDir()))
 }
 
 func openAIResponsesContinuationFingerprintForPromptTest(t *testing.T, client *llm.Client, data promptData) string {

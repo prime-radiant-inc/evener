@@ -44,7 +44,6 @@ func FuzzCoreDeterministicScenarios(f *testing.F) {
 		TestStreamAccumulatorFinishRebuildsEmptyResponse(t)
 		TestCopyResponseMetadataNilSource(t)
 		TestStreamAccumulatorNilReceiver(t)
-		TestModelCatalogLookups(t)
 		TestEstimateInputTokensCountsResponseFormat(t)
 		TestCountInputTokensConfigErrors(t)
 		TestLoadOrCreateContinuationSecretOpenFileError(t)
@@ -55,13 +54,7 @@ func FuzzCoreDeterministicScenarios(f *testing.F) {
 		TestInferMimeTypeFromPath(t)
 		TestDataURI(t)
 		TestStripMarkdownCodeFence(t)
-		TestParseIntHelper(t)
-		TestParseBoolHelper(t)
-		TestParseBoolPtrHelper(t)
-		TestParseFloatPtrHelper(t)
 		TestStripMarkdownCodeFenceNested(t)
-		TestGetLatestModel_CapabilityFilters(t)
-		TestGetLatestModel_NilCatalog(t)
 		TestMiddlewareFunc_NilPhasesPassThrough(t)
 		TestApplyMiddleware_SkipsNilEntries(t)
 		TestCloneProviderOptions_DeepIndependence(t)
@@ -71,7 +64,6 @@ func FuzzCoreDeterministicScenarios(f *testing.F) {
 		TestEstimateImageTokens_FallbackWhenDimensionsUnknown(t)
 		TestEstimateImageTokens_DefaultProviderFamily(t)
 		TestParseRetryAfterEdgeCases(t)
-		TestStampErrorBehaviorTag(t)
 		TestNonHTTPBaseErrorMessage(t)
 		TestNewUnsupportedToolChoiceError(t)
 	})
@@ -119,7 +111,7 @@ func fuzzTimeoutAndHeaders(t *testing.T, seed uint8) {
 func fuzzErrorContracts(t *testing.T, seed uint8) {
 	cause := errors.New("cause")
 	var cfg Error = &ConfigurationError{Message: " bad ", Cause: cause}
-	if cfg.Error() != "configuration error: bad" || cfg.Provider() != "" || cfg.BehaviorTag() != "" || cfg.StatusCode() != 0 || cfg.ErrorCode() != "" || cfg.Retryable() || cfg.RetryAfter() != nil || cfg.Raw() != nil || !errors.Is(cfg, cause) {
+	if cfg.Error() != "configuration error: bad" || cfg.Provider() != "" || cfg.StatusCode() != 0 || cfg.ErrorCode() != "" || cfg.Retryable() || cfg.RetryAfter() != nil || cfg.Raw() != nil || !errors.Is(cfg, cause) {
 		t.Fatal("configuration error contract failed")
 	}
 	raw := map[string]any{"error": map[string]any{"code": "code", "type": "type"}}
@@ -130,14 +122,12 @@ func fuzzErrorContracts(t *testing.T, seed uint8) {
 	}
 	_ = le.Error()
 	_ = le.Provider()
-	_ = le.BehaviorTag()
 	_ = le.StatusCode()
 	_ = le.ErrorCode()
 	_ = le.Retryable()
 	_ = le.RetryAfter()
 	_ = le.Raw()
 	_ = errors.Unwrap(le)
-	err = StampErrorBehaviorTag(err, " behavior ")
 	err = RewriteErrorProvider(err, " rewritten ")
 	if err == nil {
 		t.Fatal("error stamping lost error")
@@ -154,7 +144,6 @@ func fuzzErrorContracts(t *testing.T, seed uint8) {
 		}
 		_ = nonHTTP.Error()
 		_ = nonHTTP.Provider()
-		_ = nonHTTP.BehaviorTag()
 		_ = nonHTTP.StatusCode()
 		_ = nonHTTP.ErrorCode()
 		_ = nonHTTP.Retryable()

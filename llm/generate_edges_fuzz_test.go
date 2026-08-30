@@ -19,16 +19,14 @@ func FuzzGenerateEdges(f *testing.F) {
 			t.Fatal("unexpected tool context")
 		}
 
-		defaultClientMu.Lock()
-		savedClient, savedErr, savedInit := defaultClient, errDefaultClient, defaultClientInit
-		defaultClient, errDefaultClient, defaultClientInit = nil, errors.New("default unavailable"), true
-		defaultClientMu.Unlock()
-		if _, err := prepareGeneration(GenerateOptions{Model: "m", Prompt: new("p")}); err == nil {
-			t.Fatal("expected default client error")
+		// A caller that names no client gets a bare one, which resolves
+		// against EmbeddedRegistry; the request still has to validate.
+		if _, err := prepareGeneration(GenerateOptions{Model: "m", Prompt: new("p")}); err != nil {
+			t.Fatalf("prepareGeneration without a client: %v", err)
 		}
-		defaultClientMu.Lock()
-		defaultClient, errDefaultClient, defaultClientInit = savedClient, savedErr, savedInit
-		defaultClientMu.Unlock()
+		if _, err := prepareGeneration(GenerateOptions{Prompt: new("p")}); err == nil {
+			t.Fatal("expected a validation error for a request with no model")
+		}
 
 		client := NewClient()
 		client.Register(&scriptedFuzzAdapter{script: []scriptStep{{finish: FinishReasonStop}}})

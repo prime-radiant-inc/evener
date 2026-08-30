@@ -431,7 +431,7 @@ func (s *nonClosingStream) Close() error               { return nil }
 // away; the robustness now lives in the canonical wrapper.)
 func TestProviderStampStream_CloseWithoutDraining(t *testing.T) {
 	inner := &nonClosingStream{events: make(chan StreamEvent)}
-	ps := newProviderStampStream(inner, "ollama", "")
+	ps := newProviderStampStream(inner, "ollama")
 
 	// out is buffered at 128. Sending 129 events to the unbuffered inner channel
 	// fills the buffer and parks the pump on the 129th forward-to-out; when the
@@ -603,48 +603,6 @@ func TestNormalizeProviderName_GeminiNoRewrite(t *testing.T) {
 	}
 }
 
-func TestClient_SupportsToolChoice(t *testing.T) {
-	c := NewClient()
-	c.Register(&toolChoiceFakeAdapter{name: "openai"})
-
-	if !c.SupportsToolChoice("openai", "auto") {
-		t.Fatalf("expected auto to be supported")
-	}
-	if !c.SupportsToolChoice("openai", "required") {
-		t.Fatalf("expected required to be supported")
-	}
-	if c.SupportsToolChoice("openai", "named") {
-		t.Fatalf("expected named to be unsupported")
-	}
-	// Non-implementing adapter returns true by default.
-	c.Register(&fakeAdapter{name: "plain"})
-	if !c.SupportsToolChoice("plain", "auto") {
-		t.Fatalf("expected default true for non-implementing adapter")
-	}
-}
-
-// TestClient_ValidateModelCompatibility_NoOpWithoutInterface verifies that
-// ValidateModelCompatibility is a no-op (nil) for an adapter that doesn't
-// implement ModelCompatibilityValidator, and for an unknown provider name —
-// mirroring SupportsToolChoice's default-permissive dispatch shape.
-func TestClient_ValidateModelCompatibility_NoOpWithoutInterface(t *testing.T) {
-	c := NewClient()
-	c.Register(&fakeAdapter{name: "plain"})
-
-	if err := c.ValidateModelCompatibility("plain", "any-model"); err != nil {
-		t.Fatalf("ValidateModelCompatibility on non-implementing adapter = %v, want nil", err)
-	}
-	if err := c.ValidateModelCompatibility("no-such-provider", "any-model"); err != nil {
-		t.Fatalf("ValidateModelCompatibility on unknown provider = %v, want nil", err)
-	}
-}
-
-// --- Instance-name identity tests (PRI-1880) ---
-
-// instanceAdapter simulates an adapter that always hardcodes its own type
-// name ("openaicompat") into responses and errors, regardless of what instance
-// name it is registered under. The client must stamp the instance name
-// (req.Provider) over whatever the adapter returned.
 type instanceAdapter struct {
 	typeName    string // hardcoded type, e.g. "openaicompat"
 	errToReturn error  // if set, Complete returns this error and Stream emits it
@@ -838,127 +796,6 @@ func TestClient_Stream_PreservesEmptyProviderErrorEvent(t *testing.T) {
 	}
 	if llmErr.Provider() != "" {
 		t.Fatalf("stream error provider = %q, want \"\" (empty provider must not be stamped)", llmErr.Provider())
-	}
-}
-
-// --- BehaviorTag stamping via nameToTag (PRI-1880) ---
-
-func TestClient_SetNameToTag_StampsBehaviorTagOnCompleteError(t *testing.T) {
-	c := NewClient()
-	adapterErr := ErrorFromHTTPStatus("openaicompat", 429, "rate limited", nil, nil)
-	adapter := &instanceAdapter{typeName: "openaicompat", errToReturn: adapterErr}
-	c.overrides["work"] = adapter
-	c.pinnedDefault = "work"
-	c.SetNameToTag(map[string]string{"work": "openai"})
-
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-	defer cancel()
-	_, err := c.Complete(ctx, Request{Provider: "work", Model: "m", Messages: []Message{User("hi")}})
-	if err == nil {
-		t.Fatal("expected error, got nil")
-	}
-	var llmErr Error
-	if !errors.As(err, &llmErr) {
-		t.Fatalf("expected llm.Error, got %T", err)
-	}
-	if llmErr.BehaviorTag() != "openai" {
-		t.Fatalf("BehaviorTag() = %q, want \"openai\"", llmErr.BehaviorTag())
-	}
-}
-
-func TestClient_SetNameToTag_StampsBehaviorTagOnStreamError(t *testing.T) {
-	c := NewClient()
-	adapterErr := ErrorFromHTTPStatus("openaicompat", 500, "server error", nil, nil)
-	adapter := &instanceAdapter{typeName: "openaicompat", errToReturn: adapterErr}
-	c.overrides["work"] = adapter
-	c.pinnedDefault = "work"
-	c.SetNameToTag(map[string]string{"work": "openai"})
-
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-	defer cancel()
-	st, err := c.Stream(ctx, Request{Provider: "work", Model: "m", Messages: []Message{User("hi")}})
-	if err != nil {
-		t.Fatalf("Stream open: %v", err)
-	}
-	defer st.Close() //nolint:errcheck
-
-	var gotErr error
-	for ev := range st.Events() {
-		if ev.Type == StreamEventError {
-			gotErr = ev.Err
-		}
-	}
-	if gotErr == nil {
-		t.Fatal("expected StreamEventError, got none")
-	}
-	var llmErr Error
-	if !errors.As(gotErr, &llmErr) {
-		t.Fatalf("expected llm.Error, got %T", gotErr)
-	}
-	if llmErr.BehaviorTag() != "openai" {
-		t.Fatalf("stream error BehaviorTag() = %q, want \"openai\"", llmErr.BehaviorTag())
-	}
-}
-
-func TestClient_NilNameToTag_BehaviorTagEmpty(t *testing.T) {
-	// With no nameToTag set, BehaviorTag() should be empty (nil map = identity, no tag set).
-	c := NewClient()
-	adapterErr := ErrorFromHTTPStatus("openai", 429, "rate limited", nil, nil)
-	adapter := &instanceAdapter{typeName: "openai", errToReturn: adapterErr}
-	c.overrides["openai"] = adapter
-	c.pinnedDefault = "openai"
-
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-	defer cancel()
-	_, err := c.Complete(ctx, Request{Provider: "openai", Model: "m", Messages: []Message{User("hi")}})
-	if err == nil {
-		t.Fatal("expected error, got nil")
-	}
-	var llmErr Error
-	if !errors.As(err, &llmErr) {
-		t.Fatalf("expected llm.Error, got %T", err)
-	}
-	// No nameToTag: BehaviorTag() should be "" (no explicit tag stamped).
-	if llmErr.BehaviorTag() != "" {
-		t.Fatalf("BehaviorTag() = %q, want empty when no nameToTag set", llmErr.BehaviorTag())
-	}
-}
-
-// --- BehaviorTagOf public accessor (PRI-1880 phase-1b) ---
-
-// TestClient_BehaviorTagOf_WithMapping verifies that BehaviorTagOf returns the
-// mapped tag when a nameToTag entry exists.
-func TestClient_BehaviorTagOf_WithMapping(t *testing.T) {
-	c := NewClient()
-	c.SetNameToTag(map[string]string{
-		"or-work":  "openrouter",
-		"ora-work": "openrouter-anthropic",
-	})
-	if got := c.BehaviorTagOf("or-work"); got != "openrouter" {
-		t.Fatalf("BehaviorTagOf(or-work) = %q, want \"openrouter\"", got)
-	}
-	if got := c.BehaviorTagOf("ora-work"); got != "openrouter-anthropic" {
-		t.Fatalf("BehaviorTagOf(ora-work) = %q, want \"openrouter-anthropic\"", got)
-	}
-}
-
-// TestClient_BehaviorTagOf_IdentityFallback verifies that BehaviorTagOf returns
-// the name itself when no mapping exists (identity fallback).
-func TestClient_BehaviorTagOf_IdentityFallback(t *testing.T) {
-	c := NewClient()
-	c.SetNameToTag(map[string]string{"or-work": "openrouter"})
-	if got := c.BehaviorTagOf("unknown"); got != "unknown" {
-		t.Fatalf("BehaviorTagOf(unknown) = %q, want \"unknown\" (identity fallback)", got)
-	}
-}
-
-// TestClient_BehaviorTagOf_NilMap verifies that BehaviorTagOf returns the name
-// itself when nameToTag is nil (env path / no config).
-func TestClient_BehaviorTagOf_NilMap(t *testing.T) {
-	c := NewClient()
-	// no SetNameToTag call → nameToTag is nil
-	if got := c.BehaviorTagOf("openrouter"); got != "openrouter" {
-		t.Fatalf("BehaviorTagOf(openrouter) nil map = %q, want \"openrouter\"", got)
 	}
 }
 

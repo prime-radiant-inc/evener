@@ -185,3 +185,12 @@ func useWireHTTPClient(t *testing.T, protocol string, c *http.Client) {
 	}
 	t.Cleanup(restore)
 }
+
+// providerRequest is the minimal user request the wire tests dispatch.
+func providerRequest(provider, model string) llm.Request {
+	return llm.Request{
+		Provider: provider,
+		Model:    model,
+		Messages: []llm.Message{llm.User("hi")},
+	}
+}

@@ -7,10 +7,9 @@ import "testing"
 // in this package's own fixtures). The streaming decoder must capture that usage,
 // not only usage that arrives in a separate earlier chunk.
 func TestStream_UsageOnFinishChunk(t *testing.T) {
-	a := &Adapter{APIKey: "k"}
 	sse := []byte("data: " + `{"candidates":[{"content":{"parts":[{"text":"hi"}]},"finishReason":"STOP"}],"usageMetadata":{"promptTokenCount":11,"candidatesTokenCount":22,"totalTokenCount":33}}` + "\n\n")
 
-	resp, sawErr := accumulateGeminiSSE(a, sse, false)
+	resp, sawErr := accumulateGeminiSSE(sse, false)
 	if sawErr {
 		t.Fatal("unexpected stream error")
 	}
