@@ -208,8 +208,8 @@ Rendering rules:
   omitted note; unknown kinds get a labeled note. Nothing is silently dropped.
 - **Reasoning shown** — assistant thinking and text render in full, in recorded order.
 - **Tool-call condensation** — calls render as condensed cards under a **Tools** block:
-  `- [status] \`name\` — purpose: <X> — input: <summary>`. Purpose comes only from an
-  explicit `purpose`/`intent`/`description` arg, never inferred. Input summaries are
+  `- [status] \`name\` — intent: <X> — input: <summary>`. Intent comes only from an
+  explicit `intent` arg, never inferred. Input summaries are
   per-tool and never dump file contents or full edit strings.
 - **Tool-result pairing** — results pair to calls by **call ID**, never by adjacency. A
   result whose call is not in the rendered slice collects under a **"Tool results without a

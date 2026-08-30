@@ -2601,7 +2601,7 @@ func notificationTurnID(t *testing.T, items []AppNotification, method string) st
 // in Description; the completed item must carry it too (derived from the
 // call's arguments, mirroring apptranscript.ToolIntentFromArguments) so the
 // activity line stays on the intent when the tool finishes.
-func TestAppEventProjectorToolCallEndCarriesPurposeDescription(t *testing.T) {
+func TestAppEventProjectorToolCallEndCarriesIntentDescription(t *testing.T) {
 	projector := NewAppEventProjector("th_1", "local:th_1")
 	projector.Project(events.SessionEvent{Kind: events.EventUserInput, SessionID: "th_1", Data: events.UserInputData{Text: "hello"}})
 
@@ -2621,7 +2621,9 @@ func TestAppEventProjectorToolCallEndCarriesPurposeDescription(t *testing.T) {
 		t.Fatalf("completed tool item should carry the intent-derived Description, got %q", item.Description)
 	}
 
-	// The intent field is honored too, matching ToolIntentFromArguments.
+	// Description is derived from the arguments' intent field when the
+	// started event carries no explicit Description, matching
+	// ToolIntentFromArguments.
 	projector.Project(events.SessionEvent{Kind: events.EventToolCallStart, SessionID: "th_1", Data: events.ToolCallStartData{
 		ToolName:      "grep",
 		CallID:        "call_2",
@@ -2637,7 +2639,7 @@ func TestAppEventProjectorToolCallEndCarriesPurposeDescription(t *testing.T) {
 		t.Fatalf("completed tool item should derive Description from the intent field, got %q", item.Description)
 	}
 
-	// No purpose in the arguments: Description stays empty rather than
+	// No intent in the arguments: Description stays empty rather than
 	// falling back to a raw command dump.
 	projector.Project(events.SessionEvent{Kind: events.EventToolCallStart, SessionID: "th_1", Data: events.ToolCallStartData{
 		ToolName:      "shell",
@@ -2651,7 +2653,7 @@ func TestAppEventProjectorToolCallEndCarriesPurposeDescription(t *testing.T) {
 	}})
 	item = notificationThreadItem(t, out, appwire.NotifyItemCompleted)
 	if item.Description != "" {
-		t.Fatalf("purpose-less tool call should have empty Description, got %q", item.Description)
+		t.Fatalf("intent-less tool call should have empty Description, got %q", item.Description)
 	}
 }
 

@@ -81,10 +81,9 @@ func FuzzFc2OutputWindowStatus(f *testing.F) {
 	})
 }
 
-// FuzzFc2ToolStartDescription drives toolStartDescription — the pure description
-// promotion lifted out of execTool: an explicit "intent" wins over the legacy
-// promotion lifted out of execTool: an explicit "intent" is returned verbatim,
-// else empty. Oracles (beyond never-panic):
+// FuzzFc2ToolStartDescription drives toolStartDescription — the pure promotion
+// lifted out of execTool: an explicit "intent" is returned verbatim, else empty.
+// Oracles (beyond never-panic):
 //   - determinism;
 //   - a non-empty string "intent" is always returned verbatim;
 //   - otherwise the result is empty.

@@ -12,7 +12,7 @@ import (
 
 func TestFuzzCoverageUnion(t *testing.T) {
 	cases := []struct{ tool, args string }{
-		{"shell", `{"command":"x","description":"legacy"}`},
+		{"shell", `{"command":"x","intent":"describe the change"}`},
 		{"shell", `{"command":"line one\nline two"}`},
 		{"read_file", `{"file_path":""}`},
 		{"read_file", `{"file_path":"a/b","offset":1}`},

@@ -1000,7 +1000,7 @@ func TestRenderMarkdown_ResultToolResultNotOrphaned(t *testing.T) {
 }
 
 // TestRenderMarkdown_IntentField verifies intent: appears only when an explicit
-// intent/purpose/description argument is present.
+// intent argument is present.
 func TestRenderMarkdown_IntentField(t *testing.T) {
 	t.Parallel()
 	t.Run("intent present when explicit intent arg given", func(t *testing.T) {
@@ -1021,11 +1021,11 @@ func TestRenderMarkdown_IntentField(t *testing.T) {
 		}
 		out := renderMarkdown(transcript.Header{}, entries, 0, renderOpts{})
 		if strings.Contains(out, "intent:") {
-			t.Errorf("intent segment must be omitted when no intent/purpose/description arg, got:\n%s", out)
+			t.Errorf("intent segment must be omitted when no intent arg, got:\n%s", out)
 		}
 	})
 
-	t.Run("intent and description also recognized", func(t *testing.T) {
+	t.Run("intent from non-shell tool arg", func(t *testing.T) {
 		entries := []transcript.Entry{
 			toolCallEntry(call("c1", "grep", `{"pattern":"x","intent":"find the symbol"}`)),
 			toolResultEntry(result("c1", "grep", "match", false)),
