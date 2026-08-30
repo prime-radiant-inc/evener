@@ -968,8 +968,10 @@ func (s *Session) callModelWithFallback(ctx context.Context, profile *provider.P
 			fbReq.Model = fbProfile.Model()
 			fbReq.Provider = fbProfile.ID()
 			if origEffort != "" && fbProfile.SupportsReasoning() {
-				// Clamp to the FALLBACK model's own levels: the resolver hands
-				// back a profile carrying the registry's ladder for that model.
+				// Clamp to the FALLBACK model's own levels. The resolver
+				// rebuilds the profile through its constructor for every
+				// behavior tag whose ladder is model-derived, so fbProfile's
+				// levels are the fallback model's, not the primary's.
 				//
 				// Gated on SupportsReasoning so a fallback explicitly declared
 				// non-reasoning never gets reasoning_effort on the wire (see the

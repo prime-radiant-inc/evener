@@ -295,6 +295,35 @@ func TestSessionsWithoutDelegateCapabilitySkipModelAvailabilityCapture(t *testin
 	})
 }
 
+// TestNewSessionSnapshotOmitsInvisibleRows pins the delegate snapshot to the
+// client's visibility rule: a row an instance's own listing marks hidden or
+// tool-less is never offered as a delegate choice (spec §5). The rule lives in
+// Client.Models, so the session must not need a second filter of its own.
+func TestNewSessionSnapshotOmitsInvisibleRows(t *testing.T) {
+	selected := &modelAvailabilityAdapter{models: []registry.Model{{ID: "gpt-5.5"}}}
+	selected.name = "openai"
+	other := &modelAvailabilityAdapter{models: []registry.Model{
+		{ID: "tool-model"},
+		{ID: "tool-less-model", Caps: registry.Caps{Tools: new(false)}},
+		{ID: "hidden-model", Hidden: true},
+	}}
+	other.name = "router"
+	client := llm.NewClient()
+	client.Register(selected)
+	client.Register(other)
+
+	sess, err := NewSession(client, NewOpenAIProfile("gpt-5.5"), execenv.NewLocalExecutionEnvironment(t.TempDir()), SessionConfig{})
+	if err != nil {
+		t.Fatalf("NewSession: %v", err)
+	}
+	defer sess.Close()
+
+	want := []string{"openai/gpt-5.5", "router/tool-model"}
+	if sess.modelSnapshot == nil || !slices.Equal(sess.modelSnapshot.Choices, want) {
+		t.Fatalf("visible startup choices = %#v, want %q", sess.modelSnapshot, want)
+	}
+}
+
 func TestNewSessionBoundedSnapshotRetainsSelectedProvider(t *testing.T) {
 	const selectedName = "zz-selected-provider"
 	selected := &modelAvailabilityAdapter{models: []registry.Model{{ID: "gpt-5.5"}}}

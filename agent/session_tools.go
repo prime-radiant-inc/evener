@@ -413,8 +413,10 @@ func resolveVisionRoute(profile *provider.Profile, setting string) (providerName
 // visionRouteReasoning gates reasoning_effort for the vision request and names
 // the levels the fixed vision cap clamps against: the session route uses the
 // profile's own answers (which already carry the registry's facts); any other
-// route resolves through the registry, and a route that does not resolve gets
-// no effort knob rather than one it may reject.
+// route asks the registry whether the row takes an effort control at all
+// (spec §7.4: a reasoning row without an explicit control list is
+// effort-capable, a toggle-only row is not). A route that does not resolve
+// gets no effort knob rather than one it may reject.
 func (s *Session) visionRouteReasoning(profile *provider.Profile, providerName, modelID string) (bool, []string) {
 	if providerName == profile.ID() && modelID == profile.Model() {
 		return profile.SupportsReasoning(), profile.ReasoningEffortLevels()
@@ -423,7 +425,7 @@ func (s *Session) visionRouteReasoning(profile *provider.Profile, providerName, 
 	if err != nil {
 		return false, nil
 	}
-	return !res.Caps.ReasoningDisabled(), res.Caps.EffortValues
+	return res.Caps.EffortCapable(), res.Caps.EffortValues
 }
 
 func (s *Session) describeImageCall(ctx context.Context, r tool.ExecResult) visionSideChannelResult {

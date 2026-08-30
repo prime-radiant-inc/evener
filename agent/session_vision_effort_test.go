@@ -16,6 +16,7 @@ import (
 	"primeradiant.com/evener/agent/internal/tool"
 	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/llm"
+	"primeradiant.com/evener/llm/registry"
 )
 
 const (
@@ -675,4 +676,93 @@ func (a *contextBlockingAdapter) Complete(ctx context.Context, _ llm.Request) (l
 
 func (a *contextBlockingAdapter) Stream(context.Context, llm.Request) (llm.Stream, error) {
 	return nil, errors.New("stream not used")
+}
+
+// TestDescribeImage_PinnedRouteEffortFollowsTheRegistry pins the vision route's
+// effort gate to the registry's own verdict (spec §7.4): a row that cannot take
+// an effort control gets no reasoning_effort at all, and a row that can gets the
+// fixed vision cap clamped into its ladder. An unknown model is effort-capable
+// by derivation, so an explicit effort still reaches the wire.
+func TestDescribeImage_PinnedRouteEffortFollowsTheRegistry(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name       string
+		model      string
+		row        *registry.Model
+		wantEffort string // "" means no reasoning_effort on the wire
+	}{
+		{
+			name:  "reasoning = false gets no effort knob",
+			model: "no-reasoning",
+			row:   &registry.Model{Caps: registry.Caps{Reasoning: new(false)}},
+		},
+		{
+			name:  "a toggle-only row gets no effort knob",
+			model: "toggle-only",
+			row:   &registry.Model{Caps: registry.Caps{Reasoning: new(true), ReasoningControls: []string{"toggle"}}},
+		},
+		{
+			name:       "an unknown model on the instance passes the cap through",
+			model:      "brand-new-model",
+			wantEffort: visionReasoningEffort,
+		},
+		{
+			name:       "a ladder that carries the cap keeps it",
+			model:      "low-first",
+			row:        &registry.Model{Caps: registry.Caps{Reasoning: new(true), EffortValues: []string{"low", "high"}}},
+			wantEffort: "low",
+		},
+		{
+			name:       "a ladder above the cap clamps up to its cheapest level",
+			model:      "medium-first",
+			row:        &registry.Model{Caps: registry.Caps{Reasoning: new(true), EffortValues: []string{"medium", "high"}}},
+			wantEffort: "medium",
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			dir := t.TempDir()
+			router := &fakeAdapter{name: "router", steps: []func(req llm.Request) llm.Response{
+				func(req llm.Request) llm.Response { return llm.Response{Message: llm.Assistant(visionOutputSentinel)} },
+			}}
+			rows := map[string]registry.Model{}
+			if tc.row != nil {
+				rows[tc.model] = *tc.row
+			}
+			client := registryClient(t, map[string]registry.Provider{
+				"openai": {Base: "openai", APIKey: "k"},
+				"router": {Base: "openai", APIKey: "k", InheritModels: new(false), Models: rows},
+			}, router)
+			sess := newSession(t,
+				withProfile(NewOpenAIProfile("m")),
+				withClient(client),
+				withDir(dir),
+				withConfig(SessionConfig{
+					StateDir:        dir,
+					VisionModel:     "router/" + tc.model,
+					ReasoningEffort: "max",
+				}),
+			)
+			drainSessionEvents(sess)
+
+			if got := sess.describeImage(context.Background(), visionImageResult()); got != visionOutputSentinel {
+				t.Fatalf("describeImage output = %q, want the vision sentinel", got)
+			}
+			requests := router.Requests()
+			if len(requests) != 1 {
+				t.Fatalf("router requests = %d, want 1", len(requests))
+			}
+			switch {
+			case tc.wantEffort == "":
+				if requests[0].ReasoningEffort != nil {
+					t.Fatalf("reasoning_effort = %q, want none for a row that takes no effort control", *requests[0].ReasoningEffort)
+				}
+			case requests[0].ReasoningEffort == nil:
+				t.Fatalf("reasoning_effort = nil, want %q", tc.wantEffort)
+			case *requests[0].ReasoningEffort != tc.wantEffort:
+				t.Fatalf("reasoning_effort = %q, want %q", *requests[0].ReasoningEffort, tc.wantEffort)
+			}
+		})
+	}
 }

@@ -99,9 +99,8 @@ func (a *FakeAdapter) Requests() []llm.Request {
 // full request of every Complete call (for fallback-chain assertions) and
 // produces responses via Respond.
 type ModelTrackingAdapter struct {
-	Provider       string
-	Respond        func(req llm.Request) (llm.Response, error)
-	LiveModelsFunc func(ctx context.Context) ([]registry.Model, error)
+	Provider string
+	Respond  func(req llm.Request) (llm.Response, error)
 
 	mu       sync.Mutex
 	models   []string
@@ -134,14 +133,6 @@ func (a *ModelTrackingAdapter) Stream(ctx context.Context, req llm.Request) (llm
 	_ = ctx
 	_ = req
 	return nil, llm.ErrStreamUnsupported
-}
-
-// LiveModels implements llm.LiveModelLister when a test scripts a listing.
-func (a *ModelTrackingAdapter) LiveModels(ctx context.Context) ([]registry.Model, error) {
-	if a.LiveModelsFunc == nil {
-		return nil, errors.New("model tracking adapter does not list models")
-	}
-	return a.LiveModelsFunc(ctx)
 }
 
 // Models returns a copy of the models seen, in call order.

@@ -606,6 +606,8 @@ func (p *Profile) WithResolved(res registry.Resolved) *Profile {
 		}
 	}
 	clone.toolDefs = defs
+	// Assigned rather than presence-checked: the registry is the truth for
+	// this field, and nothing else writes it.
 	clone.thinkingAlwaysOn = registry.BoolValue(caps.ThinkingAlwaysOn)
 	if caps.WebSearch != nil {
 		clone.webSearch = *caps.WebSearch

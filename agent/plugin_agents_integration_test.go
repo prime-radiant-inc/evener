@@ -272,85 +272,122 @@ func TestSpawnAgent_PluginAgentType_Model(t *testing.T) {
 	}
 }
 
-func TestSpawnAgent_UnavailablePluginModelUsesExplicitFallback(t *testing.T) {
+// TestSpawnAgent_PluginModelAvailability drives the plugin-agent model rule
+// end to end on an instance that serves some ids and not others: a served id is
+// taken as-is, and an id nothing serves warns and falls back to the explicit
+// override.
+func TestSpawnAgent_PluginModelAvailability(t *testing.T) {
 	t.Parallel()
-	dir := t.TempDir()
-	c := llm.NewClient()
-	adapter := newFakeEnumerableAdapter("kimi-anthropic-api", "k3")
-	c.Register(adapter)
-
-	sess, err := NewSession(
-		c,
-		WithProviderID(newKimiAnthropicProfile("k3"), "kimi-anthropic-api"),
-		execenv.NewLocalExecutionEnvironment(dir),
-		SessionConfig{MaxSubagentDepth: 2},
-	)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer sess.Close()
-
 	const agentType = "my-plugin:reviewer"
-	sess.pluginAgents = map[string]plugin.Agent{
-		agentType: {
-			Name:         "reviewer",
-			Model:        "sonnet",
-			SystemPrompt: "Review the code.",
-			PluginName:   "my-plugin",
-		},
-	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second) // TRIPWIRE: scripted in-process adapter, no real I/O; only fires on a genuine hang.
-	defer cancel()
-	result, err := sess.spawnAgent(ctx, "review this", "k3", "", 10, agentType, "", nil, nil)
-	if err != nil {
-		t.Fatalf("spawnAgent: %v", err)
-	}
+	spawn := func(t *testing.T, pluginModel string) (*Session, *fakeEnumerableAdapter) {
+		t.Helper()
+		dir := t.TempDir()
+		adapter := newFakeEnumerableAdapter("kimi-anthropic-api", "k3", "k3-turbo")
+		c := registryClient(t, map[string]registry.Provider{
+			"kimi-anthropic-api": {Base: "moonshotai", APIKey: "k", Models: modelRows("k3", "k3-turbo")},
+		}, adapter)
 
-	var spawned struct {
-		AgentID string `json:"agent_id"`
-	}
-	if err := json.Unmarshal([]byte(result.(string)), &spawned); err != nil {
-		t.Fatalf("parsing result: %v", err)
-	}
-	waitForRuntimeSubagent(t, sess, spawned.AgentID)
-
-	requests := adapter.Requests()
-	if len(requests) == 0 {
-		t.Fatal("child made no provider request")
-	}
-	for _, req := range requests {
-		if req.Provider != "kimi-anthropic-api" {
-			t.Errorf("child request provider = %q, want kimi-anthropic-api", req.Provider)
+		sess, err := NewSession(
+			c,
+			WithProviderID(newKimiAnthropicProfile("k3"), "kimi-anthropic-api"),
+			execenv.NewLocalExecutionEnvironment(dir),
+			SessionConfig{MaxSubagentDepth: 2},
+		)
+		if err != nil {
+			t.Fatal(err)
 		}
-		if req.Model != "k3" {
-			t.Errorf("child request model = %q, want k3", req.Model)
+		t.Cleanup(sess.Close)
+
+		sess.pluginAgents = map[string]plugin.Agent{
+			agentType: {
+				Name:         "reviewer",
+				Model:        pluginModel,
+				SystemPrompt: "Review the code.",
+				PluginName:   "my-plugin",
+			},
 		}
-		if req.Model == "sonnet" {
-			t.Error("child request must not send unavailable plugin model sonnet")
+
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second) // TRIPWIRE: scripted in-process adapter, no real I/O; only fires on a genuine hang.
+		defer cancel()
+		result, err := sess.spawnAgent(ctx, "review this", "k3", "", 10, agentType, "", nil, nil)
+		if err != nil {
+			t.Fatalf("spawnAgent: %v", err)
 		}
+		var spawned struct {
+			AgentID string `json:"agent_id"`
+		}
+		if err := json.Unmarshal([]byte(result.(string)), &spawned); err != nil {
+			t.Fatalf("parsing result: %v", err)
+		}
+		waitForRuntimeSubagent(t, sess, spawned.AgentID)
+		return sess, adapter
 	}
 
-	var warnings []events.WarningData
-	for {
-		select {
-		case ev := <-sess.Events():
-			if warning, ok := ev.Data.(events.WarningData); ok {
-				warnings = append(warnings, warning)
+	childModels := func(t *testing.T, adapter *fakeEnumerableAdapter) []string {
+		t.Helper()
+		requests := adapter.Requests()
+		if len(requests) == 0 {
+			t.Fatal("child made no provider request")
+		}
+		models := make([]string, 0, len(requests))
+		for _, req := range requests {
+			if req.Provider != "kimi-anthropic-api" {
+				t.Errorf("child request provider = %q, want kimi-anthropic-api", req.Provider)
 			}
-		default:
-			goto drained
+			models = append(models, req.Model)
+		}
+		return models
+	}
+
+	drainWarnings := func(sess *Session) []events.WarningData {
+		var warnings []events.WarningData
+		for {
+			select {
+			case ev := <-sess.Events():
+				if warning, ok := ev.Data.(events.WarningData); ok {
+					warnings = append(warnings, warning)
+				}
+			default:
+				return warnings
+			}
 		}
 	}
-drained:
-	if len(warnings) != 1 {
-		t.Fatalf("buffered warnings = %d, want 1: %+v", len(warnings), warnings)
-	}
-	for _, text := range []string{"my-plugin", agentType, "sonnet", "unavailable", "kimi-anthropic-api"} {
-		if !strings.Contains(warnings[0].Message, text) {
-			t.Errorf("warning %q does not contain %q", warnings[0].Message, text)
+
+	// Positive control: an id the session's own instance serves is taken
+	// without any fallback, so a resolver that answered "unavailable" for
+	// everything would fail here.
+	t.Run("served plugin model is taken", func(t *testing.T) {
+		t.Parallel()
+		sess, adapter := spawn(t, "k3-turbo")
+		for _, model := range childModels(t, adapter) {
+			if model != "k3-turbo" {
+				t.Errorf("child request model = %q, want the served plugin model k3-turbo", model)
+			}
 		}
-	}
+		if warnings := drainWarnings(sess); len(warnings) != 0 {
+			t.Fatalf("buffered warnings = %+v, want none for a served plugin model", warnings)
+		}
+	})
+
+	t.Run("unserved plugin model falls back to the explicit override", func(t *testing.T) {
+		t.Parallel()
+		sess, adapter := spawn(t, "sonnet")
+		for _, model := range childModels(t, adapter) {
+			if model != "k3" {
+				t.Errorf("child request model = %q, want the explicit override k3", model)
+			}
+		}
+		warnings := drainWarnings(sess)
+		if len(warnings) != 1 {
+			t.Fatalf("buffered warnings = %d, want 1: %+v", len(warnings), warnings)
+		}
+		for _, text := range []string{"my-plugin", agentType, "sonnet", "unavailable", "kimi-anthropic-api"} {
+			if !strings.Contains(warnings[0].Message, text) {
+				t.Errorf("warning %q does not contain %q", warnings[0].Message, text)
+			}
+		}
+	})
 }
 
 func TestSpawnAgent_AvailablePluginModelWins(t *testing.T) {
