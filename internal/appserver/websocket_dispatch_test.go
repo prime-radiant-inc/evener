@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"log"
 	"net/http"
 	"net/http/httptest"
@@ -59,9 +60,10 @@ func waitFor[T any](t *testing.T, what string, ch <-chan T) T {
 
 // dispatchSlowFastServer builds a server whose thread/read handler — a
 // slow-read method that dispatches concurrently — blocks until released, plus
-// an http server speaking AppWire over WebSocket. The release channel is
-// closed by test cleanup so a parked handler can never outlive the test.
-func dispatchSlowFastServer(t *testing.T) (*Server, *httptest.Server, chan struct{}) {
+// an http server speaking AppWire over WebSocket. The returned release is
+// idempotent and also runs at test cleanup, so a parked handler can never
+// outlive the test.
+func dispatchSlowFastServer(t *testing.T) (*Server, *httptest.Server, chan struct{}, func()) {
 	t.Helper()
 	server := NewServer(ServerConfig{ServerName: "test-server", Version: "test", SourceID: "local"})
 	handlerStarted := make(chan struct{})
@@ -76,21 +78,16 @@ func dispatchSlowFastServer(t *testing.T) (*Server, *httptest.Server, chan struc
 		return appwire.ThreadReadResponse{Thread: appwire.Thread{ID: "th_held"}}, nil
 	})
 	httpServer := serveWebSocketHTTP(t, server)
-	t.Cleanup(func() {
-		select {
-		case <-releaseHandler:
-		default:
-			close(releaseHandler)
-		}
-	})
-	return server, httpServer, handlerStarted
+	release := sync.OnceFunc(func() { close(releaseHandler) })
+	t.Cleanup(release)
+	return server, httpServer, handlerStarted, release
 }
 
 // TestServeWebSocketSlowHandlerDoesNotDelayPing pins the fix itself: with one
 // slow-read handler parked mid-turn, the browser's app-level ping heartbeat
 // completes on the same connection while the slow handler is still running.
 func TestServeWebSocketSlowHandlerDoesNotDelayPing(t *testing.T) {
-	_, httpServer, handlerStarted := dispatchSlowFastServer(t)
+	_, httpServer, handlerStarted, _ := dispatchSlowFastServer(t)
 	client := dialAppWireClient(t, httpServer)
 	ctx := context.Background()
 
@@ -128,7 +125,7 @@ func TestServeWebSocketSlowHandlerDoesNotDelayPing(t *testing.T) {
 // the slow read dispatched on its own goroutine, so the receive loop stayed
 // free to handle the later request inline.
 func TestServeWebSocketFastRequestCompletesWhileSlowHandlerRuns(t *testing.T) {
-	server, httpServer, handlerStarted := dispatchSlowFastServer(t)
+	server, httpServer, handlerStarted, _ := dispatchSlowFastServer(t)
 	HandleTyped(server.Router(), appwire.MethodThreadList, func(_ context.Context, _ appwire.ThreadListParams) (appwire.ThreadListResponse, error) {
 		return appwire.ThreadListResponse{Data: []appwire.Thread{{ID: "th_fast"}}}, nil
 	})
@@ -204,27 +201,17 @@ func TestServeWebSocketRejectsRequestsBeforeInitialize(t *testing.T) {
 // the opposite order they were issued both return their own result, not each
 // other's.
 func TestServeWebSocketResponsesPairToIDsWhenHandlersCompleteOutOfOrder(t *testing.T) {
-	server := NewServer(ServerConfig{ServerName: "test-server", Version: "test", SourceID: "local"})
-	slowStarted := make(chan struct{})
-	releaseSlow := make(chan struct{})
-	slowResult := appwire.ThreadReadResponse{Thread: appwire.Thread{ID: "th_slow"}}
-	fastResult := appwire.ThreadListResponse{Data: []appwire.Thread{{ID: "th_fast"}}}
-	HandleTyped(server.Router(), appwire.MethodThreadRead, func(_ context.Context, _ appwire.ThreadReadParams) (appwire.ThreadReadResponse, error) {
-		close(slowStarted)
-		<-releaseSlow
-		return slowResult, nil
-	})
+	server, httpServer, slowStarted, releaseSlow := dispatchSlowFastServer(t)
 	HandleTyped(server.Router(), appwire.MethodThreadList, func(_ context.Context, _ appwire.ThreadListParams) (appwire.ThreadListResponse, error) {
-		return fastResult, nil
+		return appwire.ThreadListResponse{Data: []appwire.Thread{{ID: "th_fast"}}}, nil
 	})
-	httpServer := serveWebSocketHTTP(t, server)
 	client := dialAppWireClient(t, httpServer)
 	ctx := context.Background()
 
 	slowDone := make(chan appwire.ThreadReadResponse, 1)
 	slowErr := make(chan error, 1)
 	go func() {
-		resp, err := client.ThreadRead(ctx, appwire.ThreadReadParams{Ref: "local:th_slow"})
+		resp, err := client.ThreadRead(ctx, appwire.ThreadReadParams{Ref: "local:th_held"})
 		slowDone <- resp
 		slowErr <- err
 	}()
@@ -250,12 +237,12 @@ func TestServeWebSocketResponsesPairToIDsWhenHandlersCompleteOutOfOrder(t *testi
 		t.Fatalf("fast response paired to wrong result: %+v", resp.Data)
 	}
 
-	close(releaseSlow)
+	releaseSlow()
 	if err := waitFor(t, "slow request to complete after release", slowErr); err != nil {
 		t.Fatalf("slow request failed after release: %v", err)
 	}
 	slowResp := waitFor(t, "slow response payload", slowDone)
-	if slowResp.Thread.ID != "th_slow" {
+	if slowResp.Thread.ID != "th_held" {
 		t.Fatalf("slow response paired to wrong result: %+v", slowResp.Thread)
 	}
 }
@@ -304,29 +291,25 @@ func TestServeWebSocketBurstOfConcurrentRequestsAllPairCorrectly(t *testing.T) {
 }
 
 // TestConcurrentDispatchMethodsAreExactlyTheSlowReads pins the dispatch
-// policy's method set: only the known-slow read methods leave the receive
-// loop; every mutation — and every other read — stays serial per connection.
+// policy's method set against the full appwire catalog: only the known-slow
+// read methods leave the receive loop; every mutation — and every other
+// read, present or future — stays serial per connection. A method added to
+// the catalog is classified here automatically, so the concurrent set cannot
+// silently acquire (or lose) a member.
 func TestConcurrentDispatchMethodsAreExactlyTheSlowReads(t *testing.T) {
-	for _, method := range []string{
-		appwire.MethodThreadRead,
-		appwire.MethodThreadTurnsList,
-		appwire.MethodEvenerSubagentPreview,
-	} {
-		if !concurrentDispatchMethod(method) {
-			t.Errorf("%s should dispatch concurrently", method)
+	slowReads := map[string]bool{
+		appwire.MethodThreadRead:            true,
+		appwire.MethodThreadTurnsList:       true,
+		appwire.MethodEvenerSubagentPreview: true,
+	}
+	for _, spec := range appwire.Methods {
+		if got, want := concurrentDispatchMethod(spec.Name), slowReads[spec.Name]; got != want {
+			t.Errorf("concurrentDispatchMethod(%s) = %v, want %v", spec.Name, got, want)
 		}
 	}
-	for _, method := range []string{
-		appwire.MethodThreadList,
-		appwire.MethodTurnStart,
-		appwire.MethodTurnSteer,
-		appwire.MethodThreadClear,
-		appwire.MethodThreadModelSet,
-		appwire.MethodPing,
-		appwire.MethodInitialize,
-	} {
-		if concurrentDispatchMethod(method) {
-			t.Errorf("%s should dispatch inline", method)
+	for method := range slowReads {
+		if !concurrentDispatchMethod(method) {
+			t.Errorf("%s should dispatch concurrently", method)
 		}
 	}
 }
@@ -353,13 +336,8 @@ func TestServeWebSocketMutationsDispatchSeriallyPerConnection(t *testing.T) {
 	httpServer := serveWebSocketHTTP(t, server)
 	client := dialAppWireClient(t, httpServer)
 	ctx := context.Background()
-	t.Cleanup(func() {
-		select {
-		case <-releaseFirst:
-		default:
-			close(releaseFirst)
-		}
-	})
+	release := sync.OnceFunc(func() { close(releaseFirst) })
+	t.Cleanup(release)
 
 	firstDone := make(chan error, 1)
 	go func() {
@@ -378,7 +356,7 @@ func TestServeWebSocketMutationsDispatchSeriallyPerConnection(t *testing.T) {
 	case <-time.After(100 * time.Millisecond):
 	}
 
-	close(releaseFirst)
+	release()
 	if err := waitFor(t, "first request to complete", firstDone); err != nil {
 		t.Fatalf("first request failed: %v", err)
 	}
@@ -545,31 +523,6 @@ func seenMarkers(seen map[string]bool) []string {
 	return markers
 }
 
-// panicLogCapture redirects the standard logger to a buffer for the duration
-// of the test, so an intentionally provoked panic keeps the test output
-// pristine and the log line itself can be asserted on.
-func panicLogCapture(t *testing.T) func() string {
-	t.Helper()
-	var mu sync.Mutex
-	var buf strings.Builder
-	prev := log.Writer()
-	log.SetOutput(writerFunc(func(p []byte) (int, error) {
-		mu.Lock()
-		defer mu.Unlock()
-		return buf.Write(p)
-	}))
-	t.Cleanup(func() { log.SetOutput(prev) })
-	return func() string {
-		mu.Lock()
-		defer mu.Unlock()
-		return buf.String()
-	}
-}
-
-type writerFunc func(p []byte) (int, error)
-
-func (f writerFunc) Write(p []byte) (int, error) { return f(p) }
-
 // requireInternalError asserts one request error is the panic barrier's
 // InternalError wire error.
 func requireInternalError(t *testing.T, what string, err error) {
@@ -587,8 +540,21 @@ func requireInternalError(t *testing.T, what string, err error) {
 // with a stack, and leave the connection — and the process — alive for
 // subsequent requests.
 func TestServeWebSocketPanickingHandlerAnswersInternalErrorAndConnectionSurvives(t *testing.T) {
-	logged := panicLogCapture(t)
-	server := NewServer(ServerConfig{ServerName: "test-server", Version: "test", SourceID: "local"})
+	var logMu sync.Mutex
+	var logBuf strings.Builder
+	server := NewServer(ServerConfig{
+		ServerName: "test-server", Version: "test", SourceID: "local",
+		Logf: func(format string, args ...any) {
+			logMu.Lock()
+			fmt.Fprintf(&logBuf, format+"\n", args...)
+			logMu.Unlock()
+		},
+	})
+	logged := func() string {
+		logMu.Lock()
+		defer logMu.Unlock()
+		return logBuf.String()
+	}
 	HandleTyped(server.Router(), appwire.MethodThreadList, func(_ context.Context, _ appwire.ThreadListParams) (appwire.ThreadListResponse, error) {
 		panic("inline handler blew up")
 	})
@@ -629,5 +595,21 @@ func TestServeWebSocketPanickingHandlerAnswersInternalErrorAndConnectionSurvives
 		if !strings.Contains(output, want) {
 			t.Fatalf("panic log missing %q in:\n%s", want, output)
 		}
+	}
+}
+
+// TestPanicLogfFallsBackToStandardLoggerWhenNoSinkIsConfigured pins the
+// never-silent guarantee: with no ServerConfig.Logf, a panic report goes to
+// the standard logger instead of being dropped the way logf drops advisory
+// lines.
+func TestPanicLogfFallsBackToStandardLoggerWhenNoSinkIsConfigured(t *testing.T) {
+	server := NewServer(ServerConfig{ServerName: "test-server", Version: "test", SourceID: "local"})
+	var buf strings.Builder
+	prev := log.Writer()
+	log.SetOutput(&buf)
+	t.Cleanup(func() { log.SetOutput(prev) })
+	server.panicLogf("appserver: panic handling %s: %v", appwire.MethodThreadList, "boom")
+	if !strings.Contains(buf.String(), "panic handling thread/list: boom") {
+		t.Fatalf("standard logger output = %q, want the panic line", buf.String())
 	}
 }
