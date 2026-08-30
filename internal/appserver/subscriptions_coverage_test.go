@@ -196,6 +196,37 @@ func TestSubscriptionsUnsubscribeDuringNonReplaceCaptureDefersToAbort(t *testing
 	}
 }
 
+// The commit counterpart for the NON-replace capture shape (regression test
+// from #676's independent fix of the same flake): the generation buffers a
+// thread the connection already held, and the client's unsubscribe arrives
+// while the generation is still buffering — it received the read response
+// before the handler goroutine reached finalizer.commit(). The commit must
+// drop the entry rather than revive it: a revived entry both counts as a
+// subscriber and delivers its buffered records.
+func TestSubscriptionsUnsubscribeDuringCaptureThenCommitDropsEntry(t *testing.T) {
+	subs := NewSubscriptions()
+	subs.Subscribe("conn-1", "th_1")
+	subs.beginBuffered("conn-1", "th_1", false, 7)
+
+	// Routed before the drop, so the record sits in the entry's buffer past
+	// its cut and only Release's withdrawal handling keeps it undelivered.
+	subs.Route(SequencedNotification{Seq: 9, ThreadID: "th_1"})
+	subs.Unsubscribe("conn-1", "th_1")
+	records, ok := subs.Release("conn-1", "th_1", 7)
+	if !ok {
+		t.Fatal("Release should succeed for the live generation")
+	}
+	if len(records) != 0 {
+		t.Fatalf("commit delivered buffered records for a withdrawn thread: %#v", records)
+	}
+	if subs.byConn["conn-1"]["th_1"] != nil {
+		t.Fatal("commit left the withdrawn entry in the registry")
+	}
+	if got := subs.ConnectionCount("th_1"); got != 0 {
+		t.Fatalf("subscriber count after commit = %d, want 0", got)
+	}
+}
+
 // A committed capture honors the mid-capture unsubscribe: the client dropped
 // the thread after the capture began, so the commit removes the entry instead
 // of resurrecting a subscription the client no longer holds, releases none of
