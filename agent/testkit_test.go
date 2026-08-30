@@ -11,10 +11,11 @@ import (
 	"primeradiant.com/evener/agent/internal/jobstore"
 	"primeradiant.com/evener/agent/provider"
 	"primeradiant.com/evener/llm"
+	"primeradiant.com/evener/llm/registry"
+
 	// registryClientAt's live instances dispatch over the real Responses
 	// protocol at an httptest server, which needs it registered.
 	_ "primeradiant.com/evener/llm/providers/responses"
-	"primeradiant.com/evener/llm/registry"
 )
 
 // Shared test fixtures for the agent package.

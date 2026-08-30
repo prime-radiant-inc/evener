@@ -14,116 +14,7 @@ import (
 
 	"primeradiant.com/evener/llm"
 	"primeradiant.com/evener/llm/apilog"
-	"primeradiant.com/evener/llm/providers/anthropic"
-	"primeradiant.com/evener/llm/providers/google"
-	"primeradiant.com/evener/llm/providers/openai"
-	"primeradiant.com/evener/llm/providers/openaicompat"
 )
-
-type timeoutProvider struct {
-	name         string
-	completeBody string
-	streamBody   string
-	streamPrefix string
-	new          func(string, *http.Client) llm.ProviderAdapter
-}
-
-func timeoutProviders() []timeoutProvider {
-	return []timeoutProvider{
-		{
-			name:         "openai",
-			completeBody: `{"id":"resp-1","model":"test-model","output":[{"type":"message","role":"assistant","content":[{"type":"output_text","text":"hello"}]}],"status":"completed","usage":{"input_tokens":1,"output_tokens":1,"total_tokens":2}}`,
-			streamBody: strings.Join([]string{
-				`event: response.output_text.delta`,
-				`data: {"type":"response.output_text.delta","delta":"hello"}`,
-				``,
-				`event: response.completed`,
-				`data: {"type":"response.completed","response":{"id":"resp-1","model":"test-model","output":[{"type":"message","content":[{"type":"output_text","text":"hello"}]}],"usage":{"input_tokens":1,"output_tokens":1,"total_tokens":2}}}`,
-				``,
-				``,
-			}, "\n"),
-			streamPrefix: strings.Join([]string{
-				`event: response.output_text.delta`,
-				`data: {"type":"response.output_text.delta","delta":"partial"}`,
-				``,
-				``,
-			}, "\n"),
-			new: func(baseURL string, client *http.Client) llm.ProviderAdapter {
-				return &openai.Adapter{APIKey: "test-key", BaseURL: baseURL, Client: client, DisableChatFallback: true}
-			},
-		},
-		{
-			name:         "anthropic",
-			completeBody: `{"id":"msg_1","model":"test-model","content":[{"type":"text","text":"hello"}],"stop_reason":"end_turn","usage":{"input_tokens":1,"output_tokens":1}}`,
-			streamBody: strings.Join([]string{
-				`event: message_start`,
-				`data: {"type":"message_start","message":{"id":"msg_1","type":"message","model":"test-model","content":[],"usage":{"input_tokens":1,"output_tokens":0}}}`,
-				``,
-				`event: content_block_start`,
-				`data: {"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}`,
-				``,
-				`event: content_block_delta`,
-				`data: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"hello"}}`,
-				``,
-				`event: content_block_stop`,
-				`data: {"type":"content_block_stop","index":0}`,
-				``,
-				`event: message_delta`,
-				`data: {"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"output_tokens":1}}`,
-				``,
-				`event: message_stop`,
-				`data: {"type":"message_stop"}`,
-				``,
-				``,
-			}, "\n"),
-			streamPrefix: strings.Join([]string{
-				`event: content_block_delta`,
-				`data: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"partial"}}`,
-				``,
-				``,
-			}, "\n"),
-			new: func(baseURL string, client *http.Client) llm.ProviderAdapter {
-				return &anthropic.Adapter{APIKey: "test-key", BaseURL: baseURL, Client: client}
-			},
-		},
-		{
-			name:         "google",
-			completeBody: `{"candidates":[{"content":{"role":"model","parts":[{"text":"hello"}]},"finishReason":"STOP"}],"usageMetadata":{"promptTokenCount":1,"candidatesTokenCount":1,"totalTokenCount":2},"modelVersion":"test-model"}`,
-			streamBody: strings.Join([]string{
-				`data: {"candidates":[{"content":{"parts":[{"text":"hello"}]},"finishReason":"STOP"}],"usageMetadata":{"promptTokenCount":1,"candidatesTokenCount":1,"totalTokenCount":2}}`,
-				``,
-				``,
-			}, "\n"),
-			streamPrefix: strings.Join([]string{
-				`data: {"candidates":[{"content":{"parts":[{"text":"partial"}]}}]}`,
-				``,
-				``,
-			}, "\n"),
-			new: func(baseURL string, client *http.Client) llm.ProviderAdapter {
-				return &google.Adapter{APIKey: "test-key", BaseURL: baseURL, Client: client}
-			},
-		},
-		{
-			name:         "openai-compatible",
-			completeBody: `{"id":"chatcmpl-1","model":"test-model","choices":[{"index":0,"message":{"role":"assistant","content":"hello"},"finish_reason":"stop"}],"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}}`,
-			streamBody: strings.Join([]string{
-				`data: {"id":"chatcmpl-1","model":"test-model","choices":[{"index":0,"delta":{"role":"assistant","content":"hello"},"finish_reason":"stop"}],"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}}`,
-				``,
-				`data: [DONE]`,
-				``,
-				``,
-			}, "\n"),
-			streamPrefix: strings.Join([]string{
-				`data: {"id":"chatcmpl-1","model":"test-model","choices":[{"index":0,"delta":{"role":"assistant","content":"partial"}}]}`,
-				``,
-				``,
-			}, "\n"),
-			new: func(baseURL string, client *http.Client) llm.ProviderAdapter {
-				return &openaicompat.Adapter{APIKey: "test-key", BaseURL: baseURL, Client: client}
-			},
-		},
-	}
-}
 
 type lockedAttemptSink struct {
 	mu       sync.Mutex
@@ -212,7 +103,7 @@ func (s *lockedAttemptSink) snapshot() []apilog.APIAttemptRecord {
 }
 
 func TestCoreStreamCloseRecordsCallerCancellationBeforeCloseReturns(t *testing.T) {
-	for _, provider := range timeoutProviders() {
+	for _, provider := range wireProviders() {
 		t.Run(provider.name, func(t *testing.T) {
 			body := &streamCloseResponseBody{
 				readEntered: make(chan struct{}),
@@ -239,11 +130,9 @@ func TestCoreStreamCloseRecordsCallerCancellationBeforeCloseReturns(t *testing.T
 				llm.WithAPIAttemptGroup(context.Background(), llm.NewAPIAttemptGroup("ag_stream_close")),
 				sink,
 			)
-			stream, err := provider.new("https://provider.test", client).Stream(ctx, llm.Request{
-				Model:          "test-model",
-				Messages:       []llm.Message{llm.User("hello")},
-				AdapterTimeout: &llm.AdapterTimeout{StreamRead: time.Hour},
-			})
+			req := providerRequest(provider.name, "test-model")
+			req.AdapterTimeout = &llm.AdapterTimeout{StreamRead: time.Hour}
+			stream, err := provider.wireClient(t, "https://provider.test", client, nil).Stream(ctx, req)
 			if err != nil {
 				t.Fatalf("Stream: %v", err)
 			}
@@ -273,7 +162,7 @@ func TestCoreStreamCloseRecordsCallerCancellationBeforeCloseReturns(t *testing.T
 }
 
 func TestCoreActiveFinalBodyClosesUnderlyingExactlyOnce(t *testing.T) {
-	for _, provider := range timeoutProviders() {
+	for _, provider := range wireProviders() {
 		for _, streaming := range []bool{false, true} {
 			name := "complete"
 			if streaming {
@@ -300,9 +189,9 @@ func TestCoreActiveFinalBodyClosesUnderlyingExactlyOnce(t *testing.T) {
 					llm.WithAPIAttemptGroup(context.Background(), llm.NewAPIAttemptGroup("ag_final_close_once")),
 					sink,
 				)
-				adapter := provider.new("https://provider.test", client)
+				wire := provider.wireClient(t, "https://provider.test", client, nil)
 				if streaming {
-					stream, err := adapter.Stream(ctx, llm.Request{Model: "test-model", Messages: []llm.Message{llm.User("hello")}})
+					stream, err := wire.Stream(ctx, providerRequest(provider.name, "test-model"))
 					if err != nil {
 						t.Fatalf("Stream: %v", err)
 					}
@@ -316,7 +205,7 @@ func TestCoreActiveFinalBodyClosesUnderlyingExactlyOnce(t *testing.T) {
 						t.Fatal("stream returned no semantic finish")
 					}
 				} else {
-					response, err := adapter.Complete(ctx, llm.Request{Model: "test-model", Messages: []llm.Message{llm.User("hello")}})
+					response, err := wire.Complete(ctx, providerRequest(provider.name, "test-model"))
 					if err != nil || response.Text() != "hello" {
 						t.Fatalf("Complete = (%q, %v), want hello success", response.Text(), err)
 					}
@@ -334,7 +223,7 @@ func TestCoreActiveFinalBodyClosesUnderlyingExactlyOnce(t *testing.T) {
 }
 
 func TestCoreCompleteWireCaptureWithClientTimeoutRetainsFinalSemanticOwnership(t *testing.T) {
-	for _, provider := range timeoutProviders() {
+	for _, provider := range wireProviders() {
 		for _, testCase := range []struct {
 			name        string
 			body        string
@@ -369,10 +258,7 @@ func TestCoreCompleteWireCaptureWithClientTimeoutRetainsFinalSemanticOwnership(t
 					llm.WithAPIAttemptGroup(context.Background(), llm.NewAPIAttemptGroup("ag_complete_client_timeout")),
 					sink,
 				)
-				response, err := provider.new(server.URL, client).Complete(ctx, llm.Request{
-					Model:    "test-model",
-					Messages: []llm.Message{llm.User("hello")},
-				})
+				response, err := provider.wireClient(t, server.URL, client, nil).Complete(ctx, providerRequest(provider.name, "test-model"))
 				if testCase.wantSuccess {
 					if err != nil || response.Text() != "hello" {
 						t.Fatalf("Complete = (%q, %v), want hello success", response.Text(), err)
@@ -398,7 +284,7 @@ func TestCoreCompleteWireCaptureWithClientTimeoutRetainsFinalSemanticOwnership(t
 }
 
 func TestCoreStreamWireCaptureWithClientTimeoutRetainsFinalSemanticOwnership(t *testing.T) {
-	for _, provider := range timeoutProviders() {
+	for _, provider := range wireProviders() {
 		for _, testCase := range []struct {
 			name        string
 			body        string
@@ -435,10 +321,7 @@ func TestCoreStreamWireCaptureWithClientTimeoutRetainsFinalSemanticOwnership(t *
 					llm.WithAPIAttemptGroup(context.Background(), llm.NewAPIAttemptGroup("ag_stream_client_timeout")),
 					sink,
 				)
-				stream, err := provider.new(server.URL, client).Stream(ctx, llm.Request{
-					Model:    "test-model",
-					Messages: []llm.Message{llm.User("hello")},
-				})
+				stream, err := provider.wireClient(t, server.URL, client, nil).Stream(ctx, providerRequest(provider.name, "test-model"))
 				if err != nil {
 					t.Fatalf("Stream: %v", err)
 				}
@@ -479,7 +362,7 @@ func TestCoreStreamWireCaptureWithClientTimeoutRetainsFinalSemanticOwnership(t *
 }
 
 func TestCoreCompleteWireCaptureClassifiesAdapterRequestBodyDeadline(t *testing.T) {
-	for _, provider := range timeoutProviders() {
+	for _, provider := range wireProviders() {
 		t.Run(provider.name, func(t *testing.T) {
 			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				w.Header().Set("Content-Type", "application/json")
@@ -494,11 +377,9 @@ func TestCoreCompleteWireCaptureClassifiesAdapterRequestBodyDeadline(t *testing.
 				llm.WithAPIAttemptGroup(context.Background(), llm.NewAPIAttemptGroup("ag_adapter_request_body_timeout")),
 				sink,
 			)
-			_, _ = provider.new(server.URL, server.Client()).Complete(ctx, llm.Request{
-				Model:          "test-model",
-				Messages:       []llm.Message{llm.User("hello")},
-				AdapterTimeout: &llm.AdapterTimeout{Request: 50 * time.Millisecond},
-			})
+			req := providerRequest(provider.name, "test-model")
+			req.AdapterTimeout = &llm.AdapterTimeout{Request: 50 * time.Millisecond}
+			_, _ = provider.wireClient(t, server.URL, server.Client(), nil).Complete(ctx, req)
 			attempts := sink.snapshot()
 			if len(attempts) != 1 {
 				t.Fatalf("canonical attempts = %d, want exactly 1", len(attempts))
@@ -511,7 +392,7 @@ func TestCoreCompleteWireCaptureClassifiesAdapterRequestBodyDeadline(t *testing.
 }
 
 func TestCoreCompleteWireCaptureClassifiesAdapterConnectDeadline(t *testing.T) {
-	for _, provider := range timeoutProviders() {
+	for _, provider := range wireProviders() {
 		t.Run(provider.name, func(t *testing.T) {
 			dialStarted := make(chan struct{})
 			var startOnce sync.Once
@@ -527,11 +408,9 @@ func TestCoreCompleteWireCaptureClassifiesAdapterConnectDeadline(t *testing.T) {
 				llm.WithAPIAttemptGroup(context.Background(), llm.NewAPIAttemptGroup("ag_adapter_connect_timeout")),
 				sink,
 			)
-			_, err := provider.new("http://provider.test", client).Complete(ctx, llm.Request{
-				Model:          "test-model",
-				Messages:       []llm.Message{llm.User("hello")},
-				AdapterTimeout: &llm.AdapterTimeout{Connect: 50 * time.Millisecond},
-			})
+			req := providerRequest(provider.name, "test-model")
+			req.AdapterTimeout = &llm.AdapterTimeout{Connect: 50 * time.Millisecond}
+			_, err := provider.wireClient(t, "http://provider.test", client, nil).Complete(ctx, req)
 			if !errors.Is(err, context.DeadlineExceeded) {
 				t.Fatalf("connect error = %v, want original deadline identity", err)
 			}
