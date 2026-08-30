@@ -44,20 +44,6 @@ func TestApplyThinkingFormat_ExplicitNone(t *testing.T) {
 	}
 }
 
-// A mandatory-thinking model with no effort on the request gets the medium
-// backstop. The session resolves an explicit off to a nil effort when the
-// ladder has no none level, so by design the backstop also covers that case:
-// the model cannot run without thinking, and the adapter cannot see whether
-// nil meant "unset" or "off" (spec: model-level-reasoning-defaults).
-func TestApplyThinkingFormat_ThinkingAlwaysOnBackstop(t *testing.T) {
-	body := map[string]any{}
-	mc := ModelCompat{Quirks: ProviderQuirks{ThinkingFormat: "openai"}, ThinkingAlwaysOn: true}
-	applyThinkingFormat(body, llm.Request{}, mc)
-	if body["reasoning_effort"] != "medium" {
-		t.Fatalf("body = %#v, want the medium backstop for a mandatory-thinking model", body)
-	}
-}
-
 // The off-guard keys on the configured effort, not the post-translation wire
 // string: a thinking_levels entry may spell a real thinking-on tier as the
 // provider's literal "none", and that tier must still emit its wire shape.

@@ -514,13 +514,14 @@ func (p *Profile) WithLiveModelInfo(info llm.ModelInfo) *Profile {
 	// /models enrichment for the fields they set.
 	instEntry, hasInstEntry := p.instModels[p.model]
 	configuredWindow := hasInstEntry && instEntry.ContextWindow > 0
-	// An explicit reasoning flag in providers.toml is authoritative user
-	// intent and must survive live /models enrichment. reasoning = true is a
-	// permission statement, not a level configuration, so only an explicit
-	// off freezes the ladder (a non-reasoning model has nothing to
-	// configure; adopting live levels would re-enable it).
-	reasoningConfigured := instEntry.Reasoning != nil
-	configuredLevels := len(instEntry.ThinkingLevels) > 0 || (reasoningConfigured && !*instEntry.Reasoning)
+	// Configured reasoning intent (an explicit flag, or a thinking_levels
+	// map) is authoritative user intent and must survive live /models
+	// enrichment. reasoning = true is a permission statement, not a level
+	// configuration, so only an explicit off freezes the ladder (a
+	// non-reasoning model has nothing to configure; adopting live levels
+	// would re-enable it).
+	reasoningConfigured := instEntry.ReasoningIntent() != nil
+	configuredLevels := len(instEntry.ThinkingLevels) > 0 || (instEntry.Reasoning != nil && !*instEntry.Reasoning)
 	if info.ContextWindow > 0 && !configuredWindow {
 		clone.contextWindow = info.ContextWindow
 	}
@@ -1307,15 +1308,6 @@ func newOpenAICompatProfile(id, model string, contextWindow int, instModels map[
 	default:
 		efforts = resolveEffortLevels(model, defaultEfforts)
 	}
-	// A configured thinking_levels map is complete authority on the model's
-	// ladder (docs/llm-providers.md), which entails the model takes an effort
-	// control: it overrides a catalog verdict of non-reasoning unless the
-	// user said reasoning = false outright.
-	reasoningOverride := entry.Reasoning
-	if reasoningOverride == nil && len(entry.ThinkingLevels) > 0 {
-		configuredOn := true
-		reasoningOverride = &configuredOn
-	}
 	// MiniMax via OpenRouter uses reasoning_details for multi-turn reasoning
 	// (not OpenAI's reasoning_content). Set the provider option that tells the
 	// openai-compat adapter to serialize/deserialize reasoning_details.
@@ -1338,9 +1330,10 @@ func newOpenAICompatProfile(id, model string, contextWindow int, instModels map[
 		parallel:      true,
 		contextWindow: contextWindow,
 		docFiles:      []string{"AGENTS.md"},
-		// providers.toml reasoning is the user's answer either way; the
-		// catalog only speaks for models it was not set for.
-		reasoningOverride: reasoningOverride,
+		// providers.toml's answer (an explicit reasoning flag, or a
+		// thinking_levels map implying an effort control) wins either way;
+		// the catalog only speaks for models it left unset.
+		reasoningOverride: entry.ReasoningIntent(),
 		catalogModel:      catModel,
 		streaming:         true,
 		webSearch:         false,
@@ -1360,9 +1353,5 @@ func newOpenAICompatProfile(id, model string, contextWindow int, instModels map[
 // from explicit providers.toml model configuration (a thinking_levels map or
 // an explicit reasoning flag) rather than catalog or default derivation.
 func (p *Profile) EffortLevelsConfigured() bool {
-	entry, ok := p.instModels[p.model]
-	if !ok {
-		return false
-	}
-	return len(entry.ThinkingLevels) > 0 || entry.Reasoning != nil
+	return p.instModels[p.model].ReasoningIntent() != nil
 }

@@ -563,22 +563,22 @@ func TestCovFetchHubSessionRead(t *testing.T) {
 // TestCovReasoningEffortLevelKnown exercises the level check.
 func TestCovReasoningEffortLevelKnown(t *testing.T) {
 	levels := []string{"low", "medium", "high"}
-	if !reasoningEffortLevelKnown(levels, "high") {
+	if !reasoningEffortLevelSettable(levels, "high") {
 		t.Fatal("should find 'high'")
 	}
-	if !reasoningEffortLevelKnown(levels, "HIGH") {
+	if !reasoningEffortLevelSettable(levels, "HIGH") {
 		t.Fatal("should find 'HIGH' (case-insensitive)")
 	}
-	if !reasoningEffortLevelKnown(levels, "none") {
-		t.Error("reasoningEffortLevelKnown(none) = false, want true (explicit off is always settable; it omits the field where the model has no off level)")
+	if !reasoningEffortLevelSettable(levels, "none") {
+		t.Error("reasoningEffortLevelSettable(none) = false, want true (explicit off is always settable; it omits the field where the model has no off level)")
 	}
-	if !reasoningEffortLevelKnown(levels, "off") {
-		t.Error("reasoningEffortLevelKnown(off) = false, want true (disable alias)")
+	if !reasoningEffortLevelSettable(levels, "off") {
+		t.Error("reasoningEffortLevelSettable(off) = false, want true (disable alias)")
 	}
-	if reasoningEffortLevelKnown(levels, "xhigh") {
+	if reasoningEffortLevelSettable(levels, "xhigh") {
 		t.Fatal("should not find 'xhigh'")
 	}
-	if reasoningEffortLevelKnown(nil, "high") {
+	if reasoningEffortLevelSettable(nil, "high") {
 		t.Fatal("should not find in nil levels")
 	}
 }
