@@ -2,10 +2,12 @@ package agent
 
 import (
 	"context"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+	"testing/fstest"
 
 	"primeradiant.com/evener/agent/doctor"
 	"primeradiant.com/evener/agent/execenv"
@@ -209,6 +211,36 @@ func TestDoctorEvener_ReadOnlyEnforced(t *testing.T) {
 	}
 }
 
+// TestDoctorEvener_RunbookSeamSubstitutable proves the doctorBundledSkills
+// test seam works: a substituted FS changes what the tool resolves, and the
+// traversal-rejection path of the shared ParseRunbookFromFS rejects path
+// separators through the tool layer.
+func TestDoctorEvener_RunbookSeamSubstitutable(t *testing.T) {
+	stateHome := newStateHome(t)
+	rt := doctorToolForTest(t, stateHome)
+
+	old := doctorBundledSkills
+	doctorBundledSkills = func() fs.FS {
+		return fstest.MapFS{"doctoring-evener/runbooks/fake.md": &fstest.MapFile{Data: []byte("")}}
+	}
+	t.Cleanup(func() { doctorBundledSkills = old })
+
+	// substitution takes effect: a runbook only the fake FS has
+	if _, err := rt.Exec(context.Background(), nil, map[string]any{
+		"command": "audit", "runbook": "fake", "sessions": "034ANYSESSION0000000000",
+	}); err == nil {
+		t.Error("substituted-FS runbook resolved via real bundled skills; seam not honored")
+	}
+
+	// traversal rejection through the tool layer
+	for _, name := range []string{"../secret", "a/b", `a\b`} {
+		_, err := doctorLoadRunbook(name)
+		if err == nil || !strings.Contains(err.Error(), "invalid runbook name") {
+			t.Errorf("runbook %q: err = %v, want invalid runbook name", name, err)
+		}
+	}
+}
+
 // doctorTestSID mints a validator-passing session id for the tool fixtures.
 func doctorTestSID(t *testing.T) string {
 	t.Helper()
@@ -266,7 +298,8 @@ func TestDoctorEvener_RejectsStraySelectorOnSelectorlessCommands(t *testing.T) {
 // table promised, extending stable_delegate_readonly_test.go's pattern from
 // the library layer to the tool handler layer. (plugins is excluded: its
 // store-writability probe creates and removes a temp file by design, and it
-// reads the plugin store, not session state.)
+// reads the plugin store, not session state. audit is included via a
+// since-based sweep over the fixture session.)
 func TestDoctorEvener_HandlerDoesNotMutateState(t *testing.T) {
 	stateHome := newStateHome(t)
 	bucket := newBucketUnder(t, stateHome)
@@ -304,6 +337,7 @@ func TestDoctorEvener_HandlerDoesNotMutateState(t *testing.T) {
 		{"command": "tree", "selector": sid},
 		{"command": "turnids"},
 		{"command": "sessions"},
+		{"command": "audit", "runbook": "error-loop", "sessions": sid},
 	}
 	for _, args := range commands {
 		if _, err := rt.Exec(context.Background(), nil, args); err != nil {
@@ -386,6 +420,36 @@ func TestDoctorEvener_EnumSinglesource(t *testing.T) {
 	for i := range want {
 		if raw[i] != want[i] {
 			t.Errorf("enum[%d] = %v, want %q", i, raw[i], want[i])
+		}
+	}
+}
+
+// TestDoctorEvener_EveryCommandDispatches pins the other half of the
+// single-source claim: every command in tool.DoctorEvenerCommands() must have
+// a dispatch case. Without this, adding a command to the enum compiles clean,
+// surfaces in the schema, and then always fails at runtime with "unknown
+// doctor command" — silent drift the schema-enum test above cannot see.
+func TestDoctorEvener_EveryCommandDispatches(t *testing.T) {
+	stateHome := newStateHome(t)
+	bucket := newBucketUnder(t, stateHome)
+	sid := writeDoctorFixtureSession(t, bucket)
+	rt := doctorToolForTest(t, stateHome)
+	for _, command := range tool.DoctorEvenerCommands() {
+		args := map[string]any{"command": command}
+		// Sweep commands take no selector; every other command does. The
+		// fixtures won't trip every code path — this only needs each command
+		// to reach its handler, not to return data.
+		switch command {
+		case "turnids", "sessions", "audit", "plugins":
+		default:
+			args["selector"] = sid
+		}
+		_, err := rt.Exec(context.Background(), nil, args)
+		if err == nil {
+			continue
+		}
+		if strings.Contains(err.Error(), "unknown doctor command") {
+			t.Errorf("command %q has no dispatch case", command)
 		}
 	}
 }

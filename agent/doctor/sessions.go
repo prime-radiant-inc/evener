@@ -145,10 +145,7 @@ func sessionRow(b bucket, paths Paths, meta schema.SessionMeta, delegates delega
 	// The meta is already in hand, so resolve the delegates root from it
 	// directly instead of going through delegates.get, which would re-read
 	// the same meta from disk.
-	rootSessionID := strings.TrimSpace(meta.JobTreeRootSessionID)
-	if rootSessionID == "" {
-		rootSessionID = paths.SessionID
-	}
+	rootSessionID := delegateRootFromMeta(meta, paths.SessionID)
 	_, stable, _, err := delegates.getForRoot(b.dir, rootSessionID)
 	if err != nil {
 		return SessionRow{}, fmt.Errorf("session %s: %w", meta.ID, err)

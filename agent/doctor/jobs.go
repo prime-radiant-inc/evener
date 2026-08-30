@@ -194,13 +194,24 @@ func (c delegateCache) getForRoot(bucketDir, rootSessionID string) (string, dele
 // resolveDelegateRoot returns the session id whose delegates.jsonl is the
 // lifecycle authority for this session: the meta's JobTreeRootSessionID when
 // set, else the session itself. It reads the session's meta from disk; callers
-// that already hold the meta (e.g. ListSessions' sweep) should trim
-// JobTreeRootSessionID themselves and call getForRoot instead.
+// that already hold the meta (e.g. ListSessions' sweep) should call
+// delegateRootFromMeta and getForRoot instead.
 func resolveDelegateRoot(paths Paths) string {
-	if meta, err := schema.LoadSessionMeta(paths.BucketDir, paths.SessionID); err == nil && strings.TrimSpace(meta.JobTreeRootSessionID) != "" {
-		return strings.TrimSpace(meta.JobTreeRootSessionID)
+	if meta, err := schema.LoadSessionMeta(paths.BucketDir, paths.SessionID); err == nil {
+		return delegateRootFromMeta(meta, paths.SessionID)
 	}
 	return paths.SessionID
+}
+
+// delegateRootFromMeta is the single encoding of "who owns this session's
+// delegates journal": the meta's JobTreeRootSessionID when set, else the
+// session itself. resolveDelegateRoot (disk read) and sessionRow (meta in
+// hand) both go through it so the two paths cannot diverge.
+func delegateRootFromMeta(meta schema.SessionMeta, self string) string {
+	if root := strings.TrimSpace(meta.JobTreeRootSessionID); root != "" {
+		return root
+	}
+	return self
 }
 
 func delegateJournalPath(bucketDir, rootSessionID string) string {

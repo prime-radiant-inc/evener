@@ -110,10 +110,10 @@ func execDoctorEvener(deps *toolDeps, args map[string]any) (any, error) {
 		if shellBoolArg(args, "health") {
 			return doctor.TranscriptHealth(stateBase, selector)
 		}
-		opts := doctor.TranscriptOpts{Format: "markdown", TextMax: doctor.DefaultTextMax}
-		if v := stringArg(args, "format"); v != "" {
-			opts.Format = v
-		}
+		// No format argument: the tool returns the CLI's --json struct shape,
+		// where render format doesn't apply (the CLI's --format governs its own
+		// text render).
+		opts := doctor.TranscriptOpts{TextMax: doctor.DefaultTextMax}
 		if v := stringArg(args, "range"); v != "" {
 			opts.Range = v
 		}
@@ -226,7 +226,11 @@ func execDoctorEvener(deps *toolDeps, args map[string]any) (any, error) {
 		// Manager.Doctor includes a store-writability probe (create + remove one
 		// temp file) mirroring the CLI's plugins check; everything else it does is
 		// read-only. The tool's store root is the default config root — the CLI's
-		// --store-root override has no tool counterpart.
+		// --store-root override has no tool counterpart, so state_dir is
+		// rejected rather than silently ignored (the stray-selector pattern).
+		if strings.TrimSpace(stringArg(args, "state_dir")) != "" {
+			return nil, errors.New("doctor command \"plugins\" takes no state_dir (the plugin store lives in the config root, not a state root)")
+		}
 		findings, err := plugins.NewManager("").Doctor()
 		if err != nil {
 			return nil, fmt.Errorf("plugins: %w", err)
@@ -256,23 +260,32 @@ type doctorSessionsEnvelope struct {
 	Truncated bool `json:"truncated,omitempty"`
 	// TotalRows is the full row count before a structural cap.
 	TotalRows int `json:"total_rows,omitempty"`
+	// UnreadableTruncated reports that the unreadable list was structurally
+	// capped at doctorRowCap rows.
+	UnreadableTruncated bool `json:"unreadable_truncated,omitempty"`
+	// TotalUnreadableRows is the full unreadable count before a structural cap.
+	TotalUnreadableRows int `json:"total_unreadable_rows,omitempty"`
 }
 
 // doctorCapSessionsRows structurally caps a sessions enumeration and discloses
 // the cut, mirroring find_session_transcripts' scan_truncated convention.
-// (audit evidence prose is capped at the producer — see joinSessionRefs in
-// agent/doctor/audit.go — so audit needs no tool-layer cap.)
+// Both lists are capped: a mass-corrupt state root is the exact scenario the
+// sessions sweep exists for, and an unbounded unreadable list would recreate
+// the overflow the cap prevents. (audit evidence — refs and prose — is capped
+// at the producer in agent/doctor/audit.go.)
 func doctorCapSessionsRows(res doctor.SessionsResult) doctorSessionsEnvelope {
-	if len(res.Sessions) <= doctorRowCap {
-		return doctorSessionsEnvelope{SessionsResult: res}
+	env := doctorSessionsEnvelope{SessionsResult: res}
+	if len(env.Sessions) > doctorRowCap {
+		env.Truncated = true
+		env.TotalRows = len(env.Sessions)
+		env.Sessions = env.Sessions[:doctorRowCap]
 	}
-	total := len(res.Sessions)
-	res.Sessions = res.Sessions[:doctorRowCap]
-	return doctorSessionsEnvelope{
-		SessionsResult: res,
-		Truncated:      true,
-		TotalRows:      total,
+	if len(env.Unreadable) > doctorRowCap {
+		env.UnreadableTruncated = true
+		env.TotalUnreadableRows = len(env.Unreadable)
+		env.Unreadable = env.Unreadable[:doctorRowCap]
 	}
+	return env
 }
 
 // doctorRequireSelector rejects selector-less invocation of a
