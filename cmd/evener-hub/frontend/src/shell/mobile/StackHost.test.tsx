@@ -141,6 +141,22 @@ test("falls back to opening welcome when nothing is focused at mount", async () 
   expect(await screen.findByText("No session open")).toBeTruthy();
 });
 
+test("opens the mobile panel when nothing is focused", async () => {
+  render(<StackHost />);
+  // Welcome pane mounts behind the panel; the panel opens over it
+  await screen.findByText("No session open");
+  // The panel's Sheet title "Sessions" is the dialog's accessible name
+  expect(screen.getByRole("dialog", { name: "Sessions" })).toBeTruthy();
+});
+
+test("does not flash the panel during routeDeferred", async () => {
+  render(<StackHost routeDeferred />);
+  // Wait for welcome to appear behind the (closed) panel
+  await screen.findByText("No session open");
+  // Panel should NOT be open while routeDeferred
+  expect(screen.queryByRole("dialog", { name: "Sessions" })).toBeNull();
+});
+
 test("renders the focused pane's component full-screen, with focused=true", async () => {
   workspaceStore.getState().openPane("doc", { ref: "ref_a" });
   render(<StackHost />);
