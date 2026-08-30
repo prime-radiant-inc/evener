@@ -91,6 +91,7 @@
   "claude-sonnet-5": {
     "_note": "Anthropic Sonnet 5 (platform.claude.com, verified 2026-07-11). Base LiteLLM entry carries context/pricing; overlay adds the effort ladder + adaptive thinking (the DEFAULT when thinking is omitted). claude5_request_shape is what the Anthropic request builder keys the generation-5 wire shape on.",
     "claude5_request_shape": true,
+    "default_reasoning_effort": "high",
     "reasoning_effort_levels": [
       "low",
       "medium",
@@ -105,6 +106,7 @@
   "claude-fable-5": {
     "_note": "Anthropic Fable 5 (platform.claude.com, verified 2026-07-11). Thinking is ALWAYS ON — sending thinking disabled is an API 400, hence thinking_always_on. claude5_request_shape is the broader generation-5 wire shape (Sonnet 5 has it without thinking_always_on).",
     "claude5_request_shape": true,
+    "default_reasoning_effort": "high",
     "reasoning_effort_levels": [
       "low",
       "medium",
@@ -119,15 +121,18 @@
   },
   "claude-opus-5": {
     "_note": "Anthropic Opus 5. LiteLLM already supplies context, pricing, adaptive thinking and the effort flags; the overlay adds only claude5_request_shape, the generation-5 wire shape upstream does not express.",
-    "claude5_request_shape": true
+    "claude5_request_shape": true,
+    "default_reasoning_effort": "high"
   },
   "claude-mythos-5": {
     "_note": "Anthropic Mythos 5, added upstream in the 2026-08-20 refresh. LiteLLM supplies context, pricing, adaptive thinking and the xhigh/max effort flags; the overlay adds only claude5_request_shape, without which the Anthropic request builder sends the pre-5 wire shape.",
-    "claude5_request_shape": true
+    "claude5_request_shape": true,
+    "default_reasoning_effort": "high"
   },
   "claude-mythos-preview": {
     "_note": "Added upstream alongside claude-mythos-5 with identical capability flags. isClaude5OrNewer's ID heuristic cannot classify it — 'preview' carries no numeric generation segment — so without this it would take the pre-5 wire shape and send sampling params upstream marks unsupported.",
-    "claude5_request_shape": true
+    "claude5_request_shape": true,
+    "default_reasoning_effort": "high"
   },
   "gpt-5.6-sol": {
     "_note": "LiteLLM now supplies the public OpenAI API metadata. Evener overrides only the effective Codex/OAuth context window (272,000 in codex-cli 0.145.0 models_cache.json; public API is 1,050,000) per Jesse's 2026-07-28 decision, plus the existing max effort tier.",
@@ -196,6 +201,7 @@
     ]
   },
   "claude-opus-4-6": {
+    "default_reasoning_effort": "high",
     "reasoning_effort_levels": [
       "low",
       "medium",
@@ -210,6 +216,7 @@
     "aliases": [
       "sonnet"
     ],
+    "default_reasoning_effort": "high",
     "reasoning_effort_levels": [
       "low",
       "medium",
@@ -224,10 +231,12 @@
     "aliases": [
       "opus"
     ],
-    "claude5_request_shape": true
+    "claude5_request_shape": true,
+    "default_reasoning_effort": "high"
   },
   "claude-opus-4-8": {
-    "claude5_request_shape": true
+    "claude5_request_shape": true,
+    "default_reasoning_effort": "high"
   },
   "claude-haiku-4-5": {
     "aliases": [

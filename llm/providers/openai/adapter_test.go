@@ -4519,6 +4519,9 @@ func TestAdapter_ListModels_OAuthTransportUsesCodexModelsEndpoint(t *testing.T) 
 	if got := models[0].ReasoningEffortLevels; len(got) != 3 || got[0] != "low" || got[2] != "high" {
 		t.Fatalf("ReasoningEffortLevels = %v, want [low medium high]", got)
 	}
+	if models[0].DefaultReasoningEffort != "medium" {
+		t.Fatalf("DefaultReasoningEffort = %q, want medium from default_reasoning_level", models[0].DefaultReasoningEffort)
+	}
 	if !models[0].SupportsTools {
 		t.Fatalf("SupportsTools = false, want true")
 	}

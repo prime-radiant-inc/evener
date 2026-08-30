@@ -218,6 +218,9 @@ func applyOverlayFields(m *ModelInfo, ov map[string]any, includeAliases bool) {
 	if v, ok := ov["thinking_always_on"].(bool); ok {
 		m.ThinkingAlwaysOn = v
 	}
+	if v, ok := ov["default_reasoning_effort"].(string); ok {
+		m.DefaultReasoningEffort = NormalizeReasoningEffort(v)
+	}
 	if v, ok := ov["claude5_request_shape"].(bool); ok {
 		m.Claude5RequestShape = v
 	}

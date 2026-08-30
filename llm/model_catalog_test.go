@@ -1156,6 +1156,27 @@ func TestApplyOverrides_ThinkingAlwaysOn(t *testing.T) {
 	}
 }
 
+// default_reasoning_effort records what a model runs at when the session has
+// no effort configured; the overrides layer carries it for models whose
+// provider default is a known tier (adaptive Claude runs at high).
+func TestApplyOverrides_DefaultReasoningEffort(t *testing.T) {
+	cat, err := parseLiteLLMCatalog([]byte(`{
+        "claude-opus-4-6": {"litellm_provider": "anthropic"},
+        "claude-sonnet-5": {"litellm_provider": "anthropic"}
+    }`))
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	applyOverrides(cat, []byte(`{"claude-opus-4-6": {"default_reasoning_effort": "High"}}`))
+
+	if got := cat.GetModelInfo("claude-opus-4-6").DefaultReasoningEffort; got != "high" {
+		t.Errorf("claude-opus-4-6 DefaultReasoningEffort = %q, want high (normalized) from override", got)
+	}
+	if got := cat.GetModelInfo("claude-sonnet-5").DefaultReasoningEffort; got != "" {
+		t.Errorf("claude-sonnet-5 DefaultReasoningEffort = %q, want empty (no override)", got)
+	}
+}
+
 // Materialized Evener-only entries can carry vision support, per-million pricing
 // (including cache reads), and aliases — everything a first-party model that
 // LiteLLM lacks needs (e.g. the gpt-5.6 family).
