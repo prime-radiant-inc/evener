@@ -40,11 +40,17 @@ not handlers waiting on each other.
   executing, regardless of how long it runs or whether it respects its context.
   Scoped deliberately: a *client* can still delay the transport by pipelining more
   requests than the queue holds — that is flow control, analyzed in the queue
-  section, not handler starvation — and dead-peer detection pauses in exactly the
-  windows it pauses today (see Queue semantics).
+  section, not handler starvation — and dead-peer detection pauses only in a
+  strict subset of the windows it pauses in today: while the queue is full or
+  the inline ping response is parked on a full outbound buffer, rather than
+  during every inline handler's runtime (see Queue semantics).
 - The per-connection ordering contract PR #667 restored is preserved unchanged for
   every queued frame — requests and notifications alike — with no ordering audit of
-  the 105 hub and daemon handler registrations. The contract is a partial order,
+  the 108 hub and daemon handler registrations (counting convention: 82 hub + 24
+  daemon `appserver.HandleTyped` calls = 106 typed, plus 2 raw `Router().Handle`
+  registrations — `evener/navigation/read` in `app_navigation.go`,
+  `evener/settings/transcriptDisplay/patch` in `app_rpc_transcript_display.go` —
+  all measured on the #667 branch, non-test files). The contract is a partial order,
   stated precisely in "The ordering contract" below — not total FIFO, because the
   three concurrent slow reads participate on both sides — with exactly two
   deliberate scheduling changes, both named where they are made: ping bypasses
@@ -109,6 +115,19 @@ The exposure, verified against the handlers on that branch:
 - `evener/git/head` (`cmd/evener-hub/app_git_head.go`) forks `git rev-parse` up to
   twice via `exec.CommandContext`. Normally milliseconds; on a cold NFS mount or a
   repository with a wedged `index.lock`-holding process, arbitrarily long.
+- The marketplace/plugin family — `evener/marketplace/refresh`,
+  `evener/marketplace/browse` (lazy fetch), `evener/plugin/install`,
+  `evener/plugin/upgrade`, `evener/plugin/checkNow` (`cmd/evener-hub/app_rpc.go`)
+  — are inline serial and delegate to `internal/plugins.Manager`, which forks git
+  **including network clones** (`gitClone` in `internal/plugins/git.go` runs
+  `exec.CommandContext` against a remote URL) and takes a file lock with a
+  30-second acquisition timeout (`installAcquireLock(..., 30*time.Second)` in
+  `internal/plugins/autoupgrade.go`). These are the largest members of the
+  inline set by worst-case latency: a plugin install is a full network clone
+  followed by a registry write, all of it occupying the receive loop today.
+  They are also ctx-binding mutations with awaits *between* durable side
+  effects (clone, then registry write), which puts them squarely in the
+  slice-0 audit's named scope.
 
 While either occupies the receive loop, the browser's `ping` — the app-level
 heartbeat, because browsers cannot send WebSocket ping frames from JS — sits unread in
@@ -122,14 +141,17 @@ addition reopens the ordering question PR #667 existed to close.
 
 ### The ordering contract, stated as a partial order
 
-This is the contract PR #667's end state actually provides, derived from its
-mechanics (serial requests run inline in the receive loop; slow reads spawn from that
-loop the moment their frame is read), and it is the contract the worker must
-reproduce exactly. For two requests A before B on one connection:
+This is the contract the worker provides. Every cell but one is PR #667's end
+state, derived from its mechanics (serial requests run inline in the receive
+loop; slow reads spawn from that loop the moment their frame is read); the
+serial→ping cell (marked *new*) is this design's deliberate change — under PR
+#667 ping runs inline and waits behind an executing serial handler. Test 2
+derives its cases per cell from this table. For two requests A before B on one
+connection:
 
 | A ↓ / B → | serial request | concurrent slow read | ping |
 |---|---|---|---|
-| **serial request** | B starts only after A's handler returned and its response was enqueued | B starts only after A completed | B may overtake A |
+| **serial request** | B starts only after A's handler returned and its response was enqueued | B starts only after A completed | B may overtake A (*new*) |
 | **concurrent slow read** | B does not wait for A | B does not wait for A | B may overtake A |
 | **ping** | B does not wait for A | B does not wait for A | — |
 
@@ -140,10 +162,14 @@ read runs without waiting for it (that overtaking is the point of the concurrent
 set). Responses always pair by request id, and only the sequence-cut discipline
 governs how notifications interleave with a hydration response.
 
-Inbound notification frames (today only the `initialized` no-op reaches
-`handleNotification`) ride the queue like serial requests and keep their arrival
-order relative to them; nothing about this design is request-specific, so a future
-order-sensitive client notification inherits the same contract automatically.
+Inbound notification frames ride the queue like serial requests by construction —
+the receive loop enqueues every non-ping frame identically. Stated as intent, not
+as a pinned invariant: today `handleNotification` is a closed no-op switch (only
+`initialized` reaches it, and it does nothing), so notification ordering has no
+observable effect to test against and no registration point to test through. The
+first real inbound notification handler must bring the ordering test with it;
+until then the claim is only that the mechanism does not special-case
+notifications.
 
 The table describes frames the receive loop has read. Its ping cells carry the one
 qualification the queue section derives: ping bypass applies from the moment the
@@ -171,8 +197,9 @@ semantics attach to ping in the protocol.
 
 ### The receive-loop / worker split
 
-Each connection runs three goroutines instead of two: the existing send loop, the
-existing receive loop, and a new **serial worker**.
+Each connection runs four goroutines instead of three: the existing send loop,
+keepalive loop, and receive loop (`ServeWebSocket` runs the receive loop on the
+HTTP handler goroutine and spawns the other two), plus a new **serial worker**.
 
 The receive loop keeps only transport concerns:
 
@@ -219,7 +246,16 @@ executes, which no client can observe.
 (`HandleMessage` answers it before the initialize gate with `struct{}{}`), so no
 ordering relationship with any other request exists to violate. This also upgrades the
 pinned ping property from "ping survives a slow *read*" (PR #667) to "ping survives
-any handler."
+any handler." The property carries an outbound-buffer precondition, stated rather
+than hidden: the inline ping *response* enqueues through `enqueueResponse`, which
+parks on a full outbound channel (no default arm) until space frees or the
+context dies — so a peer that has stopped draining its own notification stream
+can hold the receive loop out of `Recv` for up to the send loop's
+`webSocketWriteTimeout` cascade (~30s, after which the failed write cancels the
+connection). Ping liveness is therefore guaranteed against handler behavior and
+against inbound pipelining below capacity, for any peer that is draining its
+socket; a peer that stopped reading gets the connection teardown it was already
+heading toward.
 
 A second transport would inherit the whole policy by driving the same enqueue path,
 exactly as `dispatchMessage` is positioned today.
@@ -287,8 +323,23 @@ at the cap, the worker parks in the acquire, so the blocked slow read — and
 every request queued behind it, `turn/interrupt` included — waits for one of the
 four in-flight reads to finish. Under PR #667 those later requests would have
 overtaken the parked reads; under the cap they wait. No request ever runs
-*earlier* than the table allows, and the wait is bounded by the in-flight reads'
-own completion (they hold the connection context and unwind on teardown). A
+*earlier* than the table allows. The wait's bound is stated honestly: on a
+*live* connection it is only as bounded as the in-flight reads themselves,
+and cancellation is cooperative — a read wedged in a syscall does not unwind,
+and the daemon's `thread/turns/list` ignores its context outright
+(`handleAppThreadTurnsList` binds `_ context.Context`), so a wedged read can
+hold a cap slot indefinitely. Composed with the ping bypass this creates a
+masking interaction that must be named: the client's only liveness signal
+keeps answering while the serial lane is dead behind a saturated cap —
+whereas under PR #667 the stalled heartbeat would eventually have driven the
+client to reconnect. The design accepts the lane wedge (it is the same
+cooperative-cancellation bound every handler already has) but not its
+invisibility: alongside the first-blocked-acquire advisory below, the worker
+reports through `Server.logf` when a single acquire has been parked longer
+than a stall threshold (`slowReadCapStallAdvisory`, 30s — the same scale as
+`webSocketWriteTimeout`), naming the wait duration and the in-flight
+methods, so a wedged lane has an operational signature even though the
+connection looks healthy from the client. A
 client that keeps four transcript walks in flight and then pipelines
 priority-sensitive work behind a fifth has priced that wait in; a client that
 wants interrupt to land promptly during heavy reads sends it before the fifth
@@ -498,8 +549,11 @@ system is already built for it on all three sides:
   accept a durable mutation intent and return a receipt; the turn itself runs
   under session-lifetime context in the serve loop, not under the RPC. Prompt
   disconnect cancellation is a no-op for this entire class. The six daemon
-  handlers that do bind ctx are the slow read (`thread/read`), two benign reads
-  (`thread/unsubscribe`, `model/list`), and three mutations that carry their own
+  handlers that do bind ctx are the slow read (`thread/read`), one benign read
+  (`model/list`), the subscription-state mutation `thread/unsubscribe` (it
+  mutates connection-owned subscription state through the seam-fenced
+  `appserver.Unsubscribe`, so it is not durable-state work, but it is not a
+  read), and three mutations that carry their own
   failure discipline: `turn/interrupt` sits under the same `lockRetrySafeMutation`
   dedup as start/steer, `thread/clear`'s failure path releases its gate and
   admits a retry with a fresh mutation id, and `thread/compact/start` forwards
@@ -509,8 +563,9 @@ system is already built for it on all three sides:
   explicit.* A client disconnected mid-mutation has never been able to know
   whether the mutation applied — under PR #667 the handler usually ran to
   completion but its response was undeliverable. That is why the retry-safe
-  machinery exists (`ClientMutationID` on 13 mutation param types, validated via
-  `ValidateMutationParams`; the queue-mutation fences `ExpectedQueueRevision`,
+  machinery exists (`ClientMutationID` enforced by `ValidateMutationParams` on
+  exactly 8 methods — the turn family plus `thread/clear`, per the required-field
+  table in `appwire/protocol.go`; the queue-mutation fences `ExpectedQueueRevision`,
   `ExpectedEntryID`, `ExpectedInstanceID`; the reconnect flow in
   `2026-07-28-appwire-retry-safe-mutations-and-atomic-rejoin-design.md` and
   `2026-07-30-single-composer-mutation-recovery-design.md`): after reconnect the
@@ -522,10 +577,12 @@ system is already built for it on all three sides:
 - *The remaining class is small and gets a bounded pre-implementation audit,
   gating the worker.* The only handlers prompt cancellation can touch are those
   that bind their context *and* await between durable side effects. Slice 0 of
-  the landing order inventories every registration mechanically — all 105, hub
-  and daemon, classified serial/concurrent, read/mutation, ctx-ignoring/
-  ctx-binding (18 of 24 daemon handlers already classified above; the hub's 81
-  get the same sweep) — then reads each ctx-binding *serial mutation* body for
+  the landing order inventories every registration mechanically — all 108 (82
+  hub + 24 daemon `HandleTyped`, plus the 2 raw `Router().Handle`
+  registrations; the counting convention in Goals), classified
+  serial/concurrent, read/mutation, ctx-ignoring/ctx-binding (18 of 24 daemon
+  handlers already classified above; the hub's 84 get the same sweep) — then
+  reads each ctx-binding *serial mutation* body for
   awaits between durable writes. The acceptance artifact is a disposition table
   appended to this spec, one row per registration, and it must be complete
   before slice 1 lands: any member that does not already tolerate mid-flight
@@ -533,21 +590,26 @@ system is already built for it on all three sides:
   or its detachment from connection cancel — landed *before or with* the worker,
   with a test, so the prompt-cancellation behavior never deploys ahead of a
   handler that cannot take it. This is a bounded audit of a grep-able class with
-  a hard gate, not the 105-handler ordering audit this design exists to avoid —
+  a hard gate, not the 108-handler ordering audit this design exists to avoid —
   the ordering audit would re-derive every handler's cross-request assumptions;
-  this one reads six named daemon bodies and whatever the hub sweep names.
+  this one reads six named daemon bodies, the marketplace/plugin family named in
+  "Current state", and whatever else the hub sweep names.
 - *Post-cancellation access to connection-owned state is fenced at the seam, not
-  per handler.* Handler code can reach connection-owned state only through five
+  per handler.* Handler code can reach connection-owned state only through six
   entry points, each already fenced for exactly this race because PR #667's
   concurrent slow reads need it: `appserver.Subscribe` and
   `appserver.ReplaceSubscriptions` verify `server.conns[conn.id] == conn` under
-  the projection gate (verified: they are the only subscription paths handlers
-  use — `cmd/evener-hub/app_relay.go` — the `Connection` methods have no
-  production callers); `CaptureSubscription` carries the same registration check
-  under the same gate; `Notify` and response enqueue land on the
-  `sendClosed`-fenced channel. Everything else a handler touches is server-global
+  the projection gate; `appserver.Unsubscribe` (used by the hub's relay
+  teardown in `app_rpc.go` and the daemon's unsubscribe handling in
+  `appwire_runtime.go`) carries the same identity check but under `server.mu`
+  alone — deliberately no projection gate, since removing a subscription cannot
+  race a capture into existence — so an unsubscribe after unregistration is a
+  no-op; `CaptureSubscription` carries the registration check under the
+  projection gate; `Notify` and response enqueue land on the
+  `sendClosed`-fenced channel. (Verified: these are the only subscription paths
+  handlers use — the `Connection` methods have no production callers.) Everything else a handler touches is server-global
   state (stores, projectors) that must already tolerate concurrent mutation from
-  *other* connections. A per-handler audit would re-verify 105 handlers against
+  *other* connections. A per-handler audit would re-verify 108 handlers against
   a race the seams already close; this design instead pins the seam behavior in
   the test plan (test 8).
 
@@ -613,8 +675,9 @@ Worker lifecycle is owned by `ServeWebSocket`, symmetric with the send loop:
   without registering). Response enqueue is likewise fenced by `sendClosed` under
   `sendMu`. The worker adds no new registration path, so it inherits the fence.
 - **Non-blocking teardown, not absolute leak-freedom.** The worker can only be
-  blocked in its `select` (exits on cancel), in `enqueueResponse` (selects on
-  `ctx.Done`), or in a handler. The last is the honest limitation: a handler that
+  blocked in its `select` (exits on cancel), in the `slowReadDispatchCap`
+  acquire (selects on `ctx.Done`; see the cap mechanics), in `enqueueResponse`
+  (selects on `ctx.Done`), or in a handler. The last is the honest limitation: a handler that
   ignores its canceled context retains the worker goroutine — and through it the
   `Connection` — until it returns. That is cooperative cancellation, the same
   bound every execution path has today (an inline handler retains the receive-loop
@@ -720,7 +783,8 @@ without modification:
    (the new promptness this design introduces) and the handler unwinds. Then a
    context-*ignoring* serial handler parks, the client disconnects and teardown
    completes, and the handler resumes to call `appserver.Subscribe`,
-   `CaptureSubscription`, and `Notify`: assert each is refused by its fence
+   `appserver.Unsubscribe`, `CaptureSubscription`, and `Notify`: assert each is
+   refused by its fence
    (subscription/capture rejected on the unregistered connection, notification
    dropped on the closed send channel) and nothing leaks into `Subscriptions`.
 9. **Keepalive live during a slow mutation** — using the `keepaliveDecision` seam:
@@ -742,7 +806,19 @@ without modification:
     (d) The acquire race, deterministically: an after-acquire/before-spawn hook
     in the style of the after-dequeue seam — park the worker there, cancel the
     connection, release the hook; assert the slow read never starts and the
-    slot was released.
+    slot was released. (e) The wedged lane is visible: fill the cap with reads
+    that ignore their context and never return, park a serial request behind
+    them, and — with an injectable stall threshold — assert ping still answers
+    (the masking interaction is real), the stall advisory reaches `Logf` naming
+    the in-flight methods, and teardown still completes without joining the
+    wedged reads.
+11. **Ping's outbound-buffer precondition** — with the transport's write side
+    parked (a blocking `Send` seam) and the outbound channel filled by
+    notifications, send a ping: assert no response arrives while the buffer is
+    full (the receive loop is parked in `enqueueResponse`, as specified — the
+    precondition is real). Release the write side; assert the ping response
+    arrives. Repeat without releasing; assert the write-timeout cascade tears
+    the connection down rather than leaving the loop parked forever.
 
 ## Rejected alternative: full-async dispatch for all handlers
 
@@ -753,9 +829,10 @@ explicitly.
 `0291be074` was that design: every request on its own goroutine. The audit's C1 and I3
 findings are what it cost, and the deeper problem is the contract change:
 
-- **Per-connection ordering is load-bearing.** Every handler among the 105 hub and
-  daemon registrations (81 in `cmd/evener-hub`, 24 in `server/appwire_runtime.go`,
-  counted on the #667 branch) was written against serial-per-connection dispatch. A
+- **Per-connection ordering is load-bearing.** Every handler among the 108 hub and
+  daemon registrations (84 in `cmd/evener-hub` — 82 `HandleTyped` plus 2 raw
+  `Router().Handle` — and 24 in `server/appwire_runtime.go`, counted on the #667
+  branch) was written against serial-per-connection dispatch. A
   client that pipelines `turn/start` then `turn/steer` relies on the start being
   applied first; under full-async the steer can win the race and target the previous
   turn — or no turn — with no error that names the reordering. The same shape exists
@@ -772,7 +849,7 @@ findings are what it cost, and the deeper problem is the contract change:
   the worst kind of contract to retire implicitly.
 
 The serial worker gets full-async's actual benefit — the transport never blocks on a
-handler — while keeping the contract all 105 handlers were written against, at the
+handler — while keeping the contract all 108 handlers were written against, at the
 cost every ordering contract carries: queued requests wait their turn.
 
 ## Migration and implementation shape
@@ -801,7 +878,10 @@ the semantics the final design requires):
 
 0. **Audit — a hard gate, remediation included.** The ctx-binding mutation audit
    from "Admitted-request semantics on disconnect", producing the complete
-   105-row disposition table appended to this spec; any handler the audit finds
+   108-row disposition table (the counting convention in Goals — the row count
+   is the exhaustiveness checksum, so it must match a fresh registration sweep,
+   raw `Router().Handle` included) appended to this spec; any handler the audit
+   finds
    intolerant of mid-flight cancellation gets its fix (or its detachment from
    connection cancel) and its test landed *here*, before the worker exists, so
    slice 1 can never deploy prompt cancellation ahead of a handler that cannot
@@ -818,24 +898,28 @@ the semantics the final design requires):
    landed its behavior with its tests. The bounded queue's saturation behavior
    exists from the moment the queue does, so its advisory and coverage belong
    here too, not deferred: the queue-saturation one-shot advisory, the
-   injectable capacity and blocked-enqueue seams, and tests 1–9 — carried tests
-   green unmodified throughout — with the seams they need (worker-exit,
-   after-dequeue, purge-complete).
+   injectable capacity and blocked-enqueue seams, and tests 1–9 and 11 — carried
+   tests green unmodified throughout — with the seams they need (worker-exit,
+   after-dequeue, purge-complete, blocking-send).
 2. **The slow-read cap** — the `slowReadDispatchCap` semaphore with its acquire
    cancellation discipline, its one-shot saturation advisory, and the
    after-acquire seam, plus test 10.
 
 Estimated size for the worker mechanism: roughly 140–180 lines of production delta
 (most of it comments; the mechanisms are one channel, one goroutine, and one
-semaphore) and 500–620 lines of new tests per the plan above; handler remediation, if slice 0 names any, is additional and estimated
+semaphore, plus the stall and saturation advisories) and 550–700 lines of new
+tests per the plan above; handler remediation, if slice 0 names any, is additional and estimated
 per finding. No wire-format or API change and no client change; handler changes
-are exactly the slice-0 remediation set (expected small, possibly empty); the
-wire-observable behavior changes are the two scheduling changes named in the
-goals — a ping response may now overtake earlier responses (meaningless to
-id-correlating clients, per the ordering-contract section), and a connection
-saturating the slow-read cap head-of-line blocks later requests,
+are exactly the slice-0 remediation set (expected small, possibly empty). The
+client-observable behavior changes number three: the two scheduling changes
+named in the goals — a ping response may now overtake earlier responses
+(meaningless to id-correlating clients, per the ordering-contract section), and
+a connection saturating the slow-read cap head-of-line blocks later requests,
 `turn/interrupt` included, that would have overtaken the parked reads under PR
-#667 (specified with its rationale in the slow-read composition section).
+#667 (slow-read composition section) — plus one lifecycle change: an ordinary
+disconnect now cancels an executing ctx-binding serial mutation promptly
+instead of letting it run to completion, observable after reconnect through
+retry outcomes (the admitted-request section owns that contract).
 
 ## Decided questions (Jesse, 2026-08-30)
 
