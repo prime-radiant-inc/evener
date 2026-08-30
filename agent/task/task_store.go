@@ -180,7 +180,9 @@ type TaskStore struct {
 // beforeMutationPublicationWaitHook, when non-nil, runs when MutateAndPublish
 // finds the publication serializer contended, before blocking on it. It is a
 // deterministic contention seam for the shared-producer ordering test;
-// production never assigns it.
+// production never assigns it. It is one unsynchronized package variable, so
+// a test that installs it must not run in parallel and must join its
+// goroutines before its cleanup resets the hook.
 var beforeMutationPublicationWaitHook func()
 
 // NewTaskStore creates a TaskStore that persists to <stateDir>/tasks/<sessionID>.json.
