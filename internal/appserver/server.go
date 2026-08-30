@@ -106,6 +106,18 @@ func (s *Server) logf(format string, args ...any) {
 	}
 }
 
+// panicLogf reports a handler panic. It prefers the embedder's configured
+// sink so panic lines ride the same channel as every other server-initiated
+// event, but unlike logf it never drops the line: a panic must stay visible
+// even when the embedder configured no logger.
+func (s *Server) panicLogf(format string, args ...any) {
+	if s.cfg.Logf != nil {
+		s.cfg.Logf(format, args...)
+		return
+	}
+	log.Printf(format, args...)
+}
+
 // evictSlowConsumer unregisters a connection whose outbound buffer is full.
 // The buffer holds appwire.NotificationBufferCap frames — any legitimate
 // burst fits — so a full one means the peer stopped draining, not that its
@@ -459,11 +471,9 @@ func (c *Connection) HandleMessage(ctx context.Context, msg appwire.Message) app
 	}
 	req := *msg.Request
 	// ping is the browser's app-level heartbeat (browsers cannot send WS ping
-	// frames from JS). It bypasses the router, and dispatchMessage answers it
-	// inline in the receive loop, so however busy the slow-read handler
-	// goroutines get, ping is never starved. (Inline handlers do occupy the
-	// receive loop ahead of a queued ping, which is why they must stay
-	// bounded.)
+	// frames from JS). It bypasses the router and is answered here, before
+	// the initialize gate; dispatchMessage owns the inline-vs-concurrent
+	// policy that keeps it responsive.
 	if req.Method == appwire.MethodPing {
 		return appwire.ResponseMessage(req.ID, struct{}{})
 	}
@@ -822,14 +832,16 @@ func concurrentDispatchMethod(method string) bool {
 // policy lives on the Connection so any second transport inherits the same
 // sequencing for free.
 //
-// The contract: requests are serial per connection — a later request does
-// not begin until an earlier one completes — EXCEPT the slow-read methods
+// Requests are serial per connection — a later request does not begin until
+// an earlier one completes — EXCEPT the slow-read methods
 // concurrentDispatchMethod names, which run on their own goroutine so a
 // full-transcript read cannot head-of-line block the connection. A later
 // request can therefore dispatch while a slow read (including a hydrating
 // read parked in its snapshot clone) is still in flight; responses pair by
 // request ID, and only the sequence-cut discipline governs how notifications
-// interleave with a hydration response.
+// interleave with a hydration response. An inline handler occupies the
+// receive loop — ping included, since ping is answered inline — so every
+// method outside the concurrent set must stay bounded.
 //
 // Ordering constraints in detail:
 //
@@ -839,10 +851,6 @@ func concurrentDispatchMethod(method string) bool {
 //     required"), and the initialize handshake itself completes — response
 //     enqueued — before the loop reads another frame. Dispatch of later
 //     requests therefore cannot observe a half-initialized connection.
-//   - notifications and ping are always handled inline: they are bounded
-//     work, and answering ping inline is what keeps the app-level heartbeat
-//     responsive while a slow read is busy. (An inline handler does occupy
-//     the receive loop, so every non-slow-read handler must stay bounded.)
 //   - responses enter the connection send queue through the same
 //     enqueueResponse path on both dispatch modes, so hydration capture
 //     commit/abort ordering is unchanged.
@@ -852,11 +860,13 @@ func concurrentDispatchMethod(method string) bool {
 // canceling the shared context is enough — the next Recv fails and the loop
 // exits with the normal close handling.
 func (c *Connection) dispatchMessage(ctx context.Context, msg appwire.Message) {
-	if msg.Request == nil || !c.isInitialized() || !concurrentDispatchMethod(msg.Request.Method) {
-		c.handleAndEnqueue(ctx, msg)
+	// concurrentDispatchMethod is checked before isInitialized so the common
+	// inline path never takes the connection mutex.
+	if msg.Request != nil && concurrentDispatchMethod(msg.Request.Method) && c.isInitialized() {
+		go c.handleAndEnqueue(ctx, msg)
 		return
 	}
-	go c.handleAndEnqueue(ctx, msg)
+	c.handleAndEnqueue(ctx, msg)
 }
 
 // handleAndEnqueue runs one request through HandleMessage and enqueues its
@@ -869,7 +879,7 @@ func (c *Connection) dispatchMessage(ctx context.Context, msg appwire.Message) {
 func (c *Connection) handleAndEnqueue(ctx context.Context, msg appwire.Message) {
 	defer func() {
 		if r := recover(); r != nil {
-			log.Printf("appserver: panic handling %s: %v\n%s", methodOf(msg), r, debug.Stack())
+			c.server.panicLogf("appserver: panic handling %s: %v\n%s", methodOf(msg), r, debug.Stack())
 			if msg.Request != nil {
 				c.enqueueDispatched(ctx, appwire.ErrorMessage(msg.Request.ID, appwire.InternalError("internal error handling request")))
 			}
