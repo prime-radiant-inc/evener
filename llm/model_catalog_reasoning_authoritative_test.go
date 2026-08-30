@@ -70,4 +70,19 @@ func TestEmbeddedCatalog_DottedClaudeMirrorsInheritFamilyOverlay(t *testing.T) {
 			t.Errorf("%s DefaultReasoningEffort = %q, want high from the dashed family overlay", id, mi.DefaultReasoningEffort)
 		}
 	}
+
+	// The runtime canonicalizer must bridge the spelling too: the
+	// openrouter-anthropic profile and the Anthropic request builder both
+	// resolve dotted refs through LookupModelInfo, and a miss there costs
+	// the high default AND the adaptive request shape.
+	mi := cat.LookupModelInfo("anthropic/claude-opus-4.6")
+	if mi == nil {
+		t.Fatal("LookupModelInfo(anthropic/claude-opus-4.6) = nil, want the dashed entry")
+	}
+	if mi.DefaultReasoningEffort != "high" || !mi.SupportsAdaptiveThinking {
+		t.Fatalf("LookupModelInfo(anthropic/claude-opus-4.6) default/adaptive = %q/%v, want high/true", mi.DefaultReasoningEffort, mi.SupportsAdaptiveThinking)
+	}
+	if got := cat.LookupModelInfo("anthropic/claude-opus-4.6[1m]"); got == nil || got.ContextWindow != 1_000_000 {
+		t.Fatalf("LookupModelInfo(anthropic/claude-opus-4.6[1m]) = %+v, want the 1M window on the dashed entry", got)
+	}
 }

@@ -3382,6 +3382,49 @@ func TestSession_ReasoningEffort_EmptyGetsDefaultEffort(t *testing.T) {
 	}
 }
 
+// Disable aliases are accepted at session construction and behave as the
+// explicit off: gpt-5.2's ladder lists a none level (gpt-5.1+ family), so
+// the alias normalizes to "none" and rides the wire as that level rather
+// than being rejected or upgraded to the medium default.
+func TestSession_ReasoningEffort_DisableAliasIsExplicitOff(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	c := llm.NewClient()
+
+	f := &fakeAdapter{
+		name: "openai",
+		steps: []func(req llm.Request) llm.Response{
+			func(req llm.Request) llm.Response {
+				return finalResponse("done")
+			},
+		},
+	}
+	c.Register(f)
+
+	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{
+		ReasoningEffort: "off",
+	})
+	if err != nil {
+		t.Fatalf("NewSession: %v (disable aliases must be accepted and normalized)", err)
+	}
+	defer sess.Close()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second) // TRIPWIRE: scripted in-process adapter, no real I/O; only fires on a genuine hang.
+	defer cancel()
+	if _, err := sess.ProcessInput(ctx, "hello", nil); err != nil {
+		t.Fatal(err)
+	}
+	sess.Close()
+
+	reqs := f.Requests()
+	if len(reqs) == 0 {
+		t.Fatal("no requests recorded")
+	}
+	if reqs[0].ReasoningEffort == nil || *reqs[0].ReasoningEffort != "none" {
+		t.Fatalf("ReasoningEffort = %v, want the explicit none level on the wire", reqs[0].ReasoningEffort)
+	}
+}
+
 func TestSubagent_MaxTurns_DefaultsTo500_NotInheritedFromParent(t *testing.T) {
 	t.Parallel()
 	c := llm.NewClient()
