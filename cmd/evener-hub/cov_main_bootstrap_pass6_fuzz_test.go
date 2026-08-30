@@ -13,7 +13,7 @@ import (
 	"testing"
 
 	"primeradiant.com/evener/internal/credentials"
-	"primeradiant.com/evener/llm/providercfg"
+	"primeradiant.com/evener/llm/registry"
 )
 
 func FuzzMainBootstrapPass6(f *testing.F) {
@@ -44,15 +44,13 @@ func FuzzMainBootstrapPass6(f *testing.F) {
 		cancel()
 		served := false
 		deps := mainDeps{
+			loadRegistry:    hermeticRegistryLoader,
 			loadConfig:      func(string) (Config, error) { return cfg, nil },
 			ensureDirs:      func() error { return nil },
 			acquireLock:     func(string) (func(), error) { return func() {}, nil },
 			newToken:        func() (string, error) { return "hub-token", nil },
 			loadAuthToken:   func(string) (string, error) { return "auth-token", nil },
 			loadCredentials: func(string) (*credentials.Store, error) { return &credentials.Store{}, nil },
-			loadProviderConfig: func(string) (providercfg.Config, bool, error) {
-				return providercfg.Config{}, true, nil
-			},
 			notifyContext: func(context.Context, ...os.Signal) (context.Context, context.CancelFunc) {
 				return ctx, func() {}
 			},
@@ -75,20 +73,21 @@ func FuzzMainBootstrapPass6(f *testing.F) {
 		case 1:
 			deps.loadCredentials = func(string) (*credentials.Store, error) { return nil, stop }
 		case 2:
-			// A providers.toml the legacy descriptor reader cannot parse is a
-			// warning, not a stop: the registry is what a spawned session
-			// resolves against.
-			deps.loadProviderConfig = func(string) (providercfg.Config, bool, error) {
-				return providercfg.Config{}, false, stop
+			// A providers.toml the registry cannot read is a diagnostic, not a
+			// stop: the hub starts on implicit instances alone (spec §14.1).
+			deps.loadRegistry = func(...registry.Option) (*registry.Registry, *credentials.Store, error) {
+				return nil, nil, stop
 			}
 		case 3:
-			deps.loadProviderConfig = func(string) (providercfg.Config, bool, error) {
-				return providercfg.Config{}, false, nil
+			// The user-layer load fails but the implicit-only fallback works.
+			deps.loadRegistry = func(extra ...registry.Option) (*registry.Registry, *credentials.Store, error) {
+				if len(extra) == 0 {
+					return nil, nil, stop
+				}
+				return hermeticRegistryLoader(extra...)
 			}
 		case 4:
-			deps.loadProviderConfig = func(string) (providercfg.Config, bool, error) {
-				return providercfg.Config{}, false, nil
-			}
+			deps.loadRegistry = hermeticRegistryLoader
 		case 5:
 			cfg.RunDir, cfg.StateGlob, cfg.PastIndexDB = "", "", ""
 			deps.loadConfig = func(string) (Config, error) { return cfg, nil }
@@ -99,7 +98,7 @@ func FuzzMainBootstrapPass6(f *testing.F) {
 			cfg.Addr = "[::]:0"
 			deps.loadConfig = func(string) (Config, error) { return cfg, nil }
 		case 8:
-			// Complete bootstrap using the existing provider config branch.
+			// Complete bootstrap on a registry that loads cleanly.
 		case 9:
 			// Complete bootstrap with a deterministic serving error.
 		}

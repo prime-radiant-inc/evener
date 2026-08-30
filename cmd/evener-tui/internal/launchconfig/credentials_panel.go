@@ -22,13 +22,14 @@ type CredentialsActionMsg struct {
 // panelRow is a flat list entry used internally for rendering and cursor
 // movement. Header rows carry no instance; instance rows do.
 type panelRow struct {
-	header   bool
-	typeName string
-	entry    *appwire.InstanceEntry
+	header    bool
+	groupName string
+	entry     *appwire.InstanceEntry
 }
 
 // CredentialsPanel is the overlay model for managing provider instances.
-// It groups instances by type and supports full CRUD keybindings.
+// It groups instances by the registry provider they resolve to and supports
+// full CRUD keybindings.
 type CredentialsPanel struct {
 	instances []appwire.InstanceEntry
 	rows      []panelRow // flattened display rows (headers + instance rows)
@@ -41,10 +42,10 @@ type CredentialsPanel struct {
 	// create/edit form state
 	formOpen     bool
 	formEditing  bool // true=edit existing, false=create new
-	formField    int  // create: 0=type, 1=name, 2=apiStyle, 3=baseURL; edit: 0=apiStyle, 1=baseURL
+	formField    int  // create: 0=base, 1=name, 2=protocol, 3=baseURL; edit: 0=protocol, 1=baseURL
 	formName     string
-	formType     string
-	formAPIStyle string
+	formBase     string
+	formProtocol string
 	formBaseURL  string
 
 	testPending    map[string]bool
@@ -59,15 +60,16 @@ func NewCredentialsPanel() CredentialsPanel {
 func (p CredentialsPanel) Init() tea.Cmd { return nil }
 
 // buildRows constructs the flat header+instance row list from the instance
-// slice, grouping by type in the order they appear.
+// slice, grouping by the registry provider each instance resolves to, in the
+// order they appear.
 func buildPanelRows(instances []appwire.InstanceEntry) []panelRow {
 	var rows []panelRow
-	seenType := ""
+	seenProvider := ""
 	for i := range instances {
 		inst := &instances[i]
-		if inst.Type != seenType {
-			seenType = inst.Type
-			rows = append(rows, panelRow{header: true, typeName: inst.Type})
+		if inst.ProviderID != seenProvider {
+			seenProvider = inst.ProviderID
+			rows = append(rows, panelRow{header: true, groupName: inst.ProviderID})
 		}
 		rows = append(rows, panelRow{entry: inst})
 	}
@@ -244,8 +246,8 @@ func (p CredentialsPanel) updateList(m tea.KeyMsg) (tea.Model, tea.Cmd) {
 			p.formEditing = false
 			p.formField = 0
 			p.formName = ""
-			p.formType = ""
-			p.formAPIStyle = ""
+			p.formBase = ""
+			p.formProtocol = ""
 			p.formBaseURL = ""
 			return p, nil
 		case "e":
@@ -257,8 +259,8 @@ func (p CredentialsPanel) updateList(m tea.KeyMsg) (tea.Model, tea.Cmd) {
 			p.formEditing = true
 			p.formField = 0
 			p.formName = cur.Name
-			p.formType = cur.Type
-			p.formAPIStyle = cur.APIStyle
+			p.formBase = cur.Base
+			p.formProtocol = cur.Protocol
 			p.formBaseURL = cur.BaseURL
 			return p, nil
 		}
@@ -267,8 +269,8 @@ func (p CredentialsPanel) updateList(m tea.KeyMsg) (tea.Model, tea.Cmd) {
 }
 
 // updateForm handles key input while the create/edit form is shown.
-// Fields cycle through: for create (type→name→apiStyle→baseURL→submit);
-// for edit (apiStyle→baseURL→submit). Type and name are not editable for edit.
+// Fields cycle through: for create (base→name→protocol→baseURL→submit);
+// for edit (protocol→baseURL→submit). Base and name are not editable for edit.
 func (p CredentialsPanel) updateForm(m tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch m.Type {
 	case tea.KeyEsc:
@@ -278,7 +280,7 @@ func (p CredentialsPanel) updateForm(m tea.KeyMsg) (tea.Model, tea.Cmd) {
 		// Advance field or submit on the last field.
 		maxField := 3 // baseURL is last field (index 3) for create
 		if p.formEditing {
-			// Edit form: fields are apiStyle(0) and baseURL(1).
+			// Edit form: fields are protocol(0) and baseURL(1).
 			maxField = 1
 		}
 		if p.formField < maxField {
@@ -290,46 +292,24 @@ func (p CredentialsPanel) updateForm(m tea.KeyMsg) (tea.Model, tea.Cmd) {
 		if p.formEditing {
 			params := appwire.InstanceEditParams{
 				Name:     p.formName,
-				APIStyle: p.formAPIStyle,
+				Protocol: p.formProtocol,
 				BaseURL:  p.formBaseURL,
 			}
 			return p, func() tea.Msg { return InstanceEditSubmitMsg{Params: params} }
 		}
 		params := appwire.InstanceCreateParams{
-			Type:     p.formType,
+			Base:     p.formBase,
 			Name:     p.formName,
-			APIStyle: p.formAPIStyle,
+			Protocol: p.formProtocol,
 			BaseURL:  p.formBaseURL,
 		}
 		return p, func() tea.Msg { return InstanceCreateSubmitMsg{Params: params} }
 	case tea.KeyBackspace:
 		p.formDeleteChar()
 	case tea.KeyRunes:
-		s := string(m.Runes)
-		// apiStyle field: space/tab toggles between responses and chat-completions.
-		// create: apiStyle=2; edit: apiStyle=0.
-		apiStyleField := 2
-		if p.formEditing {
-			apiStyleField = 0
-		}
-		if p.formField == apiStyleField {
-			if s == " " || s == "\t" {
-				p.toggleAPIStyle()
-				return p, nil
-			}
-			return p, nil // ignore other input on apiStyle toggle field
-		}
-		p.formAppendChar(s)
+		p.formAppendChar(string(m.Runes))
 	}
 	return p, nil
-}
-
-func (p *CredentialsPanel) toggleAPIStyle() {
-	if p.formAPIStyle == "chat-completions" {
-		p.formAPIStyle = "responses"
-	} else {
-		p.formAPIStyle = "chat-completions"
-	}
 }
 
 func (p *CredentialsPanel) formDeleteChar() {
@@ -338,9 +318,13 @@ func (p *CredentialsPanel) formDeleteChar() {
 		if len(p.formName) > 0 {
 			p.formName = p.formName[:len(p.formName)-1]
 		}
-	case "type":
-		if len(p.formType) > 0 {
-			p.formType = p.formType[:len(p.formType)-1]
+	case "base":
+		if len(p.formBase) > 0 {
+			p.formBase = p.formBase[:len(p.formBase)-1]
+		}
+	case "protocol":
+		if len(p.formProtocol) > 0 {
+			p.formProtocol = p.formProtocol[:len(p.formProtocol)-1]
 		}
 	case "baseURL":
 		if len(p.formBaseURL) > 0 {
@@ -353,32 +337,34 @@ func (p *CredentialsPanel) formAppendChar(s string) {
 	switch p.formActiveField() {
 	case "name":
 		p.formName += s
-	case "type":
-		p.formType += s
+	case "base":
+		p.formBase += s
+	case "protocol":
+		p.formProtocol += s
 	case "baseURL":
 		p.formBaseURL += s
 	}
 }
 
 // formActiveField maps the current formField index to a field name.
-// For create: 0=type, 1=name, 2=apiStyle, 3=baseURL.
-// For edit:   0=apiStyle, 1=baseURL.
+// For create: 0=base, 1=name, 2=protocol, 3=baseURL.
+// For edit:   0=protocol, 1=baseURL.
 func (p CredentialsPanel) formActiveField() string {
 	if p.formEditing {
 		switch p.formField {
 		case 0:
-			return "apiStyle"
+			return "protocol"
 		default:
 			return "baseURL"
 		}
 	}
 	switch p.formField {
 	case 0:
-		return "type"
+		return "base"
 	case 1:
 		return "name"
 	case 2:
-		return "apiStyle"
+		return "protocol"
 	default:
 		return "baseURL"
 	}
@@ -396,33 +382,30 @@ type InstanceEditSubmitMsg struct {
 
 // sourceBadgeColor picks the tone for one instance's credential-source badge.
 //
-// oauth, file and env are the three ways a credential can be PRESENT — a
-// signed-in account, a stored API key, an environment variable — so all three
-// wear the configured tone. "absent" is the one missing-credential state and
-// wears the ended tone. Everything left over — "none", which wants no
-// credential, and any source this build does not recognise — has no state to
-// report and stays on the panel's chrome tone.
+// Every registry source but "none" names a credential that resolved — an
+// inline key, a credential header, the store, an environment variable, an
+// OAuth record, application-default credentials — so all of them wear the
+// configured tone. "none" is the one no-credential state; whether that is a
+// problem depends on the instance, so credentialBadge decides its tone and
+// this function leaves it on the panel's chrome tone.
 func (p CredentialsPanel) sourceBadgeColor(source string) lipgloss.Color {
 	th := tuitheme.ActiveTheme()
-	switch source {
-	case "oauth", "file", "env":
-		return th.StateIdle
-	case "absent":
-		return th.StateEnded
-	default:
+	if source == "" || source == "none" {
 		return th.TextDim
 	}
+	return th.StateIdle
 }
 
-// credentialBadge renders one instance's credential badge. An absent credential
-// the hub never wanted - CredentialRequired is false for an auth-none provider
-// or a gateway that inherits no type-level key - is nothing missing, so it gets
-// the neutral "optional" badge instead of the ended-tone ABSENT one that marks
-// a provider whose key is genuinely gone. TextDim is the tone the other
-// no-credential-needed source, "none", already carries.
+// credentialBadge renders one instance's credential badge. A credential that
+// did not resolve is only missing when the instance needs one: an auth-none or
+// optional-bearer instance gets the neutral "optional" badge rather than the
+// ended-tone one that marks a key genuinely gone.
 func (p CredentialsPanel) credentialBadge(inst appwire.InstanceEntry) string {
-	if inst.ActiveSource == "absent" && !inst.CredentialRequired {
-		return tuiprim.StatusBadge(tuitheme.ActiveTheme().TextDim, "optional")
+	if inst.ActiveSource == "none" {
+		if !inst.CredentialRequired {
+			return tuiprim.StatusBadge(tuitheme.ActiveTheme().TextDim, "optional")
+		}
+		return tuiprim.StatusBadge(tuitheme.ActiveTheme().StateEnded, "none")
 	}
 	return tuiprim.StatusBadge(p.sourceBadgeColor(inst.ActiveSource), inst.ActiveSource)
 }
@@ -443,7 +426,7 @@ func (p CredentialsPanel) View() string {
 		var rows []string
 		for i, row := range p.rows {
 			if row.header {
-				header := lipgloss.NewStyle().Foreground(th.TextDim).Render(row.typeName)
+				header := lipgloss.NewStyle().Foreground(th.TextDim).Render(row.groupName)
 				rows = append(rows, "  "+header)
 				continue
 			}
@@ -459,12 +442,12 @@ func (p CredentialsPanel) View() string {
 			}
 			name := lipgloss.NewStyle().Foreground(th.Text).Render(inst.Name)
 			badge := p.credentialBadge(*inst)
-			// Optional apiStyle/baseURL hint
+			// Optional protocol/baseURL hint
 			hint := ""
-			if inst.APIStyle != "" || inst.BaseURL != "" {
+			if inst.Protocol != "" || inst.BaseURL != "" {
 				parts := []string{}
-				if inst.APIStyle != "" {
-					parts = append(parts, inst.APIStyle)
+				if inst.Protocol != "" {
+					parts = append(parts, inst.Protocol)
 				}
 				if inst.BaseURL != "" {
 					parts = append(parts, inst.BaseURL)
@@ -537,27 +520,27 @@ func (p CredentialsPanel) formView() string {
 		lines = append(lines,
 			"Edit instance: "+p.formName,
 			"",
-			p.formFieldLine("API Style", "apiStyle", p.apiStyleDisplay(), 0),
+			p.formFieldLine("Protocol", "protocol", p.protocolDisplay(), 0),
 			p.formFieldLine("Base URL", "baseURL", p.formBaseURL, 1),
 		)
 	} else {
 		lines = append(lines,
 			"New instance",
 			"",
-			p.formFieldLine("Type", "type", p.formType, 0),
+			p.formFieldLine("Base provider", "base", p.formBase, 0),
 			p.formFieldLine("Name", "name", p.formName, 1),
-			p.formFieldLine("API Style", "apiStyle", p.apiStyleDisplay(), 2),
+			p.formFieldLine("Protocol", "protocol", p.protocolDisplay(), 2),
 			p.formFieldLine("Base URL", "baseURL", p.formBaseURL, 3),
 		)
 	}
 	return strings.Join(lines, "\n")
 }
 
-func (p CredentialsPanel) apiStyleDisplay() string {
-	if p.formAPIStyle == "" {
+func (p CredentialsPanel) protocolDisplay() string {
+	if p.formProtocol == "" {
 		return "(default)"
 	}
-	return p.formAPIStyle
+	return p.formProtocol
 }
 
 func (p CredentialsPanel) formFieldLine(label, fieldName, value string, fieldIdx int) string {

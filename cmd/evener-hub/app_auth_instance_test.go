@@ -1,9 +1,8 @@
 package hub
 
-// Tests for Phase 2: re-keying credential RPCs by instance name.
-//
-// Each test uses a temp dir, a temp providers.toml, and EVENER_STATE_DIR /
-// XDG_STATE_HOME so that auth files and credentials land in isolated dirs.
+// Instance-keyed auth: credentials and OAuth records belong to an instance
+// name, never to the provider it is based on, and only the Codex transport
+// has an OAuth flow at all (spec §9.5, §10).
 
 import (
 	"context"
@@ -15,10 +14,13 @@ import (
 	"primeradiant.com/evener/appwire"
 	authopenai "primeradiant.com/evener/auth/openai"
 	"primeradiant.com/evener/auth/openai/oaitest"
+	"primeradiant.com/evener/cmd/evener-hub/internal/hubcore"
+	"primeradiant.com/evener/cmdutil"
 	"primeradiant.com/evener/internal/credentials"
+	"primeradiant.com/evener/llm/registry"
 )
 
-// writeProvidersToml writes a minimal providers.toml to path.
+// writeProvidersToml writes content to dir/providers.toml and returns the path.
 func writeProvidersToml(t *testing.T, dir string, content string) string {
 	t.Helper()
 	path := filepath.Join(dir, "providers.toml")
@@ -28,20 +30,54 @@ func writeProvidersToml(t *testing.T, dir string, content string) string {
 	return path
 }
 
+// newTestRegistry builds a hermetic registry holder over providersToml: no
+// network, no catalog cache, and only the env the test hands it.
+func newTestRegistry(t *testing.T, stateDir, providersToml string, store *credentials.Store, env map[string]string) *hubcore.ProviderRegistry {
+	t.Helper()
+	holder := hubcore.NewProviderRegistry(func(extra ...registry.Option) (*registry.Registry, *credentials.Store, error) {
+		opts := []registry.Option{
+			registry.WithOffline(true),
+			registry.WithoutCache(),
+			registry.WithStateRoot(stateDir),
+			registry.WithCredentials(cmdutil.StoreCredentialSource{Store: store}),
+			registry.WithEnv(func(name string) (string, bool) {
+				v, ok := env[name]
+				return v, ok
+			}),
+		}
+		if providersToml != "" {
+			opts = append(opts, registry.WithConfigPath(providersToml))
+		} else {
+			opts = append(opts, registry.WithNoUserLayer())
+		}
+		r, err := registry.Load(append(opts, extra...)...)
+		return r, store, err
+	})
+	if err := holder.Reload(); err != nil {
+		t.Fatalf("registry: %v", err)
+	}
+	return holder
+}
+
 // newTestAuthController creates an isolated hubAuthController with:
 //   - credentials store at credsDir/credentials.toml
-//   - stateDir = stateDir (for OAuth files)
-//   - providersConfigPath = providersToml
-func newTestAuthController(t *testing.T, credsDir, stateDir, providersToml string) *hubAuthController {
+//   - stateDir = stateDir (for OAuth records)
+//   - a registry reading providersToml against the optional env
+func newTestAuthController(t *testing.T, credsDir, stateDir, providersToml string, env ...map[string]string) *hubAuthController {
 	t.Helper()
 	credsPath := filepath.Join(credsDir, "credentials.toml")
 	store, err := credentials.LoadStore(credsPath)
 	if err != nil {
 		t.Fatalf("LoadStore: %v", err)
 	}
+	lookup := map[string]string{}
+	if len(env) > 0 {
+		lookup = env[0]
+	}
 	ctrl := newHubAuthControllerWithStore(credsDir, store)
 	ctrl.stateDir = stateDir
 	ctrl.providersConfigPath = providersToml
+	ctrl.reg = newTestRegistry(t, stateDir, providersToml, store, lookup)
 	return ctrl
 }
 
@@ -61,70 +97,70 @@ func makeOAuthRecord(instanceName, email string) authopenai.AuthRecord {
 	}
 }
 
+// codexInstanceToml is one instance on the Codex transport under a name that
+// is not the registry id, which is the shape every OAuth path must handle.
+const codexInstanceToml = `[providers.work]
+base = "openai-codex"
+`
+
+// bearerInstanceToml is one key-authenticated instance under a custom name.
+const bearerInstanceToml = `[providers.work-ant]
+base = "anthropic"
+api_key_env = ["WORK_ANT_KEY"]
+`
+
 // ─────────────────────────────────────────────────────────────────────────────
-// 1. ApiKeySet for a named openai-type instance writes credentials.toml[name]
+// 1. ApiKeySet for a named instance writes credentials.toml[name]
 // ─────────────────────────────────────────────────────────────────────────────
 
 func TestAuth_InstanceApiKeySet_WritesNamedKey(t *testing.T) {
 	oaitest.IsolateOpenAIAuth(t)
 	dir := t.TempDir()
 	stateDir := t.TempDir()
-	providersToml := writeProvidersToml(t, dir, `
-schema = 1
+	ctrl := newTestAuthController(t, dir, stateDir, writeProvidersToml(t, dir, bearerInstanceToml))
 
-[instances.work]
-type = "openai"
-`)
-	ctrl := newTestAuthController(t, dir, stateDir, providersToml)
-
-	got, err := ctrl.ApiKeySet(appwire.AuthApiKeySetParams{Provider: "work", Value: "sk-work-key"})
+	got, err := ctrl.ApiKeySet(appwire.AuthApiKeySetParams{Provider: "work-ant", Value: "sk-work-key"})
 	if err != nil {
-		t.Fatalf("ApiKeySet(work): %v", err)
+		t.Fatalf("ApiKeySet(work-ant): %v", err)
 	}
-	if got.Provider != "work" {
-		t.Errorf("Provider = %q, want %q", got.Provider, "work")
+	if got.Provider != "work-ant" {
+		t.Errorf("Provider = %q, want %q", got.Provider, "work-ant")
 	}
-	if got.ActiveSource != string(credentials.SourceFile) {
-		t.Errorf("ActiveSource = %q, want file", got.ActiveSource)
+	if got.ActiveSource != "store" {
+		t.Errorf("ActiveSource = %q, want store", got.ActiveSource)
+	}
+	if !got.SignedIn || !got.HasStoredFile {
+		t.Errorf("status = %+v, want signed in from the store", got)
 	}
 
-	// Verify the key is stored under the instance name "work", not "openai".
-	credsPath := filepath.Join(dir, "credentials.toml")
-	store2, err := credentials.LoadStore(credsPath)
+	// The key is stored under the instance name, not the provider it is based on.
+	store2, err := credentials.LoadStore(filepath.Join(dir, "credentials.toml"))
 	if err != nil {
 		t.Fatalf("LoadStore: %v", err)
 	}
-	v, src := store2.Get("work")
+	v, src := store2.Get("work-ant")
 	if v != "sk-work-key" || src != credentials.SourceFile {
-		t.Errorf("credentials.toml[work] = %q/%q, want sk-work-key/file", v, src)
+		t.Errorf("credentials.toml[work-ant] = %q/%q, want sk-work-key/file", v, src)
 	}
-	// "openai" slot should be untouched.
-	v2, _ := store2.Get("openai")
-	if v2 != "" {
-		t.Errorf("credentials.toml[openai] should be empty, got %q", v2)
+	if v2, _ := store2.Get("anthropic"); v2 != "" {
+		t.Errorf("credentials.toml[anthropic] should be empty, got %q", v2)
 	}
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// 2. OAuth ops on a named openai-type instance target auth/<name>.json
+// 2. OAuth ops on a named Codex instance target auth/<name>.json
 // ─────────────────────────────────────────────────────────────────────────────
 
-func TestAuth_InstanceStatus_OpenAIOAuthTargetsNamedFile(t *testing.T) {
+func TestAuth_InstanceStatus_OAuthTargetsNamedFile(t *testing.T) {
 	oaitest.IsolateOpenAIAuth(t)
 	dir := t.TempDir()
 	stateDir := t.TempDir()
-	providersToml := writeProvidersToml(t, dir, `
-schema = 1
-
-[instances.work]
-type = "openai"
-`)
-	ctrl := newTestAuthController(t, dir, stateDir, providersToml)
-
-	// Write an OAuth record for "work", not "openai".
+	// The record must exist before the registry loads: it is what makes the
+	// Codex instance resolvable at all (spec §5.1).
 	if err := authopenai.SaveAuth(stateDir, "work", makeOAuthRecord("work", "work@example.com")); err != nil {
 		t.Fatalf("SaveAuth(work): %v", err)
 	}
+	ctrl := newTestAuthController(t, dir, stateDir, writeProvidersToml(t, dir, codexInstanceToml))
 
 	got, err := ctrl.Status(appwire.AuthStatusParams{Provider: "work"})
 	if err != nil {
@@ -140,158 +176,111 @@ type = "openai"
 		t.Errorf("Email=%q, want work@example.com", got.Email)
 	}
 
-	// auth/openai.json must be absent — we only wrote work.json.
-	openaiPath := authopenai.AuthFilePath(stateDir, "openai")
-	if _, err := os.Stat(openaiPath); !os.IsNotExist(err) {
-		t.Errorf("auth/openai.json should not exist; stat err=%v", err)
+	// auth/openai-codex.json must be absent — we only wrote work.json.
+	if _, err := os.Stat(authopenai.AuthFilePath(stateDir, "openai-codex")); !os.IsNotExist(err) {
+		t.Errorf("auth/openai-codex.json should not exist; stat err=%v", err)
 	}
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// 3. OAuth ops on a non-openai instance (anthropic-type) are rejected
+// 3. OAuth ops on an instance that is not on the Codex transport are rejected
 // ─────────────────────────────────────────────────────────────────────────────
 
-func TestAuth_InstanceDeviceStart_RejectsNonOpenAI(t *testing.T) {
+func TestAuth_InstanceOAuthEntry_RejectsNonCodexInstance(t *testing.T) {
 	oaitest.IsolateOpenAIAuth(t)
 	dir := t.TempDir()
 	stateDir := t.TempDir()
-	providersToml := writeProvidersToml(t, dir, `
-schema = 1
+	ctrl := newTestAuthController(t, dir, stateDir, writeProvidersToml(t, dir, bearerInstanceToml),
+		map[string]string{"WORK_ANT_KEY": "sk-ant"})
 
-[instances.work-ant]
-type = "anthropic"
-`)
-	ctrl := newTestAuthController(t, dir, stateDir, providersToml)
-
-	_, err := ctrl.DeviceStart(context.Background(), appwire.AuthDeviceStartParams{Provider: "work-ant"})
-	if err == nil {
+	if _, err := ctrl.DeviceStart(context.Background(), appwire.AuthDeviceStartParams{Provider: "work-ant"}); err == nil {
 		t.Fatal("DeviceStart(work-ant) expected error, got nil")
 	}
-}
-
-func TestAuth_InstanceLoginStart_RejectsNonOpenAI(t *testing.T) {
-	oaitest.IsolateOpenAIAuth(t)
-	dir := t.TempDir()
-	stateDir := t.TempDir()
-	providersToml := writeProvidersToml(t, dir, `
-schema = 1
-
-[instances.work-ant]
-type = "anthropic"
-`)
-	ctrl := newTestAuthController(t, dir, stateDir, providersToml)
-
-	_, err := ctrl.LoginStart(appwire.AuthLoginStartParams{Provider: "work-ant"})
-	if err == nil {
+	if _, err := ctrl.LoginStart(appwire.AuthLoginStartParams{Provider: "work-ant"}); err == nil {
 		t.Fatal("LoginStart(work-ant) expected error, got nil")
 	}
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// 4. instanceStatus helper reflects correct activeSource for named instance
+// 4. instanceStatus reports the registry's credential source
 // ─────────────────────────────────────────────────────────────────────────────
 
-func TestAuth_InstanceStatus_ReflectsActiveSourceForNamedInstance(t *testing.T) {
+func TestAuth_InstanceStatus_ReflectsRegistryCredentialSource(t *testing.T) {
 	oaitest.IsolateOpenAIAuth(t)
 	dir := t.TempDir()
 	stateDir := t.TempDir()
-	providersToml := writeProvidersToml(t, dir, `
-schema = 1
+	ctrl := newTestAuthController(t, dir, stateDir, writeProvidersToml(t, dir, bearerInstanceToml))
 
-[instances.work]
-type = "openai"
-`)
-	ctrl := newTestAuthController(t, dir, stateDir, providersToml)
-
-	// No credentials yet: openai-type reports "signed-out" when no OAuth/file/env.
-	got := ctrl.instanceStatus("work", "openai", "openai")
-	if got.ActiveSource != authopenai.AuthSourceSignedOut {
-		t.Errorf("ActiveSource = %q, want signed-out (no creds)", got.ActiveSource)
+	// An authored entry is an instance whether or not a credential resolves;
+	// it is the source that changes.
+	inst, ok := ctrl.reg.Get().Instance("work-ant")
+	if !ok {
+		t.Fatal("an authored entry is always an instance")
+	}
+	if inst.CredentialSource != "none" {
+		t.Fatalf("credential source = %q with nothing configured, want none", inst.CredentialSource)
+	}
+	status, err := ctrl.Status(appwire.AuthStatusParams{Provider: "work-ant"})
+	if err != nil {
+		t.Fatalf("Status: %v", err)
+	}
+	if !status.Supported || status.SignedIn || status.ActiveSource != "none" {
+		t.Fatalf("status = %+v, want supported and signed out", status)
 	}
 
-	// Set a file key for "work".
-	if err := ctrl.creds.Set("work", "sk-w"); err != nil {
-		t.Fatalf("Set(work): %v", err)
-	}
-	got = ctrl.instanceStatus("work", "openai", "openai")
-	if got.ActiveSource != string(credentials.SourceFile) || !got.HasStoredFile {
-		t.Errorf("ActiveSource = %q HasStoredFile = %v, want file/true", got.ActiveSource, got.HasStoredFile)
-	}
-}
-
-func TestAuth_InstanceStatus_AnthropicTypeReportsKeyOnly(t *testing.T) {
-	oaitest.IsolateOpenAIAuth(t)
-	dir := t.TempDir()
-	stateDir := t.TempDir()
-	providersToml := writeProvidersToml(t, dir, `
-schema = 1
-
-[instances.work-ant]
-type = "anthropic"
-`)
-	ctrl := newTestAuthController(t, dir, stateDir, providersToml)
-	if err := ctrl.creds.Set("work-ant", "sk-ant"); err != nil {
+	if err := ctrl.creds.Set("work-ant", "sk-w"); err != nil {
 		t.Fatalf("Set: %v", err)
 	}
-
-	got := ctrl.instanceStatus("work-ant", "anthropic", "anthropic")
-	if got.ActiveSource != string(credentials.SourceFile) {
-		t.Errorf("ActiveSource = %q, want file", got.ActiveSource)
+	if err := ctrl.reg.Reload(); err != nil {
+		t.Fatalf("Reload: %v", err)
+	}
+	inst, ok = ctrl.reg.Get().Instance("work-ant")
+	if !ok {
+		t.Fatal("a stored key makes the instance resolvable")
+	}
+	got := ctrl.instanceStatus(inst)
+	if got.ActiveSource != "store" || !got.HasStoredFile {
+		t.Errorf("ActiveSource = %q HasStoredFile = %v, want store/true", got.ActiveSource, got.HasStoredFile)
 	}
 	if got.HasStoredOAuth {
-		t.Errorf("HasStoredOAuth should be false for anthropic type")
+		t.Error("HasStoredOAuth should be false for a key-authenticated instance")
 	}
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// 5. Backward compat: default instance (name == type) still works
+// 5. An instance whose name is the registry id resolves the same way
 // ─────────────────────────────────────────────────────────────────────────────
 
-func TestAuth_DefaultInstance_NameEqualsTypeStillWorks(t *testing.T) {
+func TestAuth_InstanceNamedAfterRegistryID(t *testing.T) {
 	oaitest.IsolateOpenAIAuth(t)
 	dir := t.TempDir()
 	stateDir := t.TempDir()
-	providersToml := writeProvidersToml(t, dir, `
-schema = 1
-
-[instances.openai]
-type = "openai"
-`)
-	ctrl := newTestAuthController(t, dir, stateDir, providersToml)
-
-	// Write OAuth for "openai" (default instance).
-	if err := authopenai.SaveAuth(stateDir, "openai", makeOAuthRecord("openai", "default@example.com")); err != nil {
-		t.Fatalf("SaveAuth(openai): %v", err)
+	if err := authopenai.SaveAuth(stateDir, "openai-codex", makeOAuthRecord("openai-codex", "default@example.com")); err != nil {
+		t.Fatalf("SaveAuth: %v", err)
 	}
+	ctrl := newTestAuthController(t, dir, stateDir, "")
 
-	got, err := ctrl.Status(appwire.AuthStatusParams{Provider: "openai"})
+	got, err := ctrl.Status(appwire.AuthStatusParams{Provider: "openai-codex"})
 	if err != nil {
-		t.Fatalf("Status(openai): %v", err)
+		t.Fatalf("Status(openai-codex): %v", err)
 	}
 	if !got.SignedIn || got.ActiveSource != authopenai.AuthSourceOAuth {
-		t.Fatalf("status=%+v, want signed-in oauth for default instance", got)
+		t.Fatalf("status=%+v, want signed-in oauth for the curated Codex provider", got)
 	}
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// 6. Logout for named openai-type instance removes auth/<name>.json
+// 6. Logout for a named Codex instance removes auth/<name>.json
 // ─────────────────────────────────────────────────────────────────────────────
 
 func TestAuth_InstanceLogout_RemovesNamedOAuthFile(t *testing.T) {
 	oaitest.IsolateOpenAIAuth(t)
 	dir := t.TempDir()
 	stateDir := t.TempDir()
-	providersToml := writeProvidersToml(t, dir, `
-schema = 1
-
-[instances.work]
-type = "openai"
-`)
-	ctrl := newTestAuthController(t, dir, stateDir, providersToml)
-
 	if err := authopenai.SaveAuth(stateDir, "work", makeOAuthRecord("work", "w@example.com")); err != nil {
 		t.Fatalf("SaveAuth(work): %v", err)
 	}
+	ctrl := newTestAuthController(t, dir, stateDir, writeProvidersToml(t, dir, codexInstanceToml))
 
 	resp, err := ctrl.Logout(appwire.AuthLogoutParams{Provider: "work"})
 	if err != nil {
@@ -300,10 +289,31 @@ type = "openai"
 	if !resp.Removed {
 		t.Errorf("Removed = false, want true")
 	}
-
-	// auth/work.json should no longer exist.
-	workPath := authopenai.AuthFilePath(stateDir, "work")
-	if _, err := os.Stat(workPath); !os.IsNotExist(err) {
+	if _, err := os.Stat(authopenai.AuthFilePath(stateDir, "work")); !os.IsNotExist(err) {
 		t.Errorf("auth/work.json still exists after logout; stat err=%v", err)
+	}
+}
+
+// TestAuth_EmptyProviderMeansCodex pins normalizeAuthProvider's default: the
+// pane's OAuth button sends no provider, and that means the Codex instance
+// (spec §9.5, §11.3).
+func TestAuth_EmptyProviderMeansCodex(t *testing.T) {
+	oaitest.IsolateOpenAIAuth(t)
+	dir := t.TempDir()
+	stateDir := t.TempDir()
+	if err := authopenai.SaveAuth(stateDir, "openai-codex", makeOAuthRecord("openai-codex", "codex@example.com")); err != nil {
+		t.Fatalf("SaveAuth: %v", err)
+	}
+	ctrl := newTestAuthController(t, dir, stateDir, "")
+
+	got, err := ctrl.Status(appwire.AuthStatusParams{})
+	if err != nil {
+		t.Fatalf("Status(): %v", err)
+	}
+	if got.Provider != "openai-codex" {
+		t.Fatalf("Provider = %q, want openai-codex", got.Provider)
+	}
+	if got.Email != "codex@example.com" {
+		t.Fatalf("Email = %q, want the Codex record's", got.Email)
 	}
 }

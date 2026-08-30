@@ -1,98 +1,169 @@
 package hub
 
-// What a provider authenticates with is a registry fact: envvars/providers.go
-// carries one row per provider with its auth modes, and the hub hands them to
-// the auth UI. These tests walk the registry instead of a literal list, so a row
-// added there is covered here with no edit — a hub-side copy of the same table
-// silently disagreeing with the registry is what kata f1zs was filed for.
+// How an instance authenticates is a registry fact: Transport.Auth names one
+// of six schemes, and authModesFor turns that into the sign-in affordances the
+// credentials pane offers (spec §11.3). A hub-side copy of that mapping
+// silently disagreeing with the registry is what kata f1zs was filed for; a
+// pane advertising "oauth" for an endpoint that has no OAuth flow at all is
+// what kata jd5s was.
 
 import (
-	"path/filepath"
 	"reflect"
+	"slices"
 	"testing"
 
 	"primeradiant.com/evener/appwire"
 	"primeradiant.com/evener/auth/openai/oaitest"
-	"primeradiant.com/evener/envvars"
-	"primeradiant.com/evener/internal/credentials"
-	"primeradiant.com/evener/llm/providercfg"
+	"primeradiant.com/evener/llm/registry"
 )
 
-// newAuthModesController builds a controller over an empty credentials store and
-// an empty OAuth state dir. Which modes a provider supports does not depend on
-// whether anyone has signed in, so neither is seeded.
-func newAuthModesController(t *testing.T) *hubAuthController {
-	t.Helper()
-	dir := t.TempDir()
-	store, err := credentials.LoadStore(filepath.Join(dir, "credentials.toml"))
+// TestAuthModesForCoversEveryScheme walks the registry's whole auth
+// vocabulary, so a scheme added there is covered here with no edit.
+func TestAuthModesForCoversEveryScheme(t *testing.T) {
+	want := map[string][]string{
+		registry.AuthBearer:           {"apiKey"},
+		registry.AuthHeader:           {"apiKey"},
+		registry.AuthOptionalBearer:   {"none", "apiKey"},
+		registry.AuthNone:             {"none"},
+		registry.AuthGCPADC:           {"adc"},
+		registry.AuthOAuthOpenAICodex: {"oauth"},
+	}
+	for scheme, modes := range want {
+		if got := authModesFor(scheme); !reflect.DeepEqual(got, modes) {
+			t.Errorf("authModesFor(%q) = %v, want %v", scheme, got, modes)
+		}
+	}
+	// Only the Codex transport has an OAuth flow, so no other scheme may
+	// advertise the "Sign in with ChatGPT" affordance.
+	for scheme := range want {
+		if scheme == registry.AuthOAuthOpenAICodex {
+			continue
+		}
+		if slices.Contains(authModesFor(scheme), "oauth") {
+			t.Errorf("authModesFor(%q) advertises oauth", scheme)
+		}
+	}
+	// An unknown scheme gets the credential-bearing default rather than a
+	// claim that it needs nothing.
+	if got := authModesFor("something-new"); !reflect.DeepEqual(got, []string{"apiKey"}) {
+		t.Errorf("authModesFor(unknown) = %v, want [apiKey]", got)
+	}
+}
+
+// TestAuthStatusAuthModesFollowTheInstance holds evener/auth/status to the
+// same mapping for a real instance of each shape.
+func TestAuthStatusAuthModesFollowTheInstance(t *testing.T) {
+	for _, tt := range []struct {
+		name  string
+		toml  string
+		env   map[string]string
+		modes []string
+	}{
+		{
+			name:  "bearer instance",
+			toml:  "[providers.work]\nbase = \"anthropic\"\napi_key_env = [\"WORK_KEY\"]\n",
+			env:   map[string]string{"WORK_KEY": "k"},
+			modes: []string{"apiKey"},
+		},
+		{
+			name:  "auth-none instance",
+			toml:  "[providers.work]\nbase = \"openai-compatible\"\nbase_url = \"http://127.0.0.1:8080/v1\"\nauth = \"none\"\n",
+			modes: []string{"none"},
+		},
+		{
+			name:  "optional-bearer instance",
+			toml:  "[providers.work]\nbase = \"openai-compatible\"\nbase_url = \"http://127.0.0.1:8080/v1\"\nauth = \"optional-bearer\"\n",
+			modes: []string{"none", "apiKey"},
+		},
+		{
+			name:  "gcp-adc instance",
+			toml:  "[providers.work]\nbase = \"openai-compatible\"\nbase_url = \"http://127.0.0.1:8080/v1\"\nauth = \"gcp-adc\"\n",
+			modes: []string{"adc"},
+		},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			oaitest.IsolateOpenAIAuth(t)
+			dir := t.TempDir()
+			ctrl := newTestAuthController(t, dir, t.TempDir(), writeProvidersToml(t, dir, tt.toml), tt.env)
+			got, err := ctrl.Status(appwire.AuthStatusParams{Provider: "work"})
+			if err != nil {
+				t.Fatalf("Status(work): %v", err)
+			}
+			if !got.Supported {
+				t.Fatalf("Status(work).Supported = false: %+v", got)
+			}
+			if !reflect.DeepEqual(got.AuthModes, tt.modes) {
+				t.Errorf("Status(work).AuthModes = %v, want %v", got.AuthModes, tt.modes)
+			}
+		})
+	}
+}
+
+// TestAuthStatusListsCuratedImplicitProvidersWithoutCredentials is spec
+// §11.3: the pane lists every curated implicit provider whether or not it has
+// a credential, because that is where a fresh install enters its first key.
+func TestAuthStatusListsCuratedImplicitProvidersWithoutCredentials(t *testing.T) {
+	oaitest.IsolateOpenAIAuth(t)
+	ctrl := newTestAuthController(t, t.TempDir(), t.TempDir(), "")
+
+	got, err := ctrl.Status(appwire.AuthStatusParams{Provider: "anthropic"})
 	if err != nil {
-		t.Fatalf("LoadStore: %v", err)
+		t.Fatalf("Status(anthropic): %v", err)
 	}
-	c := newHubAuthControllerWithStore(dir, store)
-	c.stateDir = t.TempDir()
-	return c
+	if !got.Supported {
+		t.Fatalf("a curated implicit provider is always supported: %+v", got)
+	}
+	if got.SignedIn || got.ActiveSource != "none" {
+		t.Fatalf("with no key anywhere the source is none: %+v", got)
+	}
+	if !reflect.DeepEqual(got.AuthModes, []string{"apiKey"}) {
+		t.Fatalf("AuthModes = %v, want [apiKey]", got.AuthModes)
+	}
+
+	list, err := ctrl.List(appwire.EmptyParams{})
+	if err != nil {
+		t.Fatalf("List: %v", err)
+	}
+	seen := map[string]bool{}
+	for _, p := range list.Providers {
+		if seen[p.Provider] {
+			t.Fatalf("List repeats %q", p.Provider)
+		}
+		seen[p.Provider] = true
+	}
+	for _, want := range []string{"anthropic", "openai", "openai-codex"} {
+		if !seen[want] {
+			t.Errorf("List omits the curated implicit provider %q: %v", want, seen)
+		}
+	}
 }
 
-// TestAuthStatusAuthModesFollowRegistry checks the type-keyed Status path — the
-// one taken when there is no providers.toml, or when the name is not an instance
-// in it — against every row in the envvars registry. A provider the hub fails to
-// place there is reported Supported:false, which tells the auth UI the provider
-// cannot be authenticated at all.
-func TestAuthStatusAuthModesFollowRegistry(t *testing.T) {
+// TestAuthListIncludesExplicitInstances: an authored instance appears
+// alongside the curated providers, once.
+func TestAuthListIncludesExplicitInstances(t *testing.T) {
 	oaitest.IsolateOpenAIAuth(t)
-	for _, p := range envvars.Providers() {
-		t.Run(p.Name, func(t *testing.T) {
-			c := newAuthModesController(t)
-			got, err := c.Status(appwire.AuthStatusParams{Provider: p.Name})
-			if err != nil {
-				t.Fatalf("Status(%q): %v", p.Name, err)
-			}
-			if !got.Supported {
-				t.Fatalf("Status(%q).Supported = false: %q is a provider in the envvars registry, so the auth UI must not report it unauthenticable", p.Name, p.Name)
-			}
-			if !reflect.DeepEqual(got.AuthModes, p.AuthModes) {
-				t.Errorf("Status(%q).AuthModes = %v, want the registry's %v", p.Name, got.AuthModes, p.AuthModes)
-			}
-		})
-	}
-}
+	dir := t.TempDir()
+	ctrl := newTestAuthController(t, dir, t.TempDir(),
+		writeProvidersToml(t, dir, "[providers.work]\nbase = \"anthropic\"\napi_key_env = [\"WORK_KEY\"]\n"),
+		map[string]string{"WORK_KEY": "k"})
 
-// TestAuthInstanceStatusAuthModesFollowRegistry checks the instance-keyed path —
-// the one the credentials pane and the instance list (hubInstancesController.List,
-// which calls instanceStatus directly) take once providers.toml exists — for every
-// registry row that a providers.toml instance can carry as its type. A type the
-// hub fails to place there falls back to ["apiKey"], which would tell the UI that
-// an instance needing no credential at all needs an API key.
-//
-// The instance is deliberately not named after its type: auth modes belong to the
-// type, not to the name a user picked.
-func TestAuthInstanceStatusAuthModesFollowRegistry(t *testing.T) {
-	oaitest.IsolateOpenAIAuth(t)
-	const instanceName = "workhorse"
-	for _, p := range envvars.Providers() {
-		t.Run(p.Name, func(t *testing.T) {
-			if err := providercfg.ValidateType(providercfg.Type(p.Name)); err != nil {
-				// "gemini" (an alias of google) and "openai-compatible" (a
-				// behavior tag, not a type) are registry rows no instance can
-				// declare. If either becomes a type, this subtest starts
-				// covering it with no edit here.
-				t.Skipf("%q is a registry row but not a configurable instance type: %v", p.Name, err)
+	list, err := ctrl.List(appwire.EmptyParams{})
+	if err != nil {
+		t.Fatalf("List: %v", err)
+	}
+	found := 0
+	for _, p := range list.Providers {
+		if p.Provider == "work" {
+			found++
+			if p.ActiveSource != "env:WORK_KEY" {
+				t.Errorf("work ActiveSource = %q, want env:WORK_KEY", p.ActiveSource)
 			}
-			cfgPath := writeProvidersConfig(t, t.TempDir(), providercfg.Config{
-				Instances: []providercfg.InstanceConfig{{Name: instanceName, Type: providercfg.Type(p.Name)}},
-			})
-			c := newAuthModesController(t)
-			c.providersConfigPath = cfgPath
-			got, err := c.Status(appwire.AuthStatusParams{Provider: instanceName})
-			if err != nil {
-				t.Fatalf("Status(%q) for a %q instance: %v", instanceName, p.Name, err)
+			if p.EnvVar != "WORK_KEY" {
+				t.Errorf("work EnvVar = %q, want WORK_KEY", p.EnvVar)
 			}
-			if !got.Supported {
-				t.Fatalf("Status(%q).Supported = false for a %q instance", instanceName, p.Name)
-			}
-			if !reflect.DeepEqual(got.AuthModes, p.AuthModes) {
-				t.Errorf("Status(%q).AuthModes = %v for a %q instance, want the registry's %v", instanceName, got.AuthModes, p.Name, p.AuthModes)
-			}
-		})
+		}
+	}
+	if found != 1 {
+		t.Fatalf("work appears %d times in the auth list", found)
 	}
 }

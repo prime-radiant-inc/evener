@@ -10,7 +10,6 @@ import (
 	"primeradiant.com/evener/cmd/evener-hub/internal/appsource"
 	"primeradiant.com/evener/cmd/evener-hub/internal/hubcore"
 	"primeradiant.com/evener/llm"
-	"primeradiant.com/evener/llm/providercfg"
 	"primeradiant.com/evener/llm/registry"
 )
 
@@ -33,7 +32,12 @@ func (a *modelMetadataAdapter) LiveModels(context.Context) ([]registry.Model, er
 	return append([]registry.Model(nil), a.models...), nil
 }
 
-func TestFetchLiveModels_KimiContextWindow(t *testing.T) {
+// TestFetchLiveModels_CarriesListingCapabilitiesUnchanged pins what the hub
+// does to a live listing: nothing. Every capability on the wire is one the
+// client's ModelListing carried (spec §11.3), so a row the provider reported
+// without a context window keeps none rather than borrowing one from a
+// catalog the registry replaced.
+func TestFetchLiveModels_CarriesListingCapabilitiesUnchanged(t *testing.T) {
 	r, err := registry.Load(
 		registry.WithOffline(true), registry.WithoutCache(), registry.WithNoUserLayer(),
 		registry.WithStateRoot(t.TempDir()),
@@ -67,24 +71,22 @@ func TestFetchLiveModels_KimiContextWindow(t *testing.T) {
 		liveModelLoadClient = oldLoadClient
 	})
 
-	server := NewWebServer(hubcore.WebConfig{
-		ProviderConfig: &providercfg.Config{Instances: []providercfg.InstanceConfig{
-			{Name: "kimi-anthropic-api", Type: "kimi-anthropic"},
-		}},
-	})
+	server := NewWebServer(hubcore.WebConfig{})
 	models := server.fetchLiveModels(context.Background())
-	contextByModel := make(map[string]int, len(models))
+	byModel := make(map[string]appwire.ModelDescriptor, len(models))
 	for _, model := range models {
-		if model.ContextWindow != nil {
-			contextByModel[model.Model] = *model.ContextWindow
-		}
+		byModel[model.Model] = model
 	}
 
-	if got := contextByModel["k3"]; got != 1_048_576 {
-		t.Errorf("k3 context_window = %d, want 1048576 from catalog when live metadata omits it", got)
+	if got, ok := byModel["k3"]; !ok {
+		t.Fatalf("k3 missing from %+v", models)
+	} else if got.ContextWindow != nil {
+		t.Errorf("k3 context_window = %d, want none: the listing reported none", *got.ContextWindow)
 	}
-	if got := contextByModel["k3-256k"]; got != 123_456 {
-		t.Errorf("k3-256k context_window = %d, want live value 123456", got)
+	if got, ok := byModel["k3-256k"]; !ok {
+		t.Fatalf("k3-256k missing from %+v", models)
+	} else if got.ContextWindow == nil || *got.ContextWindow != 123_456 {
+		t.Errorf("k3-256k context_window = %v, want the listing's 123456", got.ContextWindow)
 	}
 }
 
@@ -150,55 +152,6 @@ func TestAttachRecentModels_FiltersToAvailableModels(t *testing.T) {
 	}
 }
 
-func TestEnrichModelDescriptorsAddsCatalogMetadata(t *testing.T) {
-	got := enrichModelDescriptors([]appwire.ModelDescriptor{{Provider: "anthropic", Model: "claude-opus-4-6"}}, nil)
-	if len(got) != 1 {
-		t.Fatalf("got %d descriptors, want 1", len(got))
-	}
-	d := got[0]
-	if d.DisplayName != "Claude Opus 4 6" {
-		t.Errorf("display name = %q, want prettified model id", d.DisplayName)
-	}
-	if d.ContextWindow == nil || *d.ContextWindow != 1_000_000 {
-		t.Errorf("context window = %v, want 1000000", d.ContextWindow)
-	}
-	if d.SupportsVision == nil || !*d.SupportsVision {
-		t.Errorf("supports vision = %v, want true", d.SupportsVision)
-	}
-	if d.SupportsWebSearch == nil || !*d.SupportsWebSearch {
-		t.Errorf("supports web search = %v, want true", d.SupportsWebSearch)
-	}
-	if d.MaxOutputTokens == nil || *d.MaxOutputTokens != 128_000 {
-		t.Errorf("max output tokens = %v, want 128000", d.MaxOutputTokens)
-	}
-}
-
-func TestEnrichModelDescriptorsPreservesExplicitMetadata(t *testing.T) {
-	contextWindow := 7
-	supportsTools := false
-	supportsReasoning := false
-	inputCost := 0.0
-	in := appwire.ModelDescriptor{
-		Provider:            "anthropic",
-		Model:               "claude-opus-4-6",
-		DisplayName:         "Configured",
-		ContextWindow:       &contextWindow,
-		SupportsTools:       &supportsTools,
-		SupportsReasoning:   &supportsReasoning,
-		InputCostPerMillion: &inputCost,
-	}
-	got := enrichModelDescriptors([]appwire.ModelDescriptor{in}, nil)
-	if got[0].DisplayName != in.DisplayName || got[0].ContextWindow == nil || *got[0].ContextWindow != contextWindow ||
-		got[0].SupportsTools == nil || *got[0].SupportsTools != supportsTools ||
-		got[0].SupportsReasoning == nil || *got[0].SupportsReasoning != supportsReasoning ||
-		got[0].InputCostPerMillion == nil || *got[0].InputCostPerMillion != inputCost {
-		t.Fatalf("explicit metadata changed: got %+v, want preserved fields from %+v", got[0], in)
-	}
-	if len(got[0].ReasoningEffortLevels) != 0 {
-		t.Fatalf("explicit reasoning=false should keep levels empty: %+v", got[0].ReasoningEffortLevels)
-	}
-}
-
 func TestPrettifyModelDisplayName(t *testing.T) {
 	cases := map[string]string{
 		"claude-opus-4-6":             "Claude Opus 4 6",
@@ -260,45 +213,45 @@ func TestEnrichModelDescriptors_UsesPrettifiedDisplayNameAndSortsDatedLast(t *te
 	}
 }
 
-func TestEnrichModelDescriptors_IncludesCapabilityBadges(t *testing.T) {
-	models := enrichModelDescriptors([]appwire.ModelDescriptor{
-		{Provider: "anthropic", Model: "claude-opus-4-6"},
-	}, nil)
-	if len(models) != 1 {
-		t.Fatalf("got %d models, want 1", len(models))
+// TestEnrichModelListResponse_KeepsCapabilitiesAndAddsDisplayNames pins what
+// the response pipeline is still allowed to do to a descriptor: fill a blank
+// display name and sort. Every capability came from the registry's Resolved
+// record before it got here (spec §11.3), so nothing may add or overwrite one.
+func TestEnrichModelListResponse_KeepsCapabilitiesAndAddsDisplayNames(t *testing.T) {
+	contextWindow := 7
+	supportsTools := false
+	in := appwire.ModelDescriptor{
+		Provider:      "anthropic",
+		Model:         "claude-opus-4-6",
+		DisplayName:   "Configured",
+		ContextWindow: &contextWindow,
+		SupportsTools: &supportsTools,
 	}
-	m := models[0]
-	if m.SupportsVision == nil || !*m.SupportsVision {
-		t.Errorf("supports vision = %v, want true", m.SupportsVision)
+	got := enrichModelListResponse(hubcore.WebConfig{}, appwire.ModelListResponse{Data: []appwire.ModelDescriptor{in}}).Data
+	if len(got) != 1 {
+		t.Fatalf("got %d descriptors, want 1", len(got))
 	}
-	if m.SupportsWebSearch == nil || !*m.SupportsWebSearch {
-		t.Errorf("supports web search = %v, want true", m.SupportsWebSearch)
-	}
-	if m.MaxOutputTokens == nil || *m.MaxOutputTokens != 128000 {
-		t.Errorf("max output tokens = %v, want 128000", m.MaxOutputTokens)
-	}
-	if m.ContextWindow == nil || *m.ContextWindow != 1_000_000 {
-		t.Errorf("context window = %v, want 1000000", m.ContextWindow)
+	if !reflect.DeepEqual(got[0], in) {
+		t.Fatalf("descriptor changed: got %+v, want %+v", got[0], in)
 	}
 }
 
-// TestEnrichModelDescriptors_UncataloguedModelStillRendersWithoutBadges
-// pins the graceful-degradation rule: a live model absent from the embedded
-// catalog (catalogModelInfo returns nil) must still render name+provider+id
-// — not be dropped — just without any badge fields.
-func TestEnrichModelDescriptors_UncataloguedModelStillRendersWithoutBadges(t *testing.T) {
-	models := enrichModelDescriptors([]appwire.ModelDescriptor{
+// TestEnrichModelListResponse_ModelWithoutCapsStillRenders pins the
+// graceful-degradation rule: a model the registry carries no capabilities for
+// must still render name+provider+id, just without any badge fields.
+func TestEnrichModelListResponse_ModelWithoutCapsStillRenders(t *testing.T) {
+	models := enrichModelListResponse(hubcore.WebConfig{}, appwire.ModelListResponse{Data: []appwire.ModelDescriptor{
 		{Provider: "mycompany", Model: "totally-unknown-model-xyz"},
-	}, nil)
+	}}).Data
 	if len(models) != 1 {
-		t.Fatalf("uncatalogued model was dropped: got %d entries, want 1", len(models))
+		t.Fatalf("model without caps was dropped: got %d entries, want 1", len(models))
 	}
 	m := models[0]
 	if m.Provider != "mycompany" || m.Model != "totally-unknown-model-xyz" {
-		t.Fatalf("uncatalogued entry missing provider/model: %+v", m)
+		t.Fatalf("entry missing provider/model: %+v", m)
 	}
 	if m.DisplayName != "Totally Unknown Model Xyz" {
-		t.Errorf("display name = %v, want prettified id even when uncatalogued", m.DisplayName)
+		t.Errorf("display name = %v, want the prettified id", m.DisplayName)
 	}
 	for field, present := range map[string]bool{
 		"supports_tools":          m.SupportsTools != nil,
@@ -311,7 +264,21 @@ func TestEnrichModelDescriptors_UncataloguedModelStillRendersWithoutBadges(t *te
 		"output_cost_per_million": m.OutputCostPerMillion != nil,
 	} {
 		if present {
-			t.Errorf("uncatalogued entry should omit %q", field)
+			t.Errorf("entry with no registry caps should omit %q", field)
 		}
+	}
+}
+
+// TestEnrichModelListResponse_DropsIncompleteDescriptors: a row with no
+// provider or no model id has nothing to select, so it never reaches the
+// picker.
+func TestEnrichModelListResponse_DropsIncompleteDescriptors(t *testing.T) {
+	got := enrichModelListResponse(hubcore.WebConfig{}, appwire.ModelListResponse{Data: []appwire.ModelDescriptor{
+		{Provider: "", Model: "orphan"},
+		{Provider: "openai", Model: "  "},
+		{Provider: "openai", Model: "gpt-5.2"},
+	}}).Data
+	if len(got) != 1 || got[0].Model != "gpt-5.2" {
+		t.Fatalf("got %+v, want only the complete descriptor", got)
 	}
 }

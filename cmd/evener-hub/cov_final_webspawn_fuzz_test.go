@@ -12,7 +12,6 @@ import (
 	"primeradiant.com/evener/cmd/evener-hub/internal/appsource"
 	"primeradiant.com/evener/cmd/evener-hub/internal/hubcore"
 	"primeradiant.com/evener/llm"
-	"primeradiant.com/evener/llm/providercfg"
 	llmregistry "primeradiant.com/evener/llm/registry"
 )
 
@@ -66,11 +65,7 @@ func FuzzFinalWebspawn(f *testing.F) {
 		liveModelLoadClient = func(string) (*llm.Client, error) { return client, nil }
 		t.Cleanup(func() { liveModelLoadClient = oldLoad })
 
-		reasoning := false
-		cfg := hubcore.WebConfig{ProviderConfig: &providercfg.Config{Instances: []providercfg.InstanceConfig{{
-			Name: "custom", Models: map[string]providercfg.ModelConfig{"plain": {Reasoning: &reasoning, ContextWindow: 99}},
-		}}}}
-		server := NewWebServer(cfg)
+		server := NewWebServer(hubcore.WebConfig{})
 		models := server.fetchLiveModels(context.Background())
 		_ = models
 		_ = server.fetchLiveModels(context.Background())
@@ -94,8 +89,6 @@ func FuzzFinalWebspawn(f *testing.F) {
 
 		entries := []appwire.ModelDescriptor{{Provider: "z", Model: "same"}, {Provider: "z", Model: "same"}}
 		sortModelDescriptors(entries)
-		_ = enrichModelDescriptors([]appwire.ModelDescriptor{{Provider: "anthropic", Model: "claude-fable-5"}}, nil)
-		_ = catalogModelInfo(llm.EmbeddedModelCatalog(), "ollama", "absent")
-		_ = catalogModelInfo(llm.EmbeddedModelCatalog(), "", "definitely-absent")
+		_ = withDisplayNames([]appwire.ModelDescriptor{{Provider: "anthropic", Model: "claude-fable-5"}})
 	})
 }

@@ -11,7 +11,6 @@ import (
 	"primeradiant.com/evener/cmd/evener-hub/internal/launchconfig"
 	"primeradiant.com/evener/identifier"
 	"primeradiant.com/evener/internal/credentials"
-	"primeradiant.com/evener/llm/providercfg"
 	"primeradiant.com/evener/rendezvous"
 )
 
@@ -46,17 +45,19 @@ type WebConfig struct {
 	PastIndexPath             string                  // path to the SQLite past-index DB, for display in settings
 	Roster                    *Roster
 	Past                      *PastIndex
-	Spawner                   Spawner             // optional; nil disables spawn
-	ResumeLocks               *ResumeLocks        // per-session resume serialization shared by the REST and RPC paths; nil → each path falls back to its own lock
-	DeletionStore             *DeletionStore      // host-authoritative deletion fences; production persists this under HubStateRoot
-	PastPerPage               int                 // results per page for /past; defaults to 50 when zero
-	StateDir                  string              // root of the projects/<sha> state directory; needed for ForkSession
-	CredsStore                *credentials.Store  // credentials store; passed to auth controller
-	PluginDirs                []string            // explicit plugin dirs; when empty, default to ~/.config/evener/plugins/*
-	PluginRoot                string              // internal/plugins.Manager store root; "" → plugins.DefaultRoot() (~/.config/evener/plugins). Distinct from PluginDirs above: this is the marketplace/install registry root, not the explicit --plugin-dir scan list. Tests/sandboxes point this inside their own temp root so plugin/marketplace mutations never touch the real store.
-	MCPConfigPath             string              // MCP config file path; when empty, default to ~/.config/evener/mcp.json
-	ProviderConfig            *providercfg.Config // instance-to-tag mapping; nil when providers.toml absent (env path)
-	ProvidersConfigPath       string              // path to providers.toml; forwarded to the auth controller
+	Spawner                   Spawner            // optional; nil disables spawn
+	ResumeLocks               *ResumeLocks       // per-session resume serialization shared by the REST and RPC paths; nil → each path falls back to its own lock
+	DeletionStore             *DeletionStore     // host-authoritative deletion fences; production persists this under HubStateRoot
+	PastPerPage               int                // results per page for /past; defaults to 50 when zero
+	StateDir                  string             // root of the projects/<sha> state directory; needed for ForkSession
+	CredsStore                *credentials.Store // credentials store; passed to auth controller
+	PluginDirs                []string           // explicit plugin dirs; when empty, default to ~/.config/evener/plugins/*
+	PluginRoot                string             // internal/plugins.Manager store root; "" → plugins.DefaultRoot() (~/.config/evener/plugins). Distinct from PluginDirs above: this is the marketplace/install registry root, not the explicit --plugin-dir scan list. Tests/sandboxes point this inside their own temp root so plugin/marketplace mutations never touch the real store.
+	MCPConfigPath             string             // MCP config file path; when empty, default to ~/.config/evener/mcp.json
+	Registry                  *ProviderRegistry  // live provider registry; the instance, auth, credential-test and model surfaces all read it
+	ProvidersConfigPath       string             // path to providers.toml; the instances pane is its only writer
+	CredentialsPath           string             // path to credentials.toml; handed to every spawned child as EVENER_CREDENTIALS_CONFIG
+	NoUserLayer               bool               // the child gets EVENER_PROVIDERS_CONFIG= (present, empty): no user layer at all (spec §10)
 	CodexSources              []appsource.CodexSourceConfig
 	CodexLaunches             []codexlaunch.CodexLaunchConfig
 	CodexLauncher             *codexlaunch.CodexLauncher
@@ -108,7 +109,7 @@ type SpawnRequest struct {
 	PluginRoot    string // internal/plugins.Manager root handed to the child serve process; "" keeps the child's default root resolution
 	AppReplaySize int
 	Env           []string // populated by ToEnv during Spawn
-	Provider      string   // for credential injection
+	Provider      string   // instance the launch selected; gated against the registry before spawning
 }
 
 // ResumeRequest carries the resolved state needed to resume a saved session.
@@ -121,5 +122,5 @@ type ResumeRequest struct {
 	RunDir        string
 	AppReplaySize int
 	Env           []string // populated by ToEnv during Resume
-	Provider      string   // for credential injection
+	Provider      string   // instance the launch selected; gated against the registry before spawning
 }

@@ -223,8 +223,8 @@ func (s *Store) ResolveKey(name, tag string) (string, Source) {
 	return "", SourceAbsent
 }
 
-// APIKeyFor implements launchconfig.CredentialResolver.
-// Returns the API key value and the source label (e.g. "file", "env", "absent").
+// APIKeyFor returns the API key value and the source label (e.g. "file",
+// "env", "absent").
 func (s *Store) APIKeyFor(provider string) (string, string) {
 	v, src := s.Get(provider)
 	return v, string(src)

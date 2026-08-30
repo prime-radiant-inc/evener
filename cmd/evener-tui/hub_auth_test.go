@@ -28,7 +28,7 @@ func TestHubModelCredentialTestActionUsesAppWire(t *testing.T) {
 	m := newSessionHubModel(client)
 	panel := launchconfig.NewCredentialsPanel()
 	loaded, _ := panel.Update(launchconfig.InstanceListResultMsg{List: appwire.InstanceListResponse{Instances: []appwire.InstanceEntry{
-		{Name: "custom / team-east", Type: "openai"},
+		{Name: "custom / team-east", ProviderID: "openai"},
 	}}})
 	pending, actionCmd := loaded.(launchconfig.CredentialsPanel).Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("t")})
 	if actionCmd == nil {

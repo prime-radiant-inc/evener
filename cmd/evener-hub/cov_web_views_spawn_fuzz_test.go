@@ -11,7 +11,6 @@ import (
 	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/appwire"
 	"primeradiant.com/evener/cmd/evener-hub/internal/hubcore"
-	"primeradiant.com/evener/llm/providercfg"
 )
 
 // FuzzCovWebViewsSpawn drives deterministic edge seeds through the web view
@@ -51,26 +50,13 @@ func FuzzCovWebViewsSpawn(f *testing.F) {
 		}
 		models := []appwire.ModelDescriptor{{Provider: "z", Model: "m-20250101"}, {Provider: "a", Model: "m"}, {Provider: "z", Model: "m"}}
 		sortModelDescriptors(models)
-		_ = enrichModelDescriptors(nil, nil)
-		_ = enrichModelDescriptors([]appwire.ModelDescriptor{{}, {Provider: "openai", Model: "gpt-4o"}}, nil)
-		_ = catalogModelInfo(nil, "", "")
-		no, yes := false, true
-		providerCfg := &providercfg.Config{Instances: []providercfg.InstanceConfig{
-			{Name: "plain", Type: "ollama"},
-			{Name: "custom", Type: "openai", APIStyle: providercfg.StyleChatCompletions, Models: map[string]providercfg.ModelConfig{
-				"off":    {Reasoning: &no},
-				"levels": {ThinkingLevels: map[string]string{"high": "hard", "low": "easy"}},
-				"on":     {Reasoning: &yes, ContextWindow: 1234},
-			}},
-		}}
-		for _, model := range []string{"missing", "off", "levels", "on"} {
-			entry := appwire.ModelDescriptor{}
-			applyInstanceModelOverride(&entry, providerCfg, "custom", model)
-		}
-		applyInstanceModelOverride(&appwire.ModelDescriptor{}, providerCfg, "absent", "x")
-		_ = behaviorTagFor(providerCfg, "plain")
-		_ = behaviorTagFor(providerCfg, "custom")
-		_ = behaviorTagFor(providerCfg, "absent")
+		_ = withDisplayNames(nil)
+		_ = withDisplayNames([]appwire.ModelDescriptor{{}, {Provider: "openai", Model: "gpt-4o"}})
+		_ = enrichModelListResponse(hubcore.WebConfig{}, appwire.ModelListResponse{})
+		_ = enrichModelListResponse(hubcore.WebConfig{}, appwire.ModelListResponse{
+			Data:   []appwire.ModelDescriptor{{Provider: "openai", Model: "gpt-4o"}},
+			Recent: []appwire.ModelDescriptor{{Provider: "openai", Model: "gpt-4o"}},
+		})
 		_ = evenerUsageFromCumulative(schema.CumulativeUsage{})
 		_ = evenerUsageFromCumulative(schema.CumulativeUsage{InputTokens: 1})
 

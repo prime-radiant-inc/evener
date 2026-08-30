@@ -12,7 +12,8 @@ import (
 	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/appwire"
 	"primeradiant.com/evener/cmd/evener-hub/internal/hubcore"
-	"primeradiant.com/evener/llm/providercfg"
+	"primeradiant.com/evener/internal/credentials"
+	"primeradiant.com/evener/llm/registry"
 	"primeradiant.com/evener/rendezvous"
 )
 
@@ -99,28 +100,46 @@ func newSandbox(tb testing.TB) *sandbox {
 	}
 
 	// Seed a providers.toml inside Root so the evener/instance/* methods register
-	// (they are gated on ProvidersConfigPath != "") and so the instances
-	// controller's atomic writes land in the sandbox temp tree, never on the real
-	// providers.toml. Two instances give Edit/Remove/SetDefault real targets.
+	// (they are gated on a registry and a ProvidersConfigPath) and so the
+	// instances controller's atomic writes land in the sandbox temp tree, never
+	// on the real providers.toml. Two instances give Edit/Remove/SetDefault real
+	// targets.
 	providersPath := filepath.Join(root, "providers.toml")
-	if err := providercfg.WriteFile(providersPath, providercfg.Config{
-		Default: "work",
-		Instances: []providercfg.InstanceConfig{
-			{Name: "work", Type: "openai"},
-			{Name: "key", Type: "anthropic"},
-		},
-	}); err != nil {
+	const sandboxProviders = `default = "work"
+
+[providers.work]
+base    = "openai"
+api_key = "sk-sandbox"
+
+[providers.key]
+base    = "anthropic"
+api_key = "sk-sandbox"
+`
+	if err := os.WriteFile(providersPath, []byte(sandboxProviders), 0o644); err != nil {
+		tb.Fatal(err)
+	}
+	stateRoot := filepath.Join(root, "state")
+	providerRegistry := hubcore.NewProviderRegistry(func(extra ...registry.Option) (*registry.Registry, *credentials.Store, error) {
+		r, err := registry.Load(append([]registry.Option{
+			registry.WithOffline(true), registry.WithoutCache(),
+			registry.WithConfigPath(providersPath), registry.WithStateRoot(stateRoot),
+			registry.WithEnv(func(string) (string, bool) { return "", false }),
+		}, extra...)...)
+		return r, nil, err
+	})
+	if err := providerRegistry.Reload(); err != nil {
 		tb.Fatal(err)
 	}
 
 	spawner := &recordingSpawner{}
 	cfg := hubcore.WebConfig{
 		HubAddr:             "127.0.0.1:9180",
-		HubStateRoot:        filepath.Join(root, "state"),
+		HubStateRoot:        stateRoot,
 		Past:                idx,
 		Roster:              hubcore.NewRoster(filepath.Join(root, "roster"), nil),
 		RunDir:              filepath.Join(root, "run"), // empty rendezvous dir → no live daemons to reach
 		StateDir:            filepath.Join(root, "projects"),
+		Registry:            providerRegistry,
 		ProvidersConfigPath: providersPath,
 		PluginRoot:          filepath.Join(root, "plugins"), // contain the marketplace/plugin store; "" would resolve to the real ~/.config/evener/plugins
 		Spawner:             spawner,

@@ -21,7 +21,6 @@ import (
 	"primeradiant.com/evener/cmdutil"
 	"primeradiant.com/evener/envvars"
 	"primeradiant.com/evener/internal/apptranscript"
-	"primeradiant.com/evener/internal/credentials"
 	"primeradiant.com/evener/llm"
 	"primeradiant.com/evener/rendezvous"
 )
@@ -92,14 +91,7 @@ func FuzzExactTails(f *testing.F) {
 		_, _, _ = prepareResolvedForSpawn(t.TempDir(), appendInline)
 		spawnWriteFile, spawnRemoveAll = oldWriteFile, oldRemoveAll
 
-		store, err := credentials.LoadStore(filepath.Join(t.TempDir(), "credentials.toml"))
-		if err != nil {
-			t.Fatal(err)
-		}
-		oldOAuth := openAIStoredOAuthUsableForLaunch
-		openAIStoredOAuthUsableForLaunch = func([]string) bool { return true }
-		_ = validateProviderCredentials("openai", store, nil, "")
-		openAIStoredOAuthUsableForLaunch = oldOAuth
+		_ = validateProviderCredentials("openai", nil)
 
 		canceled, cancel := context.WithCancel(context.Background())
 		cancel()

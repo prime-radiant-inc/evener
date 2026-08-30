@@ -7,12 +7,15 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 
+	"primeradiant.com/evener/appwire"
+	"primeradiant.com/evener/cmd/evener-hub/internal/launchconfig"
 	"primeradiant.com/evener/cmdutil"
 	"primeradiant.com/evener/internal/credentials"
-	"primeradiant.com/evener/llm/providercfg"
+	"primeradiant.com/evener/llm/registry"
 )
 
 func TestPrintHubEnvVars(t *testing.T) {
@@ -227,13 +230,13 @@ func TestRunMainLeavesAnAbsentProvidersConfigAlone(t *testing.T) {
 
 	served := false
 	deps := mainDeps{
-		loadConfig:         func(string) (Config, error) { return cfg, nil },
-		ensureDirs:         func() error { return nil },
-		acquireLock:        func(string) (func(), error) { return func() {}, nil },
-		newToken:           func() (string, error) { return "hub-token", nil },
-		loadAuthToken:      func(string) (string, error) { return "auth-token", nil },
-		loadCredentials:    func(string) (*credentials.Store, error) { return &credentials.Store{}, nil },
-		loadProviderConfig: providercfg.LoadFile,
+		loadRegistry:    hermeticRegistryLoader,
+		loadConfig:      func(string) (Config, error) { return cfg, nil },
+		ensureDirs:      func() error { return nil },
+		acquireLock:     func(string) (func(), error) { return func() {}, nil },
+		newToken:        func() (string, error) { return "hub-token", nil },
+		loadAuthToken:   func(string) (string, error) { return "auth-token", nil },
+		loadCredentials: func(string) (*credentials.Store, error) { return &credentials.Store{}, nil },
 		notifyContext: func(context.Context, ...os.Signal) (context.Context, context.CancelFunc) {
 			return ctx, func() {}
 		},
@@ -267,4 +270,142 @@ func TestRunMainLeavesAnAbsentProvidersConfigAlone(t *testing.T) {
 	if _, err := client.Resolve("openai/gpt-5.2"); err != nil {
 		t.Fatalf("the child's client resolves nothing: %v", err)
 	}
+}
+
+// hermeticRegistryLoader is the registry loader every runMain test injects:
+// cmdutil's own, with the network and the catalog cache taken away so the
+// hub under test observes only the environment the test set up.
+func hermeticRegistryLoader(extra ...registry.Option) (*registry.Registry, *credentials.Store, error) {
+	return cmdutil.LoadRegistry(append(extra, registry.WithOffline(true), registry.WithoutCache())...)
+}
+
+// TestRunMainDegradesOnAnOldSchemaProvidersConfig is spec §14.1's flag-day
+// row for the hub: an old-schema providers.toml fails to load, and the hub
+// starts anyway on implicit instances alone, surfaces the pointer as a
+// diagnostic, refuses instance writes, and hands every child it spawns
+// EVENER_PROVIDERS_CONFIG= (present, empty) plus EVENER_CREDENTIALS_CONFIG so
+// the child computes the same instance set from the environment and the store.
+func TestRunMainDegradesOnAnOldSchemaProvidersConfig(t *testing.T) {
+	root := t.TempDir()
+	t.Setenv("HOME", filepath.Join(root, "home"))
+	t.Setenv("XDG_CONFIG_HOME", filepath.Join(root, "config"))
+	t.Setenv("XDG_STATE_HOME", filepath.Join(root, "state"))
+	t.Setenv("GROQ_API_KEY", "gk")
+
+	providersPath := filepath.Join(root, "providers.toml")
+	credentialsPath := filepath.Join(root, "credentials.toml")
+	const oldSchema = "default = \"openai\"\n[instances.openai]\ntype = \"openai\"\n"
+	if err := os.WriteFile(providersPath, []byte(oldSchema), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("EVENER_PROVIDERS_CONFIG", providersPath)
+	t.Setenv("EVENER_CREDENTIALS_CONFIG", credentialsPath)
+
+	cfg := DefaultConfig()
+	cfg.Addr = "127.0.0.1:0"
+	cfg.RunDir = filepath.Join(root, "run")
+	cfg.StateGlob = filepath.Join(root, "projects", "*")
+	cfg.PastIndexDB = filepath.Join(root, "hub", "index.db")
+	cfg.HubStateRoot = filepath.Join(root, "hub")
+	cfg.PluginAutoUpgrade = false
+	if err := os.MkdirAll(cfg.HubStateRoot, 0o700); err != nil {
+		t.Fatal(err)
+	}
+
+	ctx := t.Context()
+	served := false
+	var web *WebServer
+	deps := mainDeps{
+		loadRegistry:    hermeticRegistryLoader,
+		loadConfig:      func(string) (Config, error) { return cfg, nil },
+		ensureDirs:      func() error { return nil },
+		acquireLock:     func(string) (func(), error) { return func() {}, nil },
+		newToken:        func() (string, error) { return "hub-token", nil },
+		loadAuthToken:   func(string) (string, error) { return "auth-token", nil },
+		loadCredentials: credentials.LoadStore,
+		notifyContext: func(context.Context, ...os.Signal) (context.Context, context.CancelFunc) {
+			return ctx, func() {}
+		},
+		listen: func(ctx context.Context, network, addr string) (net.Listener, error) {
+			var lc net.ListenConfig
+			return lc.Listen(ctx, network, addr)
+		},
+		serve: func(context.Context, hubHTTPServer, hubShutdowner) error {
+			served = true
+			return nil
+		},
+		afterWeb: func(w *WebServer) { web = w },
+	}
+
+	var stderr bytes.Buffer
+	if err := runMain([]string{"-addr", cfg.Addr, "-evener", "/bin/evener"}, &stderr, deps); err != nil {
+		t.Fatalf("runMain: %v, stderr=%s", err, stderr.String())
+	}
+	if !served {
+		t.Fatalf("the hub did not reach its serve boundary: %s", stderr.String())
+	}
+	if !strings.Contains(stderr.String(), "providers config:") || !strings.Contains(stderr.String(), "implicit instances only") {
+		t.Fatalf("startup did not announce the degraded load: %s", stderr.String())
+	}
+	if data, err := os.ReadFile(providersPath); err != nil || string(data) != oldSchema {
+		t.Fatalf("the hub rewrote the file it could not read (err=%v):\n%s", err, data)
+	}
+
+	// The instances pane reports the refusal and still lists the implicit set.
+	if web == nil {
+		t.Fatal("afterWeb never ran")
+	}
+	list, ok := hubInstanceListOverRPC(t, web)
+	if !ok {
+		t.Fatal("evener/instance/list is not registered")
+	}
+	if !list.WritesRefused {
+		t.Fatalf("instance/list writesRefused = false; want the write refusal: %+v", list)
+	}
+	if !strings.Contains(strings.Join(list.Diagnostics, "\n"), "§14.1") {
+		t.Fatalf("instance/list diagnostics carry the flag-day pointer: %v", list.Diagnostics)
+	}
+	found := false
+	for _, inst := range list.Instances {
+		if inst.Name == "groq" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("the hub still launches against the implicit set: %+v", list.Instances)
+	}
+
+	// And the child it spawns is pointed at no user layer, with the hub's own
+	// credentials.toml.
+	spawner, ok := web.cfg.Spawner.(*HubSpawner)
+	if !ok {
+		t.Fatalf("spawner = %T, want *HubSpawner", web.cfg.Spawner)
+	}
+	env := launchconfig.ToEnv(launchconfig.EnvInputs{
+		ParentEnv:           []string{"EVENER_PROVIDERS_CONFIG=" + providersPath},
+		ProvidersConfigPath: spawner.ProvidersConfigPath,
+		NoUserLayer:         spawner.NoUserLayer,
+		CredentialsPath:     spawner.CredentialsPath,
+	})
+	if !slices.Contains(env, "EVENER_PROVIDERS_CONFIG=") {
+		t.Fatalf("child env must carry a present, empty EVENER_PROVIDERS_CONFIG: %v", env)
+	}
+	if !slices.Contains(env, "EVENER_CREDENTIALS_CONFIG="+credentialsPath) {
+		t.Fatalf("child env must name the hub's credentials.toml: %v", env)
+	}
+}
+
+// hubInstanceListOverRPC dispatches evener/instance/list on a hub's app server.
+func hubInstanceListOverRPC(t *testing.T, web *WebServer) (appwire.InstanceListResponse, bool) {
+	t.Helper()
+	raw, err := web.appRPC.Router().Dispatch(t.Context(), appwire.Request{
+		ID:     appwire.NewIntID(1),
+		Method: appwire.MethodEvenerInstanceList,
+		Params: mustMarshal(t, appwire.EmptyParams{}),
+	})
+	if err != nil {
+		t.Fatalf("evener/instance/list: %v", err)
+	}
+	resp, ok := raw.(appwire.InstanceListResponse)
+	return resp, ok
 }

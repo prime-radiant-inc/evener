@@ -7,40 +7,35 @@ package hub
 // different variable — or claims a sign-in for a child that will send no key at
 // all — one of the two is lying about a session the user is running. Kata z1gm.
 //
-// The two hub surfaces still read the legacy providercfg file, so each case
-// carries both views of one instance: the descriptor the hub reads and the
-// registry twin the child resolves. They must agree.
+// Both hub surfaces now read the one registry the child resolves against, so
+// each case seeds exactly one environment variable and requires the registry's
+// own credential source, the pane, and the spawn gate to say the same thing.
 
 import (
-	"path/filepath"
 	"testing"
 
 	"primeradiant.com/evener/appwire"
 	"primeradiant.com/evener/auth/openai/oaitest"
-	"primeradiant.com/evener/envvars"
+	"primeradiant.com/evener/cmd/evener-hub/internal/hubcore"
 	"primeradiant.com/evener/internal/credentials"
-	"primeradiant.com/evener/llm/providercfg"
 	"primeradiant.com/evener/llm/registry"
 )
 
 // TestCredentialAgreement_HubAgreesWithTheKeyTheChildSends holds the launch
 // preflight and evener/auth/status to what the registry resolves, which is the
-// only credential the spawned process has. Each case seeds exactly one
-// environment variable, asks the registry what the child would authenticate
-// with, and requires both hub surfaces to agree.
+// only credential the spawned process has.
 //
-// Instances whose behavior tag is "openai" are out of scope here: their OAuth
-// record is a credential with no key to inject, so injection is not the whole
-// answer for them. Every shape below authenticates with an API key or nothing.
+// Instances on the Codex transport are out of scope here: their OAuth record is
+// a credential with no key at all. Every shape below authenticates with an API
+// key or nothing.
 func TestCredentialAgreement_HubAgreesWithTheKeyTheChildSends(t *testing.T) {
 	// A base URL that is syntactically real and semantically unreachable: no
 	// case here issues a request, and a loopback port nothing listens on keeps
 	// it that way if one ever does.
 	const gatewayBaseURL = "http://127.0.0.1:9/v1"
 
-	// A chat-completions instance behind the openai row: the registry twin of
-	// providercfg's Type "openai" + APIStyle "chat-completions".
-	compatTwin := func(baseURL string) registry.Provider {
+	// A chat-completions instance behind the openai row.
+	compatInstance := func(baseURL string) registry.Provider {
 		return registry.Provider{
 			Base: "openai", Protocol: registry.ProtocolOpenAIChat, Surface: registry.SurfaceGeneric,
 			Transport: registry.Transport{BaseURL: baseURL},
@@ -49,147 +44,138 @@ func TestCredentialAgreement_HubAgreesWithTheKeyTheChildSends(t *testing.T) {
 
 	for _, tt := range []struct {
 		name         string
-		inst         providercfg.InstanceConfig
-		twin         registry.Provider
-		envVar       envvars.Var
+		instance     string
+		provider     registry.Provider
+		envVar       string
 		value        string
 		wantInjected bool
 		why          string
 	}{
 		{
-			name:         "openai on chat-completions with no base_url",
-			inst:         providercfg.InstanceConfig{Name: "local", Type: "openai", APIStyle: providercfg.StyleChatCompletions},
-			twin:         compatTwin(""),
-			envVar:       envvars.OpenAIAPIKey,
+			name:         "openai-chat instance with no base_url",
+			instance:     "local",
+			provider:     compatInstance(""),
+			envVar:       "OPENAI_API_KEY",
 			value:        "sk-openai-only",
 			wantInjected: true,
 			why:          "with no base_url the adapter targets api.openai.com, so OPENAI_API_KEY is the key that signs its requests",
 		},
 		{
-			name:         "the materialized openai instance flipped to chat-completions",
-			inst:         providercfg.InstanceConfig{Name: "openai", Type: "openai", APIStyle: providercfg.StyleChatCompletions},
-			twin:         compatTwin(""),
-			envVar:       envvars.OpenAIAPIKey,
+			name:         "an instance named after the provider it is based on",
+			instance:     "openai",
+			provider:     compatInstance(""),
+			envVar:       "OPENAI_API_KEY",
 			value:        "sk-openai-only",
 			wantInjected: true,
-			why:          "two clicks in the instance dialog reach this shape from the hub's own default instance",
+			why:          "two clicks in the instance dialog reach this shape from the curated openai provider",
 		},
 		{
 			name:         "custom gateway at its own base_url",
-			inst:         providercfg.InstanceConfig{Name: "gateway", Type: "openai", APIStyle: providercfg.StyleChatCompletions, BaseURL: gatewayBaseURL},
-			twin:         compatTwin(gatewayBaseURL),
-			envVar:       envvars.OpenAICompatibleAPIKey,
-			value:        "sk-compat-only",
+			instance:     "gateway",
+			provider:     compatInstance(gatewayBaseURL),
+			envVar:       "OPENAI_API_KEY",
+			value:        "sk-openai-only",
 			wantInjected: false,
-			why:          "OPENAI_COMPATIBLE_API_KEY belongs to the host OPENAI_COMPATIBLE_BASE_URL names, which this gateway is not; the child sends no Authorization header at all",
+			why:          "credential inheritance stops at the endpoint (spec §10): a gateway never receives the vendor key, so the child sends no Authorization header at all",
 		},
 		{
-			name:         "gateway named after another provider row",
-			inst:         providercfg.InstanceConfig{Name: "glm", Type: "openai", APIStyle: providercfg.StyleChatCompletions, BaseURL: gatewayBaseURL},
-			twin:         compatTwin(gatewayBaseURL),
-			envVar:       envvars.GLMAPIKey,
+			name:         "gateway named after another vendor",
+			instance:     "glm",
+			provider:     compatInstance(gatewayBaseURL),
+			envVar:       "GLM_API_KEY",
 			value:        "sk-glm-only",
 			wantInjected: true,
-			why:          "the name-scoped layer resolves for any instance, base_url or not",
+			why:          "the name-scoped <NAME>_API_KEY layer resolves for any instance whose name is not a registry id, base_url or not",
 		},
 		{
-			name:         "instance named after another provider row with no base_url",
-			inst:         providercfg.InstanceConfig{Name: "glm", Type: "openai", APIStyle: providercfg.StyleChatCompletions},
-			twin:         compatTwin(""),
-			envVar:       envvars.GLMAPIKey,
+			name:         "instance named after another vendor with no base_url",
+			instance:     "glm",
+			provider:     compatInstance(""),
+			envVar:       "GLM_API_KEY",
 			value:        "sk-glm-only",
 			wantInjected: true,
-			why:          "the preflight must resolve the layers ResolveKey resolves, name before tag; a key the provider then rejects is the provider's 401 to give, not the gate's refusal to make",
+			why:          "the preflight must resolve the layers the child resolves; a key the provider then rejects is the provider's 401 to give, not the gate's refusal to make",
 		},
 		{
 			name:         "anthropic instance under a name of its own",
-			inst:         providercfg.InstanceConfig{Name: "work", Type: "anthropic"},
-			twin:         registry.Provider{Base: "anthropic"},
-			envVar:       envvars.AnthropicAPIKey,
+			instance:     "work",
+			provider:     registry.Provider{Base: "anthropic"},
+			envVar:       "ANTHROPIC_API_KEY",
 			value:        "sk-ant-only",
 			wantInjected: true,
-			why:          "the control: a type whose tag, endpoint and registry row have never disagreed",
+			why:          "the control: a base whose endpoint and key have never disagreed",
 		},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
-			// IsolateOpenAIAuth first: it clears OPENAI_* itself, so the seed
-			// below has to come after it and after the registry sweep.
 			oaitest.IsolateOpenAIAuth(t)
 			clearProviderKeysFromEnvironment(t)
 
 			dir := t.TempDir()
-			cfgPath := writeProvidersConfig(t, dir, providercfg.Config{
-				Default:   tt.inst.Name,
-				Instances: []providercfg.InstanceConfig{tt.inst},
-			})
-			t.Setenv(tt.envVar.Name, tt.value)
+			stateDir := t.TempDir()
+			store, err := credentials.LoadStore(dir + "/credentials.toml")
+			if err != nil {
+				t.Fatalf("LoadStore: %v", err)
+			}
+			reg := newProbeRegistry(t, stateDir, store,
+				map[string]string{tt.envVar: tt.value},
+				map[string]registry.Provider{tt.instance: tt.provider})
 
 			// The credential the child process is actually built with.
-			resolved := childCredentialSource(t, tt.inst.Name, tt.twin, tt.envVar.Name, tt.value)
+			resolved := childCredentialSource(t, reg, tt.instance)
 			if got := resolved != "" && resolved != "none"; got != tt.wantInjected {
 				t.Fatalf("the registry resolves a credential = %v (source %q), want %v: %s", got, resolved, tt.wantInjected, tt.why)
 			}
 
-			store, err := credentials.LoadStore(filepath.Join(dir, "credentials.toml"))
-			if err != nil {
-				t.Fatalf("LoadStore: %v", err)
-			}
 			c := newHubAuthControllerWithStore(dir, store)
-			c.providersConfigPath = cfgPath
+			c.stateDir = stateDir
+			c.reg = reg
 
-			status, err := c.Status(appwire.AuthStatusParams{Provider: tt.inst.Name})
+			status, err := c.Status(appwire.AuthStatusParams{Provider: tt.instance})
 			if err != nil {
-				t.Fatalf("Status(%q): %v", tt.inst.Name, err)
+				t.Fatalf("Status(%q): %v", tt.instance, err)
 			}
-			// A nil launch env means the child inherits the hub's, which is
-			// what these seeded variables are.
-			preflight := validateProviderCredentials(tt.inst.Name, store, nil, cfgPath)
+			preflight := validateProviderCredentials(tt.instance, reg)
 
 			if tt.wantInjected {
 				if preflight != nil {
 					t.Errorf("validateProviderCredentials(%q) = %v, want nil: the child authenticates with %s, so the gate in front of it must not refuse (%s)",
-						tt.inst.Name, preflight, tt.envVar.Name, tt.why)
+						tt.instance, preflight, tt.envVar, tt.why)
 				}
 				if !status.SignedIn {
-					t.Errorf("Status(%q).SignedIn = false, want true: the child authenticates with %s (%s)", tt.inst.Name, tt.envVar.Name, tt.why)
+					t.Errorf("Status(%q).SignedIn = false, want true: the child authenticates with %s (%s)", tt.instance, tt.envVar, tt.why)
 				}
-				if status.EnvVar != tt.envVar.Name {
+				if status.EnvVar != tt.envVar {
 					t.Errorf("Status(%q).EnvVar = %q, want %q: the pane must name the variable the child signs with (%s)",
-						tt.inst.Name, status.EnvVar, tt.envVar.Name, tt.why)
+						tt.instance, status.EnvVar, tt.envVar, tt.why)
 				}
 				return
 			}
+			if preflight == nil {
+				t.Errorf("validateProviderCredentials(%q) = nil, want a refusal: the child sends no key (%s)", tt.instance, tt.why)
+			}
 			if status.SignedIn {
 				t.Errorf("Status(%q).SignedIn = true (EnvVar %q), want false: the registry resolves nothing here, so the child sends no key (%s)",
-					tt.inst.Name, status.EnvVar, tt.why)
+					tt.instance, status.EnvVar, tt.why)
 			}
 			if status.EnvVar != "" {
 				t.Errorf("Status(%q).EnvVar = %q, want \"\": naming a variable the child never sends describes a different client (%s)",
-					tt.inst.Name, status.EnvVar, tt.why)
+					tt.instance, status.EnvVar, tt.why)
 			}
 		})
 	}
 }
 
 // childCredentialSource is what the spawned child's registry resolves for one
-// instance with exactly one environment variable seeded — the third party the
-// two hub surfaces have to agree with. It loads offline against a temp state
-// root so nothing but the seeded variable can answer.
-func childCredentialSource(t *testing.T, name string, twin registry.Provider, envVar, value string) string {
+// instance — the third party the two hub surfaces have to agree with.
+func childCredentialSource(t *testing.T, reg *hubcore.ProviderRegistry, name string) string {
 	t.Helper()
-	env := map[string]string{envVar: value}
-	r, err := registry.Load(
-		registry.WithOffline(true), registry.WithoutCache(), registry.WithNoUserLayer(),
-		registry.WithStateRoot(t.TempDir()),
-		registry.WithEnv(func(k string) (string, bool) { v, ok := env[k]; return v, ok }),
-		registry.WithInstances(map[string]registry.Provider{name: twin}),
-	)
-	if err != nil {
-		t.Fatalf("registry twin for %q: %v", name, err)
-	}
-	inst, ok := r.Instance(name)
+	inst, ok := reg.Get().Instance(name)
 	if !ok {
-		t.Fatalf("the registry twin has no instance %q", name)
+		res, err := reg.Get().ResolveInstance(name)
+		if err != nil {
+			t.Fatalf("the registry has no instance %q: %v", name, err)
+		}
+		return res.Credential.Source
 	}
 	return inst.CredentialSource
 }

@@ -27,11 +27,13 @@ import (
 	"primeradiant.com/evener/cmd/evener-hub/internal/codexlaunch"
 	"primeradiant.com/evener/cmd/evener-hub/internal/fspaths"
 	"primeradiant.com/evener/cmd/evener-hub/internal/hubcore"
+	"primeradiant.com/evener/cmdutil"
 	"primeradiant.com/evener/identifier"
 	"primeradiant.com/evener/internal/appserver"
+	"primeradiant.com/evener/internal/credentials"
 	"primeradiant.com/evener/internal/selfupdate"
 	"primeradiant.com/evener/llm"
-	"primeradiant.com/evener/llm/providercfg"
+	"primeradiant.com/evener/llm/registry"
 	"primeradiant.com/evener/rendezvous"
 )
 
@@ -8248,6 +8250,10 @@ func TestHubRPCThreadStartRejectsProviderMissingFromDegradedLaunchContract(t *te
 	}
 }
 
+// TestHubRPCThreadStartAllowsIntentionallySkippedLaunchProvider: a provider
+// the launch contract never enumerated is still launchable when the registry
+// holds the instance (spec §11.3) — an endpoint that lists no models is
+// configured, not broken.
 func TestHubRPCThreadStartAllowsIntentionallySkippedLaunchProvider(t *testing.T) {
 	runDir := t.TempDir()
 	var got hubcore.SpawnRequest
@@ -8264,9 +8270,12 @@ func TestHubRPCThreadStartAllowsIntentionallySkippedLaunchProvider(t *testing.T)
 	}
 	spawner.spawn = func(_ context.Context, req hubcore.SpawnRequest) (rendezvous.Entry, error) {
 		got = req
-		return rendezvous.Entry{PID: 301, ThreadID: "th_openrouter_anthropic", SessionID: "th_openrouter_anthropic"}, nil
+		return rendezvous.Entry{PID: 301, ThreadID: "th_orclaude", SessionID: "th_orclaude"}, nil
 	}
-	hub := newHubRPCTestServer(t, hubcore.WebConfig{RunDir: runDir, Spawner: spawner, Past: hubcore.NewPastIndex("")})
+	reg := newSpawnGateRegistry(t, t.TempDir(), map[string]string{"OPENROUTER_API_KEY": "k"}, map[string]registry.Provider{
+		"orclaude": {Base: "openrouter", Protocol: registry.ProtocolAnthropic},
+	})
+	hub := newHubRPCTestServer(t, hubcore.WebConfig{RunDir: runDir, Spawner: spawner, Past: hubcore.NewPastIndex(""), Registry: reg})
 	defer hub.Close()
 	client := dialHubRPC(t, hub)
 	defer client.Close()
@@ -8275,17 +8284,17 @@ func TestHubRPCThreadStartAllowsIntentionallySkippedLaunchProvider(t *testing.T)
 		t.Fatalf("Initialize: %v", err)
 	}
 	resp, err := client.ThreadStart(context.Background(), appwire.ThreadStartParams{
-		ModelProvider: "openrouter-anthropic",
+		ModelProvider: "orclaude",
 		Model:         "anthropic/claude-3-5-sonnet",
 		CWD:           "/tmp",
 	})
 	if err != nil {
 		t.Fatalf("ThreadStart: %v", err)
 	}
-	if got.Resolved.Effective.Model != "openrouter-anthropic/anthropic/claude-3-5-sonnet" {
+	if got.Resolved.Effective.Model != "orclaude/anthropic/claude-3-5-sonnet" {
 		t.Fatalf("spawn model=%q", got.Resolved.Effective.Model)
 	}
-	if resp.Thread.Evener.Ref != "local:th_openrouter_anthropic" {
+	if resp.Thread.Evener.Ref != "local:th_orclaude" {
 		t.Fatalf("thread=%+v", resp.Thread)
 	}
 }
@@ -10724,45 +10733,35 @@ func waitLaunchedCodexExited(t *testing.T, launched *codexlaunch.LaunchedCodex) 
 	}
 }
 
-// TestLaunchProviderAllowsUnreportedModels_KeyedByBehaviorTag verifies that
-// launchProviderAllowsUnreportedModels returns true for any instance name
-// whose behavior tag is "openrouter-anthropic", not just the literal string.
-// A renamed instance like "ora-work" mapped to tag "openrouter-anthropic" must
-// behave identically to the canonical instance name.
-func TestLaunchProviderAllowsUnreportedModels_KeyedByBehaviorTag(t *testing.T) {
-	cfg := &providercfg.Config{
-		Instances: []providercfg.InstanceConfig{
-			{Name: "ora-work", Type: "openrouter-anthropic"},
-		},
+// TestLaunchInstanceExists_AcceptsAProviderTheContractDidNotEnumerate pins
+// the registry-only rule (spec §11.3): a launch model contract that never
+// listed an instance does not make that instance unlaunchable, as long as the
+// registry has it. A name the registry does not have is still refused.
+func TestLaunchInstanceExists_AcceptsAProviderTheContractDidNotEnumerate(t *testing.T) {
+	dir := t.TempDir()
+	tomlPath := writeProvidersToml(t, dir, "[providers.work]\nbase = \"anthropic\"\napi_key = \"sk-inline\"\n")
+	cfg := hubcore.WebConfig{Registry: newTestRegistry(t, t.TempDir(), tomlPath, nil, nil)}
+
+	if !launchInstanceExists(cfg, "work") {
+		t.Error("an instance the registry holds is launchable even when the contract omits it")
 	}
-	// Renamed instance with tag "openrouter-anthropic" must allow unreported models.
-	if !launchProviderAllowsUnreportedModels("ora-work", cfg) {
-		t.Error("renamed openrouter-anthropic instance must allow unreported models")
+	if !launchInstanceExists(cfg, "WORK") {
+		t.Error("the instance name is matched case-insensitively, as the launch ref is")
 	}
-	// Identity fallback (no config): literal name "openrouter-anthropic" still works.
-	if !launchProviderAllowsUnreportedModels("openrouter-anthropic", nil) {
-		t.Error("canonical openrouter-anthropic must allow unreported models with nil config")
+	if launchInstanceExists(cfg, "nowhere") {
+		t.Error("a name the registry does not have must not be launchable")
 	}
-	// A non-openrouter-anthropic instance must not allow unreported models.
-	if launchProviderAllowsUnreportedModels("openrouter", cfg) {
-		t.Error("openrouter instance must not allow unreported models")
+	if launchInstanceExists(hubcore.WebConfig{}, "work") {
+		t.Error("with no registry there is nothing to accept on")
 	}
 }
 
 func TestHubRPCInstanceListRoutesToController(t *testing.T) {
 	dir := t.TempDir()
-	tomlPath := filepath.Join(dir, "providers.toml")
-	cfg := providercfg.Config{
-		Instances: []providercfg.InstanceConfig{
-			{Name: "my-openai", Type: "openai", APIStyle: "responses"},
-		},
-	}
-	if err := providercfg.WriteFile(tomlPath, cfg); err != nil {
-		t.Fatalf("WriteFile: %v", err)
-	}
+	tomlPath := writeProvidersToml(t, dir, "[providers.my-openai]\nbase = \"openai\"\napi_key = \"sk-inline\"\n")
 	hub := newHubRPCTestServer(t, hubcore.WebConfig{
 		Past:                hubcore.NewPastIndex(""),
-		ProviderConfig:      &cfg,
+		Registry:            newTestRegistry(t, t.TempDir(), tomlPath, nil, nil),
 		ProvidersConfigPath: tomlPath,
 		HubStateRoot:        dir,
 	})
@@ -10777,20 +10776,26 @@ func TestHubRPCInstanceListRoutesToController(t *testing.T) {
 	if err := client.Request(context.Background(), appwire.MethodEvenerInstanceList, appwire.EmptyParams{}, &resp); err != nil {
 		t.Fatalf("evener/instance/list: %v", err)
 	}
-	if len(resp.Instances) != 1 || resp.Instances[0].Name != "my-openai" {
-		t.Fatalf("instances=%+v", resp.Instances)
+	found := false
+	for _, inst := range resp.Instances {
+		if inst.Name == "my-openai" {
+			found = true
+		}
 	}
-	if len(resp.AvailableTypes) == 0 {
-		t.Error("AvailableTypes must be non-empty in list response")
+	if !found {
+		t.Fatalf("instances=%+v, want the authored my-openai entry", resp.Instances)
+	}
+	if len(resp.AvailableProviders) == 0 {
+		t.Error("AvailableProviders must be non-empty in list response")
 	}
 	hasOpenAI := false
-	for _, tp := range resp.AvailableTypes {
-		if tp == "openai" {
+	for _, p := range resp.AvailableProviders {
+		if p.ID == "openai" {
 			hasOpenAI = true
 		}
 	}
 	if !hasOpenAI {
-		t.Errorf("AvailableTypes=%v missing expected type \"openai\"", resp.AvailableTypes)
+		t.Errorf("AvailableProviders=%+v missing the openai registry id", resp.AvailableProviders)
 	}
 }
 
@@ -10809,6 +10814,7 @@ func TestHubRPCInstanceCreateBroadcastsAuthUpdated(t *testing.T) {
 	writeMinimalProvidersToml(t, tomlPath)
 	hub := newHubRPCTestServer(t, hubcore.WebConfig{
 		Past:                hubcore.NewPastIndex(""),
+		Registry:            newTestRegistry(t, t.TempDir(), tomlPath, nil, nil),
 		ProvidersConfigPath: tomlPath,
 		HubStateRoot:        dir,
 	})
@@ -10821,7 +10827,7 @@ func TestHubRPCInstanceCreateBroadcastsAuthUpdated(t *testing.T) {
 	}
 
 	var resp appwire.InstanceListResponse
-	if err := client.Request(context.Background(), appwire.MethodEvenerInstanceCreate, appwire.InstanceCreateParams{Type: "anthropic", Name: "mywork"}, &resp); err != nil {
+	if err := client.Request(context.Background(), appwire.MethodEvenerInstanceCreate, appwire.InstanceCreateParams{Base: "anthropic", Name: "mywork"}, &resp); err != nil {
 		t.Fatalf("evener/instance/create: %v", err)
 	}
 
@@ -10845,6 +10851,7 @@ func TestHubRPCInstanceEditBroadcastsAuthUpdated(t *testing.T) {
 	writeMinimalProvidersToml(t, tomlPath)
 	hub := newHubRPCTestServer(t, hubcore.WebConfig{
 		Past:                hubcore.NewPastIndex(""),
+		Registry:            newTestRegistry(t, t.TempDir(), tomlPath, nil, nil),
 		ProvidersConfigPath: tomlPath,
 		HubStateRoot:        dir,
 	})
@@ -10881,6 +10888,7 @@ func TestHubRPCInstanceRemoveBroadcastsAuthUpdated(t *testing.T) {
 	writeMinimalProvidersToml(t, tomlPath)
 	hub := newHubRPCTestServer(t, hubcore.WebConfig{
 		Past:                hubcore.NewPastIndex(""),
+		Registry:            newTestRegistry(t, t.TempDir(), tomlPath, nil, nil),
 		ProvidersConfigPath: tomlPath,
 		HubStateRoot:        dir,
 	})
@@ -10918,6 +10926,7 @@ func TestHubRPCInstanceSetDefaultBroadcastsAuthUpdated(t *testing.T) {
 	writeMinimalProvidersToml(t, tomlPath)
 	hub := newHubRPCTestServer(t, hubcore.WebConfig{
 		Past:                hubcore.NewPastIndex(""),
+		Registry:            newTestRegistry(t, t.TempDir(), tomlPath, nil, nil),
 		ProvidersConfigPath: tomlPath,
 		HubStateRoot:        dir,
 	})
@@ -10968,6 +10977,19 @@ func newHubRPCTestServer(t *testing.T, cfg hubcore.WebConfig) *httptest.Server {
 // starts serving requests.
 func newHubRPCTestServerWithWeb(t *testing.T, cfg hubcore.WebConfig) (*httptest.Server, *WebServer) {
 	t.Helper()
+	if cfg.Registry == nil {
+		// Every auth and instance answer comes from the registry, so a hub
+		// fixture without one answers nothing. Offline, uncached and with no
+		// user layer: what the test's own environment and state root say, and
+		// nothing from the developer's providers.toml.
+		cfg.Registry = hubcore.NewProviderRegistry(func(extra ...registry.Option) (*registry.Registry, *credentials.Store, error) {
+			return cmdutil.LoadRegistry(append(extra,
+				registry.WithOffline(true), registry.WithoutCache(), registry.WithNoUserLayer())...)
+		})
+		if err := cfg.Registry.Reload(); err != nil {
+			t.Fatalf("registry: %v", err)
+		}
+	}
 	srv := httptest.NewUnstartedServer(nil)
 	cfg.HubAddr = srv.Listener.Addr().String()
 	web := NewWebServer(cfg)
@@ -10990,18 +11012,10 @@ func newHubRPCTestServerWithWeb(t *testing.T, cfg hubcore.WebConfig) (*httptest.
 func TestHubRPCRegistersExpectedHandlerSet(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
-	tomlPath := filepath.Join(dir, "providers.toml")
-	provCfg := providercfg.Config{
-		Instances: []providercfg.InstanceConfig{
-			{Name: "my-openai", Type: "openai", APIStyle: "responses"},
-		},
-	}
-	if err := providercfg.WriteFile(tomlPath, provCfg); err != nil {
-		t.Fatalf("WriteFile: %v", err)
-	}
+	tomlPath := writeProvidersToml(t, dir, "[providers.my-openai]\nbase = \"openai\"\napi_key = \"sk-inline\"\n")
 	hub, web := newHubRPCTestServerWithWeb(t, hubcore.WebConfig{
 		Past:                hubcore.NewPastIndex(""),
-		ProviderConfig:      &provCfg,
+		Registry:            newTestRegistry(t, t.TempDir(), tomlPath, nil, nil),
 		ProvidersConfigPath: tomlPath,
 		HubStateRoot:        dir,
 	})

@@ -13,11 +13,12 @@ import (
 
 	"primeradiant.com/evener/appwire"
 	authopenai "primeradiant.com/evener/auth/openai"
+	"primeradiant.com/evener/cmd/evener-hub/internal/hubcore"
+	"primeradiant.com/evener/cmdutil"
 	"primeradiant.com/evener/envvars"
 	"primeradiant.com/evener/internal/appserver"
 	"primeradiant.com/evener/internal/credentials"
 	"primeradiant.com/evener/llm"
-	"primeradiant.com/evener/llm/providercfg"
 	"primeradiant.com/evener/llm/registry"
 )
 
@@ -27,6 +28,9 @@ type credentialProbeFakeClient struct {
 	release chan struct{}
 	calls   int
 	listErr error
+	// notLive makes the probe report a listing the provider did not actually
+	// serve, which is how "this endpoint has no model list" reaches the pane.
+	notLive bool
 }
 
 func (f *credentialProbeFakeClient) Models(ctx context.Context, _ string) (llm.ModelListing, error) {
@@ -44,7 +48,7 @@ func (f *credentialProbeFakeClient) Models(ctx context.Context, _ string) (llm.M
 			return llm.ModelListing{}, ctx.Err()
 		}
 	}
-	return llm.ModelListing{}, f.listErr
+	return llm.ModelListing{Live: !f.notLive}, f.listErr
 }
 
 func (f *credentialProbeFakeClient) Close() error { return nil }
@@ -56,13 +60,10 @@ func (f *credentialProbeFakeClient) callCount() int {
 }
 
 // clearProviderKeysFromEnvironment unsets every API key the envvars registry
-// knows about, for the duration of the test. evener/auth/test asks
-// credentials.Store.ResolveKey whether an instance has a credential, and that
-// reads the environment — so a test asserting an instance is unconfigured means
-// nothing unless it states that the environment holds no key for it
-// (docs/developing-evener/testing.md: no ambient developer machine state). Walking the registry
-// rather than a literal list keeps a provider row added later covered here with
-// no edit.
+// knows about, for the duration of the test. The credentials store's Layers
+// reads the ambient environment, so a test asserting an instance has no stored
+// key means nothing unless it states that the environment holds none either
+// (docs/developing-evener/testing.md: no ambient developer machine state).
 func clearProviderKeysFromEnvironment(t *testing.T) {
 	t.Helper()
 	for _, p := range envvars.Providers() {
@@ -72,38 +73,70 @@ func clearProviderKeysFromEnvironment(t *testing.T) {
 	}
 }
 
-func newCredentialProbeController(t *testing.T, client credentialProbeClient, cfg providercfg.Config) *hubAuthController {
+// newCredentialProbeController builds an auth controller whose registry holds
+// exactly instances, resolved against env, and whose probe returns client.
+func newCredentialProbeController(t *testing.T, client credentialProbeClient, instances map[string]registry.Provider, env map[string]string) *hubAuthController {
 	t.Helper()
 	store, err := credentials.LoadStore(t.TempDir() + "/credentials.toml")
 	if err != nil {
 		t.Fatal(err)
 	}
+	stateDir := t.TempDir()
 	c := newHubAuthControllerWithStore(t.TempDir(), store)
-	c.credentialTestLoader = func(string) (credentialProbeClient, providercfg.Config, error) {
-		return client, cfg, nil
-	}
+	c.stateDir = stateDir
+	c.reg = newProbeRegistry(t, stateDir, store, env, instances)
+	c.credentialTestLoader = func(string) (credentialProbeClient, error) { return client, nil }
 	return c
+}
+
+// newProbeRegistry is a hermetic registry over exactly the injected instances.
+func newProbeRegistry(t *testing.T, stateDir string, store *credentials.Store, env map[string]string, instances map[string]registry.Provider) *hubcore.ProviderRegistry {
+	t.Helper()
+	holder := hubcore.NewProviderRegistry(func(extra ...registry.Option) (*registry.Registry, *credentials.Store, error) {
+		opts := []registry.Option{
+			registry.WithOffline(true),
+			registry.WithoutCache(),
+			registry.WithNoUserLayer(),
+			registry.WithStateRoot(stateDir),
+			registry.WithCredentials(cmdutil.StoreCredentialSource{Store: store}),
+			registry.WithEnv(func(name string) (string, bool) {
+				v, ok := env[name]
+				return v, ok
+			}),
+			registry.WithInstances(instances),
+		}
+		r, err := registry.Load(append(opts, extra...)...)
+		return r, store, err
+	})
+	if err := holder.Reload(); err != nil {
+		t.Fatalf("registry: %v", err)
+	}
+	return holder
 }
 
 func TestAuthTestCredentialsClassifiesProviderOutcomesWithoutSecrets(t *testing.T) {
 	secret := "sk-test-credential-must-not-cross-boundary"
 	cases := []struct {
-		name   string
-		err    error
-		status string
+		name    string
+		err     error
+		notLive bool
+		status  string
 	}{
 		{name: "success", status: appwire.AuthTestStatusSuccess},
 		{name: "auth", err: llm.ErrorFromHTTPStatus("custom", 401, secret, nil, nil), status: appwire.AuthTestStatusAuthRejected},
 		{name: "forbidden", err: llm.ErrorFromHTTPStatus("custom", 403, secret, nil, nil), status: appwire.AuthTestStatusAuthRejected},
 		{name: "endpoint", err: errors.New("dial tcp 192.0.2.1:443: connection refused"), status: appwire.AuthTestStatusEndpointFailure},
 		{name: "configuration", err: &llm.ConfigurationError{Message: "invalid provider configuration"}, status: appwire.AuthTestStatusConfigurationFailure},
-		{name: "unsupported", err: &llm.ConfigurationError{Message: "provider custom does not support listing models"}, status: appwire.AuthTestStatusUnsupported},
+		{name: "unsupported", notLive: true, status: appwire.AuthTestStatusUnsupported},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			client := &credentialProbeFakeClient{listErr: tc.err}
-			cfg := providercfg.Config{Instances: []providercfg.InstanceConfig{{Name: "custom", Type: "openai-compatible", BaseURL: "http://provider.test/v1", APIKey: secret}}}
-			c := newCredentialProbeController(t, client, cfg)
+			client := &credentialProbeFakeClient{listErr: tc.err, notLive: tc.notLive}
+			c := newCredentialProbeController(t, client, map[string]registry.Provider{"custom": {
+				Base:      "openai-compatible",
+				APIKey:    secret,
+				Transport: registry.Transport{BaseURL: "http://provider.test/v1"},
+			}}, nil)
 			resp, err := c.TestCredentials(context.Background(), appwire.AuthTestParams{Provider: "custom"})
 			if err != nil {
 				t.Fatalf("TestCredentials: %v", err)
@@ -125,8 +158,9 @@ func TestAuthTestCredentialsClassifiesProviderOutcomesWithoutSecrets(t *testing.
 func TestAuthTestCredentialsReportsMissingCredentialsBeforeProbe(t *testing.T) {
 	clearProviderKeysFromEnvironment(t)
 	client := &credentialProbeFakeClient{}
-	cfg := providercfg.Config{Instances: []providercfg.InstanceConfig{{Name: "anthropic-work", Type: "anthropic"}}}
-	c := newCredentialProbeController(t, client, cfg)
+	c := newCredentialProbeController(t, client, map[string]registry.Provider{
+		"anthropic-work": {Base: "anthropic", APIKeyEnv: []string{"ANTHROPIC_WORK_KEY"}},
+	}, nil)
 
 	resp, err := c.TestCredentials(context.Background(), appwire.AuthTestParams{Provider: "anthropic-work"})
 	if err != nil {
@@ -140,54 +174,18 @@ func TestAuthTestCredentialsReportsMissingCredentialsBeforeProbe(t *testing.T) {
 	}
 }
 
-func TestAuthTestCredentialsReportsMissingWhenClientConstructionSkipsInstance(t *testing.T) {
-	clearProviderKeysFromEnvironment(t)
-	cfg := providercfg.Config{Instances: []providercfg.InstanceConfig{{Name: "anthropic-work", Type: "anthropic"}}}
-	store, err := credentials.LoadStore(t.TempDir() + "/credentials.toml")
-	if err != nil {
-		t.Fatal(err)
-	}
-	c := newHubAuthControllerWithStore(t.TempDir(), store)
-	c.credentialTestLoader = func(string) (credentialProbeClient, providercfg.Config, error) {
-		return nil, cfg, errors.New("no providers initialized")
-	}
-
-	resp, err := c.TestCredentials(context.Background(), appwire.AuthTestParams{Provider: "anthropic-work"})
-	if err != nil {
-		t.Fatalf("TestCredentials: %v", err)
-	}
-	if resp.Status != appwire.AuthTestStatusMissing {
-		t.Fatalf("status=%q, want missing", resp.Status)
-	}
-}
-
-func TestAuthTestCredentialsReportsLoaderFailureAsConfigurationFailure(t *testing.T) {
-	c := newHubAuthControllerWithStore(t.TempDir(), nil)
-	c.credentialTestLoader = func(string) (credentialProbeClient, providercfg.Config, error) {
-		return nil, providercfg.Config{}, errors.New("providers config is unreadable")
-	}
-
-	resp, err := c.TestCredentials(context.Background(), appwire.AuthTestParams{Provider: "openai"})
-	if err != nil {
-		t.Fatalf("TestCredentials: %v", err)
-	}
-	if resp.Status != "configuration_failure" {
-		t.Fatalf("status=%q, want configuration_failure", resp.Status)
-	}
-	if resp.Message != "Provider configuration could not be loaded. Check the instance settings." {
-		t.Fatalf("message=%q, want fixed configuration message", resp.Message)
-	}
-}
-
-func TestAuthTestCredentialsIgnoresOrdinaryHeadersForMissingCredentialDetection(t *testing.T) {
+// TestAuthTestCredentialsIgnoresOrdinaryHeaders: an ordinary header is not a
+// credential, so an instance carrying only one is still unconfigured.
+func TestAuthTestCredentialsIgnoresOrdinaryHeaders(t *testing.T) {
 	clearProviderKeysFromEnvironment(t)
 	client := &credentialProbeFakeClient{}
-	cfg := providercfg.Config{Instances: []providercfg.InstanceConfig{{
-		Name:    "anthropic-work",
-		Type:    "anthropic",
-		Headers: map[string]string{"X-Trace": "request-id"},
-	}}}
-	c := newCredentialProbeController(t, client, cfg)
+	c := newCredentialProbeController(t, client, map[string]registry.Provider{
+		"anthropic-work": {
+			Base:      "anthropic",
+			APIKeyEnv: []string{"ANTHROPIC_WORK_KEY"},
+			Headers:   map[string]string{"X-Trace": "request-id"},
+		},
+	}, nil)
 
 	resp, err := c.TestCredentials(context.Background(), appwire.AuthTestParams{Provider: "anthropic-work"})
 	if err != nil {
@@ -201,16 +199,14 @@ func TestAuthTestCredentialsIgnoresOrdinaryHeadersForMissingCredentialDetection(
 	}
 }
 
+// TestAuthTestCredentialsTreatsUnresolvedAPIKeyReferenceAsMissing: an api_key
+// naming a variable nothing sets resolves to no credential (spec §10).
 func TestAuthTestCredentialsTreatsUnresolvedAPIKeyReferenceAsMissing(t *testing.T) {
 	clearProviderKeysFromEnvironment(t)
-	t.Setenv("EVENER_ZR5R_MISSING_API_KEY", "")
 	client := &credentialProbeFakeClient{}
-	cfg := providercfg.Config{Instances: []providercfg.InstanceConfig{{
-		Name:   "anthropic-work",
-		Type:   "anthropic",
-		APIKey: "$EVENER_ZR5R_MISSING_API_KEY",
-	}}}
-	c := newCredentialProbeController(t, client, cfg)
+	c := newCredentialProbeController(t, client, map[string]registry.Provider{
+		"anthropic-work": {Base: "anthropic", APIKey: "$EVENER_ZR5R_MISSING_API_KEY"},
+	}, nil)
 
 	resp, err := c.TestCredentials(context.Background(), appwire.AuthTestParams{Provider: "anthropic-work"})
 	if err != nil {
@@ -224,10 +220,46 @@ func TestAuthTestCredentialsTreatsUnresolvedAPIKeyReferenceAsMissing(t *testing.
 	}
 }
 
+func TestAuthTestCredentialsReportsLoaderFailureAsConfigurationFailure(t *testing.T) {
+	c := newCredentialProbeController(t, nil, map[string]registry.Provider{
+		"work": {Base: "anthropic", APIKey: "configured"},
+	}, nil)
+	c.credentialTestLoader = func(string) (credentialProbeClient, error) {
+		return nil, errors.New("providers config is unreadable")
+	}
+
+	resp, err := c.TestCredentials(context.Background(), appwire.AuthTestParams{Provider: "work"})
+	if err != nil {
+		t.Fatalf("TestCredentials: %v", err)
+	}
+	if resp.Status != appwire.AuthTestStatusConfigurationFailure {
+		t.Fatalf("status=%q, want configuration_failure", resp.Status)
+	}
+	if resp.Message != credentialTestConfigurationMessage {
+		t.Fatalf("message=%q, want fixed configuration message", resp.Message)
+	}
+}
+
+// TestAuthTestCredentialsRejectsUnknownInstance: a name the registry cannot
+// resolve at all is a configuration failure, not a missing credential.
+func TestAuthTestCredentialsRejectsUnknownInstance(t *testing.T) {
+	c := newCredentialProbeController(t, &credentialProbeFakeClient{}, nil, nil)
+	resp, err := c.TestCredentials(context.Background(), appwire.AuthTestParams{Provider: "nowhere"})
+	if err != nil {
+		t.Fatalf("TestCredentials: %v", err)
+	}
+	if resp.Status != appwire.AuthTestStatusConfigurationFailure {
+		t.Fatalf("status=%q, want configuration_failure", resp.Status)
+	}
+}
+
 func TestAuthTestCredentialsSuppressesDuplicateSameInstance(t *testing.T) {
 	client := &credentialProbeFakeClient{started: make(chan struct{}), release: make(chan struct{})}
-	cfg := providercfg.Config{Instances: []providercfg.InstanceConfig{{Name: "custom", Type: "openai-compatible", BaseURL: "http://provider.test/v1", APIKey: "configured"}}}
-	c := newCredentialProbeController(t, client, cfg)
+	c := newCredentialProbeController(t, client, map[string]registry.Provider{"custom": {
+		Base:      "openai-compatible",
+		APIKey:    "configured",
+		Transport: registry.Transport{BaseURL: "http://provider.test/v1"},
+	}}, nil)
 
 	first := make(chan appwire.AuthTestResponse, 1)
 	go func() {
@@ -269,30 +301,24 @@ func TestAuthTestCredentialsUsesConfiguredBaseURLAndHeadersAtFakeHTTPBoundary(t 
 	}))
 	t.Cleanup(server.Close)
 
+	instances := map[string]registry.Provider{"gateway": {
+		Base:              "openai-compatible",
+		APIKey:            apiKey,
+		Transport:         registry.Transport{BaseURL: server.URL},
+		CredentialHeaders: map[string]string{"X-Test-Credential": headerSecret},
+	}}
 	// No override: the probe reaches the fake server through the registry's
 	// own transport, which is what a spawned session would use.
 	r, err := registry.Load(
 		registry.WithOffline(true), registry.WithoutCache(), registry.WithNoUserLayer(),
 		registry.WithStateRoot(t.TempDir()),
 		registry.WithEnv(func(string) (string, bool) { return "", false }),
-		registry.WithInstances(map[string]registry.Provider{"gateway": {
-			Base: "openai-compatible", APIKey: apiKey,
-			Transport:         registry.Transport{BaseURL: server.URL},
-			CredentialHeaders: map[string]string{"X-Test-Credential": headerSecret},
-		}}),
+		registry.WithInstances(instances),
 	)
 	if err != nil {
 		t.Fatalf("registry: %v", err)
 	}
-	client := llm.NewClient(llm.WithRegistry(r))
-	cfg := providercfg.Config{Instances: []providercfg.InstanceConfig{{
-		Name:              "gateway",
-		Type:              "openai-compatible",
-		BaseURL:           server.URL,
-		APIKey:            apiKey,
-		CredentialHeaders: map[string]string{"X-Test-Credential": headerSecret},
-	}}}
-	c := newCredentialProbeController(t, client, cfg)
+	c := newCredentialProbeController(t, llm.NewClient(llm.WithRegistry(r)), instances, nil)
 
 	resp, err := c.TestCredentials(context.Background(), appwire.AuthTestParams{Provider: "gateway"})
 	if err != nil {
@@ -310,15 +336,11 @@ func TestAuthTestCredentialsUsesConfiguredBaseURLAndHeadersAtFakeHTTPBoundary(t 
 	}
 }
 
-func TestAuthTestCredentialsAcceptsStoredOAuthForNamedOpenAIInstance(t *testing.T) {
-	// Without this the stored record proves nothing: after gpbz an ambient
-	// OPENAI_API_KEY resolves through the store and reaches success on its own.
+// TestAuthTestCredentialsAcceptsStoredOAuthForCodexInstance: on the Codex
+// transport the record is the credential, so the probe runs.
+func TestAuthTestCredentialsAcceptsStoredOAuthForCodexInstance(t *testing.T) {
 	clearProviderKeysFromEnvironment(t)
 	stateDir := t.TempDir()
-	store, err := credentials.LoadStore(t.TempDir() + "/credentials.toml")
-	if err != nil {
-		t.Fatal(err)
-	}
 	if err := authopenai.SaveAuth(stateDir, "openai-work", authopenai.AuthRecord{
 		ObtainedAt:   time.Now().Add(-time.Minute),
 		Version:      1,
@@ -331,13 +353,17 @@ func TestAuthTestCredentialsAcceptsStoredOAuthForNamedOpenAIInstance(t *testing.
 	}); err != nil {
 		t.Fatal(err)
 	}
+	store, err := credentials.LoadStore(t.TempDir() + "/credentials.toml")
+	if err != nil {
+		t.Fatal(err)
+	}
 	c := newHubAuthControllerWithStore(stateDir, store)
 	c.stateDir = stateDir
-	c.credentialTestLoader = func(string) (credentialProbeClient, providercfg.Config, error) {
-		return &credentialProbeFakeClient{}, providercfg.Config{Instances: []providercfg.InstanceConfig{{
-			Name: "openai-work",
-			Type: "openai",
-		}}}, nil
+	c.reg = newProbeRegistry(t, stateDir, store, nil, map[string]registry.Provider{
+		"openai-work": {Base: "openai-codex"},
+	})
+	c.credentialTestLoader = func(string) (credentialProbeClient, error) {
+		return &credentialProbeFakeClient{}, nil
 	}
 
 	resp, err := c.TestCredentials(context.Background(), appwire.AuthTestParams{Provider: "openai-work"})
@@ -351,8 +377,11 @@ func TestAuthTestCredentialsAcceptsStoredOAuthForNamedOpenAIInstance(t *testing.
 
 func TestAuthTestRPCUsesSharedContract(t *testing.T) {
 	client := &credentialProbeFakeClient{}
-	cfg := providercfg.Config{Instances: []providercfg.InstanceConfig{{Name: "gateway", Type: "openai-compatible", BaseURL: "http://provider.test/v1", APIKey: "configured"}}}
-	controller := newCredentialProbeController(t, client, cfg)
+	controller := newCredentialProbeController(t, client, map[string]registry.Provider{"gateway": {
+		Base:      "openai-compatible",
+		APIKey:    "configured",
+		Transport: registry.Transport{BaseURL: "http://provider.test/v1"},
+	}}, nil)
 	server := appserver.NewServer(appserver.ServerConfig{})
 	registerAuthHandlers(server, controller)
 

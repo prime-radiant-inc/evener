@@ -91,7 +91,6 @@ func FuzzFinalSmalltails(f *testing.F) {
 		_, _ = ResumeDaemon(context.Background(), "", root, hubcore.ResumeRequest{}, time.Millisecond)
 		_ = validateEvenerLaunchContract(context.Background(), "", "", nil)
 		_, _ = listEvenerLaunchModelContract(context.Background(), "", nil)
-		_ = openAIStoredOAuthUsable(nil)
 
 		for _, mode := range []int{0, 1} {
 			cfg := hubcore.WebConfig{Spawner: &finalSmalltailLister{mode: mode}}

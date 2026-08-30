@@ -19,7 +19,6 @@ import (
 	"primeradiant.com/evener/internal/appserver"
 	"primeradiant.com/evener/internal/plugins"
 	"primeradiant.com/evener/internal/selfupdate"
-	"primeradiant.com/evener/llm/providercfg"
 )
 
 type fuzzModelSource struct {
@@ -112,12 +111,7 @@ func fuzzExerciseModels(data []byte) {
 	_ = sanitizeModelDiagnostics(diags)
 	_ = providerHasLaunchDiagnostic(diags, "P")
 	_ = providerHasLaunchDiagnostic(nil, "P")
-	_ = behaviorTagFor(nil, "openrouter-anthropic")
-	pcfg := &providercfg.Config{Instances: []providercfg.InstanceConfig{{Name: "router", Type: providercfg.Type("openrouter-anthropic")}}}
-	_ = behaviorTagFor(pcfg, "router")
-	_ = behaviorTagFor(pcfg, "missing")
-	_ = launchProviderAllowsUnreportedModels("openrouter-anthropic", nil)
-	_ = launchProviderAllowsUnreportedModels("openai", nil)
+	_ = launchInstanceExists(hubcore.WebConfig{}, "openrouter")
 	_ = launchHarnessDescriptors(hubcore.WebConfig{})
 	_ = launchHarnessDescriptors(hubcore.WebConfig{
 		CodexSources:  []appsource.CodexSourceConfig{{}, {ID: "evener"}, {ID: "remote"}},

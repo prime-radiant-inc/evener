@@ -10,7 +10,6 @@ import (
 
 	"primeradiant.com/evener/cmd/evener-hub/internal/codexlaunch"
 	"primeradiant.com/evener/internal/credentials"
-	"primeradiant.com/evener/llm/providercfg"
 )
 
 // serveHub guards its companion with `if companion != nil`, which is only a
@@ -69,15 +68,13 @@ func TestRunMainHandsServeAnHonestlyNilCompanionWithNoCodexLaunches(t *testing.T
 	var companion hubShutdowner
 	var sawServe bool
 	deps := mainDeps{
+		loadRegistry:    hermeticRegistryLoader,
 		loadConfig:      func(string) (Config, error) { return cfg, nil },
 		ensureDirs:      func() error { return nil },
 		acquireLock:     func(string) (func(), error) { return func() {}, nil },
 		newToken:        func() (string, error) { return "hub-token", nil },
 		loadAuthToken:   func(string) (string, error) { return "auth-token", nil },
 		loadCredentials: func(string) (*credentials.Store, error) { return &credentials.Store{}, nil },
-		loadProviderConfig: func(string) (providercfg.Config, bool, error) {
-			return providercfg.Config{}, true, nil
-		},
 		notifyContext: func(context.Context, ...os.Signal) (context.Context, context.CancelFunc) {
 			return ctx, func() {}
 		},

@@ -13,13 +13,16 @@ import (
 
 // TestHubRouterMatchesCatalog keeps appwire.Methods (the source of the
 // generated protocol doc) in lockstep with what evener-hub actually registers.
-// The hub serves the ScopeHub + ScopeBoth methods. ProvidersConfigPath is set
-// so the evener/instance/* handlers register (they no-op without it).
+// The hub serves the ScopeHub + ScopeBoth methods. A registry and a
+// ProvidersConfigPath are set so the evener/instance/* handlers register (they
+// no-op without both).
 func TestHubRouterMatchesCatalog(t *testing.T) {
+	stateDir := t.TempDir()
 	cfg := hubcore.WebConfig{
 		Past:                hubcore.NewPastIndex(""),
+		Registry:            newTestRegistry(t, stateDir, "", nil, nil),
 		ProvidersConfigPath: filepath.Join(t.TempDir(), "providers.toml"),
-		HubStateRoot:        t.TempDir(),
+		HubStateRoot:        stateDir,
 	}
 	web := NewWebServer(cfg)
 	got := excludeHubMethods(web.appRPC.Router().Methods(), appwire.ConnectionMethodNames())
