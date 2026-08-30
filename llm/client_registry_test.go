@@ -317,12 +317,23 @@ func TestClientModelsRegistryOnlyWhenUnsupported(t *testing.T) {
 
 func TestClientModelsOverrideLister(t *testing.T) {
 	c := llm.NewClient()
-	lister := &listingAdapter{models: []registry.Model{{ID: "m1"}, {ID: "m0"}}}
+	// An override's listing is its own live truth, so the §5 visibility rule
+	// applies to it exactly as it does on the registry path.
+	lister := &listingAdapter{models: []registry.Model{
+		{ID: "m1"}, {ID: "m0"},
+		{ID: "hidden-row", Hidden: true},
+		{ID: "no-tools", Caps: registry.Caps{Tools: new(false)}},
+	}}
 	lister.name = "fake"
 	c.Register(lister)
 	listing, err := c.Models(context.Background(), "fake")
 	if err != nil || !listing.Live || len(listing.Models) != 2 || listing.Models[0].ModelID != "m0" {
 		t.Fatalf("override listing: %v %+v", err, listing)
+	}
+	for _, row := range listing.Models {
+		if row.ModelID == "hidden-row" || row.ModelID == "no-tools" {
+			t.Fatalf("a hidden or tool-less override row must not be listed (spec §5): %+v", listing.Models)
+		}
 	}
 	c.Register(&recordingAdapter{name: "mute"})
 	if _, err := c.Models(context.Background(), "mute"); err == nil {

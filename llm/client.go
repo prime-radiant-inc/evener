@@ -448,10 +448,15 @@ func liveSaysNoTools(row registry.Resolved) bool {
 }
 
 // standaloneRows turns a listing that has no registry record behind it into
-// Resolved rows, sorted by model id.
+// Resolved rows, sorted by model id. An override's listing is its own live
+// layer, so the §5 visibility rule applies to it directly: a hidden row and a
+// row that says Tools = false are both dropped.
 func standaloneRows(instance string, rows []registry.Model) []registry.Resolved {
 	out := make([]registry.Resolved, 0, len(rows))
 	for _, m := range rows {
+		if m.Hidden || (m.Caps.Tools != nil && !*m.Caps.Tools) {
+			continue
+		}
 		out = append(out, registry.Resolved{Instance: instance, ModelID: m.ID, WireID: m.ID, Model: m, Caps: m.Caps})
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].ModelID < out[j].ModelID })
