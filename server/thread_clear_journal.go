@@ -130,6 +130,19 @@ func persistThreadClearJournal(path string, records map[string]threadClearRecord
 		_ = os.Remove(tmp)
 		return fmt.Errorf("replace thread clear journal: %w", err)
 	}
+	// The rename is only durable once the directory entry itself is synced; a
+	// crash right after the rename could otherwise lose the replacement.
+	dir, err := os.Open(filepath.Dir(path))
+	if err != nil {
+		return fmt.Errorf("open thread clear journal directory: %w", err)
+	}
+	if err := dir.Sync(); err != nil {
+		_ = dir.Close()
+		return fmt.Errorf("sync thread clear journal directory: %w", err)
+	}
+	if err := dir.Close(); err != nil {
+		return fmt.Errorf("close thread clear journal directory: %w", err)
+	}
 	return nil
 }
 
