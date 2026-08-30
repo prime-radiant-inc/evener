@@ -22,9 +22,13 @@ import (
 // equivalent of the `evener doctor` CLI, executing the same commands against
 // the session's own state root by default — no shell, no PATH, no cwd
 // dependence (the failure class the doctoring-evener skill hit when it
-// instructed shell invocation). Registered read-only with the transcript
-// tools' output-limit class: the sessions table and audit findings are the
-// large shapes.
+// instructed shell invocation). Read-only by library construction — every
+// command reads settled durable state through the same read-only folds the
+// CLI uses (pinned by TestDoctorEvener_HandlerDoesNotMutateState, extending
+// stable_delegate_readonly_test.go to the tool layer); the ReadOnly flag
+// itself is the registry's parallel-batching hint, not the enforcement.
+// Output-limited like the transcript tools: the sessions table and audit
+// findings are the large shapes.
 func doctorTools(deps *toolDeps) []tool.RegisteredTool {
 	return []tool.RegisteredTool{
 		{
@@ -34,7 +38,7 @@ func doctorTools(deps *toolDeps) []tool.RegisteredTool {
 				_ = ctx
 				return execDoctorEvener(deps, args)
 			},
-			Limit: schema.ToolOutputLimit{MaxChars: transcriptToolMaxChars},
+			Limit: schema.ToolOutputLimit{MaxChars: transcriptToolMaxChars, Strategy: schema.TruncTail},
 		},
 	}
 }
@@ -66,11 +70,6 @@ func doctorStateBase(deps *toolDeps, override string) string {
 // tests can substitute the runbook source FS.
 var doctorBundledSkills = bundled.Skills
 
-// doctorPluginStoreRoot mirrors the CLI's --store-root default: "" means
-// plugins.NewManager resolves the default config root (~/.config/evener/plugins,
-// honoring XDG_CONFIG_HOME).
-var doctorPluginStoreRoot = ""
-
 // execDoctorEvener dispatches one doctor_evener invocation to the
 // agent/doctor package. Results are the CLI's --json struct shapes: the CLI's
 // cmd functions marshal these same structs, so the tool and
@@ -88,6 +87,17 @@ func execDoctorEvener(deps *toolDeps, args map[string]any) (any, error) {
 
 	stateBase := doctorStateBase(deps, stringArg(args, "state_dir"))
 	selector := stringArg(args, "selector")
+
+	// Selector-less commands must reject a stray selector, not silently
+	// ignore it — the CLI's own usage error. An agent passing a selector to a
+	// sweep command believing it scopes to one session would otherwise get a
+	// state-root-wide result with no signal.
+	switch command {
+	case "turnids", "sessions", "audit", "plugins":
+		if strings.TrimSpace(selector) != "" {
+			return nil, fmt.Errorf("doctor command %q takes no selector (it is a state-root-wide sweep)", command)
+		}
+	}
 
 	switch command {
 	case "locate":
@@ -211,7 +221,11 @@ func execDoctorEvener(deps *toolDeps, args map[string]any) (any, error) {
 		if v := stringArg(args, "bucket"); v != "" {
 			opts.Bucket = v
 		}
-		return doctor.ListSessions(stateBase, opts)
+		res, err := doctor.ListSessions(stateBase, opts)
+		if err != nil {
+			return nil, err
+		}
+		return doctorCapSessionsRows(res), nil
 
 	case "audit":
 		runbookName := stringArg(args, "runbook")
@@ -236,14 +250,18 @@ func execDoctorEvener(deps *toolDeps, args map[string]any) (any, error) {
 			}
 			opts.Since = d
 		}
-		return doctor.RunAudit(stateBase, runbook, opts)
+		res, err := doctor.RunAudit(stateBase, runbook, opts)
+		if err != nil {
+			return nil, err
+		}
+		return doctorCapAuditResult(res), nil
 
 	case "plugins":
 		// Manager.Doctor includes a store-writability probe (create + remove one
 		// temp file) mirroring the CLI's plugins check; everything else it does is
 		// read-only. The tool's store root is the default config root — the CLI's
 		// --store-root override has no tool counterpart.
-		findings, err := plugins.NewManager(doctorPluginStoreRoot).Doctor()
+		findings, err := plugins.NewManager("").Doctor()
 		if err != nil {
 			return nil, fmt.Errorf("plugins: %w", err)
 		}
@@ -252,6 +270,41 @@ func execDoctorEvener(deps *toolDeps, args map[string]any) (any, error) {
 
 	// Unreachable: the enum gate above covers every command.
 	return nil, fmt.Errorf("unknown doctor command %q", command)
+}
+
+// doctorRowCap is the structural row cap for the two unbounded result shapes
+// (sessions enumeration and audit evidence). Capping rows inside the result
+// keeps the envelope valid JSON under the char limit — the mid-JSON truncation
+// the default strategy would otherwise produce. 500 rows is far under the
+// 600k-char limit at the row sizes ListSessions emits.
+const doctorRowCap = 500
+
+// doctorCapSessionsRows structurally caps a sessions enumeration and discloses
+// the cut, mirroring find_session_transcripts' scan_truncated convention.
+func doctorCapSessionsRows(res doctor.SessionsResult) doctor.SessionsResult {
+	if len(res.Sessions) <= doctorRowCap {
+		return res
+	}
+	kept := res.Sessions[:doctorRowCap]
+	return doctor.SessionsResult{
+		Sessions:   kept,
+		Unreadable: res.Unreadable,
+		Truncated:  true,
+		TotalRows:  len(res.Sessions),
+	}
+}
+
+// doctorCapAuditResult caps each finding's evidence session-ref list so a
+// fleet-wide trip (the 1,927-session case) cannot overflow the envelope; the
+// summary counts stay true.
+func doctorCapAuditResult(res doctor.AuditResult) doctor.AuditResult {
+	capped := res
+	for i := range capped.Findings {
+		if len(capped.Findings[i].Evidence.SessionRefs) > doctorRowCap {
+			capped.Findings[i].Evidence.SessionRefs = capped.Findings[i].Evidence.SessionRefs[:doctorRowCap]
+		}
+	}
+	return capped
 }
 
 // doctorRequireSelector rejects selector-less invocation of a

@@ -56,10 +56,19 @@ type UnreadableSession struct {
 }
 
 // SessionsResult is a session enumeration: every session ListSessions could
-// read, plus every one it couldn't.
+// read, plus every one it couldn't. Truncated/TotalRows are set only by the
+// doctor_evener tool's row cap (a tool-layer concern, not the library's);
+// they disclose that the enumeration was structurally cut at doctorRowCap
+// rows with TotalRows existing in total, mirroring find_session_transcripts'
+// scan_truncated convention.
 type SessionsResult struct {
 	Sessions   []SessionRow        `json:"sessions"`
 	Unreadable []UnreadableSession `json:"unreadable"`
+	// Truncated reports that the sessions list was structurally capped
+	// (tool layer only; false for every library-produced result).
+	Truncated bool `json:"truncated,omitempty"`
+	// TotalRows is the full row count before a structural cap.
+	TotalRows int `json:"total_rows,omitempty"`
 }
 
 // SessionsOpts narrows a ListSessions enumeration.

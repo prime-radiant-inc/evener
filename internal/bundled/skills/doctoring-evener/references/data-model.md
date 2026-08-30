@@ -2,7 +2,7 @@
 
 This is the conceptual reference the HARD GATE points at. Read it before reading
 any artifact. It is the map; the cited Go types are the territory (the
-`evener doctor` tools `import` them, so they cannot drift). Citations are to Go
+the `doctor_evener` data plane `import`s them, so they cannot drift). Citations are to Go
 **symbols**, never `file:line`.
 
 Every section ends with **read it via:** the `doctor_evener` command (the
@@ -28,15 +28,18 @@ Up to six artifacts per root/session tree:
   daemon accepted AND every one it rejected, plus the durable input queue.
 
 "Durable" state (these files) is distinct from the **live** event stream
-(`events.SessionEvent` over appwire → tui/hub). evener doctor reads settled
+(`events.SessionEvent` over appwire → tui/hub). doctor_evener reads settled
 durable state only; it is not a live monitor.
 
 ---
 
 ## State-dir layout
 
-The base resolves with evener's precedence: `--state-dir` flag › `EVENER_STATE_DIR`
-env › `$XDG_STATE_HOME` › `~/.local/state` (there is **no** `EVENER_STATE_HOME` —
+The base resolves with evener's precedence. For `doctor_evener` (the primary
+path): an explicit `state_dir` argument › the session's own state root › the
+doctor default chain `EVENER_STATE_DIR` env › `$XDG_STATE_HOME` ›
+`~/.local/state`. For the CLI: `--state-dir` flag › `EVENER_STATE_DIR` env ›
+`$XDG_STATE_HOME` › `~/.local/state` (there is **no** `EVENER_STATE_HOME` —
 it was never read). Under an XDG home the layout is:
 
 ```
@@ -72,7 +75,7 @@ it was never read). Under an XDG home the layout is:
 Parent, observer, and delegate sub-sessions are different SIDs and frequently
 live in **different buckets**. Don't assume one bucket.
 
-**Read it via:** `evener doctor locate <selector>` (resolves all six paths +
+**Read it via:** `doctor_evener` `locate <selector>` (resolves all six paths +
 bucket hash; never recompute the hash by hand — resolve by glob).
 
 ---
@@ -107,8 +110,8 @@ The session's **result tool** (how the agent "speaks" its answer) follows
 `"communicate"`. A `communicate` call is the result-tool call, not an ordinary
 tool — resolve the effective name from meta rather than hard-coding it.
 
-**Read it via:** `evener doctor transcript <selector>` (turn map / conversation
-render); `evener doctor transcript <selector> --count <tool>` for the **structural**
+**Read it via:** `doctor_evener` `transcript <selector>` (turn map / conversation
+render); `transcript <selector>` with `count: <tool>` for the **structural**
 invocation count — distinct from textual mentions in assistant prose.
 
 ---
@@ -124,7 +127,7 @@ outcome. Once the outer logical model call settles, an
 the final attempt and count. A clean EOF after an attempt without its settlement
 is an explicitly unsettled group; a partial tail has unknown finality.
 
-**Read it via:** `evener doctor apilog <selector>` for attempt metadata and
+**Read it via:** `doctor_evener` `apilog <selector>` for attempt metadata and
 aggregates. The model-facing `read_transcript` tool does not accept API-log
 selectors or expose request/response bodies. Credential values are excluded.
 
@@ -156,8 +159,8 @@ delegate. Note what the durable log does **not** carry: `Background` and `Phase`
 live only on the shell runtime's in-memory record, so no folded record can say
 whether a shell job ran in the background.
 
-**Read it via:** `evener doctor jobs <selector>` (every job in durable append
-order), or `evener doctor jobs <selector> --job <job_id>` for one job's state.
+**Read it via:** `doctor_evener` `jobs <selector>` (every job in durable append
+order), or `jobs <selector>` with `job_id` for one job's state.
 
 ### Watches and the four watch-send terminals
 
@@ -186,7 +189,7 @@ derived from the delegate controller and do not create a second delegate
 lifecycle fold. For a shell source, the watch row is only half the story: join
 the target shell's folded state before diagnosing a missing match.
 
-**Read it via:** `evener doctor watches <selector>` (distinct deliveries vs pending
+**Read it via:** `doctor_evener` `watches <selector>` (distinct deliveries vs pending
 lines, per-delivery terminal + reason + provenance, self-influence/breaker
 telemetry, and the joined `target job:` state — `target_job` / `target_job_missing`
 under `--json`).
@@ -207,7 +210,7 @@ or invoke a provider. A retired delegate JobRecord fails closed as
 `legacy_delegate_state`; a watch addressed through that retired activation
 fails as `legacy_delegate_watch_state`.
 
-**Read it via:** `evener doctor tree <selector> [--observers]`.
+**Read it via:** `doctor_evener` `tree <selector>` (with `observers: true` for observer edges).
 
 ---
 
@@ -251,7 +254,7 @@ provenance.Causal{
   the gradient line but does not drive the fuse — the runaway is bounded by the
   recorded depth and, ultimately, by the volume breaker.
 
-**Read it via:** `evener doctor watches <selector> --self-loops` (now reads breaker
+**Read it via:** `doctor_evener` `watches <selector>` with `self_loops: true` (now reads breaker
 telemetry: per-watch `max_self_influence_depth` and `runaway_drops`, surfacing
 only watches whose fuse fired).
 
@@ -284,7 +287,7 @@ Fields that carry a diagnosis:
 The client mutation ID is the join key to the client's own outbox: a reply the
 browser holds but the journal does not know about never left the browser.
 
-**Read it via:** `evener doctor mutations <selector>`. A session with no store
+**Read it via:** `doctor_evener` `mutations <selector>`. A session with no store
 reports that cleanly (it accepted no client mutations); a file the reader cannot
 decode is an error naming the file, never an empty journal.
 
@@ -297,5 +300,5 @@ Key fields: `ID`, `Model`, `Config` (incl. `ResultToolName`), `ParentSessionID`
 (fork lineage), `IsSubagent`, and `ObservedBy[]` (the observer sessions watching
 this worker — the durable basis for the session tree's observer edges).
 
-**Read it via:** `evener doctor locate` (path), `evener doctor tree --observers`
-(observer edges), `evener doctor transcript` (result-tool resolution).
+**Read it via:** `doctor_evener` `locate` (path), `tree` with `observers: true`
+(observer edges), `transcript` (result-tool resolution).

@@ -54,25 +54,25 @@ it is surfaced. Do not use shell for inspection.
 ## Known gotchas (evener-specific)
 
 - `watch_send_pending` lines **coalesce** latest-wins; count distinct settled
-  deliveries (`evener doctor watches`), not pending lines. `evicted` is a real
+  deliveries (`doctor_evener` `watches`), not pending lines. `evicted` is a real
   fourth terminal alongside delivered/dropped.
 - A watch with **zero deliveries** is not evidence of broken delivery. Read the
-  `target job:` line `evener doctor watches` prints on the same row: a target that
+  `target job:` line `doctor_evener` `watches` prints on the same row: a target that
   was already terminal, or that produced zero output bytes, could never match the
-  condition. `evener doctor jobs <sel> --job <job_id>` is the full record.
+  condition. `doctor_evener` `jobs` with `job_id` is the full record.
 - A recorded delivery's provenance `WatchKeys` **always** contains its own watch
   key (the delivery-time stamp) — so `ContainsWatch` is vacuously true and is
   **not** a self-loop signal. The verdict is a same-`watch_id` **prior** hop in
-  the diagnostic `Chain` (`evener doctor watches --self-loops`). The `Chain` is
+  the diagnostic `Chain` (`doctor_evener` `watches` with `self_loops: true`). The `Chain` is
   truncatable (`maxDiagnosticChain`), so a positive verdict is real but its
   absence is not a completeness guarantee. The Chain check keys on `watch_id`
   while suppression keys on `watch_id`+`watch_generation`, so a re-arm is exactly
   the loop the Chain still catches.
 - A `delegate_send` (or any tool) name appearing in assistant text is **not**
-  an invocation: `evener doctor transcript --count
+  an invocation: `doctor_evener` `transcript` with `count:
   delegate_send` gives the structural call count.
 - Parent, observer, and delegate sub-sessions live in **different** project-hash
-  buckets. Use `evener doctor tree --observers` to link them.
+  buckets. Use `doctor_evener` `tree` with `observers: true` to link them.
 
 ## How you work
 
