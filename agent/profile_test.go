@@ -2109,21 +2109,19 @@ func TestRenamedInstance_CheapModel(t *testing.T) {
 }
 
 // TestRenamedInstance_RebuildPreservesTag verifies that WithModel on a renamed
-// instance (where id != behaviorTag) rebuilds correctly using behaviorTag for
-// the rebuildOnSameProviderChange decision, AND re-stamps the tag on the
-// rebuilt profile so it doesn't derive a wrong tag from the renamed id.
-// Regression guard: before this fix, rebuildOnSameProviderChange(p.id) returned
-// false for "work", skipping the catalog-aware rebuild entirely; and the rebuild
-// path called newOpenAICompatProfile(p.id, model, 0) which would derive the tag
-// from "work" instead of "kimi".
+// instance (where id != behaviorTag) selects the constructor by behaviorTag,
+// AND re-stamps the tag on the rebuilt profile so it doesn't derive a wrong
+// tag from the renamed id. Regression guard: the rebuild once keyed on p.id,
+// so a renamed "work" instance skipped the catalog-aware rebuild and would
+// have derived its tag from "work" instead of "kimi".
 func TestRenamedInstance_RebuildPreservesTag(t *testing.T) {
 	t.Parallel()
 	kimiWork := WithProviderID(newOpenAICompatProfile("kimi", "kimi-k2", 0), "work")
 	if kimiWork.BehaviorTag() != "kimi" {
 		t.Fatalf("pre-condition: BehaviorTag() = %q, want kimi", kimiWork.BehaviorTag())
 	}
-	// WithModel must use behaviorTag=="kimi" for rebuildOnSameProviderChange
-	// and re-stamp the tag on the rebuilt profile.
+	// WithModel must select the constructor by behaviorTag=="kimi" and
+	// re-stamp the tag on the rebuilt profile.
 	rebuilt := kimiWork.WithModel("kimi-k2.5")
 	if rebuilt.BehaviorTag() != "kimi" {
 		t.Fatalf("BehaviorTag() after WithModel = %q, want kimi — rebuild must preserve behaviorTag", rebuilt.BehaviorTag())

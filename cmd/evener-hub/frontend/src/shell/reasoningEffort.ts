@@ -1,7 +1,7 @@
 // Shared vocabulary for reasoning-effort chips and pickers, so every surface
 // (session status row, command palette, spawn form) speaks one language:
-// "" is "(default)" (the session default applies), "none" is an explicit off
-// the user chose and always reads "none (off)".
+// "" is "(default)" (the session default applies), and "none" is an explicit
+// off the user chose — labelled by whether the model can actually express it.
 
 export function effortLabel(level: string, levels: string[]): string {
   if (level === "") return "(default)";

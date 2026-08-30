@@ -795,58 +795,22 @@ func restampInstanceIdentity(p *Profile, behaviorTag, id string) *Profile {
 	return p
 }
 
-// rebuildOnSameProviderChange reports whether a same-provider WithModel
-// override needs to rebuild the profile via its constructor (rather than
-// shallow-cloning) so that model-derived state — context window from
-// catalog, providerOpts that depend on the model — is recomputed.
-//
-// True for providers whose constructors look up per-model state (every
-// openai-compat provider; openrouter-anthropic; openai, whose web-search
-// capability and effort ladder both come from the catalog). False for
-// providers whose model-derived state is fixed at construction (minimax)
-// or handled by the dedicated anthropic branch of WithModel.
-func rebuildOnSameProviderChange(behaviorTag string) bool {
-	switch behaviorTag {
-	case "kimi", "glm", "openrouter", "ollama", "openrouter-anthropic", "openai-compatible", "openai",
-		"google", "minimax", "kimi-anthropic":
-		return true
-	}
-	return false
-}
-
-// WithModel returns a copy of this profile that drives a different model.
+// WithModel returns a copy of this profile that drives a different model,
+// rebuilt via the provider's constructor so model-derived state (context
+// window, reasoning facts, effort ladder, tool schemas that embed the effort
+// enum) is recomputed for the new model.
 func (p *Profile) WithModel(model string) *Profile {
 	model = strings.TrimSpace(model)
 	if model == "" {
 		model = p.model
 	}
 
-	// Anthropic re-derives all model-dependent state from the model string (the
-	// [1m] suffix selects the 1M-context beta; effort levels and the tool schemas
-	// that embed the effort enum vary per model). It rebuilds via the constructor
-	// rather than shallow-cloning, so a model switch can't leave a stale
-	// max-capable effort set or task_list enum on a model capped at high.
-	if p.behaviorTag == "anthropic" {
-		// Strip the redundant instance self-prefix. Config-backed Anthropic
-		// profiles may be renamed, so this must use p.id rather than only the
-		// built-in "anthropic" name. Cross-provider refs remain for the Session
-		// resolver.
-		if parts := strings.SplitN(model, "/", 2); len(parts) == 2 {
-			provider := strings.ToLower(parts[0])
-			if decidePrefixAction(p.behaviorTag, p.id, provider) == prefixActionStrip {
-				model = parts[1]
-			}
-		}
-		rebuilt := restampInstanceIdentity(newAnthropicProfile(model), p.behaviorTag, p.id)
-		return rebuilt.WithCommunicateOverridesFrom(p).withCheapModelFrom(p)
-	}
-
 	// Parse "provider/model" strings. decidePrefixAction classifies each
 	// slashed ref as strip (redundant self-prefix), keep (model namespace
 	// slash on meta-providers), or switch (cross-provider, now handled by
 	// the Session resolver). WithModel handles strip/keep; cross-provider
-	// refs that are NOT handled by a resolver fall through to a shallow
-	// clone with the model string unchanged rather than silently stripping.
+	// refs that are NOT handled by a resolver fall through with the model
+	// string unchanged rather than silently stripping.
 	if parts := strings.SplitN(model, "/", 2); len(parts) == 2 {
 		provider := strings.ToLower(parts[0])
 		bareModel := parts[1]
@@ -861,43 +825,42 @@ func (p *Profile) WithModel(model string) *Profile {
 			// Leave model unchanged.
 		}
 	}
-	// Same-provider override: rebuild via constructor for providers
-	// whose model-derived state needs recomputation, otherwise shallow
-	// clone (existing behavior for openai, anthropic-via-Profile,
-	// google, minimax — their model-derived state is fixed).
+	// Same-provider override: every provider rebuilds via its constructor so
+	// the model-derived facts (reasoning support, effort ladder, task_list
+	// enum, web search) re-derive for the new model.
 	//
-	// The rebuild path must preserve any tool-schema overrides applied
-	// via WithCommunicateOutputSchema / WithAllowedDecisions on the
-	// existing profile. Without this carry-over, Session.SetModel and
-	// subagent model overrides would silently revert the communicate
-	// schema to its constructor default. We also preserve any
-	// providerOpts the caller has layered on, since those can also be
-	// override-driven (e.g. test harnesses).
-	if rebuildOnSameProviderChange(p.behaviorTag) {
-		var rebuilt *Profile
-		switch p.behaviorTag {
-		case "openrouter-anthropic":
-			rebuilt = newOpenRouterAnthropicProfile(model)
-		case "openai":
-			rebuilt = NewOpenAIProfile(model)
-		case "google":
-			rebuilt = newGeminiProfile(model)
-		case "minimax":
-			rebuilt = newMiniMaxProfile(model)
-		case "kimi-anthropic":
-			rebuilt = newKimiAnthropicProfile(model)
-		default:
-			rebuilt = newOpenAICompatProfile(p.behaviorTag, model, 0, p.instModels)
-		}
-		// Re-stamp the instance identity onto the rebuilt profile so that a
-		// renamed instance (id != behaviorTag, via WithProviderID) keeps its
-		// id and correctly-derived tag across model changes.
-		rebuilt = restampInstanceIdentity(rebuilt, p.behaviorTag, p.id)
-		return rebuilt.WithCommunicateOverridesFrom(p).withCheapModelFrom(p)
+	// The rebuild must preserve any tool-schema overrides applied via
+	// WithCommunicateOutputSchema / WithAllowedDecisions on the existing
+	// profile. Without this carry-over, Session.SetModel and subagent model
+	// overrides would silently revert the communicate schema to its
+	// constructor default. restampInstanceIdentity keeps a renamed
+	// instance's id and correctly-derived tag across model changes.
+	rebuilt := restampInstanceIdentity(newProfileForBehaviorTag(p.behaviorTag, model, p.instModels), p.behaviorTag, p.id)
+	return rebuilt.WithCommunicateOverridesFrom(p).withCheapModelFrom(p)
+}
+
+// newProfileForBehaviorTag is the one behavior-tag → constructor table,
+// shared by ResolveProfileFromConfig and WithModel so a provider added to one
+// dispatch cannot be missed by the other.
+func newProfileForBehaviorTag(behaviorTag, model string, instModels map[string]providercfg.ModelConfig) *Profile {
+	switch behaviorTag {
+	case "anthropic":
+		return newAnthropicProfile(model)
+	case "openai":
+		return NewOpenAIProfile(model)
+	case "google":
+		return newGeminiProfile(model)
+	case "minimax":
+		return newMiniMaxProfile(model)
+	case "kimi-anthropic":
+		return newKimiAnthropicProfile(model)
+	case "openrouter-anthropic":
+		return newOpenRouterAnthropicProfile(model)
+	default:
+		// openai-compatible, kimi, glm, openrouter, ollama: the compat
+		// constructor keys its behavior on the tag itself.
+		return newOpenAICompatProfile(behaviorTag, model, 0, instModels)
 	}
-	clone := *p
-	clone.model = model
-	return &clone
 }
 
 // NewOpenAIProfile returns a *Profile for OpenAI using the given model.
