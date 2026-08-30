@@ -1086,11 +1086,7 @@ func (s *NavigationService) Start(ctx context.Context) {
 			if _, keepGoing := s.waitUntil(ctx, s.now().Add(s.retryAfter)); !keepGoing {
 				return
 			}
-			// Same pacing as the boundary path: a failed forced refresh's
-			// next-attempt time governs when refreshPending may try again.
-			if at, _ := s.pendingAttemptAt(); !s.now().Before(at) {
-				s.refreshPending(ctx)
-			}
+			s.refreshPending(ctx)
 			continue
 		}
 		s.mu.Lock()
@@ -1109,32 +1105,24 @@ func (s *NavigationService) Start(ctx context.Context) {
 		// next-attempt time rather than the full snapshot boundary, so the
 		// pending invalidation is attempted again promptly instead of
 		// spinning (immediate wake) or parking for up to 24h (boundary).
-		wait := boundary
+		wait, retryPark := boundary, false
 		if at, pending := s.pendingAttemptAt(); pending && !at.IsZero() && at.Before(wait) {
-			wait = at
+			wait, retryPark = at, true
 		}
 		elapsed, keepGoing := s.waitUntil(ctx, wait)
 		if !keepGoing {
 			return
 		}
-		// elapsed only says the park's own deadline passed, and that deadline
-		// is the EARLIER of the snapshot boundary and the next-attempt time.
-		// Only a genuine boundary crossing is a time invalidation; a
-		// retry-deadline wake retries the already-pending invalidation as-is,
-		// stamping no hint and consuming no epoch.
-		if elapsed && !s.now().Before(boundary) {
+		// Only a park on the snapshot boundary that ran its deadline out is a
+		// time invalidation. A retry-deadline park elapsing retries the
+		// already-pending invalidation as-is, stamping no hint and consuming
+		// no epoch; refreshPending itself declines when nothing is pending or
+		// the next attempt is still paced into the future.
+		if elapsed && !retryPark {
 			s.Invalidate(navigationChangeHint{Time: true})
-			s.refreshPending(ctx)
-		} else if s.hasPendingInvalidation() {
-			s.refreshPending(ctx)
 		}
+		s.refreshPending(ctx)
 	}
-}
-
-func (s *NavigationService) hasPendingInvalidation() bool {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	return s.pendingInvalidation
 }
 
 func (s *NavigationService) refreshPending(ctx context.Context) {
