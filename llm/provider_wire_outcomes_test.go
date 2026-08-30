@@ -343,3 +343,39 @@ func assertCompleteOutcome(ctx context.Context, t *testing.T, client *llm.Client
 		t.Fatalf("binary response encoding = %q, want base64", record.Response.Body.Encoding)
 	}
 }
+
+// TestCoreResponsesEmptyStreamIsPermanentEndToEnd pins the sentinel's class on
+// a real dispatch: a Responses endpoint that answers 200 OK with no events at
+// all means the model does not speak this protocol, so the stream's terminal
+// error must short-circuit the retry chain rather than burn its budget.
+func TestCoreResponsesEmptyStreamIsPermanentEndToEnd(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+	}))
+	t.Cleanup(server.Close)
+
+	provider := wireProviders()[0]
+	client := provider.wireClient(t, server.URL, server.Client(), nil)
+	stream, err := client.Stream(context.Background(), providerRequest(provider.name, "test-model"))
+	if err != nil {
+		t.Fatalf("Stream: %v", err)
+	}
+	t.Cleanup(func() { _ = stream.Close() })
+
+	var streamErr error
+	for event := range stream.Events() {
+		if event.Type == llm.StreamEventError {
+			streamErr = event.Err
+		}
+	}
+	if streamErr == nil {
+		t.Fatal("empty Responses stream ended without a terminal error")
+	}
+	if got := llm.Classify(streamErr); got != llm.ErrorClassPermanent {
+		t.Fatalf("Classify(%v) = %v, want Permanent", streamErr, got)
+	}
+	if got := llm.Kind(streamErr); got != llm.KindNotFound {
+		t.Fatalf("Kind(%v) = %v, want KindNotFound", streamErr, got)
+	}
+}

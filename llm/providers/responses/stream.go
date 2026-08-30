@@ -506,8 +506,10 @@ func (p *Protocol) decodeStream(sctx context.Context, cancel context.CancelFunc,
 			// The stream closed cleanly, 200 OK, without a single event this
 			// decoder recognizes as the Responses API: the model likely does
 			// not support /v1/responses. There is no Chat Completions fallback
-			// in this transport; the caller never retries on this error.
-			terminalErr = llm.NewStreamError(res.Instance, "responses stream closed with no events", nil)
+			// in this transport, so this is permanent by construction — the
+			// retry chain short-circuits on it and the caller routes to its
+			// next model.
+			terminalErr = llm.NewUnsupportedEndpointError(res.Instance, "responses stream closed with no events", nil)
 		default:
 			// The endpoint served real Responses events and then closed cleanly
 			// without response.completed — a truncated response, with no read

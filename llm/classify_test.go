@@ -69,13 +69,25 @@ func TestClassifyOpenAIResponses404IsPermanent(t *testing.T) {
 	}
 }
 
-// TestClassifyOpenAIResponsesEmptyStreamIsRetryable pins the other half: the
-// empty-Responses-stream sentinel is a bare stream error with no HTTP status,
-// so the conservative default applies and the retry chain gets its budget.
-func TestClassifyOpenAIResponsesEmptyStreamIsRetryable(t *testing.T) {
-	err := NewStreamError("openai", "/v1/responses: empty stream (model not supported)", nil)
-	if got := Classify(err); got != ErrorClassRetryable {
-		t.Fatalf("Classify(openai responses empty stream) = %v, want Retryable", got)
+// TestClassifyOpenAIResponsesEmptyStreamIsPermanent pins the other half: a
+// Responses stream that closes 200 OK without a single recognized event says
+// the model does not speak this protocol. Retrying cannot help, so the retry
+// chain must short-circuit and the caller's model-fallback chain must run —
+// which needs both a permanent class and a kind the fallback routes act on.
+func TestClassifyOpenAIResponsesEmptyStreamIsPermanent(t *testing.T) {
+	err := NewUnsupportedEndpointError("openai", "responses stream closed with no events", nil)
+	if got := Classify(err); got != ErrorClassPermanent {
+		t.Fatalf("Classify(openai responses empty stream) = %v, want Permanent", got)
+	}
+	if got := Kind(err); got != KindNotFound {
+		t.Fatalf("Kind(openai responses empty stream) = %v, want KindNotFound", got)
+	}
+	var le Error
+	if !errors.As(err, &le) {
+		t.Fatalf("empty-stream sentinel %T does not implement llm.Error", err)
+	}
+	if le.Retryable() {
+		t.Fatal("empty-stream sentinel reports itself retryable")
 	}
 }
 

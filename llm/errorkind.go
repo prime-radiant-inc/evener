@@ -100,6 +100,8 @@ func Kind(err error) ErrorKind {
 		return KindAccessDenied
 	case errorIs[*notFoundError](err):
 		return KindNotFound
+	case errorIs[*UnsupportedEndpointError](err):
+		return KindNotFound
 	case errorIs[*invalidRequestError](err):
 		return KindInvalidRequest
 	case errorIs[*serverError](err):
@@ -128,6 +130,7 @@ func (*invalidRequestError) declaredKind() ErrorKind        { return KindInvalid
 func (*authenticationError) declaredKind() ErrorKind        { return KindAuthentication }
 func (*accessDeniedError) declaredKind() ErrorKind          { return KindAccessDenied }
 func (*notFoundError) declaredKind() ErrorKind              { return KindNotFound }
+func (*UnsupportedEndpointError) declaredKind() ErrorKind   { return KindNotFound }
 func (*requestTimeoutError) declaredKind() ErrorKind        { return KindTimeout }
 func (*responseHeaderTimeoutError) declaredKind() ErrorKind { return KindTimeout }
 func (*contextLengthError) declaredKind() ErrorKind         { return KindContextLength }

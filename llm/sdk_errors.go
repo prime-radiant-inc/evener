@@ -78,6 +78,14 @@ type NoObjectGeneratedError struct {
 // tool_choice mode is not supported.
 type UnsupportedToolChoiceError struct{ nonHTTPBaseError }
 
+// UnsupportedEndpointError is a non-HTTP error reporting that an endpoint
+// accepted the request but served nothing the protocol recognizes: the model
+// does not speak it. It is [KindNotFound] — the model is not there on this
+// endpoint — and never retryable, so the retry chain short-circuits and the
+// caller routes to its next model instead of re-POSTing a request that cannot
+// succeed.
+type UnsupportedEndpointError struct{ nonHTTPBaseError }
+
 // NewAbortError reports a user-initiated cancellation. cause is the underlying
 // error (typically context.Canceled); it is exposed via Unwrap so errors.Is(err,
 // context.Canceled) holds. Pass nil when there is no underlying cause.
@@ -93,6 +101,18 @@ func NewStreamError(provider, message string, cause error) error {
 		provider:  provider,
 		message:   message,
 		retryable: true,
+		cause:     cause,
+	}}
+}
+
+// NewUnsupportedEndpointError reports that provider's endpoint cannot serve
+// the request over this protocol. cause is the underlying stream or decode
+// error, exposed via Unwrap; pass nil for a content-level sentinel with none.
+func NewUnsupportedEndpointError(provider, message string, cause error) error {
+	return &UnsupportedEndpointError{nonHTTPBaseError{
+		provider:  provider,
+		message:   message,
+		retryable: false,
 		cause:     cause,
 	}}
 }

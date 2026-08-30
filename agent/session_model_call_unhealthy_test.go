@@ -344,6 +344,17 @@ func TestShouldRetryResponsesContinuationAsFullHistory_UnhealthyVerdict(t *testi
 // the class through llm.Classify would walk into that wrapped error: a
 // permanent-class one reports the chain eligible (the case that fails without
 // the arm), and a retryable-class one only happens to report non-eligible.
+// TestModelFallbackEligible_ResponsesEmptyStream pins that a Responses
+// endpoint answering 200 OK with no events routes the round to the configured
+// model fallbacks. The model does not speak the protocol, so no amount of
+// retrying the same request helps; the next model is the only way forward.
+func TestModelFallbackEligible_ResponsesEmptyStream(t *testing.T) {
+	err := llm.NewUnsupportedEndpointError("openai", "responses stream closed with no events", nil)
+	if !modelFallbackEligible(err, llm.DefaultRetryPolicy()) {
+		t.Fatalf("modelFallbackEligible(%v) = false, want true", err)
+	}
+}
+
 func TestModelFallbackEligible_ProviderUnhealthy(t *testing.T) {
 	cases := []struct {
 		name    string

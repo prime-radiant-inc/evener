@@ -33,7 +33,7 @@ func FuzzRootScenarioReplay(f *testing.F) {
 		TestClassify403CyberPolicyIsRetryable(t)
 		TestClassify404IsPermanent(t)
 		TestClassifyOpenAIResponses404IsPermanent(t)
-		TestClassifyOpenAIResponsesEmptyStreamIsRetryable(t)
+		TestClassifyOpenAIResponsesEmptyStreamIsPermanent(t)
 		TestClassify400IsPermanent(t)
 		TestClassify401IsPermanent(t)
 		TestClassifyStreamEndedIsRetryable(t)
