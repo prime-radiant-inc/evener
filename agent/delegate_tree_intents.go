@@ -5,15 +5,16 @@ package agent
 // This file is the single authority for every decision on the generation
 // finish path (spec: 2026-08-29 delegate lifecycle harness reducer design,
 // Project 2). The exported and in-plan wrapper methods construct a
-// finishIntent, call reduceFinishIntent, append through appendLocked, and
-// apply the returned effect descriptors. Wrappers never branch on
+// finishIntent, call their site's reduce*Intent method, and — for the sites
+// that carry a journal batch — drive the append and post-append effects
+// through executeFinishDecisionLocked. Wrappers never branch on
 // aggregate/live/controller state and never assign outcomes or dispositions;
 // every guard evaluation lives in exactly one place here or in the shared
-// predicates this reducer calls (exactLeaseLocked, admitLeaseLocked,
+// predicates the reducers call (exactLeaseLocked, admitLeaseLocked,
 // supervisionSuppressedLocked, finalizationReadyLocked,
 // noActionBaseEligibleLocked, noActionEvidenceEligible).
 //
-// Contract for reduceFinishIntent: the caller holds c.mu. The reducer
+// Contract for the reduce*Intent methods: the caller holds c.mu. The reducer
 // acquires no locks, performs no journal I/O, and calls no Session methods
 // (comparing runtime pointer identity for the binding-runtime guard is the
 // one permitted use of a *Session). It performs the pre-append in-memory
@@ -35,25 +36,6 @@ import (
 	"fmt"
 
 	"primeradiant.com/evener/agent/internal/delegatestore"
-)
-
-// finishSite identifies which finish-path entry point an intent came from.
-type finishSite uint8
-
-const (
-	finishSiteSupervisionBoundary         finishSite = iota + 1 // SupervisionBoundary
-	finishSiteBeginFinalization                                 // BeginSettlement / BeginFinalization / BeginRunFinalization
-	finishSiteCompleteSettlement                                // CompleteSettlement
-	finishSiteAttentionResolutions                              // AttentionResolutionsForFinalization
-	finishSitePrepareNoAction                                   // prepareNoAction
-	finishSiteNoActionFinish                                    // noActionFinishLocked (FinishNoAction)
-	finishSiteGeneration                                        // finishGenerationLocked (FinishGeneration / FinishNoAction)
-	finishSiteRequireFinalizationRecovery                       // RequireFinalizationRecovery
-	finishSiteReportQuiesced                                    // ReportFinalizationQuiesced
-	finishSiteWorkAdmitted                                      // escalateCompletionRequirement
-	finishSiteAttentionNoAction                                 // recordAttentionNoAction
-	finishSiteTerminalSeen                                      // recordTerminalSeen
-	finishSiteCompletionDecision                                // completionDecision
 )
 
 // finishStalePolicy is how an entry point surfaces a stale-lease guard
@@ -83,10 +65,10 @@ func (intent finishIntent) resolveStalePolicy(err error) error {
 }
 
 // finishIntent is what a finish-path caller wants. It carries no controller
-// state, only the request: which site is asking, the lease or claim it holds,
-// and the payload (finish, packet, run error, runtime identity).
+// state, only the request: the lease or claim the caller holds and the
+// payload (finish, packet, run error, runtime identity). Each entry point
+// passes its intent to its site's reduce*Intent method.
 type finishIntent struct {
-	site    finishSite
 	lease   delegateLease
 	claim   *delegateSettlementClaim
 	mode    delegateSettlementMode
@@ -154,59 +136,20 @@ type finishDecision struct {
 	attentionPlans []delegateAttentionCleanupPlan
 }
 
-// reduceFinishIntent is the single locked transition function for the
-// generation finish path. The caller holds c.mu; the reducer acquires no
-// locks, performs no journal I/O, and calls no Session methods (runtime
-// pointer identity comparison is the one permitted use of a *Session). It
-// evaluates every finish-path guard exactly once, performs the pre-append
-// in-memory transitions, and returns the decision.
-func (c *delegateTreeController) reduceFinishIntent(intent finishIntent) finishDecision {
-	switch intent.site {
-	case finishSiteSupervisionBoundary:
-		return c.reduceSupervisionBoundaryIntent(intent)
-	case finishSiteBeginFinalization:
-		return c.reduceBeginFinalizationIntent(intent)
-	case finishSiteCompleteSettlement:
-		return c.reduceCompleteSettlementIntent(intent)
-	case finishSiteAttentionResolutions:
-		return c.reduceAttentionResolutionsIntent(intent)
-	case finishSitePrepareNoAction:
-		return c.reducePrepareNoActionIntent(intent)
-	case finishSiteNoActionFinish:
-		return c.reduceNoActionFinishIntent(intent)
-	case finishSiteGeneration:
-		return c.reduceGenerationFinishIntent(intent)
-	case finishSiteRequireFinalizationRecovery:
-		return c.reduceRequireFinalizationRecoveryIntent(intent)
-	case finishSiteReportQuiesced:
-		return c.reduceReportQuiescedIntent(intent)
-	case finishSiteWorkAdmitted:
-		return c.reduceWorkAdmittedIntent(intent)
-	case finishSiteAttentionNoAction:
-		return c.reduceAttentionNoActionIntent(intent)
-	case finishSiteTerminalSeen:
-		return c.reduceTerminalSeenIntent(intent)
-	case finishSiteCompletionDecision:
-		return c.reduceCompletionDecisionIntent(intent)
-	}
-	return finishDecision{err: errDelegateTargetBusy}
-}
-
-// executeFinishIntentLocked drives the append, the append-failure recovery
-// latch, and the post-append effects for an intent whose reducer decision
-// carries a journal batch (settlement completion and the ordinary and
-// no-action generation finishes). The caller holds c.mu; the caller releases
-// it and then runs the returned cancel after c.mu is released
+// executeFinishDecisionLocked drives the append, the append-failure recovery
+// latch, and the post-append effects for a reducer decision that carries a
+// journal batch (settlement completion and the ordinary and no-action
+// generation finishes). The caller holds c.mu; the caller releases it and
+// then runs the returned cancel after c.mu is released
 // (cancel-after-unlock).
-func (c *delegateTreeController) executeFinishIntentLocked(intent finishIntent) (delegateMutationPlans, context.CancelFunc, error) {
-	decision := c.reduceFinishIntent(intent)
+func (c *delegateTreeController) executeFinishDecisionLocked(decision finishDecision) (delegateMutationPlans, context.CancelFunc, error) {
 	if decision.err != nil || decision.events == nil {
 		return delegateMutationPlans{}, nil, decision.err
 	}
 	var appendErr error
 	var closurePlan delegateUpdatePlan
 	if decision.closure {
-		closurePlan, appendErr = c.appendResumabilityClosureLocked(intent.lease.delegateID, decision.events...)
+		closurePlan, appendErr = c.appendResumabilityClosureLocked(decision.lease.delegateID, decision.events...)
 	} else {
 		_, appendErr = c.appendLocked(decision.events...)
 	}

@@ -26,7 +26,7 @@ const (
 func (c *delegateTreeController) completionDecision(lease delegateLease) (delegateCompletionDecision, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	decision := c.reduceFinishIntent(finishIntent{site: finishSiteCompletionDecision, lease: lease})
+	decision := c.reduceCompletionDecisionIntent(finishIntent{lease: lease})
 	return decision.completion, decision.err
 }
 
