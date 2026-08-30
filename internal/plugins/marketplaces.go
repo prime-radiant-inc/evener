@@ -222,6 +222,38 @@ func (m *Manager) RemoveMarketplace(name string) error {
 	return m.saveMarketplaces(mk)
 }
 
+// recloneMarketplace replaces a marketplace clone whose git pull failed. The
+// fresh clone is fully downloaded into a staging dir before the existing clone
+// is touched (rename old aside → rename new in → remove old), so the current
+// clone — possibly wedged, but the only local copy — is never lost to a failed
+// download; a failed reclone leaves it exactly as it was. The caller must hold
+// m.lockPath(), which also serializes use of the shared staging/aside dirs.
+func (m *Manager) recloneMarketplace(ctx context.Context, ref MarketplaceRef) error {
+	staging := m.marketplaceDir(".staging")
+	_ = marketplaceRemoveAll(staging)
+	if _, err := m.fetchMarketplaceContainer(ctx, ref.Source, staging); err != nil {
+		_ = marketplaceRemoveAll(staging)
+		return err
+	}
+	old := m.marketplaceDir(".old")
+	_ = marketplaceRemoveAll(old)
+	if err := marketplaceRename(ref.InstallLocation, old); err != nil {
+		_ = marketplaceRemoveAll(staging)
+		return fmt.Errorf("moving old clone aside: %w", err)
+	}
+	if err := marketplaceRename(staging, ref.InstallLocation); err != nil {
+		// Put the old clone back so InstallLocation keeps pointing at a
+		// real directory; a restore failure is reported over the rename one.
+		if restoreErr := marketplaceRename(old, ref.InstallLocation); restoreErr != nil {
+			return fmt.Errorf("installing fresh clone failed (%v); restoring old clone: %w", err, restoreErr)
+		}
+		_ = marketplaceRemoveAll(staging)
+		return fmt.Errorf("installing fresh clone: %w", err)
+	}
+	_ = marketplaceRemoveAll(old)
+	return nil
+}
+
 func (m *Manager) RefreshMarketplace(ctx context.Context, name string) error {
 	release, err := marketplaceAcquireLock(ctx, m.lockPath(), 30*time.Second)
 	if err != nil {
@@ -245,8 +277,14 @@ func (m *Manager) RefreshMarketplace(ctx context.Context, name string) error {
 				return err
 			}
 			ref.InstallLocation = installLoc
-		} else if err := marketplaceGitPull(ctx, ref.InstallLocation); err != nil {
-			return err
+		} else if pullErr := marketplaceGitPull(ctx, ref.InstallLocation); pullErr != nil {
+			// A failed pull can mean the clone is wedged — e.g. a stale
+			// .git/index.lock stranded by a killed git — and a plain retry
+			// would then fail the same way forever. Self-heal with a staged
+			// reclone; on failure it leaves the existing clone untouched.
+			if recloneErr := m.recloneMarketplace(ctx, ref); recloneErr != nil {
+				return fmt.Errorf("refreshing marketplace %q: git pull failed (%v); staged reclone failed: %w", name, pullErr, recloneErr)
+			}
 		}
 	}
 	ref.LastUpdated = m.now().UTC()
