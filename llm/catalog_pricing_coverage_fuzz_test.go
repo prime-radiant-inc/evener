@@ -7,6 +7,8 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+
+	"primeradiant.com/evener/llm/registry"
 )
 
 // FuzzCatalogPricingCoverage replays deterministic edge cases for the catalog,
@@ -58,14 +60,14 @@ func FuzzCatalogPricingCoverage(f *testing.F) {
 			_ = overrideInt(7)
 		case 4:
 			for _, id := range []string{"", "missing", "unpriced", "claude-opus-4-5", "claude-opus-4-5-preview", "claude-opus-4-preview"} {
-				_, _ = cat.GetPrice(id)
+				_ = cat.LookupModelInfo(id)
 			}
-			_, _ = (*ModelCatalog)(nil).GetPrice("m")
-			_, _ = priceFromModelInfo(nil)
+			_, _ = PriceFromCost(nil)
+			_, _ = PriceFromCost(&registry.Cost{Input: in, Output: out})
 		case 5:
 			_ = EstimateCost(1_000_000, 2_000_000, 3_000_000, Price{InputPerM: in, OutputPerM: out})
 			_ = EstimateCost(1, 2, 3, Price{InputPerM: in, OutputPerM: out, CacheReadPerM: &cached})
-			_, _ = DefaultPrice("gpt-4o")
+			_, _ = PriceFromCost(&registry.Cost{Input: in, Output: out, CacheRead: cached, CacheWrite: out})
 		case 6:
 			h := http.Header{}
 			h.Set("x-ratelimit-reset-tokens", "2026-01-01T00:00:00Z")

@@ -1,6 +1,6 @@
 # cost-estimate-display-and-gating: `~$` cost appears on a real turn and is CSS-gated by the Show-cost toggle
 
-**What this covers**: `llm/pricing.go` `GetPrice`/`EstimateCost` → `appwire.EstimateCost` →
+**What this covers**: `llm/pricing.go` `PriceFromCost`/`EstimateCost` → `appwire.EstimateCost` →
 the three cost-bearing surfaces added in Track C: the input-strip status row
 (`cmd/evener-hub/web_workspace.go` `renderInputStrip`), the details panel
 (`tokensAndCostRows`/`detailsRow`, `data-row="cost"`), and the per-turn
@@ -13,7 +13,7 @@ server round trip.
 
 - Hub running as an isolated instance, fake `$HOME`
   (never Jesse's real `9180`).
-- A model with pricing data in `llm/pricing.go` (e.g. `openai/gpt-5.5`).
+- A model whose registry row carries a cost (e.g. `openai/gpt-5.5`).
 - Browser authenticated against the hub, OR (browser tool unavailable) a
   Bearer token and `curl` with `-H "HX-Request: true"` against
   `/_partials/s/<id>/state` and `/_partials/s/<id>/details` — both are

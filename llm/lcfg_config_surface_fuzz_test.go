@@ -11,11 +11,11 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
-	"slices"
 	"strings"
 	"testing"
 
 	"primeradiant.com/evener/llm/providercfg"
+	"primeradiant.com/evener/llm/registry"
 )
 
 type lcfgSecretFile struct {
@@ -185,91 +185,85 @@ func Fuzz_lcfg_NewFromProviders(f *testing.F) {
 	})
 }
 
-// Fuzz_lcfg_GetPrice drives ModelCatalog.GetPrice over (a) the real embedded
-// catalog with fuzzed model IDs and (b) a synthetic catalog built from fuzzed
-// non-negative rates, exercising exact/alias lookup, the longest-prefix
-// fallback, and priceFromModelInfo.
+// Fuzz_lcfg_PriceFromCost drives PriceFromCost over fuzzed registry costs,
+// the one path from a resolved row's rates to the Price every estimate is
+// computed at (spec §7.5).
 //
 // Oracles:
-//   - never panics (incl. nil-receiver and empty-ID short-circuits);
-//   - determinism: two lookups agree;
-//   - non-negative: the embedded catalog only ever yields non-negative rates;
-//   - provenance: a found price's rates match some catalog entry whose ID is a
-//     prefix of (or an exact/alias match for) the queried ID — the function may
-//     not invent a price out of thin air.
-func Fuzz_lcfg_GetPrice(f *testing.F) {
-	f.Add("claude-opus-4-5-20260101", 3.0, 15.0)
-	f.Add("gpt-5.2", 1.25, 10.0)
-	f.Add("", 0.0, 0.0)
-	f.Add("   ", 2.0, 4.0)
-	f.Add("lcfg-unknown-model-xyz", -7.0, 999.0)
+//   - never panics, nil cost included;
+//   - a nil cost is never priced; a present one always is, all-zero rates
+//     included (a row that says zero is not a row with no price);
+//   - determinism: two conversions agree;
+//   - provenance: the base rates are the cost's own, and each cache tier is
+//     set exactly when its rate is positive — the function may not invent,
+//     scale or drop a rate;
+//   - the 1-hour creation tier is always absent: models.dev carries a single
+//     cache-write rate, reported as the 5-minute tier.
+func Fuzz_lcfg_PriceFromCost(f *testing.F) {
+	f.Add(3.0, 15.0, 0.3, 3.75)
+	f.Add(0.0, 0.0, 0.0, 0.0)
+	f.Add(1.25, 10.0, 0.125, 0.0)
+	f.Add(-7.0, 999.0, -0.5, 2.0)
+	f.Add(math.NaN(), math.Inf(1), 0.0, math.Inf(-1))
 
-	f.Fuzz(func(t *testing.T, modelID string, inRate, outRate float64) {
-		emb := EmbeddedModelCatalog()
-
-		p1, ok1 := emb.GetPrice(modelID)
-		p2, ok2 := emb.GetPrice(modelID)
-		if ok1 != ok2 || p1 != p2 {
-			t.Fatalf("embedded GetPrice(%q) nondeterministic: (%+v,%v) vs (%+v,%v)", modelID, p1, ok1, p2, ok2)
-		}
-		if ok1 {
-			if p1.InputPerM < 0 || p1.OutputPerM < 0 {
-				t.Fatalf("embedded GetPrice(%q) negative rate: %+v", modelID, p1)
-			}
-			lcfgAssertPriceProvenance(t, emb, modelID, p1)
+	f.Fuzz(func(t *testing.T, in, out, cacheRead, cacheWrite float64) {
+		if p, ok := PriceFromCost(nil); ok || p != (Price{}) {
+			t.Fatalf("PriceFromCost(nil) = (%+v, %v), want the zero Price and false", p, ok)
 		}
 
-		// nil receiver must not panic.
-		var nilCat *ModelCatalog
-		if _, ok := nilCat.GetPrice(modelID); ok {
-			t.Fatalf("nil catalog reported a price for %q", modelID)
+		cost := &registry.Cost{Input: in, Output: out, CacheRead: cacheRead, CacheWrite: cacheWrite}
+		p1, ok1 := PriceFromCost(cost)
+		p2, ok2 := PriceFromCost(cost)
+		if !ok1 || !ok2 {
+			t.Fatalf("PriceFromCost(%+v) reported no price for a present cost", cost)
 		}
-
-		// Synthetic catalog: skip non-finite fuzzed rates (those can only arrive
-		// from a hand-built catalog, never from the embedded JSON, and the
-		// provenance oracle uses value equality).
-		if math.IsNaN(inRate) || math.IsInf(inRate, 0) || math.IsNaN(outRate) || math.IsInf(outRate, 0) {
-			return
+		if !lcfgSamePrice(p1, p2) {
+			t.Fatalf("PriceFromCost(%+v) nondeterministic: %+v vs %+v", cost, p1, p2)
 		}
-		in := math.Abs(inRate)
-		out := math.Abs(outRate)
-		syn := &ModelCatalog{Models: []ModelInfo{
-			{ID: "fam", InputCostPerMillion: &in, OutputCostPerMillion: &out},
-			{ID: "fam-mini"}, // no rates: forces skip in the prefix loop
-			{ID: "other", InputCostPerMillion: &out, OutputCostPerMillion: &in},
-		}}
-		sp1, sok1 := syn.GetPrice(modelID)
-		sp2, sok2 := syn.GetPrice(modelID)
-		if sok1 != sok2 || sp1 != sp2 {
-			t.Fatalf("synthetic GetPrice(%q) nondeterministic", modelID)
+		if !lcfgSameRate(p1.InputPerM, in) || !lcfgSameRate(p1.OutputPerM, out) {
+			t.Fatalf("PriceFromCost(%+v) base rates = %v/%v, want the cost's own", cost, p1.InputPerM, p1.OutputPerM)
 		}
-		if sok1 {
-			lcfgAssertPriceProvenance(t, syn, modelID, sp1)
+		lcfgAssertCacheTier(t, "cache_read", p1.CacheReadPerM, cacheRead)
+		lcfgAssertCacheTier(t, "cache_create_5m", p1.CacheCreation5mPerM, cacheWrite)
+		if p1.CacheCreation1hPerM != nil {
+			t.Fatalf("PriceFromCost(%+v) invented a 1-hour tier: %v", cost, *p1.CacheCreation1hPerM)
 		}
 	})
 }
 
-// lcfgAssertPriceProvenance verifies a returned price traces to a catalog entry
-// that legitimately matches modelID (exact/alias/prefix), never a fabrication.
-func lcfgAssertPriceProvenance(t *testing.T, cat *ModelCatalog, modelID string, got Price) {
+// lcfgAssertCacheTier checks one optional cache tier: present with exactly the
+// row's rate when that rate is positive, absent otherwise.
+func lcfgAssertCacheTier(t *testing.T, name string, got *float64, rate float64) {
 	t.Helper()
-	id := strings.TrimSpace(modelID)
-	for i := range cat.Models {
-		m := &cat.Models[i]
-		if m.InputCostPerMillion == nil || m.OutputCostPerMillion == nil {
-			continue
+	if rate > 0 {
+		if got == nil || !lcfgSameRate(*got, rate) {
+			t.Fatalf("%s = %v, want %v", name, got, rate)
 		}
-		if *m.InputCostPerMillion != got.InputPerM || *m.OutputCostPerMillion != got.OutputPerM {
-			continue
-		}
-		if m.ID == id || strings.HasPrefix(id, m.ID) {
-			return
-		}
-		if slices.Contains(m.Aliases, id) {
-			return
-		}
+		return
 	}
-	t.Fatalf("GetPrice(%q) returned %+v with no matching catalog entry", modelID, got)
+	if got != nil {
+		t.Fatalf("%s = %v, want absent for a non-positive rate %v", name, *got, rate)
+	}
+}
+
+// lcfgSameRate compares two rates by value, treating NaN as equal to NaN: a
+// fuzzed NaN rate must survive the conversion unchanged, and == says otherwise.
+func lcfgSameRate(a, b float64) bool {
+	return a == b || (math.IsNaN(a) && math.IsNaN(b))
+}
+
+// lcfgSamePrice is lcfgSameRate over a whole Price, including its optional tiers.
+func lcfgSamePrice(a, b Price) bool {
+	sameTier := func(x, y *float64) bool {
+		if x == nil || y == nil {
+			return x == nil && y == nil
+		}
+		return lcfgSameRate(*x, *y)
+	}
+	return lcfgSameRate(a.InputPerM, b.InputPerM) && lcfgSameRate(a.OutputPerM, b.OutputPerM) &&
+		sameTier(a.CacheReadPerM, b.CacheReadPerM) &&
+		sameTier(a.CacheCreation5mPerM, b.CacheCreation5mPerM) &&
+		sameTier(a.CacheCreation1hPerM, b.CacheCreation1hPerM)
 }
 
 // Fuzz_lcfg_Kind drives Kind over classified errors built from fuzzed HTTP

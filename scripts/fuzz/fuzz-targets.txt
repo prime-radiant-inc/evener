@@ -343,10 +343,10 @@ native:llm:./providers/anthropic:FuzzAreqDecodeStreamGrammar
 native:llm:./providers/anthropic:FuzzAreqParseUsage
 native:llm:./providers/anthropic:FuzzAreqToAnthropicMessages
 native:llm:.:Fuzz_lcfg_ContinuationSecret
-native:llm:.:Fuzz_lcfg_GetPrice
 native:llm:.:Fuzz_lcfg_Kind
 native:llm:.:Fuzz_lcfg_NewFromEnv
 native:llm:.:Fuzz_lcfg_NewFromProviders
+native:llm:.:Fuzz_lcfg_PriceFromCost
 native:llm:./providers/google:FuzzMiscGoogleStreamRoundTrip
 native:llm:./providers/ollama:FuzzMiscOllamaNormalizeHost
 native:llm:./providers/openaicompat:FuzzMiscOpenAICompatBuilder
