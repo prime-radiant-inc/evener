@@ -395,6 +395,12 @@ func (c *hubAuthController) ApiKeySet(params appwire.AuthApiKeySetParams) (appwi
 	if strings.TrimSpace(params.Value) == "" {
 		return appwire.AuthStatusResponse{}, appwire.InvalidParams("value is required")
 	}
+	// A key stored under a Codex instance is one nothing reads: the transport
+	// authenticates with its OAuth record (spec §5.1), so storing it and
+	// reporting success would describe a credential the launch cannot use.
+	if c.instanceIsCodex(name) {
+		return appwire.AuthStatusResponse{}, appwire.InvalidParams(fmt.Sprintf("%s authenticates with an OAuth record, not an API key: run `evener openai login --instance %s`", name, name))
+	}
 	if err := c.setCredential(name, params.Value); err != nil {
 		return appwire.AuthStatusResponse{}, err
 	}
@@ -642,18 +648,19 @@ func (c *hubAuthController) openAIInstanceStatus(name string) (appwire.AuthStatu
 		return appwire.AuthStatusResponse{}, err
 	}
 
-	// A Codex instance never reads an API key (spec §5.1), so the only layers
-	// below the OAuth record are the store's own entry for this instance.
+	// The Codex transport authenticates with its OAuth record and nothing else:
+	// the registry ignores the store and the environment for this scheme
+	// (spec §5.1, §10), so the source is "oauth" when a record exists and
+	// "none" when one does not. A stored key under this name is reported as a
+	// diagnostic only — calling it a sign-in would claim a credential the
+	// spawn gate refuses (kata z1gm).
 	hasFile, _ := c.creds.Layers(name)
 
+	source := "none"
 	var active authopenai.AuthStatus
-	switch {
-	case hasRecord:
+	if hasRecord {
 		active = openAIStatusFromRecord(c.now(), record)
-	case hasFile:
-		active = authopenai.AuthStatus{SignedIn: true, Source: string(credentials.SourceFile)}
-	default:
-		active = authopenai.AuthStatus{Source: authopenai.AuthSourceSignedOut}
+		source = authopenai.AuthSourceOAuth
 	}
 
 	// Every caller has already resolved this instance to the Codex transport,
@@ -664,7 +671,7 @@ func (c *hubAuthController) openAIInstanceStatus(name string) (appwire.AuthStatu
 		Provider:      name,
 		Supported:     true,
 		SignedIn:      active.SignedIn,
-		ActiveSource:  active.Source,
+		ActiveSource:  source,
 		AuthModes:     modes,
 		Email:         active.Email,
 		AccountID:     active.AccountID,
@@ -676,11 +683,9 @@ func (c *hubAuthController) openAIInstanceStatus(name string) (appwire.AuthStatu
 	if hasRecord {
 		status.HasStoredOAuth = true
 		status.StoredEmail = record.Email
-		if status.ActiveSource == authopenai.AuthSourceOAuth {
-			status.Email = envvars.FirstNonEmpty(status.Email, record.Email)
-			status.AccountID = envvars.FirstNonEmpty(status.AccountID, record.AccountID)
-			status.WorkspaceID = envvars.FirstNonEmpty(status.WorkspaceID, record.WorkspaceID)
-		}
+		status.Email = envvars.FirstNonEmpty(status.Email, record.Email)
+		status.AccountID = envvars.FirstNonEmpty(status.AccountID, record.AccountID)
+		status.WorkspaceID = envvars.FirstNonEmpty(status.WorkspaceID, record.WorkspaceID)
 	}
 	return status, nil
 }

@@ -9,6 +9,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -122,8 +123,8 @@ func TestHubRPCAuthStatusIgnoresAPIKeyForTheCodexInstance(t *testing.T) {
 	if err != nil {
 		t.Fatalf("AuthStatus: %v", err)
 	}
-	if status.SignedIn || status.ActiveSource != authopenai.AuthSourceSignedOut || status.HasStoredOAuth || status.EnvVar != "" {
-		t.Fatalf("status=%+v, want signed out: an API key is not a Codex credential", status)
+	if status.SignedIn || status.ActiveSource != "none" || status.HasStoredOAuth || status.EnvVar != "" {
+		t.Fatalf("status=%+v, want signed out with source none: an API key is not a Codex credential", status)
 	}
 }
 
@@ -268,8 +269,8 @@ func TestHubRPCAuthLogoutRemovesUserScopedOpenAIAuth(t *testing.T) {
 	if err != nil {
 		t.Fatalf("AuthLogout: %v", err)
 	}
-	if !resp.Removed || resp.Status.ActiveSource != authopenai.AuthSourceSignedOut {
-		t.Fatalf("logout=%+v, want removed and signed out", resp)
+	if !resp.Removed || resp.Status.ActiveSource != "none" {
+		t.Fatalf("logout=%+v, want removed and source none", resp)
 	}
 	if _, err := authopenai.LoadAuth(userStateDir, "openai"); !errors.Is(err, authopenai.ErrAuthNotFound) {
 		t.Fatalf("LoadAuth() err=%v, want ErrAuthNotFound", err)
@@ -407,7 +408,12 @@ func TestAuth_Status_AnthropicViaStore(t *testing.T) {
 	}
 }
 
-func TestAuth_OpenAI_Status_ReflectsStoredFileKey(t *testing.T) {
+// TestAuth_Codex_StoredKeyIsNotACredential is kata z1gm on the Codex
+// transport: the registry resolves an oauth-openai-codex instance from its
+// OAuth record and nothing else (spec §5.1, §10), so a credentials.toml entry
+// under that name is not a credential. The pane must say so, because the spawn
+// gate reading the same registry refuses the launch.
+func TestAuth_Codex_StoredKeyIsNotACredential(t *testing.T) {
 	oaitest.IsolateOpenAIAuth(t)
 	dir := t.TempDir()
 	store, _ := credentials.LoadStore(filepath.Join(dir, "credentials.toml"))
@@ -417,15 +423,25 @@ func TestAuth_OpenAI_Status_ReflectsStoredFileKey(t *testing.T) {
 	if err := store.Set("openai-codex", "sk-test-123"); err != nil {
 		t.Fatalf("store.Set: %v", err)
 	}
+	if err := c.reg.Reload(); err != nil {
+		t.Fatalf("Reload: %v", err)
+	}
 	got, err := c.Status(appwire.AuthStatusParams{Provider: "openai-codex"})
 	if err != nil {
 		t.Fatalf("Status: %v", err)
 	}
-	if !got.SignedIn || got.ActiveSource != string(credentials.SourceFile) || !got.HasStoredFile {
-		t.Fatalf("status=%+v, want signed-in file with HasStoredFile", got)
+	if got.SignedIn || got.ActiveSource != "none" {
+		t.Fatalf("status=%+v, want signed out with source none: a stored key is not a Codex credential", got)
+	}
+	if !got.HasStoredFile {
+		t.Errorf("status=%+v, want HasStoredFile as a diagnostic", got)
 	}
 	if got.HasStoredOAuth {
 		t.Fatalf("status=%+v, want no stored OAuth", got)
+	}
+	// And the gate in front of the launch agrees.
+	if err := validateProviderCredentials("openai-codex", c.reg); err == nil {
+		t.Fatal("the spawn gate accepted a Codex instance whose only key is in the store")
 	}
 }
 
@@ -456,7 +472,7 @@ func TestAuth_OpenAI_Status_OAuthShadowsStoredFileKey(t *testing.T) {
 	}
 }
 
-func TestAuth_OpenAI_Status_CorruptOAuthFallsBackToFile(t *testing.T) {
+func TestAuth_Codex_Status_CorruptOAuthIsNoCredential(t *testing.T) {
 	oaitest.IsolateOpenAIAuth(t)
 	dir := t.TempDir()
 	store, _ := credentials.LoadStore(filepath.Join(dir, "credentials.toml"))
@@ -477,12 +493,19 @@ func TestAuth_OpenAI_Status_CorruptOAuthFallsBackToFile(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Status returned error on corrupt record: %v", err)
 	}
-	if !got.SignedIn || got.ActiveSource != string(credentials.SourceFile) || !got.HasStoredFile {
-		t.Fatalf("status=%+v, want signed-in file (corrupt oauth treated as absent)", got)
+	if got.SignedIn || got.ActiveSource != "none" {
+		t.Fatalf("status=%+v, want signed out with source none (a corrupt record is absent, and the store is not a Codex credential)", got)
+	}
+	if !got.HasStoredFile {
+		t.Errorf("status=%+v, want HasStoredFile as a diagnostic", got)
 	}
 }
 
-func TestAuth_OpenAI_ApiKeySet_PersistsAndReportsFile(t *testing.T) {
+// TestAuth_Codex_ApiKeySetIsRefused: storing a key nothing can use and then
+// reporting success is how the pane came to claim a sign-in the spawn gate
+// refuses. The Codex transport authenticates with its OAuth record alone
+// (spec §5.1), so the pane says so instead of writing the key.
+func TestAuth_Codex_ApiKeySetIsRefused(t *testing.T) {
 	oaitest.IsolateOpenAIAuth(t)
 	dir := t.TempDir()
 	credsPath := filepath.Join(dir, "credentials.toml")
@@ -491,17 +514,16 @@ func TestAuth_OpenAI_ApiKeySet_PersistsAndReportsFile(t *testing.T) {
 	c.stateDir = t.TempDir()
 	attachTestRegistry(t, c) // no OAuth record
 
-	got, err := c.ApiKeySet(appwire.AuthApiKeySetParams{Provider: "openai-codex", Value: "sk-openai-XXX"})
-	if err != nil {
-		t.Fatalf("ApiKeySet(openai): %v", err)
+	_, err := c.ApiKeySet(appwire.AuthApiKeySetParams{Provider: "openai-codex", Value: "sk-openai-XXX"})
+	if err == nil {
+		t.Fatal("ApiKeySet(openai-codex) succeeded; a key the Codex transport never reads must be refused")
 	}
-	if got.ActiveSource != string(credentials.SourceFile) || !got.HasStoredFile {
-		t.Fatalf("status=%+v, want file active with HasStoredFile", got)
+	if !strings.Contains(err.Error(), "evener openai login") {
+		t.Errorf("the refusal names the way in: %v", err)
 	}
 	store2, _ := credentials.LoadStore(credsPath)
-	v, src := store2.Get("openai-codex")
-	if v != "sk-openai-XXX" || src != credentials.SourceFile {
-		t.Errorf("after ApiKeySet: v=%q src=%q, want sk-openai-XXX/file", v, src)
+	if v, _ := store2.Get("openai-codex"); v != "" {
+		t.Errorf("the refused key reached credentials.toml: %q", v)
 	}
 }
 
@@ -519,15 +541,15 @@ func TestAuth_OpenAI_Logout_ClearsStoredFileKey(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Logout: %v", err)
 	}
-	if !resp.Removed || resp.Status.ActiveSource != authopenai.AuthSourceSignedOut {
-		t.Fatalf("resp=%+v, want removed + signed-out", resp)
+	if !resp.Removed || resp.Status.ActiveSource != "none" {
+		t.Fatalf("resp=%+v, want removed + source none", resp)
 	}
 	if v, _ := store.Get("openai"); v != "" {
 		t.Errorf("file key still present: %q", v)
 	}
 }
 
-func TestAuth_OpenAI_Logout_OAuthRevealsStoredFileKey(t *testing.T) {
+func TestAuth_Codex_Logout_OAuthRemovalLeavesNoCredential(t *testing.T) {
 	oaitest.IsolateOpenAIAuth(t)
 	dir := t.TempDir()
 	store, _ := credentials.LoadStore(filepath.Join(dir, "credentials.toml"))
@@ -549,15 +571,15 @@ func TestAuth_OpenAI_Logout_OAuthRevealsStoredFileKey(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Logout: %v", err)
 	}
-	if !resp.Removed || resp.Status.ActiveSource != string(credentials.SourceFile) {
-		t.Fatalf("resp=%+v, want removed OAuth revealing file", resp)
+	if !resp.Removed || resp.Status.ActiveSource != "none" {
+		t.Fatalf("resp=%+v, want the OAuth record removed and no credential left (the store is not a Codex credential)", resp)
 	}
 	if resp.Status.HasStoredOAuth {
 		t.Errorf("OAuth record still present after logout")
 	}
 }
 
-func TestAuth_OpenAI_Logout_CorruptOAuthDeletedRevealsFile(t *testing.T) {
+func TestAuth_Codex_Logout_CorruptOAuthDeletedLeavesNoCredential(t *testing.T) {
 	oaitest.IsolateOpenAIAuth(t)
 	dir := t.TempDir()
 	store, _ := credentials.LoadStore(filepath.Join(dir, "credentials.toml"))
@@ -578,15 +600,15 @@ func TestAuth_OpenAI_Logout_CorruptOAuthDeletedRevealsFile(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Logout: %v", err)
 	}
-	if !resp.Removed || resp.Status.ActiveSource != string(credentials.SourceFile) {
-		t.Fatalf("resp=%+v, want corrupt oauth removed revealing file", resp)
+	if !resp.Removed || resp.Status.ActiveSource != "none" {
+		t.Fatalf("resp=%+v, want the corrupt record removed and no credential left", resp)
 	}
 	if _, statErr := os.Stat(authPath); !os.IsNotExist(statErr) {
 		t.Errorf("corrupt openai.json still present after logout: %v", statErr)
 	}
 }
 
-func TestAuth_OpenAI_Status_ExpiredOAuthStillShadowsFileKey(t *testing.T) {
+func TestAuth_Codex_Status_ExpiredOAuthStaysTheSource(t *testing.T) {
 	oaitest.IsolateOpenAIAuth(t)
 	dir := t.TempDir()
 	store, _ := credentials.LoadStore(filepath.Join(dir, "credentials.toml"))
@@ -609,7 +631,8 @@ func TestAuth_OpenAI_Status_ExpiredOAuthStillShadowsFileKey(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Status: %v", err)
 	}
-	// Expired OAuth stays the effective source (NeedsLogin); must NOT downgrade to file.
+	// Expired OAuth stays the source the registry resolves (the record exists),
+	// with NeedsLogin carrying the "sign in again" signal.
 	if got.ActiveSource != authopenai.AuthSourceOAuth || !got.NeedsLogin {
 		t.Fatalf("status=%+v, want oauth active + NeedsLogin (expired record must not fall back to file)", got)
 	}
