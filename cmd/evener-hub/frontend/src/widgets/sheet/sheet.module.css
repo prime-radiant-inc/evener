@@ -123,6 +123,13 @@
 
 .expandableBottom {
   height: 100vh;
+  /* Override .bottom's max-height: min(480px, 100vh): when expandable, the
+   * panel owns the dynamic height (peek vs full) via an inline style, and
+   * the 480px cap would prevent the "full" (100vh) geometry from ever
+   * filling the screen. .expandableBottom appears after .bottom in the
+   * composed panelClassName and has equal (single-class) specificity, so
+   * this later declaration wins. */
+  max-height: 100vh;
   transition: height var(--motion-duration-overlay) var(--motion-easing-standard);
 }
 

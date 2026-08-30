@@ -1,6 +1,6 @@
 {
   "name": "welcome-resume-candidate-overflow",
-  "description": "Welcome pane (issue #197): a 200-rune resume-candidate title, forced to white-space:nowrap by button.module.css, must not inflate the centered .actions column past the pane body - PaneScaffold's overflow-x:clip would slice it into a marker-less mid-string fragment and stretch the .examples buttons past the viewport. The wrapped title must also fit INSIDE the button box vertically (no fixed-height spill), and the example buttons keep their deliberate left alignment.",
+  "description": "Welcome pane (issue #197): a 200-rune resume-candidate title, forced to white-space:nowrap by button.module.css, must not inflate the centered .actions column past the pane body - PaneScaffold's overflow-x:clip would slice it into a marker-less mid-string fragment and stretch the column past the viewport. The wrapped title must also fit INSIDE the button box vertically (no fixed-height spill). The example prompt buttons were removed from the product; this probe now asserts only the resume button, the New session button, and the hints staying inside the pane body.",
   "viewport": {
     "width": 390,
     "height": 844,
@@ -17,7 +17,7 @@
   ],
   "widthMatrix": [{ "width": 320 }, { "width": 360 }, { "width": 390 }],
   "mutation": {
-    "declaration": "panes/welcome/welcome.module.css: .actions button { white-space: normal } (deleted - fails with the full #197 shape: resume button 1163px wide, symmetric double-ended clip, examples stretched to 576px); .actions button { height: auto } (deleted - fails with the wrapped label spilling 19-27px out of its fixed-height box)",
+    "declaration": "panes/welcome/welcome.module.css: .actions button { white-space: normal } (deleted - fails with the full #197 shape: resume button 1163px wide, symmetric double-ended clip, column stretched past viewport); .actions button { height: auto } (deleted - fails with the wrapped label spilling 19-27px out of its fixed-height box)",
     "verified": "2026-08-19",
     "expect": "fail"
   }
