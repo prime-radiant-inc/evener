@@ -53,8 +53,10 @@ e.g. ollama) and derives:
   provider default (`true`: an uncataloged model is permitted, not assumed
   non-reasoning).
 - `effortLevels`: providers.toml `thinking_levels` → catalog levels → the
-  constructor's provider vocabulary. A non-reasoning model gets an empty,
-  non-nil level list so the `task_list` enum and the effort chip agree.
+  constructor's provider vocabulary. The ladder stays stored for a
+  non-reasoning model; `ReasoningEffortLevels()` gates the read, so the
+  `task_list` enum and the effort chip agree with the request builder while a
+  later model switch or live reasoning-on has a vocabulary to return to.
 - `defaultEffort`: catalog `DefaultReasoningEffort` (override data or, later,
   live `/models`).
 

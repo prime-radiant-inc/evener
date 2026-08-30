@@ -112,7 +112,7 @@ function ReasoningEffortControl({ sessionRef, model }: { sessionRef: string; mod
           select already speaks its own value - without it the value would be
           announced twice. */}
       <span className={CLASS.effortValue} data-testid="status-row-effort-value" aria-hidden="true">
-        {effortLabel(current)}
+        {effortLabel(current, levels)}
       </span>
       <span className={CLASS.effortChevron} aria-hidden="true">
         <Chevron direction="down" />
@@ -132,7 +132,7 @@ function ReasoningEffortControl({ sessionRef, model }: { sessionRef: string; mod
       >
         {options.map((level) => (
           <option key={level} value={level}>
-            {effortLabel(level)}
+            {effortLabel(level, levels)}
           </option>
         ))}
       </select>

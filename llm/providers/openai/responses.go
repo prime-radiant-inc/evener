@@ -579,6 +579,11 @@ func responsesInbandError(data []byte) error {
 	return inbandStreamError("responses.create(stream)", inband, raw)
 }
 
+// reasoningPartSeparator joins consecutive reasoning parts, both as they
+// stream and in the settled thinking text, so the transcript reads like the
+// live view (the contract Response.ReasoningText documents).
+const reasoningPartSeparator = "\n\n"
+
 // responsesAPIEventTypes are the event types this decoder recognizes as the
 // Responses API's own: the ones the decode switch below handles, plus the
 // lifecycle events OpenAI documents ahead of the first delta. An endpoint that
@@ -590,11 +595,6 @@ func responsesInbandError(data []byte) error {
 // decoder does not know what it is, so it cannot vouch for the endpoint. A bare
 // "error" envelope is not enough either — it is generic SSE, not this API. Both
 // leave the empty-stream sentinel armed.
-// reasoningPartSeparator joins consecutive reasoning parts, both as they
-// stream and in the settled thinking text, so the transcript reads like the
-// live view (the contract Response.ReasoningText documents).
-const reasoningPartSeparator = "\n\n"
-
 var responsesAPIEventTypes = map[string]struct{}{
 	"response.created":                       {},
 	"response.in_progress":                   {},

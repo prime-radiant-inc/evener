@@ -24,11 +24,12 @@ type ModelInfo struct {
 	SupportsVision    bool   `json:"supports_vision"`
 	SupportsReasoning bool   `json:"supports_reasoning"`
 	// ReasoningAuthoritative marks that SupportsReasoning is knowledge rather
-	// than sparse data: the source stated it explicitly, or the entry is a
-	// bare curated key (litellm's silence there means the model does not
-	// reason). Provider-prefixed mirror keys (openrouter/*, ollama/*) that
-	// are silent leave the model's reasoning support unknown, and consumers
-	// treat it as permitted.
+	// than sparse data: the source stated it explicitly, the entry carries an
+	// effort ladder (which implies a reasoning model unless explicitly
+	// denied), or the entry is a bare curated key (litellm's silence there
+	// means the model does not reason). Provider-prefixed mirror keys
+	// (openrouter/*, ollama/*) that are silent leave the model's reasoning
+	// support unknown, and consumers treat it as permitted.
 	ReasoningAuthoritative bool     `json:"reasoning_authoritative,omitempty"`
 	ReasoningEffortLevels  []string `json:"reasoning_effort_levels,omitempty"`
 	// DefaultReasoningEffort is the effort a model runs at when the session
@@ -485,6 +486,16 @@ func parseLiteLLMCatalog(data []byte) (*ModelCatalog, error) {
 		if len(effortLevels) == 0 {
 			effortLevels = synthesizeReasoningEffortLevels(v)
 		}
+		// An entry that enumerates per-level effort flags is not silent about
+		// reasoning: an effort ladder implies a reasoning model unless the
+		// source states supports_reasoning: false explicitly (perplexity
+		// mirrors do). gpt-5-search-api carries effort flags with no
+		// supports_reasoning key.
+		reasoningExplicit := v["supports_reasoning"] != nil
+		supportsReasoning := parseBool(v["supports_reasoning"])
+		if !reasoningExplicit && len(effortLevels) > 0 {
+			supportsReasoning = true
+		}
 
 		models = append(models, ModelInfo{
 			ID:                            id,
@@ -494,8 +505,8 @@ func parseLiteLLMCatalog(data []byte) (*ModelCatalog, error) {
 			MaxOutputTokens:               maxOutPtr,
 			SupportsTools:                 parseBool(v["supports_function_calling"]),
 			SupportsVision:                parseBool(v["supports_vision"]),
-			SupportsReasoning:             parseBool(v["supports_reasoning"]),
-			ReasoningAuthoritative:        v["supports_reasoning"] != nil || !strings.Contains(id, "/"),
+			SupportsReasoning:             supportsReasoning,
+			ReasoningAuthoritative:        reasoningExplicit || len(effortLevels) > 0 || !strings.Contains(id, "/"),
 			ReasoningEffortLevels:         effortLevels,
 			SupportsAdaptiveThinking:      parseBool(v["supports_adaptive_thinking"]),
 			SupportsEffortParameter:       parseBool(v["supports_effort_parameter"]),

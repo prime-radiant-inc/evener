@@ -1,6 +1,9 @@
 package provider
 
 import (
+	"encoding/json"
+	"slices"
+	"strings"
 	"testing"
 
 	"primeradiant.com/evener/llm"
@@ -114,11 +117,11 @@ func TestProfile_WithModel_RebuildRederivesReasoningFacts(t *testing.T) {
 	}
 }
 
-// google/minimax/kimi-anthropic clone rather than rebuild on a model switch;
-// the shallow path must re-derive the facts too, in both directions, and a
-// switch away from a non-reasoning model must restore a usable ladder — an
-// empty one would defeat the clamp (max → an unclamped 131072-token Gemini
-// thinking budget).
+// google/minimax/kimi-anthropic rebuild via their constructors on a model
+// switch like every other provider, so the facts re-derive in both directions
+// and a switch away from a non-reasoning model gets a usable ladder — a stale
+// one would defeat the clamp (max → an unclamped 131072-token Gemini thinking
+// budget).
 func TestProfile_WithModel_ShallowCloneRederivesReasoningFacts(t *testing.T) {
 	toNonReasoning := newGeminiProfile("gemini-2.5-pro").WithModel("gemini-2.0-flash")
 	if toNonReasoning.SupportsReasoning() {
@@ -134,6 +137,57 @@ func TestProfile_WithModel_ShallowCloneRederivesReasoningFacts(t *testing.T) {
 	}
 	if len(back.ReasoningEffortLevels()) == 0 {
 		t.Fatal("gemini-2.5-pro after WithModel back: empty effort ladder, want the provider vocabulary restored")
+	}
+}
+
+// A model switch must hand the new model the provider vocabulary, not the
+// incumbent's narrower curated ladder: k3's [low high max] must not cost an
+// uncataloged sibling its medium tier (the clamp would round a default of
+// medium up to high).
+func TestProfile_WithModel_UncatalogedModelGetsProviderVocabulary(t *testing.T) {
+	p := newKimiAnthropicProfile("k3").WithModel("kimi-uncataloged-test-model")
+	if !slices.Contains(p.ReasoningEffortLevels(), "medium") {
+		t.Fatalf("levels = %v, want the provider vocabulary including medium, not k3's curated ladder", p.ReasoningEffortLevels())
+	}
+}
+
+// taskListHasEffortEnum reports whether the profile's task_list schema offers
+// the per-task reasoning_effort enum ("inherit" rides along only when the
+// gated ladder is non-empty).
+func taskListHasEffortEnum(t *testing.T, p *Profile) bool {
+	t.Helper()
+	for _, def := range p.ToolDefinitions() {
+		if def.Name != "task_list" {
+			continue
+		}
+		raw, err := json.Marshal(def.Parameters)
+		if err != nil {
+			t.Fatalf("marshal task_list schema: %v", err)
+		}
+		return strings.Contains(string(raw), `"inherit"`)
+	}
+	t.Fatal("no task_list definition on the profile")
+	return false
+}
+
+// The task_list effort enum follows the gated ladder: absent for a
+// non-reasoning model at construction, and appearing/disappearing when live
+// capability data flips reasoning.
+func TestProfile_TaskListEffortEnumFollowsGatedLadder(t *testing.T) {
+	nonReasoning := NewOpenAIProfile("gpt-4.1")
+	if taskListHasEffortEnum(t, nonReasoning) {
+		t.Fatal("gpt-4.1 task_list offers a reasoning_effort enum, want none for a non-reasoning model")
+	}
+	if !taskListHasEffortEnum(t, NewOpenAIProfile("gpt-5.5")) {
+		t.Fatal("gpt-5.5 task_list lacks the reasoning_effort enum, want it for a reasoning model")
+	}
+	flippedOn := nonReasoning.WithLiveModelInfo(llm.ModelInfo{CapabilitiesAdvertised: true, SupportsReasoning: true})
+	if !taskListHasEffortEnum(t, flippedOn) {
+		t.Fatal("task_list lacks the reasoning_effort enum after live reasoning-on")
+	}
+	flippedOff := NewOpenAIProfile("gpt-5.5").WithLiveModelInfo(llm.ModelInfo{CapabilitiesAdvertised: true, SupportsReasoning: false})
+	if taskListHasEffortEnum(t, flippedOff) {
+		t.Fatal("task_list still offers the reasoning_effort enum after live reasoning-off")
 	}
 }
 

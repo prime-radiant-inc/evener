@@ -43,3 +43,20 @@ func TestApplyThinkingFormat_ExplicitNone(t *testing.T) {
 		})
 	}
 }
+
+// The off-guard keys on the configured effort, not the post-translation wire
+// string: a thinking_levels entry may spell a real thinking-on tier as the
+// provider's literal "none", and that tier must still emit its wire shape.
+func TestApplyThinkingFormat_WireSpelledNoneIsNotOff(t *testing.T) {
+	minimal := "minimal"
+	body := map[string]any{}
+	mc := ModelCompat{
+		Quirks:         ProviderQuirks{ThinkingFormat: "zai"},
+		ThinkingLevels: map[string]string{"minimal": "none", "high": "high"},
+	}
+	applyThinkingFormat(body, llm.Request{ReasoningEffort: &minimal}, mc)
+	thinking, _ := body["thinking"].(map[string]any)
+	if thinking == nil || thinking["type"] != "enabled" {
+		t.Fatalf("body = %#v, want thinking enabled for a wire-spelled none that means the lowest tier", body)
+	}
+}
