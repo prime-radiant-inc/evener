@@ -392,7 +392,13 @@ func (c *Client) Models(ctx context.Context, instance string) (ModelListing, err
 		return ModelListing{}, RewriteErrorProvider(err, instance)
 	default:
 		live = true
-		r.ApplyLive(instance, rows)
+		if c.hasRegistry {
+			// Only a client that owns its registry records what an
+			// instance's transport said. A client without WithRegistry
+			// resolves against the process-wide EmbeddedRegistry, which it
+			// shares with every other such client (spec §5.1, §8.1).
+			r.ApplyLive(instance, rows)
+		}
 	}
 	ids, err := r.ModelIDs(instance)
 	if err != nil {
