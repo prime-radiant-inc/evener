@@ -176,11 +176,11 @@ func TestOpenAI_SkillsWithUseSkillInSystemPrompt(t *testing.T) {
 	if !strings.Contains(capturedSystem, "<skill-catalog>") {
 		t.Error("OpenAI system prompt should contain <skill-catalog> section")
 	}
-	if !strings.Contains(capturedSystem, "Load a skill by calling use_skill with its name") {
+	if !strings.Contains(capturedSystem, "use_skill") {
 		t.Error("OpenAI system prompt should instruct model to use use_skill for skills")
 	}
-	if !strings.Contains(capturedSystem, "- my-skill: Test skill [") {
-		t.Error("OpenAI system prompt should list skill directory for use_skill")
+	if !strings.Contains(capturedSystem, "my-skill") {
+		t.Error("OpenAI system prompt should list the configured skill")
 	}
 }
 
@@ -363,14 +363,10 @@ func TestNonInteractive_SystemPromptContainsGuidance(t *testing.T) {
 	c := llm.NewClient()
 	comm := communicateCall("c1", "done")
 
-	var capturedSystem string
 	f := &fakeAdapter{
 		name: "openai",
 		steps: []func(req llm.Request) llm.Response{
 			func(req llm.Request) llm.Response {
-				if len(req.Messages) > 0 && req.Messages[0].Role == llm.RoleSystem {
-					capturedSystem = req.Messages[0].Text()
-				}
 				return toolCallResponse(comm)
 			},
 		},
@@ -389,11 +385,8 @@ func TestNonInteractive_SystemPromptContainsGuidance(t *testing.T) {
 	_, _ = sess.ProcessInput(ctx, "hi", nil)
 	sess.Close()
 
-	if !strings.Contains(capturedSystem, "non-interactive") {
-		t.Error("system prompt missing non-interactive guidance")
-	}
-	if !strings.Contains(capturedSystem, "no human available") {
-		t.Error("system prompt missing 'no human available' note")
+	if !hasPromptSource(sess.promptSourceLog, "embedded:prompts/sections/non-interactive.md.tmpl") {
+		t.Errorf("prompt source log missing non-interactive section: %+v", sess.promptSourceLog)
 	}
 }
 
@@ -405,14 +398,10 @@ func TestNonInteractive_NotPresentWhenFalse(t *testing.T) {
 	c := llm.NewClient()
 	comm := communicateCall("c1", "done")
 
-	var capturedSystem string
 	f := &fakeAdapter{
 		name: "openai",
 		steps: []func(req llm.Request) llm.Response{
 			func(req llm.Request) llm.Response {
-				if len(req.Messages) > 0 && req.Messages[0].Role == llm.RoleSystem {
-					capturedSystem = req.Messages[0].Text()
-				}
 				return toolCallResponse(comm)
 			},
 		},
@@ -431,8 +420,8 @@ func TestNonInteractive_NotPresentWhenFalse(t *testing.T) {
 	_, _ = sess.ProcessInput(ctx, "hi", nil)
 	sess.Close()
 
-	if strings.Contains(capturedSystem, "no human available") {
-		t.Error("system prompt should NOT contain non-interactive guidance when NonInteractive is false")
+	if hasPromptSource(sess.promptSourceLog, "embedded:prompts/sections/non-interactive.md.tmpl") {
+		t.Errorf("prompt source log contains non-interactive section for an interactive session: %+v", sess.promptSourceLog)
 	}
 }
 

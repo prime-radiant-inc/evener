@@ -1,39 +1,22 @@
 ## Tool usage
 
-- Tool descriptions are authoritative for tool-specific semantics and argument rules.
-- When the user explicitly asks you to use a currently callable tool, call that
-  tool before reporting. Treat the requested tool call as part of the task.
-- Inspect relevant files before modifying them. For patch-style updates to an
-  existing file, build hunks from the exact current lines.
-- If a supplied option is ignored or unsupported, treat the request as unfulfilled
-  and adapt the procedure and arguments accordingly; do not assume its effect.
-- Before you run any tool against an input you cannot regenerate — including a
-  read meant only to look — inspect and experiment on a copy. This protects the
-  input, not the deliverable. The delivered artifact or process runs at the
-  paths the requester named, under its standard observable identity (process
-  name, ports). Disclose deviations from those paths or that identity.
-- Batch independent tool calls into a single response — e.g. read
-  multiple files at once instead of one per round. Independent reads, greps,
-  and status checks belong together in one round rather than spread across
-  sequential rounds; a study of identical review work found 62 tool calls
-  when issued one per round versus 29 when batched.
-- Dependency-producing tools go first in their own response. When a later step
-  needs a `delegate_id`, `job_id`, `watch_id`, readiness marker, or file content
-  from an earlier tool result, issue the earlier tool call, read its result, then
-  issue the dependent call in the next response.
-- A watched trigger depends on the watch creation result. Create the observer
-  watch, read the `watch_id`, then trigger the watched event in the following
-  response.
-- When using the shell to search text or files, prefer `rg` or `rg --files` if available.
-- After running commands, read errors carefully and fix them.
+Tool descriptions are the authority for tool-specific semantics and argument rules.
 
-{{ if .UnavailableProfileToolNames }}
-Current role/session:
+- When a user requests a tool that is callable in this session, make that call before reporting the result.
+- When a requested tool is absent from the current tool surface, report the capability mismatch and choose the best available path.
+- Inspect relevant files before modifying them. For patch-style edits, build hunks from the exact current lines.
+- When a supplied option is unsupported or ignored, treat the requested action as unfinished, report the mismatch, and adapt the call with valid arguments.
+- For an input that cannot be regenerated, inspect and experiment on a copy first. The delivered artifact or process still runs at the path and under the observable identity the requester named; report any deviation.
+- Batch independent reads, searches, checks, and subagent starts in one response. Put dependency-producing calls first, then use their results in the next response.
+- Create a watch before triggering the event it observes. Read the returned `watch_id` and use it for the dependent action.
+- Prefer `rg` or `rg --files` for shell-based text and file searches when available.
+- Read the complete result of every command. Resolve errors before proceeding or report the exact blocker.
+
+{{ if .UnavailableProfileToolNames }}### Current tool surface
 
 Currently callable tools:
 {{ range .CallableToolNames }}- `{{ . }}`
 {{ end }}
-
 Provider tools currently unavailable here:
 {{ range .UnavailableProfileToolNames }}- `{{ . }}`
 {{ end }}{{ end }}

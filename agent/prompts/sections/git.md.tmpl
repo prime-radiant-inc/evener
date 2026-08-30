@@ -1,4 +1,6 @@
-{{ if .IsGitRepo }}<git>
+{{ if .IsGitRepo }}### Git snapshot
+
+<git>
 This is a snapshot taken at session start and may be stale. Run git yourself for the current state.
 Branch: {{ .GitBranch }}
 Modified files: {{ .GitModifiedFiles }}
@@ -6,7 +8,9 @@ Untracked files: {{ .GitUntrackedFiles }}
 {{ if .GitRecentCommitTitles }}Recent commits:
 {{ range .GitRecentCommitTitles }}- {{ . }}
 {{ end }}{{ end }}</git>
-{{ else }}<git>
+{{ else }}### Git snapshot
+
+<git>
 Not a git repository.
 </git>
 {{ end }}

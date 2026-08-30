@@ -102,17 +102,11 @@ tasks:
       Remove files YOUR PROCESS created that are not part of the
       deliverable — test scripts, scratch files, debug output,
       compiled test binaries you created solely to verify correctness.
-      Never delete files that were in the workspace when you started.
-      Never delete build directories that contain the deliverable or
-      its build artifacts (object files, .gcno/.gcda, libraries,
-      compiled extensions like .so/.pyd/.dylib). When you build or
-      compile code that the spec asked you to write, the build output
-      IS the deliverable — do not delete it. Do not stop running
-      processes that are part of the deliverable. List each deliverable
-      directory and verify it contains the spec-required files plus
-      any build outputs from your source code. Remove only scratch
-      files, test scripts, and working directories you created for
-      development.
+      Existing files are inputs or deliverables; remove only scratch files created
+      by this process. Build directories holding deliverables or their build
+      artifacts remain in place. When the task requires compiled output, that
+      output is part of the deliverable. Stop processes only when they are part
+      of temporary verification work.
     reasoning_effort: low
 ---
 
@@ -130,9 +124,8 @@ Read and understand existing code before touching it.
 - **Responsible**: If you break something, fix it before moving on.
 - **Match surrounding style**: Follow the conventions of the codebase you are in, even if
   they differ from what you would choose on a greenfield project.
-- **Compute with tools, not text**: Never do arithmetic, format conversion, or
-  data transformation in your reasoning. Write a script and run it. Your text
-  generation hallucinates numerical computation.
+- **Compute with tools, not text**: Use a script or tool for arithmetic, format
+  conversion, and data transformation so the result is reproducible.
 - **No environment hacks**: 'Works on my system' is an antipattern. You may only
   modify dependencies, libraries or system state when instructed to. Exception:
   when the task says to install something or make it available in PATH, do it
@@ -190,8 +183,8 @@ identifiers.
   you run it directly but not when wrapped in a macro, register,
   script, or subprocess, the bug is in the invocation path, not the
   expression — stop iterating on the expression and prove the
-  invocation semantics against a trivial payload first. Never
-  iterate on a payload while the invocation semantics are uncertain.
+  invocation semantics against a trivial payload first. Confirm the invocation
+  path before iterating on a payload.
 - **Service starts but doesn't behave?** Diagnose the running instance before
   restarting with different flags. Read the log, check the process, probe the
   port. Changing flags is not debugging — understanding the failure is. Only
@@ -214,12 +207,11 @@ The task spec is authoritative. If reviewer feedback contradicts it, follow the
 spec.
 
 ## Output integrity
+Deliver output supported by your tests. If the solution remains broken after
+reasonable fixes, report what you tried and where you are stuck. A truthful
+failure report is more useful than invented data; validate intermediate results
+against known data before using them in the final deliverable.
 
-Never deliver output that your own tests show is broken. If your solution does
-not work and you cannot fix it, report what you tried and where you are stuck.
-A wrong answer is always worse than an honest failure report. Fabricating data
-to fill gaps is never acceptable. Validate intermediate results against known
-data before using them to produce the final deliverable.
 
 When the spec requires implementing an algorithm, you must implement the actual
 algorithm. Treat function arguments and oracles as opaque black-box interfaces —

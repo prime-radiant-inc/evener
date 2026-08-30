@@ -2020,9 +2020,9 @@ func TestAskUser_PromptSectionVisibleForInteractiveRoot(t *testing.T) {
 	t.Parallel()
 	sess := newSession(t, withConfig(SessionConfig{NoProjectPrompts: true}))
 
-	prompt, _ := sess.renderSystemPrompt(sess.env)
-	if !strings.Contains(prompt, "Asking the user.") {
-		t.Fatal("system prompt missing ask-user guidance for an interactive root session")
+	sess.renderSystemPrompt(sess.env)
+	if !hasPromptSource(sess.promptSourceLog, "embedded:prompts/sections/ask-user.md.tmpl") {
+		t.Fatalf("interactive root prompt did not resolve the ask-user section: %+v", sess.promptSourceLog)
 	}
 }
 
@@ -2034,9 +2034,9 @@ func TestAskUser_PromptSectionHiddenWhenNonInteractive(t *testing.T) {
 	t.Parallel()
 	sess := newSession(t, withConfig(SessionConfig{NoProjectPrompts: true, NonInteractive: true}))
 
-	prompt, _ := sess.renderSystemPrompt(sess.env)
-	if strings.Contains(prompt, "Asking the user.") {
-		t.Fatal("system prompt contains ask-user guidance in a NonInteractive session")
+	sess.renderSystemPrompt(sess.env)
+	if hasPromptSource(sess.promptSourceLog, "embedded:prompts/sections/ask-user.md.tmpl") {
+		t.Fatalf("NonInteractive prompt resolved the ask-user section: %+v", sess.promptSourceLog)
 	}
 }
 
@@ -2052,9 +2052,9 @@ func TestAskUser_PromptSectionHiddenForSubagent(t *testing.T) {
 	cfg.spawn.delegationAllowance = 1
 	sess := newSession(t, withConfig(cfg))
 
-	prompt, _ := sess.renderSystemPrompt(sess.env)
-	if strings.Contains(prompt, "Asking the user.") {
-		t.Fatal("system prompt contains ask-user guidance in a subagent session")
+	sess.renderSystemPrompt(sess.env)
+	if hasPromptSource(sess.promptSourceLog, "embedded:prompts/sections/ask-user.md.tmpl") {
+		t.Fatalf("subagent prompt resolved the ask-user section: %+v", sess.promptSourceLog)
 	}
 }
 

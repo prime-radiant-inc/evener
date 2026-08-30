@@ -1,5 +1,6 @@
-{{ if .ActivatedSkillBodies }}
-Activated skill instructions:
+{{ if .ActivatedSkillBodies }}## Activated skills
+
+The following skill instructions are active for this session:
 {{ range .ActivatedSkillBodies }}
 {{ . }}
 {{ end }}{{ end }}

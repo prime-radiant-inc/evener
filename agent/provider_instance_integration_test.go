@@ -119,10 +119,9 @@ func TestProviderInstance_RenamedOpenAI_IdentityAndBehavior(t *testing.T) {
 	}
 
 	// ── Assertion 3: behavior by tag — openai prompt section in system prompt ──
-	const openAIMarker = "they execute in the order you"
-	prompt, _ := sess.renderSystemPrompt(sess.env)
-	if !strings.Contains(prompt, openAIMarker) {
-		t.Fatalf("system prompt missing openai section marker %q — renamed openai instance must get openai-tagged behavior", openAIMarker)
+	sess.renderSystemPrompt(sess.env)
+	if !hasPromptSource(sess.promptSourceLog, "embedded:prompts/sections/tools.provider-openai_append.md.tmpl") {
+		t.Fatalf("system prompt source log lacks the openai-specific tools section: %+v", sess.promptSourceLog)
 	}
 
 	// ── Assertion 4: behavior by tag — 24h prompt-cache eligibility ──

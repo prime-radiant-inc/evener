@@ -7,6 +7,13 @@
 
 {{ section "workflow" }}
 
+{{ section "verification" }}
+
+{{ section "communicate" }}
+
+{{ if .HasAskUser }}{{ section "ask-user" }}
+{{ end }}
+
 {{ section "delegation" }}
 
 {{ section "background-jobs" }}
@@ -19,15 +26,12 @@
 
 {{ section "task-tracking" }}
 
-{{ section "verification" }}
-
 {{ section "context-management" }}
-
-{{ section "communicate" }}
-
-{{ if .HasAskUser }}
-{{ section "ask-user" }}
 {{ end }}
+
+{{ section "role" }}
+
+{{ if .NonInteractive }}{{ section "non-interactive" }}
 {{ end }}
 
 {{ section "tools" }}
@@ -38,7 +42,7 @@
 
 {{ section "workspace" }}
 
-{{ section "role" }}
+{{ section "project-docs" }}
 
 {{ section "activated-skills" }}
 
@@ -46,16 +50,10 @@
 
 {{ section "available-agents" }}
 
-{{ section "project-docs" }}
-
-{{ if .NonInteractive }}
-{{ section "non-interactive" }}
-{{ end }}
 {{ if .UserInstructionOverride }}
-
 {{ .UserInstructionOverride }}
 {{ end }}
-{{ range .CLIAppends }}
 
+{{ range .CLIAppends }}
 {{ . }}
 {{ end }}

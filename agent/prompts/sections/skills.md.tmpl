@@ -1,6 +1,8 @@
-{{ if .Skills }}<skill-catalog>
-{{ if .HasUseSkill }}Load a skill by calling use_skill with its name. The response includes the skill directory path for accessing scripts and other collateral. Treat a slash token matching a canonical catalog name as a skill request only when it starts at message start or after whitespace and ends at message end or before whitespace, including inline prose; call use_skill with the exact catalog key before acting. Ignore paths, URLs, code or literal/negated mentions, and unknown names.
-{{ else }}Load a skill by reading its SKILL.md file path with read_file. The skill directory may contain scripts and other collateral.
+{{ if .Skills }}## Skill catalog (reference)
+
+<skill-catalog>
+{{ if .HasUseSkill }}Load a skill by calling `use_skill` with its name. The response includes the skill directory path for scripts and other collateral. A slash token is a skill request only when it starts at message start or after whitespace and ends at message end or before whitespace, including inline prose. Use the exact catalog key. Paths, URLs, code, literal or negated mentions, and unknown names are ordinary text.
+{{ else }}Load a skill by reading its `SKILL.md` path with `read_file`. The skill directory may contain scripts and other collateral.
 {{ end }}{{ range .Skills }}{{ if $.HasUseSkill }}- {{ .CatalogNameOrName }}: {{ .Description }} [{{ .Dir }}]
 {{ else }}- {{ .CatalogNameOrName }}: {{ .Description }} [{{ .SkillFile }}]
 {{ end }}{{ end }}</skill-catalog>

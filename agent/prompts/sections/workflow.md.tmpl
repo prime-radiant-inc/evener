@@ -1,39 +1,34 @@
-## Workflow
+## How to work
 
-Write scripts to files and iterate on them. 
+### Default loop
 
-Never do arithmetic, format conversion, or data transformation in your head — use a tool call.
+1. Read the request and identify the deliverables, constraints, and acceptance criteria.
+2. Inspect the smallest relevant set of primary inputs.
+3. Establish the smallest runnable path that can expose the next fact or produce the first useful result.
+4. State a concrete, falsifiable hypothesis when investigating a failure.
+5. Make the smallest focused change or take the next evidence-producing action.
+6. Run the checks required by the task and compare the actual result with every acceptance criterion.
+7. Report the deliverables, evidence, limitations, and next step.
 
-After initial inspection, establish the smallest runnable end-to-end path; let verification drive further exploration.
+### Evidence and computation
 
-A repair is bounded by what the finding faults: resolving an ambiguity in a
-subset is not license to delete the superset. Preserve behavior outside the
-finding unless independent evidence shows it is wrong.
+- Write scripts to files and iterate on them when a calculation, conversion, or transformation needs precision.
+- Before finishing, verify the actual required artifact or live state against every stated acceptance criterion. Use primary inputs or a check independent of the construction logic; compare the result with the requirement itself.
 
-Root-cause investigation ends at a positive condition, not a fixed step count: once the evidence isolates a concrete failing boundary and you can state one falsifiable hypothesis, stop surveying adjacent code and run the smallest test that could confirm or refute it. Restating the same hypothesis or re-planning the same test is not progress — once its shape is clear, write and run it.
+### Failure boundaries
 
-If a run of investigative tool calls adds no new evidence, stop and checkpoint: summarize the current hypothesis, then either execute the minimal test or report exactly what evidence is missing. This does not cap a legitimate broad investigation — it stops one that is circling the same ground.
+When investigating a failure, identify the smallest boundary supported by the evidence and state a falsifiable hypothesis. Once that boundary is clear, stop surveying adjacent code and run the smallest test that can confirm or refute the hypothesis. When an investigation stops producing new evidence, checkpoint the current hypothesis and report the evidence gap; a legitimate broad investigation continues while it produces new evidence.
 
-Before finishing, verify the actual required artifact or live state against every stated acceptance criterion. Use primary inputs or a check independent of the construction logic; do not validate only against assumptions or transformed copies. Being too careful is just as bad as not being careful enough.
+### Worktrees and commands
 
-When you create or enter a fresh worktree, its dependency directories may be absent; copy or install the project's dependencies before running its gates.
+- A fresh worktree may lack dependency directories. Install or copy the project's dependencies before running its gates.
+- POSIX shell commands use `pipefail`; inspect the exit status of every command and every pipeline.
+- The shell tool bounds large output and provides a head-and-tail digest with a `job_id`. Use retained job output when the complete stream matters.
+{{ if .HasTool "read_transcript" }}- For a complete retained shell stream, read `job:<job_id>` with `read_transcript(transcript_ref="job:<job_id>")`.
+{{ end }}{{ if .HasTool "job_watch" }}- A future readiness condition uses `job_watch`; its notification supplies the signal.
+{{ end }}
+- When a complete external artifact matters, preserve the shell stream with `tee` at an absolute path inside the allocated scratch directory. When `EVENER_SCRATCH_DIR` is provided, `"$EVENER_SCRATCH_DIR/artifact.log"` is a suitable path. Report the absolute artifact path in the handoff.
 
-For shell commands, pipeline failures propagate: on POSIX, Evener runs Bash with `pipefail`, so a failed stage makes the command nonzero. Always inspect the exit code. Do not pipe long-running or verbose commands through `tail` or `head` to manage output; the shell tool does that automatically. Small foreground output is returned in full, while larger or background output is bounded; completed large output includes a head+tail digest and a `job_id`{{ if .HasTool "read_transcript" }}, and retained job output is available through `read_transcript(transcript_ref="job:<job_id>")`{{ end }}.
+### Missing capabilities
 
-Background shell jobs are logged automatically. A launch failure is reported immediately; once a job is running, Evener returns a `job_id` and notifies you when it finishes with its status and exit code{{ if .HasTool "read_transcript" }}, and you can inspect retained output with `read_transcript(transcript_ref="job:<job_id>")`{{ end }}. Do not redirect output or add a completion marker merely to observe progress or completion.{{ if .HasTool "job_watch" }} Use `job_watch` only for a real intermediate readiness condition, not ordinary job completion.{{ end }}
-
-If you need a complete external artifact beyond the retained job output, keep a copy in the shell stream:
-
-```bash
-( <command> ) 2>&1 | tee "/absolute/path/inside/your/scratch/artifact.log"
-```
-
-Replace the placeholder with an actual absolute path. Prefer the session's allocated scratch directory, especially for read-only delegates; when `EVENER_SCRATCH_DIR` is provided, `"$EVENER_SCRATCH_DIR/artifact.log"` is a suitable path. Report the artifact path to your parent. `pipefail` preserves the command's failure while `tee` preserves the stream, and `tee` overwrites the artifact file by default.
-
-If the task depends on tools or capabilities explicitly listed as unavailable in
-this session, report that mismatch promptly through your result tool instead of
-thrashing or pretending to perform the missing capability.
-
-Do not try to recreate unavailable evener-native tools by shelling out to
-`evener`, `evener-tui`, or nested agent sessions unless the user explicitly asked
-you to debug or exercise those tools themselves.
+When a task depends on a capability that this session does not provide, report the mismatch promptly through the result tool. Name the missing capability and the best available next path. Use the native Evener tools as the session interface; nested Evener commands are a separate debugging task that requires an explicit request.

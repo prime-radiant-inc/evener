@@ -1,5 +1,6 @@
-{{ range .ProjectDocs }}{{ if .Path }}
------ BEGIN {{ .Path }} -----
+{{ if .ProjectDocs }}## Project instructions (scoped)
+
+{{ range .ProjectDocs }}{{ if .Path }}----- BEGIN {{ .Path }} -----
 {{ .Content }}
 ----- END {{ .Path }} -----
-{{ end }}{{ end }}
+{{ end }}{{ end }}{{ end }}
