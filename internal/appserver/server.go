@@ -7,6 +7,7 @@ import (
 	"log"
 	"runtime/debug"
 	"sort"
+	"strings"
 	"sync"
 	"time"
 
@@ -33,12 +34,42 @@ type ServerConfig struct {
 	Logf func(format string, args ...any)
 }
 
+// requestQueueCap bounds each connection's inbound request queue. It must
+// hold any legitimate pipelined burst from one client (observed bursts are a
+// handful of requests) while keeping the queue's worst-case memory boring; a
+// full queue applies blocking backpressure to the receive loop, never a wire
+// error. Deliberately not appwire.NotificationBufferCap: that constant sizes
+// the outbound notification firehose, where overflow means eviction; this one
+// sizes inbound pipelining, where overflow means flow control. Coupling them
+// would let the wrong contract resize this one.
+const requestQueueCap = 64
+
 type Server struct {
-	cfg                            ServerConfig
-	router                         *Router
-	subs                           *Subscriptions
-	keepaliveTickerFactory         func(time.Duration) webSocketKeepaliveTicker
-	keepaliveDecision              func(bool)
+	cfg                    ServerConfig
+	router                 *Router
+	subs                   *Subscriptions
+	keepaliveTickerFactory func(time.Duration) webSocketKeepaliveTicker
+	keepaliveDecision      func(bool)
+	// requestQueueCapacity overrides requestQueueCap for tests that need to
+	// saturate the queue without pipelining 65 real frames. Zero means the
+	// production capacity.
+	requestQueueCapacity int
+	// blockedEnqueue runs when the receive loop is about to park on a full
+	// request queue, so a saturation test can wait for the loop to actually
+	// block instead of sleeping. Production leaves it nil.
+	blockedEnqueue func()
+	// afterWorkerDequeue runs on the worker goroutine after each dequeue and
+	// before the post-dequeue cancellation re-check, so a test can pin the
+	// re-check deterministically. Production leaves it nil.
+	afterWorkerDequeue func(appwire.Message)
+	// wrapWebSocketTransport lets a test interpose on the transport
+	// ServeWebSocket builds — e.g. a blocking Send — before the loops start.
+	// Production leaves it nil.
+	wrapWebSocketTransport func(webSocketTransport) webSocketTransport
+	// sendWriteTimeout overrides webSocketWriteTimeout for tests that drive
+	// the write-timeout cascade without waiting 30 seconds. Zero means the
+	// production timeout.
+	sendWriteTimeout               time.Duration
 	projectionMu                   sync.Mutex
 	deliveryMu                     sync.Mutex
 	nextHydrationGeneration        uint64
@@ -93,10 +124,16 @@ func (s *Server) NewConnection(id string) *Connection {
 	// share one constant so neither peer can quietly become the smaller pipe
 	// (at 32 this side evicted live clients whose send loop napped through a
 	// turn-boundary burst on a loaded machine).
+	capacity := s.requestQueueCapacity
+	if capacity == 0 {
+		capacity = requestQueueCap
+	}
 	return &Connection{
-		id:     id,
-		server: s,
-		send:   make(chan appwire.Message, appwire.NotificationBufferCap),
+		id:           id,
+		server:       s,
+		send:         make(chan appwire.Message, appwire.NotificationBufferCap),
+		requests:     make(chan appwire.Message, capacity),
+		workerExited: make(chan struct{}),
 	}
 }
 
@@ -296,16 +333,29 @@ func navigationCapability(capability *appwire.NavigationCapability) *appwire.Nav
 }
 
 type Connection struct {
-	id          string
-	server      *Server
-	send        chan appwire.Message
-	sendMu      sync.RWMutex
-	sendClosed  bool
-	mu          sync.RWMutex
-	initialized bool
-	cancel      context.CancelFunc
-	responseMu  sync.Mutex
-	hydrations  map[string]*hydrationResponseFinalizer
+	id         string
+	server     *Server
+	send       chan appwire.Message
+	sendMu     sync.RWMutex
+	sendClosed bool
+	// requests is the bounded inbound queue between the transport's receive
+	// loop (the only producer) and the serial worker (the only consumer).
+	// Neither side ever closes it — producer teardown is "stop sending",
+	// consumer teardown is context cancellation — and ServeWebSocket purges
+	// its buffered frames at teardown so an orphaned handler retains at most
+	// the one frame it is executing.
+	requests chan appwire.Message
+	// queueSaturationAdvised makes the queue-saturation advisory one-shot per
+	// connection. Only the receive-loop goroutine touches it.
+	queueSaturationAdvised bool
+	// workerExited closes when the serial worker returns; tests assert
+	// worker teardown against it instead of sleeping.
+	workerExited chan struct{}
+	mu           sync.RWMutex
+	initialized  bool
+	cancel       context.CancelFunc
+	responseMu   sync.Mutex
+	hydrations   map[string]*hydrationResponseFinalizer
 }
 
 func (c *Connection) ID() string {
@@ -472,8 +522,8 @@ func (c *Connection) HandleMessage(ctx context.Context, msg appwire.Message) app
 	req := *msg.Request
 	// ping is the browser's app-level heartbeat (browsers cannot send WS ping
 	// frames from JS). It bypasses the router and is answered here, before
-	// the initialize gate; dispatchMessage owns the inline-vs-concurrent
-	// policy that keeps it responsive.
+	// the initialize gate; the receive loop answers it inline, bypassing the
+	// request queue, so no handler can starve it.
 	if req.Method == appwire.MethodPing {
 		return appwire.ResponseMessage(req.ID, struct{}{})
 	}
@@ -826,42 +876,184 @@ func concurrentDispatchMethod(method string) bool {
 	return false
 }
 
-// dispatchMessage applies the connection's dispatch policy to one inbound
-// message: which messages run inline in the receive loop and which run on
-// their own goroutine. A transport's receive loop is the only caller; the
-// policy lives on the Connection so any second transport inherits the same
-// sequencing for free.
+// enqueueRequest pushes one inbound frame onto the connection's bounded
+// request queue on behalf of the transport's receive loop, which is the only
+// producer. A full queue blocks until the worker frees a slot or the
+// connection context ends; false means the connection died while blocked and
+// the loop should return. Blocking is the pressure valve: the parked loop
+// stops calling Recv, inbound frames accumulate in the kernel socket buffer,
+// and TCP flow control eventually reaches the client — no wire error, no
+// eviction. A client that pipelines deeper than the queue experiences
+// exactly the ordering it asked for, applied at the transport instead of in
+// server memory.
+func (c *Connection) enqueueRequest(ctx context.Context, msg appwire.Message) bool {
+	select {
+	case c.requests <- msg:
+		return true
+	default:
+	}
+	// Saturation is a healthy server applying flow control, but it is also
+	// the one state where ping and dead-peer detection wait on the client's
+	// own backlog, so its first occurrence per connection gets an advisory —
+	// the same channel evictSlowConsumer uses, and the proportionate version
+	// of a metric this package does not have.
+	if !c.queueSaturationAdvised {
+		c.queueSaturationAdvised = true
+		c.server.logf("appserver: connection %s inbound request queue is full (%d frames); blocking the receive loop until the worker frees a slot", c.id, cap(c.requests))
+	}
+	if c.server.blockedEnqueue != nil {
+		c.server.blockedEnqueue()
+	}
+	select {
+	case c.requests <- msg:
+		return true
+	case <-ctx.Done():
+		return false
+	}
+}
+
+// runWorker is the connection's serial worker: the only consumer of the
+// request queue, started by the transport beside its send loop. It drains
+// the queue strictly in arrival order and applies the dispatch policy in
+// executeOrdered, so per-connection ordering is preserved for every queued
+// frame while the receive loop stays parked in Recv — no handler can starve
+// the transport's ping answering, close handling, or dead-peer detection.
 //
-// Requests are serial per connection — a later request does not begin until
-// an earlier one completes — EXCEPT the slow-read methods
-// concurrentDispatchMethod names, which run on their own goroutine so a
-// full-transcript read cannot head-of-line block the connection. A later
-// request can therefore dispatch while a slow read (including a hydrating
-// read parked in its snapshot clone) is still in flight; responses pair by
-// request ID, and only the sequence-cut discipline governs how notifications
-// interleave with a hydration response. An inline handler occupies the
-// receive loop — ping included, since ping is answered inline — so every
-// method outside the concurrent set must stay bounded.
+// The ordering contract, for two requests A before B on one connection:
+// earlier serial requests block all later work; nothing waits for a slow
+// read; ping (answered in the receive loop, never queued) waits for no
+// queued work. Slow reads are unordered among themselves, and a serial
+// request issued after a slow read runs without waiting for it. Responses
+// always pair by request id, and only the sequence-cut discipline governs
+// how notifications interleave with a hydration response.
+//
+// Cancellation: the connection context ending is the only cancellation this
+// transport has. No request begins executing after the worker has observed
+// cancellation, and it observes at every dequeue — the post-dequeue re-check
+// below, because select chooses randomly when both cases are ready. Requests
+// still queued behind the observation point never execute; a request that
+// never started has no side effects and no peer remains to answer.
+func (c *Connection) runWorker(ctx context.Context) {
+	defer close(c.workerExited)
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case msg := <-c.requests:
+			if c.server.afterWorkerDequeue != nil {
+				c.server.afterWorkerDequeue(msg)
+			}
+			// select chooses randomly when both cases are ready, so a
+			// canceled connection can still win a dequeue; re-check before
+			// executing so no request starts after cancellation is
+			// observable here.
+			if ctx.Err() != nil {
+				return
+			}
+			c.executeOrdered(ctx, msg)
+		}
+	}
+}
+
+// wireCatalogName reports whether a method name appears in the appwire
+// catalog (requests, notifications, or the initialized handshake
+// notification). The teardown purge tallies only cataloged names verbatim:
+// the method field is client-controlled and the transport read limit admits
+// very large strings, so an uncataloged value could carry arbitrary size or
+// control characters into the log.
+func wireCatalogName(method string) bool {
+	wireCatalogNamesOnce.Do(func() {
+		wireCatalogNames = make(map[string]bool, len(appwire.Methods)+len(appwire.Notifications)+1)
+		for _, m := range appwire.Methods {
+			wireCatalogNames[m.Name] = true
+		}
+		for _, n := range appwire.Notifications {
+			wireCatalogNames[n.Name] = true
+		}
+		wireCatalogNames[appwire.MethodInitialized] = true
+	})
+	return wireCatalogNames[method]
+}
+
+var (
+	wireCatalogNamesOnce sync.Once
+	wireCatalogNames     map[string]bool
+)
+
+// purgeRequestQueue discards every frame still buffered in the request queue
+// at teardown. The transport calls it after its receive loop — the queue's
+// only producer — has returned and the connection context is canceled; that
+// ownership rule is what makes draining safe. The worker may race the purge
+// by winning a dequeue, but its post-dequeue re-check discards the message
+// just the same: both sides only ever discard. Without the purge, an
+// orphaned handler that ignores its canceled context would retain the worker
+// goroutine, through it the Connection, and through that up to a full
+// queue's worth of decoded frames; after it, such a handler retains exactly
+// the one frame it is executing.
+//
+// A non-empty purge reports one bounded advisory line: the count plus a
+// per-method tally, catalog methods by name and everything else aggregated
+// as unknown — never params, which can carry user content. This is an
+// aggregate teardown advisory, not request-level attribution; "did my
+// mutation run?" belongs to the ClientMutationID dedup on reconnect.
+func (c *Connection) purgeRequestQueue() {
+	discarded := 0
+	tally := map[string]int{}
+	for {
+		select {
+		case msg := <-c.requests:
+			discarded++
+			name := methodOf(msg)
+			if !wireCatalogName(name) {
+				name = "unknown"
+			}
+			tally[name]++
+			continue
+		default:
+		}
+		break
+	}
+	if discarded == 0 {
+		return
+	}
+	names := make([]string, 0, len(tally))
+	for name := range tally {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	parts := make([]string, 0, len(names))
+	for _, name := range names {
+		parts = append(parts, fmt.Sprintf("%s=%d", name, tally[name]))
+	}
+	c.server.logf("appserver: connection %s discarded %d undispatched queued frames at teardown (%s)", c.id, discarded, strings.Join(parts, " "))
+}
+
+// executeOrdered applies the dispatch policy to one dequeued frame: the
+// slow-read methods concurrentDispatchMethod names spawn onto their own
+// goroutine — a full-transcript read cannot head-of-line block the
+// connection — and everything else, initialize and notifications included,
+// executes inline in the worker so handlers keep the per-connection ordering
+// they were written against.
 //
 // Ordering constraints in detail:
 //
-//   - initialize must be the first request. Until the connection reports
-//     initialized, every message is handled inline in the receive loop:
-//     pre-initialize requests other than ping are rejected ("initialize
-//     required"), and the initialize handshake itself completes — response
-//     enqueued — before the loop reads another frame. Dispatch of later
-//     requests therefore cannot observe a half-initialized connection.
+//   - initialize must be the first request. Pre-initialize frames ride the
+//     queue like everything else; the worker executes them in order, and
+//     HandleMessage's gate answers non-initialize requests with "initialize
+//     required" while the handshake itself completes — response enqueued —
+//     before any later frame is dequeued. Later dispatch therefore cannot
+//     observe a half-initialized connection; the isInitialized check below
+//     is exact rather than racy because the worker is the goroutine that
+//     sets it.
 //   - responses enter the connection send queue through the same
 //     enqueueResponse path on both dispatch modes, so hydration capture
 //     commit/abort ordering is unchanged.
 //
 // Error responses from enqueueResponse are terminal for the connection, but
-// a handler goroutine must not tear the receive loop down out from under it;
-// canceling the shared context is enough — the next Recv fails and the loop
-// exits with the normal close handling.
-func (c *Connection) dispatchMessage(ctx context.Context, msg appwire.Message) {
-	// concurrentDispatchMethod is checked before isInitialized so the common
-	// inline path never takes the connection mutex.
+// a handler goroutine must not tear the worker down out from under it;
+// canceling the shared context is enough — the worker exits at its next
+// dequeue and the receive loop's next Recv fails into normal close handling.
+func (c *Connection) executeOrdered(ctx context.Context, msg appwire.Message) {
 	if msg.Request != nil && concurrentDispatchMethod(msg.Request.Method) && c.isInitialized() {
 		go c.handleAndEnqueue(ctx, msg)
 		return
