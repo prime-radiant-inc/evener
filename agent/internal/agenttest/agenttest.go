@@ -20,6 +20,7 @@ import (
 	"sync"
 
 	"primeradiant.com/evener/llm"
+	"primeradiant.com/evener/llm/registry"
 )
 
 // FakeAdapter is a scripted llm.ProviderAdapter. Each call to Complete runs the
@@ -29,6 +30,7 @@ type FakeAdapter struct {
 	Provider                      string
 	Steps                         []func(req llm.Request) llm.Response
 	PlanResponsesContinuationFunc func(req llm.Request) (llm.ResponsesContinuationPlan, error)
+	LiveModelsFunc                func(ctx context.Context) ([]registry.Model, error)
 	CanFallbackToChat             bool
 
 	mu       sync.Mutex
@@ -78,6 +80,14 @@ func (a *FakeAdapter) PlanResponsesContinuation(req llm.Request) (llm.ResponsesC
 	return plan, nil
 }
 
+// LiveModels implements llm.LiveModelLister when a test scripts a listing.
+func (a *FakeAdapter) LiveModels(ctx context.Context) ([]registry.Model, error) {
+	if a.LiveModelsFunc == nil {
+		return nil, errors.New("fake adapter does not list models")
+	}
+	return a.LiveModelsFunc(ctx)
+}
+
 // Requests returns a copy of every request the adapter has seen.
 func (a *FakeAdapter) Requests() []llm.Request {
 	a.mu.Lock()
@@ -89,8 +99,9 @@ func (a *FakeAdapter) Requests() []llm.Request {
 // full request of every Complete call (for fallback-chain assertions) and
 // produces responses via Respond.
 type ModelTrackingAdapter struct {
-	Provider string
-	Respond  func(req llm.Request) (llm.Response, error)
+	Provider       string
+	Respond        func(req llm.Request) (llm.Response, error)
+	LiveModelsFunc func(ctx context.Context) ([]registry.Model, error)
 
 	mu       sync.Mutex
 	models   []string
@@ -123,6 +134,14 @@ func (a *ModelTrackingAdapter) Stream(ctx context.Context, req llm.Request) (llm
 	_ = ctx
 	_ = req
 	return nil, llm.ErrStreamUnsupported
+}
+
+// LiveModels implements llm.LiveModelLister when a test scripts a listing.
+func (a *ModelTrackingAdapter) LiveModels(ctx context.Context) ([]registry.Model, error) {
+	if a.LiveModelsFunc == nil {
+		return nil, errors.New("model tracking adapter does not list models")
+	}
+	return a.LiveModelsFunc(ctx)
 }
 
 // Models returns a copy of the models seen, in call order.

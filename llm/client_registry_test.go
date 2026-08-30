@@ -384,3 +384,15 @@ func TestClientProviderNamesUnionsOverridesAndInstances(t *testing.T) {
 		t.Fatalf("the registry ranks openai first (spec §5.1): %q", c.DefaultProvider())
 	}
 }
+
+func TestClientCanServe(t *testing.T) {
+	srv, _ := responsesServer(t)
+	c := llm.NewClient(llm.WithRegistry(fixtureRegistry(t, srv.URL, nil)))
+	c.Register(&recordingAdapter{name: "fake"})
+	if !c.CanServe("fake", "anything") || !c.CanServe("openai", "never-heard-of-it") {
+		t.Fatal("overrides and synthesized rows are served")
+	}
+	if c.CanServe("nope", "x") || c.CanServe("openai-codex", "not-on-the-allowlist") {
+		t.Fatal("unknown instances and Codex ids off the allowlist are not (spec §7.3)")
+	}
+}

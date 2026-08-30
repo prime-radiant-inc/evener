@@ -123,6 +123,18 @@ func (c *Client) Resolve(ref string) (registry.Resolved, error) {
 	return c.Registry().Resolve(ref)
 }
 
+// CanServe reports whether provider/model would dispatch: an override is
+// registered under the name, or the reference resolves (spec §7.3: every
+// model resolves except an id off the Codex allowlist).
+func (c *Client) CanServe(provider, model string) bool {
+	provider = normalizeProviderName(provider)
+	if _, ok := c.overrides[provider]; ok {
+		return true
+	}
+	_, err := c.Resolve(provider + "/" + model)
+	return err == nil
+}
+
 // ContinuationHasher returns the hasher for the client's state directory,
 // creating the secret on first use; ErrContinuationSecretUnavailable when
 // the client has no state directory.
