@@ -731,24 +731,23 @@ func (s *Server) applyTaskCarrierLocked(threadID string, params appwire.TaskUpda
 	}
 }
 
+// stampAppNotificationTarget re-addresses params to the fanout target the
+// server is committing them under. The projector already stamps its own view
+// of threadId/ref; the server overwrites both with the authoritative target
+// (ref remapping, descendant fanout). Params are either structs implementing
+// appwire.NotificationTargeted or map[string]any carrying threadId/ref keys;
+// anything else passes through untouched.
 func stampAppNotificationTarget(params any, threadID, ref string) any {
-	data, err := json.Marshal(params)
-	if err != nil {
+	switch p := params.(type) {
+	case appwire.NotificationTargeted:
+		return p.WithNotificationTarget(threadID, ref)
+	case map[string]any:
+		p["threadId"] = threadID
+		p["ref"] = ref
+		return p
+	default:
 		return params
 	}
-	fields := map[string]json.RawMessage{}
-	if len(data) > 0 && string(data) != "null" {
-		if err := json.Unmarshal(data, &fields); err != nil {
-			return params
-		}
-	}
-	fields["threadId"], _ = json.Marshal(threadID)
-	fields["ref"], _ = json.Marshal(ref)
-	qualified, err := json.Marshal(fields)
-	if err != nil {
-		return params
-	}
-	return json.RawMessage(qualified)
 }
 
 // stampFailureCountOnStatusChange rides the session's running failure count
