@@ -4,6 +4,7 @@ package plugins
 
 import (
 	"bytes"
+	"context"
 	"errors"
 	"io/fs"
 	"os"
@@ -146,11 +147,11 @@ func coverageGC(t *testing.T) {
 	boom := errors.New("boom")
 	m := NewManager(t.TempDir())
 
-	gcAcquireLock = func(string, time.Duration) (func(), error) { return nil, boom }
+	gcAcquireLock = func(context.Context, string, time.Duration) (func(), error) { return nil, boom }
 	if _, err := m.Gc(); !errors.Is(err, boom) {
 		t.Fatalf("lock: %v", err)
 	}
-	gcAcquireLock = func(string, time.Duration) (func(), error) { return func() {}, nil }
+	gcAcquireLock = func(context.Context, string, time.Duration) (func(), error) { return func() {}, nil }
 	if err := os.WriteFile(m.registryPath(), []byte("{"), 0o600); err != nil {
 		t.Fatal(err)
 	}

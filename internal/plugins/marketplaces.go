@@ -136,7 +136,7 @@ func (m *Manager) ensureFetched(ctx context.Context, name string) (MarketplaceRe
 // AddMarketplace fetches src, reads its marketplace.json for the name (unless
 // name is given), and records it. Returns the stored ref.
 func (m *Manager) AddMarketplace(ctx context.Context, name string, src Source) (MarketplaceRef, error) {
-	release, err := marketplaceAcquireLock(m.lockPath(), 30*time.Second)
+	release, err := marketplaceAcquireLock(ctx, m.lockPath(), 30*time.Second)
 	if err != nil {
 		return MarketplaceRef{}, err
 	}
@@ -200,7 +200,7 @@ func (m *Manager) AddMarketplace(ctx context.Context, name string, src Source) (
 func (m *Manager) ListMarketplaces() (Marketplaces, error) { return m.loadMarketplaces() }
 
 func (m *Manager) RemoveMarketplace(name string) error {
-	release, err := marketplaceAcquireLock(m.lockPath(), 30*time.Second)
+	release, err := marketplaceAcquireLock(context.Background(), m.lockPath(), 30*time.Second)
 	if err != nil {
 		return err
 	}
@@ -223,7 +223,7 @@ func (m *Manager) RemoveMarketplace(name string) error {
 }
 
 func (m *Manager) RefreshMarketplace(ctx context.Context, name string) error {
-	release, err := marketplaceAcquireLock(m.lockPath(), 30*time.Second)
+	release, err := marketplaceAcquireLock(ctx, m.lockPath(), 30*time.Second)
 	if err != nil {
 		return err
 	}

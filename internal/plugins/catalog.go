@@ -129,7 +129,7 @@ func catalogPluginName(raw json.RawMessage) string {
 // Browse returns the parsed catalog of a registered marketplace, lazily
 // cloning it first if it was only seeded as an unfetched pointer.
 func (m *Manager) Browse(ctx context.Context, name string) (Catalog, error) {
-	release, err := acquireLock(m.lockPath(), 30*time.Second)
+	release, err := acquireLock(ctx, m.lockPath(), 30*time.Second)
 	if err != nil {
 		return Catalog{}, err
 	}

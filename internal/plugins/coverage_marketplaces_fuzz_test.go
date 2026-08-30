@@ -129,7 +129,7 @@ func fuzzMarketplacesCoverage(t *testing.T) {
 	}
 	reset()
 
-	marketplaceAcquireLock = func(string, time.Duration) (func(), error) { return nil, fail }
+	marketplaceAcquireLock = func(context.Context, string, time.Duration) (func(), error) { return nil, fail }
 	if _, err := m.AddMarketplace(ctx, "x", Source{Kind: SourceDirectory, Path: "p"}); err == nil {
 		t.Fatal("add lock error accepted")
 	}
@@ -288,7 +288,7 @@ func fuzzMarketplacesCoverage(t *testing.T) {
 		t.Fatalf("existing seed = %v, %v", seeded, err)
 	}
 	reset()
-	marketplaceAcquireLock = func(string, time.Duration) (func(), error) { return nil, fail }
+	marketplaceAcquireLock = func(context.Context, string, time.Duration) (func(), error) { return nil, fail }
 	if _, err := NewManager(t.TempDir()).SeedDefaultMarketplaces(); err == nil {
 		t.Fatal("seed lock error accepted")
 	}

@@ -295,7 +295,7 @@ func TestUpdateAutoUpgrade_ConcurrentSweepDoesNotDuplicateReport(t *testing.T) {
 
 	// Hold the lock ourselves so sweep B (started below) is guaranteed to
 	// block on its own upgrade attempt until we release it.
-	release, err := acquireLock(m1.lockPath(), 5*time.Second)
+	release, err := acquireLock(context.Background(), m1.lockPath(), 5*time.Second)
 	if err != nil {
 		t.Fatalf("acquireLock: %v", err)
 	}

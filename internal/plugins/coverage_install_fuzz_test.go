@@ -104,7 +104,7 @@ func resetInstallSeams(t *testing.T) {
 func fakeInstallSuccess(t *testing.T, m *Manager) {
 	t.Helper()
 	resetInstallSeams(t)
-	installAcquireLock = func(string, time.Duration) (func(), error) { return func() {}, nil }
+	installAcquireLock = func(context.Context, string, time.Duration) (func(), error) { return func() {}, nil }
 	installEnsureFetched = func(*Manager, context.Context, string) (MarketplaceRef, error) {
 		return MarketplaceRef{Source: Source{Kind: SourceGitHub}, InstallLocation: t.TempDir()}, nil
 	}
@@ -184,7 +184,7 @@ func fuzzInstallBranches(t *testing.T) {
 		breakIt func()
 	}{
 		{"lock", func() {
-			installAcquireLock = func(string, time.Duration) (func(), error) { return nil, errInstallCoverage }
+			installAcquireLock = func(context.Context, string, time.Duration) (func(), error) { return nil, errInstallCoverage }
 		}},
 		{"catalog", func() {
 			installEnsureFetched = func(*Manager, context.Context, string) (MarketplaceRef, error) {
@@ -233,7 +233,7 @@ func fuzzInstallRegistryBranches(t *testing.T) {
 	ctx := context.Background()
 	m := NewManager(t.TempDir())
 	fakeInstallSuccess(t, m)
-	installAcquireLock = func(string, time.Duration) (func(), error) { return nil, errInstallCoverage }
+	installAcquireLock = func(context.Context, string, time.Duration) (func(), error) { return nil, errInstallCoverage }
 	if _, err := m.Upgrade(ctx, "p", "m"); err == nil {
 		t.Fatal("upgrade lock")
 	}
@@ -243,7 +243,7 @@ func fuzzInstallRegistryBranches(t *testing.T) {
 	if err := m.Remove("p", "m"); err == nil {
 		t.Fatal("remove lock")
 	}
-	installAcquireLock = func(string, time.Duration) (func(), error) { return func() {}, nil }
+	installAcquireLock = func(context.Context, string, time.Duration) (func(), error) { return func() {}, nil }
 	installLoadRegistry = func(string) (Registry, error) { return Registry{}, errInstallCoverage }
 	if err := m.mutateEntry("p", "m", func(*InstallEntry) {}); err == nil {
 		t.Fatal("mutate load")
@@ -296,11 +296,11 @@ func fuzzAutoUpgradeBranches(t *testing.T) {
 	ctx := context.Background()
 	m := NewManager(t.TempDir())
 	fakeInstallSuccess(t, m)
-	installAcquireLock = func(string, time.Duration) (func(), error) { return nil, errInstallCoverage }
+	installAcquireLock = func(context.Context, string, time.Duration) (func(), error) { return nil, errInstallCoverage }
 	if _, _, _, err := m.upgradeAuto(ctx, "p", "m"); err == nil {
 		t.Fatal("auto lock")
 	}
-	installAcquireLock = func(string, time.Duration) (func(), error) { return func() {}, nil }
+	installAcquireLock = func(context.Context, string, time.Duration) (func(), error) { return func() {}, nil }
 	installLoadRegistry = func(string) (Registry, error) { return Registry{}, errInstallCoverage }
 	if _, err := m.UpdateAutoUpgrade(ctx); err == nil {
 		t.Fatal("auto load")
