@@ -13,7 +13,6 @@ import (
 	"testing"
 
 	"primeradiant.com/evener/internal/credentials"
-	"primeradiant.com/evener/llm"
 	"primeradiant.com/evener/llm/providercfg"
 )
 
@@ -54,9 +53,6 @@ func FuzzMainBootstrapPass6(f *testing.F) {
 			loadProviderConfig: func(string) (providercfg.Config, bool, error) {
 				return providercfg.Config{}, true, nil
 			},
-			materializeConfig: func(string, ...llm.EnvOption) (providercfg.Config, error) {
-				return providercfg.Config{}, nil
-			},
 			notifyContext: func(context.Context, ...os.Signal) (context.Context, context.CancelFunc) {
 				return ctx, func() {}
 			},
@@ -88,9 +84,6 @@ func FuzzMainBootstrapPass6(f *testing.F) {
 		case 3:
 			deps.loadProviderConfig = func(string) (providercfg.Config, bool, error) {
 				return providercfg.Config{}, false, nil
-			}
-			deps.materializeConfig = func(string, ...llm.EnvOption) (providercfg.Config, error) {
-				return providercfg.Config{}, stop
 			}
 		case 4:
 			deps.loadProviderConfig = func(string) (providercfg.Config, bool, error) {

@@ -1562,7 +1562,7 @@ func TestValidateProviderCredentials_ConfigInstanceAuthModeNone(t *testing.T) {
 		wantErr  bool
 	}{
 		{
-			name:     "ollama instance as the hub materializes it",
+			name:     "credential-less ollama instance",
 			instance: providercfg.InstanceConfig{Name: "ollama", Type: "ollama"},
 			provider: "ollama",
 		},
@@ -1606,11 +1606,11 @@ func TestValidateProviderCredentials_ConfigInstanceAuthModeNone(t *testing.T) {
 	}
 }
 
-// TestHubSpawnerResumeAcceptsMaterializedOllamaConfig resumes against the
-// providers.toml a hub materializes for itself when none exists: with no
-// provider credentials in the environment, the only instance is ollama, which
-// carries no credential at all. Resume must reach the daemon.
-func TestHubSpawnerResumeAcceptsMaterializedOllamaConfig(t *testing.T) {
+// TestHubSpawnerResumeAcceptsCredentiallessOllamaConfig resumes against a
+// providers.toml whose only instance is ollama, which carries no credential at
+// all — the shape a machine with no provider keys ends up with. Resume must
+// still reach the daemon.
+func TestHubSpawnerResumeAcceptsCredentiallessOllamaConfig(t *testing.T) {
 	t.Setenv("OLLAMA_API_KEY", "")
 	dir := t.TempDir()
 	runDir := filepath.Join(dir, "run")
@@ -1636,9 +1636,8 @@ exit 2
 	if err != nil {
 		t.Fatalf("LoadStore: %v", err)
 	}
-	// The shape MaterializeProvidersConfig writes when no provider credential is
-	// present: the ollama adapter registers unconditionally, so it is the only
-	// seeded instance and it has no api_key.
+	// The ollama instance needs no api_key, so it is the one instance a
+	// machine with no provider keys can still name.
 	cfgPath := writeProvidersConfig(t, dir, providercfg.Config{
 		Instances: []providercfg.InstanceConfig{{Name: "ollama", Type: "ollama"}},
 	})

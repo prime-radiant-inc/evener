@@ -3,9 +3,6 @@
 package cmdutil
 
 import (
-	"context"
-	"errors"
-	"net/http"
 	"os"
 	"path/filepath"
 	"testing"
@@ -14,38 +11,11 @@ import (
 	"primeradiant.com/evener/llm"
 )
 
-type coverageRoundTripper func(*http.Request) (*http.Response, error)
-
-func (f coverageRoundTripper) RoundTrip(r *http.Request) (*http.Response, error) { return f(r) }
-
-type failingReader struct{}
-
-func (failingReader) Read([]byte) (int, error) { return 0, errors.New("read failed") }
-func (failingReader) Close() error             { return nil }
-
-type coverageAdapter string
-
-func (a coverageAdapter) Name() string { return string(a) }
-func (coverageAdapter) Complete(context.Context, llm.Request) (llm.Response, error) {
-	return llm.Response{}, nil
-}
-func (coverageAdapter) Stream(context.Context, llm.Request) (llm.Stream, error) {
-	return nil, errors.New("unused")
-}
-
 // FuzzCmdutilCoverage is a deterministic union seed for dependency-bound
 // cmdutil branches. All HTTP is intercepted before it reaches a transport.
 func FuzzCmdutilCoverage(f *testing.F) {
 	f.Add(uint8(0))
 	f.Fuzz(func(t *testing.T, _ uint8) {
-		oldClient := http.DefaultClient
-		oldFromEnv := newClientFromEnv
-		oldFindEnvVar := findEnvVar
-		t.Cleanup(func() {
-			http.DefaultClient = oldClient
-			newClientFromEnv = oldFromEnv
-			findEnvVar = oldFindEnvVar
-		})
 		closeLog, err := AttachAPILogger(llm.NewClient(), t.TempDir(), nil)
 		if err != nil {
 			t.Fatal(err)
@@ -58,24 +28,14 @@ func FuzzCmdutilCoverage(f *testing.F) {
 			t.Fatal(err)
 		}
 		t.Setenv(envvars.XDGConfigHome.Name, badState)
-		_, _ = seedConfigFromEnv()
-		_, _ = MaterializeProvidersConfig(filepath.Join(badState, "providers.toml"))
 		_, _ = LoadClient("")
-		newClientFromEnv = func(...llm.EnvOption) (*llm.Client, error) { return nil, errors.New("factory failed") }
-		_, _ = seedConfigFromEnv()
-		_, _ = MaterializeProvidersConfig(filepath.Join(t.TempDir(), "providers.toml"))
 		t.Setenv(envvars.EVENERProvidersConfig.Name, filepath.Join(t.TempDir(), "absent.toml"))
-		_, _ = LoadClient("")
-		newClientFromEnv = oldFromEnv
+		if _, err := LoadClient(""); err != nil {
+			t.Fatalf("an absent providers.toml is a valid configuration: %v", err)
+		}
 
 		validRoot := t.TempDir()
 		t.Setenv(envvars.XDGConfigHome.Name, validRoot)
-		t.Setenv(envvars.OllamaBaseURL.Name, "http://ollama.invalid")
-		t.Setenv(envvars.OllamaHost.Name, "http://host.invalid")
-		_, _ = seedConfigFromEnv()
-		t.Setenv(envvars.OllamaBaseURL.Name, "")
-		_, _ = seedConfigFromEnv()
-		_, _ = MaterializeProvidersConfig(filepath.Join(validRoot, "providers.toml"))
 
 		invalidConfig := filepath.Join(validRoot, "invalid.toml")
 		if err := os.WriteFile(invalidConfig, []byte("["), 0o600); err != nil {
@@ -134,27 +94,6 @@ func FuzzCmdutilCoverage(f *testing.F) {
 			t.Fatalf("an absent credentials.toml is an empty store: %v", err)
 		}
 
-		client := llm.NewClient()
-		for _, name := range []string{"ollama", "openai", "unknown"} {
-			client.Register(coverageAdapter(name))
-		}
-		newClientFromEnv = func(...llm.EnvOption) (*llm.Client, error) { return client, nil }
-		t.Setenv(envvars.OllamaBaseURL.Name, "http://ollama-base.invalid")
-		_, _ = seedConfigFromEnv()
-		t.Setenv(envvars.OllamaBaseURL.Name, "")
-		t.Setenv(envvars.OllamaHost.Name, "http://ollama-host.invalid")
-		_, _ = seedConfigFromEnv()
-		t.Setenv(envvars.OllamaHost.Name, "")
-		_, _ = seedConfigFromEnv()
-		findEnvVar = func(string) (envvars.Var, bool) { return envvars.Var{}, false }
-		_, _ = seedConfigFromEnv()
-		findEnvVar = oldFindEnvVar
-
-		blockedParent := filepath.Join(t.TempDir(), "parent-file")
-		if err := os.WriteFile(blockedParent, []byte("x"), 0o600); err != nil {
-			t.Fatal(err)
-		}
-		_, _ = MaterializeProvidersConfig(filepath.Join(blockedParent, "providers.toml"))
 	})
 }
 
@@ -175,8 +114,6 @@ func FuzzCmdutilScenarioReplay(f *testing.F) {
 			{"base-url-env", TestBaseURLEnvVar},
 			{"state-linked-worktree", TestDefaultProjectStateDir_LinkedWorktreeSameAsMain},
 			{"state-non-repo", TestDefaultProjectStateDir_NotInRepo_FallsBackToWorkDir},
-			{"materialize", TestMaterializeProvidersConfig},
-			{"materialize-oauth", TestMaterializeDetectsOpenAIOAuth},
 			{"list-models", TestListModelsFunc},
 			{"load-live", TestLoadClient_ListsTheDeclaredInstanceLive},
 			{"load-window", TestResolveProfile_TakesTheServedWindow},

@@ -2,11 +2,17 @@ package hub
 
 import (
 	"bytes"
+	"context"
 	"errors"
+	"net"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"primeradiant.com/evener/cmdutil"
+	"primeradiant.com/evener/internal/credentials"
+	"primeradiant.com/evener/llm/providercfg"
 )
 
 func TestPrintHubEnvVars(t *testing.T) {
@@ -188,4 +194,78 @@ func TestResolveEvenerBinaryPath(t *testing.T) {
 			t.Fatalf("nil lookPath resolution = %q, want %q", got, evenerPath)
 		}
 	})
+}
+
+// TestRunMainLeavesAnAbsentProvidersConfigAlone pins the write side of the
+// registry cut-over: the hub must not conjure a providers.toml, because the
+// only schema it knew how to write is the pre-registry one its own children
+// now refuse. An absent path is a valid configuration — the registry reads it
+// as "user layer: none" — so the hub starts, writes nothing, and a child
+// pointed at the same path builds a working client.
+func TestRunMainLeavesAnAbsentProvidersConfigAlone(t *testing.T) {
+	root := t.TempDir()
+	t.Setenv("HOME", filepath.Join(root, "home"))
+	t.Setenv("XDG_CONFIG_HOME", filepath.Join(root, "config"))
+	t.Setenv("XDG_STATE_HOME", filepath.Join(root, "state"))
+
+	providersPath := filepath.Join(root, "config", "evener", "providers.toml")
+	t.Setenv("EVENER_PROVIDERS_CONFIG", providersPath)
+	t.Setenv("EVENER_CREDENTIALS_CONFIG", filepath.Join(root, "config", "evener", "credentials.toml"))
+
+	cfg := DefaultConfig()
+	cfg.Addr = "127.0.0.1:0"
+	cfg.RunDir = filepath.Join(root, "run")
+	cfg.StateGlob = filepath.Join(root, "projects", "*")
+	cfg.PastIndexDB = filepath.Join(root, "hub", "index.db")
+	cfg.HubStateRoot = filepath.Join(root, "hub")
+	cfg.PluginAutoUpgrade = false
+	if err := os.MkdirAll(cfg.HubStateRoot, 0o700); err != nil {
+		t.Fatal(err)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	served := false
+	deps := mainDeps{
+		loadConfig:         func(string) (Config, error) { return cfg, nil },
+		ensureDirs:         func() error { return nil },
+		acquireLock:        func(string) (func(), error) { return func() {}, nil },
+		newToken:           func() (string, error) { return "hub-token", nil },
+		loadAuthToken:      func(string) (string, error) { return "auth-token", nil },
+		loadCredentials:    func(string) (*credentials.Store, error) { return &credentials.Store{}, nil },
+		loadProviderConfig: providercfg.LoadFile,
+		notifyContext: func(context.Context, ...os.Signal) (context.Context, context.CancelFunc) {
+			return ctx, func() {}
+		},
+		listen: func(ctx context.Context, network, addr string) (net.Listener, error) {
+			var lc net.ListenConfig
+			return lc.Listen(ctx, network, addr)
+		},
+		serve: func(context.Context, hubHTTPServer, hubShutdowner) error {
+			served = true
+			return nil
+		},
+	}
+
+	var stderr bytes.Buffer
+	if err := runMain([]string{"-addr", cfg.Addr, "-evener", "/bin/evener"}, &stderr, deps); err != nil {
+		t.Fatalf("runMain: %v, stderr=%s", err, stderr.String())
+	}
+	if !served {
+		t.Fatalf("the hub did not reach its serve boundary: %s", stderr.String())
+	}
+	if _, err := os.Stat(providersPath); !os.IsNotExist(err) {
+		t.Fatalf("the hub wrote %s (stat err=%v); an absent providers.toml must stay absent", providersPath, err)
+	}
+
+	// The property the materialized file broke: a child pointed at this same
+	// path builds a client.
+	client, err := cmdutil.LoadClientAt(providersPath, t.TempDir())
+	if err != nil {
+		t.Fatalf("LoadClientAt(%q): %v — a child spawned with EVENER_PROVIDERS_CONFIG=%s must build a client", providersPath, err, providersPath)
+	}
+	if _, err := client.Resolve("openai/gpt-5.2"); err != nil {
+		t.Fatalf("the child's client resolves nothing: %v", err)
+	}
 }

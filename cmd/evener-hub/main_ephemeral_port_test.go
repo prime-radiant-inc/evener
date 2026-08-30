@@ -12,7 +12,6 @@ import (
 	"time"
 
 	"primeradiant.com/evener/internal/credentials"
-	"primeradiant.com/evener/llm"
 	"primeradiant.com/evener/llm/providercfg"
 )
 
@@ -63,9 +62,6 @@ func TestRunMainAddrZeroReportsAndBindsTheRealPort(t *testing.T) {
 		loadCredentials: func(string) (*credentials.Store, error) { return &credentials.Store{}, nil },
 		loadProviderConfig: func(string) (providercfg.Config, bool, error) {
 			return providercfg.Config{}, true, nil
-		},
-		materializeConfig: func(string, ...llm.EnvOption) (providercfg.Config, error) {
-			return providercfg.Config{}, nil
 		},
 		notifyContext: func(context.Context, ...os.Signal) (context.Context, context.CancelFunc) {
 			return ctx, func() {}

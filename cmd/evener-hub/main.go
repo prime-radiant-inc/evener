@@ -30,7 +30,6 @@ import (
 	"primeradiant.com/evener/internal/binresolve"
 	"primeradiant.com/evener/internal/credentials"
 	"primeradiant.com/evener/internal/plugins"
-	"primeradiant.com/evener/llm"
 	"primeradiant.com/evener/llm/providercfg"
 	"primeradiant.com/evener/rendezvous"
 
@@ -112,7 +111,6 @@ type mainDeps struct {
 	loadAuthToken      func(string) (string, error)
 	loadCredentials    func(string) (*credentials.Store, error)
 	loadProviderConfig func(string) (providercfg.Config, bool, error)
-	materializeConfig  func(string, ...llm.EnvOption) (providercfg.Config, error)
 	notifyContext      func(context.Context, ...os.Signal) (context.Context, context.CancelFunc)
 	listen             func(context.Context, string, string) (net.Listener, error)
 	serve              func(context.Context, hubHTTPServer, hubShutdowner) error
@@ -128,7 +126,6 @@ func defaultMainDeps() mainDeps {
 		loadAuthToken:      hubedge.LoadOrCreateAuthToken,
 		loadCredentials:    credentials.LoadStore,
 		loadProviderConfig: providercfg.LoadFile,
-		materializeConfig:  cmdutil.MaterializeProvidersConfig,
 		notifyContext:      signal.NotifyContext,
 		listen: func(ctx context.Context, network, addr string) (net.Listener, error) {
 			var lc net.ListenConfig
@@ -234,7 +231,7 @@ func runMain(args []string, stderr io.Writer, deps mainDeps) error {
 		providersConfigPath = filepath.Join(cmdutil.DefaultConfigRoot(), "providers.toml")
 	}
 	// credentials.toml is always a sibling of providers.toml, wherever
-	// EVENER_PROVIDERS_CONFIG points it — matching cmdutil.LoadProviderConfigAt's
+	// EVENER_PROVIDERS_CONFIG points it — matching cmdutil.CredentialsPath's
 	// resolution so the hub and a plain `evener` client agree on the store.
 	credsStore, err := deps.loadCredentials(filepath.Join(filepath.Dir(providersConfigPath), "credentials.toml"))
 	if err != nil {
@@ -250,18 +247,13 @@ func runMain(args []string, stderr io.Writer, deps mainDeps) error {
 		_, _ = fmt.Fprintf(stderr, "[hub] providers config: %v\n", pcfgErr)
 	} else if exists {
 		loadedProviderConfig = &pcfg
-	} else {
-		// File absent — materialize a descriptors-only providers.toml from the
-		// environment so the hub has a single source of truth and spawned
-		// children load the same file via EVENER_PROVIDERS_CONFIG.
-		materialized, matErr := deps.materializeConfig(providersConfigPath)
-		if matErr != nil {
-			_, _ = fmt.Fprintf(stderr, "[hub] materialize providers config: %v\n", matErr)
-			return matErr
-		}
-		loadedProviderConfig = &materialized
-		_, _ = fmt.Fprintf(os.Stderr, "[hub] materialized %s\n", providersConfigPath)
 	}
+	// An absent file needs nothing written: the registry reads a missing path
+	// as "user layer: none" and every curated implicit instance still resolves
+	// (spec §10), so the hub starts on implicit instances alone and a child
+	// pointed at the same path via EVENER_PROVIDERS_CONFIG builds the same
+	// client. The hub has no writer for the registry schema; the instances
+	// pane is what creates the file.
 	resolvedEvenerBinary := resolveEvenerBinaryPath(opts.evenerBinary, currentExecutable(), exec.LookPath)
 	if opts.evenerBinary == "" && resolvedEvenerBinary != "" && resolvedEvenerBinary != "evener" {
 		_, _ = fmt.Fprintf(os.Stderr, "[hub] resolved evener at %s\n", resolvedEvenerBinary)
