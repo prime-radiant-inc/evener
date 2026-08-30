@@ -175,6 +175,30 @@ func TestProvidersProbeReportsProtocols(t *testing.T) {
 	}
 }
 
+// An endpoint that never answered says nothing about the protocol: a refused
+// connection is an error, not a verdict that the protocol is unsupported.
+func TestProvidersProbeReportsAnUnreachableEndpointAsAnError(t *testing.T) {
+	// A port with nothing listening: the server claims one, then hands it back.
+	closed := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}))
+	addr := closed.URL
+	closed.Close()
+
+	root := providersTestEnv(t, nil)
+	writeProvidersToml(t, root, "[providers.gw]\nbase = \"openai-compatible\"\nbase_url = \""+addr+"\"\ndefault_model = \"m1\"\n")
+
+	var stdout, stderr bytes.Buffer
+	if err := runProviders([]string{"probe", "gw"}, nil, &stdout, &stderr); err != nil {
+		t.Fatalf("probe: %v\n%s", err, stderr.String())
+	}
+	out := stdout.String()
+	if !strings.Contains(out, "openai-chat: error") || !strings.Contains(out, "openai-responses: error") {
+		t.Fatalf("an unreachable endpoint must be reported as an error:\n%s", out)
+	}
+	if strings.Contains(out, "unsupported") {
+		t.Fatalf("unsupported is for provider-side rejections only:\n%s", out)
+	}
+}
+
 // Only the two OpenAI protocols are interchangeable: every other protocol is
 // probed as itself alone (spec §11.2).
 func TestProvidersProbeOnANonOpenAIProtocolProbesOnlyItsOwn(t *testing.T) {

@@ -302,12 +302,21 @@ func probeProtocol(name, proto string, entry registry.Provider, model string) pr
 	ctx, cancel := context.WithTimeout(context.Background(), providerNetworkTimeout)
 	defer cancel()
 	if _, err := p.Complete(ctx, probeRequest(model), res); err != nil {
-		if e, ok := errors.AsType[llm.Error](err); ok && namesMaxTokensField(e.Error()) {
+		// Only a reply carrying an HTTP status is the provider rejecting the
+		// protocol. A refused connection, a DNS failure, or a timeout never
+		// reached it, and reporting those as "unsupported" claims something
+		// about the endpoint from evidence about the network.
+		e, answered := errors.AsType[llm.Error](err)
+		switch {
+		case !answered || e.StatusCode() == 0:
+			return probeResult{status: probeFailed, detail: err.Error()}
+		case namesMaxTokensField(e.Error()):
 			// The endpoint rejected the max-tokens field this row spells, not
 			// the protocol: it may well speak it (spec §11.2).
 			return probeResult{status: probeInconclusive, detail: e.Error()}
+		default:
+			return probeResult{status: probeUnsupported, detail: e.Error()}
 		}
-		return probeResult{status: probeUnsupported, detail: err.Error()}
 	}
 	return probeResult{status: probeOK}
 }
