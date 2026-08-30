@@ -231,6 +231,30 @@ func TestProfile_MirrorCatalogEntriesDoNotDisableReasoning(t *testing.T) {
 	}
 }
 
+// A configured thinking_levels map is complete authority on the model's
+// ladder, which entails the model takes an effort control: it overrides a
+// catalog verdict of non-reasoning even without an explicit reasoning = true.
+func TestProfile_ConfiguredThinkingLevelsImplyReasoning(t *testing.T) {
+	cfg := providercfg.Config{Instances: []providercfg.InstanceConfig{{
+		Name:     "gw",
+		Type:     "openai",
+		APIStyle: providercfg.StyleChatCompletions,
+		Models: map[string]providercfg.ModelConfig{
+			"gpt-4.1": {ThinkingLevels: map[string]string{"low": "lo", "high": "hi"}},
+		},
+	}}}
+	p, err := ResolveProfileFromConfig(cfg, "gw/gpt-4.1")
+	if err != nil {
+		t.Fatalf("ResolveProfileFromConfig: %v", err)
+	}
+	if !p.SupportsReasoning() {
+		t.Fatal("SupportsReasoning() = false, want true (thinking_levels configures an effort control)")
+	}
+	if got := p.ReasoningEffortLevels(); len(got) != 2 {
+		t.Fatalf("ReasoningEffortLevels() = %v, want the configured [low high]", got)
+	}
+}
+
 // providers.toml reasoning = true is a permission statement, not a level
 // configuration: a live /models ladder must still be adopted.
 func TestProfile_WithLiveModelInfo_ReasoningTrueKeepsLiveLevels(t *testing.T) {

@@ -1307,6 +1307,15 @@ func newOpenAICompatProfile(id, model string, contextWindow int, instModels map[
 	default:
 		efforts = resolveEffortLevels(model, defaultEfforts)
 	}
+	// A configured thinking_levels map is complete authority on the model's
+	// ladder (docs/llm-providers.md), which entails the model takes an effort
+	// control: it overrides a catalog verdict of non-reasoning unless the
+	// user said reasoning = false outright.
+	reasoningOverride := entry.Reasoning
+	if reasoningOverride == nil && len(entry.ThinkingLevels) > 0 {
+		configuredOn := true
+		reasoningOverride = &configuredOn
+	}
 	// MiniMax via OpenRouter uses reasoning_details for multi-turn reasoning
 	// (not OpenAI's reasoning_content). Set the provider option that tells the
 	// openai-compat adapter to serialize/deserialize reasoning_details.
@@ -1331,7 +1340,7 @@ func newOpenAICompatProfile(id, model string, contextWindow int, instModels map[
 		docFiles:      []string{"AGENTS.md"},
 		// providers.toml reasoning is the user's answer either way; the
 		// catalog only speaks for models it was not set for.
-		reasoningOverride: entry.Reasoning,
+		reasoningOverride: reasoningOverride,
 		catalogModel:      catModel,
 		streaming:         true,
 		webSearch:         false,
