@@ -2049,3 +2049,48 @@ test("final absence remains bound to the reopened production app", async (t) => 
     },
   );
 });
+
+test("smoke observation geometry fields", async (t) => {
+  const { buildSafeSummary } = await import("./smoke-live-concepts.mjs");
+  const summary = buildSafeSummary(
+    {
+      status: "passed",
+      hub: {
+        originDigest: "sha256:" + "a".repeat(64),
+        version: "1.0.0",
+        protocol: "evener-appwire-v3",
+      },
+      observations: [
+        {
+          milestone: "stillwater-conversation",
+          concept: "Stillwater",
+          source: {
+            observedAtMonotonicMs: 1,
+            semanticTreeDigest: "sha256:" + "b".repeat(64),
+          },
+          positiveMarker: { markerDigest: "c".repeat(64) },
+          evidence: { title: "test" },
+          geometry: {
+            visualViewport: { width: 393, height: 852, offsetTop: 0 },
+            composerRect: { x: 0, y: 800, width: 393, height: 52 },
+            safeArea: { top: 59, bottom: 34 },
+            mountedRowCount: 4,
+            userLabelCount: 1,
+            rawSystemSentinelAbsent: true,
+            conceptAnchorBefore: null,
+            conceptAnchorAfter: { x: 0, y: 0 },
+            keyboardOverlap: 0,
+            generationId: "gen-1",
+          },
+        },
+      ],
+    },
+    "sha256:" + "d".repeat(64),
+  );
+  assert.equal(summary.observations.length, 1);
+  assert.ok(summary.observations[0].geometry);
+  assert.equal(summary.observations[0].geometry.mountedRowCount, 4);
+  assert.equal(summary.observations[0].geometry.userLabelCount, 1);
+  assert.equal(summary.observations[0].geometry.rawSystemSentinelAbsent, true);
+  assert.equal(summary.observations[0].geometry.generationId, "gen-1");
+});
