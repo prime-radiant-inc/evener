@@ -9,7 +9,6 @@ import (
 	"strings"
 
 	"primeradiant.com/evener/llm"
-	"primeradiant.com/evener/llm/apilog"
 	"primeradiant.com/evener/llm/providers/internal/openaichat"
 	"primeradiant.com/evener/llm/providers/internal/protocolhttp"
 	"primeradiant.com/evener/llm/providers/internal/transport"
@@ -338,210 +337,189 @@ func (p *Protocol) decodeStream(sctx context.Context, cancel context.CancelFunc,
 	sawResponsesEvent := false
 	acc := newResponsesOutputAccumulator()
 
-	parseErr := llm.ParseSSE(sctx, resp.Body, func(ev llm.SSEEvent) error {
-		if len(ev.Data) == 0 {
-			return nil
-		}
-		var payload map[string]any
-		dec := json.NewDecoder(bytes.NewReader(ev.Data))
-		dec.UseNumber()
-		if err := dec.Decode(&payload); err != nil {
-			// Emit raw passthrough and continue; returning the error would
-			// abort the whole stream on a single malformed event.
-			s.Send(llm.StreamEvent{Type: llm.StreamEventProviderEvent, Raw: map[string]any{"event": ev.Event, "data": string(ev.Data)}})
-			return nil //nolint:nilerr // decode failure is surfaced as a raw passthrough event, not a fatal error
-		}
-		typ, _ := payload["type"].(string)
-		if typ == "" {
-			typ = ev.Event
-		}
-		if _, ok := responsesAPIEventTypes[typ]; ok {
-			sawResponsesEvent = true
-		}
-
-		switch typ {
-		case "response.output_item.added":
-			if item, ok := payload["item"].(map[string]any); ok {
-				acc.HandleOutputItemAdded(item)
-			}
-		case "response.output_text.delta":
-			delta, _ := payload["delta"].(string)
-			if delta == "" {
-				delta, _ = payload["text"].(string)
-			}
-			if delta == "" {
-				return nil
-			}
-			if !textStarted {
-				textStarted = true
-				s.Send(llm.StreamEvent{Type: llm.StreamEventTextStart, TextID: textID})
-			}
-			s.Send(llm.StreamEvent{Type: llm.StreamEventTextDelta, TextID: textID, Delta: delta})
-		case "response.reasoning_summary_text.delta":
-			delta, _ := payload["delta"].(string)
-			if delta == "" {
-				return nil
-			}
-			s.Send(llm.StreamEvent{Type: llm.StreamEventReasoningDelta, ReasoningDelta: delta})
-		case "response.reasoning_summary_part.added":
-			// Detailed reasoning arrives as multiple summary parts; separate
-			// them with a blank line so the rendered thought stays readable.
-			if reasoningStarted {
-				s.Send(llm.StreamEvent{Type: llm.StreamEventReasoningDelta, ReasoningDelta: "\n\n"})
-			}
-			reasoningStarted = true
-		case "response.function_call_arguments.delta":
-			st, delta, ok := acc.HandleFunctionCallArgumentsDelta(payload)
-			if !ok {
-				// Can't map reliably; pass through.
-				s.Send(llm.StreamEvent{Type: llm.StreamEventProviderEvent, Raw: payload})
-				return nil
-			}
-			if !st.started {
-				st.started = true
-				tc := llm.ToolCallData{ID: st.id, ItemID: st.itemID, Name: st.name, Type: "function"}
-				s.Send(llm.StreamEvent{Type: llm.StreamEventToolCallStart, ToolCall: &tc})
-			}
-			tc := llm.ToolCallData{ID: st.id, ItemID: st.itemID, Name: st.name, Arguments: []byte(delta), Type: "function"}
-			s.Send(llm.StreamEvent{Type: llm.StreamEventToolCallDelta, ToolCall: &tc})
-		case "response.function_call_arguments.done":
-			if _, ok := acc.HandleFunctionCallArgumentsDone(payload); !ok {
-				s.Send(llm.StreamEvent{Type: llm.StreamEventProviderEvent, Raw: payload})
-			}
-		case "response.output_item.done":
-			rawItem, st, argsStr, ok := acc.HandleOutputItemDone(payload)
+	runner := &transport.StreamRunner{
+		Provider:   res.Instance,
+		Resp:       resp,
+		Stream:     s,
+		Attempt:    attempt,
+		StatusCode: resp.StatusCode,
+		FinalEvent: func() *llm.StreamEvent { return finalEvent },
+		SSEOpts:    llm.StreamReadSSEOptions(req.AdapterTimeout),
+		Finished:   &finished,
+		// This transport has four ways to end without completing, and the
+		// runner's single IncompleteMsg cannot tell them apart, so it hands
+		// the classification back here instead. Every read failure is handled
+		// before the empty-stream sentinel, so the sentinel can only fire for
+		// a stream that closed cleanly: a read that broke, timed out, or was
+		// cancelled is evidence about the transport; only a clean close with
+		// nothing recognized on it is evidence about what the endpoint
+		// implements.
+		TerminalError: func(parseErr error) error {
 			switch {
-			case ok:
+			case errors.Is(parseErr, llm.ErrSSEReadTimeout):
+				// The stream went idle past the read timeout. Named separately
+				// from the read failures below because a stall is the one an
+				// operator most often has to tell apart from a broken
+				// connection.
+				return llm.NewStreamError(res.Instance, "responses stream stalled without completion", parseErr)
+			case parseErr != nil:
+				// The read failed. Surface its cause.
+				return llm.NewStreamError(res.Instance, "responses stream ended without completion", parseErr)
+			case !sawResponsesEvent:
+				// The stream closed cleanly, 200 OK, without a single event
+				// this decoder recognizes as the Responses API: the model
+				// likely does not support /v1/responses. There is no Chat
+				// Completions fallback in this transport, so this is permanent
+				// by construction — the retry chain short-circuits on it and
+				// the caller routes to its next model.
+				return llm.NewUnsupportedEndpointError(res.Instance, "responses stream closed with no events", nil)
+			default:
+				// The endpoint served real Responses events and then closed
+				// cleanly without response.completed — a truncated response,
+				// with no read error to report as its cause.
+				return llm.NewStreamError(res.Instance, "responses stream closed before response.completed", nil)
+			}
+		},
+		OnEvent: func(ev llm.SSEEvent) error {
+			if len(ev.Data) == 0 {
+				return nil
+			}
+			var payload map[string]any
+			dec := json.NewDecoder(bytes.NewReader(ev.Data))
+			dec.UseNumber()
+			if err := dec.Decode(&payload); err != nil {
+				// Emit raw passthrough and continue; returning the error would
+				// abort the whole stream on a single malformed event.
+				s.Send(llm.StreamEvent{Type: llm.StreamEventProviderEvent, Raw: map[string]any{"event": ev.Event, "data": string(ev.Data)}})
+				return nil //nolint:nilerr // decode failure is surfaced as a raw passthrough event, not a fatal error
+			}
+			typ, _ := payload["type"].(string)
+			if typ == "" {
+				typ = ev.Event
+			}
+			if _, ok := responsesAPIEventTypes[typ]; ok {
+				sawResponsesEvent = true
+			}
+
+			switch typ {
+			case "response.output_item.added":
+				if item, ok := payload["item"].(map[string]any); ok {
+					acc.HandleOutputItemAdded(item)
+				}
+			case "response.output_text.delta":
+				delta, _ := payload["delta"].(string)
+				if delta == "" {
+					delta, _ = payload["text"].(string)
+				}
+				if delta == "" {
+					return nil
+				}
+				if !textStarted {
+					textStarted = true
+					s.Send(llm.StreamEvent{Type: llm.StreamEventTextStart, TextID: textID})
+				}
+				s.Send(llm.StreamEvent{Type: llm.StreamEventTextDelta, TextID: textID, Delta: delta})
+			case "response.reasoning_summary_text.delta":
+				delta, _ := payload["delta"].(string)
+				if delta == "" {
+					return nil
+				}
+				s.Send(llm.StreamEvent{Type: llm.StreamEventReasoningDelta, ReasoningDelta: delta})
+			case "response.reasoning_summary_part.added":
+				// Detailed reasoning arrives as multiple summary parts; separate
+				// them with a blank line so the rendered thought stays readable.
+				if reasoningStarted {
+					s.Send(llm.StreamEvent{Type: llm.StreamEventReasoningDelta, ReasoningDelta: "\n\n"})
+				}
+				reasoningStarted = true
+			case "response.function_call_arguments.delta":
+				st, delta, ok := acc.HandleFunctionCallArgumentsDelta(payload)
+				if !ok {
+					// Can't map reliably; pass through.
+					s.Send(llm.StreamEvent{Type: llm.StreamEventProviderEvent, Raw: payload})
+					return nil
+				}
 				if !st.started {
 					st.started = true
 					tc := llm.ToolCallData{ID: st.id, ItemID: st.itemID, Name: st.name, Type: "function"}
 					s.Send(llm.StreamEvent{Type: llm.StreamEventToolCallStart, ToolCall: &tc})
 				}
-				tc := llm.ToolCallData{ID: st.id, ItemID: st.itemID, Name: st.name, Arguments: json.RawMessage(argsStr), Type: "function"}
-				s.Send(llm.StreamEvent{Type: llm.StreamEventToolCallEnd, ToolCall: &tc})
-			case rawItem == nil:
-				// Best-effort: treat as end-of-text.
+				tc := llm.ToolCallData{ID: st.id, ItemID: st.itemID, Name: st.name, Arguments: []byte(delta), Type: "function"}
+				s.Send(llm.StreamEvent{Type: llm.StreamEventToolCallDelta, ToolCall: &tc})
+			case "response.function_call_arguments.done":
+				if _, ok := acc.HandleFunctionCallArgumentsDone(payload); !ok {
+					s.Send(llm.StreamEvent{Type: llm.StreamEventProviderEvent, Raw: payload})
+				}
+			case "response.output_item.done":
+				rawItem, st, argsStr, ok := acc.HandleOutputItemDone(payload)
+				switch {
+				case ok:
+					if !st.started {
+						st.started = true
+						tc := llm.ToolCallData{ID: st.id, ItemID: st.itemID, Name: st.name, Type: "function"}
+						s.Send(llm.StreamEvent{Type: llm.StreamEventToolCallStart, ToolCall: &tc})
+					}
+					tc := llm.ToolCallData{ID: st.id, ItemID: st.itemID, Name: st.name, Arguments: json.RawMessage(argsStr), Type: "function"}
+					s.Send(llm.StreamEvent{Type: llm.StreamEventToolCallEnd, ToolCall: &tc})
+				case rawItem == nil:
+					// Best-effort: treat as end-of-text.
+					if textStarted {
+						s.Send(llm.StreamEvent{Type: llm.StreamEventTextEnd, TextID: textID})
+						textStarted = false
+					}
+				default:
+					if it, _ := rawItem["type"].(string); it == "function_call" {
+						// function_call with no resolvable call_id.
+						s.Send(llm.StreamEvent{Type: llm.StreamEventProviderEvent, Raw: payload})
+					} else if textStarted {
+						// Best-effort: treat as end-of-text.
+						s.Send(llm.StreamEvent{Type: llm.StreamEventTextEnd, TextID: textID})
+						textStarted = false
+					}
+				}
+			case "response.completed":
+				// Response object may be nested under "response" or be the payload itself.
+				rawResp, _ := payload["response"].(map[string]any)
+				if rawResp == nil {
+					rawResp = payload
+				}
+				built := fromResponses(rawResp, req.Model)
+				settleResponsesTerminalOutput(&built, rawResp, acc.Output())
+				built.Provider = res.Instance
+				p.stampResponseIDHash(sctx, &built)
+				llm.StampEndpointURL(&built, r.EndpointURL, r.Material)
+				// Ensure text segment is closed.
 				if textStarted {
 					s.Send(llm.StreamEvent{Type: llm.StreamEventTextEnd, TextID: textID})
 					textStarted = false
 				}
-			default:
-				if it, _ := rawItem["type"].(string); it == "function_call" {
-					// function_call with no resolvable call_id.
-					s.Send(llm.StreamEvent{Type: llm.StreamEventProviderEvent, Raw: payload})
-				} else if textStarted {
-					// Best-effort: treat as end-of-text.
-					s.Send(llm.StreamEvent{Type: llm.StreamEventTextEnd, TextID: textID})
-					textStarted = false
+				rp := built
+				event := llm.StreamEvent{Type: llm.StreamEventFinish, FinishReason: &built.Finish, Usage: &built.Usage, Response: &rp}
+				if attempt.Active() {
+					finalEvent = &event
+				} else {
+					s.Send(event)
 				}
+				// Stop parsing after finish.
+				finished = true
+				cancel()
+			case "error", "response.failed":
+				// The Responses API reports a mid-stream failure either as a flat
+				// "error" event or as an error nested in the response object of
+				// "response.failed". Decode it into the typed error hierarchy and
+				// end the stream with it: the raw passthrough below would drop the
+				// payload, leaving a content-free failure indistinguishable from an
+				// unsupported-endpoint empty stream and a mid-content failure
+				// degraded to the generic incomplete-stream error.
+				if inband := responsesInbandError(ev.Data); inband != nil {
+					return &transport.FatalStreamError{Err: llm.RewriteErrorProvider(inband, res.Instance)}
+				}
+				s.Send(llm.StreamEvent{Type: llm.StreamEventProviderEvent, Raw: payload})
+			default:
+				s.Send(llm.StreamEvent{Type: llm.StreamEventProviderEvent, Raw: payload})
 			}
-		case "response.completed":
-			// Response object may be nested under "response" or be the payload itself.
-			rawResp, _ := payload["response"].(map[string]any)
-			if rawResp == nil {
-				rawResp = payload
-			}
-			built := fromResponses(rawResp, req.Model)
-			settleResponsesTerminalOutput(&built, rawResp, acc.Output())
-			built.Provider = res.Instance
-			p.stampResponseIDHash(sctx, &built)
-			llm.StampEndpointURL(&built, r.EndpointURL, r.Material)
-			// Ensure text segment is closed.
-			if textStarted {
-				s.Send(llm.StreamEvent{Type: llm.StreamEventTextEnd, TextID: textID})
-				textStarted = false
-			}
-			rp := built
-			event := llm.StreamEvent{Type: llm.StreamEventFinish, FinishReason: &built.Finish, Usage: &built.Usage, Response: &rp}
-			if attempt.Active() {
-				finalEvent = &event
-			} else {
-				s.Send(event)
-			}
-			// Stop parsing after finish.
-			finished = true
-			cancel()
-		case "error", "response.failed":
-			// The Responses API reports a mid-stream failure either as a flat
-			// "error" event or as an error nested in the response object of
-			// "response.failed". Decode it into the typed error hierarchy and
-			// end the stream with it: the raw passthrough below would drop the
-			// payload, leaving a content-free failure indistinguishable from an
-			// unsupported-endpoint empty stream and a mid-content failure
-			// degraded to the generic incomplete-stream error.
-			if inband := responsesInbandError(ev.Data); inband != nil {
-				return &transport.FatalStreamError{Err: llm.RewriteErrorProvider(inband, res.Instance)}
-			}
-			s.Send(llm.StreamEvent{Type: llm.StreamEventProviderEvent, Raw: payload})
-		default:
-			s.Send(llm.StreamEvent{Type: llm.StreamEventProviderEvent, Raw: payload})
-		}
-		return nil
-	}, llm.StreamReadSSEOptions(req.AdapterTimeout)...)
-
-	var terminalErr error
-	var fatal *transport.FatalStreamError
-	if !finished {
-		// Every read failure is handled before the empty-stream sentinel, so
-		// the sentinel can only fire for a stream that closed cleanly. A read
-		// that broke, timed out, or was cancelled is evidence about the
-		// transport; only a clean close with nothing recognized on it is
-		// evidence about what the endpoint implements.
-		switch {
-		case sctx.Err() != nil:
-			terminalErr = llm.WrapContextError(res.Instance, sctx.Err())
-		case errors.As(parseErr, &fatal):
-			// The provider reported a structured failure in-band; the decoded,
-			// typed error is the stream's terminal error in its own right.
-			terminalErr = fatal.Err
-		case errors.Is(parseErr, llm.ErrSSEReadTimeout):
-			// The stream went idle past the read timeout. Named separately from
-			// the read failures below because a stall is the one an operator
-			// most often has to tell apart from a broken connection.
-			terminalErr = llm.NewStreamError(res.Instance, "responses stream stalled without completion", parseErr)
-		case parseErr != nil:
-			// The read failed. Surface its cause.
-			terminalErr = llm.NewStreamError(res.Instance, "responses stream ended without completion", parseErr)
-		case !sawResponsesEvent:
-			// The stream closed cleanly, 200 OK, without a single event this
-			// decoder recognizes as the Responses API: the model likely does
-			// not support /v1/responses. There is no Chat Completions fallback
-			// in this transport, so this is permanent by construction — the
-			// retry chain short-circuits on it and the caller routes to its
-			// next model.
-			terminalErr = llm.NewUnsupportedEndpointError(res.Instance, "responses stream closed with no events", nil)
-		default:
-			// The endpoint served real Responses events and then closed cleanly
-			// without response.completed — a truncated response, with no read
-			// error to report as its cause.
-			terminalErr = llm.NewStreamError(res.Instance, "responses stream closed before response.completed", nil)
-		}
+			return nil
+		},
 	}
-	var response *llm.Response
-	if finalEvent != nil {
-		response = finalEvent.Response
-	}
-	decodeErr := terminalErr
-	if finished {
-		decodeErr = nil
-	}
-	timeoutSource := llm.APITimeoutSourceForSSE(parseErr)
-	if timeoutSource == llm.APITimeoutNone {
-		timeoutSource = attempt.TimeoutSource()
-	}
-	outcome := apilog.AttemptOutcomeClass("")
-	if !finished && sctx.Err() == context.Canceled {
-		outcome = apilog.AttemptCallerCancel
-	}
-	attempt.Complete(llm.APIAttemptResult{
-		StatusCode: resp.StatusCode,
-		Response:   response,
-		Outcome:    outcome,
-		Err:        terminalErr,
-	}, timeoutSource, decodeErr, nil)
-	if finalEvent != nil {
-		s.Send(*finalEvent)
-	} else if terminalErr != nil {
-		s.Send(llm.StreamEvent{Type: llm.StreamEventError, Err: terminalErr})
-	}
+	runner.Run(sctx)
 }

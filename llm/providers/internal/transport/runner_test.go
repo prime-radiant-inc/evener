@@ -237,3 +237,108 @@ func TestRun_NeverCallsCancel(t *testing.T) {
 	// <-s.done returns immediately because s.done was already closed.
 	stream.Close()
 }
+
+// TestRun_TerminalErrorHookReplacesTheIncompleteWrap: an adapter whose stream
+// has more than one way to end without completing supplies TerminalError
+// instead of IncompleteMsg, and the runner publishes exactly what the hook
+// returns. Without the hook the responses adapter had to reimplement the whole
+// epilogue, and the copy drifted from this one.
+func TestRun_TerminalErrorHookReplacesTheIncompleteWrap(t *testing.T) {
+	sentinel := errors.New("adapter's own terminal classification")
+	finished := false
+	var sawParseErr error
+	var hookCalls int
+	r := &StreamRunner{
+		Provider:      "responses",
+		Resp:          respFrom("data: {\"a\":1}\n\n"),
+		Stream:        llm.NewChanStream(nil),
+		OnEvent:       func(llm.SSEEvent) error { return nil },
+		Finished:      &finished,
+		IncompleteMsg: "responses stream ended without completion",
+		TerminalError: func(parseErr error) error {
+			hookCalls++
+			sawParseErr = parseErr
+			return sentinel
+		},
+	}
+	got := drain(context.Background(), t, r)
+	if hookCalls != 1 {
+		t.Fatalf("TerminalError called %d times, want 1", hookCalls)
+	}
+	if sawParseErr != nil {
+		t.Fatalf("hook parseErr = %v, want nil for a stream that closed cleanly", sawParseErr)
+	}
+	if len(got) != 1 || got[0].Type != llm.StreamEventError || !errors.Is(got[0].Err, sentinel) {
+		t.Fatalf("events = %+v, want the hook's error verbatim", got)
+	}
+	if strings.Contains(got[0].Err.Error(), "responses stream ended without completion") {
+		t.Fatalf("the hook must replace the IncompleteMsg wrap, not add to it: %v", got[0].Err)
+	}
+}
+
+// TestRun_TerminalErrorHookIsNotConsultedOnCancelOrFatal: the two endings the
+// runner already classifies stay the runner's, so an adapter's hook cannot
+// turn a caller cancellation or an in-band provider failure into something
+// else.
+func TestRun_TerminalErrorHookIsNotConsultedOnCancelOrFatal(t *testing.T) {
+	inband := errors.New("provider reported a rate limit in-band")
+	for _, tc := range []struct {
+		name    string
+		ctx     func(t *testing.T) context.Context
+		onEvent func(llm.SSEEvent) error
+		want    func(t *testing.T, err error)
+	}{
+		{
+			name: "caller cancelled",
+			ctx: func(t *testing.T) context.Context {
+				t.Helper()
+				ctx, cancel := context.WithCancel(context.Background())
+				cancel()
+				return ctx
+			},
+			onEvent: func(llm.SSEEvent) error { return nil },
+			want: func(t *testing.T, err error) {
+				t.Helper()
+				if !errors.Is(err, context.Canceled) {
+					t.Fatalf("terminal error = %v, want the wrapped context error", err)
+				}
+			},
+		},
+		{
+			name:    "in-band fatal",
+			ctx:     func(*testing.T) context.Context { return context.Background() },
+			onEvent: func(llm.SSEEvent) error { return &FatalStreamError{Err: inband} },
+			want: func(t *testing.T, err error) {
+				t.Helper()
+				if !errors.Is(err, inband) {
+					t.Fatalf("terminal error = %v, want the in-band error verbatim", err)
+				}
+			},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			finished := false
+			hookCalls := 0
+			r := &StreamRunner{
+				Provider:      "responses",
+				Resp:          respFrom("data: {\"a\":1}\n\n"),
+				Stream:        llm.NewChanStream(nil),
+				OnEvent:       tc.onEvent,
+				Finished:      &finished,
+				IncompleteMsg: "responses stream ended without completion",
+				TerminalError: func(error) error {
+					hookCalls++
+					return errors.New("the hook must not run here")
+				},
+			}
+			got := drain(tc.ctx(t), t, r)
+			if hookCalls != 0 {
+				t.Fatalf("TerminalError ran %d times for %s", hookCalls, tc.name)
+			}
+			if len(got) != 1 || got[0].Type != llm.StreamEventError {
+				t.Fatalf("events = %+v, want one terminal error", got)
+			}
+			tc.want(t, got[0].Err)
+		})
+	}
+}
