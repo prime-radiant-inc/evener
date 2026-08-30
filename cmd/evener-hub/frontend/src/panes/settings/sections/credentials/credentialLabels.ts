@@ -1,98 +1,109 @@
 // credentialLabels.ts is the pure-logic half of the Credentials section
-// (parity-m7-settings.md §7c): computing the layered credential display
-// (oauth > file > env precedence, effective vs. shadowed) and the type
-// grouping, from InstanceEntry's boolean/string fields - no rendering, no
-// store access, easily unit-tested in isolation.
+// (parity-m7-settings.md §7c, updated for the provider registry's instance
+// wire shape - spec docs/superpowers/specs/2026-08-28-provider-registry-
+// design.md §11.3): computing the credential display from InstanceEntry's
+// activeSource/credentialRequired/auth fields and the providerId grouping -
+// no rendering, no store access, easily unit-tested in isolation.
 import type { AuthTestResponse, InstanceEntry } from "../../../../protocol/types.gen";
 
-export type CredentialSourceKind = "oauth" | "file" | "env";
-
 export interface CredentialLayerView {
-  source: CredentialSourceKind;
+  source: string;
   label: string;
   effective: boolean;
 }
 
-const SOURCE_LABEL: Record<CredentialSourceKind, string> = {
-  oauth: "Configured via OAuth",
-  file: "Configured via stored API key",
-  env: "Configured via environment variable",
-};
+// activeSourceLabel is the single source of truth for every ActiveSource
+// value the registry sends (spec §11.3's vocabulary: api_key |
+// credential_headers | store | env:<VAR> | oauth | adc | none). "env:<VAR>"
+// carries its variable name in the string itself, so it is matched by
+// prefix, not an exact value. "none" - nothing currently resolves - splits
+// three ways on credentialRequired and the instance's own auth scheme,
+// since a scheme that never wants a credential (auth: none) reads
+// differently from one that merely allows an optional one (optional-
+// bearer) or one that plainly lacks a required key.
+export function activeSourceLabel(instance: InstanceEntry): string {
+  const source = instance.activeSource;
+  if (source.startsWith("env:")) return `Configured via environment variable (${source.slice(4)})`;
+  switch (source) {
+    case "api_key":
+      return "Configured via providers.toml";
+    case "credential_headers":
+      return "Configured via a credential header";
+    case "store":
+      return "Configured via stored API key";
+    case "oauth":
+      return instance.storedEmail ? `Configured via OAuth (${instance.storedEmail})` : "Configured via OAuth";
+    case "adc":
+      return "Configured via Application Default Credentials";
+    case "none":
+      if (instance.credentialRequired) return "Not configured";
+      return instance.auth === "none" ? "No credentials required" : "No key set · optional";
+    default:
+      return source;
+  }
+}
 
-// credentialLayers lists every credential layer PRESENT on `instance`, in
-// fixed precedence order oauth > file > env - the first entry is always the
-// effective one (an instance can carry an OAuth sign-in shadowing a stored
-// key, e.g. OpenAI). Empty when nothing is configured at all (see
-// unconfiguredLabel for that case's own message).
+// credentialLayers lists the credential line(s) the detail sheet shows: the
+// effective source first, plus - the one case that can still shadow another
+// under the registry's resolution order (spec §10: api_key >
+// credential_headers > store > env, and oauth-openai-codex/gcp-adc never
+// layer against any of those on the same instance) - an environment
+// variable left set behind a stored key that now wins. Empty when nothing
+// has ever resolved (activeSource "none"); see activeSourceLabel for that
+// case's own message.
 export function credentialLayers(instance: InstanceEntry): CredentialLayerView[] {
-  const layers: CredentialLayerView[] = [];
-  if (instance.hasStoredOAuth) {
+  if (instance.activeSource === "none") return [];
+  const layers: CredentialLayerView[] = [
+    { source: instance.activeSource, label: activeSourceLabel(instance), effective: true },
+  ];
+  if (instance.activeSource === "store" && instance.envVar) {
     layers.push({
-      source: "oauth",
-      label: instance.storedEmail ? `${SOURCE_LABEL.oauth} (${instance.storedEmail})` : SOURCE_LABEL.oauth,
+      source: `env:${instance.envVar}`,
+      label: `Configured via environment variable (${instance.envVar})`,
       effective: false,
     });
   }
-  if (instance.hasStoredFile) layers.push({ source: "file", label: SOURCE_LABEL.file, effective: false });
-  if (instance.envVar) layers.push({ source: "env", label: SOURCE_LABEL.env, effective: false });
-  const first = layers[0];
-  if (first) first.effective = true;
   return layers;
 }
 
-// keylessByDesign: the instance holds no credential and none is wanted - the
-// hub's credentialRequired gate (InstanceEntry, appwire/types.go) says there
-// is nothing to look for, as with a gateway that inherits no type-level key.
-// Both halves of the row's display key on this one bit: the words below and
-// the heading's status dot, which otherwise disagreed about the same instance.
-//
-// "absent" and "none" are the two ways of holding no credential: "absent" is
-// nothing resolved, while "none" is the hub's word for a provider that
-// authenticates nothing at all (instanceStatus, cmd/evener-hub/app_auth.go).
-// credentialRequired stays the sole authority on whether one is wanted.
+// keylessByDesign: the instance holds no credential and none is wanted -
+// the hub's credentialRequired gate (InstanceEntry, appwire/types.go) says
+// there is nothing to look for, as with an auth-none provider or a gateway
+// on the optional-bearer scheme. Both halves of the display key on this one
+// bit: the words activeSourceLabel returns and the heading's status dot,
+// which otherwise disagreed about the same instance.
 export function keylessByDesign(instance: InstanceEntry): boolean {
-  const holdsNoCredential = instance.activeSource === "absent" || instance.activeSource === "none";
-  return holdsNoCredential && !instance.credentialRequired;
+  return instance.activeSource === "none" && !instance.credentialRequired;
 }
 
 // unconfiguredLabel: the single-line message shown INSTEAD of the layered
-// display when credentialLayers(instance) is empty - mirrors the legacy's
-// sourceLabel() lookup for the absent/none/unknown cases (file/env/oauth are
-// unreachable here, since any of those being true would make
-// credentialLayers non-empty).
-//
-// "absent" splits on credentialRequired, the hub's own gate (InstanceEntry,
-// appwire/types.go): an instance that needs no key of ours - a gateway that
-// inherits no type-level key, such as a local llama.cpp - has nothing missing
-// when it holds none, so calling it "Not configured" reports a working
-// provider as broken.
+// display when credentialLayers(instance) is empty - just activeSourceLabel
+// for the "none" case, which already covers required vs. optional vs.
+// never-wanted.
 export function unconfiguredLabel(instance: InstanceEntry): string | null {
-  if (credentialLayers(instance).length > 0) return null;
-  switch (instance.activeSource) {
-    case "none":
-      return "No credentials required";
-    case "absent":
-      return keylessByDesign(instance) ? "No key set · optional" : "Not configured";
-    default:
-      return instance.activeSource || "Not configured";
-  }
+  return instance.activeSource === "none" ? activeSourceLabel(instance) : null;
 }
 
-export interface InstanceTypeGroup {
-  type: string;
+export interface InstanceProviderGroup {
+  providerId: string;
   instances: InstanceEntry[];
 }
 
-// groupByType groups instances by `.type`, in first-seen order from the RPC
-// response - never re-sorted client-side (parity-m7-settings.md §7b).
-export function groupByType(instances: InstanceEntry[]): InstanceTypeGroup[] {
-  const groups: InstanceTypeGroup[] = [];
-  const byType = new Map<string, InstanceTypeGroup>();
+// groupByProvider groups instances by their registry providerId, in
+// first-seen order from the RPC response - never re-sorted client-side
+// (parity-m7-settings.md §7b). providerId, not `base`, is the grouping
+// key: `base` is blank whenever an instance's own name already is the
+// registry id (InstanceEntry, appwire/types.go), so a custom-named
+// instance built on a curated provider (base: "groq") lands in the SAME
+// group as that provider's own implicit instance, not a group of its own.
+export function groupByProvider(instances: InstanceEntry[]): InstanceProviderGroup[] {
+  const groups: InstanceProviderGroup[] = [];
+  const byProvider = new Map<string, InstanceProviderGroup>();
   for (const instance of instances) {
-    let group = byType.get(instance.type);
+    let group = byProvider.get(instance.providerId);
     if (!group) {
-      group = { type: instance.type, instances: [] };
-      byType.set(instance.type, group);
+      group = { providerId: instance.providerId, instances: [] };
+      byProvider.set(instance.providerId, group);
       groups.push(group);
     }
     group.instances.push(instance);
