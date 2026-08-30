@@ -66,7 +66,7 @@ func (c *hubLaunchController) Schema(ctx context.Context, params appwire.EmptyPa
 			wire.DefaultableLayers = append(wire.DefaultableLayers, string(layer))
 		}
 		if opt.EnvFallback != nil {
-			wire.EnvFallback = &appwire.LaunchOptionEnvFallback{Name: opt.EnvFallback.Name, Secret: opt.EnvFallback.Secret}
+			wire.EnvFallback = &appwire.LaunchOptionEnvFallback{Name: opt.EnvFallback.Name}
 		}
 		for _, choice := range opt.Choices {
 			wire.Choices = append(wire.Choices, appwire.LaunchOptionChoice{Value: choice.Value, Label: choice.Label, Disabled: choice.Disabled, Hint: choice.Hint})

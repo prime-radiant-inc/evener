@@ -794,7 +794,6 @@ export interface LaunchOptionChoice {
 
 export interface LaunchOptionEnvFallback {
   name: string;
-  secret?: boolean;
 }
 
 export interface LaunchOptionSchemaResponse {
