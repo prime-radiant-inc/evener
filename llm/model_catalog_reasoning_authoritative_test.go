@@ -48,3 +48,26 @@ func TestParseLiteLLMCatalog_ReasoningAuthoritative(t *testing.T) {
 		}
 	}
 }
+
+// OpenRouter spells Anthropic versions with dots (claude-opus-4.6) where the
+// overrides file keys on dashes; the family mapping must bridge that, or the
+// adaptive-Claude default effort is lost on the OpenRouter path and those
+// sessions run at medium where the direct path runs at high.
+func TestEmbeddedCatalog_DottedClaudeMirrorsInheritFamilyOverlay(t *testing.T) {
+	cat := EmbeddedModelCatalog()
+	if cat == nil {
+		t.Fatal("embedded catalog nil")
+	}
+	for _, id := range []string{
+		"openrouter/anthropic/claude-opus-4.6",
+		"openrouter/anthropic/claude-sonnet-4.6",
+	} {
+		mi := cat.GetModelInfo(id)
+		if mi == nil {
+			t.Fatalf("%s not found in embedded catalog", id)
+		}
+		if mi.DefaultReasoningEffort != "high" {
+			t.Errorf("%s DefaultReasoningEffort = %q, want high from the dashed family overlay", id, mi.DefaultReasoningEffort)
+		}
+	}
+}

@@ -828,7 +828,10 @@ func resolveRequestEffort(configured string, supportsReasoning bool, levels []st
 	if !supportsReasoning {
 		return nil
 	}
-	effort := configured
+	// Normalize here too: config entry points normalize on the way in, but a
+	// value that slipped past them ("None", a stored alias) must still be an
+	// off, not an unknown level a provider 400s on.
+	effort := llm.NormalizeReasoningEffort(configured)
 	if effort == "" {
 		effort = modelDefault
 	}
@@ -837,8 +840,11 @@ func resolveRequestEffort(configured string, supportsReasoning bool, levels []st
 	}
 	if effort == llm.ReasoningEffortNone {
 		// Off, whether the user or the model's data said so: a wire level
-		// only where the model lists it, otherwise the field stays out.
-		if slices.Contains(levels, llm.ReasoningEffortNone) {
+		// only where the model lists it (in whatever case the ladder spells
+		// it), otherwise the field stays out.
+		if slices.ContainsFunc(levels, func(l string) bool {
+			return strings.EqualFold(l, llm.ReasoningEffortNone)
+		}) {
 			return &effort
 		}
 		return nil
