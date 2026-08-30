@@ -1,7 +1,9 @@
 # AppServer Serial Worker Dispatch Design
 
 Date: 2026-08-30
-Status: design only; implementation not started
+Status: design settled; slice-0 audit complete (2026-08-30, origin/main
+`173411a6a`) with remediations in `review/slice0-audit-remediations`;
+worker implementation not started
 Depends on: PR #667 (`review/appserver-dispatch-narrowing`) — this design's "current
 state" is that branch's end state
 Lineage: 2026-08-30 audit findings C1 (lost panic barrier) and I3 (per-connection
@@ -122,12 +124,19 @@ The exposure, verified against the handlers on that branch:
   repository with a wedged `index.lock`-holding process, arbitrarily long.
 - The marketplace/plugin family — `evener/marketplace/refresh`,
   `evener/marketplace/browse` (lazy fetch), `evener/plugin/install`,
-  `evener/plugin/upgrade`, `evener/plugin/checkNow` (`cmd/evener-hub/app_rpc.go`)
-  — are inline serial and delegate to `internal/plugins.Manager`, which forks git
-  **including network clones** (`gitClone` in `internal/plugins/git.go` runs
-  `exec.CommandContext` against a remote URL) and takes a file lock with a
-  30-second acquisition timeout (`installAcquireLock(..., 30*time.Second)` in
-  `internal/plugins/autoupgrade.go`). These are the largest members of the
+  `evener/plugin/upgrade` (all in `cmd/evener-hub/app_rpc.go`), and
+  `evener/plugin/checkNow` (registered in
+  `cmd/evener-hub/app_plugin_autoupgrade.go:114` — the file attribution
+  matters, because the disposition table's file:line column is the
+  exhaustiveness checksum and a sweep sharded by `app_rpc.go` alone would
+  silently miss it) — are inline serial and delegate to
+  `internal/plugins.Manager`, which forks git **including network clones**
+  (`gitClone` in `internal/plugins/git.go` runs `exec.CommandContext` against a
+  remote URL) and takes a file lock with a 30-second acquisition timeout
+  (`installAcquireLock(..., 30*time.Second)` in
+  `internal/plugins/autoupgrade.go`; made ctx-aware by the slice-0 remediation
+  PR, so a canceled handler no longer parks the worker for the full acquisition
+  timeout). These are the largest members of the
   inline set by worst-case latency: a plugin install is a full network clone
   followed by a registry write, all of it occupying the receive loop today.
   They are also ctx-binding mutations with awaits *between* durable side
@@ -308,20 +317,27 @@ waiting for earlier requests to finish is precisely the ordering PR #667 pinned 
 the moment a slow read *starts*, so this is the contract, not a regression.
 
 **In-flight slow reads are capped per connection.** The worker holds a
-per-connection cap of **4** concurrent slow reads (`slowReadDispatchCap`, a
+per-connection cap of **16** concurrent slow reads (`slowReadDispatchCap`, a
 buffered-channel semaphore): before spawning a slow read it acquires a slot —
 blocking, with the acquire selecting on `ctx.Done()` so teardown is never held —
 and the slow-read goroutine releases the slot when `handleAndEnqueue` returns.
 This closes the unbounded half of PR #667's exposure: one connection can no
 longer hold arbitrarily many transcript walks (and their decoded params frames)
-in flight. Four is the chosen operating point, not a measured one — method
-count is not concurrency, and a client can legitimately issue several calls to
-the same method — so the slice-0 audit's sweep includes the web client's and
-TUI's slow-read call sites: if a named UI flow legitimately fans out wider
-than four, the constant (one line) is revised there with the evidence in the
-disposition table. What the design fixes regardless of the number is the
-saturation behavior: blocking, advisories on first-block and on stall, and
-recovery on read completion.
+in flight. Sixteen is the measured operating point, not a guess — this
+paragraph originally proposed 4 with a revision clause tied to the slice-0
+client sweep, and the clause fired: the sweep (run against origin/main
+`173411a6a`) found routine legitimate flows exceeding 4 — the web client's
+reconnect resync (`handleReady` in `frontend/src/stores/threads.ts`) issues an
+unbounded `Promise.all` of `thread/read` over all tracked, watched, and pinned
+refs at once (7–15 concurrent from one busy session view is realistic);
+delegate cards auto-expand and each takes a full child `thread/read` on mount,
+so a turn with 4–8 parallel delegates fans out 4–8 in one React commit; and
+the TUI re-fires N+1 concurrent reads on reconnect for N running subagent
+children. Jesse chose 16: it clears every measured burst, still bounds a
+runaway client, and leaves the stall advisory as the signal for anything
+wider. What the design fixes regardless of the number is the saturation
+behavior: blocking, advisories on first-block and on stall, and recovery on
+read completion.
 
 The cap is the same blocking-backpressure principle as the request queue, and
 explicitly *not* a return of the deleted 128-slot limiter: a full cap blocks the
@@ -332,7 +348,7 @@ ordering consequence is this design's **second deliberate scheduling change**
 qualification: below the cap, the partial-order table holds exactly as written;
 at the cap, the worker parks in the acquire, so the blocked slow read — and
 every request queued behind it, `turn/interrupt` included — waits for one of the
-four in-flight reads to finish. Under PR #667 those later requests would have
+sixteen in-flight reads to finish. Under PR #667 those later requests would have
 overtaken the parked reads; under the cap they wait. No request ever runs
 *earlier* than the table allows. The wait's bound is stated honestly: on a
 *live* connection it is only as bounded as the in-flight reads themselves,
@@ -351,10 +367,10 @@ than a stall threshold (`slowReadCapStallAdvisory`, 30s — the same scale as
 `webSocketWriteTimeout`), naming the wait duration and the in-flight
 methods, so a wedged lane has an operational signature even though the
 connection looks healthy from the client. A
-client that keeps four transcript walks in flight and then pipelines
-priority-sensitive work behind a fifth has priced that wait in; a client that
-wants interrupt to land promptly during heavy reads sends it before the fifth
-read, exactly as it must already order it against mutations. If unchanged
+client that keeps sixteen transcript walks in flight and then pipelines
+priority-sensitive work behind a seventeenth has priced that wait in; a client
+that wants interrupt to land promptly during heavy reads sends it before the
+cap-exceeding read, exactly as it must already order it against mutations. If unchanged
 overtaking were mandatory here, capped admission would need a redesign
 (deferring only the blocked read, not the worker) — rejected as machinery for a
 traffic pattern no legitimate client has.
@@ -453,8 +469,8 @@ one the receive loop may hold while blocked enqueuing (capacity + 2 total). A
 frame's decoded size is bounded by the transport read limit
 (`appWireWebSocketReadLimit`, 128 MiB in `appwire/ws_transport.go`), so the
 arithmetic worst case is (capacity + 2 + `slowReadDispatchCap`) × read limit —
-64 queued + one executing + one blocked-enqueue + up to 4 in-flight slow-read
-params, ~8.75 GiB at the limit — from an authenticated client deliberately
+64 queued + one executing + one blocked-enqueue + up to 16 in-flight slow-read
+params, ~10.25 GiB at the limit — from an authenticated client deliberately
 stuffing maximal frames behind a parked handler. That arithmetic is a floor,
 not a ceiling: decoded Go objects and transient decoding copies can exceed the
 raw frame size, so the read limit bounds the wire, not the heap. The trade is
@@ -560,16 +576,23 @@ system is already built for it on all three sides:
   accept a durable mutation intent and return a receipt; the turn itself runs
   under session-lifetime context in the serve loop, not under the RPC. Prompt
   disconnect cancellation is a no-op for this entire class. The six daemon
-  handlers that do bind ctx are the slow read (`thread/read`), one benign read
-  (`model/list`), the subscription-state mutation `thread/unsubscribe` (it
-  mutates connection-owned subscription state through the seam-fenced
+  handlers that do bind ctx are the slow read (`thread/read`), the network
+  read `model/list` (safe under abandonment, but it makes an outbound HTTP
+  round trip to the LLM provider on the serial path — a `DevicePoll`-shaped
+  latency the worker absorbs, not a "benign" local read), the
+  subscription-state mutation `thread/unsubscribe` (it mutates
+  connection-owned subscription state through the seam-fenced
   `appserver.Unsubscribe`, so it is not durable-state work, but it is not a
   read), and three mutations that carry their own
   failure discipline: `turn/interrupt` sits under the same `lockRetrySafeMutation`
   dedup as start/steer, `thread/clear`'s failure path releases its gate and
-  admits a retry with a fresh mutation id, and `thread/compact/start` forwards
-  ctx into a single callback — each is a named subject for the slice-0 audit
-  below, not an open-ended population.
+  admits a retry with a fresh mutation id (though the audit found its
+  *cancellation* safety rests on something simpler: the production
+  `SetClearFunc` callback in `cmd/evener/serve.go` binds ctx and never uses
+  it, so mid-flight cancellation cannot interrupt the identity swap at all —
+  ctx-deafness, with the gate-release shape covering failures), and
+  `thread/compact/start` forwards ctx into a single callback — each got its
+  named row in the completed audit below, not an open-ended population.
 - *The wire already answers the client-side ambiguity, and the retry contract is
   explicit.* A client disconnected mid-mutation has never been able to know
   whether the mutation applied — under PR #667 the handler usually ran to
@@ -605,6 +628,28 @@ system is already built for it on all three sides:
   the ordering audit would re-derive every handler's cross-request assumptions;
   this one reads six named daemon bodies, the marketplace/plugin family named in
   "Current state", and whatever else the hub sweep names.
+- *The audit has now run, and the gate held.* Four parallel auditors covered
+  all 108 rows plus the client call-site sweep, at origin/main `173411a6a`.
+  Outcome: the daemon 18/6 ctx split verified exact; two gate findings, both in
+  the marketplace/plugin family the spec named — `evener/marketplace/refresh`
+  (a canceled `git pull` is SIGKILLed inside the *live* marketplace clone,
+  which can strand `.git/index.lock`/partial checkout with no self-heal path:
+  every later refresh fails until manual cleanup) and `evener/plugin/checkNow`
+  (same root cause through the shared machinery). Both are remediated in the
+  standalone PR `review/slice0-audit-remediations`: a staged reclone self-heal
+  that never removes the old clone before the new content is fully down,
+  SIGTERM `Cancel` + `WaitDelay` on the shared `git()` runner so cancellation
+  stops being a SIGKILL mid-write, and a ctx-aware flock. One further finding,
+  `thread/start` (a ctx-binding spawn→read→initial-turn sequence with no
+  dedup — it is not in the `ValidateMutationParams` 8 and its initial turn's
+  `ClientMutationID` is server-minted per attempt), is shielded with
+  `context.WithoutCancel` around its admitted sequence: once admitted it runs
+  to completion as it effectively did under PR #667, and the retry-duplicate
+  residue (an orphan session visible in `thread/list`) is tolerated rather
+  than building dedup for it. One handler turned out client-orphaned:
+  `evener/subagentPreview` has zero call sites in the web client or TUI; it
+  stays in the concurrent set (nothing calls it, so it costs nothing), noted
+  so nobody mistakes it for a load-bearing member.
 - *Post-cancellation access to connection-owned state is fenced at the seam, not
   per handler.* Handler code can reach connection-owned state only through six
   entry points, each already fenced for exactly this race because PR #667's
@@ -807,9 +852,9 @@ without modification:
     read does not start (a dispatch-count seam or per-read started signal) and
     no wire error or eviction occurred — the connection is healthy, just full;
     the one-shot cap advisory reached `Logf`. (b) The second scheduling change,
-    pinned: with the cap full and a fifth slow read queued, a serial request
+    pinned: with the cap full and one more slow read queued, a serial request
     queued behind it does not execute until a slot frees — then release one
-    parked read and assert the fifth read starts, the serial request completes,
+    parked read and assert the blocked read starts, the serial request completes,
     and ordering matched the contract (drain on completion, not on response
     delivery races). (c) Close the client while the worker is parked in the
     acquire; assert the worker exits promptly (the acquire selects on
@@ -818,9 +863,10 @@ without modification:
     in the style of the after-dequeue seam — park the worker there, cancel the
     connection, release the hook; assert the slow read never starts and the
     slot was released. (e) The wedged lane is visible — and the setup must
-    actually park the worker: four in-flight reads alone do not block it, so
-    fill the cap with parked reads, queue a *fifth* slow read (this is what
-    parks the worker in the acquire), then a serial request behind it. With an
+    actually park the worker: cap-many in-flight reads alone do not block it, so
+    fill the cap with parked reads, queue one *more* slow read (this is what
+    parks the worker in the acquire), then a serial request behind it. Use the
+    injectable cap here — sixteen real parked reads is ceremony a seam avoids. With an
     injectable stall threshold, assert ping still answers (the masking
     interaction is real), the stall advisory reaches `Logf` naming the
     in-flight methods, and the serial request has not run. Cleanup releases
@@ -897,18 +943,22 @@ slice landing its behavior *with* the tests that pin it (test-driven, each
 independently green and safe to deploy alone — no slice ships the worker without
 the semantics the final design requires):
 
-0. **Audit — a hard gate, remediation included.** The ctx-binding mutation audit
-   from "Admitted-request semantics on disconnect", producing the complete
-   108-row disposition table (the counting convention in Goals — the row count
-   is the exhaustiveness checksum, so it must match a fresh registration sweep,
-   raw `Router().Handle` included) appended to this spec; any handler the audit
-   finds
-   intolerant of mid-flight cancellation gets its fix (or its detachment from
-   connection cancel) and its test landed *here*, before the worker exists, so
-   slice 1 can never deploy prompt cancellation ahead of a handler that cannot
-   take it. No production code beyond audit remediation. (An earlier draft also
-   put a burst-depth measurement task here; it died with the measure-then-freeze
-   capacity rule — `requestQueueCap` is simply 64.)
+0. **Audit — a hard gate, remediation included. Status: COMPLETE.** The
+   ctx-binding mutation audit from "Admitted-request semantics on disconnect"
+   ran as four parallel auditors at origin/main `173411a6a`, covering all 108
+   rows (the counting convention in Goals — the row count is the
+   exhaustiveness checksum) plus the client call-site sweep. Outcome recorded
+   in that section: two gate findings (`evener/marketplace/refresh`,
+   `evener/plugin/checkNow` — a canceled git pull SIGKILLed in the live clone
+   with no self-heal) remediated in the standalone PR
+   `review/slice0-audit-remediations` (staged reclone self-heal, SIGTERM
+   `Cancel` + `WaitDelay` on `git()`, ctx-aware flock); `thread/start`
+   shielded with `context.WithoutCancel` for its admitted sequence; the
+   client sweep fired the cap's revision clause and `slowReadDispatchCap`
+   became 16. The gate condition for slice 1 is that the remediation PR lands
+   first. (An earlier draft also put a burst-depth measurement task here; it
+   died with the measure-then-freeze capacity rule — `requestQueueCap` is
+   simply 64.)
 1. **Worker, queue, ordering, ping — with its lifecycle floor and its tests.**
    The receive-loop split, the worker with its classification, the inline ping
    bypass, the post-dequeue cancellation re-check, the teardown purge, and the
@@ -972,9 +1022,10 @@ are folded into the sections above and recorded here as the paper trail.
   reads-only.
 - **The memory class, re-scoped.** Instead of deferring the whole class to a
   future aggregate per-client admission budget, this design gained the
-  per-connection blocking cap on in-flight slow reads (`slowReadDispatchCap = 4`,
-  see the slow-read composition section), closing the unbounded per-connection
-  half. The residue — a malicious authenticated client multiplying every
+  per-connection blocking cap on in-flight slow reads (`slowReadDispatchCap`,
+  proposed at 4 and revised to 16 when the slice-0 client sweep fired the
+  revision clause; see the slow-read composition section), closing the
+  unbounded per-connection half. The residue — a malicious authenticated client multiplying every
   per-connection bound across many connections — is consciously accepted under
   the current trust model; the aggregate budget remains the named escalation if
   that trust model changes. Issue #680 is re-scoped to match.
