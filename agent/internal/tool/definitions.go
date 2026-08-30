@@ -713,6 +713,64 @@ func DefFindSessionTranscripts() llm.ToolDefinition {
 	}
 }
 
+// DefDoctorEvener defines the read-only in-process doctor data plane: the
+// same commands and result shapes as the `evener doctor` CLI, executed against
+// the session's own state root by default so inspection never depends on a
+// shell, PATH, or cwd. Mirrors the doctoring-evener skill's command table.
+func DefDoctorEvener() llm.ToolDefinition {
+	strictFalse := false
+	return llm.ToolDefinition{
+		Name:        "doctor_evener",
+		Description: "Read-only forensic inspection of evener durable state — the in-process equivalent of the `evener doctor` CLI, run against this session's own state root by default (no shell, no PATH, no cwd dependence). Commands: locate (resolve a selector to its file paths), transcript (render turns; count=<tool> for the structural invocation count; health=true for mechanical per-session metrics), apilog (API-call diagnostics: empties, errors, cache spikes, summary, validate, recompute, health), jobs (job records for a session, or one --job), mutations (client-mutation journal and queue), watches (distinct deliveries, provenance, breaker telemetry; self_loops=true for runaway-only), tree (parent/delegate/observer tree; observers=true), turnids (reserved-turn-id sweep), sessions (enumerate sessions; since=<dur>, bucket=<id>), audit (run a runbook's mechanical checks over a session set; runbook required, sessions xor since), plugins (plugin-store health). First positional in the CLI is the `selector` argument here: local:<id>, proj:<hash>:<id>, or a bare <id> searched across buckets. Results are the CLI's --json struct shapes. Read-only: it never mutates state.",
+		Strict:      &strictFalse,
+		Parameters: map[string]any{
+			"type":                 "object",
+			"additionalProperties": false,
+			"properties": map[string]any{
+				"command": map[string]any{
+					"type":        "string",
+					"enum":        []string{"locate", "transcript", "apilog", "jobs", "mutations", "watches", "tree", "turnids", "sessions", "audit", "plugins"},
+					"description": "Doctor subcommand, matching `evener doctor <cmd>`.",
+				},
+				"selector":  map[string]any{"type": "string", "description": "Session selector: local:<id>, proj:<hash>:<id>, or bare <id>. Required by selector-taking commands; rejected by sessions/audit/turnids/plugins."},
+				"state_dir": map[string]any{"type": "string", "description": "State root override. Defaults to this session's own state root."},
+				"count":     map[string]any{"type": "string", "description": "transcript: print the structural invocation count of this tool name."},
+				"health":    map[string]any{"type": "boolean", "description": "transcript/apilog: mechanical health metrics / one-line API-health verdict."},
+				"format":    map[string]any{"type": "string", "enum": []string{"outline", "markdown"}, "description": "transcript: render format."},
+				"range":     map[string]any{"type": "string", "description": "transcript: turn window: last:N | start:N | A-B."},
+				"text_max":  map[string]any{"type": "integer", "description": "transcript: byte cap on each turn's rendered text and tool-result previews."},
+				"full_text": map[string]any{"type": "boolean", "description": "transcript: render turns whole, with no byte cap."},
+				"empty":     map[string]any{"type": "boolean", "description": "apilog: only empty responses."},
+				"errors":    map[string]any{"type": "boolean", "description": "apilog: only failed calls."},
+				"cache_spikes": map[string]any{
+					"type":        "boolean",
+					"description": "apilog: only calls whose uncached input >= threshold.",
+				},
+				"threshold": map[string]any{"type": "integer", "description": "apilog: uncached-input-token floor for cache_spikes."},
+				"summary":   map[string]any{"type": "boolean", "description": "apilog: render only the per-session aggregate."},
+				"validate":  map[string]any{"type": "boolean", "description": "apilog: whole-history integrity scan; exits nonzero on problems."},
+				"recompute": map[string]any{
+					"type":        "boolean",
+					"description": "apilog: re-extract text/tool-call counts from stored bodies for rows recorded empty.",
+				},
+				"job_id":   map[string]any{"type": "string", "description": "jobs: scope to one job_id."},
+				"watch_id": map[string]any{"type": "string", "description": "watches: scope to one watch_id."},
+				"self_loops": map[string]any{
+					"type":        "boolean",
+					"description": "watches: only watches where the runaway fuse fired.",
+				},
+				"depth":     map[string]any{"type": "integer", "description": "tree: max depth (0 = unlimited)."},
+				"observers": map[string]any{"type": "boolean", "description": "tree: include observer edges."},
+				"since":     map[string]any{"type": "string", "description": "sessions/audit: only sessions with last activity within this duration (e.g. 120h)."},
+				"bucket":    map[string]any{"type": "string", "description": "sessions: scope to one bucket (project id)."},
+				"runbook":   map[string]any{"type": "string", "description": "audit: runbook name, resolved from the bundled doctoring-evener skill's runbooks/."},
+				"sessions":  map[string]any{"type": "string", "description": "audit: comma-separated session selectors (mutually exclusive with since)."},
+			},
+			"required": []string{"command"},
+		},
+	}
+}
+
 // DefManageWorktree defines the manage_worktree lifecycle tool (spec §2): a
 // single tool with an operation enum, mirroring task_list's action pattern.
 // Args are flattened across operations rather than split per-op in the
