@@ -68,8 +68,9 @@ func samplingPaths(protocol string) (temperature, topP, stop string) {
 // Sampling or Fields say not to send; gate the prompt-cache fields; turn
 // store on for a planned Responses continuation. It returns a shaped copy
 // and never writes through the caller's pointers. Continuation planning
-// shapes the request the same way before it builds the body or calls an
-// override's planner, so a plan describes the request that will be sent.
+// shapes the request the same way, when the name resolves, before it builds
+// the body or calls an override's planner, so a plan describes the request
+// that will be sent.
 func ShapeRequest(req Request, res registry.Resolved) Request {
 	caps := res.Caps
 	send := func(path string) bool {

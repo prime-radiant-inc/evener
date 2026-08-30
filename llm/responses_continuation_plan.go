@@ -87,9 +87,11 @@ func continuationAvailable(res registry.Resolved) bool {
 }
 
 // hashIfSet hashes a scope value, leaving an absent one absent rather than
-// hashing the empty string.
+// hashing the empty string. It hashes the value it tested, so a padded value
+// and a bare one land on one scope however they reach the plan.
 func hashIfSet(h *ContinuationHasher, kind, value string) (string, error) {
-	if strings.TrimSpace(value) == "" {
+	value = strings.TrimSpace(value)
+	if value == "" {
 		return "", nil
 	}
 	return h.HashContinuationScopeValue(kind, value)
@@ -146,7 +148,7 @@ func (c *Client) planContinuation(ctx context.Context, req Request, res registry
 	}
 	scope := ContinuationStorageScope{
 		HashVersion: ContinuationScopeHashVersion, Provider: res.Instance, EndpointFamily: string(family),
-		BaseURL: strings.TrimRight(strings.TrimSpace(res.Transport.BaseURL), "/"), Path: res.Transport.Endpoint,
+		BaseURL: strings.TrimRight(strings.TrimSpace(res.Transport.BaseURL), "/"), Path: strings.TrimSpace(res.Transport.Endpoint),
 		AuthSource: authSource, OrgIDHash: hashes["org_id"], ProjectIDHash: hashes["project_id"],
 		AccountHash: hashes["account"], WorkspaceHash: hashes["workspace"], CredentialHash: credentialHash,
 		ConversationIDHash: hashes["conversation_id"], StoragePolicy: policy,

@@ -89,7 +89,30 @@ func (c *Codex) AuthScope(_ context.Context, res registry.Resolved) (string, str
 	if err != nil {
 		return "", "", err
 	}
-	return record.AccountID, record.WorkspaceID, nil
+	account, workspace := recordScope(record)
+	return account, workspace, nil
+}
+
+// recordScope reads a record's account and workspace claims, falling back to
+// the id token for a record written before either was persisted as its own
+// field. Apply's account header and the continuation scope must agree, so
+// both read the claims through here.
+func recordScope(record authopenai.AuthRecord) (accountID, workspaceID string) {
+	accountID, workspaceID = record.AccountID, record.WorkspaceID
+	if accountID != "" && workspaceID != "" {
+		return accountID, workspaceID
+	}
+	claims, err := authopenai.ParseIDTokenClaims(record.IDToken)
+	if err != nil {
+		return accountID, workspaceID
+	}
+	if accountID == "" {
+		accountID = claims.AccountID
+	}
+	if workspaceID == "" {
+		workspaceID = claims.WorkspaceID
+	}
+	return accountID, workspaceID
 }
 
 // notSignedIn reports that there is no oauth-sourced credential to use,
@@ -167,12 +190,7 @@ func (c *Codex) accountID(instance string) string {
 	}
 	id := ""
 	if rec, err := authopenai.LoadAuth(c.stateDir(), instance); err == nil {
-		id = rec.AccountID
-		if id == "" {
-			if claims, err := authopenai.ParseIDTokenClaims(rec.IDToken); err == nil {
-				id = claims.AccountID
-			}
-		}
+		id, _ = recordScope(rec)
 	}
 	if c.accounts == nil {
 		c.accounts = map[string]string{}

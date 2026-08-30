@@ -150,9 +150,10 @@ func TestPlanContinuationHashesTheCodexAuthScope(t *testing.T) {
 	if err != nil {
 		t.Fatalf("registry: %v", err)
 	}
+	c := continuationClient(t, r)
 	req := userRequest("codex", "gpt-5.6")
 	req.Store = new(true)
-	plan, err := continuationClient(t, r).PlanResponsesContinuation(context.Background(), req)
+	plan, err := c.PlanResponsesContinuation(context.Background(), req)
 	if err != nil {
 		t.Fatalf("plan: %v", err)
 	}
@@ -164,5 +165,40 @@ func TestPlanContinuationHashesTheCodexAuthScope(t *testing.T) {
 	}
 	if plan.RequestFingerprint == "" || plan.ContinuationStorageAllowed || plan.StoragePolicyLabel != llm.ResponsesStoragePolicyCodexUnproven {
 		t.Fatalf("codex storage stays unproven: %+v", plan)
+	}
+
+	// Every scope value is hashed the way it was tested for emptiness:
+	// trimmed. A record whose claims carry stray whitespace must land on the
+	// same anchor scope as one without, rather than hashing the account one
+	// way into AccountHash and another into the credential composition.
+	record.AccountID, record.WorkspaceID = "  acct_1 ", "\tws_1\n"
+	if err := authopenai.SaveAuth(stateRoot, "codex", record); err != nil {
+		t.Fatal(err)
+	}
+	spaced, err := c.PlanResponsesContinuation(context.Background(), req)
+	if err != nil {
+		t.Fatalf("plan: %v", err)
+	}
+	if spaced.AuthScopeIdentity != plan.AuthScopeIdentity || spaced.StorageScopeFingerprint != plan.StorageScopeFingerprint {
+		t.Fatalf("stray space must not move the scope: %+v vs %+v", spaced, plan)
+	}
+}
+
+// TestPlanContinuationNormalizesTheScopeEndpoint pins that the storage scope
+// records the transport the way it hashes it: the base URL without its
+// trailing slash, the endpoint trimmed.
+func TestPlanContinuationNormalizesTheScopeEndpoint(t *testing.T) {
+	srv, _ := responsesServer(t)
+	r := fixtureRegistry(t, srv.URL, map[string]registry.Provider{
+		"padded": {Base: "openai", APIKey: "k", Transport: registry.Transport{BaseURL: srv.URL + "/", Endpoint: " /responses "}},
+	})
+	req := userRequest("padded", "gpt-5.5")
+	req.Store = new(true)
+	plan, err := continuationClient(t, r).PlanResponsesContinuation(context.Background(), req)
+	if err != nil {
+		t.Fatalf("plan: %v", err)
+	}
+	if plan.StorageScope.BaseURL != srv.URL || plan.StorageScope.Path != "/responses" {
+		t.Fatalf("the scope records a normalized transport: %q %q", plan.StorageScope.BaseURL, plan.StorageScope.Path)
 	}
 }
