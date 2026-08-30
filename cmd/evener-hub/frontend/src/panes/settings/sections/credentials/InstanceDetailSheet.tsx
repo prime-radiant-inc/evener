@@ -1,7 +1,8 @@
 // InstanceDetailSheet: the provider-instance inspector for the detail-sheet
 // redesign. Opens from an InstanceRow tap and owns everything the old row
-// carried: the layered credential display (oauth > file > env,
-// effective/shadowed), the meta table, and every per-instance ACTION (test,
+// carried: the layered credential display (the effective source, plus an
+// environment variable shadowed behind it), the meta table, and every
+// per-instance ACTION (test,
 // set/replace key, sign in/refresh OAuth, edit, make default, clear,
 // remove). A right side Sheet on desktop, a bottom Sheet on mobile
 // (useIsMobile, the shell's own source). The instance is read from the
@@ -54,13 +55,18 @@ export interface InstanceDetailSheetProps {
   onTestCredentials: () => void;
   testCredentialsPending?: boolean;
   testCredentialsResult?: AuthTestResponse;
+  /** Disables Edit/Remove/make default while providers.toml cannot be
+   * written (InstanceListResponse.writesRefused, spec §11.3) - Set key/Sign
+   * in/Clear/Test credentials are unaffected: they write the credentials
+   * store or an OAuth record, never providers.toml. */
+  writesRefused?: boolean;
 }
 
-function styleInfoText(instance: InstanceEntry): string | null {
-  if (instance.apiStyle)
-    return instance.baseUrl ? `${instance.apiStyle} · base ${instance.baseUrl}` : instance.apiStyle;
-  if (instance.baseUrl) return `base ${instance.baseUrl}`;
-  return null;
+// styleInfoText: protocol is always present (InstanceEntry.protocol has no
+// omitempty), so the API row always has something to show - unlike the
+// retired apiStyle, which was blank for every non-openai instance.
+function styleInfoText(instance: InstanceEntry): string {
+  return instance.baseUrl ? `${instance.protocol} · base ${instance.baseUrl}` : instance.protocol;
 }
 
 export function InstanceDetailSheet({
@@ -75,6 +81,7 @@ export function InstanceDetailSheet({
   onTestCredentials,
   testCredentialsPending = false,
   testCredentialsResult,
+  writesRefused = false,
 }: InstanceDetailSheetProps) {
   const instances = useCredentialsStore((s) => s.instances);
   const isMobile = useIsMobile();
@@ -93,10 +100,13 @@ export function InstanceDetailSheet({
 
   const supportsApiKey = instance !== undefined && (instance.authModes ?? []).includes("apiKey");
   const supportsOAuth = instance !== undefined && (instance.authModes ?? []).includes("oauth");
-  const showClear = instance !== undefined && (instance.activeSource === "file" || instance.activeSource === "oauth");
+  const showClear = instance !== undefined && (instance.activeSource === "store" || instance.activeSource === "oauth");
+  // The danger zone is Clear + Remove under a divider; an implicit instance
+  // with nothing stored offers neither, and a divider over nothing reads as
+  // a rendering bug.
+  const showDangerZone = instance !== undefined && (showClear || !instance.implicit);
   const layers = instance === undefined ? [] : credentialLayers(instance);
   const unconfigured = instance === undefined ? null : unconfiguredLabel(instance);
-  const styleInfo = instance === undefined ? null : styleInfoText(instance);
   const safeTestResult = testCredentialsResult
     ? safeCredentialTestResult(name ?? "", testCredentialsResult)
     : undefined;
@@ -123,15 +133,13 @@ export function InstanceDetailSheet({
           )}
           <div className={CLASS.metaList}>
             <div className={CLASS.metaRow}>
-              <span className={CLASS.metaLabel}>Type</span>
-              <span className={CLASS.metaValue}>{instance.type}</span>
+              <span className={CLASS.metaLabel}>Provider</span>
+              <span className={CLASS.metaValue}>{instance.providerId}</span>
             </div>
-            {styleInfo !== null && (
-              <div className={CLASS.metaRow}>
-                <span className={CLASS.metaLabel}>API</span>
-                <span className={`${CLASS.metaValue} ${CLASS.metaMono}`}>{styleInfo}</span>
-              </div>
-            )}
+            <div className={CLASS.metaRow}>
+              <span className={CLASS.metaLabel}>API</span>
+              <span className={`${CLASS.metaValue} ${CLASS.metaMono}`}>{styleInfoText(instance)}</span>
+            </div>
           </div>
           <div className={CLASS.actionRows}>
             <div className={CLASS.fullRow}>
@@ -160,32 +168,38 @@ export function InstanceDetailSheet({
             )}
             {!instance.isDefault && (
               <div className={CLASS.fullRow}>
-                <Button variant="quiet" onClick={onSetDefault}>
+                <Button variant="quiet" onClick={onSetDefault} disabled={writesRefused}>
                   ★ make default
                 </Button>
               </div>
             )}
             <div className={CLASS.fullRow}>
-              <Button variant="quiet" onClick={onEdit}>
+              <Button variant="quiet" onClick={onEdit} disabled={writesRefused}>
                 Edit
               </Button>
             </div>
           </div>
-          <hr className={CLASS.divider} />
-          <div className={CLASS.actionRows}>
-            {showClear && (
-              <div className={CLASS.fullRow}>
-                <Button variant="dangerQuiet" onClick={onClear}>
-                  Clear
-                </Button>
+          {showDangerZone && (
+            <>
+              <hr className={CLASS.divider} />
+              <div className={CLASS.actionRows}>
+                {showClear && (
+                  <div className={CLASS.fullRow}>
+                    <Button variant="dangerQuiet" onClick={onClear}>
+                      Clear
+                    </Button>
+                  </div>
+                )}
+                {!instance.implicit && (
+                  <div className={CLASS.fullRow}>
+                    <Button variant="danger" onClick={onRemove} disabled={writesRefused}>
+                      Remove
+                    </Button>
+                  </div>
+                )}
               </div>
-            )}
-            <div className={CLASS.fullRow}>
-              <Button variant="danger" onClick={onRemove}>
-                Remove
-              </Button>
-            </div>
-          </div>
+            </>
+          )}
         </>
       )}
     </Sheet>
