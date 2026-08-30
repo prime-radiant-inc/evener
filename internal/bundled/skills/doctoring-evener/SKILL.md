@@ -60,7 +60,7 @@ Results are the CLI's `--json` struct shapes. The same commands also run as
 |---|---|---|
 | `locate <sel>` | where are this session's transcript / private API log / meta / jobs / client-mutation files? | — |
 | `sessions` | enumerate sessions for a batch study — id, bucket, timestamps, model(s), turn count, transcript bytes, subagent/parent linkage, outcome hint | `since DUR`, `bucket B` |
-| `transcript <sel>` | render the turns; **how many real `X` calls?** | `count`, `format`, `range`, `text_max`, `full_text` |
+| `transcript <sel>` | render the turns; **how many real `X` calls?** | `count`, `range`, `text_max`, `full_text` |
 | `transcript <sel>` + `full_text` | **is one response repeating itself?** Turn text and tool-result previews both render capped at 200 bytes by default; a salvaged partial response carries its repeated tool calls as *text*, so no tool-call metric counts them and the cap hides the whole loop. Narrow with `range` first — one turn can run to tens of kilobytes. | `range`, `text_max` for a middle ground |
 | `transcript <sel>` + `health` | one session's mechanical metrics in one shot — tool calls/errors by class, longest identical-call run (+ whether it's all errors), truncation warnings, steering counts, jobs by terminal reason, stale notifications, user corrections (proxy) | — |
 | `apilog <sel>` | summarize canonical `sessions/<sid>.api.jsonl` attempt identity/grouping/finality, tokens/latency, **empty responses, errors, cache spikes**; `validate` strictly decodes offset zero..EOF and reports every corrupt/malformed/oversized/unsupported record with its offset (whole-file scan, explicit diagnostics only) | `empty`, `errors`, `cache_spikes` + `threshold`, `summary`, `validate`, `recompute` |

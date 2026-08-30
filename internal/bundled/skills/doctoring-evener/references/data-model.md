@@ -68,7 +68,8 @@ it was never read). Under an XDG home the layout is:
 - **the client-mutation store is a third shape again**: a flat `<SID>.json` in a
   bucket-level `mutations/` dir that is a **sibling** of `sessions/`, not a file
   under it (`clientMutationFilePath`).
-- When `EVENER_STATE_DIR` / `--state-dir` is set, that path **is** the bucket
+- When `EVENER_STATE_DIR` / the tool's `state_dir` argument is set, that path
+  **is** the bucket
   (sessions sit directly under it — no `evener/projects/<hash>` layer). This is the
   E2E / scratch-root shape.
 
@@ -191,8 +192,8 @@ the target shell's folded state before diagnosing a missing match.
 
 **Read it via:** `doctor_evener` `watches <selector>` (distinct deliveries vs pending
 lines, per-delivery terminal + reason + provenance, self-influence/breaker
-telemetry, and the joined `target job:` state — `target_job` / `target_job_missing`
-under `--json`).
+telemetry, and the joined `target job:` state — the `target_job` /
+`target_job_missing` fields).
 
 ### delegates.jsonl → the stable session tree
 

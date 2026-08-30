@@ -16,12 +16,11 @@ HEALTHY/INSPECT/CLASSIFY), each a heading:
    delivery — normal, not a runaway). A reader must be able to tell PASS from FAIL
    without guessing.
 2. **INSPECT** — the exact `doctor_evener` calls (command + selector +
-flags). **Pull live
+   arguments). **Pull live
    state first; never hardcode a session id, a watch id, or a threshold** — take
-   them from the target selector the runbook is invoked with. `doctor_evener` always
-returns the structured result, so no flag is needed; the CLI equivalent is
-`--json` so
-   CLASSIFY keys on fields, not on parsing prose.
+   them from the target selector the runbook is invoked with. `doctor_evener`
+   always returns the structured result (the CLI equivalent needs `--json`),
+   so CLASSIFY keys on fields, not on parsing prose.
 3. **CLASSIFY** — which results are PASS-with-a-note and which **emit a Finding**.
    Name the exact `category`, `severity`, `signature` format, and
    `suggestedFix.type` for each emit (see `finding-contract.md`). State plainly:
@@ -63,7 +62,7 @@ returns the structured result, so no flag is needed; the CLI equivalent is
 ## INSPECT
 Take the target session id from the runbook invocation — never hardcode one.
 \`\`\`
-doctor_evener {command, selector, ...flags}   (CLI: evener doctor <cmd> <selector> [--flag] --json)
+doctor_evener {command, selector, ...args}   (human reproduction: evener doctor <cmd> <selector> [--flag] --json)
 \`\`\`
 
 ## CLASSIFY
@@ -76,15 +75,16 @@ A run that finds nothing is the expected, correct outcome.
 ## Worked sketch
 
 The seed `observer-self-loop.md` is the canonical example: HEALTHY = no watch has
-a `runaway` drop (bounded self-influence is normal); INSPECT = `evener doctor
-watches` with `self_loops: true`; CLASSIFY = each watch with
+a `runaway` drop (bounded self-influence is normal); INSPECT = `doctor_evener`
+`watches` with `self_loops: true`; CLASSIFY = each watch with
 `runaway_drops > 0` → one `watch_runaway` Finding, empty output → PASS. Read it
 before authoring a new one.
 
 ## The `audit:` block — mechanical checks the audit command drives
 
 CLASSIFY's INSPECT/prose form is written for an LLM operator's judgment.
-`doctor_evener` audit with `runbook: NAME` and (`sessions` | `since`) — CLI: `evener doctor audit --runbook NAME (--sessions ... | --since DUR)`
+`doctor_evener` audit with `runbook: NAME` and (`sessions` | `since`) — human
+reproduction: `evener doctor audit --runbook NAME (--sessions ... | --since DUR)`
 is the **batch** driver: it runs a runbook's threshold checks over a whole
 session set mechanically, dedups the results into Findings by signature
 (one Finding, every affected session listed in its evidence), and prints a

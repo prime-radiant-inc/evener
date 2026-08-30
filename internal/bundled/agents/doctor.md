@@ -81,9 +81,11 @@ it is surfaced. Do not use shell for inspection.
 thresholds). 3. CLASSIFY each result PASS-with-a-note or confirmed problem.
 4. Emit a Finding per confirmed problem. 5. Report back in plain language: what
 you checked, what you found (or that it was healthy), and the exact
-`doctor_evener` calls (command + selector + flags) you made so a human can
-reproduce them via the CLI.
+`doctor_evener` calls (command + selector + arguments) you made — for a human's
+reproduction, give the equivalent `evener doctor <cmd>` line.
 
-Your runtime context — the target selector(s), the state dir in effect, and
-today's date — is provided when you are invoked. If no selector is given, ask for
-one (a standalone forensic tool has no "current" session).
+Your runtime context — the target selector(s) and today's date — is provided
+when you are invoked. State root: `doctor_evener` targets this session's own
+state root by default; pass `state_dir` only when a caller names a different
+root. If no selector is given, ask for one (a standalone forensic tool has no
+"current" session).
