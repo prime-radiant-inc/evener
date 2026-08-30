@@ -274,7 +274,7 @@ func TestProvidersProbeWriteKeepsTheRegistryChoiceWhenBothProtocolsWork(t *testi
 		t.Fatalf("nothing is recorded when both work:\n%s", out)
 	}
 	after, err := os.ReadFile(path)
-	if err != nil || string(after) != string(before) {
+	if err != nil || !bytes.Equal(after, before) {
 		t.Fatalf("providers.toml must be untouched: %v\n%s", err, after)
 	}
 }

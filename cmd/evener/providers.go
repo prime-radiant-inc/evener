@@ -556,7 +556,7 @@ func parseCredentialHeaders(pairs []string) (map[string]string, error) {
 // command line will not author.
 func checkCredentialHeaderValue(value string) error {
 	referenced := false
-	for _, token := range strings.Fields(value) {
+	for token := range strings.FieldsSeq(value) {
 		refs, literal, err := registry.ScanConfigValue(token)
 		switch {
 		case err != nil:
