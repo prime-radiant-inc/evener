@@ -2868,8 +2868,8 @@ func TestRootDelegateAttention_UserTurnConsumesCoveredMidTurnDelivery(t *testing
 	)
 	var root *Session
 	var (
-		calls       int
 		roundTwoSaw bool
+		thirdRan    bool
 		appendErr   error
 		armErr      error
 	)
@@ -2878,7 +2878,6 @@ func TestRootDelegateAttention_UserTurnConsumesCoveredMidTurnDelivery(t *testing
 		withConfig(SessionConfig{StateDir: stateDir, MaxSubagentDepth: 1, NoProjectPrompts: true}),
 		withSteps(
 			func(llm.Request) llm.Response {
-				calls++
 				if appendErr == nil {
 					_, appendErr = root.appendDelegateNotificationDurably(attentionID, content)
 				}
@@ -2888,9 +2887,14 @@ func TestRootDelegateAttention_UserTurnConsumesCoveredMidTurnDelivery(t *testing
 				return toolCallResponse(llm.ToolCallData{ID: "round-one", Name: "task_list", Arguments: json.RawMessage(`{"action":"view"}`), Type: "function"})
 			},
 			func(req llm.Request) llm.Response {
-				calls++
 				roundTwoSaw = requestContainsText(req, content)
 				return toolCallResponse(communicateCall("user-turn-complete", "question answered and delivery handled"))
+			},
+			// A third call would be the drain selector's backstop notification
+			// turn — the failure mode this test exists to rule out.
+			func(llm.Request) llm.Response {
+				thirdRan = true
+				return toolCallResponse(communicateCall("backstop-complete", "should not run"))
 			},
 		),
 	)
@@ -2905,6 +2909,13 @@ func TestRootDelegateAttention_UserTurnConsumesCoveredMidTurnDelivery(t *testing
 	}
 	if !roundTwoSaw {
 		t.Fatal("the user turn's later round did not present the mid-turn delivery")
+	}
+	// The user turn must have consumed the delivery itself. Without this
+	// guard, a regression that skips coverage consumption would still pass:
+	// the turn-tail drain selector sees the delivery pending and runs a
+	// backstop notification turn that consumes it.
+	if thirdRan {
+		t.Fatal("a third model turn ran: the drain selector's backstop consumed the delivery, not the user turn")
 	}
 	fold, err := readDelegateAttentionFold(transcriptPath(stateDir, root.ID()), root.ID())
 	if err != nil {
@@ -2969,7 +2980,7 @@ func TestRootDelegateAttention_CoverageExcludesAttentionArmedBeforeTurnBegin(t *
 		steeringFor(midTurnID, midContent),
 		steeringFor(unarmedID, midContent),
 	}
-	root.stageRootDelegateAttentionCoverage(historyTurns)
+	root.stageRootDelegateAttentionCoverage(llm.Request{}, historyTurns)
 	root.attentionMu.Lock()
 	staged := maps.Clone(root.rootAttentionStagedIDs)
 	root.attentionMu.Unlock()
@@ -2994,6 +3005,52 @@ func TestRootDelegateAttention_CoverageExcludesAttentionArmedBeforeTurnBegin(t *
 			t.Fatalf("attention %q armed (or appended) after turn begin was not marked covered", id)
 		}
 	}
+}
+
+// A responses-continuation delta request carries only new items; older
+// steering turns live in server-side state this session cannot verify, so a
+// delta request stages nothing. The items keep their wake for a full-history
+// turn.
+func TestRootDelegateAttention_DeltaRequestStagesNothing(t *testing.T) {
+	stateDir := t.TempDir()
+	const (
+		attentionID = "delegate:dlg_delta/delivery/1"
+		content     = `<delegate-notification delegate_id="dlg_delta">delta skip</delegate-notification>`
+	)
+	root := newSession(t,
+		withDir(stateDir),
+		withConfig(SessionConfig{StateDir: stateDir, MaxSubagentDepth: 1, NoProjectPrompts: true}),
+	)
+	root.resetRootDelegateAttentionCoverage()
+	if _, err := root.appendDelegateNotificationDurably(attentionID, content); err != nil {
+		t.Fatalf("append attention: %v", err)
+	}
+	if err := root.armDelegateAttention(attentionID); err != nil {
+		t.Fatalf("arm attention: %v", err)
+	}
+	steering := schema.NewTurn(schema.TurnSteering, llm.User(content))
+	steering.AttentionID = attentionID
+	historyTurns := []schema.Turn{
+		schema.NewTurn(schema.TurnUserInput, llm.User("context")),
+		steering,
+	}
+
+	root.stageRootDelegateAttentionCoverage(llm.Request{HistoryMode: llm.HistoryModeResponsesDelta}, historyTurns)
+	root.attentionMu.Lock()
+	staged := maps.Clone(root.rootAttentionStagedIDs)
+	root.attentionMu.Unlock()
+	if len(staged) != 0 {
+		t.Fatalf("delta request staged coverage: %v, want nothing", staged)
+	}
+
+	// The full-history round that follows credits normally.
+	root.stageRootDelegateAttentionCoverage(llm.Request{}, historyTurns)
+	root.attentionMu.Lock()
+	if _, ok := root.rootAttentionStagedIDs[attentionID]; !ok {
+		root.attentionMu.Unlock()
+		t.Fatal("full-history request did not stage the presented attention")
+	}
+	root.attentionMu.Unlock()
 }
 
 // Coverage is credit for presentation in a SETTLED call, not for being in a
@@ -3028,7 +3085,7 @@ func TestRootDelegateAttention_CoverageCreditsOnlySettledRounds(t *testing.T) {
 	// content-filter retry whose compaction folds the steering turn away is
 	// the production shape). No promotion happens, and finish must not
 	// consume: the model never saw it in a settled call.
-	root.stageRootDelegateAttentionCoverage(historyTurns)
+	root.stageRootDelegateAttentionCoverage(llm.Request{}, historyTurns)
 	root.attentionMu.Lock()
 	if _, ok := root.rootAttentionStagedIDs[attentionID]; !ok {
 		root.attentionMu.Unlock()
@@ -3052,7 +3109,7 @@ func TestRootDelegateAttention_CoverageCreditsOnlySettledRounds(t *testing.T) {
 
 	// The retry's round settles with the item presented: promotion credits
 	// it, and finish consumes.
-	root.stageRootDelegateAttentionCoverage(historyTurns)
+	root.stageRootDelegateAttentionCoverage(llm.Request{}, historyTurns)
 	root.promoteStagedRootDelegateAttention()
 	if err := root.finishRootDelegateAttentionTurn(nil, nil); err != nil {
 		t.Fatalf("finish with settled coverage: %v", err)
@@ -3230,10 +3287,10 @@ func TestRootDelegateAttention_CoveredResolutionFailureDoesNotFailUserTurn(t *te
 	}
 }
 
-// A failed turn never resolves, and the union's only job on that path is the
+// A failed turn never resolves, so on that path the union serves only as the
 // emptiness gate that arms the paced-retry backstop. A non-empty begin
-// snapshot already passes that gate, so unioning it with the durable fold is
-// a fold read whose result is discarded: skip it.
+// snapshot already passes that gate; unioning it with the fold would read the
+// fold only to discard the result. Skip it.
 func TestRootDelegateAttention_FailedTurnWithSnapshotSkipsFoldRead(t *testing.T) {
 	stateDir := t.TempDir()
 	root := newSession(t,
@@ -3272,10 +3329,11 @@ func TestRootDelegateAttention_FailedTurnWithSnapshotSkipsFoldRead(t *testing.T)
 	}
 }
 
-// The empty-snapshot counterpart is the backstop and MUST keep reading the
-// fold: a settled round presented mid-turn attention before the turn failed,
-// the drain skips the notification rung right after a notification turn, and
-// only this gate arms the paced retry that eventually consumes the item.
+// The empty-snapshot counterpart is the backstop, and it MUST keep reading
+// the fold: a settled round presented mid-turn attention before the turn
+// failed, the drain skips the notification rung right after a notification
+// turn, and only this gate arms the paced retry that eventually consumes the
+// item.
 func TestRootDelegateAttention_FailedEmptySnapshotTurnStillReadsFold(t *testing.T) {
 	stateDir := t.TempDir()
 	root := newSession(t,
@@ -3309,13 +3367,13 @@ func TestRootDelegateAttention_FailedEmptySnapshotTurnStillReadsFold(t *testing.
 	}
 }
 
-// The liveness counterpart to the fold-read pair above: a FAILED turn with an
+// The liveness counterpart to the fold-read pair above. A FAILED turn with an
 // empty snapshot and nothing covered leaves a set wake flag untouched — and
-// that is correct, because the flag is a coalescing suppressor, not the
-// liveness carrier. The arm's own guaranteed notify kick is what refires: it
-// drives a fresh notification turn whose begin snapshot is non-empty and
-// which consumes the item. This test is the adversarial answer to "the early
-// return strands the flag": the flag stays set precisely so the in-flight
+// that is correct: the flag is a coalescing suppressor, not the liveness
+// carrier. The arm's own guaranteed notify kick is what refires, driving a
+// fresh notification turn whose begin snapshot is non-empty and which
+// consumes the item. This test answers the adversarial claim that the early
+// return strands the flag: the flag stays set precisely so the in-flight
 // kick's turn cannot be suppressed into redundancy.
 func TestRootDelegateAttention_FailedEmptyCoverageTurnRefiresViaArmKick(t *testing.T) {
 	stateDir := t.TempDir()

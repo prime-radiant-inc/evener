@@ -1041,24 +1041,23 @@ func (s *Session) processOneInput(ctx context.Context, input string, images []Im
 	}()
 	var rootAttentionIDs []string
 	rootAttentionAccepted := false
-	// Every successful turn consumes the mid-turn deliveries its settled
-	// rounds presented — not only a notification turn's begin snapshot. A
-	// delivery injected as steering while this turn was running was
-	// incorporated by it; leaving it for the wake it armed runs a redundant
-	// notification turn whose request carries nothing new. The guard skips
-	// only wakes that were never accepted: an accepted notification turn with
-	// an EMPTY snapshot still finishes, because it may have covered a
-	// delivery armed while it ran. A resolution failure joins into the turn's
-	// error only when there IS a begin snapshot (its established contract);
-	// coverage is an optimization over the wake path, so a coverage-only
-	// failure — every non-notification kind, and empty-snapshot notification
-	// turns — warns and leaves the item pending instead of failing an
-	// otherwise successful turn.
+	// Consume the mid-turn deliveries this turn's settled rounds presented,
+	// at every exit that ran the turn. A delivery injected as steering while
+	// this turn ran rode the turn's requests; leaving it for the wake it
+	// armed runs a redundant notification turn whose request carries nothing
+	// new.
 	//
-	// Registered BEFORE the autosave/recover defer below so that on panic the
-	// recover unwinds first and marks err: a panicking turn never settled,
-	// and this defer must read a non-nil err to skip consuming coverage on
-	// the success path.
+	// Two rules govern the failure path (see finishRootDelegateAttentionTurn
+	// for the coverage contract): a resolution failure joins the turn's error
+	// only when there IS a begin snapshot — an accepted notification turn's
+	// established contract — and every other coverage-only failure warns and
+	// leaves the item pending, because coverage is an optimization over the
+	// wake path and must not fail an otherwise successful turn.
+	//
+	// Register BEFORE the autosave/recover defer below so that on panic the
+	// recover unwinds first and marks err: a panicking turn never settled, and
+	// this defer must read a non-nil err to skip consuming coverage on the
+	// success path.
 	defer func() {
 		if kind == EntryNotification && !rootAttentionAccepted {
 			return
@@ -1082,8 +1081,8 @@ func (s *Session) processOneInput(ctx context.Context, input string, images []Im
 	// autosaves (e.g. pause_turn, empty-response retries that exhaust) stay
 	// stranded if any exit path is taken before the next tool round. Kata ztne.
 	//
-	// On panic, mark err before re-panicking: the attention-finish defer above
-	// unwinds right after this one and must read a non-nil err — a panicking
+	// On panic, mark err before re-panicking. The attention-finish defer above
+	// unwinds right after this one and must read a non-nil err: a panicking
 	// turn never settled, and consuming its covered attention on the success
 	// path would durably resolve items the model never finished answering.
 	defer func() {
@@ -1137,8 +1136,8 @@ func (s *Session) processOneInput(ctx context.Context, input string, images []Im
 	s.mu.Unlock()
 	s.delegateDeliveryMu.Unlock()
 
-	// Attention coverage credits only what this turn's requests present; clear
-	// a previous turn's marks before any path below can finish this one.
+	// Attention coverage credits only what this turn's requests present.
+	// Clear a previous turn's marks before any path below can finish this one.
 	s.resetRootDelegateAttentionCoverage()
 
 	select {
@@ -1353,9 +1352,9 @@ func (s *Session) processOneInput(ctx context.Context, input string, images []Im
 			}
 			return "", progressed, ferr
 		}
-		// The round settled: its staged attention is credited as covered. A
-		// round that failed (or was retried after compaction folded the
-		// steering turn away) never reaches here, so coverage always means
+		// The round settled, so its staged attention is now covered. A round
+		// that failed — or was retried after compaction folded the steering
+		// turn away — never reaches here, so coverage always means
 		// "presented in a settled call of this turn".
 		s.promoteStagedRootDelegateAttention()
 
