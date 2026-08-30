@@ -15,7 +15,7 @@ import (
 	"primeradiant.com/evener/agent/execenv"
 	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/llm"
-	"primeradiant.com/evener/llm/providers/openai"
+	"primeradiant.com/evener/llm/registry"
 )
 
 func TestSession_OpenAIResponsesMalformedToolCallRecoveryUsesSafeReplay(t *testing.T) {
@@ -26,7 +26,7 @@ func TestSession_OpenAIResponsesMalformedToolCallRecoveryUsesSafeReplay(t *testi
 	var requestBodies [][]byte
 
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Method != http.MethodPost || r.URL.Path != "/v1/responses" {
+		if r.Method != http.MethodPost || r.URL.Path != "/responses" {
 			http.NotFound(w, r)
 			return
 		}
@@ -81,14 +81,10 @@ func TestSession_OpenAIResponsesMalformedToolCallRecoveryUsesSafeReplay(t *testi
 	}))
 	t.Cleanup(srv.Close)
 
-	client := llm.NewClient()
-	client.Register(&openai.Adapter{
-		APIKey:  "test-key",
-		BaseURL: srv.URL,
-		Client:  srv.Client(),
-	})
+	client := registryClientAt(t, dir, map[string]registry.Provider{"openai": openaiInstance(srv.URL)}, []string{"openai"})
+	profile := resolveClientProfile(t, client, "openai/gpt-5.4")
 
-	sess, err := NewSession(client, withTestSessionNamer(client, NewOpenAIProfile("gpt-5.2")), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{
+	sess, err := NewSession(client, profile, execenv.NewLocalExecutionEnvironment(dir), SessionConfig{
 		StateDir: dir,
 	})
 	if err != nil {
@@ -186,7 +182,7 @@ func TestSession_OpenAIResponsesMalformedToolCallRecoveryUsesSafeReplay(t *testi
 
 	restored, err := RestoreSessionFromMetaWithConfig(
 		client,
-		NewOpenAIProfile("gpt-5.2"),
+		profile,
 		execenv.NewLocalExecutionEnvironment(dir),
 		meta,
 		RestoreSessionConfig{

@@ -17,7 +17,7 @@ import (
 	"primeradiant.com/evener/agent/internal/agenttest"
 	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/llm"
-	"primeradiant.com/evener/llm/providers/openai"
+	"primeradiant.com/evener/llm/registry"
 )
 
 func TestSession_OpenAIResponsesContinuationPhase4DIProducesStoredFullHistoryAnchor(t *testing.T) {
@@ -194,12 +194,12 @@ func TestSession_OpenAIResponsesContinuationPhase4DIIConsumesStoredAnchorAsDelta
 	}
 }
 
-func TestSession_OpenAIResponsesContinuationPhase9RealOpenAIAdapterUsesFullHistoryWhenAnchorFingerprintMismatches(t *testing.T) {
+func TestSession_OpenAIResponsesContinuationRegistryClientUsesFullHistoryWhenAnchorFingerprintMismatches(t *testing.T) {
 	dir := t.TempDir()
 	var mu sync.Mutex
 	var requestBodies [][]byte
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Method != http.MethodPost || r.URL.Path != "/v1/responses" {
+		if r.Method != http.MethodPost || r.URL.Path != "/responses" {
 			http.NotFound(w, r)
 			return
 		}
@@ -228,15 +228,9 @@ func TestSession_OpenAIResponsesContinuationPhase9RealOpenAIAdapterUsesFullHisto
 	}))
 	t.Cleanup(srv.Close)
 
-	client := llm.NewClient()
-	client.Register(&openai.Adapter{
-		APIKey:             "test-key",
-		BaseURL:            srv.URL,
-		Client:             srv.Client(),
-		ContinuationHasher: llm.NewContinuationHasher([]byte("01234567890123456789012345678901")),
-	})
+	client := registryClientAt(t, dir, map[string]registry.Provider{"openai": openaiInstance(srv.URL)}, []string{"openai"})
 
-	sess, err := NewSession(client, withTestSessionNamer(client, NewOpenAIProfile("gpt-5.4")), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{
+	sess, err := NewSession(client, resolveClientProfile(t, client, "openai/gpt-5.4"), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{
 		StateDir:                    dir,
 		OpenAIResponsesContinuation: "auto",
 		testOnly: testConfig{
