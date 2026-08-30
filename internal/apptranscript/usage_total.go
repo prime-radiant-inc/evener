@@ -39,13 +39,7 @@ func (c *TurnCache) UsageTotalFromFile(path string, maxLineBytes int, fromEntryO
 	if err != nil {
 		return nil, fmt.Errorf("stat transcript: %w", err)
 	}
-	identity := usageTotalKey{
-		size:           info.Size(),
-		modUnixNano:    info.ModTime().UnixNano(),
-		fileIdentity:   fileIdentity(info),
-		changeIdentity: fileChangeIdentity(info),
-		fromOrdinal:    fromEntryOrdinal,
-	}
+	identity := scanMemoIdentity(info, fromEntryOrdinal)
 
 	c.mu.Lock()
 	if entry, ok := c.entries[path]; ok && entry.usageTotal != nil && entry.usageTotal.key == identity {
@@ -119,22 +113,8 @@ type usageOnlyEntry struct {
 	} `json:"turn"`
 }
 
-// usageTotalKey is the file identity a memoized sum is valid for. It mirrors
-// the turn cache's own parse-validity gate (object identity, size, mtime,
-// platform change time) and adds the divergence ordinal, since two ordinals
-// over one file are two different answers. mtime is held as nanos so the key
-// stays comparable with == (a time.Time compares its monotonic/location fields
-// too, which would spuriously miss).
-type usageTotalKey struct {
-	size           int64
-	modUnixNano    int64
-	fileIdentity   string
-	changeIdentity string
-	fromOrdinal    int
-}
-
 type usageTotalMemo struct {
-	key   usageTotalKey
+	key   scanMemoKey
 	total *appwire.EvenerUsage
 }
 
