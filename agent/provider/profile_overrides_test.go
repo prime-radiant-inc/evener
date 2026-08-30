@@ -290,7 +290,7 @@ func TestRebuildOnSameProviderChange(t *testing.T) {
 }
 
 func TestProfileGetters(t *testing.T) {
-	p := NewOpenAIProfile("gpt-4")
+	p := NewOpenAIProfile("gpt-5.5")
 	if p.ToolNameMap() == nil {
 		t.Error("ToolNameMap should not be nil for openai")
 	}
