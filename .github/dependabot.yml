@@ -5,17 +5,9 @@ updates:
     schedule:
       interval: weekly
 
-  # Go modules only. npm is deliberately absent: the frontend's dependency
-  # bumps are a reviewed, manual affair (owner ruling, 2026-08-19).
-  - package-ecosystem: gomod
-    directories:
-      - /
-      - /agent
-      - /auth
-      - /envvars
-      - /fuzz
-      - /identifier
-      - /invariant
-      - /llm
-    schedule:
-      interval: weekly
+  # Go modules are deliberately absent: this repo is a go.work workspace
+  # whose modules live under the internal vanity path primeradiant.com/evener,
+  # which is not a fetchable module host. Dependabot's gomod updater resolves
+  # each go.mod without workspace context and 404s on the sibling imports
+  # (#289). Go dependency bumps are a reviewed, manual affair — as are the
+  # frontend's npm bumps (owner ruling, 2026-08-19).
