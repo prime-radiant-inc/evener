@@ -645,16 +645,17 @@ func ReasoningEffortVocabulary() []string {
 
 // ValidateReasoningEffort reports whether effort is a value NewSession, a
 // delegate dispatch, or a plugin-agent task config may safely accept. The
-// empty string (unset) is always valid. Any of the six known levels is valid,
-// case-insensitive and trimmed. Anything else — including the CLI's
-// disable-alias sugar (none/off/0/etc, already normalized to "" by
-// NormalizeReasoningEffort before reaching this function) — is rejected with
-// an error naming the bad value and the full vocabulary, so a typo or a
-// stale/historical level (e.g. "ultra") fails loudly at config load instead
-// of silently reaching a provider on a session's first turn.
+// empty string (unset) and ReasoningEffortNone (explicit off) are always
+// valid. Any of the six known levels is valid, case-insensitive and trimmed.
+// Anything else — including the CLI's other disable-alias sugar (off/0/etc,
+// already normalized to "none" by NormalizeReasoningEffort before reaching
+// this function) — is rejected with an error naming the bad value and the
+// full vocabulary, so a typo or a stale/historical level (e.g. "ultra") fails
+// loudly at config load instead of silently reaching a provider on a
+// session's first turn.
 func ValidateReasoningEffort(effort string) error {
 	v := strings.ToLower(strings.TrimSpace(effort))
-	if v == "" {
+	if v == "" || v == ReasoningEffortNone {
 		return nil
 	}
 	if _, ok := effortRank[v]; ok {
@@ -663,16 +664,21 @@ func ValidateReasoningEffort(effort string) error {
 	return fmt.Errorf("invalid reasoning_effort %q (expected one of: %s)", effort, strings.Join(ReasoningEffortVocabulary(), ", "))
 }
 
+// ReasoningEffortNone is the canonical configured value for "the user turned
+// thinking off". It is distinct from "" (nothing configured), which lets the
+// session apply a default effort without overriding an explicit off.
+const ReasoningEffortNone = "none"
+
 // NormalizeReasoningEffort lowercases and trims a reasoning-effort value and maps
-// the "disable" aliases (none/null/off/false/0) to "" (no effort). It does not
-// validate the level — unknown non-empty values pass through lowercased. This is
-// the single place the disable-aliases are defined, shared by the CLI resolver
-// and the runtime setter so they cannot drift.
+// the "disable" aliases (none/null/off/false/0) to ReasoningEffortNone. It does
+// not validate the level — unknown non-empty values pass through lowercased.
+// This is the single place the disable-aliases are defined, shared by the CLI
+// resolver and the runtime setter so they cannot drift.
 func NormalizeReasoningEffort(s string) string {
 	v := strings.ToLower(strings.TrimSpace(s))
 	switch v {
-	case "none", "null", "off", "false", "0":
-		return ""
+	case ReasoningEffortNone, "null", "off", "false", "0":
+		return ReasoningEffortNone
 	default:
 		return v
 	}

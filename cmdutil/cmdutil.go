@@ -247,9 +247,10 @@ func ResolveReasoningEffort(cliValue, envValue string) (ReasoningEffortResolutio
 
 	v := llm.NormalizeReasoningEffort(raw)
 	switch v {
-	case "":
-		// A disable alias (none/null/off/false/0): explicitly clear the effort.
-		return ReasoningEffortResolution{Set: true, Value: ""}, nil
+	case llm.ReasoningEffortNone:
+		// A disable alias (none/null/off/false/0): thinking explicitly off,
+		// which the session keeps distinct from "nothing configured".
+		return ReasoningEffortResolution{Set: true, Value: llm.ReasoningEffortNone}, nil
 	case "minimal", "low", "medium", "high", "xhigh", "max":
 		// "xhigh" and "max" are distinct ascending tiers (max above xhigh);
 		// the per-model clamp maps either to the nearest level the chosen
