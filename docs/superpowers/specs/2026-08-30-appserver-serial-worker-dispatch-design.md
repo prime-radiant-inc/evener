@@ -40,10 +40,15 @@ not handlers waiting on each other.
   executing, regardless of how long it runs or whether it respects its context.
   Scoped deliberately: a *client* can still delay the transport by pipelining more
   requests than the queue holds — that is flow control, analyzed in the queue
-  section, not handler starvation — and dead-peer detection pauses only in a
-  strict subset of the windows it pauses in today: while the queue is full or
-  the inline ping response is parked on a full outbound buffer, rather than
-  during every inline handler's runtime (see Queue semantics).
+  section, not handler starvation. Dead-peer detection's pause windows change
+  shape rather than strictly shrinking: today the gate pauses during *every*
+  inline handler's runtime; under this design it pauses only while the receive
+  loop is out of `Recv` — a full request queue (reachable through a serial
+  backlog, or through a cap-blocked worker letting frames pile up: a route PR
+  #667 did not have, since uncapped reads never blocked its loop) or an inline
+  ping response parked on a full outbound buffer. The common case improves
+  enormously; the saturated corners are enumerated and tested, not claimed
+  away (see Queue semantics and the cap mechanics).
 - The per-connection ordering contract PR #667 restored is preserved unchanged for
   every queued frame — requests and notifications alike — with no ordering audit of
   the 108 hub and daemon handler registrations (counting convention: 82 hub + 24
@@ -309,8 +314,14 @@ blocking, with the acquire selecting on `ctx.Done()` so teardown is never held �
 and the slow-read goroutine releases the slot when `handleAndEnqueue` returns.
 This closes the unbounded half of PR #667's exposure: one connection can no
 longer hold arbitrarily many transcript walks (and their decoded params frames)
-in flight; four covers any legitimate use of three slow-read methods with room
-to spare.
+in flight. Four is the chosen operating point, not a measured one — method
+count is not concurrency, and a client can legitimately issue several calls to
+the same method — so the slice-0 audit's sweep includes the web client's and
+TUI's slow-read call sites: if a named UI flow legitimately fans out wider
+than four, the constant (one line) is revised there with the evidence in the
+disposition table. What the design fixes regardless of the number is the
+saturation behavior: blocking, advisories on first-block and on stall, and
+recovery on read completion.
 
 The cap is the same blocking-backpressure principle as the request queue, and
 explicitly *not* a return of the deleted 128-slot limiter: a full cap blocks the
@@ -806,12 +817,22 @@ without modification:
     (d) The acquire race, deterministically: an after-acquire/before-spawn hook
     in the style of the after-dequeue seam — park the worker there, cancel the
     connection, release the hook; assert the slow read never starts and the
-    slot was released. (e) The wedged lane is visible: fill the cap with reads
-    that ignore their context and never return, park a serial request behind
-    them, and — with an injectable stall threshold — assert ping still answers
-    (the masking interaction is real), the stall advisory reaches `Logf` naming
-    the in-flight methods, and teardown still completes without joining the
-    wedged reads.
+    slot was released. (e) The wedged lane is visible — and the setup must
+    actually park the worker: four in-flight reads alone do not block it, so
+    fill the cap with parked reads, queue a *fifth* slow read (this is what
+    parks the worker in the acquire), then a serial request behind it. With an
+    injectable stall threshold, assert ping still answers (the masking
+    interaction is real), the stall advisory reaches `Logf` naming the
+    in-flight methods, and the serial request has not run. Cleanup releases
+    every parked handler — "never returns" is a property under test, not a
+    goroutine leaked into the next test. (f) The composed saturation corner,
+    integration-shaped: with the worker parked as in (e), keep sending frames
+    until the request queue fills and the receive loop blocks; assert the
+    contract the Goals section states for this corner — ping stops answering
+    only once the queue is full, the keepalive gate defers transport pings for
+    exactly that window, the queue-saturation advisory fired, and releasing
+    one parked read drains the whole composition (worker resumes, queue
+    drains, ping answers again).
 11. **Ping's outbound-buffer precondition** — with the transport's write side
     parked (a blocking `Send` seam) and the outbound channel filled by
     notifications, send a ping: assert no response arrives while the buffer is
