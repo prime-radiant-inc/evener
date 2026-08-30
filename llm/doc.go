@@ -39,8 +39,8 @@
 // types are unexported; branch on a failure with one of two orthogonal axes
 // rather than type-asserting:
 //
-//   - [Classify] returns the retry disposition ([ErrorClassRetryable],
-//     [ErrorClassPermanent], or [ErrorClassFallback]).
+//   - [Classify] returns the retry disposition ([ErrorClassRetryable] or
+//     [ErrorClassPermanent]).
 //   - [Kind] returns the category ([ErrorKind]: [KindRateLimit],
 //     [KindContextLength], [KindContentFilter], …). A 429 and a 503 share a
 //     Class (retryable) but differ in Kind.

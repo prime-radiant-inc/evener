@@ -421,7 +421,6 @@ func (a *Adapter) PlanResponsesContinuation(req llm.Request) (llm.ResponsesConti
 	plan.StorageScopeFingerprint = storageScopeFingerprint
 	plan.StoragePolicyLabel = storagePolicy
 	plan.ContinuationStorageAllowed = storageAllowed
-	plan.CanFallbackToChat = true
 	return plan, nil
 }
 
@@ -882,6 +881,11 @@ func isFallbackEligible(err error) bool {
 	return errors.Is(err, errEmptyResponsesStream)
 }
 
+// shouldFallbackToChatCompletions reports whether a failed Responses call may
+// be retried on Chat Completions. A request carrying continuation state never
+// may: the delta it sent stands on an anchor the chat endpoint cannot honor,
+// and the full history that would replace it lives in the session's call
+// frame, not on the request.
 func (a *Adapter) shouldFallbackToChatCompletions(req llm.Request, err error) bool {
 	if a.DisableChatFallback {
 		return false
@@ -889,13 +893,7 @@ func (a *Adapter) shouldFallbackToChatCompletions(req llm.Request, err error) bo
 	if !isFallbackEligible(err) {
 		return false
 	}
-	if !hasResponsesContinuationState(req) {
-		return true
-	}
-	if a.ClassifyResponsesError(req, err) != llm.ResponsesErrorModelEndpoint {
-		return false
-	}
-	return len(req.FullHistoryFallbackMessages) > 0
+	return !hasResponsesContinuationState(req)
 }
 
 func hasPreviousResponseID(req llm.Request) bool {
@@ -958,16 +956,16 @@ func (a *Adapter) fallbackToChatCompletions(ctx context.Context, req llm.Request
 	return ccStream, nil
 }
 
+// chatFallbackRequest is req as the Chat Completions endpoint takes it. Only
+// a request with no continuation state reaches here (see
+// shouldFallbackToChatCompletions), so the messages it already carries are the
+// full history.
 func chatFallbackRequest(req llm.Request) llm.Request {
 	fallbackReq := req
-	fallbackReq.HistoryMode = llm.HistoryModeChatFallback
-	if len(req.FullHistoryFallbackMessages) > 0 {
-		fallbackReq.Messages = append([]llm.Message(nil), req.FullHistoryFallbackMessages...)
-	}
+	fallbackReq.HistoryMode = llm.HistoryModeFullHistory
 	fallbackReq.PreviousResponseID = ""
 	fallbackReq.ConversationID = ""
 	fallbackReq.Continuation = nil
-	fallbackReq.FullHistoryFallbackMessages = nil
 	return fallbackReq
 }
 

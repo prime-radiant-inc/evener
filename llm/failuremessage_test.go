@@ -69,16 +69,6 @@ func TestProviderFailureMessageTruncatesRunawayBodies(t *testing.T) {
 	}
 }
 
-// The endpoint-fallback classifier keys on "responses.create" appearing in the
-// message, so the operation prefix is load-bearing, not decorative.
-func TestProviderFailureMessagePreservesFallbackSignal(t *testing.T) {
-	msg := ProviderFailureMessage("responses.create(stream)", []byte(`{"error":{"message":"This model is not supported"}}`))
-	err := ErrorFromHTTPStatus("openai", 404, msg, nil, nil)
-	if got := Classify(err); got != ErrorClassFallback {
-		t.Fatalf("Classify = %v, want ErrorClassFallback", got)
-	}
-}
-
 // classifyByMessage reads the message for 400/422 signals. Surfacing the
 // provider's own wording must keep those signals intact.
 func TestProviderFailureMessageKeepsClassificationSignals(t *testing.T) {

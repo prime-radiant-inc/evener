@@ -1323,7 +1323,7 @@ func (s *Session) processOneInput(ctx context.Context, input string, images []Im
 		default:
 		}
 
-		profile, sys, _, req, reqEffort, prepareErr := s.prepareModelRequestWithError(ctx, round, &timings)
+		profile, sys, _, req, fullHistory, reqEffort, prepareErr := s.prepareModelRequestWithError(ctx, round, &timings)
 		if prepareErr != nil {
 			return "", progressed, prepareErr
 		}
@@ -1331,7 +1331,7 @@ func (s *Session) processOneInput(ctx context.Context, input string, images []Im
 		tPhaseStart := s.sclock().Now()
 
 		s.noteParentJobActivity(jobPhaseAwaitingModel)
-		modelResp, req, attempt, err := s.callModelWithFallback(ctx, profile, req, reqEffort, round)
+		modelResp, req, attempt, err := s.callModelWithFallback(ctx, profile, req, fullHistory, reqEffort, round)
 		for _, callID := range modelResp.CommunicatePreviewCallIDs {
 			communicatePreviewCalls[callID] = struct{}{}
 		}

@@ -185,7 +185,7 @@ func TestRoundRecorder_FallbackTrickleNeverShadowsPrimaryPartial(t *testing.T) {
 	}
 	sess := unhealthyChainSession(t, a)
 
-	_, _, _, err := sess.callModelWithFallback(context.Background(), NewOpenAIProfile("primary"), unhealthyChainRequest(), "", 1)
+	_, _, _, err := sess.callModelWithFallback(context.Background(), NewOpenAIProfile("primary"), unhealthyChainRequest(), nil, "", 1)
 	if err == nil {
 		t.Fatal("callModelWithFallback: got nil error, want the exhausted chain's last error")
 	}

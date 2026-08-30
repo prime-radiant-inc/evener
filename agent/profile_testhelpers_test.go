@@ -163,6 +163,12 @@ func newOpenAICompatProfile(id, model string, _ int) *provider.Profile {
 	return resolveTestProfile(id, openAICompatInstance(id), model)
 }
 
+// openaiInstance is the openai instance pointed at a test server, for the
+// session tests that dispatch over the Responses protocol for real.
+func openaiInstance(srvURL string) registry.Provider {
+	return registry.Provider{Base: "openai", APIKey: "test-key", Transport: registry.Transport{BaseURL: srvURL}}
+}
+
 // openAICompatInstance is the instance an openai-compatible fixture id needs
 // when the fixture registry does not already carry it: a custom gateway.
 func openAICompatInstance(id string) map[string]registry.Provider {

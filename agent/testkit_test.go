@@ -11,6 +11,9 @@ import (
 	"primeradiant.com/evener/agent/internal/jobstore"
 	"primeradiant.com/evener/agent/provider"
 	"primeradiant.com/evener/llm"
+	// registryClientAt's live instances dispatch over the real Responses
+	// protocol at an httptest server, which needs it registered.
+	_ "primeradiant.com/evener/llm/providers/responses"
 	"primeradiant.com/evener/llm/registry"
 )
 
@@ -123,6 +126,15 @@ func newSession(t *testing.T, opts ...sessionOpt) *Session {
 // can reach a real transport.
 func registryClient(t *testing.T, instances map[string]registry.Provider, adapters ...llm.ProviderAdapter) *llm.Client {
 	t.Helper()
+	return registryClientAt(t, "", instances, nil, adapters...)
+}
+
+// registryClientAt is registryClient with two additions the wire tests need:
+// stateDir holds the continuation scope secret the plan is keyed from, and
+// the instances named in live keep their own transport instead of the mute
+// fake, so a session can dispatch at an httptest server for real.
+func registryClientAt(t *testing.T, stateDir string, instances map[string]registry.Provider, live []string, adapters ...llm.ProviderAdapter) *llm.Client {
+	t.Helper()
 	merged := map[string]registry.Provider{}
 	maps.Copy(merged, instances)
 	for _, a := range adapters {
@@ -142,11 +154,14 @@ func registryClient(t *testing.T, instances map[string]registry.Provider, adapte
 			t.Fatalf("registryClient: %v", err)
 		}
 	}
-	c := llm.NewClient(llm.WithRegistry(r))
+	c := llm.NewClient(llm.WithRegistry(r), llm.WithClientStateDir(stateDir))
 	covered := map[string]bool{}
 	for _, a := range adapters {
 		c.Register(a)
 		covered[a.Name()] = true
+	}
+	for _, name := range live {
+		covered[name] = true
 	}
 	for _, inst := range r.Instances() {
 		if !covered[inst.Name] {
@@ -154,6 +169,17 @@ func registryClient(t *testing.T, instances map[string]registry.Provider, adapte
 		}
 	}
 	return c
+}
+
+// resolveClientProfile resolves ref on the client's own registry, so the
+// session's profile is the row that client will dispatch on.
+func resolveClientProfile(t *testing.T, client *llm.Client, ref string) *provider.Profile {
+	t.Helper()
+	p, err := provider.Resolve(client.Registry(), ref)
+	if err != nil {
+		t.Fatalf("resolve %q: %v", ref, err)
+	}
+	return p
 }
 
 // adapterInstance is the registry entry a test adapter's name needs when it is

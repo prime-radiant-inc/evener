@@ -458,7 +458,7 @@ func FuzzMsfzCallModelWithFallback(f *testing.F) {
 		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 		defer cancel()
 
-		modelResp, usedReq, attempt, callErr := sess.callModelWithFallback(ctx, profile, req, "", 1)
+		modelResp, usedReq, attempt, callErr := sess.callModelWithFallback(ctx, profile, req, nil, "", 1)
 
 		if callErr == nil {
 			if usedReq.Model == "" {
@@ -543,7 +543,7 @@ func FuzzMsfzContinuationAnchorPlanning(f *testing.F) {
 		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 		defer cancel()
 
-		out := sess.applyResponsesContinuationAnchorPlanning(ctx, req, history, cfg.stream)
+		out, fullHistory := sess.applyResponsesContinuationAnchorPlanning(ctx, req, history, cfg.stream)
 
 		// Invariant: every return path leaves a concrete history mode.
 		if out.HistoryMode == "" {
@@ -557,10 +557,17 @@ func FuzzMsfzContinuationAnchorPlanning(f *testing.F) {
 			if out.Continuation == nil {
 				t.Fatalf("delta selection has nil Continuation metadata: %+v", out)
 			}
+			// The retry a rejected anchor forces needs the history the delta
+			// was cut from, so a delta always hands one back.
+			if len(fullHistory) < len(out.Messages) {
+				t.Fatalf("delta selection kept %d full-history messages for a %d-message delta", len(fullHistory), len(out.Messages))
+			}
+		} else if fullHistory != nil {
+			t.Fatalf("non-delta selection kept a full-history list: %+v", fullHistory)
 		}
 
 		// Determinism: the same session state + request yields the same decision.
-		again := sess.applyResponsesContinuationAnchorPlanning(ctx, req, history, cfg.stream)
+		again, _ := sess.applyResponsesContinuationAnchorPlanning(ctx, req, history, cfg.stream)
 		if again.HistoryMode != out.HistoryMode || again.PreviousResponseID != out.PreviousResponseID {
 			t.Fatalf("planning not deterministic:\n first  = mode=%q prev=%q\n second = mode=%q prev=%q",
 				out.HistoryMode, out.PreviousResponseID, again.HistoryMode, again.PreviousResponseID)
@@ -573,8 +580,7 @@ func msfzNewPlanningSession(t *testing.T, cfg msfzPlanConfig) *Session {
 	dir := t.TempDir()
 
 	adapter := &agenttest.FakeAdapter{
-		Provider:          "openai",
-		CanFallbackToChat: true,
+		Provider: "openai",
 		PlanResponsesContinuationFunc: func(req llm.Request) (llm.ResponsesContinuationPlan, error) {
 			plan := phase4DIContinuationPlan(req)
 			plan.ContinuationStorageAllowed = cfg.storageAllowed

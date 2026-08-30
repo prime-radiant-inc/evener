@@ -1441,7 +1441,7 @@ func modelFallbackEligible(err error, policy llm.RetryPolicy) bool {
 		return false
 	}
 	switch llm.Classify(err) {
-	case llm.ErrorClassPermanent, llm.ErrorClassFallback:
+	case llm.ErrorClassPermanent:
 		return true
 	case llm.ErrorClassRetryable:
 		return retryLoopDeclined(err, policy)

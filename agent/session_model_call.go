@@ -147,13 +147,17 @@ func effectiveReasoningEffort(cfg, override string, escalated bool) string {
 // and HistoryExpand phase timings into t. It never returns an error: the input
 // phases only emit warnings.
 func (s *Session) prepareModelRequest(ctx context.Context, round int, t *events.RoundTimings) (profile *provider.Profile, sys string, history []llm.Message, req llm.Request, reasoningEffort string) {
-	profile, sys, history, req, reasoningEffort, _ = s.prepareModelRequestWithError(ctx, round, t)
+	profile, sys, history, req, _, reasoningEffort, _ = s.prepareModelRequestWithError(ctx, round, t)
 	return profile, sys, history, req, reasoningEffort
 }
 
-func (s *Session) prepareModelRequestWithError(ctx context.Context, round int, t *events.RoundTimings) (profile *provider.Profile, sys string, history []llm.Message, req llm.Request, reasoningEffort string, err error) {
+// prepareModelRequestWithError also returns the full-history message list a
+// planned continuation delta was cut from. It is the round's, not the
+// request's: the retry after a rejected anchor rebuilds from it, and nothing
+// on the wire ever carries it.
+func (s *Session) prepareModelRequestWithError(ctx context.Context, round int, t *events.RoundTimings) (profile *provider.Profile, sys string, history []llm.Message, req llm.Request, fullHistory []llm.Message, reasoningEffort string, err error) {
 	if err := s.flushPendingDelegateDeliveries(); err != nil {
-		return nil, "", nil, llm.Request{}, "", err
+		return nil, "", nil, llm.Request{}, nil, "", err
 	}
 	// --- Phase: SystemPrompt ---
 	tPhaseStart := s.sclock().Now()
@@ -259,13 +263,13 @@ func (s *Session) prepareModelRequestWithError(ctx context.Context, round int, t
 	if lease, ok := ctx.Value(delegateRunLeaseContextKey{}).(delegateLease); ok && s.delegateController != nil {
 		claim, claimErr := s.delegateController.BeginModelRequest(lease)
 		if claimErr != nil {
-			return nil, "", nil, llm.Request{}, "", claimErr
+			return nil, "", nil, llm.Request{}, nil, "", claimErr
 		}
 		snapshot := s.delegateModelHistorySnapshot()
 		history, claimErr = s.delegateController.CompleteModelRequest(claim, snapshot, scope)
 		if claimErr != nil {
 			_ = s.delegateController.AbortModelRequest(claim)
-			return nil, "", nil, llm.Request{}, "", claimErr
+			return nil, "", nil, llm.Request{}, nil, "", claimErr
 		}
 	} else {
 		history = expandHistory(historyTurns, scope)
@@ -275,21 +279,19 @@ func (s *Session) prepareModelRequestWithError(ctx context.Context, round int, t
 
 	// --- Phase: ToolDefs --- (toolDefs snapshotted with profile/sys above)
 	req = s.buildModelRequest(profile, sys, history, toolDefs, reasoningEffort)
-	req = s.applyResponsesContinuationAnchorPlanning(ctx, req, historyTurns, profile.SupportsStreaming())
-	// Stage the mid-turn attention this round's request presents. The guard
-	// inside is the single gate, whichever path built the history; staging
-	// follows anchor planning because credit belongs to what the request
-	// actually carries.
-	s.stageRootDelegateAttentionCoverage(req, historyTurns)
-	return profile, sys, history, req, reasoningEffort, nil
+	req, fullHistory = s.applyResponsesContinuationAnchorPlanning(ctx, req, historyTurns, profile.SupportsStreaming())
+	return profile, sys, history, req, fullHistory, reasoningEffort, nil
 }
 
-func (s *Session) applyResponsesContinuationAnchorPlanning(ctx context.Context, req llm.Request, historyTurns []schema.Turn, stream bool) llm.Request {
+// applyResponsesContinuationAnchorPlanning returns the request to dispatch and,
+// when it planned a continuation delta, the full-history message list the delta
+// was cut from, for the retry a rejected anchor forces.
+func (s *Session) applyResponsesContinuationAnchorPlanning(ctx context.Context, req llm.Request, historyTurns []schema.Turn, stream bool) (llm.Request, []llm.Message) {
 	if llm.ResponsesContinuationMode(strings.TrimSpace(s.cfg.OpenAIResponsesContinuation)) != llm.ResponsesContinuationAuto {
 		if req.HistoryMode == "" {
 			req.HistoryMode = llm.HistoryModeFullHistory
 		}
-		return req
+		return req, nil
 	}
 
 	registry := s.responsesContinuationSupportRegistry()
@@ -297,7 +299,7 @@ func (s *Session) applyResponsesContinuationAnchorPlanning(ctx context.Context, 
 		if req.HistoryMode == "" {
 			req.HistoryMode = llm.HistoryModeFullHistory
 		}
-		return req
+		return req, nil
 	}
 	req = s.applyResponsesContinuationShadowEstimate(req)
 	if req.ContinuationDiagnostic == "continuation_shadow_estimate_unavailable" {
@@ -305,14 +307,13 @@ func (s *Session) applyResponsesContinuationAnchorPlanning(ctx context.Context, 
 		req.PreviousResponseID = ""
 		req.ConversationID = ""
 		req.Continuation = nil
-		req.FullHistoryFallbackMessages = nil
-		return responsesContinuationWithInputEstimate(req)
+		return responsesContinuationWithInputEstimate(req), nil
 	}
 
 	plan, err := s.client.PlanResponsesContinuation(ctx, req)
 	if err != nil {
 		req.HistoryMode = llm.HistoryModeFullHistory
-		return responsesContinuationWithInputEstimate(req)
+		return responsesContinuationWithInputEstimate(req), nil
 	}
 	support := llm.ResponsesContinuationSupportFor(registry, plan.EndpointFamily)
 	decision := llm.DecideResponsesContinuationForRequest(
@@ -322,7 +323,7 @@ func (s *Session) applyResponsesContinuationAnchorPlanning(ctx context.Context, 
 	)
 	if decision.HistoryMode != llm.HistoryModeResponsesDelta {
 		req.HistoryMode = llm.HistoryModeFullHistory
-		return responsesContinuationWithInputEstimate(req)
+		return responsesContinuationWithInputEstimate(req), nil
 	}
 	if !plan.ContinuationStorageAllowed &&
 		support.StorageShapeProven &&
@@ -336,10 +337,10 @@ func (s *Session) applyResponsesContinuationAnchorPlanning(ctx context.Context, 
 	}
 	if !plan.ContinuationStorageAllowed {
 		req.HistoryMode = llm.HistoryModeFullHistory
-		return responsesContinuationWithInputEstimate(req)
+		return responsesContinuationWithInputEstimate(req), nil
 	}
 	if s.responsesContinuationDisabledForPlan(req, plan, stream) {
-		return responsesContinuationFullHistoryRequestForPlan(req, plan)
+		return responsesContinuationFullHistoryRequestForPlan(req, plan), nil
 	}
 
 	reservation := reserveResponsesContinuationHistoryBase(historyTurns)
@@ -349,20 +350,17 @@ func (s *Session) applyResponsesContinuationAnchorPlanning(ctx context.Context, 
 	}
 	if !historyCurrent {
 		req.HistoryMode = llm.HistoryModeFullHistory
-		return responsesContinuationWithInputEstimate(req)
+		return responsesContinuationWithInputEstimate(req), nil
 	}
 
 	candidate, anchorDecision := selectResponsesContinuationAnchorCandidate(s.cfg, historyTurns)
 	if anchorDecision.HistoryMode == llm.HistoryModeResponsesDelta &&
 		responsesContinuationCandidateMatchesPlan(candidate, plan) {
-		fullHistoryFallbackMessages := append([]llm.Message(nil), req.Messages...)
+		fullHistory := append([]llm.Message(nil), req.Messages...)
 		req, _ = llm.ApplyResponsesContinuationStoreOverride(req, plan.StoragePolicyLabel)
 		req.HistoryMode = llm.HistoryModeResponsesDelta
 		req.PreviousResponseID = strings.TrimSpace(candidate.Turn.ResponseID)
 		req.Messages = responsesContinuationDeltaMessages(req.Messages, candidate.Delta)
-		if plan.CanFallbackToChat {
-			req.FullHistoryFallbackMessages = fullHistoryFallbackMessages
-		}
 		req.Continuation = &llm.ContinuationMetadata{
 			PreviousResponseIDHash:  candidate.Turn.ResponseIDHash,
 			AnchorTurnIndex:         candidate.TurnIndex,
@@ -373,12 +371,11 @@ func (s *Session) applyResponsesContinuationAnchorPlanning(ctx context.Context, 
 			ContextMarker:           responseContextMarkerV1,
 			StoragePolicyLabel:      plan.StoragePolicyLabel,
 			StorageScopeFingerprint: plan.StorageScopeFingerprint,
-			ChatFallbackHistoryLen:  len(req.FullHistoryFallbackMessages),
 		}
-		return responsesContinuationWithInputEstimate(req)
+		return responsesContinuationWithInputEstimate(req), fullHistory
 	}
 
-	return responsesContinuationFullHistoryRequestForPlan(req, plan)
+	return responsesContinuationFullHistoryRequestForPlan(req, plan), nil
 }
 
 func responsesContinuationFullHistoryRequestForPlan(req llm.Request, plan llm.ResponsesContinuationPlan) llm.Request {
@@ -400,7 +397,6 @@ func (s *Session) applyResponsesContinuationShadowEstimate(req llm.Request) llm.
 	shadowReq.PreviousResponseID = ""
 	shadowReq.ConversationID = ""
 	shadowReq.Continuation = nil
-	shadowReq.FullHistoryFallbackMessages = nil
 	tokens, ok := s.estimateResponsesContinuationShadow(shadowReq)
 	if !ok {
 		req.HistoryMode = llm.HistoryModeFullHistory
@@ -873,7 +869,7 @@ func resolveRequestEffort(configured string, supportsReasoning bool, levels []st
 // fallback-eligible permanent error, retries each configured fallback model in
 // order. It returns the (possibly fallback-updated) request actually used so
 // downstream logging reflects the model that answered.
-func (s *Session) callModelWithFallback(ctx context.Context, profile *provider.Profile, req llm.Request, requestedEffort string, _ int) (sessionModelResponse, llm.Request, ModelAttemptMetadata, error) {
+func (s *Session) callModelWithFallback(ctx context.Context, profile *provider.Profile, req llm.Request, fullHistory []llm.Message, requestedEffort string, _ int) (sessionModelResponse, llm.Request, ModelAttemptMetadata, error) {
 	previewCalls := map[string]struct{}{}
 	defer func() {
 		if recovered := recover(); recovered != nil {
@@ -911,7 +907,7 @@ func (s *Session) callModelWithFallback(ctx context.Context, profile *provider.P
 	recorder.Groups = append(recorder.Groups, primaryRecord)
 	if err != nil && shouldRetryResponsesContinuationAsFullHistory(req, err) {
 		s.disableResponsesContinuationForRequest(req, profile.SupportsStreaming())
-		retryReq := responsesContinuationFullHistoryFallbackRequest(req)
+		retryReq := responsesContinuationFullHistoryFallbackRequest(req, fullHistory)
 		// Group-transition reset: the primary group's error usually arrives
 		// open-phase (nothing streamed), but an in-band mid-stream
 		// "response.failed" can leave real salvage on primaryRecord — this
@@ -964,7 +960,7 @@ func (s *Session) callModelWithFallback(ctx context.Context, profile *provider.P
 					fmt.Sprintf("model_fallbacks entry %q could not be resolved; skipping it", fbModel), resolveErr))
 				continue
 			}
-			fbReq := responsesContinuationModelFallbackRequest(req)
+			fbReq := responsesContinuationModelFallbackRequest(req, fullHistory)
 			fbReq.Model = fbProfile.Model()
 			fbReq.Provider = fbProfile.ID()
 			if origEffort != "" && fbProfile.SupportsReasoning() {
@@ -1035,9 +1031,6 @@ func shouldRetryResponsesContinuationAsFullHistory(req llm.Request, err error) b
 	if strings.TrimSpace(req.PreviousResponseID) == "" {
 		return false
 	}
-	if len(req.FullHistoryFallbackMessages) == 0 {
-		return false
-	}
 	// An unhealthy verdict settles the round from any group (spec: component 2),
 	// and the recovery re-call is another full retry group against the endpoint
 	// RetryStream just indicted. Checked before the llm.Error match because the
@@ -1059,28 +1052,32 @@ func shouldRetryResponsesContinuationAsFullHistory(req llm.Request, err error) b
 		(strings.Contains(message, "previous response") && (strings.Contains(message, "not found") || strings.Contains(message, "expired")))
 }
 
-func responsesContinuationFullHistoryFallbackRequest(req llm.Request) llm.Request {
+// responsesContinuationFullHistoryFallbackRequest rebuilds the delta request as
+// the full history the round kept for it, for the one retry a rejected anchor
+// earns.
+func responsesContinuationFullHistoryFallbackRequest(req llm.Request, fullHistory []llm.Message) llm.Request {
 	fallbackReq := req
 	fallbackReq.HistoryMode = llm.HistoryModeFullHistoryFallback
-	fallbackReq.Messages = append([]llm.Message(nil), req.FullHistoryFallbackMessages...)
+	fallbackReq.Messages = append([]llm.Message(nil), fullHistory...)
 	fallbackReq.PreviousResponseID = ""
 	fallbackReq.ConversationID = ""
 	fallbackReq.Continuation = nil
-	fallbackReq.FullHistoryFallbackMessages = nil
 	return fallbackReq
 }
 
-func responsesContinuationModelFallbackRequest(req llm.Request) llm.Request {
+// responsesContinuationModelFallbackRequest un-anchors a delta request for a
+// different model: the fallback model has no claim on this endpoint's stored
+// response, so it gets the round's full history instead.
+func responsesContinuationModelFallbackRequest(req llm.Request, fullHistory []llm.Message) llm.Request {
 	fallbackReq := req
 	if req.HistoryMode == llm.HistoryModeResponsesDelta {
 		fallbackReq.HistoryMode = llm.HistoryModeFullHistory
-		if len(req.FullHistoryFallbackMessages) > 0 {
-			fallbackReq.Messages = append([]llm.Message(nil), req.FullHistoryFallbackMessages...)
+		if len(fullHistory) > 0 {
+			fallbackReq.Messages = append([]llm.Message(nil), fullHistory...)
 		}
 		fallbackReq.PreviousResponseID = ""
 		fallbackReq.ConversationID = ""
 		fallbackReq.Continuation = nil
-		fallbackReq.FullHistoryFallbackMessages = nil
 	}
 	return fallbackReq
 }

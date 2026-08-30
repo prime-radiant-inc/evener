@@ -31,7 +31,6 @@ type FakeAdapter struct {
 	Steps                         []func(req llm.Request) llm.Response
 	PlanResponsesContinuationFunc func(req llm.Request) (llm.ResponsesContinuationPlan, error)
 	LiveModelsFunc                func(ctx context.Context) ([]registry.Model, error)
-	CanFallbackToChat             bool
 
 	mu       sync.Mutex
 	requests []llm.Request
@@ -72,12 +71,7 @@ func (a *FakeAdapter) PlanResponsesContinuation(req llm.Request) (llm.ResponsesC
 	if a.PlanResponsesContinuationFunc == nil {
 		return llm.ResponsesContinuationPlan{}, errors.New("fake adapter missing PlanResponsesContinuationFunc")
 	}
-	plan, err := a.PlanResponsesContinuationFunc(req)
-	if err != nil {
-		return plan, err
-	}
-	plan.CanFallbackToChat = a.CanFallbackToChat
-	return plan, nil
+	return a.PlanResponsesContinuationFunc(req)
 }
 
 // LiveModels implements llm.LiveModelLister when a test scripts a listing.

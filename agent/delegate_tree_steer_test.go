@@ -426,7 +426,7 @@ func TestDelegateControllerModelRequestUsesOutgoingReplayScope(t *testing.T) {
 	runtime.mu.Unlock()
 	ctx := context.WithValue(context.Background(), delegateRunLeaseContextKey{}, lease)
 	var timings events.RoundTimings
-	_, _, history, _, _, err := runtime.prepareModelRequestWithError(ctx, 1, &timings)
+	_, _, history, _, _, _, err := runtime.prepareModelRequestWithError(ctx, 1, &timings)
 	if err != nil {
 		t.Fatalf("prepare delegate model request: %v", err)
 	}
@@ -479,7 +479,7 @@ func TestDelegateControllerSteerDuringContextManagementEntersNextRequestOnce(t *
 	ctx := context.WithValue(context.Background(), delegateRunLeaseContextKey{}, lease)
 	go func() {
 		var timings events.RoundTimings
-		_, _, history, _, _, err := runtime.prepareModelRequestWithError(ctx, 1, &timings)
+		_, _, history, _, _, _, err := runtime.prepareModelRequestWithError(ctx, 1, &timings)
 		result <- prepareResult{history: history, err: err}
 	}()
 

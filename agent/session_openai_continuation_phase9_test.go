@@ -13,77 +13,8 @@ import (
 	"primeradiant.com/evener/agent/internal/agenttest"
 	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/llm"
-	"primeradiant.com/evener/llm/providers/openai"
+	"primeradiant.com/evener/llm/registry"
 )
-
-func TestSession_OpenAIResponsesContinuationPhase9FallbackCapableFakePathCarriesFullHistorySidecar(t *testing.T) {
-	dir := t.TempDir()
-	adapter := &agenttest.FakeAdapter{
-		Provider:          "openai",
-		CanFallbackToChat: true,
-		PlanResponsesContinuationFunc: func(req llm.Request) (llm.ResponsesContinuationPlan, error) {
-			return phase4DIContinuationPlan(req), nil
-		},
-		Steps: []func(req llm.Request) llm.Response{
-			func(req llm.Request) llm.Response {
-				return agenttest.FinalResponse("phase 9 delta consumed")
-			},
-		},
-	}
-	client := llm.NewClient()
-	client.Register(adapter)
-
-	sess, err := NewSession(client, withTestSessionNamer(client, NewOpenAIProfile("gpt-5.4")), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{
-		StateDir:                    dir,
-		OpenAIResponsesContinuation: "auto",
-		testOnly: testConfig{
-			responsesContinuationSupportRegistry: map[llm.ResponsesEndpointFamily]llm.ResponsesContinuationSupport{
-				llm.ResponsesEndpointFamilyOpenAIPublic: phase4DIEnabledSupport(),
-			},
-		},
-	})
-	if err != nil {
-		t.Fatalf("NewSession: %v", err)
-	}
-	defer sess.Close()
-	drainSessionEvents(sess)
-	anchor := responsesContinuationEligibleAssistantTurn("resp_phase9_anchor")
-	anchor.ResponseIDHash = "cont-handle-v1:response_id:phase9"
-	anchor.ResponseRequestFingerprint = "cont-req-v1:phase4d"
-	anchor.ResponseStorageScopeFingerprint = "cont-scope-v1:phase4d"
-	sess.history = append(sess.history,
-		schema.NewTurn(schema.TurnUserInput, llm.User("phase9 prior user marker")),
-		anchor,
-	)
-
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second) // TRIPWIRE: scripted in-process adapter (some tests use a loopback httptest server with no real I/O); only fires on a genuine hang.
-	defer cancel()
-	if _, err := sess.ProcessInput(ctx, "phase9 current user marker", nil); err != nil {
-		t.Fatalf("ProcessInput: %v", err)
-	}
-
-	requests := adapter.Requests()
-	if len(requests) != 1 {
-		t.Fatalf("request count = %d, want 1", len(requests))
-	}
-	req := requests[0]
-	if req.HistoryMode != llm.HistoryModeResponsesDelta {
-		t.Fatalf("HistoryMode = %q, want %q", req.HistoryMode, llm.HistoryModeResponsesDelta)
-	}
-	if req.PreviousResponseID != "resp_phase9_anchor" {
-		t.Fatalf("PreviousResponseID = %q, want resp_phase9_anchor", req.PreviousResponseID)
-	}
-	if !requestMessagesContainText(req.Messages, "phase9 current user marker") {
-		t.Fatalf("delta request missing current marker: %+v", req.Messages)
-	}
-	if requestMessagesContainText(req.Messages, "phase9 prior user marker") {
-		t.Fatalf("delta request included prior marker: %+v", req.Messages)
-	}
-	if !requestMessagesContainText(req.FullHistoryFallbackMessages, "phase9 prior user marker") ||
-		!requestMessagesContainText(req.FullHistoryFallbackMessages, "phase9 current user marker") {
-		t.Fatalf("FullHistoryFallbackMessages = %+v, want prior and current markers", req.FullHistoryFallbackMessages)
-	}
-}
 
 func TestSession_OpenAIResponsesContinuationPhase9RetryThroughRealAnchorSelection(t *testing.T) {
 	dir := t.TempDir()
@@ -95,8 +26,7 @@ func TestSession_OpenAIResponsesContinuationPhase9RetryThroughRealAnchorSelectio
 		},
 	}, nil)
 	adapter := &phase9RetryAdapter{
-		provider:          "openai",
-		canFallbackToChat: true,
+		provider: "openai",
 		steps: []func(req llm.Request) (llm.Response, error){
 			func(req llm.Request) (llm.Response, error) {
 				return llm.Response{}, continuationErr
@@ -152,6 +82,12 @@ func TestSession_OpenAIResponsesContinuationPhase9RetryThroughRealAnchorSelectio
 	}
 }
 
+// TestSession_OpenAIResponsesContinuationPhase9FallbackReplaySanitizesMalformedToolCall
+// is the anchor-rejection pin on a real dispatch: the session plans a delta
+// against a registry client, the endpoint answers previous_response_not_found,
+// and the session retries exactly once with the full history it kept in the
+// call frame — no sidecar on the request — sanitizing the malformed tool call
+// it replays.
 func TestSession_OpenAIResponsesContinuationPhase9FallbackReplaySanitizesMalformedToolCall(t *testing.T) {
 	dir := t.TempDir()
 	const malformedArgs = `{"value": broken`
@@ -160,7 +96,7 @@ func TestSession_OpenAIResponsesContinuationPhase9FallbackReplaySanitizesMalform
 	var requestBodies [][]byte
 
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Method != http.MethodPost || r.URL.Path != "/v1/responses" {
+		if r.Method != http.MethodPost || r.URL.Path != "/responses" {
 			http.NotFound(w, r)
 			return
 		}
@@ -201,16 +137,11 @@ func TestSession_OpenAIResponsesContinuationPhase9FallbackReplaySanitizesMalform
 	}))
 	t.Cleanup(srv.Close)
 
-	client := llm.NewClient()
-	client.Register(&phase9PlanningOpenAIAdapter{
-		inner: &openai.Adapter{
-			APIKey:  "test-key",
-			BaseURL: srv.URL,
-			Client:  srv.Client(),
-		},
-	})
+	instances := map[string]registry.Provider{"openai": openaiInstance(srv.URL)}
+	dispatch := registryClientAt(t, dir, instances, []string{"openai"})
+	client := registryClientAt(t, dir, instances, nil, &phase9PlanningOpenAIAdapter{inner: dispatch})
 
-	sess, err := NewSession(client, withTestSessionNamer(client, NewOpenAIProfile("gpt-5.4")), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{
+	sess, err := NewSession(client, resolveClientProfile(t, client, "openai/gpt-5.4"), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{
 		StateDir:                    dir,
 		OpenAIResponsesContinuation: "auto",
 		testOnly: testConfig{
@@ -296,8 +227,7 @@ func TestSession_OpenAIResponsesContinuationPhase9DisabledStateUsesFullHistoryAf
 		},
 	}, nil)
 	adapter := &phase9RetryAdapter{
-		provider:          "openai",
-		canFallbackToChat: true,
+		provider: "openai",
 		steps: []func(req llm.Request) (llm.Response, error){
 			func(req llm.Request) (llm.Response, error) {
 				return llm.Response{}, continuationErr
@@ -396,8 +326,7 @@ func TestSession_OpenAIResponsesContinuationPhase9DisabledStateDoesNotLeakToNewS
 		},
 	}, nil)
 	firstAdapter := &phase9RetryAdapter{
-		provider:          "openai",
-		canFallbackToChat: true,
+		provider: "openai",
 		steps: []func(req llm.Request) (llm.Response, error){
 			func(req llm.Request) (llm.Response, error) {
 				return llm.Response{}, continuationErr
@@ -421,8 +350,7 @@ func TestSession_OpenAIResponsesContinuationPhase9DisabledStateDoesNotLeakToNewS
 	}
 
 	nextAdapter := &phase9RetryAdapter{
-		provider:          "openai",
-		canFallbackToChat: true,
+		provider: "openai",
 		steps: []func(req llm.Request) (llm.Response, error){
 			func(req llm.Request) (llm.Response, error) {
 				return agenttest.FinalResponse("phase 9 new session delta"), nil
@@ -469,7 +397,6 @@ func TestSession_OpenAIResponsesContinuationPhase9OrphanedToolResultGateUsesFull
 
 type phase9RetryAdapter struct {
 	provider                string
-	canFallbackToChat       bool
 	storageScopeFingerprint string
 	storagePolicyLabel      string
 	steps                   []func(req llm.Request) (llm.Response, error)
@@ -516,7 +443,6 @@ func (a *phase9RetryAdapter) PlanResponsesContinuation(req llm.Request) (llm.Res
 	if a.storagePolicyLabel != "" {
 		plan.StoragePolicyLabel = a.storagePolicyLabel
 	}
-	plan.CanFallbackToChat = a.canFallbackToChat
 	return plan, nil
 }
 
@@ -526,11 +452,15 @@ func (a *phase9RetryAdapter) Requests() []llm.Request {
 	return append([]llm.Request(nil), a.requests...)
 }
 
+// phase9PlanningOpenAIAdapter dispatches through a second registry client —
+// the transport is the real Responses protocol — while restating the plan's
+// fingerprints as the phase-4d fixture anchors carry them, so the anchor the
+// test plants is the one the session selects.
 type phase9PlanningOpenAIAdapter struct {
-	inner *openai.Adapter
+	inner *llm.Client
 }
 
-func (a *phase9PlanningOpenAIAdapter) Name() string { return a.inner.Name() }
+func (a *phase9PlanningOpenAIAdapter) Name() string { return "openai" }
 
 func (a *phase9PlanningOpenAIAdapter) Complete(ctx context.Context, req llm.Request) (llm.Response, error) {
 	return a.inner.Complete(ctx, req)
@@ -541,8 +471,15 @@ func (a *phase9PlanningOpenAIAdapter) Stream(ctx context.Context, req llm.Reques
 }
 
 func (a *phase9PlanningOpenAIAdapter) PlanResponsesContinuation(req llm.Request) (llm.ResponsesContinuationPlan, error) {
-	plan := phase4DIContinuationPlan(req)
-	plan.CanFallbackToChat = true
+	plan, err := a.inner.PlanResponsesContinuation(context.Background(), req)
+	if err != nil {
+		return plan, err
+	}
+	fixture := phase4DIContinuationPlan(req)
+	plan.RequestFingerprint = fixture.RequestFingerprint
+	plan.StorageScopeFingerprint = fixture.StorageScopeFingerprint
+	plan.StoragePolicyLabel = fixture.StoragePolicyLabel
+	plan.ContinuationStorageAllowed = fixture.ContinuationStorageAllowed
 	return plan, nil
 }
 
@@ -571,8 +508,7 @@ func runPhase9GateSession(t *testing.T, history []schema.Turn) llm.Request {
 	t.Helper()
 	dir := t.TempDir()
 	adapter := &agenttest.FakeAdapter{
-		Provider:          "openai",
-		CanFallbackToChat: true,
+		Provider: "openai",
 		PlanResponsesContinuationFunc: func(req llm.Request) (llm.ResponsesContinuationPlan, error) {
 			return phase4DIContinuationPlan(req), nil
 		},

@@ -17,8 +17,6 @@ const (
 	// HistoryModeFullHistoryFallback sends full history after a continuation
 	// attempt was abandoned.
 	HistoryModeFullHistoryFallback HistoryMode = "full_history_fallback"
-	// HistoryModeChatFallback sends history via the chat-completions shape as a fallback.
-	HistoryModeChatFallback HistoryMode = "chat_completions_fallback"
 )
 
 // ResponsesContinuationMode is the configured policy for using server-side
@@ -105,7 +103,6 @@ type ContinuationMetadata struct {
 	ContextMarker           string
 	StoragePolicyLabel      string
 	StorageScopeFingerprint string
-	ChatFallbackHistoryLen  int
 }
 
 // AuthScopeIdentity identifies the authenticated scope (auth source plus hashed
@@ -160,7 +157,7 @@ type ResponsesContinuationPlanInput struct {
 
 // ResponsesContinuationPlan is the resolved continuation context for a request:
 // endpoint family, auth scope, fingerprints, storage scope and policy, and
-// whether continuation storage and chat fallback are allowed.
+// whether continuation storage is allowed.
 type ResponsesContinuationPlan struct {
 	EndpointFamily             ResponsesEndpointFamily
 	AuthScopeIdentity          AuthScopeIdentity
@@ -171,13 +168,12 @@ type ResponsesContinuationPlan struct {
 	StorageScopeFingerprint    string
 	StoragePolicyLabel         string
 	ContinuationStorageAllowed bool
-	CanFallbackToChat          bool
 }
 
 // PlanResponsesContinuation builds a ResponsesContinuationPlan from the input,
 // carrying through the endpoint family, auth scope identity, and trimmed
 // org/project ID hashes. It does not yet compute the request fingerprint,
-// storage scope, or storage/fallback decisions (those plan fields are left zero).
+// storage scope, or the storage decision (those plan fields are left zero).
 func PlanResponsesContinuation(input ResponsesContinuationPlanInput) ResponsesContinuationPlan {
 	return ResponsesContinuationPlan{
 		EndpointFamily:    input.EndpointFamily,

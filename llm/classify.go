@@ -3,7 +3,6 @@ package llm
 import (
 	"context"
 	"errors"
-	"strings"
 )
 
 // ErrorClass describes how a provider error should affect the retry chain.
@@ -11,7 +10,7 @@ import (
 // The classifier is conservative: unknown / unclassifiable errors fall back to
 // ErrorClassRetryable. Callers (the StreamGenerate retry loop, the Retry
 // helper, etc.) branch on the class to decide whether to burn additional
-// budget, give up, or trigger an endpoint fallback.
+// budget or give up.
 type ErrorClass int
 
 const (
@@ -25,14 +24,6 @@ const (
 	// denied, 404 not-found, 413 context-length, 422 invalid request, plus
 	// user-initiated cancellation. These must short-circuit the retry loop.
 	ErrorClassPermanent
-
-	// ErrorClassFallback covers errors that signal "this endpoint won't
-	// work for this model — try a different one." Today this is the
-	// OpenAI Responses->ChatCompletions handoff (404/422 from /v1/responses
-	// and the errEmptyResponsesStream sentinel). The retry chain itself
-	// treats Fallback the same as Permanent (short-circuit) because the
-	// fallback handoff happens inside the adapter, below the retry chain.
-	ErrorClassFallback
 )
 
 // String implements fmt.Stringer for legible log/metric output.
@@ -42,8 +33,6 @@ func (c ErrorClass) String() string {
 		return "retryable"
 	case ErrorClassPermanent:
 		return "permanent"
-	case ErrorClassFallback:
-		return "fallback"
 	default:
 		return "unknown"
 	}
@@ -62,9 +51,9 @@ func (c ErrorClass) String() string {
 //  4. Bare context deadline (context.DeadlineExceeded) → Retryable.
 //  5. Default → Retryable (conservative).
 //
-// This mirrors the retryableError helper but exposes the classification
-// (including the Fallback signal) so the retry loop can branch explicitly
-// instead of relying on a single boolean.
+// This mirrors the retryableError helper but exposes the classification so
+// the retry loop can branch explicitly instead of relying on a single
+// boolean.
 func Classify(err error) ErrorClass {
 	if err == nil {
 		return ErrorClassRetryable
@@ -79,9 +68,6 @@ func Classify(err error) ErrorClass {
 	}
 
 	if le, ok := errors.AsType[Error](err); ok {
-		if isEndpointFallbackSignal(err, le) {
-			return ErrorClassFallback
-		}
 		// A provider may flag an otherwise-permanent status as retryable
 		// (e.g. OpenAI cyber_policy_violation on 403). Honor that bit first.
 		if le.Retryable() {
@@ -114,25 +100,4 @@ func Classify(err error) ErrorClass {
 	// Unknown / unwrapped error: default to Retryable (conservative — when
 	// in doubt, retry — matches retryableError's existing behavior).
 	return ErrorClassRetryable
-}
-
-func isEndpointFallbackSignal(err error, le Error) bool {
-	// Key on BehaviorTag when set (instance named "work" with tag "openai"
-	// must still trigger fallback); fall back to Provider() for the default
-	// identity case (tag empty, name==type=="openai").
-	tag := le.BehaviorTag()
-	if tag == "" {
-		tag = le.Provider()
-	}
-	if !strings.EqualFold(strings.TrimSpace(tag), "openai") {
-		return false
-	}
-	message := strings.ToLower(err.Error())
-	switch le.StatusCode() {
-	case 404, 422:
-		return strings.Contains(message, "responses.create") ||
-			strings.Contains(message, "/v1/responses")
-	}
-	return strings.Contains(message, "responses stream closed with no events") ||
-		(strings.Contains(message, "/v1/responses") && strings.Contains(message, "empty stream"))
 }

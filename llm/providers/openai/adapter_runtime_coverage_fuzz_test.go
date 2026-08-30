@@ -271,15 +271,10 @@ func adapterRuntimeExerciseHelpers(t *testing.T) {
 	modelErr := llm.ErrorFromHTTPStatus("openai", http.StatusNotFound, "model unsupported", map[string]any{"error": map[string]any{"code": "unsupported_model"}}, nil)
 	continuationReq := llm.Request{PreviousResponseID: "prev"}
 	if a.shouldFallbackToChatCompletions(continuationReq, modelErr) {
-		t.Fatal("continuation without history eligible")
+		t.Fatal("continuation request eligible for the chat endpoint")
 	}
-	continuationReq.FullHistoryFallbackMessages = []llm.Message{llm.User("hi")}
-	if !a.shouldFallbackToChatCompletions(continuationReq, modelErr) {
-		t.Fatal("model endpoint with history not eligible")
-	}
-	permanent404 := llm.ErrorFromHTTPStatus("openai", http.StatusNotFound, "bad request", map[string]any{}, nil)
-	if a.shouldFallbackToChatCompletions(continuationReq, permanent404) {
-		t.Fatal("permanent continuation error eligible")
+	if !a.shouldFallbackToChatCompletions(llm.Request{}, modelErr) {
+		t.Fatal("model endpoint error without continuation state not eligible")
 	}
 
 	for _, tc := range []struct {
@@ -298,7 +293,7 @@ func adapterRuntimeExerciseHelpers(t *testing.T) {
 		}
 	}
 
-	if got := chatFallbackRequest(llm.Request{Messages: []llm.Message{llm.User("current")}, FullHistoryFallbackMessages: []llm.Message{llm.User("full")}, PreviousResponseID: "p", ConversationID: "c", Continuation: &llm.ContinuationMetadata{}}); got.Messages[0].Text() != "full" || hasResponsesContinuationState(got) {
+	if got := chatFallbackRequest(llm.Request{Messages: []llm.Message{llm.User("current")}, PreviousResponseID: "p", ConversationID: "c", Continuation: &llm.ContinuationMetadata{}}); got.Messages[0].Text() != "current" || hasResponsesContinuationState(got) || got.HistoryMode != llm.HistoryModeFullHistory {
 		t.Fatalf("chat fallback request = %#v", got)
 	}
 

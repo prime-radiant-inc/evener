@@ -131,7 +131,7 @@ func TestFallbackChain_MidChainProviderUnhealthyAbortsWalk(t *testing.T) {
 	}
 	sess := unhealthyChainSession(t, a)
 
-	_, _, _, err := sess.callModelWithFallback(context.Background(), NewOpenAIProfile("primary"), unhealthyChainRequest(), "", 1)
+	_, _, _, err := sess.callModelWithFallback(context.Background(), NewOpenAIProfile("primary"), unhealthyChainRequest(), nil, "", 1)
 
 	if _, ok := errors.AsType[*llm.ProviderUnhealthyError](err); !ok {
 		t.Fatalf("terminal error = %v (%T), want *llm.ProviderUnhealthyError from the fallback-b group", err, err)
@@ -184,7 +184,7 @@ func TestFallbackChain_ResetsAssistantTextBetweenGroups(t *testing.T) {
 	)
 	evs, mu, done := collectEvents(sess)
 
-	_, _, _, err := sess.callModelWithFallback(context.Background(), NewOpenAIProfile("primary"), unhealthyChainRequest(), "", 1)
+	_, _, _, err := sess.callModelWithFallback(context.Background(), NewOpenAIProfile("primary"), unhealthyChainRequest(), nil, "", 1)
 	if err != nil {
 		t.Fatalf("callModelWithFallback: %v, want nil (fallback should succeed)", err)
 	}
@@ -242,7 +242,7 @@ func TestFallbackChain_NoResetWhenNoGroupProducedOutput(t *testing.T) {
 	)
 	evs, mu, done := collectEvents(sess)
 
-	_, _, _, err := sess.callModelWithFallback(context.Background(), NewOpenAIProfile("primary"), unhealthyChainRequest(), "", 1)
+	_, _, _, err := sess.callModelWithFallback(context.Background(), NewOpenAIProfile("primary"), unhealthyChainRequest(), nil, "", 1)
 	if err != nil {
 		t.Fatalf("callModelWithFallback: %v, want nil (fallback should succeed)", err)
 	}
@@ -265,17 +265,15 @@ func TestFallbackChain_NoResetWhenNoGroupProducedOutput(t *testing.T) {
 
 // continuationRecoveryRequest is a Responses-continuation delta request shaped
 // so that shouldRetryResponsesContinuationAsFullHistory's own preconditions
-// (delta mode, an anchor, a stored full-history fallback) all hold — leaving
-// the terminal error as the only thing that decides whether the recovery
-// re-call fires.
+// (delta mode, an anchor) all hold — leaving the terminal error as the only
+// thing that decides whether the recovery re-call fires.
 func continuationRecoveryRequest() llm.Request {
 	return llm.Request{
-		Provider:                    "openai",
-		Model:                       "primary",
-		Messages:                    []llm.Message{llm.User("delta")},
-		HistoryMode:                 llm.HistoryModeResponsesDelta,
-		PreviousResponseID:          "resp_anchor",
-		FullHistoryFallbackMessages: []llm.Message{llm.User("full history")},
+		Provider:           "openai",
+		Model:              "primary",
+		Messages:           []llm.Message{llm.User("delta")},
+		HistoryMode:        llm.HistoryModeResponsesDelta,
+		PreviousResponseID: "resp_anchor",
 	}
 }
 
@@ -307,7 +305,7 @@ func TestContinuationRecovery_SkippedOnProviderUnhealthyVerdict(t *testing.T) {
 	)
 	drainSessionEvents(sess)
 
-	_, _, _, err := sess.callModelWithFallback(context.Background(), NewOpenAIProfile("primary"), continuationRecoveryRequest(), "", 1)
+	_, _, _, err := sess.callModelWithFallback(context.Background(), NewOpenAIProfile("primary"), continuationRecoveryRequest(), []llm.Message{llm.User("full history")}, "", 1)
 
 	if _, ok := errors.AsType[*llm.ProviderUnhealthyError](err); !ok {
 		t.Fatalf("terminal error = %v (%T), want *llm.ProviderUnhealthyError", err, err)

@@ -84,7 +84,6 @@ func FuzzModelCallTailCoverage(f *testing.F) {
 
 		// Each guard in the continuation retry predicate is independently useful:
 		// malformed requests and non-LLM errors must never trigger a replay.
-		base := llm.Request{HistoryMode: llm.HistoryModeResponsesDelta, PreviousResponseID: "resp", FullHistoryFallbackMessages: []llm.Message{llm.User("full")}}
 		cases := []struct {
 			req llm.Request
 			err error
@@ -92,7 +91,6 @@ func FuzzModelCallTailCoverage(f *testing.F) {
 			{llm.Request{}, errors.New("plain")},
 			{llm.Request{HistoryMode: llm.HistoryModeResponsesDelta}, errors.New("plain")},
 			{llm.Request{HistoryMode: llm.HistoryModeResponsesDelta, PreviousResponseID: "resp"}, errors.New("plain")},
-			{base, errors.New("plain")},
 		}
 		for _, tc := range cases {
 			if shouldRetryResponsesContinuationAsFullHistory(tc.req, tc.err) {
@@ -185,7 +183,7 @@ func modelCallTailPlanningCases(t *testing.T) {
 		if mode == 4 {
 			s.cfg.testOnly.responsesContinuationHistoryCurrentFunc = func(responsesContinuationHistoryReservation, []schema.Turn) bool { return false }
 		}
-		out := s.applyResponsesContinuationAnchorPlanning(context.Background(), req, history, false)
+		out, _ := s.applyResponsesContinuationAnchorPlanning(context.Background(), req, history, false)
 		if out.HistoryMode == "" {
 			t.Fatalf("planning mode %d returned empty history mode", mode)
 		}
@@ -194,7 +192,7 @@ func modelCallTailPlanningCases(t *testing.T) {
 	s := modelCallTailSession(t)
 	s.cfg.OpenAIResponsesContinuation = "auto"
 	s.cfg.testOnly.responsesContinuationSupportRegistry = map[llm.ResponsesEndpointFamily]llm.ResponsesContinuationSupport{}
-	if got := s.applyResponsesContinuationAnchorPlanning(context.Background(), req, nil, false); got.HistoryMode != llm.HistoryModeFullHistory {
+	if got, _ := s.applyResponsesContinuationAnchorPlanning(context.Background(), req, nil, false); got.HistoryMode != llm.HistoryModeFullHistory {
 		t.Fatalf("disabled registry mode = %q", got.HistoryMode)
 	}
 }
@@ -232,7 +230,7 @@ func modelCallTailCatalogFallback(t *testing.T, selector byte) {
 	s.cfg.LLMRetryPolicy = &policy
 	s.cfg.ModelFallbacks = []string{"gpt-5.4"}
 	req := llm.Request{Provider: "openai", Model: "missing-primary", Messages: []llm.Message{llm.User("tail")}}
-	_, _, _, _ = s.callModelWithFallback(context.Background(), s.currentProfile(), req, []string{"high", "xhigh"}[int(selector)&1], 1)
+	_, _, _, _ = s.callModelWithFallback(context.Background(), s.currentProfile(), req, nil, []string{"high", "xhigh"}[int(selector)&1], 1)
 }
 
 func modelCallTailSession(t *testing.T) *Session {

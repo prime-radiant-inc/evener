@@ -2903,39 +2903,10 @@ func TestAdapter_Complete_ContinuationRejectionBypassesChatFallback(t *testing.T
 	}
 }
 
-func TestAdapter_Stream_ChatFallbackUsesFullHistoryFallbackMessagesOnImmediateFallback(t *testing.T) {
-	var chatBody map[string]any
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		switch r.URL.Path {
-		case "/v1/responses":
-			w.Header().Set("Content-Type", "application/json")
-			w.WriteHeader(http.StatusNotFound)
-			_, _ = w.Write([]byte(`{"error":{"message":"model not found","code":"model_not_found","type":"invalid_request_error"}}`))
-		case "/v1/chat/completions":
-			if err := json.NewDecoder(r.Body).Decode(&chatBody); err != nil {
-				t.Fatalf("decode chat body: %v", err)
-			}
-			w.Header().Set("Content-Type", "text/event-stream")
-			w.WriteHeader(http.StatusOK)
-			writeChatCompletionsTextStream(t, w, "fallback response")
-		default:
-			w.WriteHeader(http.StatusNotFound)
-		}
-	}))
-	t.Cleanup(srv.Close)
-
-	a := &Adapter{APIKey: "test-key", BaseURL: srv.URL, Client: srv.Client()}
-	stream, err := a.Stream(context.Background(), phase6DeltaRequest())
-	if err != nil {
-		t.Fatalf("Stream: %v", err)
-	}
-	defer stream.Close()
-	drainOpenAIStream(t, stream)
-
-	assertChatFallbackUsedFullHistoryMessages(t, chatBody)
-}
-
-func TestAdapter_Stream_ChatFallbackUsesFullHistoryFallbackMessagesOnEmptyStreamFallback(t *testing.T) {
+// TestAdapter_Stream_ChatFallbackReplaysRequestMessagesOnEmptyStreamFallback
+// pins what the chat endpoint receives now that the full-history sidecar is
+// gone: the request's own messages, minus any continuation handle.
+func TestAdapter_Stream_ChatFallbackReplaysRequestMessagesOnEmptyStreamFallback(t *testing.T) {
 	var chatBody map[string]any
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
@@ -2963,7 +2934,7 @@ func TestAdapter_Stream_ChatFallbackUsesFullHistoryFallbackMessagesOnEmptyStream
 	defer stream.Close()
 	drainOpenAIStream(t, stream)
 
-	assertChatFallbackUsedFullHistoryMessages(t, chatBody)
+	assertChatFallbackReplayedRequestMessages(t, chatBody)
 }
 
 func TestAdapter_ClassifyResponsesError(t *testing.T) {
@@ -3044,7 +3015,12 @@ func TestAdapter_Stream_ContinuationRejectionBypassesChatFallback(t *testing.T) 
 	}
 }
 
-func TestAdapter_Stream_ModelEndpointContinuationFallbackStillUsesChat(t *testing.T) {
+// TestAdapter_Stream_ModelEndpointContinuationBypassesChatFallback pins the
+// flag day: a request carrying continuation state never hands off to Chat
+// Completions, whatever the Responses endpoint said. The delta it sent stands
+// on an anchor the chat endpoint cannot honor, and the full history that would
+// replace it lives in the session's call frame, not on the request.
+func TestAdapter_Stream_ModelEndpointContinuationBypassesChatFallback(t *testing.T) {
 	var chatCalled bool
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
@@ -3065,13 +3041,14 @@ func TestAdapter_Stream_ModelEndpointContinuationFallbackStillUsesChat(t *testin
 
 	a := &Adapter{APIKey: "test-key", BaseURL: srv.URL, Client: srv.Client()}
 	stream, err := a.Stream(context.Background(), phase6DeltaRequest())
-	if err != nil {
-		t.Fatalf("Stream: %v", err)
+	if err == nil {
+		if stream != nil {
+			stream.Close() //nolint:errcheck
+		}
+		t.Fatal("Stream returned nil error for a continuation request the endpoint refused")
 	}
-	defer stream.Close()
-	drainOpenAIStream(t, stream)
-	if !chatCalled {
-		t.Fatal("chat fallback was not called for model endpoint mismatch")
+	if chatCalled {
+		t.Fatal("chat fallback was called for a continuation request")
 	}
 }
 
@@ -3125,12 +3102,6 @@ func phase6DeltaRequest() llm.Request {
 			llm.System("phase6 system"),
 			llm.User("PHASE6_DELTA_ONLY_MARKER"),
 		},
-		FullHistoryFallbackMessages: []llm.Message{
-			llm.System("phase6 system"),
-			llm.User("PHASE6_FULL_HISTORY_MARKER"),
-			llm.Assistant("prior assistant"),
-			llm.User("current user"),
-		},
 	}
 }
 
@@ -3146,7 +3117,7 @@ func openAITestHTTPError(status int, code, message string) error {
 	return llm.ErrorFromHTTPStatus("openai", status, message, raw, nil)
 }
 
-func assertChatFallbackUsedFullHistoryMessages(t *testing.T, chatBody map[string]any) {
+func assertChatFallbackReplayedRequestMessages(t *testing.T, chatBody map[string]any) {
 	t.Helper()
 	if chatBody == nil {
 		t.Fatal("chat fallback body was not captured")
@@ -3156,11 +3127,8 @@ func assertChatFallbackUsedFullHistoryMessages(t *testing.T, chatBody map[string
 		t.Fatalf("marshal chat body: %v", err)
 	}
 	body := string(data)
-	if !strings.Contains(body, "PHASE6_FULL_HISTORY_MARKER") {
-		t.Fatalf("chat body missing full-history marker: %s", body)
-	}
-	if strings.Contains(body, "PHASE6_DELTA_ONLY_MARKER") {
-		t.Fatalf("chat body used delta marker: %s", body)
+	if !strings.Contains(body, "PHASE6_DELTA_ONLY_MARKER") {
+		t.Fatalf("chat body missing the request's own messages: %s", body)
 	}
 	if strings.Contains(body, "previous_response_id") || strings.Contains(body, "resp_phase6_anchor") {
 		t.Fatalf("chat body leaked Responses continuation handle: %s", body)

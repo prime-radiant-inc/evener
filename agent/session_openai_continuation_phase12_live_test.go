@@ -111,18 +111,23 @@ func TestSession_OpenAIResponsesContinuationPhase12PublicLiveProof(t *testing.T)
 	if requestMessagesContainText(deltaReq.Messages, priorMarker) {
 		t.Fatalf("delta request messages include prior marker: %+v", deltaReq.Messages)
 	}
-	if !requestMessagesContainText(deltaReq.FullHistoryFallbackMessages, priorMarker) ||
-		!requestMessagesContainText(deltaReq.FullHistoryFallbackMessages, currentMarker) {
-		t.Fatalf("delta FullHistoryFallbackMessages missing proof markers: %+v", deltaReq.FullHistoryFallbackMessages)
+
+	// The full-history twin the delta was cut from: the session keeps it in
+	// its own call frame, never on the request, so rebuild it here from the
+	// history as it stood when the delta round was planned — the delta's own
+	// system prefix plus every turn up to the last user input.
+	fullHistory := responsesContinuationDeltaMessages(deltaReq.Messages, phase12HistoryThroughLastUserInput(sess.history))
+	if !requestMessagesContainText(fullHistory, priorMarker) ||
+		!requestMessagesContainText(fullHistory, currentMarker) {
+		t.Fatalf("rebuilt full history missing proof markers: %+v", fullHistory)
 	}
 
 	store := true
 	shadowReq := deltaReq
-	shadowReq.Messages = append([]llm.Message(nil), deltaReq.FullHistoryFallbackMessages...)
+	shadowReq.Messages = fullHistory
 	shadowReq.PreviousResponseID = ""
 	shadowReq.HistoryMode = llm.HistoryModeFullHistory
 	shadowReq.Continuation = nil
-	shadowReq.FullHistoryFallbackMessages = nil
 	shadowReq.Store = &store
 	shadowReq.ContinuationDiagnostic = "phase12_full_history_shadow"
 	shadowSessionID := "phase12-shadow-" + runID
@@ -287,10 +292,21 @@ func (a *phase12PublicOpenAIAdapter) requestSummaries() []string {
 	return summaries
 }
 
+// phase12HistoryThroughLastUserInput is the session history as it stood when
+// the delta round was planned: everything up to and including the newest user
+// input, without the assistant turn that round produced.
+func phase12HistoryThroughLastUserInput(history []schema.Turn) []schema.Turn {
+	for i := range slices.Backward(history) {
+		if history[i].Kind == schema.TurnUserInput {
+			return history[:i+1]
+		}
+	}
+	return history
+}
+
 func phase12CloneRequest(req llm.Request) llm.Request {
 	out := req
 	out.Messages = append([]llm.Message(nil), req.Messages...)
-	out.FullHistoryFallbackMessages = append([]llm.Message(nil), req.FullHistoryFallbackMessages...)
 	if req.Store != nil {
 		store := *req.Store
 		out.Store = &store

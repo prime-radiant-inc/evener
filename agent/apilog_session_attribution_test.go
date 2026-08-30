@@ -202,7 +202,7 @@ func TestSessionSettlesProviderResolutionFailureBeforeTransport(t *testing.T) {
 		Provider: "openai",
 		Model:    "model-a",
 		Messages: []llm.Message{llm.User("hello")},
-	}, "", 1)
+	}, nil, "", 1)
 	if callErr == nil {
 		t.Fatal("callModelWithFallback succeeded without a registered provider")
 	}

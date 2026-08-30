@@ -14,7 +14,6 @@ func TestErrorClassStringExhaustive(t *testing.T) {
 	}{
 		{ErrorClassRetryable, "retryable"},
 		{ErrorClassPermanent, "permanent"},
-		{ErrorClassFallback, "fallback"},
 		{ErrorClass(99), "unknown"},
 	}
 	for _, tt := range tests {
