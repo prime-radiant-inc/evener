@@ -36,12 +36,3 @@ func TestMergeHeaders_CaseInsensitiveCollision(t *testing.T) {
 		t.Errorf("MergeHeaders = %#v, want %#v (single canonical key, override wins)", got, want)
 	}
 }
-
-type capturedProviderHeaders struct {
-	ordinary   map[string]string
-	credential map[string]string
-}
-
-// captureHeadersFactory swaps the instance factory registry for one that records
-// both header classes each instance was constructed with, so runtime resolution
-// and separation at the newFromProviders choke point are observable.

@@ -53,10 +53,7 @@ func applyLiveRegistry(t *testing.T, protocolID string) *registry.Registry {
 // own — and it keeps the assertion off the shared EmbeddedRegistry, which a
 // test must not mutate.
 func TestModelsAppliesLiveListingOnlyToARegistryTheClientOwns(t *testing.T) {
-	RegisterProtocol(listingProtocol{
-		stubProtocol: stubProtocol{id: "test-proto-applylive"},
-		rows:         []registry.Model{{ID: "live-only-model"}},
-	})
+	RegisterProtocol(listingProtocol{stubProtocol{id: "test-proto-applylive"}, []registry.Model{{ID: "live-only-model"}}})
 
 	t.Run("owned registry takes the listing", func(t *testing.T) {
 		r := applyLiveRegistry(t, "test-proto-applylive")

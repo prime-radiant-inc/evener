@@ -499,14 +499,6 @@ func (a *initializableFakeAdapter) Initialize(ctx context.Context) error {
 	return nil
 }
 
-type toolChoiceFakeAdapter struct {
-	fakeAdapter
-}
-
-func (a *toolChoiceFakeAdapter) SupportsToolChoice(mode string) bool {
-	return mode == "auto" || mode == "required"
-}
-
 func TestClient_Close_CallsClosableAdapters(t *testing.T) {
 	c := NewClient()
 	closable := &closableFakeAdapter{name: "closable"}

@@ -105,29 +105,6 @@ func TestCovBeginAPIAttemptGroupScopeOwnedSettleResult(t *testing.T) {
 	}
 }
 
-// modelValidatorAdapter is a fake adapter that implements
-// ModelCompatibilityValidator.
-type modelValidatorAdapter struct {
-	name            string
-	validateErr     error
-	validatedModels []string
-}
-
-func (a *modelValidatorAdapter) Name() string { return a.name }
-func (a *modelValidatorAdapter) Complete(_ context.Context, _ Request) (Response, error) {
-	return Response{}, nil
-}
-func (a *modelValidatorAdapter) Stream(_ context.Context, _ Request) (Stream, error) {
-	return nil, nil
-}
-func (a *modelValidatorAdapter) ValidateModel(model string) error {
-	a.validatedModels = append(a.validatedModels, model)
-	return a.validateErr
-}
-
-// sinkMiddleware wraps a recordingAPIAttemptSink as a Middleware so it can be
-// registered via Client.Use and discovered by beginProviderOperation as an
-// APIAttemptSink.
 type sinkMiddleware struct {
 	sink *recordingAPIAttemptSink
 }

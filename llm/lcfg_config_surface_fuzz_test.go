@@ -196,33 +196,6 @@ func lcfgKnownKind(k ErrorKind) bool {
 	}
 }
 
-// lcfgEnvFactoryPlan is the JSON-decodable recipe for a fuzzed set of env
-// adapter factories: each rune maps to a factory behavior.
-type lcfgEnvFactoryPlan struct {
-	// Kinds is a string where each byte selects a factory behavior:
-	//   'o' -> configured, returns an adapter
-	//   'n' -> not configured (ok=false)
-	//   'e' -> returns an error
-	Kinds    string `json:"kinds"`
-	StateDir string `json:"state_dir"`
-}
-
-// Fuzz_lcfg_ContinuationSecret drives LoadOrCreateContinuationSecret over a
-// sandboxed temp dir, exercising the create, re-read (idempotent), empty-dir,
-// mkdir-failure, and corrupt-file (bad mode / bad length) branches. It also
-// checks that a hasher keyed from the loaded secret is deterministic.
-//
-// NB: LoadOrCreateContinuationSecret uses the os package directly (not afero),
-// so the sandbox is t.TempDir(); the fuzzed path component is sanitized so it
-// can never escape the temp root.
-//
-// Oracles:
-//   - never panics;
-//   - idempotent: two loads of the same valid state dir return byte-identical
-//     32-byte secrets;
-//   - empty state dir always errors with ErrContinuationSecretUnavailable;
-//   - a corrupt secret file (wrong mode or wrong length) always errors;
-//   - a hasher built from the secret is deterministic across two derivations.
 func Fuzz_lcfg_ContinuationSecret(f *testing.F) {
 	f.Add(uint8(0), "sub", []byte("seed"))
 	f.Add(uint8(1), "", []byte(""))

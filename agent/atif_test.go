@@ -115,14 +115,6 @@ func TestSession_ExcludesConfiguredCredentialFromResponseEndpointArtifacts(t *te
 	}
 }
 
-type completeOnlyEndpointAdapter struct {
-	llm.ProviderAdapter
-}
-
-func (completeOnlyEndpointAdapter) Stream(context.Context, llm.Request) (llm.Stream, error) {
-	return nil, llm.ErrStreamUnsupported
-}
-
 func TestExportATIF_ExcludesCredentialBearingResponseEndpoint(t *testing.T) {
 	dir := t.TempDir()
 	transcriptPath := filepath.Join(dir, "sessions", "test-sess.transcript.jsonl")
