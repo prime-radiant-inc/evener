@@ -144,8 +144,7 @@ describe("the meta table", () => {
   });
 
   // protocol has no omitempty on the wire, so the API row always has
-  // something to show - unlike the retired apiStyle, which was blank for
-  // every non-openai instance.
+  // something to show.
   test("the API row shows the protocol alone when no base URL is set", () => {
     renderSheet(
       instance({ name: "a", providerId: "x", protocol: "openai-chat", hasStoredFile: true, activeSource: "store" }),

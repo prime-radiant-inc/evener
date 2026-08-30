@@ -6,6 +6,7 @@ import {
   credentialLayers,
   groupByProvider,
   keylessByDesign,
+  styleInfoText,
   unconfiguredLabel,
 } from "./credentialLabels";
 
@@ -98,6 +99,18 @@ describe("activeSourceLabel", () => {
 
   test("falls back to the raw value for an unrecognized activeSource", () => {
     expect(activeSourceLabel(instance({ name: "a", providerId: "x", activeSource: "mystery" }))).toBe("mystery");
+  });
+});
+
+describe("styleInfoText", () => {
+  test("protocol and base URL when the instance carries one", () => {
+    expect(
+      styleInfoText(instance({ name: "a", providerId: "openai", protocol: "openai-responses", baseUrl: "https://x" })),
+    ).toBe("openai-responses · base https://x");
+  });
+
+  test("protocol alone when no base URL is set", () => {
+    expect(styleInfoText(instance({ name: "a", providerId: "openai", protocol: "openai-chat" }))).toBe("openai-chat");
   });
 });
 

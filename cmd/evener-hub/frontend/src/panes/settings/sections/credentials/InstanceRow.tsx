@@ -9,7 +9,7 @@
 import type { InstanceEntry } from "../../../../protocol/types.gen";
 import { Chevron, Chip, StatusDot } from "../../../../widgets";
 import { requireClass } from "../../../../widgets/internal/requireClass";
-import { credentialLayers, keylessByDesign, unconfiguredLabel } from "./credentialLabels";
+import { credentialLayers, keylessByDesign, styleInfoText, unconfiguredLabel } from "./credentialLabels";
 import styles from "./InstanceRow.module.css";
 
 const CLASS = {
@@ -20,13 +20,6 @@ const CLASS = {
   meta: requireClass(styles.meta, "InstanceRow.module.css", "meta"),
   chevron: requireClass(styles.chevron, "InstanceRow.module.css", "chevron"),
 };
-
-// styleInfoText: protocol is always present (InstanceEntry.protocol has no
-// omitempty), so this always has something to show - unlike the retired
-// apiStyle, which was blank for every non-openai instance.
-function styleInfoText(instance: InstanceEntry): string {
-  return instance.baseUrl ? `${instance.protocol} · base ${instance.baseUrl}` : instance.protocol;
-}
 
 // The one meta line: the unconfigured label is the more important signal and
 // leads; style info (a gateway's base URL is the interesting part of "No key

@@ -13,7 +13,7 @@
 // editor, a confirm dialog, or calling the store), same division of labor
 // as the old InstanceRow.
 import { useEffect } from "react";
-import type { AuthTestResponse, InstanceEntry } from "../../../../protocol/types.gen";
+import type { AuthTestResponse } from "../../../../protocol/types.gen";
 import { useIsMobile } from "../../../../shell/useIsMobile";
 import { useCredentialsStore } from "../../../../stores/credentials";
 import { Button, Chip, Sheet, StatusDot } from "../../../../widgets";
@@ -23,6 +23,7 @@ import {
   keylessByDesign,
   safeCredentialTestMessage,
   safeCredentialTestResult,
+  styleInfoText,
   unconfiguredLabel,
 } from "./credentialLabels";
 import styles from "./InstanceDetailSheet.module.css";
@@ -60,13 +61,6 @@ export interface InstanceDetailSheetProps {
    * in/Clear/Test credentials are unaffected: they write the credentials
    * store or an OAuth record, never providers.toml. */
   writesRefused?: boolean;
-}
-
-// styleInfoText: protocol is always present (InstanceEntry.protocol has no
-// omitempty), so the API row always has something to show - unlike the
-// retired apiStyle, which was blank for every non-openai instance.
-function styleInfoText(instance: InstanceEntry): string {
-  return instance.baseUrl ? `${instance.protocol} · base ${instance.baseUrl}` : instance.protocol;
 }
 
 export function InstanceDetailSheet({

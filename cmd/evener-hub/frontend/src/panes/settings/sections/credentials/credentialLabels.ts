@@ -86,6 +86,12 @@ export function unconfiguredLabel(instance: InstanceEntry): string | null {
   return instance.activeSource === "none" ? activeSourceLabel(instance) : null;
 }
 
+// styleInfoText is an instance's endpoint in one line: protocol has no
+// omitempty on the wire, so there is always something to show.
+export function styleInfoText(instance: InstanceEntry): string {
+  return instance.baseUrl ? `${instance.protocol} · base ${instance.baseUrl}` : instance.protocol;
+}
+
 export interface InstanceProviderGroup {
   providerId: string;
   instances: InstanceEntry[];
