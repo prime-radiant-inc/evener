@@ -7,6 +7,7 @@ import (
 	"primeradiant.com/evener/agent/internal/tool"
 	"primeradiant.com/evener/llm"
 	"primeradiant.com/evener/llm/providercfg"
+	"primeradiant.com/evener/llm/registry"
 )
 
 // catalogModelFor returns the catalog entry for model, or nil when the
@@ -339,6 +340,49 @@ func (p *Profile) ID() string { return p.id }
 // is preserved across WithModel and WithProviderID calls so code that
 // keys on provider-specific behavior can use the tag instead of the id.
 func (p *Profile) BehaviorTag() string { return p.behaviorTag }
+
+// Surface, Protocol, and ProviderID derive the registry vocabulary from the
+// behavior tag so the tag-keyed agent branches can move first (spec §7.5);
+// the registry-backed Profile returns them from Resolved and deletes this
+// table together with the behavior tag.
+func (p *Profile) Surface() string {
+	switch p.behaviorTag {
+	case "openai":
+		return registry.SurfaceOpenAI
+	case "anthropic", "minimax", "kimi-anthropic", "openrouter-anthropic":
+		return registry.SurfaceAnthropic
+	case "google":
+		return registry.SurfaceGoogle
+	default:
+		return registry.SurfaceGeneric
+	}
+}
+
+// Protocol is the wire protocol the profile's instance speaks.
+func (p *Profile) Protocol() string {
+	switch p.behaviorTag {
+	case "openai":
+		return registry.ProtocolOpenAIResponses
+	case "anthropic", "minimax", "kimi-anthropic", "openrouter-anthropic":
+		return registry.ProtocolAnthropic
+	case "google":
+		return registry.ProtocolGoogle
+	default:
+		return registry.ProtocolOpenAIChat
+	}
+}
+
+// ProviderID is the registry provider id behind the instance.
+func (p *Profile) ProviderID() string {
+	switch p.behaviorTag {
+	case "kimi-anthropic":
+		return "kimi-for-coding"
+	case "openrouter-anthropic":
+		return "openrouter"
+	default:
+		return p.behaviorTag
+	}
+}
 
 // Model returns the model name this profile drives.
 func (p *Profile) Model() string { return p.model }
