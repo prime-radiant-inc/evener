@@ -63,7 +63,7 @@ check exists to cover them:**
   signature hashes a call's whole arguments payload
   (`toolCallSignature`/`shortHash`), so a tool whose arguments carry a
   free-text field the model varies each call (e.g. a browser tool's
-  `purpose` rationale string) never repeats the same hash twice, even when
+  `intent` rationale string) never repeats the same hash twice, even when
   every other argument and the underlying action are identical. A ~300-call
   MCP tool loop measured `longest_identical_run.length` at 10, not 300,
   purely from this fragmentation — the run was real, the metric just

@@ -444,7 +444,7 @@ export function ToolRow({
           ) : null}
         </span>
       )}
-      {/* Rows with no intent trail the control at the summary line's end. A
+      {/* Rows with no intent trail the control at the summary line's end. An
           intent-only row never reaches this fallback: its control rides the
           disclosure line via intentLineTrailing (the summaryLine div below
           only mounts when there is no such slot). */}
