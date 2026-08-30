@@ -11,7 +11,7 @@ import (
 )
 
 func (p *Protocol) call(operation, method, url string, body map[string]any, req llm.Request, res registry.Resolved) *protocolhttp.Call {
-	return &protocolhttp.Call{Operation: operation, EndpointFamily: string(EndpointFamily(res)), Method: method, URL: url, Body: body, Req: req, Res: res, Client: p.Client}
+	return &protocolhttp.Call{Operation: operation, EndpointFamily: string(llm.ResponsesEndpointFamilyFor(res)), Method: method, URL: url, Body: body, Req: req, Res: res, Client: p.Client}
 }
 
 // Complete implements llm.Protocol. Transports that answer only streams
