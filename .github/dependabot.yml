@@ -8,6 +8,10 @@ updates:
   # Go modules are deliberately absent: this repo is a go.work workspace
   # whose modules live under the internal vanity path primeradiant.com/evener,
   # which is not a fetchable module host. Dependabot's gomod updater resolves
-  # each go.mod without workspace context and 404s on the sibling imports
-  # (#289). Go dependency bumps are a reviewed, manual affair — as are the
-  # frontend's npm bumps (owner ruling, 2026-08-19).
+  # each go.mod without workspace context, so the sibling-importing modules
+  # (/, /agent, /auth, /llm) 404 on their primeradiant.com/evener/* requires
+  # (#289); the leaf modules (envvars, invariant, identifier, fuzz) resolve
+  # fine alone but are removed too, for one uniform manual cadence. Go
+  # dependency bumps are a reviewed, manual affair — see #614 for the manual
+  # review owner/cadence decision. npm: owner ruling 2026-08-19; Go: triage
+  # #289, 2026-08-29.
