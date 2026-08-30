@@ -1574,31 +1574,31 @@ func (s *Server) handleAppThreadClear(ctx context.Context, params appwire.Thread
 	// A new reservation supersedes every older record for the same stable ref:
 	// the instance those records expected (or installed) is being replaced, so
 	// none of them can be a live client's retry anymore. This bounds the
-	// journal at one record per ref instead of one per clear, forever.
-	superseded := make(map[string]threadClearRecord)
+	// journal at one record per ref instead of one per clear, forever. The two
+	// snapshots make each rollback below a wholesale restore; only this
+	// handler mutates clearRecords, and appMutationGate serializes it.
+	beforeReservation := maps.Clone(s.clearRecords)
 	for id, existing := range s.clearRecords {
 		if existing.Ref == params.Ref {
-			superseded[id] = existing
 			delete(s.clearRecords, id)
 		}
 	}
 	s.clearRecords[params.ClientMutationID] = record
 	if err := persistThreadClearJournal(s.clearJournalPath, s.clearRecords); err != nil {
-		delete(s.clearRecords, params.ClientMutationID)
-		maps.Copy(s.clearRecords, superseded)
+		s.clearRecords = beforeReservation
 		s.mu.Unlock()
 		return appwire.ThreadClearResponse{}, appwire.MutationUnknown(params.ClientMutationID, "thread clear reservation could not be persisted")
 	}
+	reserved := maps.Clone(s.clearRecords)
 	s.mu.Unlock()
 
 	if err := fn(ctx, params); err != nil {
 		s.mu.Lock()
-		reservedRecord := s.clearRecords[params.ClientMutationID]
-		delete(s.clearRecords, params.ClientMutationID)
 		// The failed clear installed nothing, so the records its reservation
-		// superseded describe the still-current instance: restore them so an
-		// older receipt's replay survives a failed newer clear.
-		maps.Copy(s.clearRecords, superseded)
+		// superseded describe the still-current instance: restoring the
+		// pre-reservation journal keeps an older receipt's replay alive after
+		// a failed newer clear.
+		s.clearRecords = beforeReservation
 		persistErr := persistThreadClearJournal(s.clearJournalPath, s.clearRecords)
 		if persistErr != nil {
 			// Roll memory back to the journal the reservation persisted. Disk
@@ -1607,10 +1607,7 @@ func (s *Server) handleAppThreadClear(ctx context.Context, params appwire.Thread
 			// the whole file from memory, so the next successful one resyncs
 			// disk, and a retry that re-invokes the callback re-runs work that
 			// failed without installing anything.
-			for id := range superseded {
-				delete(s.clearRecords, id)
-			}
-			s.clearRecords[params.ClientMutationID] = reservedRecord
+			s.clearRecords = reserved
 		}
 		s.mu.Unlock()
 		if persistErr != nil {
