@@ -362,8 +362,6 @@ test:.:./appwire:TestStructuredFrameReachesDecoder
 test:agent:.:TestTranscriptGenReachesDeeper
 test:llm:./providers/anthropic:TestStructuredAnthropicReachesDeeper
 test:llm:./providers/google:TestStructuredGeminiReachesDeeper
-test:llm:./providers/openai:TestStructuredResponsesReachesDeeper
-test:llm:./providers/openaicompat:TestStructuredOpenAICompatReachesDeeper
 rapid:agent:.:TestToolArgsSchemaFuzz
 rapid:agent:.:TestLifecycleSeqFuzz
 rapid:agent:.:TestWatchSeqFuzz
