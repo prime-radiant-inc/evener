@@ -154,3 +154,28 @@ test("switching segments while the detail sheet is open closes it", async () => 
   await user.click(screen.getByRole("radio", { name: "Browse" }));
   await waitFor(() => expect(screen.queryByRole("dialog", { name: "linter" })).toBeNull());
 });
+
+test("Browse tree expansion survives a segment round trip (Installed → Browse → Installed → Browse)", async () => {
+  const user = userEvent.setup();
+  const fake = connectSeededClient();
+  fake.on("evener/marketplace/browse", () => ({
+    name: "acme-plugins",
+    description: "Acme plugins catalog",
+    plugins: [{ name: "formatter", description: "A formatter" }],
+  }));
+  render(<MarketplacesPluginsSection />);
+  await screen.findByText("linter");
+
+  // Switch to Browse and expand the marketplace tree
+  await user.click(screen.getByRole("radio", { name: "Browse" }));
+  await user.click(await screen.findByRole("button", { name: /acme-plugins/ }));
+  await waitFor(() => expect(screen.getByText("formatter")).toBeTruthy());
+
+  // Switch to Installed and back to Browse
+  await user.click(screen.getByRole("radio", { name: /Installed/ }));
+  await screen.findByText("linter");
+  await user.click(screen.getByRole("radio", { name: "Browse" }));
+
+  // The tree should still be expanded — formatter should be visible without re-expanding
+  await waitFor(() => expect(screen.getByText("formatter")).toBeTruthy());
+});

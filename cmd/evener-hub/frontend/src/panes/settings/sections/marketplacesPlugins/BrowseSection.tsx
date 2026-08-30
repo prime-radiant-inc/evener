@@ -3,7 +3,7 @@
 // (marketplacesPlugins/index.tsx) - see MarketplacesSection's own comment
 // for why (its Refresh action needs to read this component's expansion
 // state).
-import { type Dispatch, type SetStateAction, useEffect, useState } from "react";
+import { type Dispatch, type SetStateAction, useEffect, useRef, useState } from "react";
 import { errorText } from "../../../../protocol/errors";
 import type { MarketplaceCatalogPlugin, MarketplaceEntry } from "../../../../protocol/types.gen";
 import { extensionsStore, type MarketplaceCatalogEntry, useExtensionsStore } from "../../../../stores/extensions";
@@ -60,12 +60,16 @@ export function BrowseSection({ expandedMarketplaces, setExpandedMarketplaces }:
   // last keystroke, first lazily loads every not-yet-cached marketplace's
   // catalog (filterLoading shows "Loading marketplaces…" tree-wide meanwhile
   // - see the render below), then auto-expands every marketplace with a
-  // match and collapses the rest.
+  // match and collapses the rest. The empty-query collapse is skipped on
+  // the initial mount so lifted expansion state (from a prior Browse visit)
+  // survives the segment round trip instead of being clobbered.
+  const filterTouched = useRef(false);
   useEffect(() => {
     if (trimmedQuery === "") {
-      setExpandedMarketplaces(new Set());
+      if (filterTouched.current) setExpandedMarketplaces(new Set());
       return;
     }
+    filterTouched.current = true;
     let cancelled = false;
     const timer = setTimeout(() => {
       void (async () => {
