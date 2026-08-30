@@ -188,6 +188,7 @@ native:.:./server:FuzzAppTurnsFromNotifications
 native:.:./internal/appserver:FuzzHandleMessage
 native:.:./internal/appprojector:FuzzProject
 native:.:./internal/apptranscript:FuzzProjectTurn
+native:.:./internal/apptranscript:FuzzDerivedTotalsMatchesIndividualScans
 native:.:./cmd/evener-hub/internal/appsource:FuzzMapCodexTurn
 native:.:./cmd/evener-hub/internal/appsource:FuzzAppSourceProgram
 native:.:./cmd/evener-hub/internal/codexlaunch:FuzzParseCodexEndpoint

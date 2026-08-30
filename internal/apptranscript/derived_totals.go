@@ -49,13 +49,7 @@ func (c *TurnCache) DerivedTotalsFromFile(path string, maxLineBytes int, fromEnt
 	if err != nil {
 		return nil, 0, fmt.Errorf("stat transcript: %w", err)
 	}
-	identity := derivedTotalsKey{
-		size:           info.Size(),
-		modUnixNano:    info.ModTime().UnixNano(),
-		fileIdentity:   fileIdentity(info),
-		changeIdentity: fileChangeIdentity(info),
-		fromOrdinal:    fromEntryOrdinal,
-	}
+	identity := scanMemoIdentity(info, fromEntryOrdinal)
 
 	c.mu.Lock()
 	if entry, ok := c.entries[path]; ok && entry.derivedTotals != nil && entry.derivedTotals.key == identity {
@@ -113,16 +107,7 @@ func scanDerivedTotals(path string, maxLineBytes int, fromEntryOrdinal int) (der
 			accumulated = accumulated.Add(record.Turn.Usage)
 			counted = true
 		}
-		for _, part := range record.Turn.Message.Content {
-			switch {
-			case part.ToolCall != nil && part.Kind == llm.ContentToolCall:
-				toolNames[part.ToolCall.ID] = part.ToolCall.Name
-			case part.ToolResult != nil && part.Kind == llm.ContentToolResult:
-				if counting && failedToolResult(part.ToolResult, toolNames) {
-					totals.failedToolCall++
-				}
-			}
-		}
+		totals.failedToolCall += tallyFailedToolCalls(record.Turn.Message.Content, counting, toolNames)
 		return nil
 	}); err != nil {
 		return derivedTotals{}, err
@@ -136,39 +121,19 @@ func scanDerivedTotals(path string, maxLineBytes int, fromEntryOrdinal int) (der
 }
 
 // derivedTotalsEntry decodes the few fields both figures need: the usage block
-// for the token sum, and the tool calls/results for the failure count.
+// for the token sum (usageOnlyEntry's field), and the tool calls/results for
+// the failure count (failedToolCallEntry's shared toolScanMessage).
 // scanSemanticTranscript has already validated the full record, so this
 // narrow view can ignore the rest rather than paying to decode whole message
 // bodies (including inline image bytes) per line.
 type derivedTotalsEntry struct {
 	Turn struct {
-		Usage   llm.Usage `json:"usage"`
-		Message struct {
-			Content []struct {
-				Kind     llm.ContentKind `json:"kind"`
-				ToolCall *struct {
-					ID   string `json:"id"`
-					Name string `json:"name"`
-				} `json:"tool_call"`
-				ToolResult *failedToolCallResult `json:"tool_result"`
-			} `json:"content"`
-		} `json:"message"`
+		Usage   llm.Usage       `json:"usage"`
+		Message toolScanMessage `json:"message"`
 	} `json:"turn"`
 }
 
-// derivedTotalsKey is the file identity a memoized combined scan is valid for.
-// It mirrors usageTotalKey and failedToolCallsKey exactly (object identity,
-// size, mtime as nanos, platform change time, divergence ordinal) so the
-// combined memo can never outlive the two it consolidates.
-type derivedTotalsKey struct {
-	size           int64
-	modUnixNano    int64
-	fileIdentity   string
-	changeIdentity string
-	fromOrdinal    int
-}
-
 type derivedTotalsMemo struct {
-	key    derivedTotalsKey
+	key    scanMemoKey
 	totals derivedTotals
 }
