@@ -153,10 +153,11 @@ func buildLaunchOptionSchema() []LaunchOption {
 
 func reasoningChoices() []LaunchOptionChoice {
 	// In layered launch config, "" ("(default)") means "no override → inherit the
-	// global/project default", whereas "none" overrides it to empty — the only
-	// way to CLEAR an inherited high/max from the launch UI. So both are kept and
-	// are genuinely distinct here (unlike the flat runtime path).
-	return []LaunchOptionChoice{{Value: "", Label: "(default)"}, {Value: "minimal", Label: "minimal"}, {Value: "low", Label: "low"}, {Value: "medium", Label: "medium"}, {Value: "high", Label: "high"}, {Value: "xhigh", Label: "xhigh"}, {Value: "max", Label: "max"}, {Value: "none", Label: "none (clear)"}}
+	// global/project default", whereas "none" overrides an inherited level and
+	// reaches the daemon as an explicit off (thinking disabled where the model
+	// allows it, the field omitted otherwise). So both are kept and are
+	// genuinely distinct here.
+	return []LaunchOptionChoice{{Value: "", Label: "(default)"}, {Value: "minimal", Label: "minimal"}, {Value: "low", Label: "low"}, {Value: "medium", Label: "medium"}, {Value: "high", Label: "high"}, {Value: "xhigh", Label: "xhigh"}, {Value: "max", Label: "max"}, {Value: "none", Label: "none (off)"}}
 }
 
 func contextChoices() []LaunchOptionChoice {
