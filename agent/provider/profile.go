@@ -341,10 +341,11 @@ func (p *Profile) ID() string { return p.id }
 // keys on provider-specific behavior can use the tag instead of the id.
 func (p *Profile) BehaviorTag() string { return p.behaviorTag }
 
-// Surface, Protocol, and ProviderID derive the registry vocabulary from the
-// behavior tag so the tag-keyed agent branches can move first (spec §7.5);
-// the registry-backed Profile returns them from Resolved and deletes this
-// table together with the behavior tag.
+// Surface is the agent-facing vendor family the model was trained for. It,
+// Protocol, and ProviderID derive the registry vocabulary from the behavior
+// tag so the tag-keyed agent branches can move first (spec §7.5); the
+// registry-backed Profile returns them from Resolved and deletes this table
+// together with the behavior tag.
 func (p *Profile) Surface() string {
 	switch p.behaviorTag {
 	case "openai":

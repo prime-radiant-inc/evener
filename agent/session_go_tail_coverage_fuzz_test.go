@@ -121,7 +121,7 @@ func FuzzSessionGoTailCoverage(f *testing.F) {
 				client:     client,
 				httpClient: nil,
 			}
-			s.reapplyProviderSpecificTools("openai", "google")
+			s.reapplyProviderSpecificTools(NewOpenAIProfile("gpt-5"), newGeminiProfile("gemini"))
 			web := s.reg.Get("web_search")
 			if web == nil {
 				t.Fatal("google transition did not register web_search")
@@ -147,7 +147,7 @@ func FuzzSessionGoTailCoverage(f *testing.F) {
 			if err == nil {
 				t.Fatal("network-off web_search unexpectedly succeeded")
 			}
-			s.reapplyProviderSpecificTools("google", "openai")
+			s.reapplyProviderSpecificTools(newGeminiProfile("gemini"), NewOpenAIProfile("gpt-5"))
 			if s.reg.Get("web_search") != nil {
 				t.Fatal("leaving google retained web_search")
 			}
@@ -192,7 +192,7 @@ func FuzzSessionGoTailCoverage(f *testing.F) {
 		t.Run("rename and metadata defensive branches", func(t *testing.T) {
 			s := &Session{profile: NewOpenAIProfile("gpt-5")}
 			s.Rename("   ")
-			s.applyModelRequestMetadata(s.profile, nil)
+			s.applyModelRequestMetadata(nil)
 		})
 
 		t.Run("transcript warning branches", func(t *testing.T) {
