@@ -446,27 +446,26 @@ func standaloneRows(instance string, rows []registry.Model) []registry.Resolved 
 	return out
 }
 
-// PlanResponsesContinuation returns the Responses-API continuation plan for
-// req's provider, or an error when no provider can serve the request.
+// PlanResponsesContinuation returns the continuation plan for req's
+// instance (spec §7.6): an override's own planner when one is registered
+// under the name, else the plan computed from Resolved and the built body.
 func (c *Client) PlanResponsesContinuation(ctx context.Context, req Request) (ResponsesContinuationPlan, error) {
-	_ = ctx
-	prov := normalizeProviderName(req.Provider)
-	if prov == "" {
-		prov = c.DefaultProvider()
+	t, err := c.dispatchTarget(req)
+	if err != nil {
+		return ResponsesContinuationPlan{}, err
 	}
-	if prov == "" {
-		return ResponsesContinuationPlan{}, &ConfigurationError{Message: "no provider specified and no default provider configured"}
+	req.Provider = t.name
+	if t.resolved {
+		req = ShapeRequest(req, t.res)
 	}
-	adapter, ok := c.overrides[prov]
-	if !ok {
-		return ResponsesContinuationPlan{}, &ConfigurationError{Message: "unknown provider: " + prov}
+	if t.override != nil {
+		planner, ok := t.override.(ResponsesContinuationPlanner)
+		if !ok {
+			return ResponsesContinuationPlan{}, &ConfigurationError{Message: "provider does not support responses continuation planning: " + t.name}
+		}
+		return planner.PlanResponsesContinuation(req)
 	}
-	planner, ok := adapter.(ResponsesContinuationPlanner)
-	if !ok {
-		return ResponsesContinuationPlan{}, &ConfigurationError{Message: "provider does not support responses continuation planning: " + prov}
-	}
-	req.Provider = prov
-	return planner.PlanResponsesContinuation(req)
+	return c.planContinuation(ctx, req, t.res, t.protocol)
 }
 
 // Use appends middleware to the client. Middleware is applied in registration order

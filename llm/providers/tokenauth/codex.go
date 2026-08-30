@@ -78,7 +78,21 @@ func (c *Codex) Apply(ctx context.Context, req *http.Request, res registry.Resol
 	return nil
 }
 
-// notSignedIn reports that Apply has no oauth-sourced credential to send,
+// AuthScope implements llm.AuthScopeProvider: the account and workspace
+// claims of the instance's OAuth record, which the continuation storage
+// scope hashes (spec §7.6).
+func (c *Codex) AuthScope(_ context.Context, res registry.Resolved) (string, string, error) {
+	if res.Credential.Source != "oauth" {
+		return "", "", notSignedIn(res.Instance)
+	}
+	record, err := authopenai.LoadAuth(c.stateDir(), res.Instance)
+	if err != nil {
+		return "", "", err
+	}
+	return record.AccountID, record.WorkspaceID, nil
+}
+
+// notSignedIn reports that there is no oauth-sourced credential to use,
 // whether because the registry's own gate failed or because c.credentials
 // resolved something else (spec §9.5's flag day: never OPENAI_API_KEY).
 func notSignedIn(instance string) error {
