@@ -3,6 +3,7 @@ package server
 import (
 	"context"
 	"errors"
+	"os"
 	"sync"
 	"testing"
 	"time"
@@ -339,5 +340,123 @@ func TestServerRejectsOldInstanceTurnMutationsAfterClear(t *testing.T) {
 				t.Fatalf("old-generation mutation callback calls = %d, want 0", calls)
 			}
 		})
+	}
+}
+
+// TestServerAppWireThreadClearFailureReleasesGateAndReservation covers the half
+// of the clear fence a success path cannot: a clear whose replacement callback
+// fails must hand back both the mutation gate and its journal reservation, or
+// one transient failure turns into a clear that is refused forever.
+func TestServerAppWireThreadClearFailureReleasesGateAndReservation(t *testing.T) {
+	stateDir := t.TempDir()
+	srv := NewServer(ServerConfig{StateDir: stateDir})
+	srv.SetAppIdentity("local", "old")
+	srv.SetClearFunc(func(context.Context, appwire.ThreadClearParams) error {
+		return errors.New("replacement provisioning failed")
+	})
+
+	_, err := srv.handleAppThreadClear(context.Background(), appwire.ThreadClearParams{
+		Ref: "local:old", ClientMutationID: "clear-fails", ExpectedInstanceID: "old",
+	})
+	if err == nil {
+		t.Fatal("failed clear reported success")
+	}
+	var wire appwire.WireError
+	if !errors.As(err, &wire) {
+		t.Fatalf("failed clear error = %T %v, want WireError", err, err)
+	}
+	data, ok := wire.Data.(appwire.ErrorData)
+	if !ok || data.ClientMutationID != "clear-fails" || data.MutationOutcome != appwire.MutationOutcomeNotAccepted {
+		t.Fatalf("failed clear error data = %#v, want named notAccepted mutation", wire.Data)
+	}
+
+	srv.mu.RLock()
+	_, held := srv.clearRecords["clear-fails"]
+	srv.mu.RUnlock()
+	if held {
+		t.Fatal("failed clear left its reservation in clearRecords")
+	}
+
+	srv.SetClearFunc(func(_ context.Context, params appwire.ThreadClearParams) error {
+		prepared, err := PrepareAppIdentityForRef("local", "new", params.Ref, "")
+		if err != nil {
+			return err
+		}
+		srv.ReplaceAppIdentity(prepared, nil)
+		return nil
+	})
+	response, err := srv.handleAppThreadClear(context.Background(), appwire.ThreadClearParams{
+		Ref: "local:old", ClientMutationID: "clear-retry", ExpectedInstanceID: "old",
+	})
+	if err != nil {
+		t.Fatalf("clear after a failed clear: %v", err)
+	}
+	if response.Thread.ID != "new" || response.Receipt.Disposition != appwire.MutationDispositionApplied {
+		t.Fatalf("clear after a failed clear = (%q, %q), want (new, applied)", response.Thread.ID, response.Receipt.Disposition)
+	}
+}
+
+// TestServerAppWireThreadClearRestoresReservationWhenRollbackPersistFails pins
+// the failure path's failure path: when the callback fails AND the journal
+// write that would remove the reservation also fails, the reservation must stay
+// in memory (matching the journal on disk) and the client must hear
+// mutationOutcomeUnknown -- then the SAME mutation id must be able to retry to
+// completion once persistence recovers.
+func TestServerAppWireThreadClearRestoresReservationWhenRollbackPersistFails(t *testing.T) {
+	stateDir := t.TempDir()
+	srv := NewServer(ServerConfig{StateDir: stateDir})
+	srv.SetAppIdentity("local", "old")
+	// Occupying the journal's temp path with a directory makes the rollback
+	// persist fail without any production fault seam. The callback installs
+	// the fault after the reservation has already been persisted.
+	journalTmp := threadClearJournalPath(stateDir) + ".tmp"
+	srv.SetClearFunc(func(context.Context, appwire.ThreadClearParams) error {
+		if err := os.Mkdir(journalTmp, 0o700); err != nil {
+			t.Fatalf("install journal write fault: %v", err)
+		}
+		return errors.New("replacement provisioning failed")
+	})
+
+	_, err := srv.handleAppThreadClear(context.Background(), appwire.ThreadClearParams{
+		Ref: "local:old", ClientMutationID: "clear-wedged", ExpectedInstanceID: "old",
+	})
+	if err == nil {
+		t.Fatal("clear with an unpersistable rollback reported success")
+	}
+	var wire appwire.WireError
+	if !errors.As(err, &wire) {
+		t.Fatalf("wedged clear error = %T %v, want WireError", err, err)
+	}
+	data, ok := wire.Data.(appwire.ErrorData)
+	if !ok || data.ClientMutationID != "clear-wedged" || data.MutationOutcome != appwire.MutationOutcomeUnknown {
+		t.Fatalf("wedged clear error data = %#v, want named unknown-outcome mutation", wire.Data)
+	}
+
+	srv.mu.RLock()
+	record, held := srv.clearRecords["clear-wedged"]
+	srv.mu.RUnlock()
+	if !held || record.State != threadClearReserved {
+		t.Fatalf("clearRecords after unpersistable rollback = (%#v, %t), want the reserved record restored", record, held)
+	}
+
+	if err := os.Remove(journalTmp); err != nil {
+		t.Fatalf("clear journal write fault: %v", err)
+	}
+	srv.SetClearFunc(func(_ context.Context, params appwire.ThreadClearParams) error {
+		prepared, err := PrepareAppIdentityForRef("local", "new", params.Ref, "")
+		if err != nil {
+			return err
+		}
+		srv.ReplaceAppIdentity(prepared, nil)
+		return nil
+	})
+	response, err := srv.handleAppThreadClear(context.Background(), appwire.ThreadClearParams{
+		Ref: "local:old", ClientMutationID: "clear-wedged", ExpectedInstanceID: "old",
+	})
+	if err != nil {
+		t.Fatalf("retry after persistence recovered: %v", err)
+	}
+	if response.Thread.ID != "new" || response.Receipt.Disposition != appwire.MutationDispositionApplied {
+		t.Fatalf("recovered retry = (%q, %q), want (new, applied)", response.Thread.ID, response.Receipt.Disposition)
 	}
 }
