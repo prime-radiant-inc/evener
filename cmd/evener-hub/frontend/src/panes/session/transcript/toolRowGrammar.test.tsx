@@ -669,9 +669,13 @@ test("an intent-only row trails its affordance on the disclosure line, not a lin
   expect(screen.queryByTestId("tool-row-summary")).toBeNull();
   expect(row.getAttribute("data-intent-trailing")).toBe("true");
   // The stylesheet keeps trigger and control on one line: the trigger gives
-  // up the full-width flex basis an intent-bearing row otherwise assigns.
+  // up the full-width flex basis an intent-bearing row otherwise assigns, and
+  // uses a ZERO basis (not auto) so the intent wraps inside the trigger
+  // instead of the control wrapping to its own line - the regression a
+  // layoutguard geometry case (delegate-open-widget-inline) pins, since
+  // jsdom computes no cascade and can't see the wrap.
   const css = rowCss();
-  expect(css).toMatch(/\.row\[data-intent-trailing="true"\] \.trigger\s*\{[^}]*flex:\s*1 1 auto/);
+  expect(css).toMatch(/\.row\[data-intent-trailing="true"\] \.trigger\s*\{[^}]*flex:\s*1 1 0/);
 });
 
 // Without an affordance an intent-only row changes shape not at all: no
