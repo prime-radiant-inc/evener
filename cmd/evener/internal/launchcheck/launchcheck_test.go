@@ -2,7 +2,6 @@ package launchcheck
 
 import (
 	"bytes"
-	"context"
 	"encoding/json"
 	"errors"
 	"net/http"
@@ -14,17 +13,61 @@ import (
 
 	"primeradiant.com/evener/appwire"
 	"primeradiant.com/evener/auth/openai/oaitest"
-	"primeradiant.com/evener/llm"
-	_ "primeradiant.com/evener/llm/providers/anthropic"
-	_ "primeradiant.com/evener/llm/providers/openai"
-	_ "primeradiant.com/evener/llm/providers/openrouter"
+	_ "primeradiant.com/evener/llm/providers/all"
 )
 
+// launchCheckGateway starts a /models endpoint answering with status and body,
+// declares it as the "gw" instance in an isolated providers.toml, and points
+// every environment seam at that temp directory. It returns nothing: the
+// launch check reads the environment the same way the CLI does.
+func launchCheckGateway(t *testing.T, status int, body string) {
+	t.Helper()
+	// Isolate from any stored OAuth record or provider key on the dev machine
+	// so only the declared instance is configured.
+	oaitest.IsolateOpenAIAuth(t)
+	for _, key := range []string{
+		"OPENAI_API_KEY", "ANTHROPIC_API_KEY", "GEMINI_API_KEY", "GLM_API_KEY",
+		"GROK_API_KEY", "KIMI_API_KEY", "MINIMAX_API_KEY", "OPENROUTER_API_KEY",
+		"OLLAMA_API_KEY", "OPENAI_COMPATIBLE_BASE_URL",
+	} {
+		t.Setenv(key, "")
+	}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if !strings.HasSuffix(r.URL.Path, "/models") {
+			http.NotFound(w, r)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(status)
+		_, _ = w.Write([]byte(body))
+	}))
+	t.Cleanup(srv.Close)
+	// The ollama instance is always configured (its auth is optional); point it
+	// at a closed port so its listing fails fast instead of reaching a real one.
+	t.Setenv("OLLAMA_HOST", "127.0.0.1:1")
+
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, "providers.toml")
+	if err := os.WriteFile(cfgPath, []byte(`
+[providers.gw]
+base     = "openai-compatible"
+base_url = "`+srv.URL+`/v1"
+api_key  = "test-key"
+`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("EVENER_PROVIDERS_CONFIG", cfgPath)
+	t.Setenv("EVENER_CREDENTIALS_CONFIG", filepath.Join(dir, "credentials.toml"))
+	t.Setenv("EVENER_STATE_DIR", t.TempDir())
+}
+
 func TestLaunchCheckReportsProtocolAndValidatedModel(t *testing.T) {
+	launchCheckGateway(t, http.StatusOK, `{"data":[{"id":"glm-5"}]}`)
+
 	var stdout, stderr bytes.Buffer
 	err := RunLaunchCheck([]string{
 		"--protocol", appwire.ProtocolVersion,
-		"--model", "openrouter/free",
+		"--model", "gw/glm-5",
 		"--json",
 	}, &stdout, &stderr)
 	if err != nil {
@@ -38,7 +81,7 @@ func TestLaunchCheckReportsProtocolAndValidatedModel(t *testing.T) {
 	if err := json.Unmarshal(stdout.Bytes(), &out); err != nil {
 		t.Fatalf("decode stdout %q: %v", stdout.String(), err)
 	}
-	if out.Protocol != appwire.ProtocolVersion || out.Provider != "openrouter" || out.Model != "free" {
+	if out.Protocol != appwire.ProtocolVersion || out.Provider != "gw" || out.Model != "glm-5" {
 		t.Fatalf("launch check output=%+v", out)
 	}
 	// Literal check: catches a change to the ProtocolVersion constant value.
@@ -59,7 +102,7 @@ func TestLaunchCheckRejectsPreviousProtocolVersion(t *testing.T) {
 }
 
 func TestLaunchCheckListsLiveModelsFromConfiguredProviders(t *testing.T) {
-	configureLaunchCheckOpenAIModels(t, `{"data":[{"id":"gpt-live"},{"id":"text-embedding-3-small"}]}`)
+	launchCheckGateway(t, http.StatusOK, `{"data":[{"id":"gpt-live"},{"id":"text-embedding-3-small"}]}`)
 
 	var stdout, stderr bytes.Buffer
 	err := RunLaunchCheck([]string{
@@ -79,13 +122,22 @@ func TestLaunchCheckListsLiveModelsFromConfiguredProviders(t *testing.T) {
 	if err := json.Unmarshal(stdout.Bytes(), &out); err != nil {
 		t.Fatalf("decode stdout %q: %v", stdout.String(), err)
 	}
-	if len(out.Models) != 1 || out.Models[0].Provider != "openai" || out.Models[0].Model != "gpt-live" {
-		t.Fatalf("models=%+v", out.Models)
+	gw := map[string]bool{}
+	for _, m := range out.Models {
+		if m.Provider == "gw" {
+			gw[m.Model] = true
+		}
+	}
+	if !gw["gpt-live"] {
+		t.Fatalf("models=%+v, want the served gpt-live", out.Models)
+	}
+	if gw["text-embedding-3-small"] {
+		t.Fatalf("models=%+v, want the embedding id filtered out", out.Models)
 	}
 }
 
 func TestLaunchCheckReportsModelEnumerationDiagnostics(t *testing.T) {
-	configureLaunchCheckOpenAIModelStatus(t, http.StatusForbidden, `{"error":"forbidden"}`)
+	launchCheckGateway(t, http.StatusForbidden, `{"error":"forbidden"}`)
 
 	var stdout, stderr bytes.Buffer
 	err := RunLaunchCheck([]string{
@@ -107,12 +159,9 @@ func TestLaunchCheckReportsModelEnumerationDiagnostics(t *testing.T) {
 	if err := json.Unmarshal(stdout.Bytes(), &out); err != nil {
 		t.Fatalf("decode stdout %q: %v", stdout.String(), err)
 	}
-	if len(out.Diagnostics) == 0 {
-		t.Fatalf("diagnostics=%+v", out.Diagnostics)
-	}
 	var found bool
 	for _, got := range out.Diagnostics {
-		if got.Provider == "openai" {
+		if got.Provider == "gw" {
 			found = true
 			if got.Source != "provider" || got.Title != "Provider error" || !strings.Contains(got.Message, "403") {
 				t.Fatalf("diagnostic=%+v", got)
@@ -120,84 +169,7 @@ func TestLaunchCheckReportsModelEnumerationDiagnostics(t *testing.T) {
 		}
 	}
 	if !found {
-		t.Fatalf("diagnostics missing openai entry: %+v", out.Diagnostics)
-	}
-}
-
-func TestLaunchCheckListsModelsWhenOneConfiguredProviderCannotInitialize(t *testing.T) {
-	oaitest.IsolateOpenAIAuth(t)
-	t.Setenv("OPENAI_API_KEY", "")
-	t.Setenv("ANTHROPIC_API_KEY", "")
-
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != "/v1/models" {
-			http.NotFound(w, r)
-			return
-		}
-		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(`{"data":[{"id":"gpt-live"}]}`))
-	}))
-	t.Cleanup(srv.Close)
-
-	dir := t.TempDir()
-	cfgPath := filepath.Join(dir, "providers.toml")
-	if err := os.WriteFile(cfgPath, []byte(`schema = 1
-default = "openai"
-
-[instances.anthropic]
-type = "anthropic"
-
-[instances.openai]
-type = "openai"
-base_url = "`+srv.URL+`"
-`), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(dir, "credentials.toml"), []byte(`schema = 1
-[providers.openai]
-api_key = "test-key"
-`), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	t.Setenv("EVENER_PROVIDERS_CONFIG", cfgPath)
-
-	var stdout, stderr bytes.Buffer
-	err := RunLaunchCheck([]string{
-		"--protocol", appwire.ProtocolVersion,
-		"--models",
-		"--json",
-	}, &stdout, &stderr)
-	if err != nil {
-		t.Fatalf("runLaunchCheck: %v stderr=%s", err, stderr.String())
-	}
-
-	var out struct {
-		Models []struct {
-			Provider string `json:"provider"`
-			Model    string `json:"model"`
-		} `json:"models"`
-		Diagnostics []struct {
-			Provider string `json:"provider"`
-			Message  string `json:"message"`
-		} `json:"diagnostics"`
-	}
-	if err := json.Unmarshal(stdout.Bytes(), &out); err != nil {
-		t.Fatalf("decode stdout %q: %v", stdout.String(), err)
-	}
-	if len(out.Models) != 1 || out.Models[0].Provider != "openai" || out.Models[0].Model != "gpt-live" {
-		t.Fatalf("models=%+v", out.Models)
-	}
-	var foundAnthropic bool
-	for _, diag := range out.Diagnostics {
-		if diag.Provider == "anthropic" {
-			foundAnthropic = true
-			if diag.Message == "" {
-				t.Fatalf("anthropic diagnostic has empty message: %+v", diag)
-			}
-		}
-	}
-	if !foundAnthropic {
-		t.Fatalf("diagnostics missing anthropic entry: %+v", out.Diagnostics)
+		t.Fatalf("diagnostics missing the gw entry: %+v", out.Diagnostics)
 	}
 }
 
@@ -214,18 +186,18 @@ func TestLaunchCheckModelDiagnosticRedactsEnvSecrets(t *testing.T) {
 }
 
 func TestLaunchCheckRejectsModelMissingFromLiveProviderList(t *testing.T) {
-	configureLaunchCheckOpenAIModels(t, `{"data":[{"id":"gpt-live"}]}`)
+	launchCheckGateway(t, http.StatusOK, `{"data":[{"id":"gpt-live"}]}`)
 
 	var stdout, stderr bytes.Buffer
 	err := RunLaunchCheck([]string{
 		"--protocol", appwire.ProtocolVersion,
-		"--model", "openai/gpt-stale",
+		"--model", "gw/gpt-stale",
 		"--json",
 	}, &stdout, &stderr)
 	if err == nil {
 		t.Fatal("expected stale model rejection")
 	}
-	if !strings.Contains(err.Error(), "model openai/gpt-stale is not available") {
+	if !strings.Contains(err.Error(), "model gw/gpt-stale is not available") {
 		t.Fatalf("error=%v", err)
 	}
 	if stdout.Len() != 0 {
@@ -234,12 +206,12 @@ func TestLaunchCheckRejectsModelMissingFromLiveProviderList(t *testing.T) {
 }
 
 func TestLaunchCheckAcceptsModelWhenProviderCannotEnumerateModels(t *testing.T) {
-	configureLaunchCheckOpenAIModelStatus(t, http.StatusForbidden, `{"error":"forbidden"}`)
+	launchCheckGateway(t, http.StatusForbidden, `{"error":"forbidden"}`)
 
 	var stdout, stderr bytes.Buffer
 	err := RunLaunchCheck([]string{
 		"--protocol", appwire.ProtocolVersion,
-		"--model", "openai/gpt-5.5",
+		"--model", "gw/gpt-5.5",
 		"--json",
 	}, &stdout, &stderr)
 	if err != nil {
@@ -252,160 +224,8 @@ func TestLaunchCheckAcceptsModelWhenProviderCannotEnumerateModels(t *testing.T) 
 	if err := json.Unmarshal(stdout.Bytes(), &out); err != nil {
 		t.Fatalf("decode stdout %q: %v", stdout.String(), err)
 	}
-	if out.Provider != "openai" || out.Model != "gpt-5.5" {
+	if out.Provider != "gw" || out.Model != "gpt-5.5" {
 		t.Fatalf("launch check output=%+v", out)
-	}
-}
-
-func TestLaunchCheckModelListUnavailableClassifiesTransientFailures(t *testing.T) {
-	tests := []struct {
-		name string
-		err  error
-		want bool
-	}{
-		{
-			name: "context deadline",
-			err:  context.DeadlineExceeded,
-			want: true,
-		},
-		{
-			name: "provider deadline string",
-			err:  errors.New(`Get "https://chatgpt.com/backend-api/codex/models?client_version=0.0.0": context deadline exceeded`),
-			want: true,
-		},
-		{
-			name: "dns lookup failure",
-			err:  errors.New(`Get "https://example.test/v1/models": dial tcp: lookup example.test: no such host`),
-			want: true,
-		},
-		{
-			name: "connection refused",
-			err:  errors.New(`Get "http://localhost:11434/v1/models": dial tcp [::1]:11434: connect: connection refused`),
-			want: true,
-		},
-		{
-			name: "net timeout",
-			err:  launchCheckTimeoutError{},
-			want: true,
-		},
-		{
-			name: "http 403",
-			err:  errors.New("http 403 forbidden"),
-			want: true,
-		},
-		{
-			name: "http 404",
-			err:  errors.New("http 404 not found"),
-			want: true,
-		},
-		{
-			name: "does not support listing models",
-			err:  errors.New("does not support listing models"),
-			want: true,
-		},
-		{
-			name: "i/o timeout",
-			err:  errors.New("read tcp: i/o timeout"),
-			want: true,
-		},
-		{
-			name: "client.timeout exceeded",
-			err:  errors.New("net/http: request canceled (client.timeout exceeded while awaiting headers)"),
-			want: true,
-		},
-		{
-			name: "timeout awaiting response headers",
-			err:  errors.New("timeout awaiting response headers"),
-			want: true,
-		},
-		{
-			name: "network is unreachable",
-			err:  errors.New("dial tcp: connect: network is unreachable"),
-			want: true,
-		},
-		{
-			name: "definite model failure",
-			err:  errors.New("model openai/gpt-stale is not available"),
-			want: false,
-		},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			if got := launchCheckModelListUnavailable(tt.err); got != tt.want {
-				t.Fatalf("launchCheckModelListUnavailable(%v)=%v, want %v", tt.err, got, tt.want)
-			}
-		})
-	}
-}
-
-// TestLaunchCheckModelVisibleFiltersByBehaviorTag verifies that
-// launchCheckModelVisible filters models by the behavior tag passed in, not by a
-// literal provider instance name. A renamed openrouter instance (e.g.
-// "or-work") that is mapped to tag "openrouter" must be filtered the same way
-// as the canonical "openrouter" instance name — i.e. hidden when not in the
-// catalog or the catalog entry lacks SupportsTools.
-func TestLaunchCheckModelVisibleFiltersByBehaviorTag(t *testing.T) {
-	cat := llm.EmbeddedModelCatalog()
-
-	// With the canonical tag "openrouter", a model absent from the catalog is hidden.
-	if launchCheckModelVisible("openrouter", llm.ModelInfo{ID: "not-in-catalog-xyz"}, cat) {
-		t.Error("model not in catalog should be hidden when behaviorTag is openrouter")
-	}
-	// With a non-openrouter tag, any non-media model is visible.
-	if !launchCheckModelVisible("some-other-tag", llm.ModelInfo{ID: "not-in-catalog-xyz"}, cat) {
-		t.Error("model should be visible when behaviorTag is not openrouter")
-	}
-}
-
-type launchCheckTimeoutError struct{}
-
-func (launchCheckTimeoutError) Error() string   { return "timeout" }
-func (launchCheckTimeoutError) Timeout() bool   { return true }
-func (launchCheckTimeoutError) Temporary() bool { return true }
-
-// TestLaunchCheckModelVisible_OpenRouterBareLiveID is the regression test for the
-// bug where the launch-check model list showed only ~10 OpenRouter models.
-// OpenRouter's /v1/models endpoint returns bare IDs like
-// "anthropic/claude-3.7-sonnet", but the catalog keys them as
-// "openrouter/anthropic/claude-3.7-sonnet". Before the shared
-// llm.VisibleLiveModel rule, launchCheckCatalogModelInfo did an exact
-// GetModelInfo(bareID) that returned nil, so the tools filter dropped the model.
-// The shared ResolveLiveModelInfo applies the "openrouter/<id>" fallback.
-// (The fixture is a model LookupModelInfo itself cannot resolve — newer
-// dotted Claude refs resolve to their dashed direct entries there, so this
-// pins the fallback with an id that still depends on it.)
-func TestLaunchCheckModelVisible_OpenRouterBareLiveID(t *testing.T) {
-	cat := llm.EmbeddedModelCatalog()
-
-	// Premise: only the prefixed key resolves the model.
-	if cat.LookupModelInfo("anthropic/claude-3.7-sonnet") != nil {
-		t.Fatal("test premise broken: anthropic/claude-3.7-sonnet now resolves without the tag-qualified fallback")
-	}
-	if cat.GetModelInfo("openrouter/anthropic/claude-3.7-sonnet") == nil {
-		t.Fatal("test premise broken: openrouter/anthropic/claude-3.7-sonnet missing from catalog")
-	}
-
-	// The bare live ID must survive the launch-check visibility filter.
-	if !launchCheckModelVisible("openrouter", llm.ModelInfo{ID: "anthropic/claude-3.7-sonnet"}, cat) {
-		t.Error("bare OpenRouter live ID should be visible via the tag-qualified fallback")
-	}
-}
-
-func TestLaunchCheckRejectsUnsupportedProvider(t *testing.T) {
-	var stdout, stderr bytes.Buffer
-	err := RunLaunchCheck([]string{
-		"--protocol", appwire.ProtocolVersion,
-		"--model", "missing/free",
-		"--json",
-	}, &stdout, &stderr)
-	if err == nil {
-		t.Fatal("expected unsupported provider error")
-	}
-	if !strings.Contains(err.Error(), "unknown provider") {
-		t.Fatalf("error=%v", err)
-	}
-	if stdout.Len() != 0 {
-		t.Fatalf("stdout=%q, want empty on failure", stdout.String())
 	}
 }
 
@@ -413,7 +233,7 @@ func TestLaunchCheckRejectsProtocolMismatch(t *testing.T) {
 	var stdout, stderr bytes.Buffer
 	err := RunLaunchCheck([]string{
 		"--protocol", "evener-appwire-v0",
-		"--model", "openrouter/free",
+		"--model", "gw/free",
 		"--json",
 	}, &stdout, &stderr)
 	if err == nil {
@@ -424,99 +244,10 @@ func TestLaunchCheckRejectsProtocolMismatch(t *testing.T) {
 	}
 }
 
-// TestLaunchCheckAcceptsConfigInstanceModel verifies that when
-// EVENER_PROVIDERS_CONFIG points to a valid config file, launch-check resolves
-// a custom instance name (e.g. "work2") without requiring credentials.
-func TestLaunchCheckAcceptsConfigInstanceModel(t *testing.T) {
-	dir := t.TempDir()
-	cfgPath := filepath.Join(dir, "providers.toml")
-	if err := os.WriteFile(cfgPath, []byte(`schema = 1
-default = "work"
-[instances.work]
-type = "openai"
-[instances.work2]
-type = "openai"
-`), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	t.Setenv("EVENER_PROVIDERS_CONFIG", cfgPath)
-	oaitest.IsolateOpenAIAuth(t)
-
-	var stdout, stderr bytes.Buffer
-	err := RunLaunchCheck([]string{
-		"--protocol", appwire.ProtocolVersion,
-		"--model", "work2/gpt-5.2",
-		"--json",
-	}, &stdout, &stderr)
-	if err != nil {
-		t.Fatalf("runLaunchCheck: %v stderr=%s", err, stderr.String())
-	}
-	var out struct {
-		Provider string `json:"provider"`
-		Model    string `json:"model"`
-	}
-	if err := json.Unmarshal(stdout.Bytes(), &out); err != nil {
-		t.Fatalf("decode stdout %q: %v", stdout.String(), err)
-	}
-	if out.Provider != "work2" || out.Model != "gpt-5.2" {
-		t.Fatalf("launch check output=%+v", out)
-	}
-}
-
-// TestLaunchCheckAcceptsCompatInstanceModel verifies that a chat-completions
-// instance with a custom base_url is also accepted by the config path.
-func TestLaunchCheckAcceptsCompatInstanceModel(t *testing.T) {
-	dir := t.TempDir()
-	cfgPath := filepath.Join(dir, "providers.toml")
-	if err := os.WriteFile(cfgPath, []byte(`schema = 1
-default = "work"
-[instances.work]
-type = "openai"
-[instances.compat-x]
-type = "openai"
-api_style = "chat-completions"
-base_url = "https://example.test/v1"
-`), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	t.Setenv("EVENER_PROVIDERS_CONFIG", cfgPath)
-	oaitest.IsolateOpenAIAuth(t)
-
-	var stdout, stderr bytes.Buffer
-	err := RunLaunchCheck([]string{
-		"--protocol", appwire.ProtocolVersion,
-		"--model", "compat-x/some-model",
-		"--json",
-	}, &stdout, &stderr)
-	if err != nil {
-		t.Fatalf("runLaunchCheck: %v stderr=%s", err, stderr.String())
-	}
-	var out struct {
-		Provider string `json:"provider"`
-		Model    string `json:"model"`
-	}
-	if err := json.Unmarshal(stdout.Bytes(), &out); err != nil {
-		t.Fatalf("decode stdout %q: %v", stdout.String(), err)
-	}
-	if out.Provider != "compat-x" || out.Model != "some-model" {
-		t.Fatalf("launch check output=%+v", out)
-	}
-}
-
-// TestLaunchCheckRejectsUnknownInstanceFromConfig verifies that a model ref
-// naming an instance not present in the providers.toml is rejected.
-func TestLaunchCheckRejectsUnknownInstanceFromConfig(t *testing.T) {
-	dir := t.TempDir()
-	cfgPath := filepath.Join(dir, "providers.toml")
-	if err := os.WriteFile(cfgPath, []byte(`schema = 1
-default = "work"
-[instances.work]
-type = "openai"
-`), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	t.Setenv("EVENER_PROVIDERS_CONFIG", cfgPath)
-	oaitest.IsolateOpenAIAuth(t)
+// A model ref naming an instance the registry does not have is rejected by
+// the resolver's own error.
+func TestLaunchCheckRejectsUnknownInstance(t *testing.T) {
+	launchCheckGateway(t, http.StatusOK, `{"data":[{"id":"glm-5"}]}`)
 
 	var stdout, stderr bytes.Buffer
 	err := RunLaunchCheck([]string{
@@ -533,42 +264,4 @@ type = "openai"
 	if stdout.Len() != 0 {
 		t.Fatalf("stdout=%q, want empty on failure", stdout.String())
 	}
-}
-
-func configureLaunchCheckOpenAIModels(t *testing.T, body string) {
-	t.Helper()
-	configureLaunchCheckOpenAIModelStatus(t, http.StatusOK, body)
-}
-
-func configureLaunchCheckOpenAIModelStatus(t *testing.T, status int, body string) {
-	t.Helper()
-	// Isolate from any stored OAuth / OpenAI env vars on the dev machine so
-	// the test's OPENAI_API_KEY + OPENAI_BASE_URL win deterministically.
-	oaitest.IsolateOpenAIAuth(t)
-	for _, key := range []string{
-		"ANTHROPIC_API_KEY",
-		"GEMINI_API_KEY",
-		"GLM_API_KEY",
-		"GROK_API_KEY",
-		"KIMI_API_KEY",
-		"MINIMAX_API_KEY",
-		"OPENROUTER_API_KEY",
-	} {
-		t.Setenv(key, "")
-	}
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != "/v1/models" {
-			http.NotFound(w, r)
-			return
-		}
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(status)
-		_, _ = w.Write([]byte(body))
-	}))
-	t.Cleanup(srv.Close)
-	t.Setenv("OPENAI_API_KEY", "test-key")
-	t.Setenv("OPENAI_BASE_URL", srv.URL)
-	t.Setenv("OLLAMA_BASE_URL", srv.URL+"/missing")
-	t.Setenv("OLLAMA_HOST", "")
-	t.Setenv("OLLAMA_API_KEY", "")
 }

@@ -1640,7 +1640,7 @@ func TestSession_NonRetryableProviderErrorLeavesSessionIdle(t *testing.T) {
 	policy := llm.RetryPolicy{MaxRetries: 0}
 	sess, err := NewSession(
 		client,
-		WithProviderID(newKimiAnthropicProfile("k3"), "kimi-anthropic"),
+		namedInstanceProfile("kimi-anthropic", "kimi-for-coding", "k3"),
 		execenv.NewLocalExecutionEnvironment(t.TempDir()),
 		SessionConfig{LLMRetryPolicy: &policy},
 	)

@@ -16,7 +16,7 @@ func TestWithCommunicateOutputSchema(t *testing.T) {
 	})
 
 	t.Run("empty schema", func(t *testing.T) {
-		p := NewOpenAIProfile("gpt-4")
+		p := NewOpenAIProfile("gpt-5.5")
 		before, _ := json.Marshal(p.ToolDefinitions())
 		q := WithCommunicateOutputSchema(p, map[string]any{})
 		after, _ := json.Marshal(q.ToolDefinitions())
@@ -26,7 +26,7 @@ func TestWithCommunicateOutputSchema(t *testing.T) {
 	})
 
 	t.Run("valid schema", func(t *testing.T) {
-		p := NewOpenAIProfile("gpt-4")
+		p := NewOpenAIProfile("gpt-5.5")
 		schema := map[string]any{"type": "string", "description": "custom"}
 		q := WithCommunicateOutputSchema(p, schema)
 		def := findToolDef(q, "communicate")
@@ -110,7 +110,7 @@ func TestWithAllowedDecisions(t *testing.T) {
 	})
 
 	t.Run("empty decisions", func(t *testing.T) {
-		p := NewOpenAIProfile("gpt-4")
+		p := NewOpenAIProfile("gpt-5.5")
 		before, _ := json.Marshal(p.ToolDefinitions())
 		q := WithAllowedDecisions(p, []string{})
 		after, _ := json.Marshal(q.ToolDefinitions())
@@ -120,7 +120,7 @@ func TestWithAllowedDecisions(t *testing.T) {
 	})
 
 	t.Run("valid decisions", func(t *testing.T) {
-		p := NewOpenAIProfile("gpt-4")
+		p := NewOpenAIProfile("gpt-5.5")
 		q := WithAllowedDecisions(p, []string{"continue", "stop"})
 		def := findToolDef(q, "communicate")
 		if def == nil {
@@ -208,63 +208,30 @@ func TestWithAllowedDecisions(t *testing.T) {
 	})
 }
 
-func TestDecidePrefixAction(t *testing.T) {
-	tests := []struct {
-		name         string
-		behaviorTag  string
-		instanceName string
-		prefix       string
-		want         prefixAction
-	}{
-		{"openrouter self strip", "openrouter", "openrouter", "openrouter", prefixActionStrip},
-		{"openrouter switch ollama", "openrouter", "openrouter", "ollama", prefixActionSwitch},
-		{"openrouter switch kimi", "openrouter", "openrouter", "kimi", prefixActionSwitch},
-		{"openrouter switch glm", "openrouter", "openrouter", "glm", prefixActionSwitch},
-		{"openrouter switch openrouter-anthropic", "openrouter", "openrouter", "openrouter-anthropic", prefixActionSwitch},
-		{"openrouter keep anthropic", "openrouter", "openrouter", "anthropic", prefixActionKeep},
-		// Renamed instance (id != behaviorTag via WithProviderID): the
-		// self-strip check must key off instanceName, not behaviorTag.
-		{"openrouter renamed self strip", "openrouter", "myrouter", "myrouter", prefixActionStrip},
-		{"openrouter renamed tag switch", "openrouter", "myrouter", "openrouter", prefixActionSwitch},
-		// openrouter-anthropic shares the openrouter case-label arm.
-		{"openrouter-anthropic self strip", "openrouter-anthropic", "openrouter-anthropic", "openrouter-anthropic", prefixActionStrip},
-		{"openrouter-anthropic switch kimi", "openrouter-anthropic", "openrouter-anthropic", "kimi", prefixActionSwitch},
-		{"openrouter-anthropic keep anthropic", "openrouter-anthropic", "openrouter-anthropic", "anthropic", prefixActionKeep},
-		{"openrouter-anthropic renamed self strip", "openrouter-anthropic", "myrouter", "myrouter", prefixActionStrip},
-		{"minimax self keep", "minimax", "minimax", "minimax", prefixActionKeep},
-		{"minimax other switch", "minimax", "minimax", "openai", prefixActionSwitch},
-		{"openai self strip", "openai", "openai", "openai", prefixActionStrip},
-		{"openai other switch", "openai", "openai", "anthropic", prefixActionSwitch},
-		{"kimi self strip", "kimi", "kimi", "kimi", prefixActionStrip},
-		{"kimi other switch", "kimi", "kimi", "anthropic", prefixActionSwitch},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			got := decidePrefixAction(tt.behaviorTag, tt.instanceName, tt.prefix)
-			if got != tt.want {
-				t.Errorf("decidePrefixAction(%q, %q, %q) = %v, want %v", tt.behaviorTag, tt.instanceName, tt.prefix, got, tt.want)
-			}
-		})
-	}
-}
-
+// CrossProviderRef is false for a bare model, for a redundant self-prefix,
+// and for a namespaced id the instance itself serves.
 func TestCrossProviderRef(t *testing.T) {
-	p := NewOpenAIProfile("gpt-4")
-	if p.CrossProviderRef("gpt-4") {
+	r := fixtureRegistry(t)
+	p := mustResolve(t, r, "openai/gpt-5.5")
+	if p.CrossProviderRef("gpt-5.5") {
 		t.Error("bare model should not be cross-provider")
 	}
-	if !p.CrossProviderRef("anthropic/claude-sonnet") {
-		t.Error("different provider prefix should be cross-provider")
+	if !p.CrossProviderRef("anthropic/claude-opus-5") {
+		t.Error("different instance prefix should be cross-provider")
 	}
-	if p.CrossProviderRef("openai/gpt-4") {
+	if p.CrossProviderRef("openai/gpt-5.5") {
 		t.Error("self-prefix should not be cross-provider")
+	}
+	or := mustResolve(t, r, "openrouter/openai/gpt-5.5")
+	if or.CrossProviderRef("anthropic/claude-opus-5") {
+		t.Error("a namespaced id the instance serves is not cross-provider")
 	}
 }
 
 func TestProfileGetters(t *testing.T) {
-	p := NewOpenAIProfile("gpt-5.5")
+	p := mustResolve(t, fixtureRegistry(t), "openai/gpt-5.5")
 	if p.ToolNameMap() == nil {
-		t.Error("ToolNameMap should not be nil for openai")
+		t.Error("ToolNameMap should not be nil for the openai surface")
 	}
 	if !p.SupportsParallelToolCalls() {
 		t.Error("SupportsParallelToolCalls should be true")
@@ -284,18 +251,19 @@ func TestProfileGetters(t *testing.T) {
 	if p.DefaultCommandTimeoutMS() != 120000 {
 		t.Errorf("DefaultCommandTimeoutMS = %d", p.DefaultCommandTimeoutMS())
 	}
-	if p.KnowledgeCutoff() != "2025-06-01" {
-		t.Errorf("KnowledgeCutoff = %q", p.KnowledgeCutoff())
+	if p.KnowledgeCutoff() == "" {
+		t.Error("KnowledgeCutoff should come from the row")
+	}
+	if p.ProviderID() != "openai" {
+		t.Errorf("ProviderID = %q", p.ProviderID())
 	}
 
-	// Unconfigured auxiliary work uses the active provider and model.
-	if providerName, model := p.CheapModelRef(); providerName != p.ID() || model != p.Model() {
-		t.Errorf("CheapModelRef = (%q, %q), want (%q, %q)", providerName, model, p.ID(), p.Model())
+	// The instance's curated cheap_model backs an unconfigured profile.
+	if got := p.CheapModel(); got != "gpt-4.1-nano" {
+		t.Errorf("CheapModel fallback = %q, want gpt-4.1-nano", got)
 	}
-
-	// ConfiguredCheapModel with empty cheapModel
-	if got := (&Profile{}).ConfiguredCheapModel(); got != "" {
-		t.Errorf("ConfiguredCheapModel empty = %q", got)
+	if got := p.ConfiguredCheapModel(); got != "" {
+		t.Errorf("ConfiguredCheapModel unconfigured = %q", got)
 	}
 
 	// CheapProvider with nil profile
@@ -310,41 +278,6 @@ func TestProfileGetters(t *testing.T) {
 	}
 }
 
-func TestWithProviderID(t *testing.T) {
-	t.Run("nil profile", func(t *testing.T) {
-		if got := WithProviderID(nil, "x"); got != nil {
-			t.Errorf("got non-nil for nil profile")
-		}
-	})
-
-	t.Run("empty name", func(t *testing.T) {
-		p := NewOpenAIProfile("gpt-4")
-		q := WithProviderID(p, "")
-		if q.ID() != p.ID() {
-			t.Errorf("ID changed from %q to %q", p.ID(), q.ID())
-		}
-	})
-
-	t.Run("valid name", func(t *testing.T) {
-		p := NewOpenAIProfile("gpt-4")
-		q := WithProviderID(p, "custom-id")
-		if q.ID() != "custom-id" {
-			t.Errorf("ID = %q, want custom-id", q.ID())
-		}
-		if q.BehaviorTag() != p.BehaviorTag() {
-			t.Errorf("BehaviorTag changed")
-		}
-	})
-
-	t.Run("whitespace trimmed", func(t *testing.T) {
-		p := NewOpenAIProfile("gpt-4")
-		q := WithProviderID(p, "  spaced  ")
-		if q.ID() != "spaced" {
-			t.Errorf("ID = %q, want spaced", q.ID())
-		}
-	})
-}
-
 func TestWithCheapModel(t *testing.T) {
 	t.Run("nil profile", func(t *testing.T) {
 		if got := WithCheapModel(nil, "x"); got != nil {
@@ -353,7 +286,7 @@ func TestWithCheapModel(t *testing.T) {
 	})
 
 	t.Run("empty ref", func(t *testing.T) {
-		p := NewOpenAIProfile("gpt-4")
+		p := NewOpenAIProfile("gpt-5.5")
 		q := WithCheapModel(p, "")
 		if q.ConfiguredCheapModel() != p.ConfiguredCheapModel() {
 			t.Error("cheap model changed")
@@ -361,7 +294,7 @@ func TestWithCheapModel(t *testing.T) {
 	})
 
 	t.Run("whitespace trimmed", func(t *testing.T) {
-		p := NewOpenAIProfile("gpt-4")
+		p := NewOpenAIProfile("gpt-5.5")
 		q := WithCheapModel(p, "  model  ")
 		if q.ConfiguredCheapModel() != "model" {
 			t.Errorf("ConfiguredCheapModel = %q, want model", q.ConfiguredCheapModel())
@@ -377,7 +310,7 @@ func TestWithContextWindow(t *testing.T) {
 	})
 
 	t.Run("zero or negative", func(t *testing.T) {
-		p := NewOpenAIProfile("gpt-4")
+		p := NewOpenAIProfile("gpt-5.5")
 		q := WithContextWindow(p, 0)
 		if q.ContextWindowSize() != p.ContextWindowSize() {
 			t.Error("context window changed for n=0")
@@ -389,7 +322,7 @@ func TestWithContextWindow(t *testing.T) {
 	})
 
 	t.Run("valid window", func(t *testing.T) {
-		p := NewOpenAIProfile("gpt-4")
+		p := NewOpenAIProfile("gpt-5.5")
 		q := WithContextWindow(p, 256000)
 		if q.ContextWindowSize() != 256000 {
 			t.Errorf("ContextWindowSize = %d, want 256000", q.ContextWindowSize())

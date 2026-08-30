@@ -166,8 +166,8 @@ func FuzzSessionGoTailCoverage(f *testing.F) {
 			}
 			s.cfg.testOnly.minimalSystemPrompt = true
 			s.SetModel("google/gemini")
-			if s.profile.BehaviorTag() != "google" || s.reg.Get("web_search") == nil {
-				t.Fatalf("cross-provider switch = %q, web_search=%v", s.profile.BehaviorTag(), s.reg.Get("web_search") != nil)
+			if s.profile.Surface() != registry.SurfaceGoogle || s.reg.Get("web_search") == nil {
+				t.Fatalf("cross-provider switch = %q, web_search=%v", s.profile.Surface(), s.reg.Get("web_search") != nil)
 			}
 
 			lister := &tailCoverageBlockingLister{entered: make(chan struct{}), release: make(chan struct{})}

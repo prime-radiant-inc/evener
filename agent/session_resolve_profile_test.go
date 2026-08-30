@@ -13,6 +13,7 @@ import (
 	"primeradiant.com/evener/agent/provider"
 	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/llm"
+	"primeradiant.com/evener/llm/registry"
 )
 
 // testResolver is a trivial resolver that maps known "provider/model"
@@ -82,8 +83,8 @@ func TestSetModel_CrossProvider_SwapsProfileAndPreservesOverride(t *testing.T) {
 	if got := sess.profile.Model(); got != "claude-opus-4-6" {
 		t.Fatalf("after SetModel, model = %q, want claude-opus-4-6", got)
 	}
-	if got := sess.profile.BehaviorTag(); got != "anthropic" {
-		t.Fatalf("after SetModel, BehaviorTag = %q, want anthropic", got)
+	if got := sess.profile.Surface(); got != registry.SurfaceAnthropic {
+		t.Fatalf("after SetModel, Surface = %q, want anthropic", got)
 	}
 
 	// The communicate-output-schema override must have been preserved.
@@ -516,7 +517,7 @@ func TestValidateModelFallbacks_SameSurface_Allowed(t *testing.T) {
 func workInstanceResolver(ref string) (*provider.Profile, error) {
 	parts := strings.SplitN(ref, "/", 2)
 	if len(parts) == 2 && strings.EqualFold(parts[0], "work") {
-		return WithProviderID(NewOpenAIProfile(parts[1]), "work"), nil
+		return namedOpenAIInstanceProfile("work", parts[1]), nil
 	}
 	return testResolver(ref)
 }
@@ -737,9 +738,10 @@ func TestSetModel_CrossProvider_ToOllama_WithCatalog(t *testing.T) {
 	if got := sess.profile.ID(); got != "ollama" {
 		t.Fatalf("ID() = %q, want ollama", got)
 	}
-	// llama3.1 is in the catalog with 8192 context window.
-	if got := sess.profile.ContextWindowSize(); got != 8192 {
-		t.Fatalf("ContextWindowSize() = %d, want 8192 (catalog metadata for ollama/llama3.1 must resolve)", got)
+	// The window is the ollama record's, resolved through the resolver.
+	want := newOpenAICompatProfile("ollama", "llama3.1", 0).ContextWindowSize()
+	if got := sess.profile.ContextWindowSize(); got == 0 || got != want {
+		t.Fatalf("ContextWindowSize() = %d, want the registry's %d", got, want)
 	}
 }
 

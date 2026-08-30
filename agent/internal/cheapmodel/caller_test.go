@@ -18,7 +18,29 @@ import (
 	"primeradiant.com/evener/agent/provider"
 	"primeradiant.com/evener/llm"
 	apilog "primeradiant.com/evener/llm/apilog"
+	"primeradiant.com/evener/llm/registry"
 )
+
+// namedOpenAIInstanceProfile is a profile on an openai-backed instance under a
+// user-assigned name: side calls route on the instance name, and the cheap
+// model still comes from the provider behind it.
+func namedOpenAIInstanceProfile(t *testing.T, name, model string) *provider.Profile {
+	t.Helper()
+	r, err := registry.Load(
+		registry.WithOffline(true), registry.WithoutCache(), registry.WithNoUserLayer(),
+		registry.WithStateRoot(t.TempDir()),
+		registry.WithEnv(func(string) (string, bool) { return "", false }),
+		registry.WithInstances(map[string]registry.Provider{name: {Base: "openai", APIKey: "test"}}),
+	)
+	if err != nil {
+		t.Fatalf("registry: %v", err)
+	}
+	p, err := provider.Resolve(r, name+"/"+model)
+	if err != nil {
+		t.Fatalf("resolve %s/%s: %v", name, model, err)
+	}
+	return p
+}
 
 func refusal(status int, message string) func(string, string) error {
 	return func(prov, _ string) error {
@@ -394,10 +416,7 @@ func TestCallerKeepsRefusalsAcrossModelSwitchButNotProviderSwitch(t *testing.T) 
 	if got, want := openAI.Models(), []string{"gpt-4.1-nano", "main", "main-2"}; !slices.Equal(got, want) {
 		t.Fatalf("openai models = %v, want %v", got, want)
 	}
-	bedrockProfile := provider.WithCheapModel(
-		provider.WithProviderID(provider.NewOpenAIProfile("bedrock-main"), "bedrock"),
-		"gpt-4.1-nano",
-	)
+	bedrockProfile := namedOpenAIInstanceProfile(t, "bedrock", "bedrock-main")
 	if _, err := complete(t, caller, bedrockProfile); err != nil {
 		t.Fatalf("bedrock Complete: %v", err)
 	}

@@ -35,8 +35,9 @@ func TestLLMCallMainParserBranches(t *testing.T) {
 	t.Setenv(envvars.EVENERProvider.Name, "")
 	t.Setenv(envvars.LLMModel.Name, "")
 	t.Setenv(envvars.EVENERModel.Name, "")
-	if err := llmcallMain([]string{"p"}, &out, &errOut); err == nil || !strings.Contains(err.Error(), "provider") {
-		t.Fatalf("provider=%v", err)
+	// The model is required whatever the provider is.
+	if err := llmcallMain([]string{"p"}, &out, &errOut); err == nil || !strings.Contains(err.Error(), "model") {
+		t.Fatalf("model=%v", err)
 	}
 	t.Setenv(envvars.LLMProvider.Name, "fake")
 	if err := llmcallMain([]string{"p"}, &out, &errOut); err == nil || !strings.Contains(err.Error(), "model") {
@@ -65,11 +66,9 @@ func TestLLMCallMainParserBranches(t *testing.T) {
 }
 
 func TestLLMCallProfilesAndOptions(t *testing.T) {
-	originalNewClient := newLLMClientFromEnv
-	t.Cleanup(func() { newLLMClientFromEnv = originalNewClient })
-	newLLMClientFromEnv = func(...llm.EnvOption) (*llm.Client, error) {
-		return llm.NewClient(), nil
-	}
+	originalNewClient := newLLMClient
+	t.Cleanup(func() { newLLMClient = originalNewClient })
+	newLLMClient = func() (*llm.Client, error) { return llm.NewClient(), nil }
 	var out, errOut bytes.Buffer
 	cpu := filepath.Join(t.TempDir(), "cpu.pprof")
 	trace := filepath.Join(t.TempDir(), "trace.out")
@@ -99,9 +98,9 @@ func TestRunLLMCallRemainingErrorsAndOptions(t *testing.T) {
 	}
 	bad := base
 	bad.client = nil
-	oldNew := newLLMClientFromEnv
-	t.Cleanup(func() { newLLMClientFromEnv = oldNew })
-	newLLMClientFromEnv = func(...llm.EnvOption) (*llm.Client, error) { return nil, errors.New("setup") }
+	oldNew := newLLMClient
+	t.Cleanup(func() { newLLMClient = oldNew })
+	newLLMClient = func() (*llm.Client, error) { return nil, errors.New("setup") }
 	if err := runLLMCall(context.Background(), bad); err == nil {
 		t.Fatal("client setup")
 	}

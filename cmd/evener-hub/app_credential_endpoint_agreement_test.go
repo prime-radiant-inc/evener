@@ -2,29 +2,32 @@ package hub
 
 // Launch and the credentials pane must describe one instance's credential the
 // same way, and the arbiter is the endpoint the adapter will actually contact.
-// cmdutil.LoadProviderConfigAt injects the key the child signs its requests
-// with; if the launch preflight refuses that instance, or the pane names a
-// different variable — or claims a sign-in for a child that will send no key at
-// all — one of the two is lying about a session the user is running. Kata z1gm.
+// If the launch preflight refuses an instance the pane calls signed in, or the
+// pane names a variable the child never sends, one of the two is lying about a
+// session the user is running. Kata z1gm.
+//
+// The third party to this agreement — the credential the spawned child is
+// actually built with — now comes from the registry rather than from
+// providercfg injection, and the registry's rules are not yet the ones these
+// cases encode (a gateway at its own base_url does resolve its base's
+// api_key_env there). The hub moves onto the registry in step 3 task 9; until
+// it does, this test holds the two hub surfaces to each other.
 
 import (
 	"path/filepath"
-	"strings"
 	"testing"
 
 	"primeradiant.com/evener/appwire"
 	"primeradiant.com/evener/auth/openai/oaitest"
-	"primeradiant.com/evener/cmdutil"
 	"primeradiant.com/evener/envvars"
 	"primeradiant.com/evener/internal/credentials"
 	"primeradiant.com/evener/llm/providercfg"
 )
 
 // TestCredentialAgreement_HubAgreesWithTheKeyTheChildSends holds the launch
-// preflight and evener/auth/status to what cmdutil injects, which is the only
-// credential the spawned process has. Each case seeds exactly one environment
-// variable, asks cmdutil what the child would authenticate with, and requires
-// both hub surfaces to agree.
+// preflight and evener/auth/status to one another. Each case seeds exactly one
+// environment variable and requires both hub surfaces to describe the same
+// credential.
 //
 // Instances whose behavior tag is "openai" are out of scope here: their OAuth
 // record is a credential with no key to inject, so injection is not the whole
@@ -105,16 +108,6 @@ func TestCredentialAgreement_HubAgreesWithTheKeyTheChildSends(t *testing.T) {
 			})
 			t.Setenv(tt.envVar.Name, tt.value)
 
-			// The credential the child process is actually built with.
-			cfg, exists, err := cmdutil.LoadProviderConfigAt(cfgPath)
-			if err != nil || !exists {
-				t.Fatalf("LoadProviderConfigAt(%q) = exists %v, err %v", cfgPath, exists, err)
-			}
-			injected := strings.TrimSpace(cfg.Instances[0].APIKey)
-			if got := injected != ""; got != tt.wantInjected {
-				t.Fatalf("cmdutil injected a key = %v, want %v: %s", got, tt.wantInjected, tt.why)
-			}
-
 			store, err := credentials.LoadStore(filepath.Join(dir, "credentials.toml"))
 			if err != nil {
 				t.Fatalf("LoadStore: %v", err)
@@ -132,7 +125,7 @@ func TestCredentialAgreement_HubAgreesWithTheKeyTheChildSends(t *testing.T) {
 
 			if tt.wantInjected {
 				if preflight != nil {
-					t.Errorf("validateProviderCredentials(%q) = %v, want nil: cmdutil builds this instance's client with %s, so the gate in front of it must not refuse (%s)",
+					t.Errorf("validateProviderCredentials(%q) = %v, want nil: this instance authenticates with %s, so the gate in front of it must not refuse (%s)",
 						tt.inst.Name, preflight, tt.envVar.Name, tt.why)
 				}
 				if !status.SignedIn {
@@ -145,7 +138,7 @@ func TestCredentialAgreement_HubAgreesWithTheKeyTheChildSends(t *testing.T) {
 				return
 			}
 			if status.SignedIn {
-				t.Errorf("Status(%q).SignedIn = true (EnvVar %q), want false: cmdutil injects nothing here, so the client sends no key (%s)",
+				t.Errorf("Status(%q).SignedIn = true (EnvVar %q), want false: nothing resolves here, so the client sends no key (%s)",
 					tt.inst.Name, status.EnvVar, tt.why)
 			}
 			if status.EnvVar != "" {

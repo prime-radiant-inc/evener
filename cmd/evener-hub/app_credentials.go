@@ -26,7 +26,7 @@ const (
 )
 
 type credentialProbeClient interface {
-	ListModels(context.Context, string) ([]llm.ModelInfo, error)
+	Models(context.Context, string) (llm.ModelListing, error)
 	Close() error
 }
 
@@ -37,12 +37,28 @@ type credentialTestCall struct {
 	result appwire.AuthTestResponse
 }
 
+// loadCredentialTestClient builds the probe client from the registry and
+// reads the same providers.toml for the instance descriptors the probe still
+// needs (Task 9 moves those onto the registry too).
 func loadCredentialTestClient(path string) (credentialProbeClient, providercfg.Config, error) {
-	if strings.TrimSpace(path) == "" {
-		client, cfg, _, err := cmdutil.LoadClient()
-		return client, cfg, err
+	path = strings.TrimSpace(path)
+	configPath := path
+	if configPath == "" {
+		configPath, _ = cmdutil.ProvidersConfigPath()
 	}
-	client, cfg, _, err := cmdutil.LoadClientAt(path)
+	cfg, _, cfgErr := providercfg.LoadFile(configPath)
+	var (
+		client *llm.Client
+		err    error
+	)
+	if path == "" {
+		client, err = cmdutil.LoadClient("")
+	} else {
+		client, err = cmdutil.LoadClientAt(path, "")
+	}
+	if err == nil {
+		err = cfgErr
+	}
 	return client, cfg, err
 }
 
@@ -105,7 +121,7 @@ func (c *hubAuthController) runCredentialTest(ctx context.Context, name string, 
 
 	probeCtx, cancel := context.WithTimeout(ctx, credentialTestTimeout)
 	defer cancel()
-	_, err = client.ListModels(probeCtx, name)
+	_, err = client.Models(probeCtx, name)
 	if err != nil {
 		status, message := classifyCredentialTestError(err)
 		return credentialTestResponse(name, status, message)

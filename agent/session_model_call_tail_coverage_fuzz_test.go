@@ -202,7 +202,7 @@ func modelCallTailPlanningCases(t *testing.T) {
 func modelCallTailWebCases(t *testing.T) {
 	t.Helper()
 	s := modelCallTailSession(t)
-	noWeb := provider.NewOpenAIProfile("tail").WithLiveModelInfo(llm.ModelInfo{SupportsWebSearch: func() *bool { v := false; return &v }()})
+	noWeb := withWebSearch(provider.NewOpenAIProfile("tail"), false)
 	if s.providerWebSearchEnabled(noWeb) {
 		t.Fatal("non-web profile enabled web search")
 	}
@@ -243,10 +243,7 @@ func modelCallTailSession(t *testing.T) *Session {
 	}
 	client := llm.NewClient()
 	client.Register(adapter)
-	return modelCallTailSessionWithClient(t, client, provider.NewOpenAIProfile("tail-model").WithLiveModelInfo(llm.ModelInfo{
-		ReasoningEffortLevels: []string{"low", "high"},
-		SupportsReasoning:     true,
-	}))
+	return modelCallTailSessionWithClient(t, client, withEffortLevels(provider.NewOpenAIProfile("tail-model"), "low", "high"))
 }
 
 func modelCallTailSessionWithClient(t *testing.T, client *llm.Client, profile *provider.Profile) *Session {

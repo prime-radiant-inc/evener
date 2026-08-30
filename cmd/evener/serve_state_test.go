@@ -19,7 +19,6 @@ import (
 	"primeradiant.com/evener/appwire"
 	"primeradiant.com/evener/cmd/evener/internal/rvreg"
 	"primeradiant.com/evener/llm"
-	"primeradiant.com/evener/llm/providercfg"
 	"primeradiant.com/evener/server"
 )
 
@@ -192,16 +191,10 @@ func startSessionControlLifecycle(t *testing.T) *sessionControlLifecycle {
 	deps := defaultServeDeps()
 	deps.ensureConfigDirs = func() error { return nil }
 	deps.seedMarketplaces = func() error { return nil }
-	deps.newClient = func(string, io.Writer) (*llm.Client, providercfg.Config, bool, func() error, error) {
+	deps.newClient = func(string, io.Writer) (*llm.Client, func() error, error) {
 		client := llm.NewClient()
 		client.Register(&closedStreamAdapter{})
-		cfg := providercfg.Config{
-			Default: "openai",
-			Instances: []providercfg.InstanceConfig{
-				{Name: "openai", Type: "openai"},
-			},
-		}
-		return client, cfg, true, func() error { return nil }, nil
+		return client, func() error { return nil }, nil
 	}
 	deps.newSession = func(client *llm.Client, profile *provider.Profile, env execenv.ExecutionEnvironment, cfg agent.SessionConfig) (*agent.Session, error) {
 		cfg.LLMRetryPolicy = &llm.RetryPolicy{MaxRetries: 0}
@@ -414,16 +407,10 @@ func TestRunServe_StreamErrorPublishesIdleStatus(t *testing.T) {
 	deps := defaultServeDeps()
 	deps.ensureConfigDirs = func() error { return nil }
 	deps.seedMarketplaces = func() error { return nil }
-	deps.newClient = func(string, io.Writer) (*llm.Client, providercfg.Config, bool, func() error, error) {
+	deps.newClient = func(string, io.Writer) (*llm.Client, func() error, error) {
 		client := llm.NewClient()
 		client.Register(adapter)
-		cfg := providercfg.Config{
-			Default: "openai",
-			Instances: []providercfg.InstanceConfig{
-				{Name: "openai", Type: "openai"},
-			},
-		}
-		return client, cfg, true, func() error { return nil }, nil
+		return client, func() error { return nil }, nil
 	}
 	deps.newSession = func(client *llm.Client, profile *provider.Profile, env execenv.ExecutionEnvironment, cfg agent.SessionConfig) (*agent.Session, error) {
 		cfg.LLMRetryPolicy = &llm.RetryPolicy{MaxRetries: 0}
@@ -666,14 +653,10 @@ func newClearServeDeps(t *testing.T) (serveDeps, *clearTestState, []string) {
 	deps := defaultServeDeps()
 	deps.ensureConfigDirs = func() error { return nil }
 	deps.seedMarketplaces = func() error { return nil }
-	deps.newClient = func(string, io.Writer) (*llm.Client, providercfg.Config, bool, func() error, error) {
+	deps.newClient = func(string, io.Writer) (*llm.Client, func() error, error) {
 		client := llm.NewClient()
 		client.Register(&closedStreamAdapter{})
-		cfg := providercfg.Config{
-			Default:   "openai",
-			Instances: []providercfg.InstanceConfig{{Name: "openai", Type: "openai"}},
-		}
-		return client, cfg, true, func() error { return nil }, nil
+		return client, func() error { return nil }, nil
 	}
 	newSession := func(client *llm.Client, profile *provider.Profile, env execenv.ExecutionEnvironment, cfg agent.SessionConfig) (*agent.Session, error) {
 		sess, err := agent.NewSession(client, profile, env, cfg)

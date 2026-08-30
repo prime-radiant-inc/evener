@@ -10,7 +10,7 @@ import (
 	"time"
 
 	"primeradiant.com/evener/llm"
-	"primeradiant.com/evener/llm/providercfg"
+	"primeradiant.com/evener/llm/registry"
 )
 
 func requireLiveOpenAI(t *testing.T) {
@@ -108,14 +108,45 @@ func (p *scriptedProvider) Requests() []llm.Request {
 	return append([]llm.Request{}, p.requests...)
 }
 
+// scriptedRegistryClient builds the client the CLI's loader would build: a
+// hermetic registry carrying one instance per scripted adapter name, with the
+// adapters registered as overrides so nothing reaches a transport.
+func scriptedRegistryClient(t *testing.T, adapters ...*scriptedProvider) *llm.Client {
+	t.Helper()
+	instances := map[string]registry.Provider{}
+	for _, a := range adapters {
+		instances[a.Name()] = scriptedInstance(a.Name())
+	}
+	r, err := registry.Load(
+		registry.WithOffline(true), registry.WithoutCache(), registry.WithNoUserLayer(),
+		registry.WithStateRoot(t.TempDir()),
+		registry.WithEnv(func(string) (string, bool) { return "", false }),
+		registry.WithInstances(instances),
+	)
+	if err != nil {
+		t.Fatalf("scripted registry: %v", err)
+	}
+	client := llm.NewClient(llm.WithRegistry(r))
+	for _, a := range adapters {
+		client.Register(a)
+	}
+	client.SetDefaultProvider(adapters[0].Name())
+	return client
+}
+
+// scriptedInstance is the registry entry behind a scripted adapter's name.
+func scriptedInstance(name string) registry.Provider {
+	if name == "kimi-anthropic" {
+		return registry.Provider{Base: "kimi-for-coding", APIKey: "test"}
+	}
+	return registry.Provider{Base: "openai", APIKey: "test"}
+}
+
 func installRunScriptedProvider(t *testing.T, adapter *scriptedProvider) {
 	t.Helper()
 	oldLoadClient := runLoadClient
-	runLoadClient = func(...llm.EnvOption) (*llm.Client, providercfg.Config, bool, error) {
-		client := llm.NewClient()
-		client.Register(adapter)
-		return client, scriptedProviderConfig(adapter.Name()), true, nil
-	}
+	client := scriptedRegistryClient(t, adapter)
+	runLoadClient = func(string) (*llm.Client, error) { return client, nil }
 	t.Cleanup(func() {
 		runLoadClient = oldLoadClient
 	})
@@ -131,41 +162,11 @@ func installServeScriptedProviders(t *testing.T, adapters ...*scriptedProvider) 
 		t.Fatal("installServeScriptedProviders requires at least one adapter")
 	}
 	oldLoadClient := serveLoadClient
-	serveLoadClient = func(...llm.EnvOption) (*llm.Client, providercfg.Config, bool, error) {
-		client := llm.NewClient()
-		for _, adapter := range adapters {
-			client.Register(adapter)
-		}
-		instances := make([]providercfg.InstanceConfig, len(adapters))
-		for i, adapter := range adapters {
-			instances[i] = providercfg.InstanceConfig{Name: adapter.Name(), Type: scriptedProviderType(adapter.Name())}
-		}
-		return client, providercfg.Config{
-			Default:   adapters[0].Name(),
-			Instances: instances,
-		}, true, nil
-	}
+	client := scriptedRegistryClient(t, adapters...)
+	serveLoadClient = func(string) (*llm.Client, error) { return client, nil }
 	t.Cleanup(func() {
 		serveLoadClient = oldLoadClient
 	})
-}
-
-func scriptedProviderType(name string) providercfg.Type {
-	switch name {
-	case "kimi-anthropic":
-		return "kimi-anthropic"
-	default:
-		return "openai"
-	}
-}
-
-func scriptedProviderConfig(name string) providercfg.Config {
-	return providercfg.Config{
-		Default: name,
-		Instances: []providercfg.InstanceConfig{
-			{Name: name, Type: "openai"},
-		},
-	}
 }
 
 func scriptedCommunicate(message string) llm.Response {

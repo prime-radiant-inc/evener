@@ -21,7 +21,6 @@ import (
 	"primeradiant.com/evener/cmd/evener/internal/launchcheck"
 	"primeradiant.com/evener/cmdutil"
 	"primeradiant.com/evener/envvars"
-	openaiprovider "primeradiant.com/evener/llm/providers/openai"
 )
 
 // Alias for brevity within flag definitions.
@@ -107,9 +106,8 @@ func defaultMainDepsWithStdin(stdin *os.File) mainDeps {
 }
 
 func mainWithDeps(deps mainDeps) {
-	// Report the evener build version in the OpenAI provider's User-Agent and in
-	// agent session metadata.
-	openaiprovider.ClientVersion = buildinfo.Version()
+	// Report the evener build version in agent session metadata. The provider
+	// User-Agent is stamped by cmdutil.NewRegistryClient when the client loads.
 	agent.BuildVersion = buildinfo.Version()
 
 	// Quick flags that don't need full flag.Parse().

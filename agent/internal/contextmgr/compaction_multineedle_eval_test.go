@@ -213,7 +213,7 @@ func multiNeedleCases() []multiNeedleCase {
 // oauthClientAndCfg builds the OAuth-backed client + provider config once,
 // mirroring newOAuthManager but reusable for multiple profiles (summarizer +
 // judge at different models).
-func oauthClientAndCfg(t *testing.T) (*llm.Client, providercfg.Config) {
+func oauthEvalClient(t *testing.T) *llm.Client {
 	t.Helper()
 	oauthStateHome, oauthProvidersConfig := liveEvalOAuthPaths(t)
 	if _, err := os.Stat(filepath.Join(oauthStateHome, "evener", "auth", "openai.json")); err != nil {
@@ -231,14 +231,14 @@ func oauthClientAndCfg(t *testing.T) (*llm.Client, providercfg.Config) {
 	if err != nil {
 		t.Fatalf("NewFromAvailableProviders: %v (errs: %v)", err, errs)
 	}
-	return client, cfg
+	return client
 }
 
-func managerForModel(t *testing.T, client *llm.Client, cfg providercfg.Config, model string) *Manager {
+func managerForModel(t *testing.T, client *llm.Client, model string) *Manager {
 	t.Helper()
-	prof, err := provider.ResolveProfileFromConfig(cfg, "openai/"+model)
+	prof, err := provider.Resolve(client.Registry(), "openai/"+model)
 	if err != nil {
-		t.Fatalf("ResolveProfileFromConfig openai/%s: %v", model, err)
+		t.Fatalf("Resolve openai/%s: %v", model, err)
 	}
 	return NewManager(prof, client, cheapmodel.New(client))
 }
@@ -264,9 +264,9 @@ type mnRow struct {
 }
 
 func TestCompactionMultiNeedle(t *testing.T) {
-	client, cfg := oauthClientAndCfg(t)
-	summ := managerForModel(t, client, cfg, mnSummarizerModel)
-	judge := managerForModel(t, client, cfg, mnJudgeModel)
+	client := oauthEvalClient(t)
+	summ := managerForModel(t, client, mnSummarizerModel)
+	judge := managerForModel(t, client, mnJudgeModel)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 55*time.Minute)
 	defer cancel()

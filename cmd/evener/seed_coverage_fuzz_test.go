@@ -45,7 +45,7 @@ func FuzzRootCommandSeedCoverage(f *testing.F) {
 			{"profile config", TestBuildInitialProfile_ConfigPath},
 			{"profile schema", TestBuildInitialProfile_ConfigPathInvalidOutputSchema},
 			{"profile unknown", TestBuildInitialProfile_UnknownInstanceError},
-			{"profile materialized", TestBuildInitialProfile_MaterializedInstance},
+			{"profile materialized", TestBuildInitialProfile_CuratedInstance},
 			{"serve bare model", TestRunServe_BareModelRejected},
 			{"serve missing model", TestRunServe_MissingModel},
 			{"serve env", TestPrintServeEnvVars_IncludesOpenAIResponsesContinuation},

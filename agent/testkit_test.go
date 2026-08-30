@@ -2,6 +2,7 @@ package agent
 
 import (
 	"fmt"
+	"maps"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -72,13 +73,18 @@ func newSession(t *testing.T, opts ...sessionOpt) *Session {
 		fn(&o)
 	}
 	if o.client == nil {
-		o.client = llm.NewClient()
 		if len(o.adapters) == 0 {
+			// The default fixture needs no registry: openai is a curated
+			// implicit id, so a bare client resolves it on the embedded one.
+			o.client = llm.NewClient()
 			o.client.Register(&fakeAdapter{name: "openai", steps: o.steps})
+		} else {
+			o.client = registryClient(t, nil, o.adapters...)
 		}
-	}
-	for _, a := range o.adapters {
-		o.client.Register(a)
+	} else {
+		for _, a := range o.adapters {
+			o.client.Register(a)
+		}
 	}
 	if o.dir == "" {
 		o.dir = sharedSessionWorkspace
@@ -108,21 +114,33 @@ func newSession(t *testing.T, opts ...sessionOpt) *Session {
 	return sess
 }
 
-// registryClient builds a client whose resolutions come from a hermetic
-// registry carrying instances, with no user layer, no cache, and no
-// environment. Supplied adapters are registered as overrides; every remaining
-// instance the registry knows (the credential-less implicit ones included)
-// gets a mute fake, so no test client can reach a real transport.
+// registryClient builds a client whose resolutions come from the fixture
+// registry extended with instances, with no user layer, no cache, and no
+// environment. Supplied adapters are registered as overrides, and an adapter
+// name the registry does not already know is injected as an instance so the
+// profile for it resolves. Every remaining instance the registry knows (the
+// credential-less implicit ones included) gets a mute fake, so no test client
+// can reach a real transport.
 func registryClient(t *testing.T, instances map[string]registry.Provider, adapters ...llm.ProviderAdapter) *llm.Client {
 	t.Helper()
-	r, err := registry.Load(
-		registry.WithOffline(true), registry.WithoutCache(), registry.WithNoUserLayer(),
-		registry.WithStateRoot(t.TempDir()),
-		registry.WithEnv(func(string) (string, bool) { return "", false }),
-		registry.WithInstances(instances),
-	)
-	if err != nil {
-		t.Fatalf("registryClient: %v", err)
+	merged := map[string]registry.Provider{}
+	maps.Copy(merged, instances)
+	for _, a := range adapters {
+		name := a.Name()
+		if _, ok := merged[name]; ok {
+			continue
+		}
+		if _, ok := testRegistryInstances()[name]; ok {
+			continue
+		}
+		merged[name] = adapterInstance(name)
+	}
+	r := testRegistry(t)
+	if len(merged) > 0 {
+		var err error
+		if r, err = testRegistryWith(merged); err != nil {
+			t.Fatalf("registryClient: %v", err)
+		}
 	}
 	c := llm.NewClient(llm.WithRegistry(r))
 	covered := map[string]bool{}
@@ -136,6 +154,16 @@ func registryClient(t *testing.T, instances map[string]registry.Provider, adapte
 		}
 	}
 	return c
+}
+
+// adapterInstance is the registry entry a test adapter's name needs when it is
+// not a curated id: an unreachable openai-compatible gateway, so a profile for
+// it resolves and only the override ever serves it.
+func adapterInstance(name string) registry.Provider {
+	return registry.Provider{
+		Base: "openai-compatible", APIKey: "test",
+		Transport: registry.Transport{BaseURL: "http://test.invalid/v1"},
+	}
 }
 
 // --- deterministic clock ---

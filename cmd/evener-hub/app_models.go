@@ -386,28 +386,23 @@ func (s *WebServer) fetchLiveModels(ctx context.Context) []appwire.ModelDescript
 	}
 	s.liveModels.mu.Unlock()
 
-	client, _, _, err := liveModelLoadClient()
+	client, err := liveModelLoadClient("")
 	if err != nil || client == nil {
 		return nil
 	}
-	cat := llm.EmbeddedModelCatalog()
 	var out []appwire.ModelDescriptor
-	for _, provider := range client.ProviderNames() {
-		tag := client.BehaviorTagOf(provider)
-		if tag == "openrouter-anthropic" {
+	for _, inst := range client.Registry().Instances() {
+		if inst.Hidden {
 			continue
 		}
 		listCtx, cancel := context.WithTimeout(ctx, 8*time.Second)
-		models, listErr := client.ListModels(listCtx, provider)
+		listing, listErr := client.Models(listCtx, inst.Name)
 		cancel()
 		if listErr != nil {
 			continue
 		}
-		for _, model := range models {
-			if !cat.VisibleLiveModel(tag, model) {
-				continue
-			}
-			out = append(out, cmdutil.ModelDescriptorFromInfo(provider, model))
+		for _, m := range listing.Models {
+			out = append(out, cmdutil.ModelDescriptorFromResolved(m))
 		}
 	}
 	sortModelDescriptors(out)

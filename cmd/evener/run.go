@@ -205,10 +205,11 @@ func run(ctx context.Context, cfg runConfig) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
-	client, provCfg, hasProvConfig, err := runLoadClient(llm.WithStateDir(stateDir))
+	client, err := runLoadClient(stateDir)
 	if err != nil {
 		return fmt.Errorf("LLM client setup: %w", err)
 	}
+	printRegistryNotices(cfg.stderr, client)
 	if err := ctx.Err(); err != nil {
 		return err
 	}
@@ -256,7 +257,7 @@ func run(ctx context.Context, cfg runConfig) error {
 		}
 	}
 
-	profile, err := buildInitialProfile(provCfg, modelRef, cfg.outputSchema)
+	profile, err := buildInitialProfile(client, modelRef, cfg.outputSchema)
 	if err != nil {
 		return err
 	}
@@ -302,7 +303,7 @@ func run(ctx context.Context, cfg runConfig) error {
 		TurnEndsProcess:             true,
 		SystemPromptAsUser:          cfg.systemPromptAsUser,
 		OpenAIResponsesContinuation: openAIResponsesContinuation,
-		ResolveProfile:              cmdutil.BuildResolveProfile(provCfg, hasProvConfig),
+		ResolveProfile:              cmdutil.BuildResolveProfile(client),
 	}
 	if cfg.maxSubagentDepth >= 0 {
 		baseSessionCfg.MaxSubagentDepth = cfg.maxSubagentDepth

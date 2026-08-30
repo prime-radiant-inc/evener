@@ -40,7 +40,7 @@ func TestDescribeImage_ClampsEffortToProfileLevels(t *testing.T) {
 	c.Register(adapter)
 
 	// Model tops out at "high" (no xhigh/max), but the session requests "max".
-	profile := NewOpenAIProfile("m").WithLiveModelInfo(llm.ModelInfo{ReasoningEffortLevels: []string{"low", "medium", "high"}})
+	profile := withEffortLevels(NewOpenAIProfile("m"), "low", "medium", "high")
 	sess, err := NewSession(c, profile, execenv.NewLocalExecutionEnvironment(dir), SessionConfig{
 		StateDir:        dir,
 		ReasoningEffort: "max",
@@ -79,9 +79,7 @@ func TestDescribeImage_UsesLowEffortIndependentOfSession(t *testing.T) {
 	}
 	c := llm.NewClient()
 	c.Register(adapter)
-	profile := NewOpenAIProfile("m").WithLiveModelInfo(llm.ModelInfo{
-		ReasoningEffortLevels: llm.ReasoningEffortVocabulary(),
-	})
+	profile := withEffortLevels(NewOpenAIProfile("m"), llm.ReasoningEffortVocabulary()...)
 	sess, err := NewSession(c, profile, execenv.NewLocalExecutionEnvironment(dir), SessionConfig{
 		StateDir:        dir,
 		ReasoningEffort: "max",
@@ -418,9 +416,7 @@ func TestDescribeImage_CancelsTheSideChannelOnTimeout(t *testing.T) {
 		started:  started,
 		canceled: canceled,
 	}
-	profile := NewOpenAIProfile("m").WithLiveModelInfo(llm.ModelInfo{
-		ReasoningEffortLevels: llm.ReasoningEffortVocabulary(),
-	})
+	profile := withEffortLevels(NewOpenAIProfile("m"), llm.ReasoningEffortVocabulary()...)
 	sess := newSession(t, withAdapter(blocking), withProfile(profile), withDir(dir), withConfig(SessionConfig{
 		StateDir: dir,
 		testOnly: testConfig{visionSideChannelTimeout: 20 * time.Millisecond},

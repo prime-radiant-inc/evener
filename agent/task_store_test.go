@@ -517,21 +517,20 @@ func TestTaskListSchema_ReasoningEffortEnumPerProvider(t *testing.T) {
 	cases := []struct {
 		name    string
 		profile *provider.Profile
-		want    []string
 	}{
-		{"openai", NewOpenAIProfile("test"), []string{"low", "medium", "high", "xhigh"}},
-		{"anthropic", newAnthropicProfile("test"), []string{"low", "medium", "high", "max"}},
-		{"gemini", newGeminiProfile("test"), []string{"low", "medium", "high"}},
+		{"openai", NewOpenAIProfile("gpt-5.2")},
+		{"anthropic", newAnthropicProfile("claude-opus-4-6")},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			if got := tc.profile.ReasoningEffortLevels(); !reflect.DeepEqual(got, tc.want) {
-				t.Fatalf("ReasoningEffortLevels: got %v, want %v", got, tc.want)
+			want := tc.profile.ReasoningEffortLevels()
+			if len(want) == 0 {
+				t.Fatalf("%s/%s advertises no effort ladder", tc.profile.ID(), tc.profile.Model())
 			}
 			// The schema enum additionally carries the "inherit" sentinel so
 			// strict-mode providers (which force-require the property) let the
 			// model decline to override the session's effort.
-			wantEnum := append(append([]string(nil), tc.want...), "inherit")
+			wantEnum := append(append([]string(nil), want...), "inherit")
 			// The enum should surface in the task_list update schema.
 			var td *llm.ToolDefinition
 			for i := range tc.profile.ToolDefinitions() {

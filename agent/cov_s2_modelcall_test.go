@@ -43,14 +43,14 @@ func TestS2Cov_MaybeWarnContextUsage(t *testing.T) {
 	go col.drain(sess)
 
 	// A tiny context window makes even a small request cross the 80% threshold.
-	small := NewOpenAIProfile("gpt-5.2").WithLiveModelInfo(llm.ModelInfo{ContextWindow: 4})
+	small := WithContextWindow(NewOpenAIProfile("gpt-5.2"), 4)
 	bigReq := llm.Request{Messages: []llm.Message{llm.User(strings.Repeat("token ", 200))}}
 	if !sess.maybeWarnContextUsage(small, bigReq) {
 		t.Fatal("expected a context-usage warning over threshold")
 	}
 
 	// A huge window with a tiny request stays under the threshold.
-	big := NewOpenAIProfile("gpt-5.2").WithLiveModelInfo(llm.ModelInfo{ContextWindow: 1_000_000})
+	big := WithContextWindow(NewOpenAIProfile("gpt-5.2"), 1_000_000)
 	if sess.maybeWarnContextUsage(big, llm.Request{Messages: []llm.Message{llm.User("hi")}}) {
 		t.Fatal("did not expect a warning under threshold")
 	}

@@ -9,6 +9,7 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"primeradiant.com/evener/internal/credentials"
@@ -78,6 +79,9 @@ func FuzzMainBootstrapPass6(f *testing.F) {
 		case 1:
 			deps.loadCredentials = func(string) (*credentials.Store, error) { return nil, stop }
 		case 2:
+			// A providers.toml the legacy descriptor reader cannot parse is a
+			// warning, not a stop: the registry is what a spawned session
+			// resolves against.
 			deps.loadProviderConfig = func(string) (providercfg.Config, bool, error) {
 				return providercfg.Config{}, false, stop
 			}
@@ -109,6 +113,15 @@ func FuzzMainBootstrapPass6(f *testing.F) {
 
 		var stderr bytes.Buffer
 		err := runMain([]string{"-addr", cfg.Addr, "-config", filepath.Join(root, "hub.toml"), "-evener", "/bin/evener"}, &stderr, deps)
+		if mode == 2 {
+			if err != nil {
+				t.Fatalf("mode 2: an unparseable providers.toml must not stop the hub: %v", err)
+			}
+			if !strings.Contains(stderr.String(), "providers config:") {
+				t.Fatalf("mode 2: the hub must announce the degraded config: %s", stderr.String())
+			}
+			return
+		}
 		if mode <= 3 || mode == 9 {
 			if !errors.Is(err, stop) {
 				t.Fatalf("mode %d: error = %v, output=%s", mode, err, stderr.String())

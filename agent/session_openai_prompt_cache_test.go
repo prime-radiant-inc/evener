@@ -127,7 +127,7 @@ func TestOpenAIPromptCacheDefaults_PreserveExplicitRequestValues(t *testing.T) {
 // eligibility is the resolved row's decision at dispatch.
 func TestPromptCacheDefaults_StampedForRenamedInstance(t *testing.T) {
 	t.Parallel()
-	renamedProfile := WithProviderID(NewOpenAIProfile("gpt-5.5"), "work")
+	renamedProfile := namedOpenAIInstanceProfile("work", "gpt-5.5")
 	sess := &Session{id: "sess-abc", profile: renamedProfile}
 	req := llm.Request{Model: "gpt-5.5", Provider: renamedProfile.ID()}
 

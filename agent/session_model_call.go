@@ -1348,7 +1348,9 @@ func (s *Session) instanceProtocol(name string) string {
 // claude-sonnet-4-5, and both address the same deployment. Otherwise the
 // matched row's id is the canonical one, which folds a dated snapshot the
 // catalog does not carry as its own row onto the base row the registry
-// matched it against.
+// matched it against. A dated snapshot that IS its own row folds onto the
+// undated row when the instance serves one — applied after the alias fold, so
+// every spelling of one deployment lands on the same id.
 func (s *Session) canonicalModelID(instance, model string) string {
 	trimmed := strings.TrimSpace(model)
 	if s.client == nil {
@@ -1358,11 +1360,17 @@ func (s *Session) canonicalModelID(instance, model string) string {
 	if err != nil {
 		return trimmed
 	}
-	if target := strings.TrimSpace(res.Model.AliasOf); target != "" {
-		return target
+	id := strings.TrimSpace(res.Model.AliasOf)
+	if id == "" {
+		id = res.Model.ID
 	}
-	if res.Model.ID != "" {
-		return res.Model.ID
+	if id == "" {
+		id = trimmed
 	}
-	return trimmed
+	if base := registry.StripDatedSuffix(id); base != id {
+		if row, err := s.client.Resolve(instance + "/" + base); err == nil && !row.Synthesized {
+			return base
+		}
+	}
+	return id
 }

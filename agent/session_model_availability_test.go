@@ -14,7 +14,6 @@ import (
 
 	"primeradiant.com/evener/agent/execenv"
 	"primeradiant.com/evener/agent/internal/modelavailability"
-	"primeradiant.com/evener/agent/provider"
 	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/llm"
 	"primeradiant.com/evener/llm/registry"
@@ -339,7 +338,7 @@ func TestNewSessionBoundedSnapshotRetainsSelectedProvider(t *testing.T) {
 		nameToTag[name] = "openai"
 	}
 	client.SetNameToTag(nameToTag)
-	profile := provider.WithProviderID(NewOpenAIProfile("gpt-5.5"), selectedName)
+	profile := namedInstanceProfile(selectedName, "openai", "gpt-5.5")
 
 	sess, err := NewSession(client, profile, execenv.NewLocalExecutionEnvironment(t.TempDir()), SessionConfig{})
 	if err != nil {

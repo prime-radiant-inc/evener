@@ -13,8 +13,10 @@ import (
 
 	"primeradiant.com/evener/agent/internal/agenttest"
 	"primeradiant.com/evener/agent/internal/sessionlog"
+	"primeradiant.com/evener/agent/provider"
 	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/llm"
+	"primeradiant.com/evener/llm/registry"
 )
 
 // FuzzSessionNamerProgram drives the session naming pipeline with an offline
@@ -104,7 +106,9 @@ func FuzzSessionNamerProgram(f *testing.F) {
 		if _, err := nameSession(context.Background(), llm.NewClient(), profile, source, " ", noNamerSleep); err == nil {
 			t.Fatal("empty source text was accepted")
 		}
-		if _, err := nameSession(context.Background(), llm.NewClient(), NewOpenAIProfile(""), source, text, noNamerSleep); err == nil {
+		// A record with no model id: the degenerate profile the namer must refuse.
+		emptyModel := provider.FromResolved(registry.Resolved{Instance: "openai"}, nil)
+		if _, err := nameSession(context.Background(), llm.NewClient(), emptyModel, source, text, noNamerSleep); err == nil {
 			t.Fatal("empty model was accepted")
 		}
 		failureClient := llm.NewClient()

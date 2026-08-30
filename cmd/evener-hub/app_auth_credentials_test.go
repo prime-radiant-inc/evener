@@ -18,7 +18,7 @@ import (
 	"primeradiant.com/evener/internal/credentials"
 	"primeradiant.com/evener/llm"
 	"primeradiant.com/evener/llm/providercfg"
-	"primeradiant.com/evener/llm/providers/openaicompat"
+	"primeradiant.com/evener/llm/registry"
 )
 
 type credentialProbeFakeClient struct {
@@ -29,7 +29,7 @@ type credentialProbeFakeClient struct {
 	listErr error
 }
 
-func (f *credentialProbeFakeClient) ListModels(ctx context.Context, _ string) ([]llm.ModelInfo, error) {
+func (f *credentialProbeFakeClient) Models(ctx context.Context, _ string) (llm.ModelListing, error) {
 	f.mu.Lock()
 	f.calls++
 	started := f.calls == 1 && f.started != nil
@@ -41,10 +41,10 @@ func (f *credentialProbeFakeClient) ListModels(ctx context.Context, _ string) ([
 		select {
 		case <-f.release:
 		case <-ctx.Done():
-			return nil, ctx.Err()
+			return llm.ModelListing{}, ctx.Err()
 		}
 	}
-	return nil, f.listErr
+	return llm.ModelListing{}, f.listErr
 }
 
 func (f *credentialProbeFakeClient) Close() error { return nil }
@@ -269,14 +269,22 @@ func TestAuthTestCredentialsUsesConfiguredBaseURLAndHeadersAtFakeHTTPBoundary(t 
 	}))
 	t.Cleanup(server.Close)
 
-	adapter := openaicompat.NewForInstance(openaicompat.OpenAICompatInstanceParams{
-		Name:              "gateway",
-		BaseURL:           server.URL,
-		APIKey:            apiKey,
-		CredentialHeaders: map[string]string{"X-Test-Credential": headerSecret},
-	})
-	client := llm.NewClient()
-	client.Register(adapter)
+	// No override: the probe reaches the fake server through the registry's
+	// own transport, which is what a spawned session would use.
+	r, err := registry.Load(
+		registry.WithOffline(true), registry.WithoutCache(), registry.WithNoUserLayer(),
+		registry.WithStateRoot(t.TempDir()),
+		registry.WithEnv(func(string) (string, bool) { return "", false }),
+		registry.WithInstances(map[string]registry.Provider{"gateway": {
+			Base: "openai-compatible", APIKey: apiKey,
+			Transport:         registry.Transport{BaseURL: server.URL},
+			CredentialHeaders: map[string]string{"X-Test-Credential": headerSecret},
+		}}),
+	)
+	if err != nil {
+		t.Fatalf("registry: %v", err)
+	}
+	client := llm.NewClient(llm.WithRegistry(r))
 	cfg := providercfg.Config{Instances: []providercfg.InstanceConfig{{
 		Name:              "gateway",
 		Type:              "openai-compatible",

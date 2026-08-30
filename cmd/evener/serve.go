@@ -33,7 +33,6 @@ import (
 	"primeradiant.com/evener/identifier"
 	"primeradiant.com/evener/internal/plugins"
 	"primeradiant.com/evener/llm"
-	"primeradiant.com/evener/llm/providercfg"
 	_ "primeradiant.com/evener/llm/providers/all"
 	"primeradiant.com/evener/rendezvous"
 	"primeradiant.com/evener/server"
@@ -107,9 +106,9 @@ type serveDeps struct {
 	seedMarketplaces func() error
 	resolvePlugins   func([]string, *[]string) (plugins.LaunchPluginResolution, error)
 	resolveMeta      func(string, string, bool) (schema.SessionMeta, error)
-	newClient        func(string, io.Writer) (*llm.Client, providercfg.Config, bool, func() error, error)
+	newClient        func(string, io.Writer) (*llm.Client, func() error, error)
 	attachAPILogger  func(*llm.Client, string, io.Writer) (func(string) error, func() error, error)
-	buildProfile     func(providercfg.Config, cmdutil.ModelRef, string) (*provider.Profile, error)
+	buildProfile     func(*llm.Client, cmdutil.ModelRef, string) (*provider.Profile, error)
 	applyCheap       func(*provider.Profile, string, *llm.Client) (*provider.Profile, error)
 	newSession       func(*llm.Client, *provider.Profile, execenv.ExecutionEnvironment, agent.SessionConfig) (*agent.Session, error)
 	restoreSession   func(*llm.Client, *provider.Profile, execenv.ExecutionEnvironment, schema.SessionMeta, agent.RestoreSessionConfig) (*agent.Session, error)
@@ -205,17 +204,17 @@ func defaultServeDeps() serveDeps {
 	}
 }
 
-func newServeLLMClient(stateDir string, warnings io.Writer) (*llm.Client, providercfg.Config, bool, func() error, error) {
-	client, cfg, hasConfig, closeClient, err := newUnloggedServeLLMClient(stateDir, warnings)
+func newServeLLMClient(stateDir string, warnings io.Writer) (*llm.Client, func() error, error) {
+	client, closeClient, err := newUnloggedServeLLMClient(stateDir, warnings)
 	if err != nil {
-		return nil, providercfg.Config{}, false, nil, err
+		return nil, nil, err
 	}
 	closeAPILog, err := serveAttachAPILogger(client, stateDir, warnings)
 	if err != nil {
 		_ = closeClient()
-		return nil, providercfg.Config{}, false, nil, err
+		return nil, nil, err
 	}
-	return client, cfg, hasConfig, func() error {
+	return client, func() error {
 		apiLogErr := closeAPILog()
 		clientErr := closeClient()
 		if apiLogErr != nil {
@@ -225,12 +224,26 @@ func newServeLLMClient(stateDir string, warnings io.Writer) (*llm.Client, provid
 	}, nil
 }
 
-func newUnloggedServeLLMClient(stateDir string, _ io.Writer) (*llm.Client, providercfg.Config, bool, func() error, error) {
-	client, cfg, hasConfig, err := serveLoadClient(llm.WithStateDir(stateDir))
+func newUnloggedServeLLMClient(stateDir string, warnings io.Writer) (*llm.Client, func() error, error) {
+	client, err := serveLoadClient(stateDir)
 	if err != nil {
-		return nil, providercfg.Config{}, false, nil, fmt.Errorf("LLM client: %w", err)
+		return nil, nil, fmt.Errorf("LLM client: %w", err)
 	}
-	return client, cfg, hasConfig, func() error { return nil }, nil
+	printRegistryNotices(warnings, client)
+	return client, func() error { return nil }, nil
+}
+
+// printRegistryNotices writes the registry's load warnings and its stray
+// OAuth records to w at startup (spec §9.5): a misconfigured instance or an
+// unreadable auth record is announced once, not swallowed.
+func printRegistryNotices(w io.Writer, client *llm.Client) {
+	if w == nil || client == nil {
+		return
+	}
+	r := client.Registry()
+	for _, notice := range append(r.Warnings(), r.StrayOAuthRecords()...) {
+		_, _ = fmt.Fprintln(w, "warning:", notice)
+	}
 }
 
 func runServe(args []string) error {
@@ -404,7 +417,7 @@ func runServeWithDeps(args []string, deps serveDeps) error {
 	}
 
 	// Create LLM client and session.
-	client, provCfg, hasProvConfig, closeClient, err := deps.newClient(sd, os.Stderr)
+	client, closeClient, err := deps.newClient(sd, os.Stderr)
 	if err != nil {
 		return err
 	}
@@ -419,7 +432,7 @@ func runServeWithDeps(args []string, deps serveDeps) error {
 			return err
 		}
 	}
-	profile, err := deps.buildProfile(provCfg, modelRef, *outputSchema)
+	profile, err := deps.buildProfile(client, modelRef, *outputSchema)
 	if err != nil {
 		return err
 	}
@@ -462,7 +475,7 @@ func runServeWithDeps(args []string, deps serveDeps) error {
 		SystemPromptAsUser:          *systemPromptAsUser,
 		ModelFallbacks:              []string(modelFallbacks),
 		OpenAIResponsesContinuation: resolvedOpenAIResponsesContinuation,
-		ResolveProfile:              cmdutil.BuildResolveProfile(provCfg, hasProvConfig),
+		ResolveProfile:              cmdutil.BuildResolveProfile(client),
 	}
 	if *maxSubagentDepth >= 0 {
 		sessionCfg.MaxSubagentDepth = *maxSubagentDepth
@@ -1271,15 +1284,14 @@ func printServeEnvVars(w io.Writer) {
 	_ = tw.Flush()
 }
 
-// buildInitialProfile constructs the session's initial *Profile from
-// the provider config. Instance names (e.g. "work" defined in providers.toml)
-// are resolved via cmdutil.ResolveProfileWithLiveWindow, which sources the
-// context window from the provider's live /models endpoint for openai-compat
-// providers (falling back to the embedded catalog when unavailable).
-// outputSchemaJSON and EVENER_ALLOWED_DECISIONS are applied in this app layer so
-// callers see the same communicate-tool schema regardless of model.
-func buildInitialProfile(cfg providercfg.Config, modelRef cmdutil.ModelRef, outputSchemaJSON string) (*provider.Profile, error) {
-	raw, err := cmdutil.ResolveProfileWithLiveWindow(cfg, modelRef.Qualified())
+// buildInitialProfile constructs the session's initial *Profile by resolving
+// the reference on the client's registry, so an instance name defined in
+// providers.toml ("work") and a curated id resolve the same way and carry the
+// same facts. outputSchemaJSON and EVENER_ALLOWED_DECISIONS are applied in
+// this app layer so callers see the same communicate-tool schema regardless of
+// model.
+func buildInitialProfile(client *llm.Client, modelRef cmdutil.ModelRef, outputSchemaJSON string) (*provider.Profile, error) {
+	raw, err := cmdutil.ResolveProfile(client, modelRef.Qualified())
 	if err != nil {
 		return nil, err
 	}

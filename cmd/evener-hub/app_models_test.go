@@ -11,11 +11,12 @@ import (
 	"primeradiant.com/evener/cmd/evener-hub/internal/hubcore"
 	"primeradiant.com/evener/llm"
 	"primeradiant.com/evener/llm/providercfg"
+	"primeradiant.com/evener/llm/registry"
 )
 
 type modelMetadataAdapter struct {
 	name   string
-	models []llm.ModelInfo
+	models []registry.Model
 }
 
 func (a *modelMetadataAdapter) Name() string { return a.name }
@@ -28,25 +29,40 @@ func (a *modelMetadataAdapter) Stream(context.Context, llm.Request) (llm.Stream,
 	return nil, nil
 }
 
-func (a *modelMetadataAdapter) ListModels(context.Context) ([]llm.ModelInfo, error) {
-	return append([]llm.ModelInfo(nil), a.models...), nil
+func (a *modelMetadataAdapter) LiveModels(context.Context) ([]registry.Model, error) {
+	return append([]registry.Model(nil), a.models...), nil
 }
 
 func TestFetchLiveModels_KimiContextWindow(t *testing.T) {
-	client := llm.NewClient()
+	r, err := registry.Load(
+		registry.WithOffline(true), registry.WithoutCache(), registry.WithNoUserLayer(),
+		registry.WithStateRoot(t.TempDir()),
+		registry.WithEnv(func(string) (string, bool) { return "", false }),
+		registry.WithInstances(map[string]registry.Provider{
+			"kimi-anthropic-api": {Base: "kimi-for-coding", APIKey: "k"},
+		}),
+	)
+	if err != nil {
+		t.Fatalf("registry: %v", err)
+	}
+	client := llm.NewClient(llm.WithRegistry(r))
 	client.Register(&modelMetadataAdapter{
 		name: "kimi-anthropic-api",
-		models: []llm.ModelInfo{
-			{ID: "k3", DisplayName: "Kimi K3"},
-			{ID: "k3-256k", DisplayName: "Kimi K3 256K", ContextWindow: 123_456},
+		models: []registry.Model{
+			{ID: "k3"},
+			{ID: "k3-256k", Caps: registry.Caps{ContextWindow: new(123_456)}},
 		},
 	})
-	client.SetNameToTag(map[string]string{"kimi-anthropic-api": "kimi-anthropic"})
+	// Every other instance the registry knows gets a mute lister so no test
+	// client can reach a real transport.
+	for _, inst := range r.Instances() {
+		if inst.Name != "kimi-anthropic-api" {
+			client.Register(&modelMetadataAdapter{name: inst.Name})
+		}
+	}
 
 	oldLoadClient := liveModelLoadClient
-	liveModelLoadClient = func(...llm.EnvOption) (*llm.Client, providercfg.Config, bool, error) {
-		return client, providercfg.Config{}, true, nil
-	}
+	liveModelLoadClient = func(string) (*llm.Client, error) { return client, nil }
 	t.Cleanup(func() {
 		liveModelLoadClient = oldLoadClient
 	})

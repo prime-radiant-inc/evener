@@ -11,7 +11,6 @@ import (
 	"primeradiant.com/evener/agent/plugin"
 	"primeradiant.com/evener/agent/provider"
 	"primeradiant.com/evener/llm"
-	"primeradiant.com/evener/llm/providercfg"
 	"primeradiant.com/evener/llm/registry"
 )
 
@@ -302,7 +301,7 @@ func TestSelectSubagentModel_PluginAvailabilityPrecedence(t *testing.T) {
 func TestSelectSubagentModel_BareIDPrefersTheSessionInstance(t *testing.T) {
 	t.Parallel()
 
-	base := WithProviderID(newAnthropicProfile("claude-opus-4-6"), "work")
+	base := namedInstanceProfile("work", "anthropic", "claude-opus-4-6")
 	adapter := &pluginModelListAdapter{models: listedModels("claude-opus-4-6", "claude-sonnet-4-6")}
 	adapter.name = "work"
 	client := registryClient(t, map[string]registry.Provider{
@@ -321,8 +320,8 @@ func TestSelectSubagentModel_BareIDPrefersTheSessionInstance(t *testing.T) {
 		t.Fatalf("selectSubagentModel: %v", err)
 	}
 	assertSelectedPluginModel(t, got, "claude-sonnet-4-6", "work", "claude-sonnet-4-6", 764_002)
-	if got.profile.BehaviorTag() != "anthropic" {
-		t.Errorf("behavior tag = %q, want anthropic", got.profile.BehaviorTag())
+	if got.profile.Surface() != registry.SurfaceAnthropic {
+		t.Errorf("surface = %q, want anthropic", got.profile.Surface())
 	}
 	if levels := strings.Join(got.profile.ReasoningEffortLevels(), ","); levels != "low,high" {
 		t.Errorf("reasoning effort levels = %q, want the registry's low,high", levels)
@@ -343,7 +342,10 @@ func TestSelectSubagentModel_UnservedIDIsUnavailableWithoutListing(t *testing.T)
 	client := registryClient(t, map[string]registry.Provider{
 		"kimi-anthropic": {Base: "moonshotai", APIKey: "k", Models: modelRows("k3")},
 	}, adapter)
-	sess := newPluginModelSelectionSession(t, newKimiAnthropicProfile("k3"), client, adapter, "sonnet", nil)
+	base := resolveTestProfile("kimi-anthropic", map[string]registry.Provider{
+		"kimi-anthropic": {Base: "moonshotai", APIKey: "k", Models: modelRows("k3")},
+	}, "k3")
+	sess := newPluginModelSelectionSession(t, base, client, adapter, "sonnet", nil)
 
 	got, err := sess.selectSubagentModel(context.Background(), "k3", "reviewer")
 	if err != nil {
@@ -415,15 +417,16 @@ func TestSelectSubagentModel_QualifiedPluginRefUsesTheSessionResolver(t *testing
 func TestSelectSubagentModel_UpstreamNamespaceRefKeepsItsSlash(t *testing.T) {
 	t.Parallel()
 
-	base := newOpenRouterAnthropicProfile("anthropic/claude-opus-4-6")
-	adapter := &pluginModelListAdapter{models: listedModels("anthropic/claude-opus-4-6", "anthropic/claude-sonnet-4-6")}
-	adapter.name = "openrouter-anthropic"
-	client := registryClient(t, map[string]registry.Provider{
-		"openrouter-anthropic": {Base: "openrouter", APIKey: "k", Models: map[string]registry.Model{
+	orInstance := map[string]registry.Provider{
+		"openrouter-anthropic": {Base: "openrouter", Protocol: registry.ProtocolAnthropic, Surface: registry.SurfaceAnthropic, APIKey: "k", Models: map[string]registry.Model{
 			"anthropic/claude-opus-4-6":   {},
 			"anthropic/claude-sonnet-4-6": {Caps: registry.Caps{ContextWindow: new(775_003)}},
 		}},
-	}, adapter)
+	}
+	base := resolveTestProfile("openrouter-anthropic", orInstance, "anthropic/claude-opus-4-6")
+	adapter := &pluginModelListAdapter{models: listedModels("anthropic/claude-opus-4-6", "anthropic/claude-sonnet-4-6")}
+	adapter.name = "openrouter-anthropic"
+	client := registryClient(t, orInstance, adapter)
 	sess := newPluginModelSelectionSession(t, base, client, adapter, "anthropic/claude-sonnet-4-6", nil)
 
 	got, err := sess.selectSubagentModel(context.Background(), "", "reviewer")
@@ -522,12 +525,7 @@ func TestResolvePluginAgentModel_CustomAndExactMembership(t *testing.T) {
 func TestResolvePluginAgentModel_CarriesRegistryFactsAndKeepsCommunicateOverride(t *testing.T) {
 	t.Parallel()
 
-	base := resolveTestProfile(providercfg.InstanceConfig{
-		Name:     "work",
-		Type:     "openai",
-		APIStyle: providercfg.StyleChatCompletions,
-	}, "gpt-5.2")
-	base = WithAllowedDecisions(base, []string{"keep_config"})
+	base := WithAllowedDecisions(namedInstanceProfile("work", "openai", "gpt-5.2"), []string{"keep_config"})
 	wantCommunicate := subagentModelCommunicateDefinition(t, base)
 	adapter := &pluginModelListAdapter{models: listedModels("gpt-5.2", "gpt-5.3")}
 	adapter.name = "work"
@@ -582,7 +580,7 @@ func TestResolvePluginAgentRef(t *testing.T) {
 	if err != nil {
 		t.Fatalf("registry: %v", err)
 	}
-	base := WithProviderID(NewOpenAIProfile("shared-model"), "work")
+	base := namedInstanceProfile("work", "openai", "shared-model")
 
 	tests := []struct {
 		name       string

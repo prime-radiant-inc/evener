@@ -63,9 +63,9 @@ func TestForcedNoteLive(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewFromAvailableProviders: %v", err)
 	}
-	prof, err := provider.ResolveProfileFromConfig(cfg, "openai/gpt-5.5")
+	prof, err := provider.Resolve(client.Registry(), "openai/gpt-5.5")
 	if err != nil {
-		t.Fatalf("ResolveProfileFromConfig: %v", err)
+		t.Fatalf("Resolve openai/gpt-5.5: %v", err)
 	}
 
 	// The real window (272K) can't be forced small, so clamp thresholds to their

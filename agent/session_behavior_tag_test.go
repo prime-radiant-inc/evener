@@ -2,7 +2,7 @@ package agent
 
 // Tests that session.go provider-conditional behavior sites key on the
 // profile's registry identity rather than s.profile.ID() or req.Provider.
-// This ensures renamed provider instances (WithProviderID) keep the right
+// This ensures a provider instance under a user-assigned name keeps the right
 // behavior, and that chat-completions instances (surface "generic")
 // correctly do NOT get the real-openai behavior. The prompt-cache site moved
 // off this axis entirely — see session_openai_prompt_cache_test.go.
@@ -15,6 +15,7 @@ import (
 	"primeradiant.com/evener/agent/execenv"
 	"primeradiant.com/evener/agent/internal/tool"
 	"primeradiant.com/evener/llm"
+	"primeradiant.com/evener/llm/registry"
 )
 
 // openAISectionContent holds the raw content of the embedded OpenAI-specific
@@ -89,14 +90,14 @@ func webSearchIsWired(t *testing.T, sess *Session) bool {
 // instance (id="myai") would not get web_search registered.
 func TestBehaviorTag_Gemini_RenamedGoogleRegistersWebSearch(t *testing.T) {
 	t.Parallel()
-	// newGeminiProfile has id="gemini", tag="google".
-	// WithProviderID renames the id to "myai" while preserving tag="google".
-	renamedGemini := WithProviderID(newGeminiProfile("gemini-2.5-pro"), "myai")
+	// A google instance under a user-assigned name: id="myai",
+	// surface/protocol still google.
+	renamedGemini := namedInstanceProfile("myai", "google", "gemini-2.5-pro")
 	if renamedGemini.ID() != "myai" {
 		t.Fatalf("pre-condition: ID() = %q, want myai", renamedGemini.ID())
 	}
-	if renamedGemini.BehaviorTag() != "google" {
-		t.Fatalf("pre-condition: BehaviorTag() = %q, want google", renamedGemini.BehaviorTag())
+	if renamedGemini.Protocol() != registry.ProtocolGoogle {
+		t.Fatalf("pre-condition: Protocol() = %q, want google", renamedGemini.Protocol())
 	}
 
 	dir := t.TempDir()
@@ -106,8 +107,8 @@ func TestBehaviorTag_Gemini_RenamedGoogleRegistersWebSearch(t *testing.T) {
 	}
 
 	if !webSearchIsWired(t, sess) {
-		t.Fatalf("web_search not registered by registerCoreTools — renamed google instance (BehaviorTag=%q) must get web_search wired",
-			renamedGemini.BehaviorTag())
+		t.Fatalf("web_search not registered by registerCoreTools — renamed google instance (protocol %q) must get web_search wired",
+			renamedGemini.Protocol())
 	}
 }
 
@@ -125,8 +126,8 @@ func TestBehaviorTag_Gemini_OriginalGeminiRegistersWebSearch(t *testing.T) {
 	}
 
 	if !webSearchIsWired(t, sess) {
-		t.Fatalf("web_search not registered by registerCoreTools for unmodified gemini profile (BehaviorTag=%q)",
-			geminiProfile.BehaviorTag())
+		t.Fatalf("web_search not registered by registerCoreTools for unmodified gemini profile (protocol %q)",
+			geminiProfile.Protocol())
 	}
 }
 
@@ -136,8 +137,7 @@ func TestBehaviorTag_Gemini_OriginalGeminiRegistersWebSearch(t *testing.T) {
 // live /models entry says it does not gets no web_search.
 func TestBehaviorTag_Gemini_WithoutWebSearchDoesNotRegisterWebSearch(t *testing.T) {
 	t.Parallel()
-	profile := newGeminiProfile("gemini-2.5-pro").
-		WithLiveModelInfo(llm.ModelInfo{SupportsWebSearch: new(false)})
+	profile := withWebSearch(newGeminiProfile("gemini-2.5-pro"), false)
 	if profile.SupportsWebSearch() {
 		t.Fatal("pre-condition: SupportsWebSearch = true, want false")
 	}
@@ -162,8 +162,7 @@ func TestReapplyProviderTools_GoogleWithoutWebSearch(t *testing.T) {
 	if !searching.SupportsWebSearch() {
 		t.Fatal("pre-condition: the google profile must serve web search")
 	}
-	quiet := newGeminiProfile("gemini-2.5-pro").
-		WithLiveModelInfo(llm.ModelInfo{SupportsWebSearch: new(false)})
+	quiet := withWebSearch(newGeminiProfile("gemini-2.5-pro"), false)
 
 	s := &Session{reg: tool.NewRegistry(), env: execenv.NewLocalExecutionEnvironment(t.TempDir())}
 	s.reapplyProviderSpecificTools(NewOpenAIProfile("gpt-5.4"), quiet)
@@ -195,8 +194,8 @@ func TestBehaviorTag_Gemini_OpenAIDoesNotRegisterWebSearch(t *testing.T) {
 	}
 
 	if webSearchIsWired(t, sess) {
-		t.Fatalf("registerCoreTools wired web_search for openai (BehaviorTag=%q) — must use native web search instead",
-			openaiProfile.BehaviorTag())
+		t.Fatalf("registerCoreTools wired web_search for openai (protocol %q) — must use native web search instead",
+			openaiProfile.Protocol())
 	}
 }
 
@@ -216,8 +215,8 @@ func TestBehaviorTag_SectionResolver_RenamedOpenAILoadsOpenAISection(t *testing.
 	}}
 	c.Register(f)
 
-	// Renamed OpenAI instance: id="work", tag="openai".
-	renamedProfile := WithProviderID(NewOpenAIProfile("gpt-5.5"), "work")
+	// An openai instance under a user-assigned name: id="work".
+	renamedProfile := namedOpenAIInstanceProfile("work", "gpt-5.5")
 	sess, err := NewSession(c, renamedProfile, execenv.NewLocalExecutionEnvironment(dir), SessionConfig{
 		NoProjectPrompts: true,
 	})
@@ -233,14 +232,14 @@ func TestBehaviorTag_SectionResolver_RenamedOpenAILoadsOpenAISection(t *testing.
 	openAISection := openAISectionLiteral()
 	prompt, _ := sess.renderSystemPrompt(sess.env)
 	if !strings.Contains(prompt, openAISection) {
-		t.Fatalf("system prompt missing openai section — SectionResolver provider must be %q (behaviorTag), not %q (ID)",
-			renamedProfile.BehaviorTag(), renamedProfile.ID())
+		t.Fatalf("system prompt missing openai section — SectionResolver provider must be %q (surface), not %q (ID)",
+			renamedProfile.Surface(), renamedProfile.ID())
 	}
 }
 
 // TestBehaviorTag_SectionResolver_OpenAICompatibleDoesNotLoadOpenAISection
-// verifies that a chat-completions instance (tag="openai-compatible") does
-// NOT render the tools.provider-openai_append.md section.
+// verifies that a chat-completions instance (surface "generic") does NOT
+// render the tools.provider-openai_append.md section.
 func TestBehaviorTag_SectionResolver_OpenAICompatibleDoesNotLoadOpenAISection(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()

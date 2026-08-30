@@ -13,19 +13,36 @@ import (
 	"primeradiant.com/evener/agent/internal/agenttest"
 	"primeradiant.com/evener/agent/provider"
 	"primeradiant.com/evener/llm"
+	"primeradiant.com/evener/llm/registry"
 )
 
-const fallbackTestNamerProvider = "fallback-test-namer"
+// namedOpenAIProfile is a profile on an openai-backed instance under a
+// user-assigned name: the instance identity a fallback resolver hands back.
+func namedOpenAIProfile(t *testing.T, name, model string) *provider.Profile {
+	t.Helper()
+	r, err := registry.Load(
+		registry.WithOffline(true), registry.WithoutCache(), registry.WithNoUserLayer(),
+		registry.WithStateRoot(t.TempDir()),
+		registry.WithEnv(func(string) (string, bool) { return "", false }),
+		registry.WithInstances(map[string]registry.Provider{name: {Base: "openai", APIKey: "test"}}),
+	)
+	if err != nil {
+		t.Fatalf("registry: %v", err)
+	}
+	p, err := provider.Resolve(r, name+"/"+model)
+	if err != nil {
+		t.Fatalf("resolve %s/%s: %v", name, model, err)
+	}
+	return p
+}
 
-func withFallbackTestNamer(client *llm.Client, profile *provider.Profile) *provider.Profile {
-	client.Register(&agenttest.ScriptedAdapter{Provider: fallbackTestNamerProvider, Responder: func(request llm.Request) llm.Response {
-		return llm.Response{
-			Provider: fallbackTestNamerProvider,
-			Model:    request.Model,
-			Message:  llm.Assistant(`{"name":"Fallback Test"}`),
-		}
-	}})
-	return provider.WithCheapModel(profile, fallbackTestNamerProvider+"/namer")
+// withEffortLevels returns a copy of p whose row advertises the given ladder,
+// standing in for what a live listing does to a profile.
+func withEffortLevels(p *provider.Profile, levels ...string) *provider.Profile {
+	res := p.Resolved()
+	res.Caps.EffortValues = levels
+	res.Caps.Reasoning = new(true)
+	return p.WithResolved(res)
 }
 
 // kata cxw8: when the primary model returns a Permanent class error
@@ -135,7 +152,7 @@ func TestFallbackChain_SkipsEntryWhoseResolverFails(t *testing.T) {
 		if instance != "work" {
 			return nil, nil
 		}
-		return provider.WithProviderID(agent.NewOpenAIProfile(model), "work"), nil
+		return namedOpenAIProfile(t, "work", model), nil
 	}
 
 	policy := llm.RetryPolicy{MaxRetries: 0}
@@ -274,7 +291,7 @@ func TestFallbackChain_UsesSnapshotEffortClampedToFallback(t *testing.T) {
 	c.Register(f)
 
 	policy := llm.RetryPolicy{MaxRetries: 0}
-	profile := agent.NewOpenAIProfile("primary").WithLiveModelInfo(llm.ModelInfo{ReasoningEffortLevels: []string{"low", "medium", "high"}})
+	profile := withEffortLevels(agent.NewOpenAIProfile("primary"), "low", "medium", "high")
 	var err error
 	sess, err = agent.NewSession(c, withFallbackTestNamer(c, profile), execenv.NewLocalExecutionEnvironment(dir), agent.SessionConfig{
 		StateDir:        dir,

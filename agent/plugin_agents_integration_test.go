@@ -290,7 +290,9 @@ func TestSpawnAgent_PluginModelAvailability(t *testing.T) {
 
 		sess, err := NewSession(
 			c,
-			WithProviderID(newKimiAnthropicProfile("k3"), "kimi-anthropic-api"),
+			resolveTestProfile("kimi-anthropic-api", map[string]registry.Provider{
+				"kimi-anthropic-api": {Base: "moonshotai", APIKey: "k", Models: modelRows("k3", "k3-turbo")},
+			}, "k3"),
 			execenv.NewLocalExecutionEnvironment(dir),
 			SessionConfig{MaxSubagentDepth: 2},
 		)

@@ -3,48 +3,22 @@ package launchcheck
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"flag"
 	"fmt"
 	"io"
-	"net"
 	"os"
-	"path/filepath"
-	"slices"
-	"sort"
 	"strings"
 	"time"
 
 	"primeradiant.com/evener/agent/diagnostic"
-	"primeradiant.com/evener/agent/provider"
 	"primeradiant.com/evener/appwire"
 	"primeradiant.com/evener/buildinfo"
 	"primeradiant.com/evener/cmdutil"
-	"primeradiant.com/evener/envvars"
-	"primeradiant.com/evener/llm"
-	"primeradiant.com/evener/llm/providercfg"
 )
 
-// launchCheckLoadClient is the injectable hook for tests. Production code calls
-// cmdutil.LoadClient; tests may replace this to inject a stub client or config.
+// launchCheckLoadClient is the injectable hook for tests. Production code
+// calls cmdutil.LoadClient; tests may replace this to inject a stub client.
 var launchCheckLoadClient = cmdutil.LoadClient
-
-// launchCheckLoadProviderConfig is the injectable hook for model enumeration.
-// Production code uses the same config and credential loading path as
-// cmdutil.LoadClient, but launchCheckModels constructs each provider separately
-// so one broken instance does not hide all other launchable models.
-var launchCheckLoadProviderConfig = cmdutil.LoadProviderConfig
-
-// launchCheckLoadConfig resolves the providers config path (same logic as
-// LoadClient) and parses it. Returns (cfg, true, nil) when the file exists and
-// is valid, (cfg{}, false, nil) when absent, or (cfg{}, _, err) on parse error.
-var launchCheckLoadConfig = func() (providercfg.Config, bool, error) {
-	path := envvars.EVENERProvidersConfig.Getenv()
-	if path == "" {
-		path = filepath.Join(cmdutil.DefaultConfigRoot(), "providers.toml")
-	}
-	return providercfg.LoadFile(path)
-}
 
 type launchCheckModel struct {
 	Provider string `json:"provider"`
@@ -116,68 +90,42 @@ func RunLaunchCheck(args []string, stdout, stderr io.Writer) error {
 	return nil
 }
 
-// validateLaunchCheckProfile checks that the model ref names a known provider
-// or config instance. When a providers.toml exists (hasConfig=true),
-// it resolves via ResolveProfileFromConfig so custom instance names are valid;
-// otherwise it resolves via cmdutil.ResolveProfileForProvider, which
-// synthesizes a single-instance config from the provider string.
-//
-// Both branches are NETWORK-FREE: a validation probe must resolve without
-// credentials and must not issue the live /models lookup. Profile validation
-// only needs the config file, not a live client, so it uses
-// launchCheckLoadConfig rather than launchCheckLoadClient.
+// validateLaunchCheckProfile checks that the model ref resolves on the
+// registry. It is NETWORK-FREE: profile resolution reads the registry alone,
+// so the probe needs no credentials and issues no live /models lookup.
 func validateLaunchCheckProfile(ref cmdutil.ModelRef) error {
-	cfg, hasConfig, err := launchCheckLoadConfig()
+	client, err := launchCheckLoadClient("")
 	if err != nil {
 		return err
 	}
-	if hasConfig {
-		_, err := provider.ResolveProfileFromConfig(cfg, ref.Qualified())
-		return err
-	}
-	_, err = cmdutil.ResolveProfileForProvider(ref.Provider, ref.Model)
+	_, err = cmdutil.ResolveProfile(client, ref.Qualified())
 	return err
 }
 
+// launchCheckModels lists what every visible instance can launch. Each
+// instance is listed on its own so one unreachable endpoint reports a
+// diagnostic instead of hiding the rest.
 func launchCheckModels() ([]launchCheckModel, []appwire.ModelListDiagnostic, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
 	defer cancel()
 
-	cfg, _, err := launchCheckLoadProviderConfig()
+	client, err := launchCheckLoadClient("")
 	if err != nil {
 		return nil, nil, err
 	}
-	cat := llm.EmbeddedModelCatalog()
 	out := []launchCheckModel{}
 	diagnostics := []appwire.ModelListDiagnostic{}
-	for _, inst := range cfg.Instances {
-		provider := strings.TrimSpace(inst.Name)
-		if provider == "" {
+	for _, inst := range client.Registry().Instances() {
+		if inst.Hidden {
 			continue
 		}
-		tag := providercfg.BehaviorTag(string(inst.Type), string(inst.APIStyle))
-		if tag == "openrouter-anthropic" {
-			continue
-		}
-		client, err := llm.NewFromProviders(providercfg.Config{
-			Default:   provider,
-			Instances: []providercfg.InstanceConfig{inst},
-		})
+		listing, err := client.Models(ctx, inst.Name)
 		if err != nil {
-			diagnostics = append(diagnostics, launchCheckModelDiagnostic(provider, err))
+			diagnostics = append(diagnostics, launchCheckModelDiagnostic(inst.Name, err))
 			continue
 		}
-		models, err := client.ListModels(ctx, provider)
-		if err != nil {
-			diagnostics = append(diagnostics, launchCheckModelDiagnostic(provider, err))
-			continue
-		}
-		sort.Slice(models, func(i, j int) bool { return models[i].ID < models[j].ID })
-		for _, model := range models {
-			if !launchCheckModelVisible(tag, model, cat) {
-				continue
-			}
-			out = append(out, launchCheckModel{Provider: provider, Model: model.ID})
+		for _, m := range listing.Models {
+			out = append(out, launchCheckModel{Provider: inst.Name, Model: m.ModelID})
 		}
 	}
 	return out, diagnostics, nil
@@ -215,73 +163,32 @@ func launchCheckSensitiveEnvKey(key string) bool {
 		strings.Contains(key, "CREDENTIAL")
 }
 
+// validateLaunchCheckModel confirms the instance can serve the model: the
+// registry's own verdict first, then — only when the instance actually
+// answered with a live listing — membership in what it advertised. A
+// registry-only listing proves nothing about availability, so it passes.
 func validateLaunchCheckModel(ref cmdutil.ModelRef) error {
 	ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
 	defer cancel()
 
-	client, _, _, err := launchCheckLoadClient()
+	client, err := launchCheckLoadClient("")
 	if err != nil {
 		return nil
 	}
-	if !slices.Contains(client.ProviderNames(), ref.Provider) {
-		return nil
-	}
-	models, err := client.ListModels(ctx, ref.Provider)
-	if err != nil {
-		if launchCheckModelListUnavailable(err) {
-			return nil
+	if !client.CanServe(ref.Provider, ref.Model) {
+		if _, resolveErr := client.Resolve(ref.Qualified()); resolveErr != nil {
+			return resolveErr
 		}
-		return fmt.Errorf("validate model %s: %w", ref.Qualified(), err)
+		return fmt.Errorf("model %s is not available from provider %s", ref.Qualified(), ref.Provider)
 	}
-	cat := llm.EmbeddedModelCatalog()
-	tag := client.BehaviorTagOf(ref.Provider)
-	for _, model := range models {
-		if model.ID == ref.Model && launchCheckModelVisible(tag, model, cat) {
+	listing, err := client.Models(ctx, ref.Provider)
+	if err != nil || !listing.Live {
+		return nil
+	}
+	for _, m := range listing.Models {
+		if m.ModelID == ref.Model {
 			return nil
 		}
 	}
 	return fmt.Errorf("model %s is not available from provider %s", ref.Qualified(), ref.Provider)
-}
-
-func launchCheckModelListUnavailable(err error) bool {
-	if err == nil {
-		return false
-	}
-	if errors.Is(err, context.DeadlineExceeded) {
-		return true
-	}
-	var netErr net.Error
-	if errors.As(err, &netErr) && netErr.Timeout() {
-		return true
-	}
-	msg := strings.ToLower(err.Error())
-	return strings.Contains(msg, "http 403") ||
-		strings.Contains(msg, "http 404") ||
-		strings.Contains(msg, "does not support listing models") ||
-		strings.Contains(msg, "context deadline exceeded") ||
-		strings.Contains(msg, "i/o timeout") ||
-		strings.Contains(msg, "client.timeout exceeded") ||
-		strings.Contains(msg, "timeout awaiting response headers") ||
-		strings.Contains(msg, "no such host") ||
-		strings.Contains(msg, "connection refused") ||
-		strings.Contains(msg, "network is unreachable")
-}
-
-// launchCheckModelVisible reports whether a live model should appear in the
-// launch model list for a provider with the given behavior tag. It delegates to
-// the shared llm.ModelCatalog.VisibleLiveModel rule so the launch-check path and
-// the hub model-list path cannot drift. See VisibleLiveModel for the
-// live-API-first tool-support resolution this implements.
-func launchCheckModelVisible(behaviorTag string, live llm.ModelInfo, cat *llm.ModelCatalog) bool {
-	return cat.VisibleLiveModel(behaviorTag, live)
-}
-
-// launchCheckCatalogModelInfo resolves catalog metadata for a live model ID,
-// delegating to the shared llm.ModelCatalog.ResolveLiveModelInfo so OpenRouter
-// bare live IDs (e.g. "anthropic/claude-3.7-sonnet") resolve against the
-// openrouter/-prefixed catalog entry when nothing else matches. behaviorTag
-// defaults to "openrouter" for the launch-check path, which only calls this
-// for openrouter instances.
-func launchCheckCatalogModelInfo(cat *llm.ModelCatalog, modelID string) *llm.ModelInfo {
-	return cat.ResolveLiveModelInfo("openrouter", modelID)
 }

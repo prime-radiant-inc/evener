@@ -15,6 +15,7 @@ import (
 	"primeradiant.com/evener/agent/provider"
 	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/llm"
+	"primeradiant.com/evener/llm/registry"
 )
 
 // toolResultContent extracts string content from a TurnTool.
@@ -2553,5 +2554,37 @@ func TestBuildSummaryPrompt_WithInstructions(t *testing.T) {
 	}
 	if !strings.Contains(p, "CALLER INSTRUCTIONS (these take precedence)") {
 		t.Fatal("expected the instruction-led header")
+	}
+}
+
+// TestUnknownContextWindowNeverCompacts pins spec §7.3: a row whose window the
+// registry does not know reports 0, and 0 means unknown, not tiny. With no
+// window there is no budget, so pressure is 0, the metrics report nothing, and
+// no layer of MaybeCompact runs however long the history grows.
+func TestUnknownContextWindowNeverCompacts(t *testing.T) {
+	t.Parallel()
+	profile := provider.FromResolved(registry.Resolved{Instance: "gw", ModelID: "nobody-knows-this-one"}, nil)
+	if profile.ContextWindowSize() != 0 {
+		t.Fatalf("fixture window = %d, want 0 (unknown)", profile.ContextWindowSize())
+	}
+	cm := NewManager(profile, nil, cheapmodel.New(nil))
+
+	history := []schema.Turn{
+		schema.NewTurn(schema.TurnUserInput, llm.User(strings.Repeat("token ", 200_000))),
+		schema.NewTurn(schema.TurnAssistant, llm.Assistant(strings.Repeat("reply ", 200_000))),
+	}
+	before := len(history)
+
+	if got := cm.Pressure(history, 100_000); got != 0 {
+		t.Fatalf("Pressure = %v, want 0 with no known window", got)
+	}
+	if got := cm.EstimateUsage(history, 100_000); got != (schema.ContextMetrics{}) {
+		t.Fatalf("EstimateUsage = %+v, want the zero metrics with no known window", got)
+	}
+
+	var events0 int
+	cm.MaybeCompact(context.Background(), &history, 100_000, func(events.EventKind, events.EventData) { events0++ })
+	if len(history) != before || events0 != 0 {
+		t.Fatalf("MaybeCompact compacted %d turns and emitted %d events with no known window", before-len(history), events0)
 	}
 }

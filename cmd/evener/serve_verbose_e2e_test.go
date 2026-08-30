@@ -20,7 +20,6 @@ import (
 	"primeradiant.com/evener/agent/execenv"
 	"primeradiant.com/evener/agent/provider"
 	"primeradiant.com/evener/llm"
-	"primeradiant.com/evener/llm/providercfg"
 )
 
 const verboseE2EChildEnv = "EVENER_TEST_VERBOSE_E2E_CHILD"
@@ -180,13 +179,10 @@ func runVerboseE2EChild(t *testing.T) {
 	deps := defaultServeDeps()
 	deps.ensureConfigDirs = func() error { return nil }
 	deps.seedMarketplaces = func() error { return nil }
-	deps.newClient = func(string, io.Writer) (*llm.Client, providercfg.Config, bool, func() error, error) {
+	deps.newClient = func(string, io.Writer) (*llm.Client, func() error, error) {
 		client := llm.NewClient()
 		client.Register(&closedStreamAdapter{})
-		return client, providercfg.Config{
-			Default:   "openai",
-			Instances: []providercfg.InstanceConfig{{Name: "openai", Type: "openai"}},
-		}, true, func() error { return nil }, nil
+		return client, func() error { return nil }, nil
 	}
 
 	var live *agent.Session

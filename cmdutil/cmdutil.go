@@ -6,20 +6,16 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
-	"net/http"
 	"os/exec"
+	"slices"
 	"strings"
-	"time"
 
-	"primeradiant.com/evener/agent/provider"
 	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/appwire"
 	"primeradiant.com/evener/envvars"
 	"primeradiant.com/evener/identifier"
 	"primeradiant.com/evener/llm"
-	"primeradiant.com/evener/llm/providercfg"
-	"primeradiant.com/evener/llm/providers/kimicoding"
+	"primeradiant.com/evener/llm/registry"
 )
 
 // GitOriginURLFromDir runs "git remote get-url origin" in dir and returns the
@@ -32,122 +28,6 @@ func GitOriginURLFromDir(dir string) string {
 		return ""
 	}
 	return strings.TrimSpace(string(out))
-}
-
-// isOpenAICompatTag reports whether a profile's behavior tag identifies an
-// OpenAI-compatible provider — the family whose context window the live
-// /models lookup can refine. openrouter-anthropic is deliberately excluded:
-// it routes Anthropic models and is not an openai-compat profile.
-func isOpenAICompatTag(behaviorTag string) bool {
-	switch behaviorTag {
-	case "openai-compatible", "kimi", "glm", "openrouter", "ollama":
-		return true
-	}
-	return false
-}
-
-// ResolveProfileWithLiveWindow resolves an instance ref ("instanceName/model")
-// to a *Profile via provider.ResolveProfileFromConfig, then — for
-// openai-compat providers — refines the context window with a best-effort live
-// query to the provider's /models endpoint.
-//
-// The agent library resolver stays network-free (it sources the window from the
-// embedded catalog); the live lookup lives here, in the app layer that already
-// owns queryModelContextWindow. The query keys on the resolved profile's
-// behavior tag (the provider TYPE: kimi/glm/openrouter), NOT on the ref's
-// instance-name segment, which may be a user-assigned name. When the lookup
-// returns 0 (no credentials, offline, or a provider that does not report a
-// context length) the catalog-derived window is preserved.
-//
-// This is the default resolution path for both the initial profile
-// (buildInitialProfile) and cross-provider switches (BuildResolveProfile /
-// Session.SetModel).
-func ResolveProfileWithLiveWindow(cfg providercfg.Config, ref string) (*provider.Profile, error) {
-	p, err := provider.ResolveProfileFromConfig(cfg, ref)
-	if err != nil {
-		return nil, err
-	}
-	if isOpenAICompatTag(p.BehaviorTag()) && !instanceConfiguresContextWindow(cfg, p.ID(), p.Model()) {
-		// Query the instance's own endpoint: an instance may set base_url in
-		// providers.toml (e.g. the Kimi coding plan at api.kimi.com/coding/v1)
-		// that the provider-type default does not know about.
-		baseURL, apiKey, headers, authOK := instanceEndpoint(cfg, p.ID())
-		if !authOK {
-			// Configured auth material ($ENV api_key or Authorization header)
-			// failed to resolve. Probing anyway would let the provider-type
-			// env-key fallback send an unrelated secret to the instance's
-			// base_url — the same credential-misdirection the adapter path
-			// avoids by failing the instance. Keep the catalog window.
-			return p, nil
-		}
-		if window := queryModelContextWindow(p.BehaviorTag(), p.Model(), baseURL, apiKey, headers); window > 0 {
-			p = provider.WithContextWindow(p, window)
-		}
-	}
-	return p, nil
-}
-
-// instanceConfiguresContextWindow reports whether the instance's providers.toml
-// models table pins a context window for this model. Explicit user config is
-// authoritative — the live /models probe must not override it.
-func instanceConfiguresContextWindow(cfg providercfg.Config, name, model string) bool {
-	for _, inst := range cfg.Instances {
-		if inst.Name == name {
-			return inst.Models[model].ContextWindow > 0
-		}
-	}
-	return false
-}
-
-// instanceEndpoint returns the base URL, inline api key, and request headers
-// configured for the instance named name, or zero values when not found.
-// $ENV references are expanded. authOK reports whether the instance's AUTH
-// material resolved: a failed api_key or Authorization-header reference
-// means the caller must not probe at all — degrading auth to absent would
-// re-engage the provider-type env-key fallback and send an unrelated secret
-// to the instance's endpoint. Failed NON-auth headers merely drop (the probe
-// is best-effort).
-func instanceEndpoint(cfg providercfg.Config, name string) (baseURL, apiKey string, headers map[string]string, authOK bool) {
-	for _, inst := range cfg.Instances {
-		if inst.Name != name {
-			continue
-		}
-		authOK = true
-		key, err := providercfg.ResolveAPIKey(strings.TrimSpace(inst.APIKey))
-		if err != nil {
-			key = ""
-			authOK = false
-		}
-		if len(inst.Headers) > 0 {
-			headers = make(map[string]string, len(inst.Headers))
-			for hk, hv := range inst.Headers {
-				resolved, err := providercfg.ResolveHeaderValue(hk, hv)
-				if err != nil {
-					if strings.EqualFold(hk, "Authorization") {
-						authOK = false
-					}
-					continue
-				}
-				headers[hk] = resolved
-			}
-		}
-		return strings.TrimSpace(inst.BaseURL), key, headers, authOK
-	}
-	return "", "", nil, true
-}
-
-// ResolveProfileForProvider resolves a bare provider/model pair to a
-// *Profile WITHOUT any live network lookup. It synthesizes a
-// single-instance providercfg from the provider string (reusing the same
-// type/api-style roster as the seeded no-config path) and resolves it via
-// provider.ResolveProfileFromConfig.
-//
-// This is the network-free path used by the launch-check validation probe when
-// no providers.toml exists: it must confirm that provider/model names a known
-// provider without credentials and without issuing the live /models query.
-func ResolveProfileForProvider(providerType, model string) (*provider.Profile, error) {
-	cfg := Seed([]string{providerType}, providerType, func(string) string { return "" })
-	return provider.ResolveProfileFromConfig(cfg, providerType+"/"+model)
 }
 
 // ModelRef is a provider-qualified model identifier.
@@ -299,67 +179,49 @@ func ResolveSessionMeta(stateDir, sessionID string, resumeLast bool) (schema.Ses
 	return meta, nil
 }
 
-// ListModelsFunc returns a function suitable for server.SetListModelsFunc that
-// fetches model descriptors from the given client and provider.
-func ListModelsFunc(client *llm.Client, providerID string) func(context.Context) ([]appwire.ModelDescriptor, error) {
+// ListModelsFunc returns a function suitable for server.SetListModelsFunc
+// that lists one instance's models as wire descriptors.
+func ListModelsFunc(client *llm.Client, instance string) func(context.Context) ([]appwire.ModelDescriptor, error) {
 	return func(ctx context.Context) ([]appwire.ModelDescriptor, error) {
-		models, err := client.ListModels(ctx, providerID)
+		listing, err := client.Models(ctx, instance)
 		if err != nil {
 			return nil, err
 		}
-		items := make([]appwire.ModelDescriptor, len(models))
-		for i, m := range models {
-			items[i] = ModelDescriptorFromInfo(providerID, m)
+		items := make([]appwire.ModelDescriptor, 0, len(listing.Models))
+		for _, m := range listing.Models {
+			items = append(items, ModelDescriptorFromResolved(m))
 		}
 		return items, nil
 	}
 }
 
-// ModelDescriptorFromInfo converts normalized provider metadata to the typed
-// descriptor shared by the server and AppWire model/list response.
-func ModelDescriptorFromInfo(providerID string, model llm.ModelInfo) appwire.ModelDescriptor {
-	descriptor := appwire.ModelDescriptor{
-		Provider:              providerID,
-		Model:                 model.ID,
-		DisplayName:           model.DisplayName,
-		ReasoningEffortLevels: append([]string(nil), model.ReasoningEffortLevels...),
+// ModelDescriptorFromResolved is the wire view of a resolved row (spec §11.3).
+func ModelDescriptorFromResolved(res registry.Resolved) appwire.ModelDescriptor {
+	caps := res.Caps
+	d := appwire.ModelDescriptor{Provider: res.Instance, Model: res.ModelID, ReasoningEffortLevels: append([]string(nil), caps.EffortValues...)}
+	if caps.ContextWindow != nil {
+		d.ContextWindow = new(*caps.ContextWindow)
 	}
-	if model.ContextWindow > 0 {
-		value := model.ContextWindow
-		descriptor.ContextWindow = &value
+	if caps.MaxOutputTokens != nil {
+		d.MaxOutputTokens = new(*caps.MaxOutputTokens)
 	}
-	if model.CapabilitiesAdvertised {
-		tools, vision, reasoning := model.SupportsTools, model.SupportsVision, model.SupportsReasoning
-		descriptor.SupportsTools = &tools
-		descriptor.SupportsVision = &vision
-		descriptor.SupportsReasoning = &reasoning
-	} else {
-		if model.SupportsTools {
-			value := true
-			descriptor.SupportsTools = &value
-		}
-		if model.SupportsReasoning {
-			value := true
-			descriptor.SupportsReasoning = &value
-		}
+	if caps.Tools != nil {
+		d.SupportsTools = new(*caps.Tools)
 	}
-	if model.MaxOutputTokens != nil {
-		value := *model.MaxOutputTokens
-		descriptor.MaxOutputTokens = &value
+	if len(caps.InputModalities) > 0 {
+		d.SupportsVision = new(slices.Contains(caps.InputModalities, "image"))
 	}
-	if model.SupportsWebSearch != nil {
-		value := *model.SupportsWebSearch
-		descriptor.SupportsWebSearch = &value
+	if caps.WebSearch != nil {
+		d.SupportsWebSearch = new(*caps.WebSearch)
 	}
-	if model.InputCostPerMillion != nil {
-		value := *model.InputCostPerMillion
-		descriptor.InputCostPerMillion = &value
+	if caps.Reasoning != nil {
+		d.SupportsReasoning = new(*caps.Reasoning)
 	}
-	if model.OutputCostPerMillion != nil {
-		value := *model.OutputCostPerMillion
-		descriptor.OutputCostPerMillion = &value
+	if caps.Cost != nil {
+		d.InputCostPerMillion = new(caps.Cost.Input)
+		d.OutputCostPerMillion = new(caps.Cost.Output)
 	}
-	return descriptor
+	return d
 }
 
 // ParseAllowedDecisions parses the EVENER_ALLOWED_DECISIONS value into a slice
@@ -392,131 +254,4 @@ func trimNonEmpty(parts []string) []string {
 		out = append(out, p)
 	}
 	return out
-}
-
-// queryModelContextWindow queries the provider's /models endpoint for the
-// context window of the given model. Returns 0 if the query fails or the
-// provider doesn't report context length. Best-effort — the profile falls
-// back to the embedded catalog, then to 128K.
-//
-// It is a package var so tests can stub the live lookup without issuing real
-// HTTP requests. `provider` must be the provider TYPE / behavior tag
-// (kimi/glm/openrouter), not an instance name — the lookup keys on
-// providerEnvConfig by that tag.
-var queryModelContextWindow = queryModelContextWindowImpl
-var lookupProviderEnv = envvars.Provider
-
-func queryModelContextWindowImpl(provider, model, instanceBaseURL, instanceAPIKey string, instanceHeaders map[string]string) int {
-	switch provider {
-	case "kimi", "glm", "openrouter":
-		// Provider types with an env-registry fallback for key/base URL.
-	case "openai-compatible":
-		// openai + api_style=chat-completions. The probe needs the instance's
-		// own base_url from providers.toml: the env fallback below would reach
-		// for OPENAI_COMPATIBLE_BASE_URL, which names an unrelated host this
-		// instance never contacts. With no base_url the instance does have an
-		// endpoint — the adapter's api.openai.com default — but its models are
-		// the ones the embedded catalog already describes, so probing buys
-		// nothing a fallback does not already give.
-		if strings.TrimSpace(instanceBaseURL) == "" {
-			return 0
-		}
-	default:
-		// ollama deliberately excluded: its native model listing is not the
-		// OpenAI /models shape and local models have no upstream window.
-		return 0
-	}
-	env, envOK := lookupProviderEnv(provider)
-	// Prefer the instance's configured key/base URL (providers.toml) over the
-	// provider-type env var / default, so an instance with a custom endpoint
-	// (the Kimi coding plan) is queried at its real /models.
-	apiKey := strings.TrimSpace(instanceAPIKey)
-	// The env-registry key fallback belongs to the provider TYPES whose
-	// endpoints it was set for (kimi/glm/openrouter). An openai-compatible
-	// instance is a custom gateway at its own base_url — sending it the
-	// global OPENAI_COMPATIBLE_API_KEY would leak an unrelated secret to
-	// whatever host the instance points at; keyless gateways probe keyless.
-	instanceAuthHeader := false
-	for hk := range instanceHeaders {
-		if strings.EqualFold(hk, "Authorization") {
-			instanceAuthHeader = true
-			break
-		}
-	}
-	if apiKey == "" && !instanceAuthHeader && provider != "openai-compatible" && envOK && len(env.APIKeyVars) > 0 {
-		// The env fallback must never clobber a configured Authorization
-		// header — a header-authenticated gateway would receive the wrong
-		// secret. An explicit instance api_key still wins over headers.
-		apiKey = env.APIKeyVars[0].Trimmed()
-	}
-	if apiKey == "" && provider != "openai-compatible" && !instanceAuthHeader && len(instanceHeaders) == 0 {
-		// Gateways may be keyless (local proxies) and any instance may
-		// authenticate via configured headers; a bare upstream type with
-		// neither has nothing to probe with.
-		return 0
-	}
-	baseURL := strings.TrimSpace(instanceBaseURL)
-	if baseURL == "" && envOK && len(env.BaseURLVars) > 0 {
-		baseURL = env.BaseURLVars[0].Trimmed()
-	}
-	if baseURL == "" && envOK {
-		baseURL = env.DefaultBaseURL
-	}
-	if baseURL == "" {
-		return 0
-	}
-	baseURL = strings.TrimRight(baseURL, "/")
-
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, baseURL+"/models", nil)
-	if err != nil {
-		return 0
-	}
-	// Instance headers first (a gateway may authenticate via them); the
-	// bearer and the kimi UA below take precedence on collision.
-	for k, v := range instanceHeaders {
-		req.Header.Set(k, v)
-	}
-	if apiKey != "" {
-		req.Header.Set("Authorization", "Bearer "+apiKey)
-	}
-	if provider == "kimi" {
-		// Kimi For Coding gates its endpoints behind a coding-agent User-Agent
-		// allowlist; announce it so the /models query survives if the gate is
-		// extended to /models (today the catalog backstops the window anyway).
-		req.Header.Set("User-Agent", kimicoding.UserAgent)
-	}
-
-	resp, err := http.DefaultClient.Do(req)
-	if err != nil || resp.StatusCode != http.StatusOK {
-		if resp != nil {
-			_ = resp.Body.Close()
-		}
-		return 0
-	}
-	defer func() { _ = resp.Body.Close() }()
-
-	body, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20)) // 1MB limit
-	if err != nil {
-		return 0
-	}
-
-	var result struct {
-		Data []struct {
-			ID            string `json:"id"`
-			ContextLength int    `json:"context_length"`
-		} `json:"data"`
-	}
-	if err := json.Unmarshal(body, &result); err != nil {
-		return 0
-	}
-
-	for _, m := range result.Data {
-		if m.ID == model && m.ContextLength > 0 {
-			return m.ContextLength
-		}
-	}
-	return 0
 }

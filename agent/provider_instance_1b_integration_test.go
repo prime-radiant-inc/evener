@@ -12,8 +12,8 @@ package agent
 // Assertions (all must pass against current code with no production changes):
 //  1. Routing by name     — NewFromProviders registers all five; each explicit
 //                           req.Provider=<name> reaches its adapter.
-//  2. Behavior by tag     — ResolveProfileFromConfig: each instance name maps to
-//                           the correct behavior tag and routes by its own ID.
+//  2. Behavior by surface — each instance name resolves to the right
+//                           surface/provider-id pair and routes by its own ID.
 //  3. Real-openai boundary — compat-x (surface "generic") does NOT get the
 //                            openai prompt section; work (surface "openai")
 //                            does. Prompt-cache eligibility is no longer part
@@ -23,7 +23,7 @@ package agent
 //  4. Per-instance OAuth  — SaveAuth("work", rec) writes auth/work.json; loading
 //                           the work instance's OAuth reads it back independently
 //                           of auth/openai.json.
-//  5. SetModel override   — BuildResolveProfile resolver injected into SessionConfig;
+//  5. SetModel override   — a registry resolver injected into SessionConfig;
 //                           SetModel("work2/<model>") swaps to ID=="work2" and
 //                           preserves a WithCommunicateOutputSchema override.
 //  6. Resume              — s.Meta().ProfileID == "work" for a session on the
@@ -43,6 +43,7 @@ import (
 	"primeradiant.com/evener/auth/openai"
 	"primeradiant.com/evener/llm"
 	"primeradiant.com/evener/llm/providercfg"
+	"primeradiant.com/evener/llm/registry"
 )
 
 // ── Fixture ────────────────────────────────────────────────────────────────────
@@ -57,6 +58,23 @@ var phase1bCfg = providercfg.Config{
 		{Name: "work", Type: providercfg.Type("openai"), APIStyle: providercfg.StyleResponses, APIKey: "sk-work"},
 		{Name: "work2", Type: providercfg.Type("openai"), APIStyle: providercfg.StyleResponses, APIKey: "sk-work2"},
 	},
+}
+
+// phase1bInstances is phase1bCfg as registry instances: the same five names,
+// each based on the provider id its type resolved to.
+func phase1bInstances() map[string]registry.Provider {
+	return map[string]registry.Provider{
+		"anthro-corp": {Base: "anthropic", APIKey: "ant-key", Transport: registry.Transport{BaseURL: "https://anthropic.example.com"}},
+		"compat-x":    {Base: "openai-compatible", APIKey: "compat-key", Transport: registry.Transport{BaseURL: "https://compat.example.com/v1"}},
+		"kc":          {Base: "moonshotai", APIKey: "kimi-key"},
+		"work":        {Base: "openai", APIKey: "sk-work"},
+		"work2":       {Base: "openai", APIKey: "sk-work2"},
+	}
+}
+
+// resolvePhase1bProfile resolves a reference on the phase-1b registry.
+func resolvePhase1bProfile(ref string) (*provider.Profile, error) {
+	return provider.Resolve(mustTestRegistry(phase1bInstances()), ref)
 }
 
 // buildPhase1bClient builds an llm.Client for the phase1bCfg fixture by
@@ -113,36 +131,38 @@ func TestPhase1b_ClientRouting_AllFiveInstances(t *testing.T) {
 	}
 }
 
-// ── Assertion 2: Behavior by tag ──────────────────────────────────────────────
+// ── Assertion 2: Behavior by surface ─────────────────────────────────────────
 
-// TestPhase1b_ResolveProfileFromConfig_BehaviorTags verifies that each instance
-// in the fixture resolves to the correct behavior tag and its own instance name
-// as ID.
-func TestPhase1b_ResolveProfileFromConfig_BehaviorTags(t *testing.T) {
+// TestPhase1b_ResolveProfile_RegistryKeys verifies that each instance in the
+// fixture resolves to the right surface and provider id while keeping its own
+// name as ID.
+func TestPhase1b_ResolveProfile_RegistryKeys(t *testing.T) {
 	t.Parallel()
 	cases := []struct {
-		ref       string
-		wantID    string
-		wantTag   string
-		wantModel string
+		ref                                 string
+		wantID, wantProviderID, wantSurface string
+		wantModel                           string
 	}{
-		{"work/gpt-5.2", "work", "openai", "gpt-5.2"},
-		{"work2/gpt-5.4", "work2", "openai", "gpt-5.4"},
-		{"compat-x/gpt-4o", "compat-x", "openai-compatible", "gpt-4o"},
-		{"anthro-corp/claude-opus-4-6", "anthro-corp", "anthropic", "claude-opus-4-6"},
-		{"kc/kimi-k2", "kc", "kimi", "kimi-k2"},
+		{"work/gpt-5.2", "work", "openai", registry.SurfaceOpenAI, "gpt-5.2"},
+		{"work2/gpt-5.4", "work2", "openai", registry.SurfaceOpenAI, "gpt-5.4"},
+		{"compat-x/gpt-4o", "compat-x", "openai-compatible", registry.SurfaceGeneric, "gpt-4o"},
+		{"anthro-corp/claude-opus-4-6", "anthro-corp", "anthropic", registry.SurfaceAnthropic, "claude-opus-4-6"},
+		{"kc/kimi-k2", "kc", "moonshotai", registry.SurfaceGeneric, "kimi-k2"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.ref, func(t *testing.T) {
-			p, err := ResolveProfileFromConfig(phase1bCfg, tc.ref)
+			p, err := resolvePhase1bProfile(tc.ref)
 			if err != nil {
-				t.Fatalf("ResolveProfileFromConfig(%q): %v", tc.ref, err)
+				t.Fatalf("Resolve(%q): %v", tc.ref, err)
 			}
 			if got := p.ID(); got != tc.wantID {
 				t.Errorf("ID() = %q, want %q", got, tc.wantID)
 			}
-			if got := p.BehaviorTag(); got != tc.wantTag {
-				t.Errorf("BehaviorTag() = %q, want %q", got, tc.wantTag)
+			if got := p.ProviderID(); got != tc.wantProviderID {
+				t.Errorf("ProviderID() = %q, want %q", got, tc.wantProviderID)
+			}
+			if got := p.Surface(); got != tc.wantSurface {
+				t.Errorf("Surface() = %q, want %q", got, tc.wantSurface)
 			}
 			if got := p.Model(); got != tc.wantModel {
 				t.Errorf("Model() = %q, want %q", got, tc.wantModel)
@@ -188,21 +208,21 @@ func TestPhase1b_CompatX_NoOpenAIBehavior(t *testing.T) {
 	c.Register(&fakeAdapter{name: "work"})
 	c.Register(&fakeAdapter{name: "compat-x"})
 
-	workProfile, err := ResolveProfileFromConfig(phase1bCfg, "work/gpt-5.2")
+	workProfile, err := resolvePhase1bProfile("work/gpt-5.2")
 	if err != nil {
-		t.Fatalf("ResolveProfileFromConfig(work): %v", err)
+		t.Fatalf("Resolve(work): %v", err)
 	}
-	compatProfile, err := ResolveProfileFromConfig(phase1bCfg, "compat-x/gpt-4o")
+	compatProfile, err := resolvePhase1bProfile("compat-x/gpt-4o")
 	if err != nil {
-		t.Fatalf("ResolveProfileFromConfig(compat-x): %v", err)
+		t.Fatalf("Resolve(compat-x): %v", err)
 	}
 
-	// Pre-conditions: tags must be as expected.
-	if got := workProfile.BehaviorTag(); got != "openai" {
-		t.Fatalf("workProfile.BehaviorTag() = %q, want openai", got)
+	// Pre-conditions: surfaces must be as expected.
+	if got := workProfile.Surface(); got != registry.SurfaceOpenAI {
+		t.Fatalf("workProfile.Surface() = %q, want openai", got)
 	}
-	if got := compatProfile.BehaviorTag(); got != "openai-compatible" {
-		t.Fatalf("compatProfile.BehaviorTag() = %q, want openai-compatible", got)
+	if got := compatProfile.Surface(); got != registry.SurfaceGeneric {
+		t.Fatalf("compatProfile.Surface() = %q, want generic", got)
 	}
 
 	const openAIMarker = "they execute in the order you"
@@ -218,7 +238,7 @@ func TestPhase1b_CompatX_NoOpenAIBehavior(t *testing.T) {
 
 	workPrompt, _ := workSess.renderSystemPrompt(workSess.env)
 	if !strings.Contains(workPrompt, openAIMarker) {
-		t.Errorf("work session (tag=openai): system prompt missing openai section marker %q", openAIMarker)
+		t.Errorf("work session (surface=openai): system prompt missing openai section marker %q", openAIMarker)
 	}
 
 	workReq := llm.Request{Model: "gpt-5.2", Provider: workProfile.ID()}
@@ -241,7 +261,7 @@ func TestPhase1b_CompatX_NoOpenAIBehavior(t *testing.T) {
 
 	compatPrompt, _ := compatSess.renderSystemPrompt(compatSess.env)
 	if strings.Contains(compatPrompt, openAIMarker) {
-		t.Errorf("compat-x session (tag=openai-compatible): system prompt must NOT contain openai section marker %q", openAIMarker)
+		t.Errorf("compat-x session (surface=generic): system prompt must NOT contain openai section marker %q", openAIMarker)
 	}
 
 	// The prompt-cache fields are stamped here for compat-x too; what the
@@ -320,9 +340,9 @@ func TestPhase1b_SetModel_Work2_PreservesOutputSchema(t *testing.T) {
 	c.Register(&fakeAdapter{name: "work"})
 	c.Register(&fakeAdapter{name: "work2"})
 
-	workProfile, err := ResolveProfileFromConfig(phase1bCfg, "work/gpt-5.2")
+	workProfile, err := resolvePhase1bProfile("work/gpt-5.2")
 	if err != nil {
-		t.Fatalf("ResolveProfileFromConfig(work): %v", err)
+		t.Fatalf("Resolve(work): %v", err)
 	}
 
 	customSchema := map[string]any{
@@ -333,10 +353,9 @@ func TestPhase1b_SetModel_Work2_PreservesOutputSchema(t *testing.T) {
 	}
 	startProfile := WithCommunicateOutputSchema(workProfile, customSchema)
 
-	// Build the resolver from the config (mirrors how cmdutil.BuildResolveProfile works).
-	resolver := func(ref string) (*provider.Profile, error) {
-		return ResolveProfileFromConfig(phase1bCfg, ref)
-	}
+	// The resolver is the registry resolution itself (mirrors
+	// cmdutil.BuildResolveProfile).
+	resolver := resolvePhase1bProfile
 
 	sess, err := NewSession(c, startProfile, execenv.NewLocalExecutionEnvironment(dir), SessionConfig{
 		NoProjectPrompts: true,
@@ -351,8 +370,8 @@ func TestPhase1b_SetModel_Work2_PreservesOutputSchema(t *testing.T) {
 	if got := sess.profile.ID(); got != "work" {
 		t.Fatalf("initial profile ID = %q, want work", got)
 	}
-	if got := sess.profile.BehaviorTag(); got != "openai" {
-		t.Fatalf("initial BehaviorTag = %q, want openai", got)
+	if got := sess.profile.ProviderID(); got != "openai" {
+		t.Fatalf("initial ProviderID = %q, want openai", got)
 	}
 
 	// Switch to work2 via resolver.
@@ -364,8 +383,8 @@ func TestPhase1b_SetModel_Work2_PreservesOutputSchema(t *testing.T) {
 	if got := sess.profile.Model(); got != "gpt-5.4" {
 		t.Fatalf("after SetModel, model = %q, want gpt-5.4", got)
 	}
-	if got := sess.profile.BehaviorTag(); got != "openai" {
-		t.Fatalf("after SetModel, BehaviorTag = %q, want openai (work2 is also openai/responses)", got)
+	if got := sess.profile.ProviderID(); got != "openai" {
+		t.Fatalf("after SetModel, ProviderID = %q, want openai (work2 is also an openai instance)", got)
 	}
 
 	// The communicate-output-schema override must have been preserved.
@@ -399,9 +418,9 @@ func TestPhase1b_Resume_ProfileIDPreserved(t *testing.T) {
 	c := llm.NewClient()
 	c.Register(&fakeAdapter{name: "work"})
 
-	workProfile, err := ResolveProfileFromConfig(phase1bCfg, "work/gpt-5.2")
+	workProfile, err := resolvePhase1bProfile("work/gpt-5.2")
 	if err != nil {
-		t.Fatalf("ResolveProfileFromConfig(work): %v", err)
+		t.Fatalf("Resolve(work): %v", err)
 	}
 
 	sess, err := NewSession(c, workProfile, execenv.NewLocalExecutionEnvironment(dir), SessionConfig{
@@ -434,16 +453,16 @@ func TestPhase1b_Resume_ProfileIDPreserved(t *testing.T) {
 	}
 
 	// The loaded ProfileID can be used to reconstruct the work/<model> ref,
-	// confirming that ResolveProfileFromConfig can reconstitute the profile.
+	// confirming that the registry can reconstitute the profile.
 	reconstructRef := loaded.ProfileID + "/" + loaded.Model
-	reconstructed, err := ResolveProfileFromConfig(phase1bCfg, reconstructRef)
+	reconstructed, err := resolvePhase1bProfile(reconstructRef)
 	if err != nil {
-		t.Fatalf("ResolveProfileFromConfig(%q) from resumed meta: %v", reconstructRef, err)
+		t.Fatalf("Resolve(%q) from resumed meta: %v", reconstructRef, err)
 	}
 	if reconstructed.ID() != "work" {
 		t.Errorf("reconstructed profile ID = %q, want work", reconstructed.ID())
 	}
-	if reconstructed.BehaviorTag() != "openai" {
-		t.Errorf("reconstructed BehaviorTag = %q, want openai", reconstructed.BehaviorTag())
+	if reconstructed.ProviderID() != "openai" {
+		t.Errorf("reconstructed ProviderID = %q, want openai", reconstructed.ProviderID())
 	}
 }

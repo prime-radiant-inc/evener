@@ -56,7 +56,9 @@ func FuzzStatusSupportProgram(f *testing.F) {
 
 func statusSupportStatusAndMetrics(t *testing.T, token string) {
 	t.Helper()
-	s, clock := statusSupportSession(t, NewOpenAIProfile("gpt-status"), "openai", nil)
+	// A catalogued model: ContextMetrics reports a window only when the row
+	// carries one (spec §7.3).
+	s, clock := statusSupportSession(t, NewOpenAIProfile("gpt-5.2"), "openai", nil)
 	s.RegisterTool("status_custom_"+token, "status fixture", map[string]any{"type": "object"}, func(context.Context, any) (any, error) {
 		return "unused", nil
 	})

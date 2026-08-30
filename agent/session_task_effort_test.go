@@ -19,8 +19,7 @@ import (
 // fullLadderProfile returns an OpenAI profile whose effort ladder includes all
 // six levels, so the profile clamps nothing away in these tests.
 func fullLadderProfile(model string) *provider.Profile {
-	return provider.NewOpenAIProfile(model).
-		WithLiveModelInfo(llm.ModelInfo{ReasoningEffortLevels: []string{"minimal", "low", "medium", "high", "xhigh", "max"}})
+	return withEffortLevels(provider.NewOpenAIProfile(model), "minimal", "low", "medium", "high", "xhigh", "max")
 }
 
 // sessionMaxOnTheWire is what a session configured for "max" effort sends to
@@ -209,11 +208,10 @@ func TestSession_RestoreTaskEffortMigration_ReachesProviderSafely(t *testing.T) 
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 			stateDir := t.TempDir()
-			profile := provider.NewOpenAIProfile("gpt-5.2").WithLiveModelInfo(llm.ModelInfo{
-				// Include the stale level to prove restore sanitization does not
-				// trust provider metadata to validate the task override.
-				ReasoningEffortLevels: []string{"minimal", "low", "medium", "high", "xhigh", "max", "ultra"},
-			})
+			// The stale level proves restore sanitization does not trust the
+			// row's ladder to validate the task override.
+			profile := withEffortLevels(provider.NewOpenAIProfile("gpt-5.2"),
+				"minimal", "low", "medium", "high", "xhigh", "max", "ultra")
 
 			seedClient := llm.NewClient()
 			seedClient.Register(&fakeAdapter{name: "openai"})
@@ -328,9 +326,8 @@ func TestSession_TaskListRejectsInvalidEffortBeforeActivatingTask(t *testing.T) 
 	// Model metadata is an external boundary and may advertise a stale level.
 	// The task handler must still enforce Evener's canonical vocabulary rather
 	// than trusting the schema enum as its only validation.
-	profile := provider.NewOpenAIProfile("gpt-5.2").WithLiveModelInfo(llm.ModelInfo{
-		ReasoningEffortLevels: []string{"minimal", "low", "medium", "high", "xhigh", "max", "ultra"},
-	})
+	profile := withEffortLevels(provider.NewOpenAIProfile("gpt-5.2"),
+		"minimal", "low", "medium", "high", "xhigh", "max", "ultra")
 	sess, err := NewSession(c, profile, execenv.NewLocalExecutionEnvironment(dir), SessionConfig{
 		ReasoningEffort: "max",
 	})
@@ -375,9 +372,8 @@ func TestSession_TaskListRejectsInvalidEffortBeforeAppendingTask(t *testing.T) {
 		},
 	}
 	c.Register(f)
-	profile := provider.NewOpenAIProfile("gpt-5.2").WithLiveModelInfo(llm.ModelInfo{
-		ReasoningEffortLevels: []string{"minimal", "low", "medium", "high", "xhigh", "max", "ultra"},
-	})
+	profile := withEffortLevels(provider.NewOpenAIProfile("gpt-5.2"),
+		"minimal", "low", "medium", "high", "xhigh", "max", "ultra")
 	sess, err := NewSession(c, profile, execenv.NewLocalExecutionEnvironment(dir), SessionConfig{ReasoningEffort: "max"})
 	if err != nil {
 		t.Fatalf("NewSession: %v", err)

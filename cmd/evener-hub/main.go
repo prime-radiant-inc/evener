@@ -243,8 +243,11 @@ func runMain(args []string, stderr io.Writer, deps mainDeps) error {
 	}
 	var loadedProviderConfig *providercfg.Config
 	if pcfg, exists, pcfgErr := deps.loadProviderConfig(providersConfigPath); pcfgErr != nil {
+		// The registry is what a spawned session resolves against (spec §10):
+		// a providers.toml this legacy descriptor reader cannot parse still
+		// spawns working sessions, so the hub announces it and degrades to no
+		// descriptor view rather than refusing to start.
 		_, _ = fmt.Fprintf(stderr, "[hub] providers config: %v\n", pcfgErr)
-		return pcfgErr
 	} else if exists {
 		loadedProviderConfig = &pcfg
 	} else {

@@ -589,14 +589,13 @@ func liveStackBinaries(t *testing.T, repoRoot string) string {
 
 func startHubStack(t *testing.T, provider *fakellm.Server) hubStack {
 	t.Helper()
-	return startHubStackOnProvider(t, fmt.Sprintf(`schema = 1
+	return startHubStackOnProvider(t, fmt.Sprintf(`
 default = "fake"
 
-[instances.fake]
-type = "openai"
-api_style = "chat-completions"
+[providers.fake]
+base     = "openai-compatible"
 base_url = %q
-api_key = "fakellm-not-a-secret"
+api_key  = "fakellm-not-a-secret"
 `, provider.BaseURL()), "fake/"+fakellm.ModelID)
 }
 

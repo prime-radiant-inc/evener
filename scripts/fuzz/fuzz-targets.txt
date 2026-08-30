@@ -110,8 +110,6 @@ native:agent:./doctor:FuzzDoctorLoadTranscript
 native:agent:./doctor:FuzzDoctorFilesystemProgram
 native:agent:./mcpconfig:FuzzMCPConfigLoad
 native:agent:./mcpconfig:FuzzMCPConfigDiscoveryProgram
-native:agent:./provider:FuzzResolveProfileFromConfig
-native:agent:./provider:FuzzApOpenRouterAnthropicResolve
 native:agent:./provider:FuzzProviderProfilesProgram
 native:agent:./skill:FuzzApSkillFileParse
 native:agent:./skill:FuzzSkillDiscoveryProgram
@@ -520,7 +518,6 @@ native:.:./cmd/evener-tui/internal/tuiprim:FuzzPrimitives
 native:.:./cmd/evener-tui/internal/tuitext:FuzzTruncateText
 native:.:./cmd/evener/internal/cliprompt:FuzzRead
 native:.:./cmd/evener/internal/cliprompt:FuzzReadError
-native:.:./cmd/evener/internal/launchcheck:FuzzLaunchCheckClassifiers
 native:.:./cmd/evener/internal/launchcheck:FuzzLaunchCheckProgram
 native:.:./cmd/evener/internal/rvreg:FuzzRegistrationSessionID
 native:.:./cmd/evener/internal/rvreg:FuzzRegistrationLifecycle

@@ -12,8 +12,9 @@ package agent
 // at dispatch (spec §7.5) — that is pinned in session_openai_prompt_cache_test.go.
 //
 // Coverage map:
-//  1. Identity by name — WithProviderID(openai, "work") → ID="work", tag="openai";
-//     session turn completes; error event reports provider "work".
+//  1. Identity by name — the "work" instance (base openai) → ID="work",
+//     ProviderID="openai"; session turn completes; the request reports
+//     provider "work".
 //  2. Behavior by surface — the same "work" instance gets the openai prompt
 //     section via renderSystemPrompt, and applyModelRequestMetadata stamps the
 //     session identity onto the request.
@@ -35,6 +36,7 @@ import (
 	"primeradiant.com/evener/agent/execenv"
 	"primeradiant.com/evener/agent/provider"
 	"primeradiant.com/evener/llm"
+	"primeradiant.com/evener/llm/registry"
 )
 
 // ── Shared resolver for cross-instance switch tests ───────────────────────────
@@ -51,9 +53,9 @@ func instanceTestResolver(ref string) (*provider.Profile, error) {
 	model := parts[1]
 	switch provider {
 	case "work":
-		return WithProviderID(NewOpenAIProfile(model), "work"), nil
+		return namedOpenAIInstanceProfile("work", model), nil
 	case "work2":
-		return WithProviderID(NewOpenAIProfile(model), "work2"), nil
+		return namedOpenAIInstanceProfile("work2", model), nil
 	case "google", "gemini":
 		return newGeminiProfile(model), nil
 	case "openai":
@@ -62,11 +64,11 @@ func instanceTestResolver(ref string) (*provider.Profile, error) {
 	return nil, nil
 }
 
-// ── Subtest 1+2: Identity by name AND behavior by tag ─────────────────────────
+// ── Subtest 1+2: Identity by name AND behavior by surface ────────────────────
 
 // TestProviderInstance_RenamedOpenAI_IdentityAndBehavior drives a complete
 // session turn with a "work" (renamed openai) profile and asserts:
-//  1. ID()=="work", BehaviorTag()=="openai" (identity fields).
+//  1. ID()=="work", ProviderID()=="openai" (identity fields).
 //  2. ProcessInput returns the fake response (session is functional).
 //  3. The error-path event reports provider "work" (llm.Client stamping).
 //  4. renderSystemPrompt contains the openai section (behavior by surface).
@@ -85,14 +87,14 @@ func TestProviderInstance_RenamedOpenAI_IdentityAndBehavior(t *testing.T) {
 	}
 	c.Register(f)
 
-	renamedProfile := WithProviderID(NewOpenAIProfile("gpt-5.2"), "work")
+	renamedProfile := namedOpenAIInstanceProfile("work", "gpt-5.2")
 
 	// ── Pre-condition assertions (unit-level; fail fast before driving a session) ──
 	if got := renamedProfile.ID(); got != "work" {
 		t.Fatalf("ID() = %q, want work", got)
 	}
-	if got := renamedProfile.BehaviorTag(); got != "openai" {
-		t.Fatalf("BehaviorTag() = %q, want openai", got)
+	if got := renamedProfile.ProviderID(); got != "openai" {
+		t.Fatalf("ProviderID() = %q, want openai", got)
 	}
 
 	sess, err := NewSession(c, renamedProfile, execenv.NewLocalExecutionEnvironment(dir), SessionConfig{
@@ -123,7 +125,7 @@ func TestProviderInstance_RenamedOpenAI_IdentityAndBehavior(t *testing.T) {
 		t.Fatalf("req.Provider = %q, want work (llm.Client must stamp the instance name)", got)
 	}
 
-	// ── Assertion 3: behavior by tag — openai prompt section in system prompt ──
+	// ── Assertion 3: behavior by surface — openai prompt section in system prompt ──
 	const openAIMarker = "they execute in the order you"
 	prompt, _ := sess.renderSystemPrompt(sess.env)
 	if !strings.Contains(prompt, openAIMarker) {
@@ -198,7 +200,7 @@ func TestProviderInstance_CrossInstanceSwitch_PreservesOverrideAndIdentity(t *te
 		},
 	}
 	startProfile := WithCommunicateOutputSchema(
-		WithProviderID(NewOpenAIProfile("gpt-5.4"), "work"),
+		namedOpenAIInstanceProfile("work", "gpt-5.4"),
 		customSchema,
 	)
 
@@ -215,8 +217,8 @@ func TestProviderInstance_CrossInstanceSwitch_PreservesOverrideAndIdentity(t *te
 	if got := sess.profile.ID(); got != "work" {
 		t.Fatalf("initial profile ID = %q, want work", got)
 	}
-	if got := sess.profile.BehaviorTag(); got != "openai" {
-		t.Fatalf("initial BehaviorTag = %q, want openai", got)
+	if got := sess.profile.ProviderID(); got != "openai" {
+		t.Fatalf("initial ProviderID = %q, want openai", got)
 	}
 
 	// Switch to "work2" via resolver.
@@ -229,8 +231,8 @@ func TestProviderInstance_CrossInstanceSwitch_PreservesOverrideAndIdentity(t *te
 	if got := sess.profile.Model(); got != "gpt-5.2" {
 		t.Fatalf("after SetModel, model = %q, want gpt-5.2", got)
 	}
-	if got := sess.profile.BehaviorTag(); got != "openai" {
-		t.Fatalf("after SetModel, BehaviorTag = %q, want openai", got)
+	if got := sess.profile.ProviderID(); got != "openai" {
+		t.Fatalf("after SetModel, ProviderID = %q, want openai", got)
 	}
 
 	// The communicate-output-schema override must have been preserved.
@@ -264,7 +266,7 @@ func TestProviderInstance_ProviderConditionalTool_GoogleSwitchWiresWebSearch(t *
 	c.Register(&fakeAdapter{name: "work"})
 	c.Register(&fakeAdapter{name: "google"})
 
-	startProfile := WithProviderID(NewOpenAIProfile("gpt-5.4"), "work")
+	startProfile := namedOpenAIInstanceProfile("work", "gpt-5.4")
 
 	sess, err := NewSession(c, startProfile, execenv.NewLocalExecutionEnvironment(dir), SessionConfig{
 		NoProjectPrompts: true,
@@ -283,8 +285,8 @@ func TestProviderInstance_ProviderConditionalTool_GoogleSwitchWiresWebSearch(t *
 	// Switch to google via resolver.
 	sess.SetModel("google/gemini-2.5-pro")
 
-	if got := sess.profile.BehaviorTag(); got != "google" {
-		t.Fatalf("after SetModel, BehaviorTag = %q, want google", got)
+	if got := sess.profile.Surface(); got != registry.SurfaceGoogle {
+		t.Fatalf("after SetModel, Surface = %q, want google", got)
 	}
 	if !webSearchExecIsReal(t, sess.reg) {
 		t.Fatal("after switching to google profile, web_search function tool must be real (not placeholder)")

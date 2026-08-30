@@ -17,7 +17,7 @@ package contextmgr
 // "<stateHome>/evener") finds the real record, builds a
 // client via llm.NewFromAvailableProviders (which threads StateHome from
 // XDG_STATE_HOME into the openai factory), and resolve the "openai" profile via
-// provider.ResolveProfileFromConfig. NewManager(profile, client, cheapmodel.New(client)) then summarizes
+// provider.Resolve. NewManager(profile, client, cheapmodel.New(client)) then summarizes
 // through the OAuth-backed Codex backend.
 //
 // Three arms per case (all combined-output scored):
@@ -91,9 +91,9 @@ func newOAuthManager(t *testing.T) *Manager {
 		t.Fatalf("llm.NewFromAvailableProviders: %v (partial errs: %v)", err, errs)
 	}
 
-	prof, err := provider.ResolveProfileFromConfig(cfg, "openai/"+evalModel)
+	prof, err := provider.Resolve(client.Registry(), "openai/"+evalModel)
 	if err != nil {
-		t.Fatalf("ResolveProfileFromConfig openai/%s: %v", evalModel, err)
+		t.Fatalf("Resolve openai/%s: %v", evalModel, err)
 	}
 
 	return NewManager(prof, client, cheapmodel.New(client))

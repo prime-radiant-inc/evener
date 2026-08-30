@@ -101,15 +101,11 @@ func TestSessionInstanceProtocol(t *testing.T) {
 }
 
 // TestSessionCanonicalModelID pins the G12 provenance fallback's
-// canonicalization: a "[1m]" ref is an alias row, so it folds onto its target,
-// and a dated id the catalog does not carry as its own row folds onto the base
-// row the registry matched.
-//
-// Known narrowing: a dated snapshot the catalog DOES carry as its own row
-// (anthropic's claude-sonnet-4-5-20250929) canonicalizes to itself, so it no
-// longer compares equal to the undated alias the way the deleted
-// EmbeddedModelCatalog canonicalizer made it. Legacy transcripts only, and the
-// conservative direction — thinking is stripped, never wrongly replayed.
+// canonicalization: a "[1m]" ref is an alias row, so it folds onto its target;
+// a dated id the catalog does not carry as its own row folds onto the base row
+// the registry matched; and a dated snapshot that IS its own catalog row folds
+// onto the undated row the same instance serves — after the alias fold, so
+// every spelling of one deployment lands on the same id.
 func TestSessionCanonicalModelID(t *testing.T) {
 	t.Parallel()
 	sess := &Session{client: llm.NewClient()}
@@ -118,7 +114,8 @@ func TestSessionCanonicalModelID(t *testing.T) {
 		{"claude-sonnet-4-5", "claude-sonnet-4-5"},
 		{"claude-sonnet-4-5-20990101", "claude-sonnet-4-5"},
 		{"  claude-sonnet-4-5[1m]  ", "claude-sonnet-4-5"},
-		{"claude-sonnet-4-5-20250929", "claude-sonnet-4-5-20250929"},
+		{"claude-sonnet-4-5-20250929", "claude-sonnet-4-5"},
+		{"claude-sonnet-4-5-20250929[1m]", "claude-sonnet-4-5"},
 	}
 	for _, tc := range cases {
 		if got := sess.canonicalModelID("anthropic", tc.model); got != tc.want {

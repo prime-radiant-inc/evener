@@ -278,6 +278,18 @@ func newFakeEnumerableAdapter(name string, ids ...string) *fakeEnumerableAdapter
 	return a
 }
 
+// codexProfile is a profile on the Codex instance for model, built the way a
+// model switch builds one: an id off the allowlist does not resolve, and
+// WithModel keeps it verbatim so the membership check is what reports it.
+func codexProfile(t *testing.T, model string) *provider.Profile {
+	t.Helper()
+	p, err := provider.Resolve(provider.EmbeddedRegistry(), "openai-codex/gpt-5.6")
+	if err != nil {
+		t.Fatalf("resolve openai-codex: %v", err)
+	}
+	return p.WithModel(model)
+}
+
 // TestValidateModelSwitchMembership_ServabilityRunsBeforeMembership pins spec
 // §7.3: a reference the registry refuses outright — the Codex transport is the
 // only place an id can fail to resolve — is refused with the resolver's own
@@ -292,7 +304,7 @@ func TestValidateModelSwitchMembership_ServabilityRunsBeforeMembership(t *testin
 		{ModelID: "gpt-5.6"},
 	}}
 
-	err := validateModelSwitchMembership(client, WithProviderID(NewOpenAIProfile("gpt-5.6-mini"), "openai-codex"), listing)
+	err := validateModelSwitchMembership(client, codexProfile(t, "gpt-5.6-mini"), listing)
 	if err == nil {
 		t.Fatal("a model off the Codex allowlist = nil error, want non-nil")
 	}
@@ -305,7 +317,7 @@ func TestValidateModelSwitchMembership_ServabilityRunsBeforeMembership(t *testin
 		}
 	}
 
-	if err := validateModelSwitchMembership(client, WithProviderID(NewOpenAIProfile("gpt-5.6"), "openai-codex"), listing); err != nil {
+	if err := validateModelSwitchMembership(client, codexProfile(t, "gpt-5.6"), listing); err != nil {
 		t.Fatalf("an allowlisted Codex model must pass: %v", err)
 	}
 }
