@@ -565,16 +565,14 @@
   padding-block: 0.55rem 0.9rem;
 }
 
-.concept-constellation.co-conversation-skin
-  [data-testid="virtual-transcript-row"]
-  > article {
+.concept-constellation.co-conversation-skin [data-virtual-row] > article {
   min-width: 0;
   padding: 0.4rem max(0.7rem, var(--safe-area-right)) 0.4rem
     max(0.7rem, var(--safe-area-left));
 }
 
 .concept-constellation.co-conversation-skin
-  [data-testid="virtual-transcript-row"]
+  [data-virtual-row]
   > article[data-focused="true"] {
   outline: 3px solid color-mix(in srgb, var(--co-focus) 58%, transparent);
   outline-offset: -3px;

@@ -1493,9 +1493,13 @@ function commandSource(snapshot) {
 
 function extractGeometry(snapshot) {
   const nodes = snapshot.nodes ?? [];
-  // Mounted row count: transcript items in the AX tree.
+  // Mounted row count: transcript items in the AX tree. The label table is the
+  // production `conversationItemAxLabel` set from accessibility-semantics.ts:
+  // "Your message; completed", "Assistant message; …", "Reasoning activity; …",
+  // "Tool activity, …", "Question; …", "Failure; …", "Notice; …",
+  // "System context; …", "System activity; …", "Attachment; …", "Activity; …".
   const mountedRowCount = nodes.filter((node) =>
-    /^\s*(Your message|Assistant response|Reasoning|Tool |Question|Error|Attachment);/.test(
+    /^\s*(Your message|Assistant message|Reasoning activity|Tool activity, |Question;|Failure;|Notice;|System context;|System activity;|Attachment;|Activity;)/.test(
       node.label ?? "",
     ),
   ).length;
@@ -1730,7 +1734,7 @@ function parseTranscript(snapshot) {
   return snapshot.nodes
     .map((node) => {
       const match = node.label.match(
-        /^(Your message|Assistant response|Reasoning|Tool (.+)|Question|Error|Attachment); (streaming|completed)$/,
+        /^(Your message|Assistant message|Reasoning activity|Tool activity, (.+)|Question|Failure|Notice|System context|System activity|Attachment|Activity); (.+)$/,
       );
       if (!match) return null;
       const index = ordinal;
@@ -1738,17 +1742,19 @@ function parseTranscript(snapshot) {
       const kind =
         match[1] === "Your message"
           ? "user"
-          : match[1] === "Assistant response"
+          : match[1] === "Assistant message"
             ? "assistant"
-            : match[1] === "Reasoning"
+            : match[1] === "Reasoning activity"
               ? "reasoning"
-              : match[1].startsWith("Tool ")
+              : match[1].startsWith("Tool activity, ")
                 ? "tool"
                 : match[1] === "Question"
                   ? "question"
-                  : match[1] === "Error"
+                  : match[1] === "Failure"
                     ? "failure"
-                    : "attachment";
+                    : match[1] === "Attachment"
+                      ? "attachment"
+                      : "notice";
       return {
         id: digest(`transcript:${index}:${kind}`),
         kind,
@@ -1762,7 +1768,7 @@ function parseTranscript(snapshot) {
                   (value) =>
                     value !== match[1] &&
                     value !== match[2] &&
-                    value !== "Reasoning",
+                    value !== "Reasoning activity",
                 )
                 .join("\n"),
       };

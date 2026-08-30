@@ -1722,8 +1722,8 @@ class StatefulIdbFake {
       axNode("Your message; completed", "AXGroup", "baseline question"),
       axNode(
         this.reuseBaselineForStreaming && this.mutation?.kind === "send"
-          ? "Assistant response; streaming"
-          : "Assistant response; completed",
+          ? "Assistant message; streaming"
+          : "Assistant message; completed",
         "AXGroup",
         "baseline response",
       ),
@@ -1734,28 +1734,24 @@ class StatefulIdbFake {
     if (this.mutation.phase === 1) {
       return [
         ...baseline,
-        axNode(
-          "Assistant response; streaming",
-          "AXGroup",
-          "partial smoke-send",
-        ),
+        axNode("Assistant message; streaming", "AXGroup", "partial smoke-send"),
       ];
     }
     if (this.mutation.phase >= 2) {
       return [
         ...baseline,
         axNode(
-          "Assistant response; completed",
+          "Assistant message; completed",
           "AXGroup",
           "complete response to smoke-send",
         ),
         axNode(
-          "Reasoning; completed",
+          "Reasoning activity; completed",
           "AXGroup",
           this.reasoningOpen ? "route summary" : "",
         ),
         axNode(
-          "Tool exec_command; completed",
+          "Tool activity, exec_command; completed",
           "AXGroup",
           this.toolOpen ? "tool output" : "",
         ),
