@@ -55,6 +55,43 @@ func TestBuildTreeLiveNestsActiveSubagentUnderParent(t *testing.T) {
 	}
 }
 
+func TestBuildTreeCarriesSessionJobsForNavigation(t *testing.T) {
+	now := time.Date(2026, 8, 29, 12, 0, 0, 0, time.UTC)
+	metas := []schema.SessionMeta{{ID: "parent", CreatedAt: now, UpdatedAt: now, EnvInfo: schema.EnvironmentInfo{WorkingDir: "/projects/evener"}}}
+	live := []LiveEntry{{
+		PID: 1, SessionID: "parent", Status: appwire.ThreadStatusIdle,
+		RunningJobs:   []appwire.EvenerJobInfo{{JobID: "job-running", JobType: "shell", Status: "running"}},
+		CompletedJobs: []appwire.EvenerJobInfo{{JobID: "job-completed", JobType: "shell", Status: "completed"}},
+	}}
+
+	tree := BuildTreeAt(metas, live, nil, now)
+	if len(tree.Live) != 1 {
+		t.Fatalf("Live tier has %d rows, want one parent", len(tree.Live))
+	}
+	parent := tree.Live[0]
+	if len(parent.RunningJobs) != 1 || parent.RunningJobs[0].JobID != "job-running" {
+		t.Fatalf("running jobs = %+v", parent.RunningJobs)
+	}
+	if len(parent.CompletedJobs) != 1 || parent.CompletedJobs[0].JobID != "job-completed" {
+		t.Fatalf("completed jobs = %+v", parent.CompletedJobs)
+	}
+	if len(tree.Projects) != 1 || !tree.Projects[0].Expanded || tree.Projects[0].RollupLive != 1 {
+		t.Fatalf("project job rollup = %+v, want expanded with one live task", tree.Projects)
+	}
+}
+
+func TestBuildTreeNeedsYouCarriesSessionJobs(t *testing.T) {
+	now := time.Date(2026, 8, 29, 12, 0, 0, 0, time.UTC)
+	metas := []schema.SessionMeta{{ID: "parent", CreatedAt: now, UpdatedAt: now, EnvInfo: schema.EnvironmentInfo{WorkingDir: "/projects/evener"}}}
+	tree := BuildTreeAt(metas, []LiveEntry{{
+		PID: 1, SessionID: "parent", Status: appwire.ThreadStatusAwaiting,
+		RunningJobs: []appwire.EvenerJobInfo{{JobID: "job-running", JobType: "shell", Status: "running"}},
+	}}, nil, now)
+	if len(tree.NeedsYou) != 1 || len(tree.NeedsYou[0].RunningJobs) != 1 || tree.NeedsYou[0].RunningJobs[0].JobID != "job-running" {
+		t.Fatalf("needs-you job projection = %+v, want active job", tree.NeedsYou)
+	}
+}
+
 func TestBuildTreeLiveExcludesSubagentWhoseParentIsLive(t *testing.T) {
 	now := time.Date(2026, 8, 29, 12, 0, 0, 0, time.UTC)
 	metas := []schema.SessionMeta{

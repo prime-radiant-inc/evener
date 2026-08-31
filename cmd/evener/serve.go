@@ -1409,6 +1409,8 @@ func agentToServerDetailedStatus(ds agent.DetailedStatus) server.DetailedStatus 
 			ExitCode:         job.ExitCode,
 			OutputBytes:      job.OutputBytes,
 			TranscriptRef:    job.TranscriptRef,
+			Command:          job.Command,
+			Task:             job.Task,
 		})
 	}
 	for _, delegate := range ds.Delegates {

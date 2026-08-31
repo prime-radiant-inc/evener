@@ -11,6 +11,7 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"primeradiant.com/evener/appwire"
 	"primeradiant.com/evener/cmd/evener-hub/internal/hubcore"
 	"primeradiant.com/evener/hubapi"
 )
@@ -261,6 +262,8 @@ func cloneNavigationLiveEntries(in []hubcore.LiveEntry) []hubcore.LiveEntry {
 	for i, entry := range in {
 		out[i] = entry
 		out[i].RunningSubagentIDs = append([]string(nil), entry.RunningSubagentIDs...)
+		out[i].RunningJobs = appwire.CloneEvenerJobs(entry.RunningJobs)
+		out[i].CompletedJobs = appwire.CloneEvenerJobs(entry.CompletedJobs)
 		if entry.RunningSubagentStates != nil {
 			out[i].RunningSubagentStates = make(map[string]string, len(entry.RunningSubagentStates))
 			maps.Copy(out[i].RunningSubagentStates, entry.RunningSubagentStates)
@@ -418,6 +421,13 @@ func validateNavigationNodesContext(ctx context.Context, rows []hubcore.TreeNode
 		}
 		if _, err := navigationNodeRef(node); err != nil {
 			return err
+		}
+		for _, jobs := range [2][]appwire.EvenerJobInfo{node.RunningJobs, node.CompletedJobs} {
+			for _, job := range jobs {
+				if err := validateNavigationIdentity("job ID", job.JobID, false); err != nil {
+					return err
+				}
+			}
 		}
 		if err := validateNavigationNodesContext(ctx, node.Children); err != nil {
 			return err
@@ -1037,7 +1047,42 @@ func (p navigationProjector) projectShallow(node hubcore.TreeNode) hubapi.Naviga
 		updatedAt = &updated
 	}
 	pinned := p.projection.pinSectionFor(node.ID, ref.String()) != ""
-	return hubapi.NavigationSessionSummary{Ref: ref.String(), HostID: ref.HostID, SessionID: ref.SessionID, Title: truncateNavigationRunes(node.Title, maxNavigationTitleRunes), Project: truncateNavigationRunes(node.Project, maxNavigationLabelRunes), State: node.State, Kind: node.Kind, Branch: truncateNavigationRunes(node.Branch, maxNavigationLabelRunes), ClusterCount: node.ClusterCount, Favorite: !pinned && p.projection.sessionFavorite(node.ID, ref.String()), Rename: p.projection.renameable(node.ID, ref.String()), Live: p.projection.isLive(node.ID, ref.String()) && hubcore.NormalizeState(node.State) != "ended", AskPending: node.AskPending, Dormant: node.Dormant, UpdatedAt: updatedAt, MoreSubagents: node.MoreSubagents, Children: hubapi.NavigationArray[hubapi.NavigationSessionSummary]{}}
+	return hubapi.NavigationSessionSummary{
+		Ref:           ref.String(),
+		HostID:        ref.HostID,
+		SessionID:     ref.SessionID,
+		Title:         truncateNavigationRunes(node.Title, maxNavigationTitleRunes),
+		Project:       truncateNavigationRunes(node.Project, maxNavigationLabelRunes),
+		State:         node.State,
+		Kind:          node.Kind,
+		Branch:        truncateNavigationRunes(node.Branch, maxNavigationLabelRunes),
+		ClusterCount:  node.ClusterCount,
+		Favorite:      !pinned && p.projection.sessionFavorite(node.ID, ref.String()),
+		Rename:        p.projection.renameable(node.ID, ref.String()),
+		Live:          p.projection.isLive(node.ID, ref.String()) && hubcore.NormalizeState(node.State) != "ended",
+		AskPending:    node.AskPending,
+		Dormant:       node.Dormant,
+		UpdatedAt:     updatedAt,
+		MoreSubagents: node.MoreSubagents,
+		RunningJobs:   navigationJobs(node.RunningJobs),
+		CompletedJobs: navigationJobs(node.CompletedJobs),
+		Children:      hubapi.NavigationArray[hubapi.NavigationSessionSummary]{},
+	}
+}
+
+func navigationJobs(jobs []appwire.EvenerJobInfo) hubapi.NavigationArray[hubapi.NavigationJobSummary] {
+	out := make(hubapi.NavigationArray[hubapi.NavigationJobSummary], 0, len(jobs))
+	for _, job := range jobs {
+		out = append(out, hubapi.NavigationJobSummary{
+			JobID:   job.JobID,
+			JobType: job.JobType,
+			Status:  job.Status,
+			Command: truncateNavigationRunes(job.Command, maxNavigationLabelRunes),
+			Task:    truncateNavigationRunes(job.Task, maxNavigationLabelRunes),
+			Reason:  truncateNavigationRunes(job.Reason, maxNavigationLabelRunes),
+		})
+	}
+	return out
 }
 
 func (p navigationProjection) isLive(id, ref string) bool {
@@ -1079,6 +1124,8 @@ func cloneNavigationSummary(summary hubapi.NavigationSessionSummary) hubapi.Navi
 		updated := *summary.UpdatedAt
 		clone.UpdatedAt = &updated
 	}
+	clone.RunningJobs = append(hubapi.NavigationArray[hubapi.NavigationJobSummary](nil), summary.RunningJobs...)
+	clone.CompletedJobs = append(hubapi.NavigationArray[hubapi.NavigationJobSummary](nil), summary.CompletedJobs...)
 	clone.Children = make(hubapi.NavigationArray[hubapi.NavigationSessionSummary], len(summary.Children))
 	for index, child := range summary.Children {
 		clone.Children[index] = cloneNavigationSummary(child)

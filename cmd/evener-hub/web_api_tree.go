@@ -606,7 +606,15 @@ func appThreadTreeEntries(thread appwire.Thread) (schema.SessionMeta, hubcore.Li
 		Status:    thread.Status.Type,
 		Project:   project,
 	}
+	entry.RunningJobs, entry.CompletedJobs = hubcore.SplitNonAgentJobs(diagnosticsJobs(thread.Evener.Diagnostics))
 	return meta, entry, true
+}
+
+func diagnosticsJobs(diagnostics *appwire.EvenerDiagnostics) []appwire.EvenerJobInfo {
+	if diagnostics == nil {
+		return nil
+	}
+	return diagnostics.Jobs
 }
 
 // appThreadTreeParentSessionID translates the remote thread lineage into the

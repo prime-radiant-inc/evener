@@ -40,7 +40,10 @@ type LiveEntry struct {
 	// such as shell and watch jobs. Delegate jobs stay represented by the
 	// descendant fields above so consumers do not render duplicate agent rows.
 	RunningJobs []appwire.EvenerJobInfo
-	Project     identifier.Project // canonical identity resolved at hub ingestion, when available
+	// CompletedJobs contains recent terminal non-agent jobs. Delegate jobs stay
+	// represented by descendant sessions for the same reason as RunningJobs.
+	CompletedJobs []appwire.EvenerJobInfo
+	Project       identifier.Project // canonical identity resolved at hub ingestion, when available
 }
 
 // ProbeResult is the dynamic session state returned by a daemon liveness probe.
@@ -52,6 +55,7 @@ type ProbeResult struct {
 	RunningSubagentIDs    []string
 	RunningSubagentStates map[string]string
 	RunningJobs           []appwire.EvenerJobInfo
+	CompletedJobs         []appwire.EvenerJobInfo
 	OK                    bool
 }
 
@@ -77,6 +81,15 @@ func cloneSubagentStates(in map[string]string) map[string]string {
 
 func cloneRunningJobs(in []appwire.EvenerJobInfo) []appwire.EvenerJobInfo {
 	return appwire.CloneEvenerJobs(in)
+}
+
+func cloneLiveEntry(in LiveEntry) LiveEntry {
+	out := in
+	out.RunningSubagentIDs = append([]string(nil), in.RunningSubagentIDs...)
+	out.RunningSubagentStates = cloneSubagentStates(in.RunningSubagentStates)
+	out.RunningJobs = cloneRunningJobs(in.RunningJobs)
+	out.CompletedJobs = cloneRunningJobs(in.CompletedJobs)
+	return out
 }
 
 // crashedFileRetention is how long Refresh keeps a dead PID's rendezvous file
@@ -189,9 +202,7 @@ func (r *Roster) SetFs(fs afero.Fs) *Roster {
 func NewRosterWithEntries(entries ...LiveEntry) *Roster {
 	r := NewRoster("", nil)
 	for _, e := range entries {
-		e.RunningSubagentIDs = append([]string(nil), e.RunningSubagentIDs...)
-		e.RunningSubagentStates = cloneSubagentStates(e.RunningSubagentStates)
-		e.RunningJobs = cloneRunningJobs(e.RunningJobs)
+		e = cloneLiveEntry(e)
 		r.byPID[e.PID] = e
 		if e.SessionID != "" {
 			r.bySess[e.SessionID] = e
@@ -241,24 +252,36 @@ func rosterFingerprint(bySess map[string]LiveEntry) uint64 {
 			_, _ = h.Write([]byte(bySess[id].RunningSubagentStates[childID]))
 			_, _ = h.Write([]byte{0})
 		}
-		runningJobs := append([]appwire.EvenerJobInfo(nil), bySess[id].RunningJobs...)
-		sort.Slice(runningJobs, func(i, j int) bool {
-			if runningJobs[i].JobID != runningJobs[j].JobID {
-				return runningJobs[i].JobID < runningJobs[j].JobID
+		writeJobs := func(jobs []appwire.EvenerJobInfo) {
+			sort.SliceStable(jobs, func(i, j int) bool {
+				if jobs[i].JobID != jobs[j].JobID {
+					return jobs[i].JobID < jobs[j].JobID
+				}
+				if jobs[i].JobType != jobs[j].JobType {
+					return jobs[i].JobType < jobs[j].JobType
+				}
+				return jobs[i].Status < jobs[j].Status
+			})
+			for _, job := range jobs {
+				_, _ = h.Write([]byte(job.JobID))
+				_, _ = h.Write([]byte{0})
+				_, _ = h.Write([]byte(job.JobType))
+				_, _ = h.Write([]byte{0})
+				_, _ = h.Write([]byte(job.Status))
+				_, _ = h.Write([]byte{0})
+				_, _ = h.Write([]byte(job.Command))
+				_, _ = h.Write([]byte{0})
+				_, _ = h.Write([]byte(job.Task))
+				_, _ = h.Write([]byte{0})
+				_, _ = h.Write([]byte(job.Reason))
+				_, _ = h.Write([]byte{0})
 			}
-			if runningJobs[i].JobType != runningJobs[j].JobType {
-				return runningJobs[i].JobType < runningJobs[j].JobType
-			}
-			return runningJobs[i].Status < runningJobs[j].Status
-		})
-		for _, job := range runningJobs {
-			_, _ = h.Write([]byte(job.JobID))
-			_, _ = h.Write([]byte{0})
-			_, _ = h.Write([]byte(job.JobType))
-			_, _ = h.Write([]byte{0})
-			_, _ = h.Write([]byte(job.Status))
-			_, _ = h.Write([]byte{0})
 		}
+		runningJobs := append([]appwire.EvenerJobInfo(nil), bySess[id].RunningJobs...)
+		writeJobs(runningJobs)
+		_, _ = h.Write([]byte{0})
+		completedJobs := append([]appwire.EvenerJobInfo(nil), bySess[id].CompletedJobs...)
+		writeJobs(completedJobs)
 		_, _ = h.Write([]byte{0})
 	}
 	return h.Sum64()
@@ -380,6 +403,7 @@ func (r *Roster) Refresh() {
 			RunningSubagentIDs:    append([]string(nil), res.RunningSubagentIDs...),
 			RunningSubagentStates: cloneSubagentStates(res.RunningSubagentStates),
 			RunningJobs:           cloneRunningJobs(res.RunningJobs),
+			CompletedJobs:         cloneRunningJobs(res.CompletedJobs),
 		}
 		if res.SessionID != "" {
 			if prev, ok := bySess[res.SessionID]; !ok || preferLiveEntry(live, prev) {
@@ -427,9 +451,7 @@ func (r *Roster) List() []LiveEntry {
 	bySession := make(map[string]LiveEntry, len(r.byPID))
 	out := make([]LiveEntry, 0, len(r.byPID))
 	for _, e := range r.byPID {
-		e.RunningSubagentIDs = append([]string(nil), e.RunningSubagentIDs...)
-		e.RunningSubagentStates = cloneSubagentStates(e.RunningSubagentStates)
-		e.RunningJobs = cloneRunningJobs(e.RunningJobs)
+		e = cloneLiveEntry(e)
 		sessionID := envvars.FirstNonEmpty(e.SessionID, e.Entry.SessionID, e.ThreadID)
 		if sessionID == "" {
 			out = append(out, e)
@@ -493,9 +515,7 @@ func (r *Roster) Find(sessionID string) (LiveEntry, bool) {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
 	e, ok := r.bySess[sessionID]
-	e.RunningSubagentIDs = append([]string(nil), e.RunningSubagentIDs...)
-	e.RunningSubagentStates = cloneSubagentStates(e.RunningSubagentStates)
-	e.RunningJobs = cloneRunningJobs(e.RunningJobs)
+	e = cloneLiveEntry(e)
 	return e, ok
 }
 

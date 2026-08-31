@@ -9,6 +9,7 @@ import (
 	"unicode/utf8"
 
 	"primeradiant.com/evener/agent/schema"
+	"primeradiant.com/evener/appwire"
 	"primeradiant.com/evener/cmd/evener-hub/internal/hubcore"
 	"primeradiant.com/evener/hubapi"
 )
@@ -81,6 +82,40 @@ func TestNavigationManifestHasNoRowsAndLocationHasSummary(t *testing.T) {
 	}
 	if _, ok := any(manifest).(hubapi.NavigationSessionSummary); ok {
 		t.Fatal("manifest must not contain navigation rows")
+	}
+}
+
+func TestNavigationProjectionCarriesActiveAndCompletedJobs(t *testing.T) {
+	project := hubcore.TreeProject{
+		Key:  "project",
+		Name: "project",
+		Current: []hubcore.TreeNode{{
+			ID:    "session-parent",
+			Title: "parent",
+			Kind:  "session",
+			State: "idle",
+			RunningJobs: []appwire.EvenerJobInfo{{
+				JobID: "job-running", JobType: "shell", Status: "running", Command: "go test ./...",
+			}},
+			CompletedJobs: []appwire.EvenerJobInfo{{
+				JobID: "job-completed", JobType: "shell", Status: "completed", Command: "go fmt ./...",
+			}},
+		}},
+	}
+	projection, err := buildNavigationProjection(navigationBuildInputs{GenerationID: "generation", Tree: hubcore.Tree{Projects: []hubcore.TreeProject{project}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	resource, ok := projection.Project("project")
+	if !ok {
+		t.Fatal("project missing")
+	}
+	row := resource.Current.Sessions[0]
+	if len(row.RunningJobs) != 1 || row.RunningJobs[0].JobID != "job-running" || row.RunningJobs[0].Command != "go test ./..." {
+		t.Fatalf("running jobs = %+v", row.RunningJobs)
+	}
+	if len(row.CompletedJobs) != 1 || row.CompletedJobs[0].JobID != "job-completed" || row.CompletedJobs[0].Status != "completed" {
+		t.Fatalf("completed jobs = %+v", row.CompletedJobs)
 	}
 }
 
