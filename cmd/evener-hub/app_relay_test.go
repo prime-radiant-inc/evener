@@ -1338,6 +1338,216 @@ func TestHubRelayCanceledRemapStopsWaitingForPublicationDrain(t *testing.T) {
 	}
 }
 
+func TestHubRelayRouteCallbackPanicRestoresDisplacedOwnershipAndReleasesCommand(t *testing.T) {
+	const relayKey = "local:hub-route-panic"
+	canonicalOld := appwire.Ref{SourceID: "local", ThreadID: "hub-route-panic-old"}
+	canonicalNew := appwire.Ref{SourceID: "local", ThreadID: "hub-route-panic-new"}
+	resultFor := func(target string) appsource.RelayReadResult {
+		return appsource.RelayReadResult{
+			Response: appwire.ThreadReadResponse{Thread: appwire.Thread{
+				ID: "hub-route-panic", Source: "local", Evener: appwire.EvenerThread{Ref: target},
+			}},
+			Handoff: &guardedRelayHandoff{prepareAllowed: true, commitAllowed: true},
+		}
+	}
+	oldLease := &scriptedRelaySessionLease{readResult: resultFor(relayKey), deliveries: make(chan appsource.RelayDelivery)}
+	newLease := &scriptedRelaySessionLease{readResult: resultFor("local:hub-route-panic-new-target"), deliveries: make(chan appsource.RelayDelivery)}
+	var resolveMu sync.Mutex
+	resolved := canonicalOld
+	source := &relaySessionTestSource{
+		resolveRelay: func(appwire.ThreadReadParams) (appwire.Ref, error) {
+			resolveMu.Lock()
+			defer resolveMu.Unlock()
+			return resolved, nil
+		},
+		acquireRelay: func(ref appwire.Ref) (appsource.RelaySessionRoutePublicationLease, error) {
+			if ref == canonicalOld {
+				return routeAwareTestLease(oldLease), nil
+			}
+			return routeAwareTestLease(newLease), nil
+		},
+	}
+	publicationEntered := make(chan struct{})
+	restoredRouteEntered := make(chan struct{})
+	releasePublication := make(chan struct{})
+	var entryOnce sync.Once
+	var restoredOnce sync.Once
+	cfg := hubcore.WebConfig{}
+	cfg.RelayHooks.AfterCanonicalPublishEntry = func(_ string, notification appwire.Notification) {
+		switch notification.Method {
+		case "review/hold":
+			entryOnce.Do(func() {
+				close(publicationEntered)
+				<-releasePublication
+			})
+		case "review/restored":
+			restoredOnce.Do(func() { close(restoredRouteEntered) })
+		}
+	}
+	relays := newHubRelayFunctions(
+		appserver.NewServer(appserver.ServerConfig{ServerName: "hub-route-panic", SourceID: "local"}),
+		cfg, appsource.NewRegistry(),
+	)
+	initial, err := relays.readThread(t.Context(), source, appwire.ThreadReadParams{Ref: relayKey, Subscribe: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	initial.finish(false)
+	heldAcknowledged := make(chan struct{})
+	go func() {
+		oldLease.deliveries <- appsource.RelayDelivery{
+			Notification: appwire.Notification{Method: "review/hold", Params: []byte(`{"ref":"local:hub-route-panic"}`)},
+			Acknowledge:  func() { close(heldAcknowledged) },
+		}
+	}()
+	<-publicationEntered
+	resolveMu.Lock()
+	resolved = canonicalNew
+	resolveMu.Unlock()
+	previousWait := observeHubRelayWait
+	observeHubRelayWait = func() { panic("route drain observer panic") }
+	t.Cleanup(func() { observeHubRelayWait = previousWait })
+	recovered := make(chan any, 1)
+	go func() {
+		defer func() { recovered <- recover() }()
+		_, _ = relays.readThread(t.Context(), source, appwire.ThreadReadParams{Ref: relayKey, Subscribe: true})
+	}()
+	if got := <-recovered; got == nil {
+		close(releasePublication)
+		t.Fatal("replacement route callback did not re-panic")
+	}
+	observeHubRelayWait = previousWait
+	if got := relays.relayCommandCount(relayKey); got != 0 {
+		close(releasePublication)
+		t.Fatalf("hub command ownership leaked after route callback panic: %d", got)
+	}
+	if got := newLease.closeCallCount(); got != 1 {
+		close(releasePublication)
+		t.Fatalf("panicked unpublished replacement lease closes = %d, want 1", got)
+	}
+	close(releasePublication)
+	<-heldAcknowledged
+	if !relays.relayPublished(relayKey) {
+		t.Fatal("route callback panic retired the displaced published generation")
+	}
+	restoredAcknowledged := make(chan struct{})
+	oldLease.deliveries <- appsource.RelayDelivery{
+		Notification: appwire.Notification{Method: "review/restored", Params: []byte(`{"ref":"local:hub-route-panic"}`)},
+		Acknowledge:  func() { close(restoredAcknowledged) },
+	}
+	select {
+	case <-restoredRouteEntered:
+	case <-time.After(time.Second):
+		t.Fatal("displaced target route was not restored after route callback panic")
+	}
+	<-restoredAcknowledged
+}
+
+type cancelAfterRoutePublicationLease struct {
+	*scriptedRelaySessionLease
+	published   chan struct{}
+	allowReturn chan struct{}
+}
+
+func (l *cancelAfterRoutePublicationLease) ReadWithRoutePublication(
+	ctx context.Context,
+	params appwire.ThreadReadParams,
+	publish func(context.Context, appwire.Thread) error,
+) (appsource.RelayReadResult, error) {
+	result, err := l.scriptedRelaySessionLease.Read(ctx, params)
+	if err != nil {
+		return result, err
+	}
+	if err := publish(ctx, result.Response.Thread); err != nil {
+		return appsource.RelayReadResult{}, err
+	}
+	close(l.published)
+	<-l.allowReturn
+	return result, nil
+}
+
+func TestHubRelayPostReadFailureAbortsReturnedHandoffBeforeRelease(t *testing.T) {
+	t.Run("canceled idempotent verification", func(t *testing.T) {
+		const relayKey = "local:abort-canceled-verification"
+		canonical := appwire.Ref{SourceID: "local", ThreadID: "abort-canceled-verification"}
+		handoff := &guardedRelayHandoff{prepareAllowed: true, commitAllowed: true}
+		base := &scriptedRelaySessionLease{
+			readResult: appsource.RelayReadResult{
+				Response: appwire.ThreadReadResponse{Thread: appwire.Thread{
+					ID: canonical.ThreadID, Source: canonical.SourceID, Evener: appwire.EvenerThread{Ref: relayKey},
+				}},
+				Handoff: handoff,
+			},
+			deliveries: make(chan appsource.RelayDelivery),
+		}
+		lease := &cancelAfterRoutePublicationLease{
+			scriptedRelaySessionLease: base,
+			published:                 make(chan struct{}),
+			allowReturn:               make(chan struct{}),
+		}
+		source := &relaySessionTestSource{
+			resolveRelay: func(appwire.ThreadReadParams) (appwire.Ref, error) { return canonical, nil },
+			acquireRelay: func(appwire.Ref) (appsource.RelaySessionRoutePublicationLease, error) { return lease, nil },
+		}
+		relays := newHubRelayFunctions(
+			appserver.NewServer(appserver.ServerConfig{ServerName: "abort-canceled-verification", SourceID: "local"}),
+			hubcore.WebConfig{}, appsource.NewRegistry(),
+		)
+		ctx, cancel := context.WithCancel(t.Context())
+		result := make(chan error, 1)
+		go func() {
+			read, err := relays.readThread(ctx, source, appwire.ThreadReadParams{Ref: relayKey, Subscribe: true})
+			if read != nil {
+				read.finish(false)
+			}
+			result <- err
+		}()
+		<-lease.published
+		cancel()
+		close(lease.allowReturn)
+		if err := <-result; !errors.Is(err, context.Canceled) {
+			t.Fatalf("canceled verification error = %v, want context.Canceled", err)
+		}
+		_, commits, aborts := handoff.callCounts()
+		if commits != 0 || aborts != 1 {
+			t.Fatalf("returned handoff terminal calls after canceled verification: commits=%d aborts=%d, want 0/1", commits, aborts)
+		}
+		if got := relays.relayCommandCount(relayKey); got != 0 {
+			t.Fatalf("commands after canceled verification = %d, want 0", got)
+		}
+	})
+
+	t.Run("Read result with error", func(t *testing.T) {
+		const relayKey = "local:abort-read-error"
+		readErr := errors.New("read returned a handoff and error")
+		handoff := &guardedRelayHandoff{prepareAllowed: true, commitAllowed: true}
+		lease := &scriptedRelaySessionLease{
+			readResult: appsource.RelayReadResult{
+				Response: appwire.ThreadReadResponse{Thread: appwire.Thread{ID: "abort-read-error", Source: "local", Evener: appwire.EvenerThread{Ref: relayKey}}},
+				Handoff:  handoff,
+			},
+			readErr:    readErr,
+			deliveries: make(chan appsource.RelayDelivery),
+		}
+		source := &relaySessionTestSource{lease: lease}
+		relays := newHubRelayFunctions(
+			appserver.NewServer(appserver.ServerConfig{ServerName: "abort-read-error", SourceID: "local"}),
+			hubcore.WebConfig{}, appsource.NewRegistry(),
+		)
+		read, err := relays.readThread(t.Context(), source, appwire.ThreadReadParams{Ref: relayKey, Subscribe: true})
+		if read != nil || !errors.Is(err, readErr) {
+			t.Fatalf("read result/error = %#v / %v, want nil / %v", read, err, readErr)
+		}
+		_, commits, aborts := handoff.callCounts()
+		if commits != 0 || aborts != 1 {
+			t.Fatalf("returned handoff terminal calls after Read error: commits=%d aborts=%d, want 0/1", commits, aborts)
+		}
+		if got := relays.relayCommandCount(relayKey); got != 0 {
+			t.Fatalf("commands after Read error = %d, want 0", got)
+		}
+	})
+}
+
 func TestHubRelayUnknownTargetDoesNotHeadOfLineBlockKnownDelivery(t *testing.T) {
 	const relayKey = "local:review-hol"
 	thread := appwire.Thread{ID: "review-hol", Source: "local", Evener: appwire.EvenerThread{Ref: relayKey}}

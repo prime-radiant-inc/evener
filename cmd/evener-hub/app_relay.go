@@ -855,6 +855,21 @@ func newHubRelayFunctions(server *appserver.Server, cfg hubcore.WebConfig, sourc
 					retirementHandle = nil
 					retirementState = nil
 				}
+				defer func() {
+					if recovered := recover(); recovered != nil {
+						relayMu.Lock()
+						if routesPending {
+							if pendingRelays[relayKey][state] == handle {
+								unregisterPendingStateLocked(handle, state)
+								close(state.done)
+							}
+							restoreRetirementLocked()
+							resolveRoutesLocked()
+						}
+						relayMu.Unlock()
+						panic(recovered)
+					}
+				}()
 				for {
 					if err := publicationCtx.Err(); err != nil {
 						relayMu.Lock()
@@ -1105,28 +1120,47 @@ func newHubRelayFunctions(server *appserver.Server, cfg hubcore.WebConfig, sourc
 		if err != nil {
 			return nil, err
 		}
+		var releaseOnce sync.Once
+		releaseCommand := func() { releaseOnce.Do(release) }
+		var read *hubThreadReadResult
+		defer func() {
+			if recovered := recover(); recovered != nil {
+				if read != nil {
+					read.finish(false)
+				} else {
+					releaseCommand()
+				}
+				panic(recovered)
+			}
+		}()
 		readParams := params
 		readParams.Subscribe = true
 		result, err := handle.lease.ReadWithRoutePublication(ctx, readParams, publish)
+		if result.Handoff != nil {
+			read = &hubThreadReadResult{
+				response: result.Response,
+				handoff:  result.Handoff,
+				release:  releaseCommand,
+			}
+		}
 		if err != nil {
-			release()
+			if read != nil {
+				read.finish(false)
+			} else {
+				releaseCommand()
+			}
 			return nil, err
 		}
-		if result.Handoff == nil {
-			release()
+		if read == nil {
+			releaseCommand()
 			return nil, appwire.SessionUnavailable("atomic thread read returned no live continuation")
 		}
 		// Canonical leases invoke publish before their pre-cut acknowledgement
 		// barrier. This idempotent call verifies the returned response without a
 		// base-only compatibility path.
 		if err := publish(ctx, result.Response.Thread); err != nil {
-			release()
+			read.finish(false)
 			return nil, err
-		}
-		read := &hubThreadReadResult{
-			response: result.Response,
-			handoff:  result.Handoff,
-			release:  release,
 		}
 		if err := deletionFenceError(cfg, params.Ref, read.response.Thread.ID, ""); err != nil {
 			read.finish(false)
