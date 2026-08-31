@@ -1116,7 +1116,7 @@ func RestoreSessionFromMetaWithConfig(client *llm.Client, profile *provider.Prof
 	// over the sidecar's prefix snapshot; if the snapshot cannot seed the
 	// fold (incomplete, or the refresh above replaced it) the rearm falls
 	// back to its own full file read.
-	s.setRestoredTranscriptWindowed(restoredTranscriptHeader, transcriptEntries, restoredTranscriptOpened, resumeView.SidecarUsed, resumeView.PrefixEntryCount)
+	s.setRestoredTranscriptWindowed(restoredTranscriptHeader, transcriptEntries, restoredTranscriptOpened, resumeView.SidecarUsed, resumeView.PrefixEntryCount, resumeView.PrefixTurnCount)
 	if resumeView.SidecarUsed && resumeView.Entries != nil {
 		if err := s.rearmRootDelegateAttentionSeeded(resumeView); err != nil {
 			return nil, fmt.Errorf("rearm root delegate attention: %w", err)

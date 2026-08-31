@@ -162,7 +162,7 @@ type serveDeps struct {
 	// skipped. Same injectability rationale — the windowed branch is the
 	// one this daemon actually takes on a large resumed session, so tests
 	// must be able to observe and fault it.
-	prepareAppIdentityFromEntriesWindowed func(sourceID, threadID, ref string, header transcript.Header, entries []transcript.Entry, prefixEntryCount int) (server.PreparedAppIdentity, error)
+	prepareAppIdentityFromEntriesWindowed func(sourceID, threadID, ref string, header transcript.Header, entries []transcript.Entry, prefixEntryCount, prefixTurnCount int) (server.PreparedAppIdentity, error)
 	updateSessionID                       func(*rvreg.Registration, string) error
 	observeCallbacks                      func(serveCallbackObserver)
 }
@@ -556,12 +556,19 @@ func runServeWithDeps(args []string, deps serveDeps) error {
 		// OpenWriterForSession pass) and validated its header against the
 		// session id; projecting from those entries keeps the daemon's
 		// startup from re-reading and re-decoding the whole append-only file.
-		if windowed, prefixEntries, _ := sess.RestoredTranscriptWindowed(); windowed {
+		if windowed, prefixEntries, prefixTurns, _ := sess.RestoredTranscriptWindowed(); windowed {
 			// The windowed read decoded only a suffix: project it with the
 			// global entry positions so turn ids match the file-backed paging,
 			// and page the snapshot in the full position space (older pages
-			// fall through to the hub's transcript paging).
-			prepared, err = deps.prepareAppIdentityFromEntriesWindowed("local", sess.ID(), workspaceRef, header, entries, prefixEntries)
+			// fall through to the hub's transcript paging). The sidecar's
+			// prefix-turn count is what arms that paging; a compaction-anchored
+			// resume (whose sidecar could not compute it) falls back to the
+			// file form — one bounded re-read, not a wrong cursor space.
+			if prefixTurns >= 0 {
+				prepared, err = deps.prepareAppIdentityFromEntriesWindowed("local", sess.ID(), workspaceRef, header, entries, prefixEntries, prefixTurns)
+			} else {
+				prepared, err = deps.prepareAppIdentity("local", sess.ID(), workspaceRef, sess.TranscriptPath())
+			}
 		} else {
 			prepared, err = deps.prepareAppIdentityFromEntries("local", sess.ID(), workspaceRef, header, entries)
 		}

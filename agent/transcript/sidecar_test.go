@@ -37,6 +37,76 @@ func seedWindowedTranscript(t *testing.T, sessionID string, n int) string {
 	return path
 }
 
+// TestWriteSidecarFromWriterWindowsAtCheckpointEntryStart pins the
+// compaction anchor's window: a sidecar written from a LIVE writer right
+// after it appended a checkpoint must anchor at the START of that entry, so
+// the windowed resume that validates it decodes [checkpoint, ...rest] — the
+// same window ResumeHistory defines. The failure this pins: an anchor written
+// at the post-checkpoint append position silently drops the compaction
+// summary from every resumed session's live history.
+func TestWriteSidecarFromWriterWindowsAtCheckpointEntryStart(t *testing.T) {
+	const sessionID = "s_anchor"
+	dir := t.TempDir()
+	path := filepath.Join(dir, sessionID+".transcript.jsonl")
+	w, err := NewWriter(path, Header{SessionID: sessionID})
+	if err != nil {
+		t.Fatalf("new writer: %v", err)
+	}
+	for i := 0; i < 3; i++ {
+		if err := w.Append(schema.NewTurn(schema.TurnUserInput, llm.User("turn"))); err != nil {
+			t.Fatalf("append: %v", err)
+		}
+	}
+	// The compaction moment: the checkpoint is the LAST entry appended.
+	if err := w.Append(schema.NewTurn(schema.TurnCheckpoint, llm.User("compaction summary"))); err != nil {
+		t.Fatalf("append checkpoint: %v", err)
+	}
+	// The compaction anchor. The writer must refuse to claim snapshots it
+	// did not compute (complete=false); the fold falls back to its full read.
+	if err := w.WriteSidecarFromWriter(path, nil, nil, nil, false); err != nil {
+		t.Fatalf("write sidecar from writer: %v", err)
+	}
+	// Turn the writer's crank once more the way the session would, so the
+	// file has a suffix entry AFTER the checkpoint too.
+	if err := w.Append(schema.NewTurn(schema.TurnUserInput, llm.User("after compaction"))); err != nil {
+		t.Fatalf("append after: %v", err)
+	}
+	if err := w.Close(); err != nil {
+		t.Fatalf("close: %v", err)
+	}
+
+	resumed, view, err := OpenWriterForResume(path, sessionID)
+	if err != nil {
+		t.Fatalf("windowed resume: %v", err)
+	}
+	defer resumed.Close() //nolint:errcheck
+	if !view.SidecarUsed {
+		t.Fatalf("resume fell back to full scan — the compaction anchor did not validate")
+	}
+	if len(view.Entries) != 2 {
+		t.Fatalf("suffix entries: got %d, want 2 (the checkpoint entry + the post-compaction entry)", len(view.Entries))
+	}
+	if view.Entries[0].Turn.Kind != schema.TurnCheckpoint {
+		t.Fatalf("suffix's first entry: got kind %q, want the checkpoint entry — the compaction summary must survive resume", view.Entries[0].Turn.Kind)
+	}
+	if view.PrefixEntryCount != 3 {
+		t.Fatalf("prefix entry count: got %d, want 3", view.PrefixEntryCount)
+	}
+	// The prefix facts must match what the post-full-scan anchor would write
+	// for the same file: the boundary seq is the last PREFIX entry's seq, not
+	// the checkpoint's.
+	sidecar, ok := ReadSidecar(path)
+	if !ok {
+		t.Fatalf("sidecar missing")
+	}
+	if sidecar.BoundarySeq != sidecar.MaxSeq {
+		t.Fatalf("boundary seq %d must equal the prefix max seq %d", sidecar.BoundarySeq, sidecar.MaxSeq)
+	}
+	if sidecar.SnapshotsComplete {
+		t.Fatalf("compaction anchor must not claim complete snapshots it did not compute")
+	}
+}
+
 // resumeViaSidecar runs OpenWriterForResume twice: the first call performs
 // the full scan and writes the opportunistic sidecar; the second must use
 // it. entryCount is the seeded entry count. Returns the second call's view

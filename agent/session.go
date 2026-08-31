@@ -741,6 +741,11 @@ type Session struct {
 	// the whole file) resets windowed to false. Guarded by s.mu.
 	restoredTranscriptWindowed      bool
 	restoredTranscriptPrefixEntries int
+	// restoredTranscriptPrefixTurns is the sidecar's count of turn positions
+	// the full AppWire projection holds below the windowed suffix (-1 when
+	// the anchor could not compute it): what serve needs to arm windowed turn
+	// paging. Guarded by s.mu.
+	restoredTranscriptPrefixTurns int
 
 	// Cached tool definitions.
 	cachedToolDefs []llm.ToolDefinition
@@ -1819,19 +1824,20 @@ func (s *Session) TranscriptPath() string {
 // whether restore opened a transcript at all, independent of the entry
 // slice's emptiness.
 func (s *Session) setRestoredTranscript(header transcript.Header, entries []transcript.Entry, opened bool) {
-	s.setRestoredTranscriptWindowed(header, entries, opened, false, 0)
+	s.setRestoredTranscriptWindowed(header, entries, opened, false, 0, -1)
 }
 
 // setRestoredTranscriptWindowed is setRestoredTranscript with the windowed
 // facts: windowed reports a sidecar-validated suffix read, prefixEntryCount
 // the entries it skipped.
-func (s *Session) setRestoredTranscriptWindowed(header transcript.Header, entries []transcript.Entry, opened bool, windowed bool, prefixEntryCount int) {
+func (s *Session) setRestoredTranscriptWindowed(header transcript.Header, entries []transcript.Entry, opened bool, windowed bool, prefixEntryCount, prefixTurnCount int) {
 	s.mu.Lock()
 	s.restoredTranscriptHeader = header
 	s.restoredTranscript = entries
 	s.restoredTranscriptOpened = opened
 	s.restoredTranscriptWindowed = windowed
 	s.restoredTranscriptPrefixEntries = prefixEntryCount
+	s.restoredTranscriptPrefixTurns = prefixTurnCount
 	s.mu.Unlock()
 }
 
@@ -1850,14 +1856,17 @@ func (s *Session) RestoredTranscript() (transcript.Header, []transcript.Entry, b
 
 // RestoredTranscriptWindowed reports whether the resume read was windowed
 // (a validated sidecar let restore decode only a suffix) and, when it was,
-// the prefix entry count below the entries RestoredTranscript returns.
+// the prefix entry count below the entries RestoredTranscript returns plus
+// the sidecar's count of turn positions the full AppWire projection holds
+// below them (-1 when the anchor could not compute it).
 // ok mirrors RestoredTranscript's: true exactly when a transcript was
 // opened. A full-scan resume reports ok with windowed=false.
-func (s *Session) RestoredTranscriptWindowed() (windowed bool, prefixEntryCount int, ok bool) {
+func (s *Session) RestoredTranscriptWindowed() (windowed bool, prefixEntryCount, prefixTurnCount int, ok bool) {
 	s.mu.Lock()
 	windowed = s.restoredTranscriptWindowed
 	prefixEntryCount = s.restoredTranscriptPrefixEntries
+	prefixTurnCount = s.restoredTranscriptPrefixTurns
 	ok = s.restoredTranscriptOpened
 	s.mu.Unlock()
-	return windowed, prefixEntryCount, ok
+	return windowed, prefixEntryCount, prefixTurnCount, ok
 }

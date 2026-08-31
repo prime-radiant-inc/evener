@@ -109,6 +109,17 @@ type ResumeSidecar struct {
 	MaxSeq int `json:"max_seq"`
 	// EntryCount is the number of entries at or before Offset.
 	EntryCount int `json:"entry_count"`
+	// PrefixTurnCount is the number of turn positions a full AppWire
+	// projection of the whole file holds strictly below the suffix: the
+	// prelude turn (when the header projects one) plus one position for
+	// every prefix entry that projects at least one thread item. Only the
+	// post-full-scan anchor computes it (it decoded the prefix and knows
+	// which kinds projected); the compaction anchor writes -1, and a resume
+	// that needs windowed turn paging then falls back rather than guessing.
+	// Entries that project nothing (empty-text marker turns) are common in
+	// compacted prefixes, so the figure is genuinely not derivable from
+	// EntryCount.
+	PrefixTurnCount int `json:"prefix_turn_count"`
 	// FailureFloor is the failed-tool-call count over the prefix entries the
 	// anchor observed, bounded by the same divergence rule TrackFailures
 	// applies. -1 means "not computed by this anchor"; callers that need it

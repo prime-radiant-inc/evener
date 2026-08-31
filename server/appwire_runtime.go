@@ -170,7 +170,7 @@ func PrepareAppIdentityFromEntries(sourceID, threadID, ref string, header transc
 //
 // The header rules are the entries form's: the restore pass already
 // validated it against threadID.
-func PrepareAppIdentityFromEntriesWindowed(sourceID, threadID, ref string, header transcript.Header, entries []transcript.Entry, prefixEntryCount int) (PreparedAppIdentity, error) {
+func PrepareAppIdentityFromEntriesWindowed(sourceID, threadID, ref string, header transcript.Header, entries []transcript.Entry, prefixEntryCount, prefixTurnCount int) (PreparedAppIdentity, error) {
 	sourceID, parsedRef, err := parseAppIdentityRef(sourceID, threadID, ref)
 	if err != nil {
 		return PreparedAppIdentity{}, err
@@ -181,18 +181,18 @@ func PrepareAppIdentityFromEntriesWindowed(sourceID, threadID, ref string, heade
 	if prefixEntryCount < 0 {
 		return PreparedAppIdentity{}, errors.New("windowed identity prefix entry count is negative")
 	}
+	if prefixTurnCount < 0 {
+		return PreparedAppIdentity{}, errors.New("windowed identity prefix turn count is negative")
+	}
 	toolNames := map[string]string{}
-	turns, prefixTurnCount := apptranscript.TurnsFromEntriesWindowed(header, entries, prefixEntryCount, func(turn schema.Turn, turnID string, entryIndex int) []appwire.ThreadItem {
+	turns, turnPrefixCount := apptranscript.TurnsFromEntriesWindowed(header, entries, prefixEntryCount, prefixTurnCount, func(turn schema.Turn, turnID string, entryIndex int) []appwire.ThreadItem {
 		return apptranscript.ProjectTurn(turnID, entryIndex, turn, toolNames, nil, apptranscript.ToolResultOutputImages)
 	})
-	highest := prefixEntryCount
-	if n := len(entries); n > 0 {
-		highest = prefixEntryCount + n
-	}
+	highest := prefixEntryCount + len(entries)
 	return finishPreparedAppIdentity(sourceID, threadID, parsedRef, prepareAppIdentitySource{
 		turns:            turns,
 		persistedEntries: highest,
-		prefixTurnCount:  prefixTurnCount,
+		prefixTurnCount:  turnPrefixCount,
 	})
 }
 

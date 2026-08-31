@@ -114,19 +114,21 @@ func foldDelegateAttentionSuffix(fold delegateAttentionFold, entries []transcrip
 
 // writeCompactionSidecarAnchor writes the resume sidecar from the session's
 // attached writer at the boundary the just-appended compaction turn defines.
-// It is one of the two anchors: compaction knows the exact byte offset where
-// live history now begins (the checkpoint entry it just appended), so its
-// sidecar windows the next resume to exactly ResumeHistory's window.
+// It is one of the two anchors: the writer recorded the byte offset where
+// the checkpoint entry it just appended BEGINS, so the sidecar windows the
+// next resume to exactly ResumeHistory's window — [checkpoint, ...rest],
+// the checkpoint entry included.
 //
-// The offset here is the CURRENT append position — the writer has just
-// appended the checkpoint and nothing else — so the suffix a windowed resume
-// decodes is [checkpoint, ...subsequent], matching ResumeHistory over the
-// same file.
+// The fold snapshots are NOT complete for this anchor and it says so: the
+// session's live attention state is process-local and cannot vouch for the
+// whole prefix the way a full decode can, and the prefix-turn count is not
+// computable without the prefix entries. A resume that needs either falls
+// back honestly (the rearm re-reads the file; serve's identity projection
+// takes the file form) rather than trusting a snapshot this anchor never
+// computed. The post-full-scan anchor is the one that computes them.
 //
 // Best-effort by contract: the error is reported to the caller, which must
-// not fail compaction on it. The caller must NOT hold attentionMu (the wake
-// count read below takes it; the lock order matches every other transcript
-// operation in the package).
+// not fail compaction on it.
 //
 // The clean-shutdown path deliberately writes NO anchor: shutdown cannot know
 // where the last checkpoint sits without re-reading the transcript, and a
@@ -135,9 +137,6 @@ func foldDelegateAttentionSuffix(fold delegateAttentionFold, entries []transcrip
 // the shutdown case instead — the resume itself just decoded the whole file
 // and knows the true boundary.
 func (s *Session) writeCompactionSidecarAnchor() error {
-	s.attentionMu.Lock()
-	wakeCount := len(s.rootAttentionWakeIDs)
-	s.attentionMu.Unlock()
 	s.mu.Lock()
 	writer := s.transcript
 	ready := s.transcriptReady
@@ -145,20 +144,5 @@ func (s *Session) writeCompactionSidecarAnchor() error {
 	if !ready || writer == nil {
 		return nil
 	}
-	pending, commits, mutations, complete := liveDelegateAttentionSnapshot(wakeCount)
-	return writer.WriteSidecarFromWriter(s.TranscriptPath(), pending, commits, mutations, complete)
-}
-
-// liveDelegateAttentionSnapshot derives the fold-snapshot completeness from
-// the session's live wake count. The wake cache holds pending IDs but not
-// content, so the snapshot is complete only when the session holds no live
-// attention state at all (the common case): an empty live state is
-// trivially complete, and any live attention forces the conservative
-// incomplete marker — the resume that needs the fold then falls back to its
-// own full read.
-func liveDelegateAttentionSnapshot(wakeCount int) (pending []transcript.SidecarPendingAttention, commits []transcript.SidecarDeliveryCommit, mutations map[string]string, complete bool) {
-	if wakeCount != 0 {
-		return nil, nil, nil, false
-	}
-	return nil, nil, nil, true
+	return writer.WriteSidecarFromWriter(s.TranscriptPath(), nil, nil, nil, false)
 }

@@ -56,6 +56,9 @@ func seedResumableSession(t *testing.T, stateDir, sessionID string, headerSessio
 type serveResumeIdentityProbe struct {
 	entriesFormUsed bool
 	fileFormUsed    bool
+	windowedFormUsed bool
+	windowedPrefixTurns int
+	windowedPrefixEntries int
 	gotThreadID     string
 	gotEntryCount   int
 }
@@ -86,6 +89,13 @@ func runServeResumeWithProbe(t *testing.T, stateDir, sessionID string) (*serveRe
 		probe.fileFormUsed = true
 		return fileForm(sourceID, threadID, ref, transcriptPath)
 	}
+	windowedForm := deps.prepareAppIdentityFromEntriesWindowed
+	deps.prepareAppIdentityFromEntriesWindowed = func(sourceID, threadID, ref string, header transcript.Header, entries []transcript.Entry, prefixEntryCount, prefixTurnCount int) (server.PreparedAppIdentity, error) {
+		probe.windowedFormUsed = true
+		probe.windowedPrefixEntries = prefixEntryCount
+		probe.windowedPrefixTurns = prefixTurnCount
+		return windowedForm(sourceID, threadID, ref, header, entries, prefixEntryCount, prefixTurnCount)
+	}
 	deps.serveHTTP = func(*http.Server, net.Listener) error {
 		// Cancel before returning: the shutdown goroutine waits on ctx.Done()
 		// even after serveHTTP returns, so returning without canceling would
@@ -105,6 +115,87 @@ func runServeResumeWithProbe(t *testing.T, stateDir, sessionID string) (*serveRe
 	}
 	serveErr := runServeWithDeps(args, deps)
 	return probe, serveErr
+}
+
+// seedWindowedResumableSession seeds a session whose transcript carries a
+// validated resume sidecar: two prefix entries, a checkpoint entry (the
+// boundary the sidecar anchors at), then one suffix entry. The FIRST resume
+// writes the opportunistic sidecar (full scan), so the SECOND resume — the
+// one this helper's caller drives — reads the windowed form.
+func seedWindowedResumableSession(t *testing.T, stateDir, sessionID string) {
+	t.Helper()
+	if err := schema.SaveSessionMeta(stateDir, schema.SessionMeta{
+		ID: sessionID, ProfileID: "openai", Model: "gpt-test",
+	}); err != nil {
+		t.Fatalf("SaveSessionMeta: %v", err)
+	}
+	path := filepath.Join(stateDir, "sessions", sessionID+".transcript.jsonl")
+	writer, err := transcript.NewWriter(path, transcript.Header{
+		SessionID:  sessionID,
+		ProfileID: "openai",
+		Model:      "gpt-test",
+		WorkingDir: stateDir,
+	})
+	if err != nil {
+		t.Fatalf("NewWriter: %v", err)
+	}
+	for _, text := range []string{"first turn", "second turn"} {
+		if err := writer.Append(schema.NewTurn(schema.TurnUserInput, llm.User(text))); err != nil {
+			t.Fatalf("Append: %v", err)
+		}
+	}
+	if err := writer.Append(schema.NewTurn(schema.TurnCheckpoint, llm.User("compaction summary"))); err != nil {
+		t.Fatalf("Append checkpoint: %v", err)
+	}
+	if err := writer.Append(schema.NewTurn(schema.TurnUserInput, llm.User("after compaction"))); err != nil {
+		t.Fatalf("Append suffix: %v", err)
+	}
+	if err := writer.Close(); err != nil {
+		t.Fatalf("Close writer: %v", err)
+	}
+	// First resume: full scan, which writes the opportunistic sidecar with
+	// the exact prefix-turn count.
+	first, _, err := transcript.OpenWriterForResume(path, sessionID)
+	if err != nil {
+		t.Fatalf("first resume: %v", err)
+	}
+	if err := first.Close(); err != nil {
+		t.Fatalf("close first: %v", err)
+	}
+}
+
+// TestServeResumeWindowedIdentityArmsWindowedPaging pins the serve-level
+// wiring issue #643's windowed snapshot: a --resume whose sidecar validated
+// must seed its identity through the WINDOWED form — armed with the sidecar's
+// exact prefix-turn count, not zero. The zero-count bug left every windowed
+// Latest/Page taking the non-windowed branch, so windowed paging never ran
+// in production despite its tests passing.
+func TestServeResumeWindowedIdentityArmsWindowedPaging(t *testing.T) {
+	installServeScriptedProvider(t, &scriptedProvider{name: "openai"})
+	stateDir := t.TempDir()
+	const sessionID = "02wMz5Txv1C3Hut0M8GCeB"
+	seedWindowedResumableSession(t, stateDir, sessionID)
+
+	probe, serveErr := runServeResumeWithProbe(t, stateDir, sessionID)
+	if serveErr != nil {
+		t.Fatalf("runServeWithDeps(resume): %v", serveErr)
+	}
+	if !probe.windowedFormUsed {
+		t.Fatal("resume with a valid sidecar did not use the windowed identity form")
+	}
+	if probe.entriesFormUsed || probe.fileFormUsed {
+		t.Fatal("windowed resume also used another identity form")
+	}
+	// Two prefix entries + the checkpoint entry; the sidecar's prefix spans
+	// the two user turns (the checkpoint is the suffix's first entry).
+	if probe.windowedPrefixEntries != 2 {
+		t.Fatalf("windowed prefix entries = %d, want 2", probe.windowedPrefixEntries)
+	}
+	// Both prefix entries project turns, and no system prompt means no
+	// prelude: the prefix-turn count is 2, not 0 — the arming value.
+	if probe.windowedPrefixTurns != 2 {
+		t.Fatalf("windowed prefix turns = %d, want 2 (armed, not zero)", probe.windowedPrefixTurns)
+	}
 }
 
 // TestServeResumeSeedsIdentityFromRestoredEntries pins the serve-level

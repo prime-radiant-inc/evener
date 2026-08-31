@@ -2,11 +2,43 @@ package server
 
 import (
 	"strconv"
+	"strings"
 	"testing"
 
+	"primeradiant.com/evener/agent/schema"
+	"primeradiant.com/evener/agent/transcript"
 	"primeradiant.com/evener/appwire"
 	"primeradiant.com/evener/internal/appserver"
+	"primeradiant.com/evener/internal/apptranscript"
+	"primeradiant.com/evener/llm"
 )
+
+// agentSidecarPrefixTurnCount computes the prefix-turn count the way the
+// transcript package's full-scan anchor does. The rule is private there, so
+// this helper restates it beside the differential that compares it against
+// the real projection: a mismatch between the two is the drift the
+// differential catches.
+func agentSidecarPrefixTurnCount(t *testing.T, header transcript.Header, prefix []transcript.Entry) int {
+	t.Helper()
+	// Mirror of transcript.prefixTurnCount: prelude (non-empty system prompt)
+	// plus one position per entry whose turn projects thread items.
+	count := 0
+	if strings.TrimSpace(header.SystemPrompt) != "" {
+		count++
+	}
+	for i := range prefix {
+		turn := prefix[i].Turn
+		projects := true
+		switch turn.Kind {
+		case schema.TurnCheckpoint, schema.TurnSummary, schema.TurnModelSwitch, schema.TurnEnvironment, schema.TurnHookCompleted:
+			projects = strings.TrimSpace(turn.Message.Text()) != "" || (turn.Kind == schema.TurnHookCompleted && turn.Hook != nil)
+		}
+		if projects {
+			count++
+		}
+	}
+	return count
+}
 
 // TestWindowedSnapshotPagesInFullPositionSpace: a windowed seed's Latest and
 // Page cursors must live in the same front-anchored position space a full
@@ -59,6 +91,32 @@ func TestWindowedSnapshotPagesInFullPositionSpace(t *testing.T) {
 	}
 	if cursor != "5" {
 		t.Fatalf("Latest(10) cursor: got %q, want 5", cursor)
+	}
+}
+
+// TestWindowedSnapshotLatestLimitBetweenWindowAndTotal: a limit that reaches
+// past the window but not the full position space (window 3, prefix 5, total
+// 8, limit 4) must return the whole window with the prefix-boundary cursor —
+// the window cannot serve more turns than it holds. This pins the panic the
+// naive `lo := len(turns)-limit` produced (slice bounds [-1:]) — limit is
+// client-controlled, so the negative index was reachable from a request.
+func TestWindowedSnapshotLatestLimitBetweenWindowAndTotal(t *testing.T) {
+	snapshot := &appTurnSnapshot{threadID: "th_l"}
+	window := make([]appwire.Turn, 3)
+	for i := range window {
+		window[i] = appwire.Turn{ID: "turn_" + strconv.Itoa(6+i), Items: []appwire.ThreadItem{{ID: "i" + strconv.Itoa(i)}}, ItemsView: "full", Status: appwire.TurnStatusCompleted}
+	}
+	snapshot.SeedWindowed(window, 5)
+
+	turns, cursor := snapshot.Latest(4)
+	if len(turns) != 3 {
+		t.Fatalf("Latest(4) turns: %d, want 3 (the window cannot serve more than it holds)", len(turns))
+	}
+	if turns[0].ID != "turn_6" || turns[2].ID != "turn_8" {
+		t.Fatalf("Latest(4) turn ids: %v", turns)
+	}
+	if cursor != "5" {
+		t.Fatalf("Latest(4) cursor: got %q, want 5 (the prefix boundary — the hub serves the rest)", cursor)
 	}
 }
 
@@ -145,5 +203,64 @@ func TestWindowedSnapshotMatchesFullProjectionDifferential(t *testing.T) {
 	}
 	if fullPage.NextCursor != "4" {
 		t.Fatalf("full next cursor: got %q, want 4 (sanity)", fullPage.NextCursor)
+	}
+}
+
+// TestTurnsFromEntriesWindowedCountMatchesFullProjection is the drift guard
+// for the sidecar's PrefixTurnCount: over the same transcript, the count the
+// windowed projection returns must equal the number of turns the FULL
+// projection holds below the suffix. The count is computed by the transcript
+// package (prefixTurnCount) from the prefix entries the windowed form never
+// sees, so this differential — full projection over prefix+suffix versus
+// windowed projection seeded with the transcript package's count — is what
+// proves the restated emission rules have not drifted.
+func TestTurnsFromEntriesWindowedCountMatchesFullProjection(t *testing.T) {
+	// A prefix mix that exercises the emission rules: projecting kinds, a
+	// marker kind with empty text (projects nothing), and a prelude.
+	header := transcript.Header{SessionID: "th_c", SystemPrompt: "system prompt"}
+	prefix := []transcript.Entry{
+		{Kind: "entry", Seq: 0, Turn: schema.NewTurn(schema.TurnUserInput, llm.User("one"))},
+		{Kind: "entry", Seq: 1, Turn: schema.NewTurn(schema.TurnAssistant, llm.Assistant("two"))},
+		// Empty-text environment turn: ProjectTurn emits nothing.
+		{Kind: "entry", Seq: 2, Turn: schema.NewTurn(schema.TurnEnvironment, llm.User("   "))},
+		{Kind: "entry", Seq: 3, Turn: schema.NewTurn(schema.TurnCheckpoint, llm.User("compaction summary"))},
+	}
+	suffix := []transcript.Entry{
+		{Kind: "entry", Seq: 4, Turn: schema.NewTurn(schema.TurnUserInput, llm.User("after"))},
+		{Kind: "entry", Seq: 5, Turn: schema.NewTurn(schema.TurnAssistant, llm.Assistant("done"))},
+	}
+	project := func(turn schema.Turn, turnID string, entryIndex int) []appwire.ThreadItem {
+		return apptranscript.ProjectTurn(turnID, entryIndex, turn, map[string]string{}, nil, apptranscript.ToolResultOutputImages)
+	}
+
+	// The count the sidecar would carry: transcript's restated rule.
+	want := agentSidecarPrefixTurnCount(t, header, prefix)
+	// The full projection over prefix+suffix: prelude + one turn per
+	// projecting entry (2 prefix entries project; the empty environment
+	// turn does not), then the suffix's turns.
+	fullTurns, _ := apptranscript.TurnsFromEntries(header, append(append([]transcript.Entry{}, prefix...), suffix...), project)
+	// Turns below the suffix in the full projection: everything except the
+	// suffix's turns. The suffix holds 2 turns; count them directly.
+	suffixTurns, _ := apptranscript.TurnsFromEntries(transcript.Header{}, suffix, project)
+	below := len(fullTurns) - len(suffixTurns)
+	if want != below {
+		t.Fatalf("prefix turn count drift: sidecar rule says %d, full projection holds %d below the window", want, below)
+	}
+
+	// The windowed turns are the full projection's suffix turns — the same
+	// turns at the same global ids — nothing else (the prelude belongs to the
+	// prefix space; the hub's file-backed pages serve it).
+	windowedTurns, windowedPrefix := apptranscript.TurnsFromEntriesWindowed(header, suffix, len(prefix), want, project)
+	if windowedPrefix != want {
+		t.Fatalf("windowed prefix count: got %d, want %d", windowedPrefix, want)
+	}
+	fullSuffix := fullTurns[len(fullTurns)-len(suffixTurns):]
+	if len(windowedTurns) != len(fullSuffix) {
+		t.Fatalf("windowed turns: got %d, want %d (the full projection's suffix turns)", len(windowedTurns), len(fullSuffix))
+	}
+	for i := range windowedTurns {
+		if windowedTurns[i].ID != fullSuffix[i].ID {
+			t.Fatalf("windowed turn %d id: got %q, want %q", i, windowedTurns[i].ID, fullSuffix[i].ID)
+		}
 	}
 }

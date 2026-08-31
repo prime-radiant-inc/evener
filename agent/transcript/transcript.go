@@ -13,6 +13,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -236,9 +237,45 @@ type Writer struct {
 	lastSync time.Time
 
 	// sidecarEntryCount counts entries appended so far, seeded by
-	// TrackSidecarEntryCount at resume (prefix + suffix) or zero for a fresh
-	// writer, and advanced by every append. Guarded by mu.
+	// the resume constructors (prefix + suffix for a windowed read, the
+	// whole list for a full scan, zero for a fresh writer) and advanced by
+	// every append. WriteSidecarFromWriter reports it as the sidecar's
+	// EntryCount. Guarded by mu.
 	sidecarEntryCount int
+
+	// lastCheckpointStart is the byte offset where the most recently appended
+	// CHECKPOINT/SUMMARY entry BEGINS, or -1 before one exists. It is the
+	// writer-side mirror of the resume scan's lastCheckpointOffset: the resume
+	// window starts AT the checkpoint entry (ResumeHistory returns
+	// [checkpoint, ...rest]), so a sidecar written at compaction must point
+	// at that entry's start, not at the append position after it.
+	// checkpointPrefixSeq and checkpointPrefixCount record, at the moment
+	// that entry was appended, the facts the sidecar's prefix half needs:
+	// the seq of the last entry BEFORE the checkpoint and the count of those
+	// entries — the same prefix-relative facts the post-full-scan anchor
+	// derives. Guarded by mu; -1/-0 mean "no anchor yet" (count 0 is only
+	// valid with seq -1: a checkpoint-first transcript has no prefix to skip,
+	// and the scan anchor refuses that case).
+	lastCheckpointStart   int64
+	checkpointPrefixSeq   int
+	checkpointPrefixCount int
+	// lastAppendedSeq is the seq of the most recently appended entry (-1
+	// before any): the checkpoint capture reads it to learn the LAST PREFIX
+	// entry's seq — the boundary record the sidecar cross-checks the suffix's
+	// first entry against. Guarded by mu.
+	lastAppendedSeq int
+	// checkpointFailureFloor is the writer's failure count at the moment the
+	// checkpoint was appended — the floor over the prefix entries, the same
+	// figure the post-full-scan anchor derives by counting the prefix.
+	checkpointFailureFloor int
+
+	// writePos is the writer's byte position at the end of the last line it
+	// wrote — the seek-end the append path would otherwise have to ask the
+	// file for. Seeding it from the constructors' scans avoids a Seek per
+	// append (which would also shift the fault-injection op indices the
+	// fault tests count on) and keeps lastCheckpointStart's captured entry
+	// starts exact. Guarded by mu.
+	writePos int64
 
 	// failures counts the session's failed tool calls as they are written, for
 	// the live figure a running session reports. Nil until TrackFailures
@@ -374,7 +411,14 @@ func newWriterFS(fs afero.Fs, path string, header Header, sync bool) (*Writer, e
 		}
 	}
 
-	return &Writer{fs: fs, file: f, lastSync: time.Now(), header: header}, nil
+	return &Writer{fs: fs, file: f, lastSync: time.Now(), header: header, lastCheckpointStart: -1, lastAppendedSeq: -1, writePos: int64(len(data)) + 1}, nil
+}
+
+// isCheckpointTurn reports whether a turn defines a compaction boundary —
+// the kinds ResumeHistory restarts live history from. The sidecar's offset
+// keys at the START of the entry carrying such a turn.
+func isCheckpointTurn(turn schema.Turn) bool {
+	return turn.Kind == schema.TurnCheckpoint || turn.Kind == schema.TurnSummary
 }
 
 // Header returns the transcript's validated header: the header this writer
@@ -436,13 +480,16 @@ func (w *Writer) EstablishDurability() error {
 	return nil
 }
 
-// WriteSidecarFromWriter writes the resume sidecar for this writer's file at
-// its CURRENT append position: the prefix is everything durably appended so
-// far. It is the compaction and clean-shutdown anchor. floor facts (entry
-// count, max seq, failure floor) come from the writer's own running state;
-// the caller supplies the fold snapshots it can vouch for, with complete
-// reporting whether they cover every prefix entry. Best-effort: a failure is
-// returned but must never block the calling session operation.
+// WriteSidecarFromWriter writes the resume sidecar for this writer's file,
+// anchoring at the START of the last appended CHECKPOINT/SUMMARY entry — the
+// same boundary the post-full-scan anchor uses, so both anchors define the
+// identical resume window: the suffix a windowed resume decodes is
+// [checkpoint, ...rest], exactly ResumeHistory's window. The prefix is
+// everything before that entry. It is the compaction anchor. Floor facts
+// (entry count, max seq, failure floor) come from the writer's own running
+// state; the caller supplies the fold snapshots it can vouch for, with
+// complete reporting whether they cover every prefix entry. Best-effort: a
+// failure is returned but must never block the calling session operation.
 func (w *Writer) WriteSidecarFromWriter(path string, pending []SidecarPendingAttention, commits []SidecarDeliveryCommit, mutations map[string]string, complete bool) error {
 	if w == nil || w.file == nil {
 		return errors.New("transcript writer is nil")
@@ -466,40 +513,37 @@ func (w *Writer) WriteSidecarFromWriter(path string, pending []SidecarPendingAtt
 		w.dirty = false
 		w.lastSync = time.Now()
 	}
-	offset, err := w.file.Seek(0, io.SeekEnd)
+	if w.lastCheckpointStart < 0 {
+		return errors.New("transcript has no checkpoint to anchor the sidecar at")
+	}
+	offset := w.lastCheckpointStart
+	if w.checkpointPrefixCount == 0 || w.checkpointPrefixSeq < 0 {
+		// A checkpoint-first transcript: nothing before the boundary to skip.
+		// The post-full-scan anchor refuses the same case.
+		return errors.New("transcript has no prefix before the checkpoint to anchor")
+	}
+	current, err := w.file.Stat()
 	if err != nil {
-		return fmt.Errorf("seek transcript end for sidecar: %w", err)
-	}
-	if offset <= 0 {
-		return errors.New("transcript has no prefix to anchor")
-	}
-	floor := -1
-	if w.failures != nil {
-		floor = w.failures.Count()
+		return fmt.Errorf("stat transcript after sync for sidecar: %w", err)
 	}
 	sidecar := ResumeSidecar{
 		Version:                 resumeSidecarVersion,
 		TranscriptFormatVersion: FormatVersion,
 		SessionID:               w.header.SessionID,
-		TranscriptSize:          offset,
-		ValidBytes:              offset,
+		TranscriptSize:          current.Size(),
+		ValidBytes:              current.Size(),
 		Offset:                  offset,
-		MaxSeq:                  w.seq - 1,
-		EntryCount:              w.sidecarEntryCount,
-		FailureFloor:            floor,
+		MaxSeq:                  w.checkpointPrefixSeq,
+		EntryCount:              w.checkpointPrefixCount,
+		PrefixTurnCount:         -1, // not computable without the prefix entries
+		FailureFloor:            w.checkpointFailureFloor,
 		FileIdentity:            sidecarFileIdentity(info),
 		ModTimeUnixNS:           info.ModTime().UnixNano(),
-		BoundarySeq:             w.seq - 1,
+		BoundarySeq:             w.checkpointPrefixSeq,
 		SnapshotsComplete:       complete,
 		PendingAttention:        pending,
 		DeliveryCommits:         commits,
 		ClientMutationTurns:     mutations,
-	}
-	if sidecar.EntryCount < 0 || sidecar.MaxSeq < 0 {
-		// The writer never learned its starting count (a plain OpenWriter
-		// that only counted seqs); it cannot vouch for the entry count the
-		// turn-id projection needs.
-		return errors.New("transcript writer cannot vouch for prefix entry count")
 	}
 	sidecar.FirstAnchor, sidecar.TailAnchor = sidecarAnchors(w.file, offset)
 	if sidecar.FirstAnchor.Length <= 0 || sidecar.TailAnchor.Length <= 0 {
@@ -507,12 +551,6 @@ func (w *Writer) WriteSidecarFromWriter(path string, pending []SidecarPendingAtt
 	}
 	return WriteSidecar(path, sidecar)
 }
-
-// sidecarEntryCount is the writer's count of entries appended so far: seeded
-// by the resume constructors (prefix + suffix for a windowed read, the whole
-// list for a full scan, zero for a fresh writer) and advanced by append.
-// WriteSidecarFromWriter reports it as the sidecar's EntryCount. Guarded by
-// mu.
 
 func (w *Writer) append(turn schema.Turn, forceSync bool) error {
 	if w == nil || w.closed.Load() {
@@ -546,6 +584,9 @@ func (w *Writer) append(turn schema.Turn, forceSync bool) error {
 		if err != nil {
 			return fmt.Errorf("seek transcript append start: %w", err)
 		}
+		w.writePos = startOffset
+	} else {
+		startOffset = w.writePos
 	}
 
 	previousDirty := w.dirty
@@ -573,11 +614,26 @@ func (w *Writer) append(turn schema.Turn, forceSync bool) error {
 	}
 
 	w.seq++
+	if isCheckpointTurn(turn) {
+		// The prefix facts are the state BEFORE this checkpoint entry:
+		// sidecarEntryCount and seq have not yet counted it, so capturing here
+		// (before the increment below) records exactly the entries the
+		// sidecar's prefix covers — the same facts the post-full-scan anchor
+		// derives as len(entries[:checkpointIdx]) and prefix[n-1].Seq.
+		w.lastCheckpointStart = startOffset
+		w.checkpointPrefixSeq = w.lastAppendedSeq
+		w.checkpointPrefixCount = w.sidecarEntryCount
+		w.checkpointFailureFloor = w.failures.Count()
+	}
+	// The entry just written carried seq w.seq-1 (Entry.Seq is assigned
+	// before the increment above).
+	w.lastAppendedSeq = w.seq - 1
 	w.sidecarEntryCount++
 	// Counted only once the entry is on its way to the file and no rollback can
 	// take it back: the figure is a statement about the transcript, so it moves
 	// for exactly the entries a later reader of that transcript would see.
 	w.failures.Observe(turn)
+	w.writePos = startOffset + int64(len(data)) + 1
 	return nil
 }
 
@@ -700,6 +756,12 @@ type ResumeView struct {
 	// Entries. Entry i of Entries has global 1-based position
 	// PrefixEntryCount + i + 1 — the position its turn id is minted from.
 	PrefixEntryCount int
+	// PrefixTurnCount is the sidecar's count of turn positions the full
+	// AppWire projection holds below Entries (-1 when the anchor did not
+	// compute it — the compaction anchor cannot without the prefix entries).
+	// A caller arming windowed turn paging needs it; without it the only
+	// honest fallback is the full projection.
+	PrefixTurnCount int
 	// SidecarUsed reports whether the windowed read validated a sidecar.
 	// False means the full scan ran (including the fallback paths).
 	SidecarUsed bool
@@ -791,6 +853,12 @@ func writeSidecarAfterFullScan(path string, f *os.File, info os.FileInfo, scan s
 		return
 	}
 	prefix := entries[:checkpointIdx]
+	if len(prefix) == 0 {
+		// A checkpoint-first transcript (nothing before the checkpoint)
+		// has no prefix to skip either.
+		return
+	}
+	boundarySeq := prefix[len(prefix)-1].Seq
 	sidecar := ResumeSidecar{
 		Version:                 resumeSidecarVersion,
 		TranscriptFormatVersion: FormatVersion,
@@ -798,23 +866,20 @@ func writeSidecarAfterFullScan(path string, f *os.File, info os.FileInfo, scan s
 		TranscriptSize:          current.Size(),
 		ValidBytes:              current.Size(),
 		Offset:                  offset,
-		MaxSeq:                  -1,
+		MaxSeq:                  boundarySeq,
 		EntryCount:              len(prefix),
-		FailureFloor:            -1,
+		PrefixTurnCount:         -1,
 		FileIdentity:            sidecarFileIdentity(info),
 		ModTimeUnixNS:           current.ModTime().UnixNano(),
-		BoundarySeq:             0,
+		BoundarySeq:             boundarySeq,
 		SnapshotsComplete:       true,
 	}
-	if n := len(prefix); n > 0 {
-		sidecar.MaxSeq = prefix[n-1].Seq
-		sidecar.BoundarySeq = prefix[n-1].Seq
-	}
-	if sidecar.EntryCount == 0 || sidecar.MaxSeq < 0 {
-		// A checkpoint-first transcript (nothing before the checkpoint)
-		// has no prefix to skip either.
-		return
-	}
+	// The exact prefix-turn count: the prelude rule is header-derived (a
+	// non-empty SystemPrompt projects one), and the per-kind emission rule is
+	// the same one the projection applies per entry. Counted over the prefix
+	// because a windowed turn snapshot pages in the full projection's cursor
+	// space, and only this anchor holds the prefix entries to count.
+	sidecar.PrefixTurnCount = prefixTurnCount(scan.header, prefix)
 	// The failure floor is computed exactly the way a TrackFailures seed
 	// would count the PREFIX entries — same counter, same rule — so the
 	// windowed resume that draws from it reports the figure the full scan
@@ -827,8 +892,15 @@ func writeSidecarAfterFullScan(path string, f *os.File, info os.FileInfo, scan s
 	// Fold snapshots over the WHOLE entry list (the fold is a file-wide
 	// invariant; the boundary only decides which entries the next resume
 	// re-decodes): pending attentions with content, delivery commits, and
-	// the client-mutation identity index.
-	sidecar.PendingAttention, sidecar.DeliveryCommits, sidecar.ClientMutationTurns = foldSnapshotForSidecar(entries)
+	// the client-mutation identity index. A fold inconsistency is reported,
+	// not swallowed: the anchor then writes no sidecar at all, so the resume
+	// falls back to the full scan instead of trusting an empty snapshot a
+	// broken fold produced.
+	pending, commits, mutations, foldOK := foldSnapshotForSidecar(entries)
+	if !foldOK {
+		return
+	}
+	sidecar.PendingAttention, sidecar.DeliveryCommits, sidecar.ClientMutationTurns = pending, commits, mutations
 	sidecar.FirstAnchor, sidecar.TailAnchor = sidecarAnchors(f, offset)
 	if sidecar.FirstAnchor.Length <= 0 || sidecar.TailAnchor.Length <= 0 {
 		return
@@ -837,32 +909,79 @@ func writeSidecarAfterFullScan(path string, f *os.File, info os.FileInfo, scan s
 }
 
 // lastCheckpointEntry returns the index of the first entry of the last
-// TurnCheckpoint/TUMMARY turn, or -1 when none exists. The FIRST entry of
+// TurnCheckpoint/TurnSummary turn, or -1 when none exists. The FIRST entry of
 // the checkpoint matters because the offset must point AT it: ResumeHistory
 // returns [checkpoint, ...subsequent], so the suffix must include the
 // checkpoint entry itself.
 func lastCheckpointEntry(entries []Entry) int {
 	last := -1
 	for i := range entries {
-		if kind := entries[i].Turn.Kind; kind == schema.TurnCheckpoint || kind == schema.TurnSummary {
+		if isCheckpointTurn(entries[i].Turn) {
 			last = i
 		}
 	}
 	return last
 }
 
+// prefixTurnCount counts the turn positions a full AppWire projection holds
+// over one entry list plus its header: the prelude (a non-empty
+// SystemPrompt projects one) plus one position per entry whose turn projects
+// at least one thread item. It mirrors internal/apptranscript's rules
+// (PreludeTurn, ProjectTurn) because this package cannot import that one;
+// the differential test that keeps the two honest is
+// TestWindowedSnapshotMatchesFullProjectionDifferential, which fails if the
+// count and the projection disagree over the same entries.
+func prefixTurnCount(header Header, entries []Entry) int {
+	count := 0
+	if strings.TrimSpace(header.SystemPrompt) != "" {
+		count++
+	}
+	for i := range entries {
+		if projectsThreadItems(entries[i].Turn) {
+			count++
+		}
+	}
+	return count
+}
+
+// projectsThreadItems reports whether the AppWire projector emits at least
+// one thread item for a turn — whether the entry carrying it occupies a turn
+// position. The kind rules restated from ProjectTurn: the marker kinds emit
+// nothing when they carry no text (a checkpoint with empty text renders no
+// row), while every conversation kind (user, assistant, steering, tool
+// results, failure, resolution) always projects.
+func projectsThreadItems(turn schema.Turn) bool {
+	switch turn.Kind {
+	case schema.TurnCheckpoint, schema.TurnSummary, schema.TurnModelSwitch, schema.TurnEnvironment, schema.TurnHookCompleted:
+		if strings.TrimSpace(turn.Message.Text()) != "" {
+			return true
+		}
+		return turn.Kind == schema.TurnHookCompleted && turn.Hook != nil
+	default:
+		return true
+	}
+}
+
 // foldSnapshotForSidecar computes the fold snapshots a full-scan anchor can
 // vouch for: the delegate-attention fold over every entry, projected into
-// the sidecar's snapshot types. A fold failure means the transcript's
-// attention records are inconsistent — the sidecar then reports NO pending
-// attentions and NO commits (nil), which the seeded fold treats as
-// "nothing straddling"; that under-reports only transient wake behavior,
-// and the resume's own full read (the fallback the seeded fold's caller
-// holds) remains the authority for anything the fold would have caught.
-func foldSnapshotForSidecar(entries []Entry) (pending []SidecarPendingAttention, commits []SidecarDeliveryCommit, mutations map[string]string) {
+// the sidecar's snapshot types. ok is false when the transcript's attention
+// records are inconsistent (a resolution for an attention that never
+// appended, or a resolution naming no attention) — the caller must not write
+// a sidecar claiming complete snapshots over such a file, because the seeded
+// fold would silently reconstruct an empty state where the full read errors.
+// The structural checks here are the ones the full entry list can judge
+// without importing the agent's fold: an unresolvable resolution, or a
+// resolution that names no attention, is inconsistent on their face.
+func foldSnapshotForSidecar(entries []Entry) (pending []SidecarPendingAttention, commits []SidecarDeliveryCommit, mutations map[string]string, ok bool) {
 	pending = nil
 	commits = nil
 	mutations = map[string]string{}
+	appended := map[string]bool{}
+	for i := range entries {
+		if id := entries[i].Turn.AttentionID; id != "" {
+			appended[id] = true
+		}
+	}
 	for i := range entries {
 		turn := entries[i].Turn
 		if turn.ClientMutationID != "" {
@@ -877,6 +996,12 @@ func foldSnapshotForSidecar(entries []Entry) (pending []SidecarPendingAttention,
 	resolved := map[string]bool{}
 	for i := range entries {
 		if r := entries[i].Turn.AttentionResolution; r != nil {
+			if r.AttentionID == "" || !appended[r.AttentionID] {
+				// A resolution whose attention never appended is the fold's
+				// "resolved before it was appended" error — visible here
+				// without the fold itself.
+				return nil, nil, nil, false
+			}
 			resolved[r.AttentionID] = true
 		}
 	}
@@ -894,7 +1019,7 @@ func foldSnapshotForSidecar(entries []Entry) (pending []SidecarPendingAttention,
 			Message:     JSONMessage(message),
 		})
 	}
-	return pending, commits, mutations
+	return pending, commits, mutations, true
 }
 
 // resumeWindowed validates a sidecar against the opened file and, on
@@ -997,10 +1122,11 @@ func resumeWindowed(f *os.File, info os.FileInfo, sidecar ResumeSidecar, expecte
 		_ = f.Close()
 		return ResumeView{}, nil, false
 	}
-	writer := &Writer{fs: afero.NewOsFs(), file: f, seq: nextSeq, lastSync: time.Now(), header: header, sidecarEntryCount: sidecar.EntryCount + len(entries)}
+	writer := &Writer{fs: afero.NewOsFs(), file: f, seq: nextSeq, lastSync: time.Now(), header: header, sidecarEntryCount: sidecar.EntryCount + len(entries), lastCheckpointStart: -1, lastAppendedSeq: maxSeq, writePos: sidecar.Offset + validLen}
 	view := ResumeView{
 		Entries:          entries,
 		PrefixEntryCount: sidecar.EntryCount,
+		PrefixTurnCount:  sidecar.PrefixTurnCount,
 		SidecarUsed:      true,
 		Sidecar:          sidecar,
 	}
@@ -1097,7 +1223,7 @@ func resumeWriter(fs afero.Fs, f afero.File, expectedSessionID string) (*Writer,
 		if entry.Seq > maxSeq {
 			maxSeq = entry.Seq
 		}
-		if kind := entry.Turn.Kind; kind == schema.TurnCheckpoint || kind == schema.TurnSummary {
+		if isCheckpointTurn(entry.Turn) {
 			lastCheckpointOffset = entryStartOffset
 		}
 	}
@@ -1129,13 +1255,15 @@ func resumeWriter(fs afero.Fs, f afero.File, expectedSessionID string) (*Writer,
 		return nil, scanResult{}, fmt.Errorf("seek to end of transcript: %w", err)
 	}
 
-	return &Writer{fs: fs, file: f, seq: nextSeq, lastSync: time.Now(), header: header, sidecarEntryCount: len(entries)}, scanResult{entries: entries, lastCheckpointOffset: lastCheckpointOffset}, nil
+	return &Writer{fs: fs, file: f, seq: nextSeq, lastSync: time.Now(), header: header, sidecarEntryCount: len(entries), lastCheckpointStart: lastCheckpointOffset, lastAppendedSeq: maxSeq, writePos: validLen}, scanResult{entries: entries, lastCheckpointOffset: lastCheckpointOffset, header: header}, nil
 }
 
 // scanResult is what a full resume scan learned besides the entries: the
 // byte offset of the last checkpoint entry, recorded during the scan so the
-// opportunistic sidecar write needs no second file pass.
+// opportunistic sidecar write needs no second file pass, and the validated
+// header (for the prelude rule the prefix-turn count applies).
 type scanResult struct {
 	entries              []Entry
 	lastCheckpointOffset int64
+	header               Header
 }

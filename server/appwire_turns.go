@@ -406,12 +406,13 @@ func (s *appTurnSnapshot) Latest(limit int) ([]appwire.Turn, string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if s.prefixTurnCount > 0 {
-		// Windowed seed: page in the full-projection position space. A
-		// window smaller than the limit extends below the window; the
-		// cursor then points at the prefix boundary and the hub serves the
-		// older turns from its file-backed paging.
+		// Windowed seed: page in the full-projection position space. A window
+		// smaller than the limit extends below the window; the cursor then
+		// points at the prefix boundary and the hub serves the older turns
+		// from its file-backed paging. A limit that reaches past the window
+		// is the same case — the window cannot serve more than it holds.
 		total := s.prefixTurnCount + len(s.turns)
-		if limit <= 0 || total <= limit {
+		if limit <= 0 || limit >= len(s.turns) || total <= limit {
 			return cloneAppTurns(s.turns), strconv.Itoa(s.prefixTurnCount)
 		}
 		lo := len(s.turns) - limit
@@ -450,13 +451,7 @@ func (s *appTurnSnapshot) Page(cursor string, limit int) appwire.ThreadTurnsList
 		// turns.
 		localHi := hi - s.prefixTurnCount
 		localLo := max(localHi-limit, 0)
-		next := ""
-		if s.prefixTurnCount > 0 {
-			next = strconv.Itoa(s.prefixTurnCount)
-		} else if localLo > 0 {
-			next = strconv.Itoa(localLo)
-		}
-		return appwire.ThreadTurnsListResponse{Data: cloneAppTurns(s.turns[localLo:localHi]), NextCursor: next}
+		return appwire.ThreadTurnsListResponse{Data: cloneAppTurns(s.turns[localLo:localHi]), NextCursor: strconv.Itoa(s.prefixTurnCount)}
 	}
 	page := appwire.PageTurns(s.turns, cursor, limit)
 	page.Data = cloneAppTurns(page.Data)

@@ -705,23 +705,33 @@ func TurnsFromEntries(header transcript.Header, entries []transcript.Entry, proj
 // when the prefix is empty — with a non-empty prefix the prelude's position
 // belongs to prefix turns this projection does not hold.
 //
-// It returns the projected turns and the count of prefix TURN POSITIONS the
-// full projection would hold below them (for a zero prefix: 1 when a prelude
-// was emitted, else 0). The caller uses that count to offset paging cursors
-// into the same space.
-func TurnsFromEntriesWindowed(header transcript.Header, entries []transcript.Entry, prefixEntryCount int, project EntryProjector) ([]appwire.Turn, int) {
+// It returns the projected turns and the count of turn POSITIONS the full
+// projection would hold below them: the prelude (when the header projects
+// one) plus prefixTurnCount, the count of prefix entries that project at
+// least one thread item — a figure ONLY the sidecar can supply exactly
+// (it decoded the prefix; the suffix alone cannot infer which kinds
+// projected). The caller uses that count to offset paging cursors into the
+// same space, so a windowed snapshot pages as the full projection would.
+// A negative prefixTurnCount means the sidecar did not compute it: the
+// caller must not arm windowed paging on this projection.
+func TurnsFromEntriesWindowed(header transcript.Header, entries []transcript.Entry, prefixEntryCount, prefixTurnCount int, project EntryProjector) ([]appwire.Turn, int) {
 	var turns []appwire.Turn
 	for i := range entries {
 		projectEntryIntoTurns(&turns, project, nil, entries[i].Turn, prefixEntryCount+i+1)
 	}
-	if prefixEntryCount > 0 {
-		return turns, 0 // prelude position belongs to the unseen prefix
+	// The prelude belongs to the prefix's position space whenever a prefix
+	// exists: the full projection emits it before every entry turn, so with
+	// a non-empty prefix its position is below the window and emitting it
+	// here would double it (the hub's file-backed pages already serve it).
+	// With no prefix it is the only position below the window — count 1.
+	if prefixEntryCount == 0 && prefixTurnCount < 0 {
+		if p := PreludeTurn(header); p != nil {
+			turns = append([]appwire.Turn{*p}, turns...)
+			return turns, 1
+		}
+		return turns, 0
 	}
-	if prelude := PreludeTurn(header); prelude != nil {
-		turns = append([]appwire.Turn{*prelude}, turns...)
-		return turns, 1
-	}
-	return turns, 0
+	return turns, prefixTurnCount
 }
 
 // projectEntryIntoTurns is the per-entry step both forms share: turn id,
