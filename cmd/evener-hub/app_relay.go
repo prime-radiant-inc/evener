@@ -385,6 +385,10 @@ func newHubRelayFunctions(server *appserver.Server, cfg hubcore.WebConfig, sourc
 		if err != nil {
 			return nil, nil, err
 		}
+		canonicalRef, err := source.ResolveRelaySession(params)
+		if err != nil {
+			return nil, nil, err
+		}
 		for {
 			relayMu.Lock()
 			existing := relayedThreads[relayKey]
@@ -425,7 +429,7 @@ func newHubRelayFunctions(server *appserver.Server, cfg hubcore.WebConfig, sourc
 			relayedThreads[relayKey] = handle
 			relayMu.Unlock()
 
-			lease, acquireErr := source.AcquireRelaySession(params)
+			lease, acquireErr := source.AcquireRelaySession(canonicalRef)
 			var deliveries <-chan appsource.RelayDelivery
 			if acquireErr == nil && lease == nil {
 				acquireErr = appwire.SessionUnavailable("source returned no RelaySession lease")

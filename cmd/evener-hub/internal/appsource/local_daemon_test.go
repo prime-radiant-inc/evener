@@ -56,7 +56,7 @@ func TestRelaySessionHealthyRejoinUsesCanonicalConnection(t *testing.T) {
 	}
 
 	params := appwire.ThreadReadParams{Ref: "local:thread-1", Subscribe: true}
-	lease, err := source.AcquireRelaySession(params)
+	lease, err := source.acquireRelaySession(params)
 	if err != nil {
 		t.Fatalf("AcquireRelaySession: %v", err)
 	}
@@ -929,12 +929,20 @@ func TestLocalDaemonRootAndReadOnlyAliasShareRelaySession(t *testing.T) {
 			{Entry: entry, SessionID: "sess_child", OwnerSessionID: "sess_root", ReadOnlyAlias: true},
 		}
 	}, nil)
-	rootValue, err := source.AcquireRelaySession(appwire.ThreadReadParams{Ref: "local:sess_root"})
+	rootRef, err := source.ResolveRelaySession(appwire.ThreadReadParams{Ref: "local:sess_root"})
+	if err != nil {
+		t.Fatalf("resolve root relay: %v", err)
+	}
+	rootValue, err := source.AcquireRelaySession(rootRef)
 	if err != nil {
 		t.Fatalf("acquire root relay: %v", err)
 	}
 	defer rootValue.Close()
-	childValue, err := source.AcquireRelaySession(appwire.ThreadReadParams{Ref: "local:sess_child"})
+	childRef, err := source.ResolveRelaySession(appwire.ThreadReadParams{Ref: "local:sess_child"})
+	if err != nil {
+		t.Fatalf("resolve child relay: %v", err)
+	}
+	childValue, err := source.AcquireRelaySession(childRef)
 	if err != nil {
 		t.Fatalf("acquire child relay: %v", err)
 	}
@@ -956,5 +964,61 @@ func TestLocalDaemonRootAndReadOnlyAliasShareRelaySession(t *testing.T) {
 	source.relayMu.Unlock()
 	if actors != 1 {
 		t.Fatalf("relay session actors = %d, want 1", actors)
+	}
+}
+
+func TestLocalDaemonResolveRelaySessionCanonicalizesAliasesWithoutAcquiring(t *testing.T) {
+	entry := rendezvous.Entry{
+		Protocol:     appwire.ProtocolVersion,
+		Endpoint:     "ws://127.0.0.1/rpc",
+		SourceID:     "local",
+		ThreadID:     "sess_root",
+		SessionID:    "sess_root",
+		WorkspaceRef: "local:sess_root",
+	}
+	source := NewLocalDaemonSourceWithEntries("local", func() []LocalDaemonEntry {
+		return []LocalDaemonEntry{
+			{Entry: entry, SessionID: "sess_root"},
+			{Entry: entry, SessionID: "sess_child", OwnerSessionID: "sess_root", ReadOnlyAlias: true},
+		}
+	}, nil)
+
+	root, err := source.ResolveRelaySession(appwire.ThreadReadParams{Ref: "local:sess_root"})
+	if err != nil {
+		t.Fatalf("resolve root relay: %v", err)
+	}
+	child, err := source.ResolveRelaySession(appwire.ThreadReadParams{Ref: "local:sess_child"})
+	if err != nil {
+		t.Fatalf("resolve child relay: %v", err)
+	}
+	byThreadID, err := source.ResolveRelaySession(appwire.ThreadReadParams{ThreadID: "sess_child"})
+	if err != nil {
+		t.Fatalf("resolve thread-ID-only relay: %v", err)
+	}
+	want := appwire.Ref{SourceID: "local", ThreadID: "sess_root"}
+	for name, got := range map[string]appwire.Ref{"root": root, "child": child, "thread-ID-only": byThreadID} {
+		if got != want {
+			t.Errorf("%s canonical ref = %#v, want %#v", name, got, want)
+		}
+		if got.String() == "" {
+			t.Errorf("%s canonical ref is empty", name)
+		}
+	}
+
+	for _, params := range []appwire.ThreadReadParams{
+		{Ref: "not-a-ref"},
+		{Ref: "other:sess_root"},
+		{Ref: "local:missing"},
+		{ThreadID: "missing"},
+	} {
+		if _, err := source.ResolveRelaySession(params); err == nil {
+			t.Errorf("ResolveRelaySession(%+v) succeeded for invalid target", params)
+		}
+	}
+	source.relayMu.Lock()
+	acquired := len(source.relaySessions)
+	source.relayMu.Unlock()
+	if acquired != 0 {
+		t.Fatalf("resolution acquired %d relay sessions, want none", acquired)
 	}
 }

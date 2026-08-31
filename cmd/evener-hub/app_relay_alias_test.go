@@ -3,6 +3,7 @@ package hub
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"sync"
@@ -171,7 +172,17 @@ type aliasRelaySource struct {
 
 func (*aliasRelaySource) ID() string { return "local" }
 
-func (s *aliasRelaySource) AcquireRelaySession(appwire.ThreadReadParams) (appsource.RelaySessionLease, error) {
+func (s *aliasRelaySource) ResolveRelaySession(params appwire.ThreadReadParams) (appwire.Ref, error) {
+	if params.Ref != "" {
+		return appwire.ParseRef(params.Ref)
+	}
+	if params.ThreadID == "" {
+		return appwire.Ref{}, errors.New("missing relay target")
+	}
+	return appwire.Ref{SourceID: s.ID(), ThreadID: params.ThreadID}, nil
+}
+
+func (s *aliasRelaySource) AcquireRelaySession(appwire.Ref) (appsource.RelaySessionLease, error) {
 	return &aliasRelayLease{source: s}, nil
 }
 
