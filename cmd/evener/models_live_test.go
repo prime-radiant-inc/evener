@@ -212,6 +212,7 @@ func TestLiveOneMegaContextRowAccepted(t *testing.T) {
 	if err != nil {
 		t.Fatalf("load: %v", err)
 	}
+	t.Logf("%s; warnings=%v", r.UserLayerNote(), r.Warnings())
 	res, err := r.Resolve(oneMegaContextRef)
 	if err != nil {
 		t.Fatalf("resolve %s: %v", oneMegaContextRef, err)
