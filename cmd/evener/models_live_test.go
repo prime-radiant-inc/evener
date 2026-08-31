@@ -423,6 +423,117 @@ func assertThinkingShape(t *testing.T, what string, body map[string]any) int {
 	return budget
 }
 
+// bedrockInstance is the implicit instance the amazon-bedrock rows activate
+// as: a curated implicit provider takes its own id as its instance name, and
+// the provider's credential (auth = header) has to resolve before the instance
+// exists at all, so the pin below both needs and asserts a bearer.
+const bedrockInstance = "amazon-bedrock"
+
+// bedrockGlobalWire and bedrockRegionalWire spell the same Sonnet 5 row two
+// ways: through the `global.` cross-region inference profile and through the
+// in-region id. Naming one base id leaves the routing prefix as the only
+// difference between the two legs below. Sonnet 5 is the cheapest catalog row
+// that carries a `global.` prefix and is also served on the Mantle Anthropic
+// endpoint (input 2 / output 10).
+const (
+	bedrockGlobalWire   = "global.anthropic.claude-sonnet-5"
+	bedrockRegionalWire = "anthropic.claude-sonnet-5"
+)
+
+// TestLiveBedrockGlobalRouting pins how the amazon-bedrock rows reach Bedrock
+// (spec §9.3, §15): the base URL is the regional Mantle host built from
+// AWS_REGION, the credential travels as a bearer in x-api-key with no request
+// signing anywhere in the path, and the model id reaches the wire verbatim —
+// prefix included, since the routing prefix is the whole of what would select
+// a cross-region profile. A normalizer that trimmed the prefix would leave a
+// request that still answered 200 from the in-region id, so nothing short of a
+// verbatim wire id catches that.
+//
+// Only the in-region leg sends a request, because on 2026-08-31 the Mantle
+// Anthropic endpoint does not serve the prefixed ids at all. Its own catalog
+// (GET https://bedrock-mantle.{region}.api.aws/v1/models, 200) lists six
+// unprefixed Claude ids — anthropic.claude-{fable-5,haiku-4-5,opus-4-7,
+// opus-4-8,opus-5,sonnet-5} — and asking /anthropic/v1/messages for
+// global.anthropic.claude-sonnet-5 answers 404 not_found_error, "The model
+// 'global.anthropic.claude-sonnet-5' does not exist". That is not an
+// entitlement problem and not stale registry data: `aws bedrock
+// list-inference-profiles` shows global.anthropic.claude-sonnet-5 ACTIVE and
+// SYSTEM_DEFINED in the same account and region, and
+// get-foundation-model-availability reports it AUTHORIZED and AVAILABLE. The
+// two namespaces are simply different — inference-profile ids address
+// bedrock-runtime's InvokeModel/Converse path, which spec §1 puts out of
+// scope, while bedrock-mantle serves the flat catalog above. Spec §9.3's
+// global-routing paragraph is what needs re-deciding; until it is, the global
+// leg is pinned offline only, and sending it would only burn a request on a
+// 404 every run.
+//
+// Gated like TestLiveSmoke, plus the two AWS variables the row is built from,
+// without which no request can be assembled at all. Run with:
+//
+//	EVENER_LIVE_TESTS=1 go test ./cmd/evener/ -run TestLiveBedrockGlobalRouting -v -count=1 -args -live-config=/path/to/providers.toml
+//
+// It never prints a credential value: only the base URL, the wire id, header
+// names, statuses, and the reply's length.
+func TestLiveBedrockGlobalRouting(t *testing.T) {
+	requireLiveGate(t, "the Bedrock global-routing pin")
+	region := os.Getenv(envvars.AWSRegion.Name)
+	if os.Getenv(envvars.AWSBearerTokenBedrock.Name) == "" || region == "" {
+		t.Skipf("set %s and %s to run the Bedrock global-routing pin",
+			envvars.AWSBearerTokenBedrock.Name, envvars.AWSRegion.Name)
+	}
+	r := loadLiveRegistry(t)
+	wantBase := "https://bedrock-mantle." + region + ".api.aws/anthropic/v1"
+	assertBedrockRouting(t, r, bedrockGlobalWire, wantBase)
+	res := assertBedrockRouting(t, r, bedrockRegionalWire, wantBase)
+
+	url, body, ok := liveBody(res)
+	if !ok {
+		t.Fatalf("%s: protocol %s builds no request body", res.ModelID, res.Protocol)
+	}
+	client := &http.Client{Timeout: 90 * time.Second}
+	status, resp := liveRequest(t, client, http.MethodPost, url, body, res)
+	if status != http.StatusOK {
+		t.Fatalf("%s: POST %s (wire %s) → %d: %s", res.ModelID, res.Transport.Endpoint, res.WireID, status, excerpt(resp, 300))
+	}
+	text := strings.TrimSpace(string(liveText(res.Protocol, resp)))
+	if text == "" {
+		t.Fatalf("%s: POST %s → %d with no reply text: %s", res.ModelID, res.Transport.Endpoint, status, excerpt(resp, 300))
+	}
+	t.Logf("%s: POST %s (wire %s) → %d, %d chars of reply text", res.ModelID, res.Transport.Endpoint, res.WireID, status, len(text))
+}
+
+// assertBedrockRouting checks everything the amazon-bedrock row promises about
+// reaching the endpoint for the model id wire, which is both the model half of
+// the reference it resolves and the id the request must carry unchanged. All
+// of it is offline, so it costs no request on either leg.
+func assertBedrockRouting(t *testing.T, r *registry.Registry, wire, wantBase string) registry.Resolved {
+	t.Helper()
+	ref := bedrockInstance + "/" + wire
+	res, err := r.Resolve(ref)
+	if err != nil {
+		t.Fatalf("resolve %s: %v", ref, err)
+	}
+	if res.Synthesized {
+		t.Fatalf("%s: the catalog lists no such row, so the reference was synthesized", ref)
+	}
+	if res.Transport.BaseURL != wantBase {
+		t.Fatalf("%s: base URL %q, want %q", ref, res.Transport.BaseURL, wantBase)
+	}
+	if res.WireID != wire {
+		t.Fatalf("%s: wire id %q, want %q verbatim — the routing prefix must survive resolution", ref, res.WireID, wire)
+	}
+	if res.Transport.Auth != registry.AuthHeader || res.Transport.AuthHeader != "x-api-key" {
+		t.Fatalf("%s: auth %q in header %q, want %q in %q (spec §15: bearer only, never SigV4)",
+			ref, res.Transport.Auth, res.Transport.AuthHeader, registry.AuthHeader, "x-api-key")
+	}
+	if res.Credential.Value == "" {
+		t.Fatalf("%s: no credential resolved (source %s) though %s is set", ref, res.Credential.Source, envvars.AWSBearerTokenBedrock.Name)
+	}
+	t.Logf("%s: base=%s wire=%s protocol=%s auth=%s/%s headers=%v provenance=%s", ref, res.Transport.BaseURL,
+		res.WireID, res.Protocol, res.Transport.Auth, res.Transport.AuthHeader, sortedNames(res.Headers), res.Provenance["model"])
+	return res
+}
+
 // liveWireRecorder keeps the request body of the call it forwards so a
 // property test can assert what actually went on the wire rather than what the
 // builder returned. The bytes it holds carry the prompt and the request it
