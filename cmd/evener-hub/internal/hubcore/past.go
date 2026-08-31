@@ -173,22 +173,7 @@ func (i *PastIndex) Rebuild() (bool, error) {
 	i.byID = byID
 	i.fts = false
 	i.mu.Unlock()
-	if i.dbPath != "" {
-		if err := i.rebuildFTS(all); err == nil {
-			i.mu.Lock()
-			i.fts = true
-			i.mu.Unlock()
-		}
-	}
-	fp := contentFingerprint(all)
-	i.mu.Lock()
-	changed := fp != i.fingerprint
-	i.fingerprint = fp
-	i.mu.Unlock()
-	if changed && i.onChange != nil {
-		i.onChange()
-	}
-	return changed && i.onChange != nil, nil
+	return i.publishAndSignal(all), nil
 }
 
 // maxReportedSkips bounds how many individual unindexable paths one Rebuild
@@ -321,22 +306,37 @@ func (i *PastIndex) UpdateMeta(id string, meta schema.SessionMeta) bool {
 	pe := PastEntry{ID: id, Meta: meta, StateDir: old.StateDir}
 	i.byID[id] = pe
 	fresh := make([]PastEntry, 0, len(i.all))
-	removed := false
 	for _, e := range i.all {
-		if !removed && e.ID == id {
-			removed = true
-			continue
+		if e.ID != id {
+			fresh = append(fresh, e)
 		}
-		fresh = append(fresh, e)
 	}
-	pos := sort.Search(len(fresh), func(k int) bool { return !sessionMetaLess(fresh[k].Meta, meta) })
-	fresh = append(fresh, PastEntry{})
-	copy(fresh[pos+1:], fresh[pos:])
-	fresh[pos] = pe
+	fresh = insertSorted(fresh, pe)
 	i.all = fresh
 	all := append([]PastEntry(nil), i.all...)
 	i.mu.Unlock()
+	return i.publishAndSignal(all)
+}
 
+// insertSorted returns a new slice with pe inserted at its sorted position
+// (per sessionMetaLess). Callers own the lock; the input slice must not be
+// aliased by anything a concurrent reader still holds (allocate-then-swap,
+// see UpdateMeta's doc).
+func insertSorted(entries []PastEntry, pe PastEntry) []PastEntry {
+	pos := sort.Search(len(entries), func(k int) bool { return !sessionMetaLess(entries[k].Meta, pe.Meta) })
+	entries = append(entries, PastEntry{})
+	copy(entries[pos+1:], entries[pos:])
+	entries[pos] = pe
+	return entries
+}
+
+// publishAndSignal mirrors a freshly-swapped index snapshot into the FTS
+// index and the content fingerprint, firing onChange when the content
+// actually changed. all must be an immutable snapshot of i.all taken under
+// the lock (rebuildFTS and contentFingerprint run unlocked). The bool is
+// Rebuild/UpdateMeta's contract: whether content changed AND a registered
+// onChange fired for it.
+func (i *PastIndex) publishAndSignal(all []PastEntry) bool {
 	if i.dbPath != "" {
 		if err := i.rebuildFTS(all); err == nil {
 			i.mu.Lock()
@@ -740,12 +740,12 @@ func (i *PastIndex) findCached(sessionID string) (PastEntry, bool) {
 // disk. Like Rebuild's byID map, a session present in several projects
 // resolves to the LAST project in glob order.
 //
-// A miss here is not proof the session does not exist: unlike a full
-// Rebuild, a corrupt meta file, an unlistable sessions dir, or an invalid
-// project id all just skip that project. The 60s rebuild tick remains the
-// authority for those; Find's miss path only needs to surface a session
-// persisted after the last index (the fuzzScenarioPastIndex_FindRefreshesNewSessionOnMiss
-// contract).
+// A miss here is not proof the session does not exist: a corrupt meta file,
+// an unlistable sessions dir, or an invalid project id skip that project
+// silently — the same paths Rebuild skips (and reports); the 60s rebuild
+// tick remains the authority for those. Find's miss path only needs to
+// surface a session persisted after the last index (the
+// fuzzScenarioPastIndex_FindRefreshesNewSessionOnMiss contract).
 func (i *PastIndex) probeOne(sessionID string) (PastEntry, bool) {
 	matches, err := filepath.Glob(i.stateGlob)
 	if err != nil {
@@ -765,11 +765,11 @@ func (i *PastIndex) probeOne(sessionID string) (PastEntry, bool) {
 	return found, found.ID != ""
 }
 
-// foldOne inserts a probed entry into the in-memory index, mirroring
-// UpdateMeta's allocate-then-swap discipline (the sorted slice Rebuild may
-// still be reading must not be mutated in place). Unlike UpdateMeta it
-// inserts an id the index has never seen, so it also renumbers the FTS rows
-// and re-fingerprints, firing onChange exactly when the fold changed content.
+// foldOne inserts a probed entry into the in-memory index with the same
+// allocate-then-swap discipline and publish tail as UpdateMeta (the sorted
+// slice Rebuild may still be reading must not be mutated in place); the one
+// difference is that it inserts an id the index has never seen, where
+// UpdateMeta replaces an existing one.
 func (i *PastIndex) foldOne(entry PastEntry) {
 	i.mu.Lock()
 	if _, ok := i.byID[entry.ID]; ok {
@@ -781,27 +781,9 @@ func (i *PastIndex) foldOne(entry PastEntry) {
 	i.byID[entry.ID] = entry
 	fresh := make([]PastEntry, 0, len(i.all)+1)
 	fresh = append(fresh, i.all...)
-	pos := sort.Search(len(fresh), func(k int) bool { return !sessionMetaLess(fresh[k].Meta, entry.Meta) })
-	fresh = append(fresh, PastEntry{})
-	copy(fresh[pos+1:], fresh[pos:])
-	fresh[pos] = entry
+	fresh = insertSorted(fresh, entry)
 	i.all = fresh
 	all := append([]PastEntry(nil), i.all...)
 	i.mu.Unlock()
-
-	if i.dbPath != "" {
-		if err := i.rebuildFTS(all); err == nil {
-			i.mu.Lock()
-			i.fts = true
-			i.mu.Unlock()
-		}
-	}
-	fp := contentFingerprint(all)
-	i.mu.Lock()
-	changed := fp != i.fingerprint
-	i.fingerprint = fp
-	i.mu.Unlock()
-	if changed && i.onChange != nil {
-		i.onChange()
-	}
+	i.publishAndSignal(all)
 }
